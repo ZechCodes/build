@@ -364,10 +364,10 @@ describe("Active and unassigned Backlog", () => {
   const ids = (entries) => entries.map((entry) => entry.issue.id);
 
   it("puts a working agent's task in Working, including one in Ready", () => {
-    const task = issue("busy", { status: "ready", assignee: agent("busy") });
-    const sections = project([task]);
+    const held = issue("busy", { status: "ready", assignee: agent("busy") });
+    const sections = project([held]);
     expect(sections.activeGroups.map((group) => [group.title, ids(group.entries)])).toEqual([["Working", ["busy"]]]);
-    expect(sections.active[0]).toMatchObject({ issue: task, working: true });
+    expect(sections.active[0]).toMatchObject({ issue: held, working: true });
     expect(sections.backlog).toEqual([]);
   });
 
@@ -411,11 +411,11 @@ describe("Active and unassigned Backlog", () => {
   });
 
   it("moves an agent task between groups as the cached feed working bit changes", () => {
-    const task = issue("moving", { assignee: agent("busy") });
-    expect(project([task]).activeGroups[0].title).toBe("Working");
+    const held = issue("moving", { assignee: agent("busy") });
+    expect(project([held]).activeGroups[0].title).toBe("Working");
     const stopped = { items: [{ projectKey: PROJECT, agents: [{ id: "busy", working: false }] }] };
-    expect(project([task], stopped).activeGroups[0].title).toBe("Assigned");
-    expect(project([task]).activeGroups[0].title).toBe("Working");
+    expect(project([held], stopped).activeGroups[0].title).toBe("Assigned");
+    expect(project([held]).activeGroups[0].title).toBe("Working");
   });
 
   it("sorts each group by priority, then preserves list order", () => {

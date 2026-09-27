@@ -157,7 +157,7 @@ try {
   note("the agent's report arrives as a notification", Boolean(agent), agent ? `${agent.ms} ms: "${agent.title}: ${agent.body}" → ${agent.url}` : `none in 60 s${conversation}`);
   note("the agent notification's copy is generic", agent?.body === "An agent needs you");
   note("the agent's comment on the watched issue arrives as a notification", Boolean(task), task ? `"${task.title}: ${task.body}" → ${task.url}` : `none${conversation}`);
-  note("the task notification says task, not issue", task?.body === "New activity on a task");
+  note("the task notification names a task", task?.body === "New activity on a task");
   await page.screenshot({ path: `${OUT}/3-notified.png` });
 
   // ---- 4. each deep link opens its surface ----

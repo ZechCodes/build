@@ -54,9 +54,9 @@ it("wires a mounted issues pane to cached dashboard tabs and live counts", async
 });
 
 it("moves a mounted task between Active groups when the cached feed changes", async () => {
-  const task = issue({ id: "task", number: 8, title: "Review the draft", assignee: { kind: "agent", agent_id: "agent-1" } });
+  const held = issue({ id: "task", number: 8, title: "Review the draft", assignee: { kind: "agent", agent_id: "agent-1" } });
   let feed = { items: [{ projectKey: "dashboard-project", agents: [{ id: "agent-1", working: false }] }] };
-  await writeIssuesRecord("dashboard-device", "dashboard-project", issuesRecord([task], columns()));
+  await writeIssuesRecord("dashboard-device", "dashboard-project", issuesRecord([held], columns()));
   pane = mountIssuesPane(host, {
     deviceId: "dashboard-device",
     projectId: "dashboard-project",

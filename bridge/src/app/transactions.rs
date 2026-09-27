@@ -157,9 +157,8 @@ impl AppState {
             .record_updated(&plan_id, now.clone());
         self.stamp_state_change(&plan_id, plan_state_str(&active.plan.state), now);
         let persisted = self.persist_plan_record(&plan_id, &active);
-        let news = self.conversation_news(active.agents.sole_thread());
-        let state_kind = crate::notify::kind_for_plan_state(&active.plan.state);
-        self.push_attention_notify(&plan_id, news, state_kind);
+        let news = self.roster_news(&active.agents);
+        self.push_agent_news(&plan_id, news);
         self.plans.insert(plan_id.clone(), active);
         // After the insert: the attention file is pruned to what exists when it
         // is written, and an anchor stamped while the record was checked out
@@ -207,13 +206,8 @@ impl AppState {
         // The mutation likely changed the tree; drop the cached diffstat.
         self.invalidate_run_stat(&run_id);
         let persisted = self.persist_run_record(&run_id, &active);
-        let news = self
-            .conversation_thread_for_run(&active)
-            .map(|thread| self.conversation_news(thread));
-        let state_kind = crate::notify::kind_for_run_state(&active.run.state);
-        if let Some(news) = news {
-            self.push_attention_notify(&run_id, news, state_kind);
-        }
+        let news = self.roster_news(&active.agents);
+        self.push_agent_news(&run_id, news);
         self.runs.insert(run_id.clone(), active);
         // See `finish_plan_mutation`: seeded once the record is back in its map.
         self.seed_anchor(&run_id);

@@ -20,6 +20,7 @@ mod identities;
 mod inbox;
 mod notices;
 mod pages;
+mod push;
 mod refs;
 mod reminder;
 mod said;
@@ -430,6 +431,8 @@ impl AppState {
         // change landed, and a conversation that could not be written must not
         // turn it back into a refusal.
         self.notify_trackers(&write);
+        // And the user's browsers, when the write adds to their badge (#191).
+        self.push_issue_news(&write);
         // And the agent says, in its own conversation, what it just did.
         self.say_what_the_agent_did(&write);
         let issue =

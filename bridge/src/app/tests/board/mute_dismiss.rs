@@ -87,15 +87,13 @@ fn a_muted_entry_pushes_nothing_and_burns_no_debounce_window() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let (_, run_id) = planned_run_in_review(&mut state, "quiet push");
-    let review = crate::notify::kind_for_run_state(&RunState::Review);
 
     state.handle(req(
         "entity.mute",
         json!({ "entity_id": run_id, "muted": true }),
     ));
-    assert_eq!(
-        state.attention_push_kind(&run_id, Some("done"), review),
-        None,
+    assert!(
+        !state.agent_news_pushes(&run_id, Some("done")),
         "a muted entry pushes nothing"
     );
 
@@ -103,10 +101,7 @@ fn a_muted_entry_pushes_nothing_and_burns_no_debounce_window() {
         "entity.mute",
         json!({ "entity_id": run_id, "muted": false }),
     ));
-    assert_eq!(
-        state.attention_push_kind(&run_id, Some("done"), review),
-        Some(crate::notify::TASK_DONE_KIND)
-    );
+    assert!(state.agent_news_pushes(&run_id, Some("done")));
 }
 
 #[test]
@@ -757,7 +752,13 @@ fn one_piece_of_news_reaches_the_push_funnel_once() {
     let conversation = state.runs[&run_id].agents.sole_thread().clone();
     let news = state.conversation_news(&conversation);
     assert_eq!(news.attention_reason, Some("done"));
-    state.push_attention_notify(&run_id, news, None);
+    state.push_agent_news(
+        &run_id,
+        vec![crate::app::board::attention::AgentNews {
+            news,
+            watched: true,
+        }],
+    );
     assert_eq!(
         state.conversation_news(&conversation).attention_reason,
         None,

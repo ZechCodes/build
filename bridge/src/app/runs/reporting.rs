@@ -589,10 +589,18 @@ impl AppState {
         &'a self,
         run: &'a ActiveRun,
     ) -> Option<&'a crate::thread::Thread> {
-        let primary = run.agents.primary()?;
-        let conversation_id = primary.conversation_id();
-        if conversation_id == primary.id {
-            return Some(&primary.thread);
+        self.conversation_thread_of(run.agents.primary()?)
+    }
+
+    /// The conversation one agent speaks in: its own thread, or the one it is
+    /// bound to on another entity.
+    pub(in crate::app) fn conversation_thread_of<'a>(
+        &'a self,
+        agent: &'a crate::agent::Agent,
+    ) -> Option<&'a crate::thread::Thread> {
+        let conversation_id = agent.conversation_id();
+        if conversation_id == agent.id {
+            return Some(&agent.thread);
         }
         let owner = self.entity_of_agent(conversation_id)?;
         self.entity_agents(&owner)

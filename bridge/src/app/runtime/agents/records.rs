@@ -302,6 +302,7 @@ impl AppState {
         SessionProbes {
             resume_id: Arc::clone(&self.resume_id_probe),
             locator: Arc::clone(&self.session_locator_factory),
+            shadow: Arc::clone(&self.shadow_probe),
         }
     }
 

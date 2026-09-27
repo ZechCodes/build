@@ -76,6 +76,36 @@ pub(in crate::app) fn sanitize_attachment_name(raw: &str) -> String {
     format!("{head}{extension}")
 }
 
+/// `context` — catch-up lines rendered for a reader that stood where the
+/// attachments were stored — for a reader standing elsewhere: every
+/// `.build/attachments/` path an attachment note names is named from `root`.
+///
+/// The context is prose baked when an operation was accepted, so the paths
+/// are found by the note that carries them. Only an entry that starts a note
+/// or follows one of its separators is rewritten, and only when it is the
+/// relative form Build writes; a message body saying `.build/attachments/`
+/// is the author's words and stays as they wrote them.
+pub(in crate::app) fn attachment_notes_read_from(context: &str, root: &std::path::Path) -> String {
+    let relative = format!("{ATTACHMENTS_DIR}/");
+    let absolute = format!("{}/", root.join(ATTACHMENTS_DIR).display());
+    context
+        .split('\n')
+        .map(|line| {
+            let Some(at) = line.find(crate::thread::ATTACHMENT_NOTE_OPENING) else {
+                return line.to_string();
+            };
+            let (said, note) = line.split_at(at + crate::thread::ATTACHMENT_NOTE_OPENING.len());
+            let note = match note.strip_prefix(&relative) {
+                Some(rest) => format!("{absolute}{rest}"),
+                None => note.to_string(),
+            };
+            let note = note.replace(&format!(", {relative}"), &format!(", {absolute}"));
+            format!("{said}{note}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub(in crate::app) fn write_attachment(
     home: &std::path::Path,
     stored_name: &str,
@@ -206,6 +236,51 @@ impl AppState {
     ) -> Option<std::path::PathBuf> {
         let root = &self.runs.get(owner)?.worktree.path;
         (self.agent_process_cwd(owner, root) != *root).then(|| root.clone())
+    }
+
+    /// A delivery payload as the agent it is for reads it. A project agent
+    /// stands in its project's base, so every attachment path it is sent
+    /// relative to the scratch root is named from that root instead — the
+    /// message's own and the ones the conversation context mentions. A payload
+    /// is frozen when its operation is accepted and replayed after a restart,
+    /// so one accepted before the agent moved still names the relative paths;
+    /// this is where every delivery, native or legacy, gets them fixed.
+    ///
+    /// Every other owner's payload goes unchanged.
+    pub(in crate::app) fn payload_for_reader(
+        &self,
+        owner: &str,
+        mut payload: crate::operation::OperationPayload,
+    ) -> crate::operation::OperationPayload {
+        let Some(root) = self.attachments_root_for_reader_elsewhere(owner) else {
+            return payload;
+        };
+        for attachment in payload
+            .messages
+            .iter_mut()
+            .flat_map(|message| message.attachments.iter_mut())
+        {
+            if std::path::Path::new(&attachment.path).is_relative() {
+                attachment.path = root.join(&attachment.path).display().to_string();
+            }
+        }
+        payload.prior_context = attachment_notes_read_from(&payload.prior_context, &root);
+        payload
+    }
+
+    /// An accepted operation read back out of the store with its payload as
+    /// its agent reads it: the turn a restart rebuilds for a message queued
+    /// before the agent moved.
+    pub(in crate::app) fn receipt_for_reader(
+        &self,
+        mut receipt: crate::operation::OperationReceipt,
+    ) -> crate::operation::OperationReceipt {
+        if let Some(delivery) = receipt.delivery.as_mut() {
+            if let Some(payload) = delivery.payload.take() {
+                delivery.payload = Some(self.payload_for_reader(&delivery.owner_id, payload));
+            }
+        }
+        receipt
     }
 
     /// Where attachments go for an entity that has no checkout to put them in.

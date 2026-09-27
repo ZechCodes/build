@@ -182,6 +182,14 @@ pub type SessionLocatorFactory = std::sync::Arc<
 /// reason.
 pub type ResumeIdProbe = std::sync::Arc<dyn Fn(&Path, AgentProvider, &str) -> bool + Send + Sync>;
 
+/// Clear a recorded id's way from the directory a child stands in to the one
+/// Build filed it under — [`crate::harness::Harness::set_aside_shadowing_copy`],
+/// with the provider's home read by the caller. Asked as `(cwd, root, provider,
+/// id)`, and only where the two differ.
+pub type ShadowProbe = std::sync::Arc<
+    dyn Fn(&Path, &Path, AgentProvider, &str) -> std::io::Result<Option<PathBuf>> + Send + Sync,
+>;
+
 /// The one sentence Build says when a reviewer has written: every carrier,
 /// every phase, every path. The plan-side revise turns used to carry a
 /// shorter cousin of this line, so one agent heard two wordings of the
@@ -449,6 +457,11 @@ impl AgentLaunch {
         mcp_session_token: &str,
     ) -> Result<PreparedAgentLaunch, OrchestratorError> {
         self.scaffold_agent_worktree(dirs.scaffold, owner_id)?;
+        if dirs.scaffold != dirs.cwd {
+            if let Err(error) = exclude_harness_files(dirs.cwd) {
+                eprintln!("keep harness files out of {}: {error}", dirs.cwd.display());
+            }
+        }
         let options = SpawnOptions {
             continue_session,
             resume_session_id,
@@ -482,36 +495,17 @@ impl AgentLaunch {
     }
 
     fn exclude_build_machinery_repo_locally(&self) -> Result<(), OrchestratorError> {
-        const RULES: [&str; 2] = [".build/mcp*.json", ".build/attachments/"];
         let git_dir = run_git(&self.repo_path, &["rev-parse", "--git-common-dir"])?
             .trim()
             .to_string();
-        let git_dir = self.repo_path.join(git_dir);
-        let exclude_path = git_dir.join("info").join("exclude");
-        let existing = match std::fs::read_to_string(&exclude_path) {
-            Ok(existing) => existing,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(error) => return Err(error.into()),
-        };
-        let missing: Vec<&str> = RULES
-            .into_iter()
-            .filter(|rule| !existing.lines().any(|line| line.trim() == *rule))
-            .collect();
-        if missing.is_empty() {
-            return Ok(());
-        }
-        std::fs::create_dir_all(git_dir.join("info"))?;
-        let mut updated = existing;
-        if !updated.is_empty() && !updated.ends_with('\n') {
-            updated.push('\n');
-        }
-        updated.push_str("# Build's machine-local agent plumbing\n");
-        for rule in missing {
-            updated.push_str(rule);
-            updated.push('\n');
-        }
-        crate::store::write_file_atomically(&exclude_path, &updated)?;
-        Ok(())
+        append_exclude_rules(
+            &self.repo_path.join(git_dir),
+            "# Build's machine-local agent plumbing",
+            &[
+                ".build/mcp*.json".to_string(),
+                ".build/attachments/".to_string(),
+            ],
+        )
     }
 
     pub(super) fn write_build_dir(
@@ -547,6 +541,91 @@ impl AgentLaunch {
         )?;
         Ok(())
     }
+}
+
+/// What a harness writes into the directory it is started in, whatever it
+/// was asked to do there: Claude Code's scheduler lock and durable task list,
+/// and the permissions it remembers for that directory.
+const HARNESS_FILES_WHERE_IT_STANDS: [&str; 3] = [
+    ".claude/scheduled_tasks.lock",
+    ".claude/scheduled_tasks.json",
+    ".claude/settings.local.json",
+];
+
+/// Keep what a harness writes where it stands out of `git status` in a
+/// directory Build starts an agent in but does not own — a project's base.
+///
+/// The rules go in the repository's own `.git/info/exclude`, which is this
+/// machine's and never committed, rather than a `.gitignore` that would be a
+/// change to the user's code. They are anchored to the directory the agent
+/// stands in, so a `.claude/` anywhere else in the repository is untouched,
+/// and each is appended once. A directory that is not in a git repository has
+/// no status to keep clean, and is left alone.
+pub(crate) fn exclude_harness_files(cwd: &Path) -> Result<(), OrchestratorError> {
+    let Ok(located) = run_git(cwd, &["rev-parse", "--git-common-dir", "--show-prefix"]) else {
+        return Ok(());
+    };
+    let mut located = located.lines();
+    let git_dir = cwd.join(located.next().unwrap_or_default().trim());
+    let prefix = glob_escaped(located.next().unwrap_or_default().trim());
+    let rules: Vec<String> = HARNESS_FILES_WHERE_IT_STANDS
+        .iter()
+        .map(|file| format!("/{prefix}{file}"))
+        .collect();
+    append_exclude_rules(
+        &git_dir,
+        "# Build: what an agent's harness writes in the directory it stands in",
+        &rules,
+    )
+}
+
+/// A path as a gitignore pattern that matches only itself.
+fn glob_escaped(path: &str) -> String {
+    let mut escaped = String::with_capacity(path.len());
+    for c in path.chars() {
+        if matches!(c, '*' | '?' | '[' | '\\') {
+            escaped.push('\\');
+        }
+        escaped.push(c);
+    }
+    escaped
+}
+
+/// Append to `git_dir`'s `info/exclude` whichever of `rules` it does not
+/// already hold, under `header`, written whole so a reader never sees half a
+/// file. Nothing is written when every rule is there, and neither the header
+/// nor a rule is ever written twice.
+fn append_exclude_rules(
+    git_dir: &Path,
+    header: &str,
+    rules: &[String],
+) -> Result<(), OrchestratorError> {
+    let exclude_path = git_dir.join("info").join("exclude");
+    let existing = match std::fs::read_to_string(&exclude_path) {
+        Ok(existing) => existing,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error.into()),
+    };
+    let held = |line: &str| existing.lines().any(|held| held.trim() == line);
+    let missing: Vec<&String> = rules.iter().filter(|rule| !held(rule)).collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(git_dir.join("info"))?;
+    let mut updated = existing.clone();
+    if !updated.is_empty() && !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    if !held(header) {
+        updated.push_str(header);
+        updated.push('\n');
+    }
+    for rule in missing {
+        updated.push_str(rule);
+        updated.push('\n');
+    }
+    crate::store::write_file_atomically(&exclude_path, &updated)?;
+    Ok(())
 }
 
 /// Owns project configuration and drives plans and runs through their

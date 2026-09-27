@@ -173,6 +173,17 @@ impl Harness for AdkHarness {
         ClaudeHarness.holds_conversation(home, cwd, id)
     }
 
+    /// The same tree and the same `--resume`, so the same shadow.
+    fn set_aside_shadowing_copy(
+        &self,
+        home: &Path,
+        cwd: &Path,
+        root: &Path,
+        id: &str,
+    ) -> std::io::Result<Option<std::path::PathBuf>> {
+        ClaudeHarness.set_aside_shadowing_copy(home, cwd, root, id)
+    }
+
     /// This protocol session reads its own id off the child's `init` line, so a
     /// transcript locator beside it would be a second answer free to disagree.
     fn session_locator(&self, home: &Path, cwd: &Path) -> Option<Box<dyn SessionLocator>> {

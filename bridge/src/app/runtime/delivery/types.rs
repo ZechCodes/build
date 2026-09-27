@@ -373,12 +373,19 @@ impl AppState {
         });
         for turn in &mut ready {
             self.forget_agent_start_error(&turn.owner, &turn.agent_id);
-            if !turn.wants_catch_up {
+            let Some(say) = turn.say.as_mut() else {
                 continue;
-            }
-            if let Some(say) = turn.say.as_mut() {
-                say.cold = self.cold_prompt_with_catch_up(&turn.owner, &turn.agent_id, &say.cold);
-            }
+            };
+            say.cold = if turn.wants_catch_up {
+                self.cold_prompt_with_catch_up(&turn.owner, &turn.agent_id, &say.cold)
+            } else {
+                self.cold_prompt_of_its_own(
+                    &turn.owner,
+                    &turn.agent_id,
+                    turn.model_choice.provider,
+                    &say.cold,
+                )
+            };
         }
         let state = self.settling_handle();
         let mut turns = std::collections::VecDeque::with_capacity(ready.len());

@@ -285,6 +285,10 @@ pub(super) fn viewing_context_note(context: Option<&super::ViewingContext>) -> S
 /// A relative path is written against the directory the conversation's
 /// attachments were stored under; `attachments_root` names that directory for
 /// a reader standing somewhere else, and an absolute path is left as it is.
+/// What opens the trailer [`attachment_note`] writes, for a reader that
+/// rewrites the paths in a packet rendered before it moved.
+pub const ATTACHMENT_NOTE_OPENING: &str = " [attached files, open them: ";
+
 pub(super) fn attachment_note(
     attachments: &[MessageAttachment],
     attachments_root: Option<&Path>,
@@ -301,7 +305,7 @@ pub(super) fn attachment_note(
             _ => attachment.path.clone(),
         })
         .collect();
-    format!(" [attached files, open them: {}]", paths.join(", "))
+    format!("{ATTACHMENT_NOTE_OPENING}{}]", paths.join(", "))
 }
 
 pub(super) fn snapshot_contents(contents: &str, max_bytes: usize) -> String {

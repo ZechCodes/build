@@ -514,6 +514,32 @@ impl AppState {
         )
     }
 
+    /// The cold prompt of a turn that carries its own conversation — a native
+    /// operation, with the exact messages and the context they were accepted
+    /// into — as it is handed over.
+    ///
+    /// Left as it was queued, but for a project agent's: a native post is how
+    /// most of its turns arrive, and one that starts its process — the first
+    /// after a restart, to an agent idle when the bridge went down — is the
+    /// only time it can be told what it is. So its prompt follows the
+    /// operation, after the reviewer's words rather than before them: a
+    /// provider reads a command only as the first thing it is sent. A turn that
+    /// IS a command the provider owns goes byte-for-byte, as it always does.
+    pub(in crate::app) fn cold_prompt_of_its_own(
+        &self,
+        owner: &str,
+        agent_id: &str,
+        provider: crate::models::AgentProvider,
+        cold: &str,
+    ) -> String {
+        if !crate::agent::is_project_agent(agent_id)
+            || crate::harness::harness_for(provider).requires_unadorned_command(cold)
+        {
+            return cold.to_string();
+        }
+        format!("{cold}\n\n{}", self.project_agent_prompt(owner))
+    }
+
     /// The cold prompt the SURFACE gets. Every path that opens a conversation
     /// builds the coding one, because that is what an agent with a checkout
     /// needs; a project agent has none, so it is told what it is and what it

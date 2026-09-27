@@ -275,6 +275,25 @@ pub trait Harness: Send + Sync {
         let _ = (home, cwd, id);
         true
     }
+
+    /// Clear the way for `id` to be resumed from `cwd` when Build filed it
+    /// under `root`: a copy of the conversation filed under `cwd` that the
+    /// provider would read instead of the one under `root`, and that holds
+    /// less of it, is moved aside — kept, renamed so the provider no longer
+    /// finds it — and where it went is the answer.
+    ///
+    /// `Ok(None)` by default and whenever nothing shadows: a provider that
+    /// does not file conversations by directory has nothing to set aside.
+    fn set_aside_shadowing_copy(
+        &self,
+        home: &Path,
+        cwd: &Path,
+        root: &Path,
+        id: &str,
+    ) -> std::io::Result<Option<PathBuf>> {
+        let _ = (home, cwd, root, id);
+        Ok(None)
+    }
 }
 
 /// Locates a terminal session identity from durable provider state when launch

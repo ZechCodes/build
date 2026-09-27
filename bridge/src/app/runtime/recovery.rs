@@ -249,6 +249,7 @@ impl AppState {
     pub(in crate::app) fn restore_operations(&mut self, operations: Vec<OperationReceipt>) {
         for receipt in operations {
             if receipt.status == OperationStatus::Queued {
+                let receipt = self.receipt_for_reader(receipt);
                 if let Some(turn) = PendingAgentTurn::for_delivery_operation(&receipt) {
                     self.delivery_queue.enqueue(turn);
                 }

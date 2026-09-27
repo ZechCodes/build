@@ -53,6 +53,7 @@ function startBridge() {
     },
   });
   const { next, send } = running;
+  const sessions = new Map();
   let ids = 0;
   const answered = (reply, method) => {
     if (!reply.ok) throw new Error(`${method}: ${reply.error}`);
@@ -69,15 +70,25 @@ function startBridge() {
     },
     /** A call on one session, the way this tab's rpc sends it. */
     call: async (session, method, params) => {
+      const signal = sessions.get(session)?.signal;
+      if (!signal || signal.aborted) throw new Error(`session ${session} is closed`);
       const id = ++ids;
       send({ op: "call", session, id, method, params });
-      return answered((await next((line) => line.session === session && line.frame?.id === id && "ok" in line.frame)).frame, method);
+      return answered((await next(
+        (line) => line.session === session && line.frame?.id === id && "ok" in line.frame,
+        20000,
+        signal,
+      )).frame, method);
     },
     open: async (session) => {
+      sessions.set(session, new AbortController());
       send({ op: "open", session });
       await next((line) => line.session === session && line.opened);
     },
     close: async (session) => {
+      // A real session RPC rejects its pending calls when its carrier closes.
+      // Let the old cache pass stand down before the new session reads.
+      sessions.get(session)?.abort();
       send({ op: "close", session });
       await next((line) => line.session === session && line.closed);
     },

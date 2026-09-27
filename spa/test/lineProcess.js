@@ -73,21 +73,32 @@ export function startLineProcess(command, args, { cwd, onLine = () => false } = 
   });
 
   /** The first line `match` accepts, however long ago it came. */
-  const next = (match, waitMs = 20000) => {
+  const next = (match, waitMs = 20000, signal) => {
+    if (signal?.aborted) return Promise.reject(new Error(`${command} wait aborted`));
     const early = heard.findIndex(match);
     if (early >= 0) return Promise.resolve(heard.splice(early, 1)[0]);
     if (ended) return Promise.reject(ended);
     return new Promise((resolve, reject) => {
+      const settle = (answer) => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", abort);
+        answer();
+      };
       const waiter = {
         match,
-        resolve: (line) => { clearTimeout(timer); resolve(line); },
-        fail: (error) => { clearTimeout(timer); reject(error); },
+        resolve: (line) => settle(() => resolve(line)),
+        fail: (error) => settle(() => reject(error)),
+      };
+      const abort = () => {
+        waiters.delete(waiter);
+        waiter.fail(new Error(`${command} wait aborted`));
       };
       const timer = setTimeout(() => {
         waiters.delete(waiter);
-        reject(new Error(`${command} did not answer:\n${said}`));
+        waiter.fail(new Error(`${command} did not answer:\n${said}`));
       }, waitMs);
       waiters.add(waiter);
+      signal?.addEventListener("abort", abort, { once: true });
     });
   };
 

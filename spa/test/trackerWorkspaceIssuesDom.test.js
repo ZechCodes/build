@@ -29,10 +29,6 @@ const ELSEWHERE = "agent-01M2ELSE";
 
 let button, trackerCache, mountWorkspaceIssues, block, agents;
 
-const flush = async () => {
-  for (let i = 0; i < 20; i++) await new Promise((done) => setTimeout(done, 0));
-};
-
 const held = (agentId, over = {}) => issue({ assignee: { kind: "agent", agent_id: agentId }, ...over });
 const putIssues = (issues) => trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues, columns: columns() });
 
@@ -157,7 +153,10 @@ describe("the rail's cell", () => {
     await vi.waitFor(() => expect(button.classList.contains("has-issues")).toBe(true));
     expect(button.onclick).toBeNull();
     button.click();
-    await flush();
+    // The settle point: a cache round trip after the press, which the block
+    // answers by repainting. Whatever the press set going has had one too.
+    await putIssues([held(ONE, { number: 1, id: "i1", status: "in_progress", watched: true, unread_count: 1 })]);
+    await vi.waitFor(() => expect(badge()).toBe("1"));
     expect(overlay()).toBeNull();
     expect(document.querySelector("dialog")).toBeNull();
   });

@@ -64,7 +64,7 @@ import { ISSUE_RECORD_KIND } from "./issueCache.js";
 import { issuesAddress, issuesRecord, readIssuesRecord, writeIssuesRecord } from "./trackerCache.js";
 import { foldIssuesPage, pagesIssues, pullIssuePages } from "./trackerPages.js";
 import { nextIssueRead } from "./issueReadOrder.js";
-import { writeUserSession } from "./userSessionCache.js";
+import { writeListedUserSession } from "./userSessionCache.js";
 import { inboxPushKinds } from "./trackerPush.js";
 import {
   FILE_RECORD_KIND,
@@ -577,7 +577,7 @@ async function readIssuesNow(context, projectId) {
   if (!context.active()) return;
   await Promise.all([
     writeIssuesRecord(context.deviceId, projectId, issuesRecord(answer.issues, columns, read)),
-    writeUserSession(context.deviceId, answer),
+    writeListedUserSession(context.deviceId, answer),
   ]);
 }
 
@@ -606,7 +606,7 @@ async function readIssuePagesNow(context, projectId) {
       if (!context.active()) return false;
       const [folded] = await Promise.all([
         foldIssuesPage(issuesAddress(deviceId, projectId), stretch, () => columns),
-        writeUserSession(deviceId, page),
+        writeListedUserSession(deviceId, page),
       ]);
       return folded;
     },

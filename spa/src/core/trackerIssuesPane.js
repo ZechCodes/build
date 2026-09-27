@@ -48,7 +48,7 @@ import { BOARD_VIEW, DASHBOARD_VIEW, LIST_VIEW, mountIssuesChrome } from "./trac
 import { paintGroupedIssueRows, paintIssueBoard } from "./trackerIssuesBody.js";
 import { attentionGroups, NEEDS_YOU_GROUP, REST_GROUP, WORKING_GROUP } from "./trackerAttentionModel.js";
 import { dashboardSections, doneSessionStart, doneSinceCutoff } from "./trackerDashboardModel.js";
-import { readUserSession, userSessionAddress, writeUserSession } from "./userSessionCache.js";
+import { readUserSession, userSessionAddress, writeListedUserSession } from "./userSessionCache.js";
 import { needsYouRuleAddress, readNeedsYouRule } from "./needsYouRule.js";
 import { DEFAULT_DASHBOARD_TAB, dashboardTabIds, paintIssueDashboard } from "./trackerDashboardRender.js";
 import { createTrackerIssueDetailsFeed } from "./trackerIssueDetailsFeed.js";
@@ -219,8 +219,9 @@ export function mountIssuesPane(host, options) {
 
   /** Whether this device's bridge carries `done_at` and the user's session.
    *  Answered by the cache, not the greeting (#104 review): only a bridge that
-   *  carries it sends the session this device holds, so a cold or offline
-   *  start paints the Done it will keep. */
+   *  carries it sends the session this device holds, and a list from one that
+   *  does not drops it (`writeListedUserSession`), so a cold or offline start
+   *  paints the Done it will keep. */
   function carriesDoneSinceLeft() {
     return state.userSession !== null;
   }
@@ -458,7 +459,7 @@ export function mountIssuesPane(host, options) {
     await writeIssuesQueryRecord(state.deviceId, state.projectId, params, record);
     // An unnarrowed answer is also the authoritative whole-list record.
     if (!narrowsTheRead(filters)) await writeIssuesRecord(state.deviceId, state.projectId, record);
-    await writeUserSession(state.deviceId, answer);
+    await writeListedUserSession(state.deviceId, answer);
   }
 
   /** The same read a page at a time, from a bridge that pages it (#85). Each
@@ -481,7 +482,7 @@ export function mountIssuesPane(host, options) {
       fold: async (stretch, page) => {
         const committed = await Promise.all([
           ...addresses.map((address) => foldIssuesPage(address, stretch, () => state.columns)),
-          writeUserSession(deviceId, page),
+          writeListedUserSession(deviceId, page),
         ]);
         return committed.slice(0, addresses.length).every(Boolean);
       },

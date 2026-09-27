@@ -29,10 +29,6 @@ const THEM = "agent-01M2THEM";
 
 let trackerCache, mountAgentIssues, entry, changes;
 
-const flush = async () => {
-  for (let i = 0; i < 20; i++) await new Promise((done) => setTimeout(done, 0));
-};
-
 const mine = (over = {}) => issue({ assignee: { kind: "agent", agent_id: ME }, ...over });
 
 /** Put a project's issues on disk, the way the sync layer does. */
@@ -192,12 +188,20 @@ describe("staying live off the record, with nothing asked of the bridge", () => 
     await putIssues([mine({ number: 1, id: "i1", status: "backlog" })]);
     await mount();
     entry.dispose();
+    entry = null;
+
+    // A live supplier on the same record is the settle point: it hears the
+    // write after the disposed one would have, and reads in the order asked,
+    // so once it has re-supplied the disposed one has had every chance to.
+    let heard = 0;
+    const live = mountAgentIssues({ deviceId: "dev-1", projectId: "proj-1", onChanged: () => heard++ });
+    await vi.waitFor(() => expect(heard).toBeGreaterThan(0));
 
     changes = 0;
     await putIssues([mine({ number: 1, id: "i1", status: "in_progress" })]);
-    await flush();
+    await vi.waitFor(() => expect(live.entriesFor(ME).map((one) => one.state)).toEqual(["in_progress"]));
 
     expect(changes).toBe(0);
-    entry = null;
+    live.dispose();
   });
 });

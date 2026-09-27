@@ -182,6 +182,30 @@ it("keeps the 24-hour Done when the bridge does not announce it", async () => {
   expect(host.querySelector(".issue-dashboard-empty")?.textContent).not.toBe("Nothing has moved to Done since you left.");
 });
 
+// A rollback (#104 review): a newer bridge left its session here, then an older
+// one answers the list with no session and no `done_at`. The held session must
+// not stand in for a bridge that no longer carries it — Done falls back to the
+// 24-hour timeline rather than cutting every row off.
+it("falls back to the 24-hour Done once an older bridge answers the list", async () => {
+  await mountWith(greeting);
+  await vi.waitFor(() => expect(doneTitles()).toEqual(["While you were away"]));
+  expect(await readUserSession("dev-1")).not.toBe(null);
+
+  const hello = { ...greeting, capabilities: greeting.capabilities.filter((name) => name !== "issues.doneSinceLeft") };
+  const { user_session: _session, ...older } = answers.away;
+  listed = { ...older, issues: older.issues.map(({ done_at: _doneAt, ...issue }) => issue) };
+  pane.dispose();
+  host.innerHTML = "";
+  await mountWith(hello);
+
+  // The 24-hour Done reads the cached timelines, and this bridge was asked for
+  // none: its empty line says which Done is painted.
+  await vi.waitFor(() => expect(host.querySelector(".issue-dashboard-empty")?.textContent)
+    .toBe("Nothing moved to Done in the last 24 hours."));
+  expect(await readUserSession("dev-1")).toBe(null);
+  expect(doneRows()).toEqual([]);
+});
+
 // Paint from cache (#104 review): the session this device holds says the
 // bridge carries it, so a cold start paints the Done it will keep, with no
 // greeting and nothing answered.

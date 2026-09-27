@@ -3,7 +3,7 @@
 // the cache, and — past the cap — kept in page records (#95).
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 
 let bodies, localCache, thresholds;
 
@@ -67,11 +67,63 @@ describe("an issue page's attachment bodies", () => {
     held.dispose();
   });
 
+  it("requests one MiB ranges and stores quarter MiB byte pages", async () => {
+    const pages = await import("../src/core/bodyPages.js");
+    const size = 2 * 1_048_576 + 1;
+    const bytes = new Uint8Array(size).fill(65);
+    const call = vi.fn(async (_method, params) => {
+      const offset = params.offset || 0;
+      return { mime: "video/mp4", size, offset, content_b64: pages.base64Of(bytes.subarray(offset, offset + params.length)) };
+    });
+    const held = bodies.createIssueAttachmentBodies({ deviceId: "dev-1", issueId: "issue-1", call });
+    const body = await held.load("/store/large.mp4");
+    expect(call.mock.calls.map(([, params]) => [params.offset || 0, params.length]))
+      .toEqual([[0, 1_048_576], [1_048_576, 1_048_576], [2 * 1_048_576, 1_048_576]]);
+    expect(body.pages.map((part) => atob(part).length))
+      .toEqual(Array(8).fill(pages.BODY_PAGE_BYTES).concat(1));
+    held.dispose();
+  });
+
+  it("sweeps device videos once per mount while loading several attachments", async () => {
+    const getAllKeys = vi.spyOn(IDBObjectStore.prototype, "getAllKeys");
+    const call = vi.fn(async (_method, params) => ({ path: params.path, mime: "image/png", size: 1, content_b64: b64("x") }));
+    const held = bodies.createIssueAttachmentBodies({ deviceId: "dev-1", issueId: "issue-1", call });
+    await held.load("/store/one.png");
+    await held.load("/store/two.png");
+    const deviceSweeps = getAllKeys.mock.calls.filter(([range]) => range?.lower === "dev-1|");
+    expect(deviceSweeps).toHaveLength(1);
+    held.dispose();
+    getAllKeys.mockRestore();
+  });
+
+  it("does not deserialize inline attachment bodies during a device sweep", async () => {
+    const older = { deviceId: "dev-1", entityId: "issue-2", kind: thresholds.ATTACHMENT_RECORD_KIND, sub: "/store/inline.png" };
+    await localCache.writeCached(older, { mime: "image/png", size: 1_048_576, content_b64: "x".repeat(1_000_000) });
+    const get = vi.spyOn(IDBObjectStore.prototype, "get");
+    const held = bodies.createIssueAttachmentBodies({ deviceId: "dev-1", issueId: "issue-1", call: async () => ({ mime: "image/png", size: 1, content_b64: b64("x") }) });
+    await held.load("/store/current.png");
+    expect(get.mock.calls.some(([key]) => String(key).includes("inline.png"))).toBe(false);
+    held.dispose();
+    get.mockRestore();
+  });
+
+  it("releases held page arrays after the caller creates its Blob", async () => {
+    const call = vi.fn(async () => ({ mime: "image/png", size: 3, content_b64: b64("png") }));
+    const held = bodies.createIssueAttachmentBodies({ deviceId: "dev-1", issueId: "issue-1", call });
+    const first = await held.load("/store/a.png");
+    await held.forget("/store/a.png");
+    const second = await held.load("/store/a.png");
+    expect(second.pages).not.toBe(first.pages);
+    expect(second.pages).toEqual(first.pages);
+    expect(call).toHaveBeenCalledTimes(1);
+    held.dispose();
+  });
+
   it("writes a fetched body through to the cache and answers the next mount from it", async () => {
     const call = vi.fn(async (_method, params) => ({ path: params.path, mime: "image/png", size: 3, offset: 0, content_b64: b64("png") }));
     const first = bodies.createIssueAttachmentBodies({ deviceId: "dev-1", issueId: "issue-1", call });
     expect((await first.load("/store/a.png")).pages).toEqual([b64("png")]);
-    expect(call).toHaveBeenCalledWith("issues.attachment", { issue_id: "issue-1", path: "/store/a.png", length: 262144 }, { priority: "background" });
+    expect(call).toHaveBeenCalledWith("issues.attachment", { issue_id: "issue-1", path: "/store/a.png", length: 1_048_576 }, { priority: "background" });
     expect((await localCache.readCached(address("/store/a.png")))?.value.paged).toBe(true);
     first.dispose();
 
@@ -139,8 +191,11 @@ describe("an issue page's attachment bodies", () => {
     const held = bodies.createIssueAttachmentBodies({ deviceId: "dev-1", issueId: "issue-1", call });
     for (const name of ["a", "b", "c"]) await held.load(`/store/${name}.mp4`);
     expect(await localCache.readCached(address("/store/a.mp4"))).toBeUndefined();
+    expect(await localCache.readCached({ ...address("/store/a.mp4"), kind: bodies.ISSUE_VIDEO_META_KIND })).toBeUndefined();
     expect(await localCache.readCached(address("/store/b.mp4"))).toBeDefined();
     expect(await localCache.readCached(address("/store/c.mp4"))).toBeDefined();
+    expect((await localCache.readCached({ ...address("/store/c.mp4"), kind: bodies.ISSUE_VIDEO_META_KIND }))?.value)
+      .toMatchObject({ mime: "video/mp4", size });
     const stored = await localCache.cachedRecords({ deviceId: "dev-1", entityId: "issue-1", kind: pages.PAGE_RECORD_KIND });
     expect(stored.some((record) => record.address.sub.startsWith("attachment:/store/a.mp4@"))).toBe(false);
     held.dispose();
@@ -159,6 +214,7 @@ describe("an issue page's attachment bodies", () => {
     const next = bodies.createIssueAttachmentBodies({ deviceId: "dev-1", issueId: "issue-1", call });
     await next.load("/store/current.png");
     expect(await localCache.readCached(address("/store/stale.mp4"))).toBeUndefined();
+    expect(await localCache.readCached({ ...address("/store/stale.mp4"), kind: bodies.ISSUE_VIDEO_META_KIND })).toBeUndefined();
     const stored = await localCache.cachedRecords({ deviceId: "dev-1", entityId: "issue-1", kind: pages.PAGE_RECORD_KIND });
     expect(stored.some((record) => record.address.sub.startsWith("attachment:/store/stale.mp4@"))).toBe(false);
     next.dispose();
@@ -172,6 +228,7 @@ describe("an issue page's attachment bodies", () => {
       const head = { deviceId: "dev-1", entityId: `issue-${index}`, kind: thresholds.ATTACHMENT_RECORD_KIND, sub: `/store/${index}.mp4` };
       await pages.writeBodyPage(head, { of: "whole", offset: 0, end: 1, total: size, body: b64("x") });
       await localCache.writeCached(head, { mime: "video/mp4", size, paged: true, of: "whole" });
+      await localCache.writeCached({ ...head, kind: bodies.ISSUE_VIDEO_META_KIND }, { mime: "video/mp4", size });
     }
     const call = vi.fn(async () => ({ mime: "image/png", size: 1, content_b64: b64("x") }));
     const held = bodies.createIssueAttachmentBodies({ deviceId: "dev-1", issueId: "issue-5", call });

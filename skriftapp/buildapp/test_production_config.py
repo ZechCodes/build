@@ -265,6 +265,13 @@ def test_production_csp_connect_src_is_self_plus_relay():
     assert set(directives["connect-src"]) == {"'self'", "data:", "wss://relay.getbuild.ing"}
 
 
+@pytest.mark.parametrize("config_name", ("app.yaml", "app.dev.yaml", "app.mail.yaml"))
+def test_app_csp_allows_blob_images_and_media(config_name: str):
+    directives = _csp_directives(load_config(config_name))
+    assert directives["img-src"] == ["'self'", "data:", "blob:"]
+    assert directives["media-src"] == ["'self'", "blob:"]
+
+
 def test_production_csp_core_directives_are_self():
     directives = _csp_directives(load_config("app.yaml"))
     assert directives["default-src"] == ["'self'"]

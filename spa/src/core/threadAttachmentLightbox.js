@@ -44,7 +44,7 @@ function mediaElement(doc, item, source) {
   } else {
     element.setAttribute("alt", item.name || "");
   }
-  attachMediaSource(element, source.pages, source.mime);
+  attachMediaSource(element, source.body || source.pages, source.mime);
   return element;
 }
 
@@ -100,7 +100,8 @@ function wireSwipe(stage, step) {
 
 /**
  * Open `items[index]`. Each item is `{ trigger, path, kind, name, source }`:
- * `kind` is "image" or "video", and `source()` answers `{pages, mime}`.
+ * `kind` is "image" or "video", and `source()` answers `{body, mime}` or
+ * `{pages, mime}`. A shared body lets the tile and lightbox use one Blob.
  */
 export function openAttachmentLightbox(items, index = 0) {
   let current = Math.max(0, Math.min(index, items.length - 1));

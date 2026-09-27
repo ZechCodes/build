@@ -7,9 +7,28 @@ const observers = new WeakMap();
 
 const pageBody = (page) => typeof page === "string" ? page : page?.body || "";
 
-export function createMediaUrl(pages, mime) {
-  const parts = pages.map((page) => bytesOfBase64(pageBody(page)));
-  const url = URL.createObjectURL(new Blob(parts, { type: mime || "application/octet-stream" }));
+/** One body owns one Blob, even when several tiles or previews need URLs. */
+export function createMediaBody(pages, mime, onBuilt = () => {}) {
+  return { pages, mime: mime || "application/octet-stream", blob: null, onBuilt };
+}
+
+function blobOf(body) {
+  if (body.blob) return body.blob;
+  let blob = null;
+  for (const page of body.pages) {
+    const bytes = bytesOfBase64(pageBody(page));
+    blob = new Blob(blob ? [blob, bytes] : [bytes], { type: body.mime });
+  }
+  body.blob = blob || new Blob([], { type: body.mime });
+  body.pages.length = 0;
+  body.pages = null;
+  body.onBuilt();
+  return body.blob;
+}
+
+export function createMediaUrl(pagesOrBody, mime) {
+  const body = Array.isArray(pagesOrBody) ? createMediaBody(pagesOrBody, mime) : pagesOrBody;
+  const url = URL.createObjectURL(blobOf(body));
   return { url, revoke: () => URL.revokeObjectURL(url) };
 }
 
@@ -32,9 +51,9 @@ function watchRemoved(doc) {
   observers.set(doc, observer);
 }
 
-export function attachMediaSource(element, pages, mime) {
+export function attachMediaSource(element, pagesOrBody, mime) {
   releaseMediaSource(element);
-  const held = createMediaUrl(pages, mime);
+  const held = createMediaUrl(pagesOrBody, mime);
   attached.set(element, held.revoke);
   element.setAttribute("src", held.url);
   watchRemoved(element.ownerDocument);

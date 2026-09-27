@@ -33,7 +33,7 @@ import { isTransientTransportError } from "./transientRead.js";
 import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
 import { scrollWithin } from "./scrollWithin.js";
 import { buildNoticeSummary, noticeHasMore } from "./buildNoticeLine.js";
-import { attachMediaSource, createMediaUrl } from "./mediaBlob.js";
+import { attachMediaSource, createMediaBody, createMediaUrl } from "./mediaBlob.js";
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -2381,7 +2381,8 @@ export function wireThreadAttachments(root, load, threadState = createThreadStat
     if (held) return Promise.resolve(held);
     return threadState.loadAttachment(path, async () => {
       const attachment = await load(path);
-      const value = { ...attachment, pages: attachment.pages || [attachment.content_b64 || ""] };
+      const body = createMediaBody(attachment.pages || [attachment.content_b64 || ""], attachment.mime, attachment.onBlob);
+      const value = { mime: attachment.mime, size: attachment.size, body };
       threadState.rememberAttachment(path, value);
       return value;
     });
@@ -2429,12 +2430,12 @@ export function wireThreadAttachments(root, load, threadState = createThreadStat
     // in clamps and jumps (#153).
     const held = threadState.attachment(path);
     if (held) {
-      attachMediaSource(element, held.pages, held.mime);
+      attachMediaSource(element, held.body, held.mime);
       return;
     }
     attachmentFor(path).then(
       (attachment) => {
-        if (element.isConnected) attachMediaSource(element, attachment.pages, attachment.mime);
+        if (element.isConnected) attachMediaSource(element, attachment.body, attachment.mime);
       },
       (error) => failedToLoad(path, element, error),
     );
@@ -2464,7 +2465,7 @@ export function wireThreadAttachments(root, load, threadState = createThreadStat
         if (held) return held;
         try {
           const attachment = await attachmentFor(path);
-          if (attachment && thumbnail?.isConnected) attachMediaSource(thumbnail, attachment.pages, attachment.mime);
+          if (attachment && thumbnail?.isConnected) attachMediaSource(thumbnail, attachment.body, attachment.mime);
           return attachment;
         } catch (error) {
           failedToLoad(path, thumbnail, error);
@@ -2490,7 +2491,7 @@ export function wireThreadAttachments(root, load, threadState = createThreadStat
       const path = chip.dataset.attachmentPath;
       if (!path) return;
       const attachment = await attachmentFor(path);
-      const held = createMediaUrl(attachment.pages, attachment.mime);
+      const held = createMediaUrl(attachment.body);
       const link = root.ownerDocument.createElement("a");
       link.href = held.url;
       link.download = chip.dataset.attachmentName || "attachment";

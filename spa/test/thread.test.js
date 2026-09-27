@@ -602,6 +602,26 @@ describe("attachments on the record", () => {
     expect(asked).toEqual([".build/attachments/ab12-shot.png"]);
   });
 
+  it("shares the tile's Blob with its lightbox and releases thread byte pages", async () => {
+    const create = vi.spyOn(URL, "createObjectURL");
+    const onBlob = vi.fn();
+    const path = ".build/attachments/ab12-shot.png";
+    const threadState = createThreadState({ ownerId: "conversation-1" });
+    document.body.innerHTML = threadHtml(withAttachments([
+      { name: "shot.png", path, mime: "image/png", size: 4 },
+    ]), { threadState });
+    wireThreadAttachments(document.body, async () => ({ mime: "image/png", pages: ["AAAA"], onBlob }), threadState);
+    await vi.waitFor(() => expect(document.querySelector(".thread-attachment-image")?.src).toMatch(/^blob:/));
+    const tileBlob = create.mock.calls.at(-1)[0];
+    expect(threadState.attachment(path).body.pages).toBeNull();
+    expect(onBlob).toHaveBeenCalledTimes(1);
+    document.querySelector(".thread-attachment-preview").click();
+    await vi.waitFor(() => expect(document.querySelector(".thread-lightbox img")?.src).toMatch(/^blob:/));
+    expect(create.mock.calls.at(-1)[0]).toBe(tileBlob);
+    expect(onBlob).toHaveBeenCalledTimes(1);
+    create.mockRestore();
+  });
+
   it("shares an in-flight attachment load within its conversation", async () => {
     const threadState = createThreadState({ ownerId: "conversation-1" });
     document.body.innerHTML = `<div id="first">${threadHtml(withAttachments([

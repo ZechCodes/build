@@ -660,7 +660,10 @@ export function mountIssuePage(host, options) {
     call: (...args) => state.callRpc(...args),
   });
   const wireAttachments = () =>
-    wireThreadAttachments(host.querySelector(".issue-page-main"), attachmentBodies.load, attachmentState);
+    wireThreadAttachments(host.querySelector(".issue-page-main"), async (path) => ({
+      ...await attachmentBodies.load(path),
+      onBlob: () => void attachmentBodies.forget(path),
+    }), attachmentState);
 
   /** Wire what a paint stood up, and nothing it left alone. */
   function wire(painted) {

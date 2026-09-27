@@ -177,7 +177,7 @@ export function wholeBytesPainter(render, { asPages = false } = {}) {
  * Answers `{ more, dispose }`: `more()` reads the next page, which is what the
  * sentinel coming into view does.
  */
-export function mountPagedFile(scroller, { head, file, readPage = null, restart = () => {}, painter, onPaint = () => {} }) {
+export function mountPagedFile(scroller, { head, file, readPage = null, restart = () => {}, painter, onPaint = () => {}, releaseCompletedPages = false }) {
   scroller.innerHTML = `<div class="fppages"></div><div class="fpmore" hidden></div><div class="ftrunc" hidden>truncated at 1 MiB</div>`;
   const content = scroller.querySelector(".fppages");
   const sentinel = scroller.querySelector(".fpmore");
@@ -227,6 +227,7 @@ export function mountPagedFile(scroller, { head, file, readPage = null, restart 
 
   const paint = (state) => {
     const grew = painter.paint(content, state, state.complete);
+    if (releaseCompletedPages && state.complete) body.releasePages();
     sentinel.hidden = state.complete;
     sentinel.textContent = `Showing ${humanBytes(state.end)} of ${humanBytes(state.total ?? file.size)}`;
     // Only pages that never said what the whole weighs are a cut with no end
@@ -241,7 +242,7 @@ export function mountPagedFile(scroller, { head, file, readPage = null, restart 
 
   const body = createPagedBody({ head, of: file.of, readPage, isCurrent, onChange: paint, onMoved: () => restart() });
   void body.hydrate().then((state) => {
-    if (!disposed && !state.pages.length) restart();
+    if (!disposed && !state.complete && !state.pages.length) restart();
   });
 
   return {

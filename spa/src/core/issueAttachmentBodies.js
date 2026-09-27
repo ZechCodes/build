@@ -2,15 +2,17 @@
 // read back from the cache before the lightbox creates its Blob URL.
 
 import { createCachedBodies } from "./cachedBodies.js";
-import { BODY_PAGE_BYTES, bytePagesOf, dropBodyPages } from "./bodyPages.js";
+import { bytePagesOf, dropBodyPages } from "./bodyPages.js";
 import { ATTACHMENT_BODY_MAX_BYTES, ATTACHMENT_RECORD_KIND } from "./cacheThresholds.js";
-import { cachedAddresses, deleteCached, readCachedMany } from "./localCache.js";
+import { cachedAddresses, deleteCached, readCached, readCachedMany, recordWriteOf, writeCached } from "./localCache.js";
 
 /** Bound the storage of large videos across a device and within each issue.
  *  A revisit also expires their pages after 72 hours. */
 export const ISSUE_VIDEO_RECORDS = 2;
 export const DEVICE_VIDEO_RECORDS = 4;
 export const ISSUE_VIDEO_TTL_MS = 72 * 60 * 60 * 1000;
+export const ISSUE_VIDEO_META_KIND = "attachment-video";
+const WIRE_RANGE_BYTES = 1_048_576;
 
 const isLargeVideo = (record) => record.value?.mime?.startsWith("video/")
   && Number(record.value.size) > ATTACHMENT_BODY_MAX_BYTES;
@@ -34,18 +36,35 @@ function newestVideos(videos, issueId, preferredPath) {
 
 async function trimDeviceVideos(deviceId, issueId, preferredPath = null) {
   if (!deviceId || !issueId) return;
-  // Keys are cheap to enumerate; only attachment heads are deserialized. Page
-  // records can hold most of a film and must never be read by the sweep.
+  // Metadata records are small. Inline attachment bodies and byte pages are
+  // never deserialized by a sweep.
   const addresses = (await cachedAddresses({ deviceId }))
-    .filter((address) => address.kind === ATTACHMENT_RECORD_KIND);
+    .filter((address) => address.kind === ISSUE_VIDEO_META_KIND);
   const records = await readCachedMany(addresses);
-  const videos = records.map((record, index) => ({ ...record, address: addresses[index] })).filter(isLargeVideo);
+  const videos = records.flatMap((record, index) => record ? [{ ...record, address: addresses[index] }] : []).filter(isLargeVideo);
   const keep = newestVideos(videos, issueId, preferredPath);
   for (const record of videos) {
     if (keep.has(record)) continue;
-    await deleteCached([record.address]);
-    await dropBodyPages(record.address);
+    const head = { ...record.address, kind: ATTACHMENT_RECORD_KIND };
+    await deleteCached([record.address, head]);
+    await dropBodyPages(head);
   }
+}
+
+async function markLargeVideo(deviceId, issueId, path, body) {
+  if (!deviceId || !issueId || !isLargeVideo({ value: body })) return false;
+  const head = { deviceId, entityId: issueId, kind: ATTACHMENT_RECORD_KIND, sub: path };
+  const stored = await readCached(head);
+  if (!stored?.value?.paged) return false;
+  const marker = { ...head, kind: ISSUE_VIDEO_META_KIND };
+  const headWrite = recordWriteOf(stored);
+  if ((await readCached(marker))?.value?.headWrite === headWrite) return false;
+  await writeCached(marker, { mime: body.mime, size: body.size, headWrite });
+  return true;
+}
+
+async function trimNewVideo(deviceId, issueId, path, body) {
+  if (await markLargeVideo(deviceId, issueId, path, body)) await trimDeviceVideos(deviceId, issueId, path);
 }
 
 /** Split each wire answer separately. No base64 string spanning the file is
@@ -107,7 +126,7 @@ export function createIssueAttachmentBodies({ deviceId, issueId, call }) {
     fetchMissing: (paths) => Promise.all(paths.map(async (path) => ({
       path,
       body: await readAttachmentPages((offset) => call("issues.attachment", {
-        issue_id: issueId, path, ...(offset ? { offset } : {}), length: BODY_PAGE_BYTES,
+        issue_id: issueId, path, ...(offset ? { offset } : {}), length: WIRE_RANGE_BYTES,
       }, { priority: "background" })),
     }))),
     valueOf: ({ path, body }) => {
@@ -123,11 +142,12 @@ export function createIssueAttachmentBodies({ deviceId, issueId, call }) {
     },
   });
 
+  let swept;
   return {
     async load(path) {
-      await trimDeviceVideos(deviceId, issueId);
+      swept ||= trimDeviceVideos(deviceId, issueId);
+      await swept;
       if (!bodies.has(path)) await bodies.ensure([path]);
-      await trimDeviceVideos(deviceId, issueId, path);
       let body = bodies.read(path) ?? answered.get(path);
       if (!hasAllBytes(body)) {
         await bodies.ensure([path]);
@@ -135,11 +155,16 @@ export function createIssueAttachmentBodies({ deviceId, issueId, call }) {
       }
       answered.delete(path);
       if (!hasAllBytes(body)) throw new Error("This attachment could not be loaded completely.");
+      await trimNewVideo(deviceId, issueId, path, body);
       const size = Number(body.size) || 0;
       const pages = Array.isArray(body.content_b64)
         ? body.content_b64
         : splitPieces([body.content_b64 || ""], size).map((page) => page.body);
       return { mime: body.mime, size, pages };
+    },
+    forget: (path) => {
+      answered.delete(path);
+      return bodies.forget(path);
     },
     dispose: () => {
       answered.clear();

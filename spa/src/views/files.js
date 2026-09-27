@@ -55,7 +55,7 @@ import { mountMeasuredHeight } from "../core/measuredInset.js";
 import { mountFileTree } from "../core/fileTree.js";
 import { locateRooted, mountFileRoots, rootedKey } from "../core/fileRoots.js";
 import { mountFileTabs } from "../core/fileTabs.js";
-import { attachMediaSource, releaseMediaSource } from "../core/mediaBlob.js";
+import { attachMediaSource, createMediaBody, releaseMediaSource } from "../core/mediaBlob.js";
 import { requestPriorityFields } from "../core/readRequests.js";
 import { bridgeCapabilities } from "../core/changeEvents.js";
 
@@ -704,7 +704,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     return wholeBytesPainter((content, body) => {
       releasePreviewMedia(content);
       content.innerHTML = previewBodyHtml(path, { ...file, content_b64: media ? "" : body }, false);
-      if (media) bindPreviewMedia(content, file, body);
+      if (media) bindPreviewMedia(content, file, createMediaBody(body, file.mime));
     }, { asPages: media });
   };
 
@@ -722,6 +722,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
       readPage: pageReader(path, file),
       restart: () => void restartPagedFile(path, file).catch(() => {}),
       painter,
+      releaseCompletedPages: !sourceOverride && (fileBodyReading(file.mime) === "media" || mode === "svg"),
       // A link to a line lands once the page holding it is painted, and a
       // new version's reader is put back where they were.
       onPaint: () => {

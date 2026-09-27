@@ -43,6 +43,7 @@ const eventRow = (entry, base) => ({
   type: EVENT,
   actor: entry.actor || null,
   kind: String(entry.kind || ""),
+  mentionsUser: entry.mentions_user === true,
   payload: entry.payload || {},
 });
 

@@ -12,7 +12,7 @@ import { projectHeadHtml, projectsUnreadCount, workspaceProjectBlocks } from "..
 import { issueUnreadTally } from "../src/core/issueUnread.js";
 import { watchedIssueEntries } from "../src/core/watchedIssueRows.js";
 import { attentionGroups } from "../src/core/trackerAttentionModel.js";
-import { comment, issue, issueDetail } from "./trackerWireFixture.js";
+import { comment, event, issue, issueDetail } from "./trackerWireFixture.js";
 
 const DEVICE = "dev-1";
 const HOUR = 60 * 60 * 1000;
@@ -86,6 +86,22 @@ function soloBadges(one, timeline) {
 }
 
 describe("a fully read issue assigned to the user", () => {
+  it("counts an agent-created ask until read, then keeps Needs you without a badge", () => {
+    const created = event({ id: "ie-03", kind: "created", actor: { kind: "agent", agent_id: "a1" }, mentions_user: true });
+    const unread = { ...assignedToUser, read_through: "ie-02", unread_count: 1 };
+    const before = soloBadges(unread, [created]);
+    expect(before.issueRow.unreadCount).toBe(1);
+    expect(headBadge(before.block, false)).toBe(1);
+    expect(before.top).toBe(1);
+
+    const read = { ...unread, read_through: created.id, unread_count: 0 };
+    const after = soloBadges(read, [created]);
+    expect(attentionGroups([read]).needsYou).toEqual([read]);
+    expect(after.issueRow).toMatchObject({ state: "unread", unreadCount: 0 });
+    expect(headBadge(after.block, false)).toBe(0);
+    expect(after.top).toBe(0);
+  });
+
   it("stays in Needs you with its dot while adding zero to project and top badges", () => {
     const { issueRow, block, top } = soloBadges(assignedToUser, [
       comment({ id: "ic-02", author: { kind: "agent", agent_id: "a1" } }),

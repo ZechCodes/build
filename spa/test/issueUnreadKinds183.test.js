@@ -1,6 +1,6 @@
-// #183: which timeline entries count as unread — comments, and changes to who
-// holds an issue or where it stands; bookkeeping does not (Zech, "Correct,
-// no"). The SPA's fallback count, over a cached timeline, is held to the cases
+// #183: which timeline entries count as unread — comments, changes to who
+// holds an issue or where it stands, and an agent-created ask. Other
+// bookkeeping does not. The SPA's fallback count is held to the cases
 // the bridge's `unread_count` answers (bridge app::tests::tracker_unread_kinds,
 // printed on demand so plain `npx vitest run` needs no prepared file).
 
@@ -29,6 +29,12 @@ describe("the SPA's count", () => {
 
   it("leaves out an agent filing and tracking the issue", () => {
     expect(counted(mark, [event("created", "ie-01K5Z000000000000000000011"), event("tracked", "ie-01K5Z000000000000000000012")])).toBe(0);
+  });
+
+  it("counts a created mention until its event is read", () => {
+    const created = { ...event("created", "ie-01K5Z000000000000000000011"), mentions_user: true };
+    expect(counted(mark, [created])).toBe(1);
+    expect(counted(created.id, [created])).toBe(0);
   });
 
   it("counts an agent's comment and move", () => {

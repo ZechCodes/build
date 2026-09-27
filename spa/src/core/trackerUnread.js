@@ -13,14 +13,14 @@ export function latestIssueMark(left, right) {
 }
 
 /** The events that are news to the user (#183): a change to who holds the
- *  issue or where it stands. With comments, the only entries that count;
- *  bookkeeping — filing, tracking, linking, labelling, dispatching, watching,
- *  what Build records about branches and workspaces — does not. The bridge's
+ *  issue or where it stands, or an agent-created issue that asks the user to
+ *  read it. Comments count too; other bookkeeping does not. The bridge's
  *  `unread_count` reads the same list (bridge/src/app/tracker/inbox.rs
  *  `counts_as_unread`), and spa/test/issueUnreadKinds183.test.js holds the
  *  two to the cases the bridge prints. */
 const NEWS_EVENT_KINDS = new Set(["assigned", "unassigned", "moved", "closed", "reopened"]);
-const isNews = (row) => row.type === "comment" || (row.type === "event" && NEWS_EVENT_KINDS.has(row.kind));
+const isAskedCreation = (row) => row.kind === "created" && row.mentionsUser === true && row.actor?.kind === "agent";
+const isNews = (row) => row.type === "comment" || (row.type === "event" && (NEWS_EVENT_KINDS.has(row.kind) || isAskedCreation(row)));
 
 export const issueUnreadRules = {
   eligible: (row) => row.actor?.kind !== "user" && isNews(row),

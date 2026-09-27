@@ -72,12 +72,16 @@ describe("what a row says", () => {
     expect(inboxRowHtml(row)).toContain('<span class="badge inbox-unread">1</span>');
   });
 
-  it("keeps a mentioned creation in Needs you without an unread bubble", () => {
-    const one = watched({ id: "i-created", read_through: "" });
+  it("counts a mentioned creation until read while an assignment keeps it in Needs you", () => {
+    const one = watched({ id: "i-created", assignee: { kind: "user" }, read_through: "" });
     const detail = issueDetail(one, [event({ id: "ie-02", kind: "created", actor: { kind: "agent", agent_id: "a1" }, mentions_user: true })]);
     const [row] = watchedIssueEntries([{ ...source([one], new Map([[one.id, detail]])), askedOnly: true }]);
-    expect(row).toMatchObject({ state: "unread", unreadCount: 0 });
-    expect(inboxRowHtml(row)).not.toContain('class="badge inbox-unread"');
+    expect(row).toMatchObject({ state: "unread", unreadCount: 1 });
+    expect(inboxRowHtml(row)).toContain('<span class="badge inbox-unread">1</span>');
+    const read = { ...one, read_through: "ie-02" };
+    const [stillAsking] = watchedIssueEntries([{ ...source([read], new Map([[read.id, issueDetail(read, detail.timeline)]])), askedOnly: true }]);
+    expect(stillAsking).toMatchObject({ state: "unread", unreadCount: 0 });
+    expect(inboxRowHtml(stillAsking)).not.toContain('class="badge inbox-unread"');
   });
 
   it("is named by number and title, says every reason, and opens the issue", () => {

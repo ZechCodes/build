@@ -1,6 +1,6 @@
-//! Which timeline entries count as unread (#183): comments, and changes to
-//! who holds an issue or where it stands. Bookkeeping does not — Zech,
-//! "Correct, no".
+//! Which timeline entries count as unread (#183): comments, changes to who
+//! holds an issue or where it stands, and agent-created asks. Other
+//! bookkeeping does not.
 //!
 //! One table of cases, answered by the real `unread_since_mark`. With
 //! `BUILD_PRINT_UNREAD_KINDS` set it prints them, and
@@ -81,6 +81,8 @@ fn case(name: &str, read_through: Option<String>, timeline: Vec<Value>) -> Value
 
 fn table() -> Vec<Value> {
     let mark = || Some(id("ie", MARK));
+    let mut mentioned_creation = event(IssueEventKind::Created, agent(), MARK + 1);
+    mentioned_creation["mentions_user"] = json!(true);
     let mut cases: Vec<Value> = EVERY_KIND
         .iter()
         .map(|kind| {
@@ -92,6 +94,16 @@ fn table() -> Vec<Value> {
         })
         .collect();
     cases.extend([
+        case(
+            "an unread agent-created mention",
+            None,
+            vec![mentioned_creation.clone()],
+        ),
+        case(
+            "a read agent-created mention",
+            Some(id("ie", MARK + 1)),
+            vec![mentioned_creation],
+        ),
         case(
             "an agent filed and tracked it",
             mark(),
@@ -134,6 +146,13 @@ fn table() -> Vec<Value> {
     cases
 }
 
+#[test]
+fn an_agent_created_mention_counts_until_it_is_read() {
+    let cases = table();
+    assert_eq!(unread_of(&cases, "an unread agent-created mention"), 1);
+    assert_eq!(unread_of(&cases, "a read agent-created mention"), 0);
+}
+
 fn unread_of(cases: &[Value], name: &str) -> u64 {
     cases
         .iter()
@@ -143,7 +162,7 @@ fn unread_of(cases: &[Value], name: &str) -> u64 {
 }
 
 #[test]
-fn only_comments_and_holding_or_standing_changes_count_as_unread() {
+fn only_news_and_agent_created_asks_count_as_unread() {
     let cases = table();
     for kind in EVERY_KIND {
         let want = u64::from(COUNTED.contains(&kind));

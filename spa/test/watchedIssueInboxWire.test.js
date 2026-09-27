@@ -174,8 +174,8 @@ describe("a watched issue in the inbox, over the real wire", () => {
     expect(rowFor(issueId)).toBe(null);
     await reach(created);
     await expect.poll(() => rowFor(issueId)?.querySelector(".inbox-facts")?.textContent, WAIT).toBe("Mentioned you");
-    // Mentioned creation keeps the row, but `created` is not unread news.
-    expect(rowFor(issueId).querySelector(".inbox-unread")).toBe(null);
+    // The created event asked the user and is unread until the read mark passes it.
+    expect(rowFor(issueId).querySelector(".inbox-unread")?.textContent).toBe("1");
     await reach(read);
     await expect.poll(() => rowsNamed(issueId).length, WAIT).toBe(0);
   });

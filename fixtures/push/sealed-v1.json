@@ -1,0 +1,24 @@
+{
+  "endpoint": "https://fcm.googleapis.com/fcm/send/fixture-endpoint",
+  "subscription_id": "fktz0HaQPrTBONQORgaYdrkQLm41LU5PVktHaqho6To",
+  "kind": "agent",
+  "entity_id": "run-fixture",
+  "recipient_private_jwk": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "cqzYe0OMD65pIno-B_p9LOeiJMORgJhzPsNaL05csbQ",
+    "y": "awHT6hXC01Suu7R305cuZOrOj_tPPOhZuv3udC929qc",
+    "d": "HQxeoe0AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAE"
+  },
+  "recipient_public_key": "BHKs2HtDjA-uaSJ6Pgf6fSznoiTDkYCYcz7DWi9OXLG0awHT6hXC01Suu7R305cuZOrOj_tPPOhZuv3udC929qc",
+  "ephemeral_private_jwk": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "bJKDjjSo3fTR-IKEr0-k1HW_nqVWPSYdZoF-UNxDBvQ",
+    "y": "UpFc6-dj5GG75Z4ojMuSVLvQJEfQZuRwTlboNxNgEuQ",
+    "d": "4ODg4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAI"
+  },
+  "nonce": "AQIDBAUGBwgJCgsM",
+  "plaintext": "{\"v\":1,\"title\":\"Banner fade fixer\",\"body\":\"Fixed on build/banner-fade, ready for review — ünïcode ✓\",\"url\":\"/app/#/device/dev-1/project/proj-1/workspace/ws-1?agent=agent-1\",\"iat\":1790000000}",
+  "blob": "AQRskoOONKjd9NH4goSvT6TUdb-epVY9Jh1mgX5Q3EMG9FKRXOvnY-Rhu-WeKIzLklS70CRH0GbkcE5W6DcTYBLkAQIDBAUGBwgJCgsMxGC2YZulb6I8XbGg_t3XLKW_CYD0S_yZDrKr67QQ2QsaxAQKNVBk7lbxsWxR6OJy_jkDdJqb_EscbQyg1NRbBA6NVQxhm5vZApFwdCkUYgf4sj5fS-riy90J0-Fn0K8T2I26Vhlg5swpHcOuWrXk5wB1c2F3ChnuLP2Kknt9X4-FwzjvtgHiq2QKYbkBiTmmFB1L3a79xWGf9fLInFRopIak9MU_ewgpZi87-Q5oAHu6-BjFb-_ZgcaGEO2eRqXfHVfX45RoeD84TqFq83azBSirFBk"
+}

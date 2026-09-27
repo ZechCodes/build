@@ -25,6 +25,29 @@ describe("plainPreview (#186)", () => {
     expect(plainPreview("Before\n\n~~~js\nconst x = 1;\n~~~\n\nafter")).toBe("Before after");
     expect(plainPreview("Before\n\n~~~\nconst x = 1;\n```\nnot closed by that\n~~~\nafter")).toBe("Before after");
     expect(plainPreview("~~gone~~ kept")).toBe("gone kept");
+    expect(plainPreview("[Foo (bar)](https://w.test/Foo_(bar)) and ![shot (2)](a_(1).png) end")).toBe("Foo (bar) and shot (2) end");
+    expect(plainPreview("an unclosed <a and a < b comparison and a 2 > 1 one")).toBe("an unclosed <a and a < b comparison and a 2 > 1 one");
+  });
+
+  it("takes no longer on a malformed 200 KB body than on a short one", () => {
+    // Unclosed marks must not send a pattern scanning to the end of the body
+    // from every opener: a preview is 240 characters, and the panel waits on it.
+    const bodies = {
+      tags: "<a ".repeat(70000),
+      fence: `\`\`\`js\n${"const x = 1;\n".repeat(16000)}`,
+      autolinks: "<https:".repeat(30000),
+      links: "[a](".repeat(50000),
+      emphasis: "**a __b ".repeat(25000),
+    };
+    for (const [name, body] of Object.entries(bodies)) {
+      expect(body.length).toBeGreaterThanOrEqual(200000);
+      const started = performance.now();
+      const preview = plainPreview(body);
+      const took = performance.now() - started;
+      expect(took, `${name} took ${Math.round(took)} ms`).toBeLessThan(500);
+      expect(preview.length).toBeLessThanOrEqual(240);
+    }
+    expect(plainPreview(bodies.fence)).toBe("");
   });
 
   it("cuts a long body with an ellipsis", () => {

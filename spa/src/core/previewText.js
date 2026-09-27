@@ -7,19 +7,31 @@
 // This is a reduction, not a parser: it takes the marks off and keeps the
 // words, in order. Fenced code is dropped whole, because a line of code is not
 // a summary of anything. No DOM.
+//
+// Every pattern stops at the next mark of its own kind (a tag at the next `<`,
+// a link at the next `[` or `)`), so an unclosed mark costs its own fragment
+// and not the rest of the body; and only the head of the body is scanned at
+// all, since the preview is a line. A 200 KB body of "<a " fragments is the
+// shape that once took seconds.
+
+/** How much of a body is worth scanning for a preview of `limit` characters.
+ *  Marks come off, so more than the limit; a fence up front can still leave
+ *  a short preview, which is the trade for a bounded cost. */
+const SCAN_CHARS = 4096;
 
 // A fence of backticks or of tildes, closed by its own kind or by the end.
 const FENCE = /(```|~~~)[\s\S]*?(?:\1|$)/g;
 // An autolink, <https://…> or <someone@…>, keeps its address; a tag goes.
 const AUTOLINK = /<((?:[a-zA-Z][a-zA-Z0-9+.-]*:|[^\s<>@]+@)[^\s<>]*)>/g;
-const TAG = /<\/?[a-zA-Z][^>]*>/g;
+const TAG = /<\/?[a-zA-Z][^<>]*>/g;
 const TABLE_RULE = /^\s*\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)*\|?\s*$/;
 const HEADING = /^\s{0,3}#{1,6}\s+/;
 const QUOTE = /^\s*(?:>\s?)+/;
 const LIST_MARK = /^\s*(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/;
 const RULE = /^\s*(?:[-*_]\s*){3,}$/;
-const IMAGE = /!\[([^\]]*)\]\([^)]*\)/g;
-const LINK = /\[([^\]]+)\]\([^)]*\)/g;
+// A link's address may hold one pair of parentheses, as an encyclopedia's do.
+const IMAGE = /!\[([^[\]]*)\]\([^()]*(?:\([^()]*\)[^()]*)*\)/g;
+const LINK = /\[([^[\]]+)\]\([^()]*(?:\([^()]*\)[^()]*)*\)/g;
 const CODE = /`+([^`]*)`+/g;
 const STRONG = /(\*\*|__)([^*_](?:.*?[^*_])?)\1/g;
 const EMPHASIS = /(^|[\s(])[*_]([^*_\s](?:[^*_]*?[^*_\s])?)[*_](?=[\s).,;:!?]|$)/g;
@@ -35,7 +47,7 @@ function plainLine(line) {
 /** The plain text of a markdown body, on one line, at most `limit` characters
  *  with an ellipsis where it was cut. "" for nothing. */
 export function plainPreview(markdown, limit = 240) {
-  const text = String(markdown || "").replace(FENCE, " ").replace(AUTOLINK, "$1").replace(TAG, " ")
+  const text = String(markdown || "").slice(0, Math.max(SCAN_CHARS, limit)).replace(FENCE, " ").replace(AUTOLINK, "$1").replace(TAG, " ")
     .split("\n").map(plainLine).join(" ")
     .replace(IMAGE, "$1").replace(LINK, "$1").replace(CODE, "$1")
     .replace(STRONG, "$2").replace(EMPHASIS, "$1$2").replace(STRIKE, "$1")

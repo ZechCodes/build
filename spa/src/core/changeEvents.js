@@ -79,7 +79,7 @@ const NO_CAPABILITIES = Object.freeze({
   requests: Object.freeze({ priority: false }),
   errors: Object.freeze({ codes: false }),
   diffs: Object.freeze({ perFile: false }),
-  bodies: Object.freeze({ pages: false }),
+  bodies: Object.freeze({ pages: false, mediaRawPages: false }),
   issues: Object.freeze({
     attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false,
     listPaged: false,
@@ -87,7 +87,7 @@ const NO_CAPABILITIES = Object.freeze({
   conversations: Object.freeze({ settings: false }),
   github: Object.freeze({ repos: false }),
   messages: Object.freeze({ context: false }),
-  threads: Object.freeze({ postOperations: false }),
+  threads: Object.freeze({ postOperations: false, attachmentChunks: false }),
   branches: Object.freeze({ finishDelete: false }),
 });
 

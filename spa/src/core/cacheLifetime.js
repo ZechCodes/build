@@ -39,8 +39,14 @@ export const RECENT_FILES = 5;
 export const FILE_MAX_BYTES = 1048576;
 
 /** The most of a file the viewer shows whole (an image, a film, an HTML page)
- *  is read into pages for: the bridge's own cap on a whole media read. */
-export const FILE_MEDIA_MAX_BYTES = 32 * 1048576;
+ *  is read into pages for. The one-mebibyte pages keep each reply below the
+ *  transport limit while this bounds cache and phone memory. */
+export const FILE_MEDIA_MAX_BYTES = 64 * 1048576;
+
+/** A workspace can retain one large media body plus its four other recent
+ * files. This bounds the expensive end of the existing five-file policy. */
+export const RECENT_LARGE_MEDIA = 1;
+const LARGE_MEDIA_BYTES = 16 * 1048576;
 
 /** What the pages of an answer split here are of: a whole read names no
  *  version of the file, so a bridge's page — which does — never joins them. */
@@ -94,9 +100,15 @@ const openedAt = (record) =>
  *  rest. Called after a file is read into the cache. */
 export async function trimRecentFiles(deviceId, entityId) {
   const files = await cachedRecords({ deviceId, entityId, kind: FILE_RECORD_KIND });
-  if (files.length <= RECENT_FILES) return [];
   const newestFirst = [...files].sort((one, other) => openedAt(other) - openedAt(one));
-  const dropped = await drop(newestFirst.slice(RECENT_FILES).map((record) => record.address));
+  let largeMedia = 0;
+  const doomed = newestFirst.filter((record, index) => {
+    const file = record.value?.file;
+    const large = fileBodyReading(file?.mime) === "media" && Number(file?.size) > LARGE_MEDIA_BYTES;
+    if (large) largeMedia += 1;
+    return index >= RECENT_FILES || (large && largeMedia > RECENT_LARGE_MEDIA);
+  });
+  const dropped = await drop(doomed.map((record) => record.address));
   // A paged body's bytes are records of their own, and go with it.
   for (const head of dropped) await dropBodyPages(head);
   return dropped;
@@ -144,9 +156,12 @@ export const filePagesReadable = (deviceId) => bridgeCapabilities(deviceId)?.bod
  *  when the reader is made, and a read it cannot make answers null — "not
  *  yet" — so a view painted from the cache before its machine's greeting
  *  reads on once greeted, with nothing painted again. */
-export function filePageReader(deviceId, read) {
+export function filePageReader(deviceId, read, mime = "") {
   return async (offset, bytes = BODY_PAGE_BYTES) =>
-    filePagesReadable(deviceId) ? pageFromAnswer(await read({ offset, bytes }), "content_b64") : null;
+    filePagesReadable(deviceId) ? pageFromAnswer(await read({
+      offset, bytes,
+      ...(fileBodyReading(mime) === "media" && bridgeCapabilities(deviceId)?.bodies?.mediaRawPages ? { raw: true } : {}),
+    }), "content_b64") : null;
 }
 
 /** What a file too large for one record is, without its body or a revision:

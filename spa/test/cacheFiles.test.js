@@ -14,13 +14,14 @@ globalThis.IDBKeyRange = IDBKeyRange;
 // Whether the machine's bridge announces `bodies.pages` (#95): a case that
 // leaves it off is an older bridge, which refuses `range` on `fs.read`.
 let bridgePages = false;
+let bridgeMediaRaw = false;
 vi.mock("../src/core/changeEvents.js", async (importOriginal) => {
   const actual = await importOriginal();
   return {
     ...actual,
     bridgeCapabilities: (deviceId) => {
       const capabilities = actual.bridgeCapabilities(deviceId);
-      return bridgePages ? { ...capabilities, bodies: { pages: true } } : capabilities;
+      return bridgePages ? { ...capabilities, bodies: { pages: true, mediaRawPages: bridgeMediaRaw } } : capabilities;
     },
   };
 });
@@ -85,6 +86,7 @@ const mounted = [];
 beforeEach(async () => {
   document.body.innerHTML = "";
   bridgePages = false;
+  bridgeMediaRaw = false;
   sentinelInView = false;
   observations = 0;
   observers.splice(0);
@@ -463,7 +465,7 @@ describe("a checkout nothing walks", () => {
 // of what is painted, and a revisit reads nothing.
 describe("a file over one record", () => {
   const TEXT_CAP = 1024 * 1024;
-  const MEDIA_CAP = 32 * 1024 * 1024;
+  const MEDIA_CAP = 64 * 1024 * 1024;
   const line = (number) => `line ${number} ${"x".repeat(180)}`;
   const bigText = (lines, from = 1) => Array.from({ length: lines }, (_, index) => line(from + index)).join("\n");
 
@@ -472,7 +474,7 @@ describe("a file over one record", () => {
   const machine = (file) => vi.fn(async (method, params) => {
     if (method !== "fs.read") return { path: params.path, entries: [] };
     const bytes = Buffer.from(file.bytes);
-    const media = file.mime.startsWith("image/");
+    const media = ["image/", "audio/", "video/"].some((prefix) => file.mime.startsWith(prefix));
     const answer = { path: params.path, size: bytes.length, mime: file.mime, editable: false, revision: null };
     if (!params.range) {
       const cap = media ? MEDIA_CAP : TEXT_CAP;
@@ -788,7 +790,27 @@ describe("a file over one record", () => {
     expect(held.complete).toBe(true);
     expect(held.pages).toHaveLength(4);
     const image = host.querySelector("img.fimg");
-    expect(image.getAttribute("src")).toBe(`data:image/png;base64,${Buffer.from(file.bytes).toString("base64")}`);
+    expect(image.getAttribute("src")).toMatch(/^blob:/);
     expect(host.querySelector(".fpmore").hidden).toBe(true);
+  });
+
+  it("opens video from background raw byte pages and revokes its Blob URL on navigation", async () => {
+    bridgePages = true;
+    bridgeMediaRaw = true;
+    await seedTree("", [{ name: "clip.mp4", kind: "file", size: 2 * TEXT_CAP }, { name: "big.log", kind: "file", size: 2 * TEXT_CAP }]);
+    const file = { bytes: "v".repeat(2 * TEXT_CAP + 7), mime: "video/mp4", version: "v1" };
+    const call = machine(file);
+    const revoke = vi.spyOn(URL, "revokeObjectURL");
+    const { host } = await open(call, "clip.mp4");
+    const video = host.querySelector("video.fmedia");
+    expect(video?.getAttribute("src")).toMatch(/^blob:/);
+    const address = video.getAttribute("src");
+    expect(reads(call)[0].range).toEqual({ offset: 0, bytes: TEXT_CAP, raw: true });
+    expect(reads(call).filter((params) => params.path === "clip.mp4").every((params) => params.range.raw)).toBe(true);
+    expect(call.mock.calls.filter(([method, params]) => method === "fs.read" && params.path === "clip.mp4")
+      .every(([, , options]) => options?.priority === "background")).toBe(true);
+    rowFor(host, "big.log").click();
+    await vi.waitFor(() => expect(revoke).toHaveBeenCalledWith(address));
+    revoke.mockRestore();
   });
 });

@@ -172,7 +172,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
     requests: { priority: names.has("requests.priority") },
     errors: { codes: names.has("errors.codes") },
     diffs: { perFile: names.has("diffs.perFile") },
-    bodies: { pages: names.has("bodies.pages") },
+    bodies: { pages: names.has("bodies.pages"), mediaRawPages: names.has("fs.mediaRawPages") },
     issues: {
       context: names.has("issues.context"),
       attachments: names.has("issues.attachments"),
@@ -184,7 +184,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
     conversations: { settings: names.has("conversations.settings") },
     github: { repos: names.has("github.repos") },
     messages: { context: names.has("messages.context") },
-    threads: { postOperations: names.has("threads.postOperations") },
+    threads: { postOperations: names.has("threads.postOperations"), attachmentChunks: names.has("thread.attachmentChunks") },
     branches: { finishDelete: names.has("branches.finishDelete") },
   };
 }

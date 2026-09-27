@@ -123,7 +123,7 @@ has always been.
    keep passing unchanged (qa.mjs is *extended*, §8; existing checks are not
    edited).
 10. **HTML/SVG preview is sandboxed** (§7.4): HTML in `<iframe sandbox="">`
-    (no scripts, no same-origin), SVG only ever via `<img src="data:...">`,
+    (no scripts, no same-origin), SVG only ever via `<img src="blob:…">`,
     never inlined into the DOM. Every file name/path rendered goes through
     `esc()`.
 
@@ -583,6 +583,11 @@ One directory level per call. Rules:
   (~1.37 MiB of b64 in one response frame is acceptable as a request/response;
   pushes are the flood-sensitive path, not calls.)
 - Content is ALWAYS base64 (text included) — byte-exact for any file.
+- With `fs.mediaRawPages`, the Files viewer requests 1 MiB exact byte ranges
+  for image, audio and video paths and builds a Blob URL from cached pages.
+  Playback waits for every page. The preview cap is 64 MiB; beyond it the
+  viewer shows `file too large to preview`. Its cache keeps only one media
+  file over 16 MiB per workspace, alongside the five-recent-files rule.
 - `mime` is an extension-based hint, lowercased extension via this pinned
   table (a helper `fn mime_hint(path: &Path, head: &[u8]) -> &'static str`):
 
@@ -876,8 +881,9 @@ Preview rules by response `mime` (+ `truncated`):
 |--------------------|----------------------------------------------------------------------------------------|--------------------|
 | `text/markdown`    | `renderMarkdown(text)` in a `.plan`-styled div                                          | yes                |
 | `text/html`        | `<iframe class="fhtml" sandbox="" src="data:text/html;base64,<content_b64>">`           | yes                |
-| `image/svg+xml`    | `<img src="data:image/svg+xml;base64,<content_b64>">` — never inline SVG into the DOM   | yes                |
-| other `image/*`    | `<img src="data:<mime>;base64,<content_b64>" style="max-width:100%">`                   | no                 |
+| `image/svg+xml`    | `<img src="blob:…">` from cached byte pages — never inline SVG into the DOM              | yes                |
+| other `image/*`    | `<img src="blob:…" style="max-width:100%">` from cached byte pages                 | no                 |
+| `audio/*`, `video/*` | Native controls with `src="blob:…"` from cached byte pages after download completes | no              |
 | `application/octet-stream`, `application/pdf` | placeholder: `binary file · <size> bytes` — no content render | no                 |
 | everything else    | source view                                                                             | (is source)        |
 

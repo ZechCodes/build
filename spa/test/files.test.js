@@ -106,6 +106,7 @@ describe("mediaPreviewHtml", () => {
   it("renders native audio and video controls", () => {
     expect(mediaPreviewHtml("audio", "audio/mpeg", "SUQz")).toContain('<audio class="fmedia faudio" controls');
     expect(mediaPreviewHtml("video", "video/mp4", "AAAA")).toContain('<video class="fmedia fvideo" controls');
+    expect(mediaPreviewHtml("video", "video/mp4", "AAAA")).not.toContain("data:");
   });
 
   it("escapes a hostile MIME hint", () => {

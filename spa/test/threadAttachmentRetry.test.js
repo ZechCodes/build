@@ -87,7 +87,7 @@ describe("an attachment fetch that failed while the path was dead", () => {
     await settle();
 
     expect(document.querySelector("img.thread-attachment-image").getAttribute("src"))
-      .toBe("data:image/png;base64,AAAA");
+      .toMatch(/^blob:/);
   });
 
   it("records which of the two it decided, so a report about a wrong figure carries it", async () => {
@@ -146,7 +146,7 @@ describe("an attachment fetch that failed while the path was dead", () => {
 
     expect(asked).toBe(1);
     expect(document.querySelector("img.thread-attachment-image").getAttribute("src"))
-      .toBe("data:image/png;base64,AAAA");
+      .toMatch(/^blob:/);
   });
 
   it("keeps one conversation's deferred pictures out of another's", async () => {

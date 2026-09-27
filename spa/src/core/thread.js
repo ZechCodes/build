@@ -33,6 +33,7 @@ import { isTransientTransportError } from "./transientRead.js";
 import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
 import { scrollWithin } from "./scrollWithin.js";
 import { buildNoticeSummary, noticeHasMore } from "./buildNoticeLine.js";
+import { attachMediaSource, createMediaUrl } from "./mediaBlob.js";
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -461,7 +462,7 @@ const ATTACHMENT_CACHE_MAX = 40;
  * repository. Keeping these maps behind an instance prevents equal attachment
  * paths and offer ids in unrelated scopes from becoming the same browser state. */
 export function createThreadState({ ownerId = "" } = {}) {
-  const attachmentDataUrls = new Map();
+  const attachmentBodies = new Map();
   const pendingAttachmentLoads = new Map();
   /// Paths whose fetch died on the wire rather than being refused (#30).
   ///
@@ -485,14 +486,14 @@ export function createThreadState({ ownerId = "" } = {}) {
   return Object.freeze({
     ownerId,
     active: () => live,
-    attachment: (path) => attachmentDataUrls.get(path),
-    rememberAttachment(path, dataUrl) {
+    attachment: (path) => attachmentBodies.get(path),
+    rememberAttachment(path, body) {
       if (!live) return;
       deferredAttachments.delete(path);
-      if (attachmentDataUrls.size >= ATTACHMENT_CACHE_MAX) {
-        attachmentDataUrls.delete(attachmentDataUrls.keys().next().value);
+      if (attachmentBodies.size >= ATTACHMENT_CACHE_MAX) {
+        attachmentBodies.delete(attachmentBodies.keys().next().value);
       }
-      attachmentDataUrls.set(path, dataUrl);
+      attachmentBodies.set(path, body);
     },
 
     /// This fetch was never answered because nothing was carrying it. Held
@@ -515,7 +516,7 @@ export function createThreadState({ ownerId = "" } = {}) {
       return waiting;
     },
     loadAttachment(path, load) {
-      if (attachmentDataUrls.has(path)) return Promise.resolve(attachmentDataUrls.get(path));
+      if (attachmentBodies.has(path)) return Promise.resolve(attachmentBodies.get(path));
       const held = pendingAttachmentLoads.get(path);
       if (held) return held;
       let pending;
@@ -563,7 +564,7 @@ export function createThreadState({ ownerId = "" } = {}) {
     },
     dispose() {
       live = false;
-      attachmentDataUrls.clear();
+      attachmentBodies.clear();
       pendingAttachmentLoads.clear();
       deferredAttachments.clear();
       pendingChoices.clear();
@@ -2254,8 +2255,8 @@ export function wireThreadRevisionLinks(root, loadRevision) {
 /// Fill the images a rendered timeline is waiting on, and make the file chips
 /// download what they name.
 ///
-/// `load(path)` resolves the bridge's `thread.attachment` payload
-/// (`{mime, content_b64}`).
+/// `load(path)` resolves `{mime, pages}` from the thread or issue attachment
+/// reader. Each page carries only its own base64 wire bytes.
 /// Wire the suggested actions: the picking, and the one press that sends them.
 ///
 /// `submit` takes `{ messageId, optionIds }` and answers with a promise. The
@@ -2375,14 +2376,14 @@ const VIDEO_THUMBNAIL_MAX_BYTES = 5 * 1_048_576;
 
 export function wireThreadAttachments(root, load, threadState = createThreadState()) {
   if (!root) return;
-  const dataUrlFor = (path) => {
+  const attachmentFor = (path) => {
     const held = threadState.attachment(path);
     if (held) return Promise.resolve(held);
     return threadState.loadAttachment(path, async () => {
       const attachment = await load(path);
-      const dataUrl = `data:${attachment.mime || "application/octet-stream"};base64,${attachment.content_b64 || ""}`;
-      threadState.rememberAttachment(path, dataUrl);
-      return dataUrl;
+      const value = { ...attachment, pages: attachment.pages || [attachment.content_b64 || ""] };
+      threadState.rememberAttachment(path, value);
+      return value;
     });
   };
 
@@ -2428,12 +2429,12 @@ export function wireThreadAttachments(root, load, threadState = createThreadStat
     // in clamps and jumps (#153).
     const held = threadState.attachment(path);
     if (held) {
-      element.setAttribute("src", held);
+      attachMediaSource(element, held.pages, held.mime);
       return;
     }
-    dataUrlFor(path).then(
-      (dataUrl) => {
-        element.setAttribute("src", dataUrl);
+    attachmentFor(path).then(
+      (attachment) => {
+        if (element.isConnected) attachMediaSource(element, attachment.pages, attachment.mime);
       },
       (error) => failedToLoad(path, element, error),
     );
@@ -2459,12 +2460,12 @@ export function wireThreadAttachments(root, load, threadState = createThreadStat
       kind: preview.dataset.attachmentKind === "video" ? "video" : "image",
       name: preview.closest("figure")?.querySelector(".thread-attachment-name")?.textContent || "",
       source: async () => {
-        const held = thumbnail?.getAttribute("src");
+        const held = threadState.attachment(path);
         if (held) return held;
         try {
-          const dataUrl = await dataUrlFor(path);
-          if (dataUrl && thumbnail?.isConnected) thumbnail.setAttribute("src", dataUrl);
-          return dataUrl;
+          const attachment = await attachmentFor(path);
+          if (attachment && thumbnail?.isConnected) attachMediaSource(thumbnail, attachment.pages, attachment.mime);
+          return attachment;
         } catch (error) {
           failedToLoad(path, thumbnail, error);
           throw error;
@@ -2488,11 +2489,14 @@ export function wireThreadAttachments(root, load, threadState = createThreadStat
     chip.onclick = async () => {
       const path = chip.dataset.attachmentPath;
       if (!path) return;
-      const dataUrl = await dataUrlFor(path);
+      const attachment = await attachmentFor(path);
+      const held = createMediaUrl(attachment.pages, attachment.mime);
       const link = root.ownerDocument.createElement("a");
-      link.href = dataUrl;
+      link.href = held.url;
       link.download = chip.dataset.attachmentName || "attachment";
       link.click();
+      // Give the browser time to claim the download before releasing its URL.
+      setTimeout(held.revoke, 30_000);
     };
   });
 }

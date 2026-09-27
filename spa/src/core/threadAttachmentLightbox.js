@@ -4,7 +4,7 @@
 // It is handed the media of ONE list — a message's files, an issue body's, one
 // comment's — and the index that was pressed, so the arrows and a swipe move
 // through what was said together and nothing else. Each item brings its own
-// `source()`, a promise of the address its bytes are at: a picture already on
+// `source()`, a promise of cached byte pages: a picture already on
 // the page answers at once, and a recording that was never fetched is fetched
 // when it is shown, with the stage saying so meanwhile.
 //
@@ -14,6 +14,7 @@
 
 import { modalDialogHtml, openModal } from "./modal.js";
 import { ICON_CHEVRON_LEFT, ICON_CHEVRON_RIGHT } from "./icons.js";
+import { attachMediaSource, releaseMediaSource } from "./mediaBlob.js";
 
 /** How far a finger has to travel sideways, in px, for a swipe to count. */
 const SWIPE_MIN_PX = 48;
@@ -30,10 +31,8 @@ const lightboxHtml = (count) => modalDialogHtml(`
   ${stepsHtml(count)}
 `, { className: "thread-lightbox" });
 
-/** Built as an element rather than markup: a recording's address is a data
- *  URL tens of megabytes long, and it should be handed to the element, not
- *  parsed out of a string. */
-function mediaElement(doc, item, src) {
+/** Attach cached bytes only after the complete body has arrived. */
+function mediaElement(doc, item, source) {
   const video = item.kind === "video";
   const element = doc.createElement(video ? "video" : "img");
   element.className = video ? "thread-lightbox-video" : "thread-lightbox-image";
@@ -45,7 +44,7 @@ function mediaElement(doc, item, src) {
   } else {
     element.setAttribute("alt", item.name || "");
   }
-  element.setAttribute("src", src);
+  attachMediaSource(element, source.pages, source.mime);
   return element;
 }
 
@@ -101,26 +100,35 @@ function wireSwipe(stage, step) {
 
 /**
  * Open `items[index]`. Each item is `{ trigger, path, kind, name, source }`:
- * `kind` is "image" or "video", and `source()` answers the address to show.
+ * `kind` is "image" or "video", and `source()` answers `{pages, mime}`.
  */
 export function openAttachmentLightbox(items, index = 0) {
   let current = Math.max(0, Math.min(index, items.length - 1));
   let showing = 0; // which show() is the latest, so a slow source cannot land late
+  let closed = false;
   const doc = items[current]?.trigger?.ownerDocument || document;
   let onKeydown = () => {};
+  let stage;
+  const clearStage = () => {
+    stage?.querySelectorAll("img,video,audio").forEach(releaseMediaSource);
+  };
   const modal = openModal({
     dialogHtml: lightboxHtml(items.length),
     onClose: () => {
+      closed = true;
+      showing += 1;
+      clearStage();
       doc.removeEventListener("keydown", onKeydown);
       thumbnailOf(items[current])?.focus();
     },
   });
   const dialog = modal.body;
-  const stage = dialog.querySelector(".thread-lightbox-stage");
+  stage = dialog.querySelector(".thread-lightbox-stage");
   const count = dialog.querySelector(".thread-lightbox-count");
 
   const land = (item, turn, src) => {
-    if (turn !== showing) return;
+    if (closed || turn !== showing) return;
+    clearStage();
     stage.replaceChildren(mediaElement(doc, item, src));
   };
   const refuse = (turn) => {
@@ -128,11 +136,13 @@ export function openAttachmentLightbox(items, index = 0) {
   };
 
   function show(at) {
+    if (closed) return;
     current = (at + items.length) % items.length;
     const item = items[current];
     const turn = ++showing;
     dialog.setAttribute("aria-label", dialogLabel(item));
     if (count) count.textContent = `${current + 1} of ${items.length}`;
+    clearStage();
     stage.innerHTML = '<p class="thread-lightbox-note">Loading…</p>';
     Promise.resolve()
       .then(() => item.source())

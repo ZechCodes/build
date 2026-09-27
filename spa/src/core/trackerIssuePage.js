@@ -657,7 +657,7 @@ export function mountIssuePage(host, options) {
   const attachmentBodies = createIssueAttachmentBodies({
     deviceId: state.deviceId,
     issueId: state.issueId,
-    call: (method, params) => state.callRpc(method, params),
+    call: (...args) => state.callRpc(...args),
   });
   const wireAttachments = () =>
     wireThreadAttachments(host.querySelector(".issue-page-main"), attachmentBodies.load, attachmentState);

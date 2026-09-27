@@ -210,7 +210,7 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `1.29.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `1.30.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
@@ -225,7 +225,9 @@ runtime that starts them.
   inbox row is ordered by them, #103). 1.29.0 adds `issues.unreadCounts`:
   a watched issue on `issues.list` and `issues.get` carries `unread_count`,
   the count its inbox row says, which the Issues tab badges and the rail read
-  (#104).
+  (#104). 1.30.0 adds `thread.attachmentChunks` (`offset`/`length` on
+  `thread.attachment`) and `fs.mediaRawPages` (`range.raw` on `fs.read` for
+  exact image, audio and video byte pages through 64 MiB).
 - `session.hello` is answered by `session_hello` in
   `bridge/src/app/runtime/terminals.rs`. The reply carries `api_version`,
   `capabilities`, `push_events`, `events` and the `changes` subscription settings.

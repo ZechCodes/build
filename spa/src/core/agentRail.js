@@ -100,6 +100,8 @@ import { forgetRevisionBodies, revisionContents } from "./revisionBodies.js";
 import { readCached, subscribeCache } from "./localCache.js";
 import { scopeFor } from "./cacheScope.js";
 import { replyOrNothing } from "./session.js";
+import { bridgeCapabilities } from "./changeEvents.js";
+import { fetchThreadAttachment } from "./threadAttachmentPages.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
 import { agentLabels as agentLabelsOf, workspaceAgents } from "./trackerAssignee.js";
 import { toolbarIdentity } from "./toolbarModel.js";
@@ -298,7 +300,7 @@ function railChatDependencies(context) {
     repository: injectedRepository || createChatRepository({
       scope: cacheScope || {},
       viewingContext: context.viewingContext || App.viewingContext,
-      call: (method, params) => context.call(method, params),
+      call: (...args) => context.call(...args),
     }),
   };
 }
@@ -2988,7 +2990,12 @@ function mountRailOnContext(host, context, swap) {
     wireExpansionReveal(body);
     wireThreadAttachments(
       body,
-      (path) => chatRepository.currentCall()("thread.attachment", { entity_id: controller.identity.entityId, path }),
+      (path) => fetchThreadAttachment(
+        chatRepository.currentCall(),
+        controller.identity.entityId,
+        path,
+        bridgeCapabilities(context.deviceId)?.threads?.attachmentChunks === true,
+      ),
       controller.threadState,
     );
     wireThreadRevisionLinks(body, (revisionId) =>

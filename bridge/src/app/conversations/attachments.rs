@@ -2,7 +2,7 @@ use super::AppState;
 use crate::app::{require_str, sha256_hex};
 use crate::encoding::{b64decode, b64encode};
 use serde_json::{json, Value};
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 
 /// The folders one conversation's attachments live in.
 pub(in crate::app) struct AttachmentHomes {
@@ -266,13 +266,40 @@ impl AppState {
         let entity_id = require_str(params, "entity_id")?;
         let path = require_str(params, "path")?;
         let target = self.resolve_attachment(&entity_id, &path)?;
-        let content =
-            std::fs::read(&target).map_err(|e| format!("cannot read the attachment: {e}"))?;
-        let head = &content[..content.len().min(8192)];
+        let offset = params.get("offset").and_then(Value::as_u64).unwrap_or(0);
+        let ranged = params.get("offset").is_some() || params.get("length").is_some();
+        let mut file =
+            std::fs::File::open(&target).map_err(|e| format!("cannot read the attachment: {e}"))?;
+        let size = file
+            .metadata()
+            .map_err(|e| format!("cannot read the attachment: {e}"))?
+            .len();
+        let length = if ranged {
+            params
+                .get("length")
+                .and_then(Value::as_u64)
+                .unwrap_or(ATTACHMENT_MAX_BYTES)
+                .min(ATTACHMENT_MAX_BYTES)
+        } else {
+            size
+        };
+        let mut head = Vec::new();
+        (&mut file)
+            .take(8192)
+            .read_to_end(&mut head)
+            .map_err(|e| format!("cannot read the attachment: {e}"))?;
+        file.seek(SeekFrom::Start(offset.min(size)))
+            .map_err(|e| format!("cannot read the attachment: {e}"))?;
+        let mut content = Vec::new();
+        (&mut file)
+            .take(length)
+            .read_to_end(&mut content)
+            .map_err(|e| format!("cannot read the attachment: {e}"))?;
         Ok(json!({
             "path": path,
-            "size": content.len(),
-            "mime": mime_hint(&target, head),
+            "size": size,
+            "mime": mime_hint(&target, &head),
+            "offset": offset,
             "content_b64": b64encode(&content),
         }))
     }

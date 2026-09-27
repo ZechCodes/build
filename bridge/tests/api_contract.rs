@@ -146,6 +146,21 @@ fn every_fixture_verb_has_an_advertised_capability() {
 }
 
 #[test]
+fn media_page_features_are_announced_together() {
+    let advertised: BTreeSet<&str> = capabilities(false).into_iter().collect();
+    assert_eq!(API_VERSION, "1.30.0");
+    assert!(advertised.contains("thread.attachmentChunks"));
+    assert!(advertised.contains("fs.mediaRawPages"));
+    let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
+    assert_eq!(greeting["result"]["api_version"], API_VERSION);
+    assert!(greeting["result"]["capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry == "thread.attachmentChunks"));
+}
+
+#[test]
 fn every_fixture_parses_and_its_result_round_trips_through_the_typed_result() {
     let by_name: std::collections::BTreeMap<&str, &v1::Handler> = v1::methods()
         .iter()

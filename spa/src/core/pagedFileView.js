@@ -152,14 +152,14 @@ export function wholeTextPainter(render) {
 /** Paints a body the viewer shows whole — from every byte, once all of them
  *  are held — and only once per body, so a page written again under a
  *  playing film does not start it over. */
-export function wholeBytesPainter(render) {
+export function wholeBytesPainter(render, { asPages = false } = {}) {
   let painted = null;
   return {
     paint(content, state) {
       const key = state.complete ? `${state.pages.length}:${state.end}` : null;
       if (key === painted) return;
       painted = key;
-      if (key) render(content, joinedBase64(state.pages));
+      if (key) render(content, asPages ? state.pages : joinedBase64(state.pages));
       else content.replaceChildren();
     },
   };

@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
 /// The version of the wire API this bridge speaks.
-pub const API_VERSION: &str = "1.29.0";
+pub const API_VERSION: &str = "1.30.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -55,6 +55,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "conversations.settings",
     "diffs.perFile",
     "errors.codes",
+    "fs.mediaRawPages", // Since 1.30.0: exact binary ranges for Blob media reads, through 64 MiB.
     "issues.agentIdentities",
     "issues.attachmentChunks",
     "issues.attachments",
@@ -75,6 +76,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "settings.projectAgent",
     "settings.roleModels",
     "settings.workspaceLifecycle",
+    "thread.attachmentChunks", // Since 1.30.0: offset/length on thread.attachment.
     "threads.newestDeltaPagination",
     "threads.postOperations",
     "workspaces.lifecycle",

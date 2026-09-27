@@ -85,6 +85,7 @@ import {
 import { coordinatedRead, requestPriorityFields, rpcReadKey } from "./readRequests.js";
 import { pageVisible } from "./visibility.js";
 import { dropBodyPages } from "./bodyPages.js";
+import { isMediaPath } from "./fileViewer.js";
 import { writeUsageLimits } from "./usageLimits.js";
 import {
   BACKGROUND_COOLDOWN_MS,
@@ -1614,17 +1615,18 @@ async function readFileBody(context, entityId, scope, path) {
   // A body too large for one record is kept as pages (#95), so every answer is
   // kept: a record left over from before the change would hand the reader
   // that body on their next open, with no round trip and nothing saying so.
-  await cacheFileBody({ deviceId: context.deviceId, entityId, path, file, openedAt: held?.openedAt, readPage });
+  await cacheFileBody({ deviceId: context.deviceId, entityId, path, file, openedAt: held?.openedAt,
+    readPage: backgroundPageReader(context, scope, path, file.mime) });
   return context.active() ? "settled" : "cancelled";
 }
 
 /** One page of a held file by range, from a bridge that pages, at background
  *  priority. A read answered after a newer reader took over gives nothing, so
  *  the store gives up rather than write under it. */
-function backgroundPageReader(context, scope, path) {
+function backgroundPageReader(context, scope, path, mime = "") {
   if (!filePagesReadable(context.deviceId)) return null;
   const readPage = filePageReader(context.deviceId, (range) =>
-    context.call("fs.read", { ...scope, path, range }, requestPriorityFields("background")));
+    context.call("fs.read", { ...scope, path, range }, requestPriorityFields("background")), mime);
   return async (offset, bytes) => {
     const page = await readPage(offset, bytes);
     return context.active() ? page : null;
@@ -1635,10 +1637,16 @@ function backgroundPageReader(context, scope, path) {
  *  alone (the store reads it), where the bridge can page; anything else is
  *  read whole, as it was opened. Unlike ask(), the refusal is kept, so
  *  recovery can tell a missing file apart. */
-const freshFileAnswer = (context, scope, path, heldFile, readPage) =>
-  heldFile?.paged && readPage
-    ? heldFile
-    : context.call("fs.read", { ...scope, path }, requestPriorityFields("background"));
+const freshFileAnswer = (context, scope, path, heldFile, readPage) => {
+  if (heldFile?.paged && readPage) return heldFile;
+  const raw = filePagesReadable(context.deviceId)
+    && bridgeCapabilities(context.deviceId)?.bodies?.mediaRawPages === true
+    && isMediaPath(path);
+  return context.call("fs.read", {
+    ...scope, path,
+    ...(raw ? { range: { offset: 0, bytes: 1_048_576, raw: true } } : {}),
+  }, requestPriorityFields("background"));
+};
 
 const applyTerminals = (context, entityId, terminals) =>
   writePushed(addressOf(context, entityId, "terminals"), { tabs: terminals.tabs || [] });

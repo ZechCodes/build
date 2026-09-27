@@ -33,6 +33,35 @@ pub struct BodyRange {
     pub bytes: u64,
 }
 
+/// `fs.read` may ask for an exact binary byte window. Text bodies keep the
+/// older whole-line behavior; the raw flag belongs only to file reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileRange {
+    pub offset: u64,
+    pub bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw: Option<bool>,
+}
+
+impl FileRange {
+    pub fn from_params(params: &Value) -> Result<Option<Self>, String> {
+        match params.get("range") {
+            None | Some(Value::Null) => Ok(None),
+            Some(range) => serde_json::from_value(range.clone())
+                .map(Some)
+                .map_err(|error| format!("invalid range: {error}")),
+        }
+    }
+
+    pub fn body(self) -> BodyRange {
+        BodyRange {
+            offset: self.offset,
+            bytes: self.bytes,
+        }
+    }
+}
+
 /// Where one page's bytes sit in the whole body.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct BodySpan {

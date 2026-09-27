@@ -29,7 +29,7 @@
 //
 // SECURITY: every name/path is escaped. HTML previews render in a
 // `sandbox=""` iframe over a `data:` URL (no scripts, no same-origin); SVG and
-// images render via `<img src="data:...">` — never inlined into the DOM. The
+// images render via `<img src="blob:...">` — never inlined into the DOM. The
 // server fences the scope root and every path; this view never sends host paths.
 
 import { esc, pickAFileText } from "../core/text.js";
@@ -48,13 +48,16 @@ import { langForPath } from "../core/highlight.js";
 import { initPaneDrawer, paneDrawerHtml } from "../core/paneDrawer.js";
 import { isDotenvPath, renderDotenvSourceHtml, SPOILER_DOTS } from "../core/secrets.js";
 import { confirmAction } from "../core/confirm.js";
-import { createFileViewerState, encodeBase64Text, fileModeTrayHtml, fileViewerModes, sameFile } from "../core/fileViewer.js";
+import { createFileViewerState, encodeBase64Text, fileBodyReading, fileModeTrayHtml, fileViewerModes, isMediaPath, sameFile } from "../core/fileViewer.js";
 import { mountFileEditor } from "../core/fileEditor.js";
 import { captureFileSelection } from "../core/fileSelection.js";
 import { mountMeasuredHeight } from "../core/measuredInset.js";
 import { mountFileTree } from "../core/fileTree.js";
 import { locateRooted, mountFileRoots, rootedKey } from "../core/fileRoots.js";
 import { mountFileTabs } from "../core/fileTabs.js";
+import { attachMediaSource, releaseMediaSource } from "../core/mediaBlob.js";
+import { requestPriorityFields } from "../core/readRequests.js";
+import { bridgeCapabilities } from "../core/changeEvents.js";
 
 const FS_READ_MAX_BYTES = 1_048_576;
 
@@ -101,10 +104,26 @@ export function sourcePreviewHtml(path, text) {
   return `<div class="fsrc"><table>${sourceRowsHtml(text.split("\n"), langForPath(path))}</table></div>`;
 }
 
-export function mediaPreviewHtml(mode, mime, contentB64) {
+export function mediaPreviewHtml(mode) {
   const tag = mode === "audio" ? "audio" : "video";
   const className = mode === "audio" ? "faudio" : "fvideo";
-  return `<${tag} class="fmedia ${className}" controls preload="metadata" src="data:${esc(mime)};base64,${contentB64}"></${tag}>`;
+  return `<${tag} class="fmedia ${className}" controls preload="metadata"></${tag}>`;
+}
+
+function bindPreviewMedia(host, file, pages) {
+  const element = host.querySelector(".fmedia, .fimg");
+  if (element) attachMediaSource(element, pages, file.mime);
+}
+
+function releasePreviewMedia(host) {
+  host.querySelectorAll(".fmedia, .fimg").forEach(releaseMediaSource);
+}
+
+function bindWholeMedia(host, file, mode, sourceOverride, dotenv) {
+  if (dotenv || sourceOverride || mode === "toolarge") return;
+  if (fileBodyReading(file.mime) === "media" || mode === "svg") {
+    bindPreviewMedia(host, file, [file.content_b64 || ""]);
+  }
 }
 
 /** Whether the source view for `path`/`mode` should render as a masked dotenv
@@ -126,9 +145,9 @@ function previewBodyHtml(path, file, showSource) {
   }
   if (mode === "markdown") return `<div class="plan">${renderMarkdown(decodeBase64Text(file.content_b64))}</div>${truncNotice}`;
   if (mode === "html") return `<iframe class="fhtml" sandbox="" src="data:text/html;base64,${file.content_b64}"></iframe>`;
-  if (mode === "svg") return `<img class="fimg" src="data:image/svg+xml;base64,${file.content_b64}" alt="">`;
-  if (mode === "image") return `<img class="fimg" src="data:${esc(file.mime)};base64,${file.content_b64}" alt="" style="max-width:100%">`;
-  if (mode === "audio" || mode === "video") return mediaPreviewHtml(mode, file.mime, file.content_b64);
+  if (mode === "svg") return '<img class="fimg" alt="">';
+  if (mode === "image") return '<img class="fimg" alt="" style="max-width:100%">';
+  if (mode === "audio" || mode === "video") return mediaPreviewHtml(mode);
   return sizePlaceholder(mode, file.size);
 }
 
@@ -198,6 +217,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
   // the preview area; only a loaded file gets the bordered panel back.
   const showPlaceholder = (kind, message, hint) => {
     stopPreviewHeadMeasurement();
+    releasePreviewMedia(previewEl);
     previewEl.classList.add("idle");
     previewEl.innerHTML = previewPlaceholderHtml(kind, message, hint);
   };
@@ -388,12 +408,17 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
 
   /** The reader of one page of `path` by range (#95). It asks at each read
    *  whether the bridge can page, so the view holding it never does. */
-  const pageReader = (path) =>
-    filePageReader(cacheScope?.deviceId, (range) => callRpc("fs.read", { ...scopeOf(path), path: pathOf(path), range }));
+  const pageReader = (path, file) =>
+    filePageReader(cacheScope?.deviceId, (range) => {
+      const params = { ...scopeOf(path), path: pathOf(path), range };
+      return fileBodyReading(file?.mime) === "media"
+        ? callRpc("fs.read", params, requestPriorityFields("background"))
+        : callRpc("fs.read", params);
+    }, file?.mime);
 
   /** What a store decides by, after an answer (so after a greeting): the page
    *  reader where this bridge can page, or null where it cannot. */
-  const storePageReader = (path) => (filePagesReadable(cacheScope?.deviceId) ? pageReader(path) : null);
+  const storePageReader = (path, file) => (filePagesReadable(cacheScope?.deviceId) ? pageReader(path, file) : null);
 
   /** Store one pulled body — whole, or as pages when it is too large for one
    *  record — and then read the stored record back: the view paints what the
@@ -407,7 +432,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     if (recordWriteOf(current) !== previousWrite) return { file: current?.value?.file };
     await cacheFileBody({
       deviceId: address.deviceId, entityId: address.entityId, path: address.sub, file,
-      readPage: storePageReader(path), still: recordStill(address, previousWrite),
+      readPage: storePageReader(path, file), still: recordStill(address, previousWrite),
     });
     if (!stillSelected(request, path)) return {};
     return { file: (await heldRecord(address))?.value?.file };
@@ -426,7 +451,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
   const restartPagedFile = async (path, file) => {
     const address = fileAddress(path);
     const key = `${path}\n${file.of}`;
-    const readPage = storePageReader(path);
+    const readPage = storePageReader(path, file);
     if (!address || !readPage || key === restartedFrom || key === restartedTo) return;
     restartedFrom = key;
     const still = recordStill(address, recordWriteOf(await heldRecord(address)));
@@ -436,7 +461,14 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
 
   const pullFile = async (path, request, previousWrite) => {
     try {
-      const file = await callRpc("fs.read", { ...scopeOf(path), path: pathOf(path) });
+      const raw = bridgeCapabilities(cacheScope?.deviceId)?.bodies?.mediaRawPages === true && isMediaPath(pathOf(path));
+      const params = {
+        ...scopeOf(path), path: pathOf(path),
+        ...(raw ? { range: { offset: 0, bytes: FS_READ_MAX_BYTES, raw: true } } : {}),
+      };
+      const file = raw
+        ? await callRpc("fs.read", params, requestPriorityFields("background"))
+        : await callRpc("fs.read", params);
       return storePulledFile(path, file, request, previousWrite);
     } catch (error) {
       return { error };
@@ -650,6 +682,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
 
   let pagedView = null;
   const stopPagedView = () => {
+    releasePreviewMedia(previewEl);
     pagedView?.dispose();
     pagedView = null;
   };
@@ -667,9 +700,12 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     }
     if (sourceOverride || mode === "source" || mode === "markdown") return sourceLinesPainter(langForPath(path));
     if (mode === "binary" || mode === "toolarge") return null;
-    return wholeBytesPainter((content, contentB64) => {
-      content.innerHTML = previewBodyHtml(path, { ...file, content_b64: contentB64 }, false);
-    });
+    const media = fileBodyReading(file.mime) === "media" || mode === "svg";
+    return wholeBytesPainter((content, body) => {
+      releasePreviewMedia(content);
+      content.innerHTML = previewBodyHtml(path, { ...file, content_b64: media ? "" : body }, false);
+      if (media) bindPreviewMedia(content, file, body);
+    }, { asPages: media });
   };
 
   /** A file kept as pages is painted from them, never from an answer. */
@@ -683,7 +719,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     pagedView = mountPagedFile(host, {
       head: fileAddress(path),
       file,
-      readPage: pageReader(path),
+      readPage: pageReader(path, file),
       restart: () => void restartPagedFile(path, file).catch(() => {}),
       painter,
       // A link to a line lands once the page holding it is painted, and a
@@ -707,6 +743,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
       : null;
     const truncNotice = dotenv && file.truncated ? `<div class="ftrunc">truncated at 1 MiB</div>` : "";
     host.innerHTML = dotenv ? dotenv.html + truncNotice : previewBodyHtml(pathOf(path), file, sourceOverride);
+    bindWholeMedia(host, file, mode, sourceOverride, dotenv);
     if (dotenv) wireDotenvSpoilers(dotenv.secrets);
     scrollRequestedLineIntoView(path);
   };

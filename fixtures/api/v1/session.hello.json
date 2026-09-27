@@ -3,7 +3,7 @@
   "since": "1.0.0",
   "params": {},
   "result": {
-    "api_version": "1.29.0",
+    "api_version": "1.30.0",
     "capabilities": [
       "agent.add",
       "agent.attach",
@@ -49,6 +49,7 @@
       "entity.seen",
       "errors.codes",
       "fs.list",
+      "fs.mediaRawPages",
       "fs.mkdir",
       "fs.read",
       "fs.tree",
@@ -196,6 +197,7 @@
       "thread.activity",
       "thread.attach",
       "thread.attachment",
+      "thread.attachmentChunks",
       "thread.operation",
       "thread.page",
       "thread.post",

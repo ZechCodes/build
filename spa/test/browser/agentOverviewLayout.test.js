@@ -300,3 +300,53 @@ it("keeps the heading's pill, dot and + on one gap and in one column", async () 
     assert.equal(byName["issue-implementation-audit"].pill, null, "no pill for nothing unread");
   }, { width: 1320, height: 850 });
 }, 30_000);
+
+// #192 review: the +'s 44px press reaches over the working dot, so a press on
+// the dot has to open Add too — the dot is drawn above the button and must not
+// take the click — while the pill beside it stays inert.
+it("opens Add from a press on the working dot as from the + itself", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await mountLayout(page, markup, { basePath });
+    await loadChatOverviewModules(page, basePath, { tracker: "src/core/trackerCache.js", fixture: "test/agentsOverviewFixture.js" });
+    await page.evaluate(async () => {
+      const { mountAgentRail } = window.__layoutModules.rail;
+      const { writeCached } = window.__layoutModules.cache;
+      const { stampWorkspace } = window.__layoutModules.merge;
+      const { writeIssuesRecord } = window.__layoutModules.tracker;
+      const { writeAgentsOverviewFixture, overviewRailContext } = window.__layoutModules.fixture;
+      await writeAgentsOverviewFixture({ writeCached, stampWorkspace, writeIssuesRecord });
+      localStorage.setItem("build.rail.expanded", "1");
+      window.__layoutRail = mountAgentRail(document.querySelector("#agent-rail"), overviewRailContext());
+    });
+    await page.waitForSelector(".rail-overview-toggle", { timeout: 5000 });
+    await page.locator(".rail-overview-toggle").click();
+    await page.waitForFunction(() => document.querySelectorAll("#rail-panel .rail-overview-section").length >= 5, null, { timeout: 5000 });
+    await page.waitForFunction(() => !document.querySelector(".rail-panel")?.getAnimations().length);
+
+    const centre = (name, selector) => page.evaluate(([sectionName, wanted]) => {
+      const { left, right, top, bottom } = document.querySelector(`.rail-overview-section[aria-label="${sectionName}"] .rail-overview-section-head ${wanted}`).getBoundingClientRect();
+      return { x: (left + right) / 2, y: (top + bottom) / 2, left, right, top, bottom };
+    }, [name, selector]);
+    const hashAfterClick = async (point) => {
+      await page.evaluate(() => window.history.replaceState({}, "", window.location.pathname));
+      await page.mouse.click(point.x, point.y);
+      await page.waitForTimeout(50);
+      return page.evaluate(() => window.location.hash);
+    };
+    const opensAdd = (hash, workspaceId) => hash.includes(`/workspace/${workspaceId}/`) && hash.includes("newAgent");
+
+    for (const [name, workspaceId, dotClass] of [["skrift-review", "ws-review", ".rail-overview-idle"], ["skrift-fixes", "ws-fixes", ".rail-overview-live"]]) {
+      const dot = await centre(name, dotClass);
+      const hit = await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest("[data-overview-add]")?.dataset.overviewAdd || null, [dot.x, dot.y]);
+      assert.equal(hit, workspaceId, `${name}: the press over the dot belongs to the +`);
+      assert.ok(opensAdd(await hashAfterClick(dot), workspaceId), `${name}: a press on the dot opens Add`);
+      // Inside the +'s box but outside the heading's 36px band: still the +.
+      const press = await centre(name, ".rail-overview-add");
+      assert.ok(opensAdd(await hashAfterClick({ x: press.right - 3, y: press.top + 3 }), workspaceId), `${name}: a press at the +'s corner opens Add`);
+      assert.ok(opensAdd(await hashAfterClick({ x: press.x, y: press.y }), workspaceId), `${name}: a press on the + opens Add`);
+    }
+    // The pill is not the +.
+    const pill = await centre("skrift-review", ".rail-overview-need");
+    assert.equal(await hashAfterClick(pill), "", "a press on the unread pill opens nothing");
+  }, { width: 1320, height: 850 });
+}, 30_000);

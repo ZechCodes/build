@@ -816,8 +816,11 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   font:650 11px/1 var(--mono); }
 .rail-overview-need.is-error { background:var(--red); color:var(--danger-ink); }
 /* The working dot is always drawn: the accent and the pulse while anything
-   works, the rows' idle grey and still otherwise. */
-.rail-overview-live, .rail-overview-idle { flex:none; position:relative; width:8px; height:8px; border-radius:50%; }
+   works, the rows' idle grey and still otherwise. The +'s press reaches under
+   it, so the dot takes no pointer events: a press on the dot is a press on
+   the +, and its word is carried by the aria-label. */
+.rail-overview-live, .rail-overview-idle { flex:none; position:relative; width:8px; height:8px; border-radius:50%;
+  pointer-events:none; }
 .rail-overview-live { background:var(--accent); }
 .rail-overview-idle { background:var(--line3); }
 .rail-overview-live::after { content:""; position:absolute; inset:-3px; border-radius:50%;

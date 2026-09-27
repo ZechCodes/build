@@ -234,3 +234,128 @@ it("moves the chat overview between one workspace and the whole project", async 
     assert.deepEqual((await sections())[1].agents, ["busy-2", "busy-3", "busy-5", "busy-4", "busy-1"]);
   });
 }, 30_000);
+
+// #192: the right of every workspace heading is three fixed slots — unread
+// pill, working dot, + — on one gap, so the dot and the + stand in the same
+// columns on every heading, the dot is drawn (idle) even when nothing works,
+// and the +'s 44px press does not widen the visual gap.
+it("keeps the heading's pill, dot and + on one gap and in one column", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await mountLayout(page, markup, { basePath });
+    await loadChatOverviewModules(page, basePath, { tracker: "src/core/trackerCache.js", fixture: "test/agentsOverviewFixture.js" });
+    await page.evaluate(async () => {
+      const { mountAgentRail } = window.__layoutModules.rail;
+      const { writeCached } = window.__layoutModules.cache;
+      const { stampWorkspace } = window.__layoutModules.merge;
+      const { writeIssuesRecord } = window.__layoutModules.tracker;
+      const { writeAgentsOverviewFixture, overviewRailContext } = window.__layoutModules.fixture;
+      await writeAgentsOverviewFixture({ writeCached, stampWorkspace, writeIssuesRecord });
+      localStorage.setItem("build.rail.expanded", "1");
+      window.__layoutRail = mountAgentRail(document.querySelector("#agent-rail"), overviewRailContext());
+    });
+    await page.waitForSelector(".rail-overview-toggle", { timeout: 5000 });
+    await page.locator(".rail-overview-toggle").click();
+    await page.waitForFunction(() => document.querySelectorAll("#rail-panel .rail-overview-section").length >= 5, null, { timeout: 5000 });
+    await page.waitForFunction(() => !document.querySelector(".rail-panel")?.getAnimations().length);
+
+    const heads = await page.evaluate(() => {
+      const box = (node) => { const { left, right, top, bottom, width, height } = node.getBoundingClientRect(); return { left, right, top, bottom, width, height }; };
+      const glyph = (button) => { const range = document.createRange(); range.selectNodeContents(button); return box(range); };
+      const list = document.querySelector(".rail-overview-list");
+      return {
+        scrollsSideways: list.scrollWidth > list.clientWidth,
+        heads: [...document.querySelectorAll('.rail-overview-section[aria-label]:not([aria-label="Project agents"]) .rail-overview-section-head')].map((head) => {
+          const pill = head.querySelector(".rail-overview-need:not(.is-error)");
+          const dot = head.querySelector(".rail-overview-live, .rail-overview-idle");
+          const add = head.querySelector(".rail-overview-add");
+          return { name: head.closest("section").getAttribute("aria-label"), head: box(head),
+            pill: pill && box(pill), dot: dot && { ...box(dot), className: dot.className }, add: box(add), plus: glyph(add) };
+        }),
+      };
+    });
+    assert.equal(heads.heads.length, 4, "every workspace has a heading");
+    assert.equal(heads.scrollsSideways, false, "the +'s press target stays inside the list");
+    const first = heads.heads[0];
+    for (const head of heads.heads) {
+      assert.ok(head.dot, `${head.name}: the working dot is drawn`);
+      assert.ok(Math.abs(head.head.height - 36) <= 1, `${head.name}: heading height ${head.head.height}`);
+      assert.ok(Math.abs(head.add.width - 44) <= 1 && Math.abs(head.add.height - 44) <= 1, `${head.name}: + press ${head.add.width}x${head.add.height}`);
+      // One column for the dot and one for the +, whatever the heading holds.
+      assert.ok(Math.abs(head.dot.left - first.dot.left) <= 1, `${head.name}: dot at ${head.dot.left}, first at ${first.dot.left}`);
+      assert.ok(Math.abs(head.plus.left - first.plus.left) <= 1, `${head.name}: + at ${head.plus.left}, first at ${first.plus.left}`);
+      const dotToPlus = head.plus.left - head.dot.right;
+      if (head.pill) {
+        const pillToDot = head.dot.left - head.pill.right;
+        assert.ok(Math.abs(pillToDot - dotToPlus) <= 1, `${head.name}: pill→dot ${pillToDot} vs dot→+ ${dotToPlus}`);
+      }
+      assert.ok(dotToPlus >= 6 && dotToPlus <= 10, `${head.name}: dot→+ ${dotToPlus} is not the rows' gap`);
+    }
+    // The project's heading has no +, and its dot stands in the same column.
+    const projectDot = await page.evaluate(() => document.querySelector('.rail-overview-section[aria-label="Project agents"] .rail-overview-idle')?.getBoundingClientRect().left);
+    assert.ok(Math.abs(projectDot - first.dot.left) <= 1, `project dot at ${projectDot}, workspace dots at ${first.dot.left}`);
+    const byName = Object.fromEntries(heads.heads.map((head) => [head.name, head]));
+    assert.equal(byName["skrift-fixes"].dot.className, "rail-overview-live");
+    assert.equal(byName["skrift-review"].dot.className, "rail-overview-idle");
+    assert.ok(byName["skrift-review"].pill, "skrift-review carries its unread pill");
+    assert.equal(byName["issue-implementation-audit"].pill, null, "no pill for nothing unread");
+  }, { width: 1320, height: 850 });
+}, 30_000);
+
+// #192 review: the +'s 44px press reaches under the working dot, so a press
+// on the dot has to open Add too, while the dot keeps its own hover — its
+// status word is the tooltip, not the +'s — and the pill beside it stays inert.
+it("opens Add from a press on the working dot as from the + itself, and the dot keeps its tooltip", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await mountLayout(page, markup, { basePath });
+    await loadChatOverviewModules(page, basePath, { tracker: "src/core/trackerCache.js", fixture: "test/agentsOverviewFixture.js" });
+    await page.evaluate(async () => {
+      const { mountAgentRail } = window.__layoutModules.rail;
+      const { writeCached } = window.__layoutModules.cache;
+      const { stampWorkspace } = window.__layoutModules.merge;
+      const { writeIssuesRecord } = window.__layoutModules.tracker;
+      const { writeAgentsOverviewFixture, overviewRailContext } = window.__layoutModules.fixture;
+      await writeAgentsOverviewFixture({ writeCached, stampWorkspace, writeIssuesRecord });
+      localStorage.setItem("build.rail.expanded", "1");
+      window.__layoutRail = mountAgentRail(document.querySelector("#agent-rail"), overviewRailContext());
+    });
+    await page.waitForSelector(".rail-overview-toggle", { timeout: 5000 });
+    await page.locator(".rail-overview-toggle").click();
+    await page.waitForFunction(() => document.querySelectorAll("#rail-panel .rail-overview-section").length >= 5, null, { timeout: 5000 });
+    await page.waitForFunction(() => !document.querySelector(".rail-panel")?.getAnimations().length);
+
+    const centre = (name, selector) => page.evaluate(([sectionName, wanted]) => {
+      const { left, right, top, bottom } = document.querySelector(`.rail-overview-section[aria-label="${sectionName}"] .rail-overview-section-head ${wanted}`).getBoundingClientRect();
+      return { x: (left + right) / 2, y: (top + bottom) / 2, left, right, top, bottom };
+    }, [name, selector]);
+    const hashAfterClick = async (point) => {
+      await page.evaluate(() => window.history.replaceState({}, "", window.location.pathname));
+      await page.mouse.click(point.x, point.y);
+      await page.waitForTimeout(50);
+      return page.evaluate(() => window.location.hash);
+    };
+    const opensAdd = (hash, workspaceId) => hash.includes(`/workspace/${workspaceId}/`) && hash.includes("newAgent");
+
+    // The tooltip a hover shows is the innermost hovered element's title.
+    const hoveredTitle = async (point) => {
+      await page.mouse.move(point.x, point.y);
+      return page.evaluate(() => { const hovered = [...document.querySelectorAll(":hover")]; const top = hovered.at(-1);
+        return { className: top?.className, title: top?.closest("[title]")?.title || null }; });
+    };
+    for (const [name, workspaceId, dotClass, word] of [["skrift-review", "ws-review", ".rail-overview-idle", "Nothing working"], ["skrift-fixes", "ws-fixes", ".rail-overview-live", "1 working"]]) {
+      const dot = await centre(name, dotClass);
+      assert.deepEqual(await hoveredTitle(dot), { className: dotClass.slice(1), title: word }, `${name}: hovering the dot shows its status`);
+      assert.ok(opensAdd(await hashAfterClick(dot), workspaceId), `${name}: a press on the dot opens Add`);
+      // Inside the +'s box but outside the heading's 36px band: still the +.
+      const press = await centre(name, ".rail-overview-add");
+      assert.ok(opensAdd(await hashAfterClick({ x: press.right - 3, y: press.top + 3 }), workspaceId), `${name}: a press at the +'s corner opens Add`);
+      assert.ok(opensAdd(await hashAfterClick({ x: press.x, y: press.y }), workspaceId), `${name}: a press on the + opens Add`);
+    }
+    // The pill is not the +.
+    const pill = await centre("skrift-review", ".rail-overview-need");
+    assert.equal(await hashAfterClick(pill), "", "a press on the unread pill opens nothing");
+    // The project's dot has no + under it: its own tooltip, and no Add.
+    const projectDot = await centre("Project agents", ".rail-overview-idle");
+    assert.deepEqual(await hoveredTitle(projectDot), { className: "rail-overview-idle", title: "Nothing working" });
+    assert.equal(await hashAfterClick(projectDot), "", "a press on the project's dot opens nothing");
+  }, { width: 1320, height: 850 });
+}, 30_000);

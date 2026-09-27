@@ -171,7 +171,7 @@ import { providerInSameFamily } from "./providerCatalog.js";
 import { mountComposerClearance } from "./composerClearance.js";
 import { createChatPanelMotion } from "./chatPanelMotion.js";
 import { createChatTitleMotion } from "./chatTitleMotion.js";
-import { createAgentOverview, overviewHtml } from "./agentOverview.js";
+import { createAgentOverview, overviewAddFor, overviewHtml } from "./agentOverview.js";
 import { workspaceDisplayName } from "./workspaceModel.js";
 import { ICON_CHAT_OVERVIEW } from "./icons.js";
 import { scopeLinkHtml } from "./scopeLink.js";
@@ -1893,7 +1893,7 @@ function mountRailOnContext(host, context, swap) {
       workspaces: read.workspaces, issues: read.issues || [] });
     if (list.innerHTML !== markup) list.innerHTML = markup;
     list.onclick = (event) => {
-      const add = event.target.closest?.("[data-overview-add]");
+      const add = overviewAddFor(event.target);
       if (add) { openOverviewAdd(add.dataset.overviewAdd); return; }
       const opens = event.target.closest?.("[data-overview-scope]");
       if (opens) { moveOverviewScope({ kind: "workspace", workspaceId: opens.dataset.overviewScope }); return; }

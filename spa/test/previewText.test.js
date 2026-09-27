@@ -105,12 +105,23 @@ describe("overviewHtml workspace summary", () => {
   it("pulses while an agent works, even when that agent also has an unread message", () => {
     const rows = overviewRows([entry("busy", { working: true, unread_count: 1, unread_reason: "agent_message" })], [{ items: [] }]);
     expect(rows[0].state).toBe("waiting");
-    expect(summary(rows)).toContain('class="rail-overview-live" title="1 working"');
+    expect(summary(rows)).toContain('class="rail-overview-live" title="1 working" role="img" aria-label="1 working"');
     expect(summary(rows)).toContain('title="1 unread">1<');
+    expect(summary(rows)).not.toContain("rail-overview-idle");
   });
 
-  it("does not pulse for a quiet workspace", () => {
+  // #192: the dot is a fixed slot, so it is drawn idle when nothing works and
+  // the pill and the + hold their columns from heading to heading.
+  it("draws the working dot idle, and says so, for a quiet workspace", () => {
     const rows = overviewRows([entry("quiet", { unread_count: 1, unread_reason: "agent_message" })], [{ items: [] }]);
     expect(summary(rows)).not.toContain("rail-overview-live");
+    expect(summary(rows)).toContain('class="rail-overview-idle" title="Nothing working" role="img" aria-label="Nothing working"');
+    expect(summary(rows).indexOf('title="1 unread"')).toBeLessThan(summary(rows).indexOf("rail-overview-idle"));
+  });
+
+  it("puts the idle dot after the No agents word on an empty workspace", () => {
+    const html = summary(overviewRows([], []));
+    expect(html.indexOf("rail-overview-none")).toBeLessThan(html.indexOf("rail-overview-idle"));
+    expect(html).toContain("rail-overview-idle");
   });
 });

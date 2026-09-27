@@ -802,7 +802,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 /* A workspace's heading: its name (the way into its own overview), the issue
    it is for, what is happening in it, and its +. One line, 36px. */
 .rail-overview-section-head { display:flex; align-items:center; gap:8px; min-height:36px;
-  padding:0 4px 0 8px; }
+  padding:0 8px; }
 .rail-overview-section-head h2 { flex:0 0 auto; min-width:0; max-width:60%; margin:0; color:var(--ink);
   font-size:13px; font-weight:650; line-height:1.2; }
 .rail-overview-section-head h2 > span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -820,21 +820,33 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-overview-issue-number { flex:none; color:var(--accent); font-weight:650; font-family:var(--mono); font-size:11px; }
 .rail-overview-issue-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .rail-overview-issue-more { flex:none; color:var(--dim); font-size:11px; }
-/* What is happening in the workspace, at a glance: the unread waiting for the
-   reader, a pulse while anything works, a mark where something failed. */
-.rail-overview-sum { flex:none; display:inline-flex; align-items:center; gap:6px; margin-left:auto; }
+/* What is happening in the workspace, at a glance (#192): three fixed slots on
+   the rows' 8px gap — the unread pill (a mark before it where something
+   failed), the working dot, the + — right-aligned, so the dot and the + stand
+   in one column on every heading and a heading with nothing unread leaves no
+   hole beside its dot. */
+.rail-overview-sum { flex:none; display:inline-flex; align-items:center; gap:8px; margin-left:auto; }
 .rail-overview-need { display:inline-grid; place-items:center; min-width:18px; height:18px; padding:0 5px;
   border-radius:9px; background:var(--accent-fill); color:var(--accent-ink);
   font:650 11px/1 var(--mono); }
 .rail-overview-need.is-error { background:var(--red); color:var(--danger-ink); }
-.rail-overview-live { position:relative; width:8px; height:8px; border-radius:50%; background:var(--accent); }
+/* The working dot is always drawn: the accent and the pulse while anything
+   works, the rows' idle grey and still otherwise. It is drawn above the +'s
+   press, which reaches under it, and keeps its own hover for its tooltip; the
+   overview's click handler hands a press on it to the + (overviewAddFor). */
+.rail-overview-live, .rail-overview-idle { flex:none; position:relative; width:8px; height:8px; border-radius:50%; }
+.rail-overview-live { background:var(--accent); }
+.rail-overview-idle { background:var(--line3); }
 .rail-overview-live::after { content:""; position:absolute; inset:-3px; border-radius:50%;
   border:1px solid var(--accent); opacity:.55; animation:rail-pulse 1.6s ease-in-out infinite; }
 .rail-overview-none { color:var(--dim); font-size:11px; }
-/* The + is a 16px glyph on a 44px press: the heading is 36px, so the press
-   reaches 4px over and under it. */
-.rail-overview-add { flex:none; width:44px; height:44px; margin:-4px 0; padding:0; border-radius:8px;
+/* The + is a 12px glyph on a 44px press. The press is pulled in by negative
+   margins so it adds no visual gap: the heading is 36px, so it reaches 4px
+   over and under, and 16px to either side — to the list's own padding edge on
+   the right, over the dot's gap on the left. */
+.rail-overview-add { flex:none; width:44px; height:44px; margin:-4px -16px; padding:0; border-radius:8px;
   color:var(--ink2); font-size:20px; line-height:1; }
+.rail-overview-add-slot { flex:none; width:12px; }
 .rail-overview-see-all { align-self:flex-start; margin:2px 0 0 30px; padding:4px 0; border:0; background:none;
   color:var(--accent); font:inherit; font-size:12px; font-weight:600; cursor:pointer; }
 .rail-overview-see-all:hover { text-decoration:underline; }

@@ -34,11 +34,12 @@ third-party	planning/v2/UX Redesign Decisions.md	five Do issues|an issue doc|the
 
 @english	English that is not about the entity: the verb ("issue a request") or a problem ("zero issues").
 english	*	start_issue_only_one_turn_start
+english	spa/test/cacheSyncChanges.test.js	re-issues the active one
 english	*	cert-manager issues fresh certs
 english	*	Semgrep finds no issues
 english	*	system exclusions; zero issues
 english	*	may issue another greeting|can issue another|issues the subscribe|issues the ordinary typed|Do not issue another delivery
-english	skriftapp/*	\b(?:re)?issue_invite\b|\bissue(?=\(client)|(?<=def )issue(?=\()|issues_an_invite|invite_issues_one_invite|\bissues? (?:a fresh|an invite)
+english	skriftapp/*	(?:re)?issue_invite|\bissue(?=\(client)|(?<=def )issue(?=\()|issues_an_invite|invite_issues_one_invite|\bissues? (?:a fresh|an invite)
 english	design/landing-captures/capture.mjs	appHostIssues|(?<![-\w])issues?\b(?!-)
 english	design/landing-captures/capture-results.json	"issues": \[\]
 
@@ -62,6 +63,8 @@ compat	bridge/src/orchestrator/tests/plans.rs	\.issue-docs
 compat	bridge/src/resume.rs	`\*_issue`|comment_issue|old issue-…
 compat	bridge/src/app/tests/resume.rs	`\*_issue`|comment_issue|old issue-…
 compat	bridge/src/mcp.rs	"_issues?"|\b(?:comment|list|open)_issues?\b|"parent_issue_id"
+compat	spa/src/core/taskCache.js	`#/issue/<id>`
+compat	spa/src/views/taskView.js	#/issue/<id>
 compat	bridge/src/renamed_ids.rs
 compat	bridge/src/app/tests/renamed_ids.rs
 compat	bridge/src/store/task_rename.rs

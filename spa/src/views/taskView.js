@@ -87,8 +87,9 @@ export async function renderTask() {
       selectedStageId = stageId;
       syncHash();
     },
-    // The route may have arrived without a project (a legacy #/task/<id>
-    // link); the first payload says which one it is, and the URL catches up.
+    // The route may have arrived without a project (a legacy #/plan/<id> or
+    // #/issue/<id> link); the first payload says which one it is, and the URL
+    // catches up.
     onProject: (project) => {
       projectId = project;
       syncHash();

@@ -31,8 +31,8 @@ import { cachedAddresses, deleteCached, readCached, readCachedMany, writeCached 
 export const TASK_RECORD_KIND = "task";
 
 /** Where one thing a task holds lives. A route that names no device (a
- *  legacy `#/task/<id>` link) addresses the device-less slot rather than
- *  another machine's. */
+ *  legacy `#/plan/<id>` or `#/issue/<id>` link) addresses the device-less
+ *  slot rather than another machine's. */
 export const taskAddress = (deviceId, taskId, sub) => ({
   deviceId: deviceId || "",
   entityId: taskId,

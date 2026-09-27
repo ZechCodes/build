@@ -192,7 +192,7 @@ describe("the three subscriptions", () => {
     expect(live().map((watcher) => watcher.id)).toEqual(["s-inbox", "s-background"]);
   });
 
-  it("re-tasks the active one for the workspace the reader moved to", async () => {
+  it("re-issues the active one for the workspace the reader moved to", async () => {
     const two = [branchItem(), branchItem({ branch: "build/search", run_id: "run-2", worktree_id: "wt-2" })];
     await boot(two, { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" });
     const first = subscription("s-active");

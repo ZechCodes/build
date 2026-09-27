@@ -121,7 +121,7 @@ def test_redeem_marks_the_row_redeemed_once_and_then_refuses():
 
 
 @pytest.mark.asyncio
-async def test_task_invite_stores_the_hash_normalizes_the_address_and_dates_the_expiry(db):
+async def test_issue_invite_stores_the_hash_normalizes_the_address_and_dates_the_expiry(db):
     inviter = uuid4()
     row, raw = await invites.issue_invite(db, "  Invitee@Example.COM ", inviter, NOW)
     assert raw.startswith("inv_")
@@ -133,7 +133,7 @@ async def test_task_invite_stores_the_hash_normalizes_the_address_and_dates_the_
 
 
 @pytest.mark.asyncio
-async def test_task_invite_refuses_an_address_the_waitlist_would_refuse(db):
+async def test_issue_invite_refuses_an_address_the_waitlist_would_refuse(db):
     with pytest.raises(ValueError):
         await invites.issue_invite(db, "not-an-address", uuid4(), NOW)
 

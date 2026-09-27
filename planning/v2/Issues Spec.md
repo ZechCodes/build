@@ -919,6 +919,18 @@ what an issue page's timeline sentences should use as well.)
 `session.hello` states `"issues": { "attachments": true, "watching": true }`, so
 a client gates its inbox on the capability rather than on a version compare.
 
+## Dashboard task sections
+
+The Dashboard presents open tasks in **Active** or **Backlog**. Active has two
+groups: **Working** for a task held by an agent whose cached feed says it is
+working now, then **Assigned** for every other held task, including tasks held
+by the user or by an agent absent from the current feed. Backlog is a flat list
+of open tasks with no holder. The board column does not decide which section a
+task belongs in. Both Active groups and Backlog put higher priorities first and
+keep the issue list order within a priority. An empty Active group is hidden.
+Needs you remains a separate lens and can repeat a task from Active or Backlog.
+Done remains the completion lens below.
+
 ## The user's session
 
 The dashboard's Done section is "Done since you left" (#106): every issue in

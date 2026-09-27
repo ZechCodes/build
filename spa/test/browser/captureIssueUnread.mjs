@@ -190,10 +190,10 @@ for (const [view, query] of [["dashboard", ""], ["list", "?view=list"], ["board"
     await page.screenshot({ path: `${output}/project-issues-${view}.png` });
     if (view === "dashboard") {
       await page.locator("#toolbar .toolbar").screenshot({ path: `${output}/project-issues-tab.png` });
-      await page.locator('[data-dashboard-tab="inProgress"]').click();
-      await expectText(page.locator('[data-issue="issue-12"] .issue-unread'), "3", "dashboard in progress bubble");
+      await page.locator('[data-dashboard-tab="active"]').click();
+      await expectText(page.locator('[data-issue="issue-12"] .issue-unread'), "3", "dashboard active bubble");
       await page.waitForTimeout(200);
-      await page.screenshot({ path: `${output}/project-issues-dashboard-in-progress.png` });
+      await page.screenshot({ path: `${output}/project-issues-dashboard-active.png` });
     }
   }, { width: 1280, height: 720 });
 }

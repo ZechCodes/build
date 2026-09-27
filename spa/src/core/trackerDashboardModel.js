@@ -7,6 +7,7 @@ import { agentLabels, projectName, workspaceAgents } from "./trackerAssignee.js"
 import { actorName } from "./trackerLineWords.js";
 import { firstLine } from "./activityDigest.js";
 import { PRIORITIES, columnName } from "./trackerModel.js";
+import { isFinished } from "./trackerAgentIssues.js";
 
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -167,10 +168,7 @@ const cachedActivity = (activityByAgent, agentId) => {
   return typeof snippet === "string" ? snippet.trim() : "";
 };
 
-/** The columns an issue waits in before anyone starts it. */
-const NOT_STARTED = new Set(["backlog", "ready"]);
-
-/** Who holds an issue, as its Backlog row says it: "you" for the user, and
+/** Who holds a task, as its Assigned row says it: "you" for the user, and
  *  otherwise the name every other surface gives that actor, read off the
  *  cached issue's own identities. Null for nobody. */
 const holderOf = (issue, reading) => {
@@ -183,28 +181,41 @@ const holderOf = (issue, reading) => {
 /** How pressing a priority is, highest first; an unknown one reads as none. */
 const priorityRank = (priority) => -Math.max(0, PRIORITIES.findIndex((candidate) => candidate.id === priority));
 
-/** Every open issue not yet started: most pressing first, and within a
- *  priority the list's own order. Each names its holder, if any, and the
- *  column it waits in. */
-function backlogEntries(issues, reading, columns) {
-  return (issues || [])
-    .filter((issue) => issue?.state !== "closed" && NOT_STARTED.has(issue?.status))
-    .sort((left, right) => priorityRank(left.priority) - priorityRank(right.priority))
-    .map((issue) => ({ issue, holder: holderOf(issue, reading), columnName: columnName(columns, issue.status) }));
+/** One priority-ordered pass partitions every open task by holder and live
+ *  agent state. An assigned agent absent from the feed is still assigned. */
+function activeAndBacklog(issues, grouped, reading, activityByAgent, columns) {
+  const working = [];
+  const assigned = [];
+  const backlog = [];
+  const open = (issues || []).filter((issue) => issue && !isFinished(issue));
+  open.sort((left, right) => priorityRank(left.priority) - priorityRank(right.priority));
+  for (const issue of open) {
+    const column = columnName(columns, issue.status);
+    if (!issue.assignee?.kind) {
+      backlog.push({ issue, columnName: column });
+      continue;
+    }
+    const holding = grouped.attentionById.get(issue.id)?.holdingAgent;
+    if (!holding?.working) {
+      assigned.push({ issue, holder: holderOf(issue, reading), columnName: column });
+      continue;
+    }
+    working.push({
+      issue,
+      agentName: actorName({ kind: "agent", agent_id: holding.agent.id }, reading),
+      activity: cachedActivity(activityByAgent, holding.agent.id),
+      working: true,
+    });
+  }
+  const activeGroups = [
+    { id: "working", title: "Working", entries: working },
+    { id: "assigned", title: "Assigned", entries: assigned },
+  ].filter((group) => group.entries.length);
+  return { active: [...working, ...assigned], activeGroups, backlog };
 }
 
-/** Backlog split by whether anyone holds the issue: Assigned first, then
- *  Unassigned, each in the entries' own order. Only groups with entries are
- *  given. */
-export function backlogGroups(entries) {
-  return [
-    { id: "assigned", title: "Assigned", entries: (entries || []).filter((entry) => entry.holder) },
-    { id: "unassigned", title: "Unassigned", entries: (entries || []).filter((entry) => !entry.holder) },
-  ].filter((group) => group.entries.length > 0);
-}
-
-/** Four sections of the same cached issue list, in its existing order, but
- * for Backlog, which puts the most pressing first.
+/** Four sections of the same cached task list. Active and Backlog put the
+ *  most pressing first within their groups.
  * `activityByAgent` contains optional text read from cached conversations,
  * keyed by agent id. No feed digest provides a latest activity snippet.
  *
@@ -214,7 +225,7 @@ export function backlogGroups(entries) {
  * comes with it, and sets apart what finished before this session.
  *
  * `askedOnly` is the machine's cached Needs you rule (core/needsYouRule.js).
- * `columns` are the cached `issues.columns`, which name Backlog's columns. */
+ * `columns` are the cached `issues.columns`, which name rows' board columns. */
 export function dashboardSections(issues, {
   feed = null,
   projectKey = "",
@@ -231,23 +242,14 @@ export function dashboardSections(issues, {
     agentLabels: agentLabels(workspaceAgents(feed, projectKey)),
     projectName: projectName(feed, projectKey),
   };
-  const inProgress = grouped.working.map((issue) => {
-    const { agent, working } = grouped.attentionById.get(issue.id).holdingAgent;
-    return {
-      issue,
-      agentName: actorName({ kind: "agent", agent_id: agent.id }, reading),
-      activity: cachedActivity(activityByAgent, agent.id),
-      working,
-    };
-  });
+  const placement = activeAndBacklog(issues, grouped, reading, activityByAgent, columns);
   const needsYou = (issues || []).flatMap((issue) => {
     const { reasons } = grouped.attentionById.get(issue.id);
     return reasons.length ? [{ issue, reasons, reasonLabels: reasons.map(attentionReasonLabel) }] : [];
   });
   const done = doneEntries(issues, { detailById, nowMs, doneCutoffMs });
-  const backlog = backlogEntries(issues, reading, columns);
   return {
-    inProgress, needsYou, backlog, backlogGroups: backlogGroups(backlog),
+    ...placement, needsYou,
     done, doneGroups: doneGroups(done, { nowMs, sessionStartedMs }),
   };
 }

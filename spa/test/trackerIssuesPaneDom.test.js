@@ -286,16 +286,16 @@ describe("the Dashboard", () => {
     expect(clearPress()).toBeNull();
     expect(tabs().map((tab) => [tab.dataset.dashboardTab, tab.textContent.trim(), tab.getAttribute("aria-selected")]))
       .toEqual([
-        ["needsYou", "Needs you1", "true"], ["inProgress", "In progress1", "false"],
+        ["needsYou", "Needs you1", "true"], ["active", "Active1", "false"],
         ["backlog", "Backlog1", "false"], ["done", "Done1", "false"],
       ]);
     expect(dashboardRows("needsYou")).toEqual(["review"]);
     expect(host.querySelectorAll('[role="tabpanel"]')).toHaveLength(1);
-    await chooseTab("inProgress");
-    expect(dashboardRows("inProgress")).toEqual(["working"]);
+    await chooseTab("active");
+    expect(dashboardRows("active")).toEqual(["working"]);
     expect(dashboardRows("needsYou")).toEqual([]);
-    expect(host.querySelector('[role="tab"][aria-selected="true"]').dataset.dashboardTab).toBe("inProgress");
-    expect(host.querySelector('[data-dashboard-section="inProgress"] .issue-dashboard-detail').textContent)
+    expect(host.querySelector('[role="tab"][aria-selected="true"]').dataset.dashboardTab).toBe("active");
+    expect(host.querySelector('[data-dashboard-section="active"] [data-active-group="working"] .issue-dashboard-detail').textContent)
       .toMatch(/ · working now · Writing summary$/);
     await chooseTab("done");
     expect(dashboardRows("done")).toEqual(["done"]);
@@ -353,7 +353,7 @@ describe("the Dashboard", () => {
     expect(host.querySelector('[data-dashboard-section="done"] [data-issue="recent"]')).toBe(row);
   });
 
-  it("splits Backlog into Assigned then Unassigned, each titled above its own panel, rows drawn as before", async () => {
+  it("groups assigned tasks in Active and leaves Backlog as a flat list of unassigned tasks", async () => {
     const identities = { "agent-7": { agent_id: "agent-7", name: "Still review", ordinal: 1, workspace_name: "Composer", available: true } };
     const open = [
       issue({ id: "loose", number: 9, title: "Loose end", status: "ready" }),
@@ -365,41 +365,52 @@ describe("the Dashboard", () => {
     await trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues: open, columns: columns() });
     call = vi.fn(() => new Promise(() => {}));
     await mount({ defaultView: undefined });
-    await chooseTab("backlog");
-    await vi.waitFor(() => expect(dashboardRows("backlog")).toHaveLength(4));
+    await chooseTab("active");
+    await vi.waitFor(() => expect(dashboardRows("active")).toEqual(["mine", "held"]));
 
-    const panel = host.querySelector('[data-dashboard-section="backlog"]');
-    expect(panel.classList.contains("is-grouped")).toBe(true);
-    expect(host.querySelector('[data-dashboard-tab="backlog"] .issue-dashboard-count').textContent).toBe("4");
+    const active = host.querySelector('[data-dashboard-section="active"]');
+    expect(active.classList.contains("is-grouped")).toBe(true);
+    expect(host.querySelector('[data-dashboard-tab="active"] .issue-dashboard-count').textContent).toBe("2");
     const detailOf = (row) => row.querySelector(".issue-dashboard-detail").textContent;
-    expect([...panel.querySelectorAll(".issue-dashboard-group")].map((block) => [
-      block.dataset.backlogGroup, block.children[0].tagName, block.children[0].textContent, block.children[1].className,
+    expect([...active.querySelectorAll(".issue-dashboard-group")].map((block) => [
+      block.dataset.activeGroup, block.children[0].tagName, block.children[0].textContent, block.children[1].className,
       [...block.querySelectorAll(".issue-dashboard-group-panel > .issue-dashboard-list > li")].map((row) => [row.dataset.issue, detailOf(row)]),
     ])).toEqual([
       ["assigned", "H3", "Assigned", "issue-dashboard-group-panel",
         [["mine", "With you · Ready"], ["held", "With Composer · Still review · Backlog"]]],
-      ["unassigned", "H3", "Unassigned", "issue-dashboard-group-panel", [["loose", "Ready"], ["filed", "Backlog"]]],
     ]);
-    expect(panel.querySelectorAll(".issue-dashboard-group-panel .issue-dashboard-group-title")).toHaveLength(0);
-    const row = panel.querySelector('[data-issue="filed"]');
+    expect(active.querySelectorAll(".issue-dashboard-group-panel .issue-dashboard-group-title")).toHaveLength(0);
+    await chooseTab("backlog");
+    await vi.waitFor(() => expect(dashboardRows("backlog")).toEqual(["loose", "started", "filed"]));
+    const backlog = host.querySelector('[data-dashboard-section="backlog"]');
+    expect(backlog.classList.contains("is-grouped")).toBe(false);
+    expect(backlog.querySelector(".issue-dashboard-groups")).toBeNull();
+    expect(host.querySelector('[data-dashboard-tab="backlog"] .issue-dashboard-count').textContent).toBe("3");
+    expect([...backlog.querySelectorAll(".issue-dashboard-list > li")].map((row) => [row.dataset.issue, detailOf(row)]))
+      .toEqual([["loose", "Ready"], ["started", "In progress"], ["filed", "Backlog"]]);
+    const row = backlog.querySelector('[data-issue="filed"]');
     expect(row.className).toBe("issue-dashboard-row");
     expect([...row.querySelector(".issue-dashboard-link").children].map((part) => [part.className, part.textContent]))
       .toEqual([["issue-dashboard-number", "#5"], ["issue-dashboard-title", "Filed"], ["issue-dashboard-detail", "Backlog"]]);
     expect(row.querySelector(".issue-dashboard-link").getAttribute("href")).toContain("filed");
 
-    // A repaint keeps each row's element while it stays in its group.
+    // A repaint keeps each row's element while it stays in Backlog.
     const renamed = open.map((one) => (one.id === "loose" ? { ...one, title: "Loose end, renamed" } : one));
     await trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues: renamed, columns: columns() });
     await vi.waitFor(() => expect(host.querySelector('[data-issue="loose"] .issue-dashboard-title').textContent)
       .toBe("Loose end, renamed"));
     expect(host.querySelector('[data-dashboard-section="backlog"] [data-issue="filed"]')).toBe(row);
 
-    // A group with nothing in it is not drawn.
+    // Assigning the remaining tasks moves them out of Backlog.
     const allHeld = renamed.map((one) => (one.assignee ? one : { ...one, assignee: { kind: "user" } }));
     await trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues: allHeld, columns: columns() });
-    await vi.waitFor(() => expect([...panel.querySelectorAll(".issue-dashboard-group-title")].map((one) => one.textContent))
-      .toEqual(["Assigned"]));
-    expect(dashboardRows("backlog")).toEqual(["mine", "loose", "held", "filed"]);
+    await vi.waitFor(() => expect(dashboardRows("backlog")).toEqual([]));
+    expect(host.querySelector('[data-dashboard-tab="backlog"] .issue-dashboard-count').textContent).toBe("0");
+    expect(host.querySelector(".issue-dashboard-empty").textContent).toBe("No unassigned tasks.");
+    await chooseTab("active");
+    expect(dashboardRows("active")).toEqual(["mine", "loose", "held", "started", "filed"]);
+    expect([...host.querySelectorAll('[data-dashboard-section="active"] .issue-dashboard-group-title')]
+      .map((one) => one.textContent)).toEqual(["Assigned"]);
   });
 
   it("redraws from real conversation and detail cache writes, with no bridge answer", async () => {
@@ -409,8 +420,8 @@ describe("the Dashboard", () => {
     const activeFeed = { ...feed, items: [{ ...feed.items[0], agents: [{ id: "agent-1", working: true, conversation_id: "conv-1" }] }] };
     call = vi.fn(() => new Promise(() => {}));
     await mount({ feed: () => activeFeed, defaultView: undefined });
-    await chooseTab("inProgress");
-    expect(dashboardRows("inProgress")).toEqual(["working"]);
+    await chooseTab("active");
+    expect(dashboardRows("active")).toEqual(["working"]);
 
     const { threadCacheAddress } = await import("../src/core/conversationCache.js");
     await cache.writeCached(threadCacheAddress({ deviceId: "dev-1", entityId: "run-1", agentId: "agent-1", conversationId: "conv-1" }), {
@@ -421,7 +432,7 @@ describe("the Dashboard", () => {
     ]));
     await flush();
 
-    expect(host.querySelector('[data-dashboard-section="inProgress"] .issue-dashboard-detail').textContent)
+    expect(host.querySelector('[data-dashboard-section="active"] .issue-dashboard-detail').textContent)
       .toContain("Cached new activity");
     await chooseTab("done");
     expect(dashboardRows("done")).toEqual(["done"]);
@@ -478,17 +489,17 @@ describe("the Dashboard", () => {
     const first = host.querySelector('[data-dashboard-tab="needsYou"]');
     first.focus();
     first.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
-    await vi.waitFor(() => expect(host.querySelector('[role="tabpanel"]').dataset.dashboardSection).toBe("inProgress"));
-    expect(document.activeElement.dataset.dashboardTab).toBe("inProgress");
+    await vi.waitFor(() => expect(host.querySelector('[role="tabpanel"]').dataset.dashboardSection).toBe("active"));
+    expect(document.activeElement.dataset.dashboardTab).toBe("active");
     pane.dispose();
     host.innerHTML = "";
     mountDashboard();
     await vi.waitFor(() => {
       expect(tabs().map((tab) => tab.querySelector(".issue-dashboard-count").textContent)).toEqual(["0", "0", "0", "0"]);
-      expect(host.querySelector('[role="tabpanel"]')?.dataset.dashboardSection).toBe("inProgress");
-      expect(host.querySelector(".issue-dashboard-empty")?.textContent).toBe("No agent holds an issue.");
+      expect(host.querySelector('[role="tabpanel"]')?.dataset.dashboardSection).toBe("active");
+      expect(host.querySelector(".issue-dashboard-empty")?.textContent).toBe("No one holds a task right now.");
     });
-    expect(host.querySelector('[data-dashboard-tab="inProgress"]').getAttribute("tabindex")).toBe("0");
+    expect(host.querySelector('[data-dashboard-tab="active"]').getAttribute("tabindex")).toBe("0");
   });
 
   it("shows each section's existing empty text under its tab", async () => {
@@ -500,13 +511,13 @@ describe("the Dashboard", () => {
       expect(host.querySelector(".issue-dashboard-empty")?.textContent).toBe("Nothing needs your look right now.");
     });
     expect(host.querySelector(".issue-dashboard-empty").textContent).toBe("Nothing needs your look right now.");
-    await chooseTab("inProgress");
-    expect(host.querySelector(".issue-dashboard-empty").textContent).toBe("No agent holds an issue.");
+    await chooseTab("active");
+    expect(host.querySelector(".issue-dashboard-empty").textContent).toBe("No one holds a task right now.");
     await chooseTab("backlog");
     const backlog = host.querySelector('[data-dashboard-section="backlog"]');
     expect(backlog.classList.contains("is-grouped")).toBe(false);
     expect(backlog.querySelector(".issue-dashboard-groups")).toBeNull();
-    expect(host.querySelector(".issue-dashboard-empty").textContent).toBe("Nothing in the backlog.");
+    expect(host.querySelector(".issue-dashboard-empty").textContent).toBe("No unassigned tasks.");
     await chooseTab("done");
     expect(host.querySelector(".issue-dashboard-empty").textContent).toBe("Nothing moved to Done in the last 24 hours.");
   });
@@ -517,13 +528,14 @@ describe("the Dashboard", () => {
     call = vi.fn(() => new Promise(() => {}));
     mountDashboard();
     await vi.waitFor(() => {
-      expect(tabs().map((tab) => tab.querySelector(".issue-dashboard-count").textContent)).toEqual(["1", "0", "0", "0"]);
+      expect(tabs().map((tab) => tab.querySelector(".issue-dashboard-count").textContent)).toEqual(["1", "0", "1", "0"]);
       expect(dashboardRows("needsYou")).toEqual(["first"]);
     });
     const second = issue({ id: "second", number: 6, status: "in_review" });
     await trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues: [second, first], columns: columns() });
     await vi.waitFor(() => expect(tabs()[0].textContent.trim()).toBe("Needs you2"));
     expect(dashboardRows("needsYou")).toEqual(["second", "first"]);
+    expect(host.querySelector('[data-dashboard-tab="backlog"] .issue-dashboard-count').textContent).toBe("2");
   });
 });
 

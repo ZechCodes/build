@@ -8,7 +8,7 @@
 //!
 //! 1. **Folding.** Rows that share a key are the same work item seen twice; the
 //!    source that knows the most about it wins (a run over a bare external
-//!    worktree).
+//!    worktree, and a live run over a terminal one).
 //! 2. **Dedup.** An issue whose implementation is still in flight speaks as
 //!    that branch row alone — the branch row carries the `issue_id` and the
 //!    issue's own row is suppressed.
@@ -119,7 +119,11 @@ pub fn fold_work_items(candidates: Vec<WorkItemCandidate>) -> Vec<Value> {
     for (index, candidate) in candidates.iter().enumerate() {
         match winner_of.get(&candidate.key) {
             Some(&held) => {
-                if candidate.source < candidates[held].source {
+                if candidate.source < candidates[held].source
+                    || (candidate.source == candidates[held].source
+                        && candidate.implementation_active
+                        && !candidates[held].implementation_active)
+                {
                     winner_of.insert(candidate.key.clone(), index);
                 }
             }
@@ -401,6 +405,27 @@ mod tests {
             branch_candidate("p1", "feature", BranchSource::Run, "run-feature"),
         ]);
         assert_eq!(labels(&folded), vec!["run", "run-feature"]);
+    }
+
+    /// A current review owns the branch's confirmation even when an older
+    /// merged run still has a record at the same checkout. HashMap iteration
+    /// must not decide which outcome the row promises.
+    #[test]
+    fn a_live_run_wins_the_branch_it_shares_with_a_terminal_run() {
+        let mut merged = branch_candidate("p1", "build/thing", BranchSource::Run, "merged");
+        merged.row["state"] = json!("merged");
+        let mut review = branch_candidate("p1", "build/thing", BranchSource::Run, "review");
+        review.row["state"] = json!("review");
+        review.implementation_active = true;
+
+        for candidates in [
+            vec![merged.clone(), review.clone()],
+            vec![review.clone(), merged.clone()],
+        ] {
+            let folded = fold_work_items(candidates);
+            assert_eq!(labels(&folded), vec!["review"]);
+            assert_eq!(folded[0]["state"], "review");
+        }
     }
 
     /// Every distinct key keeps its own row — including two projects on the

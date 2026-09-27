@@ -96,6 +96,7 @@ pub struct ProjectIdParams {
 /// `tasks.reopen`.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TaskIdParams {
+    #[serde(deserialize_with = "crate::renamed_ids::current")]
     pub task_id: String,
 }
 
@@ -144,6 +145,7 @@ pub struct TasksAttachParams {
 /// no caller has to know (or can get wrong) where the file landed.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TasksAttachmentParams {
+    #[serde(deserialize_with = "crate::renamed_ids::current")]
     pub task_id: String,
     pub path: String,
     /// Where the piece starts (1.19). Absent is the start of the file.
@@ -185,6 +187,7 @@ pub struct TasksCreateParams {
 /// nothing" — there is no verb here that empties a title.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TasksUpdateParams {
+    #[serde(deserialize_with = "crate::renamed_ids::current")]
     pub task_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -202,6 +205,7 @@ pub struct TasksUpdateParams {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TasksCommentParams {
+    #[serde(deserialize_with = "crate::renamed_ids::current")]
     pub task_id: String,
     pub body: String,
     /// Typed references, fenced by shape and then by what this task is about.
@@ -225,6 +229,7 @@ pub struct TaskAttachmentRef {
 /// One or more of the five link keys. Naming none is refused.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct TasksLinkParams {
+    #[serde(deserialize_with = "crate::renamed_ids::current")]
     pub task_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
@@ -234,7 +239,11 @@ pub struct TasksLinkParams {
     pub commit: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::renamed_ids::current_optional",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub parent_task_id: Option<String>,
 }
 
@@ -248,6 +257,7 @@ pub struct TasksLinkParams {
 /// reads them, naming each refusal.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TasksAssignParams {
+    #[serde(deserialize_with = "crate::renamed_ids::current")]
     pub task_id: String,
     pub assignee: Value,
     /// Extra instruction delivered under the task. Not stored on the task:
@@ -264,6 +274,7 @@ pub struct TasksAssignParams {
 /// forces the caller, the way it cannot sign a comment as somebody else.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TasksTrackParams {
+    #[serde(deserialize_with = "crate::renamed_ids::current")]
     pub task_id: String,
     pub agent_id: String,
 }
@@ -271,8 +282,10 @@ pub struct TasksTrackParams {
 /// How far the user has read one task.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TasksReadThroughParams {
+    #[serde(deserialize_with = "crate::renamed_ids::current")]
     pub task_id: String,
     /// The last event the user has seen. Never moved backwards.
+    #[serde(deserialize_with = "crate::renamed_ids::current")]
     pub event_id: String,
 }
 
@@ -284,6 +297,7 @@ pub struct TasksForAgentParams {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TasksCloseParams {
+    #[serde(deserialize_with = "crate::renamed_ids::current")]
     pub task_id: String,
     /// One line on why, kept on the `closed` event.
     #[serde(default, skip_serializing_if = "Option::is_none")]

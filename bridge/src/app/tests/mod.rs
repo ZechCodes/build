@@ -216,6 +216,7 @@ mod project_agent_base;
 mod project_conversation;
 mod protocol;
 mod push;
+mod renamed_ids;
 mod resume;
 mod routing;
 mod rtc;

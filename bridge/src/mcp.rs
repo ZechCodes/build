@@ -14,6 +14,8 @@ use std::io::{BufRead, Write};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::renamed_ids::current_id;
+
 mod compaction;
 
 /// The protocol version this server advertises when a client omits one.
@@ -1118,7 +1120,8 @@ impl DoneServer {
     /// The tracker's `tools/call` arms, shared by both working surfaces.
     /// `None` is "not one of mine", which every other tool is.
     fn handle_task_tools_call(id: &Value, name: &str, params: Option<&Value>) -> Option<Handled> {
-        let task = || required_argument(params, "task_id");
+        // An id an agent read before the rename (#190) names the same task.
+        let task = || required_argument(params, "task_id").map(|id| current_id(&id));
         Some(match name {
             "list_tasks" => acted(
                 id.clone(),
@@ -1130,6 +1133,7 @@ impl DoneServer {
             ),
             "read_comment" => match required_argument(params, "comment_id") {
                 Ok(comment_id) => {
+                    let comment_id = current_id(&comment_id);
                     acted(id.clone(), BridgeAction::TrackerReadComment { comment_id })
                 }
                 Err(message) => refused(id.clone(), message),
@@ -1254,7 +1258,8 @@ impl DoneServer {
                         branch: optional_argument(params, "branch"),
                         commit: optional_argument(params, "commit"),
                         conversation_id: optional_argument(params, "conversation_id"),
-                        parent_task_id: optional_argument(params, "parent_task_id"),
+                        parent_task_id: optional_argument(params, "parent_task_id")
+                            .map(|id| current_id(&id)),
                         track: optional_flag(params, "track"),
                     },
                 ),

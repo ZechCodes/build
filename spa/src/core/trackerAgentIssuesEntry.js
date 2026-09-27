@@ -17,13 +17,15 @@
 // that record — so subscribing to the RECORD gives a live surface with no
 // read, no second subscription and no full pass.
 //
-// Nothing is supplied at all on a bridge whose greeting does not advertise the
-// issues kind, so no pill appears. Not an empty one: a pill that is always
-// there and opens on nothing is one a reader learns to skip.
+// It supplies from that cache alone and never asks whether the bridge is
+// connected or what its greeting said, so a cold or offline start shows the
+// pill off the cached list (#104 review). Where there is no list — a bridge that
+// has never carried issues writes none — nothing is supplied and no pill
+// appears. Not an empty one: a pill that is always there and opens on nothing
+// is one a reader learns to skip.
 
 import { subscribeCache } from "./localCache.js";
 import { issuesAddress, readIssuesRecord } from "./trackerCache.js";
-import { carriesIssuesPush } from "./trackerPush.js";
 import { agentIssueEntries } from "./trackerAgentIssues.js";
 
 /**
@@ -36,19 +38,17 @@ import { agentIssueEntries } from "./trackerAgentIssues.js";
  */
 export function mountAgentIssues({ deviceId, projectId, onChanged } = {}) {
   const state = { issues: [], disposed: false };
-  // Asked once, at mount: a bridge does not gain the kind without a new
-  // greeting, and a new greeting remounts the rail.
-  const carries = Boolean(deviceId) && Boolean(projectId) && carriesIssuesPush(deviceId);
+  const named = Boolean(deviceId) && Boolean(projectId);
 
   async function reread() {
-    if (!carries) return;
+    if (!named) return;
     const record = await readIssuesRecord(deviceId, projectId);
     if (state.disposed) return;
     state.issues = record?.issues || [];
     onChanged?.();
   }
 
-  const unsubscribe = carries && subscribeCache(issuesAddress(deviceId, projectId), () => void reread());
+  const unsubscribe = named && subscribeCache(issuesAddress(deviceId, projectId), () => void reread());
 
   void reread();
 
@@ -62,7 +62,7 @@ export function mountAgentIssues({ deviceId, projectId, onChanged } = {}) {
     /** This agent's issues as surface entries, or none at all — which is what
      *  keeps the pill away from an agent holding and tracking nothing. */
     entriesFor(agentId) {
-      if (!carries || !agentId) return null;
+      if (!named || !agentId) return null;
       const entries = agentIssueEntries(state.issues, agentId);
       return entries.length ? entries : null;
     },

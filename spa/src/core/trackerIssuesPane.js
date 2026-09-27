@@ -13,7 +13,7 @@
 
 import { messageOf } from "./text.js";
 import { hashFromRoute } from "./router.js";
-import { bridgeCapabilities, watchChanges } from "./changeEvents.js";
+import { watchChanges } from "./changeEvents.js";
 import { issuesPushKinds } from "./trackerPush.js";
 import { notifyError } from "./notify.js";
 import {
@@ -218,9 +218,11 @@ export function mountIssuesPane(host, options) {
   });
 
   /** Whether this device's bridge carries `done_at` and the user's session.
-   *  Asked at each paint: the greeting can land after the cache has painted. */
+   *  Answered by the cache, not the greeting (#104 review): only a bridge that
+   *  carries it sends the session this device holds, so a cold or offline
+   *  start paints the Done it will keep. */
   function carriesDoneSinceLeft() {
-    return bridgeCapabilities(state.deviceId)?.issues?.doneSinceLeft === true;
+    return state.userSession !== null;
   }
 
   const groupLabels = [

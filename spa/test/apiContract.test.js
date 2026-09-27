@@ -224,10 +224,13 @@ const manifestNames = readdirSync(apiDirectory).filter((name) => /^verbs-.*\.jso
 const manifest = manifestNames.length === 1 ? readJson(apiDirectory + manifestNames[0]) : null;
 
 /** Whether `previous` is the release right before `current`: the minor before
- *  it, or for a new major's first minor, any release of the major before. */
+ *  it, or for a new major's first minor, any release of the major before — or,
+ *  for a later patch of that first minor, its own first release. */
 function directlyPrecedes(previous, current_) {
   const [was, now] = [parse(previous), parse(current_)];
-  return now.minor === 0 ? was.major + 1 === now.major : was.major === now.major && was.minor + 1 === now.minor;
+  if (now.minor !== 0) return was.major === now.major && was.minor + 1 === now.minor;
+  const firstRelease = was.major === now.major && was.minor === 0 && was.patch < now.patch;
+  return was.major + 1 === now.major || firstRelease;
 }
 const hello = fixtures.find(({ name }) => name === "session.hello.json").body;
 
@@ -267,6 +270,13 @@ describe("the arrival checks, on a synthetic violation each", () => {
     expect(directlyPrecedes("1.28.0", "1.30.0")).toBe(false);
     expect(directlyPrecedes("1.30.0", "3.0.0")).toBe(false);
     expect(directlyPrecedes("1.30.0", "2.1.0")).toBe(false);
+  });
+
+  // Past a new major's first release, its patches are held to that release:
+  // the manifest is written from it, as the bridge's contract test requires.
+  it("takes a new major's first release as the one its later patches follow", () => {
+    expect(directlyPrecedes("2.0.0", "2.0.1")).toBe(true);
+    expect(directlyPrecedes("2.0.1", "2.0.1")).toBe(false);
   });
 
   const previous = { api_version: "1.23.0", verbs: ["a.old"], capabilities: ["a.old", "a.feature"] };

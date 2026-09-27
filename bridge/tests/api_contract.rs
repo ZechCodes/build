@@ -260,12 +260,22 @@ fn previous_release_manifest() -> Value {
 }
 
 /// Whether `previous` is the release right before `current`: the minor before
-/// it, or for a new major's first minor, any release of the major before.
+/// it, or for a new major's first minor, any release of the major before — or,
+/// for a later patch of that first minor, its own first release.
 fn directly_precedes(previous: (u64, u64, u64), current: (u64, u64, u64)) -> bool {
     match current {
-        (major, 0, _) => previous.0 + 1 == major,
+        (major, 0, patch) => {
+            previous.0 + 1 == major || (previous.0, previous.1) == (major, 0) && previous.2 < patch
+        }
         (major, minor, _) => (previous.0, previous.1 + 1) == (major, minor),
     }
+}
+
+/// Whether `current` may serve less than `previous` did: only the first
+/// release of a new major, which is what makes it one. A later patch of it
+/// compared against the major before would slip removals through unchecked.
+fn may_remove(previous: (u64, u64, u64), current: (u64, u64, u64)) -> bool {
+    previous.0 != current.0 && (current.1, current.2) == (0, 0)
 }
 
 #[test]
@@ -275,6 +285,16 @@ fn a_new_major_follows_any_release_of_the_one_before() {
     assert!(!directly_precedes((1, 28, 0), (1, 30, 0)));
     assert!(!directly_precedes((1, 30, 0), (3, 0, 0)));
     assert!(!directly_precedes((1, 30, 0), (2, 1, 0)));
+    assert!(directly_precedes((2, 0, 0), (2, 0, 1)));
+    assert!(!directly_precedes((2, 0, 1), (2, 0, 1)));
+}
+
+#[test]
+fn only_a_new_majors_first_release_may_remove() {
+    assert!(may_remove((1, 30, 0), (2, 0, 0)));
+    assert!(!may_remove((1, 30, 0), (2, 0, 1)), "2.0.1 is held to 2.0.0");
+    assert!(!may_remove((2, 0, 0), (2, 0, 1)));
+    assert!(!may_remove((1, 29, 0), (1, 30, 0)));
 }
 
 /// The registry against the previous release's manifest: a minor only adds,
@@ -296,7 +316,7 @@ fn the_registry_adds_to_the_previous_minor_and_dates_what_it_added() {
         directly_precedes(previous_parts, (major, minor, patch)),
         "{previous} is not the release before {API_VERSION}"
     );
-    let same_major = previous_parts.0 == major;
+    let removals_allowed = may_remove(previous_parts, (major, minor, patch));
 
     let served: BTreeSet<&str> = v1::methods()
         .iter()
@@ -307,11 +327,12 @@ fn the_registry_adds_to_the_previous_minor_and_dates_what_it_added() {
     let announced: BTreeSet<&str> = capabilities(false).into_iter().collect();
     let verbs_before = string_set(&manifest, "verbs");
     let capabilities_before = string_set(&manifest, "capabilities");
-    if same_major {
+    if !removals_allowed {
         for verb in &verbs_before {
             assert!(
                 served.contains(verb.as_str()),
-                "{verb}: served at {previous}, gone at {API_VERSION}"
+                "{verb}: served at {previous}, gone at {API_VERSION} (past a new major's \
+                 first release, write the manifest from that release)"
             );
         }
         for capability in &capabilities_before {

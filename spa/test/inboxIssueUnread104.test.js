@@ -101,21 +101,19 @@ describe("the projects face's head", () => {
     issue({ id: "i-2", watched: true, unread_count: 10 }),
   ];
 
-  it("wears the project's own issues while open", () => {
-    expect(headBadge(issues, false)).toBe(String(1 + 10));
-  });
-
-  it("wears every issue, the workspace's too, while folded", () => {
+  // #183: the head carries everything in the block, open or folded.
+  it("wears every issue, the workspace's too, open or folded", () => {
+    expect(headBadge(issues, false)).toBe(String(1 + 10 + 2 + 3));
     expect(headBadge(issues, true)).toBe(String(1 + 10 + 2 + 3));
   });
 
   // A watched issue asking for the user is a row in the block too (#125). Its
-  // unread is already in the badges above, so the fold does not count it twice.
-  it("does not count a watched issue's own row again while folded", () => {
+  // unread is already in the badges above, so the head does not count it twice.
+  it("does not count a watched issue's own row again", () => {
     const current = view();
     const { rows } = railRows(current, issues);
     const issueRow = { kind: TRACKER_ISSUE, key: "tracker_issue:i-2", projectKey: PROJECT_KEY, unreadCount: 10,
-      anchorMs: HOUR, lastActivityMs: HOUR };
+      issueUnreadCount: 10, anchorMs: HOUR, lastActivityMs: HOUR };
     const block = workspaceProjectBlocks([...rows, issueRow], current.projects, [], null, 2 * HOUR).blocks[0];
     expect(block.unreadCount).toBe(1 + 10 + 2 + 3);
   });

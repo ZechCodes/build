@@ -34,6 +34,8 @@ pub use attachments::ATTACHMENT_READ_CHUNK_BYTES;
 
 pub(in crate::app) use dispatch::AssignTarget;
 use identities::StoredRosters;
+#[cfg(test)]
+pub(in crate::app) use inbox::unread_since_mark;
 pub(in crate::app) use views::{columns_json, issue_json, issue_with_timeline_json};
 
 use crate::app::{require_str, AppState};

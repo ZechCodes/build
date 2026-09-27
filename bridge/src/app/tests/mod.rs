@@ -230,6 +230,7 @@ mod tracker_list_pages;
 mod tracker_list_reads;
 mod tracker_tools;
 mod tracker_tracking;
+mod tracker_unread_kinds;
 mod tracker_watching;
 mod updates;
 mod usage_limits;

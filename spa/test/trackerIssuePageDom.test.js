@@ -266,7 +266,8 @@ describe("issue unread navigation", () => {
     const timeline = [
       event({ id: "ie-01M37FGQD48628P29BG1A4BB01", actor: { kind: "user" } }),
       comment({ id: "ic-01M37FGQD48628P29BG1A4BB02", author: { kind: "user" } }),
-      event({ id: "ie-01M37FGQD48628P29BG1A4BB03", actor: { kind: "agent", agent_id: "agent-1" } }),
+      event({ id: "ie-01M37FGQD48628P29BG1A4BB03", kind: "moved", payload: { from: "ready", to: "in_progress" },
+        actor: { kind: "agent", agent_id: "agent-1" } }),
       comment({ id: "ic-01M37FGQD48628P29BG1A4BB04", author: { kind: "agent", agent_id: "agent-1" } }),
     ];
     await trackerCache.writeIssueRecord("dev-1", "proj-1", "issue-1", {

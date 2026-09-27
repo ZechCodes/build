@@ -3,7 +3,9 @@ import { createUnreadMarker, UNREAD_LINE_GRACE_MS } from "../src/core/unreadAnch
 import { issueUnreadKey, issueUnreadReading, issueUnreadRules } from "../src/core/trackerUnread.js";
 
 const id = (kind, suffix) => `${kind}-01M37FGQD48628P29BG1A4BB${suffix}`;
-const row = (kind, suffix, actor = "agent") => ({ key: id(kind, suffix), actor: { kind: actor }, type: kind === "ic" ? "comment" : "event" });
+// An event row is a move: news, which counts (#183), where filing would not.
+const row = (kind, suffix, actor = "agent") => ({ key: id(kind, suffix), actor: { kind: actor },
+  ...(kind === "ic" ? { type: "comment" } : { type: "event", kind: "moved" }) });
 
 describe("issue unread marker", () => {
   afterEach(() => vi.useRealTimers());

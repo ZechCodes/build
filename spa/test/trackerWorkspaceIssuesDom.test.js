@@ -78,8 +78,9 @@ afterEach(() => {
 
 describe("the badge", () => {
   // #104: the tab carries the unread of the watched issues this workspace's
-  // agents hold. An issue nobody watches never shows a count.
-  it("counts the unread of the watched issues this workspace's agents hold", async () => {
+  // agents hold. An issue nobody watches never shows a count, and neither does
+  // a finished one (#183), though a 1.29 list carries it.
+  it("counts the unread of the unfinished watched issues this workspace's agents hold", async () => {
     await putIssues([
       held(ONE, { number: 1, id: "i1", status: "in_progress", watched: true, unread_count: 2 }),
       held(TWO, { number: 2, id: "i2", status: "done", watched: true, unread_count: 1 }),
@@ -87,9 +88,9 @@ describe("the badge", () => {
       held(ELSEWHERE, { number: 4, id: "i4", status: "in_progress", watched: true, unread_count: 4 }),
     ]);
     mount();
-    await vi.waitFor(() => expect(badge()).toBe("3"));
+    await vi.waitFor(() => expect(badge()).toBe("2"));
     expect(button.hidden).toBe(false);
-    expect(button.title).toBe("3 unread · 2 open issues in this workspace");
+    expect(button.title).toBe("2 unread · 2 open issues in this workspace");
   });
 
   it("says nothing when nothing is unread, but keeps the way in and says what is open", async () => {

@@ -304,8 +304,8 @@ fn the_read_mark_never_moves_backwards_and_clears_the_count() {
     let newest = entries.last().unwrap()["id"].as_str().unwrap().to_string();
     assert_eq!(
         row_for(&mut state, &id)["unread"],
-        json!(entries.len()),
-        "everything is unread until it is read"
+        json!(2),
+        "everything said is unread until it is read; filing is not news (#183)"
     );
 
     let read = state.handle(req(
@@ -601,7 +601,11 @@ fn the_list_carries_each_watched_issues_unread_count() {
     };
 
     let unread = row_for(&mut state, &id)["unread"].clone();
-    assert!(unread.as_u64().unwrap() > 0, "{unread:?}");
+    assert_eq!(
+        unread,
+        json!(0),
+        "filing and watching are bookkeeping, not news (#183)"
+    );
     assert_eq!(listed(&mut state, &id)["unread_count"], unread);
     assert!(
         listed(&mut state, &quiet).get("unread_count").is_none(),

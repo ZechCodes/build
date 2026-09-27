@@ -57,6 +57,7 @@ import {
   blockIsFolded,
   projectBlockHtml,
   projectHeadHtml,
+  projectsUnreadCount,
   rowDeviceNames,
   workspaceProjectBlocks,
 } from "./inboxProjects.js";
@@ -162,10 +163,10 @@ function drawFromFeed() {
   draw();
 }
 
-function publishAttentionCount() {
-  const unread = [...watchedIssueRows(), ...workRows(items)]
-    .filter((entry) => entry.state === "unread");
-  publishInboxAttentionCount(new Set(unread.map((entry) => entry.entityId || entry.key)).size);
+/** The top badge (#183): the sum of the projects face's head badges, over the
+ *  rows either face paints. */
+function publishAttentionCount(rows = railRows()) {
+  publishInboxAttentionCount(projectsUnreadCount(rows, projects));
 }
 
 /** The workspace rows and each project's own agent row (#103), together in
@@ -208,21 +209,23 @@ export function setInboxView(next) {
   draw();
 }
 
+/** Every row the rail paints, on either face. The captures first: they are
+ *  the account's unfinished business and belong to no project, so they stand
+ *  above the workspace rows on the flat face and above the blocks on the
+ *  other. The watched issues asking for the user come next, and sit in their
+ *  project's block on the projects face. */
+function railRows() {
+  const rows = projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });
+  return [...captureEntries(rows), ...watchedIssueRows(), ...workRows(rows)];
+}
+
 function draw() {
   watchedIssues?.follow(projects);
-  publishAttentionCount();
+  const painted = railRows();
+  publishAttentionCount(painted);
   const list = $("#inbox-list");
   if (!list) return;
-  // The captures first: they are the account's unfinished business and belong
-  // to no project, so they stand above the workspace rows on the flat face and
-  // above the blocks on the other. The watched issues asking for the user come
-  // next, and sit in their project's block on the projects face.
-  const rows = projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });
-  const shown = withDeviceNames([
-    ...captureEntries(rows),
-    ...watchedIssueRows(),
-    ...workRows(rows),
-  ]);
+  const shown = withDeviceNames(painted);
   list.onclick = onListClick;
   list.onkeydown = onListKeydown;
   // A different face is a different list: the one is emptied for the other,

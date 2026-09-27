@@ -415,6 +415,38 @@ fn the_users_own_change_and_a_filing_push_nothing() {
     assert!(!sent(&mut state).iter().any(|(_, kind)| *kind == TASK));
 }
 
+/// An agent filing an issue that asks the user to read it is unread news
+/// (#189), so the new issue pushes as a `task`, by its own id.
+#[test]
+fn an_agent_filing_an_issue_that_asks_the_user_pushes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, who, _id) = watched_issue(&root);
+
+    let filed = act(
+        &mut state,
+        &who,
+        BridgeAction::TrackerCreateIssue {
+            title: "which route should we take?".into(),
+            body: None,
+            status: None,
+            labels: Vec::new(),
+            priority: None,
+            track: None,
+            attachments: Vec::new(),
+            notify_user: None,
+            mention_user: Some(true),
+        },
+    );
+    let asked = filed["issue"]["id"].as_str().unwrap().to_string();
+
+    let pushed: Vec<_> = sent(&mut state)
+        .into_iter()
+        .filter(|(_, kind)| *kind == TASK)
+        .collect();
+    assert_eq!(pushed, vec![(asked, TASK)]);
+}
+
 /// Reading an issue takes from the badge; it never adds to it. The read after
 /// an agent's comment pushes nothing more, and the comment's own push is the
 /// only one.

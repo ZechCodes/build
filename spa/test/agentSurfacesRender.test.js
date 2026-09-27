@@ -370,7 +370,7 @@ describe("surfacePillHtml", () => {
     const settled = rendered(settledPill, null);
     expect(settled.querySelector(".surface-pill-count").hidden).toBe(false);
     expect(settled.querySelector(".surface-pill-count").textContent).toBe("1/1");
-    expect(settled.textContent).toContain("Tasks");
+    expect(settled.textContent).toContain("Checklist");
   });
 
   it("hands the cap and the pill itself to the motion primitive", () => {

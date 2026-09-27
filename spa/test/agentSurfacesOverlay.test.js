@@ -415,7 +415,7 @@ describe("the agent's goal and observed checklist", () => {
 
     expect(panel().querySelector(".agent-observation-checklist")).toBe(null);
     const tasks = panel().querySelector('[data-surface-kind="checklist"]');
-    expect(tasks.textContent).toContain("Tasks");
+    expect(tasks.textContent).toContain("Checklist");
     expect(tasks.textContent).toContain("0/1");
   });
 

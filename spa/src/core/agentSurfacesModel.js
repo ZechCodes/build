@@ -21,7 +21,7 @@ const KIND_LABELS = {
   [WORKFLOW_ENTRY_KIND]: "Workflows",
   [AGENT_ENTRY_KIND]: "Agents",
   [SHELL_ENTRY_KIND]: "Shells",
-  [CHECKLIST_ENTRY_KIND]: "Tasks",
+  [CHECKLIST_ENTRY_KIND]: "Checklist",
   [ISSUES_ENTRY_KIND]: "Issues",
 };
 

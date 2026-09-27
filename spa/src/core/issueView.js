@@ -647,7 +647,7 @@ export function mountIssueView(
 
   const afterDispatch = (result) => {
     const runId = result && result.run_id;
-    if (runId) navigate({ name: "task", projectId: currentProjectId(), id: runId, tab: "changes" });
+    if (runId) navigate({ name: "run", projectId: currentProjectId(), id: runId, tab: "changes" });
     else refresh();
   };
 

@@ -104,7 +104,7 @@ export function defaultRunTab(run) {
  *  view owns the sessionStorage read/removal. */
 export function planBackTarget({ returnRunId, activeRunId, projectId }) {
   if (returnRunId && returnRunId === activeRunId)
-    return { name: "task", projectId, id: returnRunId, tab: "stages" };
+    return { name: "run", projectId, id: returnRunId, tab: "stages" };
   if (projectId) return { name: "project", projectId };
   return { name: "notifications" };
 }

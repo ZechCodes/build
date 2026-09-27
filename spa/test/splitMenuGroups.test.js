@@ -11,7 +11,7 @@ import { motionBeat } from "./motionRecorder.js";
 
 const SHELLS = { id: "shells", label: "Shells", description: "1 running" };
 const GROUPS = [
-  { id: "show", label: "Show", options: [SHELLS, { id: "checklist", label: "Tasks", description: "1/3 completed" }] },
+  { id: "show", label: "Show", options: [SHELLS, { id: "checklist", label: "Checklist", description: "1/3 completed" }] },
   {
     id: "detail",
     label: "Detail",

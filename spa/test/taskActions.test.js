@@ -59,7 +59,7 @@ describe("plan removal actions match the bridge contract", () => {
 describe("planBackTarget — the plan chevron's return route", () => {
   it("returns to the originating run's stages tab when the marker matches the active run", () => {
     expect(planBackTarget({ returnRunId: "run-7", activeRunId: "run-7", projectId: "p1" })).toEqual({
-      name: "task",
+      name: "run",
       projectId: "p1",
       id: "run-7",
       tab: "stages",

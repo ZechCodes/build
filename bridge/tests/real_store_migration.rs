@@ -77,7 +77,7 @@ fn conversations_in_json(root: &Path) -> BTreeMap<String, Vec<serde_json::Value>
             );
         }
     };
-    if let Ok(entries) = std::fs::read_dir(root.join("tasks")) {
+    if let Ok(entries) = std::fs::read_dir(root.join("issues")) {
         for entry in entries.flatten() {
             let Ok(raw) = std::fs::read_to_string(entry.path().join("record.json")) else {
                 continue;
@@ -119,7 +119,7 @@ fn json_records(root: &Path) -> (usize, usize, usize, usize) {
             })
             .unwrap_or(0)
     };
-    let tasks = std::fs::read_dir(root.join("tasks"))
+    let tasks = std::fs::read_dir(root.join("issues"))
         .map(|entries| {
             entries
                 .flatten()
@@ -127,7 +127,7 @@ fn json_records(root: &Path) -> (usize, usize, usize, usize) {
                 .count()
         })
         .unwrap_or(0);
-    let implementations: usize = std::fs::read_dir(root.join("tasks"))
+    let implementations: usize = std::fs::read_dir(root.join("issues"))
         .map(|entries| {
             entries
                 .flatten()
@@ -230,7 +230,7 @@ fn the_real_store_imports_with_every_record_and_conversation_intact() {
     // The JSON tree is untouched — which is what makes "throw the database
     // away and rebuild" a real recovery rather than a claim. Prove it: delete
     // the database (and the marker with it) and import again from scratch.
-    for entry in std::fs::read_dir(root.join("tasks")).expect("tasks dir") {
+    for entry in std::fs::read_dir(root.join("issues")).expect("issues dir") {
         let dir = entry.expect("entry").path();
         assert!(
             dir.join("record.json").is_file(),
@@ -266,7 +266,7 @@ fn the_real_store_imports_with_every_record_and_conversation_intact() {
 
     // Now stage the rollback: an older bridge writing a record back. Starting
     // must refuse rather than serve one of the two copies silently.
-    let touched = std::fs::read_dir(root.join("tasks"))
+    let touched = std::fs::read_dir(root.join("issues"))
         .expect("tasks dir")
         .flatten()
         .map(|entry| entry.path().join("record.json"))
@@ -290,7 +290,7 @@ fn the_real_store_imports_with_every_record_and_conversation_intact() {
     }
 
     // Plan docs stay on disk, because an agent reads and writes them.
-    let docs: usize = std::fs::read_dir(root.join("tasks"))
+    let docs: usize = std::fs::read_dir(root.join("issues"))
         .map(|entries| {
             entries
                 .flatten()

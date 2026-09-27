@@ -52,6 +52,13 @@ compat	spa/test/router.test.js	(?s)// Everything a link could say before issues 
 compat	spa/src/core/renamedIds.js
 compat	spa/test/renamedIds.test.js
 compat	spa/test/trackerUnread.test.js	(?s)describe\("a mark cached before tasks were renamed \(#190\)".*?\n\}\);
+compat	bridge/src/store.rs	issues/<task_id>/docs
+compat	bridge/src/store/documents.rs	PLANS_DIR: &'static str = "issues"
+compat	bridge/src/store/tests/documents.rs	join\("issues"\)
+compat	bridge/src/store/tests/migrations.rs	issues/plan-1
+compat	bridge/tests/real_store_migration.rs	join\("issues"\)|"issues dir"
+compat	bridge/src/orchestrator/runs.rs	\.issue-docs
+compat	bridge/src/orchestrator/tests/plans.rs	\.issue-docs
 compat	bridge/src/renamed_ids.rs
 compat	bridge/src/app/tests/renamed_ids.rs
 compat	bridge/src/store/task_rename.rs

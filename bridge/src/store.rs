@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! build.db                 every record and every conversation
-//! tasks/<task_id>/docs/… canonical stage-plan docs
+//! issues/<task_id>/docs/… canonical stage-plan docs (named before #190)
 //! ```
 //!
 //! One SQLite database, and one table in it carries the design: `thread_items`,

@@ -312,6 +312,27 @@ async fn a_drafting_plan_runs_on_the_primary_checkout_and_cuts_no_worktree() {
     let mcp = std::fs::read_to_string(repo.join(mcp_config_path("plan-1"))).unwrap();
     assert!(mcp.contains("plan-1"), "{mcp}");
 }
+/// The scratch docs dir keeps the name older builds gave it (#190), so a plan
+/// being drafted when the bridge was upgraded resumes on the revision it had in
+/// flight rather than on a fresh copy from the store.
+#[tokio::test]
+async fn a_plan_drafted_before_the_rename_resumes_in_its_own_scratch_docs() {
+    let (dir, repo) = init_repo();
+    let orch = orchestrator(&dir, &repo);
+    let store = split_store(&dir);
+    let in_flight = dir.path().join("worktrees/.issue-docs/plan-1");
+    std::fs::create_dir_all(&in_flight).unwrap();
+    std::fs::write(in_flight.join("plan.md"), "# half a revision").unwrap();
+
+    let plan = drafting_plan(&orch, &store, "plan-1", "Add a greeting");
+
+    let workspace = plan.workspace.as_ref().expect("a planning workspace");
+    assert_eq!(workspace.docs_dir, in_flight);
+    assert_eq!(
+        std::fs::read_to_string(workspace.docs_dir.join("plan.md")).unwrap(),
+        "# half a revision"
+    );
+}
 /// Planning runs in the human's own checkout, so it must leave no trace
 /// there: nothing to commit, and — critically — no untracked
 /// `.build/.gitignore`, which would refuse to be overwritten by the merge

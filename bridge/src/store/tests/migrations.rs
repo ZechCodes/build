@@ -228,9 +228,9 @@ fn the_json_import_runs_once_and_leaves_the_records_it_read() {
     task_record.agents[0]
         .thread
         .post_user("carried across", None, NOW);
-    std::fs::create_dir_all(root.join("tasks/plan-1")).unwrap();
+    std::fs::create_dir_all(root.join("issues/plan-1")).unwrap();
     std::fs::write(
-        root.join("tasks/plan-1/record.json"),
+        root.join("issues/plan-1/record.json"),
         serde_json::to_string_pretty(&serde_json::json!({
             "task": plan_record("plan-1"),
             "implementations": [task_record],
@@ -275,7 +275,7 @@ fn the_json_import_runs_once_and_leaves_the_records_it_read() {
         "the import is one-way"
     );
     assert!(
-        root.join("tasks/plan-1/record.json").is_file(),
+        root.join("issues/plan-1/record.json").is_file(),
         "the import moved the records it read"
     );
 
@@ -288,6 +288,20 @@ fn the_json_import_runs_once_and_leaves_the_records_it_read() {
     let rebuilt = Store::new(&root).expect("store reopens");
     assert_eq!(rebuilt.import_json_store().expect("the rebuild imports"), 4);
     assert_eq!(rebuilt.load_all_runs().expect("runs load").len(), 2);
+
+    // An older bridge run against the tree afterwards writes a plan record;
+    // the next start sees it and refuses rather than serve the database.
+    let record = std::fs::File::options()
+        .write(true)
+        .open(root.join("issues/plan-1/record.json"))
+        .unwrap();
+    record
+        .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(60))
+        .unwrap();
+    assert!(matches!(
+        rebuilt.refuse_a_rolled_back_store(),
+        Err(StoreError::RolledBack { .. })
+    ));
 }
 
 /// A store written before the tracker existed gains its three tables on the

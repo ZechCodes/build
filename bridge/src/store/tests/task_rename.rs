@@ -344,3 +344,30 @@ fn a_new_store_has_nothing_to_rename_and_takes_no_copy() {
         .join(crate::store::task_rename::BACKUP_FILE)
         .exists());
 }
+
+/// The rename moves no files: a retired plan's docs stay in `issues/<plan>/docs`
+/// on disk, where a v9 bridge wrote them, and this build still finds them there.
+#[test]
+fn a_v9_store_finds_a_retired_plans_docs_where_they_were_written() {
+    let dir = tempfile::tempdir().unwrap();
+    v9_store(dir.path());
+    let docs = dir.path().join("issues").join("plan-1").join("docs");
+    std::fs::create_dir_all(docs.join(".build/plan")).unwrap();
+    std::fs::write(docs.join(".build/plan/01-stage.md"), "# stage").unwrap();
+
+    let store = Store::new(dir.path()).unwrap();
+
+    assert!(store.has_plan_docs("plan-1"));
+    let worktree = tempfile::tempdir().unwrap();
+    store
+        .materialize_plan_docs("plan-1", worktree.path())
+        .expect("the docs are read from where a v9 bridge left them");
+    assert_eq!(
+        std::fs::read_to_string(worktree.path().join(".build/plan/01-stage.md")).unwrap(),
+        "# stage"
+    );
+    assert!(
+        !dir.path().join("tasks").exists(),
+        "a second tree was started"
+    );
+}

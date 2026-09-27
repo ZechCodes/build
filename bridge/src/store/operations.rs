@@ -477,7 +477,7 @@ impl Store {
                 }
             }
         };
-        if let Ok(entries) = std::fs::read_dir(self.dir.join("tasks")) {
+        if let Ok(entries) = std::fs::read_dir(self.dir.join(Store::PLANS_DIR)) {
             for entry in entries.flatten() {
                 look(entry.path().join("record.json"));
             }

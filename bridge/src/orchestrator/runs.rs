@@ -245,7 +245,9 @@ impl Orchestrator {
         let repo_path = repo_path.into();
         let worktrees_root = worktrees_root.into();
         let worktrees = WorktreeManager::new(repo_path.clone(), worktrees_root.clone());
-        let plan_docs_root = worktrees_root.join(".task-docs");
+        // Named before #190, and kept: a plan drafting across the upgrade
+        // resumes in the scratch docs it already has.
+        let plan_docs_root = worktrees_root.join(".issue-docs");
         Orchestrator {
             repo_path: repo_path.clone(),
             worktrees,

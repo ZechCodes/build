@@ -45,7 +45,7 @@ impl Store {
 
         let mut imported = 0usize;
         // Tasks, with the implementations nested inside each aggregate.
-        let tasks_dir = self.dir.join("tasks");
+        let tasks_dir = self.dir.join(Store::PLANS_DIR);
         if tasks_dir.is_dir() {
             for entry in std::fs::read_dir(&tasks_dir)? {
                 let record_path = entry?.path().join("record.json");
@@ -243,7 +243,7 @@ pub(super) fn load_legacy_owner_context(
     for (id, raw) in task_rows {
         let record: PersistedPlan =
             serde_json::from_str(&raw).map_err(|source| StoreError::Corrupt {
-                path: PathBuf::from(format!("tasks/{id}")),
+                path: PathBuf::from(format!("{}/{id}", Store::PLANS_DIR)),
                 source,
             })?;
         owners.insert(

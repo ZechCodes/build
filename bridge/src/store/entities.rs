@@ -748,7 +748,7 @@ impl Store {
         for (id, raw) in rows {
             let mut task: PersistedPlan =
                 serde_json::from_str(&raw).map_err(|source| StoreError::Corrupt {
-                    path: PathBuf::from(format!("tasks/{id}")),
+                    path: PathBuf::from(format!("{}/{id}", Store::PLANS_DIR)),
                     source,
                 })?;
             let task_choice = ModelChoice {

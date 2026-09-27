@@ -50,6 +50,20 @@ describe("plainPreview (#186)", () => {
     expect(plainPreview(bodies.fence)).toBe("");
   });
 
+  it("never splits a surrogate pair, at the scan bound or at the cut", () => {
+    const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+    // 4095 units of tags put the emoji's two units across the 4096-unit scan bound.
+    const atScanBound = plainPreview(`${"<b>".repeat(1365)}😀 is the answer`);
+    expect(atScanBound).not.toMatch(lone);
+    expect(atScanBound).toBe("");
+    // 238 letters put the emoji across the 239-unit cut before the ellipsis.
+    const atCut = plainPreview(`${"a".repeat(238)}😀 more`, 240);
+    expect(atCut).not.toMatch(lone);
+    expect(atCut).toBe(`${"a".repeat(238)}…`);
+    // A pair that fits whole stays whole.
+    expect(plainPreview(`${"a".repeat(237)}😀 more`, 240)).toBe(`${"a".repeat(237)}😀…`);
+  });
+
   it("cuts a long body with an ellipsis", () => {
     const long = "word ".repeat(100).trim();
     const cut = plainPreview(long, 40);

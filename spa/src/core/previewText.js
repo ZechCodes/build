@@ -44,15 +44,26 @@ function plainLine(line) {
   return line.replace(HEADING, "").replace(QUOTE, "").replace(LIST_MARK, "");
 }
 
+/** Whether a UTF-16 unit is the first half of a surrogate pair. */
+const leadsPair = (unit) => unit >= 0xD800 && unit <= 0xDBFF;
+
+/** The first `count` units of `text`, backed off by one where the cut would
+ *  split a surrogate pair and leave half an emoji. */
+function clip(text, count) {
+  if (text.length <= count) return text;
+  const kept = leadsPair(text.charCodeAt(count - 1)) ? count - 1 : count;
+  return text.slice(0, kept);
+}
+
 /** The plain text of a markdown body, on one line, at most `limit` characters
  *  with an ellipsis where it was cut. "" for nothing. */
 export function plainPreview(markdown, limit = 240) {
-  const text = String(markdown || "").slice(0, Math.max(SCAN_CHARS, limit)).replace(FENCE, " ").replace(AUTOLINK, "$1").replace(TAG, " ")
+  const text = clip(String(markdown || ""), Math.max(SCAN_CHARS, limit)).replace(FENCE, " ").replace(AUTOLINK, "$1").replace(TAG, " ")
     .split("\n").map(plainLine).join(" ")
     .replace(IMAGE, "$1").replace(LINK, "$1").replace(CODE, "$1")
     .replace(STRONG, "$2").replace(EMPHASIS, "$1$2").replace(STRIKE, "$1")
     .replace(/\|/g, " ")
     .replace(/\s+/g, " ").trim();
   if (text.length <= limit) return text;
-  return `${text.slice(0, Math.max(0, limit - 1)).trimEnd()}…`;
+  return `${clip(text, Math.max(0, limit - 1)).trimEnd()}…`;
 }

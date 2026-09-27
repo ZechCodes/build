@@ -105,7 +105,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
   const sheet = $("#sheet");
   sheet.innerHTML = settingsSheetHtml({ title: "Project settings", bodyHtml: '<div class="sub">Loading…</div>' });
   $("#scrim").classList.add("show");
-  void refreshGithubRepos(deviceId, callRpc);
+  void refreshGithubRepos(deviceId, callRpc, { wanted: () => $("#scrim").classList.contains("show") });
   let frame = sheet.firstElementChild;
   let view = "settings";
   let paintedRemote = "";

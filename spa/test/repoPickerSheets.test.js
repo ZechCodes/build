@@ -39,7 +39,7 @@ it("a project's Clone url searches the machine's repositories", async () => {
   await writeCached(projectSettingsAddress("dev-1", "proj-1"), { project_id: "proj-1", name: "build", path: "/p/build", base_branch: "main", sources: [] });
   const callRpc = call();
   openProjectSettings("proj-1", { callRpc, deviceId: "dev-1" });
-  expect(callRpc).toHaveBeenCalledWith("github.repos");
+  expect(callRpc).toHaveBeenCalledWith("github.repos", {}, { timeoutMs: 30_000 });
   await vi.waitFor(() => expect(document.querySelector("#psaddremote")).toBeTruthy());
   document.querySelector("#psaddremote").click();
   const input = document.querySelector("#psremoteurl");
@@ -57,7 +57,7 @@ it("a workspace's Clone url searches the machine's repositories", async () => {
   await writeCached(projectSettingsAddress("dev-1", "proj-1"), { project_id: "proj-1", sources: [] });
   const callRpc = call();
   openWorkspaceSettings({ id: "ws-1", name: "work", workspaceKey: "dev-1/ws-1" }, { callRpc, catalog: new Promise(() => {}), storage: localStorage });
-  expect(callRpc).toHaveBeenCalledWith("github.repos");
+  expect(callRpc).toHaveBeenCalledWith("github.repos", {}, { timeoutMs: 30_000 });
   await vi.waitFor(() => expect(document.querySelector("#wsdiradd")).toBeTruthy());
   const choice = document.querySelector("#wsdiradd");
   choice.value = "remote";

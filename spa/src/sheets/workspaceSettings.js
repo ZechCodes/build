@@ -145,7 +145,7 @@ export function openWorkspaceSettings(workspace, { callRpc, catalog, deviceId = 
       ${dangerZoneHtml()}`,
   });
   $("#scrim").classList.add("show");
-  void refreshGithubRepos(deviceId, callRpc);
+  void refreshGithubRepos(deviceId, callRpc, { wanted: () => $("#scrim").classList.contains("show") });
   let disposeDirectories = () => {};
   let disposeCatalog = () => {};
   const draft = { name: null, directory: emptyDirectoryDraft() };

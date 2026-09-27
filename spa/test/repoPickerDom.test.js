@@ -7,7 +7,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
-let openNewRepo, writeCached, readCached, greetBridge, githubReposAddress, startGithubRepos, uiAddress, DEVICES_ADDRESS;
+let ApiError, openNewRepo, writeCached, readCached, greetBridge, githubReposAddress, startGithubRepos, uiAddress, DEVICES_ADDRESS;
 
 const REPOS = [
   { name_with_owner: "zech/build", description: "Agentic IDE", ssh_url: "git@github.com:zech/build.git", url: "https://github.com/zech/build", private: true, pushed_at: "2026-09-24T22:00:00Z" },
@@ -18,10 +18,14 @@ const REFUSAL = "Build cannot list GitHub repositories on desk because gh is not
 
 const greet = (capabilities) => greetBridge(async () => ({ api_version: "1.22.0", capabilities }), { deviceId: "desk" });
 
+/** How the desk's bridge refuses github.repos on the wire, through the v1
+ *  adapter: the sentence, with the code the bridge sent. */
+const bridgeRefusal = (message) => new ApiError("unavailable", message);
+
 /** The desk's caller: answers github.repos with `repos`, or refuses it. */
 const deskCall = ({ repos = REPOS, refuse = null } = {}) => vi.fn(async (method) => {
   if (method === "github.repos") {
-    if (refuse) throw new Error(refuse);
+    if (refuse) throw bridgeRefusal(refuse);
     return { repos };
   }
   if (method === "settings.get") return { projects_dir: "/desk-projects" };
@@ -53,6 +57,7 @@ beforeEach(async () => {
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
   ({ openNewRepo } = await import("../src/sheets/newRepo.js"));
+  ({ ApiError } = await import("../src/core/bridgeApi/v1/index.js"));
   ({ writeCached, readCached, DEVICES_ADDRESS } = await import("../src/core/localCache.js"));
   ({ uiAddress } = await import("../src/core/localUiState.js"));
   ({ greetBridge } = await import("../src/core/changeEvents.js"));
@@ -178,7 +183,7 @@ it("a bridge without the capability is never asked, and the field stays as it wa
   const input = addRemote();
   type(input, "zech");
   await new Promise((resolve) => setTimeout(resolve, 20));
-  expect(call).not.toHaveBeenCalledWith("github.repos");
+  expect(reposCalls(call)).toHaveLength(0);
   expect(input.hasAttribute("role")).toBe(false);
   expect(options()).toEqual([]);
   expect(document.querySelector(".repo-picker-note:not([hidden])")).toBeNull();
@@ -233,4 +238,63 @@ it("a machine that has not greeted yet still searches the list it cached", async
   await vi.waitFor(() => expect(options()).toEqual(["smarter-dev/bot"]));
   expect(reposCalls(call)).toHaveLength(0);
   expect((await readCached(githubReposAddress("desk")))?.value?.repos).toEqual(REPOS);
+});
+
+// Zech, 03:07Z Sep 27: "I can't get it to work". A sheet is opened whenever the
+// reader likes; the machine answering then is not a given. Each case below
+// asked nothing, or cached a transport failure as the machine's refusal, and
+// left the field plain for the rest of that opening.
+
+it("a sheet opened before the machine greets asks it when it does, in the same opening", async () => {
+  const call = deskCall();
+  open(call);
+  const input = addRemote();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(reposCalls(call)).toHaveLength(0);
+  expect(input.hasAttribute("role")).toBe(false);
+  await greet(["github.repos"]);
+  await vi.waitFor(() => expect(reposCalls(call)).toHaveLength(1));
+  type(input, "zb");
+  await vi.waitFor(() => expect(options()).toEqual(["zech/build"]));
+});
+
+it("an ask that never reached the machine caches nothing, and its next greeting asks again", async () => {
+  await greet(["github.repos"]);
+  let reachable = false;
+  const call = vi.fn(async (method) => {
+    if (method !== "github.repos") return {};
+    if (reachable) return { repos: REPOS };
+    throw Object.assign(new ApiError("unknown", "github.repos timed out"), { timedOut: true });
+  });
+  open(call);
+  const input = addRemote();
+  await vi.waitFor(() => expect(reposCalls(call)).toHaveLength(1));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect((await readCached(githubReposAddress("desk")))?.value).toBeUndefined();
+  expect(document.querySelector(".repo-picker-note:not([hidden])")).toBeNull();
+  reachable = true;
+  await greet(["github.repos"]); // the reconnect
+  await vi.waitFor(() => expect(reposCalls(call)).toHaveLength(2));
+  type(input, "bot");
+  await vi.waitFor(() => expect(options()).toEqual(["smarter-dev/bot"]));
+});
+
+it("the machine's own refusal is settled: a later greeting does not ask again", async () => {
+  await greet(["github.repos"]);
+  const call = deskCall({ refuse: REFUSAL });
+  open(call);
+  addRemote();
+  await vi.waitFor(async () => expect((await readCached(githubReposAddress("desk")))?.value?.refusal).toBe(REFUSAL));
+  await greet(["github.repos"]);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(reposCalls(call)).toHaveLength(1);
+});
+
+it("a closed sheet stops waiting: the machine greeting later is not asked", async () => {
+  const call = deskCall();
+  open(call);
+  document.querySelector("#nrcancel").click();
+  await greet(["github.repos"]);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(reposCalls(call)).toHaveLength(0);
 });

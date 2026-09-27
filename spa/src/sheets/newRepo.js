@@ -31,14 +31,15 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
   const selectedDevice = () => choices.find((device) => device.id === selectedDeviceId) || null;
   const selectedCall = () => selectable ? callRpcFor(selectedDeviceId) : callRpc;
   const pickerDeviceId = () => selectable ? selectedDeviceId : deviceId;
-  // Each machine is asked for its GitHub repositories once per opening; the
-  // pickers paint whatever it last answered meanwhile.
+  // Each machine is asked for its GitHub repositories once per opening — and
+  // again each time it greets while this sheet is open on it, until one ask
+  // reaches it. The pickers paint whatever it last answered meanwhile.
   const askedForRepos = new Set();
   const askForRepos = () => {
     const target = pickerDeviceId();
     if (!target || askedForRepos.has(target)) return;
     askedForRepos.add(target);
-    void refreshGithubRepos(target, selectedCall());
+    void refreshGithubRepos(target, selectedCall(), { wanted: () => active && pickerDeviceId() === target });
   };
   const visible = (node) => active && node?.isConnected && scrim.classList.contains("show");
   const close = () => { active = false; version += 1; projectsDirRecord?.dispose(); draftRecord?.dispose(); scrim.classList.remove("show"); };

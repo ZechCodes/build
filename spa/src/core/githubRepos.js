@@ -3,9 +3,10 @@
 //
 // The bridge only runs gh and answers what it printed; keeping the list,
 // ranking it and deciding what to show are this module's. A sheet that holds a
-// Git remote URL paints from the cached record and asks the machine once, in
-// the background, when it opens (`refreshGithubRepos`); the answer is written
-// to the cache and every picker over that device redraws from it.
+// Git remote URL paints from the cached record and asks the machine in the
+// background when it opens — again when the machine greets, if that ask never
+// reached it (`refreshGithubRepos`); the answer is written to the cache and
+// every picker over that device redraws from it.
 //
 // The record is `{ repos, refusal }`: the last list the machine answered, or
 // `null` when it has none to search, and the sentence its last refusal said. A
@@ -17,7 +18,7 @@
 // (`startGithubRepos`), so a sheet opened later paints the list in the same
 // turn it mounts rather than after a read of its own.
 
-import { bridgeAdapter, bridgeCapabilities } from "./changeEvents.js";
+import { bridgeAdapter, bridgeCapabilities, onBridgeGreeted } from "./changeEvents.js";
 import { DEVICES_ADDRESS, mergeCached, readCached, subscribeCache } from "./localCache.js";
 
 export const githubReposAddress = (deviceId = "") => ({ deviceId, entityId: "", kind: "github-repos" });
@@ -25,31 +26,81 @@ export const githubReposAddress = (deviceId = "") => ({ deviceId, entityId: "", 
 /** How many repositories a search shows at once. */
 export const PICKER_ROWS = 8;
 
-/**
- * Ask `deviceId` for its repositories once, through the caller the sheet
- * already holds for that machine, and cache the answer. A bridge that does
- * not announce github.repos is never asked, and a list an earlier bridge on
- * that machine answered is dropped; a machine that has not greeted yet keeps
- * what it had. Nothing is thrown: the cache is where the outcome goes, and the
- * picker paints it.
- */
-export async function refreshGithubRepos(deviceId, call) {
-  if (!deviceId) return;
+/** How long the sheet waits for github.repos. The bridge gives `gh` twenty
+ *  seconds (bridge/src/github.rs GH_DEADLINE); the session's default of twelve
+ *  would give up on a listing the bridge is still going to answer. */
+export const GITHUB_REPOS_TIMEOUT_MS = 30_000;
+
+/** What one ask came to: settled (answered, refused, or not offered), or
+ *  nothing learned because the machine could not be reached. */
+const SETTLED = "settled";
+const UNREACHED = "unreached";
+
+/** A refusal the machine's bridge said, as opposed to a call that never
+ *  reached it: every 1.x bridge this client speaks to names a code, and what
+ *  the transport throws (a timeout, a closed session, a machine away) does not. */
+const saidByBridge = (error) => typeof error?.code === "string" && error.code !== "unknown" && !error.timedOut;
+
+async function askOnce(deviceId, call) {
   if (!bridgeCapabilities(deviceId).github?.repos) {
-    if (!bridgeAdapter(deviceId)) return;
+    // Not greeted yet: what it can do is not known, so keep what it had.
+    if (!bridgeAdapter(deviceId)) return UNREACHED;
     await mergeCached(githubReposAddress(deviceId), (held) => (held?.repos || held?.refusal ? { repos: null, refusal: "" } : null));
-    return;
+    return SETTLED;
   }
   let next;
   try {
-    const answer = await call("github.repos");
+    const answer = await call("github.repos", {}, { timeoutMs: GITHUB_REPOS_TIMEOUT_MS });
     const repos = Array.isArray(answer?.repos) ? answer.repos : [];
     next = () => ({ repos, refusal: "" });
   } catch (error) {
+    // Nothing reached the machine, so nothing about its repositories was
+    // learned: the record stays as it was and the next greeting asks again.
+    if (!saidByBridge(error)) return UNREACHED;
     const refusal = error?.message || String(error);
     next = (held) => ({ repos: Array.isArray(held?.repos) ? held.repos : null, refusal });
   }
   await mergeCached(githubReposAddress(deviceId), next);
+  return SETTLED;
+}
+
+/**
+ * Ask `deviceId` for its repositories, through the caller the sheet already
+ * holds for that machine, and cache the answer. A bridge that does not
+ * announce github.repos is never asked, and a list an earlier bridge on that
+ * machine answered is dropped. Nothing is thrown: the cache is where the
+ * outcome goes, and the picker paints it.
+ *
+ * A sheet is opened whenever the reader likes, and the machine may not be
+ * answering then: not greeted yet, reconnecting, or its session gone without
+ * this tab having noticed. None of that is an answer, so none of it is cached;
+ * while `wanted()` holds, the machine is asked again each time its bridge
+ * greets, until one ask reaches it. Without `wanted` it is asked once.
+ */
+export function refreshGithubRepos(deviceId, call, { wanted = () => false } = {}) {
+  if (!deviceId) return Promise.resolve();
+  return new Promise((resolve) => {
+    let done = false;
+    let stop = () => {};
+    const finish = () => {
+      if (done) return;
+      done = true;
+      stop();
+      resolve();
+    };
+    const attempt = async () => {
+      const outcome = await askOnce(deviceId, call).catch(() => SETTLED);
+      if (outcome === SETTLED || !wanted()) finish();
+    };
+    if (wanted()) {
+      stop = onBridgeGreeted((greeted) => {
+        if (done || String(greeted) !== String(deviceId)) return;
+        if (wanted()) void attempt();
+        else finish();
+      });
+    }
+    void attempt();
+  });
 }
 
 // ---------------------------------------------------------------- held ---

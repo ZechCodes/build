@@ -219,7 +219,11 @@ impl AppState {
             "id": entry.entity_id,
             "agent_id": entry.agent_id,
         }))?;
-        let notice = restart_notice(went_down_at, version, entry.was_working);
+        let tasks_renamed = self
+            .store
+            .as_ref()
+            .is_some_and(|store| store.renamed_tasks_on_open());
+        let notice = restart_notice(went_down_at, version, entry.was_working, tasks_renamed);
         let now = now_rfc3339();
         self.edit_agent_conversation(&entry.entity_id, &entry.agent_id, |thread, _| {
             thread.post_user_from_build(notice, &now);

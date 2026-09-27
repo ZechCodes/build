@@ -21,11 +21,16 @@ pub(super) struct Standing {
 }
 
 pub(super) fn standing() -> Standing {
+    standing_on(rooted)
+}
+
+/// The same, on a state root `make` builds the app on.
+fn standing_on(make: impl FnOnce(&std::path::Path) -> AppState) -> Standing {
     let (home, repo) = init_repo();
     let repo = std::fs::canonicalize(&repo).unwrap();
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
-    let mut state = rooted(&state_root);
+    let mut state = make(&state_root);
     let project_id = added_project(&mut state, &repo);
     let workspace_id = workspace(&mut state, &project_id, "the work");
     let ensured = state.handle(req(
@@ -162,6 +167,10 @@ fn a_recorded_agent_is_brought_back_at_boot_with_a_notice_from_build() {
     );
     assert!(body.contains("cut short"), "{body}");
     assert!(body.contains("from Build, not from the user"), "{body}");
+    assert!(
+        !body.contains("comment_task"),
+        "a boot that renamed nothing says nothing about names: {body}"
+    );
     assert_eq!(
         notice.get("from_agent"),
         None,
@@ -513,4 +522,41 @@ fn an_entity_checked_out_by_a_transaction_keeps_its_agents_in_the_live_roster() 
     state.finish_run_mutation(run_id.clone(), active).unwrap();
     live.settle();
     assert_eq!(live_roster_ids(&state_root), both);
+}
+
+/// A state root holding a store exactly as a v9 bridge left it, so the boot
+/// that opens it is the one that runs the task rename (#190).
+fn rooted_on_a_v9_store(state_root: &std::path::Path) -> AppState {
+    let dir = state_root.join("tasks");
+    std::fs::create_dir_all(&dir).unwrap();
+    let conn = rusqlite::Connection::open(dir.join("build.db")).unwrap();
+    conn.execute_batch(include_str!("../../store/tests/schema_v9.sql"))
+        .unwrap();
+    conn.execute_batch("INSERT INTO meta (key, value) VALUES ('schema_version', '9')")
+        .unwrap();
+    drop(conn);
+    rooted(state_root).with_task_store(dir).unwrap()
+}
+
+/// An agent brought back by the boot that ran the task rename (#190)
+/// remembers tools that are gone: its transcript is full of their old names.
+/// The notice that wakes it says what they are called now.
+#[test]
+fn an_agent_resumed_by_the_boot_that_ran_the_task_rename_is_told_the_new_tool_names() {
+    let mut standing = standing_on(rooted_on_a_v9_store);
+    let (state, _state_root, run_id, agent_id) = standing.parts();
+    set_state(state, &run_id, &agent_id, AgentLifecycle::Live, true);
+    let roster = state.resume_roster("0.2.0");
+
+    assert_eq!(
+        state.resume_recorded_agents(&roster, "0.3.0"),
+        vec![agent_id.clone()]
+    );
+
+    let notice = build_said(state, &run_id, &agent_id).expect("Build said something");
+    let body = notice["body"].as_str().unwrap();
+    assert!(
+        body.contains("Build's `*_issue` tools are now `*_task` (e.g. comment_issue → comment_task); old issue-… ids still work."),
+        "{body}"
+    );
 }

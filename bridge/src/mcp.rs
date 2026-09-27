@@ -1637,7 +1637,7 @@ impl DoneServer {
             "compact_agent" => compaction::compact_agent_action(id, params),
             "compact_self" => compaction::compact_self_action(id, params),
             "post_thread_message" => project_message(id, params),
-            other => refused(id, format!("unknown tool: {other}")),
+            other => refused(id, unknown_tool(McpSurface::Project, other)),
         }
     }
 
@@ -1741,7 +1741,7 @@ impl DoneServer {
             };
         }
         Handled {
-            reply: Some(tool_error(id, format!("unknown tool: {name}"))),
+            reply: Some(tool_error(id, unknown_tool(McpSurface::Coding, name))),
             ..Handled::default()
         }
     }
@@ -1832,7 +1832,7 @@ impl DoneServer {
                     ..Handled::default()
                 };
             }
-            other => Err(format!("unknown tool: {other}")),
+            other => Err(unknown_tool(McpSurface::Router, other)),
         };
         match action {
             Ok(action) => Handled {
@@ -1962,6 +1962,24 @@ fn acted(id: Value, action: BridgeAction) -> Handled {
 }
 
 /// A tool call the parser refused, with the reason the agent can act on.
+/// What a call to a tool this surface does not have is told. An agent resumed
+/// across the task rename (#190) remembers the tools by their old names: when
+/// the surface has the tool under its new name, the refusal says so.
+fn unknown_tool(surface: McpSurface, name: &str) -> String {
+    let renamed = name
+        .strip_suffix("_issues")
+        .map(|stem| format!("{stem}_tasks"))
+        .or_else(|| {
+            name.strip_suffix("_issue")
+                .map(|stem| format!("{stem}_task"))
+        })
+        .filter(|now| DoneServer::tool_names_of(surface).contains(now));
+    match renamed {
+        Some(now) => format!("unknown tool: {name}; it is now called {now}"),
+        None => format!("unknown tool: {name}"),
+    }
+}
+
 fn refused(id: Value, message: impl Into<String>) -> Handled {
     Handled {
         reply: Some(tool_error(id, message.into())),
@@ -3640,6 +3658,38 @@ mod tests {
             );
             assert!(refused.action.is_none(), "{tool}");
         }
+    }
+
+    /// An agent resumed across the rename (#190) calls the names its
+    /// transcript remembers. The refusal names the tool as it is called now,
+    /// on a surface that has it, rather than leave the agent to guess.
+    #[test]
+    fn a_tool_from_before_tasks_were_renamed_is_answered_with_its_new_name() {
+        let refusal = |server: DoneServer, name: &str| {
+            let called = server.handle_message(&format!(
+                r#"{{"jsonrpc":"2.0","id":64,"method":"tools/call","params":{{"name":"{name}","arguments":{{}}}}}}"#
+            ));
+            parse(&called.reply.expect("a refusal"))["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        for server in [server as fn() -> DoneServer, project] {
+            assert_eq!(
+                refusal(server(), "comment_issue"),
+                "unknown tool: comment_issue; it is now called comment_task"
+            );
+            assert_eq!(
+                refusal(server(), "list_issues"),
+                "unknown tool: list_issues; it is now called list_tasks"
+            );
+            assert_eq!(refusal(server(), "open_issue"), "unknown tool: open_issue");
+        }
+        assert_eq!(
+            refusal(router(), "comment_issue"),
+            "unknown tool: comment_issue",
+            "the router has no task tools to point at"
+        );
     }
 
     /// A tool a surface lists is a tool its dispatcher routes. `set_name` sat

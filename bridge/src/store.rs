@@ -192,6 +192,9 @@ pub struct Store {
     /// the refusal is injected here instead of simulated.
     #[cfg(test)]
     fail_next_write: Arc<std::sync::atomic::AtomicBool>,
+    /// Whether this open ran the task rename (#190): the boot that did is
+    /// the one whose resumed agents remember tools that no longer exist.
+    renamed_tasks: bool,
 }
 
 impl Store {
@@ -245,7 +248,8 @@ impl Store {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         // The task rename BEFORE the schema batch, which would otherwise make
         // the renamed tables empty beside the full ones they replace.
-        if stored.is_some_and(|found| found < task_rename::TASK_RENAME_VERSION) {
+        let renamed_tasks = stored.is_some_and(|found| found < task_rename::TASK_RENAME_VERSION);
+        if renamed_tasks {
             let report = task_rename::migrate_to_task_names(&mut conn, &dir)?;
             eprintln!("store: schema {SCHEMA_VERSION} migration: {report:?}");
         }
@@ -287,7 +291,12 @@ impl Store {
             conn: Arc::new(Mutex::new(conn)),
             #[cfg(test)]
             fail_next_write: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            renamed_tasks,
         })
+    }
+    /// Whether opening this store ran the task rename (#190).
+    pub fn renamed_tasks_on_open(&self) -> bool {
+        self.renamed_tasks
     }
     /// Make every stored task unreadable, the way a damaged record is: what
     /// a test of a tracker read failure needs.

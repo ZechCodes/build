@@ -59,6 +59,9 @@ compat	bridge/src/store/tests/migrations.rs	issues/plan-1
 compat	bridge/tests/real_store_migration.rs	join\("issues"\)|"issues dir"
 compat	bridge/src/orchestrator/runs.rs	\.issue-docs
 compat	bridge/src/orchestrator/tests/plans.rs	\.issue-docs
+compat	bridge/src/resume.rs	`\*_issue`|comment_issue|old issue-…
+compat	bridge/src/app/tests/resume.rs	`\*_issue`|comment_issue|old issue-…
+compat	bridge/src/mcp.rs	"_issues?"|\b(?:comment|list|open)_issues?\b
 compat	bridge/src/renamed_ids.rs
 compat	bridge/src/app/tests/renamed_ids.rs
 compat	bridge/src/store/task_rename.rs

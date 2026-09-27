@@ -220,6 +220,10 @@ pub fn clear_opt_out_file(dir: &Path) {
     let _ = std::fs::remove_file(dir.join(OPT_OUT_FILE));
 }
 
+/// The sentence the boot that ran the task rename adds to the notice.
+const TASKS_RENAMED: &str = " Build's `*_issue` tools are now `*_task` (e.g. comment_issue → \
+     comment_task); old issue-… ids still work.";
+
 /// What the agent is told when it comes back.
 ///
 /// Written to be actionable by a model that has just been handed a transcript
@@ -227,7 +231,12 @@ pub fn clear_opt_out_file(dir: &Path) {
 /// suspect, and what to do about it. It says Build restarted rather than "you
 /// were restarted" because the agent did not do this and must not read it as an
 /// instruction it failed to follow.
-pub fn restart_notice(at: &str, version: &str, was_working: bool) -> String {
+///
+/// On the boot that ran the task rename (#190) it also says what Build's
+/// tools are called now: the agent's transcript is full of the old names, and a
+/// strict MCP config answers them with nothing but "No such tool".
+pub fn restart_notice(at: &str, version: &str, was_working: bool, tasks_renamed: bool) -> String {
+    let renamed = if tasks_renamed { TASKS_RENAMED } else { "" };
     let turn = if was_working {
         "You were part-way through a turn when it went down, so your last action may have been \
          cut short: assume nothing you were doing finished, and check rather than trust it."
@@ -236,7 +245,7 @@ pub fn restart_notice(at: &str, version: &str, was_working: bool) -> String {
     };
     format!(
         "Build restarted at {at} (bridge {version}) and brought your session back. This message \
-         is from Build, not from the user — nobody is waiting on an answer to it.\n\n{turn}\n\n\
+         is from Build, not from the user — nobody is waiting on an answer to it.{renamed}\n\n{turn}\n\n\
          Read your conversation from where you left off, work out what you had reached, and \
          carry on with it. If the work was already finished, say so and stop; if you cannot tell \
          what you were doing, ask."
@@ -325,18 +334,33 @@ mod tests {
     /// that Build did this, when, and that its own last turn is suspect.
     #[test]
     fn the_notice_says_who_restarted_when_and_what_to_distrust() {
-        let notice = restart_notice("2026-09-20T03:00:00Z", "0.2.0", true);
+        let notice = restart_notice("2026-09-20T03:00:00Z", "0.2.0", true, false);
         assert!(notice.contains("2026-09-20T03:00:00Z"), "{notice}");
         assert!(notice.contains("bridge 0.2.0"), "{notice}");
         assert!(notice.contains("from Build, not from the user"), "{notice}");
         assert!(notice.contains("cut short"), "{notice}");
         assert!(notice.contains("Read your conversation"), "{notice}");
 
-        let live = restart_notice("2026-09-20T03:00:00Z", "0.2.0", false);
+        let live = restart_notice("2026-09-20T03:00:00Z", "0.2.0", false, false);
         assert!(
             !live.contains("cut short"),
             "an idle-at-prompt session was not mid-turn: {live}"
         );
         assert!(live.contains("Read your conversation"), "{live}");
+        assert!(!live.contains("_task"), "{live}");
+    }
+
+    /// The boot that ran the task rename (#190) names the new tools once,
+    /// beside the notice's first paragraph.
+    #[test]
+    fn the_notice_from_the_boot_that_ran_the_task_rename_names_the_new_tools() {
+        let notice = restart_notice("2026-09-20T03:00:00Z", "0.2.0", true, true);
+        assert!(
+            notice.contains(
+                "nobody is waiting on an answer to it. Build's `*_issue` tools are now `*_task` \
+                 (e.g. comment_issue → comment_task); old issue-… ids still work.\n\n"
+            ),
+            "{notice}"
+        );
     }
 }

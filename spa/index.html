@@ -36,6 +36,9 @@
          main content. The agent rail belongs to the selected
          branch or issue, so it sits below the toolbar, beside the tab content. -->
     <div id="shell">
+      <!-- The colour iOS gives the status bar (styles/shell.css, #status-edge).
+           First in the shell, so every region paints over it. -->
+      <div id="status-edge" aria-hidden="true"></div>
       <header id="global-controls">
         <button class="iconbtn" id="inbox-open" title="Open the inbox" aria-label="Open the inbox" aria-controls="inbox-rail" aria-expanded="false">
           <span class="inbox-open-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5h16l2 9v5H2v-5l2-9Z"/><path d="M2 14h5l2 3h6l2-3h5"/></svg></span>

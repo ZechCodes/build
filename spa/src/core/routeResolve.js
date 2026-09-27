@@ -77,6 +77,16 @@ const workspaceRowsOwning = (ref, feed) => feed.workspaces
   .filter((workspace) => (workspace.entity_id || workspace.run_id) === ref.id)
   .map((workspace) => ({ workspace_id: workspace.id, project_id: workspace.project_id, deviceId: workspace.deviceId }));
 
+/** A run a project owns — its own agents' conversation owner — as a row that
+ *  opens the project: an agent push from the project agent means the project,
+ *  not the scratch branch its run's row names (#191). */
+const projectRowsOwning = (ref, feed) => feed.projects
+  .filter((project) => (project.entity_id || project.run_id) === ref.id)
+  .map((project) => ({ owner: "project", project_id: project.project_id || project.id, deviceId: project.deviceId }));
+
+/** A run opens what owns it: its project, its workspace, or else its branch. */
+const runRouteFor = (row, ref) => (row.owner === "project" ? { name: "project", projectId: row.project_id } : branchRouteFor(row, ref));
+
 /**
  * What each kind of unresolved reference is looked up as: the rows a feed
  * offers as candidates for it, and the route the chosen one opens.
@@ -84,7 +94,10 @@ const workspaceRowsOwning = (ref, feed) => feed.workspaces
  * A `project` ref is a work URL that named no device; the rest are legacy ids.
  */
 const REFERENCE_KINDS = Object.freeze({
-  run: { rows: (ref, feed) => [...workspaceRowsOwning(ref, feed), ...byId("run_id")(ref, feed)], route: branchRouteFor },
+  run: {
+    rows: (ref, feed) => [...workspaceRowsOwning(ref, feed), ...projectRowsOwning(ref, feed), ...byId("run_id")(ref, feed)],
+    route: runRouteFor,
+  },
   worktree: { rows: byId("worktree_id"), route: branchRouteFor },
   issue: { rows: byId("issue_id"), route: issueRouteFor },
   // A plain folder has no work row at all, and neither has a project nobody has

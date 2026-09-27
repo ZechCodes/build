@@ -4,7 +4,7 @@
 // from the cache, and opening the sheet asks the machine once in the
 // background. Nothing here is mocked: the sheet, the cache, the capability
 // read off a real greeting, and the picker are the modules the app runs.
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 let ApiError, openNewRepo, writeCached, readCached, greetBridge, githubReposAddress, startGithubRepos, uiAddress, DEVICES_ADDRESS;
@@ -423,5 +423,73 @@ describe("the account-wide sheet", () => {
     await vi.waitFor(() => expect(input.getAttribute("role")).toBe("combobox"));
     type(input, "bot");
     await vi.waitFor(() => expect(options()).toEqual(["smarter-dev/bot"]));
+  });
+});
+
+// Review of c12f0007: the overlay heard the window's scroll and resize from
+// the moment a field was painted, and nothing let go when the sheet closed or
+// repainted, so every opening left listeners (and the closures behind them).
+describe("the overlay's window listeners", () => {
+  afterEach(() => vi.restoreAllMocks());
+  /** The window's scroll and resize listeners, as `type` → listener, from now. */
+  const trackWindow = () => {
+    const held = new Map();
+    const add = window.addEventListener.bind(window);
+    const remove = window.removeEventListener.bind(window);
+    vi.spyOn(window, "addEventListener").mockImplementation((type, listener, options) => {
+      if (type === "scroll" || type === "resize") held.set(`${type}`, [...(held.get(type) || []), listener]);
+      return add(type, listener, options);
+    });
+    vi.spyOn(window, "removeEventListener").mockImplementation((type, listener, options) => {
+      if (type === "scroll" || type === "resize") held.set(type, (held.get(type) || []).filter((each) => each !== listener));
+      return remove(type, listener, options);
+    });
+    return {
+      count: () => [...held.values()].reduce((sum, listeners) => sum + listeners.length, 0),
+      listeners: () => [...held.values()].flat(),
+    };
+  };
+  const openList = async (input) => {
+    type(input, "bot");
+    await vi.waitFor(() => expect(options()).toEqual(["smarter-dev/bot"]));
+  };
+
+  it("a closed list holds no window listeners", async () => {
+    const tracked = trackWindow();
+    await greet(["github.repos"]);
+    await cacheList({ repos: REPOS, refusal: "" });
+    open(deskCall());
+    const input = addRemote();
+    input.blur();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(tracked.count()).toBe(0);
+    await openList(input);
+    expect(tracked.count()).toBeGreaterThan(0);
+    key(input, "Escape");
+    expect(tracked.count()).toBe(0);
+  });
+
+  it("closing the sheet with the list open removes every window listener it added", async () => {
+    const tracked = trackWindow();
+    await greet(["github.repos"]);
+    await cacheList({ repos: REPOS, refusal: "" });
+    open(deskCall());
+    await openList(addRemote());
+    expect(tracked.count()).toBeGreaterThan(0);
+    document.querySelector("#nrcancel").click();
+    expect(tracked.count()).toBe(0);
+  });
+
+  it("a repaint removes the old input's window listeners", async () => {
+    const tracked = trackWindow();
+    await greet(["github.repos"]);
+    await cacheList({ repos: REPOS, refusal: "" });
+    open(deskCall());
+    await openList(addRemote());
+    const before = tracked.listeners();
+    expect(before.length).toBeGreaterThan(0);
+    addRemote(); // repaints the sheet: the first field is replaced
+    const after = tracked.listeners();
+    expect(after.filter((listener) => before.includes(listener))).toEqual([]);
   });
 });

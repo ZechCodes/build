@@ -6,7 +6,7 @@ import { readCached } from "../core/localCache.js";
 import { uiAddress, watchUiState } from "../core/localUiState.js";
 import { fieldTraits } from "../core/fieldTraits.js";
 import { refreshGithubRepos } from "../core/githubRepos.js";
-import { attachRepoPicker } from "./repoPicker.js";
+import { attachRepoPicker, disposeRepoPickers } from "./repoPicker.js";
 
 const inferredName = (value) => (value.trim().replace(/[\\/]+$/, "").replace(/\.git$/i, "").split(/[\\/:]/).pop() || "folder").replace(/[^a-zA-Z0-9._-]+/g, "-");
 
@@ -51,7 +51,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     repoAsks.set(target, refreshGithubRepos(target, selectedCall(), { wanted: () => active && pickerDeviceId() === target }));
   };
   const visible = (node) => active && node?.isConnected && scrim.classList.contains("show");
-  const close = () => { active = false; version += 1; repoAsks.forEach((ask) => ask.stop()); projectsDirRecord?.dispose(); draftRecord?.dispose(); scrim.classList.remove("show"); };
+  const close = () => { active = false; version += 1; repoAsks.forEach((ask) => ask.stop()); disposeRepoPickers(sheet); projectsDirRecord?.dispose(); draftRecord?.dispose(); scrim.classList.remove("show"); };
   const disableForm = (disabled) => sheet.querySelectorAll("button,input,select").forEach((node) => { node.disabled = disabled; });
   const finish = async (project, target) => {
     await draftRecord?.write({ name: "", sources: [], selectedDeviceId });
@@ -165,6 +165,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     const targetId = selectedDeviceId;
     const targetCall = selectedCall();
     if (!draft.sources.some((source) => source.id === sourceId)) return;
+    disposeRepoPickers(sheet);
     sheet.innerHTML = `<h3>Choose folder</h3><p class="sub">Choose a folder to add to ${esc(draft.name.trim() || "this project")}.</p><div id="nrbrowser"></div><button class="btn" id="nrback" type="button">Back</button><div class="adderr" id="nrerr" role="status"></div>`;
     $("#nrback").onclick = paint;
     try {
@@ -194,6 +195,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
   const choosingDevice = () => selectable && !selectedDevice();
   let wasChoosingDevice = false;
   const paintDeviceChoice = (selector) => {
+    disposeRepoPickers(sheet);
     sheet.innerHTML = `<h3>Add project</h3><p class="sub">Choose the device where this project will be created.</p><form id="nrform">
       ${selector}
       <div class="row"><button class="btn" id="nrcancel" type="button" style="margin-left:auto">Cancel</button></div><div class="adderr" id="nrerr" role="status" aria-live="polite"></div></form>`;
@@ -211,6 +213,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     const revealed = wasChoosingDevice && !choosingDevice();
     wasChoosingDevice = choosingDevice();
     if (wasChoosingDevice) return paintDeviceChoice(selector);
+    disposeRepoPickers(sheet);
     const subtitle = `Enter a label to create a new project in ${esc(target.name)}'s configured projects folder, or add existing folders and Git remotes.`;
     sheet.innerHTML = `<h3>Add project</h3><p class="sub">${subtitle}</p><form id="nrform">
       ${selector}

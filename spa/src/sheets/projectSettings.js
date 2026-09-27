@@ -10,7 +10,7 @@ import { deleteCached, readCached } from "../core/localCache.js";
 import { uiAddress, watchUiState } from "../core/localUiState.js";
 import { fieldTraits } from "../core/fieldTraits.js";
 import { refreshGithubRepos } from "../core/githubRepos.js";
-import { attachRepoPicker } from "./repoPicker.js";
+import { attachRepoPicker, disposeRepoPickers } from "./repoPicker.js";
 
 const field = (label, id, value) =>
   `<div class="field"><label>${esc(label)}</label>
@@ -89,7 +89,10 @@ function restoreDraft(sheet, draft) {
     if (!sheet.querySelector("#psremoteurl")) sheet.querySelector("#psaddremote").click();
     sheet.querySelector("#psremoteurl").value = draft.source.url;
     sheet.querySelector("#pssourcelabel").value = draft.source.name;
-  } else if (sheet.querySelector("#psremoteurl")) sheet.querySelector("#psaddsource").innerHTML = "";
+  } else if (sheet.querySelector("#psremoteurl")) {
+    disposeRepoPickers(sheet.querySelector("#psaddsource"));
+    sheet.querySelector("#psaddsource").innerHTML = "";
+  }
   sheet.querySelector("#pserr").textContent = draft.remoteError;
   sheet.querySelector("#pssrcerr").textContent = draft.sourceError;
   const focused = draft.focusId && sheet.querySelector(`#${draft.focusId}`);
@@ -103,6 +106,7 @@ function restoreDraft(sheet, draft) {
  *  sheet has already resolved that, so nothing here asks which device it is. */
 export function openProjectSettings(projectId, { callRpc, deviceId = "", onDeleted }) {
   const sheet = $("#sheet");
+  disposeRepoPickers(sheet);
   sheet.innerHTML = settingsSheetHtml({ title: "Project settings", bodyHtml: '<div class="sub">Loading…</div>' });
   $("#scrim").classList.add("show");
   let frame = sheet.firstElementChild;
@@ -121,6 +125,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
   const repoAsk = refreshGithubRepos(deviceId, callRpc, { wanted: current });
   const close = () => {
     repoAsk.stop();
+    disposeRepoPickers(sheet);
     record.dispose();
     draftRecord?.dispose();
     $("#scrim").classList.remove("show");
@@ -128,6 +133,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
 
   const paintMissing = (message) => {
     if (!current() || view !== "settings") return;
+    disposeRepoPickers(sheet);
     sheet.innerHTML = settingsSheetHtml({
       title: "Project settings",
       bodyHtml: `<div class="sub">${esc(message)}</div>
@@ -141,6 +147,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     if (!current() || view !== "settings") return;
     const live = captureDraft(sheet, paintedRemote);
     const draft = combineDraft(live, cachedDraft, displayedDraft);
+    disposeRepoPickers(sheet);
     sheet.innerHTML = settingsSheetHtml({
       title: "Project settings",
       subtitleHtml: "Name, location and base branch come from the repository Build was pointed at.",
@@ -250,9 +257,10 @@ function mountSources(project, { callRpc, record, deviceId, saveDraft, onFrameCh
 /** Say where to clone the remote from, and what to call it. */
 function openAddRemote(project, { write, saveDraft, deviceId }) {
   const host = $("#psaddsource");
+  disposeRepoPickers(host);
   host.innerHTML = addSourceHtml();
   attachRepoPicker($("#psremoteurl"), deviceId);
-  $("#pssourcecancel").onclick = () => { host.innerHTML = ""; saveDraft(); $("#psaddremote").focus(); };
+  $("#pssourcecancel").onclick = () => { disposeRepoPickers(host); host.innerHTML = ""; saveDraft(); $("#psaddremote").focus(); };
   $("#psremoteurl").oninput = () => saveDraft(true);
   $("#pssourcelabel").oninput = () => saveDraft(true);
   $("#pssourceadd").onclick = () => {
@@ -275,6 +283,7 @@ function openAddRemote(project, { write, saveDraft, deviceId }) {
  *  sheet's body is handed over to it and comes back on Back or on a choice. */
 async function browseForSource(project, { callRpc, deviceId, onFrameChange, onReturn }) {
   const sheet = $("#sheet");
+  disposeRepoPickers(sheet);
   sheet.innerHTML = settingsSheetHtml({
     title: "Add folder",
     subtitleHtml: `Choose a folder to add to ${esc(project.name || "this project")}.`,

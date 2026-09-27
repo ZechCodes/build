@@ -27,7 +27,7 @@ import { deleteCached } from "../core/localCache.js";
 import { uiAddress, watchUiState } from "../core/localUiState.js";
 import { fieldTraits } from "../core/fieldTraits.js";
 import { refreshGithubRepos } from "../core/githubRepos.js";
-import { attachRepoPicker } from "./repoPicker.js";
+import { attachRepoPicker, disposeRepoPickers } from "./repoPicker.js";
 
 /** The defaults panel's own element ids. Distinct from the account page's
  *  `def`, because both panels can be in one document. */
@@ -117,6 +117,7 @@ function restoreDirectoryDraft(host, draft, deviceId) {
   const choice = host.querySelector("#wsdiradd");
   if (!choice || !draft) return;
   choice.value = draft.kind || "";
+  disposeRepoPickers(host.querySelector("#wsdirfields"));
   host.querySelector("#wsdirfields").innerHTML = directoryFieldsHtml(choice.value);
   host.querySelector("#wsdiraddgo").disabled = !choice.value;
   for (const [field, selector] of Object.entries(DIRECTORY_INPUTS)) {
@@ -137,6 +138,7 @@ function restoreDirectoryDraft(host, draft, deviceId) {
  */
 export function openWorkspaceSettings(workspace, { callRpc, catalog, deviceId = workspace.workspaceKey?.split("/")[0] || "", storage = localStorage, onRenamed, onDeleted }) {
   const sheet = $("#sheet");
+  disposeRepoPickers(sheet);
   sheet.innerHTML = settingsSheetHtml({
     title: "Workspace settings",
     bodyHtml: `${nameFieldHtml(workspace.name)}
@@ -157,6 +159,7 @@ export function openWorkspaceSettings(workspace, { callRpc, catalog, deviceId = 
   let repoAsk = null;
   const close = () => {
     repoAsk?.stop();
+    disposeRepoPickers(sheet);
     disposeDirectories();
     disposeCatalog();
     draftRecord.dispose();
@@ -224,6 +227,7 @@ function mountDirectories(workspace, { callRpc, current, deviceId, draft, saveDr
     const offered = (project?.sources || []).filter((source) => !held.has(source.id));
     const errorText = host.querySelector("#wsdirerr")?.textContent || "";
     if (host.querySelector("#wsdiradd")) draft.directory = directoryDraftOf(host);
+    disposeRepoPickers(host);
     host.innerHTML = directoriesBodyHtml(detail, offered);
     host.querySelector("#wsdirerr").textContent = errorText;
     wireDirectories(workspace, { callRpc, record, current, deviceId, draft, saveDraft });
@@ -292,6 +296,7 @@ function wireDirectories(workspace, { callRpc, record, current, deviceId, draft,
     saveDraft(true);
   };
   choice.onchange = () => {
+    disposeRepoPickers($("#wsdirfields"));
     $("#wsdirfields").innerHTML = directoryFieldsHtml(choice.value);
     attachRepoPicker($("#wsdirremote"), deviceId);
     go.disabled = !choice.value;

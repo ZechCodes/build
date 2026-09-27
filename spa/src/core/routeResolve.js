@@ -70,6 +70,13 @@ function issueRouteFor(row, ref) {
 
 const byId = (field) => (ref, feed) => feed.items.filter((row) => row[field] === ref.id);
 
+/** A run a workspace owns, as the row `branchRouteFor` opens: the workspace
+ *  record names its conversation owner even when the run's own row carries no
+ *  workspace, and the workspace is the surface an agent push means (#191). */
+const workspaceRowsOwning = (ref, feed) => feed.workspaces
+  .filter((workspace) => (workspace.entity_id || workspace.run_id) === ref.id)
+  .map((workspace) => ({ workspace_id: workspace.id, project_id: workspace.project_id, deviceId: workspace.deviceId }));
+
 /**
  * What each kind of unresolved reference is looked up as: the rows a feed
  * offers as candidates for it, and the route the chosen one opens.
@@ -77,7 +84,7 @@ const byId = (field) => (ref, feed) => feed.items.filter((row) => row[field] ===
  * A `project` ref is a work URL that named no device; the rest are legacy ids.
  */
 const REFERENCE_KINDS = Object.freeze({
-  run: { rows: byId("run_id"), route: branchRouteFor },
+  run: { rows: (ref, feed) => [...workspaceRowsOwning(ref, feed), ...byId("run_id")(ref, feed)], route: branchRouteFor },
   worktree: { rows: byId("worktree_id"), route: branchRouteFor },
   issue: { rows: byId("issue_id"), route: issueRouteFor },
   // A plain folder has no work row at all, and neither has a project nobody has

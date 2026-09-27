@@ -68,6 +68,17 @@ describe("resolveLegacyRoute", () => {
     expect(routeFromHash("#/issue/issue-01T")).toMatchObject({ name: "resolve", kind: "issue", id: "issue-01T" });
   });
 
+  // An agent push deep-links by its conversation owner's run id (#191). A
+  // workspace's run opens the workspace, which the feed's workspace records
+  // say even when the run's own row does not.
+  it("resolves a workspace's run id to the workspace", () => {
+    const workspaces = [{ id: "ws-1", project_id: "p1", entity_id: "run-ws", deviceId: "dev-1" }];
+    const withRun = [...items, { kind: "branch", project_id: "p1", branch: "push-x", run_id: "run-ws", worktree_id: "wt-ws", deviceId: "dev-1" }];
+    expect(resolveLegacyRoute({ kind: "run", id: "run-ws" }, { items: withRun, workspaces })).toEqual({
+      name: "workspace", projectId: "p1", workspaceId: "ws-1", tab: "changes", deviceId: "dev-1",
+    });
+  });
+
   it("prefers the row in the project the URL named", () => {
     const ambiguous = [
       { kind: "branch", project_id: "p2", branch: "same-name", worktree_id: "wt-x" },

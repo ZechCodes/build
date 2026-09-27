@@ -51,10 +51,17 @@ export const unreadBubbleHtml = (count) =>
  *  (the Issues pane reads its cached timelines), the list's own otherwise. */
 export const issueBubbleHtml = (issue, unreadOf = issueUnreadCount) => unreadBubbleHtml(unreadOf(issue));
 
+/** Whether an issue's unread goes into a total (#183): a Done or closed one
+ *  never does, whatever the list says — a 1.29.0 bridge puts `unread_count`
+ *  on every watched row, finished ones too. Its own bubble still shows it.
+ *  The one rule every total reads, so the Issues tabs and the rail agree. */
+export const countsInTotals = (issue) => !isFinished(issue);
+
 /** The unread over a list of issues, as an Issues tab wears it: `detailOf`
  *  finds an issue's cached timeline, `only` keeps the ones the tab is about. */
 export function watchedIssuesUnread(issues = [], { detailOf = () => null, only = () => true } = {}) {
-  return issues.reduce((total, issue) => (only(issue) ? total + issueUnreadCount(issue, detailOf(issue)) : total), 0);
+  return issues.reduce((total, issue) =>
+    (countsInTotals(issue) && only(issue) ? total + issueUnreadCount(issue, detailOf(issue)) : total), 0);
 }
 
 /** The agent holding an issue, when an agent does. */
@@ -67,9 +74,7 @@ const sumOf = (held) => held.reduce((total, one) => total + one.count, 0);
  * `sources` is `[{ project, issues, details }]`, as core/watchedIssueFollower.js
  * holds them.
  *
- * A Done or closed issue never counts here (#183), whatever the list says: a
- * 1.29.0 bridge puts `unread_count` on every watched row, finished ones too,
- * and the rail is about what is still going on.
+ * A Done or closed issue never counts here (#183, countsInTotals).
  *
  * `heldBy(projectKey, agentIds)` is what one workspace row wears: the issues
  * its agents hold. `unheldBy(rows)` answers, per project key, what the
@@ -80,7 +85,7 @@ export function issueUnreadTally(sources = []) {
   const byProject = new Map();
   for (const { project, issues = [], details = new Map() } of sources) {
     const held = issues
-      .filter((issue) => !isFinished(issue))
+      .filter(countsInTotals)
       .map((issue) => ({ holder: holderOf(issue), count: issueUnreadCount(issue, details.get(issue.id) || null) }))
       .filter((one) => one.count > 0);
     byProject.set(project.projectKey, held);

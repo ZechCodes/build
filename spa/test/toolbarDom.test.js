@@ -252,7 +252,8 @@ describe("the project's pages in the bar", () => {
   });
 
   // #104: "For the project it is all unreads" — every watched issue's, off the
-  // cached list, moving when the record does.
+  // cached list, moving when the record does. A finished one's never counts
+  // (#183), though a 1.29 list carries it.
   it("wears the unread of every watched issue in the project on Issues", async () => {
     const { issuesAddress } = await import("../src/core/trackerCache.js");
     const listed = (issues) => writeCached(issuesAddress("dev-1", "p1"), { issues, columns: [] });
@@ -261,6 +262,8 @@ describe("the project's pages in the bar", () => {
       { id: "i1", number: 1, watched: true, unread_count: 2, assignee: { kind: "agent", agent_id: "a1" } },
       { id: "i2", number: 2, watched: true, unread_count: 1, assignee: null },
       { id: "i3", number: 3, unread_count: 9, assignee: null },
+      { id: "i4", number: 4, watched: true, status: "done", unread_count: 803, assignee: null },
+      { id: "i5", number: 5, watched: true, state: "closed", unread_count: 7, assignee: null },
     ]);
     standOn({ name: "project", deviceId: "dev-1", projectId: "p1" });
     await vi.waitFor(() => expect(issuesBadge()).toBe("3"));

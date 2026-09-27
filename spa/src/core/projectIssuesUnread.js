@@ -1,6 +1,6 @@
 // The project Issues tab's count (#104): "For the project it is all unreads" —
-// the unread of every watched issue in the project, read off its cached
-// `issues.list` record (core/issueUnread.js).
+// the unread of every watched issue in the project that is not finished
+// (#183), read off its cached `issues.list` record (core/issueUnread.js).
 //
 // It listens to that record, so an `issues` push moves the count with nothing
 // asked of the bridge: core/cacheSync.js rewrites the record and

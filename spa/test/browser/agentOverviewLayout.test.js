@@ -193,8 +193,8 @@ it("moves the chat overview between one workspace and the whole project", async 
     await mountLayout(page, markup, { basePath });
     await loadChatOverviewModules(page, basePath);
     await page.evaluate(seedChatOverview);
-    // The watched sections; an unwatched agent is in the Not watching group
-    // after them (#105).
+    // Every section; an unwatched agent is under its workspace wearing the
+    // not-watching mark (#105, #186).
     const sections = () => page.locator(".rail-overview-list > .rail-overview-section").evaluateAll((all) => all.map((section) => ({
       name: section.getAttribute("aria-label"),
       agents: [...section.querySelectorAll(".rail-overview-row")].map((row) => row.dataset.overviewAgent),
@@ -203,17 +203,19 @@ it("moves the chat overview between one workspace and the whole project", async 
     const sectionsNamed = (names) => page.waitForFunction((wanted) => JSON.stringify([...document
       .querySelectorAll(".rail-overview-list > .rail-overview-section")].map((section) => section.getAttribute("aria-label")))
       === JSON.stringify(wanted), names, { timeout: 5000 });
-    const notWatching = () => page.locator('.rail-overview-group[aria-label="Not watching"] .rail-overview-row')
+    const notWatching = () => page.locator('.rail-overview-section .rail-overview-row-unwatched')
       .evaluateAll((rows) => rows.map((row) => row.dataset.overviewAgent));
 
     await page.waitForSelector('.rail-bubble-add + .rail-overview-toggle', { timeout: 5000 });
     await page.locator(".rail-overview-toggle").click();
     await sectionsNamed(["Project agents", "chat-overview-nav"]);
     await page.locator("#rail-panel .rail-overview-up").click();
-    await sectionsNamed(["Project agents", "spa-flaky-tests", "landing-page", "chat-overview-nav",
+    // #186: what needs the reader first (spa-flaky-tests has an unread), then
+    // what is working (chat-overview-nav), then the quiet, then the empty.
+    await sectionsNamed(["Project agents", "spa-flaky-tests", "chat-overview-nav", "landing-page",
       "relay-candidates", "review-system-plan"]);
     assert.deepEqual((await sections()).map(({ agents, seeAll }) => [agents.length, seeAll]),
-      [[1, false], [3, true], [1, false], [1, false], [0, false], [0, false]]);
+      [[1, false], [3, true], [1, false], [2, false], [0, false], [0, false]]);
     assert.deepEqual(await notWatching(), ["quiet-review"]);
     // A workspace with no agents keeps its way in and its +.
     assert.equal(await page.locator('.rail-overview-section[aria-label="review-system-plan"] .rail-overview-add').count(), 1);
@@ -228,6 +230,7 @@ it("moves the chat overview between one workspace and the whole project", async 
     await page.locator("#rail-panel .rail-overview-up").click();
     await page.locator('.rail-overview-see-all[data-overview-scope="workspace-busy"]').click();
     await sectionsNamed(["Project agents", "spa-flaky-tests"]);
-    assert.deepEqual((await sections())[1].agents, ["busy-5", "busy-4", "busy-3", "busy-2", "busy-1"]);
+    // Unread and working agents lead; the rest by last word.
+    assert.deepEqual((await sections())[1].agents, ["busy-2", "busy-3", "busy-5", "busy-4", "busy-1"]);
   });
 }, 30_000);

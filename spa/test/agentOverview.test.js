@@ -200,7 +200,7 @@ describe("expanded agent overview", () => {
     expect(overview.overviewHtml(paints.at(-1))).toContain("Not watching");
     await cache.writeCached(rosterAddress, { kind: "branch", run_id: "run-overview", agents: [agent("A", { watched: true })] });
     await vi.waitFor(() => expect(paints.at(-1)?.[0]?.watching).toBe(true));
-    expect(overview.overviewHtml(paints.at(-1))).toContain("Watching");
+    expect(overview.overviewHtml(paints.at(-1))).not.toContain("Not watching");
     reader.close();
   });
 
@@ -267,8 +267,8 @@ describe("overview scopes (#117)", () => {
     expect(namesIn(html, "Workspace quiet")).toEqual(["quiet-1"]);
     expect(namesIn(html, "Project agents")).toEqual(["project-agent"]);
     expect(html.match(/rail-overview-see-all/g)).toHaveLength(1);
-    expect(html).toContain('data-overview-scope="busy" aria-label="See all 4 agents in Workspace busy">See all</button>');
-    expect(html).toContain('<button type="button" class="rail-overview-open" data-overview-scope="quiet"><span>Workspace quiet</span>');
+    expect(html).toContain('data-overview-scope="busy" aria-label="See all 4 agents in Workspace busy">See all 4</button>');
+    expect(html).toContain('<button type="button" class="rail-overview-open" data-overview-scope="quiet" title="Open Workspace quiet"><span>Workspace quiet</span>');
   });
 
   it("shows one workspace whole, beside the project's agents, on a workspace scope", () => {
@@ -283,7 +283,7 @@ describe("overview scopes (#117)", () => {
     const workspaces = [{ workspaceId: "busy", name: "Workspace busy" }, { workspaceId: "idle", name: "Workspace idle" }];
     const html = overview.overviewHtml(rows(), { showProjectAgents: true, scope: { kind: "project" }, workspaces });
     expect(namesIn(html, "Workspace idle")).toEqual([]);
-    expect(html).toContain('<button type="button" class="rail-overview-open" data-overview-scope="idle"><span>Workspace idle</span>');
+    expect(html).toContain('<button type="button" class="rail-overview-open" data-overview-scope="idle" title="Open Workspace idle"><span>Workspace idle</span>');
     expect(html).toContain('data-overview-add="idle" aria-label="Add an agent to Workspace idle"');
     const scoped = overview.overviewHtml([], { showProjectAgents: false, scope: { kind: "workspace", workspaceId: "idle" }, workspaces });
     expect(scoped).toContain('aria-label="Workspace idle"');
@@ -299,12 +299,13 @@ describe("overview scopes (#117)", () => {
 });
 
 // Agents the reader does not watch are off the strip (#105), and the overview
-// is where they are still found: after everything watched, in a group of their
-// own that is sectioned and sorted the way the rest is.
+// is where they are still found: under their own workspace, beside the watched
+// ones, wearing the not-watching mark (#186). A workspace is drawn once.
 describe("the agents nobody here watches (#105)", () => {
   const row = (id, workspaceId, at, watching, section = "workspace") => ({ id, source: "workspace", workspaceId,
     section, sectionName: workspaceId ? `Workspace ${workspaceId}` : "Project agents", name: id,
-    snippet: "", lastAgentMessageAt: at, working: false, unread: false, watching });
+    snippet: "", lastAgentMessageAt: at, working: false, unread: false, unreadCount: 0, state: "idle",
+    stateWord: "Idle", stateDetail: "", model: "Codex", effort: "", watching });
   const rows = () => [
     row("project-agent", "", 1, true, "project"),
     row("busy-watched", "busy", 2, true),
@@ -319,34 +320,36 @@ describe("the agents nobody here watches (#105)", () => {
     return document.body.firstElementChild;
   };
   const ids = (root) => [...root.querySelectorAll("[data-overview-agent]")].map((node) => node.dataset.overviewAgent);
-  const group = (root) => root.querySelector('.rail-overview-group[aria-label="Not watching"]');
+  const marked = (root) => [...root.querySelectorAll(".rail-overview-row-unwatched")].map((node) => node.dataset.overviewAgent);
   const sectionsOf = (root) => [...root.querySelectorAll(":scope > .rail-overview-section")].map((node) => node.getAttribute("aria-label"));
 
-  it("lists the unwatched agents only in a Not watching group after every watched section", () => {
+  it("draws each workspace once, its unwatched agents under it with the not-watching mark", () => {
     const root = draw();
-    expect(sectionsOf(root)).toEqual(["Project agents", "Workspace busy", "Workspace idle"]);
-    expect(root.lastElementChild).toBe(group(root));
-    expect(group(root).querySelector(".rail-overview-group-title").textContent).toBe("Not watching");
-    const watched = [...root.querySelectorAll(":scope > .rail-overview-section")].flatMap((node) => ids(node));
-    expect(watched.sort()).toEqual(["busy-watched", "legacy", "project-agent"]);
+    expect(sectionsOf(root)).toEqual(["Project agents", "Workspace idle", "Workspace busy"]);
+    expect(root.querySelector(".rail-overview-group")).toBeNull();
+    expect(marked(root).sort()).toEqual(["busy-quiet", "idle-newer", "idle-older"]);
+    for (const node of root.querySelectorAll(".rail-overview-row-unwatched")) {
+      expect(node.querySelector('.rail-overview-watch[aria-label="Not watching"]')).toBeTruthy();
+    }
+    expect(root.querySelectorAll(".rail-overview-watch")).toHaveLength(3);
+    expect(root.querySelectorAll(".rail-overview-add")).toHaveLength(2);
   });
 
-  it("sections and sorts the group by workspace, newest agent message first", () => {
-    const quiet = group(draw());
-    expect([...quiet.querySelectorAll(".rail-overview-section")].map((node) => node.getAttribute("aria-label")))
-      .toEqual(["Workspace idle", "Workspace busy"]);
-    expect(ids(quiet)).toEqual(["idle-newer", "idle-older", "busy-quiet"]);
-    expect(quiet.querySelector(".rail-overview-add")).toBeNull();
+  it("sorts unwatched agents among the watched by state and last word, not apart from them", () => {
+    const root = draw();
+    expect(ids(root.querySelector('[aria-label="Workspace busy"]'))).toEqual(["busy-quiet", "busy-watched", "legacy"]);
+    expect(ids(root.querySelector('[aria-label="Workspace idle"]'))).toEqual(["idle-newer", "idle-older"]);
   });
 
-  it("draws no group while every agent is watched", () => {
+  it("marks nothing while every agent is watched", () => {
     document.body.innerHTML = overview.overviewHtml(rows().filter((one) => one.watching !== false),
       { showProjectAgents: true, scope: { kind: "project" }, workspaces });
-    expect(document.querySelector(".rail-overview-group")).toBeNull();
+    expect(document.querySelector(".rail-overview-watch")).toBeNull();
   });
 
-  it("keeps the group to the one workspace a workspace scope shows", () => {
-    const quiet = group(draw({ kind: "workspace", workspaceId: "busy" }));
-    expect(ids(quiet)).toEqual(["busy-quiet"]);
+  it("keeps a workspace scope to that one workspace, marks and all", () => {
+    const root = draw({ kind: "workspace", workspaceId: "busy" });
+    expect(sectionsOf(root)).toEqual(["Project agents", "Workspace busy"]);
+    expect(marked(root)).toEqual(["busy-quiet"]);
   });
 });

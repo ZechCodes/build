@@ -104,7 +104,7 @@ const rail = () => document.getElementById("agent-rail");
 const stripIds = () => [...rail().querySelectorAll('.rail-bubble[data-bubble="agent"]')].map((node) => node.dataset.agent);
 const bubbleOf = (agentId) => rail().querySelector(`.rail-bubble[data-agent="${agentId}"]`);
 
-it("opens a linked unwatched agent on a temporary bubble, finds it under Not watching, and keeps it once watched", async () => {
+it("opens a linked unwatched agent on a temporary bubble, finds it marked Not watching, and keeps it once watched", async () => {
   await greetSession();
   await cacheBranch(branchRow());
   await (await import("../src/core/taskFeed.js")).startFeed();
@@ -123,9 +123,13 @@ it("opens a linked unwatched agent on a temporary bubble, finds it under Not wat
   await vi.waitFor(() => expect(stripIds()).toEqual(["ag-watched"]));
 
   rail().querySelector(".rail-overview-toggle").click();
-  const quietRow = () => rail().querySelector('.rail-overview-group[aria-label="Not watching"] [data-overview-agent="ag-quiet"]');
+  // #186: the unwatched agent is under its own work item beside the watched
+  // one, wearing the not-watching mark; there is no second section.
+  const quietRow = () => rail().querySelector('.rail-overview-section .rail-overview-row-unwatched[data-overview-agent="ag-quiet"]');
   await vi.waitFor(() => expect(quietRow()).toBeTruthy());
-  expect(rail().querySelector('.rail-overview-section [data-overview-agent="ag-watched"]').closest(".rail-overview-group")).toBeNull();
+  expect(quietRow().querySelector('.rail-overview-watch[aria-label="Not watching"]')).toBeTruthy();
+  expect(rail().querySelector('.rail-overview-section [data-overview-agent="ag-watched"]').classList.contains("rail-overview-row-unwatched")).toBe(false);
+  expect(rail().querySelectorAll(".rail-overview-section")).toHaveLength(1);
   quietRow().click();
   await vi.waitFor(() => expect(bubbleOf("ag-quiet")?.classList.contains("active")).toBe(true));
 

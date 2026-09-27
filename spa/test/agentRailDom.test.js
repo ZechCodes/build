@@ -1524,7 +1524,7 @@ describe("the bubble strip", () => {
       expect(sectionNamed("Project agents").querySelector(".rail-overview-see-all")).toBeNull();
       expect(sectionNamed("Second workspace").querySelector(".rail-overview-see-all")).toBeNull();
       const seeAll = sectionNamed("Busy workspace").querySelector(".rail-overview-see-all");
-      expect(seeAll.textContent).toBe("See all");
+      expect(seeAll.textContent).toBe("See all 5");
       expect(seeAll.getAttribute("aria-label")).toBe("See all 5 agents in Busy workspace");
 
       seeAll.click();

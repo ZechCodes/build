@@ -776,41 +776,88 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   transition:width 240ms cubic-bezier(.2,.8,.2,1); }
 #agent-rail.rail-unpinned, #agent-rail.rail-collapsed { width:var(--agent-strip); }
 /* The chat overview is a body of the one panel (#148), shown and laid out
-   exactly as a conversation is: the list takes the room the timeline would. */
-.rail-overview-list { display:flex; flex:1 1 auto; flex-direction:column; gap:20px;
-  min-height:0; overflow-y:auto; padding:calc(var(--surface-head) + 16px) 16px 18px; }
-.rail-overview-section { display:flex; flex-direction:column; gap:8px; }
-.rail-overview-section-head { display:flex; align-items:center; gap:6px; min-height:32px; }
-.rail-overview-section-head h2 { margin:0; color:var(--ink); font-size:14px; font-weight:650; }
-/* On the project's overview a workspace's heading is the way into its own. */
-.rail-overview-open { display:inline-flex; align-items:center; gap:2px; padding:0; border:0;
-  background:none; color:inherit; font:inherit; cursor:pointer; text-align:left; }
+   exactly as a conversation is: the list takes the room the timeline would.
+   It is an overview of the work on the project (#186): one section per
+   workspace, dense enough that a phone sees a whole project at once — about
+   36px for a workspace's heading and 44–52px for each agent's two lines. */
+.rail-overview-list { display:flex; flex:1 1 auto; flex-direction:column; gap:10px;
+  min-height:0; overflow-y:auto; padding:calc(var(--surface-head) + 8px) 8px 18px; }
+.rail-overview-list:focus { outline:none; }
+.rail-overview-section { display:flex; flex-direction:column; gap:0; }
+/* A workspace's heading: its name (the way into its own overview), the issue
+   it is for, what is happening in it, and its +. One line, 36px. */
+.rail-overview-section-head { display:flex; align-items:center; gap:8px; min-height:36px;
+  padding:0 4px 0 8px; }
+.rail-overview-section-head h2 { flex:0 0 auto; min-width:0; max-width:60%; margin:0; color:var(--ink);
+  font-size:13px; font-weight:650; line-height:1.2; }
+.rail-overview-section-head h2 > span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.rail-overview-open { display:inline-flex; align-items:center; gap:1px; max-width:100%; min-height:36px;
+  padding:0; border:0; background:none; color:inherit; font:inherit; cursor:pointer; text-align:left; }
+.rail-overview-open > span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .rail-overview-open svg { flex:none; width:15px; height:15px; color:var(--dim); }
-.rail-overview-open:hover svg { color:inherit; }
-.rail-overview-open:hover { color:var(--accent); }
+.rail-overview-open:hover, .rail-overview-open:hover svg { color:var(--accent); }
 .rail-overview-open:focus-visible, .rail-overview-see-all:focus-visible {
   outline:2px solid var(--accent); outline-offset:2px; border-radius:4px; }
-.rail-overview-see-all { align-self:flex-start; padding:2px 0; border:0; background:none;
+/* The issue the workspace is for: its number in the accent, its title dim,
+   and it gives way before the name does. */
+.rail-overview-issue { flex:1 1 auto; display:inline-flex; align-items:baseline; gap:5px; min-width:0;
+  font-size:12px; line-height:1.2; color:var(--ink2); }
+.rail-overview-issue-number { flex:none; color:var(--accent); font-weight:650; font-family:var(--mono); font-size:11px; }
+.rail-overview-issue-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.rail-overview-issue-more { flex:none; color:var(--dim); font-size:11px; }
+/* What is happening in the workspace, at a glance: the unread waiting for the
+   reader, a pulse while anything works, a mark where something failed. */
+.rail-overview-sum { flex:none; display:inline-flex; align-items:center; gap:6px; margin-left:auto; }
+.rail-overview-need { display:inline-grid; place-items:center; min-width:18px; height:18px; padding:0 5px;
+  border-radius:9px; background:var(--accent-fill); color:var(--accent-ink);
+  font:650 11px/1 var(--mono); }
+.rail-overview-need.is-error { background:var(--red); color:var(--danger-ink); }
+.rail-overview-live { position:relative; width:8px; height:8px; border-radius:50%; background:var(--accent); }
+.rail-overview-live::after { content:""; position:absolute; inset:-3px; border-radius:50%;
+  border:1px solid var(--accent); opacity:.55; animation:rail-pulse 1.6s ease-in-out infinite; }
+.rail-overview-none { color:var(--dim); font-size:11px; }
+/* The + is a 16px glyph on a 44px press: the heading is 36px, so the press
+   reaches 4px over and under it. */
+.rail-overview-add { flex:none; width:44px; height:44px; margin:-4px 0; padding:0; border-radius:8px;
+  color:var(--ink2); font-size:20px; line-height:1; }
+.rail-overview-see-all { align-self:flex-start; margin:2px 0 0 30px; padding:4px 0; border:0; background:none;
   color:var(--accent); font:inherit; font-size:12px; font-weight:600; cursor:pointer; }
 .rail-overview-see-all:hover { text-decoration:underline; }
-.rail-overview-list:focus { outline:none; }
-.rail-overview-add { width:24px; height:24px; color:var(--ink2); font-size:20px; line-height:1; }
-.rail-overview-row { display:grid; grid-template-columns:minmax(0, 1fr) auto;
-  align-items:center; gap:4px 8px; width:100%; padding:10px 12px; border:1px solid var(--line);
-  border-radius:10px; background:var(--panel2); color:var(--ink); text-align:left; cursor:pointer; font:inherit; }
-.rail-overview-row:hover { border-color:var(--accent); }
-.rail-overview-row:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
-.rail-overview-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:650; }
-.rail-overview-snippet { grid-column:1 / -1; grid-row:2; min-width:0; overflow:hidden;
-  text-overflow:ellipsis; white-space:nowrap; color:var(--ink2); }
-.rail-overview-state { color:var(--accent); font-size:11px; font-weight:650; }
-.rail-overview-empty { color:var(--dim); }
-/* The agents the reader does not watch (#105): after everything watched, under
-   a rule and a quieter heading than a section's, sectioned the same way. */
-.rail-overview-group { display:flex; flex-direction:column; gap:20px;
-  padding-top:16px; border-top:1px solid var(--line); }
-.rail-overview-group-title { margin:0; color:var(--dim); font-size:11px; font-weight:650;
-  letter-spacing:.06em; text-transform:uppercase; }
+/* An agent: its state as a dot, its name and model, its state in a word, and
+   the last thing it did on the line under. Two lines, no card — the rows sit
+   under their workspace's heading and the hover fill is the row. */
+.rail-overview-row { display:grid; grid-template-columns:10px minmax(0, 1fr) auto auto;
+  grid-template-rows:auto auto; align-items:center; column-gap:8px; row-gap:1px;
+  width:100%; min-height:44px; padding:5px 8px 6px 8px; border:0; border-radius:8px;
+  background:none; color:var(--ink); text-align:left; cursor:pointer; font:inherit;
+  -webkit-tap-highlight-color:transparent; }
+.rail-overview-row:hover { background:var(--row-hover); }
+.rail-overview-row:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+.rail-overview-dot { grid-row:1; width:8px; height:8px; margin:0 1px; border-radius:50%;
+  background:var(--line3); position:relative; }
+.rail-overview-row[data-state="working"] .rail-overview-dot { background:var(--accent); }
+.rail-overview-row[data-state="working"] .rail-overview-dot::after { content:""; position:absolute; inset:-3px;
+  border-radius:50%; border:1px solid var(--accent); opacity:.55; animation:rail-pulse 1.6s ease-in-out infinite; }
+.rail-overview-row[data-state="starting"] .rail-overview-dot { background:none; border:1px dashed var(--line3); }
+.rail-overview-row[data-state="waiting"] .rail-overview-dot { background:none; border:2px solid var(--accent); }
+.rail-overview-row[data-state="error"] .rail-overview-dot { background:var(--red); }
+.rail-overview-who { grid-row:1; display:flex; align-items:baseline; gap:6px; min-width:0; line-height:1.25; }
+.rail-overview-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  font-size:13px; font-weight:650; }
+.rail-overview-model { flex:none; max-width:45%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  color:var(--dim); font-size:11px; font-weight:500; }
+.rail-overview-state { grid-row:1; color:var(--dim); font-size:11px; font-weight:650; line-height:1.25; white-space:nowrap; }
+.rail-overview-row[data-state="working"] .rail-overview-state,
+.rail-overview-row[data-state="waiting"] .rail-overview-state { color:var(--accent); }
+.rail-overview-row[data-state="error"] .rail-overview-state { color:var(--red); }
+.rail-overview-watch { grid-row:1; display:grid; place-items:center; color:var(--dim); }
+.rail-overview-watch svg { display:block; width:13px; height:13px; }
+.rail-overview-snippet { grid-column:2 / -1; grid-row:2; min-width:0; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; color:var(--ink2); font-size:12px; line-height:1.3; }
+/* An agent the reader does not watch (#105) reads as passing through: the
+   face dropped back, the eye-off mark saying why. */
+.rail-overview-row-unwatched .rail-overview-name, .rail-overview-row-unwatched .rail-overview-snippet { opacity:.6; }
+.rail-overview-empty { color:var(--dim); padding:0 8px; }
 /* position:relative — the strip rises above the card it anchors, so pressing
    the bubble beside the open one reaches that agent. */
 /* The foot of the column is the connection icon's (spa/src/styles.css), so the

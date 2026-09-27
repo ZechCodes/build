@@ -1,5 +1,5 @@
 // Capture the review images for #105 with the production rail: the strip with
-// only watched agents, the overview's Not watching group, and an unwatched
+// only watched agents, the overview's not-watching marks (#186), and an unwatched
 // agent's temporary bubble before and after the reader leaves it.
 // Run from spa/: node test/browser/captureWatchedOnly.mjs
 import { mkdir } from "node:fs/promises";
@@ -95,7 +95,7 @@ await withLayoutPage(async ({ page, basePath }) => {
 
   await page.locator(".rail-overview-toggle").click();
   const notWatching = (count) => page.waitForFunction((want) =>
-    document.querySelectorAll('.rail-overview-group[aria-label="Not watching"] .rail-overview-row').length === want, count);
+    document.querySelectorAll('.rail-overview-section .rail-overview-row-unwatched').length === want, count);
   // The workspace page's overview opens on its own workspace, beside the
   // project's agents; All workspaces widens it to every workspace.
   await notWatching(2);
@@ -104,7 +104,7 @@ await withLayoutPage(async ({ page, basePath }) => {
   await notWatching(3);
   await page.locator("#agent-rail").screenshot({ path: `${output}overview-not-watching-all-workspaces.png` });
 
-  await page.locator('.rail-overview-group [data-overview-agent="ag-review"]').click();
+  await page.locator('.rail-overview-row-unwatched[data-overview-agent="ag-review"]').click();
   await waitForStrip("ag-rail,ag-review");
   await page.waitForFunction(() => document.querySelector('.rail-bubble[data-agent="ag-review"]')?.classList.contains("active")
     && document.querySelector(".rail-who")?.title === "Review helper");

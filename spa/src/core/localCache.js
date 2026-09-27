@@ -23,8 +23,9 @@ const DB_NAME = "build-cache";
 // v3: the cache-first client's shapes, and the write-time index the lifetime
 // rules sweep. A format change is a cold start by design — the records a
 // previous version wrote are not this version's shapes, and one sync pass
-// refills what the reader is looking at.
-const DB_VERSION = 3;
+// refills what the reader is looking at. v4: the task rename (#190) — a
+// record keyed or shaped by the old names is dropped, not misread.
+const DB_VERSION = 4;
 const STORE = "records";
 // A board record and a row can be written in the same clock millisecond.
 // Keep their order beside the timestamp without changing the timestamp used

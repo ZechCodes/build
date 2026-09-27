@@ -328,12 +328,30 @@ describe("an open blocked by another tab", () => {
   it("steps aside when a newer version opens in another tab", async () => {
     await cache.writeCached(address, { head: "stored" });
     const newer = await new Promise((resolve, reject) => {
-      const request = indexedDB.open("build-cache", 4);
+      const request = indexedDB.open("build-cache", 5);
       request.onblocked = () => reject(new Error("the cache's connection blocked the newer version"));
       request.onsuccess = () => resolve(request.result);
     });
     newer.close();
     expect(eventNames()).toEqual(["cache-yielded"]);
+  });
+});
+
+describe("a cache written before tasks were renamed (#190)", () => {
+  it("starts cold rather than reading a record the previous version wrote", async () => {
+    const v3 = await new Promise((resolve) => {
+      const request = indexedDB.open("build-cache", 3);
+      request.onupgradeneeded = () => request.result.createObjectStore("records").createIndex("at", "at");
+      request.onsuccess = () => resolve(request.result);
+    });
+    await new Promise((resolve) => {
+      const put = v3.transaction("records", "readwrite").objectStore("records")
+        .put({ value: { head: "written-by-v3" }, at: Date.now() }, "dev-1|run-1|status|");
+      put.onsuccess = resolve;
+    });
+    v3.close();
+
+    expect(await cache.readCached(address)).toBeUndefined();
   });
 });
 

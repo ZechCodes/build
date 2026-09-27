@@ -101,9 +101,9 @@ const fold = async (projectId, folded) => {
   await vi.waitFor(() => expect(block(projectId).classList.contains("inbox-folded")).toBe(folded), WAIT);
 };
 
-// Build: its agent 1 + #113 2 + the Recent workspace 2 + #159's 1.
+// Build: its agent 1 + #113 2 + the Recent workspace 2. #159 is fully read.
 // smarter-dev: its agent 1 + its workspace 1. #50 counts nowhere.
-const BUILD = 1 + 2 + 2 + 1;
+const BUILD = 1 + 2 + 2;
 const SMARTER = 1 + 1;
 
 describe("the inbox's top badge", () => {

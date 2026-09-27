@@ -73,7 +73,7 @@ pub struct OperationPayload {
     pub ask_to_name: bool,
     /// Whether this turn tells its reader how full each sending agent's
     /// context was (#68). Only the project agent's are: it is the one that
-    /// decides who takes the next issue. Decided where the recipient is known,
+    /// decides who takes the next task. Decided where the recipient is known,
     /// like [`ask_to_name`](Self::ask_to_name).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub tells_sender_context: bool,
@@ -127,8 +127,8 @@ impl OperationPayload {
         let sender = self.sender_note();
         let sender_context = self.sender_context_note();
         let workspace = self.workspace_note();
-        let issue = self.issue_note();
-        let looking = self.viewing_issue_note();
+        let task = self.task_note();
+        let looking = self.viewing_task_note();
         let naming = self.name_note();
         let user_prompt = self
             .messages
@@ -136,7 +136,7 @@ impl OperationPayload {
             .map(|message| message.body.trim())
             .filter(|body| !body.is_empty())
             .unwrap_or("Review the exact accepted messages below.");
-        let prompt = format!("{user_prompt}\n\n{scope}{context}{sender}{sender_context}{workspace}{issue}{looking}{naming}\nThis native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.\n{NATIVE_REVIEWER_MESSAGES_HEADING}\n{messages}");
+        let prompt = format!("{user_prompt}\n\n{scope}{context}{sender}{sender_context}{workspace}{task}{looking}{naming}\nThis native payload replaces the former message-fetch protocol. Build tracks delivery; process these messages directly without fetching or acknowledging them through MCP.\n{NATIVE_REVIEWER_MESSAGES_HEADING}\n{messages}");
         if cold {
             crate::orchestrator::conversation_prompt(&prompt)
         } else {
@@ -179,7 +179,7 @@ impl OperationPayload {
 
     /// One line per sending agent saying how full its context was when it
     /// wrote — "Rail scroll is at 190k of 200k (95%, compacts at 200k)." — for the project agent,
-    /// which is choosing who takes the next issue. Empty for every other
+    /// which is choosing who takes the next task. Empty for every other
     /// reader, for a notice Build wrote, and for a sender with no reading.
     fn sender_context_note(&self) -> String {
         if !self.tells_sender_context {
@@ -205,34 +205,34 @@ impl OperationPayload {
         lines.iter().map(|line| format!("\n{line}\n")).collect()
     }
 
-    /// What to do about the issue this turn was handed, when being HANDED one
+    /// What to do about the task this turn was handed, when being HANDED one
     /// is what sent it. Empty for every other message.
     ///
     /// Only for an assignment, and the check is `from_build`: a tracking
-    /// notice wears an issue too, and it is Build telling a watcher that
-    /// somebody else changed something. Telling that watcher to read the issue
+    /// notice wears a task too, and it is Build telling a watcher that
+    /// somebody else changed something. Telling that watcher to read the task
     /// before it starts, comment its progress and move the card to In review
     /// is telling it to take over work nobody gave it — which is what a
     /// tracker was being told until #35.
     ///
     /// The body already says who assigned what — it is the notice — so this
     /// does not say it again. What it adds is the id, which the notice has no
-    /// room for and `get_issue` needs, and the two tools that keep the issue
+    /// room for and `get_task` needs, and the two tools that keep the task
     /// honest about where the work got to. The payload is JSON inside a prompt
     /// written in the user's voice, and the sentence around it is what an agent
     /// actually acts on.
-    fn issue_note(&self) -> String {
+    fn task_note(&self) -> String {
         self.messages
             .iter()
             .filter(|message| !message.from_build)
-            .filter_map(|message| message.from_issue.as_deref())
+            .filter_map(|message| message.from_task.as_deref())
             .next()
-            .map_or_else(String::new, |issue| {
+            .map_or_else(String::new, |task| {
                 format!(
-                    "\nThe issue is `{}` — read it with get_issue before you start. Comment your \
-                     progress on it with comment_issue, and move it to In review with move_issue \
+                    "\nThe task is `{}` — read it with get_task before you start. Comment your \
+                     progress on it with comment_task, and move it to In review with move_task \
                      when you report Complete.\n",
-                    issue.issue_id
+                    task.task_id
                 )
             })
     }
@@ -266,27 +266,27 @@ impl OperationPayload {
         AGENT_NAME_NOTE.to_string()
     }
 
-    /// One line naming the issue the user was LOOKING at, when the message
+    /// One line naming the task the user was LOOKING at, when the message
     /// says which. Empty for everything sent from anywhere else.
     ///
-    /// Not the same sentence as [`Self::issue_note`], and deliberately not:
+    /// Not the same sentence as [`Self::task_note`], and deliberately not:
     /// that one hands the agent work and names the two tools that keep the
-    /// issue honest about it. This one answers "this issue" for a user who is
+    /// task honest about it. This one answers "this task" for a user who is
     /// standing on the board and asking about what is on screen — the agent
-    /// has not been given the issue, only pointed at it.
+    /// has not been given the task, only pointed at it.
     ///
-    /// It carries no body, because the item does not: an issue moves on after
+    /// It carries no body, because the item does not: a task moves on after
     /// the message is sent, so the agent is told to go and read it rather than
     /// handed a copy that reads as current and is not.
-    fn viewing_issue_note(&self) -> String {
+    fn viewing_task_note(&self) -> String {
         self.messages
             .iter()
             .filter_map(|message| message.viewing_context.as_deref())
-            .find_map(crate::thread::ViewingContext::issue)
-            .map_or_else(String::new, |(number, title, issue_id)| {
+            .find_map(crate::thread::ViewingContext::task)
+            .map_or_else(String::new, |(number, title, task_id)| {
                 format!(
-                    "\nThe user is looking at issue #{number} \"{title}\" (`{issue_id}`); read it \
-                     with get_issue before answering about it.\n"
+                    "\nThe user is looking at task #{number} \"{title}\" (`{task_id}`); read it \
+                     with get_task before answering about it.\n"
                 )
             })
     }
@@ -531,19 +531,19 @@ mod tests {
 
     /// A notice gets no envelope paragraph at all (#61).
     ///
-    /// The line IS the notice — "New comment ic-… on #53 from the user" — and
+    /// The line IS the notice — "New comment tc-… on #53 from the user" — and
     /// a paragraph under it explaining what a notice is would be more words
     /// than the thing it explains. The assignment brief is for the one message
     /// that hands work over.
     #[test]
     fn a_notice_gets_the_line_and_no_envelope_paragraph() {
-        let envelope = crate::thread::IssueEnvelope {
-            issue_id: "issue-01K5Z".into(),
+        let envelope = crate::thread::TaskEnvelope {
+            task_id: "task-01K5Z".into(),
             number: 13,
             title: "Kanban drag".into(),
-            links: crate::tracker::IssueLinks::default(),
+            links: crate::tracker::TaskLinks::default(),
         };
-        let notice = crate::thread::IssueNotice {
+        let notice = crate::thread::TaskNotice {
             actor: crate::thread::NoticeActor {
                 who: crate::tracker::Actor::User,
                 name: None,
@@ -560,8 +560,8 @@ mod tests {
             messages: vec![ThreadMessage {
                 from_build: true,
                 body: "#13 moved to In review by the user.".into(),
-                from_issue: Some(Box::new(envelope.clone())),
-                issue_notice: Some(Box::new(notice)),
+                from_task: Some(Box::new(envelope.clone())),
+                task_notice: Some(Box::new(notice)),
                 ..payload().messages[0].clone()
             }],
             ..payload()
@@ -575,8 +575,8 @@ mod tests {
         for absent in [
             "which you are tracking",
             "nobody is waiting",
-            "read it with get_issue before you start",
-            "move it to In review with move_issue",
+            "read it with get_task before you start",
+            "move it to In review with move_task",
         ] {
             assert!(!warm.contains(absent), "{absent:?} is still said: {warm}");
         }
@@ -585,35 +585,35 @@ mod tests {
         // work over, and this one does not.
         let handed = OperationPayload {
             messages: vec![ThreadMessage {
-                from_issue: Some(Box::new(envelope)),
+                from_task: Some(Box::new(envelope)),
                 ..payload().messages[0].clone()
             }],
             ..payload()
         };
         let brief = handed.delivery_prompt("post-1", false, AgentProvider::Claude);
         assert!(
-            brief.contains("read it with get_issue before you start"),
+            brief.contains("read it with get_task before you start"),
             "{brief}"
         );
         assert!(
-            brief.contains("move it to In review with move_issue"),
+            brief.contains("move it to In review with move_task"),
             "{brief}"
         );
     }
 
-    /// An issue the user is LOOKING at is not one they handed over, and the
-    /// envelope says which it is: the agent is being asked about the issue on
+    /// A task the user is LOOKING at is not one they handed over, and the
+    /// envelope says which it is: the agent is being asked about the task on
     /// screen, and has to go and read it before it can answer.
     #[test]
-    fn the_issue_the_user_is_looking_at_is_named_and_not_mistaken_for_a_hand_off() {
+    fn the_task_the_user_is_looking_at_is_named_and_not_mistaken_for_a_hand_off() {
         let looking = OperationPayload {
             messages: vec![ThreadMessage {
                 viewing_context: Some(Box::new(
                     serde_json::from_value(serde_json::json!({
                         "version": 1,
                         "items": [{
-                            "kind": "issue",
-                            "issue_id": "issue-01K5Z",
+                            "kind": "task",
+                            "task_id": "task-01K5Z",
                             "number": 9,
                             "title": "Kanban drag does not persist"
                         }]
@@ -628,24 +628,24 @@ mod tests {
         let warm = looking.delivery_prompt("post-1", false, AgentProvider::Claude);
         assert!(
             warm.contains(
-                "The user is looking at issue #9 \"Kanban drag does not persist\" \
-                 (`issue-01K5Z`)"
+                "The user is looking at task #9 \"Kanban drag does not persist\" \
+                 (`task-01K5Z`)"
             ),
             "{warm}"
         );
         assert!(
-            warm.contains("read it with get_issue"),
+            warm.contains("read it with get_task"),
             "the agent is told how to read it: {warm}"
         );
         assert!(
-            !warm.contains("hands you issue"),
-            "looking at an issue is not being handed one: {warm}"
+            !warm.contains("hands you task"),
+            "looking at a task is not being handed one: {warm}"
         );
 
         // And a message sent from nowhere near the board says nothing about
         // one, which is what keeps the sentence worth reading.
         let ordinary = payload().delivery_prompt("post-1", false, AgentProvider::Claude);
-        assert!(!ordinary.contains("is looking at issue"), "{ordinary}");
+        assert!(!ordinary.contains("is looking at task"), "{ordinary}");
     }
 
     /// Words another agent sent are named as such in the envelope, not only in
@@ -789,14 +789,14 @@ mod tests {
     fn request_hash_ignores_object_order_and_operation_id() {
         let left = serde_json::json!({
             "operation_id": "first",
-            "entity_id": "issue-1",
+            "entity_id": "task-1",
             "body": "hello",
             "anchor": { "line": 3, "path": "src/lib.rs" }
         });
         let right = serde_json::json!({
             "anchor": { "path": "src/lib.rs", "line": 3 },
             "body": "hello",
-            "entity_id": "issue-1",
+            "entity_id": "task-1",
             "operation_id": "second"
         });
         assert_eq!(
@@ -808,43 +808,43 @@ mod tests {
     #[test]
     fn thread_post_hash_ignores_read_projection_but_binds_resolved_address() {
         let first = serde_json::json!({
-            "entity_id": "issue-1",
+            "entity_id": "task-1",
             "body": "hello",
             "thread_limit": 20
         });
         let retry = serde_json::json!({
-            "entity_id": "issue-1",
+            "entity_id": "task-1",
             "body": "hello",
             "thread_after_sequence": 9
         });
-        let hash = thread_post_request_hash(&first, "issue-1", "agent-1", "conversation-1");
+        let hash = thread_post_request_hash(&first, "task-1", "agent-1", "conversation-1");
         assert_eq!(
             hash,
-            thread_post_request_hash(&retry, "issue-1", "agent-1", "conversation-1",)
+            thread_post_request_hash(&retry, "task-1", "agent-1", "conversation-1",)
         );
         assert_ne!(
             hash,
-            thread_post_request_hash(&retry, "issue-1", "agent-2", "conversation-1",)
+            thread_post_request_hash(&retry, "task-1", "agent-2", "conversation-1",)
         );
     }
 
     #[test]
     fn thread_post_hash_binds_viewing_context_and_keeps_legacy_hash_stable() {
-        let legacy = serde_json::json!({ "entity_id": "issue-1", "body": "hello" });
-        let expected = thread_post_request_hash(&legacy, "issue-1", "agent-1", "conversation-1");
+        let legacy = serde_json::json!({ "entity_id": "task-1", "body": "hello" });
+        let expected = thread_post_request_hash(&legacy, "task-1", "agent-1", "conversation-1");
         assert_eq!(
             expected,
-            thread_post_request_hash(&legacy, "issue-1", "agent-1", "conversation-1")
+            thread_post_request_hash(&legacy, "task-1", "agent-1", "conversation-1")
         );
 
         let contextual = serde_json::json!({
-            "entity_id": "issue-1",
+            "entity_id": "task-1",
             "body": "hello",
             "viewing_context": { "version": 1, "items": [{ "kind": "file", "path": "src/lib.rs" }] }
         });
         assert_ne!(
             expected,
-            thread_post_request_hash(&contextual, "issue-1", "agent-1", "conversation-1")
+            thread_post_request_hash(&contextual, "task-1", "agent-1", "conversation-1")
         );
     }
 

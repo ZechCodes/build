@@ -196,7 +196,7 @@ pub(in crate::app) fn agent_start(
             .or_else(|| params.get("plan_id"))
             .and_then(Value::as_str);
         if requested_entity.is_some_and(|entity_id| s.plans.contains_key(entity_id)) {
-            return Err(crate::app::issues::ISSUES_RETIRED_ERROR.to_string());
+            return Err(crate::app::tasks::TASKS_RETIRED_ERROR.to_string());
         }
         let agent = s.addressed_agent(params)?;
         s.delivery_queue.enqueue(PendingAgentTurn {
@@ -250,7 +250,7 @@ pub(in crate::app) fn agent_interrupt(
     let session = {
         let s = timer.lock(state);
         if s.plans.contains_key(&entity_id) {
-            return Err(crate::app::issues::ISSUES_RETIRED_ERROR.to_string());
+            return Err(crate::app::tasks::TASKS_RETIRED_ERROR.to_string());
         }
         let address = s.resolve_conversation_address(&entity_id, Some(&agent_id))?;
         if address.conversation_id != conversation_id {
@@ -432,10 +432,10 @@ pub(in crate::app) fn named_agent_id(params: &Value) -> Result<Option<String>, S
 
 impl AppState {
     /// The canonical checkout an entity's agents work in — the key they are
-    /// registered under. A run's is its worktree; an issue's is the project's
-    /// primary checkout, because issue agents never get a worktree.
+    /// registered under. A run's is its worktree; a task's is the project's
+    /// primary checkout, because task agents never get a worktree.
     ///
-    /// An issue whose workspace is gone (approved, abandoned) has no agent;
+    /// A task whose workspace is gone (approved, abandoned) has no agent;
     /// that is a refusal, not a blank tab, because there is nothing for an
     /// agent to run in.
     pub(in crate::app) fn entity_agent_root(
@@ -447,7 +447,7 @@ impl AppState {
                 .workspace
                 .as_ref()
                 .map(|workspace| Self::canonical_root(&workspace.checkout))
-                .ok_or_else(|| "the issue has no session, so it has no agent".to_string());
+                .ok_or_else(|| "the task has no session, so it has no agent".to_string());
         }
         if let Some(run) = self.runs.get(entity_id) {
             return Ok(Self::canonical_root(&run.worktree.path));
@@ -520,7 +520,7 @@ impl AppState {
     /// is the account's default harness unless somebody named another one when
     /// the entity was created or adopted.
     ///
-    /// An issue always holds its one agent, so only a branch is ever minted on.
+    /// A task always holds its one agent, so only a branch is ever minted on.
     pub(in crate::app) fn ensure_primary_agent(
         &mut self,
         entity_id: &str,
@@ -890,9 +890,9 @@ impl AppState {
 
     /// `agent.add` — give a branch another agent, with its own conversation.
     ///
-    /// Branches only: an issue carries exactly one agent session, because
-    /// implementing an issue is a handoff to a new agent on a branch rather
-    /// than a second agent on the issue itself. The agent is a record and a
+    /// Branches only: a task carries exactly one agent session, because
+    /// implementing a task is a handoff to a new agent on a branch rather
+    /// than a second agent on the task itself. The agent is a record and a
     /// conversation; no process is spawned until something is said to it.
     ///
     /// The FIRST agent of a branch that had none also seeds the entity's legacy
@@ -1004,7 +1004,7 @@ impl AppState {
             return Err("agent.add: creation_id is too long".to_string());
         }
         if self.plans.contains_key(&entity_id) {
-            return Err(crate::app::issues::ISSUES_RETIRED_ERROR.to_string());
+            return Err(crate::app::tasks::TASKS_RETIRED_ERROR.to_string());
         }
         if !self.runs.contains_key(&entity_id) {
             return Err(format!("agent.add: unknown entity {entity_id}"));
@@ -1154,7 +1154,7 @@ impl AppState {
     pub(crate) fn agent_choose(&mut self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
         if self.plans.contains_key(&entity_id) {
-            return Err(crate::app::issues::ISSUES_RETIRED_ERROR.to_string());
+            return Err(crate::app::tasks::TASKS_RETIRED_ERROR.to_string());
         }
         let requested_agent = named_agent_id(params)?;
         let agent = self
@@ -1221,16 +1221,16 @@ impl AppState {
             let revision = active
                 .agents
                 .resolve_mut(Some(agent_id))
-                .expect("the agent was validated before its issue was taken")
+                .expect("the agent was validated before its task was taken")
                 .choose(choice);
             if let Err(error) = self.finish_plan_mutation(entity_id.to_string(), active) {
                 *self
                     .plans
                     .get_mut(entity_id)
-                    .expect("the failed finish put the issue back")
+                    .expect("the failed finish put the task back")
                     .agents
                     .resolve_mut(Some(agent_id))
-                    .expect("the previous agent still belongs to the issue") = previous;
+                    .expect("the previous agent still belongs to the task") = previous;
                 return Err(error);
             }
             revision
@@ -1262,8 +1262,8 @@ impl AppState {
     /// `agent.remove` — take an agent back off a branch's rail.
     ///
     /// The mirror of [`agent_add`](Self::agent_add), and it validates the same
-    /// way: branches only, because an issue's one agent IS the issue's
-    /// conversation — there is nothing to remove there, only an issue to
+    /// way: branches only, because a task's one agent IS the task's
+    /// conversation — there is nothing to remove there, only a task to
     /// abandon.
     ///
     /// Any of a branch's agents may go, the primary and the last one included.
@@ -1280,7 +1280,7 @@ impl AppState {
         let entity_id = require_str(params, "entity_id")?;
         let agent_id = require_str(params, "agent_id")?;
         if self.plans.contains_key(&entity_id) {
-            return Err(crate::app::issues::ISSUES_RETIRED_ERROR.to_string());
+            return Err(crate::app::tasks::TASKS_RETIRED_ERROR.to_string());
         }
         if !self.runs.contains_key(&entity_id) {
             return Err(format!("agent.remove: unknown entity {entity_id}"));
@@ -1298,8 +1298,8 @@ impl AppState {
                  session is running"
             ));
         }
-        self.preserve_entity_issue_identities(&entity_id)?;
-        let issue_refresh = self.issues_with_agent_identity(&entity_id, &agent_id)?;
+        self.preserve_entity_task_identities(&entity_id)?;
+        let task_refresh = self.tasks_with_agent_identity(&entity_id, &agent_id)?;
         let removed_agent_revived_clear = self
             .entity_agents(&entity_id)
             .ok()
@@ -1333,9 +1333,9 @@ impl AppState {
         let persisted = self.finish_run_mutation(entity_id.clone(), active);
         // finish_run_mutation installs the changed live roster even if its
         // persistence fails. Invalidate wherever that availability is cached;
-        // issues.get/list retain the historical facts and resolve availability.
-        if let Some((project_id, issue_ids)) = issue_refresh {
-            self.changes.note_issues(&project_id, &issue_ids);
+        // tasks.get/list retain the historical facts and resolve availability.
+        if let Some((project_id, task_ids)) = task_refresh {
+            self.changes.note_tasks(&project_id, &task_ids);
         }
         self.retire_agent(&root, &removed.id);
         // Nothing prunes cursors by agent, so one left behind here would
@@ -1372,14 +1372,14 @@ impl AppState {
             .retain_queued(|turn| turn.agent_id != agent_id);
     }
 
-    /// End an issue's agent session, because the gate that just closed ended
-    /// it. An issue agent works in the PRIMARY checkout, which never goes
+    /// End a task's agent session, because the gate that just closed ended
+    /// it. A task agent works in the PRIMARY checkout, which never goes
     /// away, so nothing else would ever stop it: it would keep working there
-    /// and report `done` for an issue no longer taking reports. Only this
-    /// issue's own agent goes — the checkout's other agents belong to the main
+    /// and report `done` for a task no longer taking reports. Only this
+    /// task's own agent goes — the checkout's other agents belong to the main
     /// branch and are none of this verb's business.
     #[track_caller]
-    pub(in crate::app) fn retire_issue_session(
+    pub(in crate::app) fn retire_task_session(
         &mut self,
         session: Option<(std::path::PathBuf, String)>,
     ) {

@@ -1,17 +1,17 @@
 // A workspace's navigation, on the shell's rail (#dir-rail): Changes, Files and
-// the Issues its agents hold, with the workspace's Settings at the foot (#174).
+// the Tasks its agents hold, with the workspace's Settings at the foot (#174).
 //
-// "Issues moved to the rail as an icon along with the settings. Making the left
+// "Tasks moved to the rail as an icon along with the settings. Making the left
 // rail the workspace navigation." The rail is workspace scoped: it stands on the
 // route alone, before the workspace's record has landed, and which directory
 // Changes or Files is looking at is said inside the pane, below it.
 //
 // core/directoryRail.js draws the cells; this is what a workspace hangs on them
-// — the Issues count (core/trackerWorkspaceIssuesView.js), kept on the cell
+// — the Tasks count (core/trackerWorkspaceTasksView.js), kept on the cell
 // across repaints, and the settings sheet the toolbar's cog used to open.
 
 import { WORKSPACE_TABS, paintDirectoryRail } from "./directoryRail.js";
-import { mountWorkspaceIssues } from "./trackerWorkspaceIssuesView.js";
+import { mountWorkspaceTasks } from "./trackerWorkspaceTasksView.js";
 import { workspaceAgents } from "./trackerAssignee.js";
 import { routeProjectKey, routeWorkspaceKey } from "./deviceKey.js";
 import { canAnswer, contextFor } from "./deviceContexts.js";
@@ -64,29 +64,29 @@ export function openRouteWorkspaceSettings(route, workspace, { navigate }) {
  * the rail for one workspace route. `feed()` is the route's machine's feed and
  * `workspace()` its record (null until it lands), both read at use. Returns
  * { paint(active), feedMoved(), dispose() }: a paint draws the faces with
- * `active` marked, and hands the Issues count the cell it drew.
+ * `active` marked, and hands the Tasks count the cell it drew.
  */
 export function mountWorkspaceRail(host, { route, feed, workspace, onSelect, navigate }) {
-  let issues = null;
+  let tasks = null;
   const settings = { onOpen: () => openRouteWorkspaceSettings(route, workspace(), { navigate }) };
 
-  const keepIssuesCount = () => {
-    const cell = host.querySelector("[data-tab=issues]");
-    if (issues) issues.retarget(cell);
-    else issues = mountWorkspaceIssues(cell, { deviceId: route.deviceId, projectId: route.projectId, agents: () => agentsOf(feed, route) });
+  const keepTasksCount = () => {
+    const cell = host.querySelector("[data-tab=tasks]");
+    if (tasks) tasks.retarget(cell);
+    else tasks = mountWorkspaceTasks(cell, { deviceId: route.deviceId, projectId: route.projectId, agents: () => agentsOf(feed, route) });
   };
 
   return {
     paint(active) {
       paintDirectoryRail(host, { tabs: WORKSPACE_TABS, active, onSelect, settings });
-      keepIssuesCount();
+      keepTasksCount();
     },
-    feedMoved: () => issues?.refresh(),
+    feedMoved: () => tasks?.refresh(),
     // The rail is the shell's column, lent to whichever surface is standing on
     // it: leaving hands it back empty.
     dispose() {
-      issues?.dispose();
-      issues = null;
+      tasks?.dispose();
+      tasks = null;
       host.innerHTML = "";
     },
   };

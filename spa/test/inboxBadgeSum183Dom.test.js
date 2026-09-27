@@ -1,15 +1,15 @@
 // @vitest-environment jsdom
-// #183, unmocked: the real cache, feed, issue follower and rail, with no
+// #183, unmocked: the real cache, feed, task follower and rail, with no
 // session at all, so every number comes from what the cache holds. The top
 // badge the rail publishes is the sum of the head badges it paints — open or
 // folded, on either face — for the report's shape: two projects, a Needs-you
-// row with nothing unread, a watched issue nobody holds with no row, a Done
-// issue a 1.29 bridge still counts, a workspace in Recent and a folded block.
+// row with nothing unread, a watched task nobody holds with no row, a Done
+// task a 1.29 bridge still counts, a workspace in Recent and a folded block.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { issue } from "./trackerWireFixture.js";
+import { task } from "./trackerWireFixture.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 const DEVICE = "badge-183-device";
@@ -50,16 +50,16 @@ async function seed() {
   await modules.cache.writeCached(address("feed"), { items, runs: [], projects, workspaces });
   await modules.cache.writeCached(address("projects"), projects);
   await modules.cache.writeCached(address("workspaces"), workspaces);
-  const issues = [
+  const tasks = [
     // #159: in review, everything read — a Needs-you row with no unread.
-    issue({ id: "i-159", number: 159, title: "Review me", watched: true, status: "in_review", unread_count: 0,
+    task({ id: "i-159", number: 159, title: "Review me", watched: true, status: "in_review", unread_count: 0,
       updated_at: new Date(now - 120_000).toISOString() }),
     // #113: watched, nobody's, 2 unread, and no row.
-    issue({ id: "i-113", number: 113, title: "Milestones", watched: true, status: "ready", unread_count: 2 }),
+    task({ id: "i-113", number: 113, title: "Milestones", watched: true, status: "ready", unread_count: 2 }),
     // #50: Done; a 1.29 bridge sends its unread anyway.
-    issue({ id: "i-50", number: 50, title: "Finished", watched: true, status: "done", unread_count: 803 }),
+    task({ id: "i-50", number: 50, title: "Finished", watched: true, status: "done", unread_count: 803 }),
   ];
-  await modules.tracker.writeIssuesRecord(DEVICE, "build", modules.tracker.issuesRecord(issues, []));
+  await modules.tracker.writeTasksRecord(DEVICE, "build", modules.tracker.tasksRecord(tasks, []));
 }
 
 beforeEach(async () => {
@@ -108,11 +108,11 @@ const SMARTER = 1 + 1;
 
 describe("the inbox's top badge", () => {
   it("is the sum of the painted heads, open", async () => {
-    await vi.waitFor(() => expect(row("tracker_issue:i-159")).not.toBe(null), WAIT);
+    await vi.waitFor(() => expect(row("tracker_task:i-159")).not.toBe(null), WAIT);
     await fold("build", false);
     await fold("smarter", false);
     await vi.waitFor(() => expect([headCount("build"), headCount("smarter")]).toEqual([BUILD, SMARTER]), WAIT);
-    expect(row("tracker_issue:i-113")).toBe(null);
+    expect(row("tracker_task:i-113")).toBe(null);
     expect(row(`workspace:${DEVICE}/old-work`)?.closest(".inbox-recent")).not.toBe(null);
     expect(published).toBe(headCount("build") + headCount("smarter"));
   });

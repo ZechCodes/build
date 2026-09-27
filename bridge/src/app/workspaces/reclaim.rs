@@ -9,7 +9,7 @@
 //!
 //! The bridge never removes a workspace by itself. A quiet workspace is
 //! reported to the project agent as one notice per project, plus an entry on
-//! each linked issue's timeline. The agent merges it, deletes it or surfaces
+//! each linked task's timeline. The agent merges it, deletes it or surfaces
 //! it. `workspace.reclaim` is the explicit removal the agent or the user calls
 //! (`reclaim/explicit.rs`).
 //!
@@ -35,9 +35,9 @@ use crate::app::{off_the_workers, AppState, DeliveryRunner};
 use crate::reclaim::artifacts::{self, Artifact};
 use crate::reclaim::containment::WorkspaceBoundary;
 use crate::reclaim::{
-    Budget, IndexSnapshot, LifecycleRecord, LinkedIssue, NoticeDue, ReclaimPolicy, Subject,
+    Budget, IndexSnapshot, LifecycleRecord, LinkedTask, NoticeDue, ReclaimPolicy, Subject,
 };
-use crate::tracker::{Actor, Issue, IssueEventKind, IssueState};
+use crate::tracker::{Actor, Task, TaskEventKind, TaskState};
 use crate::workspace::{Workspace, WorkspaceStatus};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
@@ -46,7 +46,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// How long a nudge waits before sweeping, so a burst of issue moves is one
+/// How long a nudge waits before sweeping, so a burst of task moves is one
 /// sweep.
 const NUDGE_SETTLE: Duration = Duration::from_secs(5);
 
@@ -60,9 +60,9 @@ const RESERVATION_LIMIT: Duration = Duration::from_secs(15 * 60);
 /// Where the service's own deliveries are charged on the frame clock.
 const SWEEP_METHOD: &str = "workspace.reclaim_sweep";
 
-/// Every issue that links a workspace, by workspace id, or why the issues
+/// Every task that links a workspace, by workspace id, or why the tasks
 /// could not be read.
-type LinkedIssues = Result<HashMap<String, Vec<LinkedIssue>>, String>;
+type LinkedTasks = Result<HashMap<String, Vec<LinkedTask>>, String>;
 
 /// One workspace, reserved between measuring and removing.
 pub(in crate::app) struct ReclaimReservation {
@@ -236,7 +236,7 @@ impl AppState {
     }
 
     /// [`Self::sweep_workspaces`], with `racer` run at each [`PrunePhase`] of
-    /// a prune: where a test starts an agent, reopens an issue or edits a
+    /// a prune: where a test starts an agent, reopens a task or edits a
     /// file.
     pub(in crate::app) fn sweep_workspaces_racing(
         state: &Arc<Mutex<AppState>>,
@@ -290,20 +290,20 @@ impl AppState {
             record.unmeasured();
             return record;
         };
-        let (stop, issues) = {
+        let (stop, tasks) = {
             let mut app = state.lock().unwrap();
             match app.prune_holds(&subject.workspace_id, false) {
-                Some((holds, issues)) if holds.is_empty() => {
+                Some((holds, tasks)) if holds.is_empty() => {
                     app.reserve_workspace(&subject.workspace_id);
-                    (Arc::clone(&app.reclaim_stop), issues)
+                    (Arc::clone(&app.reclaim_stop), tasks)
                 }
                 _ => return record,
             }
         };
-        // The holds and issues as the reservation read them.
+        // The holds and tasks as the reservation read them.
         let subject = Subject {
             holds: Vec::new(),
-            issues,
+            tasks,
             ..subject.clone()
         };
         racer(PrunePhase::Reserved);
@@ -451,7 +451,7 @@ impl AppState {
         self.reclaim_policy.with_settings(&self.reclaim_settings)
     }
 
-    /// Ask for a sweep soon: an issue linked to a workspace just finished, so
+    /// Ask for a sweep soon: a task linked to a workspace just finished, so
     /// that workspace may have become reclaimable.
     pub(in crate::app) fn nudge_workspace_reclaim(&self) {
         self.reclaim_nudge.notify_one();
@@ -524,7 +524,7 @@ impl AppState {
     }
 
     /// What keeps the service from dropping this workspace's build output right
-    /// now, every hold read under the mutex and the linked issues read again.
+    /// now, every hold read under the mutex and the linked tasks read again.
     /// `None` when it is not the service's to touch at all: gone, not Build's,
     /// reserved by somebody else, or other files are being moved. `reserved`
     /// says the caller holds the reservation.
@@ -532,7 +532,7 @@ impl AppState {
         &self,
         workspace_id: &str,
         reserved: bool,
-    ) -> Option<(Vec<&'static str>, Vec<LinkedIssue>)> {
+    ) -> Option<(Vec<&'static str>, Vec<LinkedTask>)> {
         let workspace = self.workspaces.get(workspace_id)?;
         let busy = self.project_deletion_in_progress
             || self.deferred_work.is_some()
@@ -541,11 +541,11 @@ impl AppState {
         if busy || self.refuse_removing_what_is_not_builds(workspace).is_err() {
             return None;
         }
-        let issues = self
-            .issues_linking_workspaces()
+        let tasks = self
+            .tasks_linking_workspaces()
             .map(|mut linked| linked.remove(workspace_id).unwrap_or_default());
-        let holds = self.live_holds(workspace, &issues);
-        Some((holds, issues.unwrap_or_default()))
+        let holds = self.live_holds(workspace, &tasks);
+        Some((holds, tasks.unwrap_or_default()))
     }
 
     // ------------------------------------------------------------- sweep ---
@@ -553,14 +553,14 @@ impl AppState {
     /// Every workspace Build made, with what can only be read under the mutex.
     /// Adopted checkouts are somebody else's and are not measured.
     fn reclaim_subjects(&self) -> Vec<Subject> {
-        let linked = self.issues_linking_workspaces();
+        let linked = self.tasks_linking_workspaces();
         self.workspaces
             .list(None)
             .into_iter()
             .filter(|workspace| workspace.managed && workspace.status != WorkspaceStatus::Finished)
             .map(|workspace| {
-                let issues = issues_of(&linked, &workspace.id);
-                self.reclaim_subject(workspace, issues)
+                let tasks = tasks_of(&linked, &workspace.id);
+                self.reclaim_subject(workspace, tasks)
             })
             .collect()
     }
@@ -568,7 +568,7 @@ impl AppState {
     fn reclaim_subject(
         &self,
         workspace: &Workspace,
-        issues: Result<Vec<LinkedIssue>, String>,
+        tasks: Result<Vec<LinkedTask>, String>,
     ) -> Subject {
         Subject {
             workspace_id: workspace.id.clone(),
@@ -590,10 +590,10 @@ impl AppState {
                 .filter(|directory| directory.is_git)
                 .map(|directory| (directory.path.clone(), directory.branch.clone()))
                 .collect(),
-            holds: self.live_holds(workspace, &issues),
+            holds: self.live_holds(workspace, &tasks),
             conversation_activity_ms: self.conversation_activity_of(workspace),
             previous: self.workspace_lifecycle.get(&workspace.id).cloned(),
-            issues: issues.unwrap_or_default(),
+            tasks: tasks.unwrap_or_default(),
         }
     }
 
@@ -605,12 +605,12 @@ impl AppState {
 
     /// What holds a workspace that only the app state knows: it is not ready,
     /// an agent is working or a terminal is open anywhere inside it, it holds
-    /// a plain directory, or its issues are still being worked toward or
+    /// a plain directory, or its tasks are still being worked toward or
     /// could not be read.
     fn live_holds(
         &self,
         workspace: &Workspace,
-        issues: &Result<Vec<LinkedIssue>, String>,
+        tasks: &Result<Vec<LinkedTask>, String>,
     ) -> Vec<&'static str> {
         let root = Self::canonical_root(&workspace.root);
         let checks = [
@@ -634,12 +634,12 @@ impl AppState {
                 crate::workspace::FINISH_BLOCKER_PLAIN_DIRECTORY,
             ),
             (
-                issues
+                tasks
                     .as_ref()
-                    .is_ok_and(|issues| issues.iter().any(|issue| !issue.finished())),
-                crate::reclaim::HOLD_ISSUE_OPEN,
+                    .is_ok_and(|tasks| tasks.iter().any(|task| !task.finished())),
+                crate::reclaim::HOLD_TASK_OPEN,
             ),
-            (issues.is_err(), crate::reclaim::HOLD_ISSUES_UNREAD),
+            (tasks.is_err(), crate::reclaim::HOLD_TASKS_UNREAD),
         ];
         checks
             .into_iter()
@@ -667,36 +667,36 @@ impl AppState {
             .any(|key| !key.is_agent() && key.root.starts_with(root))
     }
 
-    /// Every issue of every project, filed under each workspace it links. One
-    /// store read per project. One project's issues failing to read fails the
-    /// whole answer: nobody can say which workspaces those issues link.
-    fn issues_linking_workspaces(&self) -> LinkedIssues {
-        let mut linked: HashMap<String, Vec<LinkedIssue>> = HashMap::new();
+    /// Every task of every project, filed under each workspace it links. One
+    /// store read per project. One project's tasks failing to read fails the
+    /// whole answer: nobody can say which workspaces those tasks link.
+    fn tasks_linking_workspaces(&self) -> LinkedTasks {
+        let mut linked: HashMap<String, Vec<LinkedTask>> = HashMap::new();
         for project in self.projects.iter() {
-            for issue in self.every_issue_of(&project.id)? {
-                for workspace_id in &issue.links.workspace_ids {
+            for task in self.every_task_of(&project.id)? {
+                for workspace_id in &task.links.workspace_ids {
                     linked
                         .entry(workspace_id.clone())
                         .or_default()
-                        .push(linked_issue(&issue));
+                        .push(linked_task(&task));
                 }
             }
         }
         Ok(linked)
     }
 
-    fn every_issue_of(&self, project_id: &str) -> Result<Vec<Issue>, String> {
-        // A bridge with no store has no issues at all.
+    fn every_task_of(&self, project_id: &str) -> Result<Vec<Task>, String> {
+        // A bridge with no store has no tasks at all.
         let Some(store) = self.store.as_ref() else {
             return Ok(Vec::new());
         };
         let project_path = self.tracker_project_path(project_id)?;
         store
-            .list_tracker_issues(&project_path, crate::store::IssueFilter::default())
-            .map_err(|error| format!("read the issues of {project_id}: {error}"))
+            .list_tracker_tasks(&project_path, crate::store::TaskFilter::default())
+            .map_err(|error| format!("read the tasks of {project_id}: {error}"))
     }
 
-    /// Keep what was measured, record on the linked issues what they should
+    /// Keep what was measured, record on the linked tasks what they should
     /// hear, and tell each project agent about its quiet workspaces. A
     /// workspace a stopped sweep never reached keeps its last verdict.
     fn settle_workspace_sweep(
@@ -715,9 +715,9 @@ impl AppState {
                 continue;
             }
             if record.pruned_at_ms == Some(now_ms) {
-                self.note_on_linked_issues(
+                self.note_on_linked_tasks(
                     &subject,
-                    IssueEventKind::WorkspacePruned,
+                    TaskEventKind::WorkspacePruned,
                     &record,
                     policy,
                 );
@@ -761,12 +761,12 @@ impl AppState {
             return;
         }
         for quiet in workspaces {
-            // A workspace that has just gone quiet is recorded on its issues
+            // A workspace that has just gone quiet is recorded on its tasks
             // once, when the project agent has actually been told.
             if quiet.first {
-                self.note_on_linked_issues(
+                self.note_on_linked_tasks(
                     &quiet.subject,
-                    IssueEventKind::WorkspaceIdle,
+                    TaskEventKind::WorkspaceIdle,
                     &quiet.record,
                     policy,
                 );
@@ -793,13 +793,13 @@ impl AppState {
         })
     }
 
-    /// A timeline entry by Build on every issue linking the workspace. Written
-    /// without waking the issues' watchers: the project agent gets one notice
+    /// A timeline entry by Build on every task linking the workspace. Written
+    /// without waking the tasks' watchers: the project agent gets one notice
     /// for the whole sweep instead.
-    fn note_on_linked_issues(
+    fn note_on_linked_tasks(
         &mut self,
         subject: &Subject,
-        kind: IssueEventKind,
+        kind: TaskEventKind,
         record: &LifecycleRecord,
         policy: &ReclaimPolicy,
     ) {
@@ -814,14 +814,14 @@ impl AppState {
             "size_bytes": record.size_bytes,
             "pruned_bytes": record.pruned_bytes,
         });
-        for issue in &subject.issues {
+        for task in &subject.tasks {
             if let Err(error) =
-                self.record_quiet_event(&issue.issue_id, &Actor::Build, kind, payload.clone())
+                self.record_quiet_event(&task.task_id, &Actor::Build, kind, payload.clone())
             {
                 eprintln!(
                     "workspace reclaim: note {} on #{}: {error}",
                     kind.as_str(),
-                    issue.number
+                    task.number
                 );
             }
         }
@@ -836,24 +836,24 @@ impl AppState {
     }
 }
 
-/// One workspace's issues out of every project's, or the reason none could be
+/// One workspace's tasks out of every project's, or the reason none could be
 /// read.
-fn issues_of(linked: &LinkedIssues, workspace_id: &str) -> Result<Vec<LinkedIssue>, String> {
+fn tasks_of(linked: &LinkedTasks, workspace_id: &str) -> Result<Vec<LinkedTask>, String> {
     match linked {
         Ok(linked) => Ok(linked.get(workspace_id).cloned().unwrap_or_default()),
         Err(error) => Err(error.clone()),
     }
 }
 
-fn linked_issue(issue: &Issue) -> LinkedIssue {
-    LinkedIssue {
-        issue_id: issue.id.clone(),
-        number: issue.number,
-        title: issue.title.clone(),
-        status: issue.status.clone(),
-        state: match issue.state {
-            IssueState::Open => "open",
-            IssueState::Closed => "closed",
+fn linked_task(task: &Task) -> LinkedTask {
+    LinkedTask {
+        task_id: task.id.clone(),
+        number: task.number,
+        title: task.title.clone(),
+        status: task.status.clone(),
+        state: match task.state {
+            TaskState::Open => "open",
+            TaskState::Closed => "closed",
         }
         .to_string(),
     }

@@ -3727,7 +3727,7 @@ fn the_app_server_child_inherits_no_agent_identity_and_scopes_its_mcp_token() {
         !enabled_tools.contains("read_unread_messages"),
         "{enabled_tools}"
     );
-    // Not `create_issue`: the tracker gave the coding surface a `create_issue`
+    // Not `create_task`: the tracker gave the coding surface a `create_task`
     // of its own, so that name is no longer router-only and says nothing about
     // surface bleed. These four are.
     //

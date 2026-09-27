@@ -1,6 +1,6 @@
 //! A real `branch.finish` frame with Git losing both create-only restoration
 //! attempts to a competing ref lock. The workspace still goes, while the
-//! reply and linked issue retain the measured commit needed for recovery.
+//! reply and linked task retain the measured commit needed for recovery.
 
 use build_bridge::{
     app::AppState,
@@ -54,7 +54,7 @@ struct RecoveryCase {
     branch: String,
     checkout: String,
     measured: String,
-    issue: String,
+    task: String,
     attempts: std::path::PathBuf,
 }
 
@@ -121,20 +121,20 @@ impl RecoveryCase {
             &repo,
             &["config", &format!("branch.{branch}.remote"), "origin"],
         );
-        let issue = result(
+        let task = result(
             &handler,
-            "issues.create",
+            "tasks.create",
             json!({
                 "project_id": project, "title": "recover this branch"
             }),
-        )["issue"]["id"]
+        )["task"]["id"]
             .as_str()
             .unwrap()
             .to_string();
         result(
             &handler,
-            "issues.link",
-            json!({ "issue_id": issue, "workspace_id": workspace_id }),
+            "tasks.link",
+            json!({ "task_id": task, "workspace_id": workspace_id }),
         );
 
         let attempts = root.path().join("attempts");
@@ -147,7 +147,7 @@ impl RecoveryCase {
             branch,
             checkout,
             measured,
-            issue,
+            task,
             attempts,
         }
     }
@@ -209,7 +209,7 @@ exec /usr/bin/git "$@"
             "{reason}"
         );
         self.assert_git_state();
-        self.assert_issue_event(reason);
+        self.assert_task_event(reason);
     }
 
     fn assert_git_state(&self) {
@@ -251,13 +251,9 @@ exec /usr/bin/git "$@"
         assert_eq!(listed["workspaces"], json!([]));
     }
 
-    fn assert_issue_event(&self, reason: &str) {
-        let timeline = result(
-            &self.handler,
-            "issues.get",
-            json!({ "issue_id": self.issue }),
-        )["timeline"]
-            .clone();
+    fn assert_task_event(&self, reason: &str) {
+        let timeline =
+            result(&self.handler, "tasks.get", json!({ "task_id": self.task }))["timeline"].clone();
         let logged = timeline
             .as_array()
             .unwrap()
@@ -271,7 +267,7 @@ exec /usr/bin/git "$@"
 }
 
 #[test]
-fn failed_restore_is_reported_on_the_frame_and_linked_issue() {
+fn failed_restore_is_reported_on_the_frame_and_linked_task() {
     let case = RecoveryCase::new();
     let old_path = case.install_competing_lock();
     let finished = result(

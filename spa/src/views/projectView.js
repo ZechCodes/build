@@ -12,9 +12,9 @@
 // project. Both say which project they are about, because the bar names one.
 //
 // Two tabs, because a project holds two kinds of thing: the workspaces the work
-// happens in, and the issues that say what the work IS. The Issues tab is its
-// own surface (core/trackerIssuesPane.js) mounted into this page's body, and it
-// keeps its own URL — `#/project/<p>/issues` — so a link to a board opens one.
+// happens in, and the tasks that say what the work IS. The Tasks tab is its
+// own surface (core/trackerTasksPane.js) mounted into this page's body, and it
+// keeps its own URL — `#/project/<p>/tasks` — so a link to a board opens one.
 
 import { $ } from "../dom.js";
 import { App, go } from "../app.js";
@@ -34,17 +34,17 @@ import {
 import { refreshFeed, subscribeFeed } from "../core/taskFeed.js";
 import { ICON_PLUS, ICON_SETTINGS } from "../core/icons.js";
 import { routeProjectKey } from "../core/deviceKey.js";
-import { mountIssuesPane } from "../core/trackerIssuesPane.js";
+import { mountTasksPane } from "../core/trackerTasksPane.js";
 import { hashFromRoute } from "../core/router.js";
-import "../styles/issues.css";
+import "../styles/tasks.css";
 import "../styles/surfaces.css";
 
 /** The two tabs, and which one a route stands on. Workspaces is the page
  *  itself, so a route that names no tab names that one. */
 const WORKSPACES_TAB = "workspaces";
-const ISSUES_TAB = "issues";
-/// Issues is the default, so a route that names no tab is on it (#46).
-const tabOf = (route) => (route.tab === WORKSPACES_TAB ? WORKSPACES_TAB : ISSUES_TAB);
+const TASKS_TAB = "tasks";
+/// Tasks is the default, so a route that names no tab is on it (#46).
+const tabOf = (route) => (route.tab === WORKSPACES_TAB ? WORKSPACES_TAB : TASKS_TAB);
 
 /** Line two of a workspace row: what it is standing on, what its checkout is
  *  doing when that is not simply "ready", and what the work weighs. The same
@@ -65,7 +65,7 @@ const lifecycleHtml = (row, ui) => {
 };
 
 /** Reclaim, where nothing holds the workspace. It removes the workspace, whose
- *  work is already pushed and whose issues are finished, so it asks nothing
+ *  work is already pushed and whose tasks are finished, so it asks nothing
  *  first: the bridge measures again and refuses if that stopped being true. */
 const reclaimHtml = (row, ui) => {
   if (!row.lifecycle?.reclaimable) return "";
@@ -190,8 +190,8 @@ function paint(state) {
   setToolbarVerb(state.verb);
   const pane = $("#project-pane");
   if (!pane) return;
-  if (state.tab === ISSUES_TAB) {
-    state.issues?.feedMoved();
+  if (state.tab === TASKS_TAB) {
+    state.tasks?.feedMoved();
     return;
   }
   const shown = JSON.stringify([state.page.rows, state.filter, [...state.reclaiming], [...state.reclaimErrors]]);
@@ -205,19 +205,19 @@ function paint(state) {
  * Open one of the two tabs.
  *
  * Each owns the body outright — the workspaces list paints into it and the
- * Issues pane mounts into it — so the one leaving is torn down before the one
+ * Tasks pane mounts into it — so the one leaving is torn down before the one
  * arriving is built. The URL is rewritten rather than navigated: the page is
  * the same page, and a navigation would remount the rail beside it.
  */
 function openTab(state, tab) {
   if (state.tab === tab) return;
-  state.issues?.dispose();
-  state.issues = null;
+  state.tasks?.dispose();
+  state.tasks = null;
   state.tab = tab;
   const pane = $("#project-pane");
   pane.innerHTML = "";
   delete pane.dataset.rows;
-  if (tab === ISSUES_TAB) mountIssues(state, pane);
+  if (tab === TASKS_TAB) mountTasks(state, pane);
   else paint(state);
   writeTabHash(state);
 }
@@ -233,8 +233,8 @@ function writeTabHash(state) {
   history.replaceState(null, "", hashFromRoute(route));
 }
 
-function mountIssues(state, pane) {
-  state.issues = mountIssuesPane(pane, {
+function mountTasks(state, pane) {
+  state.tasks = mountTasksPane(pane, {
     projectId: state.route.projectId,
     projectName: state.page.name,
     deviceId: state.context.deviceId,
@@ -311,7 +311,7 @@ export async function renderProject() {
   const state = {
     route, context, disposed: false, selection: shellSelection(),
     page: projectPageModel(null, route), verb: null,
-    tab: tabOf(route), view: route.view || "dashboard", feed: null, issues: null, openTab: null,
+    tab: tabOf(route), view: route.view || "dashboard", feed: null, tasks: null, openTab: null,
     reclaiming: new Set(), reclaimErrors: new Map(), filter: ALL_WORKSPACES,
   };
   state.verb = (host) => paintProjectVerbs(host, state);
@@ -319,7 +319,7 @@ export async function renderProject() {
   // The two tabs are the toolbar's (core/toolbar.js), so they stay reachable
   // with the chat open over the page; a press is handed here to switch in
   // place, because a navigation would remount the rail beside the page.
-  state.openTab = (tab) => openTab(state, tab === WORKSPACES_TAB ? WORKSPACES_TAB : ISSUES_TAB);
+  state.openTab = (tab) => openTab(state, tab === WORKSPACES_TAB ? WORKSPACES_TAB : TASKS_TAB);
   setProjectTabHandler(state.openTab);
   $("#project-pane").onclick = (event) => pressList(state, event);
   const deviceStrip = mountDeviceStrip(root, context, { hasContent: () => !state.page.empty });
@@ -329,13 +329,13 @@ export async function renderProject() {
     state.page = projectPageModel(feed, state.route);
     paint(state);
   });
-  if (state.tab === ISSUES_TAB) mountIssues(state, $("#project-pane"));
+  if (state.tab === TASKS_TAB) mountTasks(state, $("#project-pane"));
   paint(state);
   App.viewDispose = () => {
     state.disposed = true;
     unsubscribe();
     deviceStrip();
-    state.issues?.dispose();
+    state.tasks?.dispose();
     clearToolbarVerb(state.verb);
     clearProjectTabHandler(state.openTab);
   };

@@ -89,7 +89,7 @@ Modules are declared in `bridge/src/lib.rs`. The main groups (paths relative to 
 
 | Area | Modules |
 | --- | --- |
-| RPC and state | `app.rs` + `app/` (`AppState`, `app/rpc.rs` dispatch, one submodule per area: `board`, `captures`, `config`, `conversations`, `git`, `issues`, `projects`, `rtc`, `runs`, `runtime`, `tracker`, `updates`, `watchers`, `workspaces`, `worktrees`) |
+| RPC and state | `app.rs` + `app/` (`AppState`, `app/rpc.rs` dispatch, one submodule per area: `board`, `captures`, `config`, `conversations`, `git`, `tasks`, `projects`, `rtc`, `runs`, `runtime`, `tracker`, `updates`, `watchers`, `workspaces`, `worktrees`) |
 | Wire contract | `api/` (`API_VERSION`, capabilities, `ApiError`), `api/v1/` (typed verbs, one file per family) |
 | Transport | `carrier.rs` + `carrier/` (relay socket or DataChannel behind one boundary; worker pool), `transport.rs` (E2EE), `relay.rs` (relay client), `rtc.rs` + `rtc/` (WebRTC peer, ICE policy, chunking), `liveness.rs`, `presence.rs`, `reachability.rs` |
 | Push | `changes.rs` (`ChangeBus`) |
@@ -107,10 +107,10 @@ watchers, presence, updates) belongs in the bridge as services isolated from
 the RPC and event layer. New work should move toward that.
 
 **Today the code does not fully follow the rule.** Some verbs still carry domain
-logic in the request path. For example, `issues.assign`
-(`bridge/src/api/v1/issues.rs`) calls `AppState::issues_assign`, and
+logic in the request path. For example, `tasks.assign`
+(`bridge/src/api/v1/tasks.rs`) calls `AppState::tasks_assign`, and
 `bridge/src/app/tracker/dispatch.rs` then applies the assignment policy: it
-watches an issue assigned to the user, tracks the receiving agent, and links
+watches a task assigned to the user, tracks the receiving agent, and links
 the dispatch result, all inside the call. Read the handler before assuming a
 verb is a thin read or write.
 
@@ -148,7 +148,7 @@ Everything else is queued to the worker pool in
    arms (`ping`, `term.list`, `term.close`, `stream.*`).
 
 **The verb registry** is `bridge/src/api/v1/mod.rs`. Each family file (`board.rs`,
-`changes.rs`, `git.rs`, `issues.rs`, `lifecycle.rs`, `thread.rs`, `updates.rs`,
+`changes.rs`, `git.rs`, `tasks.rs`, `lifecycle.rs`, `thread.rs`, `updates.rs`,
 `workspace.rs`) has a `methods()` table built with the `v1_method!` macro, which
 names the verb, its handler and its typed params and result. Handler signatures
 never take `serde_json::Value`; a test in that module enforces it. Slow git work
@@ -214,17 +214,17 @@ runtime that starts them.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
-  `issues.listPaged` (`limit`/`cursor` on `issues.list`,
+  `tasks.listPaged` (`limit`/`cursor` on `tasks.list`,
   `bridge/src/app/tracker/pages.rs`); 1.26.0 adds `bodies.pages` (`range`
   on `fs.read`, `git.diff`, `git.show` and `git.changeset_diff`,
-  `bridge/src/body_page.rs`); 1.27.0 adds `issues.createdUserMentions`:
-  an agent's `create_issue` can mark its `created` timeline event with optional
-  `mentions_user`, making the watched issue need the user until it is read.
+  `bridge/src/body_page.rs`); 1.27.0 adds `tasks.createdUserMentions`:
+  an agent's `create_task` can mark its `created` timeline event with optional
+  `mentions_user`, making the watched task need the user until it is read.
   1.28.0 adds `board.conversationSessions`: a conversation's feed row carries
   its own `session_started_ms` and `last_activity_ms` (the project agent's
-  inbox row is ordered by them, #103). 1.29.0 adds `issues.unreadCounts`:
-  a watched issue on `issues.list` and `issues.get` carries `unread_count`,
-  the count its inbox row says, which the Issues tab badges and the rail read
+  inbox row is ordered by them, #103). 1.29.0 adds `tasks.unreadCounts`:
+  a watched task on `tasks.list` and `tasks.get` carries `unread_count`,
+  the count its inbox row says, which the Tasks tab badges and the rail read
   (#104). 1.30.0 adds `thread.attachmentChunks` (`offset`/`length` on
   `thread.attachment`) and `fs.mediaRawPages` (`range.raw` on `fs.read` for
   exact image, audio and video byte pages through 64 MiB).
@@ -302,12 +302,12 @@ and those feed git and files changes into the `ChangeBus`.
 
 **Reclaim** (#135) is a service, not a verb. `AppState::spawn_workspace_reclaim`
 (`bridge/src/app/workspaces/reclaim.rs`) sweeps every managed workspace two
-minutes after startup, then every hour. It also sweeps five seconds after an
-issue that links a workspace moves to Done or closes. A sweep reads each
+minutes after startup, then every hour. It also sweeps five seconds after a
+task that links a workspace moves to Done or closes. A sweep reads each
 workspace under the app lock, then measures it with the lock released
 (`bridge/src/reclaim.rs`: `Subject::measure`). The measure covers the newest
 activity (a conversation message, a commit, a file change outside `.git`,
-`.build` and build output), dirty and unpushed counts, and the linked issues.
+`.build` and build output), dirty and unpushed counts, and the linked tasks.
 Every walk spends from one budget per workspace (2 million entries, two
 minutes, and the daemon's stop flag, `bridge/src/reclaim/budget.rs`). Git is
 read in a process of its own, `build-bridge measure-git`, one repository at a
@@ -323,7 +323,7 @@ overrides the setting. Each sweep reads the policy afresh
 (`AppState::reclaim_policy_now`), so a change in Settings applies at the next
 sweep, which the change asks for at once. What holds it: not ready, an agent working or a
 terminal open anywhere inside it, uncommitted or unpushed work, a plain
-directory, a linked issue not Done, or issues that could not be read.
+directory, a linked task not Done, or tasks that could not be read.
 
 The registry anchors reclamation to its configured managed storage directory.
 Before measurement or cleanup, the workspace root and every manifest checkout
@@ -336,7 +336,7 @@ An invalid boundary leaves the workspace unmeasured and preserves its files.
 
 Each project agent gets one notice per sweep naming its newly quiet
 workspaces, and the notice repeats daily while they stay quiet. The linked
-issues record `workspace_idle` and `workspace_pruned` as actor `build`,
+tasks record `workspace_idle` and `workspace_pruned` as actor `build`,
 without waking their trackers.
 
 Dropping build output (tier 1) is off unless the device's `workspace_prune`
@@ -371,7 +371,7 @@ before the reservation's 15-minute backstop could. Once measured, reclaim reads
 every hold again under the lock, reads Git once more on a short budget (five
 seconds, `unmeasured` past it) so a commit that landed meanwhile still holds
 the workspace, logs `workspace_reclaimed` on each linked
-issue without waking its trackers, and removes the workspace through the same
+task without waking its trackers, and removes the workspace through the same
 path as `workspace.delete`. That path stops every agent and terminal anywhere
 under the workspace root first. Once the checkouts are gone, the drain deletes
 the local branch each one carried (#167), through Done's `BranchDeletion`
@@ -380,7 +380,7 @@ commit the checks passed, never a default branch, never a branch checked out
 anywhere, never one with commits no remote has or whose remote cannot say which
 branch is its default. A branch that has to stay never holds the reclaim up.
 The answer names each repository's outcome (`deleted`, `kept`,
-`restore_failed`, with the reason), and each issue linking the workspace or
+`restore_failed`, with the reason), and each task linking the workspace or
 the branch records the same entry as `branch_deleted` or `branch_kept`, under
 whoever reclaimed and without waking its trackers. The verdicts persist in the store's `meta`
 table (`bridge/src/store/workspace_lifecycle.rs`).
@@ -422,11 +422,11 @@ the handlers in `bridge/src/app/mcp.rs`.
 The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
 `Project`). Each action is a `BridgeAction` variant. The tool lists are
 `coding_tools()`, `router_tools()`, `project_tools()`, `workspace_tools()` and
-`issue_tools()`. They cover conversation tools (`post_thread_message`,
+`task_tools()`. They cover conversation tools (`post_thread_message`,
 `message_agent`, `set_topic`, `compact_self`, …; compaction in
 `bridge/src/mcp/compaction.rs`), workspace tools (`create_workspace`,
-`add_workspace_agent`, …) and the tracker (`get_issue`, `comment_issue`,
-`move_issue`, `label_issue`, …).
+`add_workspace_agent`, …) and the tracker (`get_task`, `comment_task`,
+`move_task`, `label_task`, …).
 
 ### Relay and direct connection
 
@@ -630,13 +630,13 @@ In practice:
   a gate screen took `#root` (the version gates, the waiting and onboarding
   screens unmount the view as they take it), the account changed, or the
   route's machine was retired since (`deviceContextIdentity`).
-- **Route surfaces** (branch, issue, tracker issue, project, workspace) and the
+- **Route surfaces** (branch, task, tracker task, project, workspace) and the
   shell's rail and console stand on `surfaceContext(route)`
   (`spa/src/core/surfaceContext.js`): the device's context, or a session-less
   one when only its records are on disk (a cold reload). They never ask whether
   the machine can answer. `mountDeviceNotice` (`spa/src/core/deviceNotice.js`)
   stands in only for a machine nothing here has ever held.
-- Entity-specific caches sit beside it: `issueCache.js`, `trackerCache.js`,
+- Entity-specific caches sit beside it: `taskCache.js`, `trackerCache.js`,
   `conversationCache.js`, `surfacesCache.js` in `spa/src/core/`.
 - **Bodies in pages** (#95). A file, diff or commit patch over its cache cap
   (`FILE_MAX_BYTES`, `FILE_DIFF_MAX_BYTES`, `CHANGESET_DIFF_MAX_BYTES`,
@@ -664,8 +664,8 @@ In practice:
   die with their head: the five recent files per workspace, the workspace's
   data TTL. An oversized aggregate diff is kept without its patch and
   painted file by file.
-- **Paged issue lists.** From a bridge announcing `issues.listPaged`, the sync
-  pass and the Issues tab pull `issues.list` a page at a time
+- **Paged task lists.** From a bridge announcing `tasks.listPaged`, the sync
+  pass and the Tasks tab pull `tasks.list` a page at a time
   (`spa/src/core/trackerPages.js`): each page read is written under its own
   address (its filter, cursor, limit and read number) with that read number
   in its body. The page is read back and laid over the list using its own read
@@ -678,19 +678,19 @@ In practice:
   is asked, from a count shared by all tabs in the cache. Allocation waits
   through transient cache recovery; a refused counter write stops the read
   instead of inventing a tab-local number while shared storage is usable.
-  Each page notes the stretch of issue numbers it had the say on beside the
+  Each page notes the stretch of task numbers it had the say on beside the
   list record, written in the same transaction as that list record
-  (`spa/src/core/issueReadOrder.js`,
+  (`spa/src/core/taskReadOrder.js`,
   `mergeCachedTogether`). That joint write waits through transient cache
   recovery before the walk advances; a refused fold stops the walk without
   advancing its cursor. A page yields every row a read asked after it had
   the say on, in any tab, present or absent, so an older page neither brings
-  back an issue a newer read took off the list nor overwrites a newer copy
+  back a task a newer read took off the list nor overwrites a newer copy
   with the same `updated_at`. A page answers for its own rows
   and below with its own read; the numbers between the last row the walk laid
   and a page's first keep the older read of the pages that read past them,
   since the cursor does not say how far the page before read. For writers
-  that are not page reads (a whole list from an older bridge, an issue filed
+  that are not page reads (a whole list from an older bridge, a task filed
   here) the timestamps stand in: a held row written after the page's copy of
   it, or one the page does not name that was written after the page was
   read, keeps its place. An older bridge is read whole, as before.
@@ -719,7 +719,7 @@ them into new code; each is a candidate to bring under the rule.
   - the agent rail reads `settings.get` (`spa/src/core/agentRail.js`).
 - **Invalidation pushes.** Some push fields only say what moved, and the
   applier reads again:
-  - `issues` carries only ids, so the project's issue list is re-read;
+  - `tasks` carries only ids, so the project's task list is re-read;
   - changed `files` paths re-list the directories the reader opened and
     re-read open file bodies with `fs.read` (a paged body from its first
     page, keeping the rest when the file's version has not moved);
@@ -793,9 +793,9 @@ refuses when that device cannot answer.
   (`spa/src/core/changeEvents.js`), which falls back to `NO_CAPABILITIES`.
 - A flag that changes what a view draws is written to the cache at the
   greeting and read from there, so a cold mount draws what it will keep:
-  `issues.commentUserNotifies` becomes the per-device Needs you rule in
-  `spa/src/core/needsYouRule.js`, read by the Issues tab and the inbox's
-  watched issues; `branches.finishDelete` becomes whether Done deletes the
+  `tasks.commentUserNotifies` becomes the per-device Needs you rule in
+  `spa/src/core/needsYouRule.js`, read by the Tasks tab and the inbox's
+  watched tasks; `branches.finishDelete` becomes whether Done deletes the
   branch on that machine in `spa/src/core/branchDeleteSupport.js`, read by the
   branch surface's Done and the inbox row's. What the cache says draws the
   confirmation; the deletion itself is sent through `whenGreeted`, on the
@@ -829,9 +829,9 @@ open as a modal (`spa/src/views/settingsModal.js`).
 | --- | --- |
 | Inbox | `spa/src/views/inbox.js`, `spa/src/core/inboxShell.js`, `spa/src/core/inboxView.js`, `spa/src/core/inbox.js` |
 | Conversation and agent rail | `spa/src/core/shell.js`, `spa/src/core/agentRail.js` (+ `agentRailModel.js`, `agentRailRender.js`), `spa/src/core/chatRepository.js`, `spa/src/core/thread*.js` |
-| Issues list, board, dashboard | `spa/src/views/projectView.js` → `spa/src/core/trackerIssuesPane.js`; `trackerListRender.js`, `trackerBoardRender.js`, `trackerDashboardRender.js` in `spa/src/core/` |
-| Issue page | `spa/src/views/trackerIssueView.js` → `spa/src/core/trackerIssuePage.js` |
-| Workspace navigation | the toolbar's `project / workspace` picker in `spa/src/core/toolbar.js` (+ `toolbarModel.js`, `toolbarRender.js`); the rail down the left edge (Changes, Files, Issues, Settings) in `spa/src/core/workspaceRail.js` over `directoryRail.js`, mounted from `spa/src/views/workspaceView.js`; inside Changes, the per-directory tab row in `spa/src/views/workspaceChanges.js` |
+| Tasks list, board, dashboard | `spa/src/views/projectView.js` → `spa/src/core/trackerTasksPane.js`; `trackerListRender.js`, `trackerBoardRender.js`, `trackerDashboardRender.js` in `spa/src/core/` |
+| Task page | `spa/src/views/trackerTaskView.js` → `spa/src/core/trackerTaskPage.js` |
+| Workspace navigation | the toolbar's `project / workspace` picker in `spa/src/core/toolbar.js` (+ `toolbarModel.js`, `toolbarRender.js`); the rail down the left edge (Changes, Files, Tasks, Settings) in `spa/src/core/workspaceRail.js` over `directoryRail.js`, mounted from `spa/src/views/workspaceView.js`; inside Changes, the per-directory tab row in `spa/src/views/workspaceChanges.js` |
 | Changes and git | `spa/src/core/gitPane.js`, `gitRender.js`, `changesReview.js`, `changesModel.js`, `changesRender.js`, mounted from `spa/src/views/workspaceChanges.js` (a workspace, under its directory tab row, one pane per directory shown, kept while another stands; hide/show suspends owned editors, dialogs, listeners and layout work while preserving drafts, scroll and cache subscriptions) and `spa/src/views/branchView.js` |
 | Files | `spa/src/views/files.js`, `spa/src/core/fileRoots.js` (a workspace's one root per directory), `spa/src/core/fileTree.js` (+ `fileTreeModel.js`), `spa/src/core/fileTabs.js` (+ `fileTabsModel.js`), `spa/src/core/fileViewer.js`, `spa/src/core/fileEditor.js` |
 | Terminal | `spa/src/core/console.js`, `spa/src/terminal/` |

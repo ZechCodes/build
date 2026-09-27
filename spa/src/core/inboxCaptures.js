@@ -119,7 +119,7 @@ async function rerouteCapture(captureId, destination) {
     const rerouted = await call("capture.reroute", rerouteParams(captureId, destination));
     // The answer carries the new routing, and for a capture that has already
     // settled it is the only thing that will: the feed stopped carrying it, so
-    // nothing else would ever correct the row's "→ project as issue".
+    // nothing else would ever correct the row's "→ project as task".
     await adoptCaptureRecord(rerouted, entry?.deviceId);
     await refreshFeed();
   } catch (error) {

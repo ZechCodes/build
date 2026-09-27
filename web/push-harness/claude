@@ -4,8 +4,8 @@
 # It looks like an interactive harness to the bridge (it turns on bracketed
 # paste, which is the readiness signal a spawn waits for), and once its prompt
 # is pasted it acts as its agent through Build's real MCP entry, with the
-# session token the bridge handed it: a comment on the issue named in
-# /tmp/push-issue (when there is one), then a Complete report to the user.
+# session token the bridge handed it: a comment on the task named in
+# /tmp/push-task (when there is one), then a Complete report to the user.
 # Both are what a real agent does, so both reach the bridge's push triggers.
 #
 # Mounted at /usr/local/bin/claude by deploy/compose.push-check.yml.
@@ -21,12 +21,12 @@ done
 # The pasted prompt is the go signal.
 dd bs=1 count=1 >/dev/null 2>&1
 sleep 1
-ISSUE=$(cat /tmp/push-issue 2>/dev/null || true)
+TASK=$(cat /tmp/push-task 2>/dev/null || true)
 {
   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"push-check","version":"1"}}}'
   printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/initialized"}'
-  if [ -n "$ISSUE" ]; then
-    printf '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"comment_issue","arguments":{"issue_id":"%s","body":"A question for you."}}}\n' "$ISSUE"
+  if [ -n "$TASK" ]; then
+    printf '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"comment_task","arguments":{"task_id":"%s","body":"A question for you."}}}\n' "$TASK"
   fi
   printf '%s\n' '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"status":"Complete","body":"Hello from the push check."}}}'
   sleep 4

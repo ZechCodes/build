@@ -3,7 +3,7 @@
 //! checkout is gone, at the commit the checks passed, never a default branch,
 //! never a branch checked out somewhere, never one whose default a remote
 //! cannot confirm. The workspace goes either way. The answer says what became
-//! of each branch in each repository, and so does each linked issue, with why
+//! of each branch in each repository, and so does each linked task, with why
 //! a branch stayed when it did.
 
 use super::workspace_reclaim::{call, finish, linked_workspace, root_and_checkout};
@@ -38,9 +38,9 @@ fn has_branch(repo: &Path, branch: &str) -> bool {
         .success()
 }
 
-/// The `branch_*` entries on the issue's timeline.
-fn branch_entries(state: &Arc<Mutex<AppState>>, issue: &str) -> Vec<Value> {
-    call(state, "issues.get", json!({ "issue_id": issue }))["result"]["timeline"]
+/// The `branch_*` entries on the task's timeline.
+fn branch_entries(state: &Arc<Mutex<AppState>>, task: &str) -> Vec<Value> {
+    call(state, "tasks.get", json!({ "task_id": task }))["result"]["timeline"]
         .as_array()
         .unwrap()
         .iter()
@@ -91,9 +91,9 @@ fn origin_of(source: &Path) -> PathBuf {
 }
 
 #[test]
-fn reclaim_deletes_the_workspace_branch_and_says_so_on_the_issue() {
-    let (_tmp, state, _project, ws, issue) = linked_workspace();
-    finish(&state, &issue);
+fn reclaim_deletes_the_workspace_branch_and_says_so_on_the_task() {
+    let (_tmp, state, _project, ws, task) = linked_workspace();
+    finish(&state, &task);
     let (source, branch) = source_and_branch(&state, &ws);
     assert!(has_branch(&source, &branch));
     let source_id = source_id(&state, &ws);
@@ -113,7 +113,7 @@ fn reclaim_deletes_the_workspace_branch_and_says_so_on_the_issue() {
             "outcome": "deleted",
         })]
     );
-    let entries = branch_entries(&state, &issue);
+    let entries = branch_entries(&state, &task);
     assert_eq!(entries.len(), 1, "{entries:?}");
     assert_eq!(entries[0]["kind"], "branch_deleted");
     assert_eq!(entries[0]["payload"]["outcome"], "deleted");
@@ -129,11 +129,11 @@ fn reclaim_deletes_the_workspace_branch_and_says_so_on_the_issue() {
 }
 
 /// The source's own checkout stood on the branch: the workspace goes, the
-/// branch stays, and the issue says where it is checked out.
+/// branch stays, and the task says where it is checked out.
 #[test]
 fn reclaim_keeps_a_branch_checked_out_in_the_source_and_says_why() {
-    let (_tmp, state, _project, ws, issue) = linked_workspace();
-    finish(&state, &issue);
+    let (_tmp, state, _project, ws, task) = linked_workspace();
+    finish(&state, &task);
     let (root, _) = root_and_checkout(&state, &ws);
     let (source, branch) = source_and_branch(&state, &ws);
     // Same commit as main, so the source's tree stays clean.
@@ -154,7 +154,7 @@ fn reclaim_keeps_a_branch_checked_out_in_the_source_and_says_why() {
     );
     assert!(!root.exists(), "the workspace goes either way");
     assert!(has_branch(&source, &branch));
-    let entries = branch_entries(&state, &issue);
+    let entries = branch_entries(&state, &task);
     assert_eq!(entries.len(), 1, "{entries:?}");
     assert_eq!(entries[0]["kind"], "branch_kept");
     assert_eq!(entries[0]["payload"]["branch"], branch.as_str());
@@ -170,8 +170,8 @@ fn reclaim_keeps_a_branch_checked_out_in_the_source_and_says_why() {
 /// The remote calls the workspace's branch its default: it stays.
 #[test]
 fn reclaim_keeps_the_branch_a_remote_calls_its_default() {
-    let (_tmp, state, _project, ws, issue) = linked_workspace();
-    finish(&state, &issue);
+    let (_tmp, state, _project, ws, task) = linked_workspace();
+    finish(&state, &task);
     let (source, branch) = source_and_branch(&state, &ws);
     let origin = origin_of(&source);
     git_in(&source, &["push", "-q", "origin", &branch]);
@@ -183,7 +183,7 @@ fn reclaim_keeps_the_branch_a_remote_calls_its_default() {
     reclaim(&state, &ws);
 
     assert!(has_branch(&source, &branch));
-    let entries = branch_entries(&state, &issue);
+    let entries = branch_entries(&state, &task);
     assert_eq!(entries[0]["kind"], "branch_kept", "{entries:?}");
     assert_eq!(
         entries[0]["payload"]["reason"],
@@ -195,8 +195,8 @@ fn reclaim_keeps_the_branch_a_remote_calls_its_default() {
 /// branch: nothing can say it is not that remote's default.
 #[test]
 fn reclaim_keeps_the_branch_when_the_remote_default_cannot_be_confirmed() {
-    let (tmp, state, _project, ws, issue) = linked_workspace();
-    finish(&state, &issue);
+    let (tmp, state, _project, ws, task) = linked_workspace();
+    finish(&state, &task);
     let (source, branch) = source_and_branch(&state, &ws);
     let gone = tmp.path().join("no-such-origin.git");
     git_in(
@@ -207,7 +207,7 @@ fn reclaim_keeps_the_branch_when_the_remote_default_cannot_be_confirmed() {
     reclaim(&state, &ws);
 
     assert!(has_branch(&source, &branch));
-    let entries = branch_entries(&state, &issue);
+    let entries = branch_entries(&state, &task);
     assert_eq!(entries[0]["kind"], "branch_kept", "{entries:?}");
     assert_eq!(
         entries[0]["payload"]["reason"],
@@ -254,8 +254,8 @@ fn settle(state: &Arc<Mutex<AppState>>, params: &Value, removing: DeferredJob) {
 /// checkout is gone.
 #[test]
 fn the_branch_goes_in_the_removal_off_the_lock() {
-    let (_tmp, state, _project, ws, issue) = linked_workspace();
-    finish(&state, &issue);
+    let (_tmp, state, _project, ws, task) = linked_workspace();
+    finish(&state, &task);
     let (source, branch) = source_and_branch(&state, &ws);
 
     let (params, removing) = decided(&state, &ws);
@@ -269,8 +269,8 @@ fn the_branch_goes_in_the_removal_off_the_lock() {
 /// decided: the removal still goes ahead, and the branch keeps the commit.
 #[test]
 fn a_commit_landing_after_the_decision_keeps_the_branch() {
-    let (_tmp, state, _project, ws, issue) = linked_workspace();
-    finish(&state, &issue);
+    let (_tmp, state, _project, ws, task) = linked_workspace();
+    finish(&state, &task);
     let (source, branch) = source_and_branch(&state, &ws);
 
     let (params, removing) = decided(&state, &ws);
@@ -304,7 +304,7 @@ fn a_commit_landing_after_the_decision_keeps_the_branch() {
     settle(&state, &params, removing);
 
     assert!(has_branch(&source, &branch));
-    let entries = branch_entries(&state, &issue);
+    let entries = branch_entries(&state, &task);
     assert_eq!(entries[0]["kind"], "branch_kept", "{entries:?}");
     assert_eq!(
         entries[0]["payload"]["reason"],
@@ -313,11 +313,11 @@ fn a_commit_landing_after_the_decision_keeps_the_branch() {
 }
 
 /// A branch somebody deleted after the decision: nothing to take, and nothing
-/// said about it on the issue.
+/// said about it on the task.
 #[test]
 fn a_branch_already_gone_is_not_reported() {
-    let (_tmp, state, _project, ws, issue) = linked_workspace();
-    finish(&state, &issue);
+    let (_tmp, state, _project, ws, task) = linked_workspace();
+    finish(&state, &task);
     let (source, branch) = source_and_branch(&state, &ws);
 
     let (params, removing) = decided(&state, &ws);
@@ -328,22 +328,22 @@ fn a_branch_already_gone_is_not_reported() {
     settle(&state, &params, removing);
 
     assert!(!has_branch(&source, &branch));
-    assert_eq!(branch_entries(&state, &issue), Vec::<Value>::new());
+    assert_eq!(branch_entries(&state, &task), Vec::<Value>::new());
 }
 
 /// Two sources carrying the same branch name, deleted in one repository and
-/// kept in the other: the answer and the issue say which is which.
+/// kept in the other: the answer and the task say which is which.
 #[test]
 fn a_branch_deleted_in_one_source_and_kept_in_another_is_told_apart() {
-    let (tmp, state, project, issue) = two_source_project();
+    let (tmp, state, project, task) = two_source_project();
     let ws = super::project_agent::workspace(&mut state.lock().unwrap(), &project, "pair");
     let linked = call(
         &state,
-        "issues.link",
-        json!({ "issue_id": issue, "workspace_id": ws }),
+        "tasks.link",
+        json!({ "task_id": task, "workspace_id": ws }),
     );
     assert_eq!(linked["ok"], true, "{linked:?}");
-    finish(&state, &issue);
+    finish(&state, &task);
     let directories = state
         .lock()
         .unwrap()
@@ -375,7 +375,7 @@ fn a_branch_deleted_in_one_source_and_kept_in_another_is_told_apart() {
     assert_eq!(branches[1]["source_id"], kept.source_id.as_str());
     assert!(!has_branch(&deleted.source_path, &branch));
     assert!(has_branch(&kept.source_path, &branch));
-    let entries = branch_entries(&state, &issue);
+    let entries = branch_entries(&state, &task);
     let by_repository = |repo: &Path| {
         entries
             .iter()
@@ -390,8 +390,8 @@ fn a_branch_deleted_in_one_source_and_kept_in_another_is_told_apart() {
     drop(tmp);
 }
 
-/// A project over two repositories with origins, and an issue:
-/// `(tempdir, state, project, issue)`.
+/// A project over two repositories with origins, and a task:
+/// `(tempdir, state, project, task)`.
 fn two_source_project() -> (tempfile::TempDir, Arc<Mutex<AppState>>, String, String) {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
@@ -417,9 +417,9 @@ fn two_source_project() -> (tempfile::TempDir, Arc<Mutex<AppState>>, String, Str
         json!({ "project_id": project_id, "path": second, "name": "second" }),
     ));
     assert_eq!(added["ok"], true, "{added:?}");
-    let issue = super::tracker::filed(&mut state, &project_id, "Two sources")["id"]
+    let task = super::tracker::filed(&mut state, &project_id, "Two sources")["id"]
         .as_str()
         .unwrap()
         .to_string();
-    (tmp, state.shared(), project_id, issue)
+    (tmp, state.shared(), project_id, task)
 }

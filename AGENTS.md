@@ -31,7 +31,7 @@ spec disagrees with the code or `ARCHITECTURE.md`, the code and
 ## About this project
 
 Build is an agentic IDE for developers, meant to be easy to contribute to: it
-lets a developer monitor agents running on their own machine, track issues,
+lets a developer monitor agents running on their own machine, track tasks,
 create plans, review changes and make their own changes, from a browser or the
 desktop app, end-to-end encrypted.
 
@@ -55,7 +55,7 @@ Design rules:
 - Run gitleaks before every push and semgrep before you post ready (commands below). The roll gate runs both again on every merge.
 - Security checklists must be 100/100. The feature checklists live in
   `planning/v2/*Security Checklist.md`.
-- One issue per branch, branched from `main`. Nothing merges without a review.
+- One task per branch, branched from `main`. Nothing merges without a review.
 - **SPA rendering draws from the cache, never from connection state.** Every
   view renders from the local cache and assumes it is up to date. Nothing
   draws based on the status of a connection or is aware of the connection

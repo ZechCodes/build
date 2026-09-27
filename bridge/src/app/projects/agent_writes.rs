@@ -150,7 +150,7 @@ impl AppState {
 
     /// `reclaim_workspace` — remove one of this project's workspaces through
     /// `workspace.reclaim`, holds and all, with the reclaim logged on its
-    /// issues under the calling agent's name.
+    /// tasks under the calling agent's name.
     pub(in crate::app) fn project_agent_reclaim_workspace(
         &mut self,
         owner_id: &str,

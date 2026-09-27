@@ -91,7 +91,7 @@ pub(in crate::app) fn reconcile_missing_run_worktree(
         let in_flight = progress.state != StageProgressState::Completed;
         if publication == StagePublication::Local || in_flight {
             progress.invalidation_reason = Some(
-                "Issue worktree disappeared before this stage's commits were verified pushed or merged"
+                "Task worktree disappeared before this stage's commits were verified pushed or merged"
                     .to_string(),
             );
             affected.push(progress.stage_id.clone());
@@ -466,14 +466,14 @@ impl AppState {
                     recovery_event = Some((
                         crate::thread::ThreadEventKind::WorktreeRecreated,
                         format!(
-                            "Recreated the Issue worktree from branch {}",
+                            "Recreated the Task worktree from branch {}",
                             active.worktree.branch()
                         ),
                     ));
                     state_changed = true;
                 }
-                // An Issue's implementation keeps its record: its branch is
-                // the lineage the Issue's stages were built on, and only the
+                // A Task's implementation keeps its record: its branch is
+                // the lineage the Task's stages were built on, and only the
                 // human can say how to get it back.
                 Err(error) if active.run.plan_id.is_some() && project_id.is_some() => {
                     active.last_error =
@@ -553,13 +553,13 @@ impl AppState {
             );
         }
 
-        if let (Some(issue_id), Some((event, summary))) = (
+        if let (Some(task_id), Some((event, summary))) = (
             active.run.plan_id.as_ref().map(|id| id.0.clone()),
             recovery_event,
         ) {
-            if let Ok(mut issue) = self.take_plan(&issue_id) {
+            if let Ok(mut task) = self.take_plan(&task_id) {
                 let mut links = vec![crate::thread::ThreadLink::Implementation {
-                    issue_id: issue_id.clone(),
+                    task_id: task_id.clone(),
                     implementation_id: run_id.clone(),
                 }];
                 if active.worktree.path.exists() {
@@ -567,7 +567,7 @@ impl AppState {
                         worktree_id: crate::worktree::external_worktree_id(&active.worktree.path),
                     });
                 }
-                issue.agents.sole_thread_mut().push_event_with_links(
+                task.agents.sole_thread_mut().push_event_with_links(
                     event,
                     Some(summary),
                     None,
@@ -575,7 +575,7 @@ impl AppState {
                     links,
                     now_rfc3339(),
                 );
-                let persisted = self.finish_plan_mutation(issue_id, issue);
+                let persisted = self.finish_plan_mutation(task_id, task);
                 persisted?;
             }
         }
@@ -627,11 +627,11 @@ impl AppState {
     }
 
     /// Write down what the restore found: the checkout is back (or was never
-    /// really gone), and the Issue's conversation says which. A restore that
+    /// really gone), and the Task's conversation says which. A restore that
     /// failed is refused with git's reason.
     pub(in crate::app) fn settle_restored_checkout(
         &mut self,
-        issue_id: String,
+        task_id: String,
         run_id: String,
         restored: crate::lifecycle::RestoredCheckout,
         caller: Box<dyn ImplementationCaller>,
@@ -659,30 +659,30 @@ impl AppState {
             }
             let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
             self.finish_run_mutation(run_id.clone(), active)?;
-            let mut issue = self.take_plan(&issue_id)?;
-            issue.agents.sole_thread_mut().push_event_with_links(
+            let mut task = self.take_plan(&task_id)?;
+            task.agents.sole_thread_mut().push_event_with_links(
                 if checkout_stood {
                     crate::thread::ThreadEventKind::WorktreeReused
                 } else {
                     crate::thread::ThreadEventKind::WorktreeRecreated
                 },
                 Some(if checkout_stood {
-                    "Verified and reused the original Issue worktree".to_string()
+                    "Verified and reused the original Task worktree".to_string()
                 } else {
-                    "Recreated the Issue worktree from its original branch".to_string()
+                    "Recreated the Task worktree from its original branch".to_string()
                 }),
                 None,
                 None,
                 vec![
                     crate::thread::ThreadLink::Implementation {
-                        issue_id: issue_id.clone(),
+                        task_id: task_id.clone(),
                         implementation_id: run_id.clone(),
                     },
                     crate::thread::ThreadLink::Worktree { worktree_id },
                 ],
                 now_rfc3339(),
             );
-            self.finish_plan_mutation(issue_id.clone(), issue)
+            self.finish_plan_mutation(task_id.clone(), task)
         })();
         caller.settle(self, settled.map(|()| run_id.as_str()))
     }
@@ -739,7 +739,7 @@ impl AppState {
             let Ok(mut active) = self.take_run(&run_id) else {
                 continue;
             };
-            let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
+            let task_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
             let branch = active.worktree.branch();
             let affected_stages = reconcile_missing_run_worktree(&mut active, &published);
             let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
@@ -757,9 +757,9 @@ impl AppState {
             if let Err(e) = persisted {
                 eprintln!("archive {run_id}: {e}");
             }
-            if let Some(issue_id) = issue_id {
-                if let Ok(mut issue) = self.take_plan(&issue_id) {
-                    issue.agents.sole_thread_mut().push_event_with_links(
+            if let Some(task_id) = task_id {
+                if let Ok(mut task) = self.take_plan(&task_id) {
+                    task.agents.sole_thread_mut().push_event_with_links(
                         crate::thread::ThreadEventKind::WorktreeDeleted,
                         Some(format!(
                             "Implementation worktree disappeared; {} stage(s) were reconciled",
@@ -769,7 +769,7 @@ impl AppState {
                         None,
                         vec![
                             crate::thread::ThreadLink::Implementation {
-                                issue_id: issue_id.clone(),
+                                task_id: task_id.clone(),
                                 implementation_id: run_id.clone(),
                             },
                             crate::thread::ThreadLink::Worktree {
@@ -779,21 +779,21 @@ impl AppState {
                         now_rfc3339(),
                     );
                     for stage_id in &affected_stages {
-                        if let Some(stage) = issue.stages.iter().find(|stage| &stage.id == stage_id)
+                        if let Some(stage) = task.stages.iter().find(|stage| &stage.id == stage_id)
                         {
-                            issue.agents.sole_thread_mut().push_event_with_links(
+                            task.agents.sole_thread_mut().push_event_with_links(
                                 crate::thread::ThreadEventKind::StageInvalidated,
                                 Some(format!("Stage “{}” is incomplete", stage.title)),
                                 None,
                                 None,
                                 vec![
-                                    crate::thread::ThreadLink::IssueStage {
-                                        issue_id: issue_id.clone(),
+                                    crate::thread::ThreadLink::TaskStage {
+                                        task_id: task_id.clone(),
                                         stage_id: stage.id.clone(),
                                         path: stage.path.clone(),
                                     },
                                     crate::thread::ThreadLink::Implementation {
-                                        issue_id: issue_id.clone(),
+                                        task_id: task_id.clone(),
                                         implementation_id: run_id.clone(),
                                     },
                                 ],
@@ -801,15 +801,15 @@ impl AppState {
                             );
                         }
                     }
-                    let persisted = self.finish_plan_mutation(issue_id.clone(), issue);
+                    let persisted = self.finish_plan_mutation(task_id.clone(), task);
                     if let Err(e) = persisted {
-                        eprintln!("archive {run_id}: issue event persist failed: {e}");
+                        eprintln!("archive {run_id}: task event persist failed: {e}");
                     }
                     // The checkout went away under Build with nothing merged,
-                    // so the issue is back in the inbox. Say which branch it
+                    // so the task is back in the inbox. Say which branch it
                     // lost, or its reappearance is unexplained.
                     self.note_implementation_abandoned(
-                        &issue_id,
+                        &task_id,
                         &run_id,
                         &branch,
                         "deleted outside Build",

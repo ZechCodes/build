@@ -433,7 +433,7 @@
   background: var(--app-panel2);
 }
 
-.issue-card {
+.task-card {
   min-height: 128px;
   padding: 9px 10px;
   box-sizing: border-box;
@@ -443,7 +443,7 @@
   box-shadow: 0 0 0 1px rgba(81, 255, 180, var(--lift)), 0 18px 40px rgba(0, 0, 0, calc(var(--lift) * 0.45));
 }
 
-.issue-card-head {
+.task-card-head {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -451,14 +451,14 @@
   color: var(--app-dim);
 }
 
-.issue-card .state-dot {
+.task-card .state-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: var(--app-green);
 }
 
-.issue-card .priority {
+.task-card .priority {
   margin-left: auto;
   padding: 1px 7px;
   border-radius: 999px;
@@ -470,7 +470,7 @@
   color: var(--app-amber);
 }
 
-.issue-card strong {
+.task-card strong {
   display: block;
   margin-top: 6px;
   font-size: 14px;
@@ -478,7 +478,7 @@
   line-height: 18.9px;
 }
 
-.issue-card-labels {
+.task-card-labels {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -487,7 +487,7 @@
   line-height: 17px;
 }
 
-.issue-card .label {
+.task-card .label {
   padding: 1px 8px;
   border: 1px solid var(--app-line2);
   border-radius: 999px;
@@ -514,7 +514,7 @@
   color: var(--accent);
 }
 
-.issue-card .assignee {
+.task-card .assignee {
   display: grid;
   margin: 6px 0 0;
   padding: 7px 7px;
@@ -522,17 +522,17 @@
   line-height: 14px;
 }
 
-.issue-card .assignee span {
+.task-card .assignee span {
   grid-area: 1 / 1;
   white-space: nowrap;
 }
 
-.issue-card [data-assignee="none"] {
+.task-card [data-assignee="none"] {
   font-style: italic;
   color: var(--app-dim);
 }
 
-.issue-card [data-assignee="agent"] {
+.task-card [data-assignee="agent"] {
   color: var(--app-ink2);
 }
 

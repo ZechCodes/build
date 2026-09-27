@@ -474,7 +474,7 @@ async fn legacy_post_asks_an_unnamed_agent_once_when_its_turn_is_sent() {
 }
 
 #[tokio::test]
-async fn direct_issue_notice_asks_an_unnamed_agent_on_its_first_turn() {
+async fn direct_task_notice_asks_an_unnamed_agent_on_its_first_turn() {
     let (dir, repo) = init_repo();
     let owner = "run-notice-name";
     let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), owner);
@@ -491,7 +491,7 @@ async fn direct_issue_notice_asks_an_unnamed_agent_on_its_first_turn() {
             .unwrap();
         agent
             .thread
-            .post_user_from_build("Issue moved", crate::store::now_rfc3339());
+            .post_user_from_build("Task moved", crate::store::now_rfc3339());
         let conversation_id = agent.conversation_id().to_string();
         app.delivery_queue.enqueue(PendingAgentTurn {
             operation_id: None,
@@ -506,13 +506,13 @@ async fn direct_issue_notice_asks_an_unnamed_agent_on_its_first_turn() {
                 cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
                 warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
             }),
-            phase: "issue_notice",
+            phase: "task_notice",
             wants_catch_up: true,
             survives_refusal: false,
         });
     }
     deliver_pending_agent_turns(&state);
-    let heard = capture_containing(&capture, "Issue moved").await;
+    let heard = capture_containing(&capture, "Task moved").await;
     assert!(heard.contains("call set_name"), "{heard}");
 }
 

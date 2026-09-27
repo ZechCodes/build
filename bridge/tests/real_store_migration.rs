@@ -23,8 +23,8 @@ fn fixture() -> Option<PathBuf> {
 /// be compared without caring what order anything was read in.
 fn conversations(store: &Store) -> BTreeMap<String, Vec<serde_json::Value>> {
     let mut out: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
-    for issue in store.load_all_issues().expect("issues load") {
-        for agent in issue.issue.agents.iter() {
+    for task in store.load_all_tasks().expect("tasks load") {
+        for agent in task.task.agents.iter() {
             out.insert(
                 agent.id.clone(),
                 agent
@@ -77,13 +77,13 @@ fn conversations_in_json(root: &Path) -> BTreeMap<String, Vec<serde_json::Value>
             );
         }
     };
-    if let Ok(entries) = std::fs::read_dir(root.join("issues")) {
+    if let Ok(entries) = std::fs::read_dir(root.join("tasks")) {
         for entry in entries.flatten() {
             let Ok(raw) = std::fs::read_to_string(entry.path().join("record.json")) else {
                 continue;
             };
-            let aggregate: serde_json::Value = serde_json::from_str(&raw).expect("issue parses");
-            absorb(&aggregate["issue"]);
+            let aggregate: serde_json::Value = serde_json::from_str(&raw).expect("task parses");
+            absorb(&aggregate["task"]);
             for implementation in aggregate["implementations"]
                 .as_array()
                 .into_iter()
@@ -119,7 +119,7 @@ fn json_records(root: &Path) -> (usize, usize, usize, usize) {
             })
             .unwrap_or(0)
     };
-    let issues = std::fs::read_dir(root.join("issues"))
+    let tasks = std::fs::read_dir(root.join("tasks"))
         .map(|entries| {
             entries
                 .flatten()
@@ -127,7 +127,7 @@ fn json_records(root: &Path) -> (usize, usize, usize, usize) {
                 .count()
         })
         .unwrap_or(0);
-    let implementations: usize = std::fs::read_dir(root.join("issues"))
+    let implementations: usize = std::fs::read_dir(root.join("tasks"))
         .map(|entries| {
             entries
                 .flatten()
@@ -140,7 +140,7 @@ fn json_records(root: &Path) -> (usize, usize, usize, usize) {
         })
         .unwrap_or(0);
     (
-        issues,
+        tasks,
         implementations + count("runs", ".json"),
         count("captures", ".json"),
         count("archived-worktrees", ".json"),
@@ -158,25 +158,25 @@ fn the_real_store_imports_with_every_record_and_conversation_intact() {
     let root = work.path().join("tasks");
     copy_tree(&source, &root);
 
-    let (issues_on_disk, runs_on_disk, captures_on_disk, archived_on_disk) = json_records(&root);
+    let (tasks_on_disk, runs_on_disk, captures_on_disk, archived_on_disk) = json_records(&root);
     println!(
-        "json store: {issues_on_disk} issues, {runs_on_disk} runs, \
+        "json store: {tasks_on_disk} tasks, {runs_on_disk} runs, \
          {captures_on_disk} captures, {archived_on_disk} archived worktrees"
     );
-    assert!(issues_on_disk > 0, "the fixture has no issues to import");
+    assert!(tasks_on_disk > 0, "the fixture has no tasks to import");
 
     let store = Store::new(&root).expect("store opens");
     let imported = store.import_json_store().expect("the import succeeds");
     println!("imported {imported} records");
 
-    let issues = store.load_all_issues().expect("issues load");
+    let tasks = store.load_all_tasks().expect("tasks load");
     let runs = store.load_all_runs().expect("runs load");
     let captures = store.load_all_captures().expect("captures load");
     let archived = store
         .load_all_archived_worktrees()
         .expect("archived worktrees load");
 
-    assert_eq!(issues.len(), issues_on_disk, "every issue survives");
+    assert_eq!(tasks.len(), tasks_on_disk, "every task survives");
     assert_eq!(runs.len(), runs_on_disk, "every run survives");
     assert_eq!(captures.len(), captures_on_disk, "every capture survives");
     assert_eq!(
@@ -230,7 +230,7 @@ fn the_real_store_imports_with_every_record_and_conversation_intact() {
     // The JSON tree is untouched — which is what makes "throw the database
     // away and rebuild" a real recovery rather than a claim. Prove it: delete
     // the database (and the marker with it) and import again from scratch.
-    for entry in std::fs::read_dir(root.join("issues")).expect("issues dir") {
+    for entry in std::fs::read_dir(root.join("tasks")).expect("tasks dir") {
         let dir = entry.expect("entry").path();
         assert!(
             dir.join("record.json").is_file(),
@@ -266,8 +266,8 @@ fn the_real_store_imports_with_every_record_and_conversation_intact() {
 
     // Now stage the rollback: an older bridge writing a record back. Starting
     // must refuse rather than serve one of the two copies silently.
-    let touched = std::fs::read_dir(root.join("issues"))
-        .expect("issues dir")
+    let touched = std::fs::read_dir(root.join("tasks"))
+        .expect("tasks dir")
         .flatten()
         .map(|entry| entry.path().join("record.json"))
         .find(|path| path.is_file())
@@ -290,7 +290,7 @@ fn the_real_store_imports_with_every_record_and_conversation_intact() {
     }
 
     // Plan docs stay on disk, because an agent reads and writes them.
-    let docs: usize = std::fs::read_dir(root.join("issues"))
+    let docs: usize = std::fs::read_dir(root.join("tasks"))
         .map(|entries| {
             entries
                 .flatten()

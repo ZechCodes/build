@@ -1,22 +1,22 @@
-//! Files filed with an issue (spec: Issues → Attachments).
+//! Files filed with a task (spec: Tasks → Attachments).
 //!
 //! The same story a conversation's attachments tell, told once. Everything that
 //! decides what a file IS — the size cap, the name flattening, the
 //! content-addressed leaf, the mime sniff — is
 //! [`crate::app::conversations::attachments`]'s, imported rather than copied,
-//! so a screenshot sent to an agent in a conversation and one filed on an issue
+//! so a screenshot sent to an agent in a conversation and one filed on a task
 //! are the same object with the same rules.
 //!
-//! What differs is WHERE, and it differs because of what an issue is.
+//! What differs is WHERE, and it differs because of what a task is.
 //!
 //! A conversation attachment has two homes: the worktree its agent reads from,
-//! and the bridge's own store, which outlives every checkout. An issue has no
-//! worktree. It may never have one — an issue filed unassigned has no
+//! and the bridge's own store, which outlives every checkout. A task has no
+//! worktree. It may never have one — a task filed unassigned has no
 //! conversation at all, and one assigned to the user never gets a checkout — so
 //! there is nowhere to put a second copy and nothing that would read it. The
 //! durable store is therefore the only home, which is also why
-//! [`AppState::issues_attach`] takes a `project_id` and not an `entity_id`:
-//! `attachment_homes` resolves a plan or a run, and an issue being CREATED is
+//! [`AppState::tasks_attach`] takes a `project_id` and not an `entity_id`:
+//! `attachment_homes` resolves a plan or a run, and a task being CREATED is
 //! neither.
 //!
 //! ## The fence
@@ -30,7 +30,7 @@
 //! The leaf retry is what lets an AGENT attach what the user sent it. Its own
 //! copy is worktree-relative (`.build/attachments/<leaf>`), but both homes
 //! store the same content-addressed leaf, so the durable copy answers for a
-//! path written against a checkout this issue knows nothing about.
+//! path written against a checkout this task knows nothing about.
 
 use super::AppState;
 use crate::app::conversations::{
@@ -43,7 +43,7 @@ use crate::encoding::{b64decode, b64encode};
 use serde_json::{json, Value};
 use std::io::Read;
 
-/// The most one `issues.attachment` answer carries. A user's upload is capped
+/// The most one `tasks.attachment` answer carries. A user's upload is capped
 /// at the same size so it always comes back whole; an agent's recording can be
 /// ten times that, and is read back in pieces of this size. Base64 costs a
 /// third on top, and the piece plus its envelope still fits under the 8 MiB
@@ -55,18 +55,18 @@ pub const ATTACHMENT_READ_CHUNK_BYTES: u64 = ATTACHMENT_MAX_BYTES;
 const MIME_SNIFF_BYTES: usize = 8192;
 
 impl AppState {
-    /// `issues.attach` — take one file the reviewer is filing with an issue and
-    /// put it where the issue can name it.
+    /// `tasks.attach` — take one file the reviewer is filing with a task and
+    /// put it where the task can name it.
     ///
     /// Writing is deliberately separate from filing, exactly as it is for a
-    /// message: the bytes are on disk and verified before the issue that
-    /// references them exists, so an issue can never point at an upload that
+    /// message: the bytes are on disk and verified before the task that
+    /// references them exists, so a task can never point at an upload that
     /// failed halfway, and a file that will not land is refused on its own chip
     /// rather than failing the whole filing.
     ///
-    /// Content-addressed, so the same screenshot filed on three issues costs
+    /// Content-addressed, so the same screenshot filed on three tasks costs
     /// one copy.
-    pub(crate) fn issues_attach(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn tasks_attach(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         // Refused for a project this bridge does not serve: answering for one
         // is saying it exists.
@@ -96,9 +96,9 @@ impl AppState {
         }))
     }
 
-    /// `issues.attachment` — hand an attachment's bytes back to the surface
-    /// that is drawing the issue. The browser cannot reach the disk, and
-    /// routing the read through the issue means no caller has to know (or can
+    /// `tasks.attachment` — hand an attachment's bytes back to the surface
+    /// that is drawing the task. The browser cannot reach the disk, and
+    /// routing the read through the task means no caller has to know (or can
     /// get wrong) where the file landed.
     ///
     /// One piece at a time (1.19): `offset` and `length` name a range, the
@@ -106,14 +106,14 @@ impl AppState {
     /// a reader asks again from `offset + piece` until it has `size` bytes. A
     /// file no bigger than one piece comes back whole from an unranged read,
     /// exactly as it did before ranges.
-    pub(crate) fn issues_attachment(&mut self, params: &Value) -> Result<Value, String> {
-        let issue_id = require_str(params, "issue_id")?;
+    pub(crate) fn tasks_attachment(&mut self, params: &Value) -> Result<Value, String> {
+        let task_id = require_str(params, "task_id")?;
         let path = require_str(params, "path")?;
-        // The issue has to exist and be one this bridge serves before any of
+        // The task has to exist and be one this bridge serves before any of
         // its bytes are read: a read fenced only by the store would answer for
-        // an issue that is not there.
-        self.tracker_issue(&issue_id)?;
-        let target = self.resolve_issue_attachment(&path)?;
+        // a task that is not there.
+        self.tracker_task(&task_id)?;
+        let target = self.resolve_task_attachment(&path)?;
         let offset = params.get("offset").and_then(Value::as_u64).unwrap_or(0);
         let length = params
             .get("length")
@@ -137,13 +137,13 @@ impl AppState {
     ///
     /// Containment after canonicalisation, never a prefix match on the string:
     /// `../../etc/passwd` satisfies a prefix check and fails this one.
-    pub(in crate::app) fn resolve_issue_attachment(
+    pub(in crate::app) fn resolve_task_attachment(
         &self,
         path: &str,
     ) -> Result<std::path::PathBuf, String> {
         let home = self.local_attachments_dir();
         let canonical_home = std::fs::canonicalize(&home)
-            .map_err(|_| format!("not an attachment on this issue: {path}"))?;
+            .map_err(|_| format!("not an attachment on this task: {path}"))?;
         let candidate = std::path::Path::new(path);
         let attempts = [
             candidate.is_absolute().then(|| candidate.to_path_buf()),
@@ -159,15 +159,15 @@ impl AppState {
                 return Ok(resolved);
             }
         }
-        Err(format!("not an attachment on this issue: {path}"))
+        Err(format!("not an attachment on this task: {path}"))
     }
 
-    /// The files an `issues.create` or `issues.comment` says it is filing.
+    /// The files an `tasks.create` or `tasks.comment` says it is filing.
     ///
     /// Name, mime and size are re-read from disk rather than trusted: the
     /// client's copy is a display hint, and the record a reader opens should
     /// describe the bytes that exist.
-    pub(in crate::app) fn parse_issue_attachments(
+    pub(in crate::app) fn parse_task_attachments(
         &self,
         params: &Value,
     ) -> Result<Vec<crate::thread::MessageAttachment>, String> {
@@ -177,16 +177,16 @@ impl AppState {
         let listed = value.as_array().ok_or("attachments must be an array")?;
         if listed.len() > ATTACHMENTS_PER_MESSAGE_MAX {
             return Err(format!(
-                "an issue carries at most {ATTACHMENTS_PER_MESSAGE_MAX} attachments"
+                "a task carries at most {ATTACHMENTS_PER_MESSAGE_MAX} attachments"
             ));
         }
         listed
             .iter()
-            .map(|entry| self.one_issue_attachment(entry))
+            .map(|entry| self.one_task_attachment(entry))
             .collect()
     }
 
-    fn one_issue_attachment(
+    fn one_task_attachment(
         &self,
         entry: &Value,
     ) -> Result<crate::thread::MessageAttachment, String> {
@@ -194,7 +194,7 @@ impl AppState {
             .get("path")
             .and_then(Value::as_str)
             .ok_or("each attachment needs a path")?;
-        let resolved = self.resolve_issue_attachment(path)?;
+        let resolved = self.resolve_task_attachment(path)?;
         let size = std::fs::metadata(&resolved)
             .map_err(|e| format!("cannot stat the attachment: {e}"))?
             .len();

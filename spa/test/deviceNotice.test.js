@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // The one sentence this client says about a machine it cannot reach, and the
 // markup a work surface stands up in place of itself while that is true. Every
-// surface that names a missing machine — a branch, an issue, a sheet the
+// surface that names a missing machine — a branch, a task, a sheet the
 // toolbar refuses to open — says it in these words.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

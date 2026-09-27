@@ -4,17 +4,17 @@ export const WORKFLOW_ENTRY_KIND = "workflows";
 export const AGENT_ENTRY_KIND = "subagents";
 export const SHELL_ENTRY_KIND = "shells";
 export const CHECKLIST_ENTRY_KIND = "checklist";
-/** The issues this agent holds and follows (#34). A surface like the others:
+/** The tasks this agent holds and follows (#34). A surface like the others:
  *  behind a pill, opened when the reader wants it, with what the agent is
  *  finished with folded away. */
-export const ISSUES_ENTRY_KIND = "issues";
+export const TASKS_ENTRY_KIND = "tasks";
 
 export const SURFACE_KINDS = [
   WORKFLOW_ENTRY_KIND,
   AGENT_ENTRY_KIND,
   SHELL_ENTRY_KIND,
   CHECKLIST_ENTRY_KIND,
-  ISSUES_ENTRY_KIND,
+  TASKS_ENTRY_KIND,
 ];
 
 const KIND_LABELS = {
@@ -22,7 +22,7 @@ const KIND_LABELS = {
   [AGENT_ENTRY_KIND]: "Agents",
   [SHELL_ENTRY_KIND]: "Shells",
   [CHECKLIST_ENTRY_KIND]: "Checklist",
-  [ISSUES_ENTRY_KIND]: "Issues",
+  [TASKS_ENTRY_KIND]: "Tasks",
 };
 
 const PENDING_STATE = "pending";
@@ -45,12 +45,12 @@ const AGENT_STATE_MARKS = {
   ...RUN_STATE_MARKS,
 };
 
-/** What an issue's standing means to the fold. In progress is the only one
+/** What a task's standing means to the fold. In progress is the only one
  *  that counts as running — it is the only one the agent is actually doing —
  *  and the three it is finished with carry the done mark, which is what puts
  *  them under the fold. In review is among them: the agent has said the work
  *  is ready to be looked at and has nothing more to do with it. */
-const ISSUE_STATE_MARKS = {
+const TASK_STATE_MARKS = {
   in_progress: { mark: RUNNING_MARK, label: "In progress" },
   assigned: { mark: PENDING_STATE, label: "Assigned" },
   tracked: { mark: PENDING_STATE, label: "Tracking" },
@@ -69,7 +69,7 @@ const STATE_MARKS_BY_KIND = {
     completed: { mark: DONE_MARK, label: "Completed" },
     blocked: { mark: "blocked", label: "Blocked" },
   },
-  [ISSUES_ENTRY_KIND]: ISSUE_STATE_MARKS,
+  [TASKS_ENTRY_KIND]: TASK_STATE_MARKS,
 };
 
 const OPEN_SURFACE_KEY_PREFIX = "build.agentSurfaces.open.";
@@ -175,10 +175,10 @@ export function surfacePills(surfaces, visibility = null, nowMs = 0) {
   return kindsWithContent(surfaces).filter(({ kind, count }) => pillIsShown(kind, count, visibility, nowMs));
 }
 
-/** What the ⋮ menu says under a surface's name. An issue is not "running" —
+/** What the ⋮ menu says under a surface's name. A task is not "running" —
  *  an agent is working on it — so that one kind says what it is doing. */
 const runningWord = (kind, count) =>
-  kind === ISSUES_ENTRY_KIND ? `${count} in progress` : `${count} running`;
+  kind === TASKS_ENTRY_KIND ? `${count} in progress` : `${count} running`;
 
 export function surfaceMenuOptions(surfaces) {
   return kindsWithContent(surfaces).map(({ kind, label, count, progress }) => ({
@@ -300,7 +300,7 @@ const ROW_NORMALISERS = {
   [CHECKLIST_ENTRY_KIND]: (entry) => ({
     description: entry.description || "",
   }),
-  [ISSUES_ENTRY_KIND]: (entry) => ({
+  [TASKS_ENTRY_KIND]: (entry) => ({
     number: Number.isFinite(entry.number) ? entry.number : null,
     title: entry.title || "",
     movedAt: entry.updated_at || null,
@@ -313,7 +313,7 @@ export function surfaceRows(kind, surfaces, reading = {}) {
   const normalise = ROW_NORMALISERS[kind];
   if (!normalise) return [];
   const rows = keyedRows(kind, kind, entries, normalise, reading);
-  // The issues arrive already in the order they read in — in progress, then
+  // The tasks arrive already in the order they read in — in progress, then
   // assigned, then tracked, then the three the agent is finished with — and
   // reordering them here would fight the model that built them.
   if (kind !== CHECKLIST_ENTRY_KIND) return rows;
@@ -404,8 +404,8 @@ const ROW_SUBJECTS = {
   [AGENT_ENTRY_KIND]: (entry) => entry.label || entry.id || "",
   [SHELL_ENTRY_KIND]: (entry) => entry.description || entry.id || "",
   [CHECKLIST_ENTRY_KIND]: (entry) => entry.subject || entry.description || entry.id || "",
-  // How a person says an issue out loud: the number, then what it is about.
-  [ISSUES_ENTRY_KIND]: (entry) =>
+  // How a person says a task out loud: the number, then what it is about.
+  [TASKS_ENTRY_KIND]: (entry) =>
     [entry.number ? `#${entry.number}` : "", entry.title || ""].filter(Boolean).join(" ") || entry.id || "",
 };
 

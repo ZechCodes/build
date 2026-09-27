@@ -24,7 +24,7 @@
 //! `node_modules/` — three to five thousand per checkout — and every file a
 //! test run writes there would wake the backend thread, cross the channel and
 //! be classified only to be dropped. On 2026-09-24 ten such watchers had two
-//! `notify-rs inotify` threads at the top of the bridge's CPU table (issue
+//! `notify-rs inotify` threads at the top of the bridge's CPU table (task
 //! #128). So the tree is walked once at start, the directories the repository
 //! ignores are skipped along with everything beneath them, and each watched
 //! directory is watched on its own; a directory created later is adopted the

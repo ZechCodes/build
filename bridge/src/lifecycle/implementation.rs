@@ -5,18 +5,18 @@ use crate::lifecycle::{
     WorktreeChange, WorktreeMutation,
 };
 use crate::models::ModelChoice;
-use crate::orchestrator::{ImplementableIssue, Orchestrator};
+use crate::orchestrator::{ImplementableTask, Orchestrator};
 use std::path::PathBuf;
 
 pub struct OpenImplementation {
     pub project: Orchestrator,
-    pub issue: ImplementableIssue,
+    pub task: ImplementableTask,
     pub base_branch: String,
     pub run_id: String,
     pub store: crate::store::Store,
     pub model_choice: ModelChoice,
     /// How this implementation's checkout is made. A fallback is said on the
-    /// Issue's conversation once the run stands.
+    /// Task's conversation once the run stands.
     pub resolved: ResolvedIsolation,
 }
 
@@ -24,7 +24,7 @@ impl WorktreeMutation for OpenImplementation {
     type Output = ImplementationPrepared;
     fn perform(self) -> Result<Performed<Self::Output>, String> {
         let prepared = self.project.prepare_run_checkout(
-            &self.issue,
+            &self.task,
             &self.base_branch,
             &self.run_id,
             self.resolved.isolation,
@@ -61,7 +61,7 @@ impl WorktreeMutation for OpenImplementation {
     }
 }
 
-/// The checkout an Issue's implementation is being handed, and what reaching it
+/// The checkout a Task's implementation is being handed, and what reaching it
 /// costs. The type owns its own variation — which git runs, which run the
 /// implementation is written onto — so no caller matches on it.
 pub enum ImplementationCheckout {
@@ -129,7 +129,7 @@ impl ImplementationCheckout {
 pub struct AdoptImplementation {
     pub project: Orchestrator,
     pub project_id: String,
-    pub issue: ImplementableIssue,
+    pub task: ImplementableTask,
     pub run_id: String,
     pub checkout: ImplementationCheckout,
     pub store: crate::store::Store,
@@ -142,7 +142,7 @@ impl WorktreeMutation for AdoptImplementation {
         let AdoptImplementation {
             project,
             project_id,
-            issue,
+            task,
             run_id,
             checkout,
             store,
@@ -151,7 +151,7 @@ impl WorktreeMutation for AdoptImplementation {
         let prepared = (|| -> Result<(ReachedCheckout, String), String> {
             let reached = checkout.reach(&project, &project_id, &run_id, &model_choice)?;
             let base_sha = project
-                .prepare_adopted_checkout(&issue, &reached.path, &store)
+                .prepare_adopted_checkout(&task, &reached.path, &store)
                 .map_err(|error| error.to_string())?;
             Ok((reached, base_sha))
         })();
@@ -166,7 +166,7 @@ impl WorktreeMutation for AdoptImplementation {
     }
 }
 
-/// `issue.implement_*` — put back the checkout an Issue's implementation lost,
+/// `task.implement_*` — put back the checkout a Task's implementation lost,
 /// from the exact branch its run recorded. `git worktree add`, and a fetch when
 /// the branch survives only on a remote.
 pub struct RestoreImplementationCheckout {
@@ -174,7 +174,7 @@ pub struct RestoreImplementationCheckout {
     pub worktree: crate::worktree::Worktree,
     pub checkout_stood: bool,
     /// How the checkout is put back, when it has to be. A fallback is said on
-    /// the Issue's conversation beside what the restore found.
+    /// the Task's conversation beside what the restore found.
     pub resolved: ResolvedIsolation,
 }
 

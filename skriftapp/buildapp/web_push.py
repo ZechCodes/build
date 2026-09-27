@@ -1,8 +1,8 @@
 """Content-free web push — the api side of the bridge's unread notifications.
 
 A push fires exactly when something adds to the unread counter (#191): an
-agent's conversation (``agent``) or a watched issue (``task``, the user's word
-for an issue, #190). E2EE invariant: the server never sees content, so a push
+agent's conversation (``agent``) or a watched task (``task``, the user's word
+for a task, #190). E2EE invariant: the server never sees content, so a push
 payload carries **no content at all** — an opaque id, the generic kind and the
 deep link built from them. The service worker renders the kind's copy; the
 real state loads over the E2EE channel when the app opens.
@@ -52,10 +52,10 @@ logger = logging.getLogger(__name__)
 # Notify kinds (contract #6), mirroring ``bridge/src/notify.rs``. A kind is a
 # generic label, never content: the service worker renders its copy, and each
 # kind deep-links by its own route — an agent by its conversation owner (a run
-# id, which the SPA resolves), a task by its issue id.
+# id, which the SPA resolves), a task by its task id.
 AGENT_KIND = "agent"
 TASK_KIND = "task"
-_DEEP_LINK_ROUTES = {AGENT_KIND: "task", TASK_KIND: "issue"}
+_DEEP_LINK_ROUTES = {AGENT_KIND: "task", TASK_KIND: "task"}
 ALLOWED_KINDS = frozenset(_DEEP_LINK_ROUTES)
 
 # How far a notify timestamp may drift from server time before it's rejected
@@ -90,7 +90,7 @@ def push_payload(task_id: str, kind: str) -> str:
     """The push payload delivered to the service worker (contract #6):
     ``{"task_id", "kind", "url"}``. Still content-free — ``task_id`` is opaque and
     ``kind`` is a generic label; the ``url`` deep-links under ``/app/`` by the
-    kind's hash route (``#/task/<run>`` or ``#/issue/<issue>``), and the real
+    kind's hash route (``#/task/<run>`` or ``#/task/<task>``), and the real
     state loads only over the E2EE channel once the app opens."""
     route = _DEEP_LINK_ROUTES[kind]
     return json.dumps(

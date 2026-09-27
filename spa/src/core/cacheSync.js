@@ -60,10 +60,10 @@ import {
   updateCachedFeed,
   writeCached,
 } from "./localCache.js";
-import { ISSUE_RECORD_KIND } from "./issueCache.js";
-import { issuesAddress, issuesRecord, readIssuesRecord, writeIssuesRecord } from "./trackerCache.js";
-import { foldIssuesPage, pagesIssues, pullIssuePages } from "./trackerPages.js";
-import { nextIssueRead } from "./issueReadOrder.js";
+import { TASK_RECORD_KIND } from "./taskCache.js";
+import { tasksAddress, tasksRecord, readTasksRecord, writeTasksRecord } from "./trackerCache.js";
+import { foldTasksPage, pagesTasks, pullTaskPages } from "./trackerPages.js";
+import { nextTaskRead } from "./taskReadOrder.js";
 import { writeListedUserSession } from "./userSessionCache.js";
 import { inboxPushKinds } from "./trackerPush.js";
 import {
@@ -215,13 +215,13 @@ async function readWhole(context, address, request, shape = (answer) => answer) 
  *  branch surface makes, minus the project's own directory: a row that names
  *  neither a run nor a worktree holds no checkout, so it never reaches here. */
 function gitScopeOf(row) {
-  if (!row || row.kind === "issue") return null;
+  if (!row || row.kind === "task") return null;
   if (row.run_id) return { run_id: row.run_id };
   if (row.project_id && row.worktree_id) return { project_id: row.project_id, worktree_id: row.worktree_id };
   return null;
 }
 
-/** The scope this row's terminals are listed under. An issue's agent runs in
+/** The scope this row's terminals are listed under. A task's agent runs in
  *  the project's own checkout, which the project alone names, so this reaches
  *  further than the git scope does. */
 function terminalScopeOf(row) {
@@ -345,7 +345,7 @@ async function orderedSync(deviceId, turn) {
   if (!view || !context.active()) return false;
   const pass = await workspacesToRead(context, view);
   const filesRecovered = await readWorkspaces(context, pass, fence);
-  await readProjectIssues(context, view);
+  await readProjectTasks(context, view);
   await evictRowsThatAreOver(context, view, fence);
   await dropWhatTheBoardStoppedNaming(context, view, passStartedAt, fence);
   if (!context.active()) return false;
@@ -535,69 +535,69 @@ const projectConversationIds = (view) =>
   (view.projects || []).map((project) => project.entity_id || project.run_id).filter(Boolean);
 
 /** Every project this device lists, by the id the wire carries. What the
- *  tracker's records are addressed by: an issue belongs to a project and never
+ *  tracker's records are addressed by: a task belongs to a project and never
  *  moves between projects, and a project is named by the machine it is on. */
 const projectIds = (view) => (view.projects || []).map((project) => project.project_id || project.id).filter(Boolean);
 
 /**
- * Step 2b: every project's issue list.
+ * Step 2b: every project's task list.
  *
  * Read on every pass for the same reason a project's conversation is
- * (`projectConversationIds` above): the Issues tab offers itself the moment the
+ * (`projectConversationIds` above): the Tasks tab offers itself the moment the
  * reader opens a project, and a project is not a board row that ages into
  * Recent — it holds no work that finishes. Reading it only when routed there
  * would leave the tab blank on the first pass of a new session, and blank until
  * somebody filed something.
  *
- * The whole list, narrowed by nothing: the tab's filters are `issues.list`
+ * The whole list, narrowed by nothing: the tab's filters are `tasks.list`
  * params of their own (core/trackerFilters.js), and a record already narrowed
  * would be missing whatever the next filter is about to ask for.
  *
- * Behind the workspaces, never in front of them. An issue list is a project
+ * Behind the workspaces, never in front of them. A task list is a project
  * surface and the inbox is the landing one, so nothing on screen waits on this.
  */
-async function readProjectIssues(context, view) {
+async function readProjectTasks(context, view) {
   for (const projectId of projectIds(view)) {
     if (!context.active()) return;
-    await readIssues(context, projectId);
+    await readTasks(context, projectId);
   }
 }
 
-/** One project's issues, and its columns the first time. The columns change
- *  with the project rather than with an issue, so they are asked for once and
+/** One project's tasks, and its columns the first time. The columns change
+ *  with the project rather than with a task, so they are asked for once and
  *  held; a bridge that refuses the verb leaves them empty and every board falls
  *  back to phase 1's five (core/trackerModel.js). A bridge that serves no
- *  tracker at all refuses both and writes nothing, which is a cold Issues tab
+ *  tracker at all refuses both and writes nothing, which is a cold Tasks tab
  *  and never an error the reader sees. */
-async function readIssuesNow(context, projectId) {
-  if (pagesIssues(context.deviceId)) return readIssuePagesNow(context, projectId);
-  const read = await nextIssueRead();
-  const answer = await ask(context, "issues.list", { project_id: projectId }, "background");
+async function readTasksNow(context, projectId) {
+  if (pagesTasks(context.deviceId)) return readTaskPagesNow(context, projectId);
+  const read = await nextTaskRead();
+  const answer = await ask(context, "tasks.list", { project_id: projectId }, "background");
   if (!answer || !context.active()) return;
   const columns = await projectColumns(context, projectId);
   if (!context.active()) return;
   await Promise.all([
-    writeIssuesRecord(context.deviceId, projectId, issuesRecord(answer.issues, columns, read)),
+    writeTasksRecord(context.deviceId, projectId, tasksRecord(answer.tasks, columns, read)),
     writeListedUserSession(context.deviceId, answer),
   ]);
 }
 
 /** The columns the cache holds for a project, or the bridge's the first time. */
 async function projectColumns(context, projectId) {
-  const held = await readIssuesRecord(context.deviceId, projectId);
+  const held = await readTasksRecord(context.deviceId, projectId);
   if (held?.columns?.length) return held.columns;
-  return (await ask(context, "issues.columns", { project_id: projectId }, "background"))?.columns || [];
+  return (await ask(context, "tasks.columns", { project_id: projectId }, "background"))?.columns || [];
 }
 
 /** The same list, a page at a time from a bridge that pages it (#85): each
  *  page lands in the cache and is laid over the held list for the numbers it
- *  answers for, so the Issues tab fills in page by page, and a row something
+ *  answers for, so the Tasks tab fills in page by page, and a row something
  *  newer wrote meanwhile keeps its place (core/trackerPages.js). */
-async function readIssuePagesNow(context, projectId) {
+async function readTaskPagesNow(context, projectId) {
   const deviceId = context.deviceId;
   let columns = null;
-  await pullIssuePages({
-    ask: (params) => ask(context, "issues.list", params, "background"),
+  await pullTaskPages({
+    ask: (params) => ask(context, "tasks.list", params, "background"),
     deviceId,
     projectId,
     params: { project_id: projectId },
@@ -606,7 +606,7 @@ async function readIssuePagesNow(context, projectId) {
       columns ||= await projectColumns(context, projectId);
       if (!context.active()) return false;
       const [folded] = await Promise.all([
-        foldIssuesPage(issuesAddress(deviceId, projectId), stretch, () => columns),
+        foldTasksPage(tasksAddress(deviceId, projectId), stretch, () => columns),
         writeListedUserSession(deviceId, page),
       ]);
       return folded;
@@ -616,31 +616,31 @@ async function readIssuePagesNow(context, projectId) {
 
 /** One project's list read at a time on a session (#119). A push heard while
  *  it is out is read once after it, under the newest context that asked. */
-const latestIssueReads = new Map();
-const issueReadGenerations = new Map();
-function issueReadGeneration(deviceId) {
+const latestTaskReads = new Map();
+const taskReadGenerations = new Map();
+function taskReadGeneration(deviceId) {
   const session = sessionOf(deviceId);
   const requestScope = restoredScopes.get(deviceId)?.session === session
     ? restoredScopes.get(deviceId).scope : null;
-  const held = issueReadGenerations.get(deviceId);
+  const held = taskReadGenerations.get(deviceId);
   if (held?.session === session && held?.requestScope === requestScope) return held;
   const generation = { session, requestScope };
-  issueReadGenerations.set(deviceId, generation);
+  taskReadGenerations.set(deviceId, generation);
   return generation;
 }
-const issueReads = trailingRead((key) => {
-  const { context, projectId } = latestIssueReads.get(key);
-  return readIssuesNow(context, projectId);
-}, { generationOf: (key) => issueReadGeneration(latestIssueReads.get(key).context.deviceId) });
+const taskReads = trailingRead((key) => {
+  const { context, projectId } = latestTaskReads.get(key);
+  return readTasksNow(context, projectId);
+}, { generationOf: (key) => taskReadGeneration(latestTaskReads.get(key).context.deviceId) });
 
-function readIssues(context, projectId) {
+function readTasks(context, projectId) {
   const key = JSON.stringify([context.deviceId, projectId]);
-  const generation = issueReadGeneration(context.deviceId);
-  latestIssueReads.set(key, {
-    context: { ...context, active: () => context.active() && issueReadGeneration(context.deviceId) === generation },
+  const generation = taskReadGeneration(context.deviceId);
+  latestTaskReads.set(key, {
+    context: { ...context, active: () => context.active() && taskReadGeneration(context.deviceId) === generation },
     projectId,
   });
-  return issueReads(key);
+  return taskReads(key);
 }
 
 /**
@@ -742,38 +742,38 @@ const entitiesTheBoardNames = (view) => {
     const entityId = entityIdOf(row);
     if (entityId) named.add(entityId);
   }
-  // A project is not a work row, but its issues are cached under its id
+  // A project is not a work row, but its tasks are cached under its id
   // (core/trackerCache.js) — so a project the lists still name is still named
-  // here, and one that has gone takes its issues with it.
+  // here, and one that has gone takes its tasks with it.
   for (const projectId of projectIds(view)) named.add(projectId);
   return named;
 };
 
 /**
- * Everything an unnamed entity holds — except the issue surface's records.
+ * Everything an unnamed entity holds — except the task surface's records.
  *
- * Issues LEFT the board (core/issueCache.js): no `board.list` names one, no
- * pass fills one, and nothing but the issue surface itself ever writes one. So
- * "the board stopped naming it" is not news about an issue — it is the
- * standing state of every issue there is, and a pass that read it as a
+ * Tasks LEFT the board (core/taskCache.js): no `board.list` names one, no
+ * pass fills one, and nothing but the task surface itself ever writes one. So
+ * "the board stopped naming it" is not news about a task — it is the
+ * standing state of every task there is, and a pass that read it as a
  * departure would take the records back out on every boot, reconnect and tab
  * return. The surface's mount-from-cache frame would then be a frame nobody
  * ever sees.
  *
  * Only the kind is exempt, and only from this rule: everything else the entity
- * holds still goes, a Done or a Delete still takes an issue's records with the
+ * holds still goes, a Done or a Delete still takes a task's records with the
  * rest (core/cacheLifetime.js), and the 72 h sweep still ages them out.
  */
 async function dropUnnamedEntity(context, entityId) {
-  const issueRecords = await cachedSubKeys(context.deviceId, entityId, ISSUE_RECORD_KIND);
+  const taskRecords = await cachedSubKeys(context.deviceId, entityId, TASK_RECORD_KIND);
   if (!context.active()) return;
-  if (!issueRecords.length) {
+  if (!taskRecords.length) {
     await evictEntity(context.deviceId, entityId);
     return;
   }
   const held = await cachedAddresses({ deviceId: context.deviceId, entityId });
   if (!context.active()) return;
-  await deleteCached(held.filter((address) => address.kind !== ISSUE_RECORD_KIND));
+  await deleteCached(held.filter((address) => address.kind !== TASK_RECORD_KIND));
 }
 
 // ─── Step 3: one workspace ───────────────────────────────────────────────────
@@ -1368,7 +1368,7 @@ function withoutEntities(view, gone) {
 
 /** Whether a `state` item is a feed row at all.
  *
- *  A legacy issue left the board, so the bridge has no row to push for one and
+ *  A legacy task left the board, so the bridge has no row to push for one and
  *  answers with the three-field digest it always did: a lifecycle word, an
  *  agent COUNT and an attention reason. Nothing cache-first reads that, and
  *  written where a row belongs it is a work item whose agents are a number —
@@ -1651,15 +1651,15 @@ const freshFileAnswer = (context, scope, path, heldFile, readPage) => {
 const applyTerminals = (context, entityId, terminals) =>
   writePushed(addressOf(context, entityId, "terminals"), { tabs: terminals.tabs || [] });
 
-/** `issues`: which issues of this project moved. Content-free beyond the ids —
+/** `tasks`: which tasks of this project moved. Content-free beyond the ids —
  *  and dropped altogether past 200 of them — so there is one answer either
  *  way, which is to read the project's list again. The entity here is a
  *  PROJECT, not a workspace: every other applier below is handed a board row's
- *  entity, and this one is handed the project the issues belong to. Not
+ *  entity, and this one is handed the project the tasks belong to. Not
  *  awaited: a read folded behind one already out settles only after the read
  *  that follows it, and the rest of the flush has nothing to wait for. */
-const applyIssues = (context, projectId) => {
-  void readIssues(context, projectId);
+const applyTasks = (context, projectId) => {
+  void readTasks(context, projectId);
 };
 
 /** One writer per kind, in the order a reader would want them applied: what
@@ -1667,7 +1667,7 @@ const applyIssues = (context, projectId) => {
 const APPLIERS = [
   ["state", applyState],
   ["thread", applyThreadItem],
-  ["issues", applyIssues],
+  ["tasks", applyTasks],
   ["git", applyGit],
   ["files", applyFiles],
   ["terminals", applyTerminals],
@@ -1763,7 +1763,7 @@ export function stopCacheSync() {
   syncedSessions.clear();
   restoredScopes.clear();
   readingSessions.clear();
-  issueReadGenerations.clear();
+  taskReadGenerations.clear();
   // Everything still out stands down before the fences it was held to go.
   lifetime += 1;
   fileReads.clear();

@@ -126,13 +126,13 @@ fn a_stage_link_makes_the_item_findable_by_stage() {
         None,
         None,
         vec![
-            ThreadLink::IssueStage {
-                issue_id: "issue-1".to_string(),
+            ThreadLink::TaskStage {
+                task_id: "task-1".to_string(),
                 stage_id: "parser".to_string(),
                 path: ".build/plan/01-parser.md".to_string(),
             },
             ThreadLink::PlanStage {
-                plan_id: "issue-1".to_string(),
+                plan_id: "task-1".to_string(),
                 stage_id: "lexer".to_string(),
                 path: ".build/plan/02-lexer.md".to_string(),
             },

@@ -146,7 +146,7 @@ impl AttentionIndex {
         true
     }
 
-    /// Exact clock cleanup used by existing run/issue removal call sites. This
+    /// Exact clock cleanup used by existing run/task removal call sites. This
     /// deliberately leaves attention and conversation watermarks untouched.
     pub(in crate::app) fn remove_entity_clocks(&mut self, entity_id: &str) {
         self.entity_created_at.remove(entity_id);

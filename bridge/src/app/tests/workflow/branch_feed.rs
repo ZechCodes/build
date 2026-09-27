@@ -62,10 +62,10 @@ fn the_feed_folds_runs_and_worktrees_into_branch_rows() {
 
     let board = state.handle(req("board.list", json!({})));
     // The active board carries runs and workspace-backed rows, with no legacy
-    // issue collections.
+    // task collections.
     assert!(board["result"]["runs"].is_array(), "{board:?}");
     assert!(board["result"].get("plans").is_none(), "{board:?}");
-    assert!(board["result"].get("issues").is_none(), "{board:?}");
+    assert!(board["result"].get("tasks").is_none(), "{board:?}");
     assert!(
         board["result"]["external_worktrees"].is_array(),
         "{board:?}"
@@ -77,7 +77,7 @@ fn the_feed_folds_runs_and_worktrees_into_branch_rows() {
     assert_eq!(adopted["project_id"], project_id, "{adopted:?}");
     assert_eq!(adopted["title"], "feature-adopted", "{adopted:?}");
     assert_eq!(adopted["state"], "review", "{adopted:?}");
-    assert!(adopted["issue_id"].is_null(), "{adopted:?}");
+    assert!(adopted["task_id"].is_null(), "{adopted:?}");
     assert!(
         adopted["worktree_path"]
             .as_str()
@@ -137,29 +137,29 @@ fn the_feed_folds_runs_and_worktrees_into_branch_rows() {
     );
 }
 
-/// Legacy issues remain directly readable but never re-enter the active board.
+/// Legacy tasks remain directly readable but never re-enter the active board.
 #[test]
-fn retired_issues_are_absent_from_the_board_but_remain_readable() {
+fn retired_tasks_are_absent_from_the_board_but_remain_readable() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let issue = state
-        .plan_create(&json!({ "goal": "legacy issue", "dispatch": false }))
+    let task = state
+        .plan_create(&json!({ "goal": "legacy task", "dispatch": false }))
         .expect("legacy fixture is created below the retired RPC boundary");
-    let issue_id = issue["plan_id"].as_str().unwrap().to_string();
+    let task_id = task["plan_id"].as_str().unwrap().to_string();
 
     let rows = work_item_rows(&mut state);
     assert!(
-        rows.iter().all(|row| row["kind"] != "issue"),
-        "retired issues must not appear in active work: {rows:?}"
+        rows.iter().all(|row| row["kind"] != "task"),
+        "retired tasks must not appear in active work: {rows:?}"
     );
     let board = state.handle(req("board.list", json!({})));
-    assert!(board["result"].get("issues").is_none(), "{board:?}");
+    assert!(board["result"].get("tasks").is_none(), "{board:?}");
     assert!(board["result"].get("plans").is_none(), "{board:?}");
 
-    let readable = state.handle(req("issue.get", json!({ "issue_id": issue_id })));
+    let readable = state.handle(req("task.get", json!({ "task_id": task_id })));
     assert_eq!(readable["ok"], true, "{readable:?}");
     assert_eq!(
-        readable["result"]["goal"], "legacy issue",
+        readable["result"]["goal"], "legacy task",
         "the direct compatibility read keeps the stored record"
     );
 }

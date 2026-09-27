@@ -15,9 +15,9 @@ await mkdir(output, { recursive: true });
 
 // The inbox is a drawer on a phone, and shut until it is asked for.
 const shellHtml = (desktop) => `<div id="shell">${desktop ? '<aside id="inbox-rail"></aside>' : ""}<div id="view">
-  <header id="toolbar">Skrift · Issues</header>
+  <header id="toolbar">Skrift · Tasks</header>
   <div id="view-body"><nav id="dir-rail"></nav>
-    <main id="root"><h1>Issues</h1><p>Board</p></main>
+    <main id="root"><h1>Tasks</h1><p>Board</p></main>
     <aside id="agent-rail" aria-label="Agents"></aside>
   </div><div id="console-region"></div>
 </div></div>`;
@@ -46,9 +46,9 @@ async function seed(page, basePath) {
     const { mountAgentRail } = window.__layoutModules.rail;
     const { writeCached } = window.__layoutModules.cache;
     const { stampWorkspace } = window.__layoutModules.merge;
-    const { writeIssuesRecord } = window.__layoutModules.tracker;
+    const { writeTasksRecord } = window.__layoutModules.tracker;
     const { writeAgentsOverviewFixture, overviewRailContext } = window.__layoutModules.fixture;
-    await writeAgentsOverviewFixture({ writeCached, stampWorkspace, writeIssuesRecord });
+    await writeAgentsOverviewFixture({ writeCached, stampWorkspace, writeTasksRecord });
     localStorage.setItem("build.rail.expanded", "1");
     window.__overviewRail = mountAgentRail(document.querySelector("#agent-rail"), overviewRailContext());
   });

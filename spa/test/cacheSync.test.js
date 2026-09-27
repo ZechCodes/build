@@ -21,7 +21,7 @@ const branchItem = (over = {}) => ({
   last_activity: ago(1),
   worktree_id: "wt-1",
   run_id: "run-1",
-  issue_id: null,
+  task_id: null,
   agents: [],
   ...over,
 });
@@ -58,7 +58,7 @@ let registeredWatchers = [];
 vi.mock("../src/core/changeEvents.js", () => ({
   // The greeting says which kinds a bridge carries; a stand-in that
   // answers none would have the sync layer ask for none of the new ones.
-  bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "issues"] } }),
+  bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "tasks"] } }),
   // A stand-in bridge holds whatever it is asked to at once
   // (test/cacheSyncDelivery.test.js drives the real one).
   subscriptionsSettledFor: async () => {},
@@ -117,8 +117,8 @@ const ANSWERS = {
   "term.list": () => ({ terminals: [] }),
   "fs.tree": (params) => ({ path: params.path, entries: [] }),
   "thread.page": () => ({ items: [], has_more: false }),
-  "issues.list": () => ({ issues: [] }),
-  "issues.columns": () => ({ project_id: "p1", columns: [{ id: "backlog", name: "Backlog" }] }),
+  "tasks.list": () => ({ tasks: [] }),
+  "tasks.columns": () => ({ project_id: "p1", columns: [{ id: "backlog", name: "Backlog" }] }),
   "run.diff": () => ({ patch: "the whole diff", diff_key: "d1" }),
   "worktree.diff": () => ({ patch: "the whole diff", diff_key: "d1" }),
 };
@@ -197,7 +197,7 @@ describe("the order a pass reads in", () => {
     // What is on screen first is read first. The conversation comes before the
     // patches behind the unpushed commits, which are twenty reads of a quarter
     // of a megabyte and nothing anybody is looking at yet — and the projects'
-    // issue lists come after every workspace, because an issue list is a
+    // task lists come after every workspace, because a task list is a
     // project surface and the inbox is the landing one.
     script["git.log"] = () => ({ commits: [{ hash: "h1", ahead_of_base: true }], newest: "h1", reset: false });
     await boot([branchItem({ agents: [{ id: "ag-1" }] })], routeTo("build/login"));
@@ -210,8 +210,8 @@ describe("the order a pass reads in", () => {
       "thread.page",
       "git.show",
       "run.diff",
-      "issues.list",
-      "issues.columns",
+      "tasks.list",
+      "tasks.columns",
     ]);
   });
 
@@ -263,11 +263,11 @@ describe("what a pass writes", () => {
     expect((await read("run-1", "unpushed")).value.patch).toBeUndefined();
   });
 
-  it("asks nothing of git for an issue, and still lists its shells and its conversations", async () => {
+  it("asks nothing of git for a task, and still lists its shells and its conversations", async () => {
     await boot([{
-      kind: "issue",
+      kind: "task",
       project_id: "p2",
-      issue_id: "iss-1",
+      task_id: "iss-1",
       state: "plan_review",
       anchor: ago(2),
       last_activity: ago(2),
@@ -667,30 +667,30 @@ describe("the lifetime rules a pass applies", () => {
     expect(await read("run-1", "row")).toBeTruthy();
   });
 
-  // Issues left the board, so no board will ever name one and no pass will
-  // ever fill one: the issue surface's records are written by the surface
-  // alone (core/issueCache.js) and are the frame it mounts from. A pass that
+  // Tasks left the board, so no board will ever name one and no pass will
+  // ever fill one: the task surface's records are written by the surface
+  // alone (core/taskCache.js) and are the frame it mounts from. A pass that
   // took them would leave that frame for ever unpainted.
-  it("leaves an issue's own records where the board does not name the issue", async () => {
-    const issueRecord = (sub, value) =>
-      cache.writeCached({ deviceId: "dev-1", entityId: "issue-7", kind: "issue", sub }, value);
-    await issueRecord("get", { issue_id: "issue-7" });
-    await issueRecord("stages", { stages: [] });
-    await issueRecord("stage:1", { doc: "# one" });
-    await cache.writeCached({ deviceId: "dev-1", entityId: "issue-7", kind: "status" }, {});
+  it("leaves a task's own records where the board does not name the task", async () => {
+    const taskRecord = (sub, value) =>
+      cache.writeCached({ deviceId: "dev-1", entityId: "task-7", kind: "task", sub }, value);
+    await taskRecord("get", { task_id: "task-7" });
+    await taskRecord("stages", { stages: [] });
+    await taskRecord("stage:1", { doc: "# one" });
+    await cache.writeCached({ deviceId: "dev-1", entityId: "task-7", kind: "status" }, {});
 
     await boot([branchItem()]);
 
-    expect((await read("issue-7", "issue", "get")).value).toEqual({ issue_id: "issue-7" });
-    expect(await read("issue-7", "issue", "stages")).toBeTruthy();
-    expect(await read("issue-7", "issue", "stage:1")).toBeTruthy();
+    expect((await read("task-7", "task", "get")).value).toEqual({ task_id: "task-7" });
+    expect(await read("task-7", "task", "stages")).toBeTruthy();
+    expect(await read("task-7", "task", "stage:1")).toBeTruthy();
     // Everything else that entity held is still the board's to take away.
-    expect(await read("issue-7", "status")).toBeUndefined();
+    expect(await read("task-7", "status")).toBeUndefined();
   });
 });
 
 describe("no timers", () => {
-  it("issues nothing in an hour of wall clock", async () => {
+  it("tasks nothing in an hour of wall clock", async () => {
     await boot([branchItem()]);
     bridge.call.mockClear();
     vi.useFakeTimers();
@@ -911,25 +911,25 @@ describe("a pass that is still out when the next session lands", () => {
     expect((await read("run-1", "surfaces", "ag-1"))?.value?.surfaces?.goal).toBe("after");
   });
 
-  it("does not fold a restored issue list behind the old path's unanswered read", async () => {
+  it("does not fold a restored task list behind the old path's unanswered read", async () => {
     let release;
-    script["issues.list"] = () => new Promise((resolve) => { release = () => resolve({ issues: [{ id: "old" }] }); });
+    script["tasks.list"] = () => new Promise((resolve) => { release = () => resolve({ tasks: [{ id: "old" }] }); });
     board = [branchItem()];
     sync.startCacheSync();
     await settle();
-    expect(calls("issues.list")).toHaveLength(1);
+    expect(calls("tasks.list")).toHaveLength(1);
 
     script = {};
     await sync.syncRestoredDevice("dev-1", contexts.get("dev-1").session);
     await settle();
-    expect(calls("issues.list")).toHaveLength(2);
+    expect(calls("tasks.list")).toHaveLength(2);
     expect(registeredWatchers.map((watcher) => watcher.id)).toContain("s-inbox");
-    expect((await read("p1", "tracker-issues"))?.value?.issues).toEqual([]);
+    expect((await read("p1", "tracker-tasks"))?.value?.tasks).toEqual([]);
 
     release();
     await settle();
-    expect(calls("issues.list")).toHaveLength(2);
-    expect((await read("p1", "tracker-issues"))?.value?.issues).toEqual([]);
+    expect(calls("tasks.list")).toHaveLength(2);
+    expect((await read("p1", "tracker-tasks"))?.value?.tasks).toEqual([]);
   });
 
   it("does not share a restored diff read with the old path's unanswered request", async () => {
@@ -1053,82 +1053,82 @@ describe("every device answers for itself", () => {
   });
 });
 
-// Every project's issue list, read on every pass for the same reason its own
-// conversation is: the Issues tab offers itself the moment the reader opens a
+// Every project's task list, read on every pass for the same reason its own
+// conversation is: the Tasks tab offers itself the moment the reader opens a
 // project, and a project holds no work that finishes, so it never ages into
 // Recent to be rescued by being routed to.
-describe("every project's issues", () => {
-  const issuesOf = (projectId) => read(projectId, "tracker-issues");
+describe("every project's tasks", () => {
+  const tasksOf = (projectId) => read(projectId, "tracker-tasks");
 
   it("reads the list of every project the device lists", async () => {
     script["project.list"] = () => ({ projects: [{ project_id: "p1" }, { project_id: "p2" }] });
     await boot([]);
-    expect(paramsOf("issues.list")).toEqual([{ project_id: "p1" }, { project_id: "p2" }]);
+    expect(paramsOf("tasks.list")).toEqual([{ project_id: "p1" }, { project_id: "p2" }]);
   });
 
   // Not only when routed, and with no work item in the project at all.
   it("reads a project nobody has cut a workspace in", async () => {
-    script["issues.list"] = () => ({ issues: [{ id: "issue-1", number: 12, status: "backlog" }] });
+    script["tasks.list"] = () => ({ tasks: [{ id: "task-1", number: 12, status: "backlog" }] });
     await boot([]);
-    expect((await issuesOf("p1")).value.issues.map((one) => one.number)).toEqual([12]);
+    expect((await tasksOf("p1")).value.tasks.map((one) => one.number)).toEqual([12]);
   });
 
-  // The tab's filters are `issues.list` params of their own; a record already
+  // The tab's filters are `tasks.list` params of their own; a record already
   // narrowed would be missing whatever the next filter is about to ask for.
   it("asks for the whole list, narrowed by nothing", async () => {
     await boot([]);
-    expect(paramsOf("issues.list")).toEqual([{ project_id: "p1" }]);
+    expect(paramsOf("tasks.list")).toEqual([{ project_id: "p1" }]);
   });
 
-  // #129: the Issues tab weighs this list against its own filtered answer by
+  // #129: the Tasks tab weighs this list against its own filtered answer by
   // when each was asked, and this read is large enough to land well after.
   it("stamps the list with when it was asked, not when it landed", async () => {
-    script["issues.list"] = () => new Promise((resolve) => setTimeout(() => resolve({ issues: [] }), 50));
+    script["tasks.list"] = () => new Promise((resolve) => setTimeout(() => resolve({ tasks: [] }), 50));
     await boot([]);
-    await vi.waitFor(async () => expect(await issuesOf("p1")).toBeTruthy());
-    const landed = await issuesOf("p1");
+    await vi.waitFor(async () => expect(await tasksOf("p1")).toBeTruthy());
+    const landed = await tasksOf("p1");
     expect(landed.value.read_order).toBeLessThan(landed.at - 25);
   });
 
-  it("holds the project's columns beside its issues", async () => {
+  it("holds the project's columns beside its tasks", async () => {
     await boot([]);
-    expect((await issuesOf("p1")).value.columns).toEqual([{ id: "backlog", name: "Backlog" }]);
+    expect((await tasksOf("p1")).value.columns).toEqual([{ id: "backlog", name: "Backlog" }]);
   });
 
-  // The columns change with the project, not with an issue.
+  // The columns change with the project, not with a task.
   it("asks for the columns once and not again on the next pass", async () => {
     await boot([]);
     await sync.syncDevice("dev-1");
     await settle();
-    expect(calls("issues.columns")).toHaveLength(1);
-    expect(calls("issues.list")).toHaveLength(2);
+    expect(calls("tasks.columns")).toHaveLength(1);
+    expect(calls("tasks.list")).toHaveLength(2);
   });
 
-  // An issue list is a project surface; the inbox is the landing one.
+  // A task list is a project surface; the inbox is the landing one.
   it("reads them behind the workspaces, never in front", async () => {
     await boot([branchItem()]);
     const order = bridge.call.mock.calls.map(([method]) => method);
-    expect(order.indexOf("issues.list")).toBeGreaterThan(order.indexOf("git.status"));
+    expect(order.indexOf("tasks.list")).toBeGreaterThan(order.indexOf("git.status"));
   });
 
   // A project holds records but is not a board row: the pass that drops what
   // the board stopped naming must not take them.
-  it("keeps a listed project's issues through the drop pass", async () => {
+  it("keeps a listed project's tasks through the drop pass", async () => {
     await boot([branchItem()]);
-    expect(await issuesOf("p1")).toBeTruthy();
+    expect(await tasksOf("p1")).toBeTruthy();
     board = [];
     await sync.syncDevice("dev-1");
     await settle();
-    expect(await issuesOf("p1")).toBeTruthy();
+    expect(await tasksOf("p1")).toBeTruthy();
   });
 
-  it("drops the issues of a project the device has stopped listing", async () => {
+  it("drops the tasks of a project the device has stopped listing", async () => {
     await boot([]);
-    expect(await issuesOf("p1")).toBeTruthy();
+    expect(await tasksOf("p1")).toBeTruthy();
     script["project.list"] = () => ({ projects: [{ project_id: "p2" }] });
     await sync.syncDevice("dev-1");
     await settle();
-    expect(await issuesOf("p1")).toBeUndefined();
+    expect(await tasksOf("p1")).toBeUndefined();
   });
 
   // #119: a busy project pushes every flush. Each push used to start its own
@@ -1136,30 +1136,30 @@ describe("every project's issues", () => {
   // heard while that read is out now waits for it and reads once after it.
   it("reads a project's list once more after a burst of pushes, never alongside", async () => {
     await boot([]);
-    const before = calls("issues.list").length;
+    const before = calls("tasks.list").length;
     const answers = [];
-    script["issues.list"] = () => new Promise((resolve) => answers.push(resolve));
+    script["tasks.list"] = () => new Promise((resolve) => answers.push(resolve));
     const inbox = registeredWatchers.find((watcher) => watcher.id === "s-inbox");
-    const pushed = { entity_id: "p1", issues: { issue_ids: ["issue-1"], truncated: false } };
+    const pushed = { entity_id: "p1", tasks: { task_ids: ["task-1"], truncated: false } };
     for (let n = 0; n < 4; n += 1) inbox.onChanges([pushed]);
     await vi.waitFor(() => expect(answers).toHaveLength(1));
-    expect(calls("issues.list")).toHaveLength(before + 1);
+    expect(calls("tasks.list")).toHaveLength(before + 1);
 
-    answers[0]({ issues: [{ id: "issue-1", number: 12, status: "done" }] });
+    answers[0]({ tasks: [{ id: "task-1", number: 12, status: "done" }] });
     await vi.waitFor(() => expect(answers).toHaveLength(2));
-    expect(calls("issues.list")).toHaveLength(before + 2);
-    answers[1]({ issues: [{ id: "issue-1", number: 12, status: "done" }] });
+    expect(calls("tasks.list")).toHaveLength(before + 2);
+    answers[1]({ tasks: [{ id: "task-1", number: 12, status: "done" }] });
     await vi.waitFor(async () =>
-      expect((await issuesOf("p1")).value.issues.map((one) => one.status)).toEqual(["done"]));
+      expect((await tasksOf("p1")).value.tasks.map((one) => one.status)).toEqual(["done"]));
   });
 
   // A bridge that predates the tracker refuses both verbs; the tab falls back
   // to phase 1's five columns and nothing reaches the reader.
   it("writes nothing when the bridge does not serve the tracker", async () => {
-    script["issues.list"] = () => {
+    script["tasks.list"] = () => {
       throw new Error("unknown method");
     };
     await boot([]);
-    expect(await issuesOf("p1")).toBeUndefined();
+    expect(await tasksOf("p1")).toBeUndefined();
   });
 });

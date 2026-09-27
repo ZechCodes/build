@@ -20,7 +20,7 @@ records for assets that were not regenerated.
 The landing story textures are refreshed without touching reused device states with:
 
 ```sh
-CAPTURE_SCENES=ui10-editor,ui12-issues,ui13-team,ui14-git,ui16-builder \
+CAPTURE_SCENES=ui10-editor,ui12-tasks,ui13-team,ui14-git,ui16-builder \
   CAPTURE_PROFILES=macbook CHROMIUM_PATH=/usr/bin/chromium \
   node design/landing-captures/capture.mjs
 CAPTURE_SCENES=ui15-triage CAPTURE_PROFILES=ipad \

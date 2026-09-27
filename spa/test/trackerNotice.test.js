@@ -11,7 +11,7 @@
 // landed the structured field yet: the link.
 
 import { describe, expect, it } from "vitest";
-import { isIssueNotice, issueNoticeLineHtml, issueNoticeOf, noticeHref } from "../src/core/trackerNotice.js";
+import { isTaskNotice, taskNoticeLineHtml, taskNoticeOf, noticeHref } from "../src/core/trackerNotice.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { threadHtml } from "../src/core/thread.js";
@@ -22,42 +22,42 @@ const PLACE = { projectId: "proj-1", deviceId: "dev-1" };
 const notice = (over = {}) => ({
   from_build: true,
   role: "user",
-  from_issue: { issue_id: "issue-32", number: 32, title: "Kanban drag does not persist" },
+  from_task: { task_id: "task-32", number: 32, title: "Kanban drag does not persist" },
   body: "#32 Kanban drag does not persist — agent-01M2XXGQ commented: this reproduces on a phone too.",
   ...over,
 });
 
 const html = (message, options = { place: PLACE }) => {
   const host = document.createElement("div");
-  host.innerHTML = issueNoticeLineHtml(issueNoticeOf(message), options);
+  host.innerHTML = taskNoticeLineHtml(taskNoticeOf(message), options);
   return host.firstElementChild;
 };
 const text = (message, options) => html(message, options).textContent.replace(/\s+/g, " ").trim();
 
 describe("what counts as a notice", () => {
   it("is a message carrying both marks", () => {
-    expect(isIssueNotice(notice())).toBe(true);
+    expect(isTaskNotice(notice())).toBe(true);
   });
 
   // `from_build` alone is the restart notice, which is an instruction to the
   // agent and reads as one.
   it("is not Build's own restart notice", () => {
-    expect(isIssueNotice({ from_build: true, body: "Carry on." })).toBe(false);
+    expect(isTaskNotice({ from_build: true, body: "Carry on." })).toBe(false);
   });
 
-  // A hand-off carries `from_issue` and is a real message from somebody.
-  it("is not an issue handed over in a message", () => {
-    expect(isIssueNotice({ from_issue: { issue_id: "issue-1" }, body: "Take this" })).toBe(false);
-    expect(isIssueNotice(null)).toBe(false);
+  // A hand-off carries `from_task` and is a real message from somebody.
+  it("is not a task handed over in a message", () => {
+    expect(isTaskNotice({ from_task: { task_id: "task-1" }, body: "Take this" })).toBe(false);
+    expect(isTaskNotice(null)).toBe(false);
   });
 });
 
 describe("the line, from the structured field", () => {
   const stated = (over = {}) =>
-    notice({ issue_notice: { actor: "agent-01M2XXGQ", action: "commented", comment_id: "ic-9", ...over } });
+    notice({ task_notice: { actor: "agent-01M2XXGQ", action: "commented", comment_id: "tc-9", ...over } });
 
   // #49. The maintainer: "Relevant info is getting pushed out of view … Move
-  // what happened first and don't show the issue title."
+  // what happened first and don't show the task title."
   it("reads number, action, then who did it — and no title", () => {
     expect(text(stated())).toBe("#32 commented on by Agent 01M2");
   });
@@ -88,11 +88,11 @@ describe("the line, from the structured field", () => {
   });
 
   it("uses the name this client has for an agent when it has one", () => {
-    const line = issueNoticeLineHtml(issueNoticeOf(stated()), {
+    const line = taskNoticeLineHtml(taskNoticeOf(stated()), {
       place: PLACE,
-      agentLabels: { "agent-01M2XXGQ": "issues-spa · Agent 1" },
+      agentLabels: { "agent-01M2XXGQ": "tasks-spa · Agent 1" },
     });
-    expect(line).toContain("by issues-spa · Agent 1");
+    expect(line).toContain("by tasks-spa · Agent 1");
   });
 });
 
@@ -115,34 +115,34 @@ describe("the line, parsed from the body", () => {
   // the last one.
   it("survives a title with an em dash in it", () => {
     const dashed = notice({
-      from_issue: { issue_id: "issue-9", number: 9, title: "Board — on a phone" },
+      from_task: { task_id: "task-9", number: 9, title: "Board — on a phone" },
       body: "#9 Board — on a phone — agent-01M2XXGQ closed: done.",
     });
     expect(text(dashed)).toBe("#9 closed by Agent 01M2");
   });
 
-  // The whole point of the fallback degrading rather than failing: the issue
+  // The whole point of the fallback degrading rather than failing: the task
   // comes from the envelope, so the LINK never depends on the parse.
-  it("says the issue alone when the prose says nothing it can read", () => {
+  it("says the task alone when the prose says nothing it can read", () => {
     const opaque = notice({ body: "something else entirely" });
     expect(text(opaque)).toBe("#32");
-    expect(html(opaque).getAttribute("href")).toBe("#/device/dev-1/project/proj-1/issues/issue-32");
+    expect(html(opaque).getAttribute("href")).toBe("#/device/dev-1/project/proj-1/tasks/task-32");
   });
 });
 
 describe("where the line goes", () => {
-  it("opens the issue's page on the machine the project is on", () => {
-    expect(html(notice()).getAttribute("href")).toBe("#/device/dev-1/project/proj-1/issues/issue-32");
+  it("opens the task's page on the machine the project is on", () => {
+    expect(html(notice()).getAttribute("href")).toBe("#/device/dev-1/project/proj-1/tasks/task-32");
   });
 
   it("lands on the comment itself when the field names one", () => {
-    const stated = notice({ issue_notice: { actor: "agent-01M2XXGQ", action: "commented", comment_id: "ic-9" } });
-    expect(html(stated).getAttribute("href")).toBe("#/device/dev-1/project/proj-1/issues/issue-32#comment-ic-9");
+    const stated = notice({ task_notice: { actor: "agent-01M2XXGQ", action: "commented", comment_id: "tc-9" } });
+    expect(html(stated).getAttribute("href")).toBe("#/device/dev-1/project/proj-1/tasks/task-32#comment-tc-9");
   });
 
   // Nothing in a sentence is a comment id, so a parsed notice lands on the
-  // issue — the right page, one scroll from the right place.
-  it("lands on the issue when only the prose was available", () => {
+  // task — the right page, one scroll from the right place.
+  it("lands on the task when only the prose was available", () => {
     expect(html(notice()).getAttribute("href")).not.toContain("#comment-");
   });
 
@@ -150,11 +150,11 @@ describe("where the line goes", () => {
   it("draws as plain text where there is no project to stand in", () => {
     const loose = html(notice(), { place: null });
     expect(loose.tagName).toBe("SPAN");
-    expect(noticeHref(issueNoticeOf(notice()), null)).toBe("");
+    expect(noticeHref(taskNoticeOf(notice()), null)).toBe("");
   });
 
-  it("names the issue on the row, so a press can be found by id", () => {
-    expect(html(notice()).dataset.issueNotice).toBe("issue-32");
+  it("names the task on the row, so a press can be found by id", () => {
+    expect(html(notice()).dataset.taskNotice).toBe("task-32");
   });
 });
 
@@ -180,15 +180,15 @@ describe("the row, in the timeline", () => {
   });
 
   // Build's own restart notice is the SAME kind of row now (#42) — one quiet
-  // line — but it is not about an issue, so it carries no issue link and its
+  // line — but it is not about a task, so it carries no task link and its
   // press reveals the body rather than opening a page.
-  it("draws Build's own notice as the same kind of row, without an issue link", () => {
+  it("draws Build's own notice as the same kind of row, without a task link", () => {
     const restart = { type: "message", data: { id: "m-1", sequence: 1, role: "user", from_build: true, body: "Carry on. There is more to say about it here." } };
     const row = paint([restart]);
     expect(row.classList.contains("thread-notice")).toBe(true);
-    expect(row.classList.contains("thread-issue-line")).toBe(true);
+    expect(row.classList.contains("thread-task-line")).toBe(true);
     expect(row.classList.contains("user")).toBe(false);
-    expect(row.querySelector("[data-issue-notice]")).toBeNull();
+    expect(row.querySelector("[data-task-notice]")).toBeNull();
     expect(row.querySelector("details.thread-notice-more")).not.toBeNull();
   });
 
@@ -203,17 +203,17 @@ describe("the row, in the timeline", () => {
   // The names come off the feed, so the timeline is handed them.
   it("names the agent the way the rest of the project names it", () => {
     document.body.innerHTML = threadHtml(
-      { id: "conversation-3", items: [item({ issue_notice: { actor: "agent-01M2XXGQ", action: "commented" } })] },
-      { place: PLACE, agentLabels: { "agent-01M2XXGQ": "issues-spa · Agent 1" } },
+      { id: "conversation-3", items: [item({ task_notice: { actor: "agent-01M2XXGQ", action: "commented" } })] },
+      { place: PLACE, agentLabels: { "agent-01M2XXGQ": "tasks-spa · Agent 1" } },
     );
     expect(document.querySelector(".thread-notice").textContent.replace(/\s+/g, " ").trim())
-      .toBe("#32 commented on by issues-spa · Agent 1");
+      .toBe("#32 commented on by tasks-spa · Agent 1");
   });
 
   // Not a blank where a name should be: an agent this client cannot name is
   // still said, by the four characters it wears everywhere else.
   it("falls back to the agent's short name when the feed has none for it", () => {
-    expect(paint([item({ issue_notice: { actor: "agent-01M2XXGQ", action: "commented" } })])
+    expect(paint([item({ task_notice: { actor: "agent-01M2XXGQ", action: "commented" } })])
       .textContent.replace(/\s+/g, " ").trim())
       .toBe("#32 commented on by Agent 01M2");
   });
@@ -244,7 +244,7 @@ describe("the row, in the timeline", () => {
 });
 
 // #40. The maintainer, on the rolled build: "There's a lot of space on the left
-// of the issue notifications, there's a lot of space between them, and they're
+// of the task notifications, there's a lot of space between them, and they're
 // not one line." All three are structural, so all three are asserted
 // structurally here — and then measured for real in a browser, which is the
 // only place the first and third can actually be seen.
@@ -254,7 +254,7 @@ describe("the shape of the row", () => {
     type: "message",
     data: {
       id: "m-a", sequence: 10, role: "agent", body: "",
-      issue_action: { action: "created", issue_id: "issue-39", number: 39, title: "A title", ...over },
+      task_action: { action: "created", task_id: "task-39", number: 39, title: "A title", ...over },
     },
   });
   const said = (item) => {
@@ -264,8 +264,8 @@ describe("the shape of the row", () => {
 
   // One KIND of row, so the rules that matter are written about the kind.
   it("marks both rows as the same kind of line", () => {
-    expect(said(notice_()).classList.contains("thread-issue-line")).toBe(true);
-    expect(said(action_()).classList.contains("thread-issue-line")).toBe(true);
+    expect(said(notice_()).classList.contains("thread-task-line")).toBe(true);
+    expect(said(action_()).classList.contains("thread-task-line")).toBe(true);
   });
 
   // The title is the part that can be any length, so it is the part that
@@ -280,8 +280,8 @@ describe("the shape of the row", () => {
     // verb leads with the number.
     for (const row of [said(notice_()), said(action_({ action: "commented" }))]) {
       const line = row.querySelector("a, span");
-      expect(line.firstElementChild.classList.contains("thread-issue-number")).toBe(true);
-      expect(line.querySelector(".thread-issue-line-title")).toBeNull();
+      expect(line.firstElementChild.classList.contains("thread-task-number")).toBe(true);
+      expect(line.querySelector(".thread-task-line-title")).toBeNull();
       expect(line.textContent).not.toContain("Kanban drag does not persist");
       expect(line.textContent).not.toContain("A title");
     }
@@ -298,7 +298,7 @@ describe("the shape of the row", () => {
     expect(readFileSync(resolve(process.cwd(), "src/styles.css"), "utf8"))
       .toContain(".thread-quiet-row { min-height:0; margin:0; padding:1px 0; }");
     // The 34 px indent the rows used to carry on top of the avatar gutter.
-    expect(readFileSync(resolve(process.cwd(), "src/styles/issues.css"), "utf8"))
+    expect(readFileSync(resolve(process.cwd(), "src/styles/tasks.css"), "utf8"))
       .not.toContain("padding:1px 0 1px 34px");
   });
 
@@ -317,7 +317,7 @@ describe("the shape of the row", () => {
   // project.
   it("names the project's agent after its project", () => {
     document.body.innerHTML = threadHtml(
-      { id: "c-3", items: [notice_({ issue_notice: { actor: "project-01M2SCB", action: "commented" } })] },
+      { id: "c-3", items: [notice_({ task_notice: { actor: "project-01M2SCB", action: "commented" } })] },
       { place: { ...PLACE, projectName: "Build" } },
     );
     expect(document.querySelector(".thread-notice").textContent.replace(/\s+/g, " ").trim())

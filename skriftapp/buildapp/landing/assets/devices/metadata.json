@@ -424,7 +424,7 @@
         "blender": "4.5.14 LTS",
         "screen_fixtures": {
           "laptop": {
-            "file": "screens/ui12-issues-macbook.webp",
+            "file": "screens/ui12-tasks-macbook.webp",
             "sha256": "66e0c16399ed659f27518380755712d0ad6e7598f97fbb46d4f220b983bbdf60"
           }
         }
@@ -448,7 +448,7 @@
         "blender": "4.5.14 LTS",
         "screen_fixtures": {
           "laptop": {
-            "file": "screens/ui12-issues-macbook.webp",
+            "file": "screens/ui12-tasks-macbook.webp",
             "sha256": "66e0c16399ed659f27518380755712d0ad6e7598f97fbb46d4f220b983bbdf60"
           }
         }

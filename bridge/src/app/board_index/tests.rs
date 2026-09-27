@@ -284,29 +284,29 @@ fn state_clock_moves_only_on_wire_state_transition() {
 #[test]
 fn stale_read_cursor_never_rewinds_and_legacy_applies_only_to_primary() {
     let mut index = AttentionIndex::new(HashMap::new());
-    index.seed_legacy_read_cursor("issue-1", 7);
+    index.seed_legacy_read_cursor("task-1", 7);
     index.mark_seen(
-        "issue-1",
+        "task-1",
         None,
         &[("agent-1".to_string(), 10), ("agent-1".to_string(), 8)],
     );
 
-    assert_eq!(index.read_cursor("issue-1", "agent-1", true), 10);
-    assert_eq!(index.read_cursor("issue-1", "agent-2", true), 7);
-    assert_eq!(index.read_cursor("issue-1", "agent-2", false), 0);
+    assert_eq!(index.read_cursor("task-1", "agent-1", true), 10);
+    assert_eq!(index.read_cursor("task-1", "agent-2", true), 7);
+    assert_eq!(index.read_cursor("task-1", "agent-2", false), 0);
 }
 
 #[test]
 fn dismissing_with_lower_and_omitted_lines_preserves_existing_agent_lines() {
     let mut index = AttentionIndex::new(HashMap::new());
     index.set_entity_dismissal(
-        "issue-1",
+        "task-1",
         &[("agent-1".to_string(), 10), ("agent-2".to_string(), 7)],
     );
 
-    index.set_entity_dismissal("issue-1", &[("agent-1".to_string(), 4)]);
+    index.set_entity_dismissal("task-1", &[("agent-1".to_string(), 4)]);
 
-    let attention = index.attention("issue-1").unwrap();
+    let attention = index.attention("task-1").unwrap();
     assert_eq!(attention.dismissed_line_for("agent-1", true), Some(10));
     assert_eq!(attention.dismissed_line_for("agent-2", false), Some(7));
     assert!(attention.dismissal_active);

@@ -152,7 +152,7 @@ pub enum BridgeAction {
     ListHarnesses,
     /// Every project on this device. Router only.
     ListProjects,
-    /// The branches and issues in flight, as a digest. Router only.
+    /// The branches and tasks in flight, as a digest. Router only.
     ListWork,
     /// One work item's conversation, read-only. Router only.
     ReadConversation {
@@ -160,8 +160,8 @@ pub enum BridgeAction {
         agent_id: Option<String>,
         limit: usize,
     },
-    /// File an inert issue: a record, no worktree, no agent. Router only.
-    CreateIssue {
+    /// File an inert task: a record, no worktree, no agent. Router only.
+    CreateTask {
         project_id: String,
         goal: String,
         rationale: Option<String>,
@@ -256,7 +256,7 @@ pub enum BridgeAction {
     RemoveProjectSource {
         source_id: String,
     },
-    /// Remove a workspace whose work is somewhere else and whose issues are
+    /// Remove a workspace whose work is somewhere else and whose tasks are
     /// finished (#135). Project only: what becomes of a quiet workspace is
     /// the project agent's call.
     ReclaimWorkspace {
@@ -276,25 +276,25 @@ pub enum BridgeAction {
         directory_id: String,
     },
 
-    // ---------------------------------------------------- issue tracker ---
-    // The per-project issue tracker (spec: Issues), on the coding and project
+    // ---------------------------------------------------- task tracker ---
+    // The per-project task tracker (spec: Tasks), on the coding and project
     // surfaces alike. Every one of them is `Tracker`-prefixed so it cannot be
-    // read as `CreateIssue` above, which is the ROUTER's and belongs to the
+    // read as `CreateTask` above, which is the ROUTER's and belongs to the
     // retired plan flow — the two share a tool NAME on disjoint surfaces, the
     // way `post_thread_message` already does, and nothing else.
     //
     // None of these takes a project or an author. The scope is the calling
     // agent's own project, and the author is the calling agent; a call that
     // carries either anyway is parsed as though it had not.
-    /// The issues of this agent's project, narrowed.
-    TrackerListIssues {
+    /// The tasks of this agent's project, narrowed.
+    TrackerListTasks {
         state: Option<String>,
         status: Option<String>,
         label: Option<String>,
     },
-    /// One issue and its whole timeline.
-    TrackerGetIssue {
-        issue_id: String,
+    /// One task and its whole timeline.
+    TrackerGetTask {
+        task_id: String,
     },
     /// One comment, by the id a notice named. What a notice deliberately does
     /// not carry, for an agent that decides it cares.
@@ -302,28 +302,28 @@ pub enum BridgeAction {
         comment_id: String,
     },
     /// File one.
-    TrackerCreateIssue {
+    TrackerCreateTask {
         title: String,
         body: Option<String>,
         status: Option<String>,
         labels: Vec<String>,
         priority: Option<String>,
-        /// Files to file WITH the issue, as `{path, name?}` — the same shape a
+        /// Files to file WITH the task, as `{path, name?}` — the same shape a
         /// message carries them in, so an agent hands on what the user sent it
         /// by passing the path it was given.
         attachments: Vec<Value>,
-        /// And put the caller on the issue's trackers. Absent means YES here
-        /// and nowhere else: an agent that files an issue almost always wants
+        /// And put the caller on the task's trackers. Absent means YES here
+        /// and nowhere else: an agent that files a task almost always wants
         /// to know how it goes.
         track: Option<bool>,
         /// Watch it for the user, without asking them for a decision.
         notify_user: Option<bool>,
-        /// File this issue as a question for the user.
+        /// File this task as a question for the user.
         mention_user: Option<bool>,
     },
     /// Say something on one, with typed references fenced by what it is about.
-    TrackerCommentIssue {
-        issue_id: String,
+    TrackerCommentTask {
+        task_id: String,
         body: String,
         /// The same, said with the comment.
         attachments: Vec<Value>,
@@ -337,49 +337,49 @@ pub enum BridgeAction {
     /// The assignee is carried whole rather than as five sets of fields: the
     /// five kinds have different shapes, and the daemon's own parse is the one
     /// place that reads them and names each refusal.
-    TrackerAssignIssue {
+    TrackerAssignTask {
         assignee: Value,
-        issue_id: String,
+        task_id: String,
         note: Option<String>,
         track: Option<bool>,
         notify_user: Option<bool>,
     },
     /// Move one to another column.
-    TrackerMoveIssue {
-        issue_id: String,
+    TrackerMoveTask {
+        task_id: String,
         status: String,
         track: Option<bool>,
     },
-    /// Add and remove labels on an existing issue.
-    TrackerLabelIssue {
-        issue_id: String,
+    /// Add and remove labels on an existing task.
+    TrackerLabelTask {
+        task_id: String,
         add: Vec<String>,
         remove: Vec<String>,
         track: Option<bool>,
     },
     /// Close one.
-    TrackerCloseIssue {
-        issue_id: String,
+    TrackerCloseTask {
+        task_id: String,
         reason: Option<String>,
         track: Option<bool>,
     },
-    /// Start or stop hearing about an issue. Which agent is the CALLER: a
+    /// Start or stop hearing about a task. Which agent is the CALLER: a
     /// tool cannot subscribe somebody else, the way it cannot sign a comment
     /// as somebody else, so neither carries an agent id.
-    TrackerTrackIssue {
-        issue_id: String,
+    TrackerTrackTask {
+        task_id: String,
     },
-    TrackerUntrackIssue {
-        issue_id: String,
+    TrackerUntrackTask {
+        task_id: String,
     },
     /// Record what one is about.
-    TrackerLinkIssue {
-        issue_id: String,
+    TrackerLinkTask {
+        task_id: String,
         workspace_id: Option<String>,
         branch: Option<String>,
         commit: Option<String>,
         conversation_id: Option<String>,
-        parent_issue_id: Option<String>,
+        parent_task_id: Option<String>,
         track: Option<bool>,
     },
 }
@@ -420,7 +420,7 @@ impl BridgeAction {
             BridgeAction::ListProjects => "list_projects",
             BridgeAction::ListWork => "list_work",
             BridgeAction::ReadConversation { .. } => "read_conversation",
-            BridgeAction::CreateIssue { .. } => "create_issue",
+            BridgeAction::CreateTask { .. } => "create_task",
             BridgeAction::DispatchBranch { .. } => "dispatch_branch",
             BridgeAction::AskUser { .. } => "ask_user",
             BridgeAction::RouterMessage { .. } => "post_thread_message",
@@ -437,19 +437,19 @@ impl BridgeAction {
             BridgeAction::ReclaimWorkspace { .. } => "reclaim_workspace",
             BridgeAction::AddWorkspaceDirectory { .. } => "add_workspace_directory",
             BridgeAction::RemoveWorkspaceDirectory { .. } => "remove_workspace_directory",
-            // The issue tracker's twelve, on both working surfaces.
-            BridgeAction::TrackerListIssues { .. } => "list_issues",
-            BridgeAction::TrackerGetIssue { .. } => "get_issue",
+            // The task tracker's twelve, on both working surfaces.
+            BridgeAction::TrackerListTasks { .. } => "list_tasks",
+            BridgeAction::TrackerGetTask { .. } => "get_task",
             BridgeAction::TrackerReadComment { .. } => "read_comment",
-            BridgeAction::TrackerCreateIssue { .. } => "create_issue",
-            BridgeAction::TrackerCommentIssue { .. } => "comment_issue",
-            BridgeAction::TrackerAssignIssue { .. } => "assign_issue",
-            BridgeAction::TrackerMoveIssue { .. } => "move_issue",
-            BridgeAction::TrackerLabelIssue { .. } => "label_issue",
-            BridgeAction::TrackerCloseIssue { .. } => "close_issue",
-            BridgeAction::TrackerLinkIssue { .. } => "link_issue",
-            BridgeAction::TrackerTrackIssue { .. } => "track_issue",
-            BridgeAction::TrackerUntrackIssue { .. } => "untrack_issue",
+            BridgeAction::TrackerCreateTask { .. } => "create_task",
+            BridgeAction::TrackerCommentTask { .. } => "comment_task",
+            BridgeAction::TrackerAssignTask { .. } => "assign_task",
+            BridgeAction::TrackerMoveTask { .. } => "move_task",
+            BridgeAction::TrackerLabelTask { .. } => "label_task",
+            BridgeAction::TrackerCloseTask { .. } => "close_task",
+            BridgeAction::TrackerLinkTask { .. } => "link_task",
+            BridgeAction::TrackerTrackTask { .. } => "track_task",
+            BridgeAction::TrackerUntrackTask { .. } => "untrack_task",
         }
     }
 
@@ -476,7 +476,7 @@ impl BridgeAction {
             BridgeAction::ListProjects
             | BridgeAction::ListWork
             | BridgeAction::ReadConversation { .. }
-            | BridgeAction::CreateIssue { .. }
+            | BridgeAction::CreateTask { .. }
             | BridgeAction::DispatchBranch { .. }
             | BridgeAction::AskUser { .. }
             | BridgeAction::RouterMessage { .. } => &[McpSurface::Router],
@@ -501,22 +501,20 @@ impl BridgeAction {
             // agent's business; every agent compacts itself.
             BridgeAction::CompactAgent { .. } => &[McpSurface::Project],
             // The tracker is on every surface that WORKS a project: a coding
-            // agent files and moves the issues it is given, and a project
+            // agent files and moves the tasks it is given, and a project
             // agent runs the board. The router has no project to be scoped to.
-            BridgeAction::TrackerListIssues { .. }
-            | BridgeAction::TrackerGetIssue { .. }
+            BridgeAction::TrackerListTasks { .. }
+            | BridgeAction::TrackerGetTask { .. }
             | BridgeAction::TrackerReadComment { .. }
-            | BridgeAction::TrackerCreateIssue { .. }
-            | BridgeAction::TrackerCommentIssue { .. }
-            | BridgeAction::TrackerAssignIssue { .. }
-            | BridgeAction::TrackerMoveIssue { .. }
-            | BridgeAction::TrackerLabelIssue { .. }
-            | BridgeAction::TrackerCloseIssue { .. }
-            | BridgeAction::TrackerLinkIssue { .. }
-            | BridgeAction::TrackerTrackIssue { .. }
-            | BridgeAction::TrackerUntrackIssue { .. } => {
-                &[McpSurface::Coding, McpSurface::Project]
-            }
+            | BridgeAction::TrackerCreateTask { .. }
+            | BridgeAction::TrackerCommentTask { .. }
+            | BridgeAction::TrackerAssignTask { .. }
+            | BridgeAction::TrackerMoveTask { .. }
+            | BridgeAction::TrackerLabelTask { .. }
+            | BridgeAction::TrackerCloseTask { .. }
+            | BridgeAction::TrackerLinkTask { .. }
+            | BridgeAction::TrackerTrackTask { .. }
+            | BridgeAction::TrackerUntrackTask { .. } => &[McpSurface::Coding, McpSurface::Project],
         }
     }
 
@@ -626,7 +624,7 @@ impl DoneServer {
             "inputSchema": { "type": "object", "properties": {} }
         }, {
             "name": "list_work",
-            "description": "The branches and issues in flight across every project: what each one is, which project it belongs to, its state, and whether an agent is working it right now. This is what you check the capture against before you believe it continues existing work.",
+            "description": "The branches and tasks in flight across every project: what each one is, which project it belongs to, its state, and whether an agent is working it right now. This is what you check the capture against before you believe it continues existing work.",
             "inputSchema": { "type": "object", "properties": {} }
         }, {
             "name": "read_conversation",
@@ -634,7 +632,7 @@ impl DoneServer {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "entity_id": { "type": "string", "description": "The run_id or issue_id from list_work." },
+                    "entity_id": { "type": "string", "description": "The run_id or task_id from list_work." },
                     "agent_id": { "type": "string", "description": "Which agent's conversation, when the item has several. Omit for the item's own." },
                     "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 40 }
                 },
@@ -728,7 +726,7 @@ impl DoneServer {
             }),
         ];
         tools.extend(Self::workspace_tools());
-        tools.extend(Self::issue_tools());
+        tools.extend(Self::task_tools());
         Value::Array(tools)
     }
 
@@ -868,8 +866,8 @@ impl DoneServer {
         })
     }
 
-    // -------------------------------------------------- issue tracker ---
-    // The per-project issue tracker (spec: Issues). One block, shown by both
+    // -------------------------------------------------- task tracker ---
+    // The per-project task tracker (spec: Tasks). One block, shown by both
     // working surfaces, so a coding agent and a project agent are offered the
     // same twelve tools with the same words.
 
@@ -879,31 +877,31 @@ impl DoneServer {
     /// the session, so there is nothing to pass and no other project reachable.
     /// None takes an author either — the bridge knows who is calling, so a
     /// comment is signed by whoever wrote it and an event by whoever caused it.
-    fn issue_tools() -> Vec<Value> {
-        let issue_id = json!({
+    fn task_tools() -> Vec<Value> {
+        let task_id = json!({
             "type": "string",
-            "description": "From list_issues, or the issue you were handed."
+            "description": "From list_tasks, or the task you were handed."
         });
         let status = json!({
             "type": "string",
             "enum": ["backlog", "ready", "in_progress", "in_review", "done"],
             "description": "A column of the board."
         });
-        // Every write carries it, so following an issue is never a second
-        // call. `create_issue` describes its own default, which is the other
+        // Every write carries it, so following a task is never a second
+        // call. `create_task` describes its own default, which is the other
         // way round.
         let track = json!({
             "type": "boolean",
-            "description": "And follow this issue from now on: every later change to it arrives as a message here. Defaults to false; asking twice is not two trackers."
+            "description": "And follow this task from now on: every later change to it arrives as a message here. Defaults to false; asking twice is not two trackers."
         });
         // Two kinds of file: one the user already sent you, passed back by the
         // `path` it arrived on, and one you made yourself, named by its full
         // path on this machine and copied into the store when the call lands
-        // (#116). Either way the issue holds the bytes, not a pointer.
+        // (#116). Either way the task holds the bytes, not a pointer.
         let attachments = json!({
             "type": "array",
             "maxItems": 10,
-            "description": "Files to file with this issue, shown on it to anyone reading, phone included. Use this for the screenshots, recordings and logs that prove a claim — a before/after, a failing run, a UI you changed — instead of listing their paths in the text, which nobody reading the issue can open. Two kinds: an attachment you were sent (pass its `path` through unchanged), or a file you made, by its full path on this machine: images (png, jpg, webp, gif), videos (mp4, webm) and plain text or logs, up to 50 MB each. Build copies your file when the call lands, so you may delete it afterwards.",
+            "description": "Files to file with this task, shown on it to anyone reading, phone included. Use this for the screenshots, recordings and logs that prove a claim — a before/after, a failing run, a UI you changed — instead of listing their paths in the text, which nobody reading the task can open. Two kinds: an attachment you were sent (pass its `path` through unchanged), or a file you made, by its full path on this machine: images (png, jpg, webp, gif), videos (mp4, webm) and plain text or logs, up to 50 MB each. Build copies your file when the call lands, so you may delete it afterwards.",
             "items": {
                 "type": "object",
                 "properties": {
@@ -915,8 +913,8 @@ impl DoneServer {
         });
         vec![
             json!({
-                "name": "list_issues",
-                "description": "The issues of your project, newest first: what each one is, who holds it, which column it is in and what it is about. Which project is read comes from who you are — there is nothing to pass, and no other project is reachable from here.",
+                "name": "list_tasks",
+                "description": "The tasks of your project, newest first: what each one is, who holds it, which column it is in and what it is about. Which project is read comes from who you are — there is nothing to pass, and no other project is reachable from here.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -927,28 +925,28 @@ impl DoneServer {
                 }
             }),
             json!({
-                "name": "get_issue",
-                "description": "One issue and its whole timeline: every comment and everything that has happened to it, oldest first. Read this before you act on an issue somebody handed you — the body says what is wanted and the timeline says what has already been tried.",
+                "name": "get_task",
+                "description": "One task and its whole timeline: every comment and everything that has happened to it, oldest first. Read this before you act on a task somebody handed you — the body says what is wanted and the timeline says what has already been tried.",
                 "inputSchema": {
                     "type": "object",
-                    "properties": { "issue_id": issue_id },
-                    "required": ["issue_id"]
+                    "properties": { "task_id": task_id },
+                    "required": ["task_id"]
                 }
             }),
             json!({
                 "name": "read_comment",
-                "description": "One comment on one issue, by the id a notice gave you. A notice is one line and carries no comment text on purpose — this is how you read the words when you decide you care, and not reading it costs nothing. Use get_issue instead when you want the whole timeline rather than the one comment.",
+                "description": "One comment on one task, by the id a notice gave you. A notice is one line and carries no comment text on purpose — this is how you read the words when you decide you care, and not reading it costs nothing. Use get_task instead when you want the whole timeline rather than the one comment.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "comment_id": { "type": "string", "description": "From a notice, or from an issue's timeline." }
+                        "comment_id": { "type": "string", "description": "From a notice, or from a task's timeline." }
                     },
                     "required": ["comment_id"]
                 }
             }),
             json!({
-                "name": "create_issue",
-                "description": "File an issue in your project. Two things it is for: work you have found and are NOT doing — an issue is cheap, and something you noticed and did not write down exists only in this conversation — and work you ARE doing that runs to more than one step, filed and assigned to yourself so the user can see what is in progress without opening your conversation. It is filed, not started; assign it to start anyone on it, yourself included. If its body asks the user for a decision, pass mention_user: true so it reaches Needs you until they read it; a question in the body alone does not.",
+                "name": "create_task",
+                "description": "File a task in your project. Two things it is for: work you have found and are NOT doing — a task is cheap, and something you noticed and did not write down exists only in this conversation — and work you ARE doing that runs to more than one step, filed and assigned to yourself so the user can see what is in progress without opening your conversation. It is filed, not started; assign it to start anyone on it, yourself included. If its body asks the user for a decision, pass mention_user: true so it reaches Needs you until they read it; a question in the body alone does not.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -960,42 +958,42 @@ impl DoneServer {
                         "attachments": attachments.clone(),
                         "track": {
                             "type": "boolean",
-                            "description": "Follow this issue: every later change to it arrives as a message here. Defaults to TRUE — an issue you filed is one you almost always want to hear about. Pass false for one you are filing for somebody else."
+                            "description": "Follow this task: every later change to it arrives as a message here. Defaults to TRUE — a task you filed is one you almost always want to hear about. Pass false for one you are filing for somebody else."
                         },
                         "notify_user": {
                             "type": "boolean",
-                            "description": "Watch this issue for the user. Watching alone does not put it in Needs you or ask them for an answer. To ask, pass mention_user: true when filing, comment later with mention_user: true, or assign the issue to the user."
+                            "description": "Watch this task for the user. Watching alone does not put it in Needs you or ask them for an answer. To ask, pass mention_user: true when filing, comment later with mention_user: true, or assign the task to the user."
                         },
                         "mention_user": {
                             "type": "boolean",
-                            "description": "Put this new issue in the user's Needs you until they read it, and watch it for them. Use when the issue body asks the user to read or answer a decision; leave it off for bookkeeping."
+                            "description": "Put this new task in the user's Needs you until they read it, and watch it for them. Use when the task body asks the user to read or answer a decision; leave it off for bookkeeping."
                         }
                     },
                     "required": ["title"]
                 }
             }),
             json!({
-                "name": "comment_issue",
-                "description": "Say something on an issue. This is how progress on an issue you were handed becomes visible: the conversation you are in is yours, and the issue is where the user and the other agents look. It is also where you ANSWER: a comment on an issue you hold is a question, and it is answered here rather than in your own thread — the user reads the issue, not your conversation. The same goes for asking: a question about an issue that came from outside your conversation goes here, because the assigner and the user both read the issue and the answer comes back to you. For any decision the user must make, pass mention_user: true; that puts the issue in Needs you until the user reads it. A question left only in the issue body does not ask them; notify_user on create or assign only watches.",
+                "name": "comment_task",
+                "description": "Say something on a task. This is how progress on a task you were handed becomes visible: the conversation you are in is yours, and the task is where the user and the other agents look. It is also where you ANSWER: a comment on a task you hold is a question, and it is answered here rather than in your own thread — the user reads the task, not your conversation. The same goes for asking: a question about a task that came from outside your conversation goes here, because the assigner and the user both read the task and the answer comes back to you. For any decision the user must make, pass mention_user: true; that puts the task in Needs you until the user reads it. A question left only in the task body does not ask them; notify_user on create or assign only watches.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "issue_id": issue_id,
+                        "task_id": task_id,
                         "body": { "type": "string", "description": "Markdown." },
                         "track": track,
                         "attachments": attachments,
                         "notify_user": {
                             "type": "boolean",
-                            "description": "Watch this issue for the user and mark this comment as needing their attention; the unread comment puts it in Needs you until they read it. Use mention_user: true for a question or decision addressed to the user."
+                            "description": "Watch this task for the user and mark this comment as needing their attention; the unread comment puts it in Needs you until they read it. Use mention_user: true for a question or decision addressed to the user."
                         },
                         "mention_user": {
                             "type": "boolean",
-                            "description": "Put this issue in the user's Needs you until they read this comment, and watch it for them. Use for any decision the user must read or answer; leave it off for bookkeeping."
+                            "description": "Put this task in the user's Needs you until they read this comment, and watch it for them. Use for any decision the user must read or answer; leave it off for bookkeeping."
                         },
                         "refs": {
                             "type": "array",
                             "maxItems": 20,
-                            "description": "Typed references. A file needs the issue to link the workspace it is in; a commit must be one the issue links.",
+                            "description": "Typed references. A file needs the task to link the workspace it is in; a commit must be one the task links.",
                             "items": { "type": "object", "properties": {
                                 "kind": { "type": "string", "enum": ["file", "commit", "worktree"] },
                                 "path": { "type": "string" },
@@ -1006,16 +1004,16 @@ impl DoneServer {
                             }, "required": ["kind"] }
                         }
                     },
-                    "required": ["issue_id", "body"]
+                    "required": ["task_id", "body"]
                 }
             }),
             json!({
-                "name": "assign_issue",
-                "description": "Hand an issue to somebody. Assigning IS dispatching: it delivers the issue into that agent's conversation and starts it. This is how you hand work off — anything beyond a quick question or a one-line correction is filed and assigned rather than sent as a message, because the issue is where the user and the other agents look and a brief sent as a message is a brief only its reader has. Assign it to yourself to plan and track work you are doing yourself. For a new_workspace or new_agent assignee, give the agent a short job name in agent_name.",
+                "name": "assign_task",
+                "description": "Hand a task to somebody. Assigning IS dispatching: it delivers the task into that agent's conversation and starts it. This is how you hand work off — anything beyond a quick question or a one-line correction is filed and assigned rather than sent as a message, because the task is where the user and the other agents look and a brief sent as a message is a brief only its reader has. Assign it to yourself to plan and track work you are doing yourself. For a new_workspace or new_agent assignee, give the agent a short job name in agent_name.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "issue_id": issue_id,
+                        "task_id": task_id,
                         "assignee": {
                             "type": "object",
                             "description": "Who gets it, and where the work runs. Pass null to unassign.",
@@ -1023,13 +1021,13 @@ impl DoneServer {
                                 "kind": { "type": "string", "enum": ["user", "project_agent", "agent", "new_workspace", "new_agent"] },
                                 "agent_id": { "type": "string", "description": "With kind=agent. An agent of your project; one outside it is refused." },
                                 "workspace_id": { "type": "string", "description": "With kind=new_agent: the workspace the new agent works in." },
-                                "name": { "type": "string", "description": "With kind=new_workspace, the WORKSPACE name. The issue's title when omitted." },
+                                "name": { "type": "string", "description": "With kind=new_workspace, the WORKSPACE name. The task's title when omitted." },
                                 "agent_name": { "type": "string", "minLength": 1, "description": "Required with kind=new_workspace or new_agent. A short name describing the agent's job, like \"Flaky test fixer\"." },
                                 "isolation": { "type": "string", "enum": ["worktree", "rift"], "description": "With kind=new_workspace. Omit for the project's own setting." },
                                 "harness": { "type": "string", "description": "What a new agent runs on. Omit for the user's default." },
                                 "model": { "type": "string" },
                                 "effort": { "type": "string" },
-                                "notify_user": { "type": "boolean", "description": "With kind=new_workspace or new_agent: watch the new agent and show its workspace in the USER's inbox. Pass true when the user asked to follow that agent's work. Otherwise the new agent is unwatched. This is separate from the top-level notify_user, which watches the issue." }
+                                "notify_user": { "type": "boolean", "description": "With kind=new_workspace or new_agent: watch the new agent and show its workspace in the USER's inbox. Pass true when the user asked to follow that agent's work. Otherwise the new agent is unwatched. This is separate from the top-level notify_user, which watches the task." }
                             },
                             "required": ["kind"],
                             "allOf": [
@@ -1037,81 +1035,81 @@ impl DoneServer {
                                 { "if": { "properties": { "kind": { "const": "new_agent" } } }, "then": { "required": ["agent_name"] } }
                             ]
                         },
-                        "note": { "type": "string", "description": "Extra instruction delivered under the issue. The issue's body is the issue; this is what you would have said in a message." },
+                        "note": { "type": "string", "description": "Extra instruction delivered under the task. The task's body is the task; this is what you would have said in a message." },
                         "track": track,
                         "notify_user": {
                             "type": "boolean",
-                            "description": "Watch this issue for the user. Watching alone does not put it in Needs you or ask them for an answer. Assign it to kind=user to ask them directly, or use mention_user on create_issue or comment_issue."
+                            "description": "Watch this task for the user. Watching alone does not put it in Needs you or ask them for an answer. Assign it to kind=user to ask them directly, or use mention_user on create_task or comment_task."
                         }
                     },
-                    "required": ["issue_id", "assignee"]
+                    "required": ["task_id", "assignee"]
                 }
             }),
             json!({
-                "name": "move_issue",
-                "description": "Move an issue to another column. Move it to In review when you report Complete: that says the work is ready to be looked at, not that it is accepted.",
+                "name": "move_task",
+                "description": "Move a task to another column. Move it to In review when you report Complete: that says the work is ready to be looked at, not that it is accepted.",
                 "inputSchema": {
                     "type": "object",
-                    "properties": { "issue_id": issue_id, "status": status, "track": track },
-                    "required": ["issue_id", "status"]
+                    "properties": { "task_id": task_id, "status": status, "track": track },
+                    "required": ["task_id", "status"]
                 }
             }),
             json!({
-                "name": "label_issue",
-                "description": "Add or remove labels on an existing issue. Labels are free text, including spaces. Returns the issue and its labels after the change. Adding a label already present or removing one absent does nothing.",
+                "name": "label_task",
+                "description": "Add or remove labels on an existing task. Labels are free text, including spaces. Returns the task and its labels after the change. Adding a label already present or removing one absent does nothing.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "issue_id": issue_id,
+                        "task_id": task_id,
                         "add": { "type": "array", "items": { "type": "string" }, "maxItems": 20 },
                         "remove": { "type": "array", "items": { "type": "string" }, "maxItems": 20 },
                         "track": track
                     },
-                    "required": ["issue_id"]
+                    "required": ["task_id"]
                 }
             }),
             json!({
-                "name": "close_issue",
-                "description": "Close an issue. Closing is not the Done column: one says whether anyone is still expected to act, the other says where the card is. Closing an issue that is already closed is refused.",
+                "name": "close_task",
+                "description": "Close a task. Closing is not the Done column: one says whether anyone is still expected to act, the other says where the card is. Closing a task that is already closed is refused.",
                 "inputSchema": {
                     "type": "object",
-                    "properties": { "issue_id": issue_id, "reason": { "type": "string", "description": "One line on why." }, "track": track },
-                    "required": ["issue_id"]
+                    "properties": { "task_id": task_id, "reason": { "type": "string", "description": "One line on why." }, "track": track },
+                    "required": ["task_id"]
                 }
             }),
             json!({
-                "name": "link_issue",
-                "description": "Record what an issue is about: the workspace being worked in, the branch, a commit, or the conversation working it. Assigning an issue already links the assignee's workspace and conversation, so this is for the branch you cut for it, each commit that lands for it, and any second workspace. A link has to name something of your own project. Name at least one.",
+                "name": "link_task",
+                "description": "Record what a task is about: the workspace being worked in, the branch, a commit, or the conversation working it. Assigning a task already links the assignee's workspace and conversation, so this is for the branch you cut for it, each commit that lands for it, and any second workspace. A link has to name something of your own project. Name at least one.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "issue_id": issue_id,
+                        "task_id": task_id,
                         "workspace_id": { "type": "string" },
                         "branch": { "type": "string", "description": "Spelled exactly as it is." },
                         "commit": { "type": "string", "description": "A full 40-character sha." },
                         "conversation_id": { "type": "string", "description": "A conversation owner id of your project." },
-                        "parent_issue_id": { "type": "string", "description": "The issue this one is part of. A cycle is refused." },
+                        "parent_task_id": { "type": "string", "description": "The task this one is part of. A cycle is refused." },
                         "track": track
                     },
-                    "required": ["issue_id"]
+                    "required": ["task_id"]
                 }
             }),
             json!({
-                "name": "track_issue",
-                "description": "Start hearing about an issue. Every later change to it — a move, a comment, an assignment, an edit — arrives as a message in your conversation, and starts your turn if you are idle. Use it on an issue you depend on or are collaborating around; you are tracked automatically on anything assigned to you. Your own changes are never echoed back to you.",
+                "name": "track_task",
+                "description": "Start hearing about a task. Every later change to it — a move, a comment, an assignment, an edit — arrives as a message in your conversation, and starts your turn if you are idle. Use it on a task you depend on or are collaborating around; you are tracked automatically on anything assigned to you. Your own changes are never echoed back to you.",
                 "inputSchema": {
                     "type": "object",
-                    "properties": { "issue_id": issue_id.clone() },
-                    "required": ["issue_id"]
+                    "properties": { "task_id": task_id.clone() },
+                    "required": ["task_id"]
                 }
             }),
             json!({
-                "name": "untrack_issue",
-                "description": "Stop hearing about an issue. Being unassigned does not do this on its own — handing work on is often exactly when you still want to know how it went — so say so when you no longer do.",
+                "name": "untrack_task",
+                "description": "Stop hearing about a task. Being unassigned does not do this on its own — handing work on is often exactly when you still want to know how it went — so say so when you no longer do.",
                 "inputSchema": {
                     "type": "object",
-                    "properties": { "issue_id": issue_id.clone() },
-                    "required": ["issue_id"]
+                    "properties": { "task_id": task_id.clone() },
+                    "required": ["task_id"]
                 }
             }),
         ]
@@ -1119,12 +1117,12 @@ impl DoneServer {
 
     /// The tracker's `tools/call` arms, shared by both working surfaces.
     /// `None` is "not one of mine", which every other tool is.
-    fn handle_issue_tools_call(id: &Value, name: &str, params: Option<&Value>) -> Option<Handled> {
-        let issue = || required_argument(params, "issue_id");
+    fn handle_task_tools_call(id: &Value, name: &str, params: Option<&Value>) -> Option<Handled> {
+        let task = || required_argument(params, "task_id");
         Some(match name {
-            "list_issues" => acted(
+            "list_tasks" => acted(
                 id.clone(),
-                BridgeAction::TrackerListIssues {
+                BridgeAction::TrackerListTasks {
                     state: optional_argument(params, "state"),
                     status: optional_argument(params, "status"),
                     label: optional_argument(params, "label"),
@@ -1136,14 +1134,14 @@ impl DoneServer {
                 }
                 Err(message) => refused(id.clone(), message),
             },
-            "get_issue" => match issue() {
-                Ok(issue_id) => acted(id.clone(), BridgeAction::TrackerGetIssue { issue_id }),
+            "get_task" => match task() {
+                Ok(task_id) => acted(id.clone(), BridgeAction::TrackerGetTask { task_id }),
                 Err(message) => refused(id.clone(), message),
             },
-            "create_issue" => match required_argument(params, "title") {
+            "create_task" => match required_argument(params, "title") {
                 Ok(title) => acted(
                     id.clone(),
-                    BridgeAction::TrackerCreateIssue {
+                    BridgeAction::TrackerCreateTask {
                         title,
                         body: optional_argument(params, "body"),
                         status: optional_argument(params, "status"),
@@ -1157,15 +1155,13 @@ impl DoneServer {
                 ),
                 Err(message) => refused(id.clone(), message),
             },
-            "comment_issue" => {
-                match issue()
-                    .and_then(|issue_id| Ok((issue_id, required_argument(params, "body")?)))
-                {
-                    Ok((issue_id, body)) => match issue_refs(params) {
+            "comment_task" => {
+                match task().and_then(|task_id| Ok((task_id, required_argument(params, "body")?))) {
+                    Ok((task_id, body)) => match task_refs(params) {
                         Ok(refs) => acted(
                             id.clone(),
-                            BridgeAction::TrackerCommentIssue {
-                                issue_id,
+                            BridgeAction::TrackerCommentTask {
+                                task_id,
                                 body,
                                 refs,
                                 attachments: value_list_argument(params, "attachments"),
@@ -1179,15 +1175,15 @@ impl DoneServer {
                     Err(message) => refused(id.clone(), message),
                 }
             }
-            "assign_issue" => match issue().and_then(|issue_id| {
+            "assign_task" => match task().and_then(|task_id| {
                 let assignee = argument(params, "assignee").unwrap_or(Value::Null);
                 require_created_agent_name(&assignee)?;
-                Ok((issue_id, assignee))
+                Ok((task_id, assignee))
             }) {
-                Ok((issue_id, assignee)) => acted(
+                Ok((task_id, assignee)) => acted(
                     id.clone(),
-                    BridgeAction::TrackerAssignIssue {
-                        issue_id,
+                    BridgeAction::TrackerAssignTask {
+                        task_id,
                         // Absent and null are both unassignment, which is a
                         // legible thing to ask for.
                         assignee,
@@ -1198,14 +1194,13 @@ impl DoneServer {
                 ),
                 Err(message) => refused(id.clone(), message),
             },
-            "move_issue" => {
-                match issue()
-                    .and_then(|issue_id| Ok((issue_id, required_argument(params, "status")?)))
+            "move_task" => {
+                match task().and_then(|task_id| Ok((task_id, required_argument(params, "status")?)))
                 {
-                    Ok((issue_id, status)) => acted(
+                    Ok((task_id, status)) => acted(
                         id.clone(),
-                        BridgeAction::TrackerMoveIssue {
-                            issue_id,
+                        BridgeAction::TrackerMoveTask {
+                            task_id,
                             status,
                             track: optional_flag(params, "track"),
                         },
@@ -1213,17 +1208,17 @@ impl DoneServer {
                     Err(message) => refused(id.clone(), message),
                 }
             }
-            "label_issue" => match issue().and_then(|issue_id| {
+            "label_task" => match task().and_then(|task_id| {
                 Ok((
-                    issue_id,
+                    task_id,
                     label_list_argument(params, "add")?,
                     label_list_argument(params, "remove")?,
                 ))
             }) {
-                Ok((issue_id, add, remove)) => acted(
+                Ok((task_id, add, remove)) => acted(
                     id.clone(),
-                    BridgeAction::TrackerLabelIssue {
-                        issue_id,
+                    BridgeAction::TrackerLabelTask {
+                        task_id,
                         add,
                         remove,
                         track: optional_flag(params, "track"),
@@ -1231,35 +1226,35 @@ impl DoneServer {
                 ),
                 Err(message) => refused(id.clone(), message),
             },
-            "close_issue" => match issue() {
-                Ok(issue_id) => acted(
+            "close_task" => match task() {
+                Ok(task_id) => acted(
                     id.clone(),
-                    BridgeAction::TrackerCloseIssue {
-                        issue_id,
+                    BridgeAction::TrackerCloseTask {
+                        task_id,
                         reason: optional_argument(params, "reason"),
                         track: optional_flag(params, "track"),
                     },
                 ),
                 Err(message) => refused(id.clone(), message),
             },
-            "track_issue" => match issue() {
-                Ok(issue_id) => acted(id.clone(), BridgeAction::TrackerTrackIssue { issue_id }),
+            "track_task" => match task() {
+                Ok(task_id) => acted(id.clone(), BridgeAction::TrackerTrackTask { task_id }),
                 Err(message) => refused(id.clone(), message),
             },
-            "untrack_issue" => match issue() {
-                Ok(issue_id) => acted(id.clone(), BridgeAction::TrackerUntrackIssue { issue_id }),
+            "untrack_task" => match task() {
+                Ok(task_id) => acted(id.clone(), BridgeAction::TrackerUntrackTask { task_id }),
                 Err(message) => refused(id.clone(), message),
             },
-            "link_issue" => match issue() {
-                Ok(issue_id) => acted(
+            "link_task" => match task() {
+                Ok(task_id) => acted(
                     id.clone(),
-                    BridgeAction::TrackerLinkIssue {
-                        issue_id,
+                    BridgeAction::TrackerLinkTask {
+                        task_id,
                         workspace_id: optional_argument(params, "workspace_id"),
                         branch: optional_argument(params, "branch"),
                         commit: optional_argument(params, "commit"),
                         conversation_id: optional_argument(params, "conversation_id"),
-                        parent_issue_id: optional_argument(params, "parent_issue_id"),
+                        parent_task_id: optional_argument(params, "parent_task_id"),
                         track: optional_flag(params, "track"),
                     },
                 ),
@@ -1480,7 +1475,7 @@ impl DoneServer {
             }
         }), json!({
             "name": "reclaim_workspace",
-            "description": "Remove a workspace whose work is safe somewhere else: every commit is pushed, nothing is uncommitted, no agent is working in it, and every issue linked to it is Done or closed. Its agents and terminals stop, its checkouts are handed back, the folder goes, and each linked issue records the reclaim. The local branch each checkout carried goes too, unless it is a default branch, is checked out elsewhere or has commits no remote has; then it stays and the issue says why. Refused, with the reasons, while anything still holds it. That refusal is the difference from delete_workspace, which removes whatever is there.",
+            "description": "Remove a workspace whose work is safe somewhere else: every commit is pushed, nothing is uncommitted, no agent is working in it, and every task linked to it is Done or closed. Its agents and terminals stop, its checkouts are handed back, the folder goes, and each linked task records the reclaim. The local branch each checkout carried goes too, unless it is a default branch, is checked out elsewhere or has commits no remote has; then it stays and the task says why. Refused, with the reasons, while anything still holds it. That refusal is the difference from delete_workspace, which removes whatever is there.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1505,7 +1500,7 @@ impl DoneServer {
             "description": SET_TOPIC_DESCRIPTION,
             "inputSchema": Self::set_topic_input_schema()
         }), compaction::compact_self_tool()]);
-        tools.extend(Self::issue_tools());
+        tools.extend(Self::task_tools());
         Value::Array(tools)
     }
 
@@ -1606,7 +1601,7 @@ impl DoneServer {
     fn handle_project_tools_call(id: Value, name: &str, params: Option<&Value>) -> Handled {
         // The tracker first, then the workspace tools: both are shared by
         // the two working surfaces, so each is parsed in one place.
-        if let Some(handled) = Self::handle_issue_tools_call(&id, name, params) {
+        if let Some(handled) = Self::handle_task_tools_call(&id, name, params) {
             return handled;
         }
         if let Some(handled) = workspace_tool_call(id.clone(), name, params) {
@@ -1646,7 +1641,7 @@ impl DoneServer {
     fn handle_coding_tools_call(&self, id: Value, name: &str, params: Option<&Value>) -> Handled {
         // The tracker first, then the workspace tools: both are shared by
         // the two working surfaces, so each is parsed in one place.
-        if let Some(handled) = Self::handle_issue_tools_call(&id, name, params) {
+        if let Some(handled) = Self::handle_task_tools_call(&id, name, params) {
             return handled;
         }
         if let Some(handled) = workspace_tool_call(id.clone(), name, params) {
@@ -1790,9 +1785,9 @@ impl DoneServer {
                 let options = ask_options(&arguments)?;
                 if options
                     .iter()
-                    .any(|option| option.kind == Some(crate::capture::CaptureTarget::Issue))
+                    .any(|option| option.kind == Some(crate::capture::CaptureTarget::Task))
                 {
-                    return Err("router issue destinations have been retired".to_string());
+                    return Err("router task destinations have been retired".to_string());
                 }
                 Ok(BridgeAction::AskUser { question, options })
             }),
@@ -1994,7 +1989,7 @@ fn required_argument(params: Option<&Value>, field: &str) -> Result<String, Stri
 }
 
 /// Agent-originated creation always names its agent. The wire's `agent.add`
-/// and `issues.assign` remain optional so a user can create an unnamed agent.
+/// and `tasks.assign` remain optional so a user can create an unnamed agent.
 fn created_agent_name(name: Option<&str>) -> Result<String, String> {
     let name = name
         .filter(|name| !name.trim().is_empty())
@@ -2109,7 +2104,7 @@ fn workspace_tool_action(
     Some(parsed)
 }
 
-// ------------------------------------------------------ issue tracker ---
+// ------------------------------------------------------ task tracker ---
 // Three argument readers the tracker's tools need and the ones above do not:
 // a whole value, a list of words, and a list of typed references.
 
@@ -2178,7 +2173,7 @@ fn label_list_argument(params: Option<&Value>, field: &str) -> Result<Vec<String
 
 /// A comment's typed references, parsed here so a malformed one refuses the
 /// call rather than reaching the daemon as an empty list.
-fn issue_refs(params: Option<&Value>) -> Result<Vec<crate::thread::ThreadLink>, String> {
+fn task_refs(params: Option<&Value>) -> Result<Vec<crate::thread::ThreadLink>, String> {
     match argument(params, "refs") {
         None | Some(Value::Null) => Ok(Vec::new()),
         Some(Value::Array(values)) => values
@@ -2363,7 +2358,7 @@ mod tests {
         let h = server().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
         let v = parse(&h.reply.unwrap());
         let tools = v["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 6 + WORKSPACE_TOOLS.len() + ISSUE_TOOLS.len());
+        assert_eq!(tools.len(), 6 + WORKSPACE_TOOLS.len() + TASK_TOOLS.len());
         assert_eq!(tools[0]["name"], "post_thread_message");
         assert_eq!(tools[1]["name"], "message_agent");
         assert_eq!(tools[2]["name"], "search_conversation");
@@ -2819,36 +2814,36 @@ mod tests {
         "remove_workspace_directory",
     ];
 
-    /// The issue tracker's twelve, the OTHER inventory shared between the two
+    /// The task tracker's twelve, the OTHER inventory shared between the two
     /// working surfaces — and for the same reason: both agents are bound to a
     /// project, and a project has one board.
-    const ISSUE_TOOLS: [&str; 12] = [
-        "list_issues",
-        "get_issue",
+    const TASK_TOOLS: [&str; 12] = [
+        "list_tasks",
+        "get_task",
         "read_comment",
-        "create_issue",
-        "comment_issue",
-        "assign_issue",
-        "move_issue",
-        "label_issue",
-        "close_issue",
-        "link_issue",
-        "track_issue",
-        "untrack_issue",
+        "create_task",
+        "comment_task",
+        "assign_task",
+        "move_task",
+        "label_task",
+        "close_task",
+        "link_task",
+        "track_task",
+        "untrack_task",
     ];
 
     #[test]
-    fn both_issue_surfaces_explain_how_a_new_issue_asks_the_user() {
+    fn both_task_surfaces_explain_how_a_new_task_asks_the_user() {
         for owner in ["agent-01H", "project-01H"] {
             let tools = DoneServer::for_owner(owner).tools();
             let tools = tools.as_array().unwrap();
             let create = tools
                 .iter()
-                .find(|tool| tool["name"] == "create_issue")
+                .find(|tool| tool["name"] == "create_task")
                 .unwrap();
             let comment = tools
                 .iter()
-                .find(|tool| tool["name"] == "comment_issue")
+                .find(|tool| tool["name"] == "comment_task")
                 .unwrap();
             let properties = &create["inputSchema"]["properties"];
             assert_eq!(properties["mention_user"]["type"], "boolean");
@@ -2862,7 +2857,7 @@ mod tests {
                 .contains("Watching alone does not put it in Needs you"));
             let assign = tools
                 .iter()
-                .find(|tool| tool["name"] == "assign_issue")
+                .find(|tool| tool["name"] == "assign_task")
                 .unwrap();
             assert!(
                 assign["inputSchema"]["properties"]["notify_user"]["description"]
@@ -2885,12 +2880,12 @@ mod tests {
         }
     }
 
-    /// Every write the tracker offers takes `track`, so following an issue is
-    /// never a second call — and `create_issue` says its default is the other
+    /// Every write the tracker offers takes `track`, so following a task is
+    /// never a second call — and `create_task` says its default is the other
     /// way round, because a flag that defaults differently in one place has to
     /// say so where it is read.
     #[test]
-    fn every_issue_write_offers_the_track_flag() {
+    fn every_task_write_offers_the_track_flag() {
         let tools = server().tools().as_array().unwrap().clone();
         let named = |name: &str| {
             tools
@@ -2900,13 +2895,13 @@ mod tests {
                 .clone()
         };
         for name in [
-            "create_issue",
-            "comment_issue",
-            "assign_issue",
-            "move_issue",
-            "label_issue",
-            "close_issue",
-            "link_issue",
+            "create_task",
+            "comment_task",
+            "assign_task",
+            "move_task",
+            "label_task",
+            "close_task",
+            "link_task",
         ] {
             let tool = named(name);
             assert_eq!(
@@ -2921,19 +2916,19 @@ mod tests {
                 "{name} must not require it"
             );
         }
-        let filing = named("create_issue")["inputSchema"]["properties"]["track"]["description"]
+        let filing = named("create_task")["inputSchema"]["properties"]["track"]["description"]
             .as_str()
             .unwrap()
             .to_string();
         assert!(filing.contains("Defaults to TRUE"), "{filing}");
-        let moving = named("move_issue")["inputSchema"]["properties"]["track"]["description"]
+        let moving = named("move_task")["inputSchema"]["properties"]["track"]["description"]
             .as_str()
             .unwrap()
             .to_string();
         assert!(moving.contains("Defaults to false"), "{moving}");
 
         // The reads take no such flag: nothing to follow is written by them.
-        for name in ["list_issues", "get_issue"] {
+        for name in ["list_tasks", "get_task"] {
             assert!(
                 named(name)["inputSchema"]["properties"]["track"].is_null(),
                 "{name} offers a flag it cannot honour"
@@ -2941,22 +2936,22 @@ mod tests {
         }
     }
 
-    /// `link_issue` says what assignment does NOT do for you, so an agent that
+    /// `link_task` says what assignment does NOT do for you, so an agent that
     /// read "assignment links your workspace" does not conclude the tool is
     /// redundant and leave every commit unlinked.
     #[test]
-    fn link_issue_says_what_assignment_leaves_for_it() {
+    fn link_task_says_what_assignment_leaves_for_it() {
         let described = server()
             .tools()
             .as_array()
             .unwrap()
             .iter()
-            .find(|tool| tool["name"] == "link_issue")
-            .expect("link_issue is offered")
+            .find(|tool| tool["name"] == "link_task")
+            .expect("link_task is offered")
             .clone();
         let description = described["description"].as_str().unwrap();
         assert!(
-            description.contains("Assigning an issue already links"),
+            description.contains("Assigning a task already links"),
             "{description}"
         );
         assert!(
@@ -2993,7 +2988,7 @@ mod tests {
                 // its project and is offered no such tool.
                 &["set_name"][..],
                 &WORKSPACE_TOOLS[..],
-                &ISSUE_TOOLS[..]
+                &TASK_TOOLS[..]
             ]
             .concat(),
             "a coding agent has its conversation, the workspaces of its project, and its board"
@@ -3009,13 +3004,13 @@ mod tests {
                     "compact_agent"
                 ][..],
                 &conversation[..],
-                &ISSUE_TOOLS[..],
+                &TASK_TOOLS[..],
             ]
             .concat(),
             "and the project agent has the same three, plus the project's own sources"
         );
         for surface in [McpSurface::Coding, McpSurface::Project] {
-            for tool in WORKSPACE_TOOLS.iter().chain(ISSUE_TOOLS.iter()) {
+            for tool in WORKSPACE_TOOLS.iter().chain(TASK_TOOLS.iter()) {
                 assert!(
                     DoneServer::tool_names_of(surface).contains(&tool.to_string()),
                     "{tool} missing from {surface:?}"
@@ -3033,10 +3028,10 @@ mod tests {
                 "{project_only} is the project agent's alone"
             );
         }
-        // The router works no project, so it carries no board. `create_issue`
+        // The router works no project, so it carries no board. `create_task`
         // is the exception it always was: the router's own, and the plan
         // flow's, sharing a name on a surface nothing else here reaches.
-        for tool in ISSUE_TOOLS.iter().filter(|tool| **tool != "create_issue") {
+        for tool in TASK_TOOLS.iter().filter(|tool| **tool != "create_task") {
             assert!(
                 !tool_names(&router()).contains(&tool.to_string()),
                 "the router is shown {tool}"
@@ -3081,17 +3076,17 @@ mod tests {
         }
     }
 
-    /// The three issue tools whose descriptions had to change say, in the
+    /// The three task tools whose descriptions had to change say, in the
     /// description itself, when to reach for them: file and assign rather than
     /// message, file and self-assign to plan your own work, and ask on the
-    /// issue you were handed.
+    /// task you were handed.
     ///
     /// Said here as well as in the prompt for the reason the checkout tools say
     /// their rule twice — a description survives the compaction that eats a
-    /// cold prompt, and the moment an agent reaches for a message instead of an
-    /// issue is long after that prompt is gone.
+    /// cold prompt, and the moment an agent reaches for a message instead of a
+    /// task is long after that prompt is gone.
     #[test]
-    fn the_issue_tools_say_when_to_reach_for_them_in_the_description_itself() {
+    fn the_task_tools_say_when_to_reach_for_them_in_the_description_itself() {
         for surface in [&server(), &project()] {
             let listed =
                 surface.handle_message(r#"{"jsonrpc":"2.0","id":75,"method":"tools/list"}"#);
@@ -3110,18 +3105,18 @@ mod tests {
             for (tool, said) in [
                 // Rule 1: the threshold and the reason.
                 (
-                    "assign_issue",
+                    "assign_task",
                     "anything beyond a quick question or a one-line correction is filed and assigned rather than sent as a message",
                 ),
-                // Rule 2: your own multi-step work is an issue too.
+                // Rule 2: your own multi-step work is a task too.
                 (
-                    "create_issue",
+                    "create_task",
                     "work you ARE doing that runs to more than one step, filed and assigned to yourself",
                 ),
-                // Rule 3: the issue is where you ask, not only where you report.
+                // Rule 3: the task is where you ask, not only where you report.
                 (
-                    "comment_issue",
-                    "a question about an issue that came from outside your conversation goes here",
+                    "comment_task",
+                    "a question about a task that came from outside your conversation goes here",
                 ),
             ] {
                 let description = described(tool);
@@ -3249,7 +3244,7 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&json!("name")));
-        let assignee = &named("assign_issue")["inputSchema"]["properties"]["assignee"];
+        let assignee = &named("assign_task")["inputSchema"]["properties"]["assignee"];
         assert_eq!(
             assignee["allOf"][0]["then"]["required"],
             json!(["agent_name"])
@@ -3266,20 +3261,20 @@ mod tests {
                 r#"{"workspace_id":"ws-1","name":"  "}"#,
             ),
             (
-                "assign_issue",
-                r#"{"issue_id":"issue-1","assignee":{"kind":"new_agent","workspace_id":"ws-1"}}"#,
+                "assign_task",
+                r#"{"task_id":"task-1","assignee":{"kind":"new_agent","workspace_id":"ws-1"}}"#,
             ),
             (
-                "assign_issue",
-                r#"{"issue_id":"issue-1","assignee":{"kind":"new_agent","workspace_id":"ws-1","agent_name":" "}}"#,
+                "assign_task",
+                r#"{"task_id":"task-1","assignee":{"kind":"new_agent","workspace_id":"ws-1","agent_name":" "}}"#,
             ),
             (
-                "assign_issue",
-                r#"{"issue_id":"issue-1","assignee":{"kind":"new_workspace","name":"workspace"}}"#,
+                "assign_task",
+                r#"{"task_id":"task-1","assignee":{"kind":"new_workspace","name":"workspace"}}"#,
             ),
             (
-                "assign_issue",
-                r#"{"issue_id":"issue-1","assignee":{"kind":"new_workspace","agent_name":" "}}"#,
+                "assign_task",
+                r#"{"task_id":"task-1","assignee":{"kind":"new_workspace","agent_name":" "}}"#,
             ),
         ] {
             for server in [project(), server()] {
@@ -3400,12 +3395,12 @@ mod tests {
         );
 
         let routed = router().handle_message(
-            r#"{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"status":"Complete","body":"filed an issue on the bridge"}}}"#,
+            r#"{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"status":"Complete","body":"filed a task on the bridge"}}}"#,
         );
         let report = routed.report.expect("a routing report");
         assert_eq!(
             report,
-            DoneReport::new(DoneStatus::Completed, "filed an issue on the bridge")
+            DoneReport::new(DoneStatus::Completed, "filed a task on the bridge")
         );
     }
 
@@ -3459,7 +3454,7 @@ mod tests {
                 if question == "which project?" && options.is_empty()
         ));
         let retired = call(
-            "create_issue",
+            "create_task",
             r#"{"project_id":"proj-1","goal":"fix the redirect"}"#,
         );
         assert!(retired.action.is_none());
@@ -3506,8 +3501,8 @@ mod tests {
     #[test]
     fn an_option_the_parser_cannot_read_is_a_tool_error() {
         for arguments in [
-            r#"{"question":"which?","options":[{"kind":"issue"}]}"#,
-            r#"{"question":"which?","options":[{"label":"file it","kind":"issue"}]}"#,
+            r#"{"question":"which?","options":[{"kind":"task"}]}"#,
+            r#"{"question":"which?","options":[{"label":"file it","kind":"task"}]}"#,
             r#"{"question":"which?","options":[{"label":"go","kind":"pull_request"}]}"#,
             r#"{"question":"which?","options":"the first one"}"#,
         ] {

@@ -1,7 +1,7 @@
 // #30 on a real stack: a session whose path has silently died is not kept for
 // two minutes, and what the dead window stranded settles itself afterwards.
 //
-//   ISSUES_REPO=<this checkout> node web/dead-path-check.mjs
+//   TASKS_REPO=<this checkout> node web/dead-path-check.mjs
 //
 // Reads /tmp/live-seed.json, so run web/live-seed.mjs first and write its SEED
 // line there. Exits non-zero on a failed check.
@@ -31,7 +31,7 @@
 // `docker pause` freezes the bridge so completely that it stops answering ICE's
 // own consent checks, and the browser notices within a few seconds: the
 // connection goes `disconnected`, core/peerLink.js starts an ICE restart, and
-// that machinery — which predates this issue — is what handles it. The
+// that machinery — which predates this task — is what handles it. The
 // maintainer's fault was the opposite and is the whole reason #30 exists: their
 // consent checks WERE being answered, ICE said `connected` for the full 105
 // seconds, and nothing above it could tell that SCTP was delivering none of
@@ -65,13 +65,13 @@ const BRIDGE = process.env.BRIDGE_CONTAINER || "deploy-bridge-1";
  *  reason the other checks refuse it: there is more than one build-web checkout
  *  on this machine and a forgotten variable would pass against a bridge that was
  *  never under test. */
-const REPO = process.env.ISSUES_REPO;
+const REPO = process.env.TASKS_REPO;
 if (!REPO) {
-  console.error("set ISSUES_REPO to the checkout under test — this run must not mix checkouts");
+  console.error("set TASKS_REPO to the checkout under test — this run must not mix checkouts");
   process.exit(2);
 }
 if (!existsSync(`${REPO}/deploy/compose.real.yml`)) {
-  console.error(`no compose file under ${REPO} — is ISSUES_REPO a build-web checkout?`);
+  console.error(`no compose file under ${REPO} — is TASKS_REPO a build-web checkout?`);
   process.exit(2);
 }
 

@@ -77,7 +77,7 @@ fn selection_line_end_requires_a_start() {
 }
 
 /// Forward compatibility: `viewing_context` rides v1 request paths
-/// (`thread.post`, `run.message`, `plan.message`, `issue.send_notes`), and a
+/// (`thread.post`, `run.message`, `plan.message`, `task.send_notes`), and a
 /// v1 request never refuses a field this bridge predates — a newer SPA that
 /// names something here must still be able to talk to an older bridge.
 #[test]
@@ -185,13 +185,13 @@ fn viewing_context_rejects_a_workspace_item_naming_nothing() {
 }
 
 /// The board is a thing the user looks at, so a message sent while looking at
-/// an issue says which one. Additive at version 1, like the workspace item.
+/// a task says which one. Additive at version 1, like the workspace item.
 #[test]
-fn viewing_context_carries_the_issue_the_user_is_looking_at() {
+fn viewing_context_carries_the_task_the_user_is_looking_at() {
     let context: ViewingContext = serde_json::from_value(serde_json::json!({
         "version": 1,
         "items": [
-            { "kind": "issue", "issue_id": "issue-01K5Z", "number": 9, "title": "Kanban drag" }
+            { "kind": "task", "task_id": "task-01K5Z", "number": 9, "title": "Kanban drag" }
         ]
     }))
     .unwrap();
@@ -199,15 +199,15 @@ fn viewing_context_carries_the_issue_the_user_is_looking_at() {
     assert_eq!(context.validate(), Ok(()));
     assert_eq!(
         context.items.first(),
-        Some(&ViewingContextItem::Issue {
-            issue_id: "issue-01K5Z".into(),
+        Some(&ViewingContextItem::Task {
+            task_id: "task-01K5Z".into(),
             number: 9,
             title: "Kanban drag".into(),
         })
     );
     assert_eq!(
         serde_json::to_value(&context.items[0]).unwrap(),
-        serde_json::json!({ "kind": "issue", "issue_id": "issue-01K5Z", "number": 9, "title": "Kanban drag" }),
+        serde_json::json!({ "kind": "task", "task_id": "task-01K5Z", "number": 9, "title": "Kanban drag" }),
         "the item goes back out exactly as it came in"
     );
 }
@@ -215,26 +215,26 @@ fn viewing_context_carries_the_issue_the_user_is_looking_at() {
 /// Refused the way an over-long workspace name is: both words are for the
 /// agent to read, and a title the size of a file is not a label.
 #[test]
-fn viewing_context_rejects_an_issue_item_naming_nothing_or_too_much() {
+fn viewing_context_rejects_a_task_item_naming_nothing_or_too_much() {
     let untitled: ViewingContext = serde_json::from_value(serde_json::json!({
         "version": 1,
-        "items": [{ "kind": "issue", "issue_id": "issue-1", "number": 9, "title": "" }]
+        "items": [{ "kind": "task", "task_id": "task-1", "number": 9, "title": "" }]
     }))
     .unwrap();
-    assert!(untitled.validate().unwrap_err().contains("issue"));
+    assert!(untitled.validate().unwrap_err().contains("task"));
 
     let unaddressed: ViewingContext = serde_json::from_value(serde_json::json!({
         "version": 1,
-        "items": [{ "kind": "issue", "issue_id": "", "number": 9, "title": "Kanban drag" }]
+        "items": [{ "kind": "task", "task_id": "", "number": 9, "title": "Kanban drag" }]
     }))
     .unwrap();
-    assert!(unaddressed.validate().unwrap_err().contains("issue"));
+    assert!(unaddressed.validate().unwrap_err().contains("task"));
 
     let shouted: ViewingContext = serde_json::from_value(serde_json::json!({
         "version": 1,
         "items": [{
-            "kind": "issue",
-            "issue_id": "issue-1",
+            "kind": "task",
+            "task_id": "task-1",
             "number": 9,
             "title": "x".repeat(MAX_VIEWING_CONTEXT_LABEL_BYTES + 1),
         }]

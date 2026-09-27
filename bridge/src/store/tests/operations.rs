@@ -6,17 +6,17 @@ use crate::thread::MessageDeliveryStatus;
 fn thread_post_receipt_and_message_commit_together_and_retry_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();
-    let mut record = plan_record("issue-1");
+    let mut record = plan_record("task-1");
     record.agents[0].thread.post_user("hello", None, NOW);
     let receipt = queued_operation("op-1", 1);
 
     let accepted = store
-        .accept_thread_post("issue-1", &record.agents, &receipt)
+        .accept_thread_post("task-1", &record.agents, &receipt)
         .unwrap();
     assert_eq!(accepted, receipt);
     let writes = store.total_changes();
     let retried = store
-        .accept_thread_post("issue-1", &record.agents, &receipt)
+        .accept_thread_post("task-1", &record.agents, &receipt)
         .unwrap();
     assert_eq!(retried, receipt);
     assert_eq!(
@@ -34,7 +34,7 @@ fn thread_post_receipt_and_message_commit_together_and_retry_is_idempotent() {
 fn an_operation_an_agent_asked_for_remembers_which_agent_and_where_to_answer() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();
-    let record = plan_record("issue-1");
+    let record = plan_record("task-1");
     let mut receipt = queued_operation("op-1", 1);
     receipt.requested_by = Some(crate::operation::OperationRequester {
         agent_id: "project-01H".to_string(),
@@ -43,7 +43,7 @@ fn an_operation_an_agent_asked_for_remembers_which_agent_and_where_to_answer() {
     });
 
     store
-        .accept_thread_post("issue-1", &record.agents, &receipt)
+        .accept_thread_post("task-1", &record.agents, &receipt)
         .unwrap();
     let read = store
         .operation("op-1")
@@ -56,7 +56,7 @@ fn an_operation_an_agent_asked_for_remembers_which_agent_and_where_to_answer() {
     // written before an agent could ask for one reads as.
     let humans = queued_operation("op-2", 2);
     store
-        .accept_thread_post("issue-1", &record.agents, &humans)
+        .accept_thread_post("task-1", &record.agents, &humans)
         .unwrap();
     assert!(store
         .operation("op-2")
@@ -70,16 +70,16 @@ fn an_operation_an_agent_asked_for_remembers_which_agent_and_where_to_answer() {
 fn operation_id_reuse_with_a_different_request_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();
-    let record = plan_record("issue-1");
+    let record = plan_record("task-1");
     let receipt = queued_operation("op-1", 1);
     store
-        .accept_thread_post("issue-1", &record.agents, &receipt)
+        .accept_thread_post("task-1", &record.agents, &receipt)
         .unwrap();
 
     let mut reused = receipt.clone();
     reused.request_hash = "different-request".to_string();
     let error = store
-        .accept_thread_post("issue-1", &record.agents, &reused)
+        .accept_thread_post("task-1", &record.agents, &reused)
         .unwrap_err();
     assert!(matches!(error, StoreError::OperationConflict { .. }));
 }
@@ -88,7 +88,7 @@ fn operation_id_reuse_with_a_different_request_is_rejected() {
 fn operation_acknowledgement_updates_a_message_below_the_resident_tail() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();
-    let mut record = plan_record("issue-1");
+    let mut record = plan_record("task-1");
     let thread = &mut record.agents[0].thread;
     let before = thread.last_sequence();
     thread.post_user("managed message", None, NOW);
@@ -105,27 +105,27 @@ fn operation_acknowledgement_updates_a_message_below_the_resident_tail() {
         tells_sender_context: false,
     });
     store
-        .accept_thread_post("issue-1", &record.agents, &receipt)
+        .accept_thread_post("task-1", &record.agents, &receipt)
         .unwrap();
     for index in 0..250 {
         record.agents[0]
             .thread
             .post_user(format!("later {index}"), None, NOW);
     }
-    store.save_issue_plan(&record).unwrap();
+    store.save_task_plan(&record).unwrap();
     drop(store);
 
     let reopened = Store::new(dir.path()).unwrap();
-    let loaded = reopened.load_all_issues().unwrap().remove(0);
+    let loaded = reopened.load_all_tasks().unwrap().remove(0);
     assert!(
-        loaded.issue.agents[0]
+        loaded.task.agents[0]
             .thread
             .items
             .iter()
             .all(|item| item.sequence() != sequence),
         "the managed message is below the bounded resident tail"
     );
-    let previous_last = loaded.issue.agents[0].thread.last_sequence();
+    let previous_last = loaded.task.agents[0].thread.last_sequence();
     let acknowledged_sequence = reopened
         .acknowledge_operation_messages(
             &record.agents[0].id,
@@ -156,12 +156,12 @@ fn operation_acknowledgement_updates_a_message_below_the_resident_tail() {
     assert_eq!(message.operation_id.as_deref(), Some("old-op"));
     assert_eq!(message.seen_at.as_deref(), Some("2026-08-21T10:01:00Z"));
     assert_eq!(message.updated_sequence, acknowledged_sequence);
-    let mut after_ack = reopened.load_all_issues().unwrap().remove(0);
-    after_ack.issue.agents[0]
+    let mut after_ack = reopened.load_all_tasks().unwrap().remove(0);
+    after_ack.task.agents[0]
         .thread
         .post_user("after acknowledgement", None, NOW);
     assert!(
-        after_ack.issue.agents[0].thread.last_sequence() > acknowledged_sequence,
+        after_ack.task.agents[0].thread.last_sequence() > acknowledged_sequence,
         "the store-side acknowledgement sequence cannot be reused"
     );
 }
@@ -170,13 +170,13 @@ fn operation_acknowledgement_updates_a_message_below_the_resident_tail() {
 fn delivery_status_persists_below_the_tail_without_touching_another_operation() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();
-    let mut record = plan_record("issue-1");
+    let mut record = plan_record("task-1");
     let thread = &mut record.agents[0].thread;
     thread.post_user("managed one", None, NOW);
     thread.bind_operation_messages("op-one", 0, 1);
     thread.post_user("managed two", None, NOW);
     thread.bind_operation_messages("op-two", 1, 2);
-    store.save_issue_plan(&record).unwrap();
+    store.save_task_plan(&record).unwrap();
 
     let bumped = store
         .set_operation_delivery_status(
@@ -206,8 +206,8 @@ fn delivery_status_persists_below_the_tail_without_touching_another_operation() 
 
     drop(store);
     let reopened = Store::new(dir.path()).unwrap();
-    let loaded = reopened.load_all_issues().unwrap().remove(0);
-    let ThreadItem::Message(message) = &loaded.issue.agents[0].thread.items[0] else {
+    let loaded = reopened.load_all_tasks().unwrap().remove(0);
+    let ThreadItem::Message(message) = &loaded.task.agents[0].thread.items[0] else {
         panic!()
     };
     assert_eq!(message.delivery_status, Some(MessageDeliveryStatus::Sent));
@@ -217,12 +217,12 @@ fn delivery_status_persists_below_the_tail_without_touching_another_operation() 
 fn recovery_marks_only_submitted_legacy_messages_uncertain() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();
-    let mut record = plan_record("issue-1");
+    let mut record = plan_record("task-1");
     let thread = &mut record.agents[0].thread;
     thread.post_user("submitted", None, NOW);
     thread.post_user("sent", None, NOW);
     thread.post_user("seen", None, NOW);
-    store.save_issue_plan(&record).unwrap();
+    store.save_task_plan(&record).unwrap();
     store
         .set_legacy_delivery_status(&record.agents[0].id, 1, 1, MessageDeliveryStatus::Submitted)
         .unwrap();
@@ -257,7 +257,7 @@ fn recovery_marks_only_submitted_legacy_messages_uncertain() {
 fn recovery_repairs_uncertain_receipts_and_preserves_definitive_failure() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();
-    let mut record = plan_record("issue-1");
+    let mut record = plan_record("task-1");
 
     record.agents[0].thread.post_user("repair me", None, NOW);
     let repair_messages = record.agents[0]
@@ -273,7 +273,7 @@ fn recovery_repairs_uncertain_receipts_and_preserves_definitive_failure() {
         tells_sender_context: false,
     });
     store
-        .accept_thread_post("issue-1", &record.agents, &repair)
+        .accept_thread_post("task-1", &record.agents, &repair)
         .unwrap();
     assert!(store
         .transition_operation(
@@ -298,7 +298,7 @@ fn recovery_repairs_uncertain_receipts_and_preserves_definitive_failure() {
         tells_sender_context: false,
     });
     store
-        .accept_thread_post("issue-1", &record.agents, &failed)
+        .accept_thread_post("task-1", &record.agents, &failed)
         .unwrap();
     store
         .set_operation_delivery_status(
@@ -341,7 +341,7 @@ fn recovery_repairs_uncertain_receipts_and_preserves_definitive_failure() {
 fn recovery_ignores_an_orphaned_receipt_without_deleting_it() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();
-    let mut record = plan_record("issue-1");
+    let mut record = plan_record("task-1");
     record.agents[0].thread.post_user("managed", None, NOW);
     let messages = record.agents[0]
         .thread
@@ -356,7 +356,7 @@ fn recovery_ignores_an_orphaned_receipt_without_deleting_it() {
         tells_sender_context: false,
     });
     store
-        .accept_thread_post("issue-1", &record.agents, &receipt)
+        .accept_thread_post("task-1", &record.agents, &receipt)
         .unwrap();
     assert!(store
         .transition_operation(
@@ -383,9 +383,9 @@ fn recovery_ignores_an_orphaned_receipt_without_deleting_it() {
 fn v5_database_gains_operation_receipts_without_touching_conversations() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();
-    let mut record = plan_record("issue-1");
+    let mut record = plan_record("task-1");
     record.agents[0].thread.post_user("keep me", None, NOW);
-    store.save_issue_plan(&record).unwrap();
+    store.save_task_plan(&record).unwrap();
     store.pretend_to_be_v5();
     drop(store);
 
@@ -396,7 +396,7 @@ fn v5_database_gains_operation_receipts_without_touching_conversations() {
     );
     let receipt = queued_operation("after-upgrade", 1);
     migrated
-        .accept_thread_post("issue-1", &record.agents, &receipt)
+        .accept_thread_post("task-1", &record.agents, &receipt)
         .unwrap();
     assert_eq!(migrated.operation("after-upgrade").unwrap(), Some(receipt));
 }

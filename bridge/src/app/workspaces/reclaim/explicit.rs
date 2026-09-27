@@ -1,5 +1,5 @@
 //! `workspace.reclaim`: remove a workspace whose work is somewhere else and
-//! whose issues are finished, logged on each of those issues.
+//! whose tasks are finished, logged on each of those tasks.
 //!
 //! Three steps, because measuring Git can take minutes and the app mutex must
 //! not wait on it. Under the mutex, the holds only the app state knows are
@@ -14,15 +14,15 @@
 //! anywhere in the workspace stops first, and the files go only once they
 //! have. Once the checkouts are gone, the drain takes the branch each of them
 //! carried, under Done's branch rules (`branch_delete`), and each linked
-//! issue records what became of it (#167).
+//! task records what became of it (#167).
 
 use crate::app::git::deferred::DeferredGitWork;
 use crate::app::workspaces::branch_delete::BranchDeletion;
 use crate::app::workspaces::deletion::{Reclaiming, Removal};
 use crate::app::{AppState, DeferredGit, DeferredWork};
 use crate::reclaim::containment::WorkspaceBoundary;
-use crate::reclaim::{Budget, LinkedIssue, ReclaimPolicy};
-use crate::tracker::{Actor, IssueEventKind};
+use crate::reclaim::{Budget, LinkedTask, ReclaimPolicy};
+use crate::tracker::{Actor, TaskEventKind};
 use crate::workspace::Workspace;
 use serde_json::{json, Value};
 use std::sync::atomic::AtomicBool;
@@ -82,8 +82,8 @@ impl AppState {
     ) -> Result<Value, String> {
         let workspace = self.workspace_to_remove(params)?;
         let boundary = self.refuse_removing_what_is_not_builds(&workspace)?;
-        let issues = self.issues_of_workspace(&workspace.id);
-        let holds = self.live_holds(&workspace, &issues);
+        let tasks = self.tasks_of_workspace(&workspace.id);
+        let holds = self.live_holds(&workspace, &tasks);
         if !holds.is_empty() {
             return Err(reclaim_refusal(&workspace.name, &holds));
         }
@@ -133,8 +133,8 @@ impl AppState {
                 &[crate::reclaim::HOLD_UNMEASURED],
             ));
         }
-        let issues = self.issues_of_workspace(&workspace.id);
-        let mut holds = self.live_holds(&workspace, &issues);
+        let tasks = self.tasks_of_workspace(&workspace.id);
+        let mut holds = self.live_holds(&workspace, &tasks);
         for blocker in measured {
             if !holds.contains(blocker) {
                 holds.push(blocker);
@@ -146,7 +146,7 @@ impl AppState {
         if !holds.is_empty() {
             return Err(reclaim_refusal(&workspace.name, &holds));
         }
-        self.log_reclaim(&workspace, &issues.unwrap_or_default(), actor);
+        self.log_reclaim(&workspace, &tasks.unwrap_or_default(), actor);
         // The branches are measured and deleted in the drain, once the
         // checkouts are gone; nothing about them is read under the mutex.
         let reclaiming = Reclaiming {
@@ -178,15 +178,15 @@ impl AppState {
         git_holds(workspace, boundary, &self.reclaim_policy, &budget)
     }
 
-    /// The issues linking one workspace, or why they could not be read.
-    fn issues_of_workspace(&self, workspace_id: &str) -> Result<Vec<LinkedIssue>, String> {
-        super::issues_of(&self.issues_linking_workspaces(), workspace_id)
+    /// The tasks linking one workspace, or why they could not be read.
+    fn tasks_of_workspace(&self, workspace_id: &str) -> Result<Vec<LinkedTask>, String> {
+        super::tasks_of(&self.tasks_linking_workspaces(), workspace_id)
     }
 
-    /// Each linked issue records the reclaim before the removal starts, the
-    /// way Done closes them first. Quietly: nobody watching the issue is
+    /// Each linked task records the reclaim before the removal starts, the
+    /// way Done closes them first. Quietly: nobody watching the task is
     /// woken for it.
-    fn log_reclaim(&mut self, workspace: &Workspace, issues: &[LinkedIssue], actor: &Actor) {
+    fn log_reclaim(&mut self, workspace: &Workspace, tasks: &[LinkedTask], actor: &Actor) {
         let payload = json!({
             "workspace_id": workspace.id,
             "workspace_name": workspace.name,
@@ -200,14 +200,14 @@ impl AppState {
                 .filter_map(|directory| directory.branch.clone())
                 .collect::<Vec<_>>(),
         });
-        for issue in issues {
+        for task in tasks {
             if let Err(error) = self.record_quiet_event(
-                &issue.issue_id,
+                &task.task_id,
                 actor,
-                IssueEventKind::WorkspaceReclaimed,
+                TaskEventKind::WorkspaceReclaimed,
                 payload.clone(),
             ) {
-                eprintln!("workspace reclaim: log on #{}: {error}", issue.number);
+                eprintln!("workspace reclaim: log on #{}: {error}", task.number);
             }
         }
     }

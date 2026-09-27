@@ -26,9 +26,9 @@ import { openAttachmentLightbox } from "./threadAttachmentLightbox.js";
 import { attachmentListHtml, isMediaAttachment } from "./attachmentTiles.js";
 import { setMotionRowHtml } from "./motion.js";
 import { setAttr } from "../dom.js";
-import { issueCardHtml } from "./trackerMessageCard.js";
-import { issueActionLineHtml } from "./trackerActionLine.js";
-import { isIssueNotice, issueNoticeLineHtml, issueNoticeOf } from "./trackerNotice.js";
+import { taskCardHtml } from "./trackerMessageCard.js";
+import { taskActionLineHtml } from "./trackerActionLine.js";
+import { isTaskNotice, taskNoticeLineHtml, taskNoticeOf } from "./trackerNotice.js";
 import { isTransientTransportError } from "./transientRead.js";
 import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
 import { scrollWithin } from "./scrollWithin.js";
@@ -387,7 +387,7 @@ function harnessLabel(thread, override) {
 /// off it — which is how a reference lost the line it pointed at.
 const LINK_FIELDS = Object.freeze([
   { field: "path", data: "path" },
-  { field: "issue_id", data: "issueId" },
+  { field: "task_id", data: "taskId" },
   { field: "plan_id", data: "planId" },
   { field: "stage_id", data: "stageId" },
   { field: "implementation_id", data: "implementationId" },
@@ -396,8 +396,8 @@ const LINK_FIELDS = Object.freeze([
   { field: "sha", data: "sha" },
 ]);
 
-/// The attribute a dataset key is written as: `issueId` rides on
-/// `data-issue-id`, which is the one rule the DOM already has for the pair.
+/// The attribute a dataset key is written as: `taskId` rides on
+/// `data-task-id`, which is the one rule the DOM already has for the pair.
 const datasetAttribute = (data) => `data-${data.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)}`;
 
 /// What a reference is worth writing onto its chip. An empty string and a
@@ -795,10 +795,10 @@ function conversationLinksHtml(reference, place, prefix) {
 /// Everything inside a message's card. Shared by the reader's own bubble and by
 /// the bubble another agent's words arrive in: the two differ in where they sit
 /// and what colour they are, and in nothing a message holds.
-/// The issue a message handed over, drawn as a card above its body.
+/// The task a message handed over, drawn as a card above its body.
 ///
-/// Assignment is dispatch: the issue arrives as an ordinary message carrying a
-/// `from_issue` envelope, and the body is that issue rendered as prose so a
+/// Assignment is dispatch: the task arrives as an ordinary message carrying a
+/// `from_task` envelope, and the body is that task rendered as prose so a
 /// harness that never learns about the envelope still receives the whole of it.
 /// Every message carrying one gets a card, whoever sent it — an assignment the
 /// user made carries no `from_agent` and one an agent made does — and every
@@ -806,16 +806,16 @@ function conversationLinksHtml(reference, place, prefix) {
 ///
 /// Its fold is the arrival fold: the same length, the same measurement, the
 /// same press, and the same memory on the thread state. The key is the
-/// message's own with a suffix, so an arrival that hands over an issue can
-/// fold its report and its issue independently.
-function handedIssueHtml(message, context) {
-  const envelope = message.from_issue;
+/// message's own with a suffix, so an arrival that hands over a task can
+/// fold its report and its task independently.
+function handedTaskHtml(message, context) {
+  const envelope = message.from_task;
   if (!envelope) return "";
-  const key = `${messageKey(message)}-issue`;
-  const bodyId = `thread-issue-${esc(key)}`;
+  const key = `${messageKey(message)}-task`;
+  const bodyId = `thread-task-${esc(key)}`;
   const long = bodyRunsLong(envelope.body);
   const open = !long || context.threadState.arrivalIsOpen(key);
-  return issueCardHtml(envelope, {
+  return taskCardHtml(envelope, {
     place: context.place,
     bodyId,
     folded: !open,
@@ -823,25 +823,25 @@ function handedIssueHtml(message, context) {
   });
 }
 
-/// What a message says beyond the issue it hands over. The body of a hand-off
-/// is the issue rendered as prose — `#12 Title`, the issue's body — followed
+/// What a message says beyond the task it hands over. The body of a hand-off
+/// is the task rendered as prose — `#12 Title`, the task's body — followed
 /// by whatever the sender added, so a harness that never learns about the
-/// envelope still receives the whole issue. The card above already draws the
-/// issue, so drawing the body whole would say the issue twice; only the part
+/// envelope still receives the whole task. The card above already draws the
+/// task, so drawing the body whole would say the task twice; only the part
 /// after the prose is the sender's own words. A body that does not start
 /// with the prose (an older bridge, a different shape) is drawn whole.
-function bodyBeyondIssue(message) {
-  const envelope = message.from_issue;
+function bodyBeyondTask(message) {
+  const envelope = message.from_task;
   const body = String(message.body || "");
   if (!envelope) return body;
-  const issueBody = String(envelope.body || "").trim();
-  const prose = `#${envelope.number ?? ""} ${envelope.title || ""}${issueBody ? `\n\n${issueBody}` : ""}`;
+  const taskBody = String(envelope.body || "").trim();
+  const prose = `#${envelope.number ?? ""} ${envelope.title || ""}${taskBody ? `\n\n${taskBody}` : ""}`;
   return body.startsWith(prose) ? body.slice(prose.length).trim() : body;
 }
 
 function messageCardHtml(message, agentLabel, context) {
   const { live, offer, threadState } = context;
-  const body = bodyBeyondIssue(message);
+  const body = bodyBeyondTask(message);
   // `done` is message metadata, not a presentation type: on a thread written
   // before outcomes were message statuses it flags the send that followed the
   // timeline's done event, and such a message renders like every other one.
@@ -854,7 +854,7 @@ function messageCardHtml(message, agentLabel, context) {
       ${resolvedRevisionHtml(message)}
       ${anchorLabel(message.anchor)}
       ${messageContextHtml(message)}
-      ${handedIssueHtml(message, context)}
+      ${handedTaskHtml(message, context)}
       ${body ? `<div class="thread-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(body, { links: context.refLinks })}</div>` : ""}
       ${attachmentsHtml(message.attachments, threadState)}
       ${linksHtml(message.links)}
@@ -885,7 +885,7 @@ const arrivalLineCount = (body) =>
 /// Whether a body is long enough to be worth folding. A body that already fits
 /// is left whole, and is given no press: there would be nothing behind it.
 ///
-/// A handed-over issue's card folds by this same rule and at this same length
+/// A handed-over task's card folds by this same rule and at this same length
 /// — it is handed the answer rather than asking again, so there is one reading
 /// of "does this bury the conversation" and no second one to drift from it.
 const bodyRunsLong = (body) => arrivalLineCount(body) > ARRIVAL_LINES;
@@ -972,15 +972,15 @@ function sentMessageHtml(message, { place, threadState, refLinks }) {
 /// whole behind a press and the line is a summary of it
 /// (core/buildNoticeLine.js).
 ///
-/// A notice about an issue is the same row with the same look, and its line is
-/// the issue's (core/trackerNotice.js): the whole of it opens the issue, which
+/// A notice about a task is the same row with the same look, and its line is
+/// the task's (core/trackerNotice.js): the whole of it opens the task, which
 /// is a better press than revealing prose about it.
 function noticeMessageHtml(message, context) {
   const row = (inner) =>
-    `<article class="thread-message thread-issue-line thread-notice thread-quiet-row"${sequenceAttribute(message)}>${inner}</article>`;
+    `<article class="thread-message thread-task-line thread-notice thread-quiet-row"${sequenceAttribute(message)}>${inner}</article>`;
 
-  if (isIssueNotice(message)) {
-    return row(issueNoticeLineHtml(issueNoticeOf(message), {
+  if (isTaskNotice(message)) {
+    return row(taskNoticeLineHtml(taskNoticeOf(message), {
       place: context.place,
       workspaces: context.workspaces,
       agentLabels: context.agentLabels,
@@ -993,10 +993,10 @@ function noticeMessageHtml(message, context) {
   // keyboard and the screen reader handled without this file re-implementing
   // either. A notice with nothing more to say is a line and no press at all.
   if (!noticeHasMore(message, summary)) {
-    return row(`<span class="thread-issue-notice"><span class="thread-issue-said">${esc(summary)}</span></span>`);
+    return row(`<span class="thread-task-notice"><span class="thread-task-said">${esc(summary)}</span></span>`);
   }
   return row(`<details class="thread-notice-more">
-      <summary class="thread-issue-notice"><span class="thread-issue-said">${esc(summary)}</span></summary>
+      <summary class="thread-task-notice"><span class="thread-task-said">${esc(summary)}</span></summary>
       <div class="thread-notice-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(message.body || "", { links: context.refLinks })}</div>
     </details>`);
 }
@@ -1008,15 +1008,15 @@ function noticeMessageHtml(message, context) {
 /// The sequence rides the row: it is how the timeline says which message a row
 /// stands for, and how the panel reports what the reader's viewport has reached
 /// (`readThroughSequence`).
-/// An agent acting on an issue, as one line in its own voice.
+/// An agent acting on a task, as one line in its own voice.
 ///
 /// Its own row rather than a card inside the ordinary bubble: an agent that
 /// files, assigns, moves and comments across a session would otherwise bury
 /// what it SAID under its own bookkeeping. The sequence rides it like any
 /// other message, so it reads in order and counts as unread.
-function issueActionMessageHtml(message, context) {
-  return `<article class="thread-message thread-issue-line thread-action thread-quiet-row"${sequenceAttribute(message)}>
-    ${issueActionLineHtml(message.issue_action, {
+function taskActionMessageHtml(message, context) {
+  return `<article class="thread-message thread-task-line thread-action thread-quiet-row"${sequenceAttribute(message)}>
+    ${taskActionLineHtml(message.task_action, {
       place: context.place,
       // The same labels the notice line reads, so an agent named once is
       // named the same way in both.
@@ -1062,13 +1062,13 @@ export function incomingKindOf(message) {
   return INCOMING_KINDS.user;
 }
 
-const isReaderMessage = (message) => message?.role === "user" && !message.issue_action
+const isReaderMessage = (message) => message?.role === "user" && !message.task_action
   && !message.sent_to && incomingKindOf(message) === INCOMING_KINDS.user;
 
 function messageHtml(message, agentLabel, context) {
   // This agent's own doings first: an action line is it saying what it just
   // did here, and a sent message is it speaking elsewhere. Neither arrived.
-  if (message.issue_action) return issueActionMessageHtml(message, context);
+  if (message.task_action) return taskActionMessageHtml(message, context);
   if (message.sent_to) return sentMessageHtml(message, context);
   const kind = incomingKindOf(message);
   if (kind === INCOMING_KINDS.notice) return noticeMessageHtml(message, context);
@@ -1800,7 +1800,7 @@ const userMessageTicksOf = (topLevelItems) =>
 /// The timeline: what was said, and what happened, as keyed entries.
 ///
 /// Working time and the diffstat are NOT here. They are facts about the branch
-/// or issue rather than about anything anyone said, they are true wherever you
+/// or task rather than about anything anyone said, they are true wherever you
 /// are standing in the work, and they change every second — so they live on the
 /// toolbar (core/toolbar.js) and the conversation keeps its own record: the
 /// messages, the events, and whether the agent has read you.
@@ -1953,7 +1953,7 @@ function threadComposerHtml(composer) {
 /// The conversation's own status + lifecycle strip.
 ///
 /// The surface bar carries tabs and a branch and nothing else, so where a run or
-/// an issue STANDS, and what you can do about it, belong to the thread that
+/// a task STANDS, and what you can do about it, belong to the thread that
 /// records how it got there: the chip rides the conversation's title, and the
 /// verbs sit at the end of the timeline, right above the box you would reply in.
 function statusChipHtml(status) {
@@ -2255,7 +2255,7 @@ export function wireThreadRevisionLinks(root, loadRevision) {
 /// Fill the images a rendered timeline is waiting on, and make the file chips
 /// download what they name.
 ///
-/// `load(path)` resolves `{mime, pages}` from the thread or issue attachment
+/// `load(path)` resolves `{mime, pages}` from the thread or task attachment
 /// reader. Each page carries only its own base64 wire bytes.
 /// Wire the suggested actions: the picking, and the one press that sends them.
 ///
@@ -2350,7 +2350,7 @@ export function wireThreadArrivals(root, threadState = createThreadState()) {
   if (!root) return;
   root.querySelectorAll(".thread-arrival-press").forEach((press) => {
     // What the press toggles is what it says it controls: the arrival's card
-    // for a report, and the issue's own body for a handed-over issue. Reading
+    // for a report, and the task's own body for a handed-over task. Reading
     // it off `aria-controls` is how one press serves both without either
     // knowing about the other.
     const card = root.ownerDocument?.getElementById(press.getAttribute("aria-controls"))

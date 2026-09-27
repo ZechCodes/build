@@ -88,13 +88,13 @@ describe("the look each kind gets", () => {
   it("puts a notification on one left line, with no bubble either side", () => {
     const element = row(KINDS["a notification"].data);
     expect(element.classList.contains("thread-notice")).toBe(true);
-    expect(element.classList.contains("thread-issue-line")).toBe(true);
+    expect(element.classList.contains("thread-task-line")).toBe(true);
     expect(element.classList.contains("user")).toBe(false);
     expect(element.classList.contains("from-agent")).toBe(false);
     expect(element.querySelector(".thread-comment-card")).toBeNull();
     expect(element.querySelector(".thread-avatar")).toBeNull();
     // Its line is a summary; the whole of it is behind the press.
-    expect(element.querySelector(".thread-issue-notice").textContent).not.toContain("line 12 of the brief");
+    expect(element.querySelector(".thread-task-notice").textContent).not.toContain("line 12 of the brief");
     expect(element.querySelector(".thread-notice-body").textContent).toContain("line 12 of the brief");
   });
 });

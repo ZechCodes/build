@@ -171,7 +171,7 @@ fn project_history_survives_each_run_delete_until_explicit_project_clear() {
 
 /// Appending one message writes ONE row. This is the whole reason the store
 /// changed: the JSON records it replaced rewrote every conversation on the
-/// Issue for every append, and a store that upserted all N items per save
+/// Task for every append, and a store that upserted all N items per save
 /// would have moved that cost rather than removed it.
 #[test]
 fn appending_one_message_writes_one_row_however_long_the_conversation_is() {

@@ -53,11 +53,11 @@ impl AppState {
         self.plan_run_diff(params, None)
     }
 
-    /// `run.diff`, with the issue that asked for it when an issue surface did.
+    /// `run.diff`, with the task that asked for it when a task surface did.
     pub(in crate::app) fn plan_run_diff(
         &mut self,
         params: &Value,
-        issue_id: Option<String>,
+        task_id: Option<String>,
     ) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         self.project_of(&run_id)?;
@@ -69,7 +69,7 @@ impl AppState {
         };
         Ok(self.defer_conditional_read(
             subject,
-            issue_id,
+            task_id,
             params.get("if_diff_key").and_then(Value::as_str),
             crate::app::wants_patch(params),
         ))
@@ -82,12 +82,12 @@ impl AppState {
         self.plan_run_stage_diff(params, None)
     }
 
-    /// `run.stage_diff`, with the issue that asked for it when an issue
+    /// `run.stage_diff`, with the task that asked for it when a task
     /// surface did.
     pub(in crate::app) fn plan_run_stage_diff(
         &mut self,
         params: &Value,
-        issue_id: Option<String>,
+        task_id: Option<String>,
     ) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let stage_id = require_str(params, "stage_id")?;
@@ -110,11 +110,11 @@ impl AppState {
                 "start_sha": progress.start_sha,
                 "completion_sha": progress.completion_sha,
             });
-            if let Some(issue_id) = issue_id {
+            if let Some(task_id) = task_id {
                 unavailable
                     .as_object_mut()
                     .expect("built as an object")
-                    .insert("issue_id".to_string(), json!(issue_id));
+                    .insert("task_id".to_string(), json!(task_id));
             }
             return Ok(unavailable);
         };
@@ -131,7 +131,7 @@ impl AppState {
             start_sha,
             completion_sha,
         };
-        Ok(self.defer_read(subject, issue_id))
+        Ok(self.defer_read(subject, task_id))
     }
 
     /// Send diff comments to the coding agent — from `review` or `building`.
@@ -204,7 +204,7 @@ impl AppState {
         let persisted = self.finish_run_mutation(run_id.clone(), active);
         outcome?;
         persisted?;
-        self.record_issue_current_stage_started(&run_id, &plan_docs)?;
+        self.record_task_current_stage_started(&run_id, &plan_docs)?;
         self.auto_advance_run(&run_id);
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
         Ok(self.run_view(&run_id, active, thread_detail(params), DigestScope::Detail))
@@ -324,7 +324,7 @@ impl AppState {
                 eprintln!("auto-advance {run_id}: {e}");
                 return;
             }
-            if let Err(e) = self.record_issue_current_stage_started(run_id, &plan_docs) {
+            if let Err(e) = self.record_task_current_stage_started(run_id, &plan_docs) {
                 eprintln!("auto-advance {run_id}: {e}");
                 return;
             }
@@ -371,7 +371,7 @@ impl AppState {
             }
         }
         let mut active = self.take_run(&run_id)?;
-        let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
+        let task_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
 
         // Push and merge cross a process boundary: git may complete and the
         // daemon may die before the resulting state is saved. Commit first so
@@ -457,17 +457,17 @@ impl AppState {
                 active.publication_attempt = None;
             }
         }
-        let links = issue_id
+        let links = task_id
             .as_ref()
-            .and_then(|issue_id| self.plans.get(issue_id).map(|issue| (issue_id, issue)))
-            .map(|(issue_id, issue)| {
+            .and_then(|task_id| self.plans.get(task_id).map(|task| (task_id, task)))
+            .map(|(task_id, task)| {
                 let mut links = vec![crate::thread::ThreadLink::Implementation {
-                    issue_id: issue_id.clone(),
+                    task_id: task_id.clone(),
                     implementation_id: run_id.clone(),
                 }];
-                links.extend(issue.stages.iter().map(|stage| {
-                    crate::thread::ThreadLink::IssueStage {
-                        issue_id: issue_id.clone(),
+                links.extend(task.stages.iter().map(|stage| {
+                    crate::thread::ThreadLink::TaskStage {
+                        task_id: task_id.clone(),
                         stage_id: stage.id.clone(),
                         path: stage.path.clone(),
                     }
@@ -479,7 +479,7 @@ impl AppState {
                     run_id: run_id.clone(),
                 }]
             });
-        if let (None, Some(primary)) = (&issue_id, active.agents.primary_mut()) {
+        if let (None, Some(primary)) = (&task_id, active.agents.primary_mut()) {
             primary.thread.push_event_with_links(
                 event,
                 Some(summary.clone()),
@@ -493,9 +493,9 @@ impl AppState {
             .then(|| active.worktree.clone());
         let (view, persisted) =
             self.answer_run_mutation(run_id.clone(), active, thread_detail(params));
-        let issue_persisted = if let Some(issue_id) = issue_id {
-            let mut issue = self.take_plan(&issue_id)?;
-            issue.agents.sole_thread_mut().push_event_with_links(
+        let task_persisted = if let Some(task_id) = task_id {
+            let mut task = self.take_plan(&task_id)?;
+            task.agents.sole_thread_mut().push_event_with_links(
                 event,
                 Some(summary),
                 None,
@@ -503,14 +503,14 @@ impl AppState {
                 links,
                 now_rfc3339(),
             );
-            Some(self.finish_plan_mutation(issue_id, issue))
+            Some(self.finish_plan_mutation(task_id, task))
         } else {
             None
         };
         result?;
         persisted?;
-        if let Some(issue_persisted) = issue_persisted {
-            issue_persisted?;
+        if let Some(task_persisted) = task_persisted {
+            task_persisted?;
         }
         if let Some(worktree) = merged_worktree {
             self.apply_merge_cleanup(&run_id, &project_id, &worktree, cleanup);
@@ -540,7 +540,7 @@ impl AppState {
             }
             MergeCleanup::Keep => {}
             MergeCleanup::Release => {
-                if let Err(error) = self.preserve_entity_issue_identities(run_id) {
+                if let Err(error) = self.preserve_entity_task_identities(run_id) {
                     eprintln!("merge cleanup release {run_id}: {error}; keeping the run");
                     return;
                 }

@@ -14,13 +14,13 @@ pub(in crate::app::tests) fn dispatch_side_run(
     plan: &ActivePlan,
     run_id: &str,
 ) -> (ActiveRun, AgentTurn) {
-    let issue = ImplementableIssue::judge(RunSource {
+    let task = ImplementableTask::judge(RunSource {
         plan,
         has_active_run: false,
     })
     .unwrap();
     let prepared = orch
-        .prepare_run_checkout(&issue, "main", run_id, Isolation::Worktree, store)
+        .prepare_run_checkout(&task, "main", run_id, Isolation::Worktree, store)
         .unwrap();
     orch.open_prepared_run(RunId::new(run_id), plan, prepared, Default::default())
         .unwrap()
@@ -668,7 +668,7 @@ fn mark_idle_demotes_a_quiet_plan_and_run() {
 }
 
 /// An agent that went quiet because its harness ran out of usage did not walk
-/// off without reporting (issue #58): it is idle with the limit as its reason,
+/// off without reporting (task #58): it is idle with the limit as its reason,
 /// and it is started again when the limit lifts. No demotion, no "went quiet"
 /// post.
 #[test]
@@ -745,11 +745,11 @@ fn unreachable_turn(state: &mut AppState, owner: &str) -> PendingAgentTurn {
     }
 }
 
-/// Install the stored Issue shape these runtime tests need without going
-/// through the retired Issue/planning mutation surface. Runtime delivery and
+/// Install the stored Task shape these runtime tests need without going
+/// through the retired Task/planning mutation surface. Runtime delivery and
 /// idle recovery still support legacy records loaded from disk, which is the
 /// behavior under test here.
-fn insert_legacy_drafting_issue(state: &mut AppState, issue_id: &str, goal: &str) {
+fn insert_legacy_drafting_task(state: &mut AppState, task_id: &str, goal: &str) {
     let project_id = state.project_at(0).id.clone();
     let project = state
         .orch_for(&project_id)
@@ -759,17 +759,17 @@ fn insert_legacy_drafting_issue(state: &mut AppState, issue_id: &str, goal: &str
         .require_store()
         .expect("the test daemon has a store")
         .clone();
-    let mut active = project.create_plan(PlanId::new(issue_id), goal, "main", Default::default());
+    let mut active = project.create_plan(PlanId::new(task_id), goal, "main", Default::default());
     let workspace = project
-        .prepare_plan_workspace(issue_id, &store)
-        .expect("the legacy Issue workspace is prepared");
+        .prepare_plan_workspace(task_id, &store)
+        .expect("the legacy Task workspace is prepared");
     project
         .open_plan_drafting(&mut active, workspace)
-        .expect("the legacy Issue is drafting");
-    state.projects.bind_entity(issue_id.to_string(), project_id);
+        .expect("the legacy Task is drafting");
+    state.projects.bind_entity(task_id.to_string(), project_id);
     state
-        .finish_plan_mutation(issue_id.to_string(), active)
-        .expect("the legacy Issue is persisted");
+        .finish_plan_mutation(task_id.to_string(), active)
+        .expect("the legacy Task is persisted");
 }
 
 /// A delivery that never reached an agent used to be a silent `eprintln!`:
@@ -891,10 +891,10 @@ fn a_fresh_turn_forgets_the_last_start_failure() {
     );
 }
 
-/// The third answer to a start. An issue whose session is over holds no
+/// The third answer to a start. A task whose session is over holds no
 /// workspace, so a turn for it opens nothing — and used to say so only on
 /// stderr, leaving the client's "starting" ring on until its grace ran out.
-/// The agent carries the reason; the issue's own `last_error` does not,
+/// The agent carries the reason; the task's own `last_error` does not,
 /// because nothing about the work failed.
 #[test]
 fn a_start_for_an_entity_whose_session_is_over_says_so_on_its_agent() {
@@ -929,7 +929,7 @@ fn a_start_for_an_entity_whose_session_is_over_says_so_on_its_agent() {
     let got = state
         .lock()
         .unwrap()
-        .handle(req("issue.get", json!({ "issue_id": plan_id })));
+        .handle(req("task.get", json!({ "task_id": plan_id })));
     let agent = &got["result"]["agents"][0];
     assert_eq!(
         agent["start_error"],
@@ -968,20 +968,20 @@ fn a_working_run_with_no_agent_tab_is_an_anomaly_not_a_skip() {
     assert!(got["result"]["last_error"].is_null(), "{got:?}");
 }
 
-/// The legacy Issue half of the same hole. Its turns are queued and delivered
+/// The legacy Task half of the same hole. Its turns are queued and delivered
 /// by exactly the same path as a run's, so an agent that never starts must
-/// land on the Issue the same way, and the reason must survive a restart.
+/// land on the Task the same way, and the reason must survive a restart.
 #[test]
-fn a_delivery_that_never_reaches_an_agent_is_visible_on_its_legacy_issue() {
+fn a_delivery_that_never_reaches_an_agent_is_visible_on_its_legacy_task() {
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
-    let issue_id = "issue-unreachable";
-    insert_legacy_drafting_issue(&mut app, issue_id, "unreachable");
+    let task_id = "task-unreachable";
+    insert_legacy_drafting_task(&mut app, task_id, "unreachable");
     let state = app.shared();
     {
         let mut app = state.lock().unwrap();
         app.delivery_queue.clear_queued();
-        let turn = unreachable_turn(&mut app, issue_id);
+        let turn = unreachable_turn(&mut app, task_id);
         app.delivery_queue.enqueue(turn);
     }
 
@@ -990,11 +990,11 @@ fn a_delivery_that_never_reaches_an_agent_is_visible_on_its_legacy_issue() {
     let got = state
         .lock()
         .unwrap()
-        .handle(req("issue.get", json!({ "issue_id": issue_id })));
+        .handle(req("task.get", json!({ "task_id": task_id })));
     let last_error = got["result"]["last_error"].as_str().unwrap_or_default();
     assert!(
         last_error.contains("could not reach the agent"),
-        "the failure must be legible on the legacy Issue: {got:?}"
+        "the failure must be legible on the legacy Task: {got:?}"
     );
     let record = state
         .lock()
@@ -1005,25 +1005,25 @@ fn a_delivery_that_never_reaches_an_agent_is_visible_on_its_legacy_issue() {
         .load_all_plans()
         .unwrap()
         .into_iter()
-        .find(|p| p.id == issue_id)
-        .expect("the legacy Issue is persisted");
+        .find(|p| p.id == task_id)
+        .expect("the legacy Task is persisted");
     assert!(
         record.last_error.unwrap_or_default().contains("agent"),
         "the failure must be persisted, not just held in memory"
     );
 }
 
-/// The legacy Issue half of the tabless anomaly: a drafting Issue whose agent
+/// The legacy Task half of the tabless anomaly: a drafting Task whose agent
 /// never arrived is demoted by the sweep, and one whose turn is still queued
 /// is left alone.
 #[test]
-fn a_working_legacy_issue_with_no_agent_tab_is_an_anomaly_not_a_skip() {
+fn a_working_legacy_task_with_no_agent_tab_is_an_anomaly_not_a_skip() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let issue_id = "issue-tabless";
-    insert_legacy_drafting_issue(&mut state, issue_id, "tabless");
+    let task_id = "task-tabless";
+    insert_legacy_drafting_task(&mut state, task_id, "tabless");
     state.delivery_queue.clear_queued();
-    let turn = unreachable_turn(&mut state, issue_id);
+    let turn = unreachable_turn(&mut state, task_id);
     state.delivery_queue.enqueue(turn);
     assert!(
         state.mark_idle_tasks(Duration::from_secs(3600)).is_empty(),
@@ -1033,10 +1033,10 @@ fn a_working_legacy_issue_with_no_agent_tab_is_an_anomaly_not_a_skip() {
     state.delivery_queue.clear_queued();
     assert_eq!(
         state.mark_idle_tasks(Duration::from_secs(3600)),
-        vec![issue_id.to_string()],
-        "a drafting legacy Issue with no agent at all must be demoted, not skipped"
+        vec![task_id.to_string()],
+        "a drafting legacy Task with no agent at all must be demoted, not skipped"
     );
-    let got = state.handle(req("issue.get", json!({ "issue_id": issue_id })));
+    let got = state.handle(req("task.get", json!({ "task_id": task_id })));
     assert_eq!(got["result"]["state"], "idle_unreported", "{got:?}");
     // No harness exited here, so no exit-code claim is invented.
     assert!(got["result"]["last_error"].is_null(), "{got:?}");

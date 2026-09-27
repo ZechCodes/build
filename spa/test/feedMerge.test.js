@@ -46,8 +46,8 @@ describe("reading one device's wire", () => {
   });
 
   it("leaves a row that names no project without a project key", () => {
-    const issueOnly = board({ items: [{ kind: "issue", issue_id: "iss-1" }] });
-    const view = liveFeedSnapshot(issueOnly, projectList, workspaceList, "dev-a");
+    const taskOnly = board({ items: [{ kind: "task", task_id: "iss-1" }] });
+    const view = liveFeedSnapshot(taskOnly, projectList, workspaceList, "dev-a");
     expect(view.items[0].deviceId).toBe("dev-a");
     expect("projectKey" in view.items[0]).toBe(false);
   });

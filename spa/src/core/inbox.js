@@ -4,10 +4,10 @@
 // One list across every project — the inbox is the user's, not a project's, so
 // there are no per-project blocks and no worktree fold. (The rail's other face,
 // core/inboxProjects.js, gathers these same rows under their projects; the rows
-// and their order are decided here either way.) The rows are issues, branches
-// and captures. An issue a branch is implementing right now is not a
+// and their order are decided here either way.) The rows are tasks, branches
+// and captures. A task a branch is implementing right now is not a
 // row: one piece of work, one row, and the branch is where that work is. Delete
-// that branch without merging and the issue is work again, so it comes back —
+// that branch without merging and the task is work again, so it comes back —
 // with an event on its conversation naming the branch it lost (the bridge writes
 // that; this list just stops hiding it). Nothing that is over is ever a row.
 //
@@ -23,8 +23,8 @@
 // and its one badge, right of its Done, is the unread of its watched agents.
 // Each project's own agent has a row among them too (core/inboxProjectAgent.js):
 // the project's name alone, ordered by that agent's own conversation (#103).
-// A watched issue's unread counts in those badges like an agent's (#104,
-// core/issueUnread.js): on the workspace whose agent holds it, and on the
+// A watched task's unread counts in those badges like an agent's (#104,
+// core/taskUnread.js): on the workspace whose agent holds it, and on the
 // project's row when no workspace row does.
 //
 // A workspace or project agent whose last message is more than a day old goes
@@ -38,7 +38,7 @@ import { entityIdOf } from "./entityId.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT } from "./icons.js";
 import { workspaceRoute } from "./projectModel.js";
 import { freshestRosters, runningAgentCount, watchedUnreadCount } from "./inboxRoster.js";
-import { NO_ISSUE_UNREAD } from "./issueUnread.js";
+import { NO_TASK_UNREAD } from "./taskUnread.js";
 import { standsOnProjectCheckout, workspaceDisplayName, workspaceRun, workspaceStatusText } from "./workspaceModel.js";
 import { sessionTimes } from "./sessionSpans.js";
 import { fieldTraits } from "./fieldTraits.js";
@@ -158,32 +158,32 @@ export function workspaceEntries(workspaces = [], projects = [], items = []) {
  * board deliberately left out of `items`. A pushed row can still be present
  * after that omission, so an item's presence is never evidence of watching.
  * A workspace with no agent stays visible only when it was user-created. */
-export function watchedWorkspaceEntries(workspaces = [], projects = [], items = [], runs = [], issueUnread = NO_ISSUE_UNREAD) {
+export function watchedWorkspaceEntries(workspaces = [], projects = [], items = [], runs = [], taskUnread = NO_TASK_UNREAD) {
   const rosterOf = freshestRosters([...runs, ...items]);
   const agentCreated = new Set(workspaces.filter((workspace) => workspace.created_by_agent === true)
     .map((workspace) => workspace.workspaceKey));
   return workspaceEntries(workspaces, projects, items).flatMap((entry) => {
     const agents = rosterOf(entry.projectKey, entry.entityId)?.agents;
     if (!agents?.length) return agentCreated.has(entry.workspaceKey) ? [] : [entry];
-    return agents.some((agent) => agent.watched !== false) ? [withRosterTallies(entry, agents, issueUnread)] : [];
+    return agents.some((agent) => agent.watched !== false) ? [withRosterTallies(entry, agents, taskUnread)] : [];
   });
 }
 
 /** A workspace row with what its roster says (#103): how many agents are
  *  running, said after the git status on line two, and the unread of the
- *  watched agents, which is the one badge the row wears. The watched issues
- *  its agents hold count in that badge like agents (#104, core/issueUnread.js),
+ *  watched agents, which is the one badge the row wears. The watched tasks
+ *  its agents hold count in that badge like agents (#104, core/taskUnread.js),
  *  and a row they alone are waiting on is unread. */
-function withRosterTallies(entry, agents, issueUnread) {
+function withRosterTallies(entry, agents, taskUnread) {
   const runningCount = runningAgentCount(agents);
   const agentIds = agents.map((agent) => agent.id).filter(Boolean);
-  const issueUnreadCount = issueUnread.heldBy(entry.projectKey, agentIds);
+  const taskUnreadCount = taskUnread.heldBy(entry.projectKey, agentIds);
   return {
     ...entry,
     runningCount,
     agentIds,
-    unreadCount: watchedUnreadCount(agents) + issueUnreadCount,
-    state: issueUnreadCount > 0 ? "unread" : entry.state,
+    unreadCount: watchedUnreadCount(agents) + taskUnreadCount,
+    state: taskUnreadCount > 0 ? "unread" : entry.state,
     facts: `${entry.facts} · ${runningCount} running`,
   };
 }
@@ -243,8 +243,8 @@ const REASON_COPY = {
   abandoned: "Abandoned",
 };
 
-// An issue speaks about its own work: the same event kinds, its own words.
-const ISSUE_REASON_COPY = {
+// A task speaks about its own work: the same event kinds, its own words.
+const TASK_REASON_COPY = {
   done: "The draft is ready to review",
   blocked: "Planning is blocked — the agent needs you",
   run_failed: "Planning failed",
@@ -257,7 +257,7 @@ const ISSUE_REASON_COPY = {
  *  attention kind must still read as "this needs you", never as nothing. */
 export function unreadReasonText(reason, kind) {
   if (!reason) return "";
-  if (kind === "issue" && ISSUE_REASON_COPY[reason]) return ISSUE_REASON_COPY[reason];
+  if (kind === "task" && TASK_REASON_COPY[reason]) return TASK_REASON_COPY[reason];
   return REASON_COPY[reason] || "Something needs you";
 }
 
@@ -285,7 +285,7 @@ const PENDING_LINE = {
  *  `placeholder` is what tells this row apart from a card the same verb is
  *  running ON: there is nothing behind it yet, so it opens nowhere until its
  *  record lands under the same key. A standing card keeps its own surface for
- *  the whole of the verb — the reader's issue or run does not stop opening
+ *  the whole of the verb — the reader's task or run does not stop opening
  *  because a plan workspace is being cut in it. */
 const pendingItem = (row) => ({
   kind: "branch",
@@ -309,7 +309,7 @@ const pendingItem = (row) => ({
  * rows the daemon already has.
  *
  * A row names two ids and a card may be listed under either: the record it will
- * settle as (`entity_id` — a run, an issue) and the checkout it holds
+ * settle as (`entity_id` — a run, a task) and the checkout it holds
  * (`checkout_id`, a worktree hash). An adopt leaves the run on the board while
  * it claims the checkout, and a planning workspace holds no checkout at all, so
  * a card matching either id is the card this verb is running on and is said ON —
@@ -333,7 +333,7 @@ export function mergePendingRows(items = [], pending = []) {
 }
 
 /** Where each kind of entry opens, looked up rather than walked. A branch is
- *  (device, project, branch name); an issue is its own surface on the machine
+ *  (device, project, branch name); a task is its own surface on the machine
  *  holding it. A checkout with no branch is nameable by no URL, so it opens
  *  nowhere until it is on one.
  *
@@ -341,21 +341,21 @@ export function mergePendingRows(items = [], pending = []) {
  *  names. Until it is routed it opens its own decision page: what to do with it
  *  is a question, and a question deserves a surface. One this client is still
  *  holding has no record to decide about, so it opens nowhere. */
-/// A watched issue of the tracker (#65). NOT `issue`, which is the legacy
-/// multi-stage issue and opens the plan/stages page — two different things
+/// A watched task of the tracker (#65). NOT `task`, which is the legacy
+/// multi-stage task and opens the plan/stages page — two different things
 /// that would otherwise share a word and a row.
-export const TRACKER_ISSUE = "tracker_issue";
+export const TRACKER_TASK = "tracker_task";
 
 const OPENS_AT = {
   capture: (item) => {
-    if (item.routing) return entryRoute({ ...item, kind: item.routing.kind === "issue" ? "issue" : "branch" });
+    if (item.routing) return entryRoute({ ...item, kind: item.routing.kind === "task" ? "task" : "branch" });
     return item.state === "queued" ? null : { name: "capture", id: item.capture_id };
   },
-  issue: (item) =>
-    item.issue_id ? { name: "issue", deviceId: item.deviceId, projectId: item.project_id, id: item.issue_id } : null,
-  [TRACKER_ISSUE]: (item) =>
-    item.issue_id
-      ? { name: "trackerIssue", deviceId: item.deviceId, projectId: item.project_id, issueId: item.issue_id }
+  task: (item) =>
+    item.task_id ? { name: "task", deviceId: item.deviceId, projectId: item.project_id, id: item.task_id } : null,
+  [TRACKER_TASK]: (item) =>
+    item.task_id
+      ? { name: "trackerTask", deviceId: item.deviceId, projectId: item.project_id, taskId: item.task_id }
       : null,
   branch: (item) =>
     item.branch ? { name: "branch", deviceId: item.deviceId, projectId: item.project_id, branch: item.branch, tab: "changes" } : null,
@@ -388,9 +388,9 @@ const ms = (iso) => {
  *  had. Exported so the wiring can match a feed row to the keys it is holding. */
 export const entryKeyOf = (item) => {
   if (item.kind === "capture") return `capture:${item.capture_id}`;
-  // An issue is one issue wherever it is listed: its own id names the row.
-  if (item.kind === TRACKER_ISSUE) return `${TRACKER_ISSUE}:${item.issue_id}`;
-  return entityIdOf(item) || (item.kind === "issue" ? `issue:${item.projectKey}` : `branch:${item.projectKey}:${item.branch}`);
+  // A task is one task wherever it is listed: its own id names the row.
+  if (item.kind === TRACKER_TASK) return `${TRACKER_TASK}:${item.task_id}`;
+  return entityIdOf(item) || (item.kind === "task" ? `task:${item.projectKey}` : `branch:${item.projectKey}:${item.branch}`);
 };
 
 /**
@@ -486,7 +486,7 @@ function toCaptureEntry(item) {
     projectId: item.project_id || "",
     project: item.project || "",
     branch: item.branch || null,
-    issueId: item.issue_id || null,
+    taskId: item.task_id || null,
     name: item.title || "(nothing said)",
     title: item.title || "(nothing said)",
     text: item.text || "",
@@ -517,24 +517,24 @@ function toCaptureEntry(item) {
 }
 
 /**
- * A watched issue as a row (#65).
+ * A watched task as a row (#65).
  *
- * Its own shape rather than a detour through the branch/issue mapping below:
- * a tracker issue has no state machine, no checkout and no agent working in
+ * Its own shape rather than a detour through the branch/task mapping below:
+ * a tracker task has no state machine, no checkout and no agent working in
  * it, and the fields that row is built from are all about those. What it has
  * is a number, a title, and the last thing that happened to it.
  *
  * The subtitle arrives composed (#61's form) and is shown as given. The bridge
  * knows the event; a second sentence assembled here would be free to drift
- * from the one the issue's own timeline shows.
+ * from the one the task's own timeline shows.
  */
-const issueTitleOf = (item) => item.title || "(untitled)";
+const taskTitleOf = (item) => item.title || "(untitled)";
 
-/** The number is how a person says which issue, so it leads the line. */
-const issueNameOf = (item) => (item.number ? `#${item.number} ${issueTitleOf(item)}` : issueTitleOf(item));
+/** The number is how a person says which task, so it leads the line. */
+const taskNameOf = (item) => (item.number ? `#${item.number} ${taskTitleOf(item)}` : taskTitleOf(item));
 
 /** Where the row is, which every kind of row says the same way. */
-const issuePlaceOf = (item) => ({
+const taskPlaceOf = (item) => ({
   deviceId: item.deviceId,
   projectKey: item.projectKey,
   projectId: item.project_id,
@@ -542,8 +542,8 @@ const issuePlaceOf = (item) => ({
   deviceName: item.deviceName || null,
 });
 
-/** The fields a row carries about a checkout, which an issue has none of. A
- *  tracker issue has no branch, no agent working in it and nothing to finish. */
+/** The fields a row carries about a checkout, which a task has none of. A
+ *  tracker task has no branch, no agent working in it and nothing to finish. */
 const NOT_A_CHECKOUT = Object.freeze({
   branch: null,
   working: false,
@@ -556,39 +556,39 @@ const NOT_A_CHECKOUT = Object.freeze({
 });
 
 /**
- * When a watched issue last moved.
+ * When a watched task last moved.
  *
  * The row's own `anchor` and `last_activity`, as every other row in this feed
  * carries them (#64, settled). The event it carries is the fallback: the two
  * say the same thing, and a row that dated neither would sort under everything
  * rather than where it belongs.
  */
-function issueTimesOf(item) {
+function taskTimesOf(item) {
   const anchorMs = ms(item.anchor) ?? ms(item.last_event?.at);
   return { anchorMs, lastActivityMs: ms(item.last_activity) ?? anchorMs };
 }
 
-function toTrackerIssueEntry(item) {
-  const times = issueTimesOf(item);
+function toTrackerTaskEntry(item) {
+  const times = taskTimesOf(item);
   const unread = item.unread || 0;
   return {
     ...NOT_A_CHECKOUT,
-    ...issuePlaceOf(item),
+    ...taskPlaceOf(item),
     key: entryKeyOf(item),
-    entityId: item.issue_id || null,
-    kind: TRACKER_ISSUE,
-    issueId: item.issue_id || null,
+    entityId: item.task_id || null,
+    kind: TRACKER_TASK,
+    taskId: item.task_id || null,
     number: item.number ?? null,
-    name: issueNameOf(item),
-    title: issueTitleOf(item),
+    name: taskNameOf(item),
+    title: taskTitleOf(item),
     status: item.status || null,
-    // An issue handed to the reader outranks one that merely moved — the one
-    // departure from activity order, and only among the issue rows.
+    // A task handed to the reader outranks one that merely moved — the one
+    // departure from activity order, and only among the task rows.
     assignedToUser: !!item.assigned_to_user,
     state: unread ? "unread" : "idle",
     unreadCount: unread,
     muted: !!item.muted,
-    // Done on an issue row means the same as on a conversation: cleared until
+    // Done on a task row means the same as on a conversation: cleared until
     // the next event.
     dismissed: !!item.done_until_next,
     facts: item.last_event?.text || "",
@@ -598,12 +598,12 @@ function toTrackerIssueEntry(item) {
 }
 
 /// The kinds that are their own kind of row. Everything else is a checkout —
-/// a branch or a legacy issue — which `toEntry` builds below. A table rather
+/// a branch or a legacy task — which `toEntry` builds below. A table rather
 /// than a chain of `if`s because each new kind would otherwise be one more
 /// branch in a function that is already over the cap.
 const ENTRY_BUILDERS = {
   capture: toCaptureEntry,
-  [TRACKER_ISSUE]: toTrackerIssueEntry,
+  [TRACKER_TASK]: toTrackerTaskEntry,
 };
 
 /** One board.list row, as the inbox reads it. */
@@ -613,10 +613,10 @@ function toEntry(item) {
   if (ownKind) return ownKind(item);
   const state = entryState(item);
   const entityId = entityIdOf(item);
-  // Line one is what the thing is CALLED: a branch by its branch name, an issue
+  // Line one is what the thing is CALLED: a branch by its branch name, a task
   // by its own words. The goal a branch was cut for is a longer story, and it
   // is on the row's title where a second look finds it.
-  const name = item.kind === "issue" ? item.title || "(untitled)" : item.branch || item.title || "(detached)";
+  const name = item.kind === "task" ? item.title || "(untitled)" : item.branch || item.title || "(detached)";
   return {
     key: entryKeyOf(item),
     entityId,
@@ -629,7 +629,7 @@ function toEntry(item) {
     // machines use that name, which the list decides once (core/inboxView.js).
     deviceName: item.deviceName || null,
     branch: item.branch || null,
-    issueId: item.issue_id || null,
+    taskId: item.task_id || null,
     name,
     title: item.title || item.branch || "(untitled)",
     state,
@@ -649,12 +649,12 @@ function toEntry(item) {
     // Whether this row IS the verb in flight rather than a card it is running
     // on. Only a placeholder has nothing to open.
     placeholder: !!item.placeholder,
-    // Done destroys an entity — a branch's records, an issue's plans — and it
+    // Done destroys an entity — a branch's records, a task's plans — and it
     // is spoken in that entity's name. A row that names none has nothing to
     // finish and no way to say it, so it is never offered Done however
     // finishable the feed calls it. Clear is the whole of such a row's menu.
     canFinish: !!item.can_finish && !!entityId,
-    // Whether the work landed. It is the whole question an implemented issue's
+    // Whether the work landed. It is the whole question an implemented task's
     // fate turns on when its branch is deleted.
     merged: item.state === "merged",
     warnings: warningsOf(item),
@@ -665,19 +665,19 @@ function toEntry(item) {
   };
 }
 
-/** Whether this feed row is inbox business at all: not over, and not an issue
+/** Whether this feed row is inbox business at all: not over, and not a task
  *  whose work is being done on a branch that has its own row. */
 function isListed(item) {
-  // A watched issue is listed because it is watched. The rules below are the
-  // legacy issue's — a state machine and a branch implementing it — and a
-  // tracker issue has neither; `status` here is a board column, not a state.
+  // A watched task is listed because it is watched. The rules below are the
+  // legacy task's — a state machine and a branch implementing it — and a
+  // tracker task has neither; `status` here is a board column, not a state.
   //
   // Gated on the bridge that pushes it (#65): a machine below 1.9.0 sends no
   // such row, and one arriving from anywhere else is not something this client
   // can act on — Mute and Done on it would call verbs that bridge refuses.
-  if (item.kind === TRACKER_ISSUE) return carriesWatching(item.deviceId);
+  if (item.kind === TRACKER_TASK) return carriesWatching(item.deviceId);
   if (FINISHED_STATES.has(item.state)) return false;
-  return !(item.kind === "issue" && item.implementation_active);
+  return !(item.kind === "task" && item.implementation_active);
 }
 
 /** The captures the rail lists: what this client is holding because no machine
@@ -693,22 +693,22 @@ export function captureEntries(items = []) {
 }
 
 /**
- * Issues the reader was handed, above the issues that merely moved (#65).
+ * Tasks the reader was handed, above the tasks that merely moved (#65).
  *
- * Only among the ISSUE rows, and it keeps their places: the assigned ones take
- * the positions the issue rows already occupy, in their own activity order, and
+ * Only among the TASK rows, and it keeps their places: the assigned ones take
+ * the positions the task rows already occupy, in their own activity order, and
  * every conversation row stays exactly where it was. An assignment is a reason
- * to look at one issue before another — it is not a reason to lift an issue
+ * to look at one task before another — it is not a reason to lift a task
  * over a conversation that moved a minute ago.
  */
-function pinAssignedIssues(rows) {
-  const issueAt = rows.map((row, index) => (row.kind === TRACKER_ISSUE ? index : -1)).filter((index) => index >= 0);
-  if (issueAt.length < 2) return rows;
-  const issues = issueAt.map((index) => rows[index]);
-  const ordered = [...issues.filter((row) => row.assignedToUser), ...issues.filter((row) => !row.assignedToUser)];
-  if (ordered.every((row, index) => row === issues[index])) return rows;
+function pinAssignedTasks(rows) {
+  const taskAt = rows.map((row, index) => (row.kind === TRACKER_TASK ? index : -1)).filter((index) => index >= 0);
+  if (taskAt.length < 2) return rows;
+  const tasks = taskAt.map((index) => rows[index]);
+  const ordered = [...tasks.filter((row) => row.assignedToUser), ...tasks.filter((row) => !row.assignedToUser)];
+  if (ordered.every((row, index) => row === tasks[index])) return rows;
   const out = [...rows];
-  issueAt.forEach((index, which) => {
+  taskAt.forEach((index, which) => {
     out[index] = ordered[which];
   });
   return out;
@@ -733,7 +733,7 @@ export function byAnchor(left, right) {
  * missing data is not evidence that a row is stale.
  */
 export function inboxEntries({ items = [], nowMs = Date.now() } = {}) {
-  const rows = pinAssignedIssues(
+  const rows = pinAssignedTasks(
     items
       .filter(isListed)
       .map(toEntry)
@@ -749,7 +749,7 @@ export function inboxEntries({ items = [], nowMs = Date.now() } = {}) {
 /** The entities whose local caches stay warm: the inbox's own partition is the
  *  rule. Every listed entry's entity is active; going Recent, being cleared,
  *  and finishing all mean the row stops being named here, and the cache evicts
- *  what this stops naming. One addition: the issue an active branch is
+ *  what this stops naming. One addition: the task an active branch is
  *  implementing is not listed — the branch carries the row — but its surfaces
  *  are one click away, so its cache stays warm with the branch's. */
 export function cacheableEntityIds({ items = [], nowMs = Date.now() } = {}) {
@@ -759,7 +759,7 @@ export function cacheableEntityIds({ items = [], nowMs = Date.now() } = {}) {
       .filter(Boolean),
   );
   for (const item of items) {
-    if (item.kind !== "issue" || !item.implementation_active) continue;
+    if (item.kind !== "task" || !item.implementation_active) continue;
     if (item.dismissed || FINISHED_STATES.has(item.state)) continue;
     const id = entityIdOf(item);
     if (id) ids.add(id);
@@ -769,7 +769,7 @@ export function cacheableEntityIds({ items = [], nowMs = Date.now() } = {}) {
 
 /** Which row each kind of route stands on, as a test one row answers. A
  *  capture names where it was routed, but it is not that work item: a work
- *  route stands on the branch or the issue itself, and a capture route stands
+ *  route stands on the branch or the task itself, and a capture route stands
  *  only on the capture. */
 const STANDS_ON = {
   // A branch is named by its machine as well as its project: two devices each
@@ -779,11 +779,11 @@ const STANDS_ON = {
     entry.deviceId === route.deviceId &&
     entry.projectId === route.projectId &&
     entry.branch === route.branch,
-  // An issue id is a uuid, so it names one row wherever it is.
-  issue: (route) => (entry) => entry.kind !== "capture" && entry.issueId === route.id,
-  // A watched issue's row (#125), on the machine the route names.
-  trackerIssue: (route) => (entry) =>
-    entry.kind === TRACKER_ISSUE && entry.deviceId === route.deviceId && entry.issueId === route.issueId,
+  // A task id is a uuid, so it names one row wherever it is.
+  task: (route) => (entry) => entry.kind !== "capture" && entry.taskId === route.id,
+  // A watched task's row (#125), on the machine the route names.
+  trackerTask: (route) => (entry) =>
+    entry.kind === TRACKER_TASK && entry.deviceId === route.deviceId && entry.taskId === route.taskId,
   // A workspace is named by its machine too: a workspace id is one bridge's.
   workspace: (route) => (entry) =>
     entry.kind === "workspace" && entry.deviceId === route.deviceId && entry.workspaceId === route.workspaceId,
@@ -858,7 +858,7 @@ export function routedEntry(route, view = {}) {
  *
  *  Done leads because it is the verb the row is for, and it sits behind the
  *  menu rather than on the row because it destroys (a branch's checkout and
- *  records, an issue to the archive) — one step and a confirmation is the
+ *  records, a task to the archive) — one step and a confirmation is the
  *  right distance for that, and a button laid over the row's own words was
  *  not. It is offered only where there is something to finish.
  *
@@ -875,11 +875,11 @@ function menuHtml(entry, open) {
   // reader's to act on: every verb here would race the one already running,
   // and the daemon refuses a second claim on the same thing anyway.
   if (entry.pending) return "";
-  if (entry.kind === TRACKER_ISSUE) return menuButtonHtml(entry, open, [unwatchItemHtml(entry)]);
+  if (entry.kind === TRACKER_TASK) return menuButtonHtml(entry, open, [unwatchItemHtml(entry)]);
   const items = [];
   if (entry.canFinish) {
     items.push(menuItemHtml(`data-done="${esc(entry.key)}"`, "Done",
-      entry.kind === "issue" ? "File the issue away" : "Delete the branch and its checkout"));
+      entry.kind === "task" ? "File the task away" : "Delete the branch and its checkout"));
   }
   items.push(menuItemHtml(`data-dismiss="${esc(entry.key)}"`, "Clear from inbox", "Moves it to Recent until a new message"));
   if (entry.entityId) {
@@ -889,11 +889,11 @@ function menuHtml(entry, open) {
   return menuButtonHtml(entry, open, items);
 }
 
-/** A watched issue's row (#125) leaves by itself once nothing in it needs the
+/** A watched task's row (#125) leaves by itself once nothing in it needs the
  *  user, so it has nothing to clear or finish. Its one verb is its mute: stop
- *  watching, which is what Mute means to the bridge for an issue. */
+ *  watching, which is what Mute means to the bridge for a task. */
 const unwatchItemHtml = (entry) =>
-  menuItemHtml(`data-unwatch="${esc(entry.key)}"`, "Stop watching", "Keeps the issue, but leaves it out of your inbox");
+  menuItemHtml(`data-unwatch="${esc(entry.key)}"`, "Stop watching", "Keeps the task, but leaves it out of your inbox");
 
 /** One item of a rail menu — a row's or a block's. A button, so Enter and
  *  Space press it like any other; out of the Tab order, because the arrows
@@ -994,10 +994,10 @@ function rowTooltip(entry) {
   return [entry.title, titleProject(entry), entry.reason].filter(Boolean).join(" — ");
 }
 
-/** The dot's state class. An issue is never an agent, so its dot stays grey in
+/** The dot's state class. A task is never an agent, so its dot stays grey in
  *  every state: amber there would read as an agent that stopped. The unread
  *  badge still says it has news. */
-const dotClass = (entry) => (entry.kind === "issue" ? "sdot-issue" : `sdot-${entry.state}`);
+const dotClass = (entry) => (entry.kind === "task" ? "sdot-task" : `sdot-${entry.state}`);
 
 /** One inbox row, in two lines: the state dot and what this is, with the unread
  *  count at the right edge; then what it weighs. `ui`: { activeKey,
@@ -1199,24 +1199,24 @@ export function captureRowHtml(entry, ui = {}) {
 // ---- the Done confirmations --------------------------------------------------
 //
 // Done destroys. On a branch it deletes the branch, its checkout and its
-// records; on an issue it files the issue away. Neither is ever refused — the
+// records; on a task it files the task away. Neither is ever refused — the
 // bridge sends what the destruction would cost (`finish.warnings`) and the
 // confirmation is where the user reads it, above the outline of exactly what
 // will happen (the core/confirm.js contract).
 
 /** Done on a branch. `entry` is an inbox entry, or the same four facts off any
- *  other surface standing in the branch: { branch, issueId, merged, warnings }.
+ *  other surface standing in the branch: { branch, taskId, merged, warnings }.
  *
- *  The issue's fate follows whether the work landed: a merge files it away with
+ *  The task's fate follows whether the work landed: a merge files it away with
  *  its branch, and any other ending hands it back to the inbox with an event
  *  naming the branch it lost. */
 export function branchDoneConfirm(entry) {
   const name = entry.branch || "this checkout";
   const words = entry.deletesBranch ? branchDeletedWords(name) : branchKeptWords(name, entry.deviceName);
   const actions = [...words.actions, "Take its conversation off the inbox"];
-  if (entry.issueId) {
+  if (entry.taskId) {
     actions.push(
-      entry.merged ? "Archive the issue it implements, with its stage plans" : words.issueReturned,
+      entry.merged ? "Archive the task it implements, with its stage plans" : words.taskReturned,
     );
   }
   return {
@@ -1237,7 +1237,7 @@ export const branchDeleteTooOld = (machine) =>
 const branchDeletedWords = (name) => ({
   intro: "Done deletes the branch. This cannot be undone.",
   actions: [`Delete branch ${name}`, "Remove its checkout"],
-  issueReturned: `Return the issue it implements to the inbox, noting that ${name} was deleted`,
+  taskReturned: `Return the task it implements to the inbox, noting that ${name} was deleted`,
   confirmLabel: "Delete",
 });
 
@@ -1247,17 +1247,17 @@ const branchDeletedWords = (name) => ({
 const branchKeptWords = (name, machine) => ({
   intro: `${branchDeleteTooOld(machine)} Done removes its checkout and keeps the branch.`,
   actions: ["Remove its checkout"],
-  issueReturned: "Return the issue it implements to the inbox",
+  taskReturned: "Return the task it implements to the inbox",
   confirmLabel: "Remove",
 });
 
-/** Done on an issue: it goes to the archive, where it can be read again. */
-export function issueDoneConfirm(entry) {
+/** Done on a task: it goes to the archive, where it can be read again. */
+export function taskDoneConfirm(entry) {
   return {
-    title: "Done with this issue?",
-    intro: "The issue is filed away, and can be read again from the archive.",
+    title: "Done with this task?",
+    intro: "The task is filed away, and can be read again from the archive.",
     warnings: entry.warnings || [],
-    actions: ["Move the issue and its stage plans to the archive", "Take it off the inbox"],
+    actions: ["Move the task and its stage plans to the archive", "Take it off the inbox"],
     confirmLabel: "Done",
     danger: false,
   };

@@ -12,7 +12,7 @@ import { mergeThreadItems, windowFromThreadPayload } from "../src/core/thread.js
 
 const DEVICE = "dev-1";
 
-/** The entity a row is addressed by — a run behind a branch, an issue, a
+/** The entity a row is addressed by — a run behind a branch, a task, a
  *  workspace's conversation owner. */
 export const rowEntityId = (row) => entityIdOf(row);
 
@@ -51,7 +51,7 @@ export function writeRailThread(entityId, conversationKey, threadPayload, { devi
 }
 
 /** A whole work item on disk: its row, and the conversation its fixture names
- *  — under the execution context where the row has one (an issue's agent runs
+ *  — under the execution context where the row has one (a task's agent runs
  *  in its implementation run), else under every agent on it, because the bridge
  *  answers the same conversation whichever of them is asked about. */
 export async function writeRailWorkItem(row, { deviceId = DEVICE } = {}) {

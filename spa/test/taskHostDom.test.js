@@ -1,0 +1,161 @@
+// @vitest-environment jsdom
+// The task route's host (views/taskView.js): which machine it talks to, and
+// what it writes back into the URL. The surface itself is core/taskView.js and
+// is tested against an injected caller in taskViewDom.test.js.
+
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
+/** The one bridge this file's device answers through: a test that hands over
+ *  a new `call` is that bridge answering differently, not another machine. */
+const bridge = { call: null };
+
+const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
+
+const flush = async () => {
+  for (let i = 0; i < 20; i++) await new Promise((done) => setTimeout(done, 0));
+};
+
+const stage = (id, title) => ({ id, title, state: "planned", approval: "planned", execution: "pending", open_comments: 0, comments: [] });
+
+const taskPayload = {
+  task_id: "task-1",
+  plan_id: "task-1",
+  project_id: "p1",
+  project: "Build",
+  goal: "Rebuild the task view",
+  state: "plan_review",
+  base_branch: "main",
+  stages: [{ id: "s1", state: "planned" }],
+  implementation_lineage: [],
+  thread: { items: [], thread_last_sequence: 1 },
+};
+
+let App;
+let renderTask;
+let resetDeviceContexts;
+let theirCall;
+
+beforeEach(async () => {
+  vi.resetModules();
+  globalThis.indexedDB = new IDBFactory();
+  globalThis.IDBKeyRange = IDBKeyRange;
+  document.body.innerHTML = bodyHtml;
+  location.hash = "#/device/dev-2/project/p1/task/task-1";
+  ({ App } = await import("../src/app.js"));
+  ({ renderTask } = await import("../src/views/taskView.js"));
+  const contexts = await import("../src/core/deviceContexts.js");
+  resetDeviceContexts = contexts.resetDeviceContexts;
+  App.devices = [
+    { id: "dev-1", name: "This device", status: "online" },
+    { id: "dev-2", name: "Desktop", status: "online" },
+  ];
+  App.selectedDeviceId = "dev-1"; // home is this machine; the link is the other one
+  bridge.call = vi.fn(async () => ({}));
+  theirCall = vi.fn(async (method) => {
+    if (method === "task.get") return taskPayload;
+    if (method === "task.stages") return { stages: [stage("s1", "Wire"), stage("s2", "Paint")] };
+    if (method === "task.stage_doc") return { stage_id: "s1", contents: "# Wire" };
+    if (method === "task.doc") return { contents: "# The whole plan" };
+    if (method === "board.list") return { items: [] };
+    if (method === "project.list") return { projects: [] };
+    return {};
+  });
+  const session = (deviceId, call) => ({ deviceId, call, close: () => {}, peer: () => {}, onCarrier: () => {} });
+  contexts.adoptDeviceSession(session("dev-1", (...args) => bridge.call(...args)));
+  contexts.adoptDeviceSession(session("dev-2", theirCall));
+  App.route = { name: "task", deviceId: "dev-2", projectId: "p1", id: "task-1" };
+});
+
+afterEach(() => {
+  if (App.poll) clearInterval(App.poll);
+  App.poll = null;
+  if (App.viewDispose) App.viewDispose();
+  App.viewDispose = null;
+  resetDeviceContexts();
+});
+
+describe("a task on another device", () => {
+  const reached = (call, method) => call.mock.calls.some(([name]) => name === method);
+
+  it("calls the route device's call for entity.seen and the task read", async () => {
+    await renderTask();
+    await flush();
+
+    expect(reached(theirCall, "entity.seen")).toBe(true);
+    expect(reached(theirCall, "task.get")).toBe(true);
+    expect(reached(bridge.call, "entity.seen")).toBe(false);
+    expect(reached(bridge.call, "task.get")).toBe(false);
+  });
+
+  it("syncHash keeps the device segment when the open stage changes", async () => {
+    await renderTask();
+    await flush();
+
+    expect(location.hash).toBe("#/device/dev-2/project/p1/task/task-1/stage/s1");
+    expect(App.route.deviceId).toBe("dev-2");
+
+    document.querySelector('.stagerow[data-stage="s2"]').click();
+    await flush();
+
+    expect(location.hash).toBe("#/device/dev-2/project/p1/task/task-1/stage/s2");
+    expect(App.route.deviceId).toBe("dev-2");
+  });
+});
+
+// The machine answered once and has since gone: its context is still here, so
+// the surface stands up on what the records hold, as if it answered, and the
+// strip over it names the machine. Nothing is read through it until it is back.
+describe("a task on a device that has gone offline", () => {
+  it("an offline route device paints the surface and names that device over it", async () => {
+    const contexts = await import("../src/core/deviceContexts.js");
+    App.devices = App.devices.map((device) => device.id === "dev-2" ? { ...device, status: "offline" } : device);
+    contexts.setContextOffline("dev-2");
+
+    await renderTask();
+    await flush();
+
+    expect(document.querySelector("#root > .device-strip").textContent).toContain("Desktop isn't connected");
+    expect(document.getElementById("tabbody")).toBeTruthy();
+    expect(theirCall).not.toHaveBeenCalled();
+    expect(bridge.call).not.toHaveBeenCalled();
+  });
+});
+
+// A link can name a machine this client has no session with. There is nothing
+// to read and nothing to write until it answers, so the surface says so by name
+// rather than painting an empty task.
+describe("a task on a device this client has not opened", () => {
+  it("names the device and asks it nothing", async () => {
+    App.devices = [...App.devices, { id: "dev-3", name: "Desktop", status: "offline" }];
+    App.route = { name: "task", deviceId: "dev-3", projectId: "p1", id: "task-1" };
+
+    await renderTask();
+    await flush();
+
+    expect(document.getElementById("root").textContent).toContain("Desktop isn't connected");
+    expect(bridge.call).not.toHaveBeenCalled();
+    expect(theirCall).not.toHaveBeenCalled();
+  });
+
+  // The reload case: the machines land one at a time, and the gate paints on
+  // the first of them. The notice is where the link waits, not where it ends.
+  it("mounts the surface the moment the device lands", async () => {
+    const contexts = await import("../src/core/deviceContexts.js");
+    App.devices = [...App.devices, { id: "dev-3", name: "Laptop", status: "online" }];
+    App.route = { name: "task", deviceId: "dev-3", projectId: "p1", id: "task-1" };
+    const lateCall = vi.fn(theirCall);
+
+    await renderTask();
+    expect(document.getElementById("tabbody")).toBeNull();
+
+    contexts.adoptDeviceSession({ deviceId: "dev-3", call: lateCall, close: () => {}, peer: () => {}, onCarrier: () => {} });
+    await flush();
+
+    expect(document.getElementById("tabbody")).toBeTruthy();
+    expect(lateCall.mock.calls.some(([method]) => method === "task.get")).toBe(true);
+    expect(bridge.call.mock.calls.some(([method]) => method === "task.get")).toBe(false);
+  });
+});

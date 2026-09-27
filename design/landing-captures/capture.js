@@ -3,7 +3,7 @@
 // The views' own sheets, after styles.css as the app loads them.
 import "../../spa/src/styles/shell.css";
 import "../../spa/src/styles/surfaces.css";
-import "../../spa/src/styles/issues.css";
+import "../../spa/src/styles/tasks.css";
 import "../../spa/src/styles/fileEditor.css";
 import { renderSystemShell } from "./system-ui.js";
 import { paintBubbles } from "./app-shell.js";
@@ -23,7 +23,7 @@ const scenes = {
   ui03: () => conversationScene(state),
   ui05: reviewScene,
   "ui10-editor": editorScene,
-  "ui12-issues": boardScene,
+  "ui12-tasks": boardScene,
   "ui13-team": teamScene,
   "ui14-git": gitScene,
   "ui15-triage": () => triageScene("triage"),

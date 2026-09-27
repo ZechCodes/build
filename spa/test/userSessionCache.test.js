@@ -9,7 +9,7 @@ const { readUserSession, userSessionOf, writeUserSession } = await import("../sr
 
 const answer = (last, over = {}) => ({
   project_id: "proj-1",
-  issues: [],
+  tasks: [],
   user_session: {
     session_started_ms: 1, last_activity_ms: last, previous_session_ended_ms: null, gap_ms: 21_600_000, now_ms: 1_000, ...over,
   },
@@ -37,8 +37,8 @@ it("rewrites the same session only when the bridge's answer says the user has si
 });
 
 it("writes nothing for a bridge that sends no session", async () => {
-  expect(userSessionOf({ issues: [] })).toBeNull();
-  expect(await writeUserSession("dev-2", { issues: [] })).toBe(false);
+  expect(userSessionOf({ tasks: [] })).toBeNull();
+  expect(await writeUserSession("dev-2", { tasks: [] })).toBe(false);
   expect(await readUserSession("dev-2")).toBeNull();
 });
 

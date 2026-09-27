@@ -148,7 +148,7 @@ fn attaching_an_operation_rebuilds_one_scoped_cold_protocol() {
         "{}",
         said.cold
     );
-    assert!(!said.cold.contains("process every unread Issue message"));
+    assert!(!said.cold.contains("process every unread Task message"));
     assert_eq!(said.warm.matches("Build conversation protocol:").count(), 0);
 }
 
@@ -164,7 +164,7 @@ fn recovered_operation_keeps_cold_start_protocol_and_a_warm_exact_packet() {
         "{}",
         said.cold
     );
-    assert!(!said.cold.contains("process every unread Issue message"));
+    assert!(!said.cold.contains("process every unread Task message"));
     assert!(!said.warm.contains("Build conversation protocol:"));
     assert!(said.warm.contains("Process only reviewer operation"));
 }
@@ -199,8 +199,8 @@ fn an_in_flight_agent_holds_its_followup_while_another_agent_proceeds() {
 // - a_delivery_that_panics_gives_its_in_flight_marks_back
 // - requeue-before-settle on Store claim error and DeliveryOutcome::Deferred
 
-/// A turn that reads the agent's unread thread when it is sent, the way an
-/// issue notice's does.
+/// A turn that reads the agent's unread thread when it is sent, the way a
+/// task notice's does.
 fn catch_up(owner: &str, agent: &str) -> PendingAgentTurn {
     PendingAgentTurn {
         wants_catch_up: true,

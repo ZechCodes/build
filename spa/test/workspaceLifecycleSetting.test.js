@@ -58,7 +58,7 @@ describe("what the bridge's answer means", () => {
 
   // A bridge from before 1.25.0 answers settings.get without the fields.
   it("is unknown on a bridge that predates the settings, and before any answer", () => {
-    expect(workspaceLifecycleOf({ watch_agent_filed_issues: true }).known).toBe(false);
+    expect(workspaceLifecycleOf({ watch_agent_filed_tasks: true }).known).toBe(false);
     expect(workspaceLifecycleOf(null).known).toBe(false);
     expect(workspaceLifecycleOf(undefined).known).toBe(false);
   });
@@ -93,7 +93,7 @@ describe("the panel", () => {
   });
 
   it("says in a sentence when the machine's bridge predates the settings", async () => {
-    const callRpc = vi.fn(async () => ({ watch_agent_filed_issues: false }));
+    const callRpc = vi.fn(async () => ({ watch_agent_filed_tasks: false }));
     await mountWorkspaceLifecycleSetting(host(), { callRpc });
 
     expect(controlsShown()).toBe(false);

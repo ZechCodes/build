@@ -101,7 +101,7 @@ than a new sleep or a larger per-test timeout.
 
 ## Measurements
 
-The issue attachments contain all per-file durations, the slowest 30 files,
+The task attachments contain all per-file durations, the slowest 30 files,
 test-executable timings and exact command exit codes. File durations are
 Vitest's test/hook durations; adding parallel file times does not give suite
 wall time.

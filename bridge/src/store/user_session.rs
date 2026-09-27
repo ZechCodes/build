@@ -1,4 +1,4 @@
-//! The user's own session (spec: Issues dashboard → Done since you left).
+//! The user's own session (spec: Tasks dashboard → Done since you left).
 //!
 //! One row in `meta`, rewritten whenever the user acts, and the replay a boot
 //! folds it together with: every stored action the user took, by timestamp.
@@ -39,7 +39,7 @@ impl Store {
         Ok(())
     }
 
-    /// When the user did each stored thing: the issue events and comments
+    /// When the user did each stored thing: the task events and comments
     /// they wrote, and the messages they sent. Oldest first. A message an
     /// agent sent, or Build wrote, is not the user's however it is addressed.
     pub fn user_action_times(&self) -> Result<Vec<i64>, StoreError> {
@@ -55,7 +55,7 @@ impl Store {
                AND json_extract(item, '$.data.role') = 'user' \
                AND json_extract(item, '$.data.from_agent') IS NULL \
                AND COALESCE(json_extract(item, '$.data.from_build'), 0) = 0 \
-               AND json_extract(item, '$.data.issue_notice') IS NULL",
+               AND json_extract(item, '$.data.task_notice') IS NULL",
         ] {
             let mut statement = connection.prepare(query)?;
             let rows = statement.query_map([], |row| row.get::<_, Option<String>>(0))?;

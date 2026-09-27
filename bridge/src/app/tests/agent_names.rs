@@ -11,8 +11,8 @@ use super::tracker::{filed, tracked};
 use super::*;
 use crate::mcp::{BridgeAction, DoneServer};
 
-fn issue_id(issue: &Value) -> String {
-    issue["id"].as_str().unwrap().to_string()
+fn task_id(task: &Value) -> String {
+    task["id"].as_str().unwrap().to_string()
 }
 
 /// A workspace conversation with one agent on it, and the agent's own name for
@@ -227,17 +227,17 @@ fn mcp_agent_creation_wires_a_name_into_the_record() {
 }
 
 #[test]
-fn mcp_issue_dispatch_names_the_agent_it_creates() {
+fn mcp_task_dispatch_names_the_agent_it_creates() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
-    let workspace_id = workspace(&mut state, &project_id, "issue work");
-    let issue = filed(&mut state, &project_id, "Fix flaky tests");
+    let workspace_id = workspace(&mut state, &project_id, "task work");
+    let task = filed(&mut state, &project_id, "Fix flaky tests");
     let (owner, project_agent_id) = project_agent(&mut state, &project_id);
     let frame = json!({
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": { "name": "assign_issue", "arguments": {
-            "issue_id": issue_id(&issue),
+        "params": { "name": "assign_task", "arguments": {
+            "task_id": task_id(&task),
             "assignee": { "kind": "new_agent", "workspace_id": workspace_id,
                 "agent_name": "Flaky test fixer" }
         }}
@@ -245,7 +245,7 @@ fn mcp_issue_dispatch_names_the_agent_it_creates() {
     let parsed = DoneServer::for_owner(&project_agent_id).handle_message(&frame.to_string());
     let action = parsed
         .action
-        .expect("named issue dispatch is accepted by MCP");
+        .expect("named task dispatch is accepted by MCP");
     let assigned = state
         .on_agent_mcp_action(&owner, &project_agent_id, action)
         .unwrap();
@@ -430,19 +430,19 @@ fn an_agent_hand_off_leaves_the_name_request_for_delivery() {
     );
 }
 
-/// The SPA may dispatch an issue into an unnamed agent. The name request is
-/// attached when the issue turn is sent, not while it is queued.
+/// The SPA may dispatch a task into an unnamed agent. The name request is
+/// attached when the task turn is sent, not while it is queued.
 #[test]
-fn an_unnamed_issue_agent_waits_for_delivery_to_be_asked() {
+fn an_unnamed_task_agent_waits_for_delivery_to_be_asked() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
-    let workspace_id = workspace(&mut state, &project_id, "issue work");
-    let issue = filed(&mut state, &project_id, "Fix the rail");
+    let workspace_id = workspace(&mut state, &project_id, "task work");
+    let task = filed(&mut state, &project_id, "Fix the rail");
     state.delivery_queue.take_ready(|_| false);
     let assigned = state.handle(req(
-        "issues.assign",
-        json!({ "issue_id": issue_id(&issue), "assignee": {
+        "tasks.assign",
+        json!({ "task_id": task_id(&task), "assignee": {
             "kind": "new_agent", "workspace_id": workspace_id
         }}),
     ));
@@ -454,7 +454,7 @@ fn an_unnamed_issue_agent_waits_for_delivery_to_be_asked() {
         .filter(|turn| turn.agent_id == agent_id)
         .filter_map(|turn| turn.say.as_ref().map(|say| say.warm.as_str()))
         .find(|warm| warm.contains("Fix the rail"))
-        .expect("the issue delivery starts a turn for its agent");
+        .expect("the task delivery starts a turn for its agent");
     assert!(!warm.contains("You have no name yet"), "{warm}");
     assert!(warm.contains("Fix the rail"), "{warm}");
 }
@@ -504,18 +504,18 @@ fn the_name_travels_with_everything_the_agent_is_named_on() {
     assert_eq!(sent["name"], "Rail scroll", "{sent:?}");
     assert_eq!(sent["id"], agent_id.as_str(), "and the id is still there");
 
-    // And on the notice about an issue it changed.
-    let id = issue_id(&filed(&mut state, &project_id, "Kanban drag"));
+    // And on the notice about a task it changed.
+    let id = task_id(&filed(&mut state, &project_id, "Kanban drag"));
     state.handle(req(
-        "issues.track",
-        json!({ "issue_id": id, "agent_id": watcher }),
+        "tasks.track",
+        json!({ "task_id": id, "agent_id": watcher }),
     ));
     state
         .on_agent_mcp_action(
             &entity_id,
             &agent_id,
-            BridgeAction::TrackerMoveIssue {
-                issue_id: id.clone(),
+            BridgeAction::TrackerMoveTask {
+                task_id: id.clone(),
                 status: "in_review".into(),
                 track: None,
             },
@@ -530,11 +530,11 @@ fn the_name_travels_with_everything_the_agent_is_named_on() {
         .unwrap()
         .iter()
         .map(|item| item["data"].clone())
-        .find(|data| data["issue_notice"].is_object())
+        .find(|data| data["task_notice"].is_object())
         .unwrap_or_else(|| panic!("no notice: {page:?}"));
-    assert_eq!(notice["issue_notice"]["actor"]["name"], "Rail scroll");
+    assert_eq!(notice["task_notice"]["actor"]["name"], "Rail scroll");
     assert_eq!(
-        notice["issue_notice"]["actor"]["agent_id"],
+        notice["task_notice"]["actor"]["agent_id"],
         agent_id.as_str(),
         "beside the id, not instead of it"
     );

@@ -1,0 +1,15 @@
+{
+  "method": "task.comment_delete",
+  "since": "1.0.0",
+  "params": {
+    "task_id": "task-7",
+    "comment_id": "msg-31"
+  },
+  "result": {
+    "ok": true
+  },
+  "errors": [
+    "not_found",
+    "conflict"
+  ]
+}

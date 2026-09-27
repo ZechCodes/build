@@ -72,7 +72,7 @@ Global overlay: `body::after` fixed, `repeating-linear-gradient(0deg, rgba(0,0,0
 - Card header row: `/0N` (green) left, category (t3) right — 500 12px ls .12em, mb 20px. Then h3, then p.
 
 Card copy (verbatim):
-- /01 ISSUES — **An inbox, not a backlog** — Issues live next to the code. Agents pick them up on their own — your inbox shows only the work waiting on a human. When it's empty, you're done.
+- /01 TASKS — **An inbox, not a backlog** — Tasks live next to the code. Agents pick them up on their own — your inbox shows only the work waiting on a human. When it's empty, you're done.
 - /02 VERSION CONTROL — **Worktrees that manage themselves** — Every agent works in its own worktree. Fetch, commit, review, merge — without leaving the conversation.
 - /03 REVIEW — **Diff-first review** — Inline comments on any line, threaded with your team and your agents. Approve, redirect, or take over.
 - /04 WORKFLOWS · RLM — **Workflows that reshape around the work** — The RLM routes tasks, retries failures, and re-plans as the work changes — escalating only when it genuinely needs a human. Your team sees the same board, live.

@@ -36,7 +36,7 @@ const conversation = (workspaceId, agents) => ({
 });
 
 const feed = {
-  workspaces: [workspace("ws-1", "wire-facade"), workspace("ws-2", "issues-board")],
+  workspaces: [workspace("ws-1", "wire-facade"), workspace("ws-2", "tasks-board")],
   items: [
     conversation("ws-1", [{ id: "agent-1", ordinal: 1, provider: "claude" }, { id: "agent-2", ordinal: 2 }]),
     conversation("ws-2", []),
@@ -48,7 +48,7 @@ describe("who this project's agents are", () => {
     const groups = workspaceAgents(feed, PROJECT_KEY);
     expect(groups.map((group) => [group.name, group.agents.map((agent) => agent.id)])).toEqual([
       ["wire-facade", ["agent-1", "agent-2"]],
-      ["issues-board", []],
+      ["tasks-board", []],
     ]);
   });
 
@@ -92,7 +92,7 @@ describe("the options", () => {
 
   // A workspace with no agents yet is still a place to start one.
   it("offers a new agent on a workspace that has none", () => {
-    expect(options.find((option) => option.id === "new_agent:ws-2").label).toBe("New agent in issues-board");
+    expect(options.find((option) => option.id === "new_agent:ws-2").label).toBe("New agent in tasks-board");
   });
 
   // Assigning starts work; the reader should not discover that afterwards.
@@ -100,7 +100,7 @@ describe("the options", () => {
     const hintOf = (id) => options.find((option) => option.id === id).hint;
     expect(hintOf("user")).toBe("Nothing is dispatched.");
     expect(hintOf("new_workspace")).toBe("Cuts a workspace in this project and starts an agent on it.");
-    expect(hintOf("agent:agent-1")).toBe("Delivers the issue into this agent's conversation.");
+    expect(hintOf("agent:agent-1")).toBe("Delivers the task into this agent's conversation.");
   });
 
   // The harness/model/effort selects appear on exactly the two creating kinds.
@@ -112,7 +112,7 @@ describe("the options", () => {
     ]);
   });
 
-  it("ticks the option an issue's current assignee is", () => {
+  it("ticks the option a task's current assignee is", () => {
     expect(selectedOptionId({ kind: "agent", agent_id: "agent-1" })).toBe("agent:agent-1");
     expect(selectedOptionId(null)).toBe("none");
   });
@@ -136,7 +136,7 @@ describe("the assignee one option stands for", () => {
     expect(assigneeFor(optionOf("new_agent:ws-1"))).toEqual({ kind: "new_agent", workspace_id: "ws-1" });
   });
 
-  // `issues.assign` is a wire verb, and a wire verb takes `provider`; `harness`
+  // `tasks.assign` is a wire verb, and a wire verb takes `provider`; `harness`
   // is the word the MCP tools use for the same field. So the agent-choice
   // controls' answer rides through unchanged.
   it("carries the agent choice under the keys a wire verb takes", () => {
@@ -166,24 +166,24 @@ describe("the assignee one option stands for", () => {
   });
 });
 
-describe("one press, as issues.assign params", () => {
+describe("one press, as tasks.assign params", () => {
   const option = { id: "user", kind: "user" };
 
-  it("names the issue and the assignee", () => {
-    expect(assignParams("issue-1", option)).toEqual({ issue_id: "issue-1", assignee: { kind: "user" } });
+  it("names the task and the assignee", () => {
+    expect(assignParams("task-1", option)).toEqual({ task_id: "task-1", assignee: { kind: "user" } });
   });
 
-  // The note is delivered under the issue and is not stored on it, so an empty
+  // The note is delivered under the task and is not stored on it, so an empty
   // one is left off rather than sent blank.
   it("carries a note when one was written, and nothing when it was not", () => {
-    expect(assignParams("issue-1", option, { note: " look at the drag handler " }).note)
+    expect(assignParams("task-1", option, { note: " look at the drag handler " }).note)
       .toBe("look at the drag handler");
-    expect(assignParams("issue-1", option, { note: "  " })).not.toHaveProperty("note");
+    expect(assignParams("task-1", option, { note: "  " })).not.toHaveProperty("note");
   });
 
   it("unassigns with a null assignee", () => {
-    expect(assignParams("issue-1", { id: "none", kind: "unassign" })).toEqual({
-      issue_id: "issue-1", assignee: null,
+    expect(assignParams("task-1", { id: "none", kind: "unassign" })).toEqual({
+      task_id: "task-1", assignee: null,
     });
   });
 });

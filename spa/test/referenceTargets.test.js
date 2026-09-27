@@ -1,12 +1,12 @@
 /** @vitest-environment jsdom */
-// #63.2: the references an agent writes become links, in chat and on the issue
+// #63.2: the references an agent writes become links, in chat and on the task
 // page.
 //
 // #56 landed the syntax and the routing with the resolver left injectable and
 // no caller passing one, so every reference rendered as the words that were
 // typed. This wires the two ends together: the resolver is built from the
 // caches each surface already paints from (core/referenceTargets.js), and the
-// conversation and the issue page hand it to the renderer.
+// conversation and the task page hand it to the renderer.
 //
 // The behaviour that must survive: a reference nothing answers for stays
 // prose, and a reference inside a code span stays literal. A message that
@@ -17,13 +17,13 @@ import { describe, expect, it } from "vitest";
 import { referenceLinks } from "../src/core/referenceTargets.js";
 import { renderMarkdown } from "../src/core/markdown.js";
 import { threadHtml } from "../src/core/thread.js";
-import { issuePageHtml } from "../src/core/trackerIssueRender.js";
+import { taskPageHtml } from "../src/core/trackerTaskRender.js";
 
 const place = { deviceId: "dev-1", projectId: "proj-1", projectKey: "dev-1/proj-1", projectName: "Build" };
-const issues = [{ id: "issue-01M2A", number: 42, title: "Issues list shows open issues by default" }];
-const workspaces = [{ id: "ws-1", workspace_id: "ws-1", name: "issues-spa", projectKey: "dev-1/proj-1" }];
-const agentGroups = [{ workspaceId: "ws-1", name: "issues-spa", agents: [{ id: "agent-01M2A", label: "issues-spa · Agent 1" }] }];
-const links = () => referenceLinks({ place, issues, workspaces, agentGroups });
+const tasks = [{ id: "task-01M2A", number: 42, title: "Tasks list shows open tasks by default" }];
+const workspaces = [{ id: "ws-1", workspace_id: "ws-1", name: "tasks-spa", projectKey: "dev-1/proj-1" }];
+const agentGroups = [{ workspaceId: "ws-1", name: "tasks-spa", agents: [{ id: "agent-01M2A", label: "tasks-spa · Agent 1" }] }];
+const links = () => referenceLinks({ place, tasks, workspaces, agentGroups });
 
 const hostOf = (html) => {
   const host = document.createElement("div");
@@ -34,17 +34,17 @@ const anchors = (html) => [...hostOf(html).querySelectorAll("a")].map((a) => ({ 
 
 describe("what a reference names", () => {
   it("answers nothing at all without a place to route from", () => {
-    expect(referenceLinks({ place: { projectId: "proj-1" }, issues })).toBeNull();
+    expect(referenceLinks({ place: { projectId: "proj-1" }, tasks })).toBeNull();
   });
 
-  it("finds an issue by its number", () => {
-    expect(links().issue(42)).toEqual({ deviceId: "dev-1", projectId: "proj-1", issueId: "issue-01M2A", title: issues[0].title });
-    expect(links().issue(9999)).toBeNull();
+  it("finds a task by its number", () => {
+    expect(links().task(42)).toEqual({ deviceId: "dev-1", projectId: "proj-1", taskId: "task-01M2A", title: tasks[0].title });
+    expect(links().task(9999)).toBeNull();
   });
 
   it("finds a workspace by the name a reader writes, or by its id", () => {
-    expect(links().workspace("issues-spa")?.workspaceId).toBe("ws-1");
-    expect(links().workspace("ISSUES-SPA")?.workspaceId).toBe("ws-1");
+    expect(links().workspace("tasks-spa")?.workspaceId).toBe("ws-1");
+    expect(links().workspace("TASKS-SPA")?.workspaceId).toBe("ws-1");
     expect(links().workspace("ws-1")?.workspaceId).toBe("ws-1");
     expect(links().workspace("no-such-workspace")).toBeNull();
   });
@@ -78,10 +78,10 @@ describe("what a reference names", () => {
 
 // Every form, through the renderer the surfaces call.
 const FORMS = [
-  { name: "an issue", wrote: "Rolled #42 this morning.", reads: "#42" },
-  { name: "a workspace", wrote: "Cut on @workspace:issues-spa.", reads: "@workspace:issues-spa" },
+  { name: "a task", wrote: "Rolled #42 this morning.", reads: "#42" },
+  { name: "a workspace", wrote: "Cut on @workspace:tasks-spa.", reads: "@workspace:tasks-spa" },
   { name: "an agent", wrote: "Handed to @agent:agent-01M2A.", reads: "@agent:agent-01M2A" },
-  { name: "a file", wrote: "See [[issues-spa:spa/src/core/thread.js#L42]].", reads: "[[issues-spa:spa/src/core/thread.js#L42]]" },
+  { name: "a file", wrote: "See [[tasks-spa:spa/src/core/thread.js#L42]].", reads: "[[tasks-spa:spa/src/core/thread.js#L42]]" },
 ];
 
 describe("a reference in a chat message", () => {
@@ -107,7 +107,7 @@ describe("a reference in a chat message", () => {
 
   // A message explaining the syntax is mostly examples.
   it("leaves a reference inside a code span literal", () => {
-    const html = said("Write `#42` to point at an issue.");
+    const html = said("Write `#42` to point at a task.");
     expect(anchors(html)).toEqual([]);
     expect(hostOf(html).querySelector("code").textContent).toBe("#42");
   });
@@ -121,9 +121,9 @@ describe("a reference in a chat message", () => {
   });
 });
 
-describe("a reference in a comment on the issue page", () => {
-  const issue = { id: "issue-1", number: 63, title: "An issue", state: "open", status: "in_progress", labels: [], links: {} };
-  const page = (body) => issuePageHtml(issue, {
+describe("a reference in a comment on the task page", () => {
+  const task = { id: "task-1", number: 63, title: "A task", state: "open", status: "in_progress", labels: [], links: {} };
+  const page = (body) => taskPageHtml(task, {
     columns: [], rows: [{ type: "comment", key: "c1", actor: { kind: "user" }, body, at: "2026-09-21T00:00:00Z" }],
     links: [], draft: "", labelsDraft: "", busy: false, sending: false,
     agentLabels: {}, projectName: "Build", refLinks: links(),
@@ -146,10 +146,10 @@ describe("a reference in a comment on the issue page", () => {
   });
 });
 
-describe("the issue's own body", () => {
-  const issue = { id: "issue-1", number: 63, title: "An issue", state: "open", status: "in_progress", labels: [], links: {}, body: "Follows #42." };
+describe("the task's own body", () => {
+  const task = { id: "task-1", number: 63, title: "A task", state: "open", status: "in_progress", labels: [], links: {}, body: "Follows #42." };
   it("links what it names", () => {
-    const html = issuePageHtml(issue, {
+    const html = taskPageHtml(task, {
       columns: [], rows: [], links: [], draft: "", labelsDraft: "", busy: false, sending: false,
       agentLabels: {}, projectName: "Build", refLinks: links(),
     });

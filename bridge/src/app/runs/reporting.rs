@@ -35,8 +35,8 @@ pub(in crate::app) fn append_plan_stage_announcements(
         thread.post_agent_with_links(
             explanation,
             None,
-            vec![crate::thread::ThreadLink::IssueStage {
-                issue_id: plan_id.to_string(),
+            vec![crate::thread::ThreadLink::TaskStage {
+                task_id: plan_id.to_string(),
                 stage_id: stage.id.clone(),
                 path: stage.path.clone(),
             }],
@@ -65,13 +65,13 @@ pub(in crate::app) fn record_current_stage_started(
         None,
         None,
         vec![
-            crate::thread::ThreadLink::IssueStage {
-                issue_id: plan_id.clone(),
+            crate::thread::ThreadLink::TaskStage {
+                task_id: plan_id.clone(),
                 stage_id: stage.id.clone(),
                 path: stage.path.clone(),
             },
             crate::thread::ThreadLink::Implementation {
-                issue_id: plan_id,
+                task_id: plan_id,
                 implementation_id: active.run.id.0.clone(),
             },
         ],
@@ -127,7 +127,7 @@ pub(in crate::app) fn close_abandoned_run_conversations(active: &mut ActiveRun) 
     }
     // A branch may carry several agents and the decide phase took every one of
     // them. `Abandoned` closed the first agent's turn (and, for a planned
-    // implementation, its Issue's — see `mirror_run_outcome_to_issue`); the
+    // implementation, its Task's — see `mirror_run_outcome_to_task`); the
     // agents beside it were told nothing, so each one that died mid-turn is
     // closed on its own conversation. Every other teardown path removes the run
     // from the board entirely, so there is no row left to read as working.
@@ -138,27 +138,27 @@ pub(in crate::app) fn close_abandoned_run_conversations(active: &mut ActiveRun) 
     }
 }
 
-/// What an issue's conversation says when the branch implementing it is gone
+/// What a task's conversation says when the branch implementing it is gone
 /// and nothing was merged out of it. `how` is the way it went: abandoned by the
 /// user, deleted outside Build, finished off the board.
 pub(in crate::app) fn abandoned_branch_summary(branch: &str, how: &str) -> String {
     format!(
-        "The branch {branch} was {how} without being merged, so this issue is waiting for work \
+        "The branch {branch} was {how} without being merged, so this task is waiting for work \
          again"
     )
 }
 
-/// Whether one of an implementation's events travels to the Issue that owns
+/// Whether one of an implementation's events travels to the Task that owns
 /// it. Exactly the attention class: what needs the human is news wherever they
 /// are watching from, what merely reports progress belongs to the run.
 ///
 /// Events only, because an outcome is no longer one: a report the agent made on
-/// a planned implementation is written straight onto the Issue's conversation
+/// a planned implementation is written straight onto the Task's conversation
 /// as the agent's own message (`record_report_in_thread`, whose caller picks
 /// that conversation), which is the same timeline this mirror copies onto and
 /// the same one unread entry. What still travels this way is what Build
 /// observed about the implementation itself — an abandoned branch.
-pub(in crate::app) fn run_outcome_mirrors_to_issue(event: crate::thread::ThreadEventKind) -> bool {
+pub(in crate::app) fn run_outcome_mirrors_to_task(event: crate::thread::ThreadEventKind) -> bool {
     event.class() == crate::thread::EventClass::Attention
 }
 
@@ -183,7 +183,7 @@ pub(in crate::app) fn out_of_phase_log(
 }
 
 /// The conversation the reporting run agent is canonically bound to. A planned
-/// run's primary continues its Issue lineage; additional agents own independent
+/// run's primary continues its Task lineage; additional agents own independent
 /// conversations on the run.
 ///
 /// The run's own is reached through the mint door: the report came from an
@@ -193,11 +193,11 @@ pub(in crate::app) fn run_report_conversation<'a>(
     run_id: &str,
     reporting_agent_id: Option<&str>,
     active: &'a mut ActiveRun,
-    issue: Option<&'a mut ActivePlan>,
+    task: Option<&'a mut ActivePlan>,
 ) -> &'a mut crate::thread::Thread {
     match reporting_agent_id {
-        None => match issue {
-            Some(issue) => issue.agents.sole_thread_mut(),
+        None => match task {
+            Some(task) => task.agents.sole_thread_mut(),
             None => {
                 let choice = active.model_choice.clone();
                 &mut active
@@ -219,11 +219,11 @@ pub(in crate::app) fn run_report_conversation<'a>(
                     .expect("reporting agent was just resolved")
                     .thread;
             }
-            let issue = issue.expect("an aliased run conversation belongs to its Issue");
-            &mut issue
+            let task = task.expect("an aliased run conversation belongs to its Task");
+            &mut task
                 .agents
                 .by_id_mut(&conversation_id)
-                .expect("reporting agent's canonical Issue conversation exists")
+                .expect("reporting agent's canonical Task conversation exists")
                 .thread
         }
     }
@@ -346,13 +346,13 @@ fn completed_stage_event(active: &ActiveRun, plan_docs: &[StageDoc]) -> Option<S
 
 fn record_stage_events(
     conversation: &mut crate::thread::Thread,
-    issue_id: &str,
+    task_id: &str,
     run_id: &str,
     failed: Option<StageFailure>,
     completed: Option<StageCompletion>,
 ) {
     let implementation = crate::thread::ThreadLink::Implementation {
-        issue_id: issue_id.to_string(),
+        task_id: task_id.to_string(),
         implementation_id: run_id.to_string(),
     };
     if let Some((stage_id, stage_path, summary)) = failed {
@@ -362,8 +362,8 @@ fn record_stage_events(
             None,
             None,
             vec![
-                crate::thread::ThreadLink::IssueStage {
-                    issue_id: issue_id.to_string(),
+                crate::thread::ThreadLink::TaskStage {
+                    task_id: task_id.to_string(),
                     stage_id,
                     path: stage_path,
                 },
@@ -375,8 +375,8 @@ fn record_stage_events(
     if let Some((stage_id, completion_sha, stage_path)) = completed {
         let mut links = vec![implementation];
         if let Some(path) = stage_path {
-            links.push(crate::thread::ThreadLink::IssueStage {
-                issue_id: issue_id.to_string(),
+            links.push(crate::thread::ThreadLink::TaskStage {
+                task_id: task_id.to_string(),
                 stage_id: stage_id.clone(),
                 path,
             });
@@ -414,7 +414,7 @@ impl AppState {
             return;
         }
         let plan_docs = self.owning_plan_stage_docs(&active);
-        let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
+        let task_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
         let report_for_thread = report.clone();
         let stage_before = active
             .current_stage_id
@@ -442,20 +442,20 @@ impl AppState {
         } else {
             None
         };
-        let mut issue = issue_id
+        let mut task = task_id
             .as_ref()
-            .and_then(|issue_id| self.plans.remove(issue_id));
+            .and_then(|task_id| self.plans.remove(task_id));
         let conversation =
-            run_report_conversation(run_id, reporting_agent_id, &mut active, issue.as_mut());
+            run_report_conversation(run_id, reporting_agent_id, &mut active, task.as_mut());
         record_report_in_thread(
             conversation,
             &report_for_thread,
             outcome.as_ref().err().map(String::as_str),
         );
-        if let Some(issue_id) = issue_id.as_deref() {
+        if let Some(task_id) = task_id.as_deref() {
             record_stage_events(
                 conversation,
-                issue_id,
+                task_id,
                 run_id,
                 failed_stage_event,
                 completed_stage_event,
@@ -468,21 +468,21 @@ impl AppState {
         if let Err(e) = persisted {
             eprintln!("on_agent_done {run_id}: {e}");
         }
-        if let (Some(issue_id), Some(issue)) = (issue_id, issue) {
-            let persisted = self.finish_plan_mutation(issue_id, issue);
+        if let (Some(task_id), Some(task)) = (task_id, task) {
+            let persisted = self.finish_plan_mutation(task_id, task);
             if let Err(e) = persisted {
-                eprintln!("on_agent_done {run_id}: issue conversation persist failed: {e}");
+                eprintln!("on_agent_done {run_id}: task conversation persist failed: {e}");
             }
         }
         self.auto_advance_run(run_id);
-        if let Some(issue_id) = self
+        if let Some(task_id) = self
             .runs
             .get(run_id)
             .and_then(|run| run.run.plan_id.as_ref())
             .map(|id| id.0.clone())
         {
-            if let Err(error) = self.refresh_issue_scheduler_activity(&issue_id) {
-                eprintln!("issue scheduler {issue_id}: {error}");
+            if let Err(error) = self.refresh_task_scheduler_activity(&task_id) {
+                eprintln!("task scheduler {task_id}: {error}");
             }
         }
     }
@@ -582,7 +582,7 @@ impl AppState {
     }
 
     /// Canonical conversation owner for a run. Planned runs are implementation
-    /// lineage of the Issue and therefore project the Issue thread; planless
+    /// lineage of the Task and therefore project the Task thread; planless
     /// adopted runs remain independent worktree entities. `None` for a branch
     /// with no agents — it has no conversation until somebody speaks to it.
     pub(in crate::app) fn conversation_thread_for_run<'a>(
@@ -609,10 +609,10 @@ impl AppState {
             .map(|agent| &agent.thread)
     }
 
-    /// Write to the conversation a run speaks in — its Issue's when it has one,
+    /// Write to the conversation a run speaks in — its Task's when it has one,
     /// its own otherwise — and persist whichever record owns it.
     ///
-    /// The Issue's thread is what every surface of a planned run renders, so a
+    /// The Task's thread is what every surface of a planned run renders, so a
     /// report written anywhere else is invisible: the run reads as busy while
     /// nothing is happening in it.
     pub(in crate::app) fn record_on_run_conversation(
@@ -633,12 +633,12 @@ impl AppState {
             format!("agent {agent_id} is bound to missing conversation {conversation_id}")
         })?;
         if self.plans.contains_key(&owner) {
-            let mut issue = self.take_plan(&owner)?;
-            write(&mut issue.agents.resolve_mut(Some(&conversation_id))?.thread);
-            return self.finish_plan_mutation(owner, issue);
+            let mut task = self.take_plan(&owner)?;
+            write(&mut task.agents.resolve_mut(Some(&conversation_id))?.thread);
+            return self.finish_plan_mutation(owner, task);
         }
         Err(format!(
-            "run conversation {conversation_id} is not owned by an issue"
+            "run conversation {conversation_id} is not owned by a task"
         ))
     }
 
@@ -672,64 +672,64 @@ impl AppState {
         }
     }
 
-    /// Tell the Issue where its implementation got to.
+    /// Tell the Task where its implementation got to.
     ///
-    /// The Issue's conversation is the place the human follows work they asked
+    /// The Task's conversation is the place the human follows work they asked
     /// for, and an implementation is a different conversation entirely — so an
     /// outcome that needs them (done, blocked, failed, merged, abandoned) is
     /// mirrored there as an event naming the implementation it came from.
-    /// Progress is not mirrored: the Issue's surfaces already read where the
+    /// Progress is not mirrored: the Task's surfaces already read where the
     /// work got to off the implementation itself.
     ///
     /// The feed's dedup rule keeps this from asking twice: while an
-    /// implementation is live the Issue has no row of its own, so a mirrored
+    /// implementation is live the Task has no row of its own, so a mirrored
     /// outcome makes exactly one entry unread.
-    pub(in crate::app) fn mirror_run_outcome_to_issue(
+    pub(in crate::app) fn mirror_run_outcome_to_task(
         &mut self,
         run_id: &str,
-        issue_id: &str,
+        task_id: &str,
         event: crate::thread::ThreadEventKind,
         summary: String,
     ) -> Result<(), String> {
-        if !run_outcome_mirrors_to_issue(event) {
+        if !run_outcome_mirrors_to_task(event) {
             return Ok(());
         }
-        let Ok(mut issue) = self.take_plan(issue_id) else {
+        let Ok(mut task) = self.take_plan(task_id) else {
             return Ok(());
         };
-        issue.agents.sole_thread_mut().push_event_with_links(
+        task.agents.sole_thread_mut().push_event_with_links(
             event,
             Some(summary),
             None,
             None,
             vec![crate::thread::ThreadLink::Implementation {
-                issue_id: issue_id.to_string(),
+                task_id: task_id.to_string(),
                 implementation_id: run_id.to_string(),
             }],
             now_rfc3339(),
         );
-        self.finish_plan_mutation(issue_id.to_string(), issue)
+        self.finish_plan_mutation(task_id.to_string(), task)
     }
 
-    /// Tell an issue that the branch implementing it is gone, and that nothing
+    /// Tell a task that the branch implementing it is gone, and that nothing
     /// was merged out of it.
     ///
-    /// The issue is about to come BACK to the inbox — the branch was what had
+    /// The task is about to come BACK to the inbox — the branch was what had
     /// been speaking for it — and a row that reappears with no explanation
     /// reads as the list losing track of its own work. So the conversation
     /// records what happened, naming the branch, in the one place the user will
     /// look when they wonder why this is in front of them again.
     ///
-    /// Attention-class on purpose: the issue needs somebody to decide what
+    /// Attention-class on purpose: the task needs somebody to decide what
     /// happens to it next, which is the definition of unread.
     pub(in crate::app) fn note_implementation_abandoned(
         &mut self,
-        issue_id: &str,
+        task_id: &str,
         run_id: &str,
         branch: &str,
         how: &str,
     ) {
-        let Ok(mut issue) = self.take_plan(issue_id) else {
+        let Ok(mut task) = self.take_plan(task_id) else {
             return;
         };
         let worktree_id = self
@@ -737,13 +737,13 @@ impl AppState {
             .get(run_id)
             .map(|run| crate::worktree::external_worktree_id(&run.worktree.path));
         let mut links = vec![crate::thread::ThreadLink::Implementation {
-            issue_id: issue_id.to_string(),
+            task_id: task_id.to_string(),
             implementation_id: run_id.to_string(),
         }];
         if let Some(worktree_id) = worktree_id {
             links.push(crate::thread::ThreadLink::Worktree { worktree_id });
         }
-        issue.agents.sole_thread_mut().push_event_with_links(
+        task.agents.sole_thread_mut().push_event_with_links(
             crate::thread::ThreadEventKind::Abandoned,
             Some(abandoned_branch_summary(branch, how)),
             None,
@@ -751,9 +751,9 @@ impl AppState {
             links,
             now_rfc3339(),
         );
-        let persisted = self.finish_plan_mutation(issue_id.to_string(), issue);
+        let persisted = self.finish_plan_mutation(task_id.to_string(), task);
         if let Err(error) = persisted {
-            eprintln!("{issue_id}: could not record the abandoned branch {branch}: {error}");
+            eprintln!("{task_id}: could not record the abandoned branch {branch}: {error}");
         }
     }
 }

@@ -1,34 +1,34 @@
 use super::*;
 
-/// Retiring issue creation does not make existing records disposable. A
+/// Retiring task creation does not make existing records disposable. A
 /// restart must still load their metadata through the read-only compatibility
 /// surface and leave an associated checkout on disk.
 #[test]
-fn legacy_issue_and_run_load_without_removing_their_checkout() {
+fn legacy_task_and_run_load_without_removing_their_checkout() {
     let (dir, repo) = init_repo();
     let checkout = add_external_worktree(&repo, dir.path(), "legacy-run", "legacy-run");
     let store = crate::store::Store::new(dir.path().join("store")).expect("store opens");
     store
-        .save_issue_plan(&drafting_plan("plan-1", &repo))
+        .save_task_plan(&drafting_plan("plan-1", &repo))
         .unwrap();
     store
         .save_run(&building_run("run-1", &repo, &checkout))
         .unwrap();
 
     let mut state = qa_state(&repo, dir.path());
-    let issue = state.handle(req("issue.get", json!({ "issue_id": "plan-1" })));
-    assert_eq!(issue["ok"], true, "{issue:?}");
-    assert_eq!(issue["result"]["issue_id"], "plan-1", "{issue:?}");
-    assert_eq!(issue["result"]["goal"], "drafting", "{issue:?}");
+    let task = state.handle(req("task.get", json!({ "task_id": "plan-1" })));
+    assert_eq!(task["ok"], true, "{task:?}");
+    assert_eq!(task["result"]["task_id"], "plan-1", "{task:?}");
+    assert_eq!(task["result"]["goal"], "drafting", "{task:?}");
 
-    let issues = state.handle(req("issue.list", json!({})));
+    let tasks = state.handle(req("task.list", json!({})));
     assert!(
-        issues["result"]["issues"]
+        tasks["result"]["tasks"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|row| row["issue_id"] == "plan-1"),
-        "{issues:?}"
+            .any(|row| row["task_id"] == "plan-1"),
+        "{tasks:?}"
     );
     assert!(
         checkout.is_dir(),

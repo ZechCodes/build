@@ -16,7 +16,7 @@
 // The resolver answers where a thing is, and this file decides which surface
 // that means. It is asked only for what a reference actually names:
 //
-//   issue(number)  → { deviceId, projectId, issueId, title? }
+//   task(number)  → { deviceId, projectId, taskId, title? }
 //   workspace(name)→ { deviceId, projectId, workspaceId, name? }
 //   agent(id)      → { deviceId, projectId, workspaceId?, agentId, name? }
 
@@ -49,13 +49,13 @@ const workspacePlace = (found, extra) => ({
 /** What each kind of reference resolves to: the route it opens and the words
  *  the reader sees on hover. A kind that answers null is left as text. */
 const PLACES = {
-  issue(reference, links) {
-    const found = links.issue?.(reference.number);
-    if (!found?.issueId) return null;
+  task(reference, links) {
+    const found = links.task?.(reference.number);
+    if (!found?.taskId) return null;
     return {
-      route: { name: "trackerIssue", deviceId: found.deviceId, projectId: found.projectId, issueId: found.issueId,
+      route: { name: "trackerTask", deviceId: found.deviceId, projectId: found.projectId, taskId: found.taskId,
         ...(reference.commentId ? { commentId: reference.commentId } : null) },
-      title: found.title ? `Issue #${reference.number} — ${found.title}` : `Issue #${reference.number}`,
+      title: found.title ? `Task #${reference.number} — ${found.title}` : `Task #${reference.number}`,
     };
   },
 

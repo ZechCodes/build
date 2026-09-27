@@ -108,7 +108,7 @@ Each part of the changes has a test that fails without it:
 | rtc: queueing the ClientHello after `connect()` | the ClientHello |
 
 The measurement harness for #166 is `bridge/experiments/166/` at commit
-`1ca86df4`. The numbers for both changes are on their issues.
+`1ca86df4`. The numbers for both changes are on their tasks.
 
 ## Tests
 

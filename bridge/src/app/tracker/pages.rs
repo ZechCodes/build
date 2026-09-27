@@ -1,29 +1,29 @@
-//! `issues.list` a page at a time (#85).
+//! `tasks.list` a page at a time (#85).
 //!
 //! The list's order is number descending, and a number is minted once and
 //! never moves, so the last number a page answered is a place in that order
-//! that no later write can shift: the next page is the issues below it. An
-//! issue filed meanwhile lands above the first page, where the client's next
+//! that no later write can shift: the next page is the tasks below it. A
+//! task filed meanwhile lands above the first page, where the client's next
 //! read from the top finds it.
 //!
 //! The cursor carries that number, a digest of the list it was made in and a
 //! digest of the filter it was made under. A cursor is only a place in ONE
 //! list: below #40 of this device's Build project is not below #40 of another
 //! device's, whose project may wear the same boot-local `proj-N`, and below
-//! #40 of the open issues is not below #40 of the closed ones. So the list is
+//! #40 of the open tasks is not below #40 of the closed ones. So the list is
 //! the store's own key and the project's repository path, and a cursor handed
 //! back to another store, another project or under another filter is refused
 //! rather than answered as a page of a list nobody asked for. Opaque to the
 //! client: it is handed back as it came.
 
 use super::edits::AssigneeFilter;
-use crate::tracker::IssueState;
+use crate::tracker::TaskState;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-/// The most issues one page holds.
+/// The most tasks one page holds.
 const MOST_PER_PAGE: u64 = 500;
 
 /// How many rows a page reads for each row it may answer. A filter the
@@ -60,7 +60,7 @@ impl ListOf<'_> {
 /// a column named the way it is shown and the way it is stored is one
 /// filter, and so is a label in either case.
 pub(super) struct ListFilter<'a> {
-    pub state: Option<IssueState>,
+    pub state: Option<TaskState>,
     pub status: Option<&'a str>,
     pub assignee: &'a AssigneeFilter,
     pub label: Option<&'a str>,
@@ -71,7 +71,7 @@ impl ListFilter<'_> {
     /// bridge, which a cursor carries so it can only continue its own list.
     fn digest(&self) -> String {
         digest_of(&json!([
-            self.state.map(IssueState::as_str),
+            self.state.map(TaskState::as_str),
             self.status,
             self.assignee.key(),
             self.label.map(str::to_ascii_lowercase),
@@ -136,7 +136,7 @@ impl PageAsk {
     }
 
     /// Cut what was kept to the page, and name the next page when there is
-    /// one. `rows` holds at most [`Self::rows_to_keep`] issues; `scanned_to`
+    /// one. `rows` holds at most [`Self::rows_to_keep`] tasks; `scanned_to`
     /// is the last number read when the read stopped at
     /// [`Self::rows_to_scan`] with rows still below it, and then the page is
     /// short, or empty, and the next starts below that number.
@@ -165,9 +165,7 @@ fn limit(params: &Value) -> Result<Option<usize>, String> {
         .filter(|limit| (1..=MOST_PER_PAGE).contains(limit))
         .map(|limit| Some(limit as usize))
         .ok_or_else(|| {
-            format!(
-                "Build cannot list {asked} issues at a time: a page holds 1 to {MOST_PER_PAGE}."
-            )
+            format!("Build cannot list {asked} tasks at a time: a page holds 1 to {MOST_PER_PAGE}.")
         })
 }
 

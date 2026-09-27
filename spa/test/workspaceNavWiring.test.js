@@ -134,7 +134,7 @@ describe("a workspace with two directories, one not git", () => {
 
   it("stands the rail as the workspace's navigation beside it", async () => {
     await open({ name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", tab: "files" });
-    expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files", "issues"]);
+    expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files", "tasks"]);
     expect(document.querySelector("#dir-rail [data-rail-settings]")).not.toBeNull();
   });
 

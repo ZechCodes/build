@@ -15,7 +15,7 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 const view = () => ({
   items: [
     { kind: "branch", project_id: "proj-1", projectKey: "dev-1/proj-1", run_id: "run-1", branch: "build/login" },
-    { kind: "issue", project_id: "proj-2", projectKey: "dev-1/proj-2", issue_id: "issue-9" },
+    { kind: "task", project_id: "proj-2", projectKey: "dev-1/proj-2", task_id: "task-9" },
   ],
   plans: [],
   runs: [],
@@ -131,7 +131,7 @@ describe("hiding a project", () => {
     await cache.writeCached(FEED, view());
     await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "thread" }, { lines: ["gone"] });
     await cache.writeCached({ deviceId: "dev-1", entityId: "ws-1", kind: "files" }, ["src/a.js"]);
-    await cache.writeCached({ deviceId: "dev-1", entityId: "issue-9", kind: "thread" }, { lines: ["kept"] });
+    await cache.writeCached({ deviceId: "dev-1", entityId: "task-9", kind: "thread" }, { lines: ["kept"] });
     // Another machine's `proj-1` is a different project and keeps everything.
     await cache.writeCached({ deviceId: "dev-2", entityId: "run-1", kind: "thread" }, { lines: ["theirs"] });
 
@@ -139,7 +139,7 @@ describe("hiding a project", () => {
 
     expect(await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "thread" })).toBeUndefined();
     expect(await cache.readCached({ deviceId: "dev-1", entityId: "ws-1", kind: "files" })).toBeUndefined();
-    expect((await cache.readCached({ deviceId: "dev-1", entityId: "issue-9", kind: "thread" })).value).toEqual({ lines: ["kept"] });
+    expect((await cache.readCached({ deviceId: "dev-1", entityId: "task-9", kind: "thread" })).value).toEqual({ lines: ["kept"] });
     expect((await cache.readCached({ deviceId: "dev-2", entityId: "run-1", kind: "thread" })).value).toEqual({ lines: ["theirs"] });
   });
 

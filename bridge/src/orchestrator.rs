@@ -6,7 +6,7 @@ mod workspace;
 
 pub use plans::{ActivePlan, PlanWorkspace};
 pub use reporting::{AgentTurn, OrchestratorError, ReportOutcome};
-pub use runs::{ActiveRun, ImplementableIssue, PreparedImplementation, RunSource};
+pub use runs::{ActiveRun, ImplementableTask, PreparedImplementation, RunSource};
 #[cfg(test)]
 pub(crate) use workspace::ignore_harness_files;
 pub(crate) use workspace::{

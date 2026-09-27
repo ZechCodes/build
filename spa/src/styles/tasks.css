@@ -1,0 +1,793 @@
+/* The task tracker: the Tasks tab (dashboard, list and board) and one task's page.
+
+   Every colour here is a theme token from styles.css — a rule with a hex in it
+   is a rule that only works in one theme. The vocabulary is the one the rest of
+   the app already speaks: --panel slabs on the --bg ground, --panel2 for the
+   step inside one, --line2 for a seam, --row-hover for the pointer, and the
+   .btn / .chip / .empty families for the controls.
+
+   The one layout rule that is not shared: the board SCROLLS SIDEWAYS rather
+   than reflowing. A column that wraps under another is not a column, and on a
+   phone the reader would lose the only thing the layout is for. */
+
+/* ---- the tab's own header ------------------------------------------------ */
+
+.task-head {
+  display:flex; align-items:center; gap:10px;
+  padding:12px var(--pane-gutter) 0;
+}
+.task-views { display:flex; gap:4px; }
+.task-view.active { background:var(--accent-soft); border-color:var(--accent-soft); color:var(--accent); }
+.task-new { margin-left:auto; display:inline-flex; align-items:center; gap:5px; }
+.task-head .scope-link { margin-left:auto; }
+.task-head .scope-link + .task-new { margin-left:0; }
+.task-new svg { width:14px; height:14px; }
+
+.task-filters {
+  display:flex; flex-wrap:wrap; align-items:center; gap:6px;
+  padding:10px var(--pane-gutter);
+}
+
+/* ---- a filter menu (#44) --------------------------------------------------
+
+   Ours rather than the platform's, because a native select has no search, says
+   nothing above itself about what is chosen, and on a phone is whatever the
+   platform decided. All four wear this — the two that take one answer as well
+   as the two that take several — so the bar reads as one family.
+
+   The popover is positioned against its own press and not against the page, so
+   nothing has to measure anything; under 760px it is a sheet at the bottom of
+   the screen instead, where a thumb is. */
+
+.fmenu { position:relative; }
+.fmenu-press {
+  display:inline-flex; align-items:center; gap:5px;
+  font:inherit; font-size:12px; color:var(--ink2);
+  background:var(--panel2); border:1px solid var(--line2); border-radius:7px;
+  padding:4px 8px; max-width:200px; cursor:pointer;
+  transition:border-color var(--motion-fast), color var(--motion-fast);
+}
+.fmenu-press-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.fmenu-press:hover { border-color:var(--line3); color:var(--ink); }
+.fmenu-press:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+/* Something is chosen here. The one accent on the bar, so "which of these four
+   am I narrowed by" is answered without reading any of them. */
+.fmenu-press.is-set { color:var(--accent); border-color:var(--accent-soft); }
+.fmenu-caret { width:12px; height:12px; flex:0 0 auto; opacity:.7; }
+.fmenu-press[aria-expanded="true"] .fmenu-caret { transform:rotate(180deg); }
+
+.fmenu-pop {
+  position:absolute; z-index:40; top:calc(100% + 5px); left:0; min-width:230px; max-width:320px;
+  display:flex; flex-direction:column; gap:6px;
+  padding:8px; border-radius:10px;
+  background:var(--panel); border:1px solid var(--line2);
+  box-shadow:0 12px 28px -12px rgb(0 0 0 / .45);
+}
+/* `display` here has to say the shut state too: `hidden` is a rule of its own
+   that any later `display` beats, and a popover laid out as a flex column is a
+   popover that is never hidden. */
+.fmenu-pop[hidden] { display:none; }
+.fmenu-search {
+  font:inherit; font-size:12px; color:var(--ink);
+  background:var(--panel2); border:1px solid var(--line2); border-radius:7px; padding:5px 8px;
+}
+.fmenu-search:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+.fmenu-rows { list-style:none; margin:0; padding:0; max-height:46vh; overflow:auto; }
+/* The workspace an agent stands on, as the assignee picker groups them. */
+.fmenu-group {
+  padding:7px 6px 3px; font-size:10.5px; letter-spacing:.04em; text-transform:uppercase;
+  color:var(--dim);
+}
+.fmenu-row {
+  display:flex; align-items:center; gap:7px;
+  padding:5px 6px; border-radius:6px; cursor:pointer;
+  font-size:12.5px; color:var(--ink2);
+}
+/* The walked row and the pointed-at row are the same mark: focus never leaves
+   the search box, so this is the only thing that says where the keyboard is. */
+.fmenu-row.is-active, .fmenu-row:hover { background:var(--row-hover); color:var(--ink); }
+.fmenu-tick {
+  position:relative;
+  flex:0 0 14px; width:14px; height:14px; border-radius:4px;
+  border:1px solid var(--line3); background:var(--panel2);
+}
+.fmenu-row[aria-selected="true"] { color:var(--ink); }
+.fmenu-row[aria-selected="true"] .fmenu-tick {
+  background:var(--accent-fill); border-color:var(--accent-fill);
+}
+/* The tick itself, drawn rather than fetched: two sides of a box, turned. Dark
+   ink on the filled accent, which is what reads in both themes. */
+.fmenu-row[aria-selected="true"] .fmenu-tick::after {
+  content:""; position:absolute; left:4px; top:1px; width:3px; height:7px;
+  border:solid var(--accent-ink); border-width:0 2px 2px 0;
+  transform:rotate(43deg);
+}
+.fmenu-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.fmenu-none { margin:0; padding:8px 6px; font-size:12px; color:var(--dim); }
+.fmenu-foot { display:flex; justify-content:flex-end; border-top:1px solid var(--line2); padding-top:6px; }
+
+.task-body { padding:0 var(--pane-gutter) var(--pane-bottom); }
+
+/* ---- filing in place (#57) ------------------------------------------------
+
+   The maintainer: "Task creation should be inline." So the form is a slab at
+   the head of the list rather than a dialog over it — the list it is filed
+   against stays on screen and stays readable, which is most of what you are
+   looking at while you write the title. */
+
+.task-compose-slot:empty { display:none; }
+.task-compose {
+  display:flex; flex-direction:column; gap:8px;
+  margin:0 var(--pane-gutter) 12px;
+  padding:12px; border-radius:11px;
+  background:var(--panel2); border:1px solid var(--line2);
+}
+.task-compose-title {
+  font:inherit; font-size:14px; font-weight:550; color:var(--ink);
+  background:var(--panel); border:1px solid var(--line2); border-radius:8px;
+  padding:8px 10px;
+}
+.task-compose-title::placeholder { font-weight:400; color:var(--dim); }
+.task-compose-title:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+/* The body box is the chat composer's, so the paperclip, the tray, the drop
+   mask and the paste all look and behave the way they do in a conversation. */
+.task-compose-body { background:var(--panel); }
+.task-compose .composer-tray:not([hidden]) { display:flex; flex-wrap:wrap; gap:6px; }
+/* The bar under the body holds only the paperclip here — there is no model to
+   pick and no arrow to send — so it hugs the box instead of sitting on a row
+   of its own. */
+.task-compose-body .composer-bar { padding:2px 0 0; min-height:0; }
+.task-compose-body .composer-actions { margin-left:auto; }
+.task-compose-facets { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+/* The assignee keeps its own control (five kinds, two of which open forms), so
+   it cannot be a filter menu — but it can read like one. */
+.task-compose-assignee .create-label { display:block; font-size:11px; color:var(--dim); margin-bottom:3px; }
+.task-compose-assignee select {
+  font:inherit; font-size:12px; color:var(--ink2);
+  background:var(--panel); border:1px solid var(--line2); border-radius:7px;
+  padding:4px 8px; width:100%; max-width:340px;
+}
+.task-compose-assignee select:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+.task-compose-assignee .task-assignee-hint { font-size:11px; margin:3px 0 0; }
+.task-compose-error[hidden], .task-compose-waiting[hidden] { display:none; }
+.task-compose-error { margin:0; font-size:12px; }
+.task-compose-waiting { margin:0; font-size:11px; color:var(--ink2); }
+.task-compose-row { display:flex; justify-content:flex-end; gap:8px; }
+
+/* The files a task was filed with, on its own page. The conversation's own
+   attachment styles already draw these; this only says where they sit. */
+.task-page-attachments { margin:10px 0 0; }
+/* A comment's files sit under its words, inside the card, flush with them. */
+.task-comment-attachments { margin:8px 0 0; padding:0; }
+
+/* ---- the marks a task wears -------------------------------------------- */
+
+/* Open/closed is NOT the Done column: one says whether the work is live, the
+   other where it stands. They are drawn as two different things on purpose. */
+.task-state {
+  flex:0 0 9px; width:9px; height:9px; border-radius:50%;
+  background:var(--green); display:inline-block;
+}
+.task-state-closed { background:var(--violet); }
+
+.task-number { color:var(--dim); font-variant-numeric:tabular-nums; }
+.task-status {
+  font-size:11px; color:var(--ink2); background:var(--panel2);
+  border-radius:999px; padding:1px 8px; white-space:nowrap;
+}
+.task-label {
+  font-size:11px; color:var(--ink2); background:var(--line2);
+  border:1px solid var(--line2); border-radius:999px; padding:1px 8px; white-space:nowrap;
+}
+.task-priority {
+  font-size:10px; font-weight:700; letter-spacing:.04em; text-transform:uppercase;
+  border-radius:999px; padding:1px 7px; background:var(--line2); color:var(--ink2);
+}
+/* A closed task on a list row (#33). Quiet, and the only state word drawn —
+   "Open" on every other row is a word the reader learns to skip. It leads line
+   two because it changes how the rest of it reads.
+
+   #45 took its pill away with every other pill on the row: the column is the
+   one chip there now. What is left is the violet — what closed has always been
+   here, and what the state dot wore before the dots went (#28) — because a
+   closed row that cannot be told from an open one is the thing #33 was for. */
+.task-closed {
+  font-size:11px; font-weight:600; letter-spacing:.01em;
+  background:none; padding:0;
+  color:var(--violet);
+  white-space:nowrap;
+}
+.task-priority-medium { background:var(--panel2); color:var(--ink2); }
+.task-priority-high { background:var(--amber-bg); color:var(--amber); }
+.task-priority-urgent { background:var(--red-bg); color:var(--red); }
+.task-age, .task-when { color:var(--dim); font-size:11px; white-space:nowrap; }
+.task-assignee { font-size:11px; color:var(--ink2); white-space:nowrap; }
+.task-unassigned { color:var(--dim); font-style:italic; }
+
+/* ---- the list ------------------------------------------------------------
+
+   #45: "the task list still feels cluttered." The row keeps every fact
+   it had and the order it had them in; what changed is how much each one
+   weighs. One chip (the column) and one colour on it. Labels are words, not
+   pills. The priority left line two for a single mark before the title, and
+   only when it is pressing. Rows are separated by a hairline on a 12px rhythm
+   rather than by a block of hover colour — a list whose rows light up under
+   the pointer is a list that flickers as the eye travels down it. */
+
+.task-rows { list-style:none; margin:0; padding:0; }
+.task-paging { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 10px; color:var(--dim); font-size:12px; }
+.task-group { border-top:1px solid var(--line2); }
+.task-group-heading {
+  width:100%; display:flex; align-items:center; justify-content:space-between; gap:12px;
+  padding:10px; border:0; background:transparent; color:var(--ink2);
+  font:inherit; font-size:12px; font-weight:650; text-align:left; cursor:pointer;
+}
+.task-group-heading:hover { background:var(--panel2); }
+.task-group-heading:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+.task-group-heading::before { content:"▾"; color:var(--dim); font-size:12px; }
+.task-group-heading[aria-expanded="false"]::before { content:"▸"; }
+.task-group-heading span:first-child { flex:1; }
+.task-group-count { color:var(--dim); font-weight:500; }
+/* Two lines, stacked at every width: `#12 Title` on the first with the full
+   row to itself, and every other fact on the second. 6px of padding on each
+   side puts 12px between one row's words and the next's, with the rule in the
+   middle of it. */
+.task-row {
+  position:relative;
+  display:flex; flex-direction:column; gap:3px;
+  padding:6px 10px;
+  border-bottom:1px solid var(--line2);
+}
+.task-row:last-child { border-bottom:0; }
+
+/* The link is line one, because the press on line two is a button and a button
+   cannot live inside an anchor. Its hit area is stretched over the whole row
+   instead, so the row is still one thing to press — and the ring is drawn
+   around the row rather than around the two words that carry the href. */
+.task-row-open {
+  display:flex; align-items:baseline; gap:7px; min-width:0;
+  color:inherit; text-decoration:none;
+}
+.task-row-open::after { content:""; position:absolute; inset:0; border-radius:6px; }
+.task-row:has(.task-row-open:focus-visible) { outline:2px solid var(--accent); outline-offset:-2px; }
+/* The reading weight. The title is the row, so it is the one thing set in the
+   colour and the weight the rest of the app reads its prose in; the number
+   beside it is dim, because nobody scans a list by number. */
+.task-title {
+  flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  color:var(--ink); font-weight:400;
+}
+/* A watched task's unread (#104), at line one's far edge as on an inbox row. */
+.task-row-open .task-unread { flex:none; align-self:center; }
+
+/* A pressing priority, before the title (#45). One stroke for high and two for
+   urgent, so the two are told apart by shape as well as by colour: a mark that
+   is only a colour is not a mark to every reader. Nothing at medium and below
+   wears one — a list where most rows carry a mark has no marks in it. */
+.task-priority-mark {
+  flex:0 0 auto; font-size:12px; font-weight:800; line-height:1;
+  letter-spacing:-.06em; color:var(--amber);
+}
+.task-priority-mark-urgent { color:var(--red); }
+
+/* Spacing is the separator: there is no punctuation between these. */
+.task-row-facts { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+/* Dim at the end of line two: when it moved, and who has it. Facts you read
+   when you have decided this is the row, not while you are deciding. */
+.task-row-facts .task-assignee { color:var(--dim); }
+
+/* Labels as words (#45). No pill, no border, no fill — the gaps between them
+   are the whole of the separation, and they are one group so that gap is
+   theirs and not line two's. Three, then a count; the count names the rest in
+   its title rather than losing them. */
+.task-labels { display:inline-flex; align-items:center; gap:7px; min-width:0; }
+.task-labels .task-label {
+  font-size:11px; color:var(--dim);
+  background:none; border:0; border-radius:0; padding:0;
+}
+.task-labels .task-label-more { color:var(--dim); opacity:.8; }
+
+/* The assignee is a press, not a label: assigning is dispatching, and handing
+   a task to an agent is worth reaching from the list. It sits above the
+   stretched link, which is what keeps it pressable. */
+.task-assign {
+  position:relative; z-index:1;
+  font:inherit; background:none; border:1px solid transparent; border-radius:7px;
+  padding:1px 7px; cursor:pointer; color:var(--ink2);
+  transition:background var(--motion-fast), border-color var(--motion-fast);
+}
+.task-assign:hover:not(:disabled) { background:var(--panel2); border-color:var(--line2); }
+.task-assign:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+
+/* An unheld row says nothing about its assignee — "Unassigned" on every one of
+   them is a word the reader learns to skip. The press is still there and still
+   holds its width, so nothing moves when it appears; it is simply quiet until
+   the row is reached. Where there is no pointer to hover with, it is always
+   shown: a control that only exists on hover does not exist on a phone.
+
+   This is the one thing the pointer still changes about a row: the row itself
+   no longer lights up (#45), so what hover does is reveal the press it is
+   over rather than paint the line it is on. */
+.task-assign-cue {
+  font-size:11px; color:var(--dim);
+  opacity:0; transition:opacity var(--motion-fast);
+}
+.task-row:hover .task-assign-cue,
+.task-assign:focus-visible .task-assign-cue { opacity:1; }
+@media (hover: none) {
+  .task-assign-cue { opacity:1; }
+}
+
+.task-empty { padding:32px 4px; }
+.task-empty h2 { font-size:15px; margin:0 0 6px; color:var(--ink); }
+.task-empty p { margin:0; max-width:52ch; }
+
+/* ---- the dashboard ------------------------------------------------------- */
+
+.task-dashboard { min-width:0; padding-top:4px; }
+.task-dashboard-tabs { display:flex; gap:4px; margin-bottom:12px; border-bottom:1px solid var(--line2); }
+.task-dashboard-tab { display:flex; align-items:center; justify-content:center; gap:8px; min-width:0; padding:10px 14px; border:0; border-bottom:2px solid transparent; background:none; color:var(--dim); font:inherit; font-size:13px; font-weight:700; cursor:pointer; white-space:nowrap; }
+.task-dashboard-tab:hover { color:var(--ink); }
+.task-dashboard-tab[aria-selected="true"] { color:var(--ink); border-bottom-color:var(--accent); }
+.task-dashboard-tab:focus-visible { outline:2px solid var(--accent); outline-offset:-3px; }
+.task-dashboard-count { color:var(--dim); font-size:12px; font-weight:400; font-variant-numeric:tabular-nums; }
+.task-dashboard-section { min-width:0; border:1px solid var(--line2); border-radius:10px; background:var(--panel); overflow:hidden; }
+.task-dashboard-list { list-style:none; margin:0; padding:0; }
+.task-dashboard-row + .task-dashboard-row { border-top:1px solid var(--line2); }
+/* Done grouped by time: the tab panel is only a container, and each group is
+   its own panel with its title above and outside it. */
+.task-dashboard-section.is-grouped { border:0; border-radius:0; background:none; overflow:visible; }
+.task-dashboard-group + .task-dashboard-group { margin-top:14px; }
+.task-dashboard-group-title { margin:0 0 6px; padding:0; border:0; color:var(--dim); font-size:11px; font-weight:600; }
+.task-dashboard-group-panel { border:1px solid var(--line2); border-radius:10px; background:var(--panel); overflow:hidden; }
+.task-dashboard-link { display:grid; grid-template-columns:auto minmax(0,1fr); gap:2px 7px; padding:11px 14px; color:inherit; text-decoration:none; }
+.task-dashboard-link:hover { background:var(--panel2); }
+.task-dashboard-link:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+.task-dashboard-number { color:var(--dim); font-size:11px; }
+.task-dashboard-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink); font-size:12px; }
+.task-dashboard-detail { grid-column:2; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink2); font-size:11px; }
+/* A watched task's unread (#104): a third column, beside the title, only on a
+   row that wears one. */
+.task-dashboard-link:has(.task-unread) { grid-template-columns:auto minmax(0,1fr) auto; }
+.task-dashboard-link .task-unread { grid-column:3; grid-row:1; align-self:center; }
+.task-dashboard-empty { margin:0; padding:17px 14px; color:var(--dim); font-size:12px; }
+
+/* ---- the board ----------------------------------------------------------- */
+
+.task-board {
+  display:flex; align-items:flex-start; gap:12px;
+  overflow-x:auto; overscroll-behavior-x:contain;
+  padding-bottom:10px;
+  scrollbar-width:thin;
+}
+.task-column {
+  flex:0 0 260px; min-width:0;
+  background:var(--panel2); border-radius:12px; padding:10px;
+}
+.task-column-head { display:flex; align-items:center; gap:8px; padding:0 4px 8px; }
+.task-column-head h3 { margin:0; font-size:12px; font-weight:650; color:var(--ink2); }
+.task-column-count {
+  margin-left:auto; font-size:11px; color:var(--dim); font-variant-numeric:tabular-nums;
+}
+.task-column-cards {
+  list-style:none; margin:0; padding:0;
+  display:flex; flex-direction:column; gap:8px; min-height:44px;
+}
+.task-card {
+  background:var(--panel); border:1px solid var(--line2); border-radius:10px;
+  padding:9px 10px; display:flex; flex-direction:column; gap:6px; cursor:grab;
+  transition:border-color var(--motion-fast), box-shadow var(--motion-fast);
+}
+.task-card:hover { border-color:var(--line3); }
+.task-card:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+.task-card:active { cursor:grabbing; }
+.task-card-head { display:flex; align-items:center; gap:7px; }
+.task-card-head .task-priority { margin-left:auto; }
+/* A watched task's unread (#104) closes the head at its far edge, past the
+   priority when there is one. */
+.task-card-head .task-unread { flex:none; margin-left:auto; }
+.task-card-head .task-priority ~ .task-unread { margin-left:0; }
+.task-card-title { color:var(--ink); text-decoration:none; font-weight:550; line-height:1.35; }
+.task-card-title:hover { text-decoration:underline; }
+.task-card-labels { display:flex; flex-wrap:wrap; gap:4px; }
+/* Who an In review card is with (#144). A long agent name ends in an ellipsis
+   rather than widening the column. */
+.task-card-status { display:flex; min-width:0; }
+.task-card-status .task-status { overflow:hidden; text-overflow:ellipsis; }
+.task-card .task-assign { margin:0; align-self:flex-start; padding:2px 6px; }
+
+/* ---- one task's page ---------------------------------------------------- */
+
+/* The page is the one scroll container under a flush tab body, the way the
+   project page is (surfaces.css .project-page): #tabbody.flush hides its own
+   overflow, so a surface that did not scroll itself could not be scrolled at
+   all — on a phone, not even by touch. */
+.task-surface {
+  height:100%; box-sizing:border-box; overflow:auto;
+  padding:var(--pane-top) var(--pane-gutter) var(--pane-bottom);
+}
+.task-page { display:grid; grid-template-columns:minmax(0,1fr) 260px; gap:24px; align-items:start; }
+.task-page-main { min-width:0; }
+/* The head floats over the timeline as it scrolls, glassed like the other
+   floating bars. It bleeds through the surface's top and left padding (and the
+   right one once the rail stacks below) so the glass meets the pane's edges,
+   paying the bleed back as padding so nothing in it moves. Sticky measures
+   from inside the surface's padding, hence the negative top. */
+.task-page-head { position:sticky; z-index:4; top:calc(0px - var(--pane-top));
+  margin:calc(0px - var(--pane-top)) 0 0 calc(0px - var(--pane-gutter));
+  padding:var(--pane-top) 0 10px var(--pane-gutter);
+  background:var(--panel); background:color-mix(in srgb, var(--panel) var(--chat-glass-opacity), transparent);
+  -webkit-backdrop-filter:blur(var(--chat-glass-blur)); backdrop-filter:blur(var(--chat-glass-blur)); }
+/* The head's own bottom padding is its edge, so its last line drops the margin. */
+.task-page-head > :last-child { margin-bottom:0; }
+
+.task-page-marks { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+/* The watch switch (#65) sits among the marks and not in the rail of controls:
+   whether the reader is watching is a fact about them, like the task's state
+   and its age, rather than something they are changing about the task. Far
+   right, because it is the only thing in the row that can be pressed.
+
+   Scoped to this row rather than written against `.rail-watch` itself: the
+   same control stands in the conversation's panel head, which is the shell's
+   surface to dress. */
+.task-page-marks .rail-watch { margin-left:auto; padding:2px 5px; }
+.task-page-marks .rail-watch svg { display:block; width:15px; height:15px; }
+.task-page-marks .rail-watch.watching { color:var(--accent); }
+.task-page-marks .rail-watch[disabled] { opacity:.55; cursor:default; }
+.task-page-state { font-size:11px; font-weight:650; color:var(--ink2); }
+.task-page-title { margin:0 0 8px; font-size:20px; line-height:1.25; color:var(--ink); }
+.task-page-labels { display:flex; flex-wrap:wrap; gap:5px; margin-bottom:12px; }
+.task-page-body {
+  min-width:0;
+  background:var(--panel2); border-radius:10px; padding:12px 14px; margin:0 0 20px;
+}
+.task-page-body.empty { color:var(--dim); font-style:italic; }
+
+.task-timeline { list-style:none; margin:0 0 18px; padding:0; display:flex; flex-direction:column; gap:10px; }
+.task-entry { display:flex; align-items:flex-start; gap:9px; }
+.task-avatar {
+  flex:0 0 24px; width:24px; height:24px; border-radius:50%;
+  background:var(--panel2); color:var(--ink2);
+  display:flex; align-items:center; justify-content:center;
+  font-size:11px; font-weight:700;
+}
+/* What wrote the comment, as a picture (#54). The box above is untouched —
+   same size, same place in the card — and only what sits in it changes.
+
+   The harness mark carries no plate behind it: the artwork is the identity and
+   a circle around it reads as a second shape. The icon is the rail's own
+   (core/harnessIcon.js), cut down from the 20px the conversation header gives
+   it to the 18px this box holds. */
+.task-avatar.is-harness { background:none; }
+.task-avatar .rail-harness-icon,
+.task-avatar .rail-harness-icon svg { width:18px; height:18px; }
+/* The project's own agent wears the project's initial in a squared-off box —
+   the same face the rail gives its bubble (.rail-bubble-project), so the page
+   and the strip agree about whose agent this is. */
+.task-avatar.is-project { border-radius:8px; }
+.task-comment-card {
+  flex:1; min-width:0;
+  --task-comment-background:var(--panel);
+  background:var(--task-comment-background); border:1px solid var(--line2); border-radius:10px; padding:9px 12px;
+}
+.task-comment-mentioned .task-comment-card {
+  --task-comment-background:color-mix(in srgb, var(--accent-soft) 55%, var(--panel));
+  border-left:3px solid var(--accent); padding-left:10px;
+}
+.task-entry-head { display:flex; align-items:baseline; gap:8px; margin-bottom:4px; font-size:12px; color:var(--ink2); }
+/* min-width:0 so a fenced block inside scrolls instead of widening the
+   column it is in (#50). */
+.task-comment-body { min-width:0; color:var(--ink); }
+
+/* History is drawn quieter than a comment — but never hidden: "the board moved
+   and nobody said anything" is exactly what a timeline is for. */
+.task-event { align-items:center; gap:9px; padding-left:7px; font-size:12px; color:var(--dim); }
+.task-event-dot {
+  flex:0 0 7px; width:7px; height:7px; border-radius:50%;
+  background:var(--line3); margin-left:4px;
+}
+.task-event-text { flex:1; min-width:0; }
+.task-event-text strong { color:var(--ink2); font-weight:600; }
+.task-actor-link { color:inherit; text-decoration:underline; text-decoration-color:var(--line3); text-underline-offset:2px; }
+.task-actor-link:hover { color:var(--accent); text-decoration:underline; }
+.task-actor-icon { display:inline-flex; width:15px; height:15px; vertical-align:-3px; margin-right:4px; }
+.task-actor-icon .rail-harness-icon, .task-actor-icon svg { width:15px; height:15px; }
+.task-actor-icon .task-avatar { width:15px; height:15px; flex:none; font-size:9px; }
+.task-assignee-current { font-size:12px; color:var(--ink2); }
+.task-assignee-current .task-actor-link { text-decoration-color:currentColor; }
+.task-assignee-entry { position:relative; z-index:1; display:inline-flex; align-items:center; gap:2px; min-width:0; }
+.task-assignee-link { color:var(--ink2); text-decoration:underline; text-decoration-color:var(--line3); text-underline-offset:2px; border-radius:3px; }
+.task-assignee-link:hover { color:var(--accent); text-decoration-color:currentColor; }
+.task-assignee-link:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.task-assignee-entry .task-assign { font-size:10px; padding:1px 3px; color:var(--dim); }
+.task-assignee .task-avatar { display:inline-flex; width:16px; height:16px; flex:none; vertical-align:-3px; margin-right:5px; font-size:9px; }
+.task-assignee .task-avatar .rail-harness-icon,
+.task-assignee .task-avatar .rail-harness-icon svg { width:14px; height:14px; }
+
+.task-composer { display:flex; flex-direction:column; gap:8px; }
+.task-composer textarea {
+  font:inherit; width:100%; resize:vertical;
+  background:var(--panel); color:var(--ink);
+  border:1px solid var(--line); border-radius:10px; padding:9px 11px;
+}
+.task-composer textarea:focus-visible { outline:2px solid var(--accent); outline-offset:-1px; }
+.task-composer-row { display:flex; justify-content:flex-end; }
+/* While the reader is typing, the box they are typing into is what the scroll
+   holds still (#153). A comment pushed above it, and the screenshot in it
+   that loads a moment later, would otherwise slide the box down under their
+   fingers: the browser anchors the scroll on the first row in view, so
+   everything else in the column steps out of the running. */
+.task-page-main:has(.task-composer :focus) > :not(.task-composer) { overflow-anchor:none; }
+
+/* The comment box that takes files (#57): the conversation's own composer,
+   which wears its frame on the FIELD and hangs the paperclip on a bar beneath
+   it. Restated at a specificity that beats both `.task-composer textarea`
+   above and `.composer textarea` in the base sheet, because those two are
+   equally specific and which of them wins should not depend on which file was
+   imported last. */
+.task-composer .task-comment-box textarea {
+  min-height:72px; resize:none;
+  border:1px solid var(--line); border-radius:11px;
+  padding:13px 14px; background:var(--bg);
+}
+.task-composer .task-comment-box textarea:focus-visible {
+  border-color:var(--accent); outline:none;
+}
+.task-comment-box .composer-bar { padding:4px 2px 0; }
+.task-composer .composer-tray:not([hidden]) { display:flex; flex-wrap:wrap; gap:6px; }
+
+.task-rail { display:flex; flex-direction:column; gap:16px; }
+.task-rail-section { display:flex; flex-direction:column; gap:6px; }
+.task-rail-section h2 {
+  margin:0; font-size:10px; font-weight:700; letter-spacing:.06em;
+  text-transform:uppercase; color:var(--dim);
+}
+.task-rail-section .sub { margin:0; font-size:11px; color:var(--dim); }
+.task-rail select, .task-rail input[type="text"] {
+  font:inherit; font-size:13px; width:100%;
+  background:var(--panel); color:var(--ink);
+  border:1px solid var(--line); border-radius:8px; padding:6px 9px;
+}
+.task-assign-open { text-align:left; }
+.task-links { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:5px; }
+.task-link a { color:var(--accent); text-decoration:none; font-size:12px; }
+.task-link a:hover { text-decoration:underline; }
+.task-link code { font-family:var(--mono); font-size:11px; color:var(--ink2); }
+
+/* ---- the assignee control ------------------------------------------------ */
+
+.task-assignee-control { display:flex; flex-direction:column; gap:4px; margin-top:4px; }
+.task-assignee-control select, .task-assignee-control input[type="text"] {
+  font:inherit; width:100%;
+  background:var(--panel); color:var(--ink);
+  border:1px solid var(--line); border-radius:8px; padding:7px 10px;
+}
+/* Assigning starts work. The reader is told which before they press. */
+.task-assignee-hint { margin:2px 0 6px; font-size:11px; color:var(--dim); min-height:1.2em; }
+/* And while the slow one runs, what is being waited on: cutting a checkout is
+   minutes on a large repository, and a dialog that says nothing for minutes
+   reads as a hung one. */
+.task-assign-waiting { margin:6px 0 0; font-size:11px; color:var(--ink2); }
+
+.modal-task-new textarea {
+  font:inherit; width:100%; resize:vertical;
+  background:var(--panel); color:var(--ink);
+  border:1px solid var(--line); border-radius:8px; padding:8px 10px;
+}
+
+/* ---- the message a task was handed over in ----------------------------- */
+
+.thread-task {
+  display:flex; flex-direction:column; gap:4px; margin-bottom:8px;
+  background:var(--panel2); border:1px solid var(--line2);
+  border-left:3px solid var(--accent); border-radius:8px; padding:8px 10px;
+}
+.thread-task-head { display:flex; align-items:baseline; gap:7px; min-width:0; }
+.thread-task-link { color:var(--accent); text-decoration:none; font-weight:650; font-size:12px; }
+.thread-task-link:hover { text-decoration:underline; }
+.thread-task-title {
+  min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  color:var(--ink); font-size:12px;
+}
+/* The task's own body, folded to five lines until it is asked for: a hand-off
+   carries the whole task, and the whole task is not what the next line of the
+   conversation is about. */
+.thread-task-body { font-size:12px; color:var(--ink2); white-space:pre-wrap; }
+/* The fold is the arrival fold — same class, same length, same press
+   (core/thread.js) — over the task's own body rather than over a card. */
+.thread-task-body.thread-arrival-folded .thread-task-text {
+  display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:5; line-clamp:5; overflow:hidden;
+}
+.thread-task .thread-arrival-press { padding:2px 0 0; }
+.thread-task-links { display:flex; flex-wrap:wrap; gap:8px; }
+.thread-task-links a { color:var(--ink2); text-decoration:none; font-size:11px; }
+.thread-task-links a:hover { color:var(--accent); text-decoration:underline; }
+
+/* ---- narrow ---------------------------------------------------------------
+   Under 760px the rail goes under the task rather than beside it, and the
+   board keeps its sideways scroll — with the gutter bled into it, so a column
+   can sit flush against the edge and read as "there is more this way". */
+
+@media (max-width: 760px) {
+  .task-page { grid-template-columns:minmax(0,1fr); gap:18px; }
+  .task-page-head { margin-right:calc(0px - var(--pane-gutter)); padding-right:var(--pane-gutter); }
+  .task-rail { flex-direction:row; flex-wrap:wrap; gap:14px 20px; }
+  .task-rail-section { flex:1 1 150px; }
+  .task-board {
+    margin:0 calc(var(--pane-gutter) * -1);
+    padding:0 var(--pane-gutter) 10px;
+    scroll-snap-type:x proximity;
+  }
+  .task-column { flex-basis:78vw; max-width:300px; scroll-snap-align:start; }
+  .task-head, .task-filters { padding-left:var(--pane-gutter); padding-right:var(--pane-gutter); }
+  /* A phone has no room for the way out beside the views and New task, so
+     it takes the line under them rather than pushing New task off screen. */
+  .task-head { flex-wrap:wrap; row-gap:6px; }
+  .task-head .scope-link { order:1; margin-left:-6px; }
+  .task-head .scope-link + .task-new { margin-left:auto; }
+  /* A sheet at the foot of the screen, like the filter menus: on a phone the
+     form is the whole of what you are doing, and the list behind it is
+     context rather than something to keep reaching past. */
+  .task-compose {
+    position:fixed; inset:auto 0 0 0; z-index:55;
+    margin:0; border-radius:14px 14px 0 0; border-left:0; border-right:0; border-bottom:0;
+    padding:12px 14px calc(14px + env(safe-area-inset-bottom));
+    max-height:88vh; overflow:auto;
+    background:var(--panel);
+    box-shadow:0 -14px 34px -14px rgb(0 0 0 / .55);
+  }
+  .task-compose-row > .btn { flex:1 1 0; }
+  .fmenu-press { max-width:46vw; }
+  /* A sheet at the bottom of the screen rather than a popover pinned to a
+     press: on a phone the press is wherever the bar wrapped to, and a menu
+     hanging off it is a menu under the thumb that opened it. */
+  .fmenu-pop {
+    position:fixed; inset:auto 0 0 0; z-index:60;
+    min-width:0; max-width:none;
+    padding:12px 14px calc(14px + env(safe-area-inset-bottom));
+    border-radius:14px 14px 0 0; border-left:0; border-right:0; border-bottom:0;
+    box-shadow:0 -14px 34px -14px rgb(0 0 0 / .55);
+  }
+  .fmenu-rows { max-height:44vh; }
+  .fmenu-row { padding:9px 6px; }
+  /* A phone's row shows the WHOLE title, wrapping onto as many lines as it
+     takes rather than ellipsising: on a narrow screen a clipped title is most
+     of the title. The stacking itself is no longer a phone rule — the row is
+     two lines at every width now — so only the wrapping is left here. */
+  .task-row-open { flex-wrap:wrap; }
+  .task-title {
+    flex:1 1 calc(100% - 5em); white-space:normal; overflow:visible;
+    text-overflow:clip; overflow-wrap:anywhere; line-height:1.3;
+  }
+  .task-row-facts { gap:5px 8px; }
+  /* There is no hover here to find the press with, so it is found by its WORDS
+     rather than by a box: the cue is always shown and the border stays off
+     (#45). An empty bordered box on every unheld row was the loudest thing on
+     a row that had stopped using boxes for everything else. */
+  .task-assign { font-size:11px; padding:1px 2px; }
+  .task-assign-cue { opacity:1; }
+  .task-assignee, .task-unassigned { white-space:normal; }
+}
+
+/* ---- the tasks entry in a conversation's activity area -------------------
+   Sits under what the agent is doing right now (core/agentRail.js), so it
+   borrows the observation panel's density rather than the Tasks tab's: this
+   is a glance, not a surface. */
+
+/* ---- one task line in a conversation --------------------------------------
+   Two rows share this: the agent's own action line (#18) and a tracking notice
+   (#38). One kind of thing — a quiet clickable line about a task — so the
+   rules that matter are about the kind, not about which of the two it is.
+
+   The maintainer, on the rolled build (#40): "There's a lot of space on the
+   left of the task notifications, there's a lot of space between them, and
+   they're not one line." All three were true and all three are here: the row
+   inherited the avatar gutter, carried its own indent on top of it, wrapped
+   because the title was allowed to, and sat a full message gap from the row
+   above. */
+
+/* No gutter of its own, and no box of its own: the row starts exactly where a
+   message's text starts, and what gives it that — no indent, no padding but a
+   pixel above and below — is `.thread-quiet-row` in styles.css, which the tool
+   call rows beside it wear too (#52). A second copy here is how the two kinds
+   drifted 9px apart in the first place. */
+
+/* ONE line, and the title is what gives. The number and the verb are short and
+   fixed; the title is the part that can be any length, so it is the part that
+   ellipsises. Nothing here wraps at any width. */
+.thread-task-action,
+.thread-task-notice {
+  display:flex; align-items:baseline; gap:5px; flex-wrap:nowrap;
+  min-width:0; max-width:100%;
+  font-size:11.5px; line-height:1.5; color:var(--dim);
+  text-decoration:none; white-space:nowrap;
+  transition:color var(--motion-fast);
+}
+a.thread-task-action:hover, a.thread-task-notice:hover { color:var(--ink2); }
+a.thread-task-action:focus-visible, a.thread-task-notice:focus-visible {
+  outline:2px solid var(--accent); outline-offset:2px; border-radius:4px;
+}
+/* Who did what. Fixed-size beside the title, so the title is what shrinks. */
+.thread-task-said { flex:0 0 auto; }
+.thread-task-title { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.thread-task-number { flex:0 0 auto; color:var(--accent); font-weight:650; font-variant-numeric:tabular-nums; }
+.thread-task-notice a { color:inherit; text-decoration:underline; text-decoration-color:var(--line3); text-underline-offset:2px; border-radius:2px; }
+.thread-task-notice a.thread-task-number { color:var(--accent); }
+.thread-task-notice a:hover { color:var(--accent); text-decoration-color:currentColor; }
+.thread-task-notice a:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.thread-task-by { display:inline-flex; align-items:center; gap:3px; }
+.thread-task-actor-mark { display:inline-flex; width:13px; height:13px; align-items:center; justify-content:center; margin-right:3px; vertical-align:-2px; }
+.thread-task-actor-mark .rail-harness-icon,
+.thread-task-actor-mark .rail-harness-icon svg { width:13px; height:13px; }
+.thread-task-actor-mark.is-project { border-radius:3px; background:var(--panel2); font-size:9px; font-weight:700; }
+.thread-task-line-title {
+  flex:0 1 auto; min-width:0;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+
+/* A notification with more to say than its line says (#42). `<details>` and
+   not a button: the browser owns the toggle, so the keyboard and the screen
+   reader are handled without this file re-implementing either.
+
+   The whole body is kept — the agent was given instructions and may need every
+   word of them — and it is the READER who does not need it on screen. */
+.thread-notice-more { min-width:0; }
+.thread-notice-more > summary {
+  list-style:none; cursor:pointer;
+}
+.thread-notice-more > summary::-webkit-details-marker { display:none; }
+.thread-notice-more[open] > summary .thread-task-said { color:var(--ink2); }
+.thread-notice-body {
+  margin:3px 0 2px; padding:7px 9px;
+  border-radius:7px; background:var(--panel); border:1px solid var(--line2);
+  font-size:11.5px; line-height:1.5; color:var(--ink2);
+}
+.thread-notice-body :is(p, ul, ol):first-child { margin-top:0; }
+.thread-notice-body :is(p, ul, ol):last-child { margin-bottom:0; }
+
+/* The tight rhythm lives in styles.css with the box, on `.thread-quiet-row`:
+   a rule naming `.thread-task-line` twice pulled the lines together and left
+   the tool-call rows between them a full message gap away (#52). */
+
+/* The comment an action line lands on: a moment's mark so the reader sees
+   where they arrived rather than having to count rows. */
+.task-entry:target .task-comment-card,
+.task-comment-target .task-comment-card {
+  outline:2px solid var(--accent); outline-offset:2px;
+  animation:task-comment-arrival var(--motion-slow) var(--ease-out);
+}
+@keyframes task-comment-arrival { from { background:var(--accent-soft); } to { background:var(--task-comment-background); } }
+@media (prefers-reduced-motion: reduce) {
+  .task-entry:target .task-comment-card,
+  .task-comment-target .task-comment-card { animation:none; }
+}
+
+/* ---- what a column means -------------------------------------------------
+   A `title` answers a pointer; this glyph answers everything without one. The
+   note opens in flow rather than as a floating tooltip: a column is already a
+   narrow scrolling strip, and a popover inside one is a popover half off the
+   screen on a phone. */
+
+.task-column-why { position:relative; flex:none; }
+.task-column-why > summary {
+  display:flex; align-items:center; justify-content:center;
+  width:14px; height:14px; border-radius:50%;
+  list-style:none; cursor:pointer;
+  font-size:9.5px; font-weight:700; font-style:italic;
+  color:var(--dim); border:1px solid var(--line3);
+  transition:color var(--motion-fast), border-color var(--motion-fast);
+}
+.task-column-why > summary::-webkit-details-marker { display:none; }
+.task-column-why > summary:hover { color:var(--ink2); border-color:var(--ink2); }
+.task-column-why > summary:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.task-column-why[open] > summary { color:var(--accent); border-color:var(--accent); }
+.task-column-note {
+  margin:6px 0 0; padding:7px 9px;
+  border-radius:7px; background:var(--panel); border:1px solid var(--line2);
+  font-size:11px; font-weight:400; line-height:1.45; letter-spacing:0;
+  text-transform:none; color:var(--ink2);
+}
+/* The note belongs to the column head but sits under the whole head, so it
+   does not squeeze the name and the count into nothing while it is open. */
+.task-column-head { flex-wrap:wrap; }
+.task-column-head .task-column-note { flex-basis:100%; }

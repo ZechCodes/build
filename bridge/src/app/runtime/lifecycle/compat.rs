@@ -64,7 +64,7 @@ impl WorktreeCreated {
 
 pub struct ImplementationOpened {
     pub project_id: String,
-    pub issue_id: String,
+    pub task_id: String,
     pub run_id: String,
     pub prepared: PreparedImplementation,
     pub model_choice: ModelChoice,
@@ -75,7 +75,7 @@ impl ImplementationOpened {
     pub fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
         let Self {
             project_id,
-            issue_id,
+            task_id,
             run_id,
             prepared,
             model_choice,
@@ -84,7 +84,7 @@ impl ImplementationOpened {
         } = *self;
         OpenImplementationSettlement {
             project_id,
-            issue_id,
+            task_id,
             run_id,
             model_choice,
             caller,
@@ -132,7 +132,7 @@ impl RunAdopted {
 
 pub struct ImplementationAdopted {
     pub project_id: String,
-    pub issue_id: String,
+    pub task_id: String,
     pub run_id: String,
     pub base_sha: String,
     pub adopted: Option<RunAdopted>,
@@ -143,7 +143,7 @@ impl ImplementationAdopted {
     pub fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
         let Self {
             project_id,
-            issue_id,
+            task_id,
             run_id,
             base_sha,
             adopted,
@@ -152,7 +152,7 @@ impl ImplementationAdopted {
         } = *self;
         AdoptImplementationSettlement {
             project_id,
-            issue_id,
+            task_id,
             run_id,
             model_choice,
             caller,
@@ -192,7 +192,7 @@ impl RunAdoptionSettled {
 }
 
 pub struct RestoredCheckout {
-    pub issue_id: String,
+    pub task_id: String,
     pub run_id: String,
     pub checkout_stood: bool,
     pub restored: Result<Worktree, String>,
@@ -203,7 +203,7 @@ impl RestoredCheckout {
     #[allow(clippy::boxed_local)] // preserves the former object-safe epilogue call shape
     pub fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
         let Self {
-            issue_id,
+            task_id,
             run_id,
             checkout_stood,
             restored,
@@ -211,7 +211,7 @@ impl RestoredCheckout {
             downgrade,
         } = *self;
         RestoreImplementationSettlement {
-            issue_id,
+            task_id,
             run_id,
             caller,
         }

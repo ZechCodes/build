@@ -14,7 +14,7 @@ and the worktree remain the record of file changes.
 
 The SPA change is limited to Settings/default-harness selection and the provider
 names/catalog entries needed to select this harness. No conversation, activity,
-terminal, agent-surface, task, issue, branch, plan, diff, or review UI changes
+terminal, agent-surface, task, task, branch, plan, diff, or review UI changes
 belong to this feature.
 
 ## Required primitives
@@ -776,7 +776,7 @@ generic Codex choice to resolve to `codex_app_server` only when that is the
 account default. This is catalog/provider wiring, not a new control or surface:
 the existing Codex card keeps the same label and markup. The SPA must not add a
 Codex mode control or alter any conversation, activity, terminal, surface, task,
-issue, branch, plan, diff, or review UI.
+task, branch, plan, diff, or review UI.
 
 ## Required now versus deferred
 
@@ -791,7 +791,7 @@ issue, branch, plan, diff, or review UI.
 | `approvalPolicy: never`, danger-full-access, explicit refusal of unexpected server requests | Approval, permission, elicitation, and user-input UI |
 | Natural collaboration activity translation under existing Codex config | Forcing native delegation or pinning `features.multi_agent` |
 | Typed refusal of `item/tool/call` | Dynamic tool registration, execution, and translation |
-| Settings/default-harness naming and selection only | Any conversation, activity, terminal, task, issue, branch, plan, diff, or review UI change |
+| Settings/default-harness naming and selection only | Any conversation, activity, terminal, task, task, branch, plan, diff, or review UI change |
 
 ## Tests and live fixtures
 

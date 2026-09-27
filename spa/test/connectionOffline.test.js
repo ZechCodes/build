@@ -191,7 +191,7 @@ function fakePeerLink(deviceId) {
     term: carrier(),
     recovery: fakeRecovery(),
     // Every real link tells its owner when the way it is carrying changes, so
-    // the ring can redraw the word (core/peerLink.js, issue #31).
+    // the ring can redraw the word (core/peerLink.js, task #31).
     onPathChanged: vi.fn(() => () => {}),
     // A failed path put right by its restart, which may have landed on a
     // bridge that restarted under it (#123).
@@ -436,7 +436,7 @@ describe("per-device connections", () => {
     greetings.set("dev-a", async () => ({
       api_version: "1.22.0",
       push_events: true,
-      capabilities: ["changes.subscriptions", "issues.attachments"],
+      capabilities: ["changes.subscriptions", "tasks.attachments"],
       changes: { kinds: ["state", "thread"] },
     }));
     const row = (agentId) => ({

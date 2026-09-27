@@ -1,6 +1,6 @@
 // One device's rows, out of the cache, and which of them a route stands on.
 //
-// A route names a workspace, a branch or an issue; a record is addressed by an
+// A route names a workspace, a branch or a task; a record is addressed by an
 // ENTITY, and the two are not the same id — a workspace's entity is the
 // conversation it holds. Turning one into the other takes the device's rows and
 // the two lists a workspace route is named by, so both readers of that question

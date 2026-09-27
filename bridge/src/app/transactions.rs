@@ -55,16 +55,16 @@ impl AppState {
                 .store
                 .as_ref()
                 .expect("checked above")
-                .save_issue_plan_accepting_operation(&record, &acceptance.receipt)
+                .save_task_plan_accepting_operation(&record, &acceptance.receipt)
                 .map(Some),
             None => self
                 .store
                 .as_ref()
                 .expect("checked above")
-                .save_issue_plan(&record)
+                .save_task_plan(&record)
                 .map(|()| None),
         }
-        .map_err(|e| format!("issue store: {e}"))?;
+        .map_err(|e| format!("task store: {e}"))?;
         Ok(())
     }
 
@@ -117,9 +117,9 @@ impl AppState {
             updated_at,
             state_changed_at: clock.state_changed_at,
         };
-        // One write path, whether or not the run belongs to an Issue: the
-        // `issue_id` column is `record.plan_id`, so asking the store whether
-        // the Issue exists first only bought a lock acquisition per save.
+        // One write path, whether or not the run belongs to a Task: the
+        // `task_id` column is `record.plan_id`, so asking the store whether
+        // the Task exists first only bought a lock acquisition per save.
         let acceptance = self.operation_ledger.consume_acceptance_for(run_id);
         match acceptance.as_ref() {
             Some(acceptance) => self
@@ -245,12 +245,12 @@ impl AppState {
     }
 
     /// Take a plan out for mutation, having told its conversations which
-    /// checkout they are about: an Issue's is the checkout of the
+    /// checkout they are about: a Task's is the checkout of the
     /// implementation working it right now, or the primary checkout its own
     /// agent runs in when nothing is implementing it yet.
     pub(in crate::app) fn take_plan(&mut self, plan_id: &str) -> Result<ActivePlan, String> {
         let implementation_checkout = self
-            .current_issue_implementation(plan_id)
+            .current_task_implementation(plan_id)
             .map(|run| run.worktree.path.clone());
         let mut active = self
             .plans

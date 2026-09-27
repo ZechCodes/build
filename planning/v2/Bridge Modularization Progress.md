@@ -13,7 +13,7 @@ contains 24,138 lines in `app.rs`, 757 app tests, and 222 shared/helper items.
 | 4 | Extract conversation application methods and request parsing | Complete |
 | 5 | Extract project, configuration, and capture application methods | Complete |
 | 5b | Give project registration, entity binding, and retained paths their own registry | Complete |
-| 6 | Extract issue, run, worktree, board, and protocol adapters | Complete |
+| 6 | Extract task, run, worktree, board, and protocol adapters | Complete |
 | 7 | Give session registration and spawn reservations their own component | Complete |
 | 8 | Give delivery queues, receipts, and in-flight accounting their own component | Complete |
 | 9 | Give board attention and caches their own component | Complete |
@@ -112,7 +112,7 @@ configuration tests and 43 routing tests pass. The full crate audit preserves
 all 5,434 functions and 1,028 data declarations, including test attributes and
 bodies, field types, literals, and branch counts. Its nine reviewed function
 pairs differ only by trailing parameter commas; all bodies are exact. Semgrep
-finds no issues across the ten changed Rust files, and staged Gitleaks passes.
+finds no tasks across the ten changed Rust files, and staged Gitleaks passes.
 The full suite reports 2,184 passed, one failed, and seven ignored; all 2,109
 exercised library tests pass. The sole failure remains the previously reproduced
 `concurrency_load` output floor, at 80,414 bytes.
@@ -153,7 +153,7 @@ exercised library tests pass. The only failure remains the previously reproduced
 
 ## Stage 6
 
-The remaining application adapters now live under issue, run, worktree, board,
+The remaining application adapters now live under task, run, worktree, board,
 protocol, and runtime modules. `app.rs` is 741 lines of composition, construction,
 and facade exports; the largest extracted production file is 1,456 lines.
 Production imports name their owners explicitly, and the public app paths remain
@@ -215,7 +215,7 @@ The accepted-plan attachment operation preserves its exact target and payload.
 
 `app.rs` is 696 lines. The queue and ledger cores are 205 and 90 lines, with
 conventional child test modules. Independent production and test review found no
-remaining issue. All 775 baseline app tests remain, with nine new component
+remaining task. All 775 baseline app tests remain, with nine new component
 invariants. All 119 route and 13 frame-dispatch names are unchanged. The source
 inventory records the expected ownership changes: 5,550 functions become 5,579
 and 1,044 data declarations become 1,047; public function signatures and bodies
@@ -292,7 +292,7 @@ The six existing facade paths remain stable while their implementations and
 5,710 functions and 1,083 data declarations from the completed lifecycle stage.
 The 800 app tests and all 132 RPC names remain unchanged. Strict source review
 accounts separately for rustfmt punctuation and one call to the existing
-`ImplementableIssue::slug()` getter in place of direct private-field access;
+`ImplementableTask::slug()` getter in place of direct private-field access;
 that getter returns the same borrowed string. No literal or branch inventory
 changes result from these moves.
 

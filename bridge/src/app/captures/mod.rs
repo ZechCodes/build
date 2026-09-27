@@ -122,8 +122,8 @@ impl AppState {
     /// router working on it is stopped, and the record goes — a capture nobody
     /// wants routed is not a row anybody should have to look at again.
     ///
-    /// Only while the capture is still its own presence. Once it became an
-    /// issue or a branch, that work is what there is to cancel, and it is
+    /// Only while the capture is still its own presence. Once it became a
+    /// task or a branch, that work is what there is to cancel, and it is
     /// cancelled where it lives.
     pub(crate) fn capture_cancel(&mut self, params: &Value) -> Result<Value, String> {
         let capture_id = require_str(params, "capture_id")?;
@@ -172,10 +172,10 @@ impl AppState {
         let kind = params
             .get("kind")
             .and_then(Value::as_str)
-            .unwrap_or(crate::capture::CaptureTarget::Issue.as_str())
+            .unwrap_or(crate::capture::CaptureTarget::Task.as_str())
             .to_string();
-        if kind == crate::capture::CaptureTarget::Issue.as_str() {
-            return Err(crate::app::issues::ISSUES_RETIRED_ERROR.to_string());
+        if kind == crate::capture::CaptureTarget::Task.as_str() {
+            return Err(crate::app::tasks::TASKS_RETIRED_ERROR.to_string());
         }
         // A router still deciding this capture would route it a second time on
         // top of the user's own choice.
@@ -241,7 +241,7 @@ impl AppState {
 
     /// The feed rows for captures that are still their own presence: unrouted,
     /// being routed, failed, or holding a question nobody has answered. A
-    /// routed, quiet capture is spoken for by the issue or branch it became.
+    /// routed, quiet capture is spoken for by the task or branch it became.
     pub(in crate::app) fn capture_candidates(&self) -> Vec<crate::branch::WorkItemCandidate> {
         self.captures_oldest_first()
             .into_iter()
@@ -256,8 +256,8 @@ impl AppState {
     ) -> crate::branch::WorkItemCandidate {
         let routing = capture.routing.as_ref();
         let project_id = routing.map(|routing| routing.project_id.clone());
-        let issue_id = routing
-            .filter(|routing| routing.kind == crate::capture::CaptureTarget::Issue)
+        let task_id = routing
+            .filter(|routing| routing.kind == crate::capture::CaptureTarget::Task)
             .map(|routing| routing.target_id.clone());
         let branch = routing
             .filter(|routing| routing.kind == crate::capture::CaptureTarget::Branch)
@@ -288,7 +288,7 @@ impl AppState {
             // What the user said is what they last touched: a capture sorts by
             // when it was taken until it becomes work with a life of its own.
             "resume_at": capture.created_at,
-            // The oldest anchor there is, and the one the issue or branch this
+            // The oldest anchor there is, and the one the task or branch this
             // becomes will inherit.
             "anchor": capture.anchor(),
             "last_activity": capture
@@ -307,7 +307,7 @@ impl AppState {
             "worktree_path": Value::Null,
             "worktree_id": Value::Null,
             "run_id": Value::Null,
-            "issue_id": issue_id,
+            "task_id": task_id,
             "routing": routing,
             "question": capture.question,
             "progress": capture.progress,
@@ -318,7 +318,7 @@ impl AppState {
                 capture_id: capture.id.clone(),
             },
             source: None,
-            issue_id: None,
+            task_id: None,
             implementation_active: false,
             row,
         }

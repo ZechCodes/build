@@ -61,7 +61,7 @@ type, setting, wire field, control label.
 8. **Security.** Clients never send paths. The marker file's contents are compared,
    never used to derive a path to act on. Destination directories are always
    `worktrees_root/<name>` with `name` free of separators. `git` arguments that
-   carry a name are preceded by `--`. The Issue Security Checklist stays 100/100.
+   carry a name are preceded by `--`. The Task Security Checklist stays 100/100.
 
 ---
 

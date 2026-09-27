@@ -139,9 +139,9 @@ import { wireExpansionReveal } from "./revealExpanded.js";
 import { digestCovering, runDigestToFetch } from "./activityDigest.js";
 import { timedPaint } from "./paintTiming.js";
 import { mountAgentSurfaces, openSurfaceOverlay } from "./agentSurfaces.js";
-import { mountAgentIssues } from "./trackerAgentIssuesEntry.js";
+import { mountAgentTasks } from "./trackerAgentTasksEntry.js";
 import { referenceLinks } from "./referenceTargets.js";
-import { ISSUES_ENTRY_KIND } from "./agentSurfacesModel.js";
+import { TASKS_ENTRY_KIND } from "./agentSurfacesModel.js";
 import { mountAgentObservation } from "./agentObservation.js";
 import { createTaskCompletionTracker } from "./taskCompletionModel.js";
 import { mountTaskCompletionToast } from "./taskCompletionToast.js";
@@ -395,7 +395,7 @@ const threadAddressKey = (address) =>
   address ? [address.deviceId, address.entityId, address.sub].join("|") : "";
 
 const fallbackCacheEntityId = (context, railEntityId) => {
-  if (context.kind === "issue") return context.issueId;
+  if (context.kind === "task") return context.taskId;
   return railEntityId || null;
 };
 const cacheEntityId = (identity, context, railEntityId) => identity?.entityId || fallbackCacheEntityId(context, railEntityId);
@@ -446,7 +446,7 @@ const bubbleKey = (bubble) => faceKey(bubble.type, bubble.id);
 // write them to. Nothing goes to the bridge until then: there is no entity
 // choice worth writing for a checkout that may never be adopted.
 // Chat or TUI, per work item: the terminal is the basement, so walking into a
-// different branch or issue starts you in the conversation whatever face of the
+// different branch or task starts you in the conversation whatever face of the
 // last one you were looking at.
 
 /** Forget what the rail remembers. For tests, and for a session teardown — the
@@ -714,7 +714,7 @@ const workItemContext = (context, known, { openAgentId = null, addingAgent = fal
  * Mount the rail for one work item.
  *
  * `context` is `{ kind: "branch", projectId, branch }` or
- * `{ kind: "issue", projectId, issueId }`, optionally carrying a `selection`
+ * `{ kind: "task", projectId, taskId }`, optionally carrying a `selection`
  * (core/agentSelection.js) — the shared handle the surface beside the rail
  * reads, so its polls and its review comments name the agent whose bubble is
  * open — and an `adopting` supplier, the view's adopter for the checkout under
@@ -866,7 +866,7 @@ const knownProjectName = (context) => context.projectAgent?.name || context.proj
 
 /** The project this rail is about, on either kind of page: the one above the
  *  work item, or the one whose own page this is. Null on a rail that has
- *  neither — an issue's, say — which reads no project at all. */
+ *  neither — a task's, say — which reads no project at all. */
 function railProjectId(context) {
   if (context.projectAgent?.projectId) return context.projectAgent.projectId;
   return context.kind === "project" ? context.projectId || null : null;
@@ -1038,7 +1038,7 @@ function mountRailOnContext(host, context, swap) {
   // project's agent is one — keeps it.
   const overviewPage = overviewPageOf(context, alongside, projectId);
   let overviewScope = overviewPage.scope;
-  let overviewRead = { rows: [], workspaces: [], issues: [] };
+  let overviewRead = { rows: [], workspaces: [], tasks: [] };
   const overviewScopeRecord = overviewPage.address ? watchUiState(overviewPage.address, (saved) => {
     if (!isOverviewScope(saved) || JSON.stringify(saved) === JSON.stringify(overviewScope)) return;
     overviewScope = saved;
@@ -1212,7 +1212,7 @@ function mountRailOnContext(host, context, swap) {
   let unsubscribeComposerController = null;
   let surfacesBlock = null;
   let observationBlock = null;
-  let issuesBlock = null;
+  let tasksBlock = null;
   let surfaceOverlay = null; // the surface a menu option opened, over the panel
   let closeSurfaceMenu = null; // shuts the head's ⋯, and with it its outside-press watch
   let panelMotion = null;
@@ -1533,7 +1533,7 @@ function mountRailOnContext(host, context, swap) {
     includeProjectWorkspaces: overviewReadsWorkspaces,
     sources: () => [overviewSource("current", context, records.entityId() || entity.entityId),
       ...(alongside ? [overviewSource("alongside", alongside, watchedAlongsideId)] : [])],
-    onRows: (rows, { workspaces, issues }) => paintOverviewRows({ rows, workspaces, issues }),
+    onRows: (rows, { workspaces, tasks }) => paintOverviewRows({ rows, workspaces, tasks }),
   });
 
   const answerLostTheAgents = (answered) => {
@@ -1890,7 +1890,7 @@ function mountRailOnContext(host, context, swap) {
     const list = host.querySelector(".rail-overview-list");
     if (!list) return;
     const markup = overviewHtml(read.rows, { showProjectAgents: !!projectId, scope: overviewScope,
-      workspaces: read.workspaces, issues: read.issues || [] });
+      workspaces: read.workspaces, tasks: read.tasks || [] });
     if (list.innerHTML !== markup) list.innerHTML = markup;
     list.onclick = (event) => {
       const add = overviewAddFor(event.target);
@@ -2176,7 +2176,7 @@ function mountRailOnContext(host, context, swap) {
     // narrow for a long topic still gives it up on hover — and the harness name
     // while there is no topic to say. The harness icon beside it says which
     // harness either way.
-    const who = agent ? agentWho(agent) : entity.kind === "issue" ? "Issue agent" : "New agent";
+    const who = agent ? agentWho(agent) : entity.kind === "task" ? "Task agent" : "New agent";
     const removalWho = agent ? agentRemovalWho(agent) : who;
     const heading = agent ? agentHeading(agent) : { text: who, starting: false };
     const provider = agent?.provider || "";
@@ -2673,7 +2673,7 @@ function mountRailOnContext(host, context, swap) {
   };
 
   /** What a reference written in a message points at (#56, wired in #63): the
-   *  project's issues as this rail has already read them, its workspaces, and
+   *  project's tasks as this rail has already read them, its workspaces, and
    *  the agents standing in them. Nothing is fetched for this — a reference to
    *  something this client has not read stays the words the agent typed. */
   const conversationRefLinks = () => {
@@ -2682,22 +2682,22 @@ function mountRailOnContext(host, context, swap) {
     const key = deviceKey(place.deviceId, place.projectId);
     return referenceLinks({
       place,
-      issues: issuesBlock?.issues() || [],
+      tasks: tasksBlock?.tasks() || [],
       workspaces: (feedView?.workspaces || []).filter((workspace) => workspace.projectKey === key),
       agentGroups: workspaceAgents(feedView, key),
     });
   };
 
-  /** What the resolver can answer for, as the paint sees it: how many issues
+  /** What the resolver can answer for, as the paint sees it: how many tasks
    *  have been read and how far they reach. In the fingerprint because a list
    *  landing after the paint turns prose into links, and nothing else on the
    *  row would have moved. */
   const refLinksSignature = () => {
-    const issues = issuesBlock?.issues() || [];
+    const tasks = tasksBlock?.tasks() || [];
     const workspaces = (feedView?.workspaces || []).filter((workspace) =>
       workspace.projectKey === deviceKey(conversationPlace().deviceId, conversationPlace().projectId));
     const ids = workspaces.map((workspace) => workspace.workspace_id || workspace.id).sort().join(",");
-    return `${issues.length}:${issues.reduce((highest, issue) => Math.max(highest, issue.number || 0), 0)}:${ids}`;
+    return `${tasks.length}:${tasks.reduce((highest, task) => Math.max(highest, task.number || 0), 0)}:${ids}`;
   };
 
   /** The names as the paint sees them. In the fingerprint because a feed that
@@ -3134,7 +3134,7 @@ function mountRailOnContext(host, context, swap) {
    *  to vanish with the last surface, and the toggle has to be reachable from
    *  a conversation that has none. */
   const surfaceMenuGroupsInFocus = () => [
-    surfaceMenuGroup(surfacesWithIssues(surfacesSeen().surfaces)),
+    surfaceMenuGroup(surfacesWithTasks(surfacesSeen().surfaces)),
     detailLevelMenuGroup(detailLevel()),
     compactionMenuGroupInFocus(),
   ].filter(Boolean);
@@ -3154,11 +3154,11 @@ function mountRailOnContext(host, context, swap) {
     const observationHost = panel.querySelector(`#${RAIL_OBSERVATION_ID}`);
     if (!pillHost || !viewerHost || !observationHost) return;
     observationBlock = mountAgentObservation(observationHost);
-    // The issues are a surface kind now (#34), so this supplies rows rather
+    // The tasks are a surface kind now (#34), so this supplies rows rather
     // than drawing a block of its own. It reads a different source from the
-    // rest — the project's cached issue list, not the agent digest — which is
+    // rest — the project's cached task list, not the agent digest — which is
     // why it is mounted beside them and merged in at paint.
-    issuesBlock = mountAgentIssues({
+    tasksBlock = mountAgentTasks({
       deviceId: context.deviceId,
       projectId: context.projectId,
       onChanged: () => {
@@ -3177,8 +3177,8 @@ function mountRailOnContext(host, context, swap) {
 
   const disposeSurfaces = () => {
     closeSurfaceOverlay();
-    issuesBlock?.dispose();
-    issuesBlock = null;
+    tasksBlock?.dispose();
+    tasksBlock = null;
     observationBlock?.dispose();
     observationBlock = null;
     if (!surfacesBlock) return;
@@ -3186,22 +3186,22 @@ function mountRailOnContext(host, context, swap) {
     surfacesBlock = null;
   };
 
-  /** The agent digest's surfaces with this agent's issues merged in. Merged
+  /** The agent digest's surfaces with this agent's tasks merged in. Merged
    *  here rather than in the digest because they come from a different place
-   *  and a different push: the project's cached issue list. An agent holding
+   *  and a different push: the project's cached task list. An agent holding
    *  and tracking nothing adds nothing, so no pill appears. */
-  const surfacesWithIssues = (surfaces) => {
-    const entries = issuesBlock?.entriesFor(agentInFocus()?.id || null);
+  const surfacesWithTasks = (surfaces) => {
+    const entries = tasksBlock?.entriesFor(agentInFocus()?.id || null);
     if (!entries) return surfaces;
-    return { ...(surfaces || {}), [ISSUES_ENTRY_KIND]: entries };
+    return { ...(surfaces || {}), [TASKS_ENTRY_KIND]: entries };
   };
 
   const syncSurfaces = () => {
     if (!surfacesBlock || !observationBlock) return;
     const seen = surfacesSeen();
-    surfacesBlock.set(surfacesWithIssues(seen.surfaces), seen.at);
+    surfacesBlock.set(surfacesWithTasks(seen.surfaces), seen.at);
     // The observation panel reads the checklist out of the digest's own
-    // payload; the issues are none of its business.
+    // payload; the tasks are none of its business.
     observationBlock.set(seen.surfaces, {
       generation: seen.generation,
       working: agentInFocus()?.working === true,
@@ -3278,7 +3278,7 @@ function mountRailOnContext(host, context, swap) {
   /** A reference in the conversation goes where it points, as far as the
    *  work-item surfaces can take it. */
   const openLink = (link) => {
-    if (link.issue_id || link.plan_id) go({ name: "issue", projectId: entity.projectId, id: link.issue_id || link.plan_id });
+    if (link.task_id || link.plan_id) go({ name: "task", projectId: entity.projectId, id: link.task_id || link.plan_id });
   };
 
   /// Tell the daemon how much of this agent's conversation has been read, and

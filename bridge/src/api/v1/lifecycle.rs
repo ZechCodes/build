@@ -1,18 +1,18 @@
-//! The lifecycle family: `issue.*`, `plan.*`, `run.*`, `branch.*`,
+//! The lifecycle family: `task.*`, `plan.*`, `run.*`, `branch.*`,
 //! `worktree.create`, `worktree.finish`, `entity.*`.
-//! (The diff reads — `run.diff`, `run.stage_diff`, `issue.diff`,
-//! `issue.stage_diff` — are the git family's.)
+//! (The diff reads — `run.diff`, `run.stage_diff`, `task.diff`,
+//! `task.stage_diff` — are the git family's.)
 //!
 //! Two halves, converted independently and kept apart on purpose: the
-//! `issue.*` / `plan.*` half below, and the `run.*` / `branch.*` /
+//! `task.*` / `plan.*` half below, and the `run.*` / `branch.*` /
 //! `worktree.*` half under the section marker at the bottom. Append to your
 //! own section; never reorder the other's.
 //!
-//! `plan.*` is the deprecated alias of `issue.*` (spec step 2.1: the kind of
-//! thing a major retires). An alias pair is ONE typed handler: [`IssueRef`]
+//! `plan.*` is the deprecated alias of `task.*` (spec step 2.1: the kind of
+//! thing a major retires). An alias pair is ONE typed handler: [`TaskRef`]
 //! reads either spelling and writes both back out, so the plan-store
 //! implementation underneath — which still names the id `plan_id` — keeps
-//! reading exactly what it always read, and the canonical `issue_id` is what
+//! reading exactly what it always read, and the canonical `task_id` is what
 //! the contract states.
 
 use super::{answer, deferral_placeholder, Answer, Handler, NoParams, WireParams};
@@ -25,156 +25,126 @@ use serde::{Deserialize, Serialize, Serializer};
 /// The verbs this family serves.
 pub fn methods() -> &'static [(&'static str, Handler)] {
     v1_methods![
-        // ---- issue/plan
-        v1_method!("issue.create", issue_create, IssueCreateParams, IssueView),
-        v1_method!("plan.create", issue_create, IssueCreateParams, IssueView),
-        v1_method!("issue.get", issue_get, IssueDetailParams, IssueView),
-        v1_method!("plan.get", issue_get, IssueDetailParams, IssueView),
-        v1_method!("issue.list", issue_list, NoParams, IssueListResult),
+        // ---- task/plan
+        v1_method!("task.create", task_create, TaskCreateParams, TaskView),
+        v1_method!("plan.create", task_create, TaskCreateParams, TaskView),
+        v1_method!("task.get", task_get, TaskDetailParams, TaskView),
+        v1_method!("plan.get", task_get, TaskDetailParams, TaskView),
+        v1_method!("task.list", task_list, NoParams, TaskListResult),
         v1_method!("plan.list", plan_list, NoParams, PlanListResult),
-        v1_method!("issue.doc", issue_doc, IssueRefParams, IssueDocResult),
-        v1_method!("plan.doc", issue_doc, IssueRefParams, IssueDocResult),
+        v1_method!("task.doc", task_doc, TaskRefParams, TaskDocResult),
+        v1_method!("plan.doc", task_doc, TaskRefParams, TaskDocResult),
+        v1_method!("task.stages", task_stages, TaskRefParams, TaskStagesResult),
+        v1_method!("plan.stages", plan_stages, TaskRefParams, PlanStagesResult),
         v1_method!(
-            "issue.stages",
-            issue_stages,
-            IssueRefParams,
-            IssueStagesResult
-        ),
-        v1_method!("plan.stages", plan_stages, IssueRefParams, PlanStagesResult),
-        v1_method!(
-            "issue.stage_doc",
-            issue_stage_doc,
+            "task.stage_doc",
+            task_stage_doc,
             StageRefParams,
             StageDocResult
         ),
         v1_method!(
             "plan.stage_doc",
-            issue_stage_doc,
+            task_stage_doc,
             StageRefParams,
             StageDocResult
         ),
+        v1_method!("task.approve", task_approve, TaskMutationParams, TaskView),
+        v1_method!("plan.approve", task_approve, TaskMutationParams, TaskView),
         v1_method!(
-            "issue.approve",
-            issue_approve,
-            IssueMutationParams,
-            IssueView
-        ),
-        v1_method!(
-            "plan.approve",
-            issue_approve,
-            IssueMutationParams,
-            IssueView
-        ),
-        v1_method!(
-            "issue.send_notes",
-            issue_send_notes,
+            "task.send_notes",
+            task_send_notes,
             SendNotesParams,
-            IssueView
+            TaskView
         ),
         v1_method!(
             "plan.send_notes",
-            issue_send_notes,
+            task_send_notes,
             SendNotesParams,
-            IssueView
+            TaskView
         ),
         v1_method!(
-            "issue.stage_approve",
-            issue_stage_approve,
+            "task.stage_approve",
+            task_stage_approve,
             StageMutationParams,
-            IssueView
+            TaskView
         ),
         v1_method!(
             "plan.stage_approve",
-            issue_stage_approve,
+            task_stage_approve,
             StageMutationParams,
-            IssueView
+            TaskView
         ),
         v1_method!(
-            "issue.stage_revise",
-            issue_stage_revise,
+            "task.stage_revise",
+            task_stage_revise,
             StageMutationParams,
-            IssueView
+            TaskView
         ),
         v1_method!(
             "plan.stage_send_notes",
-            issue_stage_revise,
+            task_stage_revise,
             StageMutationParams,
-            IssueView
+            TaskView
         ),
-        v1_method!("plan.message", issue_message, IssueMessageParams, IssueView),
+        v1_method!("plan.message", task_message, TaskMessageParams, TaskView),
+        v1_method!("plan.abandon", task_abandon, TaskMutationParams, TaskView),
         v1_method!(
-            "plan.abandon",
-            issue_abandon,
-            IssueMutationParams,
-            IssueView
-        ),
-        v1_method!(
-            "issue.comment_add",
-            issue_comment_add,
+            "task.comment_add",
+            task_comment_add,
             CommentAddParams,
             CommentAddResult
         ),
         v1_method!(
             "plan.comment_add",
-            issue_comment_add,
+            task_comment_add,
             CommentAddParams,
             CommentAddResult
         ),
         v1_method!(
-            "issue.comment_delete",
-            issue_comment_delete,
+            "task.comment_delete",
+            task_comment_delete,
             CommentDeleteParams,
             Acknowledged
         ),
         v1_method!(
             "plan.comment_delete",
-            issue_comment_delete,
+            task_comment_delete,
             CommentDeleteParams,
             Acknowledged
         ),
+        v1_method!("task.archive", task_archive, TaskMutationParams, TaskView),
+        v1_method!("plan.archive", task_archive, TaskMutationParams, TaskView),
+        v1_method!("task.delete", task_delete, TaskRefParams, Acknowledged),
+        v1_method!("plan.delete", task_delete, TaskRefParams, Acknowledged),
         v1_method!(
-            "issue.archive",
-            issue_archive,
-            IssueMutationParams,
-            IssueView
-        ),
-        v1_method!(
-            "plan.archive",
-            issue_archive,
-            IssueMutationParams,
-            IssueView
-        ),
-        v1_method!("issue.delete", issue_delete, IssueRefParams, Acknowledged),
-        v1_method!("plan.delete", issue_delete, IssueRefParams, Acknowledged),
-        v1_method!(
-            "issue.implement_stage",
-            issue_implement_stage,
+            "task.implement_stage",
+            task_implement_stage,
             ImplementStageParams,
-            IssueView
+            TaskView
         ),
         v1_method!(
-            "issue.implement_all",
-            issue_implement_all,
+            "task.implement_all",
+            task_implement_all,
             ImplementAllParams,
-            IssueView
+            TaskView
         ),
         v1_method!(
-            "issue.set_auto_advance",
-            issue_set_auto_advance,
+            "task.set_auto_advance",
+            task_set_auto_advance,
             SetAutoAdvanceParams,
-            IssueView
+            TaskView
         ),
         v1_method!(
-            "issue.request_changes",
-            issue_request_changes,
+            "task.request_changes",
+            task_request_changes,
             RequestChangesParams,
-            IssueView
+            TaskView
         ),
         v1_method!(
-            "issue.git_action",
-            issue_git_action,
-            IssueGitActionParams,
-            IssueView
+            "task.git_action",
+            task_git_action,
+            TaskGitActionParams,
+            TaskView
         ),
         v1_method!("entity.seen", entity_seen, EntitySeenParams, Acknowledged),
         v1_method!("entity.mute", entity_mute, EntityMuteParams, MuteResult),
@@ -184,7 +154,7 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             EntityDismissParams,
             DismissResult
         ),
-        // ---- end issue/plan (the run/branch/worktree half appends below)
+        // ---- end task/plan (the run/branch/worktree half appends below)
         // ---- run/branch/worktree
         v1_method!("run.create", run_create, RunCreateParams, RunView),
         v1_method!("run.get", run_get, RunViewParams, RunView),
@@ -258,7 +228,7 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
     ]
 }
 
-// ------------------------------------------------ issue/plan: shared wire ---
+// ------------------------------------------------ task/plan: shared wire ---
 
 /// A page size, exactly as its client spelled it: a JSON integer, the whole
 /// float a language with no integer type encodes one as, or the string a URL
@@ -276,7 +246,7 @@ pub type ThreadLimit = serde_json::Value;
 /// than parsed here.
 pub type ThreadCursor = serde_json::Value;
 
-/// The conversation embedded in an issue or run view: the thread family's
+/// The conversation embedded in a task or run view: the thread family's
 /// items, sessions and revisions without `thread.page`'s paging envelope.
 /// Carried verbatim until the thread family names the embedded form.
 pub type ThreadPayload = serde_json::Value;
@@ -285,22 +255,22 @@ pub type ThreadPayload = serde_json::Value;
 /// shape, named once, there.
 pub type AgentDigest = crate::api::v1::thread::AgentDigest;
 
-/// The issue a verb acts on.
+/// The task a verb acts on.
 ///
-/// Reads either spelling — `issue_id` (canonical) or `plan_id` (the `plan.*`
+/// Reads either spelling — `task_id` (canonical) or `plan_id` (the `plan.*`
 /// alias) — and writes BOTH back to the implementation underneath, which is
 /// what the legacy route's `alias_param` did by hand at each call site.
 #[derive(Debug, Deserialize)]
-pub struct IssueRef {
+pub struct TaskRef {
     #[serde(alias = "plan_id")]
-    pub issue_id: String,
+    pub task_id: String,
 }
 
-impl Serialize for IssueRef {
+impl Serialize for TaskRef {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut map = serializer.serialize_map(Some(2))?;
-        map.serialize_entry("issue_id", &self.issue_id)?;
-        map.serialize_entry("plan_id", &self.issue_id)?;
+        map.serialize_entry("task_id", &self.task_id)?;
+        map.serialize_entry("plan_id", &self.task_id)?;
         map.end()
     }
 }
@@ -340,42 +310,42 @@ pub struct ReviewerMessageParams {
     pub viewing_context: Option<crate::thread::ViewingContext>,
 }
 
-// ----------------------------------------------------- issue/plan: params ---
+// ----------------------------------------------------- task/plan: params ---
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct IssueRefParams {
+pub struct TaskRefParams {
     #[serde(flatten)]
-    pub issue: IssueRef,
+    pub task: TaskRef,
 }
 
-/// A mutation that answers with the issue: the id, and how much of the
+/// A mutation that answers with the task: the id, and how much of the
 /// conversation the answer carries.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct IssueMutationParams {
+pub struct TaskMutationParams {
     #[serde(flatten)]
-    pub issue: IssueRef,
+    pub task: TaskRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_limit: Option<ThreadLimit>,
 }
 
-/// The detail poll: the whole issue, with the conversation window the surface
+/// The detail poll: the whole task, with the conversation window the surface
 /// is holding.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct IssueDetailParams {
+pub struct TaskDetailParams {
     #[serde(flatten)]
-    pub issue: IssueRef,
+    pub task: TaskRef,
     #[serde(flatten)]
     pub thread: ThreadWindowParams,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct IssueCreateParams {
-    /// What the issue is for, in the human's own words.
+pub struct TaskCreateParams {
+    /// What the task is for, in the human's own words.
     pub goal: String,
     /// The account's default project when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
-    /// `false` files the record and starts nothing — an inert issue, whose
+    /// `false` files the record and starts nothing — an inert task, whose
     /// first `thread.post` opens the planning session. Defaults to `true`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dispatch: Option<bool>,
@@ -394,7 +364,7 @@ pub struct IssueCreateParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct StageRefParams {
     #[serde(flatten)]
-    pub issue: IssueRef,
+    pub task: TaskRef,
     pub stage_id: String,
 }
 
@@ -402,18 +372,18 @@ pub struct StageRefParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct StageMutationParams {
     #[serde(flatten)]
-    pub issue: IssueRef,
+    pub task: TaskRef,
     pub stage_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_limit: Option<ThreadLimit>,
 }
 
-/// Notes back to the issue's agent: a batch of anchored messages, or the one
+/// Notes back to the task's agent: a batch of anchored messages, or the one
 /// unanchored body the pre-batch clients send.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SendNotesParams {
     #[serde(flatten)]
-    pub issue: IssueRef,
+    pub task: TaskRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub messages: Option<Vec<ReviewerMessageParams>>,
     /// The single-body spelling, required when `messages` is absent.
@@ -425,11 +395,11 @@ pub struct SendNotesParams {
     pub thread_limit: Option<ThreadLimit>,
 }
 
-/// A freeform human message to the issue's agent.
+/// A freeform human message to the task's agent.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct IssueMessageParams {
+pub struct TaskMessageParams {
     #[serde(flatten)]
-    pub issue: IssueRef,
+    pub task: TaskRef,
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub viewing_context: Option<crate::thread::ViewingContext>,
@@ -440,7 +410,7 @@ pub struct IssueMessageParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CommentAddParams {
     #[serde(flatten)]
-    pub issue: IssueRef,
+    pub task: TaskRef,
     pub stage_id: String,
     pub body: String,
     /// Absent for a comment on the document as a whole.
@@ -453,21 +423,21 @@ pub struct CommentAddParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CommentDeleteParams {
     #[serde(flatten)]
-    pub issue: IssueRef,
+    pub task: TaskRef,
     pub comment_id: String,
 }
 
-/// Open — or carry on — an issue's implementation.
+/// Open — or carry on — a task's implementation.
 ///
 /// The checkout is chosen here or not at all: `worktree_id` implements into a
 /// checkout that already exists (which adopts it), and `base_branch` names
-/// what a checkout cut for this issue is cut from. Naming any of
-/// `provider`/`model`/`effort` overrides the issue's own choice for the
+/// what a checkout cut for this task is cut from. Naming any of
+/// `provider`/`model`/`effort` overrides the task's own choice for the
 /// implementation agent.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ImplementAllParams {
     #[serde(flatten)]
-    pub issue: IssueRef,
+    pub task: TaskRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -493,19 +463,19 @@ pub struct ImplementStageParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SetAutoAdvanceParams {
     #[serde(flatten)]
-    pub issue: IssueRef,
+    pub task: TaskRef,
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_limit: Option<ThreadLimit>,
 }
 
-/// Diff comments to the issue's implementation. The implementation agent is
-/// the run's own; an `agent_id` naming the ISSUE's agent is not on that
+/// Diff comments to the task's implementation. The implementation agent is
+/// the run's own; an `agent_id` naming the TASK's agent is not on that
 /// roster, so this verb does not take one.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RequestChangesParams {
     #[serde(flatten)]
-    pub issue: IssueRef,
+    pub task: TaskRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub messages: Option<Vec<ReviewerMessageParams>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -518,12 +488,12 @@ pub struct RequestChangesParams {
     pub thread_limit: Option<ThreadLimit>,
 }
 
-/// Publish an issue's implementation: `commit`, `push`, `merge`,
+/// Publish a task's implementation: `commit`, `push`, `merge`,
 /// `merge_push`. Documented as open.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct IssueGitActionParams {
+pub struct TaskGitActionParams {
     #[serde(flatten)]
-    pub issue: IssueRef,
+    pub task: TaskRef,
     pub action: String,
     /// `prune` (the default), `keep`, or `release` — merge actions only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -565,7 +535,7 @@ pub struct EntityDismissParams {
     pub branch: Option<String>,
 }
 
-// ---------------------------------------------------- issue/plan: results ---
+// ---------------------------------------------------- task/plan: results ---
 
 /// Where an entity sits in the inbox, and whether the human has seen where it
 /// got to.
@@ -577,7 +547,7 @@ pub struct AttentionView {
     pub anchor: String,
 }
 
-/// The run agent currently speaking for an issue.
+/// The run agent currently speaking for a task.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ExecutionContext {
     pub entity_id: String,
@@ -586,7 +556,7 @@ pub struct ExecutionContext {
     pub agent: AgentDigest,
 }
 
-/// One branch that implements, or implemented, this issue. `created_at` rides
+/// One branch that implements, or implemented, this task. `created_at` rides
 /// along on the lineage listing and is absent on the current one.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ImplementationRef {
@@ -599,7 +569,7 @@ pub struct ImplementationRef {
     pub created_at: Option<String>,
 }
 
-/// What Done on this issue would gloss over.
+/// What Done on this task would gloss over.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct FinishWarning {
     pub code: String,
@@ -615,7 +585,7 @@ pub struct FinishView {
     pub warnings: Vec<FinishWarning>,
 }
 
-/// One comment on a stage document — a post on the issue agent's own
+/// One comment on a stage document — a post on the task agent's own
 /// conversation, anchored to the passage it is about.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CommentView {
@@ -631,10 +601,10 @@ pub struct CommentView {
     pub agent_reply: Option<String>,
 }
 
-/// One stage of an issue: its document, its plan-side review sub-state, and —
+/// One stage of a task: its document, its plan-side review sub-state, and —
 /// on the listings that read a run — where its execution got to.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct IssueStageRow {
+pub struct TaskStageRow {
     pub id: String,
     pub title: String,
     pub summary: String,
@@ -662,12 +632,12 @@ pub struct IssueStageRow {
     pub comments: Option<Vec<CommentView>>,
 }
 
-/// The whole issue: what it is for, where it got to, who is working on it,
-/// and what has been built for it. Every `issue.*` mutation answers with it,
+/// The whole task: what it is for, where it got to, who is working on it,
+/// and what has been built for it. Every `task.*` mutation answers with it,
 /// so a surface repaints from the mutation's own reply.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct IssueView {
-    pub issue_id: String,
+pub struct TaskView {
+    pub task_id: String,
     /// The same id under the name the `plan.*` alias speaks. Retired in 2.0.
     pub plan_id: String,
     pub goal: String,
@@ -705,7 +675,7 @@ pub struct IssueView {
     pub execution_context: Option<ExecutionContext>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_run_id: Option<String>,
-    /// A branch is building this issue right now.
+    /// A branch is building this task right now.
     pub implementation_active: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub implementing_branch: Option<String>,
@@ -730,51 +700,51 @@ pub struct IssueView {
     pub updated_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_changed_at: Option<String>,
-    pub stages: Vec<IssueStageRow>,
+    pub stages: Vec<TaskStageRow>,
 }
 
-/// `issue.list` — the same list twice, under both names, for the clients that
+/// `task.list` — the same list twice, under both names, for the clients that
 /// predate the rename.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct IssueListResult {
-    pub issues: Vec<IssueView>,
-    pub plans: Vec<IssueView>,
+pub struct TaskListResult {
+    pub tasks: Vec<TaskView>,
+    pub plans: Vec<TaskView>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct PlanListResult {
-    pub plans: Vec<IssueView>,
+    pub plans: Vec<TaskView>,
 }
 
-/// The single-document issue's plan, read from the canonical store.
+/// The single-document task's plan, read from the canonical store.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct IssueDocResult {
+pub struct TaskDocResult {
     pub plan_path: String,
     pub contents: String,
 }
 
-/// The stage board of a multi-stage issue, with each stage's comments.
+/// The stage board of a multi-stage task, with each stage's comments.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct PlanStagesResult {
-    pub issue_id: String,
+    pub task_id: String,
     pub plan_id: String,
-    pub stages: Vec<IssueStageRow>,
+    pub stages: Vec<TaskStageRow>,
 }
 
 /// The stage board plus what the current implementation has done to it.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct IssueStagesResult {
-    pub issue_id: String,
+pub struct TaskStagesResult {
+    pub task_id: String,
     pub plan_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub implementation_id: Option<String>,
     pub auto_advance: bool,
-    pub stages: Vec<IssueStageRow>,
+    pub stages: Vec<TaskStageRow>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct StageDocResult {
-    pub issue_id: String,
+    pub task_id: String,
     pub plan_id: String,
     pub stage_id: String,
     pub path: String,
@@ -824,158 +794,152 @@ pub enum DismissResult {
     Row(RowDismissed),
 }
 
-// --------------------------------------------------- issue/plan: handlers ---
+// --------------------------------------------------- task/plan: handlers ---
 
-fn issue_create(
-    app: &mut AppState,
-    params: IssueCreateParams,
-) -> Result<Answer<IssueView>, ApiError> {
+fn task_create(app: &mut AppState, params: TaskCreateParams) -> Result<Answer<TaskView>, ApiError> {
     answer(app.plan_create(&params.wire()))
 }
 
-fn issue_get(app: &mut AppState, params: IssueDetailParams) -> Result<Answer<IssueView>, ApiError> {
+fn task_get(app: &mut AppState, params: TaskDetailParams) -> Result<Answer<TaskView>, ApiError> {
     answer(app.plan_get(&params.wire()))
 }
 
-fn issue_list(app: &mut AppState, _params: NoParams) -> Result<Answer<IssueListResult>, ApiError> {
-    answer(Ok(app.issue_list()))
+fn task_list(app: &mut AppState, _params: NoParams) -> Result<Answer<TaskListResult>, ApiError> {
+    answer(Ok(app.task_list()))
 }
 
 fn plan_list(app: &mut AppState, _params: NoParams) -> Result<Answer<PlanListResult>, ApiError> {
     answer(Ok(app.plan_list()))
 }
 
-fn issue_doc(
-    app: &mut AppState,
-    params: IssueRefParams,
-) -> Result<Answer<IssueDocResult>, ApiError> {
+fn task_doc(app: &mut AppState, params: TaskRefParams) -> Result<Answer<TaskDocResult>, ApiError> {
     answer(app.plan_doc(&params.wire()))
 }
 
-fn issue_stages(
+fn task_stages(
     app: &mut AppState,
-    params: IssueRefParams,
-) -> Result<Answer<IssueStagesResult>, ApiError> {
-    answer(app.issue_stages(&params.wire()))
+    params: TaskRefParams,
+) -> Result<Answer<TaskStagesResult>, ApiError> {
+    answer(app.task_stages(&params.wire()))
 }
 
 fn plan_stages(
     app: &mut AppState,
-    params: IssueRefParams,
+    params: TaskRefParams,
 ) -> Result<Answer<PlanStagesResult>, ApiError> {
     answer(app.plan_stages(&params.wire()))
 }
 
-fn issue_stage_doc(
+fn task_stage_doc(
     app: &mut AppState,
     params: StageRefParams,
 ) -> Result<Answer<StageDocResult>, ApiError> {
     answer(app.plan_stage_doc(&params.wire()))
 }
 
-fn issue_approve(
+fn task_approve(
     app: &mut AppState,
-    params: IssueMutationParams,
-) -> Result<Answer<IssueView>, ApiError> {
+    params: TaskMutationParams,
+) -> Result<Answer<TaskView>, ApiError> {
     answer(app.plan_approve(&params.wire()))
 }
 
-fn issue_send_notes(
+fn task_send_notes(
     app: &mut AppState,
     params: SendNotesParams,
-) -> Result<Answer<IssueView>, ApiError> {
+) -> Result<Answer<TaskView>, ApiError> {
     answer(app.plan_send_notes(&params.wire()))
 }
 
-fn issue_stage_approve(
+fn task_stage_approve(
     app: &mut AppState,
     params: StageMutationParams,
-) -> Result<Answer<IssueView>, ApiError> {
+) -> Result<Answer<TaskView>, ApiError> {
     answer(app.plan_stage_approve(&params.wire()))
 }
 
-fn issue_stage_revise(
+fn task_stage_revise(
     app: &mut AppState,
     params: StageMutationParams,
-) -> Result<Answer<IssueView>, ApiError> {
+) -> Result<Answer<TaskView>, ApiError> {
     answer(app.plan_stage_send_notes(&params.wire()))
 }
 
-fn issue_message(
+fn task_message(
     app: &mut AppState,
-    params: IssueMessageParams,
-) -> Result<Answer<IssueView>, ApiError> {
+    params: TaskMessageParams,
+) -> Result<Answer<TaskView>, ApiError> {
     answer(app.plan_message(&params.wire()))
 }
 
-fn issue_abandon(
+fn task_abandon(
     app: &mut AppState,
-    params: IssueMutationParams,
-) -> Result<Answer<IssueView>, ApiError> {
+    params: TaskMutationParams,
+) -> Result<Answer<TaskView>, ApiError> {
     answer(app.plan_abandon(&params.wire()))
 }
 
-fn issue_comment_add(
+fn task_comment_add(
     app: &mut AppState,
     params: CommentAddParams,
 ) -> Result<Answer<CommentAddResult>, ApiError> {
     answer(app.plan_comment_add(&params.wire()))
 }
 
-fn issue_comment_delete(
+fn task_comment_delete(
     app: &mut AppState,
     params: CommentDeleteParams,
 ) -> Result<Answer<Acknowledged>, ApiError> {
     answer(app.plan_comment_delete(&params.wire()))
 }
 
-fn issue_archive(
+fn task_archive(
     app: &mut AppState,
-    params: IssueMutationParams,
-) -> Result<Answer<IssueView>, ApiError> {
+    params: TaskMutationParams,
+) -> Result<Answer<TaskView>, ApiError> {
     answer(app.plan_archive(&params.wire()))
 }
 
-fn issue_delete(
+fn task_delete(
     app: &mut AppState,
-    params: IssueRefParams,
+    params: TaskRefParams,
 ) -> Result<Answer<Acknowledged>, ApiError> {
     answer(app.plan_delete(&params.wire()))
 }
 
-fn issue_implement_stage(
+fn task_implement_stage(
     app: &mut AppState,
     params: ImplementStageParams,
-) -> Result<Answer<IssueView>, ApiError> {
-    answer(app.issue_implement_stage(&params.wire()))
+) -> Result<Answer<TaskView>, ApiError> {
+    answer(app.task_implement_stage(&params.wire()))
 }
 
-fn issue_implement_all(
+fn task_implement_all(
     app: &mut AppState,
     params: ImplementAllParams,
-) -> Result<Answer<IssueView>, ApiError> {
-    answer(app.issue_implement_all(&params.wire()))
+) -> Result<Answer<TaskView>, ApiError> {
+    answer(app.task_implement_all(&params.wire()))
 }
 
-fn issue_set_auto_advance(
+fn task_set_auto_advance(
     app: &mut AppState,
     params: SetAutoAdvanceParams,
-) -> Result<Answer<IssueView>, ApiError> {
-    answer(app.issue_set_auto_advance(&params.wire()))
+) -> Result<Answer<TaskView>, ApiError> {
+    answer(app.task_set_auto_advance(&params.wire()))
 }
 
-fn issue_request_changes(
+fn task_request_changes(
     app: &mut AppState,
     params: RequestChangesParams,
-) -> Result<Answer<IssueView>, ApiError> {
-    answer(app.issue_run_action(&params.wire(), "request_changes"))
+) -> Result<Answer<TaskView>, ApiError> {
+    answer(app.task_run_action(&params.wire(), "request_changes"))
 }
 
-fn issue_git_action(
+fn task_git_action(
     app: &mut AppState,
-    params: IssueGitActionParams,
-) -> Result<Answer<IssueView>, ApiError> {
-    answer(app.issue_run_action(&params.wire(), "git_action"))
+    params: TaskGitActionParams,
+) -> Result<Answer<TaskView>, ApiError> {
+    answer(app.task_run_action(&params.wire(), "git_action"))
 }
 
 fn entity_seen(
@@ -999,10 +963,10 @@ fn entity_dismiss(
     answer(app.entity_dismiss(&params.wire()))
 }
 
-// ------------------------------------------------------ issue/plan: tests ---
+// ------------------------------------------------------ task/plan: tests ---
 
 #[cfg(test)]
-mod issue_plan_tests {
+mod task_plan_tests {
     use super::*;
     use crate::api::v1::parse_params;
 
@@ -1013,12 +977,12 @@ mod issue_plan_tests {
     /// Both spellings of an id reach the implementation, which still reads the
     /// deprecated one — the whole of what `alias_param` used to do by hand.
     #[test]
-    fn an_issue_id_reaches_the_implementation_under_both_names() {
-        let canonical: IssueRefParams =
-            parse_params(&serde_json::json!({ "issue_id": "issue-7" })).unwrap();
-        let deprecated: IssueRefParams =
-            parse_params(&serde_json::json!({ "plan_id": "issue-7" })).unwrap();
-        let expected = serde_json::json!({ "issue_id": "issue-7", "plan_id": "issue-7" });
+    fn a_task_id_reaches_the_implementation_under_both_names() {
+        let canonical: TaskRefParams =
+            parse_params(&serde_json::json!({ "task_id": "task-7" })).unwrap();
+        let deprecated: TaskRefParams =
+            parse_params(&serde_json::json!({ "plan_id": "task-7" })).unwrap();
+        let expected = serde_json::json!({ "task_id": "task-7", "plan_id": "task-7" });
         assert_eq!(canonical.wire(), expected);
         assert_eq!(deprecated.wire(), expected);
     }
@@ -1034,15 +998,15 @@ mod issue_plan_tests {
             serde_json::json!(20.0),
             serde_json::json!(true),
         ] {
-            let params: IssueDetailParams = parse_params(&serde_json::json!({
-                "issue_id": "issue-7",
+            let params: TaskDetailParams = parse_params(&serde_json::json!({
+                "task_id": "task-7",
                 "thread_limit": spelling,
             }))
             .unwrap_or_else(|error| panic!("{spelling}: {}", error.message()));
             assert_eq!(params.wire()["thread_limit"], spelling);
         }
-        let unspoken: IssueDetailParams = parse_params(&serde_json::json!({
-            "issue_id": "issue-7",
+        let unspoken: TaskDetailParams = parse_params(&serde_json::json!({
+            "task_id": "task-7",
             "thread_limit": serde_json::Value::Null,
         }))
         .unwrap();
@@ -1061,41 +1025,41 @@ mod issue_plan_tests {
     }
 
     fixture_tests! {
-        issue_create => "issue.create",
+        task_create => "task.create",
         plan_create => "plan.create",
-        issue_get => "issue.get",
+        task_get => "task.get",
         plan_get => "plan.get",
-        issue_list => "issue.list",
+        task_list => "task.list",
         plan_list => "plan.list",
-        issue_doc => "issue.doc",
+        task_doc => "task.doc",
         plan_doc => "plan.doc",
-        issue_stages => "issue.stages",
+        task_stages => "task.stages",
         plan_stages => "plan.stages",
-        issue_stage_doc => "issue.stage_doc",
+        task_stage_doc => "task.stage_doc",
         plan_stage_doc => "plan.stage_doc",
-        issue_approve => "issue.approve",
+        task_approve => "task.approve",
         plan_approve => "plan.approve",
-        issue_send_notes => "issue.send_notes",
+        task_send_notes => "task.send_notes",
         plan_send_notes => "plan.send_notes",
-        issue_stage_approve => "issue.stage_approve",
+        task_stage_approve => "task.stage_approve",
         plan_stage_approve => "plan.stage_approve",
-        issue_stage_revise => "issue.stage_revise",
+        task_stage_revise => "task.stage_revise",
         plan_stage_send_notes => "plan.stage_send_notes",
         plan_message => "plan.message",
         plan_abandon => "plan.abandon",
-        issue_comment_add => "issue.comment_add",
+        task_comment_add => "task.comment_add",
         plan_comment_add => "plan.comment_add",
-        issue_comment_delete => "issue.comment_delete",
+        task_comment_delete => "task.comment_delete",
         plan_comment_delete => "plan.comment_delete",
-        issue_archive => "issue.archive",
+        task_archive => "task.archive",
         plan_archive => "plan.archive",
-        issue_delete => "issue.delete",
+        task_delete => "task.delete",
         plan_delete => "plan.delete",
-        issue_implement_stage => "issue.implement_stage",
-        issue_implement_all => "issue.implement_all",
-        issue_set_auto_advance => "issue.set_auto_advance",
-        issue_request_changes => "issue.request_changes",
-        issue_git_action => "issue.git_action",
+        task_implement_stage => "task.implement_stage",
+        task_implement_all => "task.implement_all",
+        task_set_auto_advance => "task.set_auto_advance",
+        task_request_changes => "task.request_changes",
+        task_git_action => "task.git_action",
         entity_seen => "entity.seen",
         entity_mute => "entity.mute",
         entity_dismiss => "entity.dismiss",
@@ -1155,17 +1119,17 @@ pub struct RunIdParams {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RunCreateParams {
-    /// The Issue to implement. `issue_id` is the spelling the rest of the v1
+    /// The Task to implement. `task_id` is the spelling the rest of the v1
     /// surface uses and is read as an alias; what travels on to the
-    /// implementation is `plan_id`, which is still the durable identity of an
-    /// Issue and what the refusal for a missing one names.
-    #[serde(alias = "issue_id")]
+    /// implementation is `plan_id`, which is still the durable identity of a
+    /// Task and what the refusal for a missing one names.
+    #[serde(alias = "task_id")]
     pub plan_id: String,
     /// Implement into a checkout that already exists rather than one cut for
-    /// the Issue.
+    /// the Task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_id: Option<String>,
-    /// What the run's branch is cut from; the Issue's own base when absent.
+    /// What the run's branch is cut from; the Task's own base when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_branch: Option<String>,
     #[serde(flatten)]
@@ -1308,7 +1272,7 @@ pub struct BranchFinishParams {
     /// Done alone: the workspace goes and the branch stays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
-    /// Leave the issue this branch implemented alone, whichever way the
+    /// Leave the task this branch implemented alone, whichever way the
     /// branch ends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unlink: Option<bool>,
@@ -1362,18 +1326,18 @@ pub struct RunStageView {
     pub invalidation_reason: Option<String>,
 }
 
-/// A run as every run verb answers it: identity and issue link, lifecycle
+/// A run as every run verb answers it: identity and task link, lifecycle
 /// state, the conversation and its agents, the checkout, per-stage progress,
 /// and what the inbox needs to place it.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RunView {
     pub run_id: String,
-    /// The run id again, under the name the Issue surface reads it by.
+    /// The run id again, under the name the Task surface reads it by.
     pub implementation_id: String,
-    /// The Issue this run implements, when it implements one. `plan_id` is
+    /// The Task this run implements, when it implements one. `plan_id` is
     /// the same id under the deprecated spelling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub issue_id: Option<String>,
+    pub task_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_id: Option<String>,
     pub goal: String,
@@ -1435,13 +1399,13 @@ pub struct RunView {
 }
 
 /// A verb that only says it happened. `run.delete` on a planned
-/// implementation keeps the record — an Issue's lineage outlives its card —
+/// implementation keeps the record — a Task's lineage outlives its card —
 /// and says so.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RunAck {
     pub ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub retained_as_issue_lineage: Option<bool>,
+    pub retained_as_task_lineage: Option<bool>,
 }
 
 /// What was sitting in a checkout's tree that no commit held.
@@ -1526,7 +1490,7 @@ pub struct BranchWorkItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub issue_id: Option<String>,
+    pub task_id: Option<String>,
     /// The run behind the branch; absent for a bare checkout, which has no
     /// agent to name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1863,18 +1827,18 @@ mod run_branch_worktree_tests {
         worktree_finish => "worktree.finish",
     }
 
-    /// An Issue can be named either way, and what reaches the implementation
+    /// A Task can be named either way, and what reaches the implementation
     /// is the spelling it still reads.
     #[test]
-    fn run_create_takes_an_issue_under_both_names() {
+    fn run_create_takes_a_task_under_both_names() {
         let canonical: RunCreateParams =
-            parse_params(&serde_json::json!({ "issue_id": "issue-7" })).unwrap();
+            parse_params(&serde_json::json!({ "task_id": "task-7" })).unwrap();
         let deprecated: RunCreateParams =
-            parse_params(&serde_json::json!({ "plan_id": "issue-7" })).unwrap();
-        assert_eq!(canonical.wire()["plan_id"], "issue-7");
-        assert_eq!(deprecated.wire()["plan_id"], "issue-7");
+            parse_params(&serde_json::json!({ "plan_id": "task-7" })).unwrap();
+        assert_eq!(canonical.wire()["plan_id"], "task-7");
+        assert_eq!(deprecated.wire()["plan_id"], "task-7");
         let missing = parse_params::<RunCreateParams>(&serde_json::json!({ "goal": "quick" }))
-            .expect_err("a run implements an issue or nothing");
+            .expect_err("a run implements a task or nothing");
         assert_eq!(missing.message(), "missing required param: plan_id");
         assert_eq!(missing.code(), "invalid_params");
     }

@@ -1443,7 +1443,7 @@ fn a_child_running_another_model_than_asked_is_ended_with_that_as_its_epitaph() 
     session.end();
 }
 
-/// Issue #72: `--model opus` announces the model the alias stands for, and an
+/// Task #72: `--model opus` announces the model the alias stands for, and an
 /// agent asked for the alias is running what it asked for. An alias of another
 /// family is still a mismatch, and says so.
 #[test]
@@ -1572,7 +1572,7 @@ fn a_child_that_never_announces_itself_is_ended_at_the_deadline_after_its_first_
     assert_eq!(
         session.start_refused().as_deref(),
         Some(refused),
-        "and the agent's start_error says it in the same sentence (issue #73)"
+        "and the agent's start_error says it in the same sentence (task #73)"
     );
 
     // A child that DOES announce itself in time is left alone past the deadline.

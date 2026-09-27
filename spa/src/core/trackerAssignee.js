@@ -1,6 +1,6 @@
 // The assignee picker, as a pure model.
 //
-// Assigning IS dispatching. One tagged field says both who holds the issue and
+// Assigning IS dispatching. One tagged field says both who holds the task and
 // where the work runs, and five kinds cover every answer: the user, the
 // project's own agent, an agent already standing on one of the project's
 // workspaces, a new agent on one of those workspaces, or a new workspace with a
@@ -80,7 +80,7 @@ export function agentLabels(groups) {
 }
 
 /** What this project is called on this device, for the surfaces that name its
- *  own agent after it (`actorName`) and draw its face (core/issueAvatar.js).
+ *  own agent after it (`actorName`) and draw its face (core/taskAvatar.js).
  *
  *  Matched on the account-wide key and never the bare `proj-N`: two machines
  *  both mint one, and naming an agent after the wrong project is worse than
@@ -89,7 +89,7 @@ export const projectName = (feed, projectKey) =>
   (feed?.projects || []).find((project) => project.projectKey === projectKey)?.name || "";
 
 /** Every agent of the project by the harness it runs on, for the pictures the
- *  issue page draws beside comments (core/issueAvatar.js). Off the same list
+ *  task page draws beside comments (core/taskAvatar.js). Off the same list
  *  `agentLabels` is cut from, so an agent is drawn by the record it is named
  *  by; an agent whose record names no harness is left out rather than entered
  *  as an empty one, because "unknown harness" and "no such agent" both mean
@@ -126,7 +126,7 @@ const workspaceOptions = (group) => [
     agentId: agent.id,
     workspaceId: group.workspaceId,
     label: agent.label,
-    hint: "Delivers the issue into this agent's conversation.",
+    hint: "Delivers the task into this agent's conversation.",
     group: group.name,
   })),
   {
@@ -134,7 +134,7 @@ const workspaceOptions = (group) => [
     kind: "new_agent",
     workspaceId: group.workspaceId,
     label: `New agent in ${group.name}`,
-    hint: "Starts another agent on this workspace and hands it the issue.",
+    hint: "Starts another agent on this workspace and hands it the task.",
     group: group.name,
     form: AGENT_FORM,
   },
@@ -164,7 +164,7 @@ export function assigneeOptions(groups) {
   ];
 }
 
-/** Which option an issue's current assignee is, so the picker can tick it. An
+/** Which option a task's current assignee is, so the picker can tick it. An
  *  assignee whose agent has left the project ticks nothing — the record still
  *  names it and the page still shows it, but it is not an answer on offer. */
 export const selectedOptionId = (assignee) => assigneeKey(assignee);
@@ -172,7 +172,7 @@ export const selectedOptionId = (assignee) => assigneeKey(assignee);
 /**
  * The harness, model and effort, exactly as `agentChoiceParams` answered them.
  *
- * `issues.assign` is a wire verb, and a wire verb takes `provider` — `harness`
+ * `tasks.assign` is a wire verb, and a wire verb takes `provider` — `harness`
  * is the word the MCP tools use for the same field. So the choice rides
  * through unchanged, which is also what keeps the rule that matters here:
  * ABSENT IS ABSENT. A choice nobody made is left off the object rather than
@@ -202,7 +202,7 @@ const ASSIGNEE_BY_KIND = Object.freeze({
 });
 
 /** A field, or nothing at all. Nothing is what "the project's own setting" and
- *  "the issue's own title" are said with: `workspace.create` reads an absent
+ *  "the task's own title" are said with: `workspace.create` reads an absent
  *  isolation as the project's, and an empty string is not absent. */
 const namedField = (key, value) => (value ? { [key]: value } : null);
 
@@ -211,7 +211,7 @@ const namedField = (key, value) => (value ? { [key]: value } : null);
  *
  * `name` and `isolation` are the new-workspace form's two fields; `choice` is
  * what `agentChoiceParams` answered for the harness/model/effort controls. A
- * new workspace given no name takes the issue's title, and one given no
+ * new workspace given no name takes the task's title, and one given no
  * isolation passes none at all.
  */
 export function assigneeFor(option, extras = {}) {
@@ -219,13 +219,13 @@ export function assigneeFor(option, extras = {}) {
   return build ? build(option, extras) : null;
 }
 
-/** One press, as `issues.assign` params. `note` is extra instruction delivered
- *  under the issue; it is not stored on the issue, so an empty one is left
+/** One press, as `tasks.assign` params. `note` is extra instruction delivered
+ *  under the task; it is not stored on the task, so an empty one is left
  *  off rather than sent blank. */
-export function assignParams(issueId, option, extras = {}) {
+export function assignParams(taskId, option, extras = {}) {
   const note = String(extras.note || "").trim();
   return {
-    issue_id: issueId,
+    task_id: taskId,
     assignee: assigneeFor(option, extras),
     ...(note ? { note } : null),
   };
@@ -240,7 +240,7 @@ export const optionConsequence = (option) => option?.hint || "";
  * Whether choosing this option makes the caller WAIT on real work.
  *
  * Cutting a workspace is git on a real repository, and an agent cannot exist
- * until the checkout is ready — so `issues.assign` with `new_workspace` defers
+ * until the checkout is ready — so `tasks.assign` with `new_workspace` defers
  * and its reply arrives once the cut, the agent and the delivery have all
  * happened. Seconds on a small repository, minutes on a large one. Every other
  * kind is a write and a lookup and answers in milliseconds.
@@ -256,7 +256,7 @@ export const optionWaitsOnAWorkspace = (option) => option?.kind === "new_workspa
  * `new_workspace` goes down `workspace.create`'s own path, so that call's
  * refusals surface here — and one of them is worth saying differently. The
  * machine holding its filesystem for something else is not a mistake anybody
- * made: nothing was written, the issue is untouched, and pressing again is the
+ * made: nothing was written, the task is untouched, and pressing again is the
  * whole of the fix. So it says that, rather than handing over a sentence about
  * filesystem operations that the reader has to decode into "try again".
  *

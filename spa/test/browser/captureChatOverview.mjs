@@ -1,5 +1,5 @@
 // Capture the review images for #117 with the production rail, overview and
-// workspace Issues tab. Run from spa/: node test/browser/captureChatOverview.mjs
+// workspace Tasks tab. Run from spa/: node test/browser/captureChatOverview.mjs
 import { mkdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { mountLayout, withLayoutPage } from "./layoutHarness.mjs";
@@ -100,33 +100,33 @@ for (const [label, viewport] of VIEWPORTS) {
   }, viewport);
 
   await withLayoutPage(async ({ page, basePath }) => {
-    await mountLayout(page, `<div id="shell"><div id="view"><header id="toolbar">Build / chat-overview-nav · Issues</header>
+    await mountLayout(page, `<div id="shell"><div id="view"><header id="toolbar">Build / chat-overview-nav · Tasks</header>
       <div id="view-body"><main id="root" style="padding:0"></main></div></div></div>`, { basePath, styles: "#toolbar{padding:12px 20px}" });
     await loadChatOverviewModules(page, basePath, {
-      tab: "src/core/workspaceIssuesTab.js",
+      tab: "src/core/workspaceTasksTab.js",
       tracker: "src/core/trackerCache.js",
-      sheet: "src/styles/issues.css",
+      sheet: "src/styles/tasks.css",
     });
     await page.evaluate(async () => {
-      const { mountWorkspaceIssuesTab } = window.__layoutModules.tab;
-      const { writeIssuesRecord } = window.__layoutModules.tracker;
+      const { mountWorkspaceTasksTab } = window.__layoutModules.tab;
+      const { writeTasksRecord } = window.__layoutModules.tracker;
       const agentId = "agent-here";
-      const issue = (number, title, status) => ({
-        id: `issue-${number}`, project_id: "overview-project", number, title, body: "", state: "open", status,
+      const task = (number, title, status) => ({
+        id: `task-${number}`, project_id: "overview-project", number, title, body: "", state: "open", status,
         labels: ["frontend"], priority: "high", assignee: { kind: "agent", agent_id: agentId },
-        links: { workspace_ids: [], branches: [], commits: [], conversation_ids: [], parent_issue_id: null },
+        links: { workspace_ids: [], branches: [], commits: [], conversation_ids: [], parent_task_id: null },
         created_by: { kind: "user" }, created_at: "2026-09-23T21:46:00Z", updated_at: "2026-09-23T21:46:00Z", closed_at: null,
       });
-      const issues = [issue(117, "Chat overview: icon after the new-chat button", "in_progress"),
-        issue(116, "Agent-made attachments and an issue lightbox", "ready")];
+      const tasks = [task(117, "Chat overview: icon after the new-chat button", "in_progress"),
+        task(116, "Agent-made attachments and a task lightbox", "ready")];
       const columns = [["backlog", "Backlog"], ["ready", "Ready"], ["in_progress", "In progress"],
         ["in_review", "In review"], ["done", "Done"]].map(([id, name]) => ({ id, name }));
-      await writeIssuesRecord("overview-device", "overview-project", { issues, columns });
+      await writeTasksRecord("overview-device", "overview-project", { tasks, columns });
       const projectKey = "overview-device/overview-project";
-      mountWorkspaceIssuesTab(document.querySelector("#root"), {
+      mountWorkspaceTasksTab(document.querySelector("#root"), {
         route: { name: "workspace", deviceId: "overview-device", projectId: "overview-project",
-          workspaceId: "workspace-current", tab: "issues" },
-        context: { deviceId: "overview-device", rpc: async (method) => (method === "issues.list" ? { issues } : {}),
+          workspaceId: "workspace-current", tab: "tasks" },
+        context: { deviceId: "overview-device", rpc: async (method) => (method === "tasks.list" ? { tasks } : {}),
           modelCatalog: () => ({ providers: [] }), refreshModelCatalog: async () => ({ providers: [] }) },
         feed: () => ({
           workspaces: [{ id: "workspace-current", workspace_id: "workspace-current", name: "chat-overview-nav", projectKey, entity_id: "current-run" }],
@@ -134,12 +134,12 @@ for (const [label, viewport] of VIEWPORTS) {
         }),
         selection: null,
         navigate: () => {},
-        sayWhichIssue: () => {},
+        sayWhichTask: () => {},
       });
     });
-    await page.waitForSelector(".issue-head .scope-link", { timeout: 5000 });
-    await page.waitForSelector(".issue-title", { timeout: 5000 });
-    await page.screenshot({ path: `${output}issues-tab-${label}.png` });
+    await page.waitForSelector(".task-head .scope-link", { timeout: 5000 });
+    await page.waitForSelector(".task-title", { timeout: 5000 });
+    await page.screenshot({ path: `${output}tasks-tab-${label}.png` });
   }, viewport);
 }
 console.log(`wrote ${output}`);

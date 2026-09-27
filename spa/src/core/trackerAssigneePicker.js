@@ -1,9 +1,9 @@
 // The assignee picker, as a modal.
 //
-// Opened from a list row, from a kanban card and from the issue page's rail —
+// Opened from a list row, from a kanban card and from the task page's rail —
 // one control, because "hand this to somebody" is one act wherever it is
 // reached from. The control itself is core/trackerAssigneeControl.js, shared
-// with the new-issue form; this is the dialog around it: the note, the press,
+// with the new-task form; this is the dialog around it: the note, the press,
 // and what the press says while it is running.
 //
 // The press is deliberately not called "Save". Assigning is dispatching: for
@@ -24,7 +24,7 @@ import {
 } from "./trackerAssigneeControl.js";
 import { fieldTraits } from "./fieldTraits.js";
 
-const PREFIX = "issue-assign";
+const PREFIX = "task-assign";
 
 /**
  * What the press says.
@@ -48,17 +48,17 @@ const waitingOnAWorkspace = (state) => draftWaitsOnAWorkspace(state.options, sta
  *  asks of a dialog that has not moved are "is it stuck" and "can I go". */
 const waitingHtml = (state) =>
   state.busy && waitingOnAWorkspace(state)
-    ? `<p class="sub issue-assign-waiting" role="status">Cutting the checkout and starting the agent. This can take a minute on a large repository.</p>`
+    ? `<p class="sub task-assign-waiting" role="status">Cutting the checkout and starting the agent. This can take a minute on a large repository.</p>`
     : "";
 
-const titleOf = (issue) => `Assign #${issue.number ?? ""}`;
+const titleOf = (task) => `Assign #${task.number ?? ""}`;
 
 export function assigneePickerBodyHtml(state) {
-  return `<h3>${esc(titleOf(state.issue))}</h3>
-    <p class="sub create-hint">${esc(state.issue.title || "")}</p>
+  return `<h3>${esc(titleOf(state.task))}</h3>
+    <p class="sub create-hint">${esc(state.task.title || "")}</p>
     ${assigneeControlHtml(state.options, state.draft, { prefix: PREFIX, catalog: state.catalog })}
-    <label class="create-label" for="${PREFIX}-note">Note <span class="sub">(delivered with the issue, not stored on it)</span></label>
-    <textarea id="${PREFIX}-note" rows="2" ${fieldTraits("prose")} placeholder="Anything the issue itself does not say">${esc(state.note)}</textarea>
+    <label class="create-label" for="${PREFIX}-note">Note <span class="sub">(delivered with the task, not stored on it)</span></label>
+    <textarea id="${PREFIX}-note" rows="2" ${fieldTraits("prose")} placeholder="Anything the task itself does not say">${esc(state.note)}</textarea>
     <div class="warn create-error"${state.error ? "" : " hidden"}>${esc(state.error)}</div>
     ${waitingHtml(state)}
     <div class="row create-row">
@@ -68,17 +68,17 @@ export function assigneePickerBodyHtml(state) {
 }
 
 /**
- * Open the picker on one issue.
+ * Open the picker on one task.
  *
  * `options` is what core/trackerAssignee.js offered for this project, `current`
  * the option id its assignee already is, and `catalog` the creation device's
- * `models.list`. `onAssigned` is handed the whole `issues.assign` answer — the
- * issue AND the dispatch — because what was started is the half the caller most
+ * `models.list`. `onAssigned` is handed the whole `tasks.assign` answer — the
+ * task AND the dispatch — because what was started is the half the caller most
  * needs to say something about.
  */
-export function openAssigneePicker({ issue, options, current = "none", catalog = null, callRpc, onAssigned = null }) {
+export function openAssigneePicker({ task, options, current = "none", catalog = null, callRpc, onAssigned = null }) {
   const state = {
-    issue,
+    task,
     options,
     catalog,
     draft: emptyAssigneeDraft(current),
@@ -89,7 +89,7 @@ export function openAssigneePicker({ issue, options, current = "none", catalog =
   let dismissed = false;
   const modal = openModal({
     dialogHtml: modalDialogHtml(assigneePickerBodyHtml(state), { className: "modal-create" }),
-    scrimId: "issue-assign-scrim",
+    scrimId: "task-assign-scrim",
     canDismiss: () => !state.busy,
     onClose: () => {
       dismissed = true;
@@ -109,17 +109,17 @@ export function openAssigneePicker({ issue, options, current = "none", catalog =
     paint();
     try {
       const params = draftAssignParams(state.options, state.draft, state.catalog, {
-        issueId: issue.id,
+        taskId: task.id,
         note: state.note,
       });
-      const answer = await callRpc("issues.assign", params);
+      const answer = await callRpc("tasks.assign", params);
       if (dismissed) return;
       await close();
       onAssigned?.(answer);
     } catch (error) {
       if (dismissed) return;
       state.busy = false;
-      // Nothing was written: a failed cut leaves the issue unassigned, in its
+      // Nothing was written: a failed cut leaves the task unassigned, in its
       // old column, with no events. There is nothing to reconcile — the dialog
       // stays up with the draft intact, so pressing again IS the retry.
       state.error = assignRefusalText(messageOf(error));

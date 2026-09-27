@@ -2,12 +2,12 @@
 // and what the work you are standing in is doing.
 //
 // Left: on a workspace, one picker reading `project / workspace` and nothing
-// else — the workspace's directories, its Issues and its settings are its
+// else — the workspace's directories, its Tasks and its settings are its
 // navigation, and stand in the rail down its left edge (core/directoryRail.js).
 // The picker's popup starts with the active project's workspaces and the way to
 // the project's own page; Switch project moves the same popup to the project
 // list, and a project choice moves it back after loading that project's
-// workspaces. Legacy branch and issue links retain their project selector and
+// workspaces. Legacy branch and task links retain their project selector and
 // static item identity while those routes remain supported.
 //
 // Right: a slot the standing view can fill with its own verb — a branch's
@@ -40,7 +40,7 @@ import { deviceView } from "./feedMerge.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import { patchList } from "./patchList.js";
 import { toolbarHtml, unreadBadgeHtml } from "./toolbarRender.js";
-import { followProjectIssuesUnread } from "./projectIssuesUnread.js";
+import { followProjectTasksUnread } from "./projectTasksUnread.js";
 import { projectRoute, workspaceRoute } from "./projectModel.js";
 import { standsOnProjectCheckout, workspaceStatusText } from "./workspaceModel.js";
 import "../styles/shell.css";
@@ -73,9 +73,9 @@ let cachedMenuValue = null;
 let unsubscribeFeed = null;
 let toolbarReady = Promise.resolve();
 let toolbarRun = 0;
-// The project Issues tab's count (#104), off the cached list of the project
+// The project Tasks tab's count (#104), off the cached list of the project
 // the bar stands in; a move in it repaints the bar.
-const projectIssues = followProjectIssuesUnread(() => paint());
+const projectTasks = followProjectTasksUnread(() => paint());
 
 /** Register the standing view's verb-slot content — called every repaint the
  *  toolbar does, poll-driven ticks included, so the caller's own function must
@@ -101,9 +101,9 @@ export function clearToolbarVerb(render) {
 // ---- the project's tabs ------------------------------------------------------
 
 /** The project page standing under the bar, where there is one: a press on
- *  Workspaces or Issues is handed to it, so the page switches its tab in place
+ *  Workspaces or Tasks is handed to it, so the page switches its tab in place
  *  rather than being torn down and built again around the same rail. From any
- *  other route — an issue's page — a press is a navigation to that tab. */
+ *  other route — a task's page — a press is a navigation to that tab. */
 let projectTabHandler = null;
 
 export function setProjectTabHandler(handler) {
@@ -127,8 +127,8 @@ export function pressProjectTab(tab) {
     return;
   }
   const { deviceId, projectId } = App.route;
-  // Issues is the default, so it is Workspaces that has to be asked for (#46).
-  go({ ...projectRoute({ id: projectId, deviceId }), tab: tab === "workspaces" ? "workspaces" : "issues" });
+  // Tasks is the default, so it is Workspaces that has to be asked for (#46).
+  go({ ...projectRoute({ id: projectId, deviceId }), tab: tab === "workspaces" ? "workspaces" : "tasks" });
 }
 
 function paintVerb() {
@@ -207,23 +207,23 @@ const loadStandingWorkspaces = () => {
 // ---- the bar ----------------------------------------------------------------
 
 function identity() {
-  followStandingProjectIssues();
+  followStandingProjectTasks();
   return toolbarIdentity(App.route, {
     ...feed,
     workspaces: workspacesByProject.get(routeProjectKey(App.route)) || [],
-    issuesUnread: projectIssues.count(),
+    tasksUnread: projectTasks.count(),
   });
 }
 
-/** The routes whose bar carries the project's Issues tab, and so its count. */
-const ISSUES_TAB_ROUTES = new Set(["project", "trackerIssue"]);
+/** The routes whose bar carries the project's Tasks tab, and so its count. */
+const TASKS_TAB_ROUTES = new Set(["project", "trackerTask"]);
 
 /** Follow the watched unread of the project the bar stands in, where the bar
- *  carries its Issues tab (#104), and of none elsewhere. */
-function followStandingProjectIssues() {
+ *  carries its Tasks tab (#104), and of none elsewhere. */
+function followStandingProjectTasks() {
   const route = App.route;
-  if (ISSUES_TAB_ROUTES.has(route.name)) projectIssues.follow(route.deviceId, route.projectId);
-  else projectIssues.follow(null, null);
+  if (TASKS_TAB_ROUTES.has(route.name)) projectTasks.follow(route.deviceId, route.projectId);
+  else projectTasks.follow(null, null);
 }
 
 /** Repaint the bar. `entering` says the paint follows a navigation (a route the
@@ -460,7 +460,7 @@ function paintMenuShell() {
 
 /** The project half's pick: the menu moves to what is inside that project,
  *  which is its workspaces — read from that project's own machine. A legacy
- *  branch or issue route stays readable in the bar's sentence, but it is not a
+ *  branch or task route stays readable in the bar's sentence, but it is not a
  *  place the menu offers to go any more. */
 function pickProject(element) {
   if (!element) return false;
@@ -569,7 +569,7 @@ function workspaceMenuShellHtml() {
     <div class="tbmenu-list"></div>
     <div class="tbmenu-foot">
       <button class="mi" data-project-page type="button" role="menuitem"><span class="mt">Project page</span>
-        <span class="md">The issues and workspaces of ${esc(scopedName())}</span></button>
+        <span class="md">The tasks and workspaces of ${esc(scopedName())}</span></button>
       <button class="mi" data-create="workspace" type="button" role="menuitem"><span class="mt">New workspace…</span>
         <span class="md">Materialize every source in ${esc(scopedName())}</span></button>
     </div>`;
@@ -658,7 +658,7 @@ export function stopToolbar() {
   unsubscribeFeed?.();
   unsubscribeFeed = null;
   workspacesByProject.clear();
-  projectIssues.dispose();
+  projectTasks.dispose();
   closeMenu({ persist: false });
   return settled;
 }

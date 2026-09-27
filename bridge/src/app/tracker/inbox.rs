@@ -1,10 +1,10 @@
-//! Watched issues as inbox rows (spec: Issues → Watching).
+//! Watched tasks as inbox rows (spec: Tasks → Watching).
 //!
-//! The user watches an issue and it appears in the inbox beside the
-//! conversations, ordered by when it last moved. One row per watched issue,
-//! carrying what the row draws and nothing else: the issue itself is a click
+//! The user watches a task and it appears in the inbox beside the
+//! conversations, ordered by when it last moved. One row per watched task,
+//! carrying what the row draws and nothing else: the task itself is a click
 //! away, and a row that carried the body would be the inbox re-rendering the
-//! issue page in miniature.
+//! task page in miniature.
 //!
 //! The row's subtitle is the reader-facing voice of the same line an agent
 //! gets as a notice ([`super::notices::notice_line`]). One composer, two
@@ -13,17 +13,17 @@
 
 use super::notices::{notice_line, NoticeVoice};
 use crate::app::AppState;
-use crate::store::IssueFilter;
-use crate::tracker::{Assignee, Issue, TimelineEntry};
+use crate::store::TaskFilter;
+use crate::tracker::{Assignee, Task, TimelineEntry};
 use serde_json::{json, Value};
 
 impl AppState {
-    /// Every watched issue, as inbox rows.
+    /// Every watched task, as inbox rows.
     ///
-    /// Rows for issues only: the conversations beside them are the board's own
+    /// Rows for tasks only: the conversations beside them are the board's own
     /// and are built where they always were. They land in the same list so the
     /// interleave by `anchor` costs nothing on either side.
-    pub(in crate::app) fn watched_issue_rows(&mut self) -> Vec<Value> {
+    pub(in crate::app) fn watched_task_rows(&mut self) -> Vec<Value> {
         let projects: Vec<String> = self
             .projects
             .iter()
@@ -34,15 +34,15 @@ impl AppState {
             let Ok(path) = self.tracker_project_path(&project_id) else {
                 continue;
             };
-            let Ok(issues) = self.tracker_store().and_then(|store| {
+            let Ok(tasks) = self.tracker_store().and_then(|store| {
                 store
-                    .list_tracker_issues(&path, IssueFilter::default())
+                    .list_tracker_tasks(&path, TaskFilter::default())
                     .map_err(|error| error.to_string())
             }) else {
                 continue;
             };
-            for issue in issues.into_iter().filter(|issue| issue.watched) {
-                if let Some(row) = self.watched_issue_row(&project_id, &issue) {
+            for task in tasks.into_iter().filter(|task| task.watched) {
+                if let Some(row) = self.watched_task_row(&project_id, &task) {
                     rows.push(row);
                 }
             }
@@ -50,28 +50,28 @@ impl AppState {
         rows
     }
 
-    /// One row, or `None` for an issue whose timeline could not be read —
+    /// One row, or `None` for a task whose timeline could not be read —
     /// which is a row the inbox is better off without than wrong about.
-    fn watched_issue_row(&mut self, project_id: &str, issue: &Issue) -> Option<Value> {
+    fn watched_task_row(&mut self, project_id: &str, task: &Task) -> Option<Value> {
         let timeline = self
             .tracker_store()
             .ok()?
-            .load_tracker_timeline(&issue.id)
+            .load_tracker_timeline(&task.id)
             .ok()?;
         let last = timeline.last()?;
         let at = entry_at(last).to_string();
-        let assigned_to_user = matches!(issue.assignee, Some(Assignee::User));
+        let assigned_to_user = matches!(task.assignee, Some(Assignee::User));
         Some(json!({
-            "kind": "tracker_issue",
-            "issue_id": issue.id,
-            "number": issue.number,
+            "kind": "tracker_task",
+            "task_id": task.id,
+            "number": task.number,
             "project_id": project_id,
-            "title": issue.title,
-            "status": issue.status,
-            "assignee": issue.assignee,
+            "title": task.title,
+            "status": task.status,
+            "assignee": task.assignee,
             "assigned_to_user": assigned_to_user,
             "last_event": {
-                "text": self.reader_line_for(issue, last),
+                "text": self.reader_line_for(task, last),
                 "actor": self.entry_actor_words(last).to_reader,
                 "at": at,
             },
@@ -79,17 +79,17 @@ impl AppState {
             // anchor IS when it last moved, and the existing rows send both.
             "anchor": at,
             "last_activity": at,
-            "unread": unread_since_mark(issue, &timeline),
+            "unread": unread_since_mark(task, &timeline),
             // Mute is unwatch here, so a row that exists is not muted — the
             // absence of the row is the whole of the answer.
             "muted": false,
-            "done_until_next": self.issue_is_done_until_next(issue, &timeline),
+            "done_until_next": self.task_is_done_until_next(task, &timeline),
         }))
     }
 
     /// What the row's subtitle says: the reader's voice of the same line an
     /// agent would be sent about this event.
-    fn reader_line_for(&self, issue: &Issue, entry: &TimelineEntry) -> String {
+    fn reader_line_for(&self, task: &Task, entry: &TimelineEntry) -> String {
         let Some(notice) = super::notices::notice_of_entry(entry) else {
             // A timeline entry the notice vocabulary has no word for — a
             // tracking change, today. The row still needs a subtitle, and
@@ -98,7 +98,7 @@ impl AppState {
         };
         notice_line(
             &notice,
-            issue,
+            task,
             &self.entry_actor_words(entry),
             NoticeVoice::Reader,
         )
@@ -109,8 +109,8 @@ impl AppState {
     }
 
     /// Whether the user cleared this row and nothing has happened since.
-    fn issue_is_done_until_next(&self, issue: &Issue, timeline: &[TimelineEntry]) -> bool {
-        let Some(cleared) = issue.dismissed_through.as_deref() else {
+    fn task_is_done_until_next(&self, task: &Task, timeline: &[TimelineEntry]) -> bool {
+        let Some(cleared) = task.dismissed_through.as_deref() else {
             return false;
         };
         !timeline
@@ -125,19 +125,19 @@ impl AppState {
 /// Their own are excluded because a count that went up when the user
 /// commented would be telling them about themselves — and the inbox badge is
 /// a list of things asking for their attention. The inbox row says it as
-/// `unread`, and `issues.list` as each watched issue's `unread_count` (#104).
-pub(in crate::app) fn unread_since_mark(issue: &Issue, timeline: &[TimelineEntry]) -> usize {
+/// `unread`, and `tasks.list` as each watched task's `unread_count` (#104).
+pub(in crate::app) fn unread_since_mark(task: &Task, timeline: &[TimelineEntry]) -> usize {
     timeline
         .iter()
-        .filter(|entry| after(issue.read_through.as_deref(), entry_id(entry)))
+        .filter(|entry| after(task.read_through.as_deref(), entry_id(entry)))
         .filter(|entry| !matches!(entry_actor(entry), crate::tracker::Actor::User))
         .filter(|entry| counts_as_unread(entry))
         .count()
 }
 
 /// Whether a timeline entry is news to the user (#183): something said, a
-/// change to who holds the issue or where it stands, or an agent-created
-/// issue that asks the user to read it. Other bookkeeping — filing without an
+/// change to who holds the task or where it stands, or an agent-created
+/// task that asks the user to read it. Other bookkeeping — filing without an
 /// ask, tracking, linking, labelling, dispatching, watching, and what Build
 /// records about branches and workspaces — is not. The SPA's
 /// fallback count reads the same list (`spa/src/core/trackerUnread.js`), and
@@ -151,8 +151,8 @@ pub(in crate::app) fn counts_as_unread(entry: &TimelineEntry) -> bool {
 
 /// The event half of [`counts_as_unread`]: whether one event is news. Browser
 /// push asks the same question of the events a write carries (#191).
-pub(in crate::app) fn event_counts_as_unread(event: &crate::tracker::IssueEvent) -> bool {
-    use crate::tracker::{Actor, IssueEventKind as Kind};
+pub(in crate::app) fn event_counts_as_unread(event: &crate::tracker::TaskEvent) -> bool {
+    use crate::tracker::{Actor, TaskEventKind as Kind};
     match event.kind {
         Kind::Assigned | Kind::Unassigned | Kind::Moved | Kind::Closed | Kind::Reopened => true,
         Kind::Created => event.mentions_user && matches!(&event.actor, Actor::Agent { .. }),
@@ -173,7 +173,7 @@ pub(in crate::app) fn event_counts_as_unread(event: &crate::tracker::IssueEvent)
 
 /// Whether `id` is newer than a mark.
 ///
-/// Compared without the `ic-`/`ie-` in front: the rest is a ULID and so is
+/// Compared without the `tc-`/`te-` in front: the rest is a ULID and so is
 /// time-ordered, but the prefixes are not — every comment id sorts below
 /// every event id, and a mark left on an event would hide every comment made
 /// after it.
@@ -181,7 +181,7 @@ pub(in crate::app) fn after(mark: Option<&str>, id: &str) -> bool {
     mark.is_none_or(|mark| when(id) > when(mark))
 }
 
-/// One id without its kind: `ic-01K5Z…` and `ie-01K5Z…` are comparable, and
+/// One id without its kind: `tc-01K5Z…` and `te-01K5Z…` are comparable, and
 /// with the prefix on they are not.
 pub(in crate::app) fn when(id: &str) -> &str {
     id.split_once('-').map_or(id, |(_, ulid)| ulid)

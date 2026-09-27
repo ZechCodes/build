@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
-import { docErrorPaneHtml } from "../src/core/issueRender.js";
+import { docErrorPaneHtml } from "../src/core/taskRender.js";
 import { canImplement, implementBlockReason, shouldFetchPlanDoc, planDocPaneState } from "../src/core/taskActions.js";
 
 // The doc-read error pane carries an inline Retry affordance (W15) instead of the
-// old "Reopen the plan/stage to retry" copy. The button ids let the issue view
+// old "Reopen the plan/stage to retry" copy. The button ids let the task view
 // wire the latch-clear + refetch.
 describe("docErrorPaneHtml (doc-read Retry)", () => {
   it("offers an inline Retry button for the plan doc", () => {
@@ -27,7 +27,7 @@ describe("docErrorPaneHtml (doc-read Retry)", () => {
 
 // Implement-availability text drives the plan cockpit's footer (enabled split
 // button vs a disabled button carrying the bridge's own rejection reason).
-describe("Implement availability text (the issue view's dispatch)", () => {
+describe("Implement availability text (the task view's dispatch)", () => {
   const readyStages = [{ id: "s1", state: "approved" }];
 
   it("is available with no reason when approved, first stage approved, and no run", () => {
@@ -39,7 +39,7 @@ describe("Implement availability text (the issue view's dispatch)", () => {
   it("explains the not-yet-approved plan at the review gate", () => {
     const plan = { state: "plan_review", active_run_id: null, stages: readyStages };
     expect(canImplement(plan)).toBe(false);
-    expect(implementBlockReason(plan)).toMatch(/mark the issue ready/i);
+    expect(implementBlockReason(plan)).toMatch(/mark the task ready/i);
   });
 
   it("explains the unapproved first stage", () => {
@@ -65,7 +65,7 @@ describe("Implement availability text (the issue view's dispatch)", () => {
   it("still blocks an unapproved single-doc plan at the review gate", () => {
     const plan = { state: "plan_review", active_run_id: null, stages: [] };
     expect(canImplement(plan)).toBe(false);
-    expect(implementBlockReason(plan)).toMatch(/mark the issue ready/i);
+    expect(implementBlockReason(plan)).toMatch(/mark the task ready/i);
   });
 
   it("still blocks a single-doc plan that already has a run", () => {

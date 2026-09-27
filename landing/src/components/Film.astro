@@ -53,15 +53,15 @@ const team = [
     </div>
   </div>
 
-  <!-- Act 3: the issue card, lifted out of the board's Ready column. The hole
+  <!-- Act 3: the task card, lifted out of the board's Ready column. The hole
        is the column behind the card, a little wider than the card, so nothing
        of it stays behind when it lifts. -->
   <div class="panel panel--hole" data-panel="hole" data-panel-device="laptop" data-panel-region="650 291 252 140"></div>
-  <div class="panel panel--issue" data-panel="issue" data-panel-device="laptop" data-panel-region="656 297 240 128" data-panel-flat="0.64 0.46 0.30">
-    <div class="issue-card">
-      <div class="issue-card-head"><i class="state-dot"></i><span class="issue-number">#78</span><span class="priority">High</span></div>
+  <div class="panel panel--task" data-panel="task" data-panel-device="laptop" data-panel-region="656 297 240 128" data-panel-flat="0.64 0.46 0.30">
+    <div class="task-card">
+      <div class="task-card-head"><i class="state-dot"></i><span class="task-number">#78</span><span class="priority">High</span></div>
       <strong>Make archived items searchable</strong>
-      <div class="issue-card-labels"><span class="label">search</span><span class="label">bug</span><span class="column-chip" data-column-chip><span data-column="ready">Ready</span><span data-column="progress">In progress</span></span></div>
+      <div class="task-card-labels"><span class="label">search</span><span class="label">bug</span><span class="column-chip" data-column-chip><span data-column="ready">Ready</span><span data-column="progress">In progress</span></span></div>
       <p class="assignee"><span data-assignee="none">Unassigned</span><span data-assignee="agent"><i class="mark"></i>Claude Code</span></p>
       <code class="branch-line" data-branch-line>{branchLine}</code>
     </div>
@@ -82,7 +82,7 @@ const team = [
     ))}
   </div>
 
-  <!-- Act 5: the workflow builder, a project page like Issues, taken over by
+  <!-- Act 5: the workflow builder, a project page like Tasks, taken over by
        HTML. -->
   <div class="panel panel--builder" data-panel="builder" data-panel-device="laptop" data-panel-region="356 209 1042 522" data-panel-flat="0.5 0.6 0.72">
     <aside class="palette">
@@ -106,7 +106,7 @@ const team = [
       <article class="node" data-node="review"><small data-node-index="review">2</small><strong>Review</strong><span>Codex</span><em data-node-status="review">Waiting</em></article>
       <article class="node gate" data-node="gate"><small data-node-index="gate">3</small><strong>You decide</strong><span>Human gate</span><em data-node-status="gate">Waiting</em></article>
       <article class="node" data-node="merge"><small data-node-index="merge">4</small><strong>Merge</strong><span>Build</span><em>Waiting</em></article>
-      <p class="canvas-caption" data-canvas-caption>Saved as <em>Fix with tests</em>. Runs on the next issue.</p>
+      <p class="canvas-caption" data-canvas-caption>Saved as <em>Fix with tests</em>. Runs on the next task.</p>
     </div>
   </div>
 

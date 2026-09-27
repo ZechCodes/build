@@ -100,7 +100,7 @@ describe("device recovery supervisor", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(attempts).toEqual(["dev-a"]);
 
-    // Mid-attempt: a second dial here is the double mint this issue also reports.
+    // Mid-attempt: a second dial here is the double mint this task also reports.
     expect(recovery.wake("online")).toEqual({ reason: "online", woke: [] });
     await vi.advanceTimersByTimeAsync(0);
 
@@ -130,7 +130,7 @@ describe("device recovery supervisor", () => {
     expect(attempts).toEqual([]);
   });
 
-  // The fourth reset the issue asks for was already there, by a different route:
+  // The fourth reset the task asks for was already there, by a different route:
   // a connected session forgets the record, so the count starts from zero next
   // time. Asserted so it cannot regress silently.
   it("forgets the failure count once a session reaches connected", async () => {

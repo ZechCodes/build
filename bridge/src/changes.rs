@@ -11,7 +11,7 @@
 //!
 //! `board.changed` says the feed is stale — a task lifecycle transition, the
 //! inbox/attention map, a capture, an agent coming or going. `entity.changed`
-//! says one issue/branch/run's thread, stages, git state or diff is stale. A
+//! says one task/branch/run's thread, stages, git state or diff is stale. A
 //! client that holds both refetches what it is showing; nothing about WHAT
 //! changed rides the wire, so the events stay content-free like every other
 //! signal Build sends about work it cannot read.
@@ -105,9 +105,9 @@ pub const UNPUSHED_COMMITS_MAX: usize = 20;
 /// pages forward from the sequence it holds. An agent that says a hundred
 /// things between two flushes is a harness in a storm, not a conversation.
 pub const THREAD_PUSH_MAX_ITEMS: usize = 100;
-/// The same, for the issue ids one `issues` item names. Past it the item is
-/// `truncated`, which means "refetch the list", not "these issues".
-pub const ISSUES_PER_FLUSH: usize = 200;
+/// The same, for the task ids one `tasks` item names. Past it the item is
+/// `truncated`, which means "refetch the list", not "these tasks".
+pub const TASKS_PER_FLUSH: usize = 200;
 
 /// The clamp on a `{"batch_ms": N}` mode, as the greeting advertises it.
 pub const MIN_BATCH_MS: u64 = 1_000;
@@ -150,14 +150,14 @@ pub enum Kind {
     Files,
     /// The tabs open in a checkout — the human's shells, coming and going.
     Terminals,
-    /// One project's issue tracker: a create, an update, a comment, a move
-    /// (spec: Issues → Push).
+    /// One project's task tracker: a create, an update, a comment, a move
+    /// (spec: Tasks → Push).
     ///
     /// The one kind whose entity is a PROJECT rather than a work item, because
     /// a tracker belongs to a project and not to any one thing inside it. A
     /// subscription scoped `all` receives it beside everything else; one
     /// scoped to a project entity receives only it.
-    Issues,
+    Tasks,
 }
 
 impl Kind {
@@ -168,7 +168,7 @@ impl Kind {
         Kind::Git,
         Kind::Files,
         Kind::Terminals,
-        Kind::Issues,
+        Kind::Tasks,
     ];
 
     /// How the wire spells it.
@@ -179,7 +179,7 @@ impl Kind {
             Kind::Git => "git",
             Kind::Files => "files",
             Kind::Terminals => "terminals",
-            Kind::Issues => "issues",
+            Kind::Tasks => "tasks",
         }
     }
 
@@ -236,7 +236,7 @@ impl FromIterator<Kind> for KindSet {
 pub enum Scope {
     /// The feed itself: `state` only, carrying the board revision.
     Board,
-    /// One issue, run, or worktree.
+    /// One task, run, or worktree.
     Entity(String),
     /// Every entity the board currently lists, tracked as the board changes.
     All,
@@ -463,7 +463,7 @@ pub struct SubscribeOutcome {
 pub struct BoardLists {
     pub projects: bool,
     pub workspaces: bool,
-    /// The harnesses out of usage on this device (issue #58).
+    /// The harnesses out of usage on this device (task #58).
     pub usage_limits: bool,
 }
 
@@ -552,7 +552,7 @@ pub struct FactsRequest {
 pub struct ThreadTip {
     pub agent_id: String,
     /// Canonical conversation identity, which can differ from `agent_id`
-    /// when an implementation agent continues an issue agent's conversation.
+    /// when an implementation agent continues a task agent's conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation_id: Option<String>,
     pub last_sequence: u64,
@@ -628,7 +628,7 @@ pub enum ChangeKey {
     /// Feed-level state: task lifecycle, inbox/attention, capture, agent
     /// liveness — anything the board reads.
     Board,
-    /// One issue/branch/run: its thread, stages, git state or diff.
+    /// One task/branch/run: its thread, stages, git state or diff.
     Entity(String),
 }
 
@@ -660,7 +660,7 @@ struct Pending {
 // ------------------------------------------------------- subscriptions ---
 
 /// The names one kind carries on an item — a `files` item's paths, an
-/// `issues` item's issue ids — with the cap that turns naming them into
+/// `tasks` item's task ids — with the cap that turns naming them into
 /// "refetch".
 ///
 /// One type for both, because they are one idea: a bounded list of what moved,
@@ -688,7 +688,7 @@ impl NameSet {
 struct PendingItem {
     kinds: KindSet,
     files: NameSet,
-    issues: NameSet,
+    tasks: NameSet,
 }
 
 impl PendingItem {
@@ -697,11 +697,11 @@ impl PendingItem {
     }
 
     /// Split into (what the settle window holds back, what may go now): the
-    /// worktree kinds wait, `state`, `thread` and `issues` never do.
+    /// worktree kinds wait, `state`, `thread` and `tasks` never do.
     fn split_worktree(self) -> (PendingItem, PendingItem) {
         let mut held = PendingItem {
             files: self.files,
-            issues: self.issues,
+            tasks: self.tasks,
             ..PendingItem::default()
         };
         let mut due = PendingItem::default();
@@ -802,7 +802,7 @@ impl Subscription {
         item.kinds.insert(kind);
         match kind {
             Kind::Files => item.files.add(names, FILES_PER_FLUSH),
-            Kind::Issues => item.issues.add(names, ISSUES_PER_FLUSH),
+            Kind::Tasks => item.tasks.add(names, TASKS_PER_FLUSH),
             _ => {}
         }
     }
@@ -1097,10 +1097,10 @@ fn item_payload(
     if item.kinds.contains(Kind::Terminals) {
         out.insert("terminals".into(), terminals_payload(facts));
     }
-    if item.kinds.contains(Kind::Issues) {
+    if item.kinds.contains(Kind::Tasks) {
         out.insert(
-            "issues".into(),
-            json!({ "issue_ids": item.issues.names, "truncated": item.issues.truncated }),
+            "tasks".into(),
+            json!({ "task_ids": item.tasks.names, "truncated": item.tasks.truncated }),
         );
     }
     Value::Object(out)
@@ -1593,14 +1593,14 @@ impl ChangeBus {
         self.note_legacy_entity(entity_id, Kind::Files);
     }
 
-    /// These issues of this project moved (spec: Issues → Push).
+    /// These tasks of this project moved (spec: Tasks → Push).
     ///
     /// The subscription path ONLY. No legacy `entity.changed` and no board
-    /// bump: a client in legacy mode has no issues surface to refetch, and
+    /// bump: a client in legacy mode has no tasks surface to refetch, and
     /// bumping the board on every comment would repaint the feed for something
     /// the feed does not show.
-    pub fn note_issues(&self, project_id: &str, issue_ids: &[String]) {
-        self.note_subscriptions(project_id, Kind::Issues, issue_ids);
+    pub fn note_tasks(&self, project_id: &str, task_ids: &[String]) {
+        self.note_subscriptions(project_id, Kind::Tasks, task_ids);
     }
 
     /// The feed is stale: bump the revision a client compares against, note
@@ -3141,10 +3141,10 @@ mod subscriptions {
         let accepted: SubscriptionSpec = serde_json::from_value(json!({
             "subscription_id": "s-inbox",
             "scope": { "kind": "entity", "id": "proj-1" },
-            "kinds": ["state", "thread", "issues"],
+            "kinds": ["state", "thread", "tasks"],
         }))
         .expect("every kind this bridge advertises");
-        assert!(accepted.kinds.contains(Kind::Issues));
+        assert!(accepted.kinds.contains(Kind::Tasks));
     }
 
     #[test]
@@ -3152,7 +3152,7 @@ mod subscriptions {
         let wire = json!({
             "subscription_id": "s-focus",
             "scope": { "kind": "entity", "id": "run-7" },
-            "kinds": ["state", "thread", "git", "files", "terminals", "issues"],
+            "kinds": ["state", "thread", "git", "files", "terminals", "tasks"],
             "mode": "realtime",
             "priority": "foreground",
         });

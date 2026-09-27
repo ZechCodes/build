@@ -5,14 +5,14 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
 
-const { mountGitPane, mountConsole, mountAgentRail, mountWorkspaceIssuesTab, renderFilesTab } = vi.hoisted(() => ({
+const { mountGitPane, mountConsole, mountAgentRail, mountWorkspaceTasksTab, renderFilesTab } = vi.hoisted(() => ({
   mountGitPane: vi.fn((host) => {
     host.innerHTML = '<aside class="crail-host"></aside>';
     return { dispose: vi.fn() };
   }),
   mountConsole: vi.fn(() => ({ dispose: vi.fn() })),
   mountAgentRail: vi.fn(() => ({ dispose: vi.fn() })),
-  mountWorkspaceIssuesTab: vi.fn(() => ({ feedMoved: vi.fn(), dispose: vi.fn() })),
+  mountWorkspaceTasksTab: vi.fn(() => ({ feedMoved: vi.fn(), dispose: vi.fn() })),
   renderFilesTab: vi.fn((host) => {
     host.innerHTML = '<aside class="ftree"></aside><main class="file-editor"></main>';
     return { dispose: vi.fn(), canLeave: vi.fn(async () => false) };
@@ -23,7 +23,7 @@ vi.mock("../src/core/gitPane.js", () => ({ mountGitPane }));
 vi.mock("../src/core/console.js", () => ({ mountConsole }));
 vi.mock("../src/core/agentRail.js", () => ({ mountAgentRail }));
 // Only the tab's mount is stood in for; the routes it mints are the real ones.
-vi.mock("../src/core/workspaceIssuesTab.js", async (importOriginal) => ({ ...(await importOriginal()), mountWorkspaceIssuesTab }));
+vi.mock("../src/core/workspaceTasksTab.js", async (importOriginal) => ({ ...(await importOriginal()), mountWorkspaceTasksTab }));
 vi.mock("../src/views/files.js", () => ({ renderFilesTab }));
 
 // The surface stands on this machine's cached workspace list. The feed is a
@@ -126,7 +126,7 @@ beforeEach(async () => {
   mountGitPane.mockClear();
   mountConsole.mockClear();
   mountAgentRail.mockClear();
-  mountWorkspaceIssuesTab.mockClear();
+  mountWorkspaceTasksTab.mockClear();
   renderFilesTab.mockClear();
   App.viewDispose = null;
   App.viewingContext = { clear() {} };
@@ -171,11 +171,11 @@ describe("workspace surface", () => {
     expect(App.route.commit).toBeUndefined();
   });
 
-  it("keeps cache-feed announcements wired to an open Issues tab", async () => {
-    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", tab: "issues" };
+  it("keeps cache-feed announcements wired to an open Tasks tab", async () => {
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", tab: "tasks" };
     device("dev-1", async () => workspace);
     await standUp();
-    const pane = mountWorkspaceIssuesTab.mock.results[0].value;
+    const pane = mountWorkspaceTasksTab.mock.results[0].value;
 
     deliverWorkspaces([workspace]);
 
@@ -337,7 +337,7 @@ describe("workspace surface", () => {
       expect(options.agentSelection).toBe(selection);
       expect(options.agentSelection.scope()).toEqual({ agent_id: "second-agent" });
     }
-    expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files", "issues"]);
+    expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files", "tasks"]);
   });
 
   // A link from a message to the conversation it came from names the agent on
@@ -376,9 +376,9 @@ describe("workspace surface", () => {
     await flush();
     expect(document.querySelector("#tabbody [data-tab]")).toBeNull();
     expect(document.querySelector("#dir-rail .dirtab.active").dataset.tab).toBe("changes");
-    // #174: Changes, Files and Issues, then Settings at the foot above the
+    // #174: Changes, Files and Tasks, then Settings at the foot above the
     // sidebar toggle.
-    expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files", "issues"]);
+    expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files", "tasks"]);
     expect([...document.querySelector("#dir-rail").children].slice(1).map((cell) => cell.getAttribute("aria-label")))
       .toEqual(["Workspace settings", "Collapse sidebar"]);
     // The rail belongs to the surface standing on it: leaving hands the shell's
@@ -397,25 +397,25 @@ describe("workspace surface", () => {
     await openWorkspace();
     await flush();
     expect(renderFilesTab).not.toHaveBeenCalled();
-    expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files", "issues"]);
+    expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files", "tasks"]);
     expect(document.querySelector("#dir-rail .dirtab.active").dataset.tab).toBe("files");
   });
 
-  it("marks Issues on the rail on the workspace's Issues tab, and goes there from the rail", async () => {
+  it("marks Tasks on the rail on the workspace's Tasks tab, and goes there from the rail", async () => {
     App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes" };
     device("dev-1", async () => workspace);
     await standUp();
-    document.querySelector("#dir-rail [data-tab=issues]").click();
+    document.querySelector("#dir-rail [data-tab=tasks]").click();
     await flush();
-    expect(location.hash).toBe("#/device/dev-1/project/p-1/workspace/ws-1/issues");
+    expect(location.hash).toBe("#/device/dev-1/project/p-1/workspace/ws-1/tasks");
     App.viewDispose();
     App.viewDispose = null;
 
-    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", tab: "issues" };
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", tab: "tasks" };
     await standUp();
-    expect(mountWorkspaceIssuesTab).toHaveBeenCalled();
-    expect(document.querySelector("#dir-rail .dirtab.active").dataset.tab).toBe("issues");
-    // The Issues tab names no directory, so neither does the way back to Files:
+    expect(mountWorkspaceTasksTab).toHaveBeenCalled();
+    expect(document.querySelector("#dir-rail .dirtab.active").dataset.tab).toBe("tasks");
+    // The Tasks tab names no directory, so neither does the way back to Files:
     // the surface stands it on the first one.
     document.querySelector("#dir-rail [data-tab=files]").click();
     await flush();

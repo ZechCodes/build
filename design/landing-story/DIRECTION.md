@@ -1,7 +1,7 @@
 # Build landing page: story and direction
 
-Issue #75. Planning only: nothing on the page changes until the maintainer approves this document.
-Written by the Fable lead, converged with the Astra co-planner on the issue.
+Task #75. Planning only: nothing on the page changes until the maintainer approves this document.
+Written by the Fable lead, converged with the Astra co-planner on the task.
 
 **Working title:** *Your agents. Your machine. Your call.*
 
@@ -43,7 +43,7 @@ is one idea, one device group, one moving thing.
 ## 1. The story
 
 One continuous example carries the whole page: **make archived items searchable**. The
-visitor sees the same file, the same issue, the same branch, and the same test from the
+visitor sees the same file, the same task, the same branch, and the same test from the
 first screen to the merge. That is what makes six features read as one product instead of
 a list.
 
@@ -51,15 +51,15 @@ a list.
 |---|---|---|---|---|
 | 1 | **Open** | Your agents. Your machine. Your call. | Build is an IDE for agentic coding. The laptop is open on a real editor the moment the page loads, and a human types a line into it. | Recognition, then ownership. "That's an IDE, and it's mine." |
 | 2 | **Where it runs** | The work runs on your machine. | Agents execute on your hardware and change your checkouts. The hosted service does sign-in and the handshake, nothing more. | Relief. Trust. |
-| 3 | **Hand it off** | Say what needs doing. | Write the issue where the code lives. Assign it. An agent cuts a branch on your machine and starts. | Leverage. |
-| 4 | **The day moves** | One issue. A whole team. | Agents fan out into their own workspaces. One asks a question. You answer from your phone. The laptop keeps working. | Momentum. |
+| 3 | **Hand it off** | Say what needs doing. | Write the task where the code lives. Assign it. An agent cuts a branch on your machine and starts. | Leverage. |
+| 4 | **The day moves** | One task. A whole team. | Agents fan out into their own workspaces. One asks a question. You answer from your phone. The laptop keeps working. | Momentum. |
 | 5 | **Wire it** | Build the workflow. Then run it again. | The path you just watched is a workflow. Open the builder, add a test step, move the review, put the gate where you want your call. | Authorship. Power, and a little play. |
 | 6 | **Everything has a home** | Every change lands in Git. | Your line and the agents' lines on one branch. Diff, stage, commit, without leaving the window. | Legibility. Nothing hidden. |
 | 7 | **Your call** | See what needs you. Decide what ships. | Agents triage the changes. What needs your judgment comes first, with the diff and the evidence beside it. You approve. Build merges. The climax. | Control. Confidence. |
 | 8 | **Any screen** | Your work stays put. You don't have to. → Your machine. Your call. | The lineup at true physical scale. Then the call to action. | Resolution. Invitation. |
 
 **Why this order.** The page follows the shape of a piece of work rather than a feature
-list: where you sit (editor) → where it runs (the machine) → what to do (issue) → who does
+list: where you sit (editor) → where it runs (the machine) → what to do (task) → who does
 it (agents) → how it's composed (workflow) → where it lands (Git) → your decision (review)
 → where you can be while all that happens (any screen). Each act is a consequence of the
 one before it, and the page builds toward review, which is the product's real promise: you
@@ -180,29 +180,29 @@ close-up. Nothing depends on the 3D to be understood (see section 5).
 
 ### Act 3. Hand it off (about 100vh)
 
-- **Kicker:** 03 / Issues
+- **Kicker:** 03 / Tasks
 - **Headline:** Say what needs doing.
-- **Support:** Write the issue where the code lives. Assign it to an agent. It cuts a branch
+- **Support:** Write the task where the code lives. Assign it to an agent. It cuts a branch
   on your machine and starts. You write the next one.
 - **Devices:** laptop, three-quarter view from the left (x 68, y 58, w 50, yaw −12), opaque.
-- **Screen:** `ui12-issues-macbook` (new). Build's issue board: columns Backlog, Ready, In
+- **Screen:** `ui12-tasks-macbook` (new). Build's task board: columns Backlog, Ready, In
   progress, In review. One card in Ready: "Make archived items searchable", labels `search`,
   `bug`. The machine label stays in the status bar.
-- **HTML close-up:** the issue card, aligned to the screen plane then growing out of it
+- **HTML close-up:** the task card, aligned to the screen plane then growing out of it
   into a readable card (same technique as the current review surface).
 - **Beats:**
-  - 0 → 0.20: laptop arrives; issue board visible.
+  - 0 → 0.20: laptop arrives; task board visible.
   - 0.20 → 0.35: the card lifts out of the screen into the HTML close-up.
   - 0.35 → 0.50: the assignee chip fills: "Claude Code".
   - 0.50 → 0.70: the card slides from Ready to In progress; under it, a branch line appears:
     `build/archive-search · ~/code/build/workspaces/archive-search`.
   - 0.70 → 0.85: hold. 0.85 → 1.0: the card returns to the screen; exit.
-- **Document version:** still plus the issue card in its In progress state.
+- **Document version:** still plus the task card in its In progress state.
 
 ### Act 4. The day moves (about 110vh)
 
 - **Kicker:** 04 / Orchestration
-- **Headline:** One issue. A whole team.
+- **Headline:** One task. A whole team.
 - **Support:** The agent splits the work: one implements, one reviews, one audits the edge
   cases. Each gets its own workspace, a copy-on-write copy of your checkout, made in an
   instant on your machine. When one needs you, it asks. You answer from the screen in
@@ -236,7 +236,7 @@ close-up. Nothing depends on the 3D to be understood (see section 5).
 - **Headline:** Build the workflow. Then run it again.
 - **Support:** The path you just watched is a workflow: implement, review, decide. Open it
   in the builder. Add a test step. Move the review. Put the gate where you want your call.
-  Run it on the next issue.
+  Run it on the next task.
 - **Devices:** laptop, front and center, large (x 50, y 60, w 66, yaw 0), aligned to the
   layout plane (faceCamera 0) so the screen hands off to HTML cleanly.
 - **Screen:** `ui16-builder-macbook` (new). The interactive builder: a canvas with four
@@ -258,7 +258,7 @@ close-up. Nothing depends on the 3D to be understood (see section 5).
     which pulses and waits. The change governs the handoff that is about to happen; it
     does not rewrite work already done, and nothing upstream re-runs.
   - 0.70 → 0.85: hold on the waiting gate. A small caption under the canvas: "Saved as
-    *Fix with tests*. Runs on the next issue."
+    *Fix with tests*. Runs on the next task."
   - 0.85 → 1.0: the canvas returns to the screen; the laptop pulls back for act 6.
 - **Document version:** two stills of the HTML canvas (before and after the test node),
   side by side.
@@ -381,13 +381,13 @@ Each feature is the next state of the same job, so the page builds instead of li
 | Order | Feature | Act | Its moment | What it proves about control |
 |---|---|---|---|---|
 | 1 | **Code editor** | 1 (and 6) | The page opens on an open laptop running an editor, and a human types a test line into it. | It is your editor; you can type in it. |
-| 2 | **Issue tracking** | 3 | The issue is written beside the code, assigned, and moves to In progress with a branch on your machine. | Work is described and assigned where the code lives. |
+| 2 | **Task tracking** | 3 | The task is written beside the code, assigned, and moves to In progress with a branch on your machine. | Work is described and assigned where the code lives. |
 | 3 | **Agent orchestration** | 4 | One agent becomes three, each in its own workspace; one asks, you answer from a phone, it resumes. | Agents execute on your hardware, in your checkouts, and ask before they guess. |
 | 4 | **Dynamic workflows + interactive builder** | 5 | The path from act 4 is opened as a graph; a test node is inserted; edges reconnect; a pulse stops at the human gate. | You author how work happens and where your call sits. |
 | 5 | **Git tools** | 6 | Your line and the agents' lines on one branch; edit in the diff; stage; commit. | Nothing an agent did is invisible; you can change any of it. |
 | 6 | **Review surface with agent triage** | 7 | Triage surfaces one finding, keeps the rest inspectable, shows the diff and the evidence (your test passing), you approve, Build merges. | You decide what ships. |
 
-Editor before issues because the visitor has to know what kind of product this is before
+Editor before tasks because the visitor has to know what kind of product this is before
 any agent appears. Orchestration before workflows because the builder edits a path the
 visitor has already watched, which is what makes the graph mean something. Git before
 review because review needs the branch and the commit to exist. Review last because it is
@@ -441,7 +441,7 @@ screen mappings around the old six chapters (`deviceNamesForScene`, `getDeviceSc
 the review-frame special case). The new build keeps the renderer, materials, loader, and
 fade code, and drives poses and screen sources from GSAP timelines per act instead.
 
-**HTML close-ups** (the typed test, the issue card, the builder canvas, the Git panel, the
+**HTML close-ups** (the typed test, the task card, the builder canvas, the Git panel, the
 review surface) are ordinary DOM animated by the same timelines, aligned to the device
 screen plane using the alignment the review surface uses today. That is where most of the
 "Apple" feel comes from, and it needs no 3D.
@@ -486,7 +486,7 @@ A static build, dropped into the current serving path, with one integration chan
   in `skriftapp/app.yaml`) and the landing already has the form and client
   (`waitlist.html`, `waitlist-form.js`, `waitlist-api.js`). The CTA needs no new signup
   infrastructure. Note that `preview-landing.py` registers only `RootController`, so the
-  preview does not exercise submission; the implementation issue should either register
+  preview does not exercise submission; the implementation task should either register
   the waitlist controller in the preview or document the form's preview-only state.
 - `preview-landing.py` and the landing browser check (`web/landing-check.mjs`; the old
   `web/landing-record.mjs` drove the retired page and went with it) keep working against the built output; `test_root_landing.py`
@@ -552,7 +552,7 @@ that is the point to ask the maintainer for one.
 - The product term is **workspace** (copy-on-write), never "worktree", in every path and
   label. Paths look like `~/code/build/workspaces/archive-search`.
 - These are demonstration states of the final product. The fixture may draw UI the client
-  does not have yet (editor, issue board, builder canvas, Git panel, triage list). Use the
+  does not have yet (editor, task board, builder canvas, Git panel, triage list). Use the
   Build palette (black, mint `#51ffb4`, Inter and JetBrains Mono), as decided on #75:
   contrast comes from the lit UI on dark hardware, not from extra colour.
 - Animated parts of each act (typing, the card lifting, nodes moving, the fan-out) are HTML
@@ -564,7 +564,7 @@ that is the point to ask the maintainer for one.
 | File | Size | Act | What is on screen |
 |---|---|---|---|
 | `ui10-editor-macbook.webp` | 1512×982 | 1, 2 | Editor. File tree left with `build-app/src/search/archive.ts` and `archive.test.ts`; `archive.ts` open in the middle with `search.remove(id)` still present (before any change); terminal drawer collapsed along the bottom; agents rail right with one row "Fixing archive button · Claude Code · Working"; status bar with the machine label. `archive.test.ts` is **not** edited in the texture: the typed test is an overlay. |
-| `ui12-issues-macbook.webp` | 1512×982 | 3 | Issue board with columns Backlog, Ready, In progress, In review. One card in Ready: "Make archived items searchable", labels `search` and `bug`, no assignee. Machine label. |
+| `ui12-tasks-macbook.webp` | 1512×982 | 3 | Task board with columns Backlog, Ready, In progress, In review. One card in Ready: "Make archived items searchable", labels `search` and `bug`, no assignee. Machine label. |
 | `ui13-team-macbook.webp` | 1512×982 | 4 | Agents view derived from the existing `ui04` layout. Three rows: "Implement · Claude Code · ~/code/build/workspaces/archive-search", "Review · Codex · ~/code/build/workspaces/archive-review", "Audit edge cases · Codex · ~/code/build/workspaces/archive-audit", each "Working"; a "3 running" counter; terminal drawer open one line showing a test run. Machine label. (The Waiting state on the Implement row is an overlay.) |
 | `ui16-builder-macbook.webp` | 1512×982 | 5 | Workflow builder. Canvas with four nodes on one path, Implement → Review → You decide → Merge, each node showing the agent that runs it; the Implement node reads "Done · handoff pending". Node palette on the left: Agent, Test, Review, Human gate, Fan out. Machine label. |
 | `ui14-git-macbook.webp` | 1512×982 | 6, 7 | Editor with the Git panel open: branch `build/archive-search`, workspace path, a small commit graph (main, the branch, three agent commits), working tree list with `archive.ts` and `archive.test.ts` modified. The editor shows the `archive.ts` diff: `search.remove(id)` removed, `search.update(id, { archived: true })` added. Machine label. |
@@ -582,7 +582,7 @@ WebP, black background, one desktop and one mobile file per act.
 |---|---|---|---|
 | `scene-01-desktop.webp`, `scene-01-mobile.webp` | 1440×900, 720×960 | 1 | Laptop fully open, low front view, showing `ui10-editor-macbook`. This is the hero fallback and the first thing a reduced-motion or phone reader sees: never a closed or partly open lid. (Today's scene-01 poster is already open; keep it that way with the new screen.) |
 | `scene-02-desktop.webp`, `scene-02-mobile.webp` | 1440×900, 720×960 | 2 | Laptop centered and smaller, turned 12° toward the copy side, `ui10-editor-macbook`. |
-| `scene-03-desktop.webp`, `scene-03-mobile.webp` | 1440×900, 720×960 | 3 | Laptop three-quarter view from the left, `ui12-issues-macbook`. |
+| `scene-03-desktop.webp`, `scene-03-mobile.webp` | 1440×900, 720×960 | 3 | Laptop three-quarter view from the left, `ui12-tasks-macbook`. |
 | `scene-04-desktop.webp`, `scene-04-mobile.webp` | 1440×900, 720×960 | 4 | Laptop open on the left with `ui13-team-macbook`; phone on the right with `ui03-answer-iphone`. |
 | `scene-05-desktop.webp`, `scene-05-mobile.webp` | 1440×900, 720×960 | 5 | Laptop front and center, large, `ui16-builder-macbook`. |
 | `scene-06-desktop.webp`, `scene-06-mobile.webp` | 1440×900, 720×960 | 6 | Laptop near-frontal close-up, `ui14-git-macbook`. |
@@ -595,7 +595,7 @@ WebP, black background, one desktop and one mobile file per act.
 **Also keep in sync**: `screen-manifest.json` (new states and their descriptions),
 `assets/devices/metadata.json` (render bounds, hashes, provenance for the posters), and
 `design/landing/README.md`'s poster list (eight pairs, not six). No page code changes are
-part of this handoff; the timeline that consumes these files is the rewrite issue's job.
+part of this handoff; the timeline that consumes these files is the rewrite task's job.
 
 **Not needed.** No new geometry, materials, or Blender modelling: no rear views, no
 portrait tablet, no exploded views, no depth-of-field or bloom (the runtime bundle has no

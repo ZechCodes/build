@@ -24,14 +24,14 @@ export function consoleSize(value) {
   return CONSOLE_SIZES.includes(value) ? value : "collapsed";
 }
 
-/** The work item whose console this is. Each workspace, branch and issue keeps
+/** The work item whose console this is. Each workspace, branch and task keeps
  *  its own — the terminals are the checkout's, so the size belongs to it too.
  *  A workspace is one machine's, and a workspace id is one bridge's, so its key
  *  carries the machine (core/deviceKey.js). */
 export function consoleKey(context) {
   if (!context) return "none";
   if (context.kind === "workspace") return `workspace:${workspaceKey(context.deviceId, context.workspaceId)}`;
-  return context.kind === "issue" ? `issue:${context.issueId}` : `branch:${context.projectId}:${context.branch}`;
+  return context.kind === "task" ? `task:${context.taskId}` : `branch:${context.projectId}:${context.branch}`;
 }
 
 /** What this device last chose for that work item. */
@@ -84,14 +84,14 @@ export function grownConsoleSize(size) {
  * `term.list`/`term.create` take (`{run_id}`, `{project_id, worktree_id}`,
  * `{project_id}`), or null when nothing here names a directory.
  *
- * `row` is the branch's `branch.get` payload; an issue needs none — its agent
+ * `row` is the branch's `branch.get` payload; a task needs none — its agent
  * runs in the project's own checkout, which the project alone names.
  */
 const scopeResolvers = {
   // A workspace owns its terminals as a whole. Its selected source directory
   // deliberately does not participate in terminal identity.
   workspace: (context) => context.workspaceId ? { workspace_id: context.workspaceId } : null,
-  issue: (context) => context.projectId ? { project_id: context.projectId } : null,
+  task: (context) => context.projectId ? { project_id: context.projectId } : null,
   branch: (context, row) => branchConsoleScope(context, row),
 };
 
@@ -119,8 +119,8 @@ export function consoleScope(context, row) {
  */
 export function consoleFeedRoute(context) {
   if (!context) return null;
-  if (context.kind === "issue")
-    return { name: "issue", deviceId: context.deviceId, projectId: context.projectId, id: context.issueId };
+  if (context.kind === "task")
+    return { name: "task", deviceId: context.deviceId, projectId: context.projectId, id: context.taskId };
   if (context.kind === "workspace")
     return {
       name: "workspace",

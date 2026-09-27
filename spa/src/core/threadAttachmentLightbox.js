@@ -1,7 +1,7 @@
 // The one lightbox: every picture and video an attachment tile opens, in a
-// conversation and on an issue alike (#116).
+// conversation and on a task alike (#116).
 //
-// It is handed the media of ONE list — a message's files, an issue body's, one
+// It is handed the media of ONE list — a message's files, a task body's, one
 // comment's — and the index that was pressed, so the arrows and a swipe move
 // through what was said together and nothing else. Each item brings its own
 // `source()`, a promise of cached byte pages: a picture already on

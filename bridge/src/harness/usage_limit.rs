@@ -15,7 +15,7 @@
 //! is: `model: "<synthetic>"`, `isApiErrorMessage: true`, `error: "rate_limit"`.
 //! The CLI's stream-json schema carries `error` on every `assistant` line, so
 //! the ADK reader recognises a limit by `error == "rate_limit"` and never by
-//! prose (issue #58, decision of 2026-09-21 16:06Z). An agent that quotes the
+//! prose (task #58, decision of 2026-09-21 16:06Z). An agent that quotes the
 //! sentence cannot set that field, which is what makes a false banner
 //! impossible rather than merely unlikely.
 //!

@@ -22,7 +22,7 @@
         "unread_reason": null,
         "branch": "fix-flaky-login",
         "run_id": "run-31a4",
-        "issue_id": "plan-6f1c",
+        "task_id": "plan-6f1c",
         "worktree_id": "wt-d8b221956672",
         "worktree_path": "/home/ada/.build/worktrees/build/fix-flaky-login",
         "agents": [
@@ -102,7 +102,7 @@
         "unread_reason": null,
         "branch": null,
         "run_id": null,
-        "issue_id": null,
+        "task_id": null,
         "worktree_id": null,
         "worktree_path": null,
         "agents": [],
@@ -117,8 +117,8 @@
         "question": null
       },
       {
-        "kind": "tracker_issue",
-        "issue_id": "issue-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+        "kind": "tracker_task",
+        "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
         "number": 12,
         "project_id": "proj-1",
         "title": "Kanban drag does not persist",
@@ -163,7 +163,7 @@
         "needs_attention": false,
         "unread_count": 0,
         "unread_reason": null,
-        "issue_id": "plan-6f1c",
+        "task_id": "plan-6f1c",
         "plan_id": "plan-6f1c",
         "implementation_id": "run-31a4",
         "base_branch": "main",

@@ -9,7 +9,7 @@ the binding work-isolation specifications.
 A dispatched operation resolves its execution context once, as the explicit
 triple `(entity_id, agent_id, conversation_id)`.
 
-- `entity_id` identifies the issue/run/entity the operation is about.
+- `entity_id` identifies the task/run/entity the operation is about.
 - `agent_id` identifies the durable agent that owns its configuration and work.
 - `conversation_id` identifies the exact transcript to which execution events,
   receipts, and messages belong.
@@ -117,13 +117,13 @@ are idempotent within the bridge.
 
 ## Shared transcripts and removal
 
-Issue and run views intentionally share a transcript when their explicit
+Task and run views intentionally share a transcript when their explicit
 conversation linkage says they do. Sharing is not an accidental “latest chat”
 alias.
 
-An issue displaying implementation work exposes an explicit execution context.
+A task displaying implementation work exposes an explicit execution context.
 Its composer, model picker, and timer must address that same implementation
-agent, while the history retains the issue's canonical conversation identity.
+agent, while the history retains the task's canonical conversation identity.
 Shared history alone never selects the executor. Legacy omitted-agent calls
 may retain their documented compatibility routing; explicit agents do not.
 
@@ -178,7 +178,7 @@ send reconciliation, and execution remain independently addressed.
 - [x] SPA tests prove transcript paging cannot change addressed chat-controller
   scope for drafts, model selection, or execution.
 - [x] Removal tests prove no primary-removal rebinding and intentional shared
-  issue/run transcript behavior.
+  task/run transcript behavior.
 - [x] Migration fixtures cover inherited/current effective choices and stale
   legacy values; unknown lineage remains explicitly unresolved.
 - [x] Versioned capability tests cover `thread_post_operations`/`thread.operation`,

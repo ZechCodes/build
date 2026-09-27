@@ -366,7 +366,7 @@ pub enum ImplementationActivity {
 
 /// A plan: identity, goal, and current lifecycle state. Stage docs, comments,
 /// and store bookkeeping attach in the persistence slice. On the canonical
-/// wire this is the Issue aggregate; the type name remains for disk/API
+/// wire this is the Task aggregate; the type name remains for disk/API
 /// compatibility.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Plan {

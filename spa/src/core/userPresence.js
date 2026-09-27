@@ -32,7 +32,7 @@ let arrivedAt = null;
 const told = new Map();
 let stopPresence = null;
 
-const carriesPresence = (deviceId) => bridgeCapabilities(deviceId)?.issues?.doneSinceLeft === true;
+const carriesPresence = (deviceId) => bridgeCapabilities(deviceId)?.tasks?.doneSinceLeft === true;
 
 function arrived() {
   if (!readerIsHere()) return;

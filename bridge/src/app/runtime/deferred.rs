@@ -183,9 +183,9 @@ pub(in crate::app) enum DeferredOutcome {
 /// as it was read, which is what was asked for.
 pub(in crate::app) struct DeferredRead {
     pub(in crate::app) subject: ReadSubject,
-    /// The issue that asked, when the read came in through an issue surface —
-    /// stamped onto the answer, as the issue verbs did before the split.
-    pub(in crate::app) issue_id: Option<String>,
+    /// The task that asked, when the read came in through a task surface —
+    /// stamped onto the answer, as the task verbs did before the split.
+    pub(in crate::app) task_id: Option<String>,
     /// The complete aggregate held by the caller. We still recompute to avoid
     /// stale filesystem answers, then suppress the equal payload on the wire.
     pub(in crate::app) if_diff_key: Option<String>,
@@ -232,8 +232,8 @@ impl DeferredRead {
             None => crate::diff::DiffPaths::All,
         };
         let mut rendered = self.subject.render(paths)?;
-        if let (Some(issue_id), Some(object)) = (&self.issue_id, rendered.as_object_mut()) {
-            object.insert("issue_id".to_string(), json!(issue_id));
+        if let (Some(task_id), Some(object)) = (&self.task_id, rendered.as_object_mut()) {
+            object.insert("task_id".to_string(), json!(task_id));
         }
         if let Some(diff_key) = conditional_key {
             if let Some(object) = rendered.as_object_mut() {
@@ -762,9 +762,9 @@ impl AppState {
     pub(in crate::app) fn defer_read(
         &mut self,
         subject: ReadSubject,
-        issue_id: Option<String>,
+        task_id: Option<String>,
     ) -> Value {
-        self.defer_conditional_read(subject, issue_id, None, true)
+        self.defer_conditional_read(subject, task_id, None, true)
     }
 
     /// Hand the drain one changeset narrowed to the paths a reader has open.
@@ -779,7 +779,7 @@ impl AppState {
     ) -> Value {
         self.deferred_work = Some(DeferredWork::Read(Box::new(DeferredRead {
             subject,
-            issue_id: None,
+            task_id: None,
             if_diff_key: if_diff_key.map(str::to_string),
             with_patch: true,
             paths: Some(paths),
@@ -808,13 +808,13 @@ impl AppState {
     pub(in crate::app) fn defer_conditional_read(
         &mut self,
         subject: ReadSubject,
-        issue_id: Option<String>,
+        task_id: Option<String>,
         if_diff_key: Option<&str>,
         with_patch: bool,
     ) -> Value {
         self.deferred_work = Some(DeferredWork::Read(Box::new(DeferredRead {
             subject,
-            issue_id,
+            task_id,
             if_diff_key: if_diff_key.map(str::to_string),
             with_patch,
             paths: None,
@@ -851,7 +851,7 @@ impl AppState {
     }
 
     /// The standing row that already claims what `row` would: the same record,
-    /// branch, checkout or issue in the same project. One rule for what two
+    /// branch, checkout or task in the same project. One rule for what two
     /// lifecycle verbs collide on.
     pub(in crate::app) fn row_claiming(&self, row: &PendingRow) -> Option<&Arc<PendingRow>> {
         self.pending_rows.iter().find(|held| {

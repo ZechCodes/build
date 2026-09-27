@@ -281,7 +281,7 @@ impl AppState {
     ///
     /// Separate from [`edit_agent_conversation`](Self::edit_agent_conversation), which edits
     /// the conversation an agent SPEAKS in: for a planned implementation's
-    /// first agent that is the Issue's thread, which is not the agent.
+    /// first agent that is the Task's thread, which is not the agent.
     ///
     /// Quiet about an owner or agent it cannot find: a record deleted with its
     /// tab has no roster left to write onto.
@@ -371,8 +371,8 @@ impl AppState {
     /// canonical conversation it named when accepted.
     ///
     /// This is deliberately stricter than owner liveness. A drained batch can
-    /// outlive `agent.remove`, and an Issue implementation can share history
-    /// with its Issue while retaining a distinct process identity. Neither may
+    /// outlive `agent.remove`, and a Task implementation can share history
+    /// with its Task while retaining a distinct process identity. Neither may
     /// be reconstructed from roster position after the turn left the queue.
     pub(in crate::app) fn queued_agent_target_exists(&self, turn: &PendingAgentTurn) -> bool {
         self.agent_target_exists(
@@ -492,7 +492,7 @@ impl AppState {
         });
     }
 
-    /// Build ended the agent's session before it ran a turn (issue #72: a child
+    /// Build ended the agent's session before it ran a turn (task #72: a child
     /// that opened another model than the agent asks for). The reason is the
     /// agent's `start_error`, so the row says why it never started instead of
     /// sitting idle with nothing on it.

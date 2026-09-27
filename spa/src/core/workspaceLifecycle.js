@@ -30,8 +30,8 @@ const counted = (count, one, many) => `${count} ${count === 1 ? one : many}`;
 const HOLD_WORDS = Object.freeze({
   dirty: (verdict) => counted(verdict.dirty_files, "uncommitted file", "uncommitted files"),
   unpushed: (verdict) => counted(verdict.unpushed_commits, "unpushed commit", "unpushed commits"),
-  issue_open: () => "an issue not Done",
-  issues_unread: () => "issues unread",
+  task_open: () => "a task not Done",
+  tasks_unread: () => "tasks unread",
   agent_working: () => "an agent working",
   terminal_open: () => "a terminal open",
   plain_directory: () => "a folder that is not a repository",

@@ -118,7 +118,7 @@ is how a client changes cadence):
 ```
 
 - `scope`: `{"kind":"board"}` (feed-level state only), `{"kind":"entity",
-  "id"}` (one issue, run, or worktree), or `{"kind":"all"}` (every entity
+  "id"}` (one task, run, or worktree), or `{"kind":"all"}` (every entity
   the board currently lists, tracked as the board changes).
 - `kinds`: any of `state` (lifecycle, agent liveness, attention), `thread`
   (conversation items), `git` (status, index, HEAD, refs), `files` (working
@@ -527,7 +527,7 @@ has been seen in `bridge.stats` for a month.
   Part 1 is `1.1.0`.
 - **Major**: a method or field removed or renamed, a param made required, a
   field's meaning or type changed, an enum documented as closed extended.
-  The `plan.*` aliases over `issue.*` (`app/rpc.rs`, `alias_param`) are the
+  The `plan.*` aliases over `task.*` (`app/rpc.rs`, `alias_param`) are the
   kind of thing a major retires.
 - **Release cadence**: one minor number covers all additive wire changes in
   a release. Do not advance the minor separately for each new verb, field, or
@@ -572,8 +572,8 @@ A request param the verb's type does not declare is refused, never dropped
 (since 1.24.0, announced as `params.strict`). Before it, the facade parsed
 params into the typed struct and handed the implementation that struct
 serialised back, so a field this bridge did not know vanished and the verb
-answered `ok`: `issues.create` with an `assignee` a bridge predated filed the
-issue unassigned, and a `patch: false` on a `project.diff` that did not
+answered `ok`: `tasks.create` with an `assignee` a bridge predated filed the
+task unassigned, and a `patch: false` on a `project.diff` that did not
 declare it answered the whole patch. The rule, in `parse_params`:
 
 - A top-level param the params type does not declare is refused with
@@ -589,7 +589,7 @@ declare it answered the whole patch. The rule, in `parse_params`:
   type holds is one it never read.
 - The rule binds a verb's top-level params. Nested objects keep their own
   rules: a message context item's unknown field is ignored and its unknown
-  `kind` refused (step 2.6); a free-form value (`issues.create`'s `assignee`)
+  `kind` refused (step 2.6); a free-form value (`tasks.create`'s `assignee`)
   is checked by the verb that reads it.
 - So a new param is an addition like any other: it joins the release's minor
   and, when its verb already exists, a feature name. A client sends it only
@@ -639,29 +639,29 @@ fixture fails the test; a fixture with no method fails the test.
 
 Since 1.22.0, `session.hello` also returns a flat `capabilities` array of
 strings. Every served verb appears under its exact method name (for example,
-`issues.attach`); a QA-only verb appears only on a QA bridge. Cross-verb
+`tasks.attach`); a QA-only verb appears only on a QA bridge. Cross-verb
 behavior or response shapes use feature names: `changes.subscriptions`,
 `requests.priority`, `errors.codes`, `diffs.perFile`,
-`issues.attachments`, `issues.context`, `issues.watching`, `conversations.settings`,
+`tasks.attachments`, `tasks.context`, `tasks.watching`, `conversations.settings`,
 `changes.bodies`, `requests.receipts`, `messages.context`,
 `threads.postOperations`, `settings.roleModels`, `settings.projectAgent`,
-`agents.names`, `messages.fromAgent`, `issues.doneSinceLeft` (`done_at` on
-issues, `user_session` on `issues.list`, and the `user.present` verb, see the
-Issues spec), `messages.issueNotices`, `board.usageLimits`,
-`threads.newestDeltaPagination`, `issues.commentUserMentions`,
-`issues.agentIdentities`, `issues.attachmentChunks`,
-`issues.commentUserNotifies` (`notifies_user` on issue comments, and the
-narrower "needs you" rule it makes possible; see the Issues spec),
-`issues.createdUserMentions` (`mentions_user` on an agent's `created` issue
-event, so an issue filed with `create_issue` and `mention_user: true` needs the
-user until that event is read; see the Issues spec),
+`agents.names`, `messages.fromAgent`, `tasks.doneSinceLeft` (`done_at` on
+tasks, `user_session` on `tasks.list`, and the `user.present` verb, see the
+Tasks spec), `messages.taskNotices`, `board.usageLimits`,
+`threads.newestDeltaPagination`, `tasks.commentUserMentions`,
+`tasks.agentIdentities`, `tasks.attachmentChunks`,
+`tasks.commentUserNotifies` (`notifies_user` on task comments, and the
+narrower "needs you" rule it makes possible; see the Tasks spec),
+`tasks.createdUserMentions` (`mentions_user` on an agent's `created` task
+event, so a task filed with `create_task` and `mention_user: true` needs the
+user until that event is read; see the Tasks spec),
 `params.strict` (an undeclared param is refused; step 2.2),
 `workspaces.lifecycle` (see below),
 `branches.finishDelete` (`branch.finish` honours `action: "delete"`),
 `workspaces.reclaimBranches` (`workspace.reclaim` deletes the workspace's local
 branches, see below), `settings.workspaceLifecycle` (the reclaim service's
 idle threshold and prune switch on `settings.*`, see below),
-`issues.listPaged` (`issues.list` pages; see below), and `bodies.pages`
+`tasks.listPaged` (`tasks.list` pages; see below), and `bodies.pages`
 (body reads in byte ranges; see below). The method registry
 supplies typed verb names, and a small explicit list supplies legacy and
 session-scoped verbs. Contract tests require every method fixture to have an
@@ -694,7 +694,7 @@ the checkouts are read again immediately before and after it, so a checkout
 that moved onto the branch keeps it. A branch that stayed then is
 `branch_deleted: false` with `branch_reason`, beside the workspace's removal,
 which stands. Success adds `branch_deleted: true` to the answer and a
-`branch_deleted` event (payload `branch`, `workspace_id`) to every issue
+`branch_deleted` event (payload `branch`, `workspace_id`) to every task
 linking the workspace or the branch. If a checkout moves onto the branch
 between the last check and the atomic delete, Build restores the measured tip
 with a create-only ref write. It retries once when a failed write leaves the
@@ -748,16 +748,16 @@ body's size is known before the first page. A bridge that does not announce
 the name refuses `range` as undeclared, so a client sends it only to one that
 does.
 
-`issues.listPaged` (since 1.25.0, #85) announces `limit` and `cursor` on
-`issues.list` and `next_cursor` in its answer. `limit` is 1 to 500 and asks for
-at most that many issues, in the list's own order (number descending); absent,
+`tasks.listPaged` (since 1.25.0, #85) announces `limit` and `cursor` on
+`tasks.list` and `next_cursor` in its answer. `limit` is 1 to 500 and asks for
+at most that many tasks, in the list's own order (number descending); absent,
 the list is whole, as it always was. A page with more after it carries
 `next_cursor`, an opaque string; sent back as `cursor` with the same filter, it
-answers the issues numbered below the last one the page held. Numbers never
-move, so an issue filed between pages lands above the first page (where the
-next read from the top finds it) and never moves a row across a cursor; an
-issue that leaves the filter between pages is simply not on the next one. A
-page can hold fewer than `limit` issues, or none, and still carry
+answers the tasks numbered below the last one the page held. Numbers never
+move, so a task filed between pages lands above the first page (where the
+next read from the top finds it) and never moves a row across a cursor; a
+task that leaves the filter between pages is simply not on the next one. A
+page can hold fewer than `limit` tasks, or none, and still carry
 `next_cursor`: `assignee` and `label` are not columns the store can seek on,
 so a page reads at most four rows for each it may answer and, when those run
 out with rows still below, stops short and names where the next page starts.
@@ -775,23 +775,23 @@ name and its slug are one filter — and with any other filter it is refused
 ("Build cannot continue this list: the cursor was made for a different
 filter."). A cursor this bridge cannot read is refused as "Build
 cannot read this cursor: ask for the list again from the start.", and a limit
-out of range as "Build cannot list 0 issues at a time: a page holds 1 to 500."
+out of range as "Build cannot list 0 tasks at a time: a page holds 1 to 500."
 Every page carries `project_id` and `user_session` like the whole list. A client
 sends `limit` and `cursor` only to a bridge that announces the name
-(`params.strict` refuses them elsewhere). `fixtures/api/v1/issues.list.json`
+(`params.strict` refuses them elsewhere). `fixtures/api/v1/tasks.list.json`
 carries a two-page example under `examples`.
 
 `workspaces.lifecycle` (since 1.24.0, #135) announces the workspace reclaim
 service. Each `workspace.list` row carries `lifecycle`, the service's last
 verdict on that workspace, or `null` before the first sweep:
-`{ measured_at_ms, last_activity_ms, idle, reclaimable, holds[], issues[],
+`{ measured_at_ms, last_activity_ms, idle, reclaimable, holds[], tasks[],
 dirty_files, unpushed_commits, behind_commits, size_bytes, pruned_bytes,
 pruned_at_ms, noticed_at_ms }`. `holds` names what keeps the workspace from
 being reclaimed: `not_ready`, `agent_working`, `terminal_open`, `dirty`,
-`unpushed`, `plain_directory`, `issue_open`, `issues_unread`, `unknown` or
+`unpushed`, `plain_directory`, `task_open`, `tasks_unread`, `unknown` or
 `unmeasured`. `pruned_bytes` stays 0 unless the bridge runs with
-`BRIDGE_WORKSPACE_PRUNE` on. `issues` lists
-`{ issue_id, number, title, status, state }` for each issue that links the
+`BRIDGE_WORKSPACE_PRUNE` on. `tasks` lists
+`{ task_id, number, title, status, state }` for each task that links the
 workspace. `workspace.reclaim` (`{ workspace_id }`, answered like
 `workspace.delete`) removes the workspace. It refuses with `conflict` and a
 sentence ("Build cannot reclaim quiet yet: it has uncommitted changes.") while
@@ -802,11 +802,11 @@ every verb that would write inside it answers `busy`: `term.create`, the
 `git.*` verbs that change a tree or its refs, `fs.write`, `fs.mkdir`,
 `thread.attach`, `run.git_action`, `workspace.finish`, `workspace.delete`,
 `workspace.rename`, `workspace.init_git` and the directory verbs. Reads are
-answered as usual. Issue timelines gain three event kinds:
+answered as usual. Task timelines gain three event kinds:
 `workspace_idle` and `workspace_pruned`, both written by the new actor
 `{ "kind": "build" }`, and `workspace_reclaimed`, written by whoever reclaimed
 the workspace. Their payloads name the workspace (`workspace_id`,
-`workspace_name`) and its size. None of the three wakes the issue's trackers.
+`workspace_name`) and its size. None of the three wakes the task's trackers.
 
 `workspaces.reclaimBranches` (since 1.25.0, #167): once `workspace.reclaim`
 has removed the workspace's checkouts, it deletes the local branch each one
@@ -824,7 +824,7 @@ sentence "Build cannot delete the branch <name>: …" that says why it stayed)
 or `restore_failed` (a checkout moved onto the branch while it was deleted and
 putting it back failed: the ref is gone, and `reason` names the commit, the
 repository and the checkout). A branch that was already gone has no entry.
-Each issue linking the workspace or the branch gets one event per entry,
+Each task linking the workspace or the branch gets one event per entry,
 written by whoever reclaimed and waking nobody, whose payload is the entry
 plus `workspace_id`, `workspace_name` and `reclaimed: true`: `branch_deleted`
 for `deleted` and `restore_failed`, and the new kind `branch_kept` for
@@ -855,25 +855,25 @@ other names announce support for clients that choose to consume them:
 
 | Feature name | Shape or behavior announced | First available |
 | --- | --- | --- |
-| `messages.issueNotices` | Structured `issue_notice` on thread messages | 1.6.0 |
+| `messages.taskNotices` | Structured `task_notice` on thread messages | 1.6.0 |
 | `board.usageLimits` | `usage_limits` rows in `board.list` | 1.11.0 |
 | `threads.newestDeltaPagination` | `thread.page` accepts `newest` with `after_sequence` to return the newest page of a delta | 1.12.0 |
-| `issues.commentUserMentions` | `mentions_user` on issue comments | 1.13.0 |
-| `issues.agentIdentities` | Durable `identities` map on issue views | 1.16.0 |
-| `issues.attachmentChunks` | `issues.attachment` accepts `offset` and `length` for chunk reads | 1.19.0 |
+| `tasks.commentUserMentions` | `mentions_user` on task comments | 1.13.0 |
+| `tasks.agentIdentities` | Durable `identities` map on task views | 1.16.0 |
+| `tasks.attachmentChunks` | `tasks.attachment` accepts `offset` and `length` for chunk reads | 1.19.0 |
 | `params.strict` | A v1 verb refuses a top-level param its type does not declare (`invalid_params`, `unknown param: <name>`) | 1.24.0 |
 | `workspaces.lifecycle` | `lifecycle` on `workspace.list` rows, and the `workspace.reclaim` verb | 1.24.0 |
 | `branches.finishDelete` | `branch.finish` accepts `action: "delete"` to finish the workspace and delete its local branch | 1.24.0 |
 | `changes.refusedKinds` | A `changes.subscribe` refused for an unknown kind names every such kind in `details.kinds` | 1.24.0 |
 | `settings.workspaceLifecycle` | `workspace_idle_secs`, `workspace_prune` and `workspace_pinned` on `settings.*` | 1.25.0 |
-| `workspaces.reclaimBranches` | `workspace.reclaim` deletes the workspace's local branches where safe, and `branch_kept` on issue timelines | 1.25.0 |
-| `issues.listPaged` | `issues.list` accepts `limit` and `cursor` and answers `next_cursor` while more rows follow | 1.25.0 |
+| `workspaces.reclaimBranches` | `workspace.reclaim` deletes the workspace's local branches where safe, and `branch_kept` on task timelines | 1.25.0 |
+| `tasks.listPaged` | `tasks.list` accepts `limit` and `cursor` and answers `next_cursor` while more rows follow | 1.25.0 |
 | `bodies.pages` | `fs.read`, `git.diff`, `git.show` and `git.changeset_diff` accept `range` and answer one page of whole lines with its `range` | 1.26.0 |
 | `thread.attachmentChunks` | `thread.attachment` accepts `offset` and `length`, with a 5 MiB page cap | 1.30.0 |
 | `fs.mediaRawPages` | `fs.read` accepts `range.raw: true` for exact image, audio and video byte pages through 64 MiB | 1.30.0 |
-| `issues.createdUserMentions` | An agent's `create_issue` with `mention_user: true` marks the `created` event with optional `mentions_user: true` and watches the issue for the user | 1.27.0 |
+| `tasks.createdUserMentions` | An agent's `create_task` with `mention_user: true` marks the `created` event with optional `mentions_user: true` and watches the task for the user | 1.27.0 |
 | `board.conversationSessions` | A conversation's feed row (`board.list` items, `state` pushes) carries its own `session_started_ms` and `last_activity_ms`; the project conversation's row is how the inbox orders the project agent (#103) | 1.28.0 |
-| `issues.unreadCounts` | A watched issue on `issues.list` and `issues.get` carries `unread_count`: the timeline entries after its `read_through` that are not the user's own and are news — comments, and `assigned`, `unassigned`, `moved`, `closed` and `reopened` events, never bookkeeping such as `created`, `tracked` or `linked` (#183) — the count its inbox row says. An unwatched issue carries none (#104) | 1.29.0 |
+| `tasks.unreadCounts` | A watched task on `tasks.list` and `tasks.get` carries `unread_count`: the timeline entries after its `read_through` that are not the user's own and are news — comments, and `assigned`, `unassigned`, `moved`, `closed` and `reopened` events, never bookkeeping such as `created`, `tracked` or `linked` (#183) — the count its inbox row says. An unwatched task carries none (#104) | 1.29.0 |
 
 For a greeting at 1.22.0 or newer, the array is authoritative for the feature
 gates implemented by the current SPA adapter: an absent name leaves its
@@ -897,9 +897,9 @@ legacy table; do not extend that table for new features.
 | `requests.priority` | 1.1.0 |
 | `errors.codes` | 1.1.0 |
 | `diffs.perFile` | 1.4.0 |
-| `issues.context` | 1.5.0 |
-| `issues.attachments` | 1.8.0 |
-| `issues.watching` | 1.9.0 |
+| `tasks.context` | 1.5.0 |
+| `tasks.attachments` | 1.8.0 |
+| `tasks.watching` | 1.9.0 |
 | `conversations.settings` | 1.10.0 |
 
 When adding a verb, register it in its typed family or the small explicit
@@ -1035,7 +1035,7 @@ model needs from whoever hands it work — `generalist`, `scoped`,
 `step_by_step` — and the create path answers it back so the agent writing the
 brief knows whether to write a goal, a scope or a list of steps.
 
-**Asking.** `agent.add`, `add_workspace_agent` and `issues.assign`'s creating
+**Asking.** `agent.add`, `add_workspace_agent` and `tasks.assign`'s creating
 kinds take `role`, and optionally `capability` when the caller needs a
 particular kind. The answer carries `capability` and `direction`, the latter
 being the instruction in words. An explicit `harness`/`model`/`effort` is laid
@@ -1065,7 +1065,7 @@ Every agent was labelled by ordinal — "Agent 1", "Agent 2" — which says wher
 sits in a rail and nothing about what it is. An agent now carries a **`name`**:
 one or two meaningful words ("Tracker", "Rail scroll", "Transport"), on the
 agent digest (`agent.add`, `agent.list`, `workspace.agents`,
-`list_workspace_agents`), on `from_agent`, and on `issue_notice.actor`. It is
+`list_workspace_agents`), on `from_agent`, and on `task_notice.actor`. It is
 absent until somebody sets one, and a client falls back to the ordinal for
 exactly that long — which is also what an older client does with it.
 
@@ -1073,7 +1073,7 @@ A name is not a topic. A topic is a subject line that moves with the work; a
 name is who the agent is, and it is unique among the agents of one conversation.
 
 **Set three ways.** `agent.add` and `add_workspace_agent` take an optional
-`name`. `issues.assign` with `{kind:"new_agent"}` or `{kind:"new_workspace"}`
+`name`. `tasks.assign` with `{kind:"new_agent"}` or `{kind:"new_workspace"}`
 takes an optional **`agent_name`** — spelled differently because `name` on
 `new_workspace` is already the workspace's, and one key meaning two things is
 how a caller names the wrong one. And the agent names itself with the
@@ -1171,7 +1171,7 @@ none and reads past it, and the bridge answers exactly as it did.
 
 A message the human sends may carry `viewing_context: { version: 1, items: [] }`
 — what they were looking at when they wrote it. It rides every reviewer send
-(`thread.post`, `run.message`, `plan.message`, `issue.send_notes`), is stored on
+(`thread.post`, `run.message`, `plan.message`, `task.send_notes`), is stored on
 the message, and reaches the harness on the native delivery payload. The bridge
 offers it on the greeting as `message_context: { version: 1 }`; a client that is
 not offered it sends none.
@@ -1187,17 +1187,17 @@ Each item is tagged by `kind`:
   project's conversation is reachable from every workspace's rail, so a message
   sent from one leads with this item, and the delivery envelope says in prose
   which workspace the user was in.
-- `issue { issue_id, number, title }` — the issue they had open on the board
+- `task { task_id, number, title }` — the task they had open on the board
   (**1.5.0**). The delivery envelope names it in prose too, and tells the agent
-  to read it with `get_issue` before answering about it. It carries no body on
-  purpose: an issue moves on after the message is sent, and a copy frozen into
-  the context would go stale while reading as current. Being pointed at an
-  issue is not being handed one — the sentence differs from the `from_issue`
+  to read it with `get_task` before answering about it. It carries no body on
+  purpose: a task moves on after the message is sent, and a copy frozen into
+  the context would go stale while reading as current. Being pointed at a
+  task is not being handed one — the sentence differs from the `from_task`
   hand-off's, which is the agent's work rather than the user's screen.
 
 A path must be scope-relative and at most 4 KiB; excerpts total at most 32 KiB
 across a context; a context carries at most 100 items and at least one; a
-workspace's id and name, and an issue's id and title, are each at most 512
+workspace's id and name, and a task's id and title, are each at most 512
 bytes and none may be empty.
 Neither the context nor an item denies an unknown field — a newer SPA must be
 able to talk to an older bridge — so `version` stays 1 while kinds are added,

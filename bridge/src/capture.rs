@@ -8,7 +8,7 @@
 //!
 //! A capture is its own presence on the feed only while it is still unfinished
 //! business — unrouted, routing, failed, or holding a question nobody has
-//! answered. Once it is routed and quiet, the issue or branch it became is the
+//! answered. Once it is routed and quiet, the task or branch it became is the
 //! presence, and the capture leaves the feed rather than doubling it.
 
 use serde::{Deserialize, Serialize};
@@ -43,19 +43,19 @@ impl CaptureState {
     }
 }
 
-/// The two things a capture can become. Branch and issue are the only work
+/// The two things a capture can become. Branch and task are the only work
 /// items, so they are the only destinations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureTarget {
-    Issue,
+    Task,
     Branch,
 }
 
 impl CaptureTarget {
     pub fn as_str(self) -> &'static str {
         match self {
-            CaptureTarget::Issue => "issue",
+            CaptureTarget::Task => "task",
             CaptureTarget::Branch => "branch",
         }
     }
@@ -67,7 +67,7 @@ impl CaptureTarget {
 pub struct CaptureRouting {
     pub project_id: String,
     pub kind: CaptureTarget,
-    /// The issue id or branch name the capture became.
+    /// The task id or branch name the capture became.
     pub target_id: String,
     pub routed_at: String,
     /// The router's one line about why it chose this destination. What makes a
@@ -122,7 +122,7 @@ impl CaptureOption {
             None => "route this".to_string(),
         };
         match self.kind {
-            Some(CaptureTarget::Issue) => phrase.push_str(" as an issue"),
+            Some(CaptureTarget::Task) => phrase.push_str(" as a task"),
             Some(CaptureTarget::Branch) => phrase.push_str(" as a branch"),
             None => {}
         }
@@ -187,9 +187,9 @@ pub fn numbered_options(drafts: &[CaptureOptionDraft]) -> Result<Vec<CaptureOpti
             if option.label.is_empty() {
                 return Err("an option with no label is nothing the user can choose".to_string());
             }
-            if option.kind == Some(CaptureTarget::Issue) && option.branch.is_some() {
+            if option.kind == Some(CaptureTarget::Task) && option.branch.is_some() {
                 return Err(format!(
-                    "option {:?} names a branch and an issue; an issue has no branch to be on",
+                    "option {:?} names a branch and a task; a task has no branch to be on",
                     option.label
                 ));
             }
@@ -257,7 +257,7 @@ pub struct Capture {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<String>,
     /// Where this capture sits in the inbox: the moment it was said. Every
-    /// entity carries one, and this is the oldest of them all — the issue or
+    /// entity carries one, and this is the oldest of them all — the task or
     /// branch the capture becomes inherits it, so what the user said and the
     /// work it turned into hold ONE place in the list rather than two.
     ///
@@ -316,7 +316,7 @@ impl Capture {
     ///
     /// Unfinished business is: not yet routed, being routed, routing failed, or
     /// a question waiting on the user. A routed, quiet capture is spoken for by
-    /// the issue or branch it became.
+    /// the task or branch it became.
     pub fn is_on_the_feed(&self) -> bool {
         match self.state {
             CaptureState::Unrouted | CaptureState::Routing | CaptureState::Failed => true,
@@ -520,9 +520,9 @@ mod tests {
     fn asking_with_options() -> Capture {
         let options = numbered_options(&[
             CaptureOptionDraft {
-                label: "File as an issue on Build".to_string(),
+                label: "File as a task on Build".to_string(),
                 project_id: Some("proj-build".to_string()),
-                kind: Some(CaptureTarget::Issue),
+                kind: Some(CaptureTarget::Task),
                 branch: None,
             },
             CaptureOptionDraft {
@@ -550,7 +550,7 @@ mod tests {
         let answered = asked.answered("the Build one").unwrap();
         let routed = answered.routed_to(CaptureRouting {
             project_id: "proj-1".to_string(),
-            kind: CaptureTarget::Issue,
+            kind: CaptureTarget::Task,
             target_id: "plan-1".to_string(),
             routed_at: "2026-08-14T09:00:00Z".to_string(),
             rationale: None,
@@ -610,10 +610,10 @@ mod tests {
         assert_eq!(trimmed[0].label, "File it");
     }
 
-    /// A branch name says the option is a branch. Naming one on an issue is two
+    /// A branch name says the option is a branch. Naming one on a task is two
     /// destinations in one choice, and the user would be tapping a guess.
     #[test]
-    fn a_branch_name_makes_an_option_a_branch_and_never_an_issue() {
+    fn a_branch_name_makes_an_option_a_branch_and_never_a_task() {
         let inferred = numbered_options(&[CaptureOptionDraft {
             label: "Continue the login work".to_string(),
             project_id: Some("proj-build".to_string()),
@@ -628,11 +628,11 @@ mod tests {
             numbered_options(&[CaptureOptionDraft {
                 label: "File it".to_string(),
                 project_id: None,
-                kind: Some(CaptureTarget::Issue),
+                kind: Some(CaptureTarget::Task),
                 branch: Some("fix-login".to_string()),
             }])
             .is_err(),
-            "an issue has no branch to be on"
+            "a task has no branch to be on"
         );
     }
 
@@ -643,9 +643,9 @@ mod tests {
     fn a_chosen_option_reads_as_an_answer_naming_the_destination() {
         let options = numbered_options(&[
             CaptureOptionDraft {
-                label: "File as an issue on Build".to_string(),
+                label: "File as a task on Build".to_string(),
                 project_id: Some("proj-build".to_string()),
-                kind: Some(CaptureTarget::Issue),
+                kind: Some(CaptureTarget::Task),
                 branch: None,
             },
             CaptureOptionDraft {
@@ -664,7 +664,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             options[0].as_answer(),
-            "File as an issue on Build — route this to project proj-build as an issue"
+            "File as a task on Build — route this to project proj-build as a task"
         );
         assert_eq!(
             options[1].as_answer(),
@@ -710,7 +710,7 @@ mod tests {
         let question = asking.question.as_ref().unwrap();
         assert_eq!(
             question.option("option-1").unwrap().label,
-            "File as an issue on Build"
+            "File as a task on Build"
         );
         assert_eq!(
             question.option_at(0).map(|option| option.id.as_str()),
@@ -886,7 +886,7 @@ mod tests {
                 serde_json::Value::String(state.as_str().to_string())
             );
         }
-        for target in [CaptureTarget::Issue, CaptureTarget::Branch] {
+        for target in [CaptureTarget::Task, CaptureTarget::Branch] {
             assert_eq!(
                 serde_json::to_value(target).unwrap(),
                 serde_json::Value::String(target.as_str().to_string())
@@ -919,7 +919,7 @@ mod tests {
 
         let routed = routing.routed_to(CaptureRouting {
             project_id: "proj-1".to_string(),
-            kind: CaptureTarget::Issue,
+            kind: CaptureTarget::Task,
             target_id: "plan-7".to_string(),
             routed_at: "2026-08-13T10:00:05Z".to_string(),
             rationale: Some("no branch names this work".to_string()),
@@ -936,7 +936,7 @@ mod tests {
     fn rerouting_remembers_the_destination_it_moved_off() {
         let routing = |target: &str| CaptureRouting {
             project_id: "proj-1".to_string(),
-            kind: CaptureTarget::Issue,
+            kind: CaptureTarget::Task,
             target_id: target.to_string(),
             routed_at: "2026-08-13T10:00:05Z".to_string(),
             rationale: None,

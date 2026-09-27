@@ -5,12 +5,12 @@ use super::*;
 fn v5_raw_agent_settings_and_surviving_primary_alias_are_frozen_once() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();
-    let mut issue = plan_record("issue-legacy");
-    issue.provider = crate::models::AgentProvider::Codex;
-    issue.model = Some("issue-model".to_string());
-    store.save_issue_plan(&issue).unwrap();
+    let mut task = plan_record("task-legacy");
+    task.provider = crate::models::AgentProvider::Codex;
+    task.model = Some("task-model".to_string());
+    store.save_task_plan(&task).unwrap();
 
-    let mut run = run_record("run-legacy", Some("issue-legacy"), NOW);
+    let mut run = run_record("run-legacy", Some("task-legacy"), NOW);
     run.provider = crate::models::AgentProvider::Codex;
     run.model = Some("entity-model".to_string());
     let mut surviving = Agent::new(
@@ -61,8 +61,8 @@ fn v5_raw_agent_settings_and_surviving_primary_alias_are_frozen_once() {
     assert_eq!(agent.settings_version, CURRENT_SETTINGS_VERSION);
     assert_eq!(
         agent.conversation_id(),
-        issue.agents[0].id,
-        "the legacy current agent keeps the Issue alias it effectively used"
+        task.agents[0].id,
+        "the legacy current agent keeps the Task alias it effectively used"
     );
     assert_eq!(
         migrated.thread_items("run-legacy-agent-2").unwrap().len(),
@@ -83,7 +83,7 @@ fn v5_raw_agent_settings_and_surviving_primary_alias_are_frozen_once() {
     drop(migrated);
     let reopened = Store::new(dir.path()).unwrap();
     let stable = reload_run(&reopened, "run-legacy");
-    assert_eq!(stable.agents[0].conversation_id(), issue.agents[0].id);
+    assert_eq!(stable.agents[0].conversation_id(), task.agents[0].id);
     assert_eq!(
         stable.agents[0].choice.model.as_deref(),
         Some("entity-model")
@@ -224,16 +224,16 @@ fn a_newer_schema_is_refused_rather_than_downgraded() {
 fn the_json_import_runs_once_and_leaves_the_records_it_read() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("tasks");
-    let mut issue_record = run_record("run-in-issue", Some("plan-1"), NOW);
-    issue_record.agents[0]
+    let mut task_record = run_record("run-in-task", Some("plan-1"), NOW);
+    task_record.agents[0]
         .thread
         .post_user("carried across", None, NOW);
-    std::fs::create_dir_all(root.join("issues/plan-1")).unwrap();
+    std::fs::create_dir_all(root.join("tasks/plan-1")).unwrap();
     std::fs::write(
-        root.join("issues/plan-1/record.json"),
+        root.join("tasks/plan-1/record.json"),
         serde_json::to_string_pretty(&serde_json::json!({
-            "issue": plan_record("plan-1"),
-            "implementations": [issue_record],
+            "task": plan_record("plan-1"),
+            "implementations": [task_record],
         }))
         .unwrap(),
     )
@@ -257,7 +257,7 @@ fn the_json_import_runs_once_and_leaves_the_records_it_read() {
 
     let store = Store::new(&root).expect("store opens");
     assert_eq!(store.import_json_store().expect("the import runs"), 4);
-    assert_eq!(store.load_all_issues().expect("issues load").len(), 1);
+    assert_eq!(store.load_all_tasks().expect("tasks load").len(), 1);
     assert_eq!(store.load_all_runs().expect("runs load").len(), 2);
     assert!(store.load_attention().contains_key("plan-1"));
     assert_eq!(
@@ -275,7 +275,7 @@ fn the_json_import_runs_once_and_leaves_the_records_it_read() {
         "the import is one-way"
     );
     assert!(
-        root.join("issues/plan-1/record.json").is_file(),
+        root.join("tasks/plan-1/record.json").is_file(),
         "the import moved the records it read"
     );
 
@@ -293,7 +293,7 @@ fn the_json_import_runs_once_and_leaves_the_records_it_read() {
 /// A store written before the tracker existed gains its three tables on the
 /// next open, keeps everything it already held, and can be written to at once.
 /// Nothing is backfilled because there is nothing to backfill: a v7 store has
-/// no issues.
+/// no tasks.
 #[test]
 fn a_v7_store_gains_the_tracker_and_loses_nothing() {
     let dir = tempfile::tempdir().unwrap();
@@ -314,18 +314,18 @@ fn a_v7_store_gains_the_tracker_and_loses_nothing() {
         "the conversation kept"
     );
 
-    let draft = crate::tracker::Issue::drafted(
+    let draft = crate::tracker::Task::drafted(
         "/repo",
         "first after the upgrade",
         crate::tracker::Actor::User,
         NOW,
     );
     let filed = upgraded
-        .create_tracker_issue(draft, &[])
-        .expect("the upgraded store takes an issue");
+        .create_tracker_task(draft, &[])
+        .expect("the upgraded store takes a task");
     assert_eq!(filed.number, 1);
     assert_eq!(
-        upgraded.load_tracker_issue(&filed.id).unwrap().unwrap().id,
+        upgraded.load_tracker_task(&filed.id).unwrap().unwrap().id,
         filed.id
     );
 }

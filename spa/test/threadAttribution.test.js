@@ -209,8 +209,8 @@ describe("a long arrival", () => {
 /// markup is the assertion: the reader's side of the thread is untouched.
 ///
 /// The card's empty slots are what the blank lines are — one per thing a
-/// message may carry and this one does not. The issue card a hand-off draws
-/// (`from_issue`) is one of them, and it is nothing at all on every message
+/// message may carry and this one does not. The task card a hand-off draws
+/// (`from_task`) is one of them, and it is nothing at all on every message
 /// that carries no envelope, which is every other message there is.
 const USER_MESSAGE_HTML = `<section class="review-thread pane-col">
     <div class="thread-title"><span class="thread-title-text">Conversation <span>1</span></span></div>
@@ -255,30 +255,30 @@ describe("the human's own message", () => {
   });
 });
 
-// A hand-off's body is the issue as prose, then the sender's note: the card
-// draws the issue, so the body under it is the note alone, and the issue is
+// A hand-off's body is the task as prose, then the sender's note: the card
+// draws the task, so the body under it is the note alone, and the task is
 // said once. A body that does not start with the prose is drawn whole.
-describe("a message that hands over an issue", () => {
-  const envelope = { issue_id: "issue-21", number: 21, title: "Stamp the issue on what the user sends", body: "SPA half of the ask.\n\nWhen the user sends from the issue page." };
+describe("a message that hands over a task", () => {
+  const envelope = { task_id: "task-21", number: 21, title: "Stamp the task on what the user sends", body: "SPA half of the ask.\n\nWhen the user sends from the task page." };
   const handed = (body) => threadHtml({
     id: "conversation-3",
-    items: [{ type: "message", data: { id: "message-15", sequence: 39, role: "user", body, from_issue: envelope, delivery_status: "sent" } }],
+    items: [{ type: "message", data: { id: "message-15", sequence: 39, role: "user", body, from_task: envelope, delivery_status: "sent" } }],
   });
 
-  it("draws the issue once, in the card, and the sender's note under it", () => {
+  it("draws the task once, in the card, and the sender's note under it", () => {
     document.body.innerHTML = handed(`#21 ${envelope.title}\n\n${envelope.body}\n\nAhead of #10 in your queue.`);
-    expect(document.querySelector(".thread-issue-title").textContent).toBe(envelope.title);
+    expect(document.querySelector(".thread-task-title").textContent).toBe(envelope.title);
     expect(document.querySelector(".thread-body").textContent.trim()).toBe("Ahead of #10 in your queue.");
     expect(document.body.textContent.split("SPA half of the ask.").length - 1).toBe(1);
   });
 
-  it("draws no body at all when nothing was said beyond the issue", () => {
+  it("draws no body at all when nothing was said beyond the task", () => {
     document.body.innerHTML = handed(`#21 ${envelope.title}\n\n${envelope.body}`);
-    expect(document.querySelector(".thread-issue")).not.toBeNull();
+    expect(document.querySelector(".thread-task")).not.toBeNull();
     expect(document.querySelector(".thread-body")).toBeNull();
   });
 
-  it("draws a body whole when it does not start with the issue's prose", () => {
+  it("draws a body whole when it does not start with the task's prose", () => {
     document.body.innerHTML = handed("Please take this one.");
     expect(document.querySelector(".thread-body").textContent.trim()).toBe("Please take this one.");
   });
@@ -377,7 +377,7 @@ describe("a notice Build wrote", () => {
     document.body.innerHTML = notice();
 
     expect(message().classList.contains("thread-notice")).toBe(true);
-    expect(message().classList.contains("thread-issue-line")).toBe(true);
+    expect(message().classList.contains("thread-task-line")).toBe(true);
     expect(message().classList.contains("user")).toBe(false);
     expect(message().classList.contains("thread-comment")).toBe(false);
     expect(message().querySelector(".thread-comment-card")).toBeNull();
@@ -388,7 +388,7 @@ describe("a notice Build wrote", () => {
 
     // This body's shape is not one the summaries know, so it takes its own
     // first sentence — never blank, and never a page of instructions.
-    expect(document.querySelector(".thread-issue-notice").textContent.trim()).toBe("The Build bridge restarted.");
+    expect(document.querySelector(".thread-task-notice").textContent.trim()).toBe("The Build bridge restarted.");
     // The agent still needs every word; the reader does not.
     const more = document.querySelector("details.thread-notice-more");
     expect(more.open).toBe(false);
@@ -401,7 +401,7 @@ describe("a notice Build wrote", () => {
       body: "Build restarted at 2026-09-20T20:09:27.317756819Z (bridge 0.2.0) and brought your session back. This message is from Build, not from the user — nobody is waiting on an answer to it.",
     });
 
-    const line = document.querySelector(".thread-issue-notice").textContent.trim();
+    const line = document.querySelector(".thread-task-notice").textContent.trim();
     expect(line).toMatch(/^Build restarted at \d/);
     expect(line).toContain("brought this session back");
     expect(line).not.toContain("2026-09-20T20:09:27");
@@ -411,18 +411,18 @@ describe("a notice Build wrote", () => {
   it("counts what it is reminding about rather than listing the lot", () => {
     document.body.innerHTML = notice({
       body: [
-        "You reported Complete, but 9 issues assigned to you are still open.",
+        "You reported Complete, but 9 tasks assigned to you are still open.",
         "",
         "- #38 Tracking notices render as one deep-linked line (In review)",
-        "- #34 Issues activity in the rail follows the surfaces UX (In review)",
-        "- #33 Issues list shows open issues by default (In review)",
-        "- #29 Workspace issues as a tab of the workspace page (In review)",
-        "- #28 Issue list row (In review)",
+        "- #34 Tasks activity in the rail follows the surfaces UX (In review)",
+        "- #33 Tasks list shows open tasks by default (In review)",
+        "- #29 Workspace tasks as a tab of the workspace page (In review)",
+        "- #28 Task list row (In review)",
       ].join("\n"),
     });
 
-    expect(document.querySelector(".thread-issue-notice").textContent.trim())
-      .toBe("Build: 5 issues still held — #38, #34, #33 and 2 more");
+    expect(document.querySelector(".thread-task-notice").textContent.trim())
+      .toBe("Build: 5 tasks still held — #38, #34, #33 and 2 more");
   });
 
   it("wears no avatar, because the reader did not write it", () => {

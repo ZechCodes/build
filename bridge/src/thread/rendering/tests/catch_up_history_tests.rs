@@ -60,18 +60,18 @@ fn catch_up_names_the_workspace_a_message_was_sent_from() {
     );
 }
 
-/// The same for the issue on screen: a resumed agent reads the packet, and an
-/// issue named only inside the context JSON is not a sentence it will act on.
+/// The same for the task on screen: a resumed agent reads the packet, and a
+/// task named only inside the context JSON is not a sentence it will act on.
 #[test]
-fn catch_up_names_the_issue_the_user_was_looking_at() {
+fn catch_up_names_the_task_the_user_was_looking_at() {
     let mut thread = Thread::for_agent("agent-a");
     thread.post_user_with_context(
         "is this one done?",
         None,
         Some(ViewingContext {
             version: 1,
-            items: vec![ViewingContextItem::Issue {
-                issue_id: "issue-01K5Z".into(),
+            items: vec![ViewingContextItem::Task {
+                task_id: "task-01K5Z".into(),
                 number: 9,
                 title: "Kanban drag".into(),
             }],
@@ -82,11 +82,11 @@ fn catch_up_names_the_issue_the_user_was_looking_at() {
 
     let prompt = thread.catch_up_markdown(10);
     assert!(
-        prompt.contains("[looking at issue #9 \"Kanban drag\" (issue-01K5Z)]"),
+        prompt.contains("[looking at task #9 \"Kanban drag\" (task-01K5Z)]"),
         "{prompt}"
     );
     assert_eq!(
-        prompt.matches("looking at issue").count(),
+        prompt.matches("looking at task").count(),
         1,
         "only the message that carried one says it: {prompt}"
     );
@@ -238,17 +238,17 @@ fn the_packet_names_the_agent_a_message_was_sent_to() {
 }
 
 /// A message written before the hand-off became a notice still carries the
-/// issue in its body. It is rendered once, the way any other body is: the
+/// task in its body. It is rendered once, the way any other body is: the
 /// packet renders `body`, and nothing re-derives prose from the envelope.
 #[test]
-fn an_old_hand_off_with_the_issue_in_its_body_renders_once() {
+fn an_old_hand_off_with_the_task_in_its_body_renders_once() {
     let mut thread = Thread::for_agent("agent-a");
     thread.post_user("#9 Kanban drag\n\nDragging a card puts it back.", None, NOW);
-    thread.wear_issue(crate::thread::IssueEnvelope {
-        issue_id: "issue-01K5Z".into(),
+    thread.wear_task(crate::thread::TaskEnvelope {
+        task_id: "task-01K5Z".into(),
         number: 9,
         title: "Kanban drag".into(),
-        links: crate::tracker::IssueLinks::default(),
+        links: crate::tracker::TaskLinks::default(),
     });
 
     let prompt = thread.catch_up_markdown(10);

@@ -1,6 +1,6 @@
 // Capture the workspace view's navigation for #174, in a real Chromium against
 // the production app shell: the toolbar's `project / workspace` picker, the
-// rail (Changes, Files, Issues, Settings), the Files tree with a root per
+// rail (Changes, Files, Tasks, Settings), the Files tree with a root per
 // directory, and the Changes tab row standing on the directory without git —
 // and a failed workspace's Retry on that surface, where the bar has none.
 // A workspace with two directories, one of them not git, on one scripted
@@ -56,7 +56,7 @@ async function standOnWorkspace({ hash, theme, status }) {
     "git.status": () => ({ branch: "build/workspace-nav-174", head: "ea34c2cd", repo_state: "clean", upstream: "origin/main", ahead: 3, behind: 0, files: [], stat: { files_changed: 0, insertions: 0, deletions: 0 } }),
     "git.log": () => ({ branch: "build/workspace-nav-174", commits: [
       commit("8d5bfd59aaaaaaaa", "files: a workspace's Files is one tree, one collapsible root per directory", 12),
-      commit("59514cceaaaaaaaa", "rail: the workspace's navigation — Changes, Files, Issues, Settings", 40),
+      commit("59514cceaaaaaaaa", "rail: the workspace's navigation — Changes, Files, Tasks, Settings", 40),
       commit("861af6a9aaaaaaaa", "toolbar: a workspace's bar is one picker reading \"project / workspace\"", 65),
     ], more: false }),
     "git.refs": () => ({ current: { kind: "branch", name: "build/workspace-nav-174", full_ref: "refs/heads/build/workspace-nav-174" }, refs: [] }),
@@ -69,7 +69,7 @@ async function standOnWorkspace({ hash, theme, status }) {
   const call = async (method, params = {}) => (answers[method] ? answers[method](params) : {});
   await events.greetBridge(async () => ({
     api_version: "1.21.0", push_events: true,
-    changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "issues"], items: "bodies" },
+    changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "tasks"], items: "bodies" },
   }), { deviceId: "dev-1" });
 
   // Past the connection gate, the way a paired browser stands.

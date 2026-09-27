@@ -1,4 +1,4 @@
-// The user's session on one bridge, as `issues.list` and `user.present`
+// The user's session on one bridge, as `tasks.list` and `user.present`
 // carry it.
 //
 // Device-wide rather than per project: the bridge keeps one summary of what
@@ -59,12 +59,12 @@ export function writeUserSession(deviceId, answer, accept = () => true) {
     (accept() && newer(held, session) ? session : null));
 }
 
-/** Write what one `issues.list` answer, or one page of it, says of the
+/** Write what one `tasks.list` answer, or one page of it, says of the
  *  session. A bridge carrying Done since you left sends the session on every
  *  list and every page, so an answer with none is from one that does not — an
  *  older bridge, after a rollback — and the session a newer one left is
  *  dropped with it. The Dashboard reads a held session as the bridge carrying
- *  Done since you left (core/trackerIssuesPane.js); a stale one would cut
+ *  Done since you left (core/trackerTasksPane.js); a stale one would cut
  *  Done off at a time rows without `done_at` cannot answer to (#104 review). */
 export async function writeListedUserSession(deviceId, answer) {
   if (!answer) return false;

@@ -222,7 +222,7 @@ describe("the device context registry", () => {
     expect(contextFor("dev-b").offlineSince).toBe(null);
   });
 
-  // Every surface that stands a frame up over a machine — a branch, an issue,
+  // Every surface that stands a frame up over a machine — a branch, a task,
   // a sheet the toolbar opens — asks the same question before it paints, so the
   // question is asked in one place and worded once.
   it("says a context can answer only while it is here and nothing has marked it offline", () => {

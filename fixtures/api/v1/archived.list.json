@@ -5,7 +5,7 @@
   "result": {
     "items": [
       {
-        "kind": "issue",
+        "kind": "task",
         "project_id": "proj-1",
         "project": "build",
         "title": "Fix the flaky login test",
@@ -14,7 +14,7 @@
         "action": null,
         "finished_at": "2026-09-12T18:02:10.441Z",
         "run_id": null,
-        "issue_id": "plan-6f1c",
+        "task_id": "plan-6f1c",
         "stages": 3,
         "worktree_id": null,
         "worktree_path": null,
@@ -33,7 +33,7 @@
         "action": "merged",
         "finished_at": "2026-09-12T18:02:10.441Z",
         "run_id": "run-1c0d",
-        "issue_id": null,
+        "task_id": null,
         "stages": null,
         "worktree_id": "wt-7b3e01dd42a1",
         "worktree_path": "/home/ada/.build/worktrees/build/relay-timeout",

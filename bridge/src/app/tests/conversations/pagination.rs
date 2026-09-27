@@ -337,10 +337,10 @@ fn thread_post_names_the_sequence_it_appended() {
 }
 
 #[test]
-fn posting_to_an_implementation_names_the_sequence_in_its_issues_conversation() {
+fn posting_to_an_implementation_names_the_sequence_in_its_tasks_conversation() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (_issue_id, run_id) = planned_run_in_review(&mut state, "name the routed post");
+    let (_task_id, run_id) = planned_run_in_review(&mut state, "name the routed post");
 
     let posted = state.handle(req(
         "thread.post",
@@ -382,9 +382,9 @@ fn posting_a_message_without_naming_a_page_still_answers_with_the_whole_conversa
     assert!(thread.get("thread_total").is_none(), "{thread:?}");
 }
 
-/// The routed post: an implementation's first agent speaks in its Issue's
+/// The routed post: an implementation's first agent speaks in its Task's
 /// conversation, so the branch view that answers the post carries the
-/// Issue's items. That answer is bounded by the same limit.
+/// Task's items. That answer is bounded by the same limit.
 #[test]
 fn posting_to_an_implementation_answers_with_a_page_of_its_conversation() {
     let (dir, repo) = init_repo();
@@ -657,13 +657,13 @@ fn conversation_reads_reject_invalid_or_stale_explicit_identity() {
 /// `thread.activity` paths read — with the run's own span, which is what a
 /// client asks for and what the entity's own lifecycle events shift.
 fn conversation_with_a_long_run(state: &mut AppState, calls: usize) -> (String, u64, u64) {
-    let issue = state
+    let task = state
         .plan_create(&json!({ "goal": "trim the retry loop", "dispatch": false }))
         .expect("create a stored legacy plan below the retired RPC boundary");
-    let issue_id = issue["plan_id"].as_str().unwrap().to_string();
-    let agent_id = primary_agent_id(state, &issue_id);
+    let task_id = task["plan_id"].as_str().unwrap().to_string();
+    let agent_id = primary_agent_id(state, &task_id);
     state
-        .edit_agent_conversation(&issue_id, &agent_id, |thread, _| {
+        .edit_agent_conversation(&task_id, &agent_id, |thread, _| {
             thread.post_user("go on then", None, "2026-08-29T09:00:00Z");
             for index in 0..calls {
                 thread.push_event(
@@ -678,14 +678,14 @@ fn conversation_with_a_long_run(state: &mut AppState, calls: usize) -> (String, 
         })
         .expect("the conversation is written");
     let run: Vec<u64> = state
-        .agent_conversation(&issue_id, None)
+        .agent_conversation(&task_id, None)
         .expect("the conversation")
         .items
         .iter()
         .filter(|item| item.is_activity())
         .map(crate::thread::ThreadItem::sequence)
         .collect();
-    (issue_id, run[0], run[run.len() - 1])
+    (task_id, run[0], run[run.len() - 1])
 }
 
 /// The span a folded run opens onto, answered the same way wherever the
@@ -696,11 +696,11 @@ fn conversation_with_a_long_run(state: &mut AppState, calls: usize) -> (String, 
 fn thread_activity_answers_one_span_the_same_from_memory_and_from_the_store() {
     let (dir, repo) = init_repo();
     let mut resident = qa_state(&repo, dir.path());
-    let (issue_id, first_call, _) = conversation_with_a_long_run(&mut resident, 400);
+    let (task_id, first_call, _) = conversation_with_a_long_run(&mut resident, 400);
     let through = first_call + 98;
     assert_eq!(
         resident
-            .agent_conversation(&issue_id, None)
+            .agent_conversation(&task_id, None)
             .expect("the conversation")
             .resident_from_sequence(),
         0,
@@ -708,7 +708,7 @@ fn thread_activity_answers_one_span_the_same_from_memory_and_from_the_store() {
     );
 
     let span = json!({
-        "entity_id": issue_id,
+        "entity_id": task_id,
         "from_sequence": first_call,
         "through_sequence": through,
     });
@@ -717,7 +717,7 @@ fn thread_activity_answers_one_span_the_same_from_memory_and_from_the_store() {
     let mut reloaded = qa_state(&repo, dir.path());
     assert!(
         reloaded
-            .agent_conversation(&issue_id, None)
+            .agent_conversation(&task_id, None)
             .expect("the conversation")
             .resident_from_sequence()
             > first_call,
@@ -741,7 +741,7 @@ fn thread_activity_answers_one_span_the_same_from_memory_and_from_the_store() {
 #[test]
 fn thread_activity_pages_backward_through_a_span_without_reading_it_whole() {
     let (dir, repo) = init_repo();
-    let (issue_id, first_call, last_call) = {
+    let (task_id, first_call, last_call) = {
         let mut writing = qa_state(&repo, dir.path());
         conversation_with_a_long_run(&mut writing, 400)
     };
@@ -752,7 +752,7 @@ fn thread_activity_pages_backward_through_a_span_without_reading_it_whole() {
     let mut before: Option<u64> = None;
     loop {
         let mut params = json!({
-            "entity_id": issue_id,
+            "entity_id": task_id,
             "from_sequence": first_call,
             "through_sequence": last_call,
             "limit": limit,
@@ -796,10 +796,10 @@ fn thread_activity_pages_backward_through_a_span_without_reading_it_whole() {
 fn thread_activity_ships_the_default_page_and_clamps_a_greedy_one() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (issue_id, first_call, last_call) = conversation_with_a_long_run(&mut state, 700);
+    let (task_id, first_call, last_call) = conversation_with_a_long_run(&mut state, 700);
 
     let span = json!({
-        "entity_id": issue_id,
+        "entity_id": task_id,
         "from_sequence": first_call,
         "through_sequence": last_call,
     });
@@ -833,7 +833,7 @@ fn thread_activity_ships_the_default_page_and_clamps_a_greedy_one() {
 fn thread_activity_refuses_an_unknown_entity_and_a_span_off_the_conversation() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (issue_id, first_call, last_call) = conversation_with_a_long_run(&mut state, 4);
+    let (task_id, first_call, last_call) = conversation_with_a_long_run(&mut state, 4);
 
     let missing = state.handle(req(
         "thread.activity",
@@ -849,7 +849,7 @@ fn thread_activity_refuses_an_unknown_entity_and_a_span_off_the_conversation() {
     let past_the_end = state.handle(req(
         "thread.activity",
         json!({
-            "entity_id": issue_id,
+            "entity_id": task_id,
             "from_sequence": first_call,
             "through_sequence": last_call + 500,
         }),
@@ -866,7 +866,7 @@ fn thread_activity_refuses_an_unknown_entity_and_a_span_off_the_conversation() {
     let backwards = state.handle(req(
         "thread.activity",
         json!({
-            "entity_id": issue_id,
+            "entity_id": task_id,
             "from_sequence": last_call,
             "through_sequence": first_call,
         }),
@@ -875,7 +875,7 @@ fn thread_activity_refuses_an_unknown_entity_and_a_span_off_the_conversation() {
 
     let nameless = state.handle(req(
         "thread.activity",
-        json!({ "entity_id": issue_id, "through_sequence": last_call }),
+        json!({ "entity_id": task_id, "through_sequence": last_call }),
     ));
     assert_eq!(nameless["ok"], false, "{nameless:?}");
     assert_eq!(
@@ -891,10 +891,10 @@ fn thread_activity_refuses_an_unknown_entity_and_a_span_off_the_conversation() {
 fn thread_activity_says_so_when_the_history_it_needs_is_not_stored() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (issue_id, first_call, last_call) = conversation_with_a_long_run(&mut state, 12);
-    let agent_id = primary_agent_id(&state, &issue_id);
+    let (task_id, first_call, last_call) = conversation_with_a_long_run(&mut state, 12);
+    let agent_id = primary_agent_id(&state, &task_id);
     state
-        .edit_agent_conversation(&issue_id, &agent_id, |thread, _| {
+        .edit_agent_conversation(&task_id, &agent_id, |thread, _| {
             let tail = thread.items[4..].to_vec();
             let last = thread.last_sequence();
             thread.adopt_stored_tail(tail, 400, last);
@@ -906,7 +906,7 @@ fn thread_activity_says_so_when_the_history_it_needs_is_not_stored() {
     let answer = state.handle(req(
         "thread.activity",
         json!({
-            "entity_id": issue_id,
+            "entity_id": task_id,
             "from_sequence": first_call,
             "through_sequence": last_call,
         }),
@@ -1220,11 +1220,11 @@ fn the_forward_page_reaches_the_history_a_restart_never_loaded() {
 fn a_legacy_delivery_finds_its_messages_under_the_tail_without_reading_the_conversation() {
     let (dir, repo) = init_repo();
     let mut resident = qa_state(&repo, dir.path());
-    let (issue_id, _, _) = conversation_with_a_long_run(&mut resident, 3000);
-    let agent_id = primary_agent_id(&resident, &issue_id);
+    let (task_id, _, _) = conversation_with_a_long_run(&mut resident, 3000);
+    let agent_id = primary_agent_id(&resident, &task_id);
     let owed = |state: &AppState| -> Vec<(u64, String)> {
         state
-            .legacy_delivery_payload(&issue_id, &agent_id)
+            .legacy_delivery_payload(&task_id, &agent_id)
             .expect("the payload reads")
             .expect("the first messages still wait")
             .messages

@@ -1,13 +1,13 @@
-// The Dashboard is a projection of the issue list, feed, and detail records
+// The Dashboard is a projection of the task list, feed, and detail records
 // already held by the client. Missing detail means an unknown timeline, not
-// proof that an issue was completed or that a comment was read.
+// proof that a task was completed or that a comment was read.
 
 import { attentionGroups, attentionReasonLabel } from "./trackerAttentionModel.js";
 import { agentLabels, projectName, workspaceAgents } from "./trackerAssignee.js";
 import { actorName } from "./trackerLineWords.js";
 import { firstLine } from "./activityDigest.js";
 import { PRIORITIES, columnName } from "./trackerModel.js";
-import { isFinished } from "./trackerAgentIssues.js";
+import { isFinished } from "./trackerAgentTasks.js";
 
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -45,11 +45,11 @@ export function latestCachedAgentActivity(window) {
   return digestActivityLine(window);
 }
 
-/** The most recent cached move into Done while the issue still stands there.
- * `issues.get` delivers the timeline in event order, so walking it backwards
+/** The most recent cached move into Done while the task still stands there.
+ * `tasks.get` delivers the timeline in event order, so walking it backwards
  * finds the latest move without sorting tied timestamps differently. */
-export function doneMoveToday(issue, detail, nowMs) {
-  if (issue?.status !== "done" || !Number.isFinite(nowMs)) return null;
+export function doneMoveToday(task, detail, nowMs) {
+  if (task?.status !== "done" || !Number.isFinite(nowMs)) return null;
   const timeline = detail?.timeline;
   if (!Array.isArray(timeline)) return null;
   const event = timeline.findLast(isDoneMove);
@@ -113,13 +113,13 @@ function sessionAt(session) {
   return { started: finite(session.session_started_ms) ?? last, ended: finite(session.previous_session_ended_ms) };
 }
 
-/** When an issue moved into Done, if it is there and got there at or after
- *  `cutoffMs`. Read from the list record alone, so an issue whose timeline
+/** When a task moved into Done, if it is there and got there at or after
+ *  `cutoffMs`. Read from the list record alone, so a task whose timeline
  *  this client never fetched is not missed. */
-export function doneSince(issue, cutoffMs) {
-  if (issue?.status !== "done" || !Number.isFinite(cutoffMs)) return null;
-  const movedMs = Date.parse(issue.done_at || "");
-  return movedMs >= cutoffMs ? issue.done_at : null;
+export function doneSince(task, cutoffMs) {
+  if (task?.status !== "done" || !Number.isFinite(cutoffMs)) return null;
+  const movedMs = Date.parse(task.done_at || "");
+  return movedMs >= cutoffMs ? task.done_at : null;
 }
 
 /** Where the current session started, for grouping Done. A user the bridge
@@ -170,12 +170,12 @@ const cachedActivity = (activityByAgent, agentId) => {
 
 /** Who holds a task, as its Assigned row says it: "you" for the user, and
  *  otherwise the name every other surface gives that actor, read off the
- *  cached issue's own identities. Null for nobody. */
-const holderOf = (issue, reading) => {
-  const assignee = issue.assignee;
+ *  cached task's own identities. Null for nobody. */
+const holderOf = (task, reading) => {
+  const assignee = task.assignee;
   if (!assignee?.kind) return null;
   if (assignee.kind === "user") return "you";
-  return actorName(assignee, { ...reading, identities: issue.identities || {} }) || null;
+  return actorName(assignee, { ...reading, identities: task.identities || {} }) || null;
 };
 
 /** How pressing a priority is, highest first; an unknown one reads as none. */
@@ -183,25 +183,25 @@ const priorityRank = (priority) => -Math.max(0, PRIORITIES.findIndex((candidate)
 
 /** One priority-ordered pass partitions every open task by holder and live
  *  agent state. An assigned agent absent from the feed is still assigned. */
-function activeAndBacklog(issues, grouped, reading, activityByAgent, columns) {
+function activeAndBacklog(tasks, grouped, reading, activityByAgent, columns) {
   const working = [];
   const assigned = [];
   const backlog = [];
-  const open = (issues || []).filter((issue) => issue && !isFinished(issue));
+  const open = (tasks || []).filter((task) => task && !isFinished(task));
   open.sort((left, right) => priorityRank(left.priority) - priorityRank(right.priority));
-  for (const issue of open) {
-    const column = columnName(columns, issue.status);
-    if (!issue.assignee?.kind) {
-      backlog.push({ issue, columnName: column });
+  for (const task of open) {
+    const column = columnName(columns, task.status);
+    if (!task.assignee?.kind) {
+      backlog.push({ task, columnName: column });
       continue;
     }
-    const holding = grouped.attentionById.get(issue.id)?.holdingAgent;
+    const holding = grouped.attentionById.get(task.id)?.holdingAgent;
     if (!holding?.working) {
-      assigned.push({ issue, holder: holderOf(issue, reading), columnName: column });
+      assigned.push({ task, holder: holderOf(task, reading), columnName: column });
       continue;
     }
     working.push({
-      issue,
+      task,
       agentName: actorName({ kind: "agent", agent_id: holding.agent.id }, reading),
       activity: cachedActivity(activityByAgent, holding.agent.id),
       working: true,
@@ -225,8 +225,8 @@ function activeAndBacklog(issues, grouped, reading, activityByAgent, columns) {
  * comes with it, and sets apart what finished before this session.
  *
  * `askedOnly` is the machine's cached Needs you rule (core/needsYouRule.js).
- * `columns` are the cached `issues.columns`, which name rows' board columns. */
-export function dashboardSections(issues, {
+ * `columns` are the cached `tasks.columns`, which name rows' board columns. */
+export function dashboardSections(tasks, {
   feed = null,
   projectKey = "",
   detailById = new Map(),
@@ -237,29 +237,29 @@ export function dashboardSections(issues, {
   askedOnly,
   columns,
 } = {}) {
-  const grouped = attentionGroups(issues, { feed, projectKey, detailById, askedOnly });
+  const grouped = attentionGroups(tasks, { feed, projectKey, detailById, askedOnly });
   const reading = {
     agentLabels: agentLabels(workspaceAgents(feed, projectKey)),
     projectName: projectName(feed, projectKey),
   };
-  const placement = activeAndBacklog(issues, grouped, reading, activityByAgent, columns);
-  const needsYou = (issues || []).flatMap((issue) => {
-    const { reasons } = grouped.attentionById.get(issue.id);
-    return reasons.length ? [{ issue, reasons, reasonLabels: reasons.map(attentionReasonLabel) }] : [];
+  const placement = activeAndBacklog(tasks, grouped, reading, activityByAgent, columns);
+  const needsYou = (tasks || []).flatMap((task) => {
+    const { reasons } = grouped.attentionById.get(task.id);
+    return reasons.length ? [{ task, reasons, reasonLabels: reasons.map(attentionReasonLabel) }] : [];
   });
-  const done = doneEntries(issues, { detailById, nowMs, doneCutoffMs });
+  const done = doneEntries(tasks, { detailById, nowMs, doneCutoffMs });
   return {
     ...placement, needsYou,
     done, doneGroups: doneGroups(done, { nowMs, sessionStartedMs }),
   };
 }
 
-function doneEntries(issues, { detailById, nowMs, doneCutoffMs }) {
+function doneEntries(tasks, { detailById, nowMs, doneCutoffMs }) {
   const movedAtOf = doneCutoffMs === null
-    ? (issue) => doneMoveToday(issue, detailById.get(issue.id), nowMs)
-    : (issue) => doneSince(issue, doneCutoffMs);
-  return (issues || []).flatMap((issue) => {
-    const movedAt = movedAtOf(issue);
-    return movedAt ? [{ issue, movedAt, sha: issue.links?.commits?.at(-1) || null }] : [];
+    ? (task) => doneMoveToday(task, detailById.get(task.id), nowMs)
+    : (task) => doneSince(task, doneCutoffMs);
+  return (tasks || []).flatMap((task) => {
+    const movedAt = movedAtOf(task);
+    return movedAt ? [{ task, movedAt, sha: task.links?.commits?.at(-1) || null }] : [];
   });
 }

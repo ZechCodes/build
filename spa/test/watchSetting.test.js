@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-// The one switch watching needs (#65): whether an issue an agent files is one
+// The one switch watching needs (#65): whether a task an agent files is one
 // the user hears about.
 //
 // It is the DEVICE's, beside the other bridge settings, because the bridge is
@@ -9,11 +9,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { wipeCache } from "../src/core/localCache.js";
 
-import { mountWatchSetting, watchSettingPanelHtml, watchesAgentFiledIssues } from "../src/core/watchSetting.js";
+import { mountWatchSetting, watchSettingPanelHtml, watchesAgentFiledTasks } from "../src/core/watchSetting.js";
 
 const host = () => document.querySelector("#panels");
-const box = () => host().querySelector("#watchagentissues");
-const error = () => host().querySelector("#watchagentissueserr").textContent;
+const box = () => host().querySelector("#watchagenttasks");
+const error = () => host().querySelector("#watchagenttaskserr").textContent;
 
 beforeEach(async () => {
   await wipeCache();
@@ -22,20 +22,20 @@ beforeEach(async () => {
 
 describe("what the bridge's answer means", () => {
   it("is off until the machine explicitly saves on", () => {
-    expect(watchesAgentFiledIssues({})).toBe(false);
-    expect(watchesAgentFiledIssues(null)).toBe(false);
-    expect(watchesAgentFiledIssues(undefined)).toBe(false);
-    expect(watchesAgentFiledIssues({ watch_agent_filed_issues: true })).toBe(true);
+    expect(watchesAgentFiledTasks({})).toBe(false);
+    expect(watchesAgentFiledTasks(null)).toBe(false);
+    expect(watchesAgentFiledTasks(undefined)).toBe(false);
+    expect(watchesAgentFiledTasks({ watch_agent_filed_tasks: true })).toBe(true);
   });
 
   it("is off when the machine says off", () => {
-    expect(watchesAgentFiledIssues({ watch_agent_filed_issues: false })).toBe(false);
+    expect(watchesAgentFiledTasks({ watch_agent_filed_tasks: false })).toBe(false);
   });
 });
 
 describe("the switch", () => {
   it("shows what the machine holds, not what the page assumed", async () => {
-    const callRpc = vi.fn(async () => ({ watch_agent_filed_issues: false }));
+    const callRpc = vi.fn(async () => ({ watch_agent_filed_tasks: false }));
     await mountWatchSetting(host(), { callRpc });
     expect(callRpc).toHaveBeenCalledWith("settings.get");
     expect(box().checked).toBe(false);
@@ -43,9 +43,9 @@ describe("the switch", () => {
   });
 
   it("saves the change and repaints from the bridge's own answer", async () => {
-    const answers = { "settings.get": { watch_agent_filed_issues: true } };
+    const answers = { "settings.get": { watch_agent_filed_tasks: true } };
     const callRpc = vi.fn(async (method, params) => {
-      if (method === "settings.set") return { watch_agent_filed_issues: params.watch_agent_filed_issues };
+      if (method === "settings.set") return { watch_agent_filed_tasks: params.watch_agent_filed_tasks };
       return answers[method];
     });
     const onSaved = vi.fn();
@@ -54,7 +54,7 @@ describe("the switch", () => {
     box().checked = false;
     await box().onchange();
 
-    expect(callRpc).toHaveBeenCalledWith("settings.set", { watch_agent_filed_issues: false });
+    expect(callRpc).toHaveBeenCalledWith("settings.set", { watch_agent_filed_tasks: false });
     expect(box().checked).toBe(false);
     expect(onSaved).toHaveBeenCalled();
   });
@@ -63,7 +63,7 @@ describe("the switch", () => {
   it("puts the switch back and says so when the save is refused", async () => {
     const callRpc = vi.fn(async (method) => {
       if (method === "settings.set") throw new Error("device is away");
-      return { watch_agent_filed_issues: true };
+      return { watch_agent_filed_tasks: true };
     });
     await mountWatchSetting(host(), { callRpc });
 

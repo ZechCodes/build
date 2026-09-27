@@ -5,7 +5,7 @@
 > Build knows which phase a report closes from the session that sent it, and a
 > plan's stages are read from `.build/plan/stages.json` on disk when the plan
 > agent reports Complete. The per-stage validation gate (validate/fix-stage
-> sessions, `ValidationReport`, `run.stage_fix`/`issue.stage_fix`), diff triage
+> sessions, `ValidationReport`, `run.stage_fix`/`task.stage_fix`), diff triage
 > (`triage.override`, `triage_enabled`, `.build/review-rules.json`), the
 > branch-recovery agent (`RecoveryAttempt`, `phase=recover`) and agent-reported
 > comment resolutions are removed. A stage is `building` until its build
@@ -543,10 +543,10 @@ attached to a message**, not a separate event.
   are re-admitted; a replacement agent reads why its predecessor blocked from
   the same packet that carries what the human said.
 
-- **The Issue mirror moves with the record.** `run_outcome_mirrors_to_issue`
+- **The Task mirror moves with the record.** `run_outcome_mirrors_to_task`
   keys on attention-classed *events*; once outcomes are messages, the mirror
-  onto the Issue conversation must key on the outcome message instead. The
-  step's tests hold the equivalence: every outcome that reached the Issue
+  onto the Task conversation must key on the outcome message instead. The
+  step's tests hold the equivalence: every outcome that reached the Task
   timeline before reaches it after.
 
 - **Compatibility.** Existing persisted threads need no migration: their
@@ -570,21 +570,21 @@ attached to a message**, not a separate event.
 
 This is the part the storage layer decides, not the design.
 
-**There is no database.** The store is one `record.json` per Issue under
-`~/.build/tasks/issues/<id>/`, holding the Issue *and every implementation
+**There is no database.** The store is one `record.json` per Task under
+`~/.build/tasks/tasks/<id>/`, holding the Task *and every implementation
 inside it*, each with its own thread. Records are written atomically — tmp file,
-fsync, rename — and `save_issue_implementation` (the JSON store's, since removed) is a
+fsync, rename — and `save_task_implementation` (the JSON store's, since removed) is a
 read-modify-write of the whole aggregate:
 
 ```rust
-let mut aggregate: PersistedIssue = read_record(&path)?;   // the entire Issue
+let mut aggregate: PersistedTask = read_record(&path)?;   // the entire Task
 … replace one implementation …
 let json = serde_json::to_string_pretty(&aggregate)?;      // re-serialize all of it
 write_record_atomically(&path, &json)                      // + fsync
 ```
 
 So appending one thread item costs a full read, a full pretty-print
-serialization, and an fsync **of every thread on that Issue**.
+serialization, and an fsync **of every thread on that Task**.
 
 That is correct and cheap for what the thread holds today: messages and
 lifecycle events, a handful per run. It is quadratic for activity. Tool events
@@ -598,8 +598,8 @@ The problem is not that the file gets big. It is write amplification.
 append-only log beside it:
 
 ```text
-issues/<issue_id>/record.json              messages + lifecycle  (unchanged)
-issues/<issue_id>/activity/<agent_id>.jsonl   reasoning, tool use, narration
+tasks/<task_id>/record.json              messages + lifecycle  (unchanged)
+tasks/<task_id>/activity/<agent_id>.jsonl   reasoning, tool use, narration
 ```
 
 - **Appending is O(1)** — one write, no read, no re-serialization of anything
@@ -1021,9 +1021,9 @@ Each step compiles, ships and is green on its own.
 > thread rows and the jsonl log in §6.2 was not built. Three details worth
 > knowing. The class needed no new mechanism and no new field: `class()`
 > answers `Status` for all four, so `attention_reason` returns `None`, the
-> unread count is unmoved, and `run_outcome_mirrors_to_issue` — which is
+> unread count is unmoved, and `run_outcome_mirrors_to_task` — which is
 > `class() == Attention` and is tested over `ThreadEventKind::ALL` — kept the
-> four off the Issue conversation without being touched. The catch-up packet's
+> four off the Task conversation without being touched. The catch-up packet's
 > `limit` now counts **messages** rather than items: filtering after taking the
 > last 40 items would have left a session that emitted forty tool calls with an
 > empty packet, which is the failure §6.1 exists to prevent, so the filter runs
@@ -1051,7 +1051,7 @@ Each step compiles, ships and is green on its own.
 > whatever had happened last, which on a machine running the whole suite is not
 > the thing they meant. `826def1` and `58a4d2e` fix them — the bridge's
 > screen-drain helper now waits for the PTY reader's own end of stream rather
-> than treating a reaped child as proof the reader is finished, the issue view's
+> than treating a reaped child as proof the reader is finished, the task view's
 > post-switch read is named rather than taken as the newest, and the socket
 > backoff test moved to fake timers. No assertion was weakened and nothing under
 > test moved.
@@ -1410,14 +1410,14 @@ Each step compiles, ships and is green on its own.
 > **The packet's conversation is now one rule, and it is the right one.** At
 > the drain the thread comes from `agent_conversation(owner, agent_id)` — the
 > conversation the agent SPEAKS in, which for a planned implementation's first
-> agent is its Issue's. The orchestrator's turns used to build their packet
+> agent is its Task's. The orchestrator's turns used to build their packet
 > from `&active.agents`, the run's OWN thread, where a planned implementation's
 > human never says anything: the §6.1 failure in a third shape, fixed here as a
 > side effect of asking the question in one place. Six tests that asserted the
 > reviewer's words were in `queued.cold` now read the prompt the turn is
 > handed over with, which is what they always meant.
 >
-> **`for_recovery` gave up its `issue_thread` parameter** and, with it, a
+> **`for_recovery` gave up its `task_thread` parameter** and, with it, a
 > fabricated fallback roster one call site built purely so the packet would
 > have something to read. The warm half stops carrying a packet, as designed.
 >
@@ -1649,7 +1649,7 @@ What the step builds, all in `bridge/src/harness/adk.rs` plus one enum arm:
 Specified in §6.1 ("The fix, designed"). Summary of the moving parts: the
 outcome message with its additive `outcome` field, `post_completion` retired,
 the `Done`/`Blocked` emission dropped (kinds retained for old rows), the
-catch-up filter inverted for outcome messages, the Issue mirror re-keyed, and
+catch-up filter inverted for outcome messages, the Task mirror re-keyed, and
 the compatibility story for persisted threads and older clients — all there.
 
 > **Shipped in `4f2c4d0` and `02dd6df`.** `Thread::post_outcome` is the one
@@ -1675,9 +1675,9 @@ the compatibility story for persisted threads and older clients — all there.
 > `Failed` outcome carrying Build's note in the same body — which is what keeps
 > `run_failed` on that row.
 >
-> **The Issue mirror needed no re-keying, and the tests say why.** A planned
-> implementation's report is written straight onto the Issue's conversation by
-> `record_report_in_thread`'s caller — `run_outcome_mirrors_to_issue` never
+> **The Task mirror needed no re-keying, and the tests say why.** A planned
+> implementation's report is written straight onto the Task's conversation by
+> `record_report_in_thread`'s caller — `run_outcome_mirrors_to_task` never
 > carried it — so the outcome reaches the same timeline as the same one unread
 > entry, now with the packet carrying it too. The helper still keys on event
 > class for the one thing that does travel through it (an abandoned branch),
@@ -1885,7 +1885,7 @@ the first stdin message. Everything below follows from those four facts.
   what the record carries, writes it through the agent's own roster (a
   `record_agent_resume_id` beside `record_agent_activity`; NOT
   `edit_agent_conversation`, which edits the conversation an agent SPEAKS in
-  and for an implementation's first agent that is the Issue's thread, not the
+  and for an implementation's first agent that is the Task's thread, not the
   agent's record). The compare runs per event; the write runs once per session.
 
 - **The argv.** `SpawnOptions` gains `resume_session_id: Option<String>`,
@@ -1941,7 +1941,7 @@ second way to reach an agent.
     `done` — so the flag on the message is not merely tidier, it is the only
     ordering that cannot come apart.
   - `thread.post` already owns the fan-out an interrupt needs and an RPC would
-    have to copy: which agent of the roster is addressed, the Issue-to-live
+    have to copy: which agent of the roster is addressed, the Task-to-live
     implementation redirection, the parked-entity `Reply`, the inbox anchor.
 
 - **Where the flag travels.** `thread_post` parses it once
@@ -2485,7 +2485,7 @@ Additive per §8, exactly as the four were: `AgentActivity::TaskUpdate
 { summary }` in `session.rs`, `ThreadEventKind::TaskUpdate` with wire token
 `task_update`, class `Status`, intrinsic like the other four, and on
 `ThreadEventKind::ALL` — so every rule tested over the roster of kinds (the
-class split, the Issue mirror, the counted predicate) covers it with no new
+class split, the Task mirror, the counted predicate) covers it with no new
 code. It is minted by the reader above, rides the existing activity pump
 (`record_agent_activity` gains the arm), and lands in the thread as an
 ordinary `Status` row: no unread badge, no notification, and no slot bought
@@ -3189,8 +3189,8 @@ the concrete id straight.
 **Creation mints no agent.** Of the three `AgentRoster::with_first` sites
 (`orchestrator.rs:913`, `1483`, `2442`):
 
-- **`create_plan` (913) is untouched.** An issue carries exactly one agent
-  and its agent IS its conversation; nothing in this step is about issues.
+- **`create_plan` (913) is untouched.** A task carries exactly one agent
+  and its agent IS its conversation; nothing in this step is about tasks.
 - **`adopt_run` (2442) mints an empty roster.** Adoption is git and records;
   no one is being spoken to. The `pending_continuation` grant and the
   adoption-time choice params stop minting an agent and instead wait for the
@@ -3212,9 +3212,9 @@ can panic is a trap every new call site walks into. In their place:
   (`no agent on {owner} — send a message to create one`) for read paths;
 - `is_empty()` becomes the real answer.
 
-Issues always construct `with_first`, so plan paths unwrap `primary()` with
+Tasks always construct `with_first`, so plan paths unwrap `primary()` with
 an expect naming the invariant that still holds there
-(`"an issue always holds its one agent"`).
+(`"a task always holds its one agent"`).
 
 **The auto-add door is one helper.** `AppState::ensure_primary_agent(entity_id)
 -> Result<agent_id>`: if the roster is empty, add an agent with
@@ -3234,9 +3234,9 @@ of reaching for `first()`:
 | `run_request_changes` (fn at `app.rs:11553`) | `resolve(addressed)` (`11567`) + `first()` compare (`11568`) | `resolve` unchanged; the `addresses_first_agent` compare reads `primary()` |
 | branch dispatch (`app.rs:13318`) | `first()` or `add` | empty roster takes the `add` arm — same code, one less special case |
 | the idle sweep (`app.rs:6161/6174`) | tab of `agents.first()` | skip entities whose roster is empty (nothing can be idle that does not exist) |
-| `issue_session` (fn at `app.rs:16522`, the free fn read before a session-ending verb) | `active.agents.first()` (`16524`) | `primary()` with the issue expect — issues always have one. (`retire_issue_session`, `app.rs:8161`, only delegates to `retire_agent` and needs nothing.) |
-| `offering_thread` (fn at `app.rs:10927`) | the ISSUE roster's `first().thread` (`10941`) | `primary()` with the issue expect; the run arm's `resolve` is unchanged |
-| `thread_post`'s `ImplementationTarget` (fn at `app.rs:10946`) | the implementation run's `first().id` / `.choice` (`11015–11016`) | `primary()` — an empty implementation roster yields no target, so the Issue's post stays on the Issue |
+| `task_session` (fn at `app.rs:16522`, the free fn read before a session-ending verb) | `active.agents.first()` (`16524`) | `primary()` with the task expect — tasks always have one. (`retire_task_session`, `app.rs:8161`, only delegates to `retire_agent` and needs nothing.) |
+| `offering_thread` (fn at `app.rs:10927`) | the TASK roster's `first().thread` (`10941`) | `primary()` with the task expect; the run arm's `resolve` is unchanged |
+| `thread_post`'s `ImplementationTarget` (fn at `app.rs:10946`) | the implementation run's `first().id` / `.choice` (`11015–11016`) | `primary()` — an empty implementation roster yields no target, so the Task's post stays on the Task |
 | `close_turn_of_dead_agent` (fn at `app.rs:3013`) | `active.agents.first().id == agent_id` (`3037`) | `primary().is_some_and(…)` — false on an empty roster, so the death is recorded on the agent's own thread |
 
 **Entity-level events on an empty roster are not minted.** The Deref sites
@@ -3265,8 +3265,8 @@ Every guard protecting the last/first agent goes:
 
 - **`AgentRoster::remove`** (`agent.rs:273`): the `index == 0` refusal is
   deleted — remove is a position lookup and a `Vec::remove`, any index.
-- **`agent_remove`** (`app.rs:8080`): the issue refusal stays (an issue's
-  agent is the issue); the "FIRST agent is not removable" doc paragraph is
+- **`agent_remove`** (`app.rs:8080`): the task refusal stays (a task's
+  agent is the task); the "FIRST agent is not removable" doc paragraph is
   rewritten to the new rule. `retire_agent` already does the last rites and
   needs nothing.
 - **SPA `canRemoveAgent`** (`agentRailModel.js:153`): drops
@@ -3406,7 +3406,7 @@ it.
 | option markup | `providerOptionsHtml` / `providerCardsHtml` | Account select / new-agent view |
 | card→id wiring | `data-provider` + delegated click (the Agent-tab idiom) | new-agent view |
 | menu open/close/outside-press | `mountSplitMenu` (`splitButton.js`) | composer model menu (and the interrupt send, as today) |
-| catalog reads | `catalogForProvider`, `modelInCatalog`, `effortSupported`, `reconcileAgentChoice`, `modelParams` | composer menu, Account defaults panel, issue sheet |
+| catalog reads | `catalogForProvider`, `modelInCatalog`, `effortSupported`, `reconcileAgentChoice`, `modelParams` | composer menu, Account defaults panel, task sheet |
 | composer markup | `composerHtml`'s one template, extended with the optional left slot | every conversation surface |
 | send composition | the rail's `ensureEntity` / `post()` / `addAgent()` / `startAgent()` | new-agent send (no parallel path) |
 | wire-token parse | `AgentProvider::from_wire` / `model_choice_from` | `settings.set`, `agent.choose`, every minting verb |
@@ -3495,7 +3495,7 @@ SPA (`npm test`):
    three names; `providerLabel("claude_adk")` is "Claude Code",
    `providerLabel("claude")` is "Claude Code TUI"; no alias helper survives;
 2. `canRemoveAgent` answers true for a branch's only agent and its first,
-   false on issues and for unknown ids;
+   false on tasks and for unknown ids;
 3. the empty-roster chat panel renders the three cards with the account
    default highlighted; picking a card and sending composes `agent.add`
    (chosen provider) → `thread.post` → `agent.start`, in order, and selects
@@ -3671,7 +3671,7 @@ Code's carrier) into one stored field. Nothing bridge-side moves:
   (`views/settings.js:140`) — and the other startable lists do not filter at
   all: `agentChoicePanelHtml` builds its Agent select from
   `providersOf(catalog)` (`agentChoice.js:24/56`, the raw catalog) and
-  `assignmentPanelHtml` from `full.providers` (`issueRender.js:97/126`, the
+  `assignmentPanelHtml` from `full.providers` (`taskRender.js:97/126`, the
   normalized catalog, equally raw). Since step 14 the catalog carries all
   three concrete providers under three distinct labels, so changing only the
   filter's contents would leave "Claude Code TUI" standing as a third option
@@ -3732,19 +3732,19 @@ Code's carrier) into one stored field. Nothing bridge-side moves:
      so a stale stored `"claude"` cannot ride out on the wire under a select
      that painted "Claude Code", while an empty provider still means the
      harness's own default;
-  5. **the issue assignment select** (`assignmentPanelHtml`,
-     `issueRender.js:97/126`): `creatableCatalog(normalizeModelCatalog(catalog))`
+  5. **the task assignment select** (`assignmentPanelHtml`,
+     `taskRender.js:97/126`): `creatableCatalog(normalizeModelCatalog(catalog))`
      is what `full` becomes, and its hand-rolled
      `assignment.provider || full.default_provider || "claude"` — a third copy
      of the fallback chain, ending in a hardcoded token — becomes
      `chosenProviderId(full, assignment)`, imported from `agentChoice.js`,
      which imports only `text.js` and `modelPicker.js`, so no cycle;
-  6. **that select's own dispatch** (`implementParams`, `issueModel.js:241`,
-     called from `issueView.js:416/553`): takes the catalog the panel painted
+  6. **that select's own dispatch** (`implementParams`, `taskModel.js:241`,
+     called from `taskView.js:416/553`): takes the catalog the panel painted
      from instead of a pre-picked models array and delegates to
      `agentChoiceParams(normalizeModelCatalog(catalog), assignment)`, so the
      Implement send carries the CLAMPED id for the same reason item 4 does.
-     `issueView`'s `providerModels` — a fourth hand-rolled provider lookup,
+     `taskView`'s `providerModels` — a fourth hand-rolled provider lookup,
      and the one that kept the stale token alive on this path — goes with it;
   7. **the Agent defaults panel** (`views/settings.js:140`):
      `const offered = creatableCatalog(catalog)` replaces the spread plus
@@ -3782,10 +3782,10 @@ Code's carrier) into one stored field. Nothing bridge-side moves:
 | clipping | `one_line` / `TOOL_SUMMARY_LIMIT` | tool summaries, task rows, unchanged |
 | a task row's ending words | `ended_summary` | the terminal patch and the terminal notification |
 | the two-agent list | `creatableAgents` (`modelPicker.js`) | `creatableCatalog`, and nothing else calls it directly |
-| the catalog a create surface offers | `creatableCatalog` (`modelPicker.js`, replacing `startableCatalogProviders`) | new-agent cards, rail highlight, compose/dispatch panel AND its params, issue assignment AND its Implement dispatch, Agent defaults panel |
+| the catalog a create surface offers | `creatableCatalog` (`modelPicker.js`, replacing `startableCatalogProviders`) | new-agent cards, rail highlight, compose/dispatch panel AND its params, task assignment AND its Implement dispatch, Agent defaults panel |
 | a choice as create/dispatch params | `agentChoiceParams` (`agentChoice.js`) | the compose/toolbar panel AND `implementParams` — one clamp, so no surface can paint one agent and send another |
 | card / option markup | `providerCardsHtml` / `providerOptionsHtml` | unchanged, fed the narrowed catalog |
-| offer clamping | `chosenProviderId`'s membership fallback, over the narrowed catalog | rail highlight, panel paint, panel params, issue assignment — three bespoke fallback chains deleted |
+| offer clamping | `chosenProviderId`'s membership fallback, over the narrowed catalog | rail highlight, panel paint, panel params, task assignment — three bespoke fallback chains deleted |
 | full label vocabulary | `STARTABLE_PROVIDERS` / `providerLabel` | bubbles, Account select, refusals |
 | the account's answer | `default_harness`, read as `models.list.default_provider` | `creatableAgents` at every paint; the bridge's own auto-add |
 
@@ -3866,14 +3866,14 @@ SPA (`npm test`):
    for that id; an empty catalog (`models.list` not answered) still yields the
    two entries with empty model lists; the rendered options contain no
    "Claude Code TUI" and no "headless";
-7. the compose/dispatch panel and the issue assignment panel each render an
+7. the compose/dispatch panel and the task assignment panel each render an
    Agent select of exactly the two entries; a stored provider `"claude"` under
    a `claude_adk` default paints the Claude Code entry as selected, and
    `agentChoiceParams` for that same stale choice sends
    `provider: "claude_adk"` — while a choice with no provider sends no
    `provider` key at all;
-8. the same pair for the issue path, asserted together in
-   `test/issueRender.test.js`: the assignment panel paints
+8. the same pair for the task path, asserted together in
+   `test/taskRender.test.js`: the assignment panel paints
    `value="claude_adk" selected` under a stale `"claude"` and no "Claude Code
    TUI" option, and `implementParams` for that same assignment sends
    `provider: "claude_adk"` — an assignment naming no agent still sends no
@@ -4021,14 +4021,14 @@ sections cite (§11 q3, §11 q4) must not move.
 
 ## 12. Revision history
 
-- **2026-08-31, the issue's Implement dispatch joined the clamp.** Review found
+- **2026-08-31, the task's Implement dispatch joined the clamp.** Review found
   the one create path the SPA half missed, which is why the entry below is
   wrong to call the `+` bubble the last of them: `assignmentPanelHtml` painted
   the clamped agent while `implementParams` still spent `assignment.provider`
-  raw, so an issue holding `"claude"` under a `claude_adk` account showed
+  raw, so a task holding `"claude"` under a `claude_adk` account showed
   "Claude Code" and created a TUI agent on Implement. `implementParams` now
   takes the catalog the panel paints from and delegates to `agentChoiceParams`,
-  which deletes `issueView`'s `providerModels` — the fourth hand-rolled
+  which deletes `taskView`'s `providerModels` — the fourth hand-rolled
   provider lookup — and leaves one function answering "what does this choice
   send" for every create surface (§15.3 item 6, §15.5 item 8).
 - **2026-08-31, step 15's SPA half built.** As specified, with three additions
@@ -4064,7 +4064,7 @@ sections cite (§11 q3, §11 q4) must not move.
   two cards, "Claude Code" and "Codex", via one `creatableAgents` helper and
   one `creatableCatalog` narrowing that REPLACES `startableCatalogProviders` —
   named at all five call sites, because two of them (the compose/dispatch panel
-  and the issue assignment select) never filtered the catalog at all and would
+  and the task assignment select) never filtered the catalog at all and would
   otherwise keep offering a third card; the account's existing three-token
   `default_harness` IS the mode setting (its claude token decides what the
   Claude Code card creates; under a Codex default the plain name means
@@ -4120,9 +4120,9 @@ sections cite (§11 q3, §11 q4) must not move.
 - **2026-08-31, step 14 read back for reuse.** Six consolidations, no behaviour
   moved. Dropping the roster's `Deref` had left 111 sites walking by hand from
   an entity to the thread its agent owns: `AgentRoster::sole_thread` /
-  `sole_thread_mut` name the walk for an issue, and the tests' `primary_thread`
+  `sole_thread_mut` name the walk for a task, and the tests' `primary_thread`
   gained the mutable twin the writing sites needed. The choice between the
-  owning Issue's conversation and a run's own — with the mint door for the
+  owning Task's conversation and a run's own — with the mint door for the
   second — was copied into `on_run_agent_done` and
   `consume_run_stage_revision`; it is `run_report_conversation` now.
   `settings_set`'s local holding what `claude_mode` resolved to is named for
@@ -4151,10 +4151,10 @@ sections cite (§11 q3, §11 q4) must not move.
   agent rebuilds the panel around a conversation.
 - **2026-08-30, step 14's citations corrected.** A read-back against the
   source fixed four misnamed call sites in §14.3's migration table and §14.5 —
-  the `.first()` site at `app.rs:16524` is `issue_session`, not
-  `retire_issue_session` (which only delegates to `retire_agent`); the
+  the `.first()` site at `app.rs:16524` is `task_session`, not
+  `retire_task_session` (which only delegates to `retire_agent`); the
   `resolve` + first-compare at `11567–11568` is `run_request_changes`, not
-  `run_stage_dispatch`; the Issue-swap trio at `10941`/`11015`/`3037` is
+  `run_stage_dispatch`; the Task-swap trio at `10941`/`11015`/`3037` is
   `offering_thread`/`thread_post`/`close_turn_of_dead_agent`, now three rows
   with their three different empty-roster answers; and §14.5 named
   `createStartingAdoptingCall`, which does not exist — the real paths are the
@@ -4501,9 +4501,9 @@ sections cite (§11 q3, §11 q4) must not move.
   catch-up exclusion inverts — outcome messages are carried, each prefixed with
   its outcome — which closes the §6.1 gap: a replacement agent now reads why
   its predecessor blocked out of the packet that carries what the human said.
-  The Issue mirror needed no re-keying (a planned implementation's report is
-  written onto the Issue's conversation directly, and never travelled through
-  `run_outcome_mirrors_to_issue`), and the equivalence is held end to end by a
+  The Task mirror needed no re-keying (a planned implementation's report is
+  written onto the Task's conversation directly, and never travelled through
+  `run_outcome_mirrors_to_task`), and the equivalence is held end to end by a
   test rather than by the helper's signature. What stays an event is what Build
   observed for itself: `Triaged`, `ReviewBlocked`, `IdleUnreported`,
   `Interrupted`, and every `RunFailed` raised where no report was made. Nothing
@@ -4549,7 +4549,7 @@ sections cite (§11 q3, §11 q4) must not move.
   screens waiting on it (`agent_screens_awaiting_spawn`) instead of dropping
   their clients onto a grid nothing will ever paint. Drifted line references
   refreshed against the tree (`thread.rs`, `orchestrator.rs`); the removed
-  JSON store's `save_issue_implementation` no longer cites a line.
+  JSON store's `save_task_implementation` no longer cites a line.
 - **2026-08-23, the `send_turn` concurrency contract corrected.** §3 and the
   trait doc claimed callers must not hold the app-wide state lock across
   `send_turn`; `deliver` did exactly that, across the write and the 250 ms
@@ -4606,7 +4606,7 @@ sections cite (§11 q3, §11 q4) must not move.
 - **2026-08-23, step 4 shipped.** `Reasoning`, `ToolUse`, `ToolResult` and
   `Narration` are on `ThreadEventKind`, wire tokens `reasoning`, `tool_use`,
   `tool_result`, `narration`, all classed `Status` — so an agent thinking out
-  loud moves no unread count, reaches no Issue conversation and sends no
+  loud moves no unread count, reaches no Task conversation and sends no
   notification, with no new code anywhere those rules live. `catch_up_markdown`
   is messages-only and its limit counts messages, not items. Nothing emits the
   four kinds yet; §8's example is corrected to the envelope events actually
@@ -4658,7 +4658,7 @@ sections cite (§11 q3, §11 q4) must not move.
   it now waits on store phases 1–3.
 - **2026-08-20, §6 decided.** Catch-up carries messages only, dropping the
   lifecycle summaries it used to include. Activity is persisted in a per-agent
-  append-only jsonl log rather than the Issue's aggregate record — the store has
+  append-only jsonl log rather than the Task's aggregate record — the store has
   no database and rewrites the whole aggregate per append, so activity in the
   record would be O(n²) bytes written per session. The open question narrows from
   "what is the retention rule" to "how large is the in-memory window".

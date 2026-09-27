@@ -1,9 +1,9 @@
-//! `issues.list` a page at a time (#85): `limit` bounds a page, `next_cursor`
+//! `tasks.list` a page at a time (#85): `limit` bounds a page, `next_cursor`
 //! names where the next one starts, and a cursor is good only for the filter
 //! it was made under.
 //!
 //! The order is the list's own, number descending, and a cursor is the last
-//! number a page answered. A number never moves, so an issue filed while a
+//! number a page answered. A number never moves, so a task filed while a
 //! client is paging lands above the first page and never shifts one below it.
 
 use super::project_agent::{added_project, rooted};
@@ -13,12 +13,12 @@ use super::*;
 const ANOTHER_LIST: &str =
     "Build cannot continue this list: the cursor was made for another project or on another device.";
 
-/// A project holding `count` issues, numbered 1 to `count`, and their ids in
-/// the order `issues.list` answers them: newest first.
+/// A project holding `count` tasks, numbered 1 to `count`, and their ids in
+/// the order `tasks.list` answers them: newest first.
 fn project_of(state: &mut AppState, project_id: &str, count: usize) -> Vec<String> {
     let mut ids: Vec<String> = (1..=count)
         .map(|n| {
-            filed(state, project_id, &format!("issue {n}"))["id"]
+            filed(state, project_id, &format!("task {n}"))["id"]
                 .as_str()
                 .unwrap()
                 .to_string()
@@ -29,26 +29,26 @@ fn project_of(state: &mut AppState, project_id: &str, count: usize) -> Vec<Strin
 }
 
 fn listed(state: &mut AppState, params: Value) -> Value {
-    let answered = state.handle(req("issues.list", params));
+    let answered = state.handle(req("tasks.list", params));
     assert_eq!(answered["ok"], true, "{answered:?}");
     answered["result"].clone()
 }
 
 fn ids_of(page: &Value) -> Vec<String> {
-    page["issues"]
+    page["tasks"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|issue| issue["id"].as_str().unwrap().to_string())
+        .map(|task| task["id"].as_str().unwrap().to_string())
         .collect()
 }
 
 fn numbers_of(page: &Value) -> Vec<u64> {
-    page["issues"]
+    page["tasks"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|issue| issue["number"].as_u64().unwrap())
+        .map(|task| task["number"].as_u64().unwrap())
         .collect()
 }
 
@@ -103,9 +103,9 @@ fn a_page_holds_at_most_its_limit_and_names_the_next_only_while_there_is_one() {
     let whole = listed(&mut state, json!({ "project_id": project_id }));
     let rows: Vec<&Value> = pages
         .iter()
-        .flat_map(|page| page["issues"].as_array().unwrap())
+        .flat_map(|page| page["tasks"].as_array().unwrap())
         .collect();
-    let whole_rows: Vec<&Value> = whole["issues"].as_array().unwrap().iter().collect();
+    let whole_rows: Vec<&Value> = whole["tasks"].as_array().unwrap().iter().collect();
     assert_eq!(
         rows, whole_rows,
         "a paged row is the row the whole list answers"
@@ -143,23 +143,23 @@ fn a_limit_is_one_to_five_hundred() {
             &mut state,
             json!({ "project_id": project_id, "limit": limit }),
         );
-        assert_eq!(page["issues"].as_array().unwrap().len(), limit.min(2));
+        assert_eq!(page["tasks"].as_array().unwrap().len(), limit.min(2));
     }
     for limit in [json!(0), json!(501), json!(u64::MAX)] {
         let answered = state.handle(req(
-            "issues.list",
+            "tasks.list",
             json!({ "project_id": project_id, "limit": limit }),
         ));
         assert_eq!(answered["ok"], false, "{limit}: {answered:?}");
         assert_eq!(answered["error_code"], "invalid_params", "{answered:?}");
         assert_eq!(
             answered["error"],
-            format!("Build cannot list {limit} issues at a time: a page holds 1 to 500."),
+            format!("Build cannot list {limit} tasks at a time: a page holds 1 to 500."),
         );
     }
     for limit in [json!(-1), json!(2.5), json!("10")] {
         let answered = state.handle(req(
-            "issues.list",
+            "tasks.list",
             json!({ "project_id": project_id, "limit": limit }),
         ));
         assert_eq!(
@@ -178,8 +178,8 @@ fn a_cursor_continues_the_filter_it_was_made_under() {
     for (index, id) in ids.iter().enumerate() {
         if index % 2 == 0 {
             let labelled = state.handle(req(
-                "issues.update",
-                json!({ "issue_id": id, "labels": ["sweep"] }),
+                "tasks.update",
+                json!({ "task_id": id, "labels": ["sweep"] }),
             ));
             assert_eq!(labelled["ok"], true, "{labelled:?}");
         }
@@ -246,8 +246,8 @@ fn short_pages_under_a_sparse_filter_walk_to_the_whole_list() {
     // Newest first, so index 0 is #30: label #29, #11 and #2.
     for index in [1, 19, 28] {
         let labelled = state.handle(req(
-            "issues.update",
-            json!({ "issue_id": ids[index], "labels": ["rare"] }),
+            "tasks.update",
+            json!({ "task_id": ids[index], "labels": ["rare"] }),
         ));
         assert_eq!(labelled["ok"], true, "{labelled:?}");
     }
@@ -300,7 +300,7 @@ fn a_cursor_made_under_another_filter_is_refused_in_a_sentence() {
     ] {
         let mut params = other.clone();
         params["cursor"] = json!(cursor);
-        let answered = state.handle(req("issues.list", params));
+        let answered = state.handle(req("tasks.list", params));
         assert_eq!(
             answered["error_code"], "invalid_params",
             "{other}: {answered:?}"
@@ -328,8 +328,8 @@ fn a_cursor_carries_over_to_the_same_filter_spelled_another_way() {
     let (_home, mut state, project_id) = tracked(&state_root);
     for id in project_of(&mut state, &project_id, 4) {
         let moved = state.handle(req(
-            "issues.update",
-            json!({ "issue_id": id, "status": "in_review", "labels": ["Bug"] }),
+            "tasks.update",
+            json!({ "task_id": id, "status": "in_review", "labels": ["Bug"] }),
         ));
         assert_eq!(moved["ok"], true, "{moved:?}");
     }
@@ -358,7 +358,7 @@ fn a_cursor_this_bridge_did_not_make_is_refused_in_a_sentence() {
 
     for cursor in ["", "not a cursor", "MTIz", "djE6eDp5"] {
         let answered = state.handle(req(
-            "issues.list",
+            "tasks.list",
             json!({ "project_id": project_id, "cursor": cursor }),
         ));
         assert_eq!(
@@ -389,7 +389,7 @@ fn a_cursor_from_another_project_is_refused() {
 
     let error = refused(
         &mut state,
-        "issues.list",
+        "tasks.list",
         json!({ "project_id": other, "cursor": first["next_cursor"] }),
     );
 
@@ -398,8 +398,8 @@ fn a_cursor_from_another_project_is_refused() {
 
 /// Another store's cursor is another list, though its project wears the
 /// same `proj-N`, sits at the same path — two devices with one checkout
-/// layout, or two bridges on one machine — and numbers its issues the same
-/// way: continuing it here would answer the issues below a place in a list
+/// layout, or two bridges on one machine — and numbers its tasks the same
+/// way: continuing it here would answer the tasks below a place in a list
 /// this store never made, skipping every one above it.
 #[test]
 fn a_cursor_from_another_store_is_refused() {
@@ -428,7 +428,7 @@ fn a_cursor_from_another_store_is_refused() {
 
     let error = refused(
         &mut second,
-        "issues.list",
+        "tasks.list",
         json!({ "project_id": second_project, "limit": 2, "cursor": page["next_cursor"] }),
     );
 
@@ -465,11 +465,11 @@ fn a_cursor_outlives_a_restart_of_its_bridge() {
     assert_eq!(numbers_of(&page), vec![3, 2]);
 }
 
-/// Issues filed while a client pages land above the first page, where the
+/// Tasks filed while a client pages land above the first page, where the
 /// next full read finds them; the page after the cursor is exactly the rows
 /// that were below it. Nothing is answered twice and nothing is skipped.
 #[test]
-fn issues_filed_between_pages_move_no_row_across_a_cursor() {
+fn tasks_filed_between_pages_move_no_row_across_a_cursor() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
@@ -501,17 +501,17 @@ fn issues_filed_between_pages_move_no_row_across_a_cursor() {
     assert_eq!(numbers_of(&whole)[..2], [8, 7]);
 }
 
-/// An issue that leaves the filter between pages leaves that page; the rest
+/// A task that leaves the filter between pages leaves that page; the rest
 /// of the page is what it would have been.
 #[test]
-fn an_issue_that_leaves_the_filter_between_pages_is_not_answered_on_the_next() {
+fn a_task_that_leaves_the_filter_between_pages_is_not_answered_on_the_next() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
     let ids = project_of(&mut state, &project_id, 6);
     let filter = json!({ "project_id": project_id, "state": "open", "limit": 2 });
     let first = listed(&mut state, filter.clone());
-    let closed = state.handle(req("issues.close", json!({ "issue_id": ids[3] })));
+    let closed = state.handle(req("tasks.close", json!({ "task_id": ids[3] })));
     assert_eq!(closed["ok"], true, "{closed:?}");
 
     let mut params = filter;

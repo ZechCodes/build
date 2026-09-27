@@ -5,9 +5,9 @@
 // What it proves, each against the running compose stack:
 //   1. the rail offers "Turn on"; the click asks for permission and the
 //      subscription reaches the api, and the offer is gone after;
-//   2. the user's own comment on a watched issue pushes nothing;
+//   2. the user's own comment on a watched task pushes nothing;
 //   3. an agent answering (a Complete report) pushes "An agent needs you", and
-//      its comment on the watched issue pushes "New activity on a task" — both
+//      its comment on the watched task pushes "New activity on a task" — both
 //      sent by the bridge's own triggers; each deep link opens its surface.
 //
 // The agent is web/push-harness/claude, a stand-in harness that acts through
@@ -53,11 +53,11 @@ const seedStep = (...args) => {
   if (!line) throw new Error(`push-seed ${args[0]} said nothing:\n${out}`);
   return JSON.parse(line.slice(5));
 };
-/** Name the issue the stand-in harness comments on, before its turn starts. */
-const tellTheHarness = (issueId) => {
-  const file = join(scratch, "push-issue");
-  writeFileSync(file, issueId);
-  docker(`docker cp ${file} ${BRIDGE}:/tmp/push-issue`);
+/** Name the task the stand-in harness comments on, before its turn starts. */
+const tellTheHarness = (taskId) => {
+  const file = join(scratch, "push-task");
+  writeFileSync(file, taskId);
+  docker(`docker cp ${file} ${BRIDGE}:/tmp/push-task`);
 };
 
 const results = [];
@@ -144,19 +144,19 @@ try {
   // ---- 2. the user's own comment is quiet ----
   await clearNotifications();
   seedStep("own", JSON.stringify(seeded));
-  const quiet = await waitForNotification(`build-task-${seeded.issueId}`, 8000);
-  note("the user's own comment on a watched issue pushes nothing", quiet === null, quiet ? JSON.stringify(quiet) : "8 s, nothing shown");
+  const quiet = await waitForNotification(`build-task-${seeded.taskId}`, 8000);
+  note("the user's own comment on a watched task pushes nothing", quiet === null, quiet ? JSON.stringify(quiet) : "8 s, nothing shown");
 
-  // ---- 3. an agent answering, and commenting on the watched issue ----
+  // ---- 3. an agent answering, and commenting on the watched task ----
   await clearNotifications();
-  tellTheHarness(seeded.issueId);
+  tellTheHarness(seeded.taskId);
   seedStep("agent", JSON.stringify(seeded));
   const agent = await waitForNotification(`build-task-${seeded.entityId}`, 60000);
-  const task = await waitForNotification(`build-task-${seeded.issueId}`, 15000);
+  const task = await waitForNotification(`build-task-${seeded.taskId}`, 15000);
   const conversation = agent && task ? "" : `; the conversation holds ${JSON.stringify(seedStep("thread", JSON.stringify(seeded)))}`;
   note("the agent's report arrives as a notification", Boolean(agent), agent ? `${agent.ms} ms: "${agent.title}: ${agent.body}" → ${agent.url}` : `none in 60 s${conversation}`);
   note("the agent notification's copy is generic", agent?.body === "An agent needs you");
-  note("the agent's comment on the watched issue arrives as a notification", Boolean(task), task ? `"${task.title}: ${task.body}" → ${task.url}` : `none${conversation}`);
+  note("the agent's comment on the watched task arrives as a notification", Boolean(task), task ? `"${task.title}: ${task.body}" → ${task.url}` : `none${conversation}`);
   note("the task notification names a task", task?.body === "New activity on a task");
   await page.screenshot({ path: `${OUT}/3-notified.png` });
 
@@ -167,8 +167,8 @@ try {
       .then((handle) => handle.jsonValue()).catch(() => null);
   };
   if (task?.url) {
-    const landed = await opens(task.url, `/issues/${seeded.issueId}`);
-    note("the task deep link opens the issue on the tracker", Boolean(landed), landed || page.url());
+    const landed = await opens(task.url, `/tasks/${seeded.taskId}`);
+    note("the task deep link opens the task on the tracker", Boolean(landed), landed || page.url());
     await page.waitForTimeout(1500);
     await page.screenshot({ path: `${OUT}/4-task-deep-link.png` });
   }

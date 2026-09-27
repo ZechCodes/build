@@ -35,7 +35,7 @@ const HEADLINES = [
   "Your agents. Your machine. Your call.",
   "The work runs on your machine.",
   "Say what needs doing.",
-  "One issue. A whole team.",
+  "One task. A whole team.",
   "Build the workflow. Then run it again.",
   "Every change lands in Git.",
   "See what needs you. Decide what ships.",

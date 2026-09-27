@@ -1,17 +1,17 @@
-// The issue tracker's record vocabulary: the columns, the priorities, and the
+// The task tracker's record vocabulary: the columns, the priorities, and the
 // one tagged actor shape that names a person or an agent
-// (planning/v2/Issues Spec.md).
+// (planning/v2/Tasks Spec.md).
 //
 // The tracker is not the retired plan flow. That flow owns the singular
-// `issue.*` verbs and core/issueModel.js; this owns the plural `issues.*` and
+// `task.*` verbs and core/taskModel.js; this owns the plural `tasks.*` and
 // every module named `tracker*`. Nothing here extends that flow, and the two
 // never share a record.
 //
 // No DOM, no app imports: every renderer and every view reads its labels here,
-// so the same issue reads the same way on a row, on a card and on its page.
+// so the same task reads the same way on a row, on a card and on its page.
 
 /** The five columns of phase 1, in order — what a board draws before
- *  `issues.columns` has answered, and what it falls back to for a bridge that
+ *  `tasks.columns` has answered, and what it falls back to for a bridge that
  *  does not serve the verb. `status` is a slug string rather than an enum
  *  precisely so a later per-project column set is a record change, so nothing
  *  here is allowed to be the only list of columns in the client. */
@@ -26,7 +26,7 @@ export const FALLBACK_COLUMNS = Object.freeze([
 /** The columns to draw: what the bridge answered, normalized to `{id, name}`,
  *  or the five above when it has answered nothing yet. A column the bridge
  *  named without a display name is drawn under its slug — an unnamed column is
- *  still a column, and dropping it would lose the issues standing in it. */
+ *  still a column, and dropping it would lose the tasks standing in it. */
 export function columnsOf(columns) {
   const listed = (columns || [])
     .map((column) => ({ id: String(column?.id || ""), name: String(column?.name || column?.id || "") }))
@@ -37,10 +37,10 @@ export function columnsOf(columns) {
 /**
  * What each column means, for a reader who has never seen this board.
  *
- * Every sentence here is the Issues Spec's own, because the board is the one
+ * Every sentence here is the Tasks Spec's own, because the board is the one
  * place the user meets rules the agents are told outright and the user is not:
  *
- *  - a dispatch moves an issue to In progress from Backlog or Ready, and
+ *  - a dispatch moves a task to In progress from Backlog or Ready, and
  *    leaves it alone anywhere further along ("the board position was set
  *    deliberately and a reassignment is not a reason to rewind it");
  *  - an agent moves a card to In review when it reports Complete — "you are
@@ -58,14 +58,14 @@ const COLUMN_NOTES = Object.freeze({
   in_progress: "An agent has been handed this and started on it.",
   in_review:
     "An agent moves a card here when it reports Complete: the work is ready to be looked at, not that it is accepted.",
-  done: "The work is over. Closing is separate — a closed issue keeps its column, and a card in Done can still be open.",
+  done: "The work is over. Closing is separate — a closed task keeps its column, and a card in Done can still be open.",
 });
 
 /** The sentence every column shares, under whatever its own says. A column is
- *  where an issue stands, and that is a different question from whether it is
+ *  where a task stands, and that is a different question from whether it is
  *  still open — the one thing about this board that surprises people. */
 export const COLUMN_NOTE_SHARED =
-  "A column is where an issue stands on the board; open or closed is whether it is still live. The two move independently.";
+  "A column is where a task stands on the board; open or closed is whether it is still live. The two move independently.";
 
 /**
  * What to say about one column on hover, or behind its info glyph.
@@ -81,7 +81,7 @@ export function columnNote(columns, status) {
   return own ? `${own} ${COLUMN_NOTE_SHARED}` : COLUMN_NOTE_SHARED;
 }
 
-/** What to call the column a status names. An issue standing in a column the
+/** What to call the column a status names. A task standing in a column the
  *  bridge no longer offers still says where it is: the slug is shown rather
  *  than nothing, because "somewhere this client cannot name" is worse than the
  *  name the record carries. */
@@ -131,8 +131,8 @@ export const stateLabel = (state) => (state === "closed" ? "Closed" : "Open");
 // comment's author, an event's actor. `project_agent` is only ever an
 // assignee; an author and an actor are always `user` or `agent`.
 
-/** The key an unassigned issue stands under. The wire's own word for it —
- *  `issues.list` takes `"none"` beside the actor shapes — so the filter bar's
+/** The key an unassigned task stands under. The wire's own word for it —
+ *  `tasks.list` takes `"none"` beside the actor shapes — so the filter bar's
  *  value and the param it becomes are the same string. */
 export const UNASSIGNED = "none";
 
@@ -179,28 +179,28 @@ export function actorInitials(actor) {
   return "A";
 }
 
-/** An issue's links, with every list present. A record written by a bridge that
+/** A task's links, with every list present. A record written by a bridge that
  *  left one out reads as empty rather than as undefined, so every rail row can
  *  be drawn without asking whether it has anything to draw. */
-export function issueLinks(issue) {
-  const links = issue?.links || {};
+export function taskLinks(task) {
+  const links = task?.links || {};
   return {
     workspace_ids: links.workspace_ids || [],
     branches: links.branches || [],
     commits: links.commits || [],
     conversation_ids: links.conversation_ids || [],
-    parent_issue_id: links.parent_issue_id || null,
+    parent_task_id: links.parent_task_id || null,
   };
 }
 
-/** Whether an issue's row on the list is newer than its cached `issues.get`
+/** Whether a task's row on the list is newer than its cached `tasks.get`
  *  record — which is when that record has to be read again, and when its
- *  timeline no longer speaks for the issue. */
-export const changedSince = (listIssue, detail) => {
-  if (!detail?.issue) return true;
-  const listedAt = listIssue?.updated_at;
+ *  timeline no longer speaks for the task. */
+export const changedSince = (listTask, detail) => {
+  if (!detail?.task) return true;
+  const listedAt = listTask?.updated_at;
   if (!listedAt) return false;
-  const detailedAt = detail.issue.updated_at;
+  const detailedAt = detail.task.updated_at;
   if (!detailedAt) return true;
   const listTime = Date.parse(listedAt);
   const detailTime = Date.parse(detailedAt);

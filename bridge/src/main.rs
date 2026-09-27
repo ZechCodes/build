@@ -548,7 +548,7 @@ async fn run_daemon(
     // What the bridge pushes to its clients — the change bus's flush, every
     // terminal's paint — is serialized and encrypted per client, and runs on a
     // runtime of its own, apart from the one that answers their requests
-    // (issue #131).
+    // (task #131).
     let push = match DedicatedRuntime::push() {
         Ok(push) => push,
         Err(error) => exit_startup(error),
@@ -586,7 +586,7 @@ async fn run_daemon(
     build_bridge::logfile::spawn_rotation();
     // The runtime the relay socket, the presence beat and every peer's
     // channels run on: threads that never take the app lock, so a handler
-    // holding it for a minute slows answers and severs nothing (issue #128).
+    // holding it for a minute slows answers and severs nothing (task #128).
     let liveness = match DedicatedRuntime::liveness() {
         Ok(liveness) => liveness,
         Err(error) => exit_startup(error),

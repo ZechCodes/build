@@ -1,8 +1,8 @@
 use super::*;
 
-/// The retired Issue destination refuses before routing the capture or creating a plan.
+/// The retired Task destination refuses before routing the capture or creating a plan.
 #[test]
-fn a_router_cannot_create_an_issue_from_a_capture() {
+fn a_router_cannot_create_a_task_from_a_capture() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let project_id = state.project_at(0).id.clone();
@@ -10,17 +10,14 @@ fn a_router_cannot_create_an_issue_from_a_capture() {
 
     let refused = state.router_action(
         &capture_id,
-        BridgeAction::CreateIssue {
+        BridgeAction::CreateTask {
             project_id,
             goal: "must not become a plan".to_string(),
             rationale: Some("legacy router choice".to_string()),
         },
     );
 
-    assert_eq!(
-        refused.unwrap_err(),
-        crate::app::issues::ISSUES_RETIRED_ERROR
-    );
+    assert_eq!(refused.unwrap_err(), crate::app::tasks::TASKS_RETIRED_ERROR);
     assert!(state.plans.is_empty());
     let capture = capture_record(&mut state, &capture_id);
     assert!(capture["routing"].is_null(), "{capture:?}");
@@ -193,7 +190,7 @@ fn dispatch_branch_puts_an_agent_on_a_branch_and_writes_the_route_through() {
     );
     assert!(
         state.plans.is_empty(),
-        "a branch route files no issue, so routing adds no planning turn to what \
+        "a branch route files no task, so routing adds no planning turn to what \
          the dispatch already queued"
     );
 
@@ -278,9 +275,9 @@ fn asked_with_two_options(state: &mut AppState, capture_id: &str) {
                 question: "which project is this about?".to_string(),
                 options: vec![
                     crate::capture::CaptureOptionDraft {
-                        label: "File as an issue on Build".to_string(),
+                        label: "File as a task on Build".to_string(),
                         project_id: Some("proj-build".to_string()),
-                        kind: Some(crate::capture::CaptureTarget::Issue),
+                        kind: Some(crate::capture::CaptureTarget::Task),
                         branch: None,
                     },
                     crate::capture::CaptureOptionDraft {
@@ -308,9 +305,9 @@ fn the_options_a_router_offers_reach_every_surface_that_shows_the_capture() {
     let expected = json!([
         {
             "id": "option-1",
-            "label": "File as an issue on Build",
+            "label": "File as a task on Build",
             "project_id": "proj-build",
-            "kind": "issue",
+            "kind": "task",
             "branch": Value::Null,
         },
         {
@@ -941,14 +938,14 @@ fn neither_session_kind_can_call_the_others_tools() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let goal = "add a greeting";
-    let issue = state
+    let task = state
         .plan_create(&json!({ "goal": goal, "dispatch": false }))
-        .expect("the stored issue fixture is filed through the domain seam");
-    let issue_id = issue["plan_id"].as_str().unwrap().to_string();
+        .expect("the stored task fixture is filed through the domain seam");
+    let task_id = task["plan_id"].as_str().unwrap().to_string();
     let (capture_id, _) = captured(&mut state, "ship it");
 
     let coding_reaching_out = state
-        .on_mcp_action(&issue_id, BridgeAction::ListProjects)
+        .on_mcp_action(&task_id, BridgeAction::ListProjects)
         .unwrap_err();
     assert!(
         coding_reaching_out.contains("list_projects")

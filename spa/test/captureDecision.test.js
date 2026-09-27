@@ -40,9 +40,9 @@ const question = (over = {}) => ({
 
 const option = (over = {}) => ({
   id: "option-1",
-  label: "File as an issue on relaydb",
+  label: "File as a task on relaydb",
   project_id: "p1",
-  kind: "issue",
+  kind: "task",
   branch: null,
   ...over,
 });
@@ -88,11 +88,11 @@ describe("the capture decision model", () => {
 
   it("says where a routed capture went, and that the deciding is over", () => {
     const model = captureDecisionModel(
-      capture({ state: "routed", routing: { project_id: "p1", kind: "issue", target_id: "iss-9" } }),
+      capture({ state: "routed", routing: { project_id: "p1", kind: "task", target_id: "iss-9" } }),
       { projects },
     );
     expect(model.routed).toBe(true);
-    expect(model.statusText).toBe("→ relaydb as issue");
+    expect(model.statusText).toBe("→ relaydb as task");
     expect(model.spinning).toBe(false);
   });
 
@@ -100,12 +100,12 @@ describe("the capture decision model", () => {
     const model = captureDecisionModel(
       capture({
         state: "routing",
-        question: question({ answer: "File as an issue on relaydb", chosen_option_id: "option-1", options: [option()] }),
+        question: question({ answer: "File as a task on relaydb", chosen_option_id: "option-1", options: [option()] }),
       }),
       { projects },
     );
     expect(model.awaitingAnswer).toBe(false);
-    expect(model.answer).toBe("File as an issue on relaydb");
+    expect(model.answer).toBe("File as a task on relaydb");
     expect(model.chosenOptionId).toBe("option-1");
     expect(model.statusText).toBe("Deciding where this goes");
   });
@@ -127,7 +127,7 @@ describe("the capture decision model", () => {
 
 describe("what an option stands for", () => {
   it("spells out the destination the router named", () => {
-    expect(optionDestinationText(option(), projects)).toBe("relaydb · a new issue");
+    expect(optionDestinationText(option(), projects)).toBe("relaydb · a new task");
     expect(optionDestinationText(option({ kind: "branch" }), projects)).toBe("relaydb · a new branch");
     expect(optionDestinationText(option({ kind: "branch", branch: "build/login" }), projects)).toBe(
       "relaydb · branch build/login",
@@ -145,7 +145,7 @@ describe("what an option stands for", () => {
 
 describe("routing it by hand", () => {
   it("answers the router in the terms it routes in", () => {
-    expect(manualRouteAnswer({ projectId: "p1", kind: "issue" })).toBe("Route this to project p1 as a branch");
+    expect(manualRouteAnswer({ projectId: "p1", kind: "task" })).toBe("Route this to project p1 as a branch");
     expect(manualRouteAnswer({ projectId: "p1", kind: "branch" })).toBe("Route this to project p1 as a branch");
     expect(manualRouteAnswer({ projectId: "p1", kind: "branch", branch: "build/login" })).toBe(
       "Route this to project p1 as a branch, on the branch build/login",
@@ -153,11 +153,11 @@ describe("routing it by hand", () => {
   });
 
   it("names no destination without a project, because there is none", () => {
-    expect(manualRouteAnswer({ projectId: "", kind: "issue" })).toBe("");
+    expect(manualRouteAnswer({ projectId: "", kind: "task" })).toBe("");
   });
 
   it("asks the daemon for the same destination when there is no question to answer", () => {
-    expect(manualRouteParams("capture-1", { projectId: "p2", kind: "issue" })).toEqual({
+    expect(manualRouteParams("capture-1", { projectId: "p2", kind: "task" })).toEqual({
       capture_id: "capture-1",
       project_id: "p2",
       kind: "branch",
@@ -216,7 +216,7 @@ describe("the decision page's markup", () => {
     );
 
   it("offers every choice as its own control, and always the way out", () => {
-    const html = captureDecisionHtml(model(), { projects, projectId: "p1", kind: "issue", branch: "", answer: "" });
+    const html = captureDecisionHtml(model(), { projects, projectId: "p1", kind: "task", branch: "", answer: "" });
     expect(html).not.toContain('data-capture-option="option-1"');
     expect(html).toContain('data-capture-option="option-2"');
     expect(html).toContain('id="capture-answer"');
@@ -226,7 +226,7 @@ describe("the decision page's markup", () => {
 
   it("always discloses the branch field", () => {
     const ui = { projects, projectId: "p1", branch: "", answer: "", branches: ["build/login"] };
-    expect(captureDecisionHtml(model(), { ...ui, kind: "issue" })).toContain('id="capture-branch"');
+    expect(captureDecisionHtml(model(), { ...ui, kind: "task" })).toContain('id="capture-branch"');
     const branchy = captureDecisionHtml(model(), { ...ui, kind: "branch" });
     expect(branchy).toContain('id="capture-branch"');
     expect(branchy).toContain('<option value="build/login">');
@@ -240,7 +240,7 @@ describe("the decision page's markup", () => {
       }),
       { projects },
     );
-    const html = captureDecisionHtml(hostile, { projects, projectId: "p1", kind: "issue", branch: "", answer: "" });
+    const html = captureDecisionHtml(hostile, { projects, projectId: "p1", kind: "task", branch: "", answer: "" });
     expect(html).not.toContain("<img");
     expect(html).not.toContain("<script>");
     expect(html).not.toContain("<b>tap me</b>");

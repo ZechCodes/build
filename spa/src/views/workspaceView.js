@@ -2,7 +2,7 @@
 // directories. Directory selection scopes Files and Changes; the console stays
 // scoped to the workspace, so navigating between directories or refs never
 // replaces its server sessions. The rail down the left edge is the workspace's
-// navigation — Changes, Files, Issues, Settings (core/workspaceRail.js) — and
+// navigation — Changes, Files, Tasks, Settings (core/workspaceRail.js) — and
 // stands on the route alone.
 
 import { $ } from "../dom.js";
@@ -23,16 +23,16 @@ import { cachedFeedView } from "../core/cachedRows.js";
 import { mergeCached, readCached, subscribeCache, writeCached } from "../core/localCache.js";
 import { upsertSessionRow } from "../core/sessionListCache.js";
 import { refreshFeed, subscribeFeed } from "../core/taskFeed.js";
-import { mountWorkspaceIssuesTab, workspaceIssuesPlace } from "../core/workspaceIssuesTab.js";
-import { issueContextItem } from "../core/trackerViewingContext.js";
-import "../styles/issues.css";
+import { mountWorkspaceTasksTab, workspaceTasksPlace } from "../core/workspaceTasksTab.js";
+import { taskContextItem } from "../core/trackerViewingContext.js";
+import "../styles/tasks.css";
 import "../styles/surfaces.css";
 
 /** The workspace's third tab, which is not about a directory at all: the
- *  issues its own agents are holding (#29). A directory scopes Changes and
+ *  tasks its own agents are holding (#29). A directory scopes Changes and
  *  Files; it does not scope this. */
-const ISSUES_TAB = "issues";
-const onIssuesTab = (route) => route.tab === ISSUES_TAB;
+const TASKS_TAB = "tasks";
+const onTasksTab = (route) => route.tab === TASKS_TAB;
 
 function errorHtml(message) {
   return `<div class="empty"><h2>Workspace unavailable</h2><p>${esc(message)}</p></div>`;
@@ -197,32 +197,32 @@ function paintWorkspaceAction(list, state) {
 
 function mountDirectoryPane(body, options) {
   const { canonical } = options;
-  if (onIssuesTab(canonical)) return mountIssuesTab(body, options);
+  if (onTasksTab(canonical)) return mountTasksTab(body, options);
   return mountCheckoutPane(body, options);
 }
 
 /**
- * Say which issue is on screen, so the agent beside it knows what the reader
+ * Say which task is on screen, so the agent beside it knows what the reader
  * is looking at (#21, #29).
  *
  * The WORKSPACE half of the stamp is already there: the rail is standing on
  * this workspace, so anything sent from here to the project's agent wears the
- * workspace item (core/agentRail.js). This adds the issue to it, from the READ
+ * workspace item (core/agentRail.js). This adds the task to it, from the READ
  * rather than from the route — an agent told an id and nothing else is no
  * better off — and only where the bridge takes the kind at all.
  */
-const sayWhichIssue = (deviceId) => (issue) => {
-  const item = issueContextItem(issue, deviceId);
+const sayWhichTask = (deviceId) => (task) => {
+  const item = taskContextItem(task, deviceId);
   if (item) App.viewingContext?.set?.({ version: 1, items: [item] });
 };
 
-function mountIssuesTab(body, { canonical, callRpc, context, feed, agentSelection }) {
-  return mountWorkspaceIssuesTab(body, {
+function mountTasksTab(body, { canonical, callRpc, context, feed, agentSelection }) {
+  return mountWorkspaceTasksTab(body, {
     route: canonical,
     context: context || { deviceId: canonical.deviceId, rpc: callRpc },
     feed,
     selection: agentSelection,
-    sayWhichIssue: sayWhichIssue(canonical.deviceId),
+    sayWhichTask: sayWhichTask(canonical.deviceId),
     navigate: go,
   });
 }
@@ -461,7 +461,7 @@ function refreshWorkspacePane(state, workspace) {
     context: state.context,
     onSelectDirectory: (next, commit) => standOnDirectory(state, next, commit),
     // Read at every use, never captured: a workspace gains and loses agents
-    // while the tab stands there, and the issues follow them.
+    // while the tab stands there, and the tasks follow them.
     feed: () => deviceFeedNow(state.route.deviceId),
   });
   App.routeLeaveGuard = state.pane?.canLeave || null;
@@ -480,9 +480,9 @@ function mountWorkspace(workspace, state) {
     return;
   }
 
-  // The issues tab is not about a directory, so none is written into its URL —
+  // The tasks tab is not about a directory, so none is written into its URL —
   // the sourceId on the canonical route is only there for the console's scope.
-  if (!onIssuesTab(route) && (route.sourceId !== sourceId || route.tab !== canonical.tab)) markRoute(canonical);
+  if (!onTasksTab(route) && (route.sourceId !== sourceId || route.tab !== canonical.tab)) markRoute(canonical);
 
   state.refreshPane = (nextWorkspace) => refreshWorkspacePane(state, nextWorkspace);
   const mounted = state.refreshPane(workspace);
@@ -526,7 +526,7 @@ export async function renderWorkspace() {
     route,
     feed: () => deviceFeedNow(route.deviceId),
     workspace: () => state.workspace,
-    onSelect: (tab) => go(tab === ISSUES_TAB ? workspaceIssuesPlace(App.route) : { ...App.route, tab }),
+    onSelect: (tab) => go(tab === TASKS_TAB ? workspaceTasksPlace(App.route) : { ...App.route, tab }),
     navigate: go,
   });
   state.rail.paint(route.tab);
@@ -585,12 +585,12 @@ const workspaceNow = (deviceId, workspaceId) =>
 async function standOnWorkspace(state) {
   const take = () => {
     if (state.disposed) return;
-    // The Issues count on the rail reads the same roster.
+    // The Tasks count on the rail reads the same roster.
     state.rail.feedMoved();
     if (state.workspace) {
-      // The workspace Issues pane derives its scope from the cached feed's
+      // The workspace Tasks pane derives its scope from the cached feed's
       // roster. Keep the cache announcement wired after mount so a later row
-      // write can re-scope the already cached issue catalogue.
+      // write can re-scope the already cached task catalogue.
       state.pane?.feedMoved?.();
       return;
     }

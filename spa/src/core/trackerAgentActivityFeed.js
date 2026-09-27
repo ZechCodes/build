@@ -1,4 +1,4 @@
-// Latest activity for agents shown on the issue Dashboard. A feed row names
+// Latest activity for agents shown on the task Dashboard. A feed row names
 // the conversation's cache address; the saved window supplies its words. The
 // background thread sync owns wire reads, and this reader only follows cache
 // writes and re-reads their records.

@@ -63,7 +63,7 @@ async function writeDevice(deviceId, { items = [], projects = [], workspaces = [
   for (const item of items) await writeRow(deviceId, item);
 }
 
-const rowId = (item) => item.entity_id || item.run_id || item.issue_id || item.worktree_id || item.id;
+const rowId = (item) => item.entity_id || item.run_id || item.task_id || item.worktree_id || item.id;
 
 const writeRow = (deviceId, item) => writeCached({ deviceId, entityId: rowId(item), kind: "row" }, item);
 

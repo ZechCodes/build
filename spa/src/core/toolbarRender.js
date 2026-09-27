@@ -6,7 +6,7 @@
 // says what the bar looks like for one identity.
 
 import { esc } from "./text.js";
-import { unreadBubbleHtml } from "./issueUnread.js";
+import { unreadBubbleHtml } from "./taskUnread.js";
 
 /** One of the bar's popup triggers. The workspace picker and the project
  *  selector are the same control wearing a different name, so the button is
@@ -18,7 +18,7 @@ const selectorHtml = ({ select, className = `tb-${select}`, name, lead = "" }) =
 
 const projectSelectorHtml = (project) => selectorHtml({ select: "project", name: project || "Projects" });
 
-/** A branch or an issue hangs off the project selector and says its own name
+/** A branch or a task hangs off the project selector and says its own name
  *  after it; a branch name is a wire string, so it wears the mono face. */
 const legacyIdentityHtml = (mono) => ({ project, label }) =>
   `${projectSelectorHtml(project)}
@@ -41,14 +41,14 @@ const workspacePickerHtml = ({ project, label }) =>
 const IDENTITIES = {
   workspace: workspacePickerHtml,
   branch: legacyIdentityHtml(true),
-  issue: legacyIdentityHtml(false),
+  task: legacyIdentityHtml(false),
 };
 
 const identityHtml = (shown) => (IDENTITIES[shown.kind] || (() => projectSelectorHtml(shown.project)))(shown);
 
 /** The project's two pages as tabs after its name — never collapsed into a
  *  menu: two short words fit a phone, and on a phone they are the way back to
- *  the list from an issue. Issues wears its watched issues' unread (#104). */
+ *  the list from a task. Tasks wears its watched tasks' unread (#104). */
 function projectTabsHtml(projectTabs) {
   if (!projectTabs.length) return "";
   const tabs = projectTabs

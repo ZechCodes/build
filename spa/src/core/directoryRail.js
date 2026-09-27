@@ -1,6 +1,6 @@
 // A checkout's faces — what moved (Changes) and what is there (Files) — as a
 // rail of icons down the left edge of the surface. On a workspace the rail is
-// the workspace's whole navigation (#174): Changes, Files and the Issues its
+// the workspace's whole navigation (#174): Changes, Files and the Tasks its
 // agents hold, with the workspace's Settings at the foot. It is workspace
 // scoped: which directory Changes or Files is standing in is said inside the
 // pane, below it in the hierarchy.
@@ -38,7 +38,7 @@ import {
   ICON_PANEL_LEFT_OPEN,
   ICON_SETTINGS,
 } from "./icons.js";
-import { changesTabLabel, esc, filesTabLabel, issuesTabLabel, sidebarToggleLabel, workspaceSettingsLabel } from "./text.js";
+import { changesTabLabel, esc, filesTabLabel, tasksTabLabel, sidebarToggleLabel, workspaceSettingsLabel } from "./text.js";
 
 /** A checkout's faces, in reading order: what moved, then what is there. */
 export const DIRECTORY_TABS = [
@@ -46,10 +46,10 @@ export const DIRECTORY_TABS = [
   { id: "files", label: filesTabLabel, icon: ICON_FOLDER },
 ];
 
-/** A workspace's faces: the checkout's two, then the issues its agents hold,
- *  which wears the count of the open ones (core/trackerWorkspaceIssuesView.js
+/** A workspace's faces: the checkout's two, then the tasks its agents hold,
+ *  which wears the count of the open ones (core/trackerWorkspaceTasksView.js
  *  fills it). */
-export const WORKSPACE_TABS = [...DIRECTORY_TABS, { id: "issues", label: issuesTabLabel, icon: ICON_CIRCLE_DOT, badge: true }];
+export const WORKSPACE_TABS = [...DIRECTORY_TABS, { id: "tasks", label: tasksTabLabel, icon: ICON_CIRCLE_DOT, badge: true }];
 
 /** Where an arrow takes the highlight, as steps along the rail. Home and End
  *  are the same question asked absolutely, so they answer from one table too. */

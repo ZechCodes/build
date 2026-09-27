@@ -19,7 +19,7 @@ const LABELS = [
 const ASSIGNEES = [
   { value: "", label: "Anyone" },
   { value: "none", label: "Unassigned" },
-  { value: "agent:a1", label: "issues-spa · Agent 1", group: "issues-spa" },
+  { value: "agent:a1", label: "tasks-spa · Agent 1", group: "tasks-spa" },
   { value: "agent:b1", label: "tracker-filters · Agent 1", group: "tracker-filters" },
 ];
 
@@ -140,7 +140,7 @@ describe("searching", () => {
     mount({ name: "assignee", label: "Assignee", summary: "first" }).update(ASSIGNEES, []);
     press().click();
     expect([...pop().querySelectorAll(".fmenu-group")].map((one) => one.textContent))
-      .toEqual(["issues-spa", "tracker-filters"]);
+      .toEqual(["tasks-spa", "tracker-filters"]);
   });
 });
 

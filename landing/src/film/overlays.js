@@ -136,9 +136,9 @@ function visibilityBeats(tl, panels) {
   // The editor is the hero's from the start; its beat brings it in.
   panels.editor.state.visible = 1;
   hide(panels.editor.state, 2, 0.1, 0.4);
-  show(panels.issue.state, 2);
+  show(panels.task.state, 2);
   show(panels.hole.state, 2);
-  hide(panels.issue.state, 3, 0.42, 0.5);
+  hide(panels.task.state, 3, 0.42, 0.5);
   hide(panels.hole.state, 3, 0.42, 0.5);
   show(panels.team.state, 3, 0.5, 0.51);
   hide(panels.team.state, 4, 0.46, 0.5);
@@ -183,10 +183,10 @@ function captionBeats(tl, film, { at, span }) {
 
 // Act 3: the card lifts out of Ready, gets its assignee, moves to In progress
 // with its branch, and holds there, readable, until the act is left.
-function issueBeats(tl, panels, { at, span }) {
-  const issue = panels.issue;
+function taskBeats(tl, panels, { at, span }) {
+  const task = panels.task;
   const hole = panels.hole;
-  const card = issue.element;
+  const card = task.element;
   const none = card.querySelector('[data-assignee="none"]');
   const agent = card.querySelector('[data-assignee="agent"]');
   const ready = card.querySelector('[data-column="ready"]');
@@ -197,7 +197,7 @@ function issueBeats(tl, panels, { at, span }) {
   // places it with the card.
   hole.state.shown = 0;
   gsap.set(branch, { height: 0 });
-  tl.to(issue.state, { lift: 1, duration: span(3, 0.2, 0.34), ease: "power3.inOut" }, at(3, 0.2));
+  tl.to(task.state, { lift: 1, duration: span(3, 0.2, 0.34), ease: "power3.inOut" }, at(3, 0.2));
   show(tl, hole.state, at(3, 0.2), at(3, 0.26));
   hide(tl, none, at(3, 0.35), at(3, 0.4));
   show(tl, agent, at(3, 0.38), at(3, 0.48));
@@ -208,10 +208,10 @@ function issueBeats(tl, panels, { at, span }) {
 
 // Leaving act 3: the branch folds away and the card drops into In progress,
 // at the head of that column.
-function issueDeparture(tl, panels) {
-  const branch = panels.issue.element.querySelector("[data-branch-line]");
+function taskDeparture(tl, panels) {
+  const branch = panels.task.element.querySelector("[data-branch-line]");
   tl.to(branch, { autoAlpha: 0, height: 0, duration: 0.3, ease: "power2.in" }, 0);
-  tl.to(panels.issue.state, { lift: 0, x: 928, y: 297, duration: 0.8, ease: "power3.inOut" }, 0.15);
+  tl.to(panels.task.state, { lift: 0, x: 928, y: 297, duration: 0.8, ease: "power3.inOut" }, 0.15);
 }
 
 // Act 4: two more agents join, Implement waits on a question the phone
@@ -417,7 +417,7 @@ function reviewBeats(tl, panels, { at, span }, screens) {
 const SCENE_BEATS = {
   1: (tl, panels, clock) => editorBeats(tl, panels, clock),
   2: (tl, panels, clock, screens, film) => captionBeats(tl, film, clock),
-  3: (tl, panels, clock) => issueBeats(tl, panels, clock),
+  3: (tl, panels, clock) => taskBeats(tl, panels, clock),
   4: (tl, panels, clock, screens) => teamBeats(tl, panels, clock, screens),
   5: (tl, panels, clock) => builderBeats(tl, panels, clock),
   6: (tl, panels, clock) => gitBeats(tl, panels, clock),
@@ -425,7 +425,7 @@ const SCENE_BEATS = {
 };
 
 const DEPARTURES = {
-  3: (tl, panels) => issueDeparture(tl, panels),
+  3: (tl, panels) => taskDeparture(tl, panels),
   5: (tl, panels) => lowerDeparture(panels.builder)(tl),
   6: (tl, panels) => lowerDeparture(panels.git)(tl),
 };

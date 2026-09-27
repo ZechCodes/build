@@ -610,7 +610,7 @@ fn turn_started_notification(_method: &str, params: Value) -> Result<ServerNotif
     })
 }
 
-// What Codex says when it runs out of usage is not known yet (issue #58): no
+// What Codex says when it runs out of usage is not known yet (task #58): no
 // limited Codex turn has been observed, so nothing here maps one to
 // `usage_limit::UsageLimited`. When one is seen, recognise it here.
 fn turn_completed_notification(_method: &str, params: Value) -> Result<ServerNotification, String> {

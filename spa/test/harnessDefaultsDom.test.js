@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // Settings → Browser agent defaults: one model and reasoning effort per
-// harness, and which harness a new issue or agent starts on. Saved on every
+// harness, and which harness a new task or agent starts on. Saved on every
 // change — a preference with a Save button is one people forget to press.
 
 import { describe, it, expect, beforeEach } from "vitest";

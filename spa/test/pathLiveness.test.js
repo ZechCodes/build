@@ -1,7 +1,7 @@
 // The one rule both sessions on a peer connection read a path's liveness by.
 //
 // The app session and the terminals share a peer and must not reach different
-// answers about whether it is carrying (issue #30). What they may differ on is
+// answers about whether it is carrying (task #30). What they may differ on is
 // what the answer is WORTH, which is each caller's own and tested with it.
 
 import { describe, it, expect } from "vitest";

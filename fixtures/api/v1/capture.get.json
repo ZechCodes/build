@@ -20,7 +20,7 @@
           "id": "option-1",
           "label": "build",
           "project_id": "proj-1",
-          "kind": "issue",
+          "kind": "task",
           "branch": null
         },
         {

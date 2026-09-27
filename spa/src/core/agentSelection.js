@@ -3,7 +3,7 @@
 // The rail owns the choice — its bubble strip IS the agent selector — but the
 // rail is not the only thing that talks to an agent. The branch's Changes
 // surface reads a conversation for its diff revision and posts review comments
-// into it; the issue's viewer does the same for its stage docs. All of them
+// into it; the task's viewer does the same for its stage docs. All of them
 // have to mean the SAME agent as the bubble that is open, or a comment written
 // under one conversation lands in another.
 //

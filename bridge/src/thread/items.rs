@@ -7,7 +7,7 @@ use serde::Serialize;
 pub enum ArtifactKind {
     Plan,
     Diff,
-    /// One stage document of an issue. What a plan-doc comment anchors to: a
+    /// One stage document of a task. What a plan-doc comment anchors to: a
     /// passage of a named file, the same way a diff comment anchors to a
     /// passage of a hunk.
     Doc,
@@ -78,40 +78,40 @@ impl AgentIdentity {
     }
 }
 
-/// The issue a message was handed over with, when assigning one is what sent
-/// it (spec: Issues → The envelope).
+/// The task a message was handed over with, when assigning one is what sent
+/// it (spec: Tasks → The envelope).
 ///
-/// The way `from_agent` names the sender: the body already carries the issue as
+/// The way `from_agent` names the sender: the body already carries the task as
 /// prose, so a harness that never learns this field still reads the whole
-/// issue, and the field is what lets a client draw the message as an issue card
+/// task, and the field is what lets a client draw the message as a task card
 /// and link `#12` without a second read.
 ///
 /// Absent on every other message, so a client that has never heard of it reads
 /// a conversation exactly as it always has.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IssueEnvelope {
-    pub issue_id: String,
+pub struct TaskEnvelope {
+    pub task_id: String,
     /// Per-project and sequential — what `#12` is.
     pub number: u64,
     pub title: String,
-    /// What the issue is about, so the agent can reach the workspace, branch
+    /// What the task is about, so the agent can reach the workspace, branch
     /// or conversation without asking.
-    pub links: crate::tracker::IssueLinks,
+    pub links: crate::tracker::TaskLinks,
 }
 
-/// What changed on an issue somebody is TRACKING, on the notice Build posted
-/// about it (spec: Issues → Tracking).
+/// What changed on a task somebody is TRACKING, on the notice Build posted
+/// about it (spec: Tasks → Tracking).
 ///
 /// The body says the same thing in one line, so a harness reads it either way.
 /// This is for a client, which draws the notice as one line that deep-links
-/// the issue or the comment — and cannot do that from prose it would have to
+/// the task or the comment — and cannot do that from prose it would have to
 /// parse back.
 ///
-/// Distinct from [`IssueAction`], which is an agent saying what IT did in its
+/// Distinct from [`TaskAction`], which is an agent saying what IT did in its
 /// own conversation. A notice is Build telling somebody else what a third
 /// party did, and the actor is therefore part of it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IssueNotice {
+pub struct TaskNotice {
     /// Who did it: `{kind: "user"}` or `{kind: "agent", agent_id}`, and the
     /// agent's `name` beside them when it has one.
     pub actor: NoticeActor,
@@ -121,7 +121,7 @@ pub struct IssueNotice {
     /// twice.
     pub action: String,
     /// The comment this notice is about, on `commented` only — what lets a
-    /// client link the comment rather than the issue.
+    /// client link the comment rather than the task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment_id: Option<String>,
     /// The columns a `moved` went between, as slugs.
@@ -134,7 +134,7 @@ pub struct IssueNotice {
     pub assignee: Option<crate::tracker::Assignee>,
     /// The target agent's durable name and harness on an assignment notice.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub assignee_identity: Option<crate::tracker::IssueAgentIdentity>,
+    pub assignee_identity: Option<crate::tracker::TaskAgentIdentity>,
 }
 
 /// Who a notice says did the thing, as a client draws it.
@@ -153,29 +153,29 @@ pub struct NoticeActor {
     /// id, as it did before names existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// The author as this issue knew them when the notice was written.
+    /// The author as this task knew them when the notice was written.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub identity: Option<crate::tracker::IssueAgentIdentity>,
+    pub identity: Option<crate::tracker::TaskAgentIdentity>,
 }
 
-/// What an agent did to an issue, on the message it posted saying so (spec:
-/// Issues → An agent says what it did).
+/// What an agent did to a task, on the message it posted saying so (spec:
+/// Tasks → An agent says what it did).
 ///
-/// Distinct from [`IssueEnvelope`], which says an issue was HANDED to somebody.
+/// Distinct from [`TaskEnvelope`], which says a task was HANDED to somebody.
 /// This says the agent acted on one. `action` is a slug rather than a label so
 /// the client renders the wording and the bridge does not decide it twice.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IssueAction {
+pub struct TaskAction {
     pub action: String,
-    pub issue_id: String,
+    pub task_id: String,
     pub number: u64,
     pub title: String,
     /// Present only on `commented_on`, and what lets a client deep-link the
-    /// comment rather than the issue.
+    /// comment rather than the task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment_id: Option<String>,
-    /// Who the issue went to, on `assigned` only — the same shape
-    /// `issue_notice.assignee` carries.
+    /// Who the task went to, on `assigned` only — the same shape
+    /// `task_notice.assignee` carries.
     ///
     /// Without it the agent's own line can say "assigned" and not to whom,
     /// which is the half a reader wants. Absent on an `unassigned`, which went
@@ -291,23 +291,23 @@ pub enum ThreadLink {
         line_end: Option<u32>,
     },
     /// Legacy stage reference retained for clients and records predating the
-    /// Issue cutover. New lifecycle events emit `IssueStage`.
+    /// Task cutover. New lifecycle events emit `TaskStage`.
     PlanStage {
         plan_id: String,
         stage_id: String,
         path: String,
     },
-    /// Canonical reference to one ordered stage-plan document owned by an Issue.
-    IssueStage {
-        issue_id: String,
+    /// Canonical reference to one ordered stage-plan document owned by a Task.
+    TaskStage {
+        task_id: String,
         stage_id: String,
         path: String,
     },
     /// Legacy implementation reference retained as a wire alias.
     Run { run_id: String },
-    /// Canonical implementation lineage reference, explicitly scoped to Issue.
+    /// Canonical implementation lineage reference, explicitly scoped to Task.
     Implementation {
-        issue_id: String,
+        task_id: String,
         implementation_id: String,
     },
     /// Stable server-minted identity of a checkout.
@@ -463,7 +463,7 @@ impl ItemMetadata {
                     push_unique(&mut metadata.commits, sha.to_lowercase())
                 }
                 ThreadLink::PlanStage { stage_id, path, .. }
-                | ThreadLink::IssueStage { stage_id, path, .. } => {
+                | ThreadLink::TaskStage { stage_id, path, .. } => {
                     push_unique(&mut metadata.stages, stage_id.clone());
                     push_unique(&mut metadata.files, path.clone());
                 }
@@ -616,21 +616,21 @@ pub struct ThreadMessage {
     /// so a client that has never heard of it reads those exactly as it has.
     #[serde(default, skip_serializing_if = "is_false")]
     pub from_build: bool,
-    /// The issue this message handed over, when assigning one is what sent it.
+    /// The task this message handed over, when assigning one is what sent it.
     ///
     /// Boxed for the reason `from_agent` is: almost every message on almost
-    /// every conversation is somebody talking, and an issue's title, body and
+    /// every conversation is somebody talking, and a task's title, body and
     /// links must not cost the rest of them a word.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub from_issue: Option<Box<IssueEnvelope>>,
-    /// What this agent did to an issue, when the message is the agent saying
-    /// so. Boxed for the reason `from_issue` is.
+    pub from_task: Option<Box<TaskEnvelope>>,
+    /// What this agent did to a task, when the message is the agent saying
+    /// so. Boxed for the reason `from_task` is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub issue_action: Option<Box<IssueAction>>,
-    /// What changed on a tracked issue, when the message is Build's notice
-    /// about it. Boxed for the reason `from_issue` is.
+    pub task_action: Option<Box<TaskAction>>,
+    /// What changed on a tracked task, when the message is Build's notice
+    /// about it. Boxed for the reason `from_task` is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub issue_notice: Option<Box<IssueNotice>>,
+    pub task_notice: Option<Box<TaskNotice>>,
     /// Client mutation whose durable delivery owns this reviewer message.
     /// Managed messages are read through that exact operation and never by
     /// the legacy catch-all unread mailbox.
@@ -747,7 +747,7 @@ pub const MAX_VIEWING_CONTEXT_LABEL_BYTES: usize = 512;
 
 /// What the reviewer was looking at when they wrote. Deliberately WITHOUT
 /// `deny_unknown_fields`: this rides v1 request paths (`thread.post`,
-/// `run.message`, `plan.message`, `issue.send_notes`), where a newer SPA may
+/// `run.message`, `plan.message`, `task.send_notes`), where a newer SPA may
 /// name a field this bridge predates and must not be refused for it. An
 /// unknown field is ignored here and dropped on the way back out.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -793,16 +793,16 @@ pub enum ViewingContextItem {
         workspace_id: String,
         name: String,
     },
-    /// The issue the user had open when they wrote. Not a thing in the
+    /// The task the user had open when they wrote. Not a thing in the
     /// checkout the way a file is: the board is its own surface, and "this
-    /// issue" is a question an agent is asked while looking at neither.
+    /// task" is a question an agent is asked while looking at neither.
     ///
-    /// Carries what it takes to NAME the issue and no more. The body is not
-    /// here on purpose — an issue changes after the message is sent, and a
+    /// Carries what it takes to NAME the task and no more. The body is not
+    /// here on purpose — a task changes after the message is sent, and a
     /// copy frozen into viewing context would go stale while reading as
-    /// current. `get_issue` is how the agent reads it.
-    Issue {
-        issue_id: String,
+    /// current. `get_task` is how the agent reads it.
+    Task {
+        task_id: String,
         number: u64,
         title: String,
     },
@@ -836,17 +836,17 @@ impl ViewingContext {
         })
     }
 
-    /// The issue the user had open when they wrote, when the message says:
+    /// The task the user had open when they wrote, when the message says:
     /// its number, its title and its id, for the line that tells the agent
     /// what is on screen. The board sends at most one, so the first is the
     /// answer — the same rule the workspace item follows.
-    pub fn issue(&self) -> Option<(u64, &str, &str)> {
+    pub fn task(&self) -> Option<(u64, &str, &str)> {
         self.items.iter().find_map(|item| match item {
-            ViewingContextItem::Issue {
-                issue_id,
+            ViewingContextItem::Task {
+                task_id,
                 number,
                 title,
-            } => Some((*number, title.as_str(), issue_id.as_str())),
+            } => Some((*number, title.as_str(), task_id.as_str())),
             _ => None,
         })
     }
@@ -889,9 +889,9 @@ impl ViewingContext {
                 ViewingContextItem::Workspace { workspace_id, name } => {
                     validate_viewing_workspace(workspace_id, name)?
                 }
-                ViewingContextItem::Issue {
-                    issue_id, title, ..
-                } => validate_viewing_issue(issue_id, title)?,
+                ViewingContextItem::Task { task_id, title, .. } => {
+                    validate_viewing_task(task_id, title)?
+                }
                 ViewingContextItem::Selection {
                     path,
                     text,
@@ -934,16 +934,16 @@ fn validate_viewing_workspace(workspace_id: &str, name: &str) -> Result<(), Stri
     Ok(())
 }
 
-/// An issue item names one, and the same way a workspace item does: both words
+/// A task item names one, and the same way a workspace item does: both words
 /// are for the agent reading them, so neither may be empty and neither may be
 /// the size of a document. The number needs no check — every `u64` is one.
-fn validate_viewing_issue(issue_id: &str, title: &str) -> Result<(), String> {
-    if issue_id.is_empty()
+fn validate_viewing_task(task_id: &str, title: &str) -> Result<(), String> {
+    if task_id.is_empty()
         || title.is_empty()
-        || issue_id.len() > MAX_VIEWING_CONTEXT_LABEL_BYTES
+        || task_id.len() > MAX_VIEWING_CONTEXT_LABEL_BYTES
         || title.len() > MAX_VIEWING_CONTEXT_LABEL_BYTES
     {
-        return Err(format!("viewing_context issue must carry an id and a title of at most {MAX_VIEWING_CONTEXT_LABEL_BYTES} bytes"));
+        return Err(format!("viewing_context task must carry an id and a title of at most {MAX_VIEWING_CONTEXT_LABEL_BYTES} bytes"));
     }
     Ok(())
 }
@@ -1029,7 +1029,7 @@ pub(super) fn doc_comment_of(message: &ThreadMessage) -> Option<DocComment> {
         return None;
     }
     let (stage_id, path) = message.links.iter().find_map(|link| match link {
-        ThreadLink::IssueStage { stage_id, path, .. }
+        ThreadLink::TaskStage { stage_id, path, .. }
         | ThreadLink::PlanStage { stage_id, path, .. } => Some((stage_id.clone(), path.clone())),
         _ => None,
     })?;

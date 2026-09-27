@@ -171,7 +171,7 @@ pub struct SessionStatusSnapshot {
     /// changes; `None` until it reports one.
     pub context: Option<TurnContext>,
     /// Why this session is idle, when the reason is that its harness has run out
-    /// of usage (issue #58).
+    /// of usage (task #58).
     ///
     /// Carried beside the status rather than as a status of its own: the agent
     /// genuinely IS idle, and every reader that only asks "is it working" is

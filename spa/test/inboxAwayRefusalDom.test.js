@@ -14,14 +14,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { issue, issueDetail } from "./trackerWireFixture.js";
+import { task, taskDetail } from "./trackerWireFixture.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 const DEVICE = "dev-1";
 const PROJECT = "proj-1";
 const PROJECT_KEY = `${DEVICE}/${PROJECT}`;
 const WAIT = { timeout: 5000, interval: 20 };
-const GREETING = { api_version: "1.21.0", push_events: true, issues: { watching: true, attachments: true } };
+const GREETING = { api_version: "1.21.0", push_events: true, tasks: { watching: true, attachments: true } };
 const project = { project_id: PROJECT, name: "Build", path: "/work/build", sources: [{ id: "src-1", name: "api", path: "/work/api" }] };
 const workspace = {
   id: "ws-1",
@@ -33,7 +33,7 @@ const workspace = {
   finish_blockers: [],
   directories: [{ id: "api", source_id: "src-1", is_git: true }],
 };
-const watchedIssue = issue({ id: "issue-7", number: 7, title: "Wire 1.22", watched: true, status: "in_review", updated_at: "2026-09-24T01:00:00Z" });
+const watchedTask = task({ id: "task-7", number: 7, title: "Wire 1.22", watched: true, status: "in_review", updated_at: "2026-09-24T01:00:00Z" });
 
 let modules;
 /** The bridge: greets, and answers every verb — so a verb that reached it would
@@ -75,12 +75,12 @@ beforeEach(async () => {
     deviceContexts: await import("../src/core/deviceContexts.js"),
     connection: await import("../src/connection.js"),
   };
-  // A reload: the board and the watched issue are already on disk. The fixture
+  // A reload: the board and the watched task are already on disk. The fixture
   // is imported with the fresh modules, so it writes the cache they read.
   const { writeRailBoard } = await import("./railCacheFixture.js");
   await writeRailBoard({ projects: [project], workspaces: [workspace] });
-  await modules.tracker.writeIssuesRecord(DEVICE, PROJECT, modules.tracker.issuesRecord([watchedIssue], []));
-  await modules.tracker.writeIssueRecord(DEVICE, PROJECT, watchedIssue.id, issueDetail(watchedIssue, []));
+  await modules.tracker.writeTasksRecord(DEVICE, PROJECT, modules.tracker.tasksRecord([watchedTask], []));
+  await modules.tracker.writeTaskRecord(DEVICE, PROJECT, watchedTask.id, taskDetail(watchedTask, []));
   // The machine answered once — which is how this tab knows it carries
   // watching — and is away now.
   await connect();
@@ -108,16 +108,16 @@ describe("a press on a machine that is away", () => {
     expect(sentVerbs()).toEqual([]);
   });
 
-  it("says why Stop watching did nothing, on the issue's row", async () => {
-    const key = `tracker_issue:${watchedIssue.id}`;
+  it("says why Stop watching did nothing, on the task's row", async () => {
+    const key = `tracker_task:${watchedTask.id}`;
     await vi.waitFor(() => expect(rowFor(key)).not.toBe(null), WAIT);
     rowFor(key).querySelector("[data-menu]").click();
     await vi.waitFor(() => expect(rowFor(key).querySelector("[data-unwatch]")).not.toBe(null), WAIT);
     rowFor(key).querySelector("[data-unwatch]").click();
     await vi.waitFor(() => expect(shown(rowError(key))).toBe(true), WAIT);
-    expect(rowError(key).textContent).toBe("Build cannot stop watching this issue because this machine is away.");
-    const held = await modules.tracker.readIssuesRecord(DEVICE, PROJECT);
-    expect(held.issues[0].watched).toBe(true);
+    expect(rowError(key).textContent).toBe("Build cannot stop watching this task because this machine is away.");
+    const held = await modules.tracker.readTasksRecord(DEVICE, PROJECT);
+    expect(held.tasks[0].watched).toBe(true);
     expect(sentVerbs()).toEqual([]);
   });
 
@@ -246,10 +246,10 @@ describe("a press on a machine that is away", () => {
 
   // Done off a row's menu and off a branch's own page both finish through
   // finishWorkItem, and the page shows what it throws.
-  it("says why Done on an issue or a branch did nothing", async () => {
+  it("says why Done on a task or a branch did nothing", async () => {
     const { finishWorkItem } = modules.inboxView;
-    await expect(finishWorkItem({ kind: "issue", deviceId: DEVICE, issueId: "issue-7" })).rejects.toThrow(
-      "Build cannot archive this issue because this machine is away.",
+    await expect(finishWorkItem({ kind: "task", deviceId: DEVICE, taskId: "task-7" })).rejects.toThrow(
+      "Build cannot archive this task because this machine is away.",
     );
     // #87: this machine's bridge keeps the branch, so Done there removes only
     // the checkout, and the refusal names that.

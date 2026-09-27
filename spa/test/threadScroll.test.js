@@ -155,7 +155,7 @@ describe("a conversation opens at its newest message", () => {
 const sourceOf = (file) => readFileSync(resolve("src", file), "utf8");
 
 // The conversation lives in the agent rail now; no view paints a thread of
-// its own — an issue's conversation belongs to its agent, and an agent's
+// its own — a task's conversation belongs to its agent, and an agent's
 // conversation lives in the rail beside every surface.
 const SURFACES_WITH_A_CONVERSATION = ["core/agentRail.js"];
 

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Working time is branch/issue-level status: it belongs to the toolbar, where
+// Working time is branch/task-level status: it belongs to the toolbar, where
 // it is true wherever you are standing in the work, and not to the conversation
 // — a timeline that narrates the clock buries what was actually said.
 

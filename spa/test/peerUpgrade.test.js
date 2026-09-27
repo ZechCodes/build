@@ -64,7 +64,7 @@ vi.mock("../src/core/composeView.js", () => ({ flushCaptures: async () => {} }))
 vi.mock("../src/core/changeEvents.js", () => ({
   // The greeting says which kinds a bridge carries; a stand-in that
   // answers none would have the sync layer ask for none of the new ones.
-  bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "issues"] } }),
+  bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "tasks"] } }),
   dispatchChangeEvent: (...args) => changed.push(args),
   disarmChangeEvents: () => {},
   greetBridge: (...args) => greetings.greet(...args),
@@ -206,7 +206,7 @@ const fakeLink = () => ({
   term: fakeCarrier("term"),
   recovery: fakeRecovery(),
   // Every real link tells its owner when the way it is carrying changes, so the
-  // ring can redraw the word (core/peerLink.js, issue #31).
+  // ring can redraw the word (core/peerLink.js, task #31).
   onPathChanged: vi.fn(() => () => {}),
   // And when a failed path carries again, so the session is greeted again (#123).
   onRestored: vi.fn(() => () => {}),

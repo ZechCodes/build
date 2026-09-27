@@ -19,7 +19,7 @@ const branch = (over = {}) => ({
   action: "delete",
   finished_at: "2026-08-10T09:30:00Z",
   run_id: "run-1",
-  issue_id: null,
+  task_id: null,
   stages: null,
   worktree_id: "wt-1",
   worktree_path: "/wt/login",
@@ -30,8 +30,8 @@ const branch = (over = {}) => ({
   ...over,
 });
 
-const issue = (over = {}) => ({
-  kind: "issue",
+const task = (over = {}) => ({
+  kind: "task",
   project_id: "p2",
   project: "dotfiles",
   title: "Split the prompt templates",
@@ -40,7 +40,7 @@ const issue = (over = {}) => ({
   action: null,
   finished_at: "2026-08-12T18:00:00Z",
   run_id: null,
-  issue_id: "issue-1",
+  task_id: "task-1",
   stages: 3,
   worktree_id: null,
   worktree_path: null,
@@ -65,10 +65,10 @@ const workspace = (over = {}) => ({
 
 describe("archiveRows", () => {
   it("reads both kinds off the wire, newest first", () => {
-    const rows = archiveRows({ items: [branch(), issue()] });
-    expect(rows.map((row) => row.kind)).toEqual(["issue", "branch"]);
+    const rows = archiveRows({ items: [branch(), task()] });
+    expect(rows.map((row) => row.kind)).toEqual(["task", "branch"]);
     expect(rows[0].title).toBe("Split the prompt templates");
-    expect(rows[0].kindLabel).toBe("Issue");
+    expect(rows[0].kindLabel).toBe("Task");
     expect(rows[1].kindLabel).toBe("Branch");
     expect(rows[1].project).toBe("relaydb");
   });
@@ -95,14 +95,14 @@ describe("archiveRows", () => {
 
   it("keeps rows whose stamp or fields the bridge could not fill", () => {
     const rows = archiveRows({
-      items: [null, "junk", branch({ finished_at: null, title: "", branch: "build/x" }), issue({ title: null, issue_id: null })],
+      items: [null, "junk", branch({ finished_at: null, title: "", branch: "build/x" }), task({ title: null, task_id: null })],
     });
     expect(rows).toHaveLength(2);
     // A row with no stamp sorts last rather than jumping the queue.
     expect(rows[rows.length - 1].finishedLabel).toBe("date unknown");
     const named = rows.find((row) => row.kind === "branch");
     expect(named.title).toBe("build/x");
-    const untitled = rows.find((row) => row.kind === "issue");
+    const untitled = rows.find((row) => row.kind === "task");
     expect(untitled.title).toBe("(untitled)");
   });
 
@@ -141,7 +141,7 @@ describe("archiveListHtml", () => {
   });
 
   it("opens the selected row's record under it, and only that one", () => {
-    const rows = archiveRows({ items: [branch(), issue()] });
+    const rows = archiveRows({ items: [branch(), task()] });
     const html = archiveListHtml(rows, { openKey: rows[0].key });
     expect(html).toContain("archive-record");
     expect(html.match(/archive-record/g)).toHaveLength(1);
@@ -169,8 +169,8 @@ describe("archiveRecordHtml", () => {
     expect(html).not.toContain("<button");
   });
 
-  it("states an issue's record without pretending it had a checkout", () => {
-    const [row] = archiveRows({ items: [issue()] });
+  it("states a task's record without pretending it had a checkout", () => {
+    const [row] = archiveRows({ items: [task()] });
     const html = archiveRecordHtml(row);
     expect(html).toContain("3 stages");
     expect(html).not.toContain("HEAD");

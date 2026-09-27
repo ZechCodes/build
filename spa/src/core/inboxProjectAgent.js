@@ -7,7 +7,7 @@
 // and after a day without activity it moves to Recent the way a workspace row
 // does. On the projects face it is not a row at all: it is the head of its
 // project's block (core/inboxProjects.js). Its badge carries the project's
-// watched issues too, the ones no workspace row wears (#104).
+// watched tasks too, the ones no workspace row wears (#104).
 //
 // No DOM, no app imports — the wiring (core/inboxView.js) renders these, and
 // the row itself is painted by core/inbox.js with the rest.
@@ -59,10 +59,10 @@ function conversationOf(project, rows, rosterOf) {
   return { entityId, row, agents };
 }
 
-function toProjectAgentEntry(project, rows, rosterOf, issueUnreadOf) {
+function toProjectAgentEntry(project, rows, rosterOf, taskUnreadOf) {
   const { entityId, row, agents } = conversationOf(project, rows, rosterOf);
   const agentUnread = agents.length ? agentsUnreadCount(agents) : row?.unread_count || 0;
-  const unreadCount = agentUnread + issueUnreadOf(project.projectKey);
+  const unreadCount = agentUnread + taskUnreadOf(project.projectKey);
   const working = agents.length ? agents.some((agent) => agent.working) : !!row?.working;
   const name = projectNameOf(project);
   return {
@@ -87,11 +87,11 @@ function toProjectAgentEntry(project, rows, rosterOf, issueUnreadOf) {
 }
 
 /** One row per project the rail lists, for its project agent.
- *  `issueUnreadOf(projectKey)` is the unread of the project's watched issues
- *  no workspace row wears (#104, core/issueUnread.js): they count on the
+ *  `taskUnreadOf(projectKey)` is the unread of the project's watched tasks
+ *  no workspace row wears (#104, core/taskUnread.js): they count on the
  *  project's own badge like its agent's. */
-export function projectAgentEntries(projects = [], items = [], runs = [], issueUnreadOf = () => 0) {
+export function projectAgentEntries(projects = [], items = [], runs = [], taskUnreadOf = () => 0) {
   const rosterOf = freshestRosters([...runs, ...items]);
   const rows = { items, runs };
-  return projects.map((project) => toProjectAgentEntry(project, rows, rosterOf, issueUnreadOf));
+  return projects.map((project) => toProjectAgentEntry(project, rows, rosterOf, taskUnreadOf));
 }

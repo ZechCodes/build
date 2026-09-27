@@ -247,9 +247,9 @@ it("keeps the heading's pill, dot and + on one gap and in one column", async () 
       const { mountAgentRail } = window.__layoutModules.rail;
       const { writeCached } = window.__layoutModules.cache;
       const { stampWorkspace } = window.__layoutModules.merge;
-      const { writeIssuesRecord } = window.__layoutModules.tracker;
+      const { writeTasksRecord } = window.__layoutModules.tracker;
       const { writeAgentsOverviewFixture, overviewRailContext } = window.__layoutModules.fixture;
-      await writeAgentsOverviewFixture({ writeCached, stampWorkspace, writeIssuesRecord });
+      await writeAgentsOverviewFixture({ writeCached, stampWorkspace, writeTasksRecord });
       localStorage.setItem("build.rail.expanded", "1");
       window.__layoutRail = mountAgentRail(document.querySelector("#agent-rail"), overviewRailContext());
     });
@@ -312,9 +312,9 @@ it("opens Add from a press on the working dot as from the + itself, and the dot 
       const { mountAgentRail } = window.__layoutModules.rail;
       const { writeCached } = window.__layoutModules.cache;
       const { stampWorkspace } = window.__layoutModules.merge;
-      const { writeIssuesRecord } = window.__layoutModules.tracker;
+      const { writeTasksRecord } = window.__layoutModules.tracker;
       const { writeAgentsOverviewFixture, overviewRailContext } = window.__layoutModules.fixture;
-      await writeAgentsOverviewFixture({ writeCached, stampWorkspace, writeIssuesRecord });
+      await writeAgentsOverviewFixture({ writeCached, stampWorkspace, writeTasksRecord });
       localStorage.setItem("build.rail.expanded", "1");
       window.__layoutRail = mountAgentRail(document.querySelector("#agent-rail"), overviewRailContext());
     });

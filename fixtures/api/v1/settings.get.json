@@ -49,7 +49,7 @@
         "capability": "step_by_step"
       }
     ],
-    "watch_agent_filed_issues": true,
+    "watch_agent_filed_tasks": true,
     "compact_above_tokens": 200000,
     "workspace_idle_secs": 86400,
     "workspace_prune": false,

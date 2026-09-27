@@ -186,12 +186,12 @@ export async function renderBranch() {
   const home = () => go({ name: "inbox" });
   /** An ending the user triggered here must not badge its own inbox entry:
    *  Merged/Abandoned are attention-class, so the entry's cursor is cleared on
-   *  the way out (the Stage B rule; core/inboxView.js noteSelfAction). An issue
+   *  the way out (the Stage B rule; core/inboxView.js noteSelfAction). A task
    *  handed BACK to the inbox keeps its own cursor — it is asking for somebody
-   *  again, and the event naming the branch it lost is the point of it. Only an
-   *  issue that ends with the branch is cleared with it. */
-  const finished = ({ issueEnded = false } = {}) => {
-    noteSelfAction(entityIdOf(row), issueEnded ? row && row.issue_id : null);
+   *  again, and the event naming the branch it lost is the point of it. Only a
+   *  task that ends with the branch is cleared with it. */
+  const finished = ({ taskEnded = false } = {}) => {
+    noteSelfAction(entityIdOf(row), taskEnded ? row && row.task_id : null);
     home();
   };
 
@@ -226,15 +226,15 @@ export async function renderBranch() {
           {
             kind: "branch",
             entityId: entityIdOf(row),
-            issueId: row && row.issue_id,
+            taskId: row && row.task_id,
             // Which machine the branch is on: the link said, and the verb goes
             // to that device.
             deviceId,
             projectId,
             branch: name,
-            // The issue ends with the branch only when the work landed;
+            // The task ends with the branch only when the work landed;
             // otherwise the bridge hands it back to the inbox.
-            issueEnded: facts.merged,
+            taskEnded: facts.merged,
             deletesBranch,
             deviceName: machine,
           },
@@ -305,8 +305,8 @@ export async function renderBranch() {
           cacheScope: context.cacheScope,
           agentSelection,
           viewingContext: App.viewingContext,
-          // A merge is the work landing: the issue it implements ends with it.
-          onMerged: () => finished({ issueEnded: true }),
+          // A merge is the work landing: the task it implements ends with it.
+          onMerged: () => finished({ taskEnded: true }),
         });
       } else {
         reviewPlug = createWorktreeReview({

@@ -17,7 +17,7 @@
     "params": {
       "subscription_id": "s-inbox",
       "scope": { "kind": "all" },
-      "kinds": ["state", "thread", "reviews", "issues"],
+      "kinds": ["state", "thread", "reviews", "tasks"],
       "mode": "realtime",
       "priority": "foreground"
     },

@@ -1,9 +1,9 @@
-//! Durable persistence for Issues, under the bridge state dir
+//! Durable persistence for Tasks, under the bridge state dir
 //! (`~/.build/tasks/` by default, next to the identity file):
 //!
 //! ```text
 //! build.db                 every record and every conversation
-//! issues/<issue_id>/docs/… canonical stage-plan docs
+//! tasks/<task_id>/docs/… canonical stage-plan docs
 //! ```
 //!
 //! One SQLite database, and one table in it carries the design: `thread_items`,
@@ -13,10 +13,10 @@
 //! appended to constantly — so appending one message writes one row, and paging
 //! is a `LIMIT` rather than a full read.
 //!
-//! That is what this store replaced: one `record.json` per Issue holding the
-//! Issue, every implementation inside it, and every thread on all of them,
+//! That is what this store replaced: one `record.json` per Task holding the
+//! Task, every implementation inside it, and every thread on all of them,
 //! rewritten whole on every state transition. 593 KB per transition on the
-//! largest Issue in the one real installation.
+//! largest Task in the one real installation.
 //!
 //! Writes are transactional: a record and the conversation rows that belong to
 //! it land together or not at all. Everything is read back on boot so a restart
@@ -68,9 +68,9 @@ mod workspace_lifecycle;
 pub use conversations::items_decoded;
 pub use conversations::RESIDENT_CONVERSATION_TAIL;
 use conversations::{read_thread_page, stored_conversation_summary};
-use entities::{migrate_agents_to_v6, write_issue, write_run};
+use entities::{migrate_agents_to_v6, write_run, write_task};
 pub use entities::{
-    PersistedArchivedWorktree, PersistedIssue, PersistedPlan, PersistedRun, WorktreeFinishAction,
+    PersistedArchivedWorktree, PersistedPlan, PersistedRun, PersistedTask, WorktreeFinishAction,
     WorktreeFinishStatus,
 };
 use legacy::{
@@ -85,7 +85,7 @@ use schema::{
     THREAD_LAST_MESSAGE_SQL, THREAD_LAST_OWN_MESSAGE_SQL, THREAD_LAST_SEQUENCE_SQL,
     THREAD_MESSAGE_PAGE_SQL, THREAD_PAGE_SQL, THREAD_TOOL_CALL_COUNT_SQL,
 };
-pub use tracker::{IssueFilter, IssueSeek, IssueStretch};
+pub use tracker::{TaskFilter, TaskSeek, TaskStretch};
 
 /// Things that can go wrong reading or writing the store.
 #[derive(Debug, thiserror::Error)]
@@ -279,12 +279,12 @@ impl Store {
             fail_next_write: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
-    /// Make every stored issue unreadable, the way a damaged record is: what
+    /// Make every stored task unreadable, the way a damaged record is: what
     /// a test of a tracker read failure needs.
     #[cfg(test)]
-    pub(crate) fn damage_tracker_issues(&self) {
+    pub(crate) fn damage_tracker_tasks(&self) {
         self.connection()
-            .execute("UPDATE tracker_issues SET record = '{'", [])
+            .execute("UPDATE tracker_tasks SET record = '{'", [])
             .expect("the damage lands");
     }
 

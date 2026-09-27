@@ -1,32 +1,32 @@
-//! Assignment is dispatch (spec: Issues → Assignment is dispatch).
+//! Assignment is dispatch (spec: Tasks → Assignment is dispatch).
 //!
-//! Handing an issue to an agent delivers it into that agent's conversation and
-//! starts the agent. There is no second step where somebody turns an issue into
+//! Handing a task to an agent delivers it into that agent's conversation and
+//! starts the agent. There is no second step where somebody turns a task into
 //! work, which is the whole reason this file exists rather than
-//! `issues.assign` just writing a name onto a record.
+//! `tasks.assign` just writing a name onto a record.
 //!
 //! Nothing here forks a code path. The workspace is cut by `workspace.create`,
 //! the agent is added by the same `agent.add` the project surface's
 //! `add_workspace_agent` calls, and the delivery is the post every other
-//! message goes through — so a dispatched issue is durable, gets an operation
+//! message goes through — so a dispatched task is durable, gets an operation
 //! receipt, and starts its agent exactly the way a reviewer message does.
 //!
-//! What IS different is the envelope: the message wears the issue
-//! ([`crate::thread::IssueEnvelope`]) the way a hand-off wears its sender, and
-//! carries the issue as prose in its body so a harness that never learns the
-//! field still reads the whole issue.
+//! What IS different is the envelope: the message wears the task
+//! ([`crate::thread::TaskEnvelope`]) the way a hand-off wears its sender, and
+//! carries the task as prose in its body so a harness that never learns the
+//! field still reads the whole task.
 
-use super::{edits, IssueWrite, StoredAnswer};
+use super::{edits, StoredAnswer, TaskWrite};
 use crate::app::git::deferred::DeferredGitWork;
 use crate::app::rpc::missing_param;
 use crate::app::{AgentChoiceArgs, AppState};
-use crate::thread::IssueEnvelope;
+use crate::thread::TaskEnvelope;
 use crate::tracker::{
-    Actor, Assignee, Issue, IssueEventKind, DISPATCH_MOVES_FROM, IN_PROGRESS_STATUS,
+    Actor, Assignee, Task, TaskEventKind, DISPATCH_MOVES_FROM, IN_PROGRESS_STATUS,
 };
 use serde_json::{json, Value};
 
-/// Where an `issues.assign` was told to put the work.
+/// Where an `tasks.assign` was told to put the work.
 ///
 /// One tagged value covering all five kinds, because assignment IS dispatch:
 /// a second `dispatch` field beside the assignee would be two places for the
@@ -173,7 +173,7 @@ impl AssignTarget {
         }
     }
 
-    /// What is stored on the issue for the kinds that name an assignee
+    /// What is stored on the task for the kinds that name an assignee
     /// outright. The two creating kinds answer `None`: what they resolve to is
     /// only known once the agent exists.
     fn settled_assignee(&self) -> Option<Option<Assignee>> {
@@ -189,7 +189,7 @@ impl AssignTarget {
     }
 }
 
-/// One delivered issue: where it went, and the receipt for the turn it queued.
+/// One delivered task: where it went, and the receipt for the turn it queued.
 pub(in crate::app) struct Delivered {
     pub workspace_id: Option<String>,
     pub entity_id: String,
@@ -210,24 +210,24 @@ impl Delivered {
 }
 
 impl AppState {
-    /// `issues.assign` — hand an issue to somebody, and start them on it.
-    pub(crate) fn issues_assign(&mut self, params: &Value) -> Result<Value, String> {
-        let issue_id = crate::app::require_str(params, "issue_id")?;
-        let (project_id, issue) = self.tracker_issue(&issue_id)?;
+    /// `tasks.assign` — hand a task to somebody, and start them on it.
+    pub(crate) fn tasks_assign(&mut self, params: &Value) -> Result<Value, String> {
+        let task_id = crate::app::require_str(params, "task_id")?;
+        let (project_id, task) = self.tracker_task(&task_id)?;
         let target = AssignTarget::parse(params.get("assignee"))?;
         let note = crate::app::optional_nonempty_string(params, "note")?.map(str::to_string);
-        self.assign_issue_to(&project_id, issue, target, note, Actor::User, None)
+        self.assign_task_to(&project_id, task, target, note, Actor::User, None)
     }
 
     /// The whole of assignment, for the wire verb and for the MCP tool alike.
     ///
     /// `sender` is the agent that asked, when one did. It decides two things
     /// and nothing else: whose name is on the events, and whether the delivered
-    /// message wears a sender beside its issue.
-    pub(in crate::app) fn assign_issue_to(
+    /// message wears a sender beside its task.
+    pub(in crate::app) fn assign_task_to(
         &mut self,
         project_id: &str,
-        issue: Issue,
+        task: Task,
         target: AssignTarget,
         note: Option<String>,
         actor: Actor,
@@ -246,7 +246,7 @@ impl AppState {
         {
             return self.dispatch_into_a_new_workspace(
                 project_id,
-                issue,
+                task,
                 name,
                 isolation,
                 choice,
@@ -257,19 +257,19 @@ impl AppState {
                 sender,
             );
         }
-        let mut write = IssueWrite::by(actor.clone(), issue);
+        let mut write = TaskWrite::by(actor.clone(), task);
         let delivery = self.deliver_for(
             project_id,
-            &write.issue,
+            &write.task,
             &target,
             note.as_deref(),
             &actor,
             sender,
         )?;
         self.settle_assignment(&mut write, &target, &delivery, &actor, &now)?;
-        let answered = self.commit_issue_write(project_id, write, &now)?;
+        let answered = self.commit_task_write(project_id, write, &now)?;
         Ok(json!({
-            "issue": answered["issue"],
+            "task": answered["task"],
             "dispatch": delivery
                 .as_ref()
                 .map(|delivered| delivered.wire(target.wire_kind()))
@@ -281,7 +281,7 @@ impl AppState {
     /// column it moved to.
     fn settle_assignment(
         &mut self,
-        write: &mut IssueWrite,
+        write: &mut TaskWrite,
         target: &AssignTarget,
         delivery: &Option<Delivered>,
         actor: &Actor,
@@ -294,17 +294,17 @@ impl AppState {
                 agent_id: delivered.agent_id.clone(),
             }),
         };
-        write.issue.assignee = settled.clone();
-        // An issue handed TO the user is one they are being asked about, so it
+        write.task.assignee = settled.clone();
+        // A task handed TO the user is one they are being asked about, so it
         // goes in their inbox whoever handed it over.
-        if matches!(settled, Some(Assignee::User)) && write.issue.set_watched(true) {
-            write.event(actor, IssueEventKind::Watched, json!({}), now);
+        if matches!(settled, Some(Assignee::User)) && write.task.set_watched(true) {
+            write.event(actor, TaskEventKind::Watched, json!({}), now);
         }
         match &settled {
-            None => write.event(actor, IssueEventKind::Unassigned, json!({}), now),
+            None => write.event(actor, TaskEventKind::Unassigned, json!({}), now),
             Some(assignee) => write.event(
                 actor,
-                IssueEventKind::Assigned,
+                TaskEventKind::Assigned,
                 json!({ "assignee": assignee }),
                 now,
             ),
@@ -313,47 +313,47 @@ impl AppState {
             return Ok(());
         };
         // The agent that GOT the work is the one that most needs to hear about
-        // the issue, so the dispatch subscribes it. Not a courtesy: it is what
+        // the task, so the dispatch subscribes it. Not a courtesy: it is what
         // makes the hand-off two-way. `by: "assignment"` so a timeline reader
         // can tell this from an agent that asked.
         //
         // Read off the DELIVERY rather than off the stored assignee, because
         // `{kind:"project_agent"}` names no agent id and the project's agent
         // needs telling exactly as much as any other.
-        if write.issue.track(&delivered.agent_id).unwrap_or(false) {
+        if write.task.track(&delivered.agent_id).unwrap_or(false) {
             write.event(
                 actor,
-                IssueEventKind::Tracked,
+                TaskEventKind::Tracked,
                 json!({ "agent_id": delivered.agent_id, "by": "assignment" }),
                 now,
             );
         }
-        // What the dispatch made is what the issue is about now. These write no
+        // What the dispatch made is what the task is about now. These write no
         // `linked` events of their own: the `dispatched` event below already
         // says it, and two records of one fact read as two things happening.
         if let Some(workspace_id) = &delivered.workspace_id {
-            crate::tracker::IssueLinks::add(&mut write.issue.links.workspace_ids, workspace_id);
+            crate::tracker::TaskLinks::add(&mut write.task.links.workspace_ids, workspace_id);
         }
-        crate::tracker::IssueLinks::add(
-            &mut write.issue.links.conversation_ids,
+        crate::tracker::TaskLinks::add(
+            &mut write.task.links.conversation_ids,
             &delivered.entity_id,
         );
         write.event(
             actor,
-            IssueEventKind::Dispatched,
+            TaskEventKind::Dispatched,
             delivered.wire(target.wire_kind()),
             now,
         );
         // What the turn this dispatch just started is FOR. Its Complete moves
-        // this issue and no other; anything else the agent holds is a queue it
+        // this task and no other; anything else the agent holds is a queue it
         // has not been asked about.
-        self.dispatched_issue
-            .insert(delivered.agent_id.clone(), write.issue.id.clone());
+        self.dispatched_task
+            .insert(delivered.agent_id.clone(), write.task.id.clone());
         // Starting work moves the card, but only off the columns that mean
-        // "not started". An issue already In progress, In review or Done was
+        // "not started". A task already In progress, In review or Done was
         // put there deliberately, and a reassignment is not a reason to rewind
         // it.
-        if write.issue.is_open() && DISPATCH_MOVES_FROM.contains(&write.issue.status.as_str()) {
+        if write.task.is_open() && DISPATCH_MOVES_FROM.contains(&write.task.status.as_str()) {
             edits::move_to(
                 write,
                 IN_PROGRESS_STATUS,
@@ -365,13 +365,13 @@ impl AppState {
         Ok(())
     }
 
-    /// Put the issue where the work will happen, for the kinds that need no
+    /// Put the task where the work will happen, for the kinds that need no
     /// checkout cut. `None` is `{kind:"user"}` and unassignment, which dispatch
     /// nothing.
     fn deliver_for(
         &mut self,
         project_id: &str,
-        issue: &Issue,
+        task: &Task,
         target: &AssignTarget,
         note: Option<&str>,
         actor: &Actor,
@@ -391,7 +391,7 @@ impl AppState {
             AssignTarget::Agent { agent_id } => {
                 let entity_id = self.agent_of_this_project(project_id, agent_id)?;
                 return self
-                    .hand_over(issue, &entity_id, agent_id, note, sender)
+                    .hand_over(task, &entity_id, agent_id, note, sender)
                     .map(Some);
             }
             AssignTarget::NewAgent {
@@ -400,7 +400,7 @@ impl AppState {
                 notify_user,
                 agent_name,
             } => {
-                let added = self.add_agent_for_issue(
+                let added = self.add_agent_for_task(
                     project_id,
                     workspace_id,
                     choice.args(),
@@ -408,24 +408,24 @@ impl AppState {
                     notify_user.unwrap_or(matches!(actor, Actor::User)),
                 )?;
                 return self
-                    .hand_over(issue, &added.1, &added.0, note, sender)
+                    .hand_over(task, &added.1, &added.0, note, sender)
                     .map(Some);
             }
             // Answered by the drain; never reaches here.
             AssignTarget::NewWorkspace { .. } => return Ok(None),
         };
         let agent_id = self.ensure_primary_agent(&entity_id)?;
-        let mut delivered = self.hand_over(issue, &entity_id, &agent_id, note, sender)?;
+        let mut delivered = self.hand_over(task, &entity_id, &agent_id, note, sender)?;
         // The project's agent works in the repository itself, so there is no
         // workspace to name and the hand-off must not invent one.
         delivered.workspace_id = workspace_id;
         Ok(Some(delivered))
     }
 
-    /// One agent of THIS project, or why it is none of this issue's business.
+    /// One agent of THIS project, or why it is none of this task's business.
     ///
-    /// The same refusal the project-agent handlers raise, in the same words: an
-    /// issue reaches the agents of its own project and nothing else.
+    /// The same refusal the project-agent handlers raise, in the same words: a
+    /// task reaches the agents of its own project and nothing else.
     fn agent_of_this_project(&self, project_id: &str, agent_id: &str) -> Result<String, String> {
         let entity_id = self
             .entity_of_agent(agent_id)
@@ -442,7 +442,7 @@ impl AppState {
     /// talked to has none and there would be nowhere for the agent to live.
     ///
     /// Answers `(agent_id, entity_id)`.
-    fn add_agent_for_issue(
+    fn add_agent_for_task(
         &mut self,
         project_id: &str,
         workspace_id: &str,
@@ -473,7 +473,7 @@ impl AppState {
         if let Some(agent_name) = agent_name {
             params["name"] = json!(agent_name);
         }
-        // The default is based on who assigned the issue: an agent's new
+        // The default is based on who assigned the task: an agent's new
         // worker is unwatched, while a worker the user creates is watched.
         // An explicit notify_user on the assignee overrides either default.
         params["made_by_agent"] = json!(true);
@@ -486,15 +486,15 @@ impl AppState {
         Ok((agent_id, entity_id))
     }
 
-    /// Deliver the issue into one agent's conversation.
+    /// Deliver the task into one agent's conversation.
     ///
     /// The post every other message goes through, so the turn is durable, gets
     /// a receipt, and starts the agent the way a reviewer message does. What is
-    /// added is the envelope: the message wears the issue, and carries it as
+    /// added is the envelope: the message wears the task, and carries it as
     /// prose so a harness that never learns the field still reads it.
     fn hand_over(
         &mut self,
-        issue: &Issue,
+        task: &Task,
         entity_id: &str,
         agent_id: &str,
         note: Option<&str>,
@@ -502,12 +502,12 @@ impl AppState {
     ) -> Result<Delivered, String> {
         let operation_id = format!("op-{}", uuid::Uuid::new_v4());
         let posted =
-            self.post_issue_to_agent(issue, entity_id, agent_id, note, &operation_id, sender)?;
+            self.post_task_to_agent(task, entity_id, agent_id, note, &operation_id, sender)?;
         Ok(Delivered {
             // Where the agent is working, when it is working somewhere. All a
-            // hand-off is given is a conversation, and an issue that recorded
+            // hand-off is given is a conversation, and a task that recorded
             // only that would name who is on it and not where the code is —
-            // which is the question anybody reading the issue later asks.
+            // which is the question anybody reading the task later asks.
             // `None` for the project's agent, which works in no checkout.
             workspace_id: self.workspace_of_conversation(&posted),
             entity_id: posted,
@@ -519,19 +519,15 @@ impl AppState {
 
 /// What the assignment says: who handed over what, and anything they added.
 ///
-/// A notice and not the issue. Copying the issue's text into the conversation
-/// put a snapshot there that goes stale the moment anybody edits the issue —
+/// A notice and not the task. Copying the task's text into the conversation
+/// put a snapshot there that goes stale the moment anybody edits the task —
 /// and that sits in the agent's context being compacted away before the work
-/// even begins. So the agent is told what it has and reads it with `get_issue`
-/// when it is ready to start, which is also when the issue is current.
-pub(in crate::app) fn assignment_notice(
-    issue: &Issue,
-    assigner: &str,
-    note: Option<&str>,
-) -> String {
+/// even begins. So the agent is told what it has and reads it with `get_task`
+/// when it is ready to start, which is also when the task is current.
+pub(in crate::app) fn assignment_notice(task: &Task, assigner: &str, note: Option<&str>) -> String {
     let mut body = format!(
-        "{assigner} assigned you issue #{} — {}",
-        issue.number, issue.title
+        "{assigner} assigned you task #{} — {}",
+        task.number, task.title
     );
     if let Some(note) = note.map(str::trim).filter(|note| !note.is_empty()) {
         body.push_str("\n\n");
@@ -540,17 +536,17 @@ pub(in crate::app) fn assignment_notice(
     body
 }
 
-/// The issue as a message wears it: enough to name it and link it.
+/// The task as a message wears it: enough to name it and link it.
 ///
 /// No body, for the reason the notice has none — a card draws the number and
 /// the title, and a copy of the text would be the same stale snapshot by
 /// another route.
-pub(in crate::app) fn envelope_of(issue: &Issue) -> IssueEnvelope {
-    IssueEnvelope {
-        issue_id: issue.id.clone(),
-        number: issue.number,
-        title: issue.title.clone(),
-        links: issue.links.clone(),
+pub(in crate::app) fn envelope_of(task: &Task) -> TaskEnvelope {
+    TaskEnvelope {
+        task_id: task.id.clone(),
+        number: task.number,
+        title: task.title.clone(),
+        links: task.links.clone(),
     }
 }
 
@@ -597,7 +593,7 @@ impl AgentChoiceArgs<'_> {
 /// to an `AppState` it cannot name while the git runs.
 pub(in crate::app) struct DispatchPlan {
     project_id: String,
-    issue_id: String,
+    task_id: String,
     workspace_id: String,
     choice: OwnedChoice,
     notify_user: bool,
@@ -614,15 +610,15 @@ pub(in crate::app) struct DispatchPlan {
 /// end of it.
 ///
 /// A wrapper rather than a second implementation: `run` and `invalidate` are
-/// the workspace family's, untouched, so cutting a checkout for an issue is
+/// the workspace family's, untouched, so cutting a checkout for a task is
 /// byte-for-byte the cut `workspace.create` makes. Only `settle` — which runs
 /// with the mutex retaken and the checkout on disk — is this file's.
-struct IssueDispatchWork {
+struct TaskDispatchWork {
     inner: Box<dyn DeferredGitWork>,
     plan: DispatchPlan,
 }
 
-impl DeferredGitWork for IssueDispatchWork {
+impl DeferredGitWork for TaskDispatchWork {
     fn run(&self, params: &Value) -> Result<Value, String> {
         self.inner.run(params)
     }
@@ -635,7 +631,7 @@ impl DeferredGitWork for IssueDispatchWork {
         self.inner.invalidate(app);
     }
 
-    /// The checkout is on disk; put an agent in it and hand it the issue.
+    /// The checkout is on disk; put an agent in it and hand it the task.
     ///
     /// The registry is reloaded here rather than left to `invalidate`, which
     /// runs AFTER this: until it is, the workspace the drain just cut is not
@@ -653,18 +649,18 @@ impl DeferredGitWork for IssueDispatchWork {
 
 impl AppState {
     /// `{kind:"new_workspace"}` — cut a workspace, then put an agent in it and
-    /// hand it the issue.
+    /// hand it the task.
     ///
     /// Cutting a checkout is seconds to minutes of git on a real repository, so
     /// it goes to the drain like every other checkout Build makes, and the rest
-    /// of the dispatch goes with it. Nothing is written to the issue here: a
-    /// creation that fails must not leave an issue assigned to an agent that
+    /// of the dispatch goes with it. Nothing is written to the task here: a
+    /// creation that fails must not leave a task assigned to an agent that
     /// was never made.
     #[allow(clippy::too_many_arguments)]
     fn dispatch_into_a_new_workspace(
         &mut self,
         project_id: &str,
-        issue: Issue,
+        task: Task,
         name: &Option<String>,
         isolation: &Option<String>,
         choice: &OwnedChoice,
@@ -677,9 +673,9 @@ impl AppState {
         let mut params = json!({
             "project_id": project_id,
             "made_by_agent": matches!(actor, Actor::Agent { .. }),
-            // The issue's title when the caller named nothing: a workspace cut
-            // for an issue is about that issue, and it names the branch too.
-            "name": name.clone().unwrap_or_else(|| issue.title.clone()),
+            // The task's title when the caller named nothing: a workspace cut
+            // for a task is about that task, and it names the branch too.
+            "name": name.clone().unwrap_or_else(|| task.title.clone()),
         });
         if let Some(isolation) = isolation {
             params["isolation"] = json!(isolation);
@@ -691,7 +687,7 @@ impl AppState {
             .to_string();
         let plan = DispatchPlan {
             project_id: project_id.to_string(),
-            issue_id: issue.id.clone(),
+            task_id: task.id.clone(),
             workspace_id: workspace_id.clone(),
             choice: choice.clone(),
             notify_user,
@@ -702,7 +698,7 @@ impl AppState {
                 .map(|sender| (sender.entity_id.to_string(), sender.agent_id.to_string())),
         };
         self.hang_dispatch_off_the_workspace_cut(plan)?;
-        Ok(json!({ "issue_id": issue.id, "workspace_id": workspace_id, "pending": true }))
+        Ok(json!({ "task_id": task.id, "workspace_id": workspace_id, "pending": true }))
     }
 
     /// Take the git `workspace.create` just handed the drain and put the rest
@@ -718,7 +714,7 @@ impl AppState {
                     .to_string(),
             );
         };
-        git.call = Box::new(IssueDispatchWork {
+        git.call = Box::new(TaskDispatchWork {
             inner: git.call,
             plan,
         });
@@ -728,14 +724,14 @@ impl AppState {
 
     /// The drain's half: the checkout exists, so make the agent and deliver.
     fn finish_new_workspace_dispatch(&mut self, plan: &DispatchPlan) -> Result<Value, String> {
-        // Re-read the issue rather than carrying it through the git: the mutex
+        // Re-read the task rather than carrying it through the git: the mutex
         // was free for the whole cut, and somebody may have moved it.
-        let issue = self
+        let task = self
             .tracker_store()?
-            .load_tracker_issue(&plan.issue_id)
+            .load_tracker_task(&plan.task_id)
             .stored()?
-            .ok_or_else(|| format!("unknown issue_id: {}", plan.issue_id))?;
-        let (agent_id, entity_id) = self.add_agent_for_issue(
+            .ok_or_else(|| format!("unknown task_id: {}", plan.task_id))?;
+        let (agent_id, entity_id) = self.add_agent_for_task(
             &plan.project_id,
             &plan.workspace_id,
             plan.choice.args(),
@@ -750,14 +746,14 @@ impl AppState {
                 agent_id,
             });
         let mut delivered =
-            self.hand_over(&issue, &entity_id, &agent_id, plan.note.as_deref(), sender)?;
+            self.hand_over(&task, &entity_id, &agent_id, plan.note.as_deref(), sender)?;
         delivered.workspace_id = Some(plan.workspace_id.clone());
         // Kept before the delivery is handed to the write: the answer names
         // the receipt for the turn that was actually queued, which is the
         // delivery's own and not the workspace cut's.
         let dispatch = delivered.wire("new_workspace");
         let now = crate::store::now_rfc3339();
-        let mut write = IssueWrite::by(plan.actor.clone(), issue);
+        let mut write = TaskWrite::by(plan.actor.clone(), task);
         let target = AssignTarget::NewWorkspace {
             name: None,
             isolation: None,
@@ -766,8 +762,8 @@ impl AppState {
             agent_name: None,
         };
         self.settle_assignment(&mut write, &target, &Some(delivered), &plan.actor, &now)?;
-        let answered = self.commit_issue_write(&plan.project_id, write, &now)?;
-        Ok(json!({ "issue": answered["issue"], "dispatch": dispatch }))
+        let answered = self.commit_task_write(&plan.project_id, write, &now)?;
+        Ok(json!({ "task": answered["task"], "dispatch": dispatch }))
     }
 
     /// Who the notice says handed the work over.
@@ -793,10 +789,10 @@ impl AppState {
         }
     }
 
-    /// Deliver an issue into one conversation, with the envelope on it.
-    fn post_issue_to_agent(
+    /// Deliver a task into one conversation, with the envelope on it.
+    fn post_task_to_agent(
         &mut self,
-        issue: &Issue,
+        task: &Task,
         entity_id: &str,
         agent_id: &str,
         note: Option<&str>,
@@ -808,14 +804,14 @@ impl AppState {
             Some(sender) => Some(self.agent_requester(sender)?),
             None => None,
         };
-        let posted = self.thread_post_handing_over_issue(
+        let posted = self.thread_post_handing_over_task(
             &json!({
                 "entity_id": entity_id,
                 "agent_id": agent_id,
-                "body": assignment_notice(issue, &assigner, note),
+                "body": assignment_notice(task, &assigner, note),
                 "operation_id": operation_id,
             }),
-            envelope_of(issue),
+            envelope_of(task),
             requester,
         )?;
         Ok(posted["entity_id"]

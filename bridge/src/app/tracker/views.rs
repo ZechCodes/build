@@ -6,49 +6,47 @@
 //! so no surface above it ever sees a path and no record below it ever sees an
 //! id.
 
-use crate::tracker::{Issue, TimelineEntry, COLUMNS};
+use crate::tracker::{Task, TimelineEntry, COLUMNS};
 use serde_json::{json, Value};
 
-/// One issue as every tracker verb answers it.
-pub(in crate::app) fn issue_json(project_id: &str, issue: &Issue) -> Value {
-    let mut value = serde_json::to_value(issue).expect("an issue always serializes");
-    let object = value
-        .as_object_mut()
-        .expect("an issue serializes as object");
+/// One task as every tracker verb answers it.
+pub(in crate::app) fn task_json(project_id: &str, task: &Task) -> Value {
+    let mut value = serde_json::to_value(task).expect("a task always serializes");
+    let object = value.as_object_mut().expect("a task serializes as object");
     object.remove("project_path");
     object.insert("project_id".to_string(), json!(project_id));
     value
 }
 
-/// One issue as a read that holds its timeline answers it — `issues.get`, and
-/// each row of `issues.list`: `issue_json`, and on a watched issue the
-/// `unread_count` its inbox row says (#104), so the Issues tab and the rail's
-/// badges read it off the list without a timeline each. An issue nobody
+/// One task as a read that holds its timeline answers it — `tasks.get`, and
+/// each row of `tasks.list`: `task_json`, and on a watched task the
+/// `unread_count` its inbox row says (#104), so the Tasks tab and the rail's
+/// badges read it off the list without a timeline each. A task nobody
 /// watches never shows a count, so it carries none.
-pub(in crate::app) fn read_issue_json(
+pub(in crate::app) fn read_task_json(
     project_id: &str,
-    issue: &Issue,
+    task: &Task,
     timeline: &[TimelineEntry],
 ) -> Value {
-    let mut value = issue_json(project_id, issue);
-    if issue.watched {
-        value["unread_count"] = Value::from(super::inbox::unread_since_mark(issue, timeline));
+    let mut value = task_json(project_id, task);
+    if task.watched {
+        value["unread_count"] = Value::from(super::inbox::unread_since_mark(task, timeline));
     }
     value
 }
 
-/// An issue and its whole timeline — what `issues.get` answers.
+/// A task and its whole timeline — what `tasks.get` answers.
 ///
 /// A timeline entry is the record itself with one more key naming which it is
 /// (the spread form), so a client reads a comment's own fields off the entry
 /// rather than reaching through a wrapper.
-pub(in crate::app) fn issue_with_timeline_json(
+pub(in crate::app) fn task_with_timeline_json(
     project_id: &str,
-    issue: &Issue,
+    task: &Task,
     timeline: &[TimelineEntry],
 ) -> Value {
     json!({
-        "issue": read_issue_json(project_id, issue, timeline),
+        "task": read_task_json(project_id, task, timeline),
         "timeline": timeline
             .iter()
             .map(|entry| serde_json::to_value(entry).expect("a timeline entry serializes"))

@@ -26,7 +26,7 @@ export const consoleBranchRow = (over = {}) => ({
 const termTabs = (ids) => ids.map((id) => (typeof id === "string" ? { term_id: id } : id));
 
 /** Put one device's rows and one row's terminals where the console looks. */
-const entityOf = (row) => row.run_id || row.worktree_id || row.issue_id || row.branch || "";
+const entityOf = (row) => row.run_id || row.worktree_id || row.task_id || row.branch || "";
 
 export async function seedConsoleWorld({ deviceId = "dev-1", row = consoleBranchRow(), terminals = [] } = {}) {
   await writeCached({ deviceId, entityId: "", kind: "projects" }, []);

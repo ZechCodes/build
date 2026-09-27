@@ -77,7 +77,7 @@ def test_the_subject_and_copy_are_verbatim():
     )
 
 
-def test_the_text_part_reads_top_to_bottom_as_the_copy_on_the_issue():
+def test_the_text_part_reads_top_to_bottom_as_the_copy_on_the_task():
     """A snapshot of the whole plain-text part: what an invitee with images and HTML
     off reads, and what Zech signed off on."""
     message = invite_email()

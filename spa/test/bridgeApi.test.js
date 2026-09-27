@@ -86,11 +86,11 @@ describe("adapter selection", () => {
       requests: { priority: true },
       errors: { codes: true },
       // The hunks-per-file read arrived in 1.4; a 1.1 bridge is asked for
-      // whole patches, and files on an issue arrived in 1.8.
+      // whole patches, and files on a task arrived in 1.8.
       diffs: { perFile: false },
       bodies: { pages: false, mediaRawPages: false },
       // Watching arrived in 1.9 (#64); a 1.1 bridge carries none.
-      issues: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false },
+      tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false },
       // A conversation's own compaction threshold arrived in 1.10.
       conversations: { settings: false },
       github: { repos: false },
@@ -125,11 +125,11 @@ describe("adapter selection", () => {
     const greetingAt = (version, over = {}) => ({
       api_version: version,
       push_events: true,
-      changes: { subscriptions: true, kinds: ["issues"], items: "bodies" },
+      changes: { subscriptions: true, kinds: ["tasks"], items: "bodies" },
       ...over,
     });
     const watching = (version, over) =>
-      selectAdapter(greetingAt(version, over)).create(vi.fn()).capabilities.issues.watching;
+      selectAdapter(greetingAt(version, over)).create(vi.fn()).capabilities.tasks.watching;
 
     // The minor alone, for a bridge that says nothing about it.
     expect(watching("1.8.0")).toBe(false);
@@ -137,12 +137,12 @@ describe("adapter selection", () => {
     expect(watching("1.10.0")).toBe(true);
 
     // Stated outright, which outranks the minor in both directions.
-    expect(watching("1.8.0", { issues: { watching: true } })).toBe(true);
-    expect(watching("1.9.0", { issues: { watching: false } })).toBe(false);
+    expect(watching("1.8.0", { tasks: { watching: true } })).toBe(true);
+    expect(watching("1.9.0", { tasks: { watching: false } })).toBe(false);
 
     // Anything that is not a boolean is not a claim, so the minor decides.
-    expect(watching("1.8.0", { issues: { watching: "yes" } })).toBe(false);
-    expect(watching("1.9.0", { issues: { watching: null } })).toBe(true);
+    expect(watching("1.8.0", { tasks: { watching: "yes" } })).toBe(false);
+    expect(watching("1.9.0", { tasks: { watching: null } })).toBe(true);
   });
 
   /** `conversation.settings` (1.10) is stated nowhere in the greeting, so the
@@ -157,7 +157,7 @@ describe("adapter selection", () => {
   });
 
   // A greeting's kind list rides through whole, whatever is on it. The list
-  // has already grown twice — `terminals` from main, `issues` with the tracker
+  // has already grown twice — `terminals` from main, `tasks` with the tracker
   // — so nothing reads its length or its order, and a caller asks it whether
   // the one kind it is about to subscribe to is there.
   //
@@ -167,9 +167,9 @@ describe("adapter selection", () => {
   // constant. apiContract.test.js reads `versions.json` and asks it there.
   it("carries a greeting's kinds through, however many there are", () => {
     const selected = selectAdapter(greetingV1({
-      changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "issues"] },
+      changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "tasks"] },
     }));
-    expect(selected.create(vi.fn()).capabilities.changes.kinds).toContain("issues");
+    expect(selected.create(vi.fn()).capabilities.changes.kinds).toContain("tasks");
   });
 
   it("a 1.1 bridge and a 1.0-only SPA: the 1.0 adapter still serves it", () => {
@@ -205,7 +205,7 @@ describe("adapter selection", () => {
         errors: { codes: false },
         diffs: { perFile: false },
         bodies: { pages: false, mediaRawPages: false },
-        issues: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false },
+        tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false },
         conversations: { settings: false },
         github: { repos: false },
         messages: { context: false },
@@ -234,7 +234,7 @@ describe("named capabilities", () => {
   });
   const features = [
     "changes.subscriptions", "requests.priority", "errors.codes", "diffs.perFile",
-    "issues.attachments", "issues.watching", "issues.context", "conversations.settings",
+    "tasks.attachments", "tasks.watching", "tasks.context", "conversations.settings",
     "messages.context", "threads.postOperations",
   ];
   const flags = (greeting) => {
@@ -247,9 +247,9 @@ describe("named capabilities", () => {
   const namedGreeting = (capabilities) => ({
     api_version: "1.22.0", capabilities,
     // Old fields cannot override the list, in either direction.
-    changes: { subscriptions: true, kinds: ["issues"] },
+    changes: { subscriptions: true, kinds: ["tasks"] },
     requests: { priority: true }, errors: { codes: true },
-    issues: { attachments: true, watching: true },
+    tasks: { attachments: true, watching: true },
   });
 
   it("rejects non-string API versions before accepting legacy flags or names", () => {
@@ -285,18 +285,18 @@ describe("named capabilities", () => {
     expect(flags({
       ...namedGreeting(features),
       changes: { subscriptions: false }, requests: { priority: false },
-      errors: { codes: false }, issues: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false },
+      errors: { codes: false }, tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false },
     })).toEqual(features);
   });
 
   it("ignores unknown names and malformed list members", () => {
-    expect(flags(namedGreeting(["future.feature", null, 10, {}, "issues.attachments"])))
-      .toEqual(["issues.attachments"]);
+    expect(flags(namedGreeting(["future.feature", null, 10, {}, "tasks.attachments"])))
+      .toEqual(["tasks.attachments"]);
   });
 
   it("never falls back for absent, empty or malformed lists on new bridges", () => {
     for (const version of ["1.22.0", "1.23.0", "1.99.0"]) {
-      for (const capabilities of [undefined, [], null, {}, "issues.attachments"]) {
+      for (const capabilities of [undefined, [], null, {}, "tasks.attachments"]) {
         const greeting = { ...namedGreeting(capabilities), api_version: version };
         if (capabilities === undefined) delete greeting.capabilities;
         expect(flags(greeting)).toEqual([]);
@@ -305,14 +305,14 @@ describe("named capabilities", () => {
   });
 
   it("prefers a list on an older bridge too", () => {
-    expect(flags({ ...namedGreeting(["issues.watching"]), api_version: "1.19.0" }))
-      .toEqual(["issues.watching"]);
+    expect(flags({ ...namedGreeting(["tasks.watching"]), api_version: "1.19.0" }))
+      .toEqual(["tasks.watching"]);
   });
 
   it("keeps kind metadata and push events separate from feature flags", () => {
     const greeting = { ...namedGreeting(["changes.subscriptions"]), events: ["changes", "future.event"] };
     const adapter = selectAdapter(greeting).create(async () => ({}));
-    expect(adapter.capabilities.changes.kinds).toEqual(["issues"]);
+    expect(adapter.capabilities.changes.kinds).toEqual(["tasks"]);
     expect(adapter.events).toEqual(greeting.events);
     expect(v1.capabilitiesOf(namedGreeting([])).changes.kinds).toEqual([]);
   });
@@ -362,15 +362,15 @@ describe("the v1 adapter", () => {
   });
 
   it("turns a v1.0 bridge's string error into code unknown, message intact", async () => {
-    const adapter = v1.create(vi.fn(async () => { throw new Error("issue has no active implementation"); }), {
+    const adapter = v1.create(vi.fn(async () => { throw new Error("task has no active implementation"); }), {
       api_version: "1.0.0",
     });
-    const error = await adapter.call("issue.diff", {}).catch((e) => e);
+    const error = await adapter.call("task.diff", {}).catch((e) => e);
     expect(error).toBeInstanceOf(ApiError);
     expect(error.code).toBe("unknown");
     expect(error.retryable).toBe(false);
     expect(error.details).toEqual({});
-    expect(error.message).toBe("issue has no active implementation");
+    expect(error.message).toBe("task has no active implementation");
   });
 
   it("throws an ApiError when a raw refusal reply is resolved instead of thrown", async () => {
@@ -437,11 +437,11 @@ describe("github.repos", () => {
   });
 });
 
-describe("issues.listPaged", () => {
+describe("tasks.listPaged", () => {
   it("is on only when the greeting names it, never inferred from a minor (#85)", () => {
-    expect(v1.capabilitiesOf({ api_version: "1.24.0", capabilities: ["issues.listPaged"] }).issues.listPaged).toBe(true);
-    expect(v1.capabilitiesOf({ api_version: "1.24.0", capabilities: ["issues.list"] }).issues.listPaged).toBe(false);
-    expect(v1.capabilitiesOf({ api_version: "1.21.0" }).issues.listPaged).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "1.24.0", capabilities: ["tasks.listPaged"] }).tasks.listPaged).toBe(true);
+    expect(v1.capabilitiesOf({ api_version: "1.24.0", capabilities: ["tasks.list"] }).tasks.listPaged).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "1.21.0" }).tasks.listPaged).toBe(false);
   });
 });
 

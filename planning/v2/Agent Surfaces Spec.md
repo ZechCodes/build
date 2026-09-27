@@ -155,7 +155,7 @@ fixtures.
   channel and notes the owning entity as changed. Progress lines that mint no
   row still invalidate.
 - `agent_digest` carries `surfaces` only on entity detail payloads
-  (`branch.get`, `issue.get`, `run.get`, `plan.get`), never on the board list
+  (`branch.get`, `task.get`, `run.get`, `plan.get`), never on the board list
   digests.
 - The shell tail poller runs only while the shell set is non-empty.
 - Subagent transcript rows: a new optional `parent_sequence` on thread events.

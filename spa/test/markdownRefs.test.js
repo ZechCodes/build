@@ -1,6 +1,6 @@
 // The reference forms an agent can write, read back off prose.
 //
-// #56. An agent should be able to point at an issue, a workspace, another agent
+// #56. An agent should be able to point at a task, a workspace, another agent
 // or a file without knowing a route. The shapes have to survive ordinary
 // writing: a heading, a hex colour, an email address, an npm scope, a version
 // specifier and a bare SHA all appear in this project's own notes, and none of
@@ -14,18 +14,18 @@ import { referencesIn } from "../src/core/markdownRefs.js";
 const found = (text) => referencesIn(text).map(({ raw, ...rest }) => rest);
 
 describe("what a reference is", () => {
-  it("reads an issue by its number", () => {
-    expect(found("see #42 for the rest")).toEqual([{ kind: "issue", number: 42, start: 4, end: 7 }]);
+  it("reads a task by its number", () => {
+    expect(found("see #42 for the rest")).toEqual([{ kind: "task", number: 42, start: 4, end: 7 }]);
   });
 
-  it("reads a comment on an issue without taking a plain issue's suffix", () => {
-    expect(found("see #42/c/ic-7 and #43").map((r) => [r.kind, r.number, r.commentId || null]))
-      .toEqual([["issue", 42, "ic-7"], ["issue", 43, null]]);
+  it("reads a comment on a task without taking a plain task's suffix", () => {
+    expect(found("see #42/c/tc-7 and #43").map((r) => [r.kind, r.number, r.commentId || null]))
+      .toEqual([["task", 42, "tc-7"], ["task", 43, null]]);
   });
 
   it("reads a workspace by name or id", () => {
-    expect(found("@workspace:issues-board is cut").map((r) => [r.kind, r.name]))
-      .toEqual([["workspace", "issues-board"]]);
+    expect(found("@workspace:tasks-board is cut").map((r) => [r.kind, r.name]))
+      .toEqual([["workspace", "tasks-board"]]);
     expect(found("@workspace:1aa00c7a-5df4").map((r) => r.name)).toEqual(["1aa00c7a-5df4"]);
   });
 
@@ -35,8 +35,8 @@ describe("what a reference is", () => {
   });
 
   it("reads a file in a workspace", () => {
-    expect(found("[[issues-board:bridge/src/mcp.rs]]").map((r) => [r.kind, r.workspace, r.path]))
-      .toEqual([["file", "issues-board", "bridge/src/mcp.rs"]]);
+    expect(found("[[tasks-board:bridge/src/mcp.rs]]").map((r) => [r.kind, r.workspace, r.path]))
+      .toEqual([["file", "tasks-board", "bridge/src/mcp.rs"]]);
   });
 
   it("reads short and full commit SHAs", () => {
@@ -57,7 +57,7 @@ describe("what a reference is", () => {
   // (#63), and neither could be seen from here: with nothing resolving, every
   // reference rendered as its own words either way.
   it("ends a name before the sentence's full stop, not after it", () => {
-    expect(found("cut on @workspace:issues-spa.").map((r) => r.name)).toEqual(["issues-spa"]);
+    expect(found("cut on @workspace:tasks-spa.").map((r) => r.name)).toEqual(["tasks-spa"]);
     expect(found("ask @agent:agent-01M2ZQ.").map((r) => r.id)).toEqual(["agent-01M2ZQ"]);
     // A dot INSIDE a name is part of it — a workspace may be called one.
     expect(found("@workspace:build.web is cut").map((r) => r.name)).toEqual(["build.web"]);
@@ -66,13 +66,13 @@ describe("what a reference is", () => {
   // The positions are what a caller splices at, so a start that is off by the
   // length of the workspace name cuts the anchor out of the middle of the line.
   it("starts a bracketed reference at its brackets", () => {
-    const [reference] = referencesIn("see [[issues-spa:src/a.js]] for it");
-    expect([reference.start, reference.raw]).toEqual([4, "[[issues-spa:src/a.js]]"]);
+    const [reference] = referencesIn("see [[tasks-spa:src/a.js]] for it");
+    expect([reference.start, reference.raw]).toEqual([4, "[[tasks-spa:src/a.js]]"]);
   });
 
   it("finds several in one line, in the order they were written", () => {
     expect(found("#1 then @workspace:w then [[w:a.js]]").map((r) => r.kind))
-      .toEqual(["issue", "workspace", "file"]);
+      .toEqual(["task", "workspace", "file"]);
   });
 });
 
@@ -93,8 +93,8 @@ describe("what is not a reference", () => {
       "rebased onto b8ce4ee9",    // a bare SHA is prose
       "see commit 4c81c037 for it",
       "an array[0] and [one] bracket",
-      "issue number 42 in words",
-      "file.js#42/c/ic-1",
+      "task number 42 in words",
+      "file.js#42/c/tc-1",
       "[[ws:commit:not-a-sha]]",
       "[[ws:commit:b8c]]", // a commit-looking path that is too short
     ]) {
@@ -102,7 +102,7 @@ describe("what is not a reference", () => {
     }
   });
 
-  it("wants a boundary before a number, so a fragment is not an issue", () => {
+  it("wants a boundary before a number, so a fragment is not a task", () => {
     expect(found("file.js#42")).toEqual([]);
     expect(found("abc#42")).toEqual([]);
   });
@@ -114,7 +114,7 @@ describe("what is not a reference", () => {
   });
 
   it("wants a keyword after the at sign", () => {
-    for (const text of ["@issues-board", "@workspace", "@workspace:", "@agent:"]) {
+    for (const text of ["@tasks-board", "@workspace", "@workspace:", "@agent:"]) {
       expect([text, found(text)]).toEqual([text, []]);
     }
   });

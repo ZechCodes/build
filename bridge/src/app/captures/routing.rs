@@ -1,7 +1,7 @@
 use super::capture_json;
 #[cfg(test)]
 use crate::app::MCP_CONTROL_METHOD;
-use crate::app::{issue_session, AppState, DeferredJob, PendingAgentTurn, TabKey, TurnText};
+use crate::app::{task_session, AppState, DeferredJob, PendingAgentTurn, TabKey, TurnText};
 use crate::mcp::{BridgeAction, DoneReport, DoneStatus};
 use crate::plan::PlanState;
 use crate::store::now_rfc3339;
@@ -198,7 +198,7 @@ impl AppState {
         // choosing a second destination, and it settles the first one.
         if matches!(
             action,
-            BridgeAction::CreateIssue { .. } | BridgeAction::DispatchBranch { .. }
+            BridgeAction::CreateTask { .. } | BridgeAction::DispatchBranch { .. }
         ) {
             self.require_undecided(capture_id)?;
         }
@@ -210,11 +210,11 @@ impl AppState {
                 agent_id,
                 limit,
             } => self.router_read_conversation(&entity_id, agent_id.as_deref(), limit),
-            BridgeAction::CreateIssue {
+            BridgeAction::CreateTask {
                 project_id,
                 goal,
                 rationale,
-            } => self.route_to_issue(
+            } => self.route_to_task(
                 capture_id,
                 &project_id,
                 &goal,
@@ -274,11 +274,11 @@ impl AppState {
             .map(|row| {
                 json!({
                     "kind": row["kind"],
-                    "entity_id": row["run_id"].as_str().or_else(|| row["issue_id"].as_str()).or_else(|| row["worktree_id"].as_str()),
+                    "entity_id": row["run_id"].as_str().or_else(|| row["task_id"].as_str()).or_else(|| row["worktree_id"].as_str()),
                     "project_id": row["project_id"],
                     "project": row["project"],
                     "branch": row["branch"],
-                    "issue_id": row["issue_id"],
+                    "task_id": row["task_id"],
                     "title": row["title"],
                     "state": row["state"],
                     "working": row["working"],
@@ -312,9 +312,9 @@ impl AppState {
     }
 
     /// Compatibility boundary for callers that still request the retired
-    /// Issue destination. Captures remain unrouted and no planning record or
+    /// Task destination. Captures remain unrouted and no planning record or
     /// session is created.
-    pub(in crate::app) fn route_to_issue(
+    pub(in crate::app) fn route_to_task(
         &mut self,
         capture_id: &str,
         project_id: &str,
@@ -323,7 +323,7 @@ impl AppState {
         answer: fn(&crate::capture::Capture, Value) -> Value,
     ) -> Result<Value, String> {
         let _ = (capture_id, project_id, goal, rationale, answer);
-        Err(crate::app::issues::ISSUES_RETIRED_ERROR.to_string())
+        Err(crate::app::tasks::TASKS_RETIRED_ERROR.to_string())
     }
 
     /// The confident destination: an agent on a branch, working. One call, and
@@ -407,13 +407,13 @@ impl AppState {
     }
 
     /// Record where a capture went, and settle what it was routed to before.
-    /// `entity_id` is the work it became — the issue filed, or the run the
+    /// `entity_id` is the work it became — the task filed, or the run the
     /// branch is dispatched into — which the caller knows and the map need not
     /// hold yet: a dispatch records its route ahead of the write that opens
     /// the run, so the anchor it inherits is held in memory until that write
     /// lands and persists it.
     ///
-    /// An issue no human has touched is archived and its planning agent stopped
+    /// A task no human has touched is archived and its planning agent stopped
     /// — it was never anything but a guess, and leaving it would put a second
     /// row on the feed for one piece of work and a session on the primary
     /// checkout planning something nobody will read. Anything else is kept and
@@ -478,21 +478,21 @@ impl AppState {
 
     /// Take back what a misroute created, when there is anything to take back.
     ///
-    /// The route made the issue and started its planning agent, so a reroute
+    /// The route made the task and started its planning agent, so a reroute
     /// takes back both — in that order, because an agent left running in the
-    /// primary checkout would keep planning an archived issue and report `done`
+    /// primary checkout would keep planning an archived task and report `done`
     /// for it. What the route did not make, it does not touch.
     fn release_misrouted_artifact(&mut self, routing: &crate::capture::CaptureRouting) {
-        if routing.kind != crate::capture::CaptureTarget::Issue {
+        if routing.kind != crate::capture::CaptureTarget::Task {
             return;
         }
-        if !self.issue_is_the_routes_alone(&routing.target_id) {
+        if !self.task_is_the_routes_alone(&routing.target_id) {
             return;
         }
         let Ok(mut active) = self.take_plan(&routing.target_id) else {
             return;
         };
-        self.retire_issue_session(issue_session(&active));
+        self.retire_task_session(task_session(&active));
         active.plan.archived_at = Some(now_rfc3339());
         let persisted = self.finish_plan_mutation(routing.target_id.clone(), active);
         if let Err(error) = persisted {
@@ -500,27 +500,27 @@ impl AppState {
         }
     }
 
-    /// Whether an issue is still nothing but what the route made of it: the
+    /// Whether a task is still nothing but what the route made of it: the
     /// goal the capture became, whatever its own planning agent has since
     /// written, and no human anywhere in it.
     ///
-    /// Not "inert" any more — routing starts the planning agent, so an issue
+    /// Not "inert" any more — routing starts the planning agent, so a task
     /// the router filed a minute ago already has a session, a state past
     /// `Created`, and stage docs its agent drafted. None of that is a claim on
-    /// the issue. A human's word is: a message they posted, a comment they left
+    /// the task. A human's word is: a message they posted, a comment they left
     /// on a stage, a plan they approved, a branch that implements it, a second
-    /// agent they added. Any one of those and the issue is theirs, kept, and
+    /// agent they added. Any one of those and the task is theirs, kept, and
     /// reachable from the capture rather than archived out from under them.
-    fn issue_is_the_routes_alone(&self, issue_id: &str) -> bool {
-        let Some(active) = self.plans.get(issue_id) else {
+    fn task_is_the_routes_alone(&self, task_id: &str) -> bool {
+        let Some(active) = self.plans.get(task_id) else {
             return false;
         };
         let implemented = self
             .runs
             .values()
-            .any(|run| run.run.plan_id.as_ref().map(|id| id.0.as_str()) == Some(issue_id));
+            .any(|run| run.run.plan_id.as_ref().map(|id| id.0.as_str()) == Some(task_id));
         // The goal itself is the one message `create_plan` seeds, and it is the
-        // capture. A second is somebody having spoken to this issue.
+        // capture. A second is somebody having spoken to this task.
         let said_by_a_human = active
             .agents
             .sole_thread()

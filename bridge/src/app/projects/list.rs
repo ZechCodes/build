@@ -57,7 +57,7 @@ impl AppState {
         let projects = self.project_list_rows();
         self.deferred_work = Some(DeferredWork::Read(Box::new(DeferredRead {
             subject: ReadSubject::ProjectList { projects },
-            issue_id: None,
+            task_id: None,
             if_diff_key: None,
             with_patch: true,
             paths: None,

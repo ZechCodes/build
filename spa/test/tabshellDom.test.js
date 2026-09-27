@@ -139,7 +139,7 @@ describe("the + tab menu", () => {
 const INBOX_ICON = '<svg class="lucide lucide-inbox"><circle cx="1" cy="1" r="1" /></svg>';
 const RIGHT_TABS = [{ id: "inbox", icon: INBOX_ICON, label: "Inbox" }];
 const MENU_ITEMS = [
-  { id: "archive", label: "Archive", description: "Retired issues and worktrees" },
+  { id: "archive", label: "Archive", description: "Retired tasks and worktrees" },
   { id: "settings", label: "Project settings", description: "Name, path, base branch" },
 ];
 

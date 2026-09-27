@@ -9,7 +9,7 @@ pub(in crate::app) mod dispatch;
 
 impl AppState {
     /// Mint a bare worktree — no run, no agent, no session. It is the
-    /// "somewhere to work" affordance beside issue creation: the human opens a
+    /// "somewhere to work" affordance beside task creation: the human opens a
     /// terminal or an agent tab in it, and it stays unbound (the scan reports
     /// it like any hand-made worktree) until a mutating action adopts it.
     ///

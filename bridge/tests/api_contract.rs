@@ -188,7 +188,7 @@ fn every_fixture_parses_and_its_result_round_trips_through_the_typed_result() {
 }
 
 /// A fixture's own params and result, then each of its further `examples`
-/// (a paged `issues.list`, #85), named by where it sits in the file.
+/// (a paged `tasks.list`, #85), named by where it sits in the file.
 fn examples_of(fixture: &Value) -> Vec<(String, &Value)> {
     let further = fixture["examples"].as_array().into_iter().flatten();
     std::iter::once((String::new(), fixture))
@@ -454,35 +454,35 @@ fn check_changes_item(item: &Value) {
     if let Some(files) = object.get("files") {
         check_files(entity_id, files);
     }
-    if let Some(issues) = object.get("issues") {
-        check_issues(entity_id, issues);
+    if let Some(tasks) = object.get("tasks") {
+        check_tasks(entity_id, tasks);
     }
 }
 
-/// The `issues` item: the ids that moved, under the cap, and the flag that
+/// The `tasks` item: the ids that moved, under the cap, and the flag that
 /// says the list stopped naming them.
 ///
 /// Its `entity_id` is a PROJECT — the one item whose entity is not a work item,
 /// because a tracker belongs to a project and not to anything inside it.
-fn check_issues(entity_id: &str, issues: &Value) {
+fn check_tasks(entity_id: &str, tasks: &Value) {
     assert!(
         entity_id.starts_with("proj-"),
-        "{entity_id}: an issues item is about a project"
+        "{entity_id}: a tasks item is about a project"
     );
-    let ids = issues["issue_ids"]
+    let ids = tasks["task_ids"]
         .as_array()
-        .expect("issues.issue_ids is a list");
+        .expect("tasks.task_ids is a list");
     assert!(
         ids.iter().all(Value::is_string),
-        "{entity_id}: issues.issue_ids are strings"
+        "{entity_id}: tasks.task_ids are strings"
     );
     assert!(
-        ids.len() <= changes::ISSUES_PER_FLUSH,
-        "{entity_id}: issues.issue_ids is capped"
+        ids.len() <= changes::TASKS_PER_FLUSH,
+        "{entity_id}: tasks.task_ids is capped"
     );
     assert!(
-        issues["truncated"].is_boolean(),
-        "{entity_id}: issues.truncated is a bool"
+        tasks["truncated"].is_boolean(),
+        "{entity_id}: tasks.truncated is a bool"
     );
 }
 

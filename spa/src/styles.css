@@ -1,5 +1,5 @@
 /* One CSS entry: this file pulls in the shell (three-panel layout, inbox rail,
-   toolbar, agent rail, console) and the work surfaces (Changes, issue view).
+   toolbar, agent rail, console) and the work surfaces (Changes, task view).
    Modules that own those regions also import their sheet directly, which keeps
    the cascade order (shell/surfaces after the base) whichever path loads first. */
 @import "./styles/shell.css";
@@ -493,7 +493,7 @@ main#root.surface { max-width:none;
    RIGHT is the seam with the conversation, and the split itself pays nothing
    there: the rail's fill, a banner's fill and a diff card still run to the seam
    with the conversation, and the divide there is the band of page, not a line. The READING columns inside (.cdetail-host, the
-   issue viewer) pay the gutter on that side themselves — a diff pressed
+   task viewer) pay the gutter on that side themselves — a diff pressed
    against the chat's border had no room to breathe — and the control rows
    (the git bar, the commit box) state the same inset they always did.
    TOP is the seam with the nav bar, and it goes for the same reason: the rail's
@@ -506,7 +506,7 @@ main#root.surface { max-width:none;
   min-height:0; display:flex; align-items:stretch; position:relative;
   padding:0 0 0 var(--pane-gutter); }
 /* The list column is a rail, not a card: the commit list, the file tree and the
-   issue's stages meet the frame the way the inbox rail on the other side of the
+   task's stages meet the frame the way the inbox rail on the other side of the
    divider does, so their fills, their hover and their divider run edge to edge
    instead of floating in a gutter. The column bleeds back through the split's
    left gutter to get there, and its rows pay that gutter as their own inset —
@@ -647,7 +647,7 @@ main#root.surface { max-width:none;
 .tabs .t.ticon svg, .tabs .t.tmenu svg { width:16px; height:16px; display:block; }
 .tabs .t.tmenu:hover, .tabs .t.tmenu.active { color:var(--accent); }
 /* ---- markdown tables ----
-   Wherever renderMarkdown renders — a chat message, a plan or issue doc, a
+   Wherever renderMarkdown renders — a chat message, a plan or task doc, a
    markdown file preview — a pipe table lands as .mdtable, so one rule set
    dresses all three and the type scale is inherited from whichever of them is
    hosting it.
@@ -1295,7 +1295,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
   .crow .cauthor { display:none; }
 }
 .emptystate .btn { margin-top:6px; }
-.issue-section h2 .n { color:var(--dim); font-weight:600; }
+.task-section h2 .n { color:var(--dim); font-weight:600; }
 /* No box: it is another field group in the sheet, titled like Project. The
    border was drawing a container around three selects that were already grouped
    by their own label. */
@@ -1321,7 +1321,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .srow.snav.active { background:var(--accent-soft); color:var(--accent); }
 .srow.snav .badge { margin-left:auto; }
 /* The way out of a narrowed view to the project's whole one (#117): a chat
-   overview's workspace scope, a workspace's Issues tab. Words first, then the
+   overview's workspace scope, a workspace's Tasks tab. Words first, then the
    arrow, in the header just ahead of its own controls. */
 .scope-link { flex:none; display:inline-flex; align-items:center; gap:4px; padding:3px 6px;
   border:0; border-radius:6px; background:none; color:var(--ink2); font:inherit; font-size:12px;
@@ -1575,7 +1575,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .workspace-init-choice[aria-pressed="true"] { border-color:var(--accent); background:var(--accent-soft); color:var(--accent); }
 .workspace-init-error { min-height:17px; margin-top:8px; color:var(--red); font-size:12px; }
 /* The create modal: two tabs, one field, and the harness question on the
-   Issue tab. The field takes the dialog's width; the preview of the branch
+   Task tab. The field takes the dialog's width; the preview of the branch
    the daemon will cut sits at the row's left, the verbs at its right. */
 .modal-create .create-tabs { margin:12px 0 10px; }
 .modal-create .create-hint { margin-bottom:8px; }
@@ -1627,7 +1627,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .confirm-popover .sub { color:var(--ink2); font-size:13px; }
 .confirm-popover .row { display:flex; justify-content:flex-end; gap:10px; margin-top:14px; }
 
-/* Durable plan/diff conversation — a GitHub-style issue activity timeline. */
+/* Durable plan/diff conversation — a GitHub-style task activity timeline. */
 .review-thread { position:relative; background:transparent; }
 .thread-title { display:flex; align-items:center; justify-content:space-between; padding:10px 0 16px; font-size:15px; font-weight:650; }
 /* Where the entity stands, on the record that explains how it got there.
@@ -1672,7 +1672,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .thread-anchor { padding:7px 12px 0; font-family:var(--mono); overflow-wrap:anywhere; }
 .thread-body { padding:12px; min-width:0; color:var(--ink2); font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
 /* ---- a fenced code block, wherever markdown is rendered (#50) -------------
-   The maintainer, from the issue page: "Code blocks across the board need to
+   The maintainer, from the task page: "Code blocks across the board need to
    scroll horizontally rather than over flow. I've seen it in chat too, would
    guess it happens anywhere code blocks are."
 
@@ -1979,9 +1979,9 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 
 /* Conversation treatment shared by the full-page thread and the agent rail.
    Messages keep their metadata and rich children, but the transcript reads as
-   prose with a quiet reply bubble instead of a stack of issue cards. */
-/* The rail and the full page share this gap, and the issue lines pull back
-   against it by name (styles/issues.css) rather than guessing at it. */
+   prose with a quiet reply bubble instead of a stack of task cards. */
+/* The rail and the full page share this gap, and the task lines pull back
+   against it by name (styles/tasks.css) rather than guessing at it. */
 .thread-timeline { --thread-gap:20px; gap:var(--thread-gap); padding:20px 12px; }
 .thread-timeline::before { display:none; }
 .thread-message { margin-left:0; }
@@ -2142,14 +2142,14 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .thread-activity-preview { flex:1 1 auto; }
 .thread-activity-head time { margin-left:auto; }
 
-/* THE QUIET ROWS (#52). A notice, an issue action, a tool call, a folded run of
+/* THE QUIET ROWS (#52). A notice, a task action, a tool call, a folded run of
    tool calls: one list, at one rhythm, in one box — and the box and the rhythm
    are each written once, here, against the class every one of them carries.
 
    They were written twice before, once per kind. Measured in a browser at
    390px, the lines were 19px tall and 4px apart and the tool-call row beside
-   them was 28px tall and 22px away, because `.thread-issue-line +
-   .thread-issue-line` named only one of the kinds and each kind's box carried
+   them was 28px tall and 22px away, because `.thread-task-line +
+   .thread-task-line` named only one of the kinds and each kind's box carried
    its own numbers. The maintainer: "Activity entries should be styled like
    the notification entries … just same padding so they all group nicely
    together."
@@ -2171,7 +2171,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
    never here: a copy of the number is a copy that goes stale, and it did — the
    rail's gap is 22px and the copy said 18, so the lines sat 8px apart and no
    test could tell, because the value only exists once there is layout.
-   test/issueLineRhythm.test.js holds every gap rule to declaring both. */
+   test/taskLineRhythm.test.js holds every gap rule to declaring both. */
 .thread-timeline > .thread-quiet-row + .thread-quiet-row { margin-top:calc(4px - var(--thread-gap)); }
 .thread-revision-view, .thread-composer { margin-left:0; }
 .composer { border:0; border-radius:0; background:transparent; }

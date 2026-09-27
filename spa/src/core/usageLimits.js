@@ -1,4 +1,4 @@
-// A harness out of usage on a device (issue #58).
+// A harness out of usage on a device (task #58).
 //
 // The bridge reports harness usage limits on each device. It keeps one record per
 // harness and carries the list on its board (`board.list`, and the board item of

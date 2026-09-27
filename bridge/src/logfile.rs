@@ -1,5 +1,5 @@
 //! One rotating file for the daemon's stderr, where there was one that only
-//! grew: `bridge.err.log` reached 16 MB in a day (issue #131).
+//! grew: `bridge.err.log` reached 16 MB in a day (task #131).
 //!
 //! The service manager opens the file — `StandardError=append:` in the
 //! systemd unit, `StandardErrorPath` in the launchd agent — and hands the

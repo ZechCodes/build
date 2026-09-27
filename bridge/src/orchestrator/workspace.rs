@@ -293,7 +293,7 @@ pub(super) fn append_stage_catalog(
     stages: &[StageDoc],
     status_for: impl Fn(&str) -> String,
 ) -> String {
-    prompt.push_str("\n\nOrdered Issue stage-plan catalog (authoritative order):\n");
+    prompt.push_str("\n\nOrdered Task stage-plan catalog (authoritative order):\n");
     if stages.is_empty() {
         prompt.push_str("- No stage plans exist yet.\n");
     } else {
@@ -714,8 +714,8 @@ pub struct Orchestrator {
     pub(super) repo_path: PathBuf,
     /// Run (and legacy task) worktrees: `build/<slug>` branches.
     pub(super) worktrees: WorktreeManager,
-    /// Where each issue's scratch plan docs are written, one directory per
-    /// issue. Outside the repo: planning writes no files into the checkout it
+    /// Where each task's scratch plan docs are written, one directory per
+    /// task. Outside the repo: planning writes no files into the checkout it
     /// runs in.
     pub(super) plan_docs_root: PathBuf,
     pub(super) launch: AgentLaunch,
@@ -723,7 +723,7 @@ pub struct Orchestrator {
 }
 
 use super::{
-    ActivePlan, ActiveRun, AgentTurn, ImplementableIssue, OrchestratorError, PreparedImplementation,
+    ActivePlan, ActiveRun, AgentTurn, ImplementableTask, OrchestratorError, PreparedImplementation,
 };
 
 impl Orchestrator {
@@ -797,7 +797,7 @@ impl Orchestrator {
     ) -> Result<Vec<ExternalWorktree>, OrchestratorError> {
         Ok(self.worktrees.discover(base_branch, excluded)?)
     }
-    /// Cut the checkout an Issue's implementation works in and make it ready
+    /// Cut the checkout a Task's implementation works in and make it ready
     /// to be worked in: `build/<slug>` off the base branch, `.build/`
     /// scaffolded (the MCP config carries the run id), the plan's canonical
     /// docs materialized out of the store and committed ("plan: <goal>" — the
@@ -811,7 +811,7 @@ impl Orchestrator {
     /// so a preparation nobody can be handed leaves nothing behind.
     pub fn prepare_run_checkout(
         &self,
-        issue: &ImplementableIssue,
+        task: &ImplementableTask,
         base_branch: &str,
         run_id: &str,
         isolation: Isolation,
@@ -819,15 +819,10 @@ impl Orchestrator {
     ) -> Result<PreparedImplementation, OrchestratorError> {
         let worktree = self
             .worktrees
-            .create(issue.slug(), base_branch, isolation)?
+            .create(task.slug(), base_branch, isolation)?
             .worktree;
         let prepared = self.scaffold_build_dir(&worktree, run_id).and_then(|()| {
-            self.materialize_and_commit_plan_docs(
-                &issue.plan_id,
-                &worktree.path,
-                &issue.goal,
-                store,
-            )
+            self.materialize_and_commit_plan_docs(&task.plan_id, &worktree.path, &task.goal, store)
         });
         match prepared {
             Ok(base_sha) => Ok(PreparedImplementation { worktree, base_sha }),
@@ -845,31 +840,28 @@ impl Orchestrator {
     /// Two commits and a store read: off the app mutex, always.
     pub fn prepare_adopted_checkout(
         &self,
-        issue: &ImplementableIssue,
+        task: &ImplementableTask,
         checkout: &Path,
         store: &Store,
     ) -> Result<String, OrchestratorError> {
-        self.commit_all_with_message(
-            checkout,
-            "Checkpoint: before Build implements an Issue here",
-        )?;
-        self.materialize_and_commit_plan_docs(&issue.plan_id, checkout, &issue.goal, store)
+        self.commit_all_with_message(checkout, "Checkpoint: before Build implements a Task here")?;
+        self.materialize_and_commit_plan_docs(&task.plan_id, checkout, &task.goal, store)
     }
-    /// Bind an Issue's implementation to a checkout that already exists,
+    /// Bind a Task's implementation to a checkout that already exists,
     /// instead of cutting `build/<slug>` for it. The branch's run adopts the
     /// implementation: whatever the branch was carrying was checkpointed under
     /// its own message, the stage docs were committed on top, and THAT commit is
     /// the review baseline — so the diff the human reviews is exactly what the
     /// implementation adds to the branch.
     ///
-    /// The work is handed to a FRESH agent (Decisions §Entity model: issue
+    /// The work is handed to a FRESH agent (Decisions §Entity model: task
     /// implementation stays a handoff), which is why the caller gets the new
     /// agent's id back: the turn is addressed to it, not to whatever agent was
     /// already talking on this branch.
     ///
     /// Pure bookkeeping: `base_sha` is what
     /// [`prepare_adopted_checkout`](Self::prepare_adopted_checkout) committed,
-    /// and the refusals were made when the [`ImplementableIssue`] was judged.
+    /// and the refusals were made when the [`ImplementableTask`] was judged.
     pub fn open_adopted_implementation(
         &self,
         active: &mut ActiveRun,

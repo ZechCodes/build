@@ -1,10 +1,10 @@
-//! The wire under the inbox's watched issues (#125).
+//! The wire under the inbox's watched tasks (#125).
 //!
-//! An agent's real MCP `tools/call` changes a watched issue; the SPA's inbox
-//! subscription (`s-inbox`: every entity, `state`/`thread`/`issues`) is
+//! An agent's real MCP `tools/call` changes a watched task; the SPA's inbox
+//! subscription (`s-inbox`: every entity, `state`/`thread`/`tasks`) is
 //! flushed; and the encrypted pushes it was sent are decrypted, beside what
-//! `issues.list` and `issues.get` answer after each step. The SPA wiring test
-//! (spa/test/watchedIssueInboxWire.test.js) runs this and replays exactly that
+//! `tasks.list` and `tasks.get` answer after each step. The SPA wiring test
+//! (spa/test/watchedTaskInboxWire.test.js) runs this and replays exactly that
 //! through its real subscriptions, cache and rail.
 
 use super::*;
@@ -64,42 +64,42 @@ impl Reader {
     }
 
     /// What the SPA reads after a push: the project's whole list, and the
-    /// issue's own record.
-    fn step(&mut self, label: &str, issue_id: &str) -> Value {
+    /// task's own record.
+    fn step(&mut self, label: &str, task_id: &str) -> Value {
         let events = self.pushes();
         json!({
             "label": label,
             "events": events,
-            "list": self.call("issues.list", json!({ "project_id": self.project })),
-            "get": self.call("issues.get", json!({ "issue_id": issue_id })),
+            "list": self.call("tasks.list", json!({ "project_id": self.project })),
+            "get": self.call("tasks.get", json!({ "task_id": task_id })),
         })
     }
 }
 
-fn issue_status(step: &Value, issue_id: &str) -> Value {
-    step["list"]["issues"]
+fn task_status(step: &Value, task_id: &str) -> Value {
+    step["list"]["tasks"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|issue| issue["id"] == issue_id)
-        .map(|issue| issue["status"].clone())
+        .find(|task| task["id"] == task_id)
+        .map(|task| task["status"].clone())
         .unwrap_or(Value::Null)
 }
 
-fn pushed_issue_ids(step: &Value) -> Vec<String> {
+fn pushed_task_ids(step: &Value) -> Vec<String> {
     step["events"]
         .as_array()
         .unwrap()
         .iter()
         .filter(|event| event["type"] == "changes")
         .flat_map(|event| event["items"].as_array().unwrap())
-        .flat_map(|item| item["issues"]["issue_ids"].as_array().into_iter().flatten())
+        .flat_map(|item| item["tasks"]["task_ids"].as_array().into_iter().flatten())
         .map(|id| id.as_str().unwrap().to_string())
         .collect()
 }
 
 #[test]
-fn watched_issue_inbox_wire_probe() {
+fn watched_task_inbox_wire_probe() {
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path()).with_change_window(Duration::ZERO);
     let board = app.handle(req("board.list", json!({})));
@@ -144,27 +144,27 @@ fn watched_issue_inbox_wire_probe() {
         "changes.subscribe",
         json!({
             "subscription_id": INBOX_SUBSCRIPTION, "scope": { "kind": "all" },
-            "kinds": ["state", "thread", "issues"], "mode": "realtime", "priority": "foreground",
+            "kinds": ["state", "thread", "tasks"], "mode": "realtime", "priority": "foreground",
         }),
     );
     let start = reader.step("filed", &review);
-    // The comment case starts from the same filed state, with its own issue.
+    // The comment case starts from the same filed state, with its own task.
     let asked_start = json!({
         "label": "filed", "events": [], "list": start["list"],
-        "get": reader.call("issues.get", json!({ "issue_id": asked })),
+        "get": reader.call("tasks.get", json!({ "task_id": asked })),
     });
     for id in [&review, &asked] {
-        let listed = start["list"]["issues"].as_array().unwrap();
-        let issue = listed.iter().find(|issue| &issue["id"] == id).unwrap();
-        assert_eq!(issue["watched"], true, "{issue:?}");
+        let listed = start["list"]["tasks"].as_array().unwrap();
+        let task = listed.iter().find(|task| &task["id"] == id).unwrap();
+        assert_eq!(task["watched"], true, "{task:?}");
     }
 
     mcp_call(
         &state,
         &entity,
         &agent,
-        "move_issue",
-        json!({ "issue_id": review, "status": "in_review" }),
+        "move_task",
+        json!({ "task_id": review, "status": "in_review" }),
     );
     let in_review = reader.step("in_review", &review);
     // In review is not the user's until the reviewer is the user (#144).
@@ -172,35 +172,35 @@ fn watched_issue_inbox_wire_probe() {
         &state,
         &entity,
         &agent,
-        "assign_issue",
-        json!({ "issue_id": review, "assignee": { "kind": "user" } }),
+        "assign_task",
+        json!({ "task_id": review, "assignee": { "kind": "user" } }),
     );
     let assigned = reader.step("assigned", &review);
     mcp_call(
         &state,
         &entity,
         &agent,
-        "move_issue",
-        json!({ "issue_id": review, "status": "done" }),
+        "move_task",
+        json!({ "task_id": review, "status": "done" }),
     );
     let done = reader.step("done", &review);
 
-    // Agents' own traffic on a watched issue, then a question put to the user
+    // Agents' own traffic on a watched task, then a question put to the user
     // (#144): only the second asks for them.
     mcp_call(
         &state,
         &entity,
         &agent,
-        "comment_issue",
-        json!({ "issue_id": asked, "body": "Rebased on main." }),
+        "comment_task",
+        json!({ "task_id": asked, "body": "Rebased on main." }),
     );
     let chatter = reader.step("chatter", &asked);
     mcp_call(
         &state,
         &entity,
         &agent,
-        "comment_issue",
-        json!({ "issue_id": asked, "body": "Which name should the row use?", "notify_user": true }),
+        "comment_task",
+        json!({ "task_id": asked, "body": "Which name should the row use?", "notify_user": true }),
     );
     let commented = reader.step("commented", &asked);
     let comment_id = commented["get"]["timeline"]
@@ -212,8 +212,8 @@ fn watched_issue_inbox_wire_probe() {
         .map(|entry| entry["id"].as_str().unwrap().to_string())
         .expect("the agent's comment is on the timeline");
     reader.call(
-        "issues.read_through",
-        json!({ "issue_id": asked, "event_id": comment_id }),
+        "tasks.read_through",
+        json!({ "task_id": asked, "event_id": comment_id }),
     );
     let read = reader.step("read", &asked);
 
@@ -222,41 +222,41 @@ fn watched_issue_inbox_wire_probe() {
         &state,
         &entity,
         &agent,
-        "create_issue",
+        "create_task",
         json!({ "title": "Choose the route", "body": "Which route should we take?", "mention_user": true, "notify_user": false }),
     );
-    let created_issue = reader.call("issues.list", json!({ "project_id": project }))["issues"]
+    let created_task = reader.call("tasks.list", json!({ "project_id": project }))["tasks"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|issue| issue["title"] == "Choose the route")
+        .find(|task| task["title"] == "Choose the route")
         .unwrap()["id"]
         .as_str()
         .unwrap()
         .to_string();
-    let created_ask = reader.step("created_ask", &created_issue);
+    let created_ask = reader.step("created_ask", &created_task);
     let created_event = &created_ask["get"]["timeline"][0];
-    assert_eq!(created_ask["get"]["issue"]["watched"], true);
+    assert_eq!(created_ask["get"]["task"]["watched"], true);
     assert_eq!(created_event["kind"], "created");
     assert_eq!(created_event["mentions_user"], true);
     let created_event_id = created_event["id"].as_str().unwrap().to_string();
     reader.call(
-        "issues.read_through",
-        json!({ "issue_id": created_issue, "event_id": created_event_id }),
+        "tasks.read_through",
+        json!({ "task_id": created_task, "event_id": created_event_id }),
     );
-    let created_read = reader.step("created_read", &created_issue);
+    let created_read = reader.step("created_read", &created_task);
     for (step, expected) in [(&created_ask, 1), (&created_read, 0)] {
-        assert_eq!(step["get"]["issue"]["unread_count"], json!(expected));
-        let listed = step["list"]["issues"]
+        assert_eq!(step["get"]["task"]["unread_count"], json!(expected));
+        let listed = step["list"]["tasks"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|issue| issue["id"] == created_issue)
+            .find(|task| task["id"] == created_task)
             .unwrap();
         assert_eq!(listed["unread_count"], json!(expected));
     }
 
-    // What the replay depends on: each step's push names its issue on the
+    // What the replay depends on: each step's push names its task on the
     // inbox subscription, and the answers after it say what changed.
     for (step, id) in [
         (&in_review, &review),
@@ -265,16 +265,16 @@ fn watched_issue_inbox_wire_probe() {
         (&chatter, &asked),
         (&commented, &asked),
         (&read, &asked),
-        (&created_ask, &created_issue),
-        (&created_read, &created_issue),
+        (&created_ask, &created_task),
+        (&created_read, &created_task),
     ] {
         assert!(
-            pushed_issue_ids(step).contains(id),
+            pushed_task_ids(step).contains(id),
             "{} names {id}: {step:?}",
             step["label"]
         );
     }
-    assert_eq!(issue_status(&in_review, &review), "in_review");
+    assert_eq!(task_status(&in_review, &review), "in_review");
     assert_eq!(
         commented["get"]["timeline"]
             .as_array()
@@ -285,18 +285,18 @@ fn watched_issue_inbox_wire_probe() {
             .unwrap()["notifies_user"],
         true
     );
-    assert_eq!(issue_status(&done, &review), "done");
-    assert_eq!(read["get"]["issue"]["read_through"], json!(comment_id));
+    assert_eq!(task_status(&done, &review), "done");
+    assert_eq!(read["get"]["task"]["read_through"], json!(comment_id));
 
     println!(
-        "WATCHED_ISSUE_INBOX_WIRE={}",
+        "WATCHED_TASK_INBOX_WIRE={}",
         json!({
             "greeting": greeting,
             "subscription_id": INBOX_SUBSCRIPTION,
             "project_id": project,
-            "review": { "issue_id": review, "steps": [start, in_review, assigned, done] },
-            "comment": { "issue_id": asked, "steps": [asked_start, chatter, commented, read] },
-            "created_ask": { "issue_id": created_issue, "steps": [created_ask, created_read] },
+            "review": { "task_id": review, "steps": [start, in_review, assigned, done] },
+            "comment": { "task_id": asked, "steps": [asked_start, chatter, commented, read] },
+            "created_ask": { "task_id": created_task, "steps": [created_ask, created_read] },
         })
     );
 }

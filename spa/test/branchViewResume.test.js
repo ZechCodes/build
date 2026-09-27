@@ -38,7 +38,7 @@ const row = {
   agents: [],
   state: "review",
   primary: false,
-  issue_id: null,
+  task_id: null,
   stat: { uncommitted: { files_changed: 0 }, ahead: 0, upstream: "origin/build/login" },
 };
 

@@ -1,4 +1,4 @@
-// Which candidates a peer connection may pair on, and when (issue #31).
+// Which candidates a peer connection may pair on, and when (task #31).
 //
 // # The race, and why the browser is where it is lost
 //

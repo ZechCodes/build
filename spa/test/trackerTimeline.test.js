@@ -1,4 +1,4 @@
-// An issue's timeline: comments and events interleaved, in the order the
+// A task's timeline: comments and events interleaved, in the order the
 // bridge answered them.
 
 import { describe, expect, it } from "vitest";
@@ -6,8 +6,8 @@ import { commentRows, eventSentence, timelineRows } from "../src/core/trackerTim
 
 const comment = (over = {}) => ({
   type: "comment",
-  id: "ic-2",
-  issue_id: "issue-1",
+  id: "tc-2",
+  task_id: "task-1",
   author: { kind: "agent", agent_id: "agent-7" },
   body: "starting on this",
   refs: [],
@@ -17,8 +17,8 @@ const comment = (over = {}) => ({
 
 const event = (over = {}) => ({
   type: "event",
-  id: "ie-1",
-  issue_id: "issue-1",
+  id: "te-1",
+  task_id: "task-1",
   at: "2026-08-21T10:00:00Z",
   actor: { kind: "user" },
   kind: "created",
@@ -45,15 +45,15 @@ describe("reading the timeline", () => {
   // re-sorting on the timestamp alone would scramble same-second pairs.
   it("keeps the order it arrived in, never re-sorting", () => {
     const entries = [
-      event({ id: "ie-1", at: "2026-08-21T10:00:00Z" }),
-      comment({ id: "ic-1", created_at: "2026-08-21T10:00:00Z" }),
-      event({ id: "ie-2", at: "2026-08-21T10:00:00Z", kind: "moved" }),
+      event({ id: "te-1", at: "2026-08-21T10:00:00Z" }),
+      comment({ id: "tc-1", created_at: "2026-08-21T10:00:00Z" }),
+      event({ id: "te-2", at: "2026-08-21T10:00:00Z", kind: "moved" }),
     ];
-    expect(timelineRows(entries).map((row) => row.key)).toEqual(["ie-1", "ic-1", "ie-2"]);
+    expect(timelineRows(entries).map((row) => row.key)).toEqual(["te-1", "tc-1", "te-2"]);
   });
 
   it("keys each row by the record's own id, so a keyed repaint holds its place", () => {
-    expect(timelineRows([comment({ id: "ic-9" })])[0].key).toBe("ic-9");
+    expect(timelineRows([comment({ id: "tc-9" })])[0].key).toBe("tc-9");
     expect(timelineRows([comment({ id: undefined })])[0].key).toBe("comment-0");
   });
 
@@ -63,7 +63,7 @@ describe("reading the timeline", () => {
   });
 
   it("counts the comments alone", () => {
-    expect(commentRows(timelineRows([comment(), event(), comment({ id: "ic-3" })]))).toHaveLength(2);
+    expect(commentRows(timelineRows([comment(), event(), comment({ id: "tc-3" })]))).toHaveLength(2);
   });
 });
 
@@ -107,18 +107,18 @@ describe("what an event says", () => {
   });
 
   it("says what a link linked", () => {
-    expect(sentenceOf("linked", { branch: "build/issues-spa" })).toBe("linked branch build/issues-spa");
+    expect(sentenceOf("linked", { branch: "build/tasks-spa" })).toBe("linked branch build/tasks-spa");
     expect(sentenceOf("linked", {})).toBe("linked this");
   });
 
-  // `workspace.finish` closes every open issue linking that workspace.
+  // `workspace.finish` closes every open task linking that workspace.
   it("says when a close came from a workspace being finished", () => {
     expect(sentenceOf("closed", { reason: "workspace_finished", workspace_id: "ws-1" }))
       .toBe("closed this when the workspace was finished");
     expect(sentenceOf("closed", {})).toBe("closed this");
   });
 
-  // #87: Done that deleted the branch says which, on every issue linking it.
+  // #87: Done that deleted the branch says which, on every task linking it.
   it("says which branch Done deleted", () => {
     expect(sentenceOf("branch_deleted", { branch: "build/login", workspace_id: "ws-1" }))
       .toBe("deleted branch build/login when the workspace was finished");

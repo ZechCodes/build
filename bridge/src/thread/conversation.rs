@@ -323,23 +323,23 @@ impl Thread {
         self.unclaim_own_message_line();
     }
 
-    /// Say which issue the message just posted handed over, set the same way
+    /// Say which task the message just posted handed over, set the same way
     /// the sender is and for the same reason: the post paths that carry an
     /// anchor or a viewing context cannot take one more argument each.
     ///
     /// It does NOT unclaim the own-message line the way wearing a sender does.
-    /// An issue is not a sender: the human assigning one IS the human speaking,
+    /// A task is not a sender: the human assigning one IS the human speaking,
     /// and a row they cleared should come back for it. Where an AGENT did the
     /// assigning, the sender it also wears is what moves the line.
-    /// Say what the agent did to an issue, on the message just posted.
+    /// Say what the agent did to a task, on the message just posted.
     ///
     /// Role `agent` and no `from_build` mark: this is the agent's own sentence
     /// about its own work, and a reader should see it among the agent's other
     /// words rather than as something the system interjected.
-    pub fn post_agent_issue_action(
+    pub fn post_agent_task_action(
         &mut self,
         body: impl Into<String>,
-        action: super::IssueAction,
+        action: super::TaskAction,
         now: impl Into<String>,
     ) -> String {
         // `still_working: true`: the agent is saying what it did on the way to
@@ -347,29 +347,29 @@ impl Thread {
         // agent finishing, and a card moved mid-turn is not an agent finishing.
         let id = self.post_agent_offering(body, Vec::new(), now, true);
         if let Some(ThreadItem::Message(message)) = self.items.last_mut() {
-            message.issue_action = Some(Box::new(action));
+            message.task_action = Some(Box::new(action));
         }
         id
     }
 
-    pub fn wear_issue(&mut self, from_issue: super::IssueEnvelope) {
+    pub fn wear_task(&mut self, from_task: super::TaskEnvelope) {
         let Some(ThreadItem::Message(message)) = self.items.last_mut() else {
             return;
         };
-        message.from_issue = Some(Box::new(from_issue));
+        message.from_task = Some(Box::new(from_task));
     }
 
-    /// Mark the message just posted as a notice about a tracked issue, saying
-    /// what changed and who changed it (spec: Issues → Tracking).
+    /// Mark the message just posted as a notice about a tracked task, saying
+    /// what changed and who changed it (spec: Tasks → Tracking).
     ///
-    /// Beside [`Self::wear_issue`], never instead of it: the envelope says
-    /// WHICH issue and this says WHAT HAPPENED to it, and a client needs both
+    /// Beside [`Self::wear_task`], never instead of it: the envelope says
+    /// WHICH task and this says WHAT HAPPENED to it, and a client needs both
     /// to draw one line that links the right thing.
-    pub fn wear_issue_notice(&mut self, notice: super::IssueNotice) {
+    pub fn wear_task_notice(&mut self, notice: super::TaskNotice) {
         let Some(ThreadItem::Message(message)) = self.items.last_mut() else {
             return;
         };
-        message.issue_notice = Some(Box::new(notice));
+        message.task_notice = Some(Box::new(notice));
     }
 
     pub fn post_user_with_context(
@@ -433,20 +433,20 @@ impl Thread {
     /// Returns the id of the comment (which is the id of the message).
     pub fn post_doc_comment(
         &mut self,
-        issue_id: &str,
+        task_id: &str,
         stage_id: &str,
         path: &str,
         anchor: Option<DocAnchor>,
         body: impl Into<String>,
         now: impl Into<String>,
     ) -> String {
-        self.post_doc_comment_with_context(issue_id, stage_id, path, anchor, body, None, now)
+        self.post_doc_comment_with_context(task_id, stage_id, path, anchor, body, None, now)
     }
 
     #[allow(clippy::too_many_arguments)]
     pub fn post_doc_comment_with_context(
         &mut self,
-        issue_id: &str,
+        task_id: &str,
         stage_id: &str,
         path: &str,
         anchor: Option<DocAnchor>,
@@ -465,8 +465,8 @@ impl Thread {
             heading_path: anchor.heading_path,
             snippet: anchor.snippet,
         };
-        let links = vec![ThreadLink::IssueStage {
-            issue_id: issue_id.to_string(),
+        let links = vec![ThreadLink::TaskStage {
+            task_id: task_id.to_string(),
             stage_id: stage_id.to_string(),
             path: path.to_string(),
         }];
@@ -783,9 +783,9 @@ impl Thread {
             from_agent: None,
             sent_to: None,
             from_build: false,
-            from_issue: None,
-            issue_action: None,
-            issue_notice: None,
+            from_task: None,
+            task_action: None,
+            task_notice: None,
             done: false,
             outcome: None,
             completion_report: None,

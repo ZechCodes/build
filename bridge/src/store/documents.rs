@@ -27,12 +27,12 @@ impl Store {
     pub fn attachments_dir(&self) -> PathBuf {
         self.dir.join("attachments")
     }
-    pub(super) fn issue_dir(&self, issue_id: &str) -> PathBuf {
-        self.dir.join("issues").join(issue_id)
+    pub(super) fn task_dir(&self, task_id: &str) -> PathBuf {
+        self.dir.join("tasks").join(task_id)
     }
-    /// Where an Issue's canonical docs live (worktree-relative layout inside).
+    /// Where a Task's canonical docs live (worktree-relative layout inside).
     pub(super) fn plan_docs_dir(&self, plan_id: &str) -> PathBuf {
-        self.issue_dir(plan_id).join("docs")
+        self.task_dir(plan_id).join("docs")
     }
     /// Ingest a worktree's plan docs into the plan's canonical store docs —
     /// the single plan doc (`plan_path`, worktree-relative) and every file in

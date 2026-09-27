@@ -3,7 +3,7 @@
 //! A push follows the unread counter (#191): it fires when something adds to
 //! the badge the inbox wears, and at no other time. Two things add to it — an
 //! attention-class item on a watched agent's conversation, and news on a
-//! watched, unfinished issue — and each has its kind. The bridge POSTs a
+//! watched, unfinished task — and each has its kind. The bridge POSTs a
 //! signed, timestamped notify to the api's `/api/push/notify`, which fans a push
 //! out to the owner's browsers. E2EE invariant: the request names the device,
 //! the **opaque entity id**, and a **generic kind** (`agent`/`task`) — never a
@@ -33,8 +33,8 @@ use crate::transport;
 /// An agent said something that needs the human; the id is the entity (the
 /// workspace's or project's conversation owner) the agent is on.
 pub const AGENT_KIND: &str = "agent";
-/// A watched issue has news; the id is the issue's. User-facing copy calls an
-/// issue a task (#190).
+/// A watched task has news; the id is the task's. User-facing copy calls a
+/// task a task (#190).
 pub const TASK_KIND: &str = "task";
 
 /// Now, in unix seconds — the clock [`NotifyThrottle`] debounces against.
@@ -100,8 +100,8 @@ pub struct NotifyThrottle {
 
 impl NotifyThrottle {
     /// Whether `entity_id` may push at `now` (unix seconds), recording the push
-    /// when it may. Plan, run and issue ids are disjoint (`plan-…` / `run-…` /
-    /// `issue-…`), so every entity shares the one map.
+    /// when it may. Plan, run and task ids are disjoint (`plan-…` / `run-…` /
+    /// `task-…`), so every entity shares the one map.
     ///
     /// A clock that stepped backwards fires and re-anchors the window rather
     /// than staying silent until it catches up.

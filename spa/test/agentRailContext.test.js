@@ -42,16 +42,16 @@ describe("agent rail context adapters", () => {
     }
   });
 
-  // Except an issue, which left the board: nothing pushes one a row and the
-  // sync layer's ordered pass never walks one, so `issue.get` is the only
+  // Except a task, which left the board: nothing pushes one a row and the
+  // sync layer's ordered pass never walks one, so `task.get` is the only
   // thing on either side that says who its agents are.
-  it("reads an issue's own work item, because the board writes it none", async () => {
-    const call = vi.fn(async () => ({ issue_id: "issue-1", agents: [] }));
-    const issue = createAgentRailContext({ kind: "issue", projectId: "p1", issueId: "issue-1" });
+  it("reads a task's own work item, because the board writes it none", async () => {
+    const call = vi.fn(async () => ({ task_id: "task-1", agents: [] }));
+    const task = createAgentRailContext({ kind: "task", projectId: "p1", taskId: "task-1" });
 
-    expect(await issue.workItem(call)).toEqual({ issue_id: "issue-1", agents: [] });
-    expect(call).toHaveBeenCalledWith("issue.get", { issue_id: "issue-1" });
-    expect(issue.detail).toBeUndefined();
+    expect(await task.workItem(call)).toEqual({ task_id: "task-1", agents: [] });
+    expect(call).toHaveBeenCalledWith("task.get", { task_id: "task-1" });
+    expect(task.detail).toBeUndefined();
   });
 
   it("names a branch by the route its row is found under", () => {
@@ -63,10 +63,10 @@ describe("agent rail context adapters", () => {
     expect(context.feedRoute()).toEqual({ name: "branch", deviceId: "dev-2", projectId: "p1", branch: "build/chat" });
   });
 
-  it("names an issue and a workspace the way their routes do", () => {
-    const issue = createAgentRailContext({ kind: "issue", deviceId: "dev-2", projectId: "p1", issueId: "issue-1" });
-    expect(issue.key).toBe("issue:issue-1");
-    expect(issue.feedRoute()).toEqual({ name: "issue", deviceId: "dev-2", projectId: "p1", id: "issue-1" });
+  it("names a task and a workspace the way their routes do", () => {
+    const task = createAgentRailContext({ kind: "task", deviceId: "dev-2", projectId: "p1", taskId: "task-1" });
+    expect(task.key).toBe("task:task-1");
+    expect(task.feedRoute()).toEqual({ name: "task", deviceId: "dev-2", projectId: "p1", id: "task-1" });
 
     const workspace = createAgentRailContext({
       kind: "workspace", deviceId: "dev-2", projectId: "p1", workspaceId: "run-1",
@@ -74,7 +74,7 @@ describe("agent rail context adapters", () => {
     expect(workspace.key).toBe("workspace:run-1");
     // A workspace is named across the account by its machine and its id
     // together: the route this rail looks itself up by carries the machine, the
-    // way the branch and issue routes beside it do.
+    // way the branch and task routes beside it do.
     expect(workspace.feedRoute()).toEqual({
       name: "workspace", deviceId: "dev-2", projectId: "p1", workspaceId: "run-1",
     });
@@ -97,12 +97,12 @@ describe("agent rail context adapters", () => {
     const workspace = createAgentRailContext({ kind: "workspace", projectId: "p1", workspaceId: "workspace-1" });
     const project = createAgentRailContext({ kind: "project", projectId: "p1", entityId: "run-9" });
     const branch = createAgentRailContext({ kind: "branch", projectId: "p1", branch: "build/chat" });
-    const issue = createAgentRailContext({ kind: "issue", projectId: "p1", issueId: "issue-1" });
+    const task = createAgentRailContext({ kind: "task", projectId: "p1", taskId: "task-1" });
 
     expect(await workspace.ensureConversation(call)).toEqual({ entity_id: "run-1" });
     expect(await project.ensureConversation(call)).toEqual({ entity_id: "run-1" });
     expect(branch.ensureConversation(call)).toBeNull();
-    expect(issue.ensureConversation(call)).toBeNull();
+    expect(task.ensureConversation(call)).toBeNull();
     expect(call).toHaveBeenCalledTimes(2);
     expect(call).toHaveBeenNthCalledWith(1, "workspace.ensure_conversation", { workspace_id: "workspace-1" });
     expect(call).toHaveBeenNthCalledWith(2, "project.ensure_conversation", { project_id: "p1" });

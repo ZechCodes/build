@@ -22,7 +22,7 @@ vi.mock("../src/terminal/manager.js", async (importOriginal) => ({
 // render() does on the way in.
 vi.mock("../src/views/inbox.js", () => ({ renderInbox: () => {} }));
 vi.mock("../src/views/branchView.js", () => ({ renderBranch: () => {} }));
-vi.mock("../src/views/issueView.js", () => ({ renderIssue: () => {} }));
+vi.mock("../src/views/taskView.js", () => ({ renderTask: () => {} }));
 vi.mock("../src/core/inboxShell.js", () => ({ inboxRouteChanged: () => {} }));
 vi.mock("../src/core/toolbar.js", () => ({ toolbarRouteChanged: () => {} }));
 
@@ -79,7 +79,7 @@ describe("the device a rendered route names", () => {
 
     App.route = branchOn("dev-b", "files");
     render();
-    App.route = { name: "issue", deviceId: "dev-b", projectId: "p1", id: "i-1" };
+    App.route = { name: "task", deviceId: "dev-b", projectId: "p1", id: "i-1" };
     render();
 
     expect(terminals.followTerminalDevice).not.toHaveBeenCalled();

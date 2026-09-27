@@ -56,20 +56,20 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "diffs.perFile",
     "errors.codes",
     "fs.mediaRawPages", // Since 1.30.0: exact binary ranges for Blob media reads, through 64 MiB.
-    "issues.agentIdentities",
-    "issues.attachmentChunks",
-    "issues.attachments",
-    "issues.commentUserMentions",
-    "issues.commentUserNotifies",
-    "issues.context",
-    "issues.createdUserMentions", // Since 1.27.0: mentions_user on an agent's created event.
-    "issues.doneSinceLeft",
-    "issues.listPaged", // Since 1.25.0: limit/cursor and next_cursor on issues.list.
-    "issues.unreadCounts", // Since 1.29.0: unread_count on a watched issue (issues.list, issues.get).
-    "issues.watching",
+    "tasks.agentIdentities",
+    "tasks.attachmentChunks",
+    "tasks.attachments",
+    "tasks.commentUserMentions",
+    "tasks.commentUserNotifies",
+    "tasks.context",
+    "tasks.createdUserMentions", // Since 1.27.0: mentions_user on an agent's created event.
+    "tasks.doneSinceLeft",
+    "tasks.listPaged", // Since 1.25.0: limit/cursor and next_cursor on tasks.list.
+    "tasks.unreadCounts", // Since 1.29.0: unread_count on a watched task (tasks.list, tasks.get).
+    "tasks.watching",
     "messages.context",
     "messages.fromAgent",
-    "messages.issueNotices",
+    "messages.taskNotices",
     "params.strict",
     "requests.priority",
     "requests.receipts",

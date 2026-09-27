@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS meta (
     value TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS issues (
+CREATE TABLE IF NOT EXISTS tasks (
     id         TEXT PRIMARY KEY,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -22,13 +22,13 @@ CREATE TABLE IF NOT EXISTS issues (
 
 CREATE TABLE IF NOT EXISTS implementations (
     id         TEXT PRIMARY KEY,
-    issue_id   TEXT,
+    task_id   TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     record     TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS implementations_by_issue
-    ON implementations(issue_id, created_at);
+CREATE INDEX IF NOT EXISTS implementations_by_task
+    ON implementations(task_id, created_at);
 
 CREATE TABLE IF NOT EXISTS agents (
     id       TEXT PRIMARY KEY,
@@ -166,11 +166,11 @@ CREATE TABLE IF NOT EXISTS operations (
 );
 CREATE INDEX IF NOT EXISTS operations_by_status ON operations(status, created_at);
 
--- The per-project issue tracker (spec: Issues). NOT the `issues` table above:
+-- The per-project task tracker (spec: Tasks). NOT the `tasks` table above:
 -- that one is the retired plan-and-stages flow, which shares the English word
 -- and nothing else, so these are namespaced apart and neither reads the other.
 --
--- A record is a record: an issue, a comment and an event are each small,
+-- A record is a record: a task, a comment and an event are each small,
 -- bounded and read and written whole, so each keeps its serde shape in
 -- `record`. Only what is QUERIED is hoisted into a column — the project key
 -- and number (the list read and the number mint), the state and status (the
@@ -180,10 +180,10 @@ CREATE INDEX IF NOT EXISTS operations_by_status ON operations(status, created_at
 --
 -- `project_key` is the project's canonical repository PATH, not its `proj-N`
 -- id: an id is minted per boot from the config that restored it, so an
--- id-keyed row would strand its issues when the same repository comes back
+-- id-keyed row would strand its tasks when the same repository comes back
 -- wearing another one. `PersistedPlan` and `PersistedRun` carry a path for
 -- exactly this reason.
-CREATE TABLE IF NOT EXISTS tracker_issues (
+CREATE TABLE IF NOT EXISTS tracker_tasks (
     id          TEXT PRIMARY KEY,
     project_key TEXT NOT NULL,
     number      INTEGER NOT NULL,
@@ -195,44 +195,44 @@ CREATE TABLE IF NOT EXISTS tracker_issues (
 );
 -- The number mint's backstop. Numbers are per project and never reused, so a
 -- second writer that read the same maximum fails here rather than handing two
--- issues one number.
-CREATE UNIQUE INDEX IF NOT EXISTS tracker_issues_number
-    ON tracker_issues(project_key, number);
--- The list read: one project's issues, newest first, as a seek down the index
+-- tasks one number.
+CREATE UNIQUE INDEX IF NOT EXISTS tracker_tasks_number
+    ON tracker_tasks(project_key, number);
+-- The list read: one project's tasks, newest first, as a seek down the index
 -- rather than a scan and a sort.
-CREATE INDEX IF NOT EXISTS tracker_issues_by_project
-    ON tracker_issues(project_key, number DESC);
--- The same seek narrowed by a column filter, so a page of the open issues,
+CREATE INDEX IF NOT EXISTS tracker_tasks_by_project
+    ON tracker_tasks(project_key, number DESC);
+-- The same seek narrowed by a column filter, so a page of the open tasks,
 -- or of a column nobody is in, reads only the rows it answers (#85). Both
 -- filters together have an index of their own: through either one alone, a
--- page of the closed issues in a column full of open ones would step over
+-- page of the closed tasks in a column full of open ones would step over
 -- every open one to find nothing.
-CREATE INDEX IF NOT EXISTS tracker_issues_by_state
-    ON tracker_issues(project_key, state, number DESC);
-CREATE INDEX IF NOT EXISTS tracker_issues_by_status
-    ON tracker_issues(project_key, status, number DESC);
-CREATE INDEX IF NOT EXISTS tracker_issues_by_state_status
-    ON tracker_issues(project_key, state, status, number DESC);
+CREATE INDEX IF NOT EXISTS tracker_tasks_by_state
+    ON tracker_tasks(project_key, state, number DESC);
+CREATE INDEX IF NOT EXISTS tracker_tasks_by_status
+    ON tracker_tasks(project_key, status, number DESC);
+CREATE INDEX IF NOT EXISTS tracker_tasks_by_state_status
+    ON tracker_tasks(project_key, state, status, number DESC);
 
 CREATE TABLE IF NOT EXISTS tracker_comments (
     id         TEXT PRIMARY KEY,
-    issue_id   TEXT NOT NULL,
+    task_id   TEXT NOT NULL,
     created_at TEXT NOT NULL,
     record     TEXT NOT NULL
 );
 -- Half of a timeline read, ordered as the timeline is: when it happened, then
 -- the id, which is time-ordered itself.
-CREATE INDEX IF NOT EXISTS tracker_comments_by_issue
-    ON tracker_comments(issue_id, created_at, id);
+CREATE INDEX IF NOT EXISTS tracker_comments_by_task
+    ON tracker_comments(task_id, created_at, id);
 
 CREATE TABLE IF NOT EXISTS tracker_events (
     id       TEXT PRIMARY KEY,
-    issue_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
     at       TEXT NOT NULL,
     record   TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS tracker_events_by_issue
-    ON tracker_events(issue_id, at, id);
+CREATE INDEX IF NOT EXISTS tracker_events_by_task
+    ON tracker_events(task_id, at, id);
 
 -- One bounded copy of each pre-v6 agent skeleton. The migration materializes
 -- formerly inherited settings and implicit conversation aliases; retaining the

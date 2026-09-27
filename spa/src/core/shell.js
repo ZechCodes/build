@@ -4,8 +4,8 @@
 // are never torn down; core/toolbar.js repaints the bar from the route. This
 // file is the other half — what goes INSIDE #agent-rail and #console-region —
 // and it is here rather than in the pages for one reason: a page that mounts
-// its own rail is a page that can forget one, and one did. The tracker's issue
-// page (views/trackerIssueView.js) mounted none, so opening an issue on a phone
+// its own rail is a page that can forget one, and one did. The tracker's task
+// page (views/trackerTaskView.js) mounted none, so opening a task on a phone
 // lost the bubble strip and left the bar holding nothing but the status dot.
 //
 // So a route declares what it stands on, in the table below, and the shell
@@ -15,8 +15,8 @@
 // A new page gets a rail whether or not anybody remembered to give it one.
 //
 // Keyed, so a navigation that does not change WHICH conversation is on screen
-// does not remount: a project page's Workspaces ⇄ Issues, a workspace's
-// directory tabs, a legacy issue URL and the tracker's URL for the same issue
+// does not remount: a project page's Workspaces ⇄ Tasks, a workspace's
+// directory tabs, a legacy task URL and the tracker's URL for the same task
 // all leave the strip exactly where it was — which is the whole of what the
 // reader sees when the page swaps inside the shell.
 
@@ -66,23 +66,23 @@ const STANDING = {
       console: { kind: "workspace", workspaceId: route.workspaceId },
     },
 
-  // An issue of the tracker stands on the PROJECT's conversation, not on one of
-  // its own. A tracker issue has none: the agents its page names are workspace
-  // agents it can be assigned to, and `kind: "issue"` addresses the legacy
-  // multi-stage issue record, which a tracker issue id is not. So the
-  // project's agent stays beside an issue of the project exactly as it is
-  // beside the project page — which is also why opening an issue from the
-  // Issues tab leaves the strip alone: same standing, same key.
-  trackerIssue: (route) => projectStanding(route),
+  // A task of the tracker stands on the PROJECT's conversation, not on one of
+  // its own. A tracker task has none: the agents its page names are workspace
+  // agents it can be assigned to, and `kind: "task"` addresses the legacy
+  // multi-stage task record, which a tracker task id is not. So the
+  // project's agent stays beside a task of the project exactly as it is
+  // beside the project page — which is also why opening a task from the
+  // Tasks tab leaves the strip alone: same standing, same key.
+  trackerTask: (route) => projectStanding(route),
   project: (route) => projectStanding(route),
 
-  // The legacy issue page is the one that does carry a conversation of its own.
-  issue: (route) =>
+  // The legacy task page is the one that does carry a conversation of its own.
+  task: (route) =>
     route.id && {
-      key: `issue:${route.id}`,
+      key: `task:${route.id}`,
       mintsProjectConversation: false,
-      rail: { kind: "issue", projectId: route.projectId || null, issueId: route.id },
-      console: { kind: "issue", projectId: route.projectId || null, issueId: route.id },
+      rail: { kind: "task", projectId: route.projectId || null, taskId: route.id },
+      console: { kind: "task", projectId: route.projectId || null, taskId: route.id },
     },
 
   branch: (route) =>
@@ -370,7 +370,7 @@ function adoptingSupplier(descriptor) {
  * Put the chat away when it is covering the page, and say whether it was.
  *
  * On a phone the chat is laid OVER the page, so a press that changes the page
- * changes something the reader cannot see: they tap Issues, or an issue line
+ * changes something the reader cannot see: they tap Tasks, or a task line
  * inside the conversation, and the same chat is still there (#62). Beside the
  * page — any desktop width — the chat costs the page nothing and stays.
  *
@@ -392,7 +392,7 @@ let stoodAt = null;
  * The chat gets out of the way of a NAVIGATION, whatever made it.
  *
  * Enforced here rather than on each link because the links are not a list
- * anybody can keep: a notice line, an action line, an issue card, a surfaces
+ * anybody can keep: a notice line, an action line, a task card, a surfaces
  * pill, whatever the markdown renderer produced (#56). One rule at the one
  * place every route change passes through means a link nobody thought of
  * behaves like the rest.

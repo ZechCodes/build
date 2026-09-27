@@ -345,10 +345,10 @@ mod tests {
     /// Every kind it does know reads as that kind, deduplicated.
     #[test]
     fn known_kinds_read_as_the_set() {
-        let read = known_kinds(asking_for(&["thread", "state", "thread", "issues"])).unwrap();
+        let read = known_kinds(asking_for(&["thread", "state", "thread", "tasks"])).unwrap();
         assert_eq!(
             read.kinds,
-            [Kind::State, Kind::Thread, Kind::Issues]
+            [Kind::State, Kind::Thread, Kind::Tasks]
                 .into_iter()
                 .collect()
         );

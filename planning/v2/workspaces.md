@@ -6,7 +6,7 @@ A workspace is a durable, local working copy of a project's sources. It is the
 place where agents, review surfaces, and user terminals operate. It lasts until
 its work is somewhere else — see Finish and retention.
 
-Creating and working in a workspace does not open an Issue or an active planning
+Creating and working in a workspace does not open a Task or an active planning
 flow. Those flows are outside the workspace lifecycle.
 
 ## Project sources

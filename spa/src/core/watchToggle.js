@@ -1,6 +1,6 @@
-// Watching an issue, from whichever surface offers the switch.
+// Watching a task, from whichever surface offers the switch.
 //
-// #65. The issue page's toggle (issues-spa, core/trackerIssuePage.js) and the
+// #65. The task page's toggle (tasks-spa, core/trackerTaskPage.js) and the
 // inbox's Mute are the same verb on the same record, so the rule about how the
 // switch behaves lives once rather than twice: the switch moves under the
 // finger, and a refusal puts it back.
@@ -12,7 +12,7 @@
 // only lie this can tell is a short one that the next push overwrites.
 //
 // It holds no DOM and reaches for nothing: the surface passes `call` and gets
-// told when to repaint. That is what lets the issue page and the inbox import
+// told when to repaint. That is what lets the task page and the inbox import
 // the same rule without agreeing about anything else.
 
 import { setAttr } from "../dom.js";
@@ -30,22 +30,22 @@ export function watchTitle({ watching = false, watchers = 0 } = {}) {
  * What a watch is asked for, by what it is a watch OF.
  *
  * Two kinds of thing are watched and they are named differently on the wire
- * (#64): an issue by `issue_id`, a conversation by its entity and agent. The
+ * (#64): a task by `task_id`, a conversation by its entity and agent. The
  * switch behaves identically for both, so the difference is one table rather
- * than two copies of the logic — and the issue form is the default, because
- * that is the shape the issue page already imports.
+ * than two copies of the logic — and the task form is the default, because
+ * that is the shape the task page already imports.
  */
-function verbsFor({ issueId, entityId, agentId }) {
+function verbsFor({ taskId, entityId, agentId }) {
   if (entityId && agentId) {
     return { watch: "conversation.watch", unwatch: "conversation.unwatch", params: { entity_id: entityId, agent_id: agentId } };
   }
-  return { watch: "issues.watch", unwatch: "issues.unwatch", params: { issue_id: issueId } };
+  return { watch: "tasks.watch", unwatch: "tasks.unwatch", params: { task_id: taskId } };
 }
 
 /**
- * A watch switch for one issue, or for one conversation.
+ * A watch switch for one task, or for one conversation.
  *
- * Pass `issueId` for an issue or `entityId` and `agentId` for a conversation; the verb
+ * Pass `taskId` for a task or `entityId` and `agentId` for a conversation; the verb
  * and its parameter follow from which (`verbsFor` above).
  *
  * `watchers` is how many OTHERS watch it, so pressing counts the reader in or
@@ -61,7 +61,7 @@ function verbsFor({ issueId, entityId, agentId }) {
 export function createWatchToggle({
   watching = false,
   watchers = 0,
-  issueId,
+  taskId,
   entityId,
   agentId,
   call,
@@ -69,7 +69,7 @@ export function createWatchToggle({
   onFailure = () => {},
 }) {
   const asked = () => verbsFor({
-    issueId,
+    taskId,
     entityId: typeof entityId === "function" ? entityId() : entityId,
     agentId: typeof agentId === "function" ? agentId() : agentId,
   });

@@ -1,0 +1,36 @@
+{
+  "method": "tasks.for_agent",
+  "since": "1.5.0",
+  "params": {
+    "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+  },
+  "result": {
+    "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E",
+    "assigned": [
+      {
+        "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+        "number": 12,
+        "title": "Kanban drag does not persist",
+        "state": "open",
+        "status": "in_progress",
+        "updated_at": "2026-09-20T15:04:00Z"
+      }
+    ],
+    "tracking": [
+      {
+        "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+        "number": 12,
+        "title": "Kanban drag does not persist",
+        "state": "open",
+        "status": "in_progress",
+        "updated_at": "2026-09-20T15:04:00Z"
+      }
+    ]
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "unavailable",
+    "internal"
+  ]
+}

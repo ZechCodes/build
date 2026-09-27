@@ -3,12 +3,12 @@
 // #56 landed the two halves either side of this one: core/markdownRefs.js says
 // what a reference IS (`#42`, `@workspace:build`, `@agent:…`, `[[ws:path#L10]]`)
 // and core/markdownLinks.js says which route each kind opens. Between them sits
-// the question neither can answer — WHICH issue is #42, which workspace is
+// the question neither can answer — WHICH task is #42, which workspace is
 // called build — and that is a question about this device, this project and
 // what has been read here. This file answers it, and nothing else does.
 //
 // Every answer comes from a cache the surface is already painting from: the
-// project's issue list, the feed's workspaces, and the agents the assignee
+// project's task list, the feed's workspaces, and the agents the assignee
 // picker names (core/trackerAssignee.js). Nothing here reads, fetches or
 // awaits — a paint cannot — so a reference to something this client has never
 // read stays the words the agent typed, which is the same thing that happens
@@ -53,21 +53,21 @@ const identityAgent = (id, identity, identities, workspaces, at) => {
  * written from. Without both there is nowhere to send anyone, so this answers
  * null and the renderer leaves every reference as prose.
  *
- * `issues` is the project's issue list as the tracker caches it, `workspaces`
+ * `tasks` is the project's task list as the tracker caches it, `workspaces`
  * the feed's for this project, and `agentGroups` what `workspaceAgents`
- * answers: the same three lists the issue page and the conversation already
+ * answers: the same three lists the task page and the conversation already
  * paint from, so a link can only point at something the reader could have
  * opened anyway.
  */
-export function referenceLinks({ place, issues = [], workspaces = [], agentGroups = [], identities = {} } = {}) {
+export function referenceLinks({ place, tasks = [], workspaces = [], agentGroups = [], identities = {} } = {}) {
   const deviceId = place?.deviceId;
   const projectId = place?.projectId;
   if (!deviceId || !projectId) return null;
   const at = { deviceId, projectId };
   return {
-    issue(number) {
-      const found = (issues || []).find((issue) => Number(issue.number) === Number(number));
-      return found?.id ? { ...at, issueId: found.id, title: found.title || "" } : null;
+    task(number) {
+      const found = (tasks || []).find((task) => Number(task.number) === Number(number));
+      return found?.id ? { ...at, taskId: found.id, title: found.title || "" } : null;
     },
 
     workspace(said) {

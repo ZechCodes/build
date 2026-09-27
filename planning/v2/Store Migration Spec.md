@@ -8,12 +8,12 @@
 
 ## 1. Why
 
-Bridge state is JSON files, one aggregate `record.json` per Issue holding that
-Issue, every implementation inside it, and every thread on all of them. Saving
+Bridge state is JSON files, one aggregate `record.json` per Task holding that
+Task, every implementation inside it, and every thread on all of them. Saving
 anything is a read-modify-write of the whole aggregate: read it, pretty-print
 all of it, fsync (`bridge/src/store.rs:615`, `:1242`).
 
-Measured on a real store, 13 issues:
+Measured on a real store, 13 tasks:
 
 | record.json | thread items | implementations |
 |---|---|---|
@@ -52,7 +52,7 @@ it to justify JSON-file persistence was a misreading.
 
 | Today | Becomes |
 |---|---|
-| `issues/<id>/record.json` — issue + lifecycle | `issues` row |
+| `tasks/<id>/record.json` — task + lifecycle | `tasks` row |
 | …the implementations inside it | `implementations` rows |
 | …the threads inside those | **`thread_items` rows** — the load-bearing change |
 | …sessions, revisions | `thread_sessions`, `thread_revisions` rows |
@@ -65,7 +65,7 @@ it to justify JSON-file persistence was a misreading.
 
 | Stays | Why |
 |---|---|
-| `issues/<id>/docs/**` — stage plan docs | Markdown the **agent** reads and writes in a worktree. Materialized into checkouts and ingested back. A blob in a database that has to be written to disk to be useful belongs on disk. |
+| `tasks/<id>/docs/**` — stage plan docs | Markdown the **agent** reads and writes in a worktree. Materialized into checkouts and ingested back. A blob in a database that has to be written to disk to be useful belongs on disk. |
 | `attachments/` | Reviewer-supplied files, handed to agents by path. Same reason. |
 | `identity.json` | A keypair at `0600`. Unrelated concern, no benefit to moving. |
 | `config.json` | Hand-editable by design. |
@@ -88,7 +88,7 @@ Boot loads every record into those maps and **every read is served from memory**
 — the process is the index.
 
 Swapping the persistence layer under that changes what a *write* costs. It does
-not change the fact that the entire conversation history of every issue is
+not change the fact that the entire conversation history of every task is
 resident, nor that `wire_value_after(0)` ships all of it. Pagination needs the
 thread to stop being a fully-resident `Vec`, which is a separate change to a
 different part of the code.
@@ -111,7 +111,7 @@ API shape survives; the backend changes under it.
   links statically, so there is no system dependency on a user's laptop and
   nothing changes for scratch containers.
 - Schema, with `thread_items` normalized to rows. Append becomes one `INSERT`.
-- `save_issue_plan` / `save_issue_implementation` / `save_run` / `save_capture` /
+- `save_task_plan` / `save_task_implementation` / `save_run` / `save_capture` /
   `save_attention` reimplemented as row writes inside a transaction.
 - Boot migration reading the JSON records and writing the DB. **Idempotent**,
   and the JSON tree is renamed rather than deleted — the existing store already

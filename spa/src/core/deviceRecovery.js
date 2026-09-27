@@ -5,7 +5,7 @@
  *  unreachable — they are the phone itself having been asleep. The maintainer's
  *  had climbed to the old thirty-second step across two earlier failures and
  *  was still there when they picked it up, so waking the screen bought a
- *  half-minute of nothing (issue #60). Ten seconds is still a real back-off for
+ *  half-minute of nothing (task #60). Ten seconds is still a real back-off for
  *  a machine that is genuinely gone, and a tenth of the wait for the case that
  *  actually happens. */
 const BACKOFF_MS = [2000, 4000, 8000, 10000];
@@ -92,7 +92,7 @@ export function createDeviceRecoverySupervisor({
      * longer each time is only sound when each failure told us something.
      *
      * Devices mid-attempt are left alone. One is already dialling, and starting a
-     * second would be the double mint this issue also asks about.
+     * second would be the double mint this task also asks about.
      *
      * Returns the devices it woke, which is what the test reads and what the
      * diagnostics record.

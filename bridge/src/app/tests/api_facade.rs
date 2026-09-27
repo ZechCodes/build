@@ -68,7 +68,7 @@ fn v1_serves_every_family_and_the_legacy_route_answers_none_of_them() {
         ("fs.list", &json!({})),
         ("board.list", &json!({})),
         ("thread.page", &json!({})),
-        ("issue.list", &json!({})),
+        ("task.list", &json!({})),
         ("run.get", &json!({})),
     ] {
         assert!(
@@ -122,8 +122,8 @@ fn the_qa_stream_verbs_are_unknown_unless_the_qa_agent_is_on() {
 const INTERNAL_REFUSALS: &[(&str, usize)] = &[
     ("git.checkout", 1),
     ("git.branch_delete", 1),
-    ("issue.diff", 1),
-    ("issue.stage_diff", 1),
+    ("task.diff", 1),
+    ("task.stage_diff", 1),
     ("entity.dismiss", 1),
 ];
 

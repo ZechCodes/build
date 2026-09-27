@@ -1,9 +1,9 @@
-// #119's browser pass: an issue moved to Done must leave both "Needs you"
-// surfaces — the Issues list's group and the Dashboard's tab — in the ways a
+// #119's browser pass: a task moved to Done must leave both "Needs you"
+// surfaces — the Tasks list's group and the Dashboard's tab — in the ways a
 // move can go unheard:
 //
 //   churn      the project keeps pushing (comments every 100 ms) while every
-//              `issues.list` round trip is slower than the bridge's 250 ms
+//              `tasks.list` round trip is slower than the bridge's 250 ms
 //              flush. Before #119 each push started a read that the next one
 //              overtook, so no answer landed until the churn stopped.
 //   reconnect  the SPA is offline while the bridge restarts and the move is
@@ -18,7 +18,7 @@
 //              one) and must greet it again. Also checks the status ring
 //              stopped saying connected, and screenshots it when it did.
 //
-//   ISSUES_REPO=<a build-web checkout> COMPOSE_PROJECT=needsyou119 \
+//   TASKS_REPO=<a build-web checkout> COMPOSE_PROJECT=needsyou119 \
 //     APP_URL=http://localhost:8090 [SCENARIOS=churn,reconnect,killed] [RUNS=5] \
 //     node web/needs-you-check.mjs
 //
@@ -28,11 +28,11 @@
 // CONSOLE=1 echoes the pages' consoles.
 //
 // Real bridge, real SPA: nothing is stubbed. Moves are made by a second
-// client (`issues.update`), the same tracker write and `issues` push note an
-// agent's MCP `move_issue` makes — the compose bridge's harness is `cat`,
+// client (`tasks.update`), the same tracker write and `tasks` push note an
+// agent's MCP `move_task` makes — the compose bridge's harness is `cat`,
 // which holds no MCP session token, so its daemon socket refuses tool calls.
 //
-// `churn` needs a slow list: it seeds 150 issues of ~30 KB (once per stack)
+// `churn` needs a slow list: it seeds 150 tasks of ~30 KB (once per stack)
 // and adds egress delay (NETEM_DELAY, default 100ms) on the bridge container's eth0 with
 // `tc netem`, from a throwaway NET_ADMIN container in that network namespace,
 // removed again at the end. Use it on your OWN compose project only.
@@ -48,10 +48,10 @@ import { chromium } from "playwright";
 import { freshDials, goOfflineWithNoOpenSocket, goOnline, trackWebSockets } from "./offlineEvidence.mjs";
 
 const APP = process.env.APP_URL || "http://localhost:8090";
-const REPO = process.env.ISSUES_REPO;
+const REPO = process.env.TASKS_REPO;
 const PROJECT = process.env.COMPOSE_PROJECT;
 if (!REPO || !PROJECT) {
-  console.error("set ISSUES_REPO and COMPOSE_PROJECT — this run must not guess which stack it is on");
+  console.error("set TASKS_REPO and COMPOSE_PROJECT — this run must not guess which stack it is on");
   process.exit(2);
 }
 const SHOTS = process.env.SHOTS_DIR || "/tmp/119-shots";
@@ -125,7 +125,7 @@ await Promise.all([
 ]);
 await login.close();
 
-const tab = (view) => `${APP}/app/#/device/${seed.deviceId}/project/${seed.projectId}/issues?view=${view}`;
+const tab = (view) => `${APP}/app/#/device/${seed.deviceId}/project/${seed.projectId}/tasks?view=${view}`;
 const list = await context.newPage();
 await list.goto(tab("list"), { waitUntil: "load" });
 const dash = await context.newPage();
@@ -146,19 +146,19 @@ async function dumpDiagnostics(label) {
   }
 }
 
-const listNeedsYou = (title) => list.evaluate((wanted) => [...document.querySelectorAll('[data-issue-group="needsYou"] .issue-title')]
+const listNeedsYou = (title) => list.evaluate((wanted) => [...document.querySelectorAll('[data-task-group="needsYou"] .task-title')]
   .some((one) => one.textContent.includes(wanted)), title);
 /** Whether the list's Needs you group is a whole paint: its header count
  *  matches the rows under it. "Dropped" then means the group repainted
- *  without the issue — not a list caught empty mid-repaint. */
+ *  without the task — not a list caught empty mid-repaint. */
 const listNeedsYouSettled = () => list.evaluate(() => {
-  const group = document.querySelector('[data-issue-group="needsYou"]');
-  const count = Number(group?.querySelector(".issue-group-count")?.textContent ?? NaN);
-  return count === group?.querySelectorAll(".issue-title").length;
+  const group = document.querySelector('[data-task-group="needsYou"]');
+  const count = Number(group?.querySelector(".task-group-count")?.textContent ?? NaN);
+  return count === group?.querySelectorAll(".task-title").length;
 });
 const dashNeedsYou = (title) => dash.evaluate((wanted) => ({
-  count: Number(document.querySelector('[data-dashboard-tab="needsYou"] .issue-dashboard-count')?.textContent ?? NaN),
-  listed: [...document.querySelectorAll('[role="tabpanel"] .issue-dashboard-title')].some((one) => one.textContent.includes(wanted)),
+  count: Number(document.querySelector('[data-dashboard-tab="needsYou"] .task-dashboard-count')?.textContent ?? NaN),
+  listed: [...document.querySelectorAll('[role="tabpanel"] .task-dashboard-title')].some((one) => one.textContent.includes(wanted)),
 }), title);
 
 let failed = false;
@@ -167,21 +167,21 @@ const report = (ok, name, detail = "") => {
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`);
 };
 
-/** File an issue in review and wait until both surfaces say it needs you. */
+/** File a task in review and wait until both surfaces say it needs you. */
 async function inReview(label) {
   const title = `${label} ${run}`;
-  const { issue } = call("issues.create", { project_id: seed.projectId, title, body: "#119 check" });
-  call("issues.update", { issue_id: issue.id, status: "in_review" });
+  const { task } = call("tasks.create", { project_id: seed.projectId, title, body: "#119 check" });
+  call("tasks.update", { task_id: task.id, status: "in_review" });
   await until(`${title} under the list's Needs you`, () => listNeedsYou(title), 180000);
   await until(`${title} under the Dashboard's Needs you`, async () => (await dashNeedsYou(title)).listed, 180000);
-  return { id: issue.id, title, countBefore: (await dashNeedsYou(title)).count };
+  return { id: task.id, title, countBefore: (await dashNeedsYou(title)).count };
 }
 
 /** Both surfaces drop it, the Dashboard's count by one, within `ms` — each
  *  timed from the same moment, not one after the other. */
 async function bothDrop(scenario, target, ms) {
   const dropped = await Promise.all([
-    ["the Issues list's Needs you group drops it", async () =>
+    ["the Tasks list's Needs you group drops it", async () =>
       !(await listNeedsYou(target.title)) && (await listNeedsYouSettled())],
     ["the Dashboard's Needs you drops it and its count falls by one", async () => {
       const now = await dashNeedsYou(target.title);
@@ -202,16 +202,16 @@ async function bothDrop(scenario, target, ms) {
 async function churn() {
   // Counted inside the container: the whole list is megabytes, far past one
   // line of piped output.
-  const counting = qaScript("count", `const r = await link.session.call("issues.list", { project_id: ${JSON.stringify(seed.projectId)} });
-console.log("BULK " + r.issues.filter((one) => one.title.startsWith("bulk ")).length);`);
+  const counting = qaScript("count", `const r = await link.session.call("tasks.list", { project_id: ${JSON.stringify(seed.projectId)} });
+console.log("BULK " + r.tasks.filter((one) => one.title.startsWith("bulk ")).length);`);
   await counting.done;
   const bulk = Number((counting.lines.find((line) => line.startsWith("BULK ")) || "BULK 0").slice(5));
   if (bulk < 150) {
     const seeding = qaScript("bulk", `const body = "bulk ".repeat(6000);
-for (let i = 0; i < 150; i++) await link.session.call("issues.create", { project_id: ${JSON.stringify(seed.projectId)}, title: "bulk " + i, body });`);
+for (let i = 0; i < 150; i++) await link.session.call("tasks.create", { project_id: ${JSON.stringify(seed.projectId)}, title: "bulk " + i, body });`);
     await seeding.done;
   }
-  const busy = call("issues.create", { project_id: seed.projectId, title: `busy ${run}`, body: "churn target" }).issue.id;
+  const busy = call("tasks.create", { project_id: seed.projectId, title: `busy ${run}`, body: "churn target" }).task.id;
   const target = await inReview("churn");
   netem("add");
   try {
@@ -219,14 +219,14 @@ for (let i = 0; i < 150; i++) await link.session.call("issues.create", { project
     // move three seconds in: the move's push lands mid-churn.
     const churning = qaScript("churn", `const end = Date.now() + 45000; let n = 0; let moved = false; const t0 = Date.now();
 while (Date.now() < end) {
-  if (!moved && Date.now() - t0 > 3000) { await link.session.call("issues.update", { issue_id: ${JSON.stringify(target.id)}, status: "done" }); moved = true; console.log("MOVED"); }
-  link.session.call("issues.comment", { issue_id: ${JSON.stringify(busy)}, body: "tick " + (n++) }).catch(() => {});
+  if (!moved && Date.now() - t0 > 3000) { await link.session.call("tasks.update", { task_id: ${JSON.stringify(target.id)}, status: "done" }); moved = true; console.log("MOVED"); }
+  link.session.call("tasks.comment", { task_id: ${JSON.stringify(busy)}, body: "tick " + (n++) }).catch(() => {});
   await new Promise((r) => setTimeout(r, 100));
 }
 console.log("CHURN_END " + n);`);
     await until("the move mid-churn", async () => churning.lines.includes("MOVED"), 90000);
     // Forty-two seconds of churn still to go after the move, and each list
-    // read takes seconds on this link: both surfaces must drop the issue
+    // read takes seconds on this link: both surfaces must drop the task
     // within thirty-five, while the pushes keep coming — not once they stop.
     if (await bothDrop("churn", target, 35000))
       report(!churning.lines.some((line) => line.startsWith("CHURN_END")), "churn: still churning when both had dropped it");
@@ -247,13 +247,13 @@ async function reconnect() {
   docker(`${compose} restart bridge`);
   await until("the restarted bridge to answer", async () => {
     try {
-      call("issues.get", { issue_id: target.id });
+      call("tasks.get", { task_id: target.id });
       return true;
     } catch {
       return false;
     }
   }, 90000);
-  call("issues.update", { issue_id: target.id, status: "done" });
+  call("tasks.update", { task_id: target.id, status: "done" });
   await new Promise((done) => setTimeout(done, 3000));
   const held = (await listNeedsYou(target.title)) && (await dashNeedsYou(target.title)).listed;
   report(held, "reconnect: the move had not reached the offline page (the gap is real)");
@@ -322,13 +322,13 @@ async function killed() {
   docker(`${compose} up -d --no-deps bridge`);
   await until("the restarted bridge to answer", async () => {
     try {
-      call("issues.get", { issue_id: target.id });
+      call("tasks.get", { task_id: target.id });
       return true;
     } catch {
       return false;
     }
   }, 90000);
-  call("issues.update", { issue_id: target.id, status: "done" });
+  call("tasks.update", { task_id: target.id, status: "done" });
   console.log(`[${((Date.now() - t0) / 1000).toFixed(1)}] MOVED ${((Date.now() - killedAt) / 1000).toFixed(1)} s after the kill`);
   const dropped = await bothDrop("killed", target, 60000);
   clearInterval(watchRing);

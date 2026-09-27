@@ -99,7 +99,7 @@ describe("overviewHtml workspace summary", () => {
   const entry = (id, state) => ({ agent: { id, name: id, watched: true }, state: { ...state, id },
     source: { slot: "current" }, workspaceId: "ws-1", section: "workspace", sectionName: "Workspace one" });
   const summary = (rows) => overviewHtml(rows, { showProjectAgents: false, scope: { kind: "project" },
-    workspaces: [{ workspaceId: "ws-1", name: "Workspace one" }], issues: [] })
+    workspaces: [{ workspaceId: "ws-1", name: "Workspace one" }], tasks: [] })
     .split('aria-label="Workspace one"')[1].split("</div>")[0];
 
   it("pulses while an agent works, even when that agent also has an unread message", () => {

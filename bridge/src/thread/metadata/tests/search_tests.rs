@@ -32,8 +32,8 @@ fn conversation() -> Thread {
         Some("Started stage Lexer".to_string()),
         None,
         None,
-        vec![ThreadLink::IssueStage {
-            issue_id: "issue-1".to_string(),
+        vec![ThreadLink::TaskStage {
+            task_id: "task-1".to_string(),
             stage_id: "lexer".to_string(),
             path: ".build/plan/02-lexer.md".to_string(),
         }],

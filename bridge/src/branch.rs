@@ -1,4 +1,4 @@
-//! Branch and issue are the only work items.
+//! Branch and task are the only work items.
 //!
 //! A branch work item is identified by `(project_id, branch_name)`. What the
 //! bridge stores underneath — a run, an adopted worktree, an external worktree
@@ -9,9 +9,9 @@
 //! 1. **Folding.** Rows that share a key are the same work item seen twice; the
 //!    source that knows the most about it wins (a run over a bare external
 //!    worktree, and a live run over a terminal one).
-//! 2. **Dedup.** An issue whose implementation is still in flight speaks as
-//!    that branch row alone — the branch row carries the `issue_id` and the
-//!    issue's own row is suppressed.
+//! 2. **Dedup.** A task whose implementation is still in flight speaks as
+//!    that branch row alone — the branch row carries the `task_id` and the
+//!    task's own row is suppressed.
 //!
 //! Both are pure functions over already-built rows, so the policy is testable
 //! without a repo, a store, or an RPC.
@@ -20,13 +20,13 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
-/// The kinds of work item, as they ship on the wire. Branch and issue are the
+/// The kinds of work item, as they ship on the wire. Branch and task are the
 /// work; a capture is the thing the user said that has not become work yet, and
 /// it holds a row of its own only until it does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkItemKind {
     Branch,
-    Issue,
+    Task,
     Capture,
 }
 
@@ -34,7 +34,7 @@ impl WorkItemKind {
     pub fn as_str(self) -> &'static str {
         match self {
             WorkItemKind::Branch => "branch",
-            WorkItemKind::Issue => "issue",
+            WorkItemKind::Task => "task",
             WorkItemKind::Capture => "capture",
         }
     }
@@ -83,8 +83,8 @@ pub enum WorkItemKey {
     Checkout {
         worktree_id: String,
     },
-    Issue {
-        issue_id: String,
+    Task {
+        task_id: String,
     },
     /// A capture is its own key: nothing else in the feed can be the same
     /// thing, because it is not yet a thing.
@@ -99,13 +99,13 @@ pub enum WorkItemKey {
 pub struct WorkItemCandidate {
     pub kind: WorkItemKind,
     pub key: WorkItemKey,
-    /// `None` for issue rows — an issue has no source to compete over.
+    /// `None` for task rows — a task has no source to compete over.
     pub source: Option<BranchSource>,
-    /// The issue this branch implements, when it implements one.
-    pub issue_id: Option<String>,
+    /// The task this branch implements, when it implements one.
+    pub task_id: Option<String>,
     /// Whether the implementation behind this branch row is still in flight.
-    /// Only a live implementation suppresses its issue's row: once it is
-    /// merged or abandoned, the issue speaks for itself again.
+    /// Only a live implementation suppresses its task's row: once it is
+    /// merged or abandoned, the task speaks for itself again.
     pub implementation_active: bool,
     pub row: Value,
 }
@@ -141,18 +141,18 @@ pub fn fold_work_items(candidates: Vec<WorkItemCandidate>) -> Vec<Value> {
                 && candidate.kind == WorkItemKind::Branch
                 && candidate.implementation_active
         })
-        .filter_map(|(_, candidate)| candidate.issue_id.as_deref())
+        .filter_map(|(_, candidate)| candidate.task_id.as_deref())
         .collect();
     candidates
         .iter()
         .enumerate()
         .filter(|(index, _)| survivors.contains(index))
         .filter(|(_, candidate)| {
-            candidate.kind != WorkItemKind::Issue
+            candidate.kind != WorkItemKind::Task
                 || !candidate
-                    .issue_id
+                    .task_id
                     .as_deref()
-                    .is_some_and(|issue_id| spoken_for.contains(issue_id))
+                    .is_some_and(|task_id| spoken_for.contains(task_id))
         })
         .map(|(_, candidate)| named_project_row(candidate.row.clone()))
         .collect()
@@ -195,7 +195,7 @@ pub struct BranchSync {
 
 /// One thing the user should know before Done destroys this work item.
 ///
-/// A warning is not a refusal. Done deletes a branch and archives an issue on
+/// A warning is not a refusal. Done deletes a branch and archives a task on
 /// the user's say-so; the bridge's job is to make what is about to be lost
 /// legible BEFORE the destructive act, and then to do as it is told. Refusals
 /// stay errors — an unknown branch, a git command that failed — because there
@@ -219,7 +219,7 @@ pub const FINISH_WARNING_UNPUSHED: &str = "unpushed";
 /// The branch tracks nothing, so the base branch is the only place its work
 /// could survive — and it is not all there.
 pub const FINISH_WARNING_UNMERGED: &str = "unmerged";
-/// An issue no branch ever implemented.
+/// A task no branch ever implemented.
 pub const FINISH_WARNING_UNIMPLEMENTED: &str = "unimplemented";
 
 impl FinishWarning {
@@ -305,15 +305,15 @@ pub fn branch_finish_warnings(branch: &str, sync: &BranchSync) -> Vec<FinishWarn
     warnings
 }
 
-/// What Done on this issue is about to lose: an issue nothing was ever built
+/// What Done on this task is about to lose: a task nothing was ever built
 /// for is being filed away on the strength of the conversation alone.
-pub fn issue_finish_warnings(implemented: bool) -> Vec<FinishWarning> {
+pub fn task_finish_warnings(implemented: bool) -> Vec<FinishWarning> {
     if implemented {
         return Vec::new();
     }
     vec![FinishWarning {
         code: FINISH_WARNING_UNIMPLEMENTED,
-        message: "No branch has implemented this issue".to_string(),
+        message: "No branch has implemented this task".to_string(),
         count: None,
         reference: None,
     }]
@@ -358,22 +358,22 @@ mod tests {
                 branch: branch.to_string(),
             },
             source: Some(source),
-            issue_id: None,
+            task_id: None,
             implementation_active: false,
             row: json!({ "branch": branch, "from": label }),
         }
     }
 
-    fn issue_candidate(issue_id: &str) -> WorkItemCandidate {
+    fn task_candidate(task_id: &str) -> WorkItemCandidate {
         WorkItemCandidate {
-            kind: WorkItemKind::Issue,
-            key: WorkItemKey::Issue {
-                issue_id: issue_id.to_string(),
+            kind: WorkItemKind::Task,
+            key: WorkItemKey::Task {
+                task_id: task_id.to_string(),
             },
             source: None,
-            issue_id: Some(issue_id.to_string()),
+            task_id: Some(task_id.to_string()),
             implementation_active: false,
-            row: json!({ "issue_id": issue_id }),
+            row: json!({ "task_id": task_id }),
         }
     }
 
@@ -382,7 +382,7 @@ mod tests {
             .map(|row| {
                 row["from"]
                     .as_str()
-                    .or_else(|| row["issue_id"].as_str())
+                    .or_else(|| row["task_id"].as_str())
                     .unwrap_or_default()
                     .to_string()
             })
@@ -438,7 +438,7 @@ mod tests {
                 worktree_id: "wt-detached".to_string(),
             },
             source: Some(BranchSource::ExternalWorktree),
-            issue_id: None,
+            task_id: None,
             implementation_active: false,
             row: json!({ "from": "detached" }),
         };
@@ -460,47 +460,47 @@ mod tests {
         );
     }
 
-    /// Once implementation starts, the issue's work surfaces as the branch row
-    /// only — and that row is what carries the issue id.
+    /// Once implementation starts, the task's work surfaces as the branch row
+    /// only — and that row is what carries the task id.
     #[test]
-    fn a_live_implementation_suppresses_its_issue_row() {
+    fn a_live_implementation_suppresses_its_task_row() {
         let mut implementation =
             branch_candidate("p1", "build/thing", BranchSource::Run, "implementation");
-        implementation.issue_id = Some("plan-1".to_string());
+        implementation.task_id = Some("plan-1".to_string());
         implementation.implementation_active = true;
 
         let folded = fold_work_items(vec![
-            issue_candidate("plan-1"),
+            task_candidate("plan-1"),
             implementation,
-            issue_candidate("plan-2"),
+            task_candidate("plan-2"),
         ]);
         assert_eq!(labels(&folded), vec!["implementation", "plan-2"]);
     }
 
-    /// A finished implementation stops speaking for its issue: the issue is a
+    /// A finished implementation stops speaking for its task: the task is a
     /// project-level work item again.
     #[test]
-    fn a_terminal_implementation_leaves_the_issue_row_alone() {
+    fn a_terminal_implementation_leaves_the_task_row_alone() {
         let mut implementation =
             branch_candidate("p1", "build/thing", BranchSource::Run, "implementation");
-        implementation.issue_id = Some("plan-1".to_string());
+        implementation.task_id = Some("plan-1".to_string());
         implementation.implementation_active = false;
 
-        let folded = fold_work_items(vec![issue_candidate("plan-1"), implementation]);
+        let folded = fold_work_items(vec![task_candidate("plan-1"), implementation]);
         assert_eq!(labels(&folded), vec!["plan-1", "implementation"]);
     }
 
     /// A suppressing branch row that lost its key suppresses nothing: the row
-    /// that won the key is the one that speaks for the issue.
+    /// that won the key is the one that speaks for the task.
     #[test]
-    fn only_a_surviving_branch_row_suppresses_an_issue() {
+    fn only_a_surviving_branch_row_suppresses_a_task() {
         let mut shadowed =
             branch_candidate("p1", "build/thing", BranchSource::ExternalWorktree, "stale");
-        shadowed.issue_id = Some("plan-1".to_string());
+        shadowed.task_id = Some("plan-1".to_string());
         shadowed.implementation_active = true;
 
         let folded = fold_work_items(vec![
-            issue_candidate("plan-1"),
+            task_candidate("plan-1"),
             shadowed,
             branch_candidate("p1", "build/thing", BranchSource::Run, "adopted"),
         ]);
@@ -517,20 +517,20 @@ mod tests {
                 capture_id: "capture-1".to_string(),
             },
             source: None,
-            issue_id: None,
+            task_id: None,
             implementation_active: false,
             row: json!({ "from": "capture" }),
         };
         let mut implementation =
             branch_candidate("p1", "build/thing", BranchSource::Run, "implementation");
-        implementation.issue_id = Some("plan-1".to_string());
+        implementation.task_id = Some("plan-1".to_string());
         implementation.implementation_active = true;
 
         let folded = fold_work_items(vec![
             capture,
-            issue_candidate("plan-1"),
+            task_candidate("plan-1"),
             implementation,
-            issue_candidate("plan-2"),
+            task_candidate("plan-2"),
         ]);
         assert_eq!(labels(&folded), vec!["capture", "implementation", "plan-2"]);
     }
@@ -684,13 +684,13 @@ mod tests {
         );
     }
 
-    /// Done on an issue is only ever a warning about provenance: nothing was
+    /// Done on a task is only ever a warning about provenance: nothing was
     /// built for it.
     #[test]
-    fn an_issue_warns_only_when_no_branch_ever_implemented_it() {
-        assert!(issue_finish_warnings(true).is_empty());
+    fn a_task_warns_only_when_no_branch_ever_implemented_it() {
+        assert!(task_finish_warnings(true).is_empty());
         assert_eq!(
-            codes(&issue_finish_warnings(false)),
+            codes(&task_finish_warnings(false)),
             vec![FINISH_WARNING_UNIMPLEMENTED]
         );
     }

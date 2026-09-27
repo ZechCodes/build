@@ -17,7 +17,7 @@ await mkdir(derivatives, { recursive: true });
 const launchOptions = { headless: true };
 if (process.env.CHROMIUM_PATH) launchOptions.executablePath = process.env.CHROMIUM_PATH;
 const browser = await chromium.launch(launchOptions);
-const allScenes = ["ui03", "ui05", "ui10-editor", "ui12-issues", "ui13-team", "ui14-git", "ui15-triage", "ui16-builder"];
+const allScenes = ["ui03", "ui05", "ui10-editor", "ui12-tasks", "ui13-team", "ui14-git", "ui15-triage", "ui16-builder"];
 const allProfiles = [
   { name: "macbook", width: 1512, height: 982, scale: 2, native: [3024, 1964] },
   { name: "ipad", width: 1210, height: 834, scale: 2, native: [2420, 1668] },

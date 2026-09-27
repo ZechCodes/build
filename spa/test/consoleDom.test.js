@@ -199,10 +199,10 @@ describe("opening it", () => {
     );
   });
 
-  it("opens an issue's console on the primary checkout, without a row to read", async () => {
+  it("opens a task's console on the primary checkout, without a row to read", async () => {
     await emptyConsoleWorld();
     await seedConsoleTerminals(["term-1"], { row: { run_id: "i-1" } });
-    await mount({ kind: "issue", deviceId: "dev-1", projectId: "p1", issueId: "i-1", call: (...args) => bridge.call(...args), cacheScope: consoleCacheScope() });
+    await mount({ kind: "task", deviceId: "dev-1", projectId: "p1", taskId: "i-1", call: (...args) => bridge.call(...args), cacheScope: consoleCacheScope() });
     await open();
     expect(manager.attachTerminal).toHaveBeenCalledWith("term-1", { project_id: "p1" }, expect.anything());
     expect(calls).toEqual([]);
@@ -264,7 +264,7 @@ describe("the sizes", () => {
     expect(size()).toBe("half");
     // Another work item's console is its own, and starts shut.
     panel.dispose();
-    await mount({ kind: "issue", deviceId: "dev-1", projectId: "p1", issueId: "i-1", call: (...args) => bridge.call(...args), cacheScope: consoleCacheScope() });
+    await mount({ kind: "task", deviceId: "dev-1", projectId: "p1", taskId: "i-1", call: (...args) => bridge.call(...args), cacheScope: consoleCacheScope() });
     expect(size()).toBe("collapsed");
   });
 

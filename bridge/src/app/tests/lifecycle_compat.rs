@@ -91,7 +91,7 @@ fn public_success_carriers_typecheck(
     };
     let _ = Box::new(ImplementationOpened {
         project_id: "project".into(),
-        issue_id: "issue".into(),
+        task_id: "task".into(),
         run_id: "run".into(),
         prepared,
         model_choice: model_choice.clone(),
@@ -100,7 +100,7 @@ fn public_success_carriers_typecheck(
     });
     let _ = Box::new(ImplementationAdopted {
         project_id: "project".into(),
-        issue_id: "issue".into(),
+        task_id: "task".into(),
         run_id: "run".into(),
         base_sha: "base".into(),
         adopted: Some(adopted),
@@ -118,7 +118,7 @@ fn public_success_carriers_typecheck(
         detail: crate::thread::ThreadDetail::Digest,
     });
     let _ = Box::new(RestoredCheckout {
-        issue_id: "issue".into(),
+        task_id: "task".into(),
         run_id: "run".into(),
         checkout_stood: false,
         restored: Ok(worktree),

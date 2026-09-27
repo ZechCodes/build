@@ -211,7 +211,7 @@ pub(super) fn catch_up_lines<'a>(
                 sender_note(message.from_agent.as_deref()),
                 recipient_note(message.sent_to.as_deref()),
                 workspace_note(message.viewing_context.as_deref()),
-                viewing_issue_note(message.viewing_context.as_deref()),
+                viewing_task_note(message.viewing_context.as_deref()),
                 match message.reported_outcome() {
                     Some(outcome) => format!(" [{}]", outcome.as_str()),
                     None => String::new(),
@@ -256,17 +256,16 @@ pub(super) fn workspace_note(context: Option<&super::ViewingContext>) -> String 
         })
 }
 
-/// The issue the user was looking at, when the message says which. Prose
+/// The task the user was looking at, when the message says which. Prose
 /// beside the context JSON for the same reason the workspace gets it: the
 /// packet is markdown, and a thing named only inside a serialized blob is not
 /// a sentence a resumed agent acts on.
-pub(super) fn viewing_issue_note(context: Option<&super::ViewingContext>) -> String {
-    context.and_then(super::ViewingContext::issue).map_or_else(
-        String::new,
-        |(number, title, issue_id)| {
-            format!(" [looking at issue #{number} \"{title}\" ({issue_id})]")
-        },
-    )
+pub(super) fn viewing_task_note(context: Option<&super::ViewingContext>) -> String {
+    context
+        .and_then(super::ViewingContext::task)
+        .map_or_else(String::new, |(number, title, task_id)| {
+            format!(" [looking at task #{number} \"{title}\" ({task_id})]")
+        })
 }
 
 /// Render message context exactly once in markdown catch-up. On the wire it

@@ -1,0 +1,19 @@
+{
+  "method": "task.stage_doc",
+  "since": "1.0.0",
+  "params": {
+    "task_id": "task-7",
+    "stage_id": "stage-2"
+  },
+  "result": {
+    "task_id": "task-7",
+    "plan_id": "task-7",
+    "stage_id": "stage-2",
+    "path": ".build/plan/stage-2.md",
+    "contents": "# Stage 2\n"
+  },
+  "errors": [
+    "not_found",
+    "internal"
+  ]
+}

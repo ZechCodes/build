@@ -8,7 +8,7 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { loadBrowserModules, mountLayout, withLayoutPage } from "./layoutHarness.mjs";
-import { deviceShim } from "./issueIdentityHarness.mjs";
+import { deviceShim } from "./taskIdentityHarness.mjs";
 
 const out = process.argv[2] || "/tmp/new-project-phone";
 const prefix = process.argv[3] || "";

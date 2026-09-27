@@ -147,7 +147,7 @@ beforeEach(async () => {
     calls.push({ method, params });
     if (method === "models.list") return CATALOG;
     if (method === "branch.get") return payload;
-    if (method === "issue.get") return payload;
+    if (method === "task.get") return payload;
     if (method === "thread.post") return { posted_sequence: 7 };
     if (method === "agent.choose") {
       return {
@@ -542,13 +542,13 @@ describe("agent rail chat ownership", () => {
     expect(bubble("agent-b").classList.contains("active")).toBe(true);
   });
 
-  it("uses an issue execution context for the picker, post, and shared surface selection", async () => {
+  it("uses a task execution context for the picker, post, and shared surface selection", async () => {
     const selection = createAgentSelection();
     payload = {
-      kind: "issue",
+      kind: "task",
       project_id: "project-1",
-      issue_id: "issue-1",
-      agents: [agent("issue-agent", 1)],
+      task_id: "task-1",
+      agents: [agent("task-agent", 1)],
       thread: {
         items: [
           { type: "message", data: { sequence: 11, role: "agent", body: "already read" } },
@@ -559,9 +559,9 @@ describe("agent rail chat ownership", () => {
       execution_context: {
         entity_id: "run-live",
         agent_id: "execution-agent",
-        conversation_id: "conversation-issue-agent",
+        conversation_id: "conversation-task-agent",
         agent: agent("execution-agent", 1, {
-          conversation_id: "conversation-issue-agent",
+          conversation_id: "conversation-task-agent",
           choice_revision: 0,
           read_through_sequence: 11,
           unread_count: 1,
@@ -570,10 +570,10 @@ describe("agent rail chat ownership", () => {
     };
     await writeRailWorkItem(payload, { deviceId: DEVICE_ID });
     rail = mountAgentRail(host(), {
-      kind: "issue",
+      kind: "task",
       deviceId: DEVICE_ID,
       projectId: "project-1",
-      issueId: "issue-1",
+      taskId: "task-1",
       autofocusComposer: true,
       selection,
       cacheScope: device().cacheScope,
@@ -599,7 +599,7 @@ describe("agent rail chat ownership", () => {
     expect(calls.find((entry) => entry.method === "thread.post").params).toMatchObject({
       entity_id: "run-live",
       agent_id: "execution-agent",
-      conversation_id: "conversation-issue-agent",
+      conversation_id: "conversation-task-agent",
     });
     expect(selection.scope()).toEqual({ agent_id: "execution-agent" });
   });

@@ -14,7 +14,7 @@ src/core/       runtime-agnostic logic, fully unit-tested:
   markdown.js     safe markdown rendering for plans/notifications
   notes.js        batched plan/diff comments → agent notes
   router.js       hash routes (#/board, #/task/<id>/<tab>, …)
-src/views/      board, workspace (Changes/Files/Issues), notifications, settings, task, gate
+src/views/      board, workspace (Changes/Files/Tasks), notifications, settings, task, gate
 src/sheets/     modal sheets: new task, repo browser/new/clone/remote, add device
 src/terminal/   the PTY drawer (ghostty-web) + its reconnecting E2EE session
 src/            app shell: state+render dispatch, connection lifecycle,

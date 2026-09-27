@@ -15,7 +15,7 @@
 //
 //   docker compose -p liveness128 -f deploy/compose.real.yml -f deploy/compose.liveness.yml \
 //     --profile qa run --rm --no-deps -T -e SOAK_MS=180000 -e LOAD_TERM_THREADS=24 \
-//     -e HAMMER_ISSUES=1 qa node liveness-soak.mjs </dev/null
+//     -e HAMMER_TASKS=1 qa node liveness-soak.mjs </dev/null
 //
 // (deploy/compose.liveness.yml says how the stack comes up and is paired.)
 // The qa image COPIES web/, so rebuild it after editing this file:
@@ -67,7 +67,7 @@
 //                          children), so this is load spawned the way a real
 //                          headless agent's is, in that agent's scope.
 //   LOAD_AGENTS=1          how many such agents to dispatch. The #131 fake `claude`
-//                          (see the #131 issue) also calls an MCP tool back to back,
+//                          (see the #131 task) also calls an MCP tool back to back,
 //                          so each agent is a stream of `mcp.control` frames that
 //                          take the app lock, the way a busy agent's are.
 //   PROBE_STATS=1          a fourth session calls `bridge.stats` every PING_EVERY_MS:
@@ -75,8 +75,8 @@
 //                          the app lock, so its round trip is the bridge's main
 //                          runtime answering at all. The summary adds the per-verb
 //                          frame table `bridge.stats` ends the run with.
-//   HAMMER_ISSUES=1        seed SEED_ISSUES (150) issues with a comment each in the
-//                          first project, then issues.list back to back from a third
+//   HAMMER_TASKS=1        seed SEED_TASKS (150) tasks with a comment each in the
+//                          first project, then tasks.list back to back from a third
 //                          session (foreground priority, the `app` channel) for the
 //                          whole soak: the read that holds the app lock.
 //   PREFER_DEVICE_ID       pin one device when the account has several
@@ -112,8 +112,8 @@ const TERM_FLOOD = process.env.LOAD_TERM_FLOOD === "1";
 const AGENT_THREADS = num("LOAD_AGENT_THREADS", 0);
 const AGENTS = num("LOAD_AGENTS", 1);
 const PROBE = process.env.PROBE_STATS === "1";
-const HAMMER = process.env.HAMMER_ISSUES === "1";
-const SEED_ISSUES = num("SEED_ISSUES", 150);
+const HAMMER = process.env.HAMMER_TASKS === "1";
+const SEED_TASKS = num("SEED_TASKS", 150);
 
 const started = performance.now();
 const stamp = () => `${((performance.now() - started) / 1000).toFixed(1).padStart(7)}s`;
@@ -314,21 +314,21 @@ async function startAgentLoad(session, project) {
   };
 }
 
-async function seedIssues(session, projectId) {
-  const have = ((await session.call("issues.list", { project_id: projectId })).issues || []).length;
+async function seedTasks(session, projectId) {
+  const have = ((await session.call("tasks.list", { project_id: projectId })).tasks || []).length;
   const body = "Seeded by liveness-soak.mjs. ".repeat(12);
-  for (let n = have; n < SEED_ISSUES; n++) {
-    const { issue } = await session.call("issues.create", { project_id: projectId, title: `liveness seed ${n}`, body, labels: ["liveness", `batch-${n % 7}`] });
-    await session.call("issues.comment", { issue_id: issue.id, body: `comment on ${n}: ${body}` });
+  for (let n = have; n < SEED_TASKS; n++) {
+    const { task } = await session.call("tasks.create", { project_id: projectId, title: `liveness seed ${n}`, body, labels: ["liveness", `batch-${n % 7}`] });
+    await session.call("tasks.comment", { task_id: task.id, body: `comment on ${n}: ${body}` });
   }
-  log(`issues: ${have} were there, ${Math.max(0, SEED_ISSUES - have)} seeded with a comment each`);
+  log(`tasks: ${have} were there, ${Math.max(0, SEED_TASKS - have)} seeded with a comment each`);
 }
 
-async function hammerIssues(session, projectId) {
+async function hammerTasks(session, projectId) {
   while (!stopping && !dead) {
     const sent = performance.now();
     try {
-      await session.call("issues.list", { project_id: projectId }, { priority: "foreground" });
+      await session.call("tasks.list", { project_id: projectId }, { priority: "foreground" });
       hammer.latencies.push(performance.now() - sent);
     } catch (error) {
       hammer.errors += 1;
@@ -368,7 +368,7 @@ function statsTable() {
 
 // ── the soak ─────────────────────────────────────────────────────────────────
 function progress(link, lastMinute) {
-  const hammerNote = HAMMER ? `  issues.list n=${hammer.calls} p50=${ms(pct(hammer.latencies, 50))} max=${ms(maxOf(hammer.latencies))}` : "";
+  const hammerNote = HAMMER ? `  tasks.list n=${hammer.calls} p50=${ms(pct(hammer.latencies, 50))} max=${ms(maxOf(hammer.latencies))}` : "";
   log(
     `progress: pings=${run.sent} last-minute p50=${ms(pct(lastMinute, 50))} max=${ms(maxOf(lastMinute))}` +
       `  timeouts=${run.timeouts} drops=${run.drops.length} ice=${link.peer.iceConnectionState} pair=${pairNow(link.peer).text}` +
@@ -419,14 +419,14 @@ function summary(link) {
   const max = maxOf(rtts);
   const over = rtts.filter((rtt) => rtt >= RTT_CEILING_MS).length;
   console.log("\n──────── liveness summary ────────");
-  console.log(`load         LOAD_TERM_THREADS=${TERM_THREADS} LOAD_TERM_FLOOD=${TERM_FLOOD ? 1 : 0} LOAD_AGENT_THREADS=${AGENT_THREADS} LOAD_AGENTS=${AGENT_THREADS > 0 ? AGENTS : 0} PROBE_STATS=${PROBE ? 1 : 0} HAMMER_ISSUES=${HAMMER ? 1 : 0} SOAK_MS=${SOAK_MS} RELAY_BOTH_ENDS=${RELAY_BOTH_ENDS ? 1 : 0} ICE_TRANSPORT_POLICY=${POLICY}`);
+  console.log(`load         LOAD_TERM_THREADS=${TERM_THREADS} LOAD_TERM_FLOOD=${TERM_FLOOD ? 1 : 0} LOAD_AGENT_THREADS=${AGENT_THREADS} LOAD_AGENTS=${AGENT_THREADS > 0 ? AGENTS : 0} PROBE_STATS=${PROBE ? 1 : 0} HAMMER_TASKS=${HAMMER ? 1 : 0} SOAK_MS=${SOAK_MS} RELAY_BOTH_ENDS=${RELAY_BOTH_ENDS ? 1 : 0} ICE_TRANSPORT_POLICY=${POLICY}`);
   console.log(`path         ${pair.text}${pair.relayed ? "" : "   !! NOT relay/relay"}`);
   console.log(`pings        samples=${run.sent} answered=${rtts.length} p50=${ms(pct(rtts, 50))} p95=${ms(pct(rtts, 95))} max=${ms(max)}`);
   console.log(`             over ${RTT_CEILING_MS} ms=${over}  timeouts(>${PING_DEADLINE_MS} ms)=${run.timeouts}  never answered=${run.sent - rtts.length - run.refusals}  refused=${run.refusals}`);
   console.log(`ice          disconnected=${run.iceDisconnected}  states: ${run.states.map((line) => line.trim()).join(" | ")}`);
   console.log(`drops        ${run.drops.length}${run.drops.length ? "\n  " + run.drops.join("\n  ") : ""}${dead ? `\n  link dead: ${dead}` : ""}`);
   console.log(`pushes       soak session ${run.pushes.length} [${[...new Set(run.pushes)].join(", ")}]  other sessions ${JSON.stringify(run.otherPushes)}`);
-  if (HAMMER) console.log(`issues.list  calls=${hammer.calls} p50=${ms(pct(hammer.latencies, 50))} p95=${ms(pct(hammer.latencies, 95))} max=${ms(maxOf(hammer.latencies))} errors=${hammer.errors}`);
+  if (HAMMER) console.log(`tasks.list  calls=${hammer.calls} p50=${ms(pct(hammer.latencies, 50))} p95=${ms(pct(hammer.latencies, 95))} max=${ms(maxOf(hammer.latencies))} errors=${hammer.errors}`);
   if (PROBE) {
     console.log(`bridge.stats calls=${probe.calls} p50=${ms(pct(probe.latencies, 50))} p95=${ms(pct(probe.latencies, 95))} max=${ms(maxOf(probe.latencies))} errors=${probe.errors}`);
     console.log(`frames       (bridge.stats at the end: frame time per verb since boot, slowest max first)\n${statsTable()}`);
@@ -469,13 +469,13 @@ async function main() {
   await session.call("session.hello", { client: { name: "liveness-soak", version: "0", api_range: ">=1.0.0 <2.0.0" } });
 
   const [project] = (await session.call("project.list")).projects || [];
-  if (HAMMER) await seedIssues(reader, project.project_id);
+  if (HAMMER) await seedTasks(reader, project.project_id);
   const stopLoops = term ? await startBusyLoops(session, term) : null;
   const stopAgent = AGENT_THREADS > 0 ? await startAgentLoad(session, project) : null;
   for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => ((stopping = true), log(`${signal}: ending the soak`)));
 
   loopDelay.reset();
-  const reading = HAMMER ? hammerIssues(reader, project.project_id) : null;
+  const reading = HAMMER ? hammerTasks(reader, project.project_id) : null;
   const probing = PROBE ? probeStats(prober) : null;
   await soak(link, session);
   stopping = true;

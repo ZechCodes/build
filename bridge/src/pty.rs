@@ -183,7 +183,7 @@ pub struct HarnessSpec {
     pub known_session_id: Option<String>,
     pub compaction_sidecar: Option<PathBuf>,
     /// The Build agent this spec starts, when the harness logs anything that
-    /// must name it (issue #58: a usage limit in bridge.log says whose turn).
+    /// must name it (task #58: a usage limit in bridge.log says whose turn).
     pub agent_id: Option<String>,
     /// An agent's harness or the user's own shell: where it runs, and behind
     /// whom (`crate::priority`).

@@ -361,7 +361,7 @@ describe("the device's settings page", () => {
 });
 
 // The account page keeps what is spent creating work rather than what a bridge
-// holds: the defaults a new issue starts with, read from the creation device's
+// holds: the defaults a new task starts with, read from the creation device's
 // own catalog.
 describe("the account page's creation defaults", () => {
   it("paints its cached device catalog while models.list has no answer", async () => {

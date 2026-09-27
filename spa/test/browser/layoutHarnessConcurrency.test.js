@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { deviceShim } from "./issueIdentityHarness.mjs";
+import { deviceShim } from "./taskIdentityHarness.mjs";
 import { loadBrowserModules, withLayoutPage } from "./layoutHarness.mjs";
 
 it("isolates concurrent layout servers' dependency caches", async () => {

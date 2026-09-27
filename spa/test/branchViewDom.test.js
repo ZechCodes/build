@@ -109,7 +109,7 @@ const finishableRow = (over = {}) => ({
   can_finish: true,
   finish: { warnings: [] },
   primary: false,
-  issue_id: null,
+  task_id: null,
   stat: { uncommitted: { files_changed: 0 }, ahead: 0, upstream: "origin/build/login" },
   ...over,
 });
@@ -744,16 +744,16 @@ describe("closing the branch out", () => {
   it.each([
     {
       state: "review",
-      promised: "Return the issue it implements to the inbox, noting that build/login was deleted",
-      absent: "Archive the issue",
+      promised: "Return the task it implements to the inbox, noting that build/login was deleted",
+      absent: "Archive the task",
     },
     {
       state: "merged",
-      promised: "Archive the issue it implements, with its stage plans",
-      absent: "Return the issue it implements to the inbox",
+      promised: "Archive the task it implements, with its stage plans",
+      absent: "Return the task it implements to the inbox",
     },
-  ])("says what Done will do with a linked issue when the branch is $state", async ({ state, promised, absent }) => {
-    await mountWith(finishableRow({ issue_id: "iss-9", state }));
+  ])("says what Done will do with a linked task when the branch is $state", async ({ state, promised, absent }) => {
+    await mountWith(finishableRow({ task_id: "iss-9", state }));
     doneButton().click();
 
     const scrim = await confirmScrim();
@@ -904,7 +904,7 @@ describe("closing the branch out", () => {
 
   it("reads the branch it deleted only after the deletion answers", async () => {
     let deleted;
-    await mountWith(finishableRow({ run_id: "run-1", issue_id: "iss-9" }), {
+    await mountWith(finishableRow({ run_id: "run-1", task_id: "iss-9" }), {
       "branch.finish": () =>
         new Promise((resolve) => {
           deleted = resolve;
@@ -937,9 +937,9 @@ describe("closing the branch out", () => {
     expect(finishCalls()).toHaveLength(0);
   });
 
-  it("clears the issue's cursor with the branch when the work landed", async () => {
+  it("clears the task's cursor with the branch when the work landed", async () => {
     let deleted;
-    await mountWith(finishableRow({ run_id: "run-1", issue_id: "iss-9", state: "merged" }), {
+    await mountWith(finishableRow({ run_id: "run-1", task_id: "iss-9", state: "merged" }), {
       "branch.finish": () =>
         new Promise((resolve) => {
           deleted = resolve;

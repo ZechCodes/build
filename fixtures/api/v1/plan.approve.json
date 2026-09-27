@@ -6,7 +6,7 @@
     "thread_limit": 40
   },
   "result": {
-    "issue_id": "plan-7",
+    "task_id": "plan-7",
     "plan_id": "plan-7",
     "goal": "Add push subscriptions to the bridge",
     "state": "plan_review",
@@ -96,22 +96,22 @@
     },
     "active_run_id": "run-7",
     "implementation_active": true,
-    "implementing_branch": "build/issue-7",
+    "implementing_branch": "build/task-7",
     "current_implementation_id": "run-7",
     "current_implementation": {
       "implementation_id": "run-7",
       "run_id": "run-7",
       "state": "building",
-      "branch": "build/issue-7",
-      "worktree_path": "/home/dev/.build-worktrees/issue-7"
+      "branch": "build/task-7",
+      "worktree_path": "/home/dev/.build-worktrees/task-7"
     },
     "implementation_lineage": [
       {
         "implementation_id": "run-7",
         "run_id": "run-7",
         "state": "building",
-        "branch": "build/issue-7",
-        "worktree_path": "/home/dev/.build-worktrees/issue-7",
+        "branch": "build/task-7",
+        "worktree_path": "/home/dev/.build-worktrees/task-7",
         "created_at": "2026-09-13T09:30:00Z"
       }
     ],

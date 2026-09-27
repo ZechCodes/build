@@ -273,7 +273,7 @@ describe("the picker while no device answers", () => {
   });
 });
 
-// Issue #58: a harness out of usage on a machine says so on that machine's row
+// Task #58: a harness out of usage on a machine says so on that machine's row
 // in the picker, in the banner's own words, and the toggle wears a mark while
 // any machine it stands for is limited — the way it wears the unreachable one.
 describe("a device out of usage", () => {

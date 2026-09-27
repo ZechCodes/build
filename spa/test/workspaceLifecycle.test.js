@@ -10,7 +10,7 @@ const verdict = (extra = {}) => ({
   idle: true,
   reclaimable: false,
   holds: [],
-  issues: [],
+  tasks: [],
   dirty_files: 0,
   unpushed_commits: 0,
   behind_commits: 0,
@@ -28,7 +28,7 @@ describe("a workspace's lifecycle line", () => {
   });
 
   it("says nothing about a workspace that is in use and still held", () => {
-    expect(lifecycleView(verdict({ idle: false, holds: ["issue_open"] }))).toBeNull();
+    expect(lifecycleView(verdict({ idle: false, holds: ["task_open"] }))).toBeNull();
   });
 
   it("offers Reclaim with the size when nothing holds the workspace", () => {
@@ -44,20 +44,20 @@ describe("a workspace's lifecycle line", () => {
 
   it("names what holds an idle workspace, counted", () => {
     const view = lifecycleView(verdict({
-      holds: ["dirty", "unpushed", "issue_open"],
+      holds: ["dirty", "unpushed", "task_open"],
       dirty_files: 3,
       unpushed_commits: 1,
     }));
     expect(view.reclaimable).toBe(false);
-    expect(view.text).toBe("Idle · 3 uncommitted files, 1 unpushed commit, an issue not Done · 17.2 GB");
+    expect(view.text).toBe("Idle · 3 uncommitted files, 1 unpushed commit, a task not Done · 17.2 GB");
   });
 
   it("names the holds read live, and a measurement that ran out", () => {
     const view = lifecycleView(verdict({
-      holds: ["agent_working", "terminal_open", "issues_unread", "unmeasured"],
+      holds: ["agent_working", "terminal_open", "tasks_unread", "unmeasured"],
       size_bytes: null,
     }));
-    expect(view.text).toBe("Idle · an agent working, a terminal open, issues unread, not fully measured");
+    expect(view.text).toBe("Idle · an agent working, a terminal open, tasks unread, not fully measured");
   });
 
   it("reads a hold this build has never heard of as the bridge's word", () => {

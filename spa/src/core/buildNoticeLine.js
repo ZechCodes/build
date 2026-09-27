@@ -5,7 +5,7 @@
 // aligned."
 //
 // A notification is written for the AGENT: the restart notice tells it to
-// carry on and what not to trust, the reminder lists every issue it still
+// carry on and what not to trust, the reminder lists every task it still
 // holds. All of that has to reach the agent, and none of it has to be on
 // screen — the reader wants to know one arrived, not to read the instructions
 // somebody else was given. So the body is kept, in full, behind a press, and
@@ -37,7 +37,7 @@ function restartSummary(body) {
   return `Build restarted at ${clockTime(at)} and brought this session back`;
 }
 
-/** "Build: 9 issues still held — #38, #34, #33 and 6 more." The list is the
+/** "Build: 9 tasks still held — #38, #34, #33 and 6 more." The list is the
  *  news; the instructions under it are for the agent. */
 function heldSummary(body) {
   const numbers = [...String(body || "").matchAll(/^-\s*#(\d+)/gm)].map((one) => `#${one[1]}`);
@@ -45,7 +45,7 @@ function heldSummary(body) {
   const shown = numbers.slice(0, 3).join(", ");
   const rest = numbers.length - 3;
   const said = rest > 0 ? `${shown} and ${rest} more` : shown;
-  return `Build: ${numbers.length} issue${numbers.length === 1 ? "" : "s"} still held — ${said}`;
+  return `Build: ${numbers.length} task${numbers.length === 1 ? "" : "s"} still held — ${said}`;
 }
 
 /**
@@ -58,7 +58,7 @@ function heldSummary(body) {
 export function buildNoticeSummary(message) {
   const body = String(message?.body || "");
   if (/^Build restarted at /.test(body)) return restartSummary(body);
-  if (/issues? assigned to you (are|is) still open/.test(body)) return heldSummary(body);
+  if (/tasks? assigned to you (are|is) still open/.test(body)) return heldSummary(body);
   return firstSentence(body) || "Build sent a notice";
 }
 

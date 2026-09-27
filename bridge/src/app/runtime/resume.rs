@@ -170,7 +170,7 @@ impl AppState {
 
     /// Every entity's agents worth recording: the runs and the plans,
     /// which between them own every conversation an agent can be on — a
-    /// workspace's, a project's, and an issue's alike.
+    /// workspace's, a project's, and a task's alike.
     fn resumable_rosters(
         &self,
     ) -> impl Iterator<Item = (&String, &crate::agent::AgentRoster)> + '_ {

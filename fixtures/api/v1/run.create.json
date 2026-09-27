@@ -2,7 +2,7 @@
   "method": "run.create",
   "since": "1.0.0",
   "params": {
-    "issue_id": "issue-3",
+    "task_id": "task-3",
     "base_branch": "main",
     "provider": "claude_code",
     "model": "opus"
@@ -10,8 +10,8 @@
   "result": {
     "run_id": "run-7",
     "implementation_id": "run-7",
-    "issue_id": "issue-3",
-    "plan_id": "issue-3",
+    "task_id": "task-3",
+    "plan_id": "task-3",
     "goal": "Add the api/v1 facade",
     "state": "review",
     "needs_attention": true,

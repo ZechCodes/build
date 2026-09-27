@@ -15,7 +15,7 @@ fn completion_message_correlation_survives_the_control_socket_round_trip() {
 fn first_operation_for_a_user_added_agent_carries_the_cold_start_protocol() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (_issue_id, run_id) = planned_run_in_review(&mut state, "new agent operation");
+    let (_task_id, run_id) = planned_run_in_review(&mut state, "new agent operation");
     let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
     assert_eq!(added["ok"], true, "{added:?}");
     let agent_id = added["result"]["agent"]["id"].as_str().unwrap();
@@ -43,7 +43,7 @@ fn first_operation_for_a_user_added_agent_carries_the_cold_start_protocol() {
         "{}",
         said.cold
     );
-    assert!(!said.cold.contains("process every unread Issue message"));
+    assert!(!said.cold.contains("process every unread Task message"));
     assert!(!said.warm.contains("Build conversation protocol:"));
 }
 
@@ -51,7 +51,7 @@ fn first_operation_for_a_user_added_agent_carries_the_cold_start_protocol() {
 fn thread_post_persists_and_delivers_each_messages_viewing_context() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (_issue_id, run_id) = planned_run_in_review(&mut state, "context delivery");
+    let (_task_id, run_id) = planned_run_in_review(&mut state, "context delivery");
     let context = json!({
         "version": 1,
         "items": [{ "kind": "selection", "path": "src/lib.rs", "text": "chosen", "line_start": 2, "line_end": 2, "side": "new" }]
@@ -87,7 +87,7 @@ fn thread_post_persists_and_delivers_each_messages_viewing_context() {
 fn thread_post_refuses_invalid_viewing_context_before_appending() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (_issue_id, run_id) = planned_run_in_review(&mut state, "context validation");
+    let (_task_id, run_id) = planned_run_in_review(&mut state, "context validation");
     let before = primary_thread(&state.runs[&run_id].agents).items.len();
     let posted = state.handle(req(
         "thread.post",
@@ -224,7 +224,7 @@ fn a_choice_made_after_the_conversation_moved_on_is_refused() {
 fn an_option_the_agent_never_offered_cannot_be_answered_with() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (_issue_id, run_id) = planned_run_in_review(&mut state, "the tests are red");
+    let (_task_id, run_id) = planned_run_in_review(&mut state, "the tests are red");
     let offer = state
         .on_mcp_action(
             &run_id,
@@ -435,7 +435,7 @@ async fn thread_post_addressed_to_run_nudges_its_live_agent() {
 }
 
 /// Legacy plan conversations remain readable, but posting cannot revive their
-/// planning agents after the Issue surface is retired.
+/// planning agents after the Task surface is retired.
 #[test]
 fn thread_post_refuses_a_retired_plan_without_changing_its_state() {
     let (dir, repo) = init_repo();
@@ -456,7 +456,7 @@ fn thread_post_refuses_a_retired_plan_without_changing_its_state() {
             json!({ "entity_id": plan_id, "body": "here is your answer" }),
         ));
         assert_eq!(posted["ok"], false, "{parked:?}: {posted:?}");
-        assert_eq!(posted["error"], crate::app::issues::ISSUES_RETIRED_ERROR);
+        assert_eq!(posted["error"], crate::app::tasks::TASKS_RETIRED_ERROR);
         let active = state.plans.get(&plan_id).unwrap();
         assert_eq!(active.plan.state, parked, "{parked:?}");
     }
@@ -491,8 +491,8 @@ fn thread_post_to_a_parked_run_is_the_reply_that_resumes_building() {
     }
 }
 
-/// The Issue owns the conversation, but the reply must still unblock the
-/// live implementation it wakes: posting to the Issue while its run is
+/// The Task owns the conversation, but the reply must still unblock the
+/// live implementation it wakes: posting to the Task while its run is
 /// parked resumes that run.
 #[test]
 fn thread_post_addressed_to_run_unblocks_it() {
@@ -568,39 +568,39 @@ fn run_post_and_mcp_read_the_same_conversation() {
 }
 
 #[test]
-fn explicit_issue_post_is_refused_without_reaching_the_run() {
+fn explicit_task_post_is_refused_without_reaching_the_run() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (issue_id, run_id) = planned_run_in_review(&mut state, "explicit issue address");
-    let issue_agent = state.plans[&issue_id].agents.sole().id.clone();
+    let (task_id, run_id) = planned_run_in_review(&mut state, "explicit task address");
+    let task_agent = state.plans[&task_id].agents.sole().id.clone();
     let execution_agent = state.runs[&run_id].agents.primary().unwrap().id.clone();
     state.delivery_queue.clear_queued();
 
     let posted = state.handle(req(
         "thread.post",
         json!({
-            "entity_id": issue_id,
-            "agent_id": issue_agent,
-            "conversation_id": issue_agent,
-            "body": "answer the issue agent itself",
+            "entity_id": task_id,
+            "agent_id": task_agent,
+            "conversation_id": task_agent,
+            "body": "answer the task agent itself",
         }),
     ));
 
     assert_eq!(posted["ok"], false, "{posted:?}");
     assert!(
         state.delivery_queue.queued_is_empty(),
-        "the Issue workspace was handed off, so its explicitly addressed agent has no PTY; \
+        "the Task workspace was handed off, so its explicitly addressed agent has no PTY; \
          the post must not silently reach implementation agent {execution_agent}"
     );
     assert!(state
-        .agent_conversation(&issue_id, Some(&issue_agent))
+        .agent_conversation(&task_id, Some(&task_agent))
         .unwrap()
         .items
         .iter()
         .all(|item| !matches!(
             item,
             crate::thread::ThreadItem::Message(message)
-                if message.body == "answer the issue agent itself"
+                if message.body == "answer the task agent itself"
         )));
 }
 

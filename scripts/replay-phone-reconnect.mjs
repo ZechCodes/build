@@ -89,7 +89,7 @@ try {
     });
     const owner = await device.rpc("workspace.ensure_conversation", { workspace_id: workspace.workspace_id });
     await device.rpc("agent.add", { entity_id: owner.entity_id, name: "Phone replay agent" });
-    await device.rpc("issues.create", { project_id: projectId, title: "Phone replay issue", status: "in_progress" });
+    await device.rpc("tasks.create", { project_id: projectId, title: "Phone replay task", status: "in_progress" });
     await new Promise((done) => setTimeout(done, 1500));
     await modules["core/cacheSync"].syncDevice(device.deviceId);
     window.replayOwner = owner;

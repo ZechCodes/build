@@ -7,7 +7,7 @@ pub(in crate::app::tests) fn work_item_row_for(state: &mut AppState, entity_id: 
     let rows = work_item_rows(state);
     rows.iter()
         .find(|row| row["run_id"] == json!(entity_id))
-        .or_else(|| rows.iter().find(|row| row["issue_id"] == json!(entity_id)))
+        .or_else(|| rows.iter().find(|row| row["task_id"] == json!(entity_id)))
         .unwrap_or_else(|| panic!("{entity_id} has a row on the feed: {rows:?}"))
         .clone()
 }
@@ -20,8 +20,8 @@ pub(in crate::app::tests) fn work_item_row_for(state: &mut AppState, entity_id: 
 fn muting_an_entry_silences_its_badge_and_unmuting_brings_it_back() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (issue_id, run_id) = planned_run_in_review(&mut state, "mute me");
-    push_to_issue_conversation(&mut state, &issue_id, |thread| {
+    let (task_id, run_id) = planned_run_in_review(&mut state, "mute me");
+    push_to_task_conversation(&mut state, &task_id, |thread| {
         thread.post_agent("which name did you want?", None, now_rfc3339());
     });
 
@@ -133,8 +133,8 @@ fn entity_mute_refuses_what_it_cannot_silence() {
 fn dismissing_a_row_clears_it_until_the_work_speaks_again() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (issue_id, run_id) = planned_run_in_review(&mut state, "clear me");
-    push_to_issue_conversation(&mut state, &issue_id, |thread| {
+    let (task_id, run_id) = planned_run_in_review(&mut state, "clear me");
+    push_to_task_conversation(&mut state, &task_id, |thread| {
         thread.post_agent("which name did you want?", None, now_rfc3339());
     });
     let seen = state.handle(req("entity.seen", json!({ "entity_id": run_id })));
@@ -163,7 +163,7 @@ fn dismissing_a_row_clears_it_until_the_work_speaks_again() {
     assert_eq!(entry["state"], "review", "{entry:?}");
 
     // Tool activity leaves it cleared.
-    push_to_issue_conversation(&mut state, &issue_id, |thread| {
+    push_to_task_conversation(&mut state, &task_id, |thread| {
         thread.push_event(
             crate::thread::ThreadEventKind::Committed,
             None,
@@ -175,7 +175,7 @@ fn dismissing_a_row_clears_it_until_the_work_speaks_again() {
     let row = work_item_row_for(&mut state, &run_id);
     assert_eq!(row["dismissed"], true, "tools do not speak: {row:?}");
 
-    push_to_issue_conversation(&mut state, &issue_id, |thread| {
+    push_to_task_conversation(&mut state, &task_id, |thread| {
         thread.post_agent_progress("still going", None, now_rfc3339());
     });
     let row = work_item_row_for(&mut state, &run_id);
@@ -183,7 +183,7 @@ fn dismissing_a_row_clears_it_until_the_work_speaks_again() {
 
     // The agent handing its turn back is, and the row is in the list again
     // with nobody having to un-dismiss it.
-    push_to_issue_conversation(&mut state, &issue_id, |thread| {
+    push_to_task_conversation(&mut state, &task_id, |thread| {
         thread.post_agent("done — take a look", None, now_rfc3339());
     });
     let row = work_item_row_for(&mut state, &run_id);
@@ -225,8 +225,8 @@ fn push_to_agent_conversation(
 fn clearing_a_row_draws_a_line_under_every_agent_on_it() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (issue_id, run_id) = planned_run_in_review(&mut state, "two voices");
-    push_to_issue_conversation(&mut state, &issue_id, |thread| {
+    let (task_id, run_id) = planned_run_in_review(&mut state, "two voices");
+    push_to_task_conversation(&mut state, &task_id, |thread| {
         thread.post_agent("which name did you want?", None, now_rfc3339());
     });
     state.handle(req("entity.seen", json!({ "entity_id": run_id })));
@@ -308,8 +308,8 @@ fn silent_agent_roster_changes_preserve_a_clear() {
 fn an_old_style_dismissal_still_clears_a_single_agent_row() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (issue_id, run_id) = planned_run_in_review(&mut state, "written before agents");
-    push_to_issue_conversation(&mut state, &issue_id, |thread| {
+    let (task_id, run_id) = planned_run_in_review(&mut state, "written before agents");
+    push_to_task_conversation(&mut state, &task_id, |thread| {
         thread.post_agent("which name did you want?", None, now_rfc3339());
     });
     state.handle(req("entity.seen", json!({ "entity_id": run_id })));
@@ -325,7 +325,7 @@ fn an_old_style_dismissal_still_clears_a_single_agent_row() {
     assert_eq!(row["dismissed"], true, "{row:?}");
 
     // And it comes back the same way it always did.
-    push_to_issue_conversation(&mut state, &issue_id, |thread| {
+    push_to_task_conversation(&mut state, &task_id, |thread| {
         thread.post_agent("done — take a look", None, now_rfc3339());
     });
     let row = work_item_row_for(&mut state, &run_id);
@@ -338,8 +338,8 @@ fn an_old_style_dismissal_still_clears_a_single_agent_row() {
 fn old_unread_does_not_beat_a_newer_dismissal() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (issue_id, run_id) = planned_run_in_review(&mut state, "still asking");
-    push_to_issue_conversation(&mut state, &issue_id, |thread| {
+    let (task_id, run_id) = planned_run_in_review(&mut state, "still asking");
+    push_to_task_conversation(&mut state, &task_id, |thread| {
         thread.post_agent("which name did you want?", None, now_rfc3339());
     });
 
@@ -362,8 +362,8 @@ fn old_unread_does_not_beat_a_newer_dismissal() {
 fn mute_and_dismiss_are_independent() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (issue_id, run_id) = planned_run_in_review(&mut state, "quiet and gone");
-    push_to_issue_conversation(&mut state, &issue_id, |thread| {
+    let (task_id, run_id) = planned_run_in_review(&mut state, "quiet and gone");
+    push_to_task_conversation(&mut state, &task_id, |thread| {
         thread.post_agent("which name did you want?", None, now_rfc3339());
     });
 
@@ -401,15 +401,15 @@ fn mute_and_dismiss_are_independent() {
 fn an_agents_hand_off_never_brings_back_a_cleared_row() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (issue_id, run_id) = planned_run_in_review(&mut state, "handed over");
-    push_to_issue_conversation(&mut state, &issue_id, |thread| {
+    let (task_id, run_id) = planned_run_in_review(&mut state, "handed over");
+    push_to_task_conversation(&mut state, &task_id, |thread| {
         thread.post_agent("which name did you want?", None, now_rfc3339());
     });
     state.handle(req("entity.seen", json!({ "entity_id": run_id })));
     let cleared = state.handle(req("entity.dismiss", json!({ "entity_id": run_id })));
     assert_eq!(cleared["ok"], true, "{cleared:?}");
 
-    push_to_issue_conversation(&mut state, &issue_id, |thread| {
+    push_to_task_conversation(&mut state, &task_id, |thread| {
         thread.post_user_from_agent(
             "take the retry path next",
             crate::thread::AgentIdentity::new("project-1".to_string()),
@@ -425,7 +425,7 @@ fn an_agents_hand_off_never_brings_back_a_cleared_row() {
 
     // And the dismissal is still there to be crossed: the human speaking
     // brings the row back the way it always did.
-    push_to_issue_conversation(&mut state, &issue_id, |thread| {
+    push_to_task_conversation(&mut state, &task_id, |thread| {
         thread.post_user("actually, hold on", None, now_rfc3339());
     });
     let row = work_item_row_for(&mut state, &run_id);
@@ -731,15 +731,15 @@ fn bare_row(state: &mut AppState, project_id: &str, branch: &str) -> Value {
     got["result"].clone()
 }
 
-/// A planned run and its Issue share one conversation. One piece of news on
+/// A planned run and its Task share one conversation. One piece of news on
 /// it is one notification, so whichever mutation tail runs second must find
 /// nothing new — otherwise every done report pushes twice.
 #[test]
 fn one_piece_of_news_reaches_the_push_funnel_once() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (issue_id, run_id) = planned_run_in_review(&mut state, "one push");
-    push_to_issue_conversation(&mut state, &issue_id, |thread| {
+    let (task_id, run_id) = planned_run_in_review(&mut state, "one push");
+    push_to_task_conversation(&mut state, &task_id, |thread| {
         thread.push_event(
             crate::thread::ThreadEventKind::Done,
             Some("Implemented the change".to_string()),

@@ -5,7 +5,7 @@ use super::*;
 // The rule is the router's whole contract (spec: UX Redesign Decisions,
 // "Capture and router"): dispatch to a branch only when the capture names an
 // existing branch or unambiguously continues work already in flight there;
-// otherwise file an inert issue on the best-guess project; ask only when
+// otherwise file an inert task on the best-guess project; ask only when
 // even the project is ambiguous.
 //
 // These tests take the model out and leave everything else in.
@@ -24,7 +24,7 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RoutingDecision {
     Dispatch { project_id: String, branch: String },
-    FileIssue { project_id: String },
+    FileTask { project_id: String },
     Ask,
 }
 
@@ -158,17 +158,17 @@ impl ScriptedRouter {
                 )
                 .expect("a dispatch the rule reached is a dispatch Build allows");
             }
-            RoutingDecision::FileIssue { project_id } => {
+            RoutingDecision::FileTask { project_id } => {
                 self.call(
                     state,
-                    "create_issue",
+                    "create_task",
                     json!({
                         "project_id": project_id,
                         "goal": said,
                         "rationale": "no branch in flight is doing this work",
                     }),
                 )
-                .expect("an issue the rule reached is an issue Build allows");
+                .expect("a task the rule reached is a task Build allows");
             }
             RoutingDecision::Ask => {
                 self.call(
@@ -252,7 +252,7 @@ impl ScriptedRouter {
                 .is_some_and(|name| said.contains(&name.to_lowercase()))
         });
         if let Some(project) = named.or_else(|| projects.first().filter(|_| projects.len() == 1)) {
-            return RoutingDecision::FileIssue {
+            return RoutingDecision::FileTask {
                 project_id: project["project_id"].as_str().unwrap().to_string(),
             };
         }
@@ -346,7 +346,7 @@ fn a_capture_naming_a_branch_in_flight_is_dispatched_to_it() {
     );
     assert!(
         state.plans.is_empty(),
-        "work this clearly placed is never also filed as an issue"
+        "work this clearly placed is never also filed as a task"
     );
     assert_router_session_settled(&state, &router.capture_id);
 }

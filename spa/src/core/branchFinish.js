@@ -119,13 +119,13 @@ export function branchInboxKey(row, { projectId, branch, projectKey }) {
 }
 
 /** The four facts Done speaks about, read off a `branch.get` row: which branch,
- *  the issue it implements, whether the work landed, and what the bridge says
+ *  the task it implements, whether the work landed, and what the bridge says
  *  the deletion would cost. `fallbackBranch` names the row the URL asked for,
  *  for a read that has not answered yet. */
 export function branchFinishFacts(row, fallbackBranch) {
   return {
     branch: (row && row.branch) || fallbackBranch || null,
-    issueId: (row && row.issue_id) || null,
+    taskId: (row && row.task_id) || null,
     merged: !!row && row.state === "merged",
     warnings: ((row && row.finish && row.finish.warnings) || []).map((warning) => warning.message),
   };

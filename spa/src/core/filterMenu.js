@@ -82,7 +82,7 @@ export function menuRows(options, query, chosen, { multi = false, invent = null 
  * The row that makes a name that does not exist yet.
  *
  * A filter chooses from what IS; a composer has to be able to say a label
- * nobody has used before, which is most of what labelling a new issue is. So
+ * nobody has used before, which is most of what labelling a new task is. So
  * a menu asked to `invent` offers one extra row at the foot whenever the query
  * names something not already on offer — and it is at the FOOT, because
  * inventing is what you do when none of the answers above it was the one.
@@ -134,7 +134,7 @@ const labelOf = (options, value) =>
  * things. Labels are short and interchangeable, so the filter names ITSELF and
  * counts them: `Labels · 2`. An assignee is a person or an agent and the first
  * one is the most useful word on the bar, so it leads and the rest are a
- * number: `issues-spa · Agent 1 +1`.
+ * number: `tasks-spa · Agent 1 +1`.
  */
 export function menuPressLabel({ name, options, chosen, summary = "first" }) {
   const held = chosen || [];

@@ -6,8 +6,8 @@ import { renderInbox } from "./views/inbox.js";
 import { renderBranch } from "./views/branchView.js";
 import { renderWorkspace } from "./views/workspaceView.js";
 import { renderProject } from "./views/projectView.js";
-import { renderIssue } from "./views/issueView.js";
-import { renderTrackerIssue } from "./views/trackerIssueView.js";
+import { renderTask } from "./views/taskView.js";
+import { renderTrackerTask } from "./views/trackerTaskView.js";
 import { isSettingsRoute, renderSettingsModal } from "./views/settingsModal.js";
 import { renderCaptureDecision } from "./views/captureDecision.js";
 import { renderResolving } from "./views/resolving.js";
@@ -146,8 +146,8 @@ function mayLeaveRoute() {
  * route has no hash of its own, so the link is written from the route as given.
  */
 function standOn(route) {
-  // What the reader is looking at belongs to the PAGE (#21 has the issue page
-  // name its issue, so the project agent beside it knows which one is open), so
+  // What the reader is looking at belongs to the PAGE (#21 has the task page
+  // name its task, so the project agent beside it knows which one is open), so
   // it is dropped when the page is replaced and not merely when the URL moves.
   // Opening a modal, and closing it again, is neither: the reader is still
   // looking at the page under the scrim, and that page does not read again on
@@ -258,7 +258,7 @@ function routeLinkHash(link) {
 }
 
 // Every route is one of these surfaces: the inbox (the landing route), a
-// project, a workspace, a branch, an issue, a capture's decision page, or the
+// project, a workspace, a branch, a task, a capture's decision page, or the
 // holding screen a pre-redesign URL waits on. The account and a device's
 // settings are not here: they are configuration rather than a place to stand,
 // so they open as a modal over whichever of these the reader was on.
@@ -267,8 +267,8 @@ const VIEWS = {
   project: renderProject,
   branch: renderBranch,
   workspace: renderWorkspace,
-  issue: renderIssue,
-  trackerIssue: renderTrackerIssue,
+  task: renderTask,
+  trackerTask: renderTrackerTask,
   capture: renderCaptureDecision,
   resolve: renderResolving,
 };
@@ -445,7 +445,7 @@ function renderPage() {
   toolbarRouteChanged(); // …and the toolbar naming where you are standing
   // …and the conversation rail and console standing on what this route is OF
   // (core/shell.js). Before the page paints, not after and not by the page: a
-  // page that mounted its own rail could forget one, and the issue page did.
+  // page that mounted its own rail could forget one, and the task page did.
   standShell(App.route);
   followRouteDevice(); // …and the terminals typing at the machine it names
   // The shell's grid owns the columns; #root is one cell. A view states its own

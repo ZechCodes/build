@@ -98,7 +98,7 @@ impl AppState {
     /// the next action rewrites the whole row, and a boot replays the actions
     /// the store already holds.
     ///
-    /// A new session is pushed to every client as an `issues` change on every
+    /// A new session is pushed to every client as an `tasks` change on every
     /// project, because the list answer carries the session: a laptop holding
     /// the old one reads the new start rather than inferring an absence the
     /// user spent on their phone. Activity inside a session pushes nothing;
@@ -119,7 +119,7 @@ impl AppState {
             || updated.previous_session_ended_ms != before.previous_session_ended_ms;
         if new_boundary {
             for project in self.projects.iter() {
-                self.changes.note_issues(&project.id, &[]);
+                self.changes.note_tasks(&project.id, &[]);
             }
         }
     }
@@ -129,7 +129,7 @@ impl AppState {
         self.user_session
     }
 
-    /// The session as `issues.list` and `user.present` answer it, with the
+    /// The session as `tasks.list` and `user.present` answer it, with the
     /// bridge's clock beside it: a client measures the six-hour silence and
     /// the 96-hour absence against this, never against its own clock.
     pub(in crate::app) fn user_session_json(&self) -> serde_json::Value {

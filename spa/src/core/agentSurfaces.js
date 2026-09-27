@@ -11,7 +11,7 @@ import { uiAddress, watchUiState } from "./localUiState.js";
 import {
   AGENT_ENTRY_KIND,
   CHECKLIST_ENTRY_KIND,
-  ISSUES_ENTRY_KIND,
+  TASKS_ENTRY_KIND,
   SHELL_ENTRY_KIND,
   WORKFLOW_ENTRY_KIND,
   advanceSurfaceVisibility,
@@ -38,7 +38,7 @@ import {
   WORKFLOW_HEAD_SELECTOR,
   agentRowHtml,
   checklistItemHtml,
-  issueSurfaceRowHtml,
+  taskSurfaceRowHtml,
   checklistContextHtml,
   checklistViewerHtml,
   completedFoldHeadHtml,
@@ -121,7 +121,7 @@ const VIEWER_PLANS = {
   },
   [AGENT_ENTRY_KIND]: runningAboveWhatFinished(AGENT_ENTRY_KIND, agentRowHtml),
   [SHELL_ENTRY_KIND]: runningAboveWhatFinished(SHELL_ENTRY_KIND, shellRowHtml),
-  [ISSUES_ENTRY_KIND]: runningAboveWhatFinished(ISSUES_ENTRY_KIND, issueSurfaceRowHtml),
+  [TASKS_ENTRY_KIND]: runningAboveWhatFinished(TASKS_ENTRY_KIND, taskSurfaceRowHtml),
   [CHECKLIST_ENTRY_KIND]: {
     frameHtmlWithEmptyLists: () => checklistViewerHtml(),
     headSelector: CHECKLIST_CONTEXT_SELECTOR,

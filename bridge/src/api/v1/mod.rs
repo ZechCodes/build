@@ -30,26 +30,26 @@
 //!
 //! Also note the retirement guard at the top of `AppState::route`: planning
 //! was retired upstream by keeping its verbs served and making the mutating
-//! ones refuse, so `issue.approve` and friends never reach the handlers
+//! ones refuse, so `task.approve` and friends never reach the handlers
 //! registered for them here. Their reads still do.
 //!
 //! Families: [`board`] (`board.list`, `archive.list`, `archived.list`,
 //! `project.*`, `capture.*`, `settings.*`, `models.list`), [`thread`]
 //! (`thread.*`, `agent.add/choose/remove/list`), [`changes`]
 //! (`changes.subscribe/unsubscribe/list`), [`git`] (`git.*`, `fs.*`,
-//! and the diff reads), [`github`] (`github.repos`), [`lifecycle`] (`issue.*`, `plan.*`, `run.*`,
+//! and the diff reads), [`github`] (`github.repos`), [`lifecycle`] (`task.*`, `plan.*`, `run.*`,
 //! `branch.*`, `worktree.create/finish`, `entity.*`),
 //! [`workspace`] (`workspace.*`), [`updates`] (`bridge.update_status`,
-//! `bridge.check_update`, `bridge.install_update`), [`issues`] (`issues.*`, the per-project
-//! tracker — NOT `lifecycle`'s singular `issue.*`, which is the retired plan
+//! `bridge.check_update`, `bridge.install_update`), [`tasks`] (`tasks.*`, the per-project
+//! tracker — NOT `lifecycle`'s singular `task.*`, which is the retired plan
 //! flow).
 
 pub mod board;
 pub mod changes;
 pub mod git;
 pub mod github;
-pub mod issues;
 pub mod lifecycle;
+pub mod tasks;
 pub mod thread;
 pub mod updates;
 pub mod workspace;
@@ -219,7 +219,7 @@ pub trait WireParams: Serialize {
 impl<T: Serialize> WireParams for T {}
 
 /// A verb that names nothing but itself — a read of what the account holds
-/// (`board.list`, `issue.list`, `settings.get`, ...). One type for every
+/// (`board.list`, `task.list`, `settings.get`, ...). One type for every
 /// family, so "takes nothing" is spelled once.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct NoParams {}
@@ -341,7 +341,7 @@ fn families() -> [&'static [(&'static str, Handler)]; 9] {
         thread::methods(),
         git::methods(),
         github::methods(),
-        issues::methods(),
+        tasks::methods(),
         lifecycle::methods(),
         updates::methods(),
         workspace::methods(),

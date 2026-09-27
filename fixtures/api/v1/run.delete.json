@@ -6,7 +6,7 @@
   },
   "result": {
     "ok": true,
-    "retained_as_issue_lineage": true
+    "retained_as_task_lineage": true
   },
   "errors": [
     "not_found",

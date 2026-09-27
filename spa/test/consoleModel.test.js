@@ -78,9 +78,9 @@ describe("the size a console reopens at", () => {
 });
 
 describe("the size a work item is remembered at", () => {
-  it("keys the memory by the branch or the issue, so each is its own console", () => {
+  it("keys the memory by the branch or the task, so each is its own console", () => {
     expect(consoleKey({ kind: "branch", projectId: "p1", branch: "build/login" })).toBe("branch:p1:build/login");
-    expect(consoleKey({ kind: "issue", projectId: "p1", issueId: "i-7" })).toBe("issue:i-7");
+    expect(consoleKey({ kind: "task", projectId: "p1", taskId: "i-7" })).toBe("task:i-7");
     // A workspace lives on a machine, and two machines can hand out the same
     // workspace id, so the key carries the device the way every other
     // workspace key does (core/deviceKey.js mints it).
@@ -97,7 +97,7 @@ describe("the size a work item is remembered at", () => {
     writeConsoleSize(key, "half", storage);
     expect(readConsoleSize(key, storage)).toBe("half");
     // One entity's choice says nothing about another's.
-    expect(readConsoleSize(consoleKey({ kind: "issue", projectId: "p1", issueId: "i-2" }), storage)).toBe("collapsed");
+    expect(readConsoleSize(consoleKey({ kind: "task", projectId: "p1", taskId: "i-2" }), storage)).toBe("collapsed");
   });
 
   it("survives a storage that refuses to answer", () => {
@@ -135,15 +135,15 @@ describe("whose terminals the console holds", () => {
     expect(consoleScope(context, { run_id: null, worktree_id: null })).toEqual({ project_id: "p1" });
   });
 
-  it("scopes an issue to the project's own checkout, where its agent runs", () => {
-    expect(consoleScope({ kind: "issue", projectId: "p1", issueId: "i-1" }, null)).toEqual({ project_id: "p1" });
+  it("scopes a task to the project's own checkout, where its agent runs", () => {
+    expect(consoleScope({ kind: "task", projectId: "p1", taskId: "i-1" }, null)).toEqual({ project_id: "p1" });
   });
 
   it("names no directory when the branch answered with nothing at all", () => {
     const context = { kind: "branch", projectId: "p1", branch: "gone" };
     expect(consoleScope(context, null)).toBeNull();
     expect(consoleScope({ kind: "branch", projectId: null, branch: "gone" }, { run_id: null })).toBeNull();
-    expect(consoleScope({ kind: "issue", projectId: null, issueId: "i-1" }, null)).toBeNull();
+    expect(consoleScope({ kind: "task", projectId: null, taskId: "i-1" }, null)).toBeNull();
   });
 });
 

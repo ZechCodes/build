@@ -1,6 +1,6 @@
 // Where a URL that does not say enough waits. A pre-redesign URL names a run, a
 // worktree or a plan by id; the new ones name a branch by
-// (project, branch) and an issue by (project, issue), and a work URL that names
+// (project, branch) and a task by (project, task), and a work URL that names
 // no device names a project every machine mints its own `proj-1` of. The feed
 // carries what is missing, so this surface holds the screen until the devices
 // that can answer have, rewrites the hash to the work item, and gets out of the
@@ -36,7 +36,7 @@ export function renderResolving() {
   root.innerHTML = `
     <div class="shell-stub">
       <h2>Opening…</h2>
-      <p>That link points at work Build now shows as a branch or an issue. Finding it.</p>
+      <p>That link points at work Build now shows as a branch or a task. Finding it.</p>
     </div>`;
   const reference = App.route;
   let settled = false;

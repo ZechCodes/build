@@ -3,7 +3,7 @@
 // github.repos.
 // Run from spa/: node test/browser/captureRepoPicker.mjs [output.png] [width] [height]
 import { loadBrowserModules, mountLayout, withLayoutPage } from "./layoutHarness.mjs";
-import { deviceShim } from "./issueIdentityHarness.mjs";
+import { deviceShim } from "./taskIdentityHarness.mjs";
 
 const output = process.argv[2] || "/tmp/repo-picker.png";
 const width = Number(process.argv[3]) || 1440;

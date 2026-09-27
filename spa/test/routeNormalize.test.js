@@ -59,10 +59,10 @@ describe("a route that names its device", () => {
   });
 
   it("is left alone by markRoute", () => {
-    const onDevice = { name: "issue", deviceId: "dev-1", projectId: "p1", id: "i-1" };
+    const onDevice = { name: "task", deviceId: "dev-1", projectId: "p1", id: "i-1" };
     markRoute(onDevice);
 
     expect(App.route).toBe(onDevice);
-    expect(location.hash).toBe("#/device/dev-1/project/p1/issue/i-1");
+    expect(location.hash).toBe("#/device/dev-1/project/p1/task/i-1");
   });
 });

@@ -48,9 +48,9 @@
           "idle": true,
           "reclaimable": false,
           "holds": ["unpushed", "plain_directory"],
-          "issues": [
+          "tasks": [
             {
-              "issue_id": "issue-01J8Z3Q6W8K4M2N5P7R9T1V3X5",
+              "task_id": "task-01J8Z3Q6W8K4M2N5P7R9T1V3X5",
               "number": 135,
               "title": "Workspace lifecycle",
               "status": "done",

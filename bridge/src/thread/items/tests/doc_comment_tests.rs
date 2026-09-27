@@ -16,7 +16,7 @@ fn passage() -> DocAnchor {
 fn commented_stage() -> Thread {
     let mut thread = Thread::for_agent("agent-1");
     thread.post_doc_comment(
-        "issue-1",
+        "task-1",
         "database-schema",
         STAGE_PATH,
         Some(passage()),
@@ -43,8 +43,8 @@ fn a_doc_comment_is_an_anchored_post_on_the_conversation() {
     assert_eq!(anchor.line_start, Some(12));
     assert_eq!(anchor.line_end, Some(14));
     assert_eq!(anchor.snippet, passage().snippet);
-    assert!(message.links.contains(&ThreadLink::IssueStage {
-        issue_id: "issue-1".to_string(),
+    assert!(message.links.contains(&ThreadLink::TaskStage {
+        task_id: "task-1".to_string(),
         stage_id: "database-schema".to_string(),
         path: STAGE_PATH.to_string(),
     }));
@@ -72,7 +72,7 @@ fn a_doc_comment_is_an_anchored_post_on_the_conversation() {
 fn a_general_comment_points_at_the_document_rather_than_a_passage() {
     let mut thread = Thread::for_agent("agent-1");
     thread.post_doc_comment(
-        "issue-1",
+        "task-1",
         "database-schema",
         STAGE_PATH,
         None,
@@ -96,7 +96,7 @@ fn a_general_comment_points_at_the_document_rather_than_a_passage() {
 fn open_comments_are_scoped_to_their_stage() {
     let mut thread = commented_stage();
     thread.post_doc_comment(
-        "issue-1",
+        "task-1",
         "api-surface",
         ".build/plan/02-api-surface.md",
         None,

@@ -1,5 +1,5 @@
 // Account settings: what belongs to the account rather than to any one machine
-// — the privacy story, where creation goes, the defaults a new issue starts
+// — the privacy story, where creation goes, the defaults a new task starts
 // with, this browser's own preferences, and the devices & keys panel (api-backed,
 // so it stays live even when every bridge is offline).
 //

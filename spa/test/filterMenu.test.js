@@ -28,8 +28,8 @@ const ASSIGNEES = [
   { value: "any", label: "Anyone assigned" },
   { value: "none", label: "Unassigned" },
   { value: "user", label: "You" },
-  { value: "agent:a1", label: "issues-spa · Agent 1", group: "issues-spa" },
-  { value: "agent:a2", label: "issues-spa · Agent 2", group: "issues-spa" },
+  { value: "agent:a1", label: "tasks-spa · Agent 1", group: "tasks-spa" },
+  { value: "agent:a2", label: "tasks-spa · Agent 2", group: "tasks-spa" },
   { value: "agent:b1", label: "tracker-filters · Agent 1", group: "tracker-filters" },
 ];
 
@@ -92,7 +92,7 @@ describe("what a search leaves", () => {
     const rows = menuRows(ASSIGNEES, "", [], { multi: true });
     expect(rows.map((row) => `${row.kind}:${row.kind === "group" ? row.label : row.value}`)).toEqual([
       "option:any", "option:none", "option:user",
-      "group:issues-spa", "option:agent:a1", "option:agent:a2",
+      "group:tasks-spa", "option:agent:a1", "option:agent:a2",
       "group:tracker-filters", "option:agent:b1",
     ]);
   });
@@ -138,7 +138,7 @@ describe("what the press says", () => {
 
   it("names one chosen thing in full", () => {
     expect(menuPressLabel({ name: "Assignee", options: ASSIGNEES, chosen: ["agent:a1"] }))
-      .toBe("issues-spa · Agent 1");
+      .toBe("tasks-spa · Agent 1");
   });
 
   // Two kinds of name want different things: labels are short and
@@ -147,7 +147,7 @@ describe("what the press says", () => {
     expect(menuPressLabel({ name: "Labels", options: LABELS, chosen: ["bug", "tracker"], summary: "count" }))
       .toBe("Labels · 2");
     expect(menuPressLabel({ name: "Assignee", options: ASSIGNEES, chosen: ["agent:a1", "user"], summary: "first" }))
-      .toBe("issues-spa · Agent 1 +1");
+      .toBe("tasks-spa · Agent 1 +1");
   });
 
   it("falls back to the value when nothing on offer names it", () => {

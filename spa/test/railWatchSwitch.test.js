@@ -8,7 +8,7 @@
 // greeting that never reaches the store, or a flag spelled differently from the
 // way the bridge spells it would all leave it green. So the first half here
 // greets a real bridge and asks the real gate — which is the shape of the break
-// issues-spa hit when its copy still exported `carriesWatch`.
+// tasks-spa hit when its copy still exported `carriesWatch`.
 //
 // The second half is the head's own half of that gate. I reported "the panel
 // head draws no switch on a bridge without watching" with nothing asserting it:
@@ -28,7 +28,7 @@ const { carriesWatching } = await import("../src/core/trackerWatch.js");
 const { panelHeadHtml } = await import("../src/core/agentRail.js");
 
 /** One machine saying what it is, through the real greeting path. `over` is
- *  whatever else that greeting states — `{ issues: { watching: false } }` for a
+ *  whatever else that greeting states — `{ tasks: { watching: false } }` for a
  *  bridge new enough to carry it that says it does not. */
 const greet = (apiVersion, { deviceId = "dev-1", ...over } = {}) =>
   greetBridge(async () => ({ push_events: true, api_version: apiVersion, ...over }), { deviceId });
@@ -60,8 +60,8 @@ describe("the gate, asked of a bridge that actually greeted", () => {
   // The flag is the point of moving off the version compare: a bridge states
   // what it can do, and is taken at its word in BOTH directions.
   it("takes a stated flag over the minor, either way", async () => {
-    await greet("1.8.0", { deviceId: "dev-early", issues: { watching: true } });
-    await greet("1.9.0", { deviceId: "dev-withdrawn", issues: { watching: false } });
+    await greet("1.8.0", { deviceId: "dev-early", tasks: { watching: true } });
+    await greet("1.9.0", { deviceId: "dev-withdrawn", tasks: { watching: false } });
     expect([carriesWatching("dev-early"), carriesWatching("dev-withdrawn")]).toEqual([true, false]);
   });
 
@@ -69,15 +69,15 @@ describe("the gate, asked of a bridge that actually greeted", () => {
   // client asks what the bridge can do, and the flag is where that is said.
   it("is the capability the adapter derived, not a second opinion", async () => {
     await greet("1.9.0");
-    expect(bridgeCapabilities("dev-1").issues.watching).toBe(true);
-    expect(carriesWatching("dev-1")).toBe(bridgeCapabilities("dev-1").issues.watching);
+    expect(bridgeCapabilities("dev-1").tasks.watching).toBe(true);
+    expect(carriesWatching("dev-1")).toBe(bridgeCapabilities("dev-1").tasks.watching);
   });
 
   // Not a mocked null: this is the real floor a machine reads as before it has
   // ever been greeted, which is the state every machine starts in.
   it("refuses a machine that has never greeted at all", () => {
     expect(bridgeApiVersion("dev-1")).toBe("0.0.0");
-    expect(bridgeCapabilities("dev-1").issues.watching).toBe(false);
+    expect(bridgeCapabilities("dev-1").tasks.watching).toBe(false);
     expect(carriesWatching("dev-1")).toBe(false);
   });
 

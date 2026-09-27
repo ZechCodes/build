@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // The workspace's rail, wired for real (#174): the cells core/directoryRail.js
-// draws, the Issues count read off the project's cached issue list, and the
+// draws, the Tasks count read off the project's cached task list, and the
 // settings sheet the cog opens — nothing between them stood in for. The
 // workspace surface's own suite (workspaceViewDom) mounts it inside the view;
 // this one proves the parts it hangs on the cells are the real ones.
@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { columns, issue } from "./trackerWireFixture.js";
+import { columns, task } from "./trackerWireFixture.js";
 
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
@@ -19,7 +19,7 @@ const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S
 const { mountWorkspaceRail } = await import("../src/core/workspaceRail.js");
 const { greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
 const { adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
-const { writeIssuesRecord } = await import("../src/core/trackerCache.js");
+const { writeTasksRecord } = await import("../src/core/trackerCache.js");
 const { wipeCache } = await import("../src/core/localCache.js");
 const { fakeSession } = await import("./deviceSessionFixture.js");
 
@@ -29,7 +29,7 @@ const AWAY = "agent-01M2AWAY";
 const HELLO = {
   api_version: "1.21.0",
   push_events: true,
-  changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "issues"], items: "bodies" },
+  changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "tasks"], items: "bodies" },
 };
 
 const route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes" };
@@ -38,7 +38,7 @@ const feed = () => ({
   workspaces: [workspace],
   items: [{ kind: "branch", projectKey: PROJECT_KEY, run_id: "run-1", agents: [{ id: HERE, ordinal: 1 }] }],
 });
-const held = (agentId, over) => issue({ assignee: { kind: "agent", agent_id: agentId }, ...over });
+const held = (agentId, over) => task({ assignee: { kind: "agent", agent_id: agentId }, ...over });
 
 const flush = async () => {
   for (let i = 0; i < 20; i++) await new Promise((done) => setTimeout(done, 0));
@@ -46,13 +46,13 @@ const flush = async () => {
 
 let rail, selected, navigated;
 const host = () => document.querySelector("#dir-rail");
-const issuesCell = () => host().querySelector("[data-tab=issues]");
+const tasksCell = () => host().querySelector("[data-tab=tasks]");
 
 beforeEach(async () => {
   await wipeCache();
   document.body.innerHTML = bodyHtml;
   // The machine greets the way a real one does: its greeting installs the
-  // adapter whose capabilities say it carries issues.
+  // adapter whose capabilities say it carries tasks.
   await greetBridge(async () => HELLO, { deviceId: "dev-1" });
   adoptDeviceSession(fakeSession("dev-1"));
   selected = [];
@@ -73,11 +73,11 @@ afterEach(() => {
 });
 
 describe("the workspace rail, wired", () => {
-  // #104: the icon carries the unread of the watched issues this workspace's
+  // #104: the icon carries the unread of the watched tasks this workspace's
   // agents hold; how many are open is its tooltip.
-  it("counts the watched unread this workspace's agents hold on the Issues icon, and moves with the record", async () => {
-    await writeIssuesRecord("dev-1", "p-1", {
-      issues: [
+  it("counts the watched unread this workspace's agents hold on the Tasks icon, and moves with the record", async () => {
+    await writeTasksRecord("dev-1", "p-1", {
+      tasks: [
         held(HERE, { number: 1, id: "i1", status: "in_progress", watched: true, unread_count: 1 }),
         held(HERE, { number: 2, id: "i2", status: "done", unread_count: 4 }),
         held(AWAY, { number: 3, id: "i3", status: "in_progress", watched: true, unread_count: 2 }),
@@ -85,29 +85,29 @@ describe("the workspace rail, wired", () => {
       columns: columns(),
     });
     rail.paint("changes");
-    await vi.waitFor(() => expect(issuesCell().querySelector(".dirtab-count").textContent).toBe("1"));
-    expect(issuesCell().hidden).toBe(false);
-    expect(issuesCell().title).toBe("1 unread · 1 open issue in this workspace");
+    await vi.waitFor(() => expect(tasksCell().querySelector(".dirtab-count").textContent).toBe("1"));
+    expect(tasksCell().hidden).toBe(false);
+    expect(tasksCell().title).toBe("1 unread · 1 open task in this workspace");
 
     // A repaint draws a new cell; the count is on it at once.
     rail.paint("files");
-    expect(issuesCell().querySelector(".dirtab-count").textContent).toBe("1");
+    expect(tasksCell().querySelector(".dirtab-count").textContent).toBe("1");
 
-    // An `issues` push rewrites the record; the icon follows.
-    await writeIssuesRecord("dev-1", "p-1", {
-      issues: [
+    // An `tasks` push rewrites the record; the icon follows.
+    await writeTasksRecord("dev-1", "p-1", {
+      tasks: [
         held(HERE, { number: 1, id: "i1", status: "in_progress", watched: true, unread_count: 1 }),
         held(HERE, { number: 4, id: "i4", status: "ready", watched: true, unread_count: 2 }),
       ],
       columns: columns(),
     });
-    await vi.waitFor(() => expect(issuesCell().querySelector(".dirtab-count").textContent).toBe("3"));
+    await vi.waitFor(() => expect(tasksCell().querySelector(".dirtab-count").textContent).toBe("3"));
   });
 
-  it("hands a press on Issues to the surface, like any face", async () => {
+  it("hands a press on Tasks to the surface, like any face", async () => {
     rail.paint("changes");
-    issuesCell().click();
-    expect(selected).toEqual(["issues"]);
+    tasksCell().click();
+    expect(selected).toEqual(["tasks"]);
   });
 
   it("opens the workspace's settings sheet from the cog at its foot", async () => {

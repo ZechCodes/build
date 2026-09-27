@@ -276,7 +276,7 @@ impl SessionPeers {
     /// opening ended while its peer was being built touches nothing in the
     /// map. The same id may be open again by then, with a peer of that
     /// opening's own negotiating, and this offer's only right is to close
-    /// what it built and be refused (the round-2 review of issue #128 caught
+    /// what it built and be refused (the round-2 review of task #128 caught
     /// a stale offer closing the new opening's live peer as "stale" before it
     /// noticed it had ended itself).
     ///
@@ -412,7 +412,7 @@ const REACTOR_THREADS: usize = 2;
 const DC_BUFFERED_HIGH: usize = 1024 * 1024;
 
 /// How long the app channel may hold undrained bytes with SCTP releasing none of
-/// them before the path under it is dead (issue #30).
+/// them before the path under it is dead (task #30).
 ///
 /// The fault this measures: a session whose client had gone carried an admission
 /// receipt and an `ok` into an SCTP association with no far end. ICE called the
@@ -615,7 +615,7 @@ impl WebrtcPeer {
                     .with_udp_addrs(udp_addrs.clone())
                     // The driver — the UDP sockets, ICE's checks and consent,
                     // DTLS, SCTP's timers — on the crate's own reactor
-                    // threads, off every runtime the daemon parks (issue
+                    // threads, off every runtime the daemon parks (task
                     // #128). Handlers are the callbacks above: a line to
                     // stderr and a candidate encrypted and queued, nothing
                     // that blocks.
@@ -1077,7 +1077,7 @@ fn field_or_empty(offered: &Value, field: &str) -> String {
 struct DataChannelCarrier {
     writer: tokio::task::JoinHandle<()>,
     reader: tokio::task::JoinHandle<()>,
-    /// The stall watch, on the channel that gets one (issue #30). The term
+    /// The stall watch, on the channel that gets one (task #30). The term
     /// channel carries a stream whose buffer is meant to be full, and both
     /// channels share one SCTP association, so a path that stops moving stops
     /// moving under the app channel too — one watch answers for the peer.
@@ -1222,7 +1222,7 @@ impl StallWatch {
 }
 
 /// Watch this channel's send side, and close it when the path under it has
-/// stopped carrying (issue #30).
+/// stopped carrying (task #30).
 ///
 /// Closing is the sever: the app channel IS the connection as far as the browser
 /// is concerned, so its close ends the session there and the client's recovery
@@ -1280,7 +1280,7 @@ async fn write_envelopes(
         for message in chunk::split(&json) {
             if channel.send_text(&message).await.is_err() {
                 // What the frame was and how long the channel had carried, not
-                // just that a write failed: the line that closed issue #30's
+                // just that a write failed: the line that closed task #30's
                 // session said neither, so the log could not say whether a
                 // 789 KB attachment had been half-written into a dead path or a
                 // 200-byte receipt had failed on a channel that never opened.
@@ -2105,7 +2105,7 @@ mod stall_tests {
     }
 
     /// The fault: bytes handed over, none released, for the whole timeout. This
-    /// is what issue #30's session looked like for 105 seconds while ICE called
+    /// is what task #30's session looked like for 105 seconds while ICE called
     /// the path connected.
     #[test]
     fn a_buffer_that_releases_nothing_is_a_dead_path() {

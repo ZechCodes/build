@@ -91,7 +91,7 @@ impl ProtocolReader {
 
     pub(super) fn end_stream(&self) {
         // A child that goes before its turn's result still ended that turn at
-        // the limit, when the limit was what it last reported (issue #58).
+        // the limit, when the limit was what it last reported (task #58).
         self.conclude_usage_limit();
         let changed = self
             .state
@@ -156,7 +156,7 @@ impl ProtocolReader {
 
     /// A top-level assistant message's `error`, which is how the CLI marks a
     /// message it wrote itself about a failed request rather than one the model
-    /// wrote. `rate_limit` is a usage limit (issue #58): the message's text is
+    /// wrote. `rate_limit` is a usage limit (task #58): the message's text is
     /// what the harness said, kept for the turn's end to conclude on. Any
     /// other assistant message means the model answered, so a limit reported
     /// earlier in the turn is not what ended it.
@@ -328,7 +328,7 @@ impl ProtocolReader {
         if let Some(reason) = &mismatch {
             // Logged, because a child ended here dies before it writes a
             // transcript: two agents asked for `opus` sat unstarted for a day
-            // with nothing in bridge.log to say why (issue #72).
+            // with nothing in bridge.log to say why (task #72).
             let agent = self.state.lock().unwrap().agent_id.clone();
             eprintln!("harness model_mismatch: agent={agent:?} {reason}");
             if let Some(child) = &self.child {

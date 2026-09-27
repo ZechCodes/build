@@ -174,11 +174,11 @@ impl AppState {
     ) -> Result<AttachmentHomes, String> {
         let local = self.local_attachments_dir();
         if let Some(active) = self.plans.get(entity_id) {
-            // The Issue owns the conversation, but a live implementation owns
+            // The Task owns the conversation, but a live implementation owns
             // the checkout its agent reads from — the same redirection
             // `thread.post` makes when it decides whom to nudge.
             let worktree = self
-                .current_issue_implementation_id(entity_id)
+                .current_task_implementation_id(entity_id)
                 .and_then(|run_id| self.runs.get(&run_id).map(|run| run.worktree.path.clone()))
                 .or_else(|| active.workspace.as_ref().map(|w| w.checkout.clone()));
             return Ok(AttachmentHomes {

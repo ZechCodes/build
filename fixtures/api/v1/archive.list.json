@@ -7,7 +7,7 @@
   "result": {
     "plans": [
       {
-        "issue_id": "plan-6f1c",
+        "task_id": "plan-6f1c",
         "plan_id": "plan-6f1c",
         "goal": "Fix the flaky login test",
         "state": "done",

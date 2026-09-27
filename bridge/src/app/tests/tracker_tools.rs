@@ -1,4 +1,4 @@
-//! The tracker's twelve tools, on both working surfaces (spec: Issues → The
+//! The tracker's twelve tools, on both working surfaces (spec: Tasks → The
 //! MCP tools).
 //!
 //! What the tests here are about is the scope: the project comes from the
@@ -37,28 +37,28 @@ pub(super) fn call(
 }
 
 /// The twelve the tracker adds, by name.
-const ISSUE_TOOLS: [&str; 12] = [
-    "list_issues",
-    "get_issue",
+const TASK_TOOLS: [&str; 12] = [
+    "list_tasks",
+    "get_task",
     "read_comment",
-    "create_issue",
-    "comment_issue",
-    "assign_issue",
-    "move_issue",
-    "label_issue",
-    "close_issue",
-    "link_issue",
-    "track_issue",
-    "untrack_issue",
+    "create_task",
+    "comment_task",
+    "assign_task",
+    "move_task",
+    "label_task",
+    "close_task",
+    "link_task",
+    "track_task",
+    "untrack_task",
 ];
 
 /// Both working surfaces are shown the same twelve tools. The router is shown
 /// none of them: it has no project to be scoped to.
 #[test]
-fn both_working_surfaces_carry_the_issue_tools_and_the_router_carries_none() {
+fn both_working_surfaces_carry_the_task_tools_and_the_router_carries_none() {
     for surface in [McpSurface::Coding, McpSurface::Project] {
         let listed = DoneServer::tool_names_of(surface);
-        for tool in ISSUE_TOOLS {
+        for tool in TASK_TOOLS {
             assert!(
                 listed.contains(&tool.to_string()),
                 "{surface:?} is not shown {tool}: {listed:?}"
@@ -66,10 +66,10 @@ fn both_working_surfaces_carry_the_issue_tools_and_the_router_carries_none() {
         }
     }
     let router = DoneServer::tool_names_of(McpSurface::Router);
-    for tool in ISSUE_TOOLS {
-        // `create_issue` is the ROUTER's own, and the plan flow's — the same
+    for tool in TASK_TOOLS {
+        // `create_task` is the ROUTER's own, and the plan flow's — the same
         // name on a disjoint surface, the way `post_thread_message` already is.
-        if tool == "create_issue" {
+        if tool == "create_task" {
             continue;
         }
         assert!(
@@ -83,8 +83,8 @@ fn both_working_surfaces_carry_the_issue_tools_and_the_router_carries_none() {
 /// a harness writing its own frames reaches no further than one reading the
 /// list.
 #[test]
-fn the_socket_refuses_an_issue_tool_from_the_router() {
-    let action = BridgeAction::TrackerListIssues {
+fn the_socket_refuses_a_task_tool_from_the_router() {
+    let action = BridgeAction::TrackerListTasks {
         state: None,
         status: None,
         label: None,
@@ -97,10 +97,10 @@ fn the_socket_refuses_an_issue_tool_from_the_router() {
     );
 }
 
-/// A coding agent reads, files and moves the issues of its own project, and
+/// A coding agent reads, files and moves the tasks of its own project, and
 /// what it writes is signed by it.
 #[test]
-fn a_coding_agent_files_an_issue_signed_by_itself() {
+fn a_coding_agent_files_a_task_signed_by_itself() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
@@ -109,7 +109,7 @@ fn a_coding_agent_files_an_issue_signed_by_itself() {
     let filed_by_agent = call(
         &mut state,
         &who,
-        BridgeAction::TrackerCreateIssue {
+        BridgeAction::TrackerCreateTask {
             title: "The drop handler races the column read".into(),
             body: Some("Found while fixing something else.".into()),
             status: None,
@@ -121,35 +121,32 @@ fn a_coding_agent_files_an_issue_signed_by_itself() {
             mention_user: None,
         },
     )
-    .expect("an agent files an issue in its own project");
-    let issue = &filed_by_agent["issue"];
-    assert_eq!(issue["project_id"], project_id.as_str());
+    .expect("an agent files a task in its own project");
+    let task = &filed_by_agent["task"];
+    assert_eq!(task["project_id"], project_id.as_str());
     assert_eq!(
-        issue["created_by"],
+        task["created_by"],
         json!({ "kind": "agent", "agent_id": who.1 }),
         "the author is who called, not who claimed"
     );
-    assert_eq!(issue["labels"], json!(["bug"]));
-    assert_eq!(issue["priority"], "high");
-    assert_eq!(issue["status"], "backlog");
+    assert_eq!(task["labels"], json!(["bug"]));
+    assert_eq!(task["priority"], "high");
+    assert_eq!(task["status"], "backlog");
 
-    // And the client sees the same issue, because it is the same record.
-    let listed = state.handle(req("issues.list", json!({ "project_id": project_id })));
-    assert_eq!(
-        listed["result"]["issues"][0]["id"], issue["id"],
-        "{listed:?}"
-    );
+    // And the client sees the same task, because it is the same record.
+    let listed = state.handle(req("tasks.list", json!({ "project_id": project_id })));
+    assert_eq!(listed["result"]["tasks"][0]["id"], task["id"], "{listed:?}");
 }
 
 #[test]
-fn mcp_create_issue_can_ask_the_user_on_its_created_event() {
+fn mcp_create_task_can_ask_the_user_on_its_created_event() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
     let who = coding_agent(&mut state, &project_id, "ask here");
     let frame = json!({
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": { "name": "create_issue", "arguments": {
+        "params": { "name": "create_task", "arguments": {
             "title": "Choose the plan", "body": "Which route should we take?",
             "mention_user": true, "notify_user": false
         }}
@@ -159,15 +156,15 @@ fn mcp_create_issue_can_ask_the_user_on_its_created_event() {
         .action
         .expect("MCP frame emits a tracker create action");
     let filed = call(&mut state, &who, action).unwrap();
-    let issue_id = filed["issue"]["id"].as_str().unwrap();
-    assert_eq!(filed["issue"]["watched"], true);
-    let fetched = state.handle(req("issues.get", json!({ "issue_id": issue_id })));
+    let task_id = filed["task"]["id"].as_str().unwrap();
+    assert_eq!(filed["task"]["watched"], true);
+    let fetched = state.handle(req("tasks.get", json!({ "task_id": task_id })));
     let created = &fetched["result"]["timeline"][0];
     assert_eq!(created["type"], "event");
     assert_eq!(created["kind"], "created");
     assert_eq!(created["actor"]["kind"], "agent");
     assert_eq!(created["mentions_user"], true);
-    assert!(filed["issue"].get("mentions_user").is_none());
+    assert!(filed["task"].get("mentions_user").is_none());
 }
 
 /// A comment and an event are signed by the calling agent.
@@ -185,8 +182,8 @@ fn a_comment_and_a_move_are_signed_by_the_agent_that_made_them() {
     call(
         &mut state,
         &who,
-        BridgeAction::TrackerCommentIssue {
-            issue_id: id.clone(),
+        BridgeAction::TrackerCommentTask {
+            task_id: id.clone(),
             body: "Reproduced it.".into(),
             refs: Vec::new(),
             track: None,
@@ -199,15 +196,15 @@ fn a_comment_and_a_move_are_signed_by_the_agent_that_made_them() {
     call(
         &mut state,
         &who,
-        BridgeAction::TrackerMoveIssue {
-            issue_id: id.clone(),
+        BridgeAction::TrackerMoveTask {
+            task_id: id.clone(),
             status: "in_review".into(),
             track: None,
         },
     )
-    .expect("an agent moves its issue");
+    .expect("an agent moves its task");
 
-    let timeline = state.handle(req("issues.get", json!({ "issue_id": id })));
+    let timeline = state.handle(req("tasks.get", json!({ "task_id": id })));
     let entries = timeline["result"]["timeline"].as_array().unwrap();
     let comment = entries
         .iter()
@@ -226,7 +223,7 @@ fn a_comment_and_a_move_are_signed_by_the_agent_that_made_them() {
         json!({ "kind": "agent", "agent_id": who.1 })
     );
     assert_eq!(
-        timeline["result"]["issue"]["status"], "in_review",
+        timeline["result"]["task"]["status"], "in_review",
         "Complete means ready to be looked at"
     );
 }
@@ -234,7 +231,7 @@ fn a_comment_and_a_move_are_signed_by_the_agent_that_made_them() {
 /// Parse real MCP frames, execute them against the store, and read through the
 /// same list filter the next agent call uses.
 #[test]
-fn mcp_label_issue_round_trips_through_store_timeline_and_filter() {
+fn mcp_label_task_round_trips_through_store_timeline_and_filter() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
@@ -247,35 +244,35 @@ fn mcp_label_issue_round_trips_through_store_timeline_and_filter() {
     let invoke = |state: &mut AppState, arguments: Value| -> Result<Value, String> {
         let frame = json!({
             "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": { "name": "label_issue", "arguments": arguments }
+            "params": { "name": "label_task", "arguments": arguments }
         });
         let action = server
             .handle_message(&frame.to_string())
             .action
-            .expect("the MCP frame dispatches label_issue");
+            .expect("the MCP frame dispatches label_task");
         call(state, &who, action)
     };
 
     let added = invoke(
         &mut state,
-        json!({ "issue_id": id, "add": ["public launch", "Bug"] }),
+        json!({ "task_id": id, "add": ["public launch", "Bug"] }),
     )
     .expect("labels added");
     assert_eq!(added["labels"], json!(["public launch", "Bug"]));
-    assert_eq!(added["issue"]["labels"], added["labels"]);
+    assert_eq!(added["task"]["labels"], added["labels"]);
     let list_frame = json!({
         "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-        "params": { "name": "list_issues", "arguments": { "label": "public launch" } }
+        "params": { "name": "list_tasks", "arguments": { "label": "public launch" } }
     });
     let list_action = server
         .handle_message(&list_frame.to_string())
         .action
-        .expect("MCP frame dispatches list_issues with its label filter");
+        .expect("MCP frame dispatches list_tasks with its label filter");
     let filtered = call(&mut state, &who, list_action).unwrap();
-    assert_eq!(filtered["issues"][0]["id"], id);
-    assert_eq!(filtered["issues"].as_array().unwrap().len(), 1);
-    let stored = state.handle(req("issues.get", json!({ "issue_id": id })));
-    assert_eq!(stored["result"]["issue"]["labels"], added["labels"]);
+    assert_eq!(filtered["tasks"][0]["id"], id);
+    assert_eq!(filtered["tasks"].as_array().unwrap().len(), 1);
+    let stored = state.handle(req("tasks.get", json!({ "task_id": id })));
+    assert_eq!(stored["result"]["task"]["labels"], added["labels"]);
     let events = stored["result"]["timeline"].as_array().unwrap();
     assert_eq!(events.len(), 2);
     assert_eq!(events[1]["kind"], "labelled");
@@ -302,49 +299,46 @@ fn assert_label_removal_and_validation(
     let same = invoke(
         state,
         json!({
-            "issue_id": id, "add": ["PUBLIC LAUNCH"], "remove": ["absent"]
+            "task_id": id, "add": ["PUBLIC LAUNCH"], "remove": ["absent"]
         }),
     )
     .unwrap();
     assert_eq!(same["labels"], added["labels"]);
-    assert_eq!(same["issue"]["updated_at"], added["issue"]["updated_at"]);
+    assert_eq!(same["task"]["updated_at"], added["task"]["updated_at"]);
     assert_eq!(
-        state.handle(req("issues.get", json!({ "issue_id": id })))["result"]["timeline"]
+        state.handle(req("tasks.get", json!({ "task_id": id })))["result"]["timeline"]
             .as_array()
             .unwrap()
             .len(),
         2
     );
 
-    let removed = invoke(
-        state,
-        json!({ "issue_id": id, "remove": ["PUBLIC LAUNCH"] }),
-    )
-    .expect("label removed case insensitively");
+    let removed = invoke(state, json!({ "task_id": id, "remove": ["PUBLIC LAUNCH"] }))
+        .expect("label removed case insensitively");
     assert_eq!(removed["labels"], json!(["Bug"]));
     let filtered = call(
         state,
         who,
-        BridgeAction::TrackerListIssues {
+        BridgeAction::TrackerListTasks {
             state: None,
             status: None,
             label: Some("public launch".into()),
         },
     )
     .unwrap();
-    assert!(filtered["issues"].as_array().unwrap().is_empty());
-    let stored = state.handle(req("issues.get", json!({ "issue_id": id })));
+    assert!(filtered["tasks"].as_array().unwrap().is_empty());
+    let stored = state.handle(req("tasks.get", json!({ "task_id": id })));
     let events = stored["result"]["timeline"].as_array().unwrap();
     assert_eq!(events.len(), 3);
     assert_eq!(events[2]["kind"], "labelled");
     assert_eq!(events[2]["payload"]["removed"], json!(["public launch"]));
 
-    let invalid = invoke(state, json!({ "issue_id": id, "add": ["x".repeat(1000)] }));
+    let invalid = invoke(state, json!({ "task_id": id, "add": ["x".repeat(1000)] }));
     assert!(invalid.unwrap_err().contains("label exceeds"));
     let malformed = json!({
         "jsonrpc": "2.0", "id": 3, "method": "tools/call",
-        "params": { "name": "label_issue", "arguments": {
-            "issue_id": id, "add": ["valid", 42]
+        "params": { "name": "label_task", "arguments": {
+            "task_id": id, "add": ["valid", 42]
         }}
     });
     let refused = server.handle_message(&malformed.to_string());
@@ -354,7 +348,7 @@ fn assert_label_removal_and_validation(
     );
     assert!(refused.reply.is_some());
     assert_eq!(
-        state.handle(req("issues.get", json!({ "issue_id": id })))["result"]["timeline"]
+        state.handle(req("tasks.get", json!({ "task_id": id })))["result"]["timeline"]
             .as_array()
             .unwrap()
             .len(),
@@ -364,7 +358,7 @@ fn assert_label_removal_and_validation(
 }
 
 /// A real MCP frame carries the mention through the action, durable record,
-/// issue timeline, and read_comment answer. Mentioning also watches the issue.
+/// task timeline, and read_comment answer. Mentioning also watches the task.
 #[test]
 fn mcp_comment_mention_round_trips_through_the_bridge() {
     let tmp = tempfile::tempdir().unwrap();
@@ -373,12 +367,12 @@ fn mcp_comment_mention_round_trips_through_the_bridge() {
     let who = coding_agent(&mut state, &project_id, "here");
     state.handle(req(
         "settings.set",
-        json!({ "watch_agent_filed_issues": false }),
+        json!({ "watch_agent_filed_tasks": false }),
     ));
     let created = call(
         &mut state,
         &who,
-        BridgeAction::TrackerCreateIssue {
+        BridgeAction::TrackerCreateTask {
             title: "Needs a choice".into(),
             body: None,
             status: None,
@@ -391,13 +385,13 @@ fn mcp_comment_mention_round_trips_through_the_bridge() {
         },
     )
     .unwrap();
-    let issue_id = created["issue"]["id"].as_str().unwrap();
-    assert_ne!(created["issue"]["watched"], true);
+    let task_id = created["task"]["id"].as_str().unwrap();
+    assert_ne!(created["task"]["watched"], true);
 
     let frame = json!({
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": { "name": "comment_issue", "arguments": {
-            "issue_id": issue_id, "body": "Which option should I use?",
+        "params": { "name": "comment_task", "arguments": {
+            "task_id": task_id, "body": "Which option should I use?",
             "mention_user": true
         }}
     });
@@ -405,21 +399,21 @@ fn mcp_comment_mention_round_trips_through_the_bridge() {
     let action = parsed.action.expect("MCP frame emits a comment action");
     assert!(matches!(
         &action,
-        BridgeAction::TrackerCommentIssue {
+        BridgeAction::TrackerCommentTask {
             mention_user: Some(true),
             ..
         }
     ));
     let commented = call(&mut state, &who, action).unwrap();
     assert_eq!(commented["comment"]["mentions_user"], true);
-    assert_eq!(commented["issue"]["watched"], true);
+    assert_eq!(commented["task"]["watched"], true);
     let comment_id = commented["comment"]["id"].as_str().unwrap();
 
     let timeline = call(
         &mut state,
         &who,
-        BridgeAction::TrackerGetIssue {
-            issue_id: issue_id.into(),
+        BridgeAction::TrackerGetTask {
+            task_id: task_id.into(),
         },
     )
     .unwrap();
@@ -444,8 +438,8 @@ fn mcp_comment_mention_round_trips_through_the_bridge() {
 
     let quiet_frame = json!({
         "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-        "params": { "name": "comment_issue", "arguments": {
-            "issue_id": issue_id, "body": "Routine update."
+        "params": { "name": "comment_task", "arguments": {
+            "task_id": task_id, "body": "Routine update."
         }}
     });
     let quiet_action = DoneServer::new(&who.1)
@@ -454,7 +448,7 @@ fn mcp_comment_mention_round_trips_through_the_bridge() {
         .expect("MCP frame emits a quiet comment action");
     let quiet = call(&mut state, &who, quiet_action).unwrap();
     assert!(quiet["comment"].get("mentions_user").is_none());
-    let timeline = state.handle(req("issues.get", json!({ "issue_id": issue_id })));
+    let timeline = state.handle(req("tasks.get", json!({ "task_id": task_id })));
     assert!(
         timeline["result"]["timeline"]
             .as_array()
@@ -467,7 +461,7 @@ fn mcp_comment_mention_round_trips_through_the_bridge() {
 
 /// A real MCP frame's `notify_user` is kept on the comment (#144), through the
 /// answer, the timeline and read_comment, apart from `mentions_user`: the
-/// inbox counts a question put to the user, not every comment on an issue
+/// inbox counts a question put to the user, not every comment on a task
 /// the user watches. A comment without it carries neither.
 #[test]
 fn mcp_comment_notify_user_is_kept_on_the_comment() {
@@ -477,12 +471,12 @@ fn mcp_comment_notify_user_is_kept_on_the_comment() {
     let who = coding_agent(&mut state, &project_id, "here");
     state.handle(req(
         "settings.set",
-        json!({ "watch_agent_filed_issues": false }),
+        json!({ "watch_agent_filed_tasks": false }),
     ));
     let created = call(
         &mut state,
         &who,
-        BridgeAction::TrackerCreateIssue {
+        BridgeAction::TrackerCreateTask {
             title: "Needs an answer".into(),
             body: None,
             status: None,
@@ -495,11 +489,11 @@ fn mcp_comment_notify_user_is_kept_on_the_comment() {
         },
     )
     .unwrap();
-    let issue_id = created["issue"]["id"].as_str().unwrap();
+    let task_id = created["task"]["id"].as_str().unwrap();
     let comment = |id: u64, arguments: Value| {
         let frame = json!({
             "jsonrpc": "2.0", "id": id, "method": "tools/call",
-            "params": { "name": "comment_issue", "arguments": arguments }
+            "params": { "name": "comment_task", "arguments": arguments }
         });
         DoneServer::new(&who.1)
             .handle_message(&frame.to_string())
@@ -512,24 +506,24 @@ fn mcp_comment_notify_user_is_kept_on_the_comment() {
         &who,
         comment(
             1,
-            json!({ "issue_id": issue_id, "body": "Ship it tonight?", "notify_user": true }),
+            json!({ "task_id": task_id, "body": "Ship it tonight?", "notify_user": true }),
         ),
     )
     .unwrap();
     assert_eq!(asked["comment"]["notifies_user"], true);
     assert!(asked["comment"].get("mentions_user").is_none());
-    assert_eq!(asked["issue"]["watched"], true);
+    assert_eq!(asked["task"]["watched"], true);
     let asked_id = asked["comment"]["id"].as_str().unwrap().to_string();
 
     let quiet = call(
         &mut state,
         &who,
-        comment(2, json!({ "issue_id": issue_id, "body": "Rebased." })),
+        comment(2, json!({ "task_id": task_id, "body": "Rebased." })),
     )
     .unwrap();
     assert!(quiet["comment"].get("notifies_user").is_none());
 
-    let timeline = state.handle(req("issues.get", json!({ "issue_id": issue_id })));
+    let timeline = state.handle(req("tasks.get", json!({ "task_id": task_id })));
     let entry = |id: &Value| {
         timeline["result"]["timeline"]
             .as_array()
@@ -554,11 +548,11 @@ fn mcp_comment_notify_user_is_kept_on_the_comment() {
     assert_eq!(read["notifies_user"], true);
 }
 
-/// An issue of another project is unknown to this agent — not forbidden.
+/// A task of another project is unknown to this agent — not forbidden.
 /// It cannot list it and cannot have been handed it, and saying an id it
 /// guessed exists somewhere else tells it more than it asked.
 #[test]
-fn an_issue_of_another_project_is_unknown_to_this_agents_tools() {
+fn a_task_of_another_project_is_unknown_to_this_agents_tools() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
@@ -574,21 +568,21 @@ fn an_issue_of_another_project_is_unknown_to_this_agents_tools() {
         .to_string();
 
     for action in [
-        BridgeAction::TrackerGetIssue {
-            issue_id: theirs.clone(),
+        BridgeAction::TrackerGetTask {
+            task_id: theirs.clone(),
         },
-        BridgeAction::TrackerMoveIssue {
-            issue_id: theirs.clone(),
+        BridgeAction::TrackerMoveTask {
+            task_id: theirs.clone(),
             status: "done".into(),
             track: None,
         },
-        BridgeAction::TrackerCloseIssue {
-            issue_id: theirs.clone(),
+        BridgeAction::TrackerCloseTask {
+            task_id: theirs.clone(),
             reason: None,
             track: None,
         },
-        BridgeAction::TrackerCommentIssue {
-            issue_id: theirs.clone(),
+        BridgeAction::TrackerCommentTask {
+            task_id: theirs.clone(),
             body: "mine now".into(),
             refs: Vec::new(),
             track: None,
@@ -598,20 +592,20 @@ fn an_issue_of_another_project_is_unknown_to_this_agents_tools() {
         },
     ] {
         let name = action.tool_name();
-        let refused = call(&mut state, &who, action).expect_err("another project's issue");
-        assert!(refused.contains("unknown issue_id"), "{name}: {refused}");
+        let refused = call(&mut state, &who, action).expect_err("another project's task");
+        assert!(refused.contains("unknown task_id"), "{name}: {refused}");
     }
 
-    // And the other project's issue is untouched.
-    let still = state.handle(req("issues.get", json!({ "issue_id": theirs })));
-    assert_eq!(still["result"]["issue"]["state"], "open");
-    assert_eq!(still["result"]["issue"]["status"], "backlog");
+    // And the other project's task is untouched.
+    let still = state.handle(req("tasks.get", json!({ "task_id": theirs })));
+    assert_eq!(still["result"]["task"]["state"], "open");
+    assert_eq!(still["result"]["task"]["status"], "backlog");
 }
 
-/// `list_issues` answers this agent's project and no other, whatever the call
+/// `list_tasks` answers this agent's project and no other, whatever the call
 /// carries — there is no project argument for one to come in on.
 #[test]
-fn list_issues_answers_this_agents_own_project_only() {
+fn list_tasks_answers_this_agents_own_project_only() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
@@ -630,18 +624,18 @@ fn list_issues_answers_this_agents_own_project_only() {
     let listed = call(
         &mut state,
         &who,
-        BridgeAction::TrackerListIssues {
+        BridgeAction::TrackerListTasks {
             state: None,
             status: None,
             label: None,
         },
     )
-    .expect("an agent lists its own project's issues");
-    let ids: Vec<&str> = listed["issues"]
+    .expect("an agent lists its own project's tasks");
+    let ids: Vec<&str> = listed["tasks"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|issue| issue["id"].as_str().unwrap())
+        .map(|task| task["id"].as_str().unwrap())
         .collect();
     assert_eq!(ids, vec![mine.as_str()], "only this project's");
     assert_eq!(listed["project_id"], project_id.as_str());
@@ -660,7 +654,7 @@ fn a_project_agent_runs_the_same_board_the_client_reads() {
     let made = call(
         &mut state,
         &who,
-        BridgeAction::TrackerCreateIssue {
+        BridgeAction::TrackerCreateTask {
             title: "Something the project agent noticed".into(),
             body: None,
             status: Some("ready".into()),
@@ -672,23 +666,23 @@ fn a_project_agent_runs_the_same_board_the_client_reads() {
             mention_user: None,
         },
     )
-    .expect("the project agent files an issue");
+    .expect("the project agent files a task");
     assert_eq!(
-        made["issue"]["created_by"],
+        made["task"]["created_by"],
         json!({ "kind": "agent", "agent_id": agent_id })
     );
-    assert_eq!(made["issue"]["status"], "ready");
+    assert_eq!(made["task"]["status"], "ready");
 
-    let client = state.handle(req("issues.list", json!({ "project_id": project_id })));
+    let client = state.handle(req("tasks.list", json!({ "project_id": project_id })));
     assert_eq!(
-        client["result"]["issues"][0]["id"], made["issue"]["id"],
+        client["result"]["tasks"][0]["id"], made["task"]["id"],
         "one board: {client:?}"
     );
 }
 
-/// An agent hands work off by assigning, and the issue records where it went.
+/// An agent hands work off by assigning, and the task records where it went.
 #[test]
-fn an_agent_hands_an_issue_to_another_agent_of_its_project() {
+fn an_agent_hands_a_task_to_another_agent_of_its_project() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
@@ -702,8 +696,8 @@ fn an_agent_hands_an_issue_to_another_agent_of_its_project() {
     let handed = call(
         &mut state,
         &who,
-        BridgeAction::TrackerAssignIssue {
-            issue_id: id.clone(),
+        BridgeAction::TrackerAssignTask {
+            task_id: id.clone(),
             assignee: json!({ "kind": "agent", "agent_id": them.1 }),
             note: Some("the parser is the part that matters".into()),
             track: None,
@@ -712,13 +706,13 @@ fn an_agent_hands_an_issue_to_another_agent_of_its_project() {
     )
     .expect("an agent assigns to another agent of its project");
     assert_eq!(
-        handed["issue"]["assignee"],
+        handed["task"]["assignee"],
         json!({ "kind": "agent", "agent_id": them.1 })
     );
     assert_eq!(handed["dispatch"]["kind"], "agent");
-    assert_eq!(handed["issue"]["status"], "in_progress");
+    assert_eq!(handed["task"]["status"], "in_progress");
 
-    // The delivered message wears the issue AND the agent that sent it, so the
+    // The delivered message wears the task AND the agent that sent it, so the
     // reader knows both what the work is and who to answer.
     let page = state.handle(req(
         "thread.page",
@@ -730,9 +724,9 @@ fn an_agent_hands_an_issue_to_another_agent_of_its_project() {
         .iter()
         .filter(|item| item["type"] == "message")
         .map(|item| item["data"].clone())
-        .find(|message| message["from_issue"].is_object())
-        .unwrap_or_else(|| panic!("no message wearing the issue: {page:?}"));
-    assert_eq!(handed_over["from_issue"]["issue_id"], id.as_str());
+        .find(|message| message["from_task"].is_object())
+        .unwrap_or_else(|| panic!("no message wearing the task: {page:?}"));
+    assert_eq!(handed_over["from_task"]["task_id"], id.as_str());
     assert_eq!(
         handed_over["from_agent"]["id"], who.1,
         "an agent assigned it, so the reader knows who to answer"
@@ -744,7 +738,7 @@ fn an_agent_hands_an_issue_to_another_agent_of_its_project() {
 }
 
 #[test]
-fn an_agent_assigning_an_issue_can_choose_whether_the_new_agent_is_watched() {
+fn an_agent_assigning_a_task_can_choose_whether_the_new_agent_is_watched() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
@@ -763,8 +757,8 @@ fn an_agent_assigning_an_issue_can_choose_whether_the_new_agent_is_watched() {
         let assigned = call(
             &mut state,
             &caller,
-            BridgeAction::TrackerAssignIssue {
-                issue_id: id,
+            BridgeAction::TrackerAssignTask {
+                task_id: id,
                 assignee,
                 note: None,
                 track: None,
@@ -780,7 +774,7 @@ fn an_agent_assigning_an_issue_can_choose_whether_the_new_agent_is_watched() {
 }
 
 #[test]
-fn an_agent_assigning_an_issue_can_watch_a_new_workspace_agent() {
+fn an_agent_assigning_a_task_can_watch_a_new_workspace_agent() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
@@ -794,8 +788,8 @@ fn an_agent_assigning_an_issue_can_watch_a_new_workspace_agent() {
         .agent_action(
             &caller.0,
             &caller.1,
-            BridgeAction::TrackerAssignIssue {
-                issue_id: id,
+            BridgeAction::TrackerAssignTask {
+                task_id: id,
                 assignee: json!({
                     "kind": "new_workspace",
                     "isolation": "worktree",
@@ -823,10 +817,10 @@ fn an_agent_assigning_an_issue_can_watch_a_new_workspace_agent() {
     );
 }
 
-/// An agent of another project cannot be assigned to, and the issue is left
+/// An agent of another project cannot be assigned to, and the task is left
 /// exactly as it was.
 #[test]
-fn an_agent_cannot_hand_an_issue_outside_its_own_project() {
+fn an_agent_cannot_hand_a_task_outside_its_own_project() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
@@ -845,8 +839,8 @@ fn an_agent_cannot_hand_an_issue_outside_its_own_project() {
     let refused = call(
         &mut state,
         &who,
-        BridgeAction::TrackerAssignIssue {
-            issue_id: id.clone(),
+        BridgeAction::TrackerAssignTask {
+            task_id: id.clone(),
             assignee: json!({ "kind": "agent", "agent_id": foreign }),
             note: None,
             track: None,
@@ -859,9 +853,9 @@ fn an_agent_cannot_hand_an_issue_outside_its_own_project() {
         "{refused}"
     );
 
-    let after = state.handle(req("issues.get", json!({ "issue_id": id })));
-    assert_eq!(after["result"]["issue"]["assignee"], Value::Null);
-    assert_eq!(after["result"]["issue"]["status"], "backlog");
+    let after = state.handle(req("tasks.get", json!({ "task_id": id })));
+    assert_eq!(after["result"]["task"]["assignee"], Value::Null);
+    assert_eq!(after["result"]["task"]["status"], "backlog");
 }
 
 /// A tool spells the agent's choice `harness`; the wire spells it `provider`.
@@ -882,8 +876,8 @@ fn a_tools_harness_becomes_the_wires_provider() {
     let handed = call(
         &mut state,
         &who,
-        BridgeAction::TrackerAssignIssue {
-            issue_id: id,
+        BridgeAction::TrackerAssignTask {
+            task_id: id,
             assignee: json!({
                 "kind": "new_agent",
                 "workspace_id": target,
@@ -914,9 +908,9 @@ fn a_tools_harness_becomes_the_wires_provider() {
 /// The prompt note is on both working surfaces and on neither of the others,
 /// and it says the four things an agent gets wrong without being told.
 #[test]
-fn the_issue_note_is_on_every_template_that_carries_the_tools() {
+fn the_task_note_is_on_every_template_that_carries_the_tools() {
     let templates = crate::templates::Templates::default();
-    let carries = |text: &str| text.contains("`assign_issue`") && text.contains("In review");
+    let carries = |text: &str| text.contains("`assign_task`") && text.contains("In review");
 
     for (name, text) in [
         ("build", &templates.build),
@@ -928,20 +922,20 @@ fn the_issue_note_is_on_every_template_that_carries_the_tools() {
         ("message", &templates.message),
         ("project_agent", &templates.project_agent),
     ] {
-        assert!(carries(text), "{name} does not carry the issue note");
+        assert!(carries(text), "{name} does not carry the task note");
     }
     assert!(
         !carries(&templates.router),
-        "the router has no project and no issues"
+        "the router has no project and no tasks"
     );
 
     // The four things it has to say.
     let note = &templates.build;
-    assert!(note.contains("that issue is the work"), "{note}");
-    assert!(note.contains("`comment_issue`"), "{note}");
+    assert!(note.contains("that task is the work"), "{note}");
+    assert!(note.contains("`comment_task`"), "{note}");
     assert!(
         note.contains("not that it is accepted"),
         "In review is not Done"
     );
-    assert!(note.contains("File an issue for follow-up work"), "{note}");
+    assert!(note.contains("File a task for follow-up work"), "{note}");
 }

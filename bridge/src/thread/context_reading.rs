@@ -1,6 +1,6 @@
 //! How full an agent's context was when it wrote something (#68).
 //!
-//! A message an agent sends, and a comment it leaves on an issue, carry the
+//! A message an agent sends, and a comment it leaves on a task, carry the
 //! author's last reading — snapshotted at write time, because the reader
 //! wants to know how much room the author had when it wrote these words, not
 //! how much it has by the time somebody looks.

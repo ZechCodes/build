@@ -530,14 +530,14 @@ describe("a bridge that refuses one subscription", () => {
   };
 
   const threeWatchers = () => {
-    changeEvents.watchChanges({ refresh: () => {}, id: "s-inbox", scope: "all", kinds: ["state", "thread", "issues"], mode: "realtime" });
+    changeEvents.watchChanges({ refresh: () => {}, id: "s-inbox", scope: "all", kinds: ["state", "thread", "tasks"], mode: "realtime" });
     changeEvents.watchChanges({ refresh: () => {}, id: "s-background", scope: "all", kinds: ["git", "files"], mode: { batch_ms: 30000 } });
     changeEvents.watchChanges({ refresh: () => {}, id: "s-active", entity: "run-7", kinds: ["git", "files"], mode: "realtime" });
   };
 
   it("still takes out every other one", async () => {
     threeWatchers();
-    await changeEvents.greetBridge(pickyBridge("issues"));
+    await changeEvents.greetBridge(pickyBridge("tasks"));
     await settle();
 
     const taken = subscribes().map((spec) => spec.subscription_id);
@@ -548,7 +548,7 @@ describe("a bridge that refuses one subscription", () => {
 
   it("asks for the refused one again on the next diff, so an upgraded bridge heals", async () => {
     threeWatchers();
-    await changeEvents.greetBridge(pickyBridge("issues"));
+    await changeEvents.greetBridge(pickyBridge("tasks"));
     await settle();
     const before = subscribes().filter((spec) => spec.subscription_id === "s-inbox").length;
 
@@ -561,7 +561,7 @@ describe("a bridge that refuses one subscription", () => {
 
   it("holds the ones that worked, and does not re-ask for them", async () => {
     threeWatchers();
-    await changeEvents.greetBridge(pickyBridge("issues"));
+    await changeEvents.greetBridge(pickyBridge("tasks"));
     await settle();
     const before = subscribes().filter((spec) => spec.subscription_id === "s-background").length;
 
@@ -618,7 +618,7 @@ describe("a refused subscribe on the record", () => {
         return { ...SUBSCRIBING_GREETING, changes: { ...SUBSCRIBING_GREETING.changes, mode } };
       }
       if (method === "changes.subscribe") {
-        const refusal = new Error("unknown variant `issues`");
+        const refusal = new Error("unknown variant `tasks`");
         if (code) refusal.error_code = code;
         throw refusal;
       }

@@ -97,21 +97,21 @@ pub(in crate::app::tests) fn change_events(pushes: &[Value]) -> Vec<Value> {
         .collect()
 }
 
-/// Install a readable legacy Issue without exercising its retired mutation
+/// Install a readable legacy Task without exercising its retired mutation
 /// surface, then publish the same invalidations a completed mutation tail
-/// would publish. These tests cover the push fanout, not Issue creation.
-fn publish_legacy_issue(state: &Arc<Mutex<AppState>>, goal: &str) -> String {
+/// would publish. These tests cover the push fanout, not Task creation.
+fn publish_legacy_task(state: &Arc<Mutex<AppState>>, goal: &str) -> String {
     let mut state = state.lock().unwrap();
-    let issue = state
+    let task = state
         .plan_create(&json!({ "goal": goal, "dispatch": false }))
-        .expect("the legacy issue fixture is filed through the domain seam");
-    let issue_id = issue["plan_id"]
+        .expect("the legacy task fixture is filed through the domain seam");
+    let task_id = task["plan_id"]
         .as_str()
-        .expect("the legacy issue has an id")
+        .expect("the legacy task has an id")
         .to_string();
     state.note_board_changed();
-    state.note_entity_changed(&issue_id);
-    issue_id
+    state.note_entity_changed(&task_id);
+    task_id
 }
 
 /// The capability announcement, in both places a client can find it: the
@@ -157,7 +157,7 @@ async fn the_greeting_announces_push_events() {
         json!({
             "subscriptions": true,
             "mode": "legacy",
-            "kinds": ["state", "thread", "git", "files", "terminals", "issues"],
+            "kinds": ["state", "thread", "git", "files", "terminals", "tasks"],
             "items": "bodies",
             "batch_ms": { "min": 1000, "max": 600_000 },
         }),
@@ -166,7 +166,7 @@ async fn the_greeting_announces_push_events() {
     // The minor that announced them. A client picks its adapter off this
     // number, so the number moving with the announcement is the contract —
     // which is why it is a literal here and an edit every time it moves. 1.3.0
-    // is the issue tracker: ten `issues.*` verbs and an `issues` change kind.
+    // is the task tracker: ten `tasks.*` verbs and an `tasks` change kind.
     assert_eq!(hello["result"]["api_version"], "1.30.0", "{hello:?}");
     assert!(
         hello["result"]["coalesce_window_ms"]
@@ -287,7 +287,7 @@ async fn a_state_change_reaches_the_browser_unasked() {
     let (state, _handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
     settled_pushes(&mut rx, &key).await; // boot noise
 
-    let plan_id = publish_legacy_issue(&state, "push me");
+    let plan_id = publish_legacy_task(&state, "push me");
 
     let pushes = pushes_until(&mut rx, &key, |pushes| {
         let events = change_events(pushes);
@@ -411,7 +411,7 @@ async fn a_terminal_byte_storm_is_not_a_change_event() {
 async fn rapid_mutations_cost_one_event_per_window() {
     let (dir, repo) = init_repo();
     let (state, handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
-    let plan_id = publish_legacy_issue(&state, "coalesce me");
+    let plan_id = publish_legacy_task(&state, "coalesce me");
     settled_pushes(&mut rx, &key).await;
 
     let mutations = 60;
@@ -462,7 +462,7 @@ async fn a_closed_session_hears_no_more_changes() {
     );
     assert_eq!(state.lock().unwrap().changes().subscriber_count(), 0);
 
-    publish_legacy_issue(&state, "nobody hears this");
+    publish_legacy_task(&state, "nobody hears this");
     assert_eq!(
         change_events(&settled_pushes(&mut rx, &key).await),
         Vec::<Value>::new()
@@ -475,7 +475,7 @@ async fn a_closed_session_hears_no_more_changes() {
 async fn an_entity_change_names_the_entity_that_moved() {
     let (dir, repo) = init_repo();
     let (state, _handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
-    let plan_id = publish_legacy_issue(&state, "agent moved me");
+    let plan_id = publish_legacy_task(&state, "agent moved me");
     settled_pushes(&mut rx, &key).await;
 
     state.lock().unwrap().note_entity_changed(&plan_id);
@@ -609,7 +609,7 @@ async fn a_write_in_a_watched_worktree_is_pushed_with_its_path() {
 async fn a_state_item_carries_the_row_the_board_would_paint() {
     let (dir, repo) = init_repo();
     let (state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
-    // A run, not an issue: legacy issues no longer appear on the board, and
+    // A run, not a task: legacy tasks no longer appear on the board, and
     // the point of this test is that the pushed `state` says what the board
     // row says. Minted through the domain seam because the workflow RPCs that
     // used to mint one are retired.
@@ -652,7 +652,7 @@ async fn a_state_item_carries_the_row_the_board_would_paint() {
         .filter(|push| push["type"] == "changes")
         .flat_map(|frame| frame["items"].as_array().cloned().unwrap_or_default())
         .find(|item| item["entity_id"] == plan_id && item["state"]["working_time"].is_object())
-        .unwrap_or_else(|| panic!("no changes item for the issue: {pushes:?}"));
+        .unwrap_or_else(|| panic!("no changes item for the task: {pushes:?}"));
     let board = call(&handler, "board.list", json!({}));
     let row = board["result"]["items"]
         .as_array()

@@ -5,7 +5,7 @@
 // work item is NAMED — the key it is remembered under, the route its row is
 // found by, the verb that mints it a conversation — plus the two on-demand
 // reads there are: the page above the window a reader has scrolled to the top
-// of, and an issue's own work item, which the board writes no row for.
+// of, and a task's own work item, which the board writes no row for.
 
 import { mergeCached } from "./localCache.js";
 import { mergeActivityDigests } from "./activityDigest.js";
@@ -79,22 +79,22 @@ class BranchRailContext {
 }
 
 /**
- * An issue, which is the one work item the cache holds nothing for.
+ * A task, which is the one work item the cache holds nothing for.
  *
- * Issues left the active-work board (bridge `app/board/views.rs`), so no row is
+ * Tasks left the active-work board (bridge `app/board/views.rs`), so no row is
  * ever built for one, no `state` push carries one, and the sync layer's ordered
- * pass never walks one. `issue.get` is the only thing on either side that says
- * who an issue's agents are, so this context keeps it — the single exception to
+ * pass never walks one. `task.get` is the only thing on either side that says
+ * who a task's agents are, so this context keeps it — the single exception to
  * "the rail reads the cache", asked once per mount and never on a clock. Stage
- * 9 takes the issue surface cache-only and this goes with it.
+ * 9 takes the task surface cache-only and this goes with it.
  */
-class IssueRailContext {
-  constructor({ deviceId = null, projectId, issueId }) {
-    this.kind = "issue";
+class TaskRailContext {
+  constructor({ deviceId = null, projectId, taskId }) {
+    this.kind = "task";
     this.deviceId = deviceId;
     this.projectId = projectId;
-    this.issueId = issueId;
-    this.key = `issue:${issueId}`;
+    this.taskId = taskId;
+    this.key = `task:${taskId}`;
   }
 
   ensureConversation() {
@@ -102,7 +102,7 @@ class IssueRailContext {
   }
 
   workItem(call) {
-    return call("issue.get", { issue_id: this.issueId });
+    return call("task.get", { task_id: this.taskId });
   }
 
   olderPage(call, asked) {
@@ -110,7 +110,7 @@ class IssueRailContext {
   }
 
   feedRoute() {
-    return { name: "issue", deviceId: this.deviceId, projectId: this.projectId, id: this.issueId };
+    return { name: "task", deviceId: this.deviceId, projectId: this.projectId, id: this.taskId };
   }
 }
 
@@ -172,7 +172,7 @@ class WorkspaceRailContext {
 
 const CONTEXTS = {
   branch: BranchRailContext,
-  issue: IssueRailContext,
+  task: TaskRailContext,
   project: ProjectRailContext,
   workspace: WorkspaceRailContext,
 };

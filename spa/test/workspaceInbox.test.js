@@ -214,14 +214,14 @@ describe("workspace inbox rows", () => {
       {
         id: "wt-abc123",
         project_id: "project-1",
-        name: "build-issue-rail",
-        root: "/work/checkouts/build-issue-rail",
+        name: "build-task-rail",
+        root: "/work/checkouts/build-task-rail",
         status: "ready",
         managed: false,
-        directories: [{ id: "root", source_id: "source-1", is_git: true, branch: "build-issue-rail" }],
+        directories: [{ id: "root", source_id: "source-1", is_git: true, branch: "build-task-rail" }],
       },
     ]);
-    expect(adopted.facts).toBe("Adopted checkout · build-issue-rail");
+    expect(adopted.facts).toBe("Adopted checkout · build-task-rail");
     expect(inboxRowHtml(adopted)).not.toMatch(/data-workspace-done/);
 
     const [nameless] = entriesOf([

@@ -73,7 +73,7 @@ describe("the v1 adapter against fixtures/api/v1", () => {
     }
   });
 
-  // A fixture's further examples (a paged `issues.list`, #85) are results
+  // A fixture's further examples (a paged `tasks.list`, #85) are results
   // like any other.
   it("parses every further example's result without throwing", () => {
     const examples = methodFixtures.flatMap(({ name, body }) =>
@@ -86,8 +86,8 @@ describe("the v1 adapter against fixtures/api/v1", () => {
     }
   });
 
-  it("dates the issues.list paging fields at 1.25.0 while keeping the original verb's arrival", () => {
-    const listing = methodFixtures.find(({ body }) => body.method === "issues.list").body;
+  it("dates the tasks.list paging fields at 1.25.0 while keeping the original verb's arrival", () => {
+    const listing = methodFixtures.find(({ body }) => body.method === "tasks.list").body;
     expect(listing.since).toBe("1.3.0");
     expect(listing.paging).toEqual({
       since: "1.25.0",
@@ -135,7 +135,7 @@ describe("the v1 adapter against fixtures/api/v1", () => {
 // ------------------------------------------------------ when a verb arrived ---
 
 // A new verb filed at the minor it shipped under, not the one it bumped to,
-// passes the `since <= current` check above: `issues.assign` went out saying
+// passes the `since <= current` check above: `tasks.assign` went out saying
 // 1.2.0 under a 1.3.0 wire. What catches it is the previous minor's verb list,
 // generated from git once (`node scripts/api-verbs-manifest.mjs`) and checked
 // in as fixtures/api/verbs-<minor>.json, so nothing here reads history.

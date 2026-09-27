@@ -1,7 +1,10 @@
 // The task timeline's adapter for the same visit marker used by chat.
-// Persisted comment/event ids share a ULID clock after their kind prefix.
-const persistedId = /^(?:ic|ie)-([^-]+)$/;
-export const taskUnreadKey = (id) => persistedId.exec(id || "")?.[1] ?? null;
+// Persisted comment/event ids share a ULID clock after their kind prefix. A
+// mark cached before the rename (#190) reads by its new prefix.
+import { currentId } from "./renamedIds.js";
+
+const persistedId = /^(?:tc|te)-([^-]+)$/;
+export const taskUnreadKey = (id) => persistedId.exec(currentId(id) || "")?.[1] ?? null;
 const compare = (left, right) => left < right ? -1 : left > right ? 1 : 0;
 
 /** Compare a comment mark and an event mark by their shared ULID clock. */

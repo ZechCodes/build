@@ -724,6 +724,13 @@ describe("links written before tasks were renamed (#190)", () => {
     });
   });
 
+  it("reads the task and comment ids an old link carries under their new prefixes", () => {
+    expect(routeFromHash("#/device/d1/project/p/issues/issue-1/c/ic-7")).toEqual({
+      name: "trackerTask", deviceId: "d1", projectId: "p", taskId: "task-1", commentId: "tc-7",
+    });
+    expect(routeFromHash("#/device/d1/project/p/workspace/ws/issues/issue-7").taskId).toBe("task-7");
+  });
+
   it("writes the new segment back", () => {
     expect(hashFromRoute(routeFromHash("#/device/d1/project/p/issues/task-1"))).toBe("#/device/d1/project/p/tasks/task-1");
     expect(hashFromRoute(routeFromHash("#/device/d1/project/p/workspace/ws/issues")))

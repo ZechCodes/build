@@ -46,3 +46,11 @@ describe("task unread marker", () => {
     marker.leave();
   });
 });
+
+describe("a mark cached before tasks were renamed (#190)", () => {
+  it("reads an old comment or event id by the same clock as a new one", () => {
+    expect(taskUnreadKey("ic-01M37FGQD48628P29BG1A4BB01")).toBe("01M37FGQD48628P29BG1A4BB01");
+    const rows = [row("tc", "02"), row("te", "03")];
+    expect(taskUnreadReading(rows, "ie-01M37FGQD48628P29BG1A4BB02").unreadCount).toBe(1);
+  });
+});

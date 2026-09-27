@@ -26,6 +26,8 @@
 //
 // Pure mapping both ways; the app shell owns the hashchange listener.
 
+import { currentId } from "./renamedIds.js";
+
 const BRANCH_TABS = new Set(["changes", "files"]);
 const ACCOUNT_PAGES = new Set(["settings", "devices", "archive"]);
 
@@ -127,7 +129,7 @@ function workspaceRoute(projectId, parts) {
     tab,
     // Only the tasks tab has anything after it. A stray segment behind a
     // directory tab named nothing before this and still names nothing.
-    ...(tab === TASKS_TAB && tail ? { taskId: tail } : null),
+    ...(tab === TASKS_TAB && tail ? { taskId: currentId(tail) } : null),
   };
 }
 
@@ -151,7 +153,12 @@ function legacyStage(tabSegment, stageSegment) {
  */
 const trackerRoute = (projectId, taskId, tail) =>
   taskId
-    ? { name: "trackerTask", projectId, taskId, ...(tail[0] === "c" && tail[1] ? { commentId: tail[1] } : null) }
+    ? {
+      name: "trackerTask",
+      projectId,
+      taskId: currentId(taskId),
+      ...(tail[0] === "c" && tail[1] ? { commentId: currentId(tail[1]) } : null),
+    }
     : projectPage(projectId);
 
 /** `#/project/<p>/task/<id>[…]` — the project is in the URL, so this is the

@@ -89,27 +89,30 @@ def test_timestamp_stale_or_far_future_rejected():
 
 
 def test_push_payload_carries_only_id_kind_and_deep_link():
-    payload = json.loads(web_push.push_payload("task-7", "plan_ready"))
+    payload = json.loads(web_push.push_payload("run-7", "agent"))
     assert payload == {
-        "task_id": "task-7",
-        "kind": "plan_ready",
-        "url": "/app/#/task/task-7",
+        "task_id": "run-7",
+        "kind": "agent",
+        "url": "/app/#/task/run-7",
     }
-    # Exactly these three keys — no goal, no plan text, no device name.
+    # Exactly these three keys — no message, no title, no device name.
     assert set(payload.keys()) == {"task_id", "kind", "url"}
 
 
-def test_push_payload_kinds_are_the_allowed_set():
-    assert web_push.ALLOWED_KINDS == {
-        "plan_ready",
-        "task_done",
-        "blocked",
-        "attention",
-    }
-    for kind in web_push.ALLOWED_KINDS:
-        payload = json.loads(web_push.push_payload("task-1", kind))
-        assert payload["kind"] == kind
-        assert payload["url"].startswith("/app/#/task/")
+def test_push_kinds_are_the_two_the_unread_counter_has():
+    # #191: a push fires only for what adds to the unread counter — an agent's
+    # conversation and a watched issue (a "task" to the user, #190). The old
+    # plan/run state labels are refused.
+    assert web_push.ALLOWED_KINDS == {"agent", "task"}
+
+
+def test_each_kind_deep_links_to_what_it_names():
+    # An agent's id is its conversation owner, which the SPA resolves by run id;
+    # a task's is the tracker issue's, which it resolves by issue id.
+    agent = json.loads(web_push.push_payload("run-1", "agent"))
+    task = json.loads(web_push.push_payload("issue-1", "task"))
+    assert agent["url"] == "/app/#/task/run-1"
+    assert task["url"] == "/app/#/issue/issue-1"
 
 
 # --- delivery + pruning -----------------------------------------------------------

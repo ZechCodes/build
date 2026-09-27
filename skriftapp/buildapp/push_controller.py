@@ -1,4 +1,4 @@
-"""Web-push endpoints — content-free attention notifications.
+"""Web-push endpoints — content-free unread notifications (#191).
 
 Storage rides the framework: subscriptions live in Skrift's ``push_subscriptions``
 table (``skrift.db.models.push_subscription``, created by a framework migration)
@@ -16,7 +16,7 @@ Two audiences, mirroring ``devices_controller``:
 
 E2EE invariant: the pushed payload is always ``web_push.push_payload(task_id,
 kind)`` — ``{"task_id", "kind", "url"}`` where ``task_id`` is opaque and ``kind``
-a generic status label — never task content (goals/plan text).
+a generic label — never content (messages, titles, comments).
 """
 
 from __future__ import annotations
@@ -130,8 +130,8 @@ class PushController(Controller):
 
     @post(NOTIFY_ROUTE_PATH)
     async def notify(self, request: Request, db_session: AsyncSession) -> Response:
-        """A bridge reports that a task needs its human. Pushes a content-free
-        ``{task_id, kind, url}`` payload (opaque id + generic kind, deep-linking
+        """A bridge reports that something added to the unread counter. Pushes a
+        content-free ``{task_id, kind, url}`` payload (opaque id + generic kind, deep-linking
         into ``/app/``) to every subscription of the device's owner. Authenticated
         by the device's Ed25519 signature over a timestamped challenge that binds
         the task and kind; a freshness window bounds replay."""

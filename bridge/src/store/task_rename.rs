@@ -181,11 +181,22 @@ pub(super) fn migrate_to_task_names(
 /// A whole copy of the database, taken once: a second attempt after a failed
 /// first finds the first's copy, which is of the same unmigrated store because
 /// the migration is one transaction.
+///
+/// Written beside its name and renamed into it, so the name only ever holds a
+/// whole copy: a boot killed mid-`VACUUM` leaves the `.tmp`, which the next
+/// one throws away and writes again.
 fn back_up(conn: &Connection, path: &Path) -> Result<bool, StoreError> {
     if path.exists() {
         return Ok(false);
     }
-    conn.execute("VACUUM INTO ?1", [path.to_string_lossy()])?;
+    let mut partial = path.as_os_str().to_owned();
+    partial.push(".tmp");
+    let partial = std::path::PathBuf::from(partial);
+    if partial.exists() {
+        std::fs::remove_file(&partial)?;
+    }
+    conn.execute("VACUUM INTO ?1", [partial.to_string_lossy()])?;
+    std::fs::rename(&partial, path)?;
     Ok(true)
 }
 

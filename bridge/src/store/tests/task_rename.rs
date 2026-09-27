@@ -371,3 +371,34 @@ fn a_v9_store_finds_a_retired_plans_docs_where_they_were_written() {
         "a second tree was started"
     );
 }
+
+/// The copy is written beside its name and renamed into it, so a bridge killed
+/// part-way through writing it leaves a partial `.tmp` — never a partial
+/// backup that the next boot would trust and skip over.
+#[test]
+fn a_partial_copy_left_by_a_killed_boot_is_replaced_by_a_whole_one() {
+    let dir = tempfile::tempdir().unwrap();
+    v9_store(dir.path());
+    let backup = dir.path().join(crate::store::task_rename::BACKUP_FILE);
+    let partial = dir
+        .path()
+        .join(format!("{}.tmp", crate::store::task_rename::BACKUP_FILE));
+    std::fs::write(&partial, b"SQLite format 3\0 cut off here").unwrap();
+
+    drop(Store::new(dir.path()).unwrap());
+
+    assert!(!partial.exists(), "the partial copy was left behind");
+    let copy = rusqlite::Connection::open(&backup).unwrap();
+    let version: String = copy
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(version, "9", "the backup is the store as it was");
+    let tasks: i64 = copy
+        .query_row("SELECT COUNT(*) FROM tracker_issues", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(tasks, 2);
+}

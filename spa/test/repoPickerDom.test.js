@@ -343,6 +343,28 @@ it("an older ask answering late does not replace what a newer ask wrote", async 
   expect((await readCached(githubReposAddress("desk")))?.value?.repos).toEqual(REPOS);
 });
 
+// Review of 1aa46288: a newer ask that never reached the machine must not
+// discard an older ask's answer — the field would stay plain for good.
+it("an older ask's answer is kept when the newer ask never reached the machine", async () => {
+  await greet(["github.repos"]);
+  const answers = [];
+  const call = vi.fn((method) => {
+    if (method !== "github.repos") return Promise.resolve({});
+    return new Promise((resolve, reject) => answers.push({ resolve, reject }));
+  });
+  open(call);
+  await vi.waitFor(() => expect(answers).toHaveLength(1));
+  await greet(["github.repos"]); // a reconnect while the first ask is out
+  await vi.waitFor(() => expect(answers).toHaveLength(2));
+  answers[1].reject(new Error("session closed"));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  answers[0].resolve({ repos: REPOS });
+  await vi.waitFor(async () => expect((await readCached(githubReposAddress("desk")))?.value?.repos).toEqual(REPOS));
+  const input = addRemote();
+  type(input, "bot");
+  await vi.waitFor(() => expect(options()).toEqual(["smarter-dev/bot"]));
+});
+
 // Zech's phone, Sep 27: the account-wide sheet (All devices) left Device on
 // "Choose a device", and a remote field with no machine never searches.
 describe("the account-wide sheet", () => {

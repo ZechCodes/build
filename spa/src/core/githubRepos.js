@@ -41,11 +41,14 @@ const UNREACHED = "unreached";
  *  the transport throws (a timeout, a closed session, a machine away) does not. */
 const saidByBridge = (error) => typeof error?.code === "string" && error.code !== "unknown" && !error.timedOut;
 
-/** The newest ask issued per device. Asks can overlap — a greeting arrives
- *  while an ask on the session it replaced has not come back, or two sheets
- *  over one machine each ask — and only the newest one issued may write: an
- *  older answer landing late never replaces what a newer ask wrote. */
+/** Asks per device are numbered as they are issued, and the cache keeps the
+ *  answer of the newest ask that has written. Asks can overlap — a greeting
+ *  arrives while an ask on the session it replaced has not come back, or two
+ *  sheets over one machine each ask — so an answer writes only when no newer
+ *  ask has written already: an older answer landing late never replaces a
+ *  newer one, and a newer ask that never reached the machine blocks nothing. */
 const issued = new Map();
+const written = new Map();
 
 /** A machine whose bridge does not offer github.repos: one that has not
  *  greeted keeps what it had, since what it can do is not known yet; one that
@@ -59,7 +62,11 @@ async function notOffered(deviceId, newest) {
 async function askOnce(deviceId, call) {
   const ask = (issued.get(deviceId) || 0) + 1;
   issued.set(deviceId, ask);
-  const newest = (next) => (held) => (issued.get(deviceId) === ask ? next(held) : null);
+  const newest = (next) => (held) => {
+    if ((written.get(deviceId) || 0) > ask) return null;
+    written.set(deviceId, ask);
+    return next(held);
+  };
   if (!bridgeCapabilities(deviceId).github?.repos) return notOffered(deviceId, newest);
   let next;
   try {

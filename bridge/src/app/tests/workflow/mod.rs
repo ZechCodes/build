@@ -8,5 +8,5 @@ mod checkout_discard;
 mod dispatch;
 pub(in crate::app::tests) mod finish;
 pub(in crate::app::tests) mod lifecycle_offlock;
-mod recovery;
+pub(in crate::app::tests) mod recovery;
 mod repo_root_runs;

@@ -1,0 +1,14 @@
+# The browser push check's bridge (web/push-check.mjs, #191): the scripted QA
+# agent never speaks, so this bridge runs the stand-in `claude` in
+# web/push-harness instead, which acts through the real MCP entry and so
+# reaches the real push triggers. It is mounted on the login shell's PATH
+# because the bridge adopts that PATH, not its own environment's. Layer it over
+# compose.real.yml:
+#
+#   docker compose -f deploy/compose.real.yml -f deploy/compose.push-check.yml ...
+services:
+  bridge:
+    environment:
+      BRIDGE_QA_AGENT: "0"
+    volumes:
+      - ../web/push-harness/claude:/usr/local/bin/claude:ro

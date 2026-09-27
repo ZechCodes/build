@@ -373,10 +373,12 @@ impl AppState {
             .stored()?;
         self.note_issues_changed(&scope.project_id, &issue.id);
         // A create does not pass through `commit_issue_write` — the number is
-        // minted inside the insert's own transaction — so the one thing that
-        // funnel does for an agent is done here by hand.
+        // minted inside the insert's own transaction — so what that funnel does
+        // for an agent is done here by hand: the push when the filing asks the
+        // user to read it (#189, #191), and the agent's own account of it.
         let mut write = IssueWrite::by(scope.actor.clone(), issue.clone());
         write.events.push(created);
+        self.push_issue_news(&write);
         self.say_what_the_agent_did(&write);
         Ok(json!({
             "issue": super::issue_json(&scope.project_id, &issue),

@@ -85,6 +85,10 @@ class AnnouncedAppVersion(Base):
     One row per announced version, newest row authoritative. Exists so a pod
     restart or scale-up serving the SAME build stays silent — the app-update
     push must fire once per deploy, not once per container start.
+
+    Nothing writes it since #191 retired the deploy push (a push fires only
+    for what adds to the unread counter); the table stays in the migration
+    chain until a migration drops it.
     """
 
     __tablename__ = "announced_app_versions"

@@ -1,8 +1,10 @@
 // Build push worker — deliberately tiny and cache-free.
 //
 // E2EE invariant: push payloads carry only opaque metadata ({task_id, kind, url}),
-// never task content (goals/plan text). The service worker renders kind-specific
-// copy from `kind`; the actual task state only decrypts inside the open app.
+// never content. A push fires only for what adds to the unread counter (#191):
+// an agent's conversation (`agent`) or a watched task (`task`). The service
+// worker renders the kind's copy; the real state only decrypts inside the open
+// app.
 // There is NO fetch handler on purpose: an E2EE app must never be served from a
 // stale cache.
 
@@ -10,22 +12,21 @@ self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
 
 // Kind → the generic line shown on the notification. Unknown kinds fall back to
-// the attention copy, so a new bridge kind never renders blank.
+// the agent copy, so a new bridge kind never renders blank.
 const KIND_BODY = {
-  plan_ready: "Plan ready to review",
-  task_done: "Task finished — diff ready",
-  blocked: "Agent needs your attention",
-  attention: "Agent needs your attention",
-  app_update: "Build was updated — open for the latest version",
+  agent: "An agent needs you",
+  task: "New activity on a task",
 };
 
+const NOTIFICATION_ICON = "/app/static/icon-192.png";
+
 function bodyForKind(kind) {
-  return KIND_BODY[kind] || KIND_BODY.attention;
+  return KIND_BODY[kind] || KIND_BODY.agent;
 }
 
 self.addEventListener("push", (event) => {
   let url = "/app/";
-  let kind = "attention";
+  let kind = "agent";
   let taskId = "";
   try {
     const payload = event.data ? event.data.json() : null;
@@ -41,27 +42,18 @@ self.addEventListener("push", (event) => {
   } catch {
     // Not JSON — render the generic notification anyway.
   }
-  // tag=task_id so repeated pushes for the same task collapse into one
-  // notification instead of stacking; a payload without a task id falls back to a
-  // single shared tag, and deploy announcements share their own so consecutive
-  // deploys never stack either.
-  const tag = kind === "app_update" ? "build-app-update" : taskId ? `build-task-${taskId}` : "build-attention";
+  // tag=task_id so repeated pushes for the same entity collapse into one
+  // notification instead of stacking; a payload without an id falls back to a
+  // single shared tag.
+  const tag = taskId ? `build-task-${taskId}` : "build-attention";
   event.waitUntil(
-    (async () => {
-      // A deploy announcement also nudges every OPEN window right now: the
-      // page re-checks version.json and shows its reload banner without the
-      // human touching the OS notification (which iOS still requires showing).
-      if (kind === "app_update") {
-        const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-        for (const w of windows) w.postMessage({ type: "app_update" });
-      }
-      await self.registration.showNotification("Build", {
-        body: bodyForKind(kind),
-        tag,
-        renotify: true,
-        data: { url },
-      });
-    })(),
+    self.registration.showNotification("Build", {
+      body: bodyForKind(kind),
+      icon: NOTIFICATION_ICON,
+      tag,
+      renotify: true,
+      data: { url },
+    }),
   );
 });
 

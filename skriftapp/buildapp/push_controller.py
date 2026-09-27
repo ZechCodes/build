@@ -1,4 +1,4 @@
-"""Web-push endpoints — content-free attention notifications.
+"""Web-push endpoints — content-free unread notifications (#191).
 
 Storage rides the framework: subscriptions live in Skrift's ``push_subscriptions``
 table (``skrift.db.models.push_subscription``, created by a framework migration)
@@ -16,7 +16,7 @@ Two audiences, mirroring ``devices_controller``:
 
 E2EE invariant: the pushed payload is always ``web_push.push_payload(task_id,
 kind)`` — ``{"task_id", "kind", "url"}`` where ``task_id`` is opaque and ``kind``
-a generic status label — never task content (goals/plan text).
+a generic label — never content (messages, titles, comments).
 """
 
 from __future__ import annotations
@@ -93,7 +93,8 @@ class PushController(Controller):
     async def subscribe(self, request: Request, db_session: AsyncSession) -> Response:
         """Store (or take over) this browser's push subscription for the current
         user. The endpoint is unique per browser+origin, so an existing row for it
-        is updated in place — including when a different account logs in."""
+        is updated in place — including when a different account logs in. Only an
+        endpoint on a known push service is stored: the server POSTs to it later."""
         user_id = require_user(request)
         body = await read_json_object(request)
         try:
@@ -103,8 +104,10 @@ class PushController(Controller):
             auth_key = str(keys["auth"])
         except (KeyError, TypeError):
             raise ClientException("malformed subscription")
-        if not endpoint.startswith("https://") or not p256dh_key or not auth_key:
+        if not p256dh_key or not auth_key:
             raise ClientException("malformed subscription")
+        if not web_push.push_endpoint_allowed(endpoint):
+            raise ClientException("push endpoint is not a known push service")
 
         await save_subscription(db_session, str(user_id), endpoint, p256dh_key, auth_key)
         return Response({"ok": True}, status_code=201)
@@ -130,8 +133,8 @@ class PushController(Controller):
 
     @post(NOTIFY_ROUTE_PATH)
     async def notify(self, request: Request, db_session: AsyncSession) -> Response:
-        """A bridge reports that a task needs its human. Pushes a content-free
-        ``{task_id, kind, url}`` payload (opaque id + generic kind, deep-linking
+        """A bridge reports that something added to the unread counter. Pushes a
+        content-free ``{task_id, kind, url}`` payload (opaque id + generic kind, deep-linking
         into ``/app/``) to every subscription of the device's owner. Authenticated
         by the device's Ed25519 signature over a timestamped challenge that binds
         the task and kind; a freshness window bounds replay."""

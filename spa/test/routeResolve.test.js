@@ -54,6 +54,45 @@ describe("resolveLegacyRoute", () => {
     });
   });
 
+  // A task push deep-links by the tracker issue's id alone (#191): the board
+  // feed carries every watched issue as a `tracker_issue` row, and the one a
+  // push names is watched, so the row is there to say its project.
+  it("resolves a watched tracker issue to its page on the tracker", () => {
+    const tracked = [
+      ...items,
+      { kind: "tracker_issue", project_id: "p1", issue_id: "issue-01T", number: 7, deviceId: "dev-1" },
+    ];
+    expect(resolveLegacyRoute({ kind: "issue", id: "issue-01T" }, { items: tracked })).toEqual({
+      name: "trackerIssue", projectId: "p1", issueId: "issue-01T", deviceId: "dev-1",
+    });
+    expect(routeFromHash("#/issue/issue-01T")).toMatchObject({ name: "resolve", kind: "issue", id: "issue-01T" });
+  });
+
+  // An agent push deep-links by its conversation owner's run id (#191). A
+  // workspace's run opens the workspace, which the feed's workspace records
+  // say even when the run's own row does not.
+  it("resolves a workspace's run id to the workspace", () => {
+    const workspaces = [{ id: "ws-1", project_id: "p1", entity_id: "run-ws", deviceId: "dev-1" }];
+    const withRun = [...items, { kind: "branch", project_id: "p1", branch: "push-x", run_id: "run-ws", worktree_id: "wt-ws", deviceId: "dev-1" }];
+    expect(resolveLegacyRoute({ kind: "run", id: "run-ws" }, { items: withRun, workspaces })).toEqual({
+      name: "workspace", projectId: "p1", workspaceId: "ws-1", tab: "changes", deviceId: "dev-1",
+    });
+  });
+
+  // The project agent's conversation is owned by a project scratch run, whose
+  // own row names a branch after the project: its push means the project.
+  it("resolves a project's run id to the project, not its scratch branch", () => {
+    const projects = [{ project_id: "p1", name: "Build", entity_id: "run-proj", deviceId: "dev-1" }];
+    const withScratch = [...items, { kind: "branch", project_id: "p1", branch: "Build", run_id: "run-proj", deviceId: "dev-1" }];
+    expect(resolveLegacyRoute({ kind: "run", id: "run-proj" }, { items: withScratch, projects })).toEqual({
+      name: "project", projectId: "p1", deviceId: "dev-1",
+    });
+    expect(resolveLegacyRoute({ kind: "run", id: "run-proj" }, { items: withScratch, projects }, { homeDeviceId: "dev-1" })).toEqual({
+      name: "project", projectId: "p1", deviceId: "dev-1",
+    });
+    expect(routeFromHash("#/task/run-proj")).toMatchObject({ name: "resolve", kind: "run", id: "run-proj" });
+  });
+
   it("prefers the row in the project the URL named", () => {
     const ambiguous = [
       { kind: "branch", project_id: "p2", branch: "same-name", worktree_id: "wt-x" },

@@ -12,6 +12,7 @@ import { subscribeInboxAttentionCount } from "./inboxAttention.js";
 import { ICON_PIN, ICON_PLUS, ICON_SETTINGS } from "./icons.js";
 import { anyBridgeUpdateAvailable, onBridgeUpdatesChanged } from "./bridgeUpdates.js";
 import { syncPinButton } from "./pinControl.js";
+import { mountPushPrompt } from "./pushPrompt.js";
 import "../styles/shell.css";
 
 const COLLAPSED_ADDRESS = uiAddress({ view: "inbox", kind: "fold", sub: "rail" });
@@ -397,6 +398,7 @@ export function initInboxRail() {
     setInboxView(view);
   });
   mountInboxList();
+  mountPushPrompt($("#push-prompt"));
   inboxRouteChanged();
   railReady = Promise.all([collapseRecord.ready, viewRecord.ready]);
   return railReady;

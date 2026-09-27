@@ -464,6 +464,12 @@ impl Issue {
     pub fn is_open(&self) -> bool {
         self.state == IssueState::Open
     }
+
+    /// Done or closed: an issue no total counts (#183), whatever its unread.
+    /// The SPA's `isFinished` (`core/trackerAgentIssues.js`) says the same.
+    pub fn is_finished(&self) -> bool {
+        !self.is_open() || self.status == DONE_STATUS
+    }
 }
 
 /// One comment on one issue.

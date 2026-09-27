@@ -490,13 +490,17 @@ pub struct AppState {
     /// holds — consulted at every spawn that has one to spend, so a dead one is
     /// cleared where it is read instead of costing a session to find out.
     resume_id_probe: ResumeIdProbe,
-    /// Web-push notifier for attention transitions, if configured. Content-free
-    /// by contract — it only ever says "a task needs you".
+    /// Web-push notifier, if configured: one content-free notify whenever
+    /// something adds to the unread counter (#191).
     notifier: Option<Notifier>,
     /// The `gh` that `github.repos` runs.
     github: crate::github::GithubCli,
-    /// At most one push per task-state change.
+    /// At most one push per entity per debounce window.
     notify_throttle: NotifyThrottle,
+    /// Every notify [`spawn_notify`](Self::spawn_notify) was asked to send, as
+    /// `(entity_id, kind)`: what the tests read instead of an api.
+    #[cfg(test)]
+    pub(in crate::app) sent_notifies: Vec<(String, &'static str)>,
     /// Which peer connection each E2EE session has (spec §Signaling), and the
     /// factory that builds them. The bridge is always the answerer, so there is
     /// nothing here until a browser offers; a bridge with no peer transport
@@ -664,6 +668,8 @@ impl AppState {
             #[cfg(test)]
             github: crate::github::GithubCli::absent(),
             notify_throttle: NotifyThrottle::default(),
+            #[cfg(test)]
+            sent_notifies: Vec::new(),
             peers: PeersSlot::new(SessionPeers::with_factory(Arc::new(NoPeerFactory))),
             changes,
             watchers,
@@ -712,8 +718,8 @@ impl AppState {
         )
     }
 
-    /// Enable web-push attention notifications: every task-state change into a
-    /// state that needs the human fires one signed, content-free notify at the api.
+    /// Enable web-push notifications: everything that adds to the unread
+    /// counter fires one signed, content-free notify at the api (#191).
     pub fn with_notifier(mut self, notifier: Notifier) -> Self {
         self.notifier = Some(notifier);
         self

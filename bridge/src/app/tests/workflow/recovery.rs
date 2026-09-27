@@ -77,7 +77,11 @@ fn drafting_plan(id: &str, repo: &std::path::Path) -> PersistedPlan {
     }
 }
 
-fn building_run(id: &str, repo: &std::path::Path, worktree: &std::path::Path) -> PersistedRun {
+pub(in crate::app::tests) fn building_run(
+    id: &str,
+    repo: &std::path::Path,
+    worktree: &std::path::Path,
+) -> PersistedRun {
     PersistedRun {
         id: id.into(),
         plan_id: Some("plan-1".into()),

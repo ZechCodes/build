@@ -69,50 +69,54 @@ function appWindow(overrides = {}) {
 }
 
 describe("service worker push notification copy + tag", () => {
-  it("renders kind-specific body copy for each known kind", () => {
+  it("renders kind-specific body copy for each kind the unread counter has (#191)", () => {
+    // User-facing copy calls an issue a task (#190).
     const cases = [
-      ["plan_ready", "Plan ready to review"],
-      ["task_done", "Task finished — diff ready"],
-      ["blocked", "Agent needs your attention"],
-      ["attention", "Agent needs your attention"],
+      ["agent", "An agent needs you", "/app/#/task/run-1"],
+      ["task", "New activity on a task", "/app/#/issue/issue-1"],
     ];
-    for (const [kind, body] of cases) {
+    for (const [kind, body, url] of cases) {
       const { handlers, showNotification } = loadWorker();
-      handlers.push(pushEvent({ task_id: "t1", kind, url: "/app/#/task/t1/plan" }));
+      handlers.push(pushEvent({ task_id: "t1", kind, url }));
       expect(showNotification).toHaveBeenCalledWith(
         "Build",
         expect.objectContaining({
           body,
+          icon: "/app/static/icon-192.png",
           tag: "build-task-t1",
           renotify: true,
-          data: { url: "/app/#/task/t1/plan" },
+          data: { url },
         }),
       );
     }
   });
 
-  it("falls back to attention copy for an unknown kind (a typo'd key never renders blank)", () => {
+  it("falls back to the agent copy for an unknown kind (a typo'd key never renders blank)", () => {
     const { handlers, showNotification } = loadWorker();
     handlers.push(pushEvent({ task_id: "t2", kind: "planready", url: "/app/" }));
     expect(showNotification).toHaveBeenCalledWith(
       "Build",
-      expect.objectContaining({ body: "Agent needs your attention" }),
+      expect.objectContaining({ body: "An agent needs you" }),
     );
+  });
+
+  it("renders no deploy announcement: an app_update is not unread news (#191)", () => {
+    expect(swSource).not.toContain("app_update");
   });
 
   it("uses a per-task tag, and a shared tag when there is no task id", () => {
     const withId = loadWorker();
-    withId.handlers.push(pushEvent({ task_id: "abc", kind: "blocked", url: "/app/" }));
+    withId.handlers.push(pushEvent({ task_id: "abc", kind: "agent", url: "/app/" }));
     expect(withId.showNotification.mock.calls[0][1].tag).toBe("build-task-abc");
 
     const noId = loadWorker();
-    noId.handlers.push(pushEvent({ kind: "blocked", url: "/app/" }));
+    noId.handlers.push(pushEvent({ kind: "agent", url: "/app/" }));
     expect(noId.showNotification.mock.calls[0][1].tag).toBe("build-attention");
   });
 
   it("rejects a protocol-relative url and falls back to the app root", () => {
     const { handlers, showNotification } = loadWorker();
-    handlers.push(pushEvent({ task_id: "t3", kind: "attention", url: "//evil.example/x" }));
+    handlers.push(pushEvent({ task_id: "t3", kind: "agent", url: "//evil.example/x" }));
     expect(showNotification.mock.calls[0][1].data).toEqual({ url: "/app/" });
   });
 
@@ -121,7 +125,7 @@ describe("service worker push notification copy + tag", () => {
     handlers.push(pushEvent(null, { malformed: true }));
     expect(showNotification).toHaveBeenCalledWith(
       "Build",
-      expect.objectContaining({ body: "Agent needs your attention", data: { url: "/app/" } }),
+      expect.objectContaining({ body: "An agent needs you", data: { url: "/app/" } }),
     );
   });
 });

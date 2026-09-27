@@ -143,10 +143,16 @@ pub(in crate::app) fn unread_since_mark(issue: &Issue, timeline: &[TimelineEntry
 /// fallback count reads the same list (`spa/src/core/trackerUnread.js`), and
 /// `app::tests::tracker_unread_kinds` prints the cases both sides are held to.
 pub(in crate::app) fn counts_as_unread(entry: &TimelineEntry) -> bool {
+    match entry {
+        TimelineEntry::Comment(_) => true,
+        TimelineEntry::Event(event) => event_counts_as_unread(event),
+    }
+}
+
+/// The event half of [`counts_as_unread`]: whether one event is news. Browser
+/// push asks the same question of the events a write carries (#191).
+pub(in crate::app) fn event_counts_as_unread(event: &crate::tracker::IssueEvent) -> bool {
     use crate::tracker::{Actor, IssueEventKind as Kind};
-    let TimelineEntry::Event(event) = entry else {
-        return true;
-    };
     match event.kind {
         Kind::Assigned | Kind::Unassigned | Kind::Moved | Kind::Closed | Kind::Reopened => true,
         Kind::Created => event.mentions_user && matches!(&event.actor, Actor::Agent { .. }),

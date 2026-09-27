@@ -18,6 +18,14 @@ pub(in crate::app) struct ConversationNews {
     pub(in crate::app) attention_reason: Option<&'static str>,
 }
 
+/// One agent's [`ConversationNews`], and whether the user watches that agent:
+/// an unwatched agent's unread is on no badge, so it pushes nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::app) struct AgentNews {
+    pub(in crate::app) news: ConversationNews,
+    pub(in crate::app) watched: bool,
+}
+
 impl AppState {
     #[cfg(test)]
     pub(in crate::app) fn has_attention(&self, entity_id: &str) -> bool {
@@ -153,56 +161,72 @@ impl AppState {
         }
     }
 
-    /// Fire one content-free web-push notify when an attention-class item lands
-    /// on an entity's conversation.
+    /// What every agent on a roster has said since a tail last looked, each
+    /// with whether the user watches that agent.
     ///
-    /// Event-driven, not state-driven: the state only chooses the kind's label
-    /// (a plan at its review gate is `plan_ready`, not a generic attention).
-    /// The watermark moves whether or not the push goes out, so one piece of
-    /// news notifies once even when two entities share the conversation.
-    pub(in crate::app) fn push_attention_notify(
-        &mut self,
-        entity_id: &str,
-        news: ConversationNews,
-        state_kind: Option<&'static str>,
-    ) {
-        let first_look = self
-            .board
-            .attention_mut()
-            .advance_conversation(news.thread_id, news.sequence);
-        if first_look || self.notifier.is_none() {
-            return;
-        }
-        if let Some(kind) = self.attention_push_kind(entity_id, news.attention_reason, state_kind) {
-            self.spawn_notify(entity_id.to_string(), kind);
+    /// Every agent, not only the primary: an entry's badge is the union of its
+    /// watched agents' unread ([`unread_for`](Self::unread_for)), so a second
+    /// agent speaking adds to it as surely as the first.
+    pub(in crate::app) fn roster_news(&self, roster: &crate::agent::AgentRoster) -> Vec<AgentNews> {
+        roster
+            .iter()
+            .filter_map(|agent| {
+                let thread = self.conversation_thread_of(agent)?;
+                Some(AgentNews {
+                    news: self.conversation_news(thread),
+                    watched: agent.watched,
+                })
+            })
+            .collect()
+    }
+
+    /// Fire one content-free web-push notify for each piece of agent news that
+    /// adds to the unread counter (#191).
+    ///
+    /// Event-driven, not state-driven. The watermark moves whether or not the
+    /// push goes out, so one piece of news notifies once even when two agents
+    /// or two entities share the conversation.
+    pub(in crate::app) fn push_agent_news(&mut self, entity_id: &str, roster: Vec<AgentNews>) {
+        for AgentNews { news, watched } in roster {
+            let first_look = self
+                .board
+                .attention_mut()
+                .advance_conversation(news.thread_id, news.sequence);
+            if first_look || !watched {
+                continue;
+            }
+            if self.agent_news_pushes(entity_id, news.attention_reason) {
+                self.spawn_notify(entity_id.to_string(), crate::notify::AGENT_KIND);
+            }
         }
     }
 
-    /// What one piece of news pushes as, or `None` when the phone stays dark: a
-    /// muted entry, news that needs nobody, a reason with no push label, or a
-    /// second push inside the entity's debounce window.
+    /// Whether one piece of agent news pushes, or the phone stays dark: a
+    /// muted entry, news that needs nobody, or a second push inside the
+    /// entity's debounce window. Every attention-class item is news, a live
+    /// `Interrupted` included; a restart's own interruptions never reach here,
+    /// because boot seeds the watermarks after recovery writes them.
     ///
     /// Mute is checked before the window is spent, so a silence costs nothing:
     /// the first news after unmuting pushes instead of sitting out a window it
     /// never entered.
-    pub(in crate::app) fn attention_push_kind(
+    pub(in crate::app) fn agent_news_pushes(
         &mut self,
         entity_id: &str,
         reason: Option<&str>,
-        state_kind: Option<&'static str>,
-    ) -> Option<&'static str> {
-        if self.is_muted(entity_id) {
-            return None;
+    ) -> bool {
+        if self.is_muted(entity_id) || reason.is_none() {
+            return false;
         }
-        let kind = crate::notify::kind_for_attention(reason?, state_kind)?;
         self.notify_throttle
             .should_notify(entity_id, crate::notify::unix_seconds())
-            .then_some(kind)
     }
 
     /// Spawn the actual notify POST off the app lock. A delivery failure only
     /// logs — it never blocks the mutation.
-    pub(in crate::app) fn spawn_notify(&self, entity_id: String, kind: &'static str) {
+    pub(in crate::app) fn spawn_notify(&mut self, entity_id: String, kind: &'static str) {
+        #[cfg(test)]
+        self.sent_notifies.push((entity_id.clone(), kind));
         let Some(notifier) = &self.notifier else {
             return;
         };

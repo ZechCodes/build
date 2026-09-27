@@ -1,88 +1,41 @@
-//! Content-free attention notifications — bridge → api → web push.
+//! Content-free push notifications — bridge → api → web push.
 //!
-//! When an attention-class item lands on an entity's conversation — an agent
-//! reporting done, blocking, failing, going quiet, or simply speaking — the
-//! bridge POSTs a signed, timestamped notify to the api's `/api/push/notify`,
-//! which fans a push out to the owner's browsers. The entity's state is not the
-//! trigger; it only picks the kind's label ([`kind_for_attention`]). E2EE invariant: the request names the device, the
-//! **opaque task id**, and a **generic kind** (`plan_ready`/`task_done`/`blocked`/
-//! `attention`) — never the goal or any task content. The browser renders
-//! kind-specific copy and deep-links to the task; the real state loads only over
-//! the E2EE channel once the app opens.
+//! A push follows the unread counter (#191): it fires when something adds to
+//! the badge the inbox wears, and at no other time. Two things add to it — an
+//! attention-class item on a watched agent's conversation, and news on a
+//! watched, unfinished issue — and each has its kind. The bridge POSTs a
+//! signed, timestamped notify to the api's `/api/push/notify`, which fans a push
+//! out to the owner's browsers. E2EE invariant: the request names the device,
+//! the **opaque entity id**, and a **generic kind** (`agent`/`task`) — never a
+//! message, a title or any other content. The browser renders the kind's copy
+//! and deep-links by the id; the real state loads only over the E2EE channel
+//! once the app opens.
 //!
 //! Authentication is the registration scheme reused: an Ed25519 signature over
 //! [`notify_challenge`], which mirrors `skriftapp/buildapp/web_push.py`
 //! byte-for-byte; the timestamp bounds replay of a captured request.
 //!
 //! Throttling: [`NotifyThrottle`] fires **at most one notify per entity per
-//! [`NOTIFY_DEBOUNCE_SECONDS`]**. Pushes follow attention-class conversation
-//! events, which arrive in bursts — a done event and the completion message
-//! behind it are one piece of news — so the window, not the state, is what
-//! keeps a phone quiet.
+//! [`NOTIFY_DEBOUNCE_SECONDS`]**. News arrives in bursts — an agent's reply and
+//! the report behind it are one piece of news — so the window is what keeps a
+//! phone quiet.
 
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::plan::PlanState;
-use crate::run::RunState;
 use crate::transport;
 
-/// Notify kinds (contract #6). Still content-free at the payload level: a kind is
-/// a generic status label, never task text. The service worker renders
-/// kind-specific copy; the real state loads over the E2EE channel once the app
-/// opens.
-pub const PLAN_READY_KIND: &str = "plan_ready";
-pub const TASK_DONE_KIND: &str = "task_done";
-pub const BLOCKED_KIND: &str = "blocked";
-pub const ATTENTION_KIND: &str = "attention";
-
-/// The push kind for a plan state, or `None` when the state should not push.
-/// The plan half of the split (`crate::plan::PlanState`): a plan needs the
-/// human at its review gate and when an agent blocked/failed/went quiet.
-/// `Interrupted` is excluded because it is raised by boot recovery after a
-/// daemon restart, where the operator is already at the machine.
-pub fn kind_for_plan_state(state: &PlanState) -> Option<&'static str> {
-    match state {
-        PlanState::PlanReview => Some(PLAN_READY_KIND),
-        PlanState::Blocked => Some(BLOCKED_KIND),
-        PlanState::Failed | PlanState::IdleUnreported => Some(ATTENTION_KIND),
-        _ => None,
-    }
-}
-
-/// The push kind for a run state, or `None` when the state should not push.
-/// The run half of the split (`crate::run::RunState`): a run needs the human
-/// at its diff-review gate, at the between-stages gate (a stage's verdict is
-/// in), and when an agent blocked/failed/went quiet. `Interrupted` is excluded
-/// for the same reason as the plan mapping.
-pub fn kind_for_run_state(state: &RunState) -> Option<&'static str> {
-    match state {
-        RunState::Review => Some(TASK_DONE_KIND),
-        RunState::StageGate => Some(ATTENTION_KIND),
-        RunState::Blocked => Some(BLOCKED_KIND),
-        RunState::Failed | RunState::IdleUnreported => Some(ATTENTION_KIND),
-        _ => None,
-    }
-}
-
-/// The push kind for one attention-class item, given the state its entity is
-/// now in.
+/// Notify kinds (contract #6). A kind is a generic label, never content; the
+/// service worker renders its copy and the api picks the deep link by it.
 ///
-/// The state is the better label whenever it has one — a plan at its review
-/// gate is `plan_ready`, a run at its diff gate is `task_done` — and an agent
-/// message arriving on an entity that is otherwise just working has only the
-/// generic kind to offer. Every result is in the api's allowed set.
-///
-/// A boot-recovery interruption pushes nothing: it is raised when the daemon
-/// restarts, where the operator is already at the machine.
-pub fn kind_for_attention(reason: &str, state_kind: Option<&'static str>) -> Option<&'static str> {
-    if reason == crate::thread::ThreadEventKind::Interrupted.as_str() {
-        return None;
-    }
-    Some(state_kind.unwrap_or(ATTENTION_KIND))
-}
+/// An agent said something that needs the human; the id is the entity (the
+/// workspace's or project's conversation owner) the agent is on.
+pub const AGENT_KIND: &str = "agent";
+/// A watched issue has news; the id is the issue's. User-facing copy calls an
+/// issue a task (#190).
+pub const TASK_KIND: &str = "task";
 
 /// Now, in unix seconds — the clock [`NotifyThrottle`] debounces against.
 pub fn unix_seconds() -> i64 {
@@ -147,8 +100,8 @@ pub struct NotifyThrottle {
 
 impl NotifyThrottle {
     /// Whether `entity_id` may push at `now` (unix seconds), recording the push
-    /// when it may. Plan and run ids are disjoint (`plan-…` / `run-…`), so both
-    /// entities share the one map.
+    /// when it may. Plan, run and issue ids are disjoint (`plan-…` / `run-…` /
+    /// `issue-…`), so every entity shares the one map.
     ///
     /// A clock that stepped backwards fires and re-anchors the window rather
     /// than staying silent until it catches up.
@@ -165,7 +118,7 @@ impl NotifyThrottle {
     }
 }
 
-/// Sends signed attention notifies to the api. Cheap to clone (the reqwest
+/// Sends signed notifies to the api. Cheap to clone (the reqwest
 /// client is an `Arc` internally) so callers can fire-and-forget from a spawned
 /// task without holding any app lock.
 #[derive(Clone)]
@@ -249,11 +202,11 @@ mod tests {
             "dev-1",
             &identity.private_key_b64,
             "task-1",
-            ATTENTION_KIND,
+            AGENT_KIND,
             1_750_000_000,
         )
         .expect("signable");
-        assert_eq!(request.kind, ATTENTION_KIND);
+        assert_eq!(request.kind, AGENT_KIND);
         assert_eq!(request.task_id, "task-1");
         let challenge = notify_challenge(
             &request.device_id,
@@ -292,7 +245,7 @@ mod tests {
             "dev-1",
             &identity.private_key_b64,
             "task-1",
-            PLAN_READY_KIND,
+            TASK_KIND,
             1_750_000_000,
         )
         .unwrap();
@@ -307,58 +260,6 @@ mod tests {
             keys,
             ["device_id", "kind", "signature_b64", "task_id", "timestamp"]
         );
-    }
-
-    #[test]
-    fn kind_for_plan_state_maps_each_push_worthy_state() {
-        assert_eq!(
-            kind_for_plan_state(&PlanState::PlanReview),
-            Some(PLAN_READY_KIND)
-        );
-        assert_eq!(kind_for_plan_state(&PlanState::Blocked), Some(BLOCKED_KIND));
-        assert_eq!(
-            kind_for_plan_state(&PlanState::Failed),
-            Some(ATTENTION_KIND)
-        );
-        assert_eq!(
-            kind_for_plan_state(&PlanState::IdleUnreported),
-            Some(ATTENTION_KIND)
-        );
-        // Working, resting, and boot-recovery states never push.
-        for quiet in [
-            PlanState::Created,
-            PlanState::Drafting,
-            PlanState::Approved,
-            PlanState::Interrupted,
-            PlanState::Abandoned,
-        ] {
-            assert_eq!(kind_for_plan_state(&quiet), None, "{quiet:?}");
-        }
-    }
-
-    #[test]
-    fn kind_for_run_state_maps_each_push_worthy_state() {
-        assert_eq!(kind_for_run_state(&RunState::Review), Some(TASK_DONE_KIND));
-        assert_eq!(
-            kind_for_run_state(&RunState::StageGate),
-            Some(ATTENTION_KIND)
-        );
-        assert_eq!(kind_for_run_state(&RunState::Blocked), Some(BLOCKED_KIND));
-        assert_eq!(kind_for_run_state(&RunState::Failed), Some(ATTENTION_KIND));
-        assert_eq!(
-            kind_for_run_state(&RunState::IdleUnreported),
-            Some(ATTENTION_KIND)
-        );
-        for quiet in [
-            RunState::Created,
-            RunState::Building,
-            RunState::Interrupted,
-            RunState::Merged,
-            RunState::Abandoned,
-            RunState::Archived,
-        ] {
-            assert_eq!(kind_for_run_state(&quiet), None, "{quiet:?}");
-        }
     }
 
     /// A burst of attention events is one piece of news. The window opens
@@ -392,33 +293,6 @@ mod tests {
         assert!(!throttle.should_notify("run-1", 1_740_000_010));
     }
 
-    #[test]
-    fn attention_takes_its_label_from_the_state_and_stays_quiet_on_a_restart() {
-        // The state has the more specific label whenever it needs the human.
-        assert_eq!(
-            kind_for_attention("done", kind_for_plan_state(&PlanState::PlanReview)),
-            Some(PLAN_READY_KIND)
-        );
-        assert_eq!(
-            kind_for_attention("done", kind_for_run_state(&RunState::Review)),
-            Some(TASK_DONE_KIND)
-        );
-        assert_eq!(
-            kind_for_attention("blocked", kind_for_run_state(&RunState::Blocked)),
-            Some(BLOCKED_KIND)
-        );
-        // An agent message on a working run has only the generic kind.
-        assert_eq!(
-            kind_for_attention("agent_message", kind_for_run_state(&RunState::Building)),
-            Some(ATTENTION_KIND)
-        );
-        // A daemon restart is not news to the operator standing at the machine.
-        assert_eq!(
-            kind_for_attention("interrupted", kind_for_run_state(&RunState::Interrupted)),
-            None
-        );
-    }
-
     #[tokio::test]
     async fn notifier_posts_a_verifiable_signed_notify() {
         use wiremock::matchers::{method, path};
@@ -435,7 +309,7 @@ mod tests {
         let identity = transport::generate_identity_keypair();
         let notifier = Notifier::new(&server.uri(), "dev-1", &identity.private_key_b64);
         notifier
-            .notify("task-1", TASK_DONE_KIND)
+            .notify("task-1", AGENT_KIND)
             .await
             .expect("notify accepted");
 
@@ -443,7 +317,7 @@ mod tests {
         let body: NotifyRequest = serde_json::from_slice(&requests[0].body).unwrap();
         assert_eq!(body.device_id, "dev-1");
         assert_eq!(body.task_id, "task-1");
-        assert_eq!(body.kind, TASK_DONE_KIND);
+        assert_eq!(body.kind, AGENT_KIND);
         let challenge =
             notify_challenge(&body.device_id, &body.task_id, &body.kind, body.timestamp);
         transport::verify_message_b64(
@@ -468,7 +342,7 @@ mod tests {
 
         let identity = transport::generate_identity_keypair();
         let notifier = Notifier::new(&server.uri(), "dev-1", &identity.private_key_b64);
-        let err = notifier.notify("task-1", ATTENTION_KIND).await.unwrap_err();
+        let err = notifier.notify("task-1", AGENT_KIND).await.unwrap_err();
         assert!(err.contains("401"), "{err}");
     }
 }

@@ -49,14 +49,26 @@ impl SessionProbes {
     ///    conversation to pick up, and the checkout's old one belongs to
     ///    whoever had it — adoption included: Build cannot show a history it
     ///    never heard.
+    ///
+    /// The provider is asked where the child will stand, and then where Build
+    /// keeps its root when that is somewhere else. A project agent stands in
+    /// the project's base but has its root in Build's scratch directory, and
+    /// every conversation it had before it moved was written under the
+    /// scratch directory's name: claude files a transcript by the cwd it was
+    /// started in, and resumes an id from any of them.
     fn pickup(
         &self,
+        cwd: &Path,
         root: &Path,
         provider: AgentProvider,
         recorded: Option<String>,
     ) -> SessionPickup {
+        let held = |named: &str| {
+            (self.resume_id)(cwd, provider, named)
+                || (cwd != root && (self.resume_id)(root, provider, named))
+        };
         match recorded {
-            Some(named) if (self.resume_id)(root, provider, &named) => SessionPickup {
+            Some(named) if held(&named) => SessionPickup {
                 resume_session_id: Some(named),
                 continue_session: false,
                 recorded_name_is_gone: false,
@@ -105,7 +117,12 @@ pub struct SessionPickup {
 /// here for a constructor to enforce: this module cannot name `AppState`.
 pub struct AgentSpawnPlan {
     pub project: Orchestrator,
+    /// Where Build keeps the agent: its `.build/` scaffold, its tab and its
+    /// session lineage.
     pub root: PathBuf,
+    /// Where the child process stands. The root, for every agent but a
+    /// project agent, which stands in its project's base.
+    pub cwd: PathBuf,
     pub agent_id: String,
     pub model_choice: ModelChoice,
     pub recorded_resume_id: Option<String>,
@@ -125,15 +142,19 @@ impl AgentSpawnPlan {
         let provider = self.model_choice.provider;
         let pickup = self
             .probes
-            .pickup(&self.root, provider, self.recorded_resume_id);
-        let locator = self.probes.locator(&self.root, provider);
+            .pickup(&self.cwd, &self.root, provider, self.recorded_resume_id);
+        // A fresh transcript is filed under the cwd the child starts in.
+        let locator = self.probes.locator(&self.cwd, provider);
         let resume_session_id = pickup.resume_session_id.clone();
         let prepared = self
             .project
             .agent_launch()
             .prepare(
                 &self.agent_id,
-                &self.root,
+                crate::orchestrator::LaunchDirs {
+                    scaffold: &self.root,
+                    cwd: &self.cwd,
+                },
                 &self.model_choice,
                 pickup.continue_session,
                 pickup.resume_session_id,
@@ -176,6 +197,7 @@ mod tests {
     fn a_recorded_name_the_provider_still_holds_is_resumed_exactly() {
         let pickup = probes(|id| id == "sess-live").pickup(
             Path::new("/tmp"),
+            Path::new("/tmp"),
             AgentProvider::default(),
             Some("sess-live".into()),
         );
@@ -190,6 +212,7 @@ mod tests {
     #[test]
     fn a_recorded_name_the_provider_has_lost_starts_fresh_and_says_so() {
         let pickup = probes(|_| false).pickup(
+            Path::new("/tmp"),
             Path::new("/tmp"),
             AgentProvider::default(),
             Some("sess-gone".into()),
@@ -207,7 +230,12 @@ mod tests {
 
     #[test]
     fn history_without_exact_lineage_starts_fresh_for_canonical_catch_up() {
-        let pickup = probes(|_| true).pickup(Path::new("/tmp"), AgentProvider::default(), None);
+        let pickup = probes(|_| true).pickup(
+            Path::new("/tmp"),
+            Path::new("/tmp"),
+            AgentProvider::default(),
+            None,
+        );
         assert!(
             !pickup.continue_session,
             "shared history must never activate a cwd-most-recent resume"
@@ -217,10 +245,51 @@ mod tests {
 
     #[test]
     fn a_brand_new_agent_opens_fresh_however_much_the_checkout_holds() {
-        let pickup = probes(|_| true).pickup(Path::new("/tmp"), AgentProvider::default(), None);
+        let pickup = probes(|_| true).pickup(
+            Path::new("/tmp"),
+            Path::new("/tmp"),
+            AgentProvider::default(),
+            None,
+        );
         assert!(
             !pickup.continue_session,
             "the checkout's old conversation belongs to whoever had it"
         );
+    }
+
+    /// A project agent moved into its project's base keeps the conversation
+    /// it had in Build's scratch directory: claude filed that transcript under
+    /// the scratch directory's name, so the probe that asks only where the
+    /// child now stands would find nothing there and start it over.
+    #[test]
+    fn a_conversation_filed_under_the_root_is_resumed_from_a_cwd_elsewhere() {
+        let scratch = Path::new("/state/project-scratch/build-0123");
+        let base = Path::new("/code/build");
+        let filed_under_scratch = SessionProbes {
+            resume_id: Arc::new(move |dir: &Path, _, id: &str| {
+                dir == Path::new("/state/project-scratch/build-0123") && id == "sess-old"
+            }),
+            locator: Arc::new(|_, _| None),
+        };
+
+        let moved = filed_under_scratch.pickup(
+            base,
+            scratch,
+            AgentProvider::default(),
+            Some("sess-old".into()),
+        );
+        assert_eq!(moved.resume_session_id.as_deref(), Some("sess-old"));
+        assert!(!moved.recorded_name_is_gone);
+
+        // The fallback is the root and nothing else: a name the provider holds
+        // in neither place is still gone.
+        let gone = filed_under_scratch.pickup(
+            base,
+            scratch,
+            AgentProvider::default(),
+            Some("sess-other".into()),
+        );
+        assert_eq!(gone.resume_session_id, None);
+        assert!(gone.recorded_name_is_gone);
     }
 }

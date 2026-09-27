@@ -1,10 +1,16 @@
 //! A project as a conversation owner.
 //!
 //! A workspace mints an owner for its own root (`workspace.ensure_conversation`);
-//! a project mints one the same way, with one difference that is the whole
-//! point: a project's owner works in a bridge-owned scratch directory, never in
-//! the project's checkout. The project is the template workspaces are cut from,
-//! and an agent talking about it has no business standing in it.
+//! a project mints one the same way, with one difference: a project's owner is
+//! rooted in a bridge-owned scratch directory, never in the project's checkout.
+//! That root is where Build keeps what is its own — the owner's identity, the
+//! agents' `.build/` scaffold and the files attached to the conversation — so
+//! none of it is ever written into the user's code.
+//!
+//! The project agent itself stands in the project's base
+//! ([`AppState::project_base`]): it reads the code it is orchestrating, and
+//! its standing instructions forbid it to change anything there — every change
+//! goes through a workspace.
 
 use super::safe_mount_name;
 use crate::agent::AgentOwner;
@@ -176,6 +182,39 @@ impl AppState {
                     && crate::app::workspaces::same_path(&active.worktree.path, scratch)
             })
             .map(|(run_id, _)| run_id.clone())
+    }
+
+    /// The project's base: the directory a project agent stands in.
+    ///
+    /// The project's own path, `repo_path` — the primary source, the folder
+    /// the project was added from and the one a primary terminal opens in.
+    /// Not the folder it sits in: nothing says that folder holds only this
+    /// project, and on a machine where it is itself an old checkout its
+    /// instructions and stale copies of the code would be read as this
+    /// project's. A project with several sources names the others in the
+    /// agent's prompt. `None` while the folder is missing, and the agent then
+    /// starts in its scratch root rather than failing to start at all.
+    pub(in crate::app) fn project_base(&self, project_id: &str) -> Option<PathBuf> {
+        let project = self.projects.get(project_id)?;
+        project
+            .repo_path
+            .is_dir()
+            .then(|| project.repo_path.clone())
+    }
+
+    /// Where an agent on `owner`'s conversation is started: the project's base
+    /// for a project's own conversation, the owner's root for everything else.
+    pub(in crate::app) fn agent_process_cwd(&self, owner: &str, root: &Path) -> PathBuf {
+        if self.is_project_conversation_owner(owner) {
+            let base = self
+                .projects
+                .project_id_of(owner)
+                .and_then(|project_id| self.project_base(project_id));
+            if let Some(base) = base {
+                return base;
+            }
+        }
+        root.to_path_buf()
     }
 
     /// The conversation owner this project has right now, or `None` for a

@@ -107,7 +107,7 @@ impl Harness for AdkHarness {
             .arg(COMPACTION_HOOK_SETTINGS)
             .for_agent(&options.owner_id)
             .arg("--mcp-config")
-            .arg(crate::orchestrator::mcp_config_path(&options.owner_id))
+            .arg(options.mcp_config())
             .arg("--strict-mcp-config")
             .arg("--dangerously-skip-permissions");
         // The two are alternatives and never both: `--resume` names the exact

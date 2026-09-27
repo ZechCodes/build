@@ -242,14 +242,27 @@ impl Tab {
     /// with no terminal paints nothing, so there is no screen to hold and no
     /// byte pump to run — its work reaches the conversation through the
     /// activity pump instead.
+    #[cfg(test)]
     pub(in crate::app) fn spawn_agent(
         owner: String,
         agent_id: String,
         request: SessionOpenRequest,
     ) -> Result<(Tab, SessionOutput), String> {
+        let root = request.root.clone();
+        Self::spawn_agent_keyed(owner, agent_id, root, request)
+    }
+
+    /// The same, for a tab kept under `root` whatever directory its child
+    /// stands in. They differ for a project agent: Build keeps it by its
+    /// scratch root and starts it in the project's base.
+    pub(in crate::app) fn spawn_agent_keyed(
+        owner: String,
+        agent_id: String,
+        root: std::path::PathBuf,
+        request: SessionOpenRequest,
+    ) -> Result<(Tab, SessionOutput), String> {
         let provider = request.choice.provider;
         let tab_id = agent_tab_id(&agent_id);
-        let root = request.root.clone();
         let size = request.terminal.size;
         let opened = open_session(provider, request).map_err(|error| error.to_string())?;
         Ok(Self::from_opened_session(

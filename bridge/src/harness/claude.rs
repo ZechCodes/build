@@ -136,7 +136,7 @@ impl Harness for ClaudeHarness {
             .submit_delay(REAL_TUI_SUBMIT_DELAY)
             .unset_all(INHERITED_AGENT_MARKERS)
             .arg("--mcp-config")
-            .arg(crate::orchestrator::mcp_config_path(&options.owner_id))
+            .arg(options.mcp_config())
             .arg("--strict-mcp-config")
             .arg("--settings")
             .arg(compaction_settings)

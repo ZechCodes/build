@@ -195,6 +195,19 @@ impl AppState {
         Err("unknown conversation owner".to_string())
     }
 
+    /// The root an owner's attachment paths are written against, for an owner
+    /// whose agents do not stand in it: a project's own conversation, rooted in
+    /// Build's scratch directory while its agent stands in the project's base.
+    /// `None` for every other owner, whose agents read those paths from where
+    /// they stand.
+    pub(in crate::app) fn attachments_root_for_reader_elsewhere(
+        &self,
+        owner: &str,
+    ) -> Option<std::path::PathBuf> {
+        let root = &self.runs.get(owner)?.worktree.path;
+        (self.agent_process_cwd(owner, root) != *root).then(|| root.clone())
+    }
+
     /// Where attachments go for an entity that has no checkout to put them in.
     pub(in crate::app) fn local_attachments_dir(&self) -> std::path::PathBuf {
         self.store
@@ -246,7 +259,16 @@ impl AppState {
                         .expect("a worktree home is always .build/attachments"),
                 )
                 .map_err(|e| format!("cannot keep attachments out of git: {e}"))?;
-                format!("{ATTACHMENTS_DIR}/{stored}")
+                if self
+                    .attachments_root_for_reader_elsewhere(&entity_id)
+                    .is_some()
+                {
+                    // Its agents stand somewhere else, so a worktree-relative
+                    // path would be read from the wrong directory.
+                    worktree_home.join(&stored).display().to_string()
+                } else {
+                    format!("{ATTACHMENTS_DIR}/{stored}")
+                }
             }
             None => homes.local.join(&stored).display().to_string(),
         };

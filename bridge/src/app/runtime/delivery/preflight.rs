@@ -452,25 +452,34 @@ impl AppState {
     /// what the tail alone said and touches no SQL. A store that cannot answer
     /// falls back to the tail-built packet: a starved packet is today's
     /// behaviour, and it is a far smaller loss than dropping the turn.
+    ///
+    /// `attachments_root` is for a reader that does not stand where the
+    /// conversation's attachments were written — a project agent — and names
+    /// the directory their relative paths are read from.
     pub(in crate::app) fn catch_up_packet(
         &self,
         thread: &crate::thread::Thread,
         limit: usize,
+        attachments_root: Option<&std::path::Path>,
     ) -> String {
+        let tail_only =
+            || thread.catch_up_markdown_for_reader_elsewhere(&[], limit, attachments_root);
         if !thread.catch_up_reaches_stored_history(limit) {
-            return thread.catch_up_markdown(limit);
+            return tail_only();
         }
         let Some(store) = self.store.as_ref() else {
-            return thread.catch_up_markdown(limit);
+            return tail_only();
         };
         match store.thread_message_page(&thread.agent.id, limit) {
-            Ok(history) => thread.catch_up_markdown_including_history(&history, limit),
+            Ok(history) => {
+                thread.catch_up_markdown_for_reader_elsewhere(&history, limit, attachments_root)
+            }
             Err(error) => {
                 eprintln!(
                     "catch-up packet for {}: {error}; the resident tail is what it carries",
                     thread.agent.id
                 );
-                thread.catch_up_markdown(limit)
+                tail_only()
             }
         }
     }
@@ -494,9 +503,14 @@ impl AppState {
         let Ok(thread) = self.agent_conversation(owner, Some(agent_id)) else {
             return cold;
         };
+        let attachments_root = self.attachments_root_for_reader_elsewhere(owner);
         crate::orchestrator::append_durable_conversation(
             cold,
-            &self.catch_up_packet(thread, crate::orchestrator::CATCH_UP_MESSAGES),
+            &self.catch_up_packet(
+                thread,
+                crate::orchestrator::CATCH_UP_MESSAGES,
+                attachments_root.as_deref(),
+            ),
         )
     }
 

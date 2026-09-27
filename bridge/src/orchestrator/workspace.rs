@@ -109,6 +109,44 @@ pub struct SpawnOptions {
     /// seen before, and Build mints a fresh worktree per run — so the adapter
     /// needs the path to pre-trust it, or the dialog eats the injected prompt.
     pub cwd: PathBuf,
+    /// The directory holding this agent's `.build/` scaffold, when it is not
+    /// `cwd`. Only a project agent's is elsewhere: it stands in its project's
+    /// base, which is the user's and gets nothing of Build's written into it,
+    /// while its scaffold stays in the root Build keeps for it.
+    pub scaffold: Option<PathBuf>,
+}
+
+impl SpawnOptions {
+    /// The `--mcp-config` a harness is handed: worktree-relative where the
+    /// scaffold is the cwd, which is every agent but a project agent, and
+    /// absolute where it is not, since a relative one would be read from the
+    /// wrong directory and the harness would die before its first turn.
+    pub fn mcp_config(&self) -> String {
+        let relative = mcp_config_path(&self.owner_id);
+        match &self.scaffold {
+            Some(dir) => dir.join(relative).display().to_string(),
+            None => relative,
+        }
+    }
+}
+
+/// Where one agent launch writes its scaffold and where its child stands.
+/// The same directory for every agent but a project agent.
+#[derive(Clone, Copy)]
+pub(crate) struct LaunchDirs<'a> {
+    pub(crate) scaffold: &'a Path,
+    pub(crate) cwd: &'a Path,
+}
+
+impl<'a> LaunchDirs<'a> {
+    /// One directory for both.
+    #[cfg(test)]
+    pub(crate) fn at(dir: &'a Path) -> Self {
+        LaunchDirs {
+            scaffold: dir,
+            cwd: dir,
+        }
+    }
 }
 
 /// Builds an interactive harness command for a rendered prompt + model + context.
@@ -404,19 +442,20 @@ impl AgentLaunch {
     pub(crate) fn prepare(
         &self,
         owner_id: &str,
-        cwd: &Path,
+        dirs: LaunchDirs<'_>,
         model_choice: &ModelChoice,
         continue_session: bool,
         resume_session_id: Option<String>,
         mcp_session_token: &str,
     ) -> Result<PreparedAgentLaunch, OrchestratorError> {
-        self.scaffold_agent_worktree(cwd, owner_id)?;
+        self.scaffold_agent_worktree(dirs.scaffold, owner_id)?;
         let options = SpawnOptions {
             continue_session,
             resume_session_id,
             owner_id: owner_id.to_string(),
             mcp_session_token: mcp_session_token.to_string(),
-            cwd: cwd.to_path_buf(),
+            cwd: dirs.cwd.to_path_buf(),
+            scaffold: (dirs.scaffold != dirs.cwd).then(|| dirs.scaffold.to_path_buf()),
         };
         let spec = match &self.agent {
             Agent::Warm(spec) => Ok(spec.clone()),

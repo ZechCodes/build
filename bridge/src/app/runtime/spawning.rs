@@ -377,6 +377,7 @@ pub(in crate::app) fn reserve_agent_spawn(
         plan: AgentSpawnPlan {
             project,
             root: key.root.clone(),
+            cwd: s.agent_process_cwd(owner, &key.root),
             agent_id: agent_id.to_string(),
             model_choice: model_choice.clone(),
             recorded_resume_id,
@@ -463,6 +464,7 @@ pub(in crate::app) fn open_agent_session(
         return Ok(None);
     }
     let choice = plan.model_choice.clone();
+    let cwd = plan.cwd.clone();
     let opened = plan.probe_and_scaffold().and_then(|ready| {
         let ReadyToSpawn {
             spec,
@@ -477,15 +479,16 @@ pub(in crate::app) fn open_agent_session(
         else {
             unreachable!("an agent reservation always names an agent")
         };
-        Tab::spawn_agent(
+        Tab::spawn_agent_keyed(
             owner,
             agent_id,
+            key.root.clone(),
             agent_open_request(
                 PreparedAgentLaunch {
                     spec,
                     pty_size: size,
                 },
-                key.root.clone(),
+                cwd,
                 &choice,
                 resume_session_id,
                 locator,

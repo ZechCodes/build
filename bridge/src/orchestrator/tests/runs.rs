@@ -63,7 +63,7 @@ fn prepared_agent_launch_preserves_setup_errors() {
         .agent_launch()
         .prepare(
             "agent-fail",
-            &worktree,
+            crate::orchestrator::LaunchDirs::at(&worktree),
             &ModelChoice::default(),
             false,
             None,

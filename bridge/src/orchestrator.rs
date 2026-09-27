@@ -8,7 +8,7 @@ pub use plans::{ActivePlan, PlanWorkspace};
 pub use reporting::{AgentTurn, OrchestratorError, ReportOutcome};
 pub use runs::{ActiveRun, ImplementableIssue, PreparedImplementation, RunSource};
 pub(crate) use workspace::{
-    append_durable_conversation, conversation_prompt, AgentLaunch, PreparedAgentLaunch,
+    append_durable_conversation, conversation_prompt, AgentLaunch, LaunchDirs, PreparedAgentLaunch,
     CHECKOUT_REAP_WAIT, HARNESS_READY_GRACE, PROMPT_WRITE_EXIT_GRACE,
 };
 pub use workspace::{

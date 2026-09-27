@@ -307,7 +307,7 @@ impl AppState {
             "entity_id": entity_id,
             "agent_id": address.agent_id,
             "conversation_id": address.conversation_id,
-            "transcript": self.catch_up_packet(thread, limit),
+            "transcript": self.catch_up_packet(thread, limit, None),
         }))
     }
 

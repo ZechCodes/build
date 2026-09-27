@@ -175,7 +175,7 @@ fn every_harness_path_uses_the_contexts_canonical_bridge_executable() {
         .agent_launch()
         .prepare(
             &options.owner_id,
-            &worktree,
+            crate::orchestrator::LaunchDirs::at(&worktree),
             &ModelChoice::default(),
             false,
             None,

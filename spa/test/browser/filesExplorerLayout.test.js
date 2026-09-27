@@ -41,6 +41,12 @@ it("steps each row in one indent per directory and draws the open file apart fro
   await withLayoutPage(async ({ page, basePath }) => {
     await mountFilesExplorer(page, basePath);
     await stageDesktop(page);
+    // The cursor fill animates for --motion-fast after the last click.
+    await page.waitForFunction(() => {
+      const cursor = document.querySelector('.frow[data-path="spa/src/styles.css"]');
+      const plain = document.querySelector('.frow[data-path="spa/src/app.js"]');
+      return getComputedStyle(cursor).backgroundColor !== getComputedStyle(plain).backgroundColor;
+    });
     const drawn = await page.evaluate(() => {
       const rowOf = (path) => document.querySelector(`.frow[data-path="${path}"]`);
       const nameLeft = (path) => rowOf(path).querySelector(".fname").getBoundingClientRect().left;

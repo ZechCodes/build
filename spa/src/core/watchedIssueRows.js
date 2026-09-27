@@ -16,7 +16,7 @@
 
 import { TRACKER_ISSUE, entryKeyOf } from "./inbox.js";
 import { issueUnreadCount } from "./issueUnread.js";
-import { ATTENTION_REASONS, unreadAsks, watchedIssueReasons } from "./trackerAttentionModel.js";
+import { ATTENTION_REASONS, watchedIssueReasons } from "./trackerAttentionModel.js";
 
 /** Why the row is there, in the inbox's words. */
 const REASON_WORDS = Object.freeze({
@@ -69,11 +69,9 @@ function toEntry(project, issue, detail, reasons, askedOnly) {
     state: "unread",
     reason: facts,
     facts,
-    unreadCount: unreadAsks(issue, detail, askedOnly).length,
-    // The issue's own unread (#104), which already counts on the badge of the
-    // workspace or project that wears it; the project's head adds 1 for a row
-    // with none, so a question nobody has read past still counts (#183).
-    issueUnreadCount: issueUnreadCount(issue, detail),
+    // A Needs-you reason keeps the row and its dot; only issue news after the
+    // read mark makes a badge (#183), including assignment and status changes.
+    unreadCount: issueUnreadCount(issue, detail),
     route: { name: "trackerIssue", deviceId: project.deviceId, projectId: project.id, issueId: issue.id },
     anchorMs: changedMs,
     lastActivityMs: changedMs,

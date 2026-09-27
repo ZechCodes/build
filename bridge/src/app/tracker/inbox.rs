@@ -135,21 +135,22 @@ pub(in crate::app) fn unread_since_mark(issue: &Issue, timeline: &[TimelineEntry
         .count()
 }
 
-/// Whether a timeline entry is news to the user (#183): something said, or a
-/// change to who holds the issue or where it stands. Bookkeeping — filing,
-/// tracking, linking, labelling, dispatching, watching, and what Build records
-/// about branches and workspaces — is not: Zech, "Correct, no". The SPA's
+/// Whether a timeline entry is news to the user (#183): something said, a
+/// change to who holds the issue or where it stands, or an agent-created
+/// issue that asks the user to read it. Other bookkeeping — filing without an
+/// ask, tracking, linking, labelling, dispatching, watching, and what Build
+/// records about branches and workspaces — is not. The SPA's
 /// fallback count reads the same list (`spa/src/core/trackerUnread.js`), and
 /// `app::tests::tracker_unread_kinds` prints the cases both sides are held to.
 pub(in crate::app) fn counts_as_unread(entry: &TimelineEntry) -> bool {
-    use crate::tracker::IssueEventKind as Kind;
+    use crate::tracker::{Actor, IssueEventKind as Kind};
     let TimelineEntry::Event(event) = entry else {
         return true;
     };
     match event.kind {
         Kind::Assigned | Kind::Unassigned | Kind::Moved | Kind::Closed | Kind::Reopened => true,
-        Kind::Created
-        | Kind::Labelled
+        Kind::Created => event.mentions_user && matches!(&event.actor, Actor::Agent { .. }),
+        Kind::Labelled
         | Kind::Linked
         | Kind::Dispatched
         | Kind::Tracked

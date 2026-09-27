@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { watchedIssueEntries } from "../src/core/watchedIssueRows.js";
 import { TRACKER_ISSUE, activeEntryKey, inboxRowHtml } from "../src/core/inbox.js";
-import { comment, issue, issueDetail } from "./trackerWireFixture.js";
+import { comment, event, issue, issueDetail } from "./trackerWireFixture.js";
 
 const project = { id: "p1", deviceId: "dev-1", projectKey: "dev-1|p1", name: "Build" };
 const watched = (over = {}) => issue({ watched: true, ...over });
@@ -48,7 +48,7 @@ describe("which watched issues are rows by the narrow rule (#144)", () => {
     expect(narrow([review, chatter], details)).toEqual([]);
   });
 
-  it("lists one assigned to the user, and one an agent asked, counting only the asks", () => {
+  it("lists one assigned to the user and one an agent asked, with a bubble for all unread news", () => {
     const mine = watched({ id: "i-mine", number: 1, status: "in_review", assignee: { kind: "user" } });
     const asked = watched({ id: "i-asked", number: 2, read_through: "ie-01" });
     const timeline = [
@@ -58,12 +58,32 @@ describe("which watched issues are rows by the narrow rule (#144)", () => {
     const listed = narrow([mine, asked], new Map([[asked.id, issueDetail(asked, timeline)]]));
     expect(listed.map((row) => [row.issueId, row.facts, row.unreadCount])).toEqual([
       ["i-mine", "Assigned to you", 0],
-      ["i-asked", "Mentioned you", 1],
+      ["i-asked", "Mentioned you", 2],
     ]);
   });
 });
 
 describe("what a row says", () => {
+  it("shows an unread assignment event in its bubble", () => {
+    const one = watched({ id: "i-assigned", assignee: { kind: "user" }, read_through: "ie-01" });
+    const detail = issueDetail(one, [event({ id: "ie-02", kind: "assigned", actor: { kind: "agent", agent_id: "a1" } })]);
+    const [row] = rows([one], new Map([[one.id, detail]]));
+    expect(row.unreadCount).toBe(1);
+    expect(inboxRowHtml(row)).toContain('<span class="badge inbox-unread">1</span>');
+  });
+
+  it("counts a mentioned creation until read while an assignment keeps it in Needs you", () => {
+    const one = watched({ id: "i-created", assignee: { kind: "user" }, read_through: "" });
+    const detail = issueDetail(one, [event({ id: "ie-02", kind: "created", actor: { kind: "agent", agent_id: "a1" }, mentions_user: true })]);
+    const [row] = watchedIssueEntries([{ ...source([one], new Map([[one.id, detail]])), askedOnly: true }]);
+    expect(row).toMatchObject({ state: "unread", unreadCount: 1 });
+    expect(inboxRowHtml(row)).toContain('<span class="badge inbox-unread">1</span>');
+    const read = { ...one, read_through: "ie-02" };
+    const [stillAsking] = watchedIssueEntries([{ ...source([read], new Map([[read.id, issueDetail(read, detail.timeline)]])), askedOnly: true }]);
+    expect(stillAsking).toMatchObject({ state: "unread", unreadCount: 0 });
+    expect(inboxRowHtml(stillAsking)).not.toContain('class="badge inbox-unread"');
+  });
+
   it("is named by number and title, says every reason, and opens the issue", () => {
     const one = watched({ id: "i-7", number: 7, title: "Wire 1.22", status: "in_review", assignee: { kind: "user" } });
     const [row] = rows([one]);

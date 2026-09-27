@@ -245,6 +245,16 @@ fn watched_issue_inbox_wire_probe() {
         json!({ "issue_id": created_issue, "event_id": created_event_id }),
     );
     let created_read = reader.step("created_read", &created_issue);
+    for (step, expected) in [(&created_ask, 1), (&created_read, 0)] {
+        assert_eq!(step["get"]["issue"]["unread_count"], json!(expected));
+        let listed = step["list"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|issue| issue["id"] == created_issue)
+            .unwrap();
+        assert_eq!(listed["unread_count"], json!(expected));
+    }
 
     // What the replay depends on: each step's push names its issue on the
     // inbox subscription, and the answers after it say what changed.

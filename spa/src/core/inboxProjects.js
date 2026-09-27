@@ -7,8 +7,9 @@
 // you talk to about the project. The head is that agent's entry (#103): its
 // badge is everything the project is holding, open or folded (#183) — the
 // project agent's unread, the project's watched issues no workspace wears
-// (#104), every workspace row's, and 1 for each Needs-you issue with no unread
-// of its own. The inbox's top badge is the sum of these heads. It offers
+// (#104), and every workspace row's. A Needs-you issue row contributes no
+// extra unread: its issue count is already on the project or workspace badge.
+// The inbox's top badge is the sum of these heads. It offers
 // the one create surface behind a +,
 // the project's settings, and a ⋯ menu that puts the block away.
 // A block folds shut by its chevron and stays that way until it is opened
@@ -71,13 +72,9 @@ function projectsNamed(projects, rows) {
 }
 
 /** What one row adds to its block's head. A watched issue's unread is already
- *  on the workspace row or the project agent that wears it (#104), so its own
- *  row adds only the 1 a Needs-you issue with nothing unread still asks for:
- *  it counts max(1, its unread), never nothing (#183). */
-const rowUnreadCount = (entry) => {
-  if (entry.kind !== TRACKER_ISSUE) return entry.unreadCount || 0;
-  return entry.issueUnreadCount > 0 ? 0 : 1;
-};
+ *  on the workspace row or the project agent that wears it (#104). The issue
+ *  row exists for Needs you, but adds no count of its own. */
+const rowUnreadCount = (entry) => entry.kind === TRACKER_ISSUE ? 0 : entry.unreadCount || 0;
 
 /** One project's block on the landing rail's workspace face: its workspaces,
  *  and the project's own page as the block's destination. Every project has one

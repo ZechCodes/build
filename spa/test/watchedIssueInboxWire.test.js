@@ -162,8 +162,8 @@ describe("a watched issue in the inbox, over the real wire", () => {
 
     await reach(commented);
     await expect.poll(() => rowFor(issueId)?.querySelector(".inbox-facts")?.textContent, WAIT).toBe("Mentioned you");
-    // The question counts; the agents' own comment before it does not.
-    expect(rowFor(issueId).querySelector(".inbox-unread")?.textContent).toBe("1");
+    // Both comments are unread, even though only one asked the user.
+    expect(rowFor(issueId).querySelector(".inbox-unread")?.textContent).toBe("2");
 
     await reach(read);
     await expect.poll(() => rowsNamed(issueId).length, WAIT).toBe(0);
@@ -174,6 +174,7 @@ describe("a watched issue in the inbox, over the real wire", () => {
     expect(rowFor(issueId)).toBe(null);
     await reach(created);
     await expect.poll(() => rowFor(issueId)?.querySelector(".inbox-facts")?.textContent, WAIT).toBe("Mentioned you");
+    // The created event asked the user and is unread until the read mark passes it.
     expect(rowFor(issueId).querySelector(".inbox-unread")?.textContent).toBe("1");
     await reach(read);
     await expect.poll(() => rowsNamed(issueId).length, WAIT).toBe(0);

@@ -43,7 +43,7 @@ beforeEach(async () => {
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
   document.body.innerHTML = bodyHtml;
-  location.hash = "#/device/dev-2/project/p1/task/task-1";
+  location.hash = "#/device/dev-2/project/p1/plan/task-1";
   ({ App } = await import("../src/app.js"));
   ({ renderTask } = await import("../src/views/taskView.js"));
   const contexts = await import("../src/core/deviceContexts.js");
@@ -94,13 +94,13 @@ describe("a task on another device", () => {
     await renderTask();
     await flush();
 
-    expect(location.hash).toBe("#/device/dev-2/project/p1/task/task-1/stage/s1");
+    expect(location.hash).toBe("#/device/dev-2/project/p1/plan/task-1/stage/s1");
     expect(App.route.deviceId).toBe("dev-2");
 
     document.querySelector('.stagerow[data-stage="s2"]').click();
     await flush();
 
-    expect(location.hash).toBe("#/device/dev-2/project/p1/task/task-1/stage/s2");
+    expect(location.hash).toBe("#/device/dev-2/project/p1/plan/task-1/stage/s2");
     expect(App.route.deviceId).toBe("dev-2");
   });
 });

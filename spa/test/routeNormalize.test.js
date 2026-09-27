@@ -63,6 +63,6 @@ describe("a route that names its device", () => {
     markRoute(onDevice);
 
     expect(App.route).toBe(onDevice);
-    expect(location.hash).toBe("#/device/dev-1/project/p1/task/i-1");
+    expect(location.hash).toBe("#/device/dev-1/project/p1/plan/i-1");
   });
 });

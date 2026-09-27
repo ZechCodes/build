@@ -19,4 +19,5 @@ mod legacy;
 mod migrations;
 mod operations;
 mod support;
+mod task_rename;
 mod tracker;

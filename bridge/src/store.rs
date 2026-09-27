@@ -60,6 +60,7 @@ mod legacy;
 mod migrations;
 mod operations;
 mod schema;
+mod task_rename;
 mod tracker;
 mod user_session;
 mod workspace_lifecycle;
@@ -161,7 +162,10 @@ pub enum StoreError {
 ///
 /// 9 added retained inbox timestamps for finished workspaces. The table is
 /// empty on upgrade; older finished conversations were already deleted.
-pub const SCHEMA_VERSION: i64 = 9;
+///
+/// 10 is the task rename (#190): tables, columns, ids and record keys take the
+/// new word, after a copy of the whole database (`store/task_rename.rs`).
+pub const SCHEMA_VERSION: i64 = 10;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.
@@ -239,6 +243,12 @@ impl Store {
         // Store share one connection, but the daemon is not the only process
         // that may ever open the file (a backup, a shell).
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        // The task rename BEFORE the schema batch, which would otherwise make
+        // the renamed tables empty beside the full ones they replace.
+        if stored.is_some_and(|found| found < task_rename::TASK_RENAME_VERSION) {
+            let report = task_rename::migrate_to_task_names(&mut conn, &dir)?;
+            eprintln!("store: schema {SCHEMA_VERSION} migration: {report:?}");
+        }
         // The columns BEFORE the schema batch: `SCHEMA` indexes them, and an
         // older table has no such column for an index to name. A v1 database
         // arrives here needing all five, and reaches the current version in

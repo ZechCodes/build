@@ -202,8 +202,10 @@ impl AppState {
     }
 
     /// Whether one piece of agent news pushes, or the phone stays dark: a
-    /// muted entry, news that needs nobody, a boot-recovery interruption, or a
-    /// second push inside the entity's debounce window.
+    /// muted entry, news that needs nobody, or a second push inside the
+    /// entity's debounce window. Every attention-class item is news, a live
+    /// `Interrupted` included; a restart's own interruptions never reach here,
+    /// because boot seeds the watermarks after recovery writes them.
     ///
     /// Mute is checked before the window is spent, so a silence costs nothing:
     /// the first news after unmuting pushes instead of sitting out a window it
@@ -213,7 +215,7 @@ impl AppState {
         entity_id: &str,
         reason: Option<&str>,
     ) -> bool {
-        if self.is_muted(entity_id) || !reason.is_some_and(crate::notify::agent_item_pushes) {
+        if self.is_muted(entity_id) || reason.is_none() {
             return false;
         }
         self.notify_throttle

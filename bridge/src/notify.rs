@@ -37,15 +37,6 @@ pub const AGENT_KIND: &str = "agent";
 /// issue a task (#190).
 pub const TASK_KIND: &str = "task";
 
-/// Whether an attention-class item on an agent's conversation pushes.
-///
-/// Every one does but a boot-recovery interruption: it is raised when the
-/// daemon restarts, where the operator is already at the machine, and every
-/// conversation that was mid-turn would ring at once.
-pub fn agent_item_pushes(reason: &str) -> bool {
-    reason != crate::thread::ThreadEventKind::Interrupted.as_str()
-}
-
 /// Now, in unix seconds — the clock [`NotifyThrottle`] debounces against.
 pub fn unix_seconds() -> i64 {
     SystemTime::now()

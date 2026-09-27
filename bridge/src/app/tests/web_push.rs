@@ -165,6 +165,89 @@ fn the_users_own_message_is_quiet_and_a_burst_pushes_once() {
     );
 }
 
+/// An agent whose process dies mid-turn leaves `Interrupted` on its
+/// conversation, which is attention and adds to the badge — so it pushes. The
+/// live death is the pump's (`record_agent_session_end`), with nobody at the
+/// machine to see it.
+#[test]
+fn an_agent_dying_mid_turn_pushes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_home, mut state, _project, owner) = project_with_workspace(tmp.path());
+    let agent = agent_on(&mut state, &owner, true);
+    state.record_agent_working_since(&owner, &agent, Some(now_rfc3339()));
+    sent(&mut state);
+
+    state.close_turn_of_dead_agent(&owner, &agent);
+
+    let thread = state.agent_conversation(&owner, Some(&agent)).unwrap();
+    assert_eq!(
+        thread.unread_since(0).reason,
+        Some(crate::thread::ThreadEventKind::Interrupted.as_str()),
+        "the death is on the conversation as attention"
+    );
+    assert_eq!(sent(&mut state), vec![(owner, AGENT)]);
+}
+
+/// A restart interrupts every turn that was in flight, and each is unread; but
+/// the restart is the operator's own doing, at the machine, and the history a
+/// boot recovers was never news a tail announced — so a reboot rings nothing.
+/// (The user stopping a turn from the app writes no event at all: see
+/// `protocol::session`'s interrupt tests.)
+#[test]
+fn a_restart_with_a_turn_in_flight_pushes_nothing() {
+    let (dir, repo) = init_repo();
+    let checkout = add_external_worktree(&repo, dir.path(), "mid-turn", "mid-turn");
+    let store = crate::store::Store::new(dir.path().join("store")).expect("store opens");
+    store
+        .save_run(&super::workflow::recovery::building_run(
+            "run-mid-turn",
+            &repo,
+            &checkout,
+        ))
+        .unwrap();
+    drop(store);
+    let context =
+        HarnessContext::resolved(dir.path().join("test-mcp.sock"), dir.path().to_path_buf())
+            .unwrap();
+    let mut state = listening(AppState::new_configured(
+        repo.clone(),
+        dir.path().join("wt"),
+        "main",
+        true,
+        context,
+    ))
+    .with_task_store(dir.path().join("store"))
+    .unwrap();
+
+    let thread = state.agent_conversation("run-mid-turn", None).unwrap();
+    assert!(
+        thread.items.iter().any(|item| matches!(
+            item,
+            crate::thread::ThreadItem::Event(event)
+                if event.event == crate::thread::ThreadEventKind::Interrupted
+        )),
+        "boot interrupted the turn: {:?}",
+        thread.items
+    );
+    assert_eq!(sent(&mut state), vec![], "the boot itself");
+
+    // Nor does the first change after it announce what boot wrote.
+    let agent = state.runs["run-mid-turn"]
+        .agents
+        .iter()
+        .next()
+        .unwrap()
+        .id
+        .clone();
+    state
+        .edit_agent_conversation("run-mid-turn", &agent, |thread, _| {
+            thread.post_user("carry on", None, now_rfc3339());
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(sent(&mut state), vec![], "the first change after boot");
+}
+
 // ---- issues -----------------------------------------------------------------
 
 /// A coding agent on a fresh workspace of `project_id`, as `(owner, agent)`.

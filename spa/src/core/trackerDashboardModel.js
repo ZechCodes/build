@@ -168,26 +168,26 @@ const cachedActivity = (activityByAgent, agentId) => {
   return typeof snippet === "string" ? snippet.trim() : "";
 };
 
-/** Who holds a task, as its Assigned row says it: "you" for the user, and
- *  otherwise the name every other surface gives that actor, read off the
- *  cached task's own identities. Null for nobody. */
-const holderOf = (task, reading) => {
-  const assignee = task.assignee;
-  if (!assignee?.kind) return null;
-  if (assignee.kind === "user") return "you";
-  return actorName(assignee, { ...reading, identities: task.identities || {} }) || null;
-};
+/** Who holds a task, as its Assigned row says it: the name every other
+ *  surface gives that agent, read off the cached task's own identities. */
+const holderOf = (task, reading) =>
+  actorName(task.assignee, { ...reading, identities: task.identities || {} }) || null;
+
+/** A task assigned to the user is theirs to act on, so it stands in Needs you
+ *  ("Assigned to you") and nowhere else: Active lists only agents' tasks. */
+const belongsInActiveOrBacklog = (task) => task && !isFinished(task) && task.assignee?.kind !== "user";
 
 /** How pressing a priority is, highest first; an unknown one reads as none. */
 const priorityRank = (priority) => -Math.max(0, PRIORITIES.findIndex((candidate) => candidate.id === priority));
 
-/** One priority-ordered pass partitions every open task by holder and live
- *  agent state. An assigned agent absent from the feed is still assigned. */
+/** One priority-ordered pass partitions every open task not assigned to the
+ *  user by holder and live agent state. An assigned agent absent from the feed
+ *  is still assigned. */
 function activeAndBacklog(tasks, grouped, reading, activityByAgent, columns) {
   const working = [];
   const assigned = [];
   const backlog = [];
-  const open = (tasks || []).filter((task) => task && !isFinished(task));
+  const open = (tasks || []).filter(belongsInActiveOrBacklog);
   open.sort((left, right) => priorityRank(left.priority) - priorityRank(right.priority));
   for (const task of open) {
     const column = columnName(columns, task.status);

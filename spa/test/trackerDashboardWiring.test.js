@@ -51,6 +51,8 @@ it("wires a mounted tasks pane to cached dashboard tabs and live counts", async 
   host.querySelector('[data-dashboard-tab="needsYou"]').click();
   await vi.waitFor(() => expect([...host.querySelectorAll(".task-dashboard-title")].map((one) => one.textContent))
     .toEqual(["Take a look", "Review changes"]));
+  expect(host.querySelector('[data-dashboard-tab="active"] .task-dashboard-count')?.textContent).toBe("0");
+  expect(host.querySelector('[data-dashboard-tab="backlog"] .task-dashboard-count')?.textContent).toBe("1");
 });
 
 it("moves a mounted task between Active groups when the cached feed changes", async () => {

@@ -45,49 +45,6 @@ fn boot_requeues_only_safe_intents_and_marks_claimed_handoffs_uncertain() {
     );
 }
 
-/// Two writers replacing one file at once — two planning workspaces
-/// appending to one `.git/info/exclude` — must each stage their own
-/// sibling: a shared temp name has the second `create` truncate the first
-/// writer's bytes and the second `rename` find nothing to rename.
-#[test]
-fn two_writers_of_one_file_never_share_a_temp_sibling() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("exclude");
-    let contents = [
-        "first writer\n".repeat(2048),
-        "second writer\n".repeat(2048),
-    ];
-    let writers: Vec<_> = contents
-        .iter()
-        .map(|contents| {
-            let path = path.clone();
-            let contents = contents.clone();
-            std::thread::spawn(move || {
-                for _ in 0..200 {
-                    write_file_atomically(&path, &contents).unwrap();
-                }
-            })
-        })
-        .collect();
-    for writer in writers {
-        writer.join().unwrap();
-    }
-    let settled = std::fs::read_to_string(&path).unwrap();
-    assert!(
-        contents.contains(&settled),
-        "the file is neither writer's whole text"
-    );
-    let leftovers: Vec<_> = std::fs::read_dir(dir.path())
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name())
-        .filter(|name| name != "exclude")
-        .collect();
-    assert!(
-        leftovers.is_empty(),
-        "temp files left beside the target: {leftovers:?}"
-    );
-}
-
 /// The history a load left in the store is not history this process may
 /// throw away. Saving a conversation whose tail is all the daemon read
 /// must not read the missing items as items that were taken off it.

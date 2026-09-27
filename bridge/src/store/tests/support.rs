@@ -4,6 +4,7 @@ use crate::models::ModelChoice;
 use crate::operation::{
     DeliveryIntent, OperationPayload, OperationReceipt, OperationStatus, THREAD_POST_METHOD,
 };
+use std::path::Path;
 
 pub(super) const NOW: &str = "2026-08-21T10:00:00Z";
 

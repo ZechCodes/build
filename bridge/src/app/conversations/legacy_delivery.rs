@@ -79,6 +79,7 @@ impl AppState {
             .sequence;
         Ok(Some(self.payload_for_reader(
             owner_id,
+            agent_id,
             OperationPayload {
                 start_sequence,
                 end_sequence,

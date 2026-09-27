@@ -1,6 +1,9 @@
-use super::{count_serialized_items, ArtifactKind, MessageAttachment, Thread, ThreadItem};
+use super::{
+    count_serialized_items, ArtifactKind, MessageAttachment, Thread, ThreadItem, ThreadMessage,
+};
 use serde_json::json;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::Path;
 
 impl Thread {
@@ -167,6 +170,47 @@ impl Thread {
             attachments_root,
         )
     }
+    /// `context` — packet lines rendered for a reader standing where the
+    /// conversation's attachments were stored — for a reader standing elsewhere.
+    /// A line that is exactly what one of the conversation's messages renders
+    /// to becomes what that message renders to with its relative attachment
+    /// paths named from `attachments_root`.
+    ///
+    /// A line is recognised by everything Build wrote into it, so nothing an
+    /// author typed — a quoted attachment note included — is ever rewritten, and
+    /// a line Build does not recognise, its message since edited or out of
+    /// reach, stays as it was.
+    pub fn catch_up_context_read_from(
+        &self,
+        context: &str,
+        history: &[ThreadItem],
+        attachments_root: &Path,
+    ) -> String {
+        let renamed: HashMap<String, String> = history
+            .iter()
+            .filter(|item| item.sequence() < self.resident_from_sequence)
+            .chain(self.items.iter())
+            .filter_map(|item| match item {
+                ThreadItem::Message(message)
+                    if message
+                        .attachments
+                        .iter()
+                        .any(|attachment| Path::new(&attachment.path).is_relative()) =>
+                {
+                    Some((
+                        catch_up_line(message, None),
+                        catch_up_line(message, Some(attachments_root)),
+                    ))
+                }
+                _ => None,
+            })
+            .collect();
+        context
+            .split('\n')
+            .map(|line| renamed.get(line).map_or(line, String::as_str))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
 
 /// How far back a page reaches, walking newest→older: to the `limit`-th
@@ -205,27 +249,32 @@ pub(super) fn catch_up_lines<'a>(
     let mut lines: Vec<String> = items
         .rev()
         .filter_map(|item| match item {
-            ThreadItem::Message(message) => Some(format!(
-                "- {}{}{}{}{}{}: {}{}{}",
-                message.role.as_str(),
-                sender_note(message.from_agent.as_deref()),
-                recipient_note(message.sent_to.as_deref()),
-                workspace_note(message.viewing_context.as_deref()),
-                viewing_issue_note(message.viewing_context.as_deref()),
-                match message.reported_outcome() {
-                    Some(outcome) => format!(" [{}]", outcome.as_str()),
-                    None => String::new(),
-                },
-                message.body.replace('\n', " "),
-                attachment_note(&message.attachments, attachments_root),
-                viewing_context_note(message.viewing_context.as_deref())
-            )),
+            ThreadItem::Message(message) => Some(catch_up_line(message, attachments_root)),
             ThreadItem::Event(_) => None,
         })
         .take(limit)
         .collect();
     lines.reverse();
     lines.join("\n")
+}
+
+/// One message's line in a catch-up packet.
+fn catch_up_line(message: &ThreadMessage, attachments_root: Option<&Path>) -> String {
+    format!(
+        "- {}{}{}{}{}{}: {}{}{}",
+        message.role.as_str(),
+        sender_note(message.from_agent.as_deref()),
+        recipient_note(message.sent_to.as_deref()),
+        workspace_note(message.viewing_context.as_deref()),
+        viewing_issue_note(message.viewing_context.as_deref()),
+        match message.reported_outcome() {
+            Some(outcome) => format!(" [{}]", outcome.as_str()),
+            None => String::new(),
+        },
+        message.body.replace('\n', " "),
+        attachment_note(&message.attachments, attachments_root),
+        viewing_context_note(message.viewing_context.as_deref())
+    )
 }
 
 /// Who sent a message, when it was not the human. The packet is markdown, so
@@ -285,10 +334,6 @@ pub(super) fn viewing_context_note(context: Option<&super::ViewingContext>) -> S
 /// A relative path is written against the directory the conversation's
 /// attachments were stored under; `attachments_root` names that directory for
 /// a reader standing somewhere else, and an absolute path is left as it is.
-/// What opens the trailer [`attachment_note`] writes, for a reader that
-/// rewrites the paths in a packet rendered before it moved.
-pub const ATTACHMENT_NOTE_OPENING: &str = " [attached files, open them: ";
-
 pub(super) fn attachment_note(
     attachments: &[MessageAttachment],
     attachments_root: Option<&Path>,
@@ -305,7 +350,7 @@ pub(super) fn attachment_note(
             _ => attachment.path.clone(),
         })
         .collect();
-    format!("{ATTACHMENT_NOTE_OPENING}{}]", paths.join(", "))
+    format!(" [attached files, open them: {}]", paths.join(", "))
 }
 
 pub(super) fn snapshot_contents(contents: &str, max_bytes: usize) -> String {

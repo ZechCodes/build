@@ -140,8 +140,8 @@ pub(in crate::app) use self::runtime::recovery::{
 };
 pub(in crate::app) use self::runtime::sessions::{
     agent_tab_id, build_agent, default_resume_id_probe, default_session_locator_factory,
-    default_shadow_probe, IdleObservation, LifecycleDiagnostic, McpTokenLease, SessionRegistry,
-    SpawnAvailability, SpawnClaimToken, Tab, TabKey, TabPumps, TabRole,
+    IdleObservation, LifecycleDiagnostic, McpTokenLease, SessionRegistry, SpawnAvailability,
+    SpawnClaimToken, Tab, TabKey, TabPumps, TabRole,
 };
 #[cfg(test)]
 pub(in crate::app) use self::runtime::spawning::nudge_live_agent_tab;
@@ -212,9 +212,7 @@ use crate::lifecycle::BranchDispatchStep;
 use crate::mcp::{BridgeAction, DoneReport, DoneStatus};
 use crate::models::{AgentProvider, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
-use crate::orchestrator::{
-    ActivePlan, ActiveRun, Agent, ResumeIdProbe, SessionLocatorFactory, ShadowProbe,
-};
+use crate::orchestrator::{ActivePlan, ActiveRun, Agent, ResumeIdProbe, SessionLocatorFactory};
 #[cfg(test)]
 use crate::orchestrator::{
     AgentTurn, ImplementableIssue, PreparedAgentLaunch, RunSource, SpawnOptions,
@@ -492,9 +490,6 @@ pub struct AppState {
     /// holds — consulted at every spawn that has one to spend, so a dead one is
     /// cleared where it is read instead of costing a session to find out.
     resume_id_probe: ResumeIdProbe,
-    /// What clears a recorded id's way when the child stands somewhere other
-    /// than where the id was filed — a project agent in its project's base.
-    shadow_probe: ShadowProbe,
     /// Web-push notifier for attention transitions, if configured. Content-free
     /// by contract — it only ever says "a task needs you".
     notifier: Option<Notifier>,
@@ -663,7 +658,6 @@ impl AppState {
             qa_agent,
             session_locator_factory,
             resume_id_probe: default_resume_id_probe(),
-            shadow_probe: default_shadow_probe(),
             notifier: None,
             #[cfg(not(test))]
             github: crate::github::GithubCli::default(),

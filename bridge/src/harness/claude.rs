@@ -190,44 +190,14 @@ impl Harness for ClaudeHarness {
                 .is_file()
     }
 
-    /// Claude looks for `--resume <id>` under the directory it was started in
-    /// first, and takes a copy there over the one it was filed under — even a
-    /// stale or truncated one, resuming it silently short or failing with "No
-    /// conversation found". A transcript only ever grows, so of two copies of
-    /// one conversation the longer is the whole of it: the one under `cwd` is
-    /// kept where it is when it is at least as long, since that is where the
-    /// conversation went on, and otherwise renamed out of claude's way so the
-    /// one Build filed is read.
-    fn set_aside_shadowing_copy(
-        &self,
-        home: &Path,
-        cwd: &Path,
-        root: &Path,
-        id: &str,
-    ) -> std::io::Result<Option<PathBuf>> {
-        if !is_a_filename(id) || cwd == root {
-            return Ok(None);
-        }
-        let projects = home.join(".claude/projects");
-        let transcript = format!("{id}.jsonl");
-        let here = project_dir(&projects, cwd).join(&transcript);
-        let filed = project_dir(&projects, root).join(&transcript);
-        let (Ok(here_len), Ok(filed_len)) = (
-            std::fs::metadata(&here).map(|meta| meta.len()),
-            std::fs::metadata(&filed).map(|meta| meta.len()),
-        ) else {
-            return Ok(None);
-        };
-        if here_len >= filed_len {
-            return Ok(None);
-        }
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|since| since.as_secs())
-            .unwrap_or_default();
-        let aside = here.with_file_name(format!("{transcript}.shadowed-{stamp}"));
-        std::fs::rename(&here, &aside)?;
-        Ok(Some(aside))
+    /// Its scheduler lock and durable task list, and the permissions it
+    /// remembers for that directory.
+    fn claude_files_where_it_stands(&self) -> &'static [&'static str] {
+        &[
+            "scheduled_tasks.lock",
+            "scheduled_tasks.json",
+            "settings.local.json",
+        ]
     }
 }
 
@@ -586,101 +556,6 @@ mod tests {
         let fresh = spec_for(&SpawnOptions::default());
         assert!(!fresh.contains("--resume"), "{fresh}");
         assert!(!fresh.contains("--continue"), "{fresh}");
-    }
-
-    /// One conversation filed under two directories: `root`, where Build
-    /// recorded it, and `cwd`, where the child now stands.
-    fn two_copies(home: &Path, filed: &str, here: &str) -> (PathBuf, PathBuf) {
-        let projects = home.join(".claude/projects");
-        let filed_at = project_dir(&projects, Path::new("/state/scratch/build")).join("sess.jsonl");
-        let here_at = project_dir(&projects, Path::new("/code/build")).join("sess.jsonl");
-        for (at, contents) in [(&filed_at, filed), (&here_at, here)] {
-            std::fs::create_dir_all(at.parent().unwrap()).unwrap();
-            std::fs::write(at, contents).unwrap();
-        }
-        (filed_at, here_at)
-    }
-
-    fn set_aside(home: &Path) -> Option<PathBuf> {
-        ClaudeHarness
-            .set_aside_shadowing_copy(
-                home,
-                Path::new("/code/build"),
-                Path::new("/state/scratch/build"),
-                "sess",
-            )
-            .unwrap()
-    }
-
-    /// Claude reads the copy under the directory it is started in first, so a
-    /// shorter one there would be resumed in place of the whole conversation.
-    /// It is renamed out of the way and kept, and the one Build filed is left
-    /// as it was.
-    #[test]
-    fn a_shorter_copy_where_claude_stands_is_set_aside_and_kept() {
-        let home = tempfile::tempdir().unwrap();
-        let (filed, here) = two_copies(home.path(), "one\ntwo\nthree\n", "one\n");
-
-        let aside = set_aside(home.path()).expect("the stale copy is moved");
-        assert!(!here.exists(), "claude no longer finds it");
-        assert_eq!(aside.parent(), here.parent(), "beside where it was");
-        assert!(
-            aside
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with("sess.jsonl.shadowed-"),
-            "{}",
-            aside.display()
-        );
-        assert_eq!(std::fs::read_to_string(&aside).unwrap(), "one\n");
-        assert_eq!(
-            std::fs::read_to_string(&filed).unwrap(),
-            "one\ntwo\nthree\n"
-        );
-        assert!(ClaudeHarness.holds_conversation(
-            home.path(),
-            Path::new("/state/scratch/build"),
-            "sess"
-        ));
-    }
-
-    /// A copy where claude stands that holds at least as much is where the
-    /// conversation went on, and claude reading it is right.
-    #[test]
-    fn a_copy_where_claude_stands_that_went_further_is_left_alone() {
-        let home = tempfile::tempdir().unwrap();
-        let (filed, here) = two_copies(home.path(), "one\n", "one\ntwo\n");
-        assert_eq!(set_aside(home.path()), None);
-        assert!(here.is_file());
-        assert!(filed.is_file());
-
-        let (_, here) = two_copies(home.path(), "same\n", "same\n");
-        assert_eq!(set_aside(home.path()), None);
-        assert!(here.is_file(), "an equal copy is the same conversation");
-    }
-
-    /// Nothing is moved where there is nothing to shadow: one copy, or a child
-    /// standing where the conversation was filed.
-    #[test]
-    fn a_single_copy_is_never_moved() {
-        let home = tempfile::tempdir().unwrap();
-        let (filed, here) = two_copies(home.path(), "one\ntwo\n", "one\n");
-        std::fs::remove_file(&here).unwrap();
-        assert_eq!(set_aside(home.path()), None);
-        assert!(filed.is_file());
-
-        let (_, here) = two_copies(home.path(), "one\ntwo\n", "one\n");
-        let standing_where_filed = ClaudeHarness
-            .set_aside_shadowing_copy(
-                home.path(),
-                Path::new("/code/build"),
-                Path::new("/code/build"),
-                "sess",
-            )
-            .unwrap();
-        assert_eq!(standing_where_filed, None);
-        assert!(here.is_file());
     }
 
     /// The locator names the conversation THIS session is having, and it knows

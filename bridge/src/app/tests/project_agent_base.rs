@@ -10,6 +10,18 @@ use super::*;
 /// Put the project's agents on a harness that prints where it was started and
 /// stays up, and keep every [`SpawnOptions`] a spawn was built from.
 fn record_spawns(state: &Arc<Mutex<AppState>>) -> Arc<Mutex<Vec<SpawnOptions>>> {
+    record_spawns_of(state, || {
+        HarnessSpec::new("bash")
+            .arg("-c")
+            .arg("printf 'started in %s\\n' \"$PWD\"; exec sleep 60")
+    })
+}
+
+/// The same, on the harness `spec` makes.
+fn record_spawns_of(
+    state: &Arc<Mutex<AppState>>,
+    spec: impl Fn() -> HarnessSpec + Send + Sync + 'static,
+) -> Arc<Mutex<Vec<SpawnOptions>>> {
     let spawns: Arc<Mutex<Vec<SpawnOptions>>> = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&spawns);
     let mut s = state.lock().unwrap();
@@ -18,9 +30,7 @@ fn record_spawns(state: &Arc<Mutex<AppState>>) -> Arc<Mutex<Vec<SpawnOptions>>> 
     let agent = Agent::WarmBuilder(Arc::new(
         move |_prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
             recorded.lock().unwrap().push(options.clone());
-            Ok(HarnessSpec::new("bash")
-                .arg("-c")
-                .arg("printf 'started in %s\\n' \"$PWD\"; exec sleep 60"))
+            Ok(spec())
         },
     ));
     s.project_at_mut(0).orch = Orchestrator::new(
@@ -121,7 +131,11 @@ async fn a_project_agent_starts_in_its_projects_base_and_writes_nothing_there() 
         "{screen}"
     );
     assert!(!repo.join(".build").exists(), "no scaffold in the base");
-    assert_eq!(git_status(&repo), clean, "nothing written into the base");
+    assert_eq!(
+        git_status(&repo),
+        format!("{clean}!! .claude/.gitignore\n"),
+        "nothing written into the base but what keeps claude's files ignored"
+    );
 }
 
 /// Only a project's own conversation stands elsewhere. An agent on a workspace
@@ -247,11 +261,12 @@ fn the_project_agents_prompt_names_its_base_and_forbids_changing_it() {
 // ---- an agent from before the move ------------------------------------------
 
 /// A project conversation minted before the agent moved is the same one after
-/// a restart: found again by its scratch root, never minted twice, and its
-/// agent resumes the exact session it recorded there — a claude transcript
-/// filed under the scratch directory's name — from the base it now starts in.
+/// a restart: found again by its scratch root and never minted twice. Its
+/// agent's claude session was filed under the scratch directory's name, and
+/// is not resumed from the base: the move starts the agent fresh once, and
+/// the name is forgotten so the next start does not ask again.
 #[tokio::test]
-async fn a_conversation_from_before_the_move_is_found_and_resumed_from_the_base() {
+async fn a_conversation_from_before_the_move_is_found_and_its_agent_starts_fresh_in_the_base() {
     let (_repo_home, repo) = init_repo();
     let repo = std::fs::canonicalize(&repo).unwrap();
     let tmp = tempfile::tempdir().unwrap();
@@ -343,17 +358,13 @@ async fn a_conversation_from_before_the_move_is_found_and_resumed_from_the_base(
 
     let options = only_spawn(&spawns);
     assert_eq!(options.cwd, repo, "it now starts in the base");
-    assert_eq!(
-        options.resume_session_id.as_deref(),
-        Some("sess-before"),
-        "and keeps the conversation it had in scratch"
-    );
+    assert_eq!(options.resume_session_id, None, "fresh, not resumed across");
+    assert!(!options.continue_session);
     let s = state.lock().unwrap();
     assert_eq!(
-        s.recorded_resume_id(&before.owner, &before.agent_id)
-            .as_deref(),
-        Some("sess-before"),
-        "the recorded name is not forgotten"
+        s.recorded_resume_id(&before.owner, &before.agent_id),
+        None,
+        "the name filed under scratch is forgotten"
     );
 }
 
@@ -694,6 +705,15 @@ fn a_workspace_agents_native_post_is_not_given_the_project_prompt() {
 
 // ---- what a harness leaves in the base ---------------------------------------
 
+/// Keep claude's files out of `dir`'s status, the way a claude spawn there does.
+fn ignore_harness_files(dir: &Path) -> Result<(), crate::orchestrator::OrchestratorError> {
+    crate::orchestrator::ignore_harness_files(
+        dir,
+        crate::harness::harness_for(crate::models::AgentProvider::Claude)
+            .claude_files_where_it_stands(),
+    )
+}
+
 const HARNESS_FILES: [&str; 3] = [
     ".claude/scheduled_tasks.lock",
     ".claude/scheduled_tasks.json",
@@ -716,19 +736,29 @@ fn write_harness_files(dir: &Path) {
     }
 }
 
-fn exclude_of(repo: &Path) -> String {
-    std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap_or_default()
+fn ignore_of(dir: &Path) -> String {
+    std::fs::read_to_string(dir.join(".claude/.gitignore")).unwrap_or_default()
+}
+
+fn inode(path: &Path) -> u64 {
+    std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(path).unwrap())
 }
 
 /// Claude writes its scheduler lock, its durable tasks and the permissions it
 /// remembers into the directory it stands in. Started in the user's checkout,
-/// those would show in their `git status`; the rules that keep them out go in
-/// the repository's own `.git/info/exclude`, never a tracked file, and only
-/// for those files — anything else under `.claude/` is still the user's.
+/// those would show in their `git status`. The rules that keep them out go in
+/// a `.gitignore` of Build's inside that `.claude/`, which ignores itself —
+/// never a tracked file, never the repository's shared `info/exclude` — and
+/// cover only those files: anything else under `.claude/` is still the
+/// user's, and so is the same file in a linked worktree of the same
+/// repository that no agent stands in.
 #[tokio::test]
 async fn what_the_harness_writes_in_the_base_stays_out_of_its_status() {
     let (_repo_home, repo) = init_repo();
     let repo = std::fs::canonicalize(&repo).unwrap();
+    let sibling = repo.with_file_name("sibling");
+    git_in(&repo, &["worktree", "add", "-q", sibling.to_str().unwrap()]);
+    let exclude = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap_or_default();
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let mut state = rooted(&state_root);
@@ -753,50 +783,57 @@ async fn what_the_harness_writes_in_the_base_stays_out_of_its_status() {
     );
     std::fs::write(repo.join(".claude/settings.json"), "{}").unwrap();
     assert_eq!(untracked(&repo), "?? .claude/settings.json\n");
-    let tracked = Command::new("git")
-        .args(["ls-files", "--others", "--exclude-standard", ".gitignore"])
-        .current_dir(&repo)
-        .output()
-        .unwrap();
-    assert!(tracked.stdout.is_empty(), "no .gitignore was written");
-    assert!(!repo.join(".gitignore").exists());
+    assert!(
+        !repo.join(".gitignore").exists(),
+        "no .gitignore at the root"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap_or_default(),
+        exclude,
+        "the exclude every worktree reads is left alone"
+    );
+
+    write_harness_files(&sibling);
+    let beside = untracked(&sibling);
+    for file in HARNESS_FILES {
+        assert!(beside.contains(&format!("?? {file}\n")), "{beside}");
+    }
 }
 
-/// Each rule is written once however many times the agent starts, below the
-/// user's own rules and never over them; it is anchored to the directory the
-/// agent stands in, so a base inside a larger repository excludes its own
-/// files and nobody else's; and a base that is not a repository is left
-/// alone.
+/// Each rule is written once however many times the agent starts. A base
+/// inside a larger repository keeps its own files out and nobody else's, and
+/// a base that is not a repository is left alone.
 #[test]
-fn the_harness_rules_are_written_once_where_the_agent_stands_and_only_in_git() {
+fn the_harness_rules_are_appended_once_where_the_agent_stands_and_only_in_git() {
     let (_repo_home, repo) = init_repo();
     let repo = std::fs::canonicalize(&repo).unwrap();
-    std::fs::write(repo.join(".git/info/exclude"), "notes/\n").unwrap();
     for _ in 0..3 {
-        crate::orchestrator::exclude_harness_files(&repo).unwrap();
+        ignore_harness_files(&repo).unwrap();
     }
-    let exclude = exclude_of(&repo);
-    assert!(exclude.starts_with("notes/\n"), "{exclude}");
-    for file in HARNESS_FILES {
-        let rule = format!("/{file}");
+    let ignore = ignore_of(&repo);
+    for rule in [
+        "/scheduled_tasks.lock",
+        "/scheduled_tasks.json",
+        "/settings.local.json",
+        "/.gitignore",
+    ] {
         assert_eq!(
-            exclude.lines().filter(|line| *line == rule).count(),
+            ignore.lines().filter(|line| *line == rule).count(),
             1,
-            "{rule} once: {exclude}"
+            "{rule} once: {ignore}"
         );
     }
     assert_eq!(
-        exclude.lines().filter(|line| line.starts_with('#')).count(),
+        ignore.lines().filter(|line| line.starts_with('#')).count(),
         1,
-        "{exclude}"
+        "{ignore}"
     );
 
     let nested = repo.join("packages/app");
     std::fs::create_dir_all(&nested).unwrap();
-    crate::orchestrator::exclude_harness_files(&nested).unwrap();
+    ignore_harness_files(&nested).unwrap();
     write_harness_files(&nested);
     write_harness_files(&repo.join("packages/other"));
-    assert!(exclude_of(&repo).contains("/packages/app/.claude/scheduled_tasks.lock\n"));
     let status = untracked(&repo);
     assert!(!status.contains("packages/app/"), "{status}");
     assert!(
@@ -805,8 +842,75 @@ fn the_harness_rules_are_written_once_where_the_agent_stands_and_only_in_git() {
     );
 
     let plain = tempfile::tempdir().unwrap();
-    crate::orchestrator::exclude_harness_files(plain.path()).unwrap();
+    ignore_harness_files(plain.path()).unwrap();
     assert!(!plain.path().join(".git").exists(), "not made a repository");
+    assert!(!plain.path().join(".claude").exists(), "nothing written");
+}
+
+/// The file is only ever appended to: a `.gitignore` the user already keeps
+/// there is theirs — its lines stay, its inode stays, and Build's rules do
+/// not hide it — and one the repository tracks is not touched at all.
+#[test]
+fn a_gitignore_the_user_keeps_there_is_appended_to_or_left_alone() {
+    let (_repo_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let theirs = repo.join("packages/theirs");
+    std::fs::create_dir_all(theirs.join(".claude")).unwrap();
+    std::fs::write(theirs.join(".claude/.gitignore"), "notes").unwrap();
+    let before = inode(&theirs.join(".claude/.gitignore"));
+    ignore_harness_files(&theirs).unwrap();
+    let appended = ignore_of(&theirs);
+    assert!(appended.starts_with("notes\n#"), "{appended}");
+    assert!(appended.contains("\n/settings.local.json\n"), "{appended}");
+    assert!(!appended.contains("/.gitignore"), "{appended}");
+    assert_eq!(
+        inode(&theirs.join(".claude/.gitignore")),
+        before,
+        "appended"
+    );
+    write_harness_files(&theirs);
+    let status = untracked(&repo);
+    assert!(
+        status.contains("?? packages/theirs/.claude/.gitignore\n"),
+        "the user's own file shows: {status}"
+    );
+    assert!(!status.contains("packages/theirs/.claude/s"), "{status}");
+
+    let tracked = repo.join("packages/tracked");
+    std::fs::create_dir_all(tracked.join(".claude")).unwrap();
+    std::fs::write(tracked.join(".claude/.gitignore"), "kept\n").unwrap();
+    git_in(&repo, &["add", "packages/tracked/.claude/.gitignore"]);
+    git_in(&repo, &["commit", "-qm", "their ignore"]);
+    ignore_harness_files(&tracked).unwrap();
+    assert_eq!(ignore_of(&tracked), "kept\n");
+}
+
+/// The rules are claude's files, so an agent on another harness leaves the
+/// base exactly as it found it.
+#[tokio::test]
+async fn a_codex_project_agent_leaves_no_claude_rules_in_the_base() {
+    let (_repo_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root);
+    let project = a_project_agent(&mut state, &repo);
+    let state = state.shared();
+    let spawns = record_spawns(&state);
+    ensure_agent_tab(
+        &state,
+        &project.scratch,
+        &project.owner,
+        &project.agent_id,
+        &ModelChoice {
+            provider: crate::models::AgentProvider::Codex,
+            ..ModelChoice::default()
+        },
+        "start",
+    )
+    .expect("the project agent starts");
+    assert_eq!(only_spawn(&spawns).cwd, repo);
+    assert!(!repo.join(".claude").exists());
 }
 
 // ---- attachments sent before the move, delivered after it -------------------
@@ -948,83 +1052,187 @@ fn a_legacy_post_names_a_project_agents_old_attachments_from_scratch() {
     );
 }
 
-// ---- two copies of one conversation --------------------------------------------
+/// What an operation's cold turn says was the conversation before it.
+fn context_of(cold: &str) -> &str {
+    let from = cold
+        .find("Conversation context before this operation:")
+        .unwrap_or_else(|| panic!("no context in {cold}"));
+    let to = cold[from..]
+        .find("This native payload")
+        .map_or(cold.len(), |at| from + at);
+    &cold[from..to]
+}
 
-/// Claude has a transcript of the agent's conversation under the scratch
-/// directory's name, where Build filed it, and a shorter one under the base's.
-/// Resumed from the base, claude would read the shorter one; it is set aside,
-/// kept, and the whole conversation is the one resumed.
-#[tokio::test]
-async fn a_stale_copy_under_the_base_is_set_aside_for_the_conversation_build_filed() {
+/// The context an operation is accepted into is prose Build wrote around
+/// what people said. A line is renamed only when Build recognises it as a
+/// message's own: a reviewer quoting an attachment note keeps their words,
+/// and the real note on the same line names the file from scratch.
+#[test]
+fn a_quoted_attachment_note_in_the_context_is_left_as_its_author_wrote_it() {
     let (_repo_home, repo) = init_repo();
     let repo = std::fs::canonicalize(&repo).unwrap();
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
-    let mut state = rooted(&state_root);
-    let project = a_project_agent(&mut state, &repo);
-    let choice = ModelChoice::default();
+    let quoted = "see [attached files, open them: .build/attachments/example.png] above";
+    let project = {
+        let mut state = configured(&state_root);
+        let project = a_project_agent(&mut state, &repo);
+        let (_, attachments) = an_old_attachment(&project);
+        let posted = state.handle(req(
+            "thread.post",
+            json!({
+                "entity_id": project.owner,
+                "agent_id": project.agent_id,
+                "body": quoted,
+                "attachments": attachments,
+            }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        drained(&mut state);
+        post_native(&mut state, &project, "op-queued", "and now?");
+        project
+    };
+    let (stored, _) = an_old_attachment(&project);
+
+    let mut state = configured(&state_root);
+    let said = the_turn_of(&drained(&mut state), "op-queued");
+    let context = context_of(&said.cold);
+    assert!(
+        context.contains(&format!(
+            "{quoted} [attached files, open them: {}]",
+            stored.display()
+        )),
+        "{context}"
+    );
+    assert!(
+        !context.contains("0123456789ab-before.png]\n- "),
+        "{context}"
+    );
+}
+
+// ---- the move itself -----------------------------------------------------------
+
+/// Record `sess-before` as the agent's claude session, filed where claude
+/// files one: under the directory the agent stood in, its scratch root.
+fn a_session_filed_in_scratch(state: &mut AppState, project: &ProjectAgent, home: &Path) {
     let root = AppState::canonical_root(&project.scratch);
+    // On the agent's own choice, so nothing but the move can start it fresh.
+    let choice = state
+        .entity_agents(&project.owner)
+        .unwrap()
+        .by_id(&project.agent_id)
+        .unwrap()
+        .choice
+        .clone();
     let instance = state
         .record_agent_session_start(&project.owner, &project.agent_id, &root, &choice, "start")
-        .expect("the session the agent had");
+        .expect("the session the agent had before the move");
     state.note_self_report(
         &project.owner,
         &project.agent_id,
         &instance,
         SelfReport {
-            named: Some("sess-both".to_string()),
+            named: Some("sess-before".to_string()),
             model: None,
             effort: None,
         },
     );
+    let filed = home
+        .join(".claude/projects")
+        .join(crate::harness::claude::encode_project_dir(&root));
+    std::fs::create_dir_all(&filed).unwrap();
+    std::fs::write(filed.join("sess-before.jsonl"), "{}\n").unwrap();
+}
 
+/// A project agent idle across the move is started fresh in its base, and the
+/// native post that starts it is what it reads the whole conversation from:
+/// the context an operation is accepted into leaves every other operation's
+/// messages out, and the session that heard them is not resumed.
+#[tokio::test]
+async fn an_idle_project_agent_moved_into_its_base_is_caught_up_by_a_native_post() {
+    let (_repo_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let home = tempfile::tempdir().unwrap();
-    let projects = home.path().join(".claude/projects");
-    let filed = projects
-        .join(crate::harness::claude::encode_project_dir(&root))
-        .join("sess-both.jsonl");
-    let shadow = projects
-        .join(crate::harness::claude::encode_project_dir(&repo))
-        .join("sess-both.jsonl");
-    for (at, lines) in [(&filed, "{}\n{}\n{}\n"), (&shadow, "{}\n")] {
-        std::fs::create_dir_all(at.parent().unwrap()).unwrap();
-        std::fs::write(at, lines).unwrap();
-    }
+    let project = {
+        let mut state = configured(&state_root);
+        let project = a_project_agent(&mut state, &repo);
+        a_session_filed_in_scratch(&mut state, &project, home.path());
+        post_native(&mut state, &project, "op-earlier", "ship the parser plan");
+        drained(&mut state);
+        for (from, to) in [
+            (
+                crate::operation::OperationStatus::Queued,
+                crate::operation::OperationStatus::Claimed,
+            ),
+            (
+                crate::operation::OperationStatus::Claimed,
+                crate::operation::OperationStatus::Delivered,
+            ),
+        ] {
+            assert!(state
+                .transition_delivery_operation("op-earlier", from, to, None)
+                .unwrap());
+        }
+        project
+    };
 
-    let state = state.shared();
-    let spawns = record_spawns(&state);
+    let state = configured(&state_root).shared();
+    let capture = state_root.join("received.txt");
+    let path = capture.clone();
+    let spawns = record_spawns_of(&state, move || {
+        HarnessSpec::new("sh")
+            .arg("-c")
+            .arg("cat > \"$1\"")
+            .arg("build-agent-capture")
+            .arg(path.to_string_lossy())
+    });
     {
         let mut s = state.lock().unwrap();
         let home_dir = home.path().to_path_buf();
         s.resume_id_probe = Arc::new(move |dir: &Path, provider, id: &str| {
             crate::harness::harness_for(provider).holds_conversation(&home_dir, dir, id)
         });
-        let home_dir = home.path().to_path_buf();
-        s.shadow_probe = Arc::new(move |cwd: &Path, root: &Path, _, id: &str| {
-            crate::harness::harness_for(crate::models::AgentProvider::Claude)
-                .set_aside_shadowing_copy(&home_dir, cwd, root, id)
-        });
+        post_native(&mut s, &project, "op-now", "what did we decide?");
     }
-    ensure_agent_tab(
-        &state,
-        &project.scratch,
-        &project.owner,
-        &project.agent_id,
-        &choice,
-        "resume",
-    )
-    .expect("the agent starts again");
+    deliver_pending_agent_turns(&state);
 
     let options = only_spawn(&spawns);
     assert_eq!(options.cwd, repo);
-    assert_eq!(options.resume_session_id.as_deref(), Some("sess-both"));
-    assert!(!shadow.exists(), "claude no longer finds the short copy");
-    let aside: Vec<PathBuf> = std::fs::read_dir(shadow.parent().unwrap())
-        .unwrap()
-        .flatten()
-        .map(|entry| entry.path())
-        .collect();
-    assert_eq!(aside.len(), 1, "{aside:?}");
-    assert_eq!(std::fs::read_to_string(&aside[0]).unwrap(), "{}\n", "kept");
-    assert_eq!(std::fs::read_to_string(&filed).unwrap(), "{}\n{}\n{}\n");
+    assert_eq!(options.resume_session_id, None, "the move starts it fresh");
+    let captured = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let captured = std::fs::read_to_string(&capture).unwrap_or_default();
+            if captured.contains("Catch-up packet") {
+                return captured;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the new session hears the post");
+    let line: Value = serde_json::from_str(captured.lines().next().unwrap()).unwrap();
+    let received = line["message"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{captured}"));
+    assert!(
+        received.starts_with("what did we decide?"),
+        "the user's words first: {received}"
+    );
+    let packet = received
+        .find("Catch-up packet from the durable conversation")
+        .expect("the whole conversation follows");
+    assert!(
+        !received[..packet].contains("ship the parser plan"),
+        "the operation's own context leaves the other operation out: {received}"
+    );
+    assert!(
+        received.find("You stand in the project's base") < Some(packet),
+        "{received}"
+    );
+    assert!(
+        received[packet..].contains("ship the parser plan"),
+        "{received}"
+    );
 }

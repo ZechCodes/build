@@ -14,7 +14,7 @@ use crate::harness::{
     SessionOpenRequest, SessionOutput, TerminalOpenOptions,
 };
 use crate::models::{AgentProvider, ModelChoice};
-use crate::orchestrator::{Agent, ResumeIdProbe, SessionLocatorFactory, ShadowProbe, SpawnOptions};
+use crate::orchestrator::{Agent, ResumeIdProbe, SessionLocatorFactory, SpawnOptions};
 use crate::pty::HarnessSpec;
 use crate::screen::{ScreenHandle, TerminalHandle};
 use crate::store::now_rfc3339;
@@ -424,22 +424,6 @@ pub(in crate::app) fn default_resume_id_probe() -> ResumeIdProbe {
         };
         harness_for(provider).holds_conversation(std::path::Path::new(&home), cwd, id)
     })
-}
-
-pub(in crate::app) fn default_shadow_probe() -> ShadowProbe {
-    Arc::new(
-        |cwd: &std::path::Path, root: &std::path::Path, provider, id: &str| {
-            let Ok(home) = std::env::var("HOME") else {
-                return Ok(None);
-            };
-            harness_for(provider).set_aside_shadowing_copy(
-                std::path::Path::new(&home),
-                cwd,
-                root,
-                id,
-            )
-        },
-    )
 }
 
 pub(in crate::app) fn default_session_locator_factory() -> SessionLocatorFactory {

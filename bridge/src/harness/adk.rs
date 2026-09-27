@@ -173,15 +173,9 @@ impl Harness for AdkHarness {
         ClaudeHarness.holds_conversation(home, cwd, id)
     }
 
-    /// The same tree and the same `--resume`, so the same shadow.
-    fn set_aside_shadowing_copy(
-        &self,
-        home: &Path,
-        cwd: &Path,
-        root: &Path,
-        id: &str,
-    ) -> std::io::Result<Option<std::path::PathBuf>> {
-        ClaudeHarness.set_aside_shadowing_copy(home, cwd, root, id)
+    /// The same CLI, standing in the same directory.
+    fn claude_files_where_it_stands(&self) -> &'static [&'static str] {
+        ClaudeHarness.claude_files_where_it_stands()
     }
 
     /// This protocol session reads its own id off the child's `init` line, so a

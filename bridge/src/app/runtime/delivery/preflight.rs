@@ -462,26 +462,36 @@ impl AppState {
         limit: usize,
         attachments_root: Option<&std::path::Path>,
     ) -> String {
-        let tail_only =
-            || thread.catch_up_markdown_for_reader_elsewhere(&[], limit, attachments_root);
+        thread.catch_up_markdown_for_reader_elsewhere(
+            &self.catch_up_history(thread, limit),
+            limit,
+            attachments_root,
+        )
+    }
+
+    /// The stored messages under `thread`'s resident tail that a catch-up of
+    /// `limit` messages reaches — none when the tail alone holds them, and
+    /// none when the store cannot be read, which is logged.
+    pub(in crate::app) fn catch_up_history(
+        &self,
+        thread: &crate::thread::Thread,
+        limit: usize,
+    ) -> Vec<crate::thread::ThreadItem> {
         if !thread.catch_up_reaches_stored_history(limit) {
-            return tail_only();
+            return Vec::new();
         }
         let Some(store) = self.store.as_ref() else {
-            return tail_only();
+            return Vec::new();
         };
-        match store.thread_message_page(&thread.agent.id, limit) {
-            Ok(history) => {
-                thread.catch_up_markdown_for_reader_elsewhere(&history, limit, attachments_root)
-            }
-            Err(error) => {
+        store
+            .thread_message_page(&thread.agent.id, limit)
+            .unwrap_or_else(|error| {
                 eprintln!(
                     "catch-up packet for {}: {error}; the resident tail is what it carries",
                     thread.agent.id
                 );
-                tail_only()
-            }
-        }
+                Vec::new()
+            })
     }
 
     /// The cold prompt a turn is actually handed over with: the prompt and its
@@ -499,13 +509,21 @@ impl AppState {
         agent_id: &str,
         cold: &str,
     ) -> String {
-        let cold = self.surface_prompt(owner, agent_id, cold);
+        self.closed_with_the_conversation(
+            owner,
+            agent_id,
+            self.surface_prompt(owner, agent_id, cold),
+        )
+    }
+
+    /// `prompt`, closed with the agent's durable conversation.
+    fn closed_with_the_conversation(&self, owner: &str, agent_id: &str, prompt: String) -> String {
         let Ok(thread) = self.agent_conversation(owner, Some(agent_id)) else {
-            return cold;
+            return prompt;
         };
         let attachments_root = self.attachments_root_for_reader_elsewhere(owner);
         crate::orchestrator::append_durable_conversation(
-            cold,
+            prompt,
             &self.catch_up_packet(
                 thread,
                 crate::orchestrator::CATCH_UP_MESSAGES,
@@ -521,10 +539,15 @@ impl AppState {
     /// Left as it was queued, but for a project agent's: a native post is how
     /// most of its turns arrive, and one that starts its process — the first
     /// after a restart, to an agent idle when the bridge went down — is the
-    /// only time it can be told what it is. So its prompt follows the
-    /// operation, after the reviewer's words rather than before them: a
-    /// provider reads a command only as the first thing it is sent. A turn that
-    /// IS a command the provider owns goes byte-for-byte, as it always does.
+    /// only time it can be told what it is and what was said. The context an
+    /// operation carries leaves out every other operation's messages, and a
+    /// process can start with nothing to resume — the move into the base
+    /// starts a claude one fresh — so its prompt and the whole durable
+    /// conversation follow the operation, the catch-up every other turn that
+    /// opens a project agent carries. After the reviewer's words rather than
+    /// before them: a provider reads a command only as the first thing it is
+    /// sent. A turn that IS a command the provider owns goes byte-for-byte, as
+    /// it always does.
     pub(in crate::app) fn cold_prompt_of_its_own(
         &self,
         owner: &str,
@@ -537,7 +560,11 @@ impl AppState {
         {
             return cold.to_string();
         }
-        format!("{cold}\n\n{}", self.project_agent_prompt(owner))
+        self.closed_with_the_conversation(
+            owner,
+            agent_id,
+            format!("{cold}\n\n{}", self.project_agent_prompt(owner)),
+        )
     }
 
     /// The cold prompt the SURFACE gets. Every path that opens a conversation

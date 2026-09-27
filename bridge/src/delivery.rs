@@ -18,7 +18,7 @@ use portable_pty::PtySize;
 
 use crate::harness::SessionLocator;
 use crate::models::{AgentProvider, ModelChoice};
-use crate::orchestrator::{Orchestrator, ResumeIdProbe, SessionLocatorFactory, ShadowProbe};
+use crate::orchestrator::{Orchestrator, ResumeIdProbe, SessionLocatorFactory};
 use crate::pty::HarnessSpec;
 
 /// What a spawn asks the provider's transcript tree, injectable so no test
@@ -31,7 +31,6 @@ use crate::pty::HarnessSpec;
 pub struct SessionProbes {
     pub resume_id: ResumeIdProbe,
     pub locator: SessionLocatorFactory,
-    pub shadow: ShadowProbe,
 }
 
 impl SessionProbes {
@@ -51,39 +50,22 @@ impl SessionProbes {
     ///    whoever had it — adoption included: Build cannot show a history it
     ///    never heard.
     ///
-    /// The provider is asked where the child will stand, and then where Build
-    /// keeps its root when that is somewhere else. A project agent stands in
-    /// the project's base but has its root in Build's scratch directory, and
-    /// every conversation it had before it moved was written under the
-    /// scratch directory's name: claude files a transcript by the cwd it was
-    /// started in, and resumes an id from any of them.
-    ///
-    /// Any of them, but the one under the cwd first — so where both hold the
-    /// name, a shorter copy under the cwd would be resumed in place of the
-    /// whole conversation Build filed under the root. That copy is set aside
-    /// before the name is spent. Where it cannot be, the name is not spent:
-    /// the child starts fresh and the cold turn catches it up from the
-    /// canonical conversation, which is what a name the provider lost gets.
+    /// The provider is asked where the child will stand, and nowhere else. A
+    /// project agent stands in its project's base while Build keeps its root in
+    /// the scratch directory, and a claude transcript is filed under the cwd it
+    /// was started in: so the conversation an agent had in scratch before it
+    /// moved is not held where it now stands, and the move starts it fresh
+    /// once, caught up from the canonical conversation. Resuming it from the
+    /// base instead would let claude choose between two directories' copies of
+    /// one name, which is not a choice Build can see.
     fn pickup(
         &self,
         cwd: &Path,
-        root: &Path,
         provider: AgentProvider,
         recorded: Option<String>,
     ) -> SessionPickup {
-        let held = |named: &str| {
-            (self.resume_id)(cwd, provider, named)
-                || (cwd != root && (self.resume_id)(root, provider, named))
-        };
         match recorded {
-            Some(named) if held(&named) && !self.unshadowed(cwd, root, provider, &named) => {
-                SessionPickup {
-                    resume_session_id: None,
-                    continue_session: false,
-                    recorded_name_is_gone: false,
-                }
-            }
-            Some(named) if held(&named) => SessionPickup {
+            Some(named) if (self.resume_id)(cwd, provider, &named) => SessionPickup {
                 resume_session_id: Some(named),
                 continue_session: false,
                 recorded_name_is_gone: false,
@@ -98,32 +80,6 @@ impl SessionProbes {
                 continue_session: false,
                 recorded_name_is_gone: false,
             },
-        }
-    }
-
-    /// Whether `named` can be resumed from `cwd` as the conversation Build
-    /// filed under `root`: true once nothing under `cwd` stands in its way.
-    fn unshadowed(&self, cwd: &Path, root: &Path, provider: AgentProvider, named: &str) -> bool {
-        if cwd == root {
-            return true;
-        }
-        match (self.shadow)(cwd, root, provider, named) {
-            Ok(None) => true,
-            Ok(Some(aside)) => {
-                eprintln!(
-                    "resume {named}: a shorter copy under {} was set aside to {}",
-                    cwd.display(),
-                    aside.display()
-                );
-                true
-            }
-            Err(error) => {
-                eprintln!(
-                    "resume {named}: a copy under {} shadows the conversation and could not be set aside ({error}); starting fresh",
-                    cwd.display()
-                );
-                false
-            }
         }
     }
 
@@ -183,7 +139,7 @@ impl AgentSpawnPlan {
         let provider = self.model_choice.provider;
         let pickup = self
             .probes
-            .pickup(&self.cwd, &self.root, provider, self.recorded_resume_id);
+            .pickup(&self.cwd, provider, self.recorded_resume_id);
         // A fresh transcript is filed under the cwd the child starts in.
         let locator = self.probes.locator(&self.cwd, provider);
         let resume_session_id = pickup.resume_session_id.clone();
@@ -231,14 +187,12 @@ mod tests {
         SessionProbes {
             resume_id: Arc::new(move |_, _, id: &str| holds(id)),
             locator: Arc::new(|_, _| None),
-            shadow: Arc::new(|_, _, _, _| Ok(None)),
         }
     }
 
     #[test]
     fn a_recorded_name_the_provider_still_holds_is_resumed_exactly() {
         let pickup = probes(|id| id == "sess-live").pickup(
-            Path::new("/tmp"),
             Path::new("/tmp"),
             AgentProvider::default(),
             Some("sess-live".into()),
@@ -254,7 +208,6 @@ mod tests {
     #[test]
     fn a_recorded_name_the_provider_has_lost_starts_fresh_and_says_so() {
         let pickup = probes(|_| false).pickup(
-            Path::new("/tmp"),
             Path::new("/tmp"),
             AgentProvider::default(),
             Some("sess-gone".into()),
@@ -272,12 +225,7 @@ mod tests {
 
     #[test]
     fn history_without_exact_lineage_starts_fresh_for_canonical_catch_up() {
-        let pickup = probes(|_| true).pickup(
-            Path::new("/tmp"),
-            Path::new("/tmp"),
-            AgentProvider::default(),
-            None,
-        );
+        let pickup = probes(|_| true).pickup(Path::new("/tmp"), AgentProvider::default(), None);
         assert!(
             !pickup.continue_session,
             "shared history must never activate a cwd-most-recent resume"
@@ -287,100 +235,41 @@ mod tests {
 
     #[test]
     fn a_brand_new_agent_opens_fresh_however_much_the_checkout_holds() {
-        let pickup = probes(|_| true).pickup(
-            Path::new("/tmp"),
-            Path::new("/tmp"),
-            AgentProvider::default(),
-            None,
-        );
+        let pickup = probes(|_| true).pickup(Path::new("/tmp"), AgentProvider::default(), None);
         assert!(
             !pickup.continue_session,
             "the checkout's old conversation belongs to whoever had it"
         );
     }
 
-    /// A project agent moved into its project's base keeps the conversation
-    /// it had in Build's scratch directory: claude filed that transcript under
-    /// the scratch directory's name, so the probe that asks only where the
-    /// child now stands would find nothing there and start it over.
+    /// A project agent moved into its project's base does not resume the
+    /// conversation it had in Build's scratch directory: claude filed that
+    /// under the scratch directory's name, and only what the provider holds
+    /// where the child stands is picked up. The name is forgotten, and the
+    /// child starts fresh for the canonical catch-up.
     #[test]
-    fn a_conversation_filed_under_the_root_is_resumed_from_a_cwd_elsewhere() {
-        let scratch = Path::new("/state/project-scratch/build-0123");
-        let base = Path::new("/code/build");
+    fn a_name_filed_only_where_the_child_no_longer_stands_starts_it_fresh() {
         let filed_under_scratch = SessionProbes {
             resume_id: Arc::new(move |dir: &Path, _, id: &str| {
                 dir == Path::new("/state/project-scratch/build-0123") && id == "sess-old"
             }),
             locator: Arc::new(|_, _| None),
-            shadow: Arc::new(|_, _, _, _| Ok(None)),
         };
 
         let moved = filed_under_scratch.pickup(
-            base,
-            scratch,
+            Path::new("/code/build"),
             AgentProvider::default(),
             Some("sess-old".into()),
         );
-        assert_eq!(moved.resume_session_id.as_deref(), Some("sess-old"));
-        assert!(!moved.recorded_name_is_gone);
+        assert_eq!(moved.resume_session_id, None);
+        assert!(!moved.continue_session);
+        assert!(moved.recorded_name_is_gone);
 
-        // The fallback is the root and nothing else: a name the provider holds
-        // in neither place is still gone.
-        let gone = filed_under_scratch.pickup(
-            base,
-            scratch,
+        let stayed = filed_under_scratch.pickup(
+            Path::new("/state/project-scratch/build-0123"),
             AgentProvider::default(),
-            Some("sess-other".into()),
+            Some("sess-old".into()),
         );
-        assert_eq!(gone.resume_session_id, None);
-        assert!(gone.recorded_name_is_gone);
-    }
-
-    /// Where both directories hold the name, the copy under the cwd is asked
-    /// to make way before the name is spent, and a copy that cannot be moved
-    /// is not resumed over: the child starts fresh and is caught up from the
-    /// canonical conversation. The name is not forgotten for it — the
-    /// provider still holds the conversation.
-    #[test]
-    fn a_copy_under_the_cwd_that_cannot_make_way_starts_the_child_fresh() {
-        let scratch = Path::new("/state/project-scratch/build-0123");
-        let base = Path::new("/code/build");
-        let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let heard = Arc::clone(&asked);
-        let stuck = SessionProbes {
-            resume_id: Arc::new(|_, _, _| true),
-            locator: Arc::new(|_, _| None),
-            shadow: Arc::new(move |cwd: &Path, root: &Path, _, id: &str| {
-                heard
-                    .lock()
-                    .unwrap()
-                    .push((cwd.to_path_buf(), root.to_path_buf(), id.to_string()));
-                Err(std::io::Error::other("read-only"))
-            }),
-        };
-
-        let pickup = stuck.pickup(base, scratch, AgentProvider::default(), Some("sess".into()));
-        assert_eq!(pickup.resume_session_id, None, "no resume over the shadow");
-        assert!(!pickup.continue_session);
-        assert!(!pickup.recorded_name_is_gone);
-        assert_eq!(
-            *asked.lock().unwrap(),
-            vec![(
-                base.to_path_buf(),
-                scratch.to_path_buf(),
-                "sess".to_string()
-            )]
-        );
-
-        // A child standing where the name was filed has nothing to shadow it.
-        asked.lock().unwrap().clear();
-        let home = stuck.pickup(
-            scratch,
-            scratch,
-            AgentProvider::default(),
-            Some("sess".into()),
-        );
-        assert_eq!(home.resume_session_id.as_deref(), Some("sess"));
-        assert!(asked.lock().unwrap().is_empty());
+        assert_eq!(stayed.resume_session_id.as_deref(), Some("sess-old"));
     }
 }

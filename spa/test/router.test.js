@@ -751,3 +751,25 @@ describe("links written before tasks were renamed (#190)", () => {
     expect(routeFromHash("#/task/run-1")).toEqual({ name: "resolve", kind: "run", id: "run-1", tab: "changes" });
   });
 });
+
+// #200: a push notification's deep link, as the service worker hands it to the
+// app (`build.push.open`, the part after /app/). Each shape names the agent the
+// chat rail opens on.
+describe("a notification's deep link", () => {
+  const cases = [
+    ["#/device/dev-1/project/proj-1/workspace/ws-1/changes?agent=agent-1",
+      { name: "workspace", deviceId: "dev-1", projectId: "proj-1", workspaceId: "ws-1", tab: "changes" }],
+    ["#/device/dev-1/project/proj-1/workspace/ws-1?agent=agent-1",
+      { name: "workspace", deviceId: "dev-1", projectId: "proj-1", workspaceId: "ws-1" }],
+    ["#/device/dev-1/project/proj-1?agent=agent-1",
+      { name: "project", deviceId: "dev-1", projectId: "proj-1" }],
+  ];
+  for (const [hash, place] of cases) {
+    it(`opens agent-1 from ${hash}`, () => {
+      const route = routeFromHash(hash);
+      expect(route).toMatchObject({ ...place, agent: "agent-1" });
+      // And writes the same link back, so the router settles on it.
+      expect(routeFromHash(hashFromRoute(route))).toEqual(route);
+    });
+  }
+});

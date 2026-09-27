@@ -6350,3 +6350,88 @@ describe("review158 independent ownership cases", () => {
     expect(notifyError).not.toHaveBeenCalled();
   });
 });
+
+// #200, Zech: "A chat notification should deeplink to and open the chat if
+// necessary." The link names the agent; the shell stands the rail on it with
+// `landOnLatest` (core/shell.js). A rail left collapsed comes up with the panel
+// out on that agent, at the message the notification was about — the latest —
+// rather than at the unread line a press would land on.
+describe("a conversation opened by a notification's link", () => {
+  const atWidth = (width) => Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+  const HEIGHT = 2400;
+  let geometry;
+
+  beforeEach(() => {
+    atWidth(390); // unpinned: the strip alone until something opens the panel
+    payload = branchRow({
+      agents: [
+        agent({ unread_count: 2, unread_reason: "agent_message", read_through_sequence: 11 }),
+        agent({ id: "ag-2", ordinal: 2 }),
+      ],
+      run: { run_id: "run-3", thread: { sessions: [], items: [
+        { type: "message", data: { sequence: 11, role: "agent", body: "the one you read" } },
+        { type: "message", data: { sequence: 12, role: "agent", body: "the first you did not" } },
+        { type: "message", data: { sequence: 13, role: "agent", body: "the latest, which the push was about" } },
+      ] } },
+    });
+    const body = (element) => element.id === "rail-body";
+    geometry = [
+      vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function () { return body(this) ? HEIGHT : 0; }),
+      vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function () { return body(this) ? 300 : 0; }),
+    ];
+  });
+
+  afterEach(() => {
+    geometry.forEach((spy) => spy.mockRestore());
+    atWidth(1024);
+  });
+
+  const scroller = () => railHost().querySelector("#rail-body");
+
+  it("opens a collapsed rail on the agent it names, scrolled to the latest message", async () => {
+    await mount();
+    expect(panel()).toBeNull();
+    rail.dispose();
+
+    await mount({ openAgentId: "ag-1", landOnLatest: true });
+    await vi.waitFor(() => {
+      expect(panel()).toBeTruthy();
+      expect(headWho()).toBe(TOPICS["ag-1"]);
+      expect(panel().textContent).toContain("the latest, which the push was about");
+      expect(railHost().querySelector(".thread-unread-line")).toBeTruthy();
+    });
+    expect(railHost().querySelector('[data-bubble="agent"][data-agent="ag-1"]').classList.contains("active")).toBe(true);
+    expect(scroller().scrollTop).toBe(HEIGHT);
+  });
+
+  it("moves off the agent the rail was open on", async () => {
+    await mount({ openAgentId: "ag-2" });
+    await vi.waitFor(() => expect(headWho()).toBe(TOPICS["ag-2"]));
+    rail.dispose();
+
+    await mount({ openAgentId: "ag-1", landOnLatest: true });
+    await vi.waitFor(() => expect(panel().textContent).toContain("the latest, which the push was about"));
+    expect(headWho()).toBe(TOPICS["ag-1"]);
+    expect(scroller().scrollTop).toBe(HEIGHT);
+  });
+
+  it("lands at the latest message on a workspace's rail, the project's agent beside it", async () => {
+    payload = { kind: "workspace", workspace_id: "ws-one", entity_id: "run-3", project_id: "p1",
+      agents: [agent({ unread_count: 2, unread_reason: "agent_message", read_through_sequence: 11 })],
+      run: payload.run };
+    await writeRailBoard({
+      projects: [{ project_id: "p1", name: "build", entity_id: "run-project" }],
+      workspaces: [{ id: "ws-one", project_id: "p1", name: "First workspace", entity_id: "run-3" }],
+      items: [payload, { kind: "project", project_id: "p1", entity_id: "run-project",
+        agents: [agent({ id: "ag-project", name: "Project agent", watched: true })] }],
+    });
+    await writeRailWorkItem(payload);
+    rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", workspaceId: "ws-one",
+      projectAgent: { projectId: "p1", entityId: "run-project" }, openAgentId: "ag-1", landOnLatest: true }));
+    await vi.waitFor(() => {
+      expect(panel()?.textContent).toContain("the latest, which the push was about");
+      expect(railHost().querySelector(".thread-unread-line")).toBeTruthy();
+    });
+    expect(scroller().scrollTop).toBe(HEIGHT);
+  });
+});

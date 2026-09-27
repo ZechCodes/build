@@ -14,7 +14,7 @@ import { renderResolving } from "./views/resolving.js";
 import { markConsoleTerminal } from "./core/consoleModel.js";
 import { inboxRouteChanged } from "./core/inboxShell.js";
 import { toolbarRouteChanged } from "./core/toolbar.js";
-import { standShell } from "./core/shell.js";
+import { askToOpenLinkedAgent, standShell } from "./core/shell.js";
 import { clearCacheScope } from "./core/cacheScope.js";
 import { wipeCache } from "./core/localCache.js";
 import { routeChanged } from "./core/cacheSync.js";
@@ -213,6 +213,22 @@ function readRoute() {
   const route = routeFromHash(location.hash);
   if (route.term) markConsoleTerminal(route.term);
   return route;
+}
+
+/**
+ * Route to a notification's deep link in this open window (push.js
+ * `installPushOpenListener`), opening the conversation it names even where the
+ * URL already names it and the rail was left collapsed or on another agent. A
+ * link to the page already standing is stood again rather than waiting on a
+ * hashchange that never comes.
+ */
+export function followNotificationLink(hash) {
+  askToOpenLinkedAgent();
+  if (location.hash !== hash) {
+    location.hash = hash;
+    return;
+  }
+  if (!App.gated) standShell(App.route);
 }
 
 export function initRouter() {

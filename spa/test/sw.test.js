@@ -2,7 +2,7 @@
 // `self` and invoking its event handlers, so the push copy / per-task tag /
 // deep-link click behavior is actually exercised — not just the server payload.
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
@@ -33,8 +33,18 @@ function loadWorker() {
   return { self, handlers, showNotification, openWindow };
 }
 
+/** Deliver a push and wait for the notification it shows: opening a sealed
+ *  payload is async, so every push resolves through waitUntil. */
+async function deliver(handlers, payload, options) {
+  const event = pushEvent(payload, options);
+  handlers.push(event);
+  await Promise.all(event.waits);
+}
+
 function pushEvent(payload, { malformed = false } = {}) {
+  const waits = [];
   return {
+    waits,
     data: malformed
       ? {
           json() {
@@ -44,7 +54,7 @@ function pushEvent(payload, { malformed = false } = {}) {
       : payload === undefined
         ? null
         : { json: () => payload },
-    waitUntil: () => {},
+    waitUntil: (p) => waits.push(p),
   };
 }
 
@@ -69,7 +79,12 @@ function appWindow(overrides = {}) {
 }
 
 describe("service worker push notification copy + tag", () => {
-  it("renders kind-specific body copy for each kind the unread counter has (#191)", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "debug").mockImplementation(() => {});
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("renders kind-specific body copy for each kind the unread counter has (#191)", async () => {
     // User-facing copy calls a task a task (#190).
     const cases = [
       ["agent", "An agent needs you", "/app/#/task/run-1"],
@@ -77,7 +92,7 @@ describe("service worker push notification copy + tag", () => {
     ];
     for (const [kind, body, url] of cases) {
       const { handlers, showNotification } = loadWorker();
-      handlers.push(pushEvent({ task_id: "t1", kind, url }));
+      await deliver(handlers, { task_id: "t1", kind, url });
       expect(showNotification).toHaveBeenCalledWith(
         "Build",
         expect.objectContaining({
@@ -91,9 +106,9 @@ describe("service worker push notification copy + tag", () => {
     }
   });
 
-  it("falls back to the agent copy for an unknown kind (a typo'd key never renders blank)", () => {
+  it("falls back to the agent copy for an unknown kind (a typo'd key never renders blank)", async () => {
     const { handlers, showNotification } = loadWorker();
-    handlers.push(pushEvent({ task_id: "t2", kind: "planready", url: "/app/" }));
+    await deliver(handlers, { task_id: "t2", kind: "planready", url: "/app/" });
     expect(showNotification).toHaveBeenCalledWith(
       "Build",
       expect.objectContaining({ body: "An agent needs you" }),
@@ -104,25 +119,25 @@ describe("service worker push notification copy + tag", () => {
     expect(swSource).not.toContain("app_update");
   });
 
-  it("uses a per-task tag, and a shared tag when there is no task id", () => {
+  it("uses a per-task tag, and a shared tag when there is no task id", async () => {
     const withId = loadWorker();
-    withId.handlers.push(pushEvent({ task_id: "abc", kind: "agent", url: "/app/" }));
+    await deliver(withId.handlers, { task_id: "abc", kind: "agent", url: "/app/" });
     expect(withId.showNotification.mock.calls[0][1].tag).toBe("build-task-abc");
 
     const noId = loadWorker();
-    noId.handlers.push(pushEvent({ kind: "agent", url: "/app/" }));
+    await deliver(noId.handlers, { kind: "agent", url: "/app/" });
     expect(noId.showNotification.mock.calls[0][1].tag).toBe("build-attention");
   });
 
-  it("rejects a protocol-relative url and falls back to the app root", () => {
+  it("rejects a protocol-relative url and falls back to the app root", async () => {
     const { handlers, showNotification } = loadWorker();
-    handlers.push(pushEvent({ task_id: "t3", kind: "agent", url: "//evil.example/x" }));
+    await deliver(handlers, { task_id: "t3", kind: "agent", url: "//evil.example/x" });
     expect(showNotification.mock.calls[0][1].data).toEqual({ url: "/app/" });
   });
 
-  it("renders a generic notification for a non-JSON payload", () => {
+  it("renders a generic notification for a non-JSON payload", async () => {
     const { handlers, showNotification } = loadWorker();
-    handlers.push(pushEvent(null, { malformed: true }));
+    await deliver(handlers, null, { malformed: true });
     expect(showNotification).toHaveBeenCalledWith(
       "Build",
       expect.objectContaining({ body: "An agent needs you", data: { url: "/app/" } }),
@@ -135,9 +150,26 @@ describe("service worker notificationclick deep-linking", () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
   });
 
-  it("focuses an open app window and navigates it to the deep link", async () => {
+  it("focuses an open app window and asks it to route to the deep link itself", async () => {
     const worker = loadWorker();
-    const win = appWindow();
+    const win = appWindow({ postMessage: vi.fn() });
+    worker.self.clients.matchAll = vi.fn(() => Promise.resolve([win]));
+    const { event, waits } = clickEvent("/app/#/device/d/project/p/workspace/w/changes?agent=a");
+    worker.handlers.notificationclick(event);
+    await Promise.all(waits);
+    expect(event.notification.close).toHaveBeenCalled();
+    expect(win.focus).toHaveBeenCalled();
+    expect(win.postMessage).toHaveBeenCalledWith({
+      type: "build.push.open",
+      url: "/app/#/device/d/project/p/workspace/w/changes?agent=a",
+    });
+    expect(win.navigate).not.toHaveBeenCalled();
+    expect(worker.openWindow).not.toHaveBeenCalled();
+  });
+
+  it("navigates the window when the message cannot be posted", async () => {
+    const worker = loadWorker();
+    const win = appWindow({ postMessage: vi.fn(() => { throw new Error("detached"); }) });
     worker.self.clients.matchAll = vi.fn(() => Promise.resolve([win]));
     const { event, waits } = clickEvent("/app/#/task/t1/diff");
     worker.handlers.notificationclick(event);
@@ -149,7 +181,10 @@ describe("service worker notificationclick deep-linking", () => {
 
   it("opens a new window on the deep link when navigate() rejects (no silent drop)", async () => {
     const worker = loadWorker();
-    const win = appWindow({ navigate: vi.fn(() => Promise.reject(new Error("uncontrolled"))) });
+    const win = appWindow({
+      postMessage: vi.fn(() => { throw new Error("detached"); }),
+      navigate: vi.fn(() => Promise.reject(new Error("uncontrolled"))),
+    });
     worker.self.clients.matchAll = vi.fn(() => Promise.resolve([win]));
     const { event, waits } = clickEvent("/app/#/task/t9/plan");
     worker.handlers.notificationclick(event);
@@ -159,7 +194,18 @@ describe("service worker notificationclick deep-linking", () => {
     expect(console.warn).toHaveBeenCalled();
   });
 
-  it("opens a new window when no app window is open", async () => {
+  it("ignores windows outside the app", async () => {
+    const worker = loadWorker();
+    const other = appWindow({ url: "https://build.example/landing", postMessage: vi.fn() });
+    worker.self.clients.matchAll = vi.fn(() => Promise.resolve([other]));
+    const { event, waits } = clickEvent("/app/#/task/t4/plan");
+    worker.handlers.notificationclick(event);
+    await Promise.all(waits);
+    expect(other.postMessage).not.toHaveBeenCalled();
+    expect(worker.openWindow).toHaveBeenCalledWith("/app/#/task/t4/plan");
+  });
+
+  it("opens a new window on a cold start, where the router reads the hash at boot", async () => {
     const worker = loadWorker();
     worker.self.clients.matchAll = vi.fn(() => Promise.resolve([]));
     const { event, waits } = clickEvent("/app/#/task/t2/plan");

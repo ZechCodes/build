@@ -100,6 +100,7 @@ describe("adapter selection", () => {
       messages: { context: false },
       threads: { postOperations: false, attachmentChunks: false },
       branches: { finishDelete: false },
+      push: { registerKey: false, revokeKey: false },
     });
   });
 
@@ -159,6 +160,7 @@ describe("adapter selection", () => {
         messages: { context: false },
         threads: { postOperations: false, attachmentChunks: false },
         branches: { finishDelete: false },
+        push: { registerKey: false, revokeKey: false },
       });
     }
   });
@@ -386,5 +388,16 @@ describe("bodies.pages", () => {
     expect(v1.capabilitiesOf({ api_version: "2.0.0", capabilities: ["bodies.pages"] }).bodies.pages).toBe(true);
     expect(v1.capabilitiesOf({ api_version: "2.0.0", capabilities: ["fs.read", "git.diff"] }).bodies.pages).toBe(false);
     expect(v1.capabilitiesOf({ api_version: "2.0.0" }).bodies.pages).toBe(false);
+  });
+});
+
+describe("push.registerKey and push.revokeKey", () => {
+  it("are each on only when the greeting names them (#200)", () => {
+    const push = (capabilities) => v1.capabilitiesOf({ api_version: "2.1.0", capabilities }).push;
+    expect(push(["push.registerKey", "push.revokeKey"])).toEqual({ registerKey: true, revokeKey: true });
+    expect(push(["push.registerKey"])).toEqual({ registerKey: true, revokeKey: false });
+    expect(push(["push.revokeKey"])).toEqual({ registerKey: false, revokeKey: true });
+    expect(push(["push"])).toEqual({ registerKey: false, revokeKey: false });
+    expect(v1.capabilitiesOf({ api_version: "2.1.0" }).push).toEqual({ registerKey: false, revokeKey: false });
   });
 });

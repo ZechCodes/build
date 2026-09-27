@@ -19,9 +19,11 @@ framework imports, trivially unit-testable.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 from datetime import datetime, timedelta
+from urllib.parse import urlsplit
 
 import requests
 from pywebpush import WebPushException, webpush
@@ -39,6 +41,7 @@ __all__ = [
     "WebPushException",
     "notify_challenge",
     "notify_timestamp_fresh",
+    "push_endpoint_allowed",
     "push_payload",
     "send_to_subscriptions",
     "subscription_gone",
@@ -95,6 +98,71 @@ def push_payload(task_id: str, kind: str) -> str:
     )
 
 
+# The push services a browser subscribes through, and so the only hosts the api
+# ever sends to: a stored endpoint is a URL the server POSTs to, so an arbitrary
+# one would let any signed-in caller aim the server at a host of their choosing.
+# A host matches exactly, or as a subdomain of a suffix — never by substring.
+PUSH_SERVICE_HOSTS = frozenset(
+    {
+        "fcm.googleapis.com",  # Chrome, and the browsers built on it
+        "jmt17.google.com",  # Chromium's own builds
+        "updates.push.services.mozilla.com",  # Firefox
+    }
+)
+PUSH_SERVICE_DOMAINS = (
+    "push.services.mozilla.com",  # Firefox
+    "push.apple.com",  # Safari
+    "notify.windows.com",  # Edge on Windows
+)
+_HOSTNAME_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-.")
+
+
+def push_endpoint_allowed(endpoint: str) -> bool:
+    """Whether ``endpoint`` is an https URL on a known push service, on the
+    default port, with no credentials and no IP literal — checked when the
+    subscription is stored and again before anything is sent to it."""
+    if any(
+        character.isspace() or not character.isprintable() or character == "\\"
+        for character in endpoint
+    ):
+        return False
+    try:
+        parts = urlsplit(endpoint)
+    except ValueError:
+        return False
+    host = parts.hostname or ""
+    if parts.scheme != "https":
+        return False
+    if parts.netloc.lower() not in (host, f"{host}:443"):
+        return False  # another port, credentials, or anything else in the authority
+    if not host or not set(host) <= _HOSTNAME_CHARACTERS:
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return False
+    except ValueError:
+        pass
+    return host in PUSH_SERVICE_HOSTS or any(
+        host.endswith(f".{domain}") for domain in PUSH_SERVICE_DOMAINS
+    )
+
+
+class _NoRedirectSession(requests.Session):
+    """A push service answers a delivery itself; a redirect would carry the
+    server's POST to a host the allowlist never checked, so none is followed."""
+
+    def request(self, *args, **kwargs):
+        kwargs["allow_redirects"] = False
+        return super().request(*args, **kwargs)
+
+
+def _send_without_redirects(**kwargs):
+    """``webpush`` over a session that follows no redirect; a 3xx answer is
+    above 202, so pywebpush raises it as a failed delivery."""
+    with _NoRedirectSession() as session:
+        return webpush(requests_session=session, **kwargs)
+
+
 def subscription_gone(status_code: int | None) -> bool:
     """Push-service statuses that mean the subscription no longer exists and
     should be pruned (as opposed to transient failures, which are retried by the
@@ -107,17 +175,21 @@ def send_to_subscriptions(
     payload: str,
     vapid_private_key: str,
     vapid_subject: str,
-    send=webpush,
+    send=_send_without_redirects,
 ) -> tuple[int, list[str]]:
     """Push ``payload`` to every subscription; return ``(delivered, gone_endpoints)``.
 
     ``gone_endpoints`` are subscriptions the push service reports as dead — the
     caller owns the state change of deleting them. Transient errors are counted
-    as neither delivered nor gone. ``send`` is injectable for tests.
+    as neither delivered nor gone, and so is an endpoint off the push services,
+    which is never sent to. ``send`` is injectable for tests.
     """
     delivered = 0
     gone: list[str] = []
     for subscription_info in subscription_infos:
+        if not push_endpoint_allowed(str(subscription_info.get("endpoint", ""))):
+            logger.warning("push endpoint is not a known push service; not sending")
+            continue
         try:
             send(
                 subscription_info=subscription_info,

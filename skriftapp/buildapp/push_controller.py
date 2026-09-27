@@ -93,7 +93,8 @@ class PushController(Controller):
     async def subscribe(self, request: Request, db_session: AsyncSession) -> Response:
         """Store (or take over) this browser's push subscription for the current
         user. The endpoint is unique per browser+origin, so an existing row for it
-        is updated in place — including when a different account logs in."""
+        is updated in place — including when a different account logs in. Only an
+        endpoint on a known push service is stored: the server POSTs to it later."""
         user_id = require_user(request)
         body = await read_json_object(request)
         try:
@@ -103,8 +104,10 @@ class PushController(Controller):
             auth_key = str(keys["auth"])
         except (KeyError, TypeError):
             raise ClientException("malformed subscription")
-        if not endpoint.startswith("https://") or not p256dh_key or not auth_key:
+        if not p256dh_key or not auth_key:
             raise ClientException("malformed subscription")
+        if not web_push.push_endpoint_allowed(endpoint):
+            raise ClientException("push endpoint is not a known push service")
 
         await save_subscription(db_session, str(user_id), endpoint, p256dh_key, auth_key)
         return Response({"ok": True}, status_code=201)

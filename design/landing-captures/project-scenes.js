@@ -3,6 +3,7 @@
 // workflow builder (act 5, a feature the app does not have yet, drawn as a
 // third project page in the app's frame).
 import { ICON_CHEVRON_DOWN, ICON_EYE, ICON_PLUS } from "../../spa/src/core/icons.js";
+import { stateMarkHtml } from "../../spa/src/core/trackerChips.js";
 import {
   PROJECT_VERBS, agentRail, appShell, harnessMark, overviewPanel, overviewRow, overviewSection, projectToolbar,
 } from "./app-shell.js";
@@ -26,7 +27,7 @@ const assignee = (name) => name
   : '<span class="task-assignee task-unassigned">Unassigned</span>';
 
 const taskCard = (task) => `<li class="task-card" data-status="${task.status}" data-task-number="${task.number}">
-    <div class="task-card-head"><span class="task-state task-state-open"></span><span class="task-number">#${task.number}</span>${task.priority ? `<span class="task-priority task-priority-${task.priority}">${task.priority[0].toUpperCase()}${task.priority.slice(1)}</span>` : ""}</div>
+    <div class="task-card-head">${stateMarkHtml({ state: "open", status: task.status })}<span class="task-number">#${task.number}</span>${task.priority ? `<span class="task-priority task-priority-${task.priority}">${task.priority[0].toUpperCase()}${task.priority.slice(1)}</span>` : ""}</div>
     <a class="task-card-title">${task.title}</a>
     <div class="task-card-labels">${task.labels.map((label) => `<span class="task-label">${label}</span>`).join("")}</div>
     <button class="task-assign" type="button">${assignee(task.assignee)}</button>
@@ -66,7 +67,7 @@ const railSection = (title, body, note = "") =>
 const taskPage = () => `<div id="task-pane" class="task-surface"><div class="task-page">
     <div class="task-page-main">
       <header class="task-page-head">
-        <div class="task-page-marks"><span class="task-state task-state-open"></span><span class="task-page-state">Open</span><span class="task-number">#78</span><time class="task-age">3m ago</time>
+        <div class="task-page-marks">${stateMarkHtml({ state: "open", status: "ready" })}<span class="task-page-state">Open</span><span class="task-number">#78</span><time class="task-age">3m ago</time>
           <button type="button" class="iconbtn rail-watch watching" aria-pressed="true">${ICON_EYE}</button></div>
         <h1 class="task-page-title">Make archived items searchable</h1>
         <div class="task-page-labels"><span class="task-label">search</span><span class="task-label">bug</span></div>

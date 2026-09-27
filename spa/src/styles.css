@@ -304,8 +304,12 @@ a { color:inherit; }
 body.inbox-collapsed #root.device-settings { padding-top:calc(48px + env(safe-area-inset-top, 0px)); }
 
 /* new-version banner: an offer, not a warning — accent, one Reload, never auto.
-   In flow above the shell, so the locked frame shrinks under it. */
+   In flow above the shell, so the locked frame shrinks under it. Sticky at 0,
+   which the locked page never scrolls away from, so it stays exactly there: it
+   is the top edge while it stands, and WebKit takes the status bar's colour
+   only from a fixed or sticky box (styles/shell.css, #status-edge; #193). */
 #verbar { flex:none; display:flex; align-items:center; gap:12px;
+  position:sticky; top:0;
   background:var(--accent-soft); color:var(--accent);
   padding:7px 18px; font-size:12.5px; }
 #verbar[hidden] { display:none; }

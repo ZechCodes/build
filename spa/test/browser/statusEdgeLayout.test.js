@@ -78,15 +78,33 @@ for (const theme of ["dark", "light"]) {
   }
 }
 
-it("leaves the top edge to the version banner while it stands", async () => {
-  await withLayoutPage(async ({ page, basePath }) => {
-    await mountLayout(page, shellMarkup, { basePath });
-    await page.evaluate(() => {
-      document.documentElement.dataset.theme = "dark";
-      document.getElementById("verbar").hidden = false;
-    });
-    const edge = await topEdge(page);
-    expect(edge.container).toBeNull();
-    expect(await page.evaluate(() => document.getElementById("status-edge").getClientRects().length)).toBe(0);
-  }, { width: 1180, height: 820 });
-});
+// While the new-version banner stands it is the top edge, so it must be the box
+// WebKit finds there: in flow alone it offered nothing, and iOS blurred the
+// inset down over the banner (#193 follow-up).
+for (const theme of ["dark", "light"]) {
+  it(`gives WebKit the version banner's colour at the top edge while it stands, ${theme}`, async () => {
+    await withLayoutPage(async ({ page, basePath }) => {
+      await mountLayout(page, shellMarkup, { basePath });
+      const before = await page.evaluate((theme) => {
+        document.documentElement.dataset.theme = theme;
+        document.body.classList.add("inbox-collapsed");
+        const banner = document.getElementById("verbar");
+        banner.hidden = false;
+        const { top, height } = banner.getBoundingClientRect();
+        return { top, height };
+      }, theme);
+      const edge = await topEdge(page);
+      expect(edge.container).toBe("verbar");
+      expect(edge.width).toBe(edge.viewport);
+      expect(edge.height).toBeGreaterThan(10);
+      // A plain, opaque colour: the banner's own.
+      expect(edge.background).toMatch(/^rgb\(/);
+      expect(edge.background).not.toBe(edge.page);
+      // The banner keeps its place, and the toolbar still owns its top row.
+      expect(before.top).toBe(0);
+      expect(edge.toolbarTopRow).toBe(true);
+      expect(await page.evaluate(() => document.getElementById("status-edge").getClientRects().length)).toBe(0);
+      await captureLayout(page, `status-edge-verbar-${theme}-1180x820.png`);
+    }, { width: 1180, height: 820 });
+  });
+}

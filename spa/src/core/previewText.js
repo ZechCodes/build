@@ -8,7 +8,10 @@
 // words, in order. Fenced code is dropped whole, because a line of code is not
 // a summary of anything. No DOM.
 
-const FENCE = /```[\s\S]*?(?:```|$)/g;
+// A fence of backticks or of tildes, closed by its own kind or by the end.
+const FENCE = /(```|~~~)[\s\S]*?(?:\1|$)/g;
+// An autolink, <https://…> or <someone@…>, keeps its address; a tag goes.
+const AUTOLINK = /<((?:[a-zA-Z][a-zA-Z0-9+.-]*:|[^\s<>@]+@)[^\s<>]*)>/g;
 const TAG = /<\/?[a-zA-Z][^>]*>/g;
 const TABLE_RULE = /^\s*\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)*\|?\s*$/;
 const HEADING = /^\s{0,3}#{1,6}\s+/;
@@ -32,7 +35,7 @@ function plainLine(line) {
 /** The plain text of a markdown body, on one line, at most `limit` characters
  *  with an ellipsis where it was cut. "" for nothing. */
 export function plainPreview(markdown, limit = 240) {
-  const text = String(markdown || "").replace(FENCE, " ").replace(TAG, " ")
+  const text = String(markdown || "").replace(FENCE, " ").replace(AUTOLINK, "$1").replace(TAG, " ")
     .split("\n").map(plainLine).join(" ")
     .replace(IMAGE, "$1").replace(LINK, "$1").replace(CODE, "$1")
     .replace(STRONG, "$2").replace(EMPHASIS, "$1$2").replace(STRIKE, "$1")

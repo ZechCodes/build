@@ -251,7 +251,9 @@ const issueHtml = (issues) => {
 /** What a workspace's heading says at a glance: a pulse while any agent works,
  *  the unread waiting for the reader, and a mark for an agent that failed. */
 const summaryHtml = (section) => {
-  const working = section.rows.filter((row) => row.state === OVERVIEW_STATES.working).length;
+  // The pulse follows the agent's working flag, not its state word: an agent
+  // working with an unread message reads "Unread", and is still at work.
+  const working = section.rows.filter((row) => row.working).length;
   const unread = section.rows.reduce((total, row) => total + row.unreadCount, 0);
   const failed = section.rows.filter((row) => row.state === OVERVIEW_STATES.error).length;
   const parts = [];
@@ -353,6 +355,14 @@ function threadEntries(entries, scope) {
 /** The issues a cached tracker list carries; none for a project never read. */
 const cachedIssues = (record) => (record && record.value && record.value.issues) || [];
 
+/** The records at `addresses`, in the same places; undefined where the address
+ *  is null (a list this pass does not read) or the cache has nothing. */
+async function readListed(addresses) {
+  const records = await readCachedMany(addresses.filter(Boolean));
+  let next = 0;
+  return addresses.map((address) => (address ? records[next++] : undefined));
+}
+
 /** Sources are cache row addresses for this work item and, where present, its
  * project agent. A subscription is installed before each read so a write
  * racing the read gets another pass. Generations discard stale passes. */
@@ -365,15 +375,17 @@ export function createAgentOverview({ sources, scope, onRows, projectId = null, 
   const includesWorkspaces = () => (typeof includeProjectWorkspaces === "function"
     ? includeProjectWorkspaces() : includeProjectWorkspaces);
   /** The machine's workspace list and feed, read only when the overview is
-   *  about more than its own sources. */
+   *  about more than its own sources; and the project's issue list, as the
+   *  tracker cached it, in every scope with a workspace heading to name an
+   *  issue on. Read, never fetched — a project whose issues this client has
+   *  not read heads its workspaces by name alone. `listed` keeps the three
+   *  places whether or not each is read this pass. */
   const listAddressesFor = (included) => {
     const workspaceAddress = included && scope?.address({ entityId: "", kind: "workspaces" });
     const feedAddress = workspaceAddress && scope?.address({ entityId: "", kind: "feed" });
-    // The project's issue list, as the tracker cached it: it names the issue
-    // each workspace is for. Read, never fetched — a project whose issues this
-    // client has not read heads its workspaces by name alone.
-    const issuesRecordAddress = workspaceAddress && projectId && scope?.address(issuesAddress(scope.deviceId, projectId));
-    return { workspaceAddress, listAddresses: [workspaceAddress, feedAddress, issuesRecordAddress].filter(Boolean) };
+    const issuesRecordAddress = projectId && scope?.address(issuesAddress(scope.deviceId, projectId));
+    const listed = [workspaceAddress, feedAddress, issuesRecordAddress].map((address) => address || null);
+    return { workspaceAddress, listed, listAddresses: listed.filter(Boolean) };
   };
 
   const watch = (addresses) => {
@@ -389,9 +401,9 @@ export function createAgentOverview({ sources, scope, onRows, projectId = null, 
     if (!active) return;
     const current = ++generation;
     const stale = () => !active || current !== generation;
-    const { workspaceAddress, listAddresses } = listAddressesFor(includesWorkspaces());
+    const { workspaceAddress, listed, listAddresses } = listAddressesFor(includesWorkspaces());
     watch([...sources().map((source) => source.address).filter(Boolean), ...listAddresses]);
-    const [workspaceRecord, feedRecord, issuesRecord] = await readCachedMany(listAddresses);
+    const [workspaceRecord, feedRecord, issuesRecord] = await readListed(listed);
     if (stale()) return;
     const workspaces = workspaceAddress ? (workspaceRecord?.value || []) : [];
     const rosterSources = projectWorkspaceSources(workspaces, sources().filter((source) => source.address), projectId, scope);

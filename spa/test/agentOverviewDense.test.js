@@ -111,6 +111,35 @@ describe("the agents overview (#186)", () => {
     expect(issue("relay-soak")).toBeNull();
   });
 
+  it("names the issue on a workspace page's own scope too, and follows the issue as it changes", async () => {
+    // The page of skrift-fixes: its own Agents scope reads no workspace list,
+    // and its heading still has to say which issue the workspace is for.
+    rail.dispose();
+    document.body.innerHTML = markup;
+    rail = mountAgentRail(host(), {
+      ...fixture.overviewRailContext(), kind: "workspace", workspaceId: "ws-fixes", entityId: "run-fixes",
+      projectAgent: { projectId: fixture.OVERVIEW_PROJECT, entityId: "project-run" },
+    });
+    await vi.waitFor(() => expect(host().querySelector(".rail-overview-toggle")).toBeTruthy());
+    host().querySelector(".rail-overview-toggle").click();
+    // The workspace page names its section from the feed, which this fixture
+    // does not carry; the section is the one whose + adds to ws-fixes.
+    await vi.waitFor(() => expect(sectionNames()).toHaveLength(2));
+    const section = () => host().querySelector('.rail-overview-add[data-overview-add="ws-fixes"]').closest(".rail-overview-section");
+    expect(section().querySelector('[data-overview-agent="fixer"]')).toBeTruthy();
+    const chip = () => section().querySelector(".rail-overview-issue");
+    await vi.waitFor(() => expect(chip()).toBeTruthy());
+    expect(chip().querySelector(".rail-overview-issue-number").textContent).toBe("#183");
+    expect(chip().querySelector(".rail-overview-issue-title").textContent).toBe("Worker shutdown cancels running jobs on SIGTERM");
+
+    // The tracker learns a new title: the heading follows the cache.
+    const retitled = fixture.OVERVIEW_ISSUES.map((issue) => (issue.number === 183
+      ? { ...issue, title: "Worker shutdown: cancel on SIGTERM", updated_at: "2026-09-27T16:00:00Z" } : issue));
+    await writeIssuesRecord(fixture.OVERVIEW_DEVICE, fixture.OVERVIEW_PROJECT, { issues: retitled, columns: [] });
+    await vi.waitFor(() => expect(chip().querySelector(".rail-overview-issue-title").textContent)
+      .toBe("Worker shutdown: cancel on SIGTERM"));
+  });
+
   it("previews a markdown table as one plain line, with no pipes or marks", () => {
     const snippet = row("auditor").querySelector(".rail-overview-snippet").textContent;
     expect(snippet.startsWith("Issue Verdict Evidence / remaining work #183 Done")).toBe(true);

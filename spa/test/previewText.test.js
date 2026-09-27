@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { plainPreview } from "../src/core/previewText.js";
-import { modelWord, overviewState } from "../src/core/agentOverview.js";
+import { modelWord, overviewHtml, overviewRows, overviewState } from "../src/core/agentOverview.js";
 
 describe("plainPreview (#186)", () => {
   it("turns a markdown table into its words, rule row and pipes gone", () => {
@@ -17,6 +17,14 @@ describe("plainPreview (#186)", () => {
     expect(plainPreview("Before\n\n```js\nconst x = 1;\n```\n\n<b>after</b>   \t the   fence\n")).toBe("Before after the fence");
     expect(plainPreview("")).toBe("");
     expect(plainPreview(null)).toBe("");
+  });
+
+  it("keeps the address of an autolink, and drops a tilde fence like a backtick one", () => {
+    expect(plainPreview("See <https://example.test> and <zech@example.test>")).toBe("See https://example.test and zech@example.test");
+    expect(plainPreview("See <https://example.test/a?b=1&c=2>.")).toBe("See https://example.test/a?b=1&c=2.");
+    expect(plainPreview("Before\n\n~~~js\nconst x = 1;\n~~~\n\nafter")).toBe("Before after");
+    expect(plainPreview("Before\n\n~~~\nconst x = 1;\n```\nnot closed by that\n~~~\nafter")).toBe("Before after");
+    expect(plainPreview("~~gone~~ kept")).toBe("gone kept");
   });
 
   it("cuts a long body with an ellipsis", () => {
@@ -47,5 +55,25 @@ describe("overviewState", () => {
     expect(overviewState({ working: true })).toMatchObject({ state: "working", word: "Working" });
     expect(overviewState({ state: "starting" })).toMatchObject({ state: "starting", word: "Starting" });
     expect(overviewState({ state: "live" })).toMatchObject({ state: "idle", word: "Idle" });
+  });
+});
+
+describe("overviewHtml workspace summary", () => {
+  const entry = (id, state) => ({ agent: { id, name: id, watched: true }, state: { ...state, id },
+    source: { slot: "current" }, workspaceId: "ws-1", section: "workspace", sectionName: "Workspace one" });
+  const summary = (rows) => overviewHtml(rows, { showProjectAgents: false, scope: { kind: "project" },
+    workspaces: [{ workspaceId: "ws-1", name: "Workspace one" }], issues: [] })
+    .split('aria-label="Workspace one"')[1].split("</div>")[0];
+
+  it("pulses while an agent works, even when that agent also has an unread message", () => {
+    const rows = overviewRows([entry("busy", { working: true, unread_count: 1, unread_reason: "agent_message" })], [{ items: [] }]);
+    expect(rows[0].state).toBe("waiting");
+    expect(summary(rows)).toContain('class="rail-overview-live" title="1 working"');
+    expect(summary(rows)).toContain('title="1 unread">1<');
+  });
+
+  it("does not pulse for a quiet workspace", () => {
+    const rows = overviewRows([entry("quiet", { unread_count: 1, unread_reason: "agent_message" })], [{ items: [] }]);
+    expect(summary(rows)).not.toContain("rail-overview-live");
   });
 });

@@ -4,7 +4,7 @@
 // One writer each, so the same task reads the same way in all three places —
 // and so the two facts that are easiest to conflate stay apart. Open/closed is
 // NOT the Done column: closing does not move a task to Done and moving it to
-// Done does not close it, so the state wears a dot of its own and the column
+// Done does not close it, so the state wears a mark of its own and the column
 // wears a chip of its own, and both are always shown.
 //
 // Everything here is escaped. Nothing here reads the app or the DOM.
@@ -20,16 +20,32 @@ import {
 } from "./trackerModel.js";
 import { actorName } from "./trackerLineWords.js";
 import { taskAvatarHtml } from "./taskAvatar.js";
+import { ICON_SQUARE, ICON_SQUARE_CHECK, ICON_SQUARE_SLASH } from "./icons.js";
 
-/** Open or closed, as a dot and its accessible name. A closed task is drawn
- *  quiet rather than absent: it is still the project's history. */
-/** Open or closed, as a dot and its accessible name. The dot is where a reader
- *  meets the other half of the board's surprise, so it carries the rule with
- *  it: this mark and the column move independently. */
-export const stateDotHtml = (state) => {
-  const label = stateLabel(state);
-  const said = `${label}. ${COLUMN_NOTE_SHARED}`;
-  return `<span class="task-state task-state-${state === "closed" ? "closed" : "open"}" role="img" aria-label="${esc(said)}" title="${esc(said)}"></span>`;
+/** A task's mark is a checkbox (#190): empty while it is open, checked once it
+ *  is done, slashed when it was closed without being done — not planned. */
+const STATE_MARKS = Object.freeze({
+  open: { label: "Open", icon: ICON_SQUARE },
+  done: { label: "Done", icon: ICON_SQUARE_CHECK },
+  closed: { label: "Closed", icon: ICON_SQUARE_SLASH },
+});
+
+const markOf = ({ state, status }) => {
+  if (status === "done") return "done";
+  return state === "closed" ? "closed" : "open";
+};
+
+/** What a task's mark draws, in a word: Open, Done or Closed. */
+export const stateMarkLabel = (task) => STATE_MARKS[markOf(task)].label;
+
+/** Open, done or closed, as a checkbox and its accessible name. A closed task
+ *  is drawn quiet rather than absent: it is still the project's history. The
+ *  mark is where a reader meets the other half of the board's surprise, so it
+ *  carries the rule with it: open/closed and the column move independently. */
+export const stateMarkHtml = (task) => {
+  const mark = markOf(task);
+  const said = `${stateMarkLabel(task)}. ${COLUMN_NOTE_SHARED}`;
+  return `<span class="task-state task-state-${mark}" role="img" aria-label="${esc(said)}" title="${esc(said)}">${STATE_MARKS[mark].icon}</span>`;
 };
 
 /**

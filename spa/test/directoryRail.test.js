@@ -304,7 +304,8 @@ describe("the workspace's rail", () => {
     const { tabs } = mountWorkspace();
     const tasks = tabs()[2];
     expect(tasks.getAttribute("aria-label")).toBe("Tasks");
-    expect(tasks.innerHTML).toContain("lucide-circle-dot");
+    expect(tasks.innerHTML).toContain("lucide-square-check");
+    expect(tasks.innerHTML).not.toContain("circle");
     expect(tasks.querySelector(".badge.dirtab-count")).not.toBeNull();
     // Changes and Files carry no count.
     expect(tabs()[0].querySelector(".badge")).toBeNull();

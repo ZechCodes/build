@@ -31,12 +31,12 @@
 // toggle is not drawn.
 
 import {
-  ICON_CIRCLE_DOT,
   ICON_FOLDER,
   ICON_GIT_GRAPH,
   ICON_PANEL_LEFT_CLOSE,
   ICON_PANEL_LEFT_OPEN,
   ICON_SETTINGS,
+  ICON_SQUARE_CHECK,
 } from "./icons.js";
 import { changesTabLabel, esc, filesTabLabel, tasksTabLabel, sidebarToggleLabel, workspaceSettingsLabel } from "./text.js";
 
@@ -49,7 +49,7 @@ export const DIRECTORY_TABS = [
 /** A workspace's faces: the checkout's two, then the tasks its agents hold,
  *  which wears the count of the open ones (core/trackerWorkspaceTasksView.js
  *  fills it). */
-export const WORKSPACE_TABS = [...DIRECTORY_TABS, { id: "tasks", label: tasksTabLabel, icon: ICON_CIRCLE_DOT, badge: true }];
+export const WORKSPACE_TABS = [...DIRECTORY_TABS, { id: "tasks", label: tasksTabLabel, icon: ICON_SQUARE_CHECK, badge: true }];
 
 /** Where an arrow takes the highlight, as steps along the rail. Home and End
  *  are the same question asked absolutely, so they answer from one table too. */

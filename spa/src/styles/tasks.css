@@ -163,12 +163,15 @@
 /* ---- the marks a task wears -------------------------------------------- */
 
 /* Open/closed is NOT the Done column: one says whether the work is live, the
-   other where it stands. They are drawn as two different things on purpose. */
+   other where it stands. They are drawn as two different things on purpose.
+   The mark is a checkbox (#190) — empty, checked or slashed — in the space and
+   the colours the old dot had. */
 .task-state {
-  flex:0 0 9px; width:9px; height:9px; border-radius:50%;
-  background:var(--green); display:inline-block;
+  flex:0 0 9px; width:9px; height:9px;
+  color:var(--green); display:inline-block;
 }
-.task-state-closed { background:var(--violet); }
+.task-state svg { display:block; width:9px; height:9px; }
+.task-state-closed { color:var(--violet); }
 
 .task-number { color:var(--dim); font-variant-numeric:tabular-nums; }
 .task-status {

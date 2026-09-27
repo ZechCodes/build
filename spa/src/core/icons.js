@@ -23,6 +23,8 @@ export { default as ICON_PLAY } from "lucide-static/icons/play.svg?raw";
 export { default as ICON_X } from "lucide-static/icons/x.svg?raw";
 export { default as ICON_ARROW_RIGHT } from "lucide-static/icons/arrow-right.svg?raw";
 export { default as ICON_SQUARE } from "lucide-static/icons/square.svg?raw";
+export { default as ICON_SQUARE_CHECK } from "lucide-static/icons/square-check.svg?raw";
+export { default as ICON_SQUARE_SLASH } from "lucide-static/icons/square-slash.svg?raw";
 export { default as ICON_FOLDERS } from "lucide-static/icons/folders.svg?raw";
 export { default as ICON_PLUS } from "lucide-static/icons/plus.svg?raw";
 export { default as ICON_PIN } from "lucide-static/icons/pin.svg?raw";

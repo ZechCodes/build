@@ -19,7 +19,7 @@ import { esc } from "./text.js";
 import { actorHref } from "./trackerIdentity.js";
 import { KEYED_LIST_ATTRIBUTE } from "./domPatch.js";
 import {
-  assigneeHtml, labelsHtml, numberHtml, priorityChipHtml, reviewerWords, stateDotHtml, statusChipHtml,
+  assigneeHtml, labelsHtml, numberHtml, priorityChipHtml, reviewerWords, stateMarkHtml, statusChipHtml,
 } from "./trackerChips.js";
 import { columnNote } from "./trackerModel.js";
 import { taskBubbleHtml } from "./taskUnread.js";
@@ -46,7 +46,7 @@ export const taskCardHtml = (task, { columns, href, unreadOf, ...context }) => {
   `<li class="task-card" draggable="true" tabindex="0"
       data-task="${esc(task.id)}" data-status="${esc(task.status)}"
       aria-label="#${esc(String(task.number ?? ""))} ${esc(task.title)}">
-    <div class="task-card-head">${stateDotHtml(task.state)}${numberHtml(task)}${priorityChipHtml(task.priority)}${taskBubbleHtml(task, unreadOf)}</div>
+    <div class="task-card-head">${stateMarkHtml(task)}${numberHtml(task)}${priorityChipHtml(task.priority)}${taskBubbleHtml(task, unreadOf)}</div>
     <a class="task-card-title" href="${esc(href(task))}">${esc(task.title)}</a>
     ${withWhom ? `<div class="task-card-status">${statusChipHtml(columns, task.status, withWhom)}</div>` : ""}
     ${task.labels?.length ? `<div class="task-card-labels">${labelsHtml(task.labels)}</div>` : ""}

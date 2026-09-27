@@ -35,12 +35,12 @@ beforeEach(async () => {
 it("opens the multi-source project form without creation tabs", () => {
   openSheet();
   expect(document.querySelector('[role="tab"]')).toBeNull();
-  expect(document.querySelector("legend").textContent).toBe("Workspace folders (optional)");
+  expect(document.querySelector("legend").textContent).toBe("Workspace folders");
 });
 
 it("names the machine the folders come from", () => {
   openSheet();
-  expect(document.querySelector("#sheet .sub").textContent).toContain("Laptop's configured projects folder");
+  expect(document.querySelector("#sheet .sub").textContent).toBe("Add the folders and Git remotes on Laptop that this project works in.");
 });
 
 it("restores an unsent project draft from cache without asking a device", async () => {
@@ -87,6 +87,9 @@ it("writes the project draft after typing and clears it when creation succeeds",
   const address = { deviceId: "", entityId: "", kind: "ui-draft", sub: "new-project:" };
   const done = vi.fn();
   openSheet(done);
+  document.querySelector("#nraddremote").click();
+  const remote = document.querySelector("[data-source-value]");
+  remote.value = "https://example.com/new.git"; remote.dispatchEvent(new Event("input"));
   const name = document.querySelector("#nrproject");
   name.value = "new project";
   name.dispatchEvent(new Event("input"));
@@ -116,24 +119,30 @@ it("opens the picker after a real settings cache announcement while the pull is 
   expect(openBrowser.mock.calls[0][0].startPath).toBe("/announced-projects");
 });
 
-it("creates a named empty project in the device projects folder", async () => {
+// #185, Zech 13:14Z: "There must always be a folder added, git or not."
+it("creates a project under a typed name with its folder", async () => {
   const done = vi.fn(); openSheet(done);
+  document.querySelector("#nraddremote").click();
+  const remote = document.querySelector("[data-source-value]");
+  remote.value = "https://example.com/docs-site.git"; remote.dispatchEvent(new Event("input"));
   document.querySelector("#nrproject").value = " docs ";
   document.querySelector("#nrdo").click(); await flush();
-  expect(callRpc).toHaveBeenCalledWith("project.create", { name: "docs" });
+  expect(callRpc).toHaveBeenCalledWith("project.create", { name: "docs", sources: [{ remote: "https://example.com/docs-site.git", name: "docs-site" }] });
   await vi.waitFor(() => expect(done).toHaveBeenCalledWith({ project_id: "p1" }));
 });
 
-it("creates a name-only project on the currently selected device without loading settings", async () => {
+it("creates a remote-only project on the currently selected device without loading settings", async () => {
   const done = vi.fn();
   const calls = openSelectableSheet(done, "desk");
   const selector = document.querySelector("#nrdevice");
   selector.value = "lap"; selector.dispatchEvent(new Event("change"));
-  document.querySelector("#nrproject").value = "docs";
+  document.querySelector("#nraddremote").click();
+  const remote = document.querySelector("[data-source-value]");
+  remote.value = "https://example.com/docs.git"; remote.dispatchEvent(new Event("input"));
   document.querySelector("#nrdo").click(); await flush();
   expect(calls.desk).not.toHaveBeenCalled();
   expect(calls.lap).toHaveBeenCalledOnce();
-  expect(calls.lap).toHaveBeenCalledWith("project.create", { name: "docs" });
+  expect(calls.lap).toHaveBeenCalledWith("project.create", { name: "docs", sources: [{ remote: "https://example.com/docs.git", name: "docs" }] });
   await vi.waitFor(() => expect(done).toHaveBeenCalledWith({ project_id: "lap-project" }, devices[1]));
 });
 
@@ -204,13 +213,13 @@ it("with all devices and none chosen, shows only the device choice and Cancel", 
   expect(document.querySelector("#scrim").classList.contains("show")).toBe(false);
 });
 
-it("choosing a device shows the rest of the form and puts the reader in the label", () => {
+it("choosing a device shows the rest of the form and starts at the folders", () => {
   openSelectableSheet();
   const selector = document.querySelector("#nrdevice");
   selector.value = "lap"; selector.dispatchEvent(new Event("change"));
   expect(partsShown()).toEqual(formParts);
   expect(document.querySelector("#nrdevice").value).toBe("lap");
-  expect(document.activeElement).toBe(document.querySelector("#nrproject"));
+  expect(document.activeElement).toBe(document.querySelector("#nraddfolder"));
 });
 
 it("a restored draft with no device waits on the device choice, and its values survive the reveal", async () => {
@@ -226,7 +235,7 @@ it("a restored draft with no device waits on the device choice, and its values s
   selector.value = "desk"; selector.dispatchEvent(new Event("change"));
   expect(document.querySelector("#nrproject").value).toBe("Skrift");
   expect(document.querySelector("[data-source-value]").value).toBe("skrift");
-  expect(document.activeElement).toBe(document.querySelector("#nrproject"));
+  expect(document.activeElement).toBe(document.querySelector("#nraddfolder"));
 });
 
 it("a restored draft that names an available device opens on the full form", async () => {
@@ -236,14 +245,14 @@ it("a restored draft that names an available device opens on the full form", asy
   await vi.waitFor(() => expect(document.querySelector("#nrproject")?.value).toBe("cached project"));
   expect(partsShown()).toEqual(formParts);
   expect(document.querySelector("#nrdevice").value).toBe("lap");
-  expect(document.activeElement).toBe(document.querySelector("#nrproject"));
+  expect(document.activeElement).toBe(document.querySelector("#nraddfolder"));
 });
 
 it("an account with one device opens on the full form", () => {
   openNewRepo(undefined, { devices: [devices[0]], defaultDeviceId: "", callRpcFor: () => vi.fn(async () => ({})) });
   expect(partsShown()).toEqual(formParts);
   expect(document.querySelector("#nrdevice").value).toBe("desk");
-  expect(document.activeElement).toBe(document.querySelector("#nrproject"));
+  expect(document.activeElement).toBe(document.querySelector("#nraddfolder"));
 });
 
 it("a pinned device's sheet is unchanged: the whole form, no device choice", () => {
@@ -317,4 +326,158 @@ it("disables device selection while project creation is in flight", async () => 
   document.querySelector("#nrdo").click();
   expect(document.querySelector("#nrdevice").disabled).toBe(true);
   finishCreate({ project_id: "p1" }); await flush();
+});
+
+// #185, Zech 13:11Z Sep 27: "Awkward optional but required… the flow needs to
+// be pick device, add folders, name project if you want. Otherwise the name
+// should autofill based on the name/repo of the first directory added."
+const nameField = () => document.querySelector("#nrproject");
+const addRemoteRow = (value) => {
+  document.querySelector("#nraddremote").click();
+  const remote = [...document.querySelectorAll("[data-source-value]")].at(-1);
+  remote.value = value; remote.dispatchEvent(new Event("input"));
+  return remote;
+};
+const typeName = (value) => { nameField().value = value; nameField().dispatchEvent(new Event("input")); };
+const submitSheet = () => document.querySelector("#nrdo").click();
+
+it("orders the sheet device, folders, name, then Cancel and Create", () => {
+  openSelectableSheet(undefined, "desk");
+  const order = ["#nrdevice", "#nraddfolder", "#nraddremote", "#nrproject", "#nrcancel", "#nrdo"].map((selector) => document.querySelector(selector));
+  const positions = order.map((node) => [...document.querySelectorAll("#sheet *")].indexOf(node));
+  expect(positions.every((position, index) => index === 0 || position > positions[index - 1])).toBe(true);
+  expect(document.querySelector('label[for="nrproject"]').textContent).toBe("Project name (optional)");
+  expect(nameField().hasAttribute("required")).toBe(false);
+  document.querySelector("#nrcancel").click();
+  openSheet(); // the pinned sheet: the same order, without a device
+  const pinned = ["#nraddfolder", "#nrproject", "#nrdo"].map((selector) => [...document.querySelectorAll("#sheet *")].indexOf(document.querySelector(selector)));
+  expect(pinned[0]).toBeLessThan(pinned[1]);
+  expect(pinned[1]).toBeLessThan(pinned[2]);
+  expect(document.activeElement).toBe(document.querySelector("#nraddfolder"));
+});
+
+it("with a remote and no typed name, the name follows the remote's repository", async () => {
+  const calls = openSelectableSheet(undefined, "desk");
+  addRemoteRow("git@github.com:ZechCodes/Skrift.git");
+  expect(nameField().value).toBe("Skrift");
+  submitSheet();
+  await vi.waitFor(() => expect(calls.desk).toHaveBeenCalledWith("project.create", { name: "Skrift", sources: [{ remote: "git@github.com:ZechCodes/Skrift.git", name: "Skrift" }] }));
+});
+
+it("with a chosen folder and no typed name, the name follows the folder", async () => {
+  openSelectableSheet(undefined, "desk");
+  document.querySelector("#nraddfolder").click();
+  await waitForBrowserCall(0);
+  openBrowser.mock.calls[0][0].onChoose("/desk-projects/api");
+  expect(nameField().value).toBe("api");
+  expect(nameField().placeholder).toBe("api");
+});
+
+it("a typed name stops following the folders, and clearing it follows again", () => {
+  openSelectableSheet(undefined, "desk");
+  const remote = addRemoteRow("git@github.com:ZechCodes/Skrift.git");
+  typeName("My project");
+  remote.value = "git@github.com:ZechCodes/other.git"; remote.dispatchEvent(new Event("input"));
+  expect(nameField().value).toBe("My project");
+  typeName("");
+  expect(nameField().placeholder).toBe("other");
+  remote.value = "git@github.com:ZechCodes/third.git"; remote.dispatchEvent(new Event("input"));
+  expect(nameField().value).toBe("third");
+});
+
+it("removing the first folder derives the name from the one now first", () => {
+  openSelectableSheet(undefined, "desk");
+  addRemoteRow("git@github.com:ZechCodes/Skrift.git");
+  addRemoteRow("git@github.com:ZechCodes/build-web.git");
+  expect(nameField().value).toBe("Skrift");
+  document.querySelector("[data-remove-source]").click();
+  expect(nameField().value).toBe("build-web");
+});
+
+it("with no folder or remote, even with a name, says so in the sheet and starts at Add folder", () => {
+  const calls = openSelectableSheet(undefined, "desk");
+  typeName("docs");
+  submitSheet();
+  expect(document.querySelector("#nrerr").textContent).toBe("Add a folder or Git remote.");
+  expect(document.activeElement).toBe(document.querySelector("#nraddfolder"));
+  expect(document.querySelector("#nrform").noValidate).toBe(true);
+  expect(calls.desk).not.toHaveBeenCalledWith("project.create", expect.anything());
+});
+
+it("a draft keeps whether its name was typed or followed a folder", async () => {
+  const address = { deviceId: "", entityId: "", kind: "ui-draft", sub: "new-project:" };
+  const remote = { id: 1, kind: "remote", path: "", remote: "git@github.com:ZechCodes/Skrift.git", name: "Skrift", base_branch: "", automaticName: true };
+  openSelectableSheet(undefined, "desk");
+  addRemoteRow("git@github.com:ZechCodes/Skrift.git");
+  await vi.waitFor(async () => expect((await readCached(address))?.value).toMatchObject({ name: "Skrift", nameAutomatic: true }));
+  typeName("Mine");
+  await vi.waitFor(async () => expect((await readCached(address))?.value).toMatchObject({ name: "Mine", nameAutomatic: false }));
+
+  document.querySelector("#nrcancel").click();
+  document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
+  await writeCached(address, { name: "Skrift", nameAutomatic: true, sources: [remote], selectedDeviceId: "desk" });
+  openSelectableSheet(undefined, "desk");
+  await vi.waitFor(() => expect(nameField()?.value).toBe("Skrift"));
+  const row = document.querySelector("[data-source-value]");
+  row.value = "git@github.com:ZechCodes/renamed.git"; row.dispatchEvent(new Event("input"));
+  expect(nameField().value).toBe("renamed"); // still following: it was never typed
+  // Let that edit's draft write land before the next opening's draft is set.
+  await vi.waitFor(async () => expect((await readCached(address))?.value).toMatchObject({ name: "renamed", nameAutomatic: true }));
+
+  document.querySelector("#nrcancel").click();
+  document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
+  await writeCached(address, { name: "Mine", nameAutomatic: false, sources: [remote], selectedDeviceId: "desk" });
+  openSelectableSheet(undefined, "desk");
+  await vi.waitFor(() => expect(nameField()?.value).toBe("Mine"));
+  const again = document.querySelector("[data-source-value]");
+  again.value = "git@github.com:ZechCodes/renamed.git"; again.dispatchEvent(new Event("input"));
+  expect(nameField().value).toBe("Mine"); // typed: it stays
+});
+
+// Review of 2667723b: a name typed to equal the folder's must still be the
+// reader's, and what project.create sends is the proof.
+const createCall = (calls) => calls.desk.mock.calls.find(([method]) => method === "project.create")?.[1];
+
+it("a typed name equal to the derived one is the reader's: a later remote change does not replace it", async () => {
+  const calls = openSelectableSheet(undefined, "desk");
+  const remote = addRemoteRow("git@github.com:ZechCodes/Skrift.git");
+  typeName("Custom");
+  typeName("");
+  typeName("Skrift");
+  remote.value = "git@github.com:ZechCodes/other.git"; remote.dispatchEvent(new Event("input"));
+  expect(nameField().value).toBe("Skrift");
+  submitSheet();
+  await vi.waitFor(() => expect(createCall(calls)).toEqual({ name: "Skrift", sources: [{ remote: "git@github.com:ZechCodes/other.git", name: "other" }] }));
+});
+
+it("a cleared name creates under the first folder's name", async () => {
+  const calls = openSelectableSheet(undefined, "desk");
+  addRemoteRow("git@github.com:ZechCodes/Skrift.git");
+  typeName("Custom");
+  typeName("");
+  submitSheet();
+  await vi.waitFor(() => expect(createCall(calls)).toEqual({ name: "Skrift", sources: [{ remote: "git@github.com:ZechCodes/Skrift.git", name: "Skrift" }] }));
+});
+
+it("removing the first folder creates under the next one's name", async () => {
+  const calls = openSelectableSheet(undefined, "desk");
+  addRemoteRow("git@github.com:ZechCodes/Skrift.git");
+  addRemoteRow("git@github.com:ZechCodes/build-web.git");
+  document.querySelector("[data-remove-source]").click();
+  submitSheet();
+  await vi.waitFor(() => expect(createCall(calls)).toEqual({ name: "build-web", sources: [{ remote: "git@github.com:ZechCodes/build-web.git", name: "build-web" }] }));
+});
+
+it("a draft from before nameAutomatic keeps the name it holds as typed", async () => {
+  const address = { deviceId: "", entityId: "", kind: "ui-draft", sub: "new-project:" };
+  await writeCached(address, {
+    name: "Legacy", selectedDeviceId: "desk",
+    sources: [{ id: 1, kind: "remote", path: "", remote: "git@github.com:ZechCodes/Skrift.git", name: "Skrift", base_branch: "", automaticName: true }],
+  });
+  const calls = openSelectableSheet(undefined, "desk");
+  await vi.waitFor(() => expect(nameField()?.value).toBe("Legacy"));
+  const row = document.querySelector("[data-source-value]");
+  row.value = "git@github.com:ZechCodes/other.git"; row.dispatchEvent(new Event("input"));
+  submitSheet();
+  await vi.waitFor(() => expect(createCall(calls)).toEqual({ name: "Legacy", sources: [{ remote: "git@github.com:ZechCodes/other.git", name: "other" }] }));
 });

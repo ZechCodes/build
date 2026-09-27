@@ -12,13 +12,13 @@
 import { esc } from "./text.js";
 import { renderMarkdown } from "./markdown.js";
 import { hashFromRoute } from "./router.js";
-import { columnsOf, PRIORITIES } from "./trackerModel.js";
+import { columnsOf, PRIORITIES, stateLabel } from "./trackerModel.js";
 import { taskAvatarHtml } from "./taskAvatar.js";
 import { actorIdentityHtml, actorHref } from "./trackerIdentity.js";
 import { watchButtonHtml } from "./watchToggle.js";
 import { eventSentence } from "./trackerTimeline.js";
 import { taskUnreadKey } from "./trackerUnread.js";
-import { ageHtml, ageText, assigneeHtml, labelsHtml, numberHtml, stateMarkHtml, stateMarkLabel } from "./trackerChips.js";
+import { ageHtml, ageText, assigneeHtml, labelsHtml, numberHtml, stateMarkHtml } from "./trackerChips.js";
 import { composerPartIds } from "./composer.js";
 import { attachmentListHtml } from "./attachmentTiles.js";
 import { ICON_PAPERCLIP } from "./icons.js";
@@ -32,7 +32,7 @@ import { fieldTraits } from "./fieldTraits.js";
  *  every press is worse than one the reader has not been given yet. */
 export const taskHeadHtml = (task, { watch = null } = {}) => `<header class="task-page-head">
     <div class="task-page-marks">
-      ${stateMarkHtml(task)}<span class="task-page-state">${esc(stateMarkLabel(task))}</span>
+      ${stateMarkHtml(task)}<span class="task-page-state">${esc(stateLabel(task.state))}</span>
       ${numberHtml(task)}
       ${ageHtml(task.updated_at)}
       ${watch ? watchButtonHtml(watch) : ""}

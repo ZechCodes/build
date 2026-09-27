@@ -1,7 +1,8 @@
 // Capture the review images for #190 in a real Chromium against the production
 // app: every place a task wears its mark, now a checkbox where GitHub's circle
 // was — the workspace rail's Tasks face, the board's cards (empty, checked
-// and slashed), and the head of a task's own page for each of the three — in
+// and slashed, and a closed task in Done: checked, in the closed colour), and
+// the head of a task's own page for each of the four — in
 // the dark theme and the light one. The inbox and the dashboard's Needs you are
 // captured beside them: their rows wear the row's unread dot, never a task mark.
 // One scripted machine answers the tracker; everything else is the app's own.
@@ -50,6 +51,7 @@ async function seed({ device, hash, inbox }) {
     task(5, "Toolbar tab badge spacing", { status: "ready" }),
     task(3, "Rail badge sizing", { status: "done" }),
     task(2, "Drop the legacy plan view", { state: "closed", status: "backlog", closed_at: iso(minutes(40)) }),
+    task(1, "Ship the first board", { state: "closed", status: "done", closed_at: iso(minutes(60)) }),
   ];
   const timelineOf = (one) => [
     { type: "event", id: READ_MARK, task_id: one.id, at: one.created_at, actor: { kind: "user" }, kind: "created", payload: {} },
@@ -151,6 +153,13 @@ async function expectCount(page, selector, count, what) {
   throw new Error(`${what}: ${got} of ${selector}, wanted ${count}`);
 }
 
+/** Two marks drawn in the same colour: open/closed, whatever the shape. */
+async function expectSameColour(page, first, second, what) {
+  const colour = (selector) => page.locator(selector).first().evaluate((node) => getComputedStyle(node).color);
+  const [a, b] = [await colour(first), await colour(second)];
+  if (a !== b) throw new Error(`${what}: ${a} and ${b}, wanted one colour`);
+}
+
 /** Every mark on the page is a checkbox, never the circle. */
 async function expectNoCircle(page, where) {
   const circles = await page.locator(".task-state svg circle, #dir-rail [data-tab=tasks] svg circle").count();
@@ -167,20 +176,26 @@ for (const theme of ["dark", "light"]) {
   await withLayoutPage(async ({ page, basePath }) => {
     await open(page, basePath, theme, { hash: `#/device/${DEVICE}/project/p-1?view=board` });
     await expectCount(page, ".task-card .task-state-open svg.lucide-square", 3, "open cards");
-    await expectCount(page, ".task-card .task-state-done svg.lucide-square-check", 1, "done card");
+    await expectCount(page, ".task-card .task-mark-done svg.lucide-square-check", 2, "done cards");
+    await expectCount(page, ".task-card .task-state-closed.task-mark-done", 1, "closed done card");
+    await expectSameColour(page, '[data-task="task-1"] .task-state', '[data-task="task-2"] .task-state', "closed cards");
     await expectNoCircle(page, "board");
     await settle(page);
     await page.screenshot({ path: `${output}/board-${theme}.png` });
     await page.locator('[data-task="task-3"]').first().screenshot({ path: `${output}/board-card-done-${theme}.png` });
     await page.locator('[data-task="task-12"]').first().screenshot({ path: `${output}/board-card-open-${theme}.png` });
     await page.locator('[data-task="task-2"]').first().screenshot({ path: `${output}/board-card-closed-${theme}.png` });
+    await page.locator('[data-task="task-1"]').first().screenshot({ path: `${output}/board-card-closed-done-${theme}.png` });
   }, { width: 1280, height: 720, deviceScaleFactor: 2 });
 
   // ---- a task's own page, for each of the three ----------------------------
-  for (const [number, mark] of [[12, "open"], [3, "done"], [2, "closed"]]) {
+  const pages = [[12, "open", "Open"], [3, "done", "Open"], [1, "closed-done", "Closed"], [2, "closed", "Closed"]];
+  for (const [number, mark, word] of pages) {
     await withLayoutPage(async ({ page, basePath }) => {
       await open(page, basePath, theme, { hash: `#/device/${DEVICE}/project/p-1/tasks/task-${number}` });
-      await expectCount(page, `.task-state-${mark}`, 1, `task #${number} page mark`);
+      await expectCount(page, `.task-page-head .task-state-${word.toLowerCase()}`, 1, `task #${number} page mark`);
+      const said = await page.locator(".task-page-state").textContent();
+      if (said !== word) throw new Error(`task #${number}: the head says ${said}, wanted ${word}`);
       await expectNoCircle(page, `task #${number}`);
       await settle(page);
       await page.screenshot({ path: `${output}/task-page-${mark}-${theme}.png` });

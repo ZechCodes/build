@@ -22,30 +22,28 @@ import { actorName } from "./trackerLineWords.js";
 import { taskAvatarHtml } from "./taskAvatar.js";
 import { ICON_SQUARE, ICON_SQUARE_CHECK, ICON_SQUARE_SLASH } from "./icons.js";
 
-/** A task's mark is a checkbox (#190): empty while it is open, checked once it
- *  is done, slashed when it was closed without being done — not planned. */
-const STATE_MARKS = Object.freeze({
-  open: { label: "Open", icon: ICON_SQUARE },
-  done: { label: "Done", icon: ICON_SQUARE_CHECK },
-  closed: { label: "Closed", icon: ICON_SQUARE_SLASH },
-});
+/** A task's mark is a checkbox (#190). Its shape says how far the work got:
+ *  empty, checked once it is done, slashed when it was closed without being
+ *  done — not planned. Its colour says open or closed, whatever the shape
+ *  (`.task-state-open`/`-closed`), so a closed task in Done still reads closed. */
+const MARK_SHAPES = Object.freeze({ open: ICON_SQUARE, done: ICON_SQUARE_CHECK, closed: ICON_SQUARE_SLASH });
 
-const markOf = ({ state, status }) => {
+const shapeOf = ({ state, status }) => {
   if (status === "done") return "done";
   return state === "closed" ? "closed" : "open";
 };
 
-/** What a task's mark draws, in a word: Open, Done or Closed. */
-export const stateMarkLabel = (task) => STATE_MARKS[markOf(task)].label;
+const openOrClosed = ({ state }) => (state === "closed" ? "closed" : "open");
 
-/** Open, done or closed, as a checkbox and its accessible name. A closed task
- *  is drawn quiet rather than absent: it is still the project's history. The
+/** Open or closed, as a checkbox and its accessible name. A closed task is
+ *  drawn quiet rather than absent: it is still the project's history. The
  *  mark is where a reader meets the other half of the board's surprise, so it
  *  carries the rule with it: open/closed and the column move independently. */
 export const stateMarkHtml = (task) => {
-  const mark = markOf(task);
-  const said = `${stateMarkLabel(task)}. ${COLUMN_NOTE_SHARED}`;
-  return `<span class="task-state task-state-${mark}" role="img" aria-label="${esc(said)}" title="${esc(said)}">${STATE_MARKS[mark].icon}</span>`;
+  const shape = shapeOf(task);
+  const done = shape === "done" ? ", done" : "";
+  const said = `${stateLabel(task.state)}${done}. ${COLUMN_NOTE_SHARED}`;
+  return `<span class="task-state task-state-${openOrClosed(task)} task-mark-${shape}" role="img" aria-label="${esc(said)}" title="${esc(said)}">${MARK_SHAPES[shape]}</span>`;
 };
 
 /**

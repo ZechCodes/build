@@ -119,7 +119,8 @@ impl AppState {
     }
 }
 
-/// Events the user has not read: everything after the mark, minus their own.
+/// Events the user has not read: everything after the mark that is news,
+/// minus their own.
 ///
 /// Their own are excluded because a count that went up when the user
 /// commented would be telling them about themselves — and the inbox badge is
@@ -130,7 +131,37 @@ pub(in crate::app) fn unread_since_mark(issue: &Issue, timeline: &[TimelineEntry
         .iter()
         .filter(|entry| after(issue.read_through.as_deref(), entry_id(entry)))
         .filter(|entry| !matches!(entry_actor(entry), crate::tracker::Actor::User))
+        .filter(|entry| counts_as_unread(entry))
         .count()
+}
+
+/// Whether a timeline entry is news to the user (#183): something said, or a
+/// change to who holds the issue or where it stands. Bookkeeping — filing,
+/// tracking, linking, labelling, dispatching, watching, and what Build records
+/// about branches and workspaces — is not: Zech, "Correct, no". The SPA's
+/// fallback count reads the same list (`spa/src/core/trackerUnread.js`), and
+/// `app::tests::tracker_unread_kinds` prints the cases both sides are held to.
+pub(in crate::app) fn counts_as_unread(entry: &TimelineEntry) -> bool {
+    use crate::tracker::IssueEventKind as Kind;
+    let TimelineEntry::Event(event) = entry else {
+        return true;
+    };
+    match event.kind {
+        Kind::Assigned | Kind::Unassigned | Kind::Moved | Kind::Closed | Kind::Reopened => true,
+        Kind::Created
+        | Kind::Labelled
+        | Kind::Linked
+        | Kind::Dispatched
+        | Kind::Tracked
+        | Kind::Untracked
+        | Kind::Watched
+        | Kind::Unwatched
+        | Kind::BranchDeleted
+        | Kind::BranchKept
+        | Kind::WorkspaceIdle
+        | Kind::WorkspacePruned
+        | Kind::WorkspaceReclaimed => false,
+    }
 }
 
 /// Whether `id` is newer than a mark.

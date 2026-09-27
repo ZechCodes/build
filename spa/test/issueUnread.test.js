@@ -24,7 +24,7 @@ describe("one issue's unread", () => {
 
   it("counts the cached timeline past the read mark, leaving out the user's own, as #99's line does", () => {
     const held = issue({ watched: true, read_through: "ic-01", unread_count: 9 });
-    const timeline = [agentSays("ic-01"), agentSays("ic-03"), userSays("ic-04"), event({ id: "ie-05", actor: { kind: "agent", agent_id: "a1" } })];
+    const timeline = [agentSays("ic-01"), agentSays("ic-03"), userSays("ic-04"), event({ id: "ie-05", kind: "moved", actor: { kind: "agent", agent_id: "a1" } })];
     expect(issueUnreadCount(held, detailOf(held, timeline))).toBe(2);
   });
 

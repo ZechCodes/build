@@ -5,9 +5,10 @@
 //
 // The block's head opens the project's own page — its workspaces, and the agent
 // you talk to about the project. The head is that agent's entry (#103): its
-// badge is the project agent's unread while the block is open, with the
-// project's watched issues no workspace wears (#104), and everything inside
-// it, the watched workspace agents' and their issues' too, while it is folded. It offers
+// badge is everything the project is holding, open or folded (#183) — the
+// project agent's unread, the project's watched issues no workspace wears
+// (#104), every workspace row's, and 1 for each Needs-you issue with no unread
+// of its own. The inbox's top badge is the sum of these heads. It offers
 // the one create surface behind a +,
 // the project's settings, and a ⋯ menu that puts the block away.
 // A block folds shut by its chevron and stays that way until it is opened
@@ -69,6 +70,15 @@ function projectsNamed(projects, rows) {
   return named;
 }
 
+/** What one row adds to its block's head. A watched issue's unread is already
+ *  on the workspace row or the project agent that wears it (#104), so its own
+ *  row adds only the 1 a Needs-you issue with nothing unread still asks for:
+ *  it counts max(1, its unread), never nothing (#183). */
+const rowUnreadCount = (entry) => {
+  if (entry.kind !== TRACKER_ISSUE) return entry.unreadCount || 0;
+  return entry.issueUnreadCount > 0 ? 0 : 1;
+};
+
 /** One project's block on the landing rail's workspace face: its workspaces,
  *  and the project's own page as the block's destination. Every project has one
  *  — the page is about the project, not about anything inside it — so a block is
@@ -81,7 +91,6 @@ function workspaceBlockFor(project, rows, tag, nowMs) {
   const { anchorMs, lastActivityMs } = sessionTimes(project, nowMs);
   const entries = grouped.filter((entry) => !workspaceIsRecent(entry, nowMs));
   const recent = grouped.filter((entry) => workspaceIsRecent(entry, nowMs));
-  const agentUnreadCount = agentEntry?.unreadCount || 0;
   return {
     key: `project:${project.projectKey}`,
     id: project.id,
@@ -98,20 +107,19 @@ function workspaceBlockFor(project, rows, tag, nowMs) {
     flat: entries.length === 0,
     route: { name: "project", projectId: project.id, deviceId: project.deviceId },
     agentEntry,
-    // The head's badge, by the fold (#103): open, the project agent's unread
-    // alone — the rows under it wear their own; folded, everything the block
-    // is holding: the project agent's and every watched workspace agent's.
-    // A watched issue's unread is already in those (#104), so the issue's own
-    // row, when it has one, is not counted again.
-    agentUnreadCount,
-    unreadCount: grouped.filter((entry) => entry.kind !== TRACKER_ISSUE)
-      .reduce((total, entry) => total + entry.unreadCount, agentUnreadCount),
+    // The head's badge, the same open or folded so a fold never changes a
+    // number (#183): everything the block is holding, Recent rows included.
+    unreadCount: grouped.reduce((total, entry) => total + rowUnreadCount(entry), agentEntry?.unreadCount || 0),
   };
 }
 
-/** The count a block's head wears: the project agent's alone while the block
- *  is open, everything inside it while it is folded. */
-export const headUnreadCount = (block, folded) => (folded ? block.unreadCount : block.agentUnreadCount);
+/** The inbox's top badge (#183): the sum of every project head, Recent blocks
+ *  included, over the same rows the projects face paints — so it is always
+ *  the sum of the numbers the heads show. */
+export function projectsUnreadCount(entries = [], projects = []) {
+  const { blocks, recentBlocks } = workspaceProjectBlocks(entries, projects);
+  return [...blocks, ...recentBlocks].reduce((total, block) => total + block.unreadCount, 0);
+}
 
 /** Group the landing rail's workspace rows by the project they are in. A
  *  project belongs to one machine, so the grouping is by the account-wide
@@ -256,7 +264,7 @@ const blockMenuHtml = (block, open) => railMenuHtml(open, `Actions for ${block.n
 export function projectHeadHtml(block, ui = {}) {
   const folded = !!(ui.folded && ui.folded.has(block.projectKey));
   const menuOpen = ui.openMenuKey === block.key;
-  const count = headUnreadCount(block, folded);
+  const count = block.unreadCount;
   const unread = count > 0 ? `<span class="badge inbox-unread">${count}</span>` : "";
   const title = `Open ${block.name}`;
   const create = `<button class="iconbtn inbox-project-create" type="button" data-project-create="${esc(block.projectKey)}" aria-label="New workspace in ${esc(block.name)}" title="New workspace in ${esc(block.name)}">${ICON_PLUS}</button>`;

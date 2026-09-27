@@ -204,11 +204,10 @@ describe("the projects face's head badge", () => {
     expect(block.agentEntry.kind).toBe(PROJECT_AGENT);
   });
 
-  it("shows only the project agent's unread while expanded", () => {
-    expect(headBadge(blockOf(view()), false)).toBe("2");
-  });
-
-  it("adds every watched workspace agent's unread while collapsed", () => {
+  // #183: the head carries everything in the block, open or folded, so a fold
+  // never changes a number.
+  it("adds every watched workspace agent's unread, open or collapsed", () => {
+    expect(headBadge(blockOf(view()), false)).toBe("5");
     expect(headBadge(blockOf(view()), true)).toBe("5");
   });
 });

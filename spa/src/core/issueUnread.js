@@ -19,6 +19,7 @@
 //
 // No DOM, no app imports.
 
+import { isFinished } from "./trackerAgentIssues.js";
 import { changedSince } from "./trackerModel.js";
 import { timelineRows } from "./trackerTimeline.js";
 import { issueUnreadReading, latestIssueMark } from "./trackerUnread.js";
@@ -66,6 +67,10 @@ const sumOf = (held) => held.reduce((total, one) => total + one.count, 0);
  * `sources` is `[{ project, issues, details }]`, as core/watchedIssueFollower.js
  * holds them.
  *
+ * A Done or closed issue never counts here (#183), whatever the list says: a
+ * 1.29.0 bridge puts `unread_count` on every watched row, finished ones too,
+ * and the rail is about what is still going on.
+ *
  * `heldBy(projectKey, agentIds)` is what one workspace row wears: the issues
  * its agents hold. `unheldBy(rows)` answers, per project key, what the
  * project's own badge wears: every issue none of those workspace rows' agents
@@ -75,6 +80,7 @@ export function issueUnreadTally(sources = []) {
   const byProject = new Map();
   for (const { project, issues = [], details = new Map() } of sources) {
     const held = issues
+      .filter((issue) => !isFinished(issue))
       .map((issue) => ({ holder: holderOf(issue), count: issueUnreadCount(issue, details.get(issue.id) || null) }))
       .filter((one) => one.count > 0);
     byProject.set(project.projectKey, held);

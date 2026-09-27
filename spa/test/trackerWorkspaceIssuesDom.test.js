@@ -14,9 +14,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { columns, issue } from "./trackerWireFixture.js";
 
-let carriedKinds = ["state", "thread", "git", "files", "terminals", "issues"];
+// What the bridge's greeting said. The face never reads it (#104 review), so a
+// test that empties it proves the paint comes off the cache alone.
+const CARRIES_ISSUES = { changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "issues"] } };
+const NO_GREETING = { changes: { subscriptions: false, kinds: [] } };
+let greeting = CARRIES_ISSUES;
 vi.mock("../src/core/changeEvents.js", () => ({
-  bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: carriedKinds } }),
+  bridgeCapabilities: () => greeting,
 }));
 
 const ONE = "agent-01M2ONE";
@@ -32,7 +36,9 @@ const flush = async () => {
 const held = (agentId, over = {}) => issue({ assignee: { kind: "agent", agent_id: agentId }, ...over });
 const putIssues = (issues) => trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues, columns: columns() });
 
-const mount = async (over = {}) => {
+// The badge settles on a cache read; every test waits for what it says rather
+// than for a count of ticks.
+const mount = (over = {}) => {
   block = mountWorkspaceIssues(button, {
     deviceId: "dev-1",
     projectId: "proj-1",
@@ -40,7 +46,6 @@ const mount = async (over = {}) => {
     agents: () => agents,
     ...over,
   });
-  await flush();
   return block;
 };
 
@@ -61,7 +66,7 @@ beforeEach(async () => {
   vi.resetModules();
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
-  carriedKinds = ["state", "thread", "git", "files", "terminals", "issues"];
+  greeting = CARRIES_ISSUES;
   agents = [{ id: ONE, ordinal: 1 }, { id: TWO, ordinal: 2 }];
   document.body.innerHTML = cellHtml;
   button = document.querySelector("[data-tab=issues]");
@@ -85,33 +90,42 @@ describe("the badge", () => {
       held(ONE, { number: 3, id: "i3", status: "ready", unread_count: 5 }),
       held(ELSEWHERE, { number: 4, id: "i4", status: "in_progress", watched: true, unread_count: 4 }),
     ]);
-    await mount();
-    expect(badge()).toBe("3");
+    mount();
+    await vi.waitFor(() => expect(badge()).toBe("3"));
     expect(button.hidden).toBe(false);
     expect(button.title).toBe("3 unread · 2 open issues in this workspace");
   });
 
   it("says nothing when nothing is unread, but keeps the way in and says what is open", async () => {
     await putIssues([held(ONE, { number: 1, id: "i1", status: "ready", watched: true, unread_count: 0 })]);
-    await mount();
+    mount();
+    await vi.waitFor(() => expect(button.title).toBe("1 open issue in this workspace"));
     expect(badge()).toBe("");
     expect(button.hidden).toBe(false);
-    expect(button.title).toBe("1 open issue in this workspace");
   });
 
-  // No icon at all, rather than one reading zero.
-  it("is not drawn on a bridge that does not carry issues", async () => {
-    carriedKinds = ["state", "thread", "git", "files", "terminals"];
-    await putIssues([held(ONE, { number: 1, id: "i1", status: "in_progress", watched: true, unread_count: 1 })]);
-    await mount();
+  // Paint from cache: a cold or offline start has no greeting yet, or a bridge
+  // that is gone. The face and its count come off the cached list all the same.
+  it("paints the cached count with no greeting from the bridge", async () => {
+    greeting = NO_GREETING;
+    await putIssues([held(ONE, { number: 1, id: "i1", status: "in_progress", watched: true, unread_count: 2 })]);
+    mount();
+    await vi.waitFor(() => expect(badge()).toBe("2"));
+    expect(button.hidden).toBe(false);
+    expect(button.title).toBe("2 unread · 1 open issue in this workspace");
+  });
+
+  it("is not drawn on a route that names no project", () => {
+    button.hidden = false;
+    mount({ projectId: null });
     expect(button.hidden).toBe(true);
     expect(badge()).toBe("");
   });
 
   it("moves on the push, with nothing asked of the bridge", async () => {
     await putIssues([held(ONE, { number: 1, id: "i1", status: "ready", watched: true, unread_count: 1 })]);
-    await mount();
-    expect(badge()).toBe("1");
+    mount();
+    await vi.waitFor(() => expect(badge()).toBe("1"));
     await putIssues([
       held(ONE, { number: 1, id: "i1", status: "ready", watched: true, unread_count: 0 }),
       held(TWO, { number: 2, id: "i2", status: "in_progress", watched: true, unread_count: 2 }),
@@ -121,9 +135,13 @@ describe("the badge", () => {
 
   // A workspace gains and loses agents while the bar stands there.
   it("re-reads the agents when the bar says they moved", async () => {
-    await putIssues([held(TWO, { number: 1, id: "i1", status: "in_progress", watched: true, unread_count: 1 })]);
+    await putIssues([
+      held(ONE, { number: 1, id: "i1", status: "in_progress", watched: true, unread_count: 0 }),
+      held(TWO, { number: 2, id: "i2", status: "in_progress", watched: true, unread_count: 1 }),
+    ]);
     agents = [{ id: ONE, ordinal: 1 }];
-    await mount();
+    mount();
+    await vi.waitFor(() => expect(button.title).toBe("1 open issue in this workspace"));
     expect(badge()).toBe("");
     agents = [{ id: ONE, ordinal: 1 }, { id: TWO, ordinal: 2 }];
     block.refresh();
@@ -135,7 +153,8 @@ describe("the rail's cell", () => {
   // The rail's own press goes to the Issues tab; the badge block wires none.
   it("leaves the press to the rail", async () => {
     await putIssues([held(ONE, { number: 1, id: "i1", status: "in_progress" })]);
-    await mount();
+    mount();
+    await vi.waitFor(() => expect(button.classList.contains("has-issues")).toBe(true));
     expect(button.onclick).toBeNull();
     button.click();
     await flush();
@@ -147,8 +166,8 @@ describe("the rail's cell", () => {
   // and says the count it already holds, with nothing read again.
   it("follows the rail onto a repainted cell, keeping its count", async () => {
     await putIssues([held(ONE, { number: 1, id: "i1", status: "in_progress", watched: true, unread_count: 1 })]);
-    await mount();
-    expect(badge()).toBe("1");
+    mount();
+    await vi.waitFor(() => expect(badge()).toBe("1"));
     document.body.innerHTML = cellHtml;
     button = document.querySelector("[data-tab=issues]");
     block.retarget(button);

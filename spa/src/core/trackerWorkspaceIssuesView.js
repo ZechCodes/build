@@ -19,12 +19,13 @@
 // an `issues` push moves it on the rail with nothing asked of the bridge:
 // core/cacheSync.js rewrites the record and core/localCache.js announces it.
 //
-// Nothing is drawn at all on a bridge whose greeting does not advertise the
-// issues kind — no face, not a face reading zero.
+// It paints from that cache alone and never asks whether the bridge is
+// connected or what its greeting said: on a cold or offline start the face and
+// its count come straight off the cached list (#104 review). Only a route that
+// names no project has no face to draw.
 
 import { subscribeCache } from "./localCache.js";
 import { issuesAddress, readIssuesRecord } from "./trackerCache.js";
-import { carriesIssuesPush } from "./trackerPush.js";
 import { workspaceIssuesTitle, workspaceIssuesUnread, workspaceOpenIssueCount } from "./trackerWorkspaceIssues.js";
 
 /**
@@ -35,31 +36,31 @@ import { workspaceIssuesTitle, workspaceIssuesUnread, workspaceOpenIssueCount } 
  * stands there.
  */
 export function mountWorkspaceIssues(button, { deviceId, projectId, agents }) {
-  const carries = Boolean(deviceId) && Boolean(projectId) && carriesIssuesPush(deviceId);
+  const named = Boolean(deviceId) && Boolean(projectId);
   const state = { issues: [], disposed: false };
 
   const paintBadge = () => {
     if (state.disposed || !button) return;
-    const unread = carries ? workspaceIssuesUnread(state.issues, agents()) : 0;
-    const open = carries ? workspaceOpenIssueCount(state.issues, agents()) : 0;
+    const unread = named ? workspaceIssuesUnread(state.issues, agents()) : 0;
+    const open = named ? workspaceOpenIssueCount(state.issues, agents()) : 0;
     const badge = button.querySelector(".dirtab-count");
     if (badge) badge.textContent = unread ? String(unread) : "";
     // The entry stays whether or not anything is waiting — it is how the view
     // is reached — but its bubble says nothing when nothing is unread.
-    button.hidden = !carries;
+    button.hidden = !named;
     button.classList.toggle("has-issues", open > 0);
     button.setAttribute("title", workspaceIssuesTitle(unread, open));
   };
 
   async function reread() {
-    if (!carries) return;
+    if (!named) return;
     const record = await readIssuesRecord(deviceId, projectId);
     if (state.disposed) return;
     state.issues = record?.issues || [];
     paintBadge();
   }
 
-  const unsubscribe = carries && subscribeCache(issuesAddress(deviceId, projectId), () => void reread());
+  const unsubscribe = named && subscribeCache(issuesAddress(deviceId, projectId), () => void reread());
 
   paintBadge();
   void reread();

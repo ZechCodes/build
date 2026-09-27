@@ -132,6 +132,20 @@ final for this build unless the reviewer overrides them in the thread.
     the list, since unknown activity is not age. On the projects face that agent is the block's
     head: its badge is the project agent's unread while the block is open,
     and adds every watched workspace agent's unread while it is folded.
+  - 2026-09-26 (#104): issues count like agents in those badges, and only
+    watched ones; an unwatched issue never shows a count anywhere. A watched
+    issue held by an agent counts on that agent's workspace row (and so on
+    the folded project head); every other watched issue — nobody's, the
+    user's (Zech, 23:20Z Sep 26), the project agent's, or an agent's whose
+    workspace has no row on the rail — counts on the project agent's row.
+    The project's Issues tab in the toolbar wears every watched issue's
+    unread; a workspace's Issues face on its rail wears the unread of the
+    watched issues its agents hold, in place of its open-issue count, which
+    moved to the face's tooltip. Every watched issue with unread wears the
+    same bubble on the list, the board and the dashboard. Unread is #99's
+    count: timeline entries after the read mark that are not the user's own,
+    off the cached timeline while current and otherwise off
+    `unread_count` on the watched `issues.list` row (wire 1.29.0).
 - **Done button** on an entry when its branch is committed+pushed or its
   issue is marked implemented. Done archives the entry. For issue
   implementations it marks worktree + issue together, with a disclosure

@@ -15,11 +15,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { columns, issue } from "./trackerWireFixture.js";
 
-/** What this device's greeting says its subscriptions carry. A case naming a
- *  list without `issues` is an older bridge answering. */
-let carriedKinds = ["state", "thread", "git", "files", "terminals", "issues"];
+/** What this device's greeting said. The supplier never reads it (#104
+ *  review), so a case that empties it proves the rows come off the cache. */
+const CARRIES_ISSUES = { changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "issues"] } };
+const NO_GREETING = { changes: { subscriptions: false, kinds: [] } };
+let greeting = CARRIES_ISSUES;
 vi.mock("../src/core/changeEvents.js", () => ({
-  bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: carriedKinds } }),
+  bridgeCapabilities: () => greeting,
 }));
 
 const ME = "agent-01M2ME";
@@ -27,19 +29,17 @@ const THEM = "agent-01M2THEM";
 
 let trackerCache, mountAgentIssues, entry, changes;
 
-const flush = async () => {
-  for (let i = 0; i < 20; i++) await new Promise((done) => setTimeout(done, 0));
-};
-
 const mine = (over = {}) => issue({ assignee: { kind: "agent", agent_id: ME }, ...over });
 
 /** Put a project's issues on disk, the way the sync layer does. */
 const putIssues = (issues) =>
   trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues, columns: columns() });
 
+/** Mount, and wait for the first read of the cache to land — it says so
+ *  through `onChanged` — rather than for a count of ticks. */
 const mount = async (over = {}) => {
   entry = mountAgentIssues({ deviceId: "dev-1", projectId: "proj-1", onChanged: () => changes++, ...over });
-  await flush();
+  await vi.waitFor(() => expect(changes).toBeGreaterThan(0));
   return entry;
 };
 
@@ -52,7 +52,7 @@ beforeEach(async () => {
   vi.resetModules();
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
-  carriedKinds = ["state", "thread", "git", "files", "terminals", "issues"];
+  greeting = CARRIES_ISSUES;
   changes = 0;
   trackerCache = await import("../src/core/trackerCache.js");
   ({ mountAgentIssues } = await import("../src/core/trackerAgentIssuesEntry.js"));
@@ -143,11 +143,21 @@ describe("when there is nothing to show", () => {
     expect(entry.entriesFor(null)).toBeNull();
   });
 
-  it("supplies nothing on a bridge that does not carry issues", async () => {
-    carriedKinds = ["state", "thread", "git", "files", "terminals"];
-    await putIssues([mine({ number: 1, id: "i1", status: "in_progress" })]);
+  // A bridge that has never carried issues writes no list, so there is none.
+  it("supplies nothing where no list is cached", async () => {
     await mount();
     expect(entry.entriesFor(ME)).toBeNull();
+  });
+});
+
+// Paint from cache: a cold or offline start has no greeting yet, or a bridge
+// that is gone. The pill's rows come off the cached list all the same.
+describe("before any bridge answers", () => {
+  it("supplies the cached rows with no greeting", async () => {
+    greeting = NO_GREETING;
+    await putIssues([mine({ number: 1, id: "i1", status: "in_progress" })]);
+    entry = mountAgentIssues({ deviceId: "dev-1", projectId: "proj-1", onChanged: () => changes++ });
+    await vi.waitFor(() => expect(rows()).toEqual(["in_progress:#1"]));
   });
 });
 
@@ -159,9 +169,8 @@ describe("staying live off the record, with nothing asked of the bridge", () => 
 
     changes = 0;
     await putIssues([mine({ number: 1, id: "i1", status: "in_progress" })]);
-    await flush();
 
-    expect(rows()).toEqual(["in_progress:#1"]);
+    await vi.waitFor(() => expect(rows()).toEqual(["in_progress:#1"]));
     expect(changes).toBeGreaterThan(0);
   });
 
@@ -171,21 +180,28 @@ describe("staying live off the record, with nothing asked of the bridge", () => 
     expect(entry.entriesFor(ME)).toBeNull();
 
     await putIssues([mine({ number: 9, id: "i9", status: "in_progress" })]);
-    await flush();
 
-    expect(rows()).toEqual(["in_progress:#9"]);
+    await vi.waitFor(() => expect(rows()).toEqual(["in_progress:#9"]));
   });
 
   it("stops listening once it is disposed", async () => {
     await putIssues([mine({ number: 1, id: "i1", status: "backlog" })]);
     await mount();
     entry.dispose();
+    entry = null;
+
+    // A live supplier on the same record is the settle point: it hears the
+    // write after the disposed one would have, and reads in the order asked,
+    // so once it has re-supplied the disposed one has had every chance to.
+    let heard = 0;
+    const live = mountAgentIssues({ deviceId: "dev-1", projectId: "proj-1", onChanged: () => heard++ });
+    await vi.waitFor(() => expect(heard).toBeGreaterThan(0));
 
     changes = 0;
     await putIssues([mine({ number: 1, id: "i1", status: "in_progress" })]);
-    await flush();
+    await vi.waitFor(() => expect(live.entriesFor(ME).map((one) => one.state)).toEqual(["in_progress"]));
 
     expect(changes).toBe(0);
-    entry = null;
+    live.dispose();
   });
 });

@@ -188,7 +188,7 @@ impl AppState {
             let issue = self.backfill_issue_identities(issue, &timeline, &rosters)?;
             let issue = self.backfill_done_at(issue, &timeline)?;
             let issue = self.issue_with_read_identities(issue, &timeline, &rosters);
-            rows.push(issue_json(project_id, &issue));
+            rows.push(views::read_issue_json(project_id, &issue, &timeline));
         }
         Ok(rows)
     }

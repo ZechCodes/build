@@ -73,18 +73,21 @@ afterEach(() => {
 });
 
 describe("the workspace rail, wired", () => {
-  it("counts the open issues this workspace's agents hold on the Issues icon, and moves with the record", async () => {
+  // #104: the icon carries the unread of the watched issues this workspace's
+  // agents hold; how many are open is its tooltip.
+  it("counts the watched unread this workspace's agents hold on the Issues icon, and moves with the record", async () => {
     await writeIssuesRecord("dev-1", "p-1", {
       issues: [
-        held(HERE, { number: 1, id: "i1", status: "in_progress" }),
-        held(HERE, { number: 2, id: "i2", status: "done" }),
-        held(AWAY, { number: 3, id: "i3", status: "in_progress" }),
+        held(HERE, { number: 1, id: "i1", status: "in_progress", watched: true, unread_count: 1 }),
+        held(HERE, { number: 2, id: "i2", status: "done", unread_count: 4 }),
+        held(AWAY, { number: 3, id: "i3", status: "in_progress", watched: true, unread_count: 2 }),
       ],
       columns: columns(),
     });
     rail.paint("changes");
     await vi.waitFor(() => expect(issuesCell().querySelector(".dirtab-count").textContent).toBe("1"));
     expect(issuesCell().hidden).toBe(false);
+    expect(issuesCell().title).toBe("1 unread · 1 open issue in this workspace");
 
     // A repaint draws a new cell; the count is on it at once.
     rail.paint("files");
@@ -93,12 +96,12 @@ describe("the workspace rail, wired", () => {
     // An `issues` push rewrites the record; the icon follows.
     await writeIssuesRecord("dev-1", "p-1", {
       issues: [
-        held(HERE, { number: 1, id: "i1", status: "in_progress" }),
-        held(HERE, { number: 4, id: "i4", status: "ready" }),
+        held(HERE, { number: 1, id: "i1", status: "in_progress", watched: true, unread_count: 1 }),
+        held(HERE, { number: 4, id: "i4", status: "ready", watched: true, unread_count: 2 }),
       ],
       columns: columns(),
     });
-    await vi.waitFor(() => expect(issuesCell().querySelector(".dirtab-count").textContent).toBe("2"));
+    await vi.waitFor(() => expect(issuesCell().querySelector(".dirtab-count").textContent).toBe("3"));
   });
 
   it("hands a press on Issues to the surface, like any face", async () => {

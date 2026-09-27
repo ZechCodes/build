@@ -13,7 +13,7 @@
 
 import { messageOf } from "./text.js";
 import { hashFromRoute } from "./router.js";
-import { bridgeCapabilities, watchChanges } from "./changeEvents.js";
+import { watchChanges } from "./changeEvents.js";
 import { issuesPushKinds } from "./trackerPush.js";
 import { notifyError } from "./notify.js";
 import {
@@ -48,10 +48,11 @@ import { BOARD_VIEW, DASHBOARD_VIEW, LIST_VIEW, mountIssuesChrome } from "./trac
 import { paintGroupedIssueRows, paintIssueBoard } from "./trackerIssuesBody.js";
 import { attentionGroups, NEEDS_YOU_GROUP, REST_GROUP, WORKING_GROUP } from "./trackerAttentionModel.js";
 import { dashboardSections, doneSessionStart, doneSinceCutoff } from "./trackerDashboardModel.js";
-import { readUserSession, userSessionAddress, writeUserSession } from "./userSessionCache.js";
+import { readUserSession, userSessionAddress, writeListedUserSession } from "./userSessionCache.js";
 import { needsYouRuleAddress, readNeedsYouRule } from "./needsYouRule.js";
 import { DEFAULT_DASHBOARD_TAB, dashboardTabIds, paintIssueDashboard } from "./trackerDashboardRender.js";
 import { createTrackerIssueDetailsFeed } from "./trackerIssueDetailsFeed.js";
+import { issueUnreadCount } from "./issueUnread.js";
 import { createTrackerAgentActivityFeed } from "./trackerAgentActivityFeed.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
 import { openIssueComposer } from "./issueComposer.js";
@@ -187,6 +188,7 @@ export function mountIssuesPane(host, options) {
 
   const paintContext = () => ({
     columns: state.columns,
+    unreadOf: unreadCounter(),
     deviceId: state.deviceId,
     projectId: state.projectId,
     agentGroups: groups(),
@@ -216,9 +218,12 @@ export function mountIssuesPane(host, options) {
   });
 
   /** Whether this device's bridge carries `done_at` and the user's session.
-   *  Asked at each paint: the greeting can land after the cache has painted. */
+   *  Answered by the cache, not the greeting (#104 review): only a bridge that
+   *  carries it sends the session this device holds, and a list from one that
+   *  does not drops it (`writeListedUserSession`), so a cold or offline start
+   *  paints the Done it will keep. */
   function carriesDoneSinceLeft() {
-    return bridgeCapabilities(state.deviceId)?.issues?.doneSinceLeft === true;
+    return state.userSession !== null;
   }
 
   const groupLabels = [
@@ -228,6 +233,13 @@ export function mountIssuesPane(host, options) {
   ];
   let details;
   let activity;
+  /** Each watched issue's unread, as the bubble on its row, card or dashboard
+   *  line says it (#104): off the cached timeline while it is current, and
+   *  the list's own count otherwise (core/issueUnread.js). */
+  function unreadCounter() {
+    const detailById = details?.read() || new Map();
+    return (issue) => issueUnreadCount(issue, detailById.get(issue.id) || null);
+  }
   const groupedRows = () => {
     const attention = attentionGroups(state.shown, {
       feed: state.feed(), projectKey: state.projectKey, detailById: details?.read(), askedOnly: state.askedOnly,
@@ -447,7 +459,7 @@ export function mountIssuesPane(host, options) {
     await writeIssuesQueryRecord(state.deviceId, state.projectId, params, record);
     // An unnarrowed answer is also the authoritative whole-list record.
     if (!narrowsTheRead(filters)) await writeIssuesRecord(state.deviceId, state.projectId, record);
-    await writeUserSession(state.deviceId, answer);
+    await writeListedUserSession(state.deviceId, answer);
   }
 
   /** The same read a page at a time, from a bridge that pages it (#85). Each
@@ -470,7 +482,7 @@ export function mountIssuesPane(host, options) {
       fold: async (stretch, page) => {
         const committed = await Promise.all([
           ...addresses.map((address) => foldIssuesPage(address, stretch, () => state.columns)),
-          writeUserSession(deviceId, page),
+          writeListedUserSession(deviceId, page),
         ]);
         return committed.slice(0, addresses.length).every(Boolean);
       },

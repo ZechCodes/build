@@ -1,6 +1,6 @@
 {
-  "api_version": "1.27.0",
-  "commit": "c100e843",
+  "api_version": "1.28.0",
+  "commit": "5ea7e767",
   "generated_by": "scripts/api-verbs-manifest.mjs",
   "verbs": [
     "agent.add",
@@ -181,6 +181,7 @@
     "agents.names",
     "archive.list",
     "archived.list",
+    "board.conversationSessions",
     "board.list",
     "board.usageLimits",
     "bodies.pages",

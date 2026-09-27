@@ -363,6 +363,11 @@ pub struct IssueView {
     /// one. `null` unless they have dismissed it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dismissed_through: Option<String>,
+    /// How many timeline entries after `read_through` are not the user's own
+    /// (1.29.0). `issues.list` and `issues.get` carry it on a watched issue:
+    /// an issue nobody watches never shows a count, so it carries none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unread_count: Option<u64>,
     /// `{"kind":"user"}` or `{"kind":"agent","agent_id":…}`.
     pub created_by: Value,
     pub created_at: String,

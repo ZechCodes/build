@@ -5,21 +5,10 @@
 
 import { readCached, readCachedMany, subscribeCache } from "./localCache.js";
 import { TRACKER_ISSUE_KIND, issueAddress, issueRecord, writeIssueRecord } from "./trackerCache.js";
+import { changedSince } from "./trackerModel.js";
 
 const MAX_READS = 4;
 
-const changedSince = (listIssue, detail) => {
-  if (!detail?.issue) return true;
-  const listedAt = listIssue?.updated_at;
-  if (!listedAt) return false;
-  const detailedAt = detail.issue.updated_at;
-  if (!detailedAt) return true;
-  const listTime = Date.parse(listedAt);
-  const detailTime = Date.parse(detailedAt);
-  return Number.isFinite(listTime) && Number.isFinite(detailTime)
-    ? listTime > detailTime
-    : listedAt !== detailedAt;
-};
 
 /**
  * Follow the details for a project's current issues. `read()` is synchronous

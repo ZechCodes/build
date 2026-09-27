@@ -9,7 +9,7 @@
 // Dashboard tells whether the user was away at that moment
 // (core/trackerDashboardModel.js). Nothing here reads this device's clock.
 
-import { mergeCachedAtomically, readCached } from "./localCache.js";
+import { deleteCached, mergeCachedAtomically, readCached } from "./localCache.js";
 import { standingOf } from "./trackerDashboardModel.js";
 
 export const USER_SESSION_KIND = "user-session";
@@ -57,6 +57,21 @@ export function writeUserSession(deviceId, answer, accept = () => true) {
   if (!session) return Promise.resolve(false);
   return mergeCachedAtomically(userSessionAddress(deviceId), (held) =>
     (accept() && newer(held, session) ? session : null));
+}
+
+/** Write what one `issues.list` answer, or one page of it, says of the
+ *  session. A bridge carrying Done since you left sends the session on every
+ *  list and every page, so an answer with none is from one that does not — an
+ *  older bridge, after a rollback — and the session a newer one left is
+ *  dropped with it. The Dashboard reads a held session as the bridge carrying
+ *  Done since you left (core/trackerIssuesPane.js); a stale one would cut
+ *  Done off at a time rows without `done_at` cannot answer to (#104 review). */
+export async function writeListedUserSession(deviceId, answer) {
+  if (!answer) return false;
+  if (userSessionOf(answer)) return writeUserSession(deviceId, answer);
+  if (!(await readCached(userSessionAddress(deviceId)))) return false;
+  await deleteCached([userSessionAddress(deviceId)]);
+  return true;
 }
 
 export async function readUserSession(deviceId) {

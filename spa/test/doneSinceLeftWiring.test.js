@@ -20,7 +20,9 @@ globalThis.IDBKeyRange = IDBKeyRange;
 
 const { bridgeCapabilities, dispatchChangeEvent, greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
 const { mountIssuesPane } = await import("../src/core/trackerIssuesPane.js");
-const { readUserSession } = await import("../src/core/userSessionCache.js");
+const { readUserSession, userSessionAddress, writeUserSession } = await import("../src/core/userSessionCache.js");
+const { deleteCached } = await import("../src/core/localCache.js");
+const { issuesAddress, issuesRecord, writeIssuesRecord } = await import("../src/core/trackerCache.js");
 
 const run = promisify(execFile);
 const bridgeRoot = resolve(process.cwd(), "../bridge");
@@ -163,9 +165,72 @@ it("shows work finished while the user was away, across their return on another 
   expect(doneRows()).toEqual([]);
 });
 
+// A bridge that does not announce it answers with no session, and this device
+// holds none: the Done it paints is the 24-hour one.
 it("keeps the 24-hour Done when the bridge does not announce it", async () => {
   const hello = { ...greeting, capabilities: greeting.capabilities.filter((name) => name !== "issues.doneSinceLeft") };
+  const { user_session: _session, ...unsessioned } = answers.away;
+  listed = unsessioned;
+  // The cache outlives each case's fresh factory: drop what the last one held.
+  await deleteCached([userSessionAddress("dev-1")]);
   await mountWith(hello);
   expect(bridgeCapabilities("dev-1").issues.doneSinceLeft).toBe(false);
-  expect(doneTab().textContent.trim()).toMatch(/^Done\d*$/);
+  await vi.waitFor(() => expect(host.querySelector('[data-dashboard-section="done"] .issue-dashboard-row, .issue-dashboard-empty'))
+    .not.toBeNull());
+  expect(await readUserSession("dev-1")).toBe(null);
+  expect(doneTitles()).not.toContain("While you were away");
+  expect(host.querySelector(".issue-dashboard-empty")?.textContent).not.toBe("Nothing has moved to Done since you left.");
+});
+
+// A rollback (#104 review): a newer bridge left its session here, then an older
+// one answers the list with no session and no `done_at`. The held session must
+// not stand in for a bridge that no longer carries it — Done falls back to the
+// 24-hour timeline rather than cutting every row off.
+it("falls back to the 24-hour Done once an older bridge answers the list", async () => {
+  await mountWith(greeting);
+  await vi.waitFor(() => expect(doneTitles()).toEqual(["While you were away"]));
+  expect(await readUserSession("dev-1")).not.toBe(null);
+
+  const hello = { ...greeting, capabilities: greeting.capabilities.filter((name) => name !== "issues.doneSinceLeft") };
+  const { user_session: _session, ...older } = answers.away;
+  listed = { ...older, issues: older.issues.map(({ done_at: _doneAt, ...issue }) => issue) };
+  pane.dispose();
+  host.innerHTML = "";
+  await mountWith(hello);
+
+  // The 24-hour Done reads the cached timelines, and this bridge was asked for
+  // none: its empty line says which Done is painted.
+  await vi.waitFor(() => expect(host.querySelector(".issue-dashboard-empty")?.textContent)
+    .toBe("Nothing moved to Done in the last 24 hours."));
+  expect(await readUserSession("dev-1")).toBe(null);
+  expect(doneRows()).toEqual([]);
+});
+
+// Paint from cache (#104 review): the session this device holds says the
+// bridge carries it, so a cold start paints the Done it will keep, with no
+// greeting and nothing answered.
+it("paints Done since you left off the cache before any bridge answers", async () => {
+  const projectId = answers.away.project_id;
+  const finished = answers.away.issues[0];
+  // The cache outlives each case's fresh factory: hold only what this reload has.
+  await deleteCached([userSessionAddress("dev-1"), issuesAddress("dev-1", projectId)]);
+  await writeUserSession("dev-1", answers.away);
+  await writeIssuesRecord("dev-1", projectId, issuesRecord(answers.away.issues, []));
+  pane = mountIssuesPane(host, {
+    projectId,
+    projectName: "Build",
+    deviceId: "dev-1",
+    projectKey: `dev-1|${projectId}`,
+    callRpc: () => new Promise(() => {}),
+    catalog: () => ({ providers: [] }),
+    refreshCatalog: async () => ({ providers: [] }),
+    feed: () => ({ workspaces: [], items: [], projects: [] }),
+    defaultView: "dashboard",
+    navigate: () => {},
+  });
+  expect(bridgeCapabilities("dev-1").issues.doneSinceLeft).toBe(false);
+  await vi.waitFor(() => expect(doneTab()).not.toBeNull());
+  doneTab().click();
+  await vi.waitFor(() => expect(doneRows()).toEqual([finished.id]));
+  await vi.waitFor(() => expect(doneTitles()).toEqual(["While you were away"]));
 });

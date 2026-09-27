@@ -79,7 +79,7 @@ impl AppState {
             // anchor IS when it last moved, and the existing rows send both.
             "anchor": at,
             "last_activity": at,
-            "unread": self.unread_since_mark(issue, &timeline),
+            "unread": unread_since_mark(issue, &timeline),
             // Mute is unwatch here, so a row that exists is not muted — the
             // absence of the row is the whole of the answer.
             "muted": false,
@@ -108,20 +108,6 @@ impl AppState {
         self.actor_words(entry_actor(entry))
     }
 
-    /// Events the user has not read: everything after the mark, minus their
-    /// own.
-    ///
-    /// Their own are excluded because a count that went up when the user
-    /// commented would be telling them about themselves — and the inbox badge
-    /// is a list of things asking for their attention.
-    fn unread_since_mark(&self, issue: &Issue, timeline: &[TimelineEntry]) -> usize {
-        timeline
-            .iter()
-            .filter(|entry| after(issue.read_through.as_deref(), entry_id(entry)))
-            .filter(|entry| !matches!(entry_actor(entry), crate::tracker::Actor::User))
-            .count()
-    }
-
     /// Whether the user cleared this row and nothing has happened since.
     fn issue_is_done_until_next(&self, issue: &Issue, timeline: &[TimelineEntry]) -> bool {
         let Some(cleared) = issue.dismissed_through.as_deref() else {
@@ -131,6 +117,20 @@ impl AppState {
             .iter()
             .any(|entry| after(Some(cleared), entry_id(entry)))
     }
+}
+
+/// Events the user has not read: everything after the mark, minus their own.
+///
+/// Their own are excluded because a count that went up when the user
+/// commented would be telling them about themselves — and the inbox badge is
+/// a list of things asking for their attention. The inbox row says it as
+/// `unread`, and `issues.list` as each watched issue's `unread_count` (#104).
+pub(in crate::app) fn unread_since_mark(issue: &Issue, timeline: &[TimelineEntry]) -> usize {
+    timeline
+        .iter()
+        .filter(|entry| after(issue.read_through.as_deref(), entry_id(entry)))
+        .filter(|entry| !matches!(entry_actor(entry), crate::tracker::Actor::User))
+        .count()
 }
 
 /// Whether `id` is newer than a mark.

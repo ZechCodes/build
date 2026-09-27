@@ -250,6 +250,28 @@ describe("the project's pages in the bar", () => {
     await standOnWorkspace();
     expect(projectTabs()).toEqual([]);
   });
+
+  // #104: "For the project it is all unreads" — every watched issue's, off the
+  // cached list, moving when the record does.
+  it("wears the unread of every watched issue in the project on Issues", async () => {
+    const { issuesAddress } = await import("../src/core/trackerCache.js");
+    const listed = (issues) => writeCached(issuesAddress("dev-1", "p1"), { issues, columns: [] });
+    const issuesBadge = () => bar().querySelector('[data-project-tab="issues"] .issue-unread')?.textContent || null;
+    await listed([
+      { id: "i1", number: 1, watched: true, unread_count: 2, assignee: { kind: "agent", agent_id: "a1" } },
+      { id: "i2", number: 2, watched: true, unread_count: 1, assignee: null },
+      { id: "i3", number: 3, unread_count: 9, assignee: null },
+    ]);
+    standOn({ name: "project", deviceId: "dev-1", projectId: "p1" });
+    await vi.waitFor(() => expect(issuesBadge()).toBe("3"));
+    expect(bar().querySelector('[data-project-tab="workspaces"] .issue-unread')).toBeNull();
+    standOn({ name: "trackerIssue", deviceId: "dev-1", projectId: "p1", issueId: "i1" });
+    expect(issuesBadge()).toBe("3");
+    await listed([{ id: "i1", number: 1, watched: true, unread_count: 0 }]);
+    await vi.waitFor(() => expect(issuesBadge()).toBeNull());
+    standOn({ name: "project", deviceId: "dev-1", projectId: "p2" });
+    expect(issuesBadge()).toBeNull();
+  });
 });
 
 // #174. The maintainer: "Move everything out of the nav except the

@@ -21,6 +21,7 @@ import { createTrackerIssueDetailsFeed } from "./trackerIssueDetailsFeed.js";
 import { issuesAddress, readIssuesRecord } from "./trackerCache.js";
 import { needsYouRuleAddress, readNeedsYouRule } from "./needsYouRule.js";
 import { watchedIssueEntries } from "./watchedIssueRows.js";
+import { issueUnreadTally } from "./issueUnread.js";
 
 const followsDetail = (issue) => issue?.watched === true && !isFinished(issue);
 
@@ -71,7 +72,8 @@ const projectKeyOf = (project) => `${project.deviceId}|${project.id}`;
 /**
  * Follow the watched issues of `projects` as the rail lists them. `onChange`
  * is called whenever a followed record changes; `entries()` answers the rows
- * as the cache holds them now. Call `follow(projects)` whenever the rail's
+ * as the cache holds them now, and `issueUnread()` the watched issues' unread
+ * (core/issueUnread.js). Call `follow(projects)` whenever the rail's
  * projects or a machine's connection change.
  */
 export function followWatchedIssues({ onChange = () => {} } = {}) {
@@ -93,9 +95,13 @@ export function followWatchedIssues({ onChange = () => {} } = {}) {
     }
   }
 
+  const sources = () => [...followed.values()].map((one) => one.source());
+
   return {
     follow,
-    entries: () => watchedIssueEntries([...followed.values()].map((one) => one.source())),
+    entries: () => watchedIssueEntries(sources()),
+    /** Where the rail wears each watched issue's unread (#104). */
+    issueUnread: () => issueUnreadTally(sources()),
     dispose: () => [...followed.keys()].forEach(drop),
   };
 }

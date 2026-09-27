@@ -40,6 +40,7 @@ import { deviceView } from "./feedMerge.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import { patchList } from "./patchList.js";
 import { toolbarHtml, unreadBadgeHtml } from "./toolbarRender.js";
+import { followProjectIssuesUnread } from "./projectIssuesUnread.js";
 import { projectRoute, workspaceRoute } from "./projectModel.js";
 import { standsOnProjectCheckout, workspaceStatusText } from "./workspaceModel.js";
 import "../styles/shell.css";
@@ -72,6 +73,9 @@ let cachedMenuValue = null;
 let unsubscribeFeed = null;
 let toolbarReady = Promise.resolve();
 let toolbarRun = 0;
+// The project Issues tab's count (#104), off the cached list of the project
+// the bar stands in; a move in it repaints the bar.
+const projectIssues = followProjectIssuesUnread(() => paint());
 
 /** Register the standing view's verb-slot content — called every repaint the
  *  toolbar does, poll-driven ticks included, so the caller's own function must
@@ -203,10 +207,23 @@ const loadStandingWorkspaces = () => {
 // ---- the bar ----------------------------------------------------------------
 
 function identity() {
+  followStandingProjectIssues();
   return toolbarIdentity(App.route, {
     ...feed,
     workspaces: workspacesByProject.get(routeProjectKey(App.route)) || [],
+    issuesUnread: projectIssues.count(),
   });
+}
+
+/** The routes whose bar carries the project's Issues tab, and so its count. */
+const ISSUES_TAB_ROUTES = new Set(["project", "trackerIssue"]);
+
+/** Follow the watched unread of the project the bar stands in, where the bar
+ *  carries its Issues tab (#104), and of none elsewhere. */
+function followStandingProjectIssues() {
+  const route = App.route;
+  if (ISSUES_TAB_ROUTES.has(route.name)) projectIssues.follow(route.deviceId, route.projectId);
+  else projectIssues.follow(null, null);
 }
 
 /** Repaint the bar. `entering` says the paint follows a navigation (a route the
@@ -641,6 +658,7 @@ export function stopToolbar() {
   unsubscribeFeed?.();
   unsubscribeFeed = null;
   workspacesByProject.clear();
+  projectIssues.dispose();
   closeMenu({ persist: false });
   return settled;
 }

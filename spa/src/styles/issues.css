@@ -257,6 +257,8 @@
   flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
   color:var(--ink); font-weight:400;
 }
+/* A watched issue's unread (#104), at line one's far edge as on an inbox row. */
+.issue-row-open .issue-unread { flex:none; align-self:center; }
 
 /* A pressing priority, before the title (#45). One stroke for high and two for
    urgent, so the two are told apart by shape as well as by colour: a mark that
@@ -344,6 +346,10 @@
 .issue-dashboard-number { color:var(--dim); font-size:11px; }
 .issue-dashboard-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink); font-size:12px; }
 .issue-dashboard-detail { grid-column:2; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink2); font-size:11px; }
+/* A watched issue's unread (#104): a third column, beside the title, only on a
+   row that wears one. */
+.issue-dashboard-link:has(.issue-unread) { grid-template-columns:auto minmax(0,1fr) auto; }
+.issue-dashboard-link .issue-unread { grid-column:3; grid-row:1; align-self:center; }
 .issue-dashboard-empty { margin:0; padding:17px 14px; color:var(--dim); font-size:12px; }
 
 /* ---- the board ----------------------------------------------------------- */
@@ -377,6 +383,10 @@
 .issue-card:active { cursor:grabbing; }
 .issue-card-head { display:flex; align-items:center; gap:7px; }
 .issue-card-head .issue-priority { margin-left:auto; }
+/* A watched issue's unread (#104) closes the head at its far edge, past the
+   priority when there is one. */
+.issue-card-head .issue-unread { flex:none; margin-left:auto; }
+.issue-card-head .issue-priority ~ .issue-unread { margin-left:0; }
 .issue-card-title { color:var(--ink); text-decoration:none; font-weight:550; line-height:1.35; }
 .issue-card-title:hover { text-decoration:underline; }
 .issue-card-labels { display:flex; flex-wrap:wrap; gap:4px; }

@@ -575,3 +575,87 @@ fn an_agent_made_agent_is_not_in_the_inbox_unless_it_asks() {
         "one that asks for the user is seen"
     );
 }
+
+/// `issues.list` and `issues.get` say how much of a watched issue is unread
+/// (#104), by the same count the issue's inbox row carries: what the list holds is what the
+/// Issues tab and the rail badges read, and an `issues` push re-reads it.
+/// An unwatched issue says nothing at all, not zero.
+#[test]
+fn the_list_carries_each_watched_issues_unread_count() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let who = coding_agent(&mut state, &project_id, "here");
+    let id = agent_files(&mut state, &who, "watched", Some(true));
+    let quiet = issue_id(&filed(&mut state, &project_id, "put down"));
+    state.handle(req("issues.unwatch", json!({ "issue_id": quiet })));
+    let listed = |state: &mut AppState, issue_id: &str| -> Value {
+        let list = state.handle(req("issues.list", json!({ "project_id": project_id })));
+        list["result"]["issues"]
+            .as_array()
+            .expect("the list answers issues")
+            .iter()
+            .find(|issue| issue["id"] == json!(issue_id))
+            .cloned()
+            .unwrap_or_else(|| panic!("{issue_id} is listed"))
+    };
+
+    let unread = row_for(&mut state, &id)["unread"].clone();
+    assert!(unread.as_u64().unwrap() > 0, "{unread:?}");
+    assert_eq!(listed(&mut state, &id)["unread_count"], unread);
+    assert!(
+        listed(&mut state, &quiet).get("unread_count").is_none(),
+        "an unwatched issue carries no count"
+    );
+
+    let newest = timeline(&mut state, &id).last().unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    state.handle(req(
+        "issues.read_through",
+        json!({ "issue_id": id, "event_id": newest }),
+    ));
+    assert_eq!(listed(&mut state, &id)["unread_count"], json!(0));
+
+    state.handle(req(
+        "issues.comment",
+        json!({ "issue_id": id, "body": "my own words" }),
+    ));
+    assert_eq!(listed(&mut state, &id)["unread_count"], json!(0));
+
+    state
+        .on_agent_mcp_action(
+            &who.0,
+            &who.1,
+            BridgeAction::TrackerCommentIssue {
+                issue_id: id.clone(),
+                body: "on it".into(),
+                refs: Vec::new(),
+                track: None,
+                attachments: Vec::new(),
+                notify_user: None,
+                mention_user: None,
+            },
+        )
+        .expect("an agent answers");
+    assert_eq!(listed(&mut state, &id)["unread_count"], json!(1));
+    assert_eq!(
+        issue(&mut state, &id)["unread_count"],
+        json!(1),
+        "reading the issue alone says the same"
+    );
+    assert!(issue(&mut state, &quiet).get("unread_count").is_none());
+    let paged = state.handle(req(
+        "issues.list",
+        json!({ "project_id": project_id, "limit": 10 }),
+    ));
+    let paged_row = paged["result"]["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|issue| issue["id"] == json!(id))
+        .cloned()
+        .unwrap();
+    assert_eq!(paged_row["unread_count"], json!(1), "a page says it too");
+}

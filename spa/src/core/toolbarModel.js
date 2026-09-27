@@ -131,7 +131,7 @@ const STANDING = {
     // name through the project selector, then the project's two pages as tabs.
     rowIs: () => () => false,
     label: () => "",
-    carries: (route) => ({ projectTabs: projectTabsModel(route.tab) }),
+    carries: (route, { issuesUnread }) => ({ projectTabs: projectTabsModel(route.tab, issuesUnread) }),
   },
   trackerIssue: {
     // One issue of the tracker is a page OF the project's Issues tab: the bar
@@ -139,7 +139,7 @@ const STANDING = {
     // one press away from the issue — on a phone, the only press back.
     rowIs: () => () => false,
     label: () => "",
-    carries: () => ({ projectTabs: projectTabsModel("issues") }),
+    carries: (route, { issuesUnread }) => ({ projectTabs: projectTabsModel("issues", issuesUnread) }),
   },
 };
 
@@ -149,12 +149,13 @@ const STANDING = {
  *  the chat open over the page on a phone.
  *
  *  Issues first, and the one a route that names no tab is on (#46): "I think
- *  issues should be the first and primary project tab." */
-export function projectTabsModel(current) {
+ *  issues should be the first and primary project tab." Issues wears the
+ *  unread of every watched issue in the project (#104). */
+export function projectTabsModel(current, issuesUnread = 0) {
   const onWorkspaces = current === "workspaces";
   return [
-    { id: "issues", label: "Issues", current: !onWorkspaces },
-    { id: "workspaces", label: "Workspaces", current: onWorkspaces },
+    { id: "issues", label: "Issues", current: !onWorkspaces, unread: issuesUnread },
+    { id: "workspaces", label: "Workspaces", current: onWorkspaces, unread: 0 },
   ];
 }
 
@@ -165,12 +166,12 @@ const NOWHERE = Object.freeze({ projectId: null, projectKey: null, project: "", 
  *  branch or issue inside it. The route is the authority on identity (it is what
  *  a deep link carries, machine included); the feed only supplies the names it
  *  knows, and the record it names is the one on the route's own machine. */
-export function toolbarIdentity(route = {}, { items = [], projects = [], workspaces = [] } = {}) {
+export function toolbarIdentity(route = {}, { items = [], projects = [], workspaces = [], issuesUnread = 0 } = {}) {
   const standing = STANDING[route.name];
   if (!standing) return NOWHERE;
   const key = routeProjectKey(route);
   const row = items.find(standing.rowIs(route)) || null;
-  const carried = standing.carries ? standing.carries(route, { items, projects, workspaces }) : null;
+  const carried = standing.carries ? standing.carries(route, { items, projects, workspaces, issuesUnread }) : null;
   return {
     projectId: route.projectId,
     projectKey: key,

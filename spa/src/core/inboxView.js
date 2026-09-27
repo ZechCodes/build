@@ -36,6 +36,7 @@ import {
   workspaceIsRecent,
 } from "./inbox.js";
 import { projectAgentEntries } from "./inboxProjectAgent.js";
+import { NO_ISSUE_UNREAD } from "./issueUnread.js";
 import { patchList } from "./patchList.js";
 import { BRANCH_DONE_OPTION, branchFinishFailureSummary, branchFinishParams, branchFinishNotice } from "./branchFinish.js";
 import { readBranchDelete } from "./branchDeleteSupport.js";
@@ -171,9 +172,13 @@ function publishAttentionCount() {
  *  the inbox's anchor order. On the projects face the project agent's row is
  *  its block's head rather than a row (core/inboxProjects.js). */
 function workRows(rows) {
+  // A watched issue's unread counts like an agent's (#104): on the workspace
+  // row whose agent holds it, and on the project agent's row otherwise.
+  const issueUnread = watchedIssues?.issueUnread() || NO_ISSUE_UNREAD;
+  const workspaceRows = watchedWorkspaceEntries(workspaces, projects, rows, runs, issueUnread);
   return [
-    ...watchedWorkspaceEntries(workspaces, projects, rows, runs),
-    ...projectAgentEntries(projects, rows, runs),
+    ...workspaceRows,
+    ...projectAgentEntries(projects, rows, runs, issueUnread.unheldBy(workspaceRows)),
   ].sort(byAnchor);
 }
 

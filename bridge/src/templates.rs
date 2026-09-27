@@ -944,7 +944,8 @@ mod tests {
                 "Anything beyond a quick question or a one-line correction gets a task",
                 "a brief sent as a message is a brief only its reader has",
                 // Rule 2: plan your own work on the board.
-                "Use tasks to plan your OWN work too.",
+                "Use Build tasks to plan your OWN work too.",
+                "file a Build task for it with `create_task`",
                 "assign it to yourself, and move it across the board as you go",
                 // Rule 3: ask where both readers are.
                 "When a task came from outside this conversation, ask ON the task.",
@@ -958,11 +959,32 @@ mod tests {
                 "Comment your progress on it with `comment_task` as you go",
                 "Move it to In review with `move_task` when you report Complete.",
                 "Hand work off by ASSIGNING the task, not by messaging.",
-                "File a task for follow-up work you find and do not do.",
+                "File a Build task for follow-up work you find and do not do.",
             ] {
                 assert!(text.contains(kept), "{name} dropped an older rule: {text}");
             }
         }
+    }
+
+    /// A Build task is a card on the project's board, and the harness has task
+    /// tools of its own (#190). The note says which is which before anything
+    /// else, so an agent never files steps on the board or thinks TaskCreate
+    /// put something there.
+    #[test]
+    fn the_task_tools_say_a_build_task_is_not_the_harness_own_list() {
+        let text = collapse_whitespace(TASK_TOOLS_NOTE);
+        assert!(
+            text.starts_with("Your project has a task board, and Build's task tools reach it:"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "A Build task is a card on that board. It is not your harness's own task or \
+                 todo list (TaskCreate, TodoWrite, update_plan): that one tracks the steps of \
+                 this conversation, and nothing in it reaches the board."
+            ),
+            "{text}"
+        );
     }
 
     /// Every template the task note is appended to: the coding phases and the

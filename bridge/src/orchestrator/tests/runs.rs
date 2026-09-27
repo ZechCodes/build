@@ -483,8 +483,18 @@ fn conversation_prompt_uses_available_native_progress_tools_for_long_running_wor
         "multi-step work should be visible to the user: {prompt}"
     );
     assert!(
-        prompt.contains("native task, checklist, or plan tool available in this session"),
+        prompt.contains("native checklist or plan tool available in this session"),
         "each provider should use its own supported progress surface: {prompt}"
+    );
+    // Build's tasks are cards on the board (#190). A progress rule that said
+    // "task" would send an agent to TaskCreate thinking it filed one.
+    let progress = prompt
+        .lines()
+        .find(|line| line.contains("long-running work with several meaningful steps"))
+        .unwrap();
+    assert!(
+        !progress.to_lowercase().contains("task"),
+        "the progress rule must not say task: {progress}"
     );
     assert!(
         prompt.contains("brief, one-step work"),

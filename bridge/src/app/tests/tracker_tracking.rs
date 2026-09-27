@@ -878,7 +878,7 @@ fn complete_with_open_tasks_lists_every_one_of_them() {
         "In review is not held open: {body}"
     );
     assert!(
-        body.contains("2 tasks assigned to you are still open"),
+        body.contains("2 Build tasks assigned to you are still open"),
         "{body}"
     );
 }
@@ -1019,7 +1019,7 @@ fn a_task_in_the_done_column_is_not_reminded_about() {
         "and so is In review: {body}"
     );
     assert!(
-        body.contains("1 task assigned to you is still open"),
+        body.contains("1 Build task assigned to you is still open"),
         "{body}"
     );
 }

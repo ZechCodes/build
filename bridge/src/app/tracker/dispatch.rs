@@ -526,7 +526,7 @@ impl AppState {
 /// when it is ready to start, which is also when the task is current.
 pub(in crate::app) fn assignment_notice(task: &Task, assigner: &str, note: Option<&str>) -> String {
     let mut body = format!(
-        "{assigner} assigned you task #{} — {}",
+        "{assigner} assigned you Build task #{} — {}",
         task.number, task.title
     );
     if let Some(note) = note.map(str::trim).filter(|note| !note.is_empty()) {

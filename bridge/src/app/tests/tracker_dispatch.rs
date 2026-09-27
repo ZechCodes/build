@@ -188,7 +188,7 @@ fn the_delivered_message_is_a_notice_naming_the_task_and_not_a_copy_of_it() {
         "the human assigned it, so nobody signed it: {handed:?}"
     );
     assert_eq!(
-        handed["body"], "The user assigned you task #1 — Kanban drag does not persist",
+        handed["body"], "The user assigned you Build task #1 — Kanban drag does not persist",
         "one line, and the task's own words are not in it"
     );
     assert!(
@@ -240,7 +240,7 @@ fn an_agent_that_assigns_is_named_in_the_notice() {
         .find(|message| message["from_task"].is_object())
         .unwrap_or_else(|| panic!("no message wearing the task: {delivered:?}"));
     assert_eq!(
-        handed["body"], "The wire-facade agent assigned you task #1 — Kanban drag",
+        handed["body"], "The wire-facade agent assigned you Build task #1 — Kanban drag",
         "named by the workspace it works in: {handed:?}"
     );
 }
@@ -278,7 +278,7 @@ fn a_hand_off_note_is_delivered_and_not_written_onto_the_task() {
         .find(|message| message["from_task"].is_object())
         .unwrap_or_else(|| panic!("no message wearing the task: {delivered:?}"));
     assert_eq!(
-        handed["body"], "The user assigned you task #1 — one\n\nStart with the drop handler.",
+        handed["body"], "The user assigned you Build task #1 — one\n\nStart with the drop handler.",
         "the note is what the notice has to say beyond naming the task"
     );
 }

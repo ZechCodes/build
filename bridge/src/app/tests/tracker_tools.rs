@@ -937,5 +937,8 @@ fn the_task_note_is_on_every_template_that_carries_the_tools() {
         note.contains("not that it is accepted"),
         "In review is not Done"
     );
-    assert!(note.contains("File a task for follow-up work"), "{note}");
+    assert!(
+        note.contains("File a Build task for follow-up work"),
+        "{note}"
+    );
 }

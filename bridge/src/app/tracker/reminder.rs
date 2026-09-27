@@ -154,7 +154,7 @@ fn reminder_body(held: &[Task]) -> String {
     let count = held.len();
     let these = if count == 1 { "task" } else { "tasks" };
     format!(
-        "You reported Complete, but {count} {these} assigned to you {} still open. This \
+        "You reported Complete, but {count} Build {these} assigned to you {} still open. This \
          message is from Build, not from the user — nobody is waiting on an answer to it.\n\n{}\n\n\
          Each one needs finishing, or a comment saying where it got to, or — if you cannot do it \
          — handing back with a comment saying why, so whoever assigned it knows. Move a task to \
@@ -193,7 +193,7 @@ mod tests {
             task(15, "The Complete reminder", "in_review"),
         ]);
         assert!(
-            body.contains("2 tasks assigned to you are still open"),
+            body.contains("2 Build tasks assigned to you are still open"),
             "{body}"
         );
         assert!(body.contains("- #13 Task tracking (In progress)"), "{body}");
@@ -210,7 +210,7 @@ mod tests {
     fn one_task_reads_as_one() {
         let body = reminder_body(&[task(13, "Task tracking", "in_progress")]);
         assert!(
-            body.contains("1 task assigned to you is still open"),
+            body.contains("1 Build task assigned to you is still open"),
             "one reads as one: {body}"
         );
     }

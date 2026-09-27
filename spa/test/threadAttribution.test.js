@@ -411,7 +411,7 @@ describe("a notice Build wrote", () => {
   it("counts what it is reminding about rather than listing the lot", () => {
     document.body.innerHTML = notice({
       body: [
-        "You reported Complete, but 9 tasks assigned to you are still open.",
+        "You reported Complete, but 9 Build tasks assigned to you are still open.",
         "",
         "- #38 Tracking notices render as one deep-linked line (In review)",
         "- #34 Tasks activity in the rail follows the surfaces UX (In review)",

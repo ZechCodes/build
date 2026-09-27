@@ -948,7 +948,7 @@ impl DoneServer {
             }),
             json!({
                 "name": "create_task",
-                "description": "File a task in your project. Two things it is for: work you have found and are NOT doing — a task is cheap, and something you noticed and did not write down exists only in this conversation — and work you ARE doing that runs to more than one step, filed and assigned to yourself so the user can see what is in progress without opening your conversation. It is filed, not started; assign it to start anyone on it, yourself included. If its body asks the user for a decision, pass mention_user: true so it reaches Needs you until they read it; a question in the body alone does not.",
+                "description": "File a Build task: a card on your project's board, not an entry in your harness's own task or todo list. Two things it is for: work you have found and are NOT doing — a task is cheap, and something you noticed and did not write down exists only in this conversation — and work you ARE doing that runs to more than one step, filed and assigned to yourself so the user can see what is in progress without opening your conversation. It is filed, not started; assign it to start anyone on it, yourself included. If its body asks the user for a decision, pass mention_user: true so it reaches Needs you until they read it; a question in the body alone does not.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -2854,6 +2854,29 @@ mod tests {
         "track_task",
         "untrack_task",
     ];
+
+    /// `create_task` files a card on the board, not an entry in the harness's
+    /// own task list (#190): the description says so first.
+    #[test]
+    fn create_task_says_it_files_a_build_task_on_the_board() {
+        for owner in ["agent-01H", "project-01H"] {
+            let tools = DoneServer::for_owner(owner).tools();
+            let create = tools
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tool| tool["name"] == "create_task")
+                .unwrap();
+            let description = create["description"].as_str().unwrap();
+            assert!(
+                description.starts_with(
+                    "File a Build task: a card on your project's board, not an entry in your \
+                     harness's own task or todo list."
+                ),
+                "{description}"
+            );
+        }
+    }
 
     #[test]
     fn both_task_surfaces_explain_how_a_new_task_asks_the_user() {

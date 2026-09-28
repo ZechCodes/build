@@ -401,7 +401,8 @@ async fn a_first_scan_never_runs_under_the_app_mutex() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_landed_first_scan_invalidates_the_browser() {
     let (dir, repo) = init_repo();
-    let (state, handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let (state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    watch_everything(&handler, &sender);
     add_external_worktree(&repo, dir.path(), "loose", "feature-loose");
     let gate = gate_scan_computes(&state);
 
@@ -413,8 +414,11 @@ async fn a_landed_first_scan_invalidates_the_browser() {
     gate.release();
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
-            let events = change_events(&settled_pushes(&mut rx, &key).await);
-            if events.iter().any(|event| event["type"] == "board.changed") {
+            let moved = changed_entities(&settled_pushes(&mut rx, &key).await);
+            if moved
+                .iter()
+                .any(|entity| entity == crate::changes::BOARD_ITEM_ID)
+            {
                 return;
             }
         }
@@ -429,7 +433,8 @@ async fn a_landed_first_scan_invalidates_the_browser() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_landed_first_diffstat_invalidates_the_browser() {
     let (dir, repo) = init_repo();
-    let (state, handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let (state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    watch_everything(&handler, &sender);
     let run_id = {
         let mut app = state.lock().unwrap();
         adopted_run(&mut app, &repo, dir.path(), "stat-run")
@@ -444,8 +449,11 @@ async fn a_landed_first_diffstat_invalidates_the_browser() {
     poll_board(&handler).await;
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
-            let events = change_events(&settled_pushes(&mut rx, &key).await);
-            if events.iter().any(|event| event["type"] == "board.changed") {
+            let moved = changed_entities(&settled_pushes(&mut rx, &key).await);
+            if moved
+                .iter()
+                .any(|entity| entity == crate::changes::BOARD_ITEM_ID)
+            {
                 return;
             }
         }

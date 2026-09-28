@@ -18,7 +18,9 @@ pub(in crate::app::tests) use super::protocol::session::{tool_call_rows, tool_ca
 pub(in crate::app::tests) use super::protocol::status::{
     insert_agent_tab, insert_dictated_agent_tab,
 };
-pub(in crate::app::tests) use super::push::{change_events, greeted_push_session, settled_pushes};
+pub(in crate::app::tests) use super::push::{
+    changed_entities, greeted_push_session, settled_pushes, watch_everything,
+};
 pub(in crate::app::tests) use super::routing::captures::capture_rows;
 pub(in crate::app::tests) use super::routing::router::{capture_record, captured};
 pub(in crate::app::tests) use super::rtc::{offer, signaling_fixture};

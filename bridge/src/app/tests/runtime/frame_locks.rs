@@ -255,7 +255,8 @@ async fn agent_start_answers_with_the_reserved_tab_before_the_harness_is_up() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_delivery_that_fails_in_the_background_lands_on_its_entity() {
     let (dir, repo) = init_repo();
-    let (state, handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let (state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    watch_everything(&handler, &sender);
     insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-unreachable");
     {
         // The checkout its agent would work in is not a directory, so the
@@ -291,10 +292,10 @@ async fn a_delivery_that_fails_in_the_background_lands_on_its_entity() {
             .contains("could not reach the agent"),
         "the failure is legible on the run: {got:?}"
     );
-    let events = change_events(&settled_pushes(&mut rx, &key).await);
+    let moved = changed_entities(&settled_pushes(&mut rx, &key).await);
     assert!(
-        events.contains(&json!({ "type": "entity.changed", "id": "run-unreachable" })),
-        "and the browser is told to look: {events:?}"
+        moved.iter().any(|entity| entity == "run-unreachable"),
+        "and the browser is told to look: {moved:?}"
     );
 }
 

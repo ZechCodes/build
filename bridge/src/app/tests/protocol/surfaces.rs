@@ -283,7 +283,8 @@ fn spawning_call_sequence(view: &Value) -> u64 {
 #[tokio::test]
 async fn a_revision_bump_that_mints_no_row_stales_the_owning_entity() {
     let (dir, repo) = init_repo();
-    let (state, _handler, _sender, mut rx, session_key) = greeted_push_session(&repo, dir.path());
+    let (state, handler, sender, mut rx, session_key) = greeted_push_session(&repo, dir.path());
+    watch_everything(&handler, &sender);
     let root = {
         let mut s = state.lock().unwrap();
         insert_run(
@@ -333,14 +334,14 @@ async fn a_revision_bump_that_mints_no_row_stales_the_owning_entity() {
 
     note_the_board_then_bump_each_revision_once(&state, &revisions);
 
-    let events = change_events(&settled_pushes(&mut rx, &session_key).await);
+    let moved = changed_entities(&settled_pushes(&mut rx, &session_key).await);
     assert_eq!(
-        events
+        moved
             .iter()
-            .filter(|event| **event == json!({ "type": "entity.changed", "id": "run-invalidated" }))
+            .filter(|entity| *entity == "run-invalidated")
             .count(),
         1,
-        "five separately watched bumps inside one window are one stale-detail event: {events:?}"
+        "five separately watched bumps inside one window are one item: {moved:?}"
     );
     let s = state.lock().unwrap();
     assert!(
@@ -354,7 +355,8 @@ async fn a_revision_bump_that_mints_no_row_stales_the_owning_entity() {
 #[tokio::test]
 async fn a_surface_only_session_invalidates_its_owning_entity() {
     let (dir, repo) = init_repo();
-    let (state, _handler, _sender, mut rx, session_key) = greeted_push_session(&repo, dir.path());
+    let (state, handler, sender, mut rx, session_key) = greeted_push_session(&repo, dir.path());
+    watch_everything(&handler, &sender);
     let revision = SurfaceRevision::default();
     let key = {
         let mut s = state.lock().unwrap();
@@ -373,18 +375,18 @@ async fn a_surface_only_session_invalidates_its_owning_entity() {
         )
     };
     spawn_activity_pump(&state, key, None);
-    let initial_events = change_events(&settled_pushes(&mut rx, &session_key).await);
+    let initial = changed_entities(&settled_pushes(&mut rx, &session_key).await);
     assert!(
-        initial_events.contains(&json!({ "type": "entity.changed", "id": "run-surface-only" })),
-        "subscription publishes the already-cached initial snapshot: {initial_events:?}"
+        initial.iter().any(|entity| entity == "run-surface-only"),
+        "subscription publishes the already-cached initial snapshot: {initial:?}"
     );
 
     revision.bump();
 
-    let events = change_events(&settled_pushes(&mut rx, &session_key).await);
+    let moved = changed_entities(&settled_pushes(&mut rx, &session_key).await);
     assert!(
-        events.contains(&json!({ "type": "entity.changed", "id": "run-surface-only" })),
-        "a surface revision invalidates detail without an activity stream: {events:?}"
+        moved.iter().any(|entity| entity == "run-surface-only"),
+        "a surface revision invalidates detail without an activity stream: {moved:?}"
     );
     let s = state.lock().unwrap();
     assert!(

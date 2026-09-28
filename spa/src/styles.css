@@ -1037,8 +1037,10 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
    rule stands between one group and the next. */
 .splitmenu .menu-group + .menu-group { border-top:1px solid var(--line2); }
 /* Text under a menu's rows that is not a choice (#205): muted like the
-   note under a model <select>, ruled off from the rows, and not pressable. */
-.splitmenu .menu-note { margin:0; padding:8px 13px 10px; border-top:1px solid var(--line2); cursor:default; line-height:1.35; }
+   note under a model <select>, ruled off from the rows, and not pressable.
+   Pinned to the foot so a menu that scrolls (the composer caps its height)
+   still shows it. */
+.splitmenu .menu-note { position:sticky; bottom:0; margin:0; padding:8px 13px 10px; background:var(--panel); border-top:1px solid var(--line2); cursor:default; line-height:1.35; }
 .splitmenu .menu-group-title { padding:9px 13px 2px; font-size:10.5px; font-weight:600;
   letter-spacing:.06em; text-transform:uppercase; color:var(--dim); }
 /* A setting's rows are one radio set, and wear it: a ring before each value,

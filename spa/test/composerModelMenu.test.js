@@ -317,6 +317,21 @@ describe("the update note (#205)", () => {
     expect(menu().hidden).toBe(false);
   });
 
+  it("never covers the row the keyboard lands on", () => {
+    mountOld();
+    const define = (element, values) => Object.entries(values).forEach(([key, value]) =>
+      Object.defineProperty(element, key, { configurable: true, get: () => value }));
+    [...menu().querySelectorAll(".mi")].forEach((row, index) =>
+      define(row, { offsetTop: index * 40, offsetHeight: 40, offsetParent: menu() }));
+    define(menu(), { clientHeight: 60 });
+    define(note(), { offsetHeight: 30 });
+    button().focus();
+    button().dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
+    // The last row ends at 80; above a 30px note in a 60px menu, that is a
+    // scroll of 50, not the 20 that would leave it under the note.
+    expect(menu().scrollTop).toBe(50);
+  });
+
   it("is skipped by the keyboard", () => {
     const { onChoose } = mountOld();
     button().focus();

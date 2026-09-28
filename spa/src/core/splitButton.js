@@ -12,6 +12,7 @@ export const SPLIT_BUTTON_SELECTOR = ".splitbtn";
 const CARET_SELECTOR = ".caret";
 const SPLIT_MENU_SELECTOR = ".splitmenu";
 const MENU_ITEM_SELECTOR = ".mi";
+const MENU_NOTE_SELECTOR = ".menu-note";
 
 /** The app's button vocabulary a split button can be painted in: the accent
  *  primary (the default — a surface's decisive verb) or the mini secondary the
@@ -321,10 +322,12 @@ function sightTopOf(menu, row) {
  *  take focus out of sight, where Enter chooses what the reader cannot see.
  *  Measured in layout units: the reveal animates the menu's height, so a
  *  scroll made while it plays can land wrong, and `focusRow` measures again
- *  once motion has settled. */
+ *  once motion has settled. The menu's note is pinned over its foot
+ *  (`menuNoteHtml`), so what is in sight stops at the note. */
 function scrollRowIntoMenu(menu, row) {
   const above = sightTopOf(menu, row) - menu.scrollTop;
-  const below = rowTopWithin(menu, row) + row.offsetHeight - menu.scrollTop - menu.clientHeight;
+  const sightHeight = menu.clientHeight - (menu.querySelector(MENU_NOTE_SELECTOR)?.offsetHeight || 0);
+  const below = rowTopWithin(menu, row) + row.offsetHeight - menu.scrollTop - sightHeight;
   if (above < 0) menu.scrollTop += above;
   else if (below > 0) menu.scrollTop += below;
 }

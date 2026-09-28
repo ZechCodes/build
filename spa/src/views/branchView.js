@@ -10,8 +10,8 @@
 // #tabbody is flush against the toolbar, nothing above it spends the height.
 // core/branchFinish.js decides when Done is offered and what it promises.
 //
-// The surface resolves what stands under the branch with `branch.get`: a run
-// or a bare worktree. That resolution names the git scope the tab bodies read,
+// The surface resolves what stands under the branch from the machine's cached
+// slice (views/branchSeed.js): a run or a bare worktree. That resolution names the git scope the tab bodies read,
 // and which review plug the Changes rail carries — a run's aggregate review
 // diff (taskReview) or a bare worktree's adopt-on-comment diff
 // (worktreeReview). A plain folder has neither: it is the project's own
@@ -254,7 +254,7 @@ export async function renderBranch() {
   let paintedFinish = null;
 
   /** Paint the branch's Done into the toolbar's verb slot, off the freshest
-   *  branch.get row. Frozen while a close-out is in flight, so no poll — this
+   *  branch row. Frozen while a close-out is in flight, so no poll — this
    *  view's own row poll, or the toolbar's independent one, which also calls
    *  this via setToolbarVerb below — can remount an enabled button over a
    *  pending branch.finish, and while its menu is open — a click in progress

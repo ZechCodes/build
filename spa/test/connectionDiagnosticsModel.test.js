@@ -49,6 +49,7 @@ describe("the machine a diagnostic is about", () => {
 
   it("names the local cache's events as this browser's (#169)", () => {
     expect(diagnosticDeviceLabel("local-cache", DEVICES)).toBe("this browser");
+    expect(diagnosticDeviceLabel("local-ui-store", DEVICES)).toBe("this browser");
   });
 });
 

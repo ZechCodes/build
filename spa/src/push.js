@@ -1,17 +1,23 @@
-// Web-push subscription management. The pushes themselves are content-free by
-// design (E2EE — the server never sees task content), so all this does is hand
-// the browser's push subscription to the api and take it back.
+// Web-push subscription management. The api only ever holds the subscription
+// and relays ciphertext: what a push says is sealed by the bridge to this
+// browser's notification key (#200), which is made here after subscribing and
+// handed to the bridges over E2EE (core/pushKeySync.js).
 //
-// The service worker (public/sw.js, served same-origin at /app/sw.js) renders
-// every push generically and never caches anything.
+// The service worker (public/sw.js, served same-origin at /app/sw.js) opens a
+// sealed push, falls back to generic copy for anything else, and never caches
+// anything. A click on its notification comes back here as `build.push.open`.
 
 import {
   fetchVapidPublicKey,
   subscribePush,
   unsubscribePush,
 } from "./api.js";
+import { armNotificationKey, retireNotificationKey } from "./core/pushKeySync.js";
 
 export const SERVICE_WORKER_URL = "/app/sw.js";
+export const PUSH_OPEN_MESSAGE = "build.push.open";
+const APP_PATH = "/app/";
+const APP_LINK_PREFIX = "/app/#/";
 
 // Decode an unpadded base64url string (the VAPID public key) to the raw bytes
 // PushManager.subscribe expects as applicationServerKey. Pure.
@@ -64,6 +70,9 @@ export async function enablePush() {
     applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
   });
   await subscribePush(subscription.toJSON());
+  // In the background: a bridge that is slow or refuses never holds up (or
+  // undoes) turning push on; the push just shows the generic copy.
+  void armNotificationKey(subscription);
 }
 
 // Drop the browser subscription and tell the api to forget it.
@@ -73,5 +82,45 @@ export async function disablePush() {
   if (!subscription) return;
   const endpoint = subscription.endpoint;
   await subscription.unsubscribe();
+  void retireNotificationKey(endpoint);
   await unsubscribePush(endpoint);
+}
+
+/** Whether a message came from this origin's own active service worker: the
+ *  worker at SERVICE_WORKER_URL that is the registration's active one or this
+ *  page's controller. Nothing else may steer the app. */
+export async function fromOwnWorker(source, container = navigator.serviceWorker) {
+  if (typeof ServiceWorker === "undefined" || !(source instanceof ServiceWorker)) return false;
+  if (source.scriptURL !== new URL(SERVICE_WORKER_URL, location.origin).href) return false;
+  const registration = await container.getRegistration(APP_PATH);
+  return source === registration?.active || source === container.controller;
+}
+
+/** The hash an in-app link routes to, or null for anything outside the app. */
+export function appLinkHash(url) {
+  return typeof url === "string" && url.startsWith(APP_LINK_PREFIX) ? url.slice(APP_PATH.length) : null;
+}
+
+async function followPushOpen(event, container, open) {
+  if (event.data?.type !== PUSH_OPEN_MESSAGE) return;
+  const hash = appLinkHash(event.data.url);
+  if (!hash || !(await fromOwnWorker(event.source, container))) return;
+  open(hash);
+}
+
+/**
+ * Hear a notification click the service worker forwards to this open window
+ * and route to its deep link without a reload. `open(hash)` does the routing;
+ * the default sets `location.hash`, which the router re-renders from.
+ */
+export function installPushOpenListener({
+  open = (hash) => {
+    location.hash = hash;
+  },
+  container = globalThis.navigator?.serviceWorker,
+} = {}) {
+  if (!container) return () => {};
+  const listener = (event) => void followPushOpen(event, container, open);
+  container.addEventListener("message", listener);
+  return () => container.removeEventListener("message", listener);
 }

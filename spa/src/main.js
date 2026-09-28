@@ -8,9 +8,10 @@ import "@fontsource/inter/800.css";
 import "./styles.css";
 
 import { $ } from "./dom.js";
-import { App, go, initRouter } from "./app.js";
+import { App, followNotificationLink, go, initRouter } from "./app.js";
 import { initDevicePicker } from "./devices.js";
-import { registerPushWorker } from "./push.js";
+import { installPushOpenListener, registerPushWorker } from "./push.js";
+import { startPushKeySync } from "./core/pushKeySync.js";
 import { createVersionWatcher, fetchServedVersion } from "./core/version.js";
 import { requestSheetDismiss } from "./core/sheetDismiss.js";
 import { installTheme } from "./core/theme.js";
@@ -29,6 +30,9 @@ installTheme();
 // origin — skip under the vite dev server.
 if (location.pathname.startsWith("/app")) {
   registerPushWorker().catch(() => {});
+  // A notification clicked while this window is open routes here, without a
+  // reload (public/sw.js posts `build.push.open`).
+  installPushOpenListener({ open: followNotificationLink });
   // Watch the served frontend version and offer one reload when this bundle
   // falls behind a deploy — the resume check is what reaches a PWA that slept
   // through it. (start() is a no-op for dev builds.)
@@ -67,3 +71,6 @@ document.addEventListener("keydown", (e) => {
 boot();
 // The user arriving, told to each bridge: where "Done since you left" starts.
 startUserPresence();
+// Every bridge that greets is handed this browser's notification key again, so
+// it can seal what a push says (#200).
+startPushKeySync();

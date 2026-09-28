@@ -765,10 +765,13 @@ export function mountAgentRail(host, context) {
   // overview opened on the project's side is the overview a fresh mount of
   // this page comes back to.
   const pageKey = createAgentRailContext(context).key;
-  const stand = (standing, alongside, { panelOpen = null, selectedKind = null } = {}) => {
+  const stand = (standing, alongside, { panelOpen = null, selectedKind = null, landOnLatest = false } = {}) => {
     live?.dispose();
     live = mountRailOnContext(host, {
       ...standing,
+      // Only a stand a link asked for lands on the latest message; a press
+      // that swaps sides opens the way a press does.
+      landOnLatest,
       // The rail can stand on the project's conversation while the route is
       // still a workspace. Overview breadth belongs to the page, not the
       // conversation selected on its strip.
@@ -790,9 +793,10 @@ export function mountAgentRail(host, context) {
     named: (name) => {
       workspaceName = name || workspaceName;
     },
-    toProject: (entityId, openAgentId = null) => {
+    toProject: (entityId, openAgentId = null, { landOnLatest = false } = {}) => {
       known = { ...known, entityId };
-      stand(projectSide(openAgentId), workItemContext(context, known), { panelOpen: true, selectedKind: "agent" });
+      stand(projectSide(openAgentId), workItemContext(context, known),
+        { panelOpen: true, selectedKind: "agent", landOnLatest });
     },
     toWorkItem: (openAgentId, { adding = false } = {}) => {
       stand(workItemContext(context, known, { openAgentId, addingAgent: adding }), projectSide(),
@@ -804,7 +808,7 @@ export function mountAgentRail(host, context) {
   // from every workspace in the project — and the side that finds it in its own
   // half of the strip is the side that stands the rail there.
   stand(workItemContext(context, known, { openAgentId: context.openAgentId || null,
-    addingAgent: context.addingAgent === true }), projectSide());
+    addingAgent: context.addingAgent === true }), projectSide(), { landOnLatest: context.landOnLatest === true });
   return {
     collapse() {
       live?.collapse();
@@ -1023,6 +1027,9 @@ function mountRailOnContext(host, context, swap) {
   let mintingProjectAgent = false;
   // The agent a URL named and this side has not accounted for yet.
   let wantedAgentId = context.openAgentId || null;
+  // A link opened this rail: its first paint of the conversation lands on the
+  // latest message (core/thread.js `paintThreadKeepingPlace`).
+  let landOnLatest = context.landOnLatest === true;
   let alongside = context.alongside && createAgentRailContext(context.alongside);
   let alongsideEntity = railEntity(seedPayload(context.alongside), alongsideKind(context));
   // Docked beside the work, or a card on the strip. The pin is the reader's
@@ -1731,7 +1738,7 @@ function mountRailOnContext(host, context, swap) {
     const wanted = wantedAgentId;
     wantedAgentId = null;
     if (agentOf(wanted) || !alongsideEntity.agents.some((agent) => agent.id === wanted)) return;
-    swap.toProject(projectOwner, wanted);
+    swap.toProject(projectOwner, wanted, { landOnLatest: context.landOnLatest === true });
   };
 
   /// The project's own page, on the machine this rail is mounted on.
@@ -2783,7 +2790,8 @@ function mountRailOnContext(host, context, swap) {
       paintThreadKeepingPlace(body, () => {
         paintThreadEntries(body, built);
         wireTimeline(body);
-      }, { olderItemsPrepended });
+      }, { olderItemsPrepended, landOnLatest });
+      if (body.querySelector(".review-thread")) landOnLatest = false;
       syncUserMessageTicks(body);
     });
   };

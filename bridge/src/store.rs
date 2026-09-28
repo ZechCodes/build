@@ -59,6 +59,7 @@ mod entities;
 mod legacy;
 mod migrations;
 mod operations;
+pub mod push_keys;
 mod schema;
 mod task_rename;
 mod tracker;
@@ -165,7 +166,11 @@ pub enum StoreError {
 ///
 /// 10 is the task rename (#190): tables, columns, ids and record keys take the
 /// new word, after a copy of the whole database (`store/task_rename.rs`).
-pub const SCHEMA_VERSION: i64 = 10;
+///
+/// 11 adds `push_keys`, the notification keys push content is sealed to
+/// (#200). A new table only: a v10 store gains it empty, and nothing it held
+/// is touched.
+pub const SCHEMA_VERSION: i64 = 11;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.

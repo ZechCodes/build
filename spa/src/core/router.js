@@ -299,6 +299,23 @@ function commitPlace(route, query) {
   return commit ? { commit } : null;
 }
 
+const PUSH_OPEN_PARAM = "from";
+const PUSH_OPEN_VALUE = "push";
+
+/// The mark the service worker puts on the link a notification click opens
+/// (public/sw.js `markedAsPushOpen`), taken off: the hash without it, and
+/// whether it was there. The mark is never part of a route, so no route writes
+/// it back and a reload of the URL left behind lands on the unread line.
+export function takePushOpenMark(hash) {
+  const text = String(hash || "");
+  const at = text.indexOf("?");
+  const params = new URLSearchParams(at < 0 ? "" : text.slice(at + 1));
+  if (params.get(PUSH_OPEN_PARAM) !== PUSH_OPEN_VALUE) return { hash, fromPush: false };
+  params.delete(PUSH_OPEN_PARAM);
+  const rest = String(params);
+  return { hash: `${text.slice(0, at)}${rest ? `?${rest}` : ""}`, fromPush: true };
+}
+
 /// The route a hash names, and where in it the reader is standing.
 ///
 /// Split before parse: everything up to the `?` is the surface, everything

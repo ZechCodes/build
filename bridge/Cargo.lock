@@ -287,6 +287,7 @@ dependencies = [
 name = "build-bridge"
 version = "0.2.3"
 dependencies = [
+ "aes-gcm",
  "async-trait",
  "base64 0.22.1",
  "build-bridge",
@@ -294,12 +295,14 @@ dependencies = [
  "flate2",
  "futures-util",
  "git2",
+ "hkdf",
  "httpdate",
  "ignore",
  "jiff",
  "libc",
  "log",
  "notify",
+ "p256",
  "portable-pty",
  "rcgen 0.13.2",
  "reqwest",

@@ -244,6 +244,15 @@ CREATE TABLE IF NOT EXISTS agent_migration_backups (
     record            TEXT NOT NULL,
     PRIMARY KEY (agent_id, migration_version)
 );
+
+-- The notification keys push content is sealed to (#200): one per push
+-- subscription, keyed by `b64u(SHA-256(endpoint))`, at most 32 kept
+-- (`store/push_keys.rs` evicts the oldest `registered_at`, unix millis).
+CREATE TABLE IF NOT EXISTS push_keys (
+    subscription_id TEXT PRIMARY KEY,
+    public_key      TEXT NOT NULL,
+    registered_at   INTEGER NOT NULL
+);
 "#;
 
 /// The two conversation reads that must never walk a whole conversation, held

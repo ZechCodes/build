@@ -19,6 +19,7 @@ const NONE = {
   messages: { context: false },
   threads: { postOperations: false, attachmentChunks: false },
   branches: { finishDelete: false },
+  push: { registerKey: false, revokeKey: false },
 };
 
 /** What a bridge that takes subscriptions, priorities and coded refusals
@@ -72,6 +73,7 @@ describe("the adapter a greeting selects", () => {
       messages: { context: false },
       threads: { postOperations: false, attachmentChunks: false },
       branches: { finishDelete: false },
+      push: { registerKey: false, revokeKey: false },
     });
   });
 

@@ -1,0 +1,14 @@
+{
+  "method": "push.registerKey",
+  "since": "2.1.0",
+  "params": {
+    "subscription_id": "fktz0HaQPrTBONQORgaYdrkQLm41LU5PVktHaqho6To",
+    "public_key": "BHKs2HtDjA-uaSJ6Pgf6fSznoiTDkYCYcz7DWi9OXLG0awHT6hXC01Suu7R305cuZOrOj_tPPOhZuv3udC929qc"
+  },
+  "result": {},
+  "errors": [
+    "invalid_params",
+    "unavailable",
+    "internal"
+  ]
+}

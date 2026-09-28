@@ -158,8 +158,10 @@ impl AppState {
         self.stamp_state_change(&plan_id, plan_state_str(&active.plan.state), now);
         let persisted = self.persist_plan_record(&plan_id, &active);
         let news = self.roster_news(&active.agents);
-        self.push_agent_news(&plan_id, news);
         self.plans.insert(plan_id.clone(), active);
+        // Back in its map first: a push's content (#200) names the place the
+        // entity belongs to, which is read from there.
+        self.push_agent_news(&plan_id, news);
         // After the insert: the attention file is pruned to what exists when it
         // is written, and an anchor stamped while the record was checked out
         // would be dropped on the way to disk.
@@ -207,8 +209,9 @@ impl AppState {
         self.invalidate_run_stat(&run_id);
         let persisted = self.persist_run_record(&run_id, &active);
         let news = self.roster_news(&active.agents);
-        self.push_agent_news(&run_id, news);
         self.runs.insert(run_id.clone(), active);
+        // See `finish_plan_mutation`: pushed once the record is back.
+        self.push_agent_news(&run_id, news);
         // See `finish_plan_mutation`: seeded once the record is back in its map.
         self.seed_anchor(&run_id);
         self.reap_orphaned_terminals();

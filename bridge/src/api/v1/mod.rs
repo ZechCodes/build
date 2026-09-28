@@ -40,7 +40,9 @@
 //! and the diff reads), [`github`] (`github.repos`), [`lifecycle`] (`task.*`, `plan.*`, `run.*`,
 //! `branch.*`, `worktree.create/finish`, `entity.*`),
 //! [`workspace`] (`workspace.*`), [`updates`] (`bridge.update_status`,
-//! `bridge.check_update`, `bridge.install_update`), [`tasks`] (`tasks.*`, the per-project
+//! `bridge.check_update`, `bridge.install_update`), [`push`] (`push.registerKey`,
+//! `push.revokeKey`, the notification keys sealed push content goes to),
+//! [`tasks`] (`tasks.*`, the per-project
 //! tracker — NOT `lifecycle`'s singular `task.*`, which is the retired plan
 //! flow).
 
@@ -49,6 +51,7 @@ pub mod changes;
 pub mod git;
 pub mod github;
 pub mod lifecycle;
+pub mod push;
 pub mod tasks;
 pub mod thread;
 pub mod updates;
@@ -334,7 +337,7 @@ pub fn call_typed<P: DeserializeOwned + Serialize, R: Serialize>(
 }
 
 /// Every family's table, in one place.
-fn families() -> [&'static [(&'static str, Handler)]; 9] {
+fn families() -> [&'static [(&'static str, Handler)]; 10] {
     [
         board::methods(),
         changes::methods(),
@@ -343,6 +346,7 @@ fn families() -> [&'static [(&'static str, Handler)]; 9] {
         github::methods(),
         tasks::methods(),
         lifecycle::methods(),
+        push::methods(),
         updates::methods(),
         workspace::methods(),
     ]

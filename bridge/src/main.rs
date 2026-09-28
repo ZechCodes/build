@@ -22,7 +22,8 @@
 //!   `done` is demoted to `idle_unreported` (default 300)
 //! - `BRIDGE_IDENTITY_FILE` durable identity path (default `~/.build/identity.json`)
 //! - `BRIDGE_API_URL`     the api (skriftapp) base URL for pairing and for the
-//!   signed, content-free web-push notifies fired when a task needs the human
+//!   signed web-push notifies fired when a task needs the human, their
+//!   content sealed so the api sees only ids and ciphertext
 //!   (default `https://getbuild.ing`)
 //! - `BRIDGE_WEB_URL`     the web app base URL printed in the approve link (default = api url)
 //! - `BRIDGE_DEVICE_NAME` device name shown during pairing (default: hostname)

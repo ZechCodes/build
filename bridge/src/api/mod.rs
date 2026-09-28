@@ -17,7 +17,9 @@ use std::collections::BTreeSet;
 /// The version of the wire API this bridge speaks.
 /// 2.0.0 is the task rename (#190): every tracker and plan verb and feature
 /// name moved to `tasks.*` or `task.*`.
-pub const API_VERSION: &str = "2.0.0";
+/// 2.1.0 adds `push.registerKey` and `push.revokeKey` (#200): the notification
+/// keys push content is sealed to.
+pub const API_VERSION: &str = "2.1.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.

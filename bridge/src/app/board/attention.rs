@@ -16,14 +16,30 @@ pub(in crate::app) struct ConversationNews {
     pub(in crate::app) thread_id: String,
     pub(in crate::app) sequence: u64,
     pub(in crate::app) attention_reason: Option<&'static str>,
+    /// The creation sequence of that newest attention-class item: what a
+    /// sealed push (#200) quotes the first line of.
+    pub(in crate::app) attention_sequence: Option<u64>,
 }
 
 /// One agent's [`ConversationNews`], and whether the user watches that agent:
 /// an unwatched agent's unread is on no badge, so it pushes nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::app) struct AgentNews {
+    pub(in crate::app) agent_id: String,
     pub(in crate::app) news: ConversationNews,
     pub(in crate::app) watched: bool,
+}
+
+/// The creation sequence of the newest attention-class item after `seen`:
+/// the one [`Thread::unread_since`](crate::thread::Thread::unread_since) names
+/// the reason of.
+fn newest_attention_after(thread: &crate::thread::Thread, seen: u64) -> Option<u64> {
+    thread
+        .items
+        .iter()
+        .rev()
+        .find(|item| item.sequence() > seen && item.attention_reason().is_some())
+        .map(crate::thread::ThreadItem::sequence)
 }
 
 impl AppState {
@@ -158,6 +174,7 @@ impl AppState {
             thread_id: thread.id.clone(),
             sequence: thread.last_sequence(),
             attention_reason: observed.and_then(|seen| thread.unread_since(seen).reason),
+            attention_sequence: observed.and_then(|seen| newest_attention_after(thread, seen)),
         }
     }
 
@@ -173,6 +190,7 @@ impl AppState {
             .filter_map(|agent| {
                 let thread = self.conversation_thread_of(agent)?;
                 Some(AgentNews {
+                    agent_id: agent.id.clone(),
                     news: self.conversation_news(thread),
                     watched: agent.watched,
                 })
@@ -180,14 +198,22 @@ impl AppState {
             .collect()
     }
 
-    /// Fire one content-free web-push notify for each piece of agent news that
-    /// adds to the unread counter (#191).
+    /// Fire one web-push notify for each piece of agent news that adds to the
+    /// unread counter (#191), carrying the agent's words for sealing (#200).
     ///
     /// Event-driven, not state-driven. The watermark moves whether or not the
     /// push goes out, so one piece of news notifies once even when two agents
     /// or two entities share the conversation.
+    ///
+    /// Called with the entity back in its map: the content names the
+    /// workspace or project the entity belongs to, which is read from there.
     pub(in crate::app) fn push_agent_news(&mut self, entity_id: &str, roster: Vec<AgentNews>) {
-        for AgentNews { news, watched } in roster {
+        for AgentNews {
+            agent_id,
+            news,
+            watched,
+        } in roster
+        {
             let first_look = self
                 .board
                 .attention_mut()
@@ -196,7 +222,9 @@ impl AppState {
                 continue;
             }
             if self.agent_news_pushes(entity_id, news.attention_reason) {
-                self.spawn_notify(entity_id.to_string(), crate::notify::AGENT_KIND);
+                let content =
+                    self.agent_push_content(entity_id, &agent_id, news.attention_sequence);
+                self.spawn_notify(entity_id.to_string(), crate::notify::AGENT_KIND, content);
             }
         }
     }
@@ -222,19 +250,39 @@ impl AppState {
             .should_notify(entity_id, crate::notify::unix_seconds())
     }
 
-    /// Spawn the actual notify POST off the app lock. A delivery failure only
-    /// logs — it never blocks the mutation.
-    pub(in crate::app) fn spawn_notify(&mut self, entity_id: String, kind: &'static str) {
+    /// Spawn the notify off the app lock (#191, #200). Sealing happens in the
+    /// spawned task, never here: the keys are read through the store's own
+    /// handle (a clone sharing its connection and mutex), so the app lock is
+    /// neither held for it nor needed. A delivery failure only logs, and says
+    /// only why — never what the push said.
+    pub(in crate::app) fn spawn_notify(
+        &mut self,
+        entity_id: String,
+        kind: &'static str,
+        content: Option<crate::notify::content::PendingContent>,
+    ) {
         #[cfg(test)]
-        self.sent_notifies.push((entity_id.clone(), kind));
+        let content = {
+            use crate::notify::content::PendingContent;
+            let resolved = content.and_then(PendingContent::resolve);
+            self.sent_notifies.push((entity_id.clone(), kind));
+            self.sent_push_contents.push(resolved.clone());
+            resolved.map(PendingContent::Ready)
+        };
         let Some(notifier) = &self.notifier else {
             return;
         };
         let notifier = notifier.clone();
+        let keys = self.store.clone();
+        let delivery = crate::notify::Delivery {
+            entity_id,
+            kind,
+            content,
+        };
         match tokio::runtime::Handle::try_current() {
             Ok(handle) => {
                 handle.spawn(async move {
-                    if let Err(e) = notifier.notify(&entity_id, kind).await {
+                    if let Err(e) = notifier.deliver(delivery, keys).await {
                         eprintln!("push notify: {e}");
                     }
                 });

@@ -3,7 +3,7 @@
   "since": "1.0.0",
   "params": {},
   "result": {
-    "api_version": "2.0.0",
+    "api_version": "2.1.0",
     "capabilities": [
       "agent.add",
       "agent.attach",
@@ -110,6 +110,8 @@
       "project.remove_source",
       "project.set_isolation",
       "project.set_remote",
+      "push.registerKey",
+      "push.revokeKey",
       "requests.priority",
       "requests.receipts",
       "rtc.close",

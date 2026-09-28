@@ -97,7 +97,7 @@ Modules are declared in `bridge/src/lib.rs`. The main groups (paths relative to 
 | Checkouts | `worktree.rs` + `worktree/` (`WorktreeManager`), `isolation/` (git worktree, Rift, plain copy), `lifecycle/`, `watch.rs`, `diff.rs`, `gitgui/`, `git_process.rs` |
 | Agents | `harness/` (providers), `pty.rs`, `screen.rs`, `agent.rs`, `thread/`, `delivery.rs`, `reaper.rs`, `resume.rs`, `priority.rs`, `mcp.rs` + `mcp/` |
 | Work model | `orchestrator/`, `plan.rs`, `run.rs`, `branch.rs`, `capture.rs`, `router.rs`, `tracker.rs`, `attention.rs`, `operation.rs` |
-| Services | `update/` (self-update), `service/` (install), `notify.rs` (web push for what adds to the unread counter, #191), `reclaim.rs` + `reclaim/` (workspace reclaim, run by `app/workspaces/reclaim.rs`) |
+| Services | `update/` (self-update), `service/` (install), `notify.rs` + `notify/` (web push for what adds to the unread counter, #191, its content sealed to each browser's notification key, #200; see [Sealed push content](#sealed-push-content)), `reclaim.rs` + `reclaim/` (workspace reclaim, run by `app/workspaces/reclaim.rs`) |
 
 ### RPC and push events
 
@@ -148,7 +148,7 @@ Everything else is queued to the worker pool in
    arms (`ping`, `term.list`, `term.close`, `stream.*`).
 
 **The verb registry** is `bridge/src/api/v1/mod.rs`. Each family file (`board.rs`,
-`changes.rs`, `git.rs`, `tasks.rs`, `lifecycle.rs`, `thread.rs`, `updates.rs`,
+`changes.rs`, `git.rs`, `push.rs`, `tasks.rs`, `lifecycle.rs`, `thread.rs`, `updates.rs`,
 `workspace.rs`) has a `methods()` table built with the `v1_method!` macro, which
 names the verb, its handler and its typed params and result. Handler signatures
 never take `serde_json::Value`; a test in that module enforces it. Slow git work
@@ -210,7 +210,7 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `2.0.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `2.1.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
@@ -231,6 +231,8 @@ runtime that starts them.
   rename (#190), the one break so far: every tracker and plan verb and feature
   name moved to `tasks.*` or `task.*`, so a 1.x bridge and a 2.x SPA gate
   each other as out of date. The modules and fixtures keep their `v1` names.
+  2.1.0 adds `push.registerKey` and `push.revokeKey` (sealed push content,
+  #200).
 - `session.hello` is answered by `session_hello` in
   `bridge/src/app/runtime/terminals.rs`. The reply carries `api_version`,
   `capabilities`, `push_events`, `events` and the `changes` subscription settings.
@@ -259,6 +261,46 @@ runtime that starts them.
   field is still ignored, and its unknown kind refused.
 - `PROTOCOL_VERSION` in `bridge/src/transport.rs` is a different number: the
   version of the E2EE envelope.
+
+### Sealed push content
+
+A browser push (#191) says what happened (#200): a task's `#N title` and the
+first line of its news, or an agent's name and the first line of what it
+said, with a deep link to the task or the conversation. The api, the push
+service and every log see only ciphertext. The exact scheme, its failure modes
+and its controls are
+[`planning/v2/Push Content Security Checklist.md`](<planning/v2/Push Content Security Checklist.md>).
+
+- The browser makes one non-extractable ECDH P-256 key per push subscription
+  (`spa/src/pushKeys.js`), keeps it in IndexedDB for the service worker, and
+  registers the public half with each bridge that announces
+  `push.registerKey`, after every greeting (`spa/src/core/pushKeySync.js`).
+  A subscription is named by `sid = b64u(SHA-256(endpoint))`, so the bridge
+  never sees the endpoint and the api needs no new column.
+- The bridge keeps the keys in `push_keys` (store schema 11,
+  `bridge/src/store/push_keys.rs`, at most 32). `spawn_notify` builds the
+  content (`bridge/src/notify/content.rs`, `bridge/src/app/board/agent_push.rs`,
+  `bridge/src/app/tracker/push.rs`) and hands it to a spawned task. An
+  agent's content leaves resolving its workspace's path on disk to that task.
+  The task seals the content per key off the app lock within a 1 s budget,
+  padded to a fixed 1024 bytes so no blob's length says which event happened
+  (`bridge/src/notify/delivery.rs`, `bridge/src/notify/seal.rs`), signs a
+  challenge that binds the sealed digest, and forgets the keys the api reports
+  unknown. Any failure sends the #191 generic notify.
+- The api (`skriftapp/buildapp/web_push.py`) checks only the shape of each
+  blob, forwards it byte-identical to its subscription, and never decodes or
+  logs it.
+- The service worker (`spa/public/sw.js`) opens the blob (AAD-bound to sid,
+  kind and entity id; freshness window; nonce replay store) or shows the
+  generic copy. A click reaches an open window as a `build.push.open` message,
+  which `spa/src/push.js` accepts only from this origin's service worker and
+  only for an `/app/#/` link. A cold start opens the link with a `from=push`
+  mark that the router takes off the URL (`takePushOpenMark`). Either way that
+  one open lands the linked conversation on its latest message; every other
+  `?agent=` link, a reload included, lands on the unread line.
+- The sealing is not sender-authenticated: forgery is prevented only because
+  the notification public key travels only over E2EE and never reaches the
+  api.
 
 ### Stores and persistence
 

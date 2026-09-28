@@ -1,0 +1,13 @@
+{
+  "method": "push.revokeKey",
+  "since": "2.1.0",
+  "params": {
+    "subscription_id": "fktz0HaQPrTBONQORgaYdrkQLm41LU5PVktHaqho6To"
+  },
+  "result": {},
+  "errors": [
+    "invalid_params",
+    "unavailable",
+    "internal"
+  ]
+}

@@ -1,7 +1,7 @@
 // App shell: shared state, the hash router wiring, and render dispatch.
 
 import { $ } from "./dom.js";
-import { routeFromHash, hashFromRoute, withDeviceOrResolve } from "./core/router.js";
+import { routeFromHash, hashFromRoute, takePushOpenMark, withDeviceOrResolve } from "./core/router.js";
 import { renderInbox } from "./views/inbox.js";
 import { renderBranch } from "./views/branchView.js";
 import { renderWorkspace } from "./views/workspaceView.js";
@@ -14,7 +14,7 @@ import { renderResolving } from "./views/resolving.js";
 import { markConsoleTerminal } from "./core/consoleModel.js";
 import { inboxRouteChanged } from "./core/inboxShell.js";
 import { toolbarRouteChanged } from "./core/toolbar.js";
-import { standShell } from "./core/shell.js";
+import { askToOpenLinkedAgent, standShell } from "./core/shell.js";
 import { clearCacheScope } from "./core/cacheScope.js";
 import { wipeCache } from "./core/localCache.js";
 import { routeChanged } from "./core/cacheSync.js";
@@ -210,9 +210,34 @@ export function markRoute(route) {
  *  So it is handed to the console here, at the one place every URL is read,
  *  and the next console to mount opens on it. */
 function readRoute() {
-  const route = routeFromHash(location.hash);
+  const { hash, fromPush } = takePushOpenMark(location.hash);
+  if (fromPush) {
+    // A notification opened this link: its first stand lands on the latest
+    // message, and the URL keeps no trace of it (no new history entry).
+    askToOpenLinkedAgent();
+    history.replaceState(null, "", hash);
+  }
+  const route = routeFromHash(hash);
   if (route.term) markConsoleTerminal(route.term);
   return route;
+}
+
+/**
+ * Route to a notification's deep link in this open window (push.js
+ * `installPushOpenListener`), opening the conversation it names even where the
+ * URL already names it and the rail was left collapsed or on another agent. A
+ * link to the page already standing is stood again rather than waiting on a
+ * hashchange that never comes. The stand this causes lands on the latest
+ * message; the service worker's mark is dropped, so the URL never keeps it.
+ */
+export function followNotificationLink(markedHash) {
+  const { hash } = takePushOpenMark(markedHash);
+  askToOpenLinkedAgent();
+  if (location.hash !== hash) {
+    location.hash = hash;
+    return;
+  }
+  if (!App.gated) standShell(App.route);
 }
 
 export function initRouter() {

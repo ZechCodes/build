@@ -61,6 +61,14 @@ rtc = "0.20.4"
 jiff = { version = "0.2.37", features = ["tzdb-bundle-always"] }
 flate2 = "1"
 tar = "0.4"
+# Sealed push content (#200, `notify/seal.rs`): ECDH P-256, HKDF-SHA256 and
+# AES-256-GCM, the scheme in `planning/v2/Push Content Security Checklist.md`.
+# Pinned to the versions webrtc already resolves, so the lock gains no
+# package. RustCrypto rather than ring because the vector test injects a fixed
+# ephemeral key, which ring's agreement API refuses by design.
+p256 = { version = "0.13.2", features = ["ecdh"] }
+hkdf = "0.12.4"
+aes-gcm = "0.10.3"
 
 # The Rust half of the complexity gate (CLAUDE.md "Complexity gates"). The
 # threshold itself lives in clippy.toml; this promotes the lint from

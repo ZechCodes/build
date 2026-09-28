@@ -209,6 +209,7 @@ mod filesystem;
 mod git;
 mod github;
 mod harness_models;
+mod installed_models;
 mod lifecycle_compat;
 mod merge_regressions;
 mod project_agent;

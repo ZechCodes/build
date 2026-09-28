@@ -41,6 +41,10 @@ pub enum HarnessError {
     /// door.
     #[error("{0}")]
     Unsupported(String),
+    /// A session this machine's CLI cannot run correctly, refused before it
+    /// is started; the sentence says why and what to do (#203).
+    #[error("{0}")]
+    Refused(String),
 }
 
 /// One turn handed to an agent.

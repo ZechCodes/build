@@ -290,6 +290,9 @@ impl ProtocolReader {
     /// asked, `claude-haiku-4-5` announced, while the messages carry the
     /// dated id), so an exact comparison is the right one.
     fn read_init(&mut self, event: &Value) {
+        if let Some(reported) = event["claude_code_version"].as_str() {
+            crate::harness::installed::observe_version(crate::models::AgentProvider::ClaudeAdk, reported);
+        }
         let mismatch = {
             let mut state = self.state.lock().unwrap();
             state.announced = true;

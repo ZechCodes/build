@@ -31,6 +31,7 @@ mod streams;
 mod tasks;
 mod tracker;
 mod transactions;
+mod model_catalog;
 mod updates;
 mod watchers;
 mod workspaces;
@@ -325,6 +326,10 @@ pub struct AppState {
     /// requests finishing. Each greeted session gets one status watch task.
     updates: Option<Arc<crate::update::UpdateService>>,
     update_subscriptions: HashMap<String, tokio::task::JoinHandle<()>>,
+    /// What the installed agent CLIs said, and each greeted session's watch
+    /// on it for the `models.changed` push.
+    cli_readings: Arc<crate::harness::installed::Readings>,
+    models_subscriptions: HashMap<String, tokio::task::JoinHandle<()>>,
     /// Build's own state directory, fixed at construction. Router scratch is
     /// cut here, beside the store; attaching a store validates its parent and
     /// never changes this root.
@@ -628,6 +633,8 @@ impl AppState {
             router_sessions: HashMap::new(),
             updates: None,
             update_subscriptions: HashMap::new(),
+            cli_readings: Arc::clone(crate::harness::installed::readings()),
+            models_subscriptions: HashMap::new(),
             state_root,
             bridge_exe,
             router_choice: None,

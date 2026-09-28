@@ -20,8 +20,8 @@ use std::time::{Duration, Instant};
 use semver::Version;
 use tokio::sync::watch;
 
-use crate::harness::harness_for;
-use crate::models::AgentProvider;
+use crate::harness::{harness_for, Harness, HarnessError};
+use crate::models::{AgentProvider, ModelChoice};
 
 pub(crate) mod offer;
 pub(crate) mod probe;
@@ -71,6 +71,9 @@ pub struct Readings {
     schedule: Option<Scheduler>,
     now: Clock,
     changed: watch::Sender<u64>,
+    /// Asked in place of every CLI's own probe, in a test.
+    #[cfg(test)]
+    stand_in: Option<&'static dyn CliProbe>,
 }
 
 impl Readings {
@@ -98,6 +101,21 @@ impl Readings {
         Self::with(None, Arc::new(Instant::now), READING_TTL)
     }
 
+    /// Readings that ask on the calling thread, and ask `probe` whichever CLI
+    /// is meant: an app test's stand-in for every installed CLI.
+    #[cfg(test)]
+    pub(crate) fn answering_inline(probe: &'static dyn CliProbe) -> Arc<Self> {
+        let mut readings = Self::with(
+            Some(Arc::new(|ask: Box<dyn FnOnce() + Send>| ask())),
+            Arc::new(Instant::now),
+            READING_TTL,
+        );
+        Arc::get_mut(&mut readings)
+            .expect("just made")
+            .stand_in = Some(probe);
+        readings
+    }
+
     fn with(schedule: Option<Scheduler>, now: Clock, ttl: Duration) -> Arc<Self> {
         Arc::new(Self {
             entries: Mutex::new(HashMap::new()),
@@ -105,6 +123,8 @@ impl Readings {
             schedule,
             now,
             changed: watch::channel(0).0,
+            #[cfg(test)]
+            stand_in: None,
         })
     }
 
@@ -177,6 +197,8 @@ impl Readings {
         let Some(schedule) = &self.schedule else {
             return;
         };
+        #[cfg(test)]
+        let probe = self.stand_in.unwrap_or(probe);
         let readings = Arc::clone(self);
         schedule(Box::new(move || {
             let reading = probe.read(binary);
@@ -218,9 +240,33 @@ pub fn readings() -> &'static Arc<Readings> {
 /// What `provider` offers on this machine: its catalog, seen through what its
 /// CLI last said.
 pub fn model_offer(provider: AgentProvider) -> ModelOffer {
+    model_offer_from(readings(), provider)
+}
+
+/// The same, seen through `readings`.
+pub fn model_offer_from(readings: &Arc<Readings>, provider: AgentProvider) -> ModelOffer {
     let harness = harness_for(provider);
-    let reading = readings().reading(harness.binary(), harness.cli_probe());
+    let reading = readings.reading(harness.binary(), harness.cli_probe());
     harness.offer(reading.as_deref())
+}
+
+/// Refuse a session on a model the installed CLI cannot run correctly, before
+/// it is started: an older Claude Code gets a 400 from the API on every turn,
+/// or runs the model at a 200k window, and neither says so where the person
+/// who chose the model will look (#203). A CLI Build knows nothing about is
+/// never refused.
+pub fn refuse_unrunnable(choice: &ModelChoice) -> Result<(), HarnessError> {
+    let harness = harness_for(choice.provider);
+    let reading = readings().reading(harness.binary(), harness.cli_probe());
+    match refusal(harness, choice, reading.as_deref()) {
+        Some(why) => Err(HarnessError::Refused(why)),
+        None => Ok(()),
+    }
+}
+
+fn refusal(harness: &dyn Harness, choice: &ModelChoice, reading: Option<&CliReading>) -> Option<String> {
+    let model = choice.model.as_deref()?;
+    harness.offer(reading).refusal(model, harness.cli_name())
 }
 
 /// A running session of `provider` reported the version it is.

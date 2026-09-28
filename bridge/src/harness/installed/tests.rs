@@ -198,3 +198,93 @@ async fn a_background_ask_lands_and_is_announced() {
         Some(version("2.1.280"))
     );
 }
+
+fn choice(provider: AgentProvider, model: Option<&str>) -> ModelChoice {
+    ModelChoice {
+        provider,
+        model: model.map(str::to_string),
+        effort: None,
+    }
+}
+
+fn claude_at(raw: &str) -> CliReading {
+    CliReading {
+        version: Some(version(raw)),
+        listed: None,
+    }
+}
+
+#[test]
+fn a_model_newer_than_the_installed_claude_code_is_refused_on_both_carriers() {
+    for provider in [AgentProvider::Claude, AgentProvider::ClaudeAdk] {
+        let harness = harness_for(provider);
+        let refused = refusal(
+            harness,
+            &choice(provider, Some("claude-sonnet-5-5")),
+            Some(&claude_at("2.1.280")),
+        );
+
+        assert_eq!(
+            refused.as_deref(),
+            Some("Build cannot start Claude Sonnet 5.5 here: Claude Code 2.1.280 is installed, and Claude Sonnet 5.5 needs 2.1.284 or newer. An older Claude Code refuses it or runs it with too small a context window. Update Claude Code, or choose another model."),
+            "{provider:?}"
+        );
+    }
+}
+
+#[test]
+fn what_the_installed_cli_runs_is_started() {
+    let harness = harness_for(AgentProvider::ClaudeAdk);
+    let reading = claude_at("2.1.280");
+
+    for model in [Some("claude-opus-5-5"), Some("claude-haiku-4-5-20251001"), None] {
+        assert_eq!(
+            refusal(harness, &choice(AgentProvider::ClaudeAdk, model), Some(&reading)),
+            None,
+            "{model:?}"
+        );
+    }
+    assert_eq!(
+        refusal(
+            harness,
+            &choice(AgentProvider::ClaudeAdk, Some("claude-sonnet-5-5")),
+            None
+        ),
+        None,
+        "an unread CLI refuses nothing"
+    );
+}
+
+#[test]
+fn a_model_codex_does_not_list_is_refused() {
+    let harness = harness_for(AgentProvider::CodexAppServer);
+    let reading = CliReading {
+        version: Some(version("0.155.1")),
+        listed: Some(vec![ListedModel {
+            id: "gpt-6-sol".into(),
+            label: "GPT-6-Sol".into(),
+            hidden: false,
+            efforts: vec!["high".into()],
+        }]),
+    };
+
+    assert!(refusal(
+        harness,
+        &choice(AgentProvider::CodexAppServer, Some("gpt-5.2")),
+        Some(&reading)
+    )
+    .is_some());
+    assert!(refusal(
+        harness,
+        &choice(AgentProvider::Codex, Some("gpt-6-sol")),
+        Some(&reading)
+    )
+    .is_none());
+}
+
+/// The process-wide readings of a test build never ask, so every spawn a test
+/// makes is let through.
+#[test]
+fn the_unit_test_readings_refuse_nothing() {
+    assert!(refuse_unrunnable(&choice(AgentProvider::ClaudeAdk, Some("claude-sonnet-5-5"))).is_ok());
+}

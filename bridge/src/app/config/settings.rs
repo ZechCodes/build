@@ -38,11 +38,11 @@ impl AppState {
     /// top level for clients that predate `providers`.
     pub(crate) fn models_list(&self) -> Value {
         json!({
-            "models": crate::harness::installed::model_offer(self.default_harness).models,
+            "models": crate::harness::installed::model_offer_from(&self.cli_readings, self.default_harness).models,
             "efforts": harness_for(self.default_harness).effort_levels(),
             "default_provider": self.default_harness,
             "agent_modes": self.agent_modes,
-            "providers": models::provider_catalogs(),
+            "providers": models::provider_catalogs_from(&self.cli_readings),
             // What this device says its models are FOR. It rides the catalog
             // because every surface that offers a model already reads this,
             // and a second call for three lines would be a second call on
@@ -74,7 +74,7 @@ impl AppState {
             })
             .collect::<serde_json::Map<_, _>>();
         json!({
-            "harnesses": models::provider_catalogs(),
+            "harnesses": models::provider_catalogs_from(&self.cli_readings),
             "default_harness": self.default_harness,
             "roles": crate::models::AgentRole::ALL
                 .map(|role| json!({ "id": role.wire_id(), "describes": role.describes() })),

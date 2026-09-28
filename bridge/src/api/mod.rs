@@ -19,7 +19,7 @@ use std::collections::BTreeSet;
 /// name moved to `tasks.*` or `task.*`.
 /// 2.1.0 adds `push.registerKey` and `push.revokeKey` (#200): the notification
 /// keys push content is sealed to.
-pub const API_VERSION: &str = "2.1.0";
+pub const API_VERSION: &str = "2.2.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -74,6 +74,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "messages.context",
     "messages.fromAgent",
     "messages.taskNotices",
+    "models.installedCli", // Since 2.2.0: models.list offers what the installed CLI runs, with cli_version/unavailable; models.changed push.
     "params.strict",
     "requests.priority",
     "requests.receipts",

@@ -193,11 +193,18 @@ pub struct ProviderCatalog {
 
 /// Every provider's catalog, for the picker that has to show them all.
 pub fn provider_catalogs() -> Vec<ProviderCatalog> {
+    provider_catalogs_from(crate::harness::installed::readings())
+}
+
+/// The same, seen through `readings`.
+pub fn provider_catalogs_from(
+    readings: &std::sync::Arc<crate::harness::installed::Readings>,
+) -> Vec<ProviderCatalog> {
     AgentProvider::ALL
         .into_iter()
         .map(|provider| {
             let harness = harness_for(provider);
-            let offer = crate::harness::installed::model_offer(provider);
+            let offer = crate::harness::installed::model_offer_from(readings, provider);
             ProviderCatalog {
                 id: provider,
                 label: harness.label(),

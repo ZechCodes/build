@@ -159,6 +159,7 @@ pub(in crate::app) fn dispatch_frame(
             let mut app = timer.lock(state);
             app.drop_session(sender.session_id());
             app.unsubscribe_update_status(sender.session_id());
+            app.unsubscribe_models_changed(sender.session_id());
             (app.changes(), app.watchers())
         };
         changes.unsubscribe(sender.session_id());

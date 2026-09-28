@@ -6,15 +6,12 @@
 //! The requests are written together and stdin is held open until both are
 //! answered: an app-server that reads end-of-input exits without answering.
 
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdout, Command, Stdio};
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
-use std::time::Instant;
+use std::io::Write;
 
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::{version_in, CliProbe, PROBE_DEADLINE};
+use super::{version_in, CliProbe, ProbeChild};
 use crate::harness::installed::{CliReading, ListedModel};
 
 /// Pages followed before the list is taken as it stands. One page holds every
@@ -22,6 +19,12 @@ use crate::harness::installed::{CliReading, ListedModel};
 const MAX_PAGES: u64 = 10;
 
 const INITIALIZE_ID: u64 = 1;
+
+/// The most models kept from one list. Codex lists nine today.
+const MAX_MODELS: usize = 200;
+
+/// The longest label kept, in characters.
+const MAX_LABEL: usize = 80;
 
 pub struct CodexModelList;
 
@@ -41,35 +44,13 @@ impl CliProbe for CodexModelList {
 
 /// One short-lived `codex app-server`, ended whatever it answered.
 struct AppServer {
-    child: Child,
-    lines: Receiver<Value>,
-    expiry: Instant,
+    child: ProbeChild,
 }
 
 impl AppServer {
     fn start(binary: &str) -> std::io::Result<Self> {
-        let mut command = Command::new(binary);
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            command.process_group(0);
-        }
-        let dir = std::env::var_os("HOME")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir);
-        let mut child = command
-            .arg("app-server")
-            .env_remove("CLAUDECODE")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .current_dir(dir)
-            .spawn()?;
-        let lines = read_lines(child.stdout.take());
         Ok(Self {
-            child,
-            lines,
-            expiry: Instant::now() + PROBE_DEADLINE,
+            child: ProbeChild::start(binary, &["app-server"], true)?,
         })
     }
 
@@ -85,11 +66,15 @@ impl AppServer {
         self.send(&json!({ "method": "initialized" }))?;
         let initialized = self.answer(INITIALIZE_ID)?;
         let version = initialized["userAgent"].as_str().and_then(version_in);
-        let listed = self.list().map_err(|why| eprintln!("cli probe: codex model/list: {why}")).ok();
+        let listed = self
+            .list()
+            .map_err(|why| eprintln!("cli probe: codex model/list: {why}"))
+            .ok();
         Ok(CliReading { version, listed })
     }
 
-    /// Every page of `model/list`, hidden models included.
+    /// Every page of `model/list`, hidden models included, less any entry
+    /// that could not be a model id.
     fn list(&mut self) -> std::io::Result<Vec<ListedModel>> {
         let mut listed = Vec::new();
         let mut cursor: Option<String> = None;
@@ -102,7 +87,8 @@ impl AppServer {
             }))?;
             let answered: ModelListPage = serde_json::from_value(self.answer(id)?)
                 .map_err(|why| std::io::Error::other(format!("unreadable model/list: {why}")))?;
-            listed.extend(answered.data.into_iter().map(ListedModel::from));
+            listed.extend(answered.data.into_iter().filter_map(ListedModel::from_listed));
+            listed.truncate(MAX_MODELS);
             match answered.next_cursor {
                 Some(next) => cursor = Some(next),
                 None => return Ok(listed),
@@ -112,11 +98,7 @@ impl AppServer {
     }
 
     fn send(&mut self, message: &Value) -> std::io::Result<()> {
-        let stdin = self
-            .child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| std::io::Error::other("app-server stdin is closed"))?;
+        let stdin = self.child.stdin()?;
         writeln!(stdin, "{message}")?;
         stdin.flush()
     }
@@ -125,55 +107,25 @@ impl AppServer {
     /// anything else said first.
     fn answer(&mut self, id: u64) -> std::io::Result<Value> {
         loop {
-            let left = self.expiry.saturating_duration_since(Instant::now());
-            let line = self.lines.recv_timeout(left).map_err(|unread| match unread {
-                RecvTimeoutError::Timeout => std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    format!("no answer within {}s", PROBE_DEADLINE.as_secs()),
-                ),
-                RecvTimeoutError::Disconnected => {
-                    std::io::Error::other("app-server closed its output")
-                }
-            })?;
-            if line["id"].as_u64() != Some(id) {
+            let line = self
+                .child
+                .next_line()?
+                .ok_or_else(|| std::io::Error::other("app-server closed its output"))?;
+            let Ok(said) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if said["id"].as_u64() != Some(id) {
                 continue;
             }
-            if let Some(error) = line.get("error") {
-                return Err(std::io::Error::other(format!("app-server refused: {error}")));
+            if let Some(error) = said.get("error") {
+                return Err(std::io::Error::other(format!(
+                    "app-server refused: {}",
+                    clipped(&error.to_string(), MAX_LABEL)
+                )));
             }
-            return Ok(line["result"].clone());
+            return Ok(said["result"].clone());
         }
     }
-}
-
-impl Drop for AppServer {
-    fn drop(&mut self) {
-        #[cfg(unix)]
-        unsafe {
-            libc::kill(-(self.child.id() as i32), libc::SIGKILL);
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-/// Every JSON line the server writes, on a thread that ends with its output.
-fn read_lines(stdout: Option<ChildStdout>) -> Receiver<Value> {
-    let (lines, received) = std::sync::mpsc::channel();
-    if let Some(stdout) = stdout {
-        std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                let Ok(line) = line else { return };
-                let Ok(value) = serde_json::from_str::<Value>(&line) else {
-                    continue;
-                };
-                if lines.send(value).is_err() {
-                    return;
-                }
-            }
-        });
-    }
-    received
 }
 
 #[derive(Deserialize)]
@@ -207,18 +159,29 @@ struct ListedEffort {
     reasoning_effort: String,
 }
 
-impl From<ListedEntry> for ListedModel {
-    fn from(entry: ListedEntry) -> Self {
+impl ListedModel {
+    /// What Build keeps of one entry: its id only when it is one a session
+    /// could be started on (the same shape [`crate::models::ModelChoice`]
+    /// accepts), its label clipped, its efforts as said — they are matched
+    /// against the harness's own before any is offered.
+    fn from_listed(entry: ListedEntry) -> Option<Self> {
         let id = entry.model.unwrap_or(entry.id);
-        ListedModel {
-            label: entry.display_name.unwrap_or_else(|| id.clone()),
+        if !crate::models::is_model_id(&id) {
+            return None;
+        }
+        Some(ListedModel {
+            label: clipped(entry.display_name.as_deref().unwrap_or(&id), MAX_LABEL),
             id,
             hidden: entry.hidden,
             efforts: entry
                 .supported_reasoning_efforts
                 .into_iter()
-                .map(|effort| effort.reasoning_effort)
+                .map(|effort| clipped(&effort.reasoning_effort, MAX_LABEL))
                 .collect(),
-        }
+        })
     }
+}
+
+fn clipped(text: &str, most: usize) -> String {
+    text.chars().filter(|c| !c.is_control()).take(most).collect()
 }

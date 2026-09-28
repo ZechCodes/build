@@ -251,6 +251,21 @@ pub fn binary_is_on_path(program: &str) -> bool {
     found
 }
 
+/// Whether `model` has the shape of a model id: short, and shell-sane
+/// (defense in depth). The first character must be alphanumeric so an id can
+/// never be parsed as a flag by the harness (`--model --effort` style
+/// confusion).
+pub fn is_model_id(model: &str) -> bool {
+    model.len() <= 64
+        && model
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric())
+        && model
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_'))
+}
+
 /// An agent's model selection (chosen at plan or run dispatch). `None` means
 /// the selected provider's configured default.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -270,17 +285,7 @@ impl ModelChoice {
     /// a harness that will 400.
     pub fn validate(&self) -> Result<(), String> {
         if let Some(model) = &self.model {
-            // First char must be alphanumeric so an id can never be parsed
-            // as a flag by the harness (`--model --effort` style confusion).
-            let sane = model.len() <= 64
-                && model
-                    .chars()
-                    .next()
-                    .is_some_and(|c| c.is_ascii_alphanumeric())
-                && model
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_'));
-            if !sane {
+            if !is_model_id(model) {
                 return Err(format!("invalid model id: {model:?}"));
             }
         }

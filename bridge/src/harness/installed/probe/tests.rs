@@ -34,7 +34,12 @@ fn versions_read_out_of_every_cli_s_own_words() {
 #[test]
 fn the_version_flag_reads_the_cli_s_answer() {
     let dir = tempfile::tempdir().unwrap();
-    let cli = fake_cli(dir.path(), "claude", "echo '2.1.280 (Claude Code)'");
+    let cli = fake_cli(
+        dir.path(),
+        "claude",
+        r#"[ "$#" -eq 1 ] && [ "$1" = --version ] || exit 7
+echo '2.1.280 (Claude Code)'"#,
+    );
 
     let reading = VERSION_FLAG.read(cli.to_str().unwrap());
 
@@ -195,5 +200,72 @@ fn a_missing_codex_reads_as_knowing_nothing() {
     assert_eq!(
         CODEX_MODEL_LIST.read(missing.to_str().unwrap()),
         CliReading::default()
+    );
+}
+
+/// A CLI's output is read into memory, so one that says too much is cut off
+/// and read as knowing nothing, however it says it.
+#[test]
+fn a_cli_that_says_too_much_is_cut_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let endless_lines = fake_cli(dir.path(), "lines", "yes '2.1.280 (Claude Code)'");
+    let endless_line = fake_cli(dir.path(), "line", "echo 2.1.280; head -c 2000000 /dev/zero | tr '\\0' a");
+
+    for cli in [&endless_lines, &endless_line] {
+        let started = Instant::now();
+        assert_eq!(VERSION_FLAG.read(cli.to_str().unwrap()), CliReading::default(), "{}", cli.display());
+        assert!(
+            started.elapsed() < PROBE_DEADLINE,
+            "cut off by what it said, not by the clock"
+        );
+    }
+}
+
+/// What codex lists is kept only where it could be a model id, with its words
+/// clipped: a listed id reaches a picker, and a picked one reaches argv.
+#[test]
+fn codex_keeps_only_what_could_be_a_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let long_label = "L".repeat(500);
+    let long_id = "g".repeat(65);
+    let cli = fake_cli(
+        dir.path(),
+        "codex",
+        &format!(
+            r#"while read -r line; do
+  case "$line" in
+    *'"initialize"'*) echo '{{"id":1,"result":{{"userAgent":"build_bridge_probe/0.155.1"}}}}' ;;
+    *'"model/list"'*) printf '%s\n' '{{"id":2,"result":{{"data":[{{"id":"--effort","displayName":"flag"}},{{"id":"gpt 6; rm -rf ~","displayName":"spaced"}},{{"id":"{long_id}"}},{{"id":"gpt-6-sol","displayName":"{long_label}\u0007"}}],"nextCursor":null}}}}' ;;
+  esac
+done"#
+        ),
+    );
+
+    let listed = CODEX_MODEL_LIST.read(cli.to_str().unwrap()).listed.unwrap();
+
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed[0].id, "gpt-6-sol");
+    assert_eq!(listed[0].label, "L".repeat(80));
+}
+
+/// A probe asks what the machine runs, not what a checkout pins: it starts in
+/// the home directory, and inherits no agent identity from the bridge (which
+/// may itself have been started by an agent).
+#[test]
+fn a_probe_runs_in_the_home_directory_as_nobody_s_agent() {
+    // SAFETY: set before anything reads it, and no other test reads it.
+    std::env::set_var("CLAUDECODE", "1");
+    let dir = tempfile::tempdir().unwrap();
+    let cli = fake_cli(
+        dir.path(),
+        "claude",
+        r#"[ "$(pwd -P)" = "$(cd "$HOME" && pwd -P)" ] || exit 5
+[ -z "${CLAUDECODE+set}" ] || exit 6
+echo 2.1.284"#,
+    );
+
+    assert_eq!(
+        VERSION_FLAG.read(cli.to_str().unwrap()).version,
+        Some(version("2.1.284"))
     );
 }

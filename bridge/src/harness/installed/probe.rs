@@ -52,21 +52,15 @@ impl CliProbe for VersionFlag {
 }
 
 fn run_version_flag(binary: &str) -> std::io::Result<String> {
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-    // The home directory, not the bridge's: a version manager reads the
-    // directory it is started in for a project-local pin, and the answer
-    // wanted is the machine's.
-    let dir = home.unwrap_or_else(std::env::temp_dir);
-    let output = crate::git_process::run_command_with_deadline(
-        std::ffi::OsStr::new(binary),
-        &dir,
-        &[std::ffi::OsStr::new("--version")],
-        PROBE_DEADLINE,
-    )?;
-    if !output.status.success() {
-        return Err(std::io::Error::other(format!("exited {}", output.status)));
+    let mut child = ProbeChild::start(binary, &["--version"], false)?;
+    let mut said = Vec::new();
+    while let Some(line) = child.next_line()? {
+        said.push(line);
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    if !child.succeeded()? {
+        return Err(std::io::Error::other("exited unsuccessfully"));
+    }
+    Ok(said.join("\n"))
 }
 
 /// The first whitespace-separated word of `said` that is a version, or the
@@ -79,7 +73,10 @@ pub fn version_in(said: &str) -> Option<Version> {
     })
 }
 
+mod child;
 mod codex_list;
+
+use child::ProbeChild;
 
 pub use codex_list::CODEX_MODEL_LIST;
 

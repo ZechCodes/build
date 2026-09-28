@@ -1,6 +1,6 @@
 # Push content security checklist
 
-**Status:** verified (10/10 controls)
+**Status:** verified (11/11 controls)
 
 **Scope:** sealed push content, #200. A browser push says what happened (a
 task's title and its news, an agent's name and the first line of what it
@@ -42,19 +42,28 @@ key       = HKDF-SHA256(salt = empty, ikm = shared,
                         info = "build-push-v1" ‖ epk ‖ recipient public, L = 32)
 aad       = "build-push-v1" ‖ 0x00 ‖ sid ‖ 0x00 ‖ kind ‖ 0x00 ‖ entity id
 ciphertext‖tag = AES-256-GCM(key, nonce, plaintext, aad), 16-byte tag
-plaintext = JSON {"v": 1, "title", "body", "url", "iat"}
+plaintext = JSON {"v": 1, "title", "body", "url", "iat"},
+            then trailing spaces to exactly 1024 bytes
 ```
 
 - The AAD binds the blob to its subscription and to the cleartext `kind` and
   `task_id` the api wraps it in. A blob moved to another subscription, or
   pasted beside another entity, fails the tag.
-- `title` is at most 64 characters and `body` at most 160. Each is the first
-  non-empty line of its source with whitespace collapsed, cut on a character
-  boundary and ended with `…` when cut.
-- `url` is a same-origin deep link starting `/app/#/`.
+- `title` is at most 64 characters and 160 bytes as JSON writes it, and
+  `body` at most 160 characters and 480 bytes. Each is the first non-empty
+  line of its source with whitespace collapsed, cut on a character boundary
+  and ended with `…` when cut. (A quote is two bytes of JSON, a control
+  character six.)
+- `url` is a same-origin deep link starting `/app/#/`, at most 320 bytes; a
+  longer one sends no content.
 - `iat` is the bridge's unix seconds when it sealed.
-- The plaintext is at most 1 KiB and the blob at most 2048 characters, well
-  under the ~4 KB a Web Push message carries after its own encryption.
+- With those caps the JSON is at most 1024 bytes even at the widest `iat`,
+  and it is padded with trailing spaces to exactly 1024 (JSON whitespace:
+  serde and `JSON.parse` both skip it). So every blob is exactly 1,491
+  characters, whatever it says: its length cannot tell the api or the push
+  service which event happened, although several event bodies are fixed
+  phrases. That is under the 2048-character blob cap and well under the ~4 KB
+  a Web Push message carries after its own encryption.
 
 **Authenticity, stated exactly.** This is ECIES with an ephemeral sender key:
 it is **not sender-authenticated**. Anyone holding a subscription's
@@ -117,23 +126,24 @@ order delivery. A blob that fails either check shows the generic copy.
 | 4 | The AAD binds sid, kind and entity id: changing any one fails decryption. | [x] | `changing_any_one_of_sid_kind_or_entity_fails_to_open` (Rust); `pushSealed.test.js` tampered sid, kind and entity each show the generic copy, and the sid is computed from the worker's own subscription, never the payload; Chromium tampered-entity case. |
 | 5 | The notification private key is non-extractable, lives only in the browser, and its public key travels only over E2EE. | [x] | `pushKeys.js` generates with `extractable: false`; the Chromium end-to-end case logs `private key extractable=false`; `pushKeySync.test.js` registers only over `push.registerKey` on bridges that announce it; no api route accepts a notification key. Authenticity rests on this and is stated as such above: the sealing is not sender-authenticated. |
 | 6 | Freshness and nonce replay: out-of-window and repeated blobs show the generic copy; blobs from bridges with skewed clocks inside the window, in any order, show content. | [x] | `pushSealed.test.js`: window edges at +300/+301/−300/−301 s, stale and future `iat`, replay across a fresh worker, skewed bridges out of order, the 256 cap and pruning by age, `PUSH_TTL_SECONDS` equal to `web_push.py`'s; Chromium end to end: the same blob delivered twice shows content then the generic copy. |
-| 7 | Deep links stay inside the app: the service worker and the app's message listener refuse anything outside `/app/#/`, and the listener accepts messages only from this origin's active service worker. | [x] | `pushSealed.test.js` sealed url outside `/app/#/` refused; `pushOpen.test.js` rejects six wrong sources and eight off-app urls and accepts the active worker and the controller; `sw.test.js` postMessage, navigate fallback and cold-start `openWindow`; `shellLinkedAgent.test.js` and `agentRailDom.test.js` open the linked chat at its latest message. |
-| 8 | Every failure falls back to the #191 generic notification, and content building or sealing never fails or delays the notify itself. | [x] | `a_bad_stored_key_falls_back_to_generic_and_the_notify_still_posts`, `a_bad_key_beside_a_good_one_costs_only_its_own_entry`, `without_keys_or_content_the_request_is_the_191_shape`; sealing runs in the spawned task on the blocking pool within a 1 s budget, never under the app lock (`notify/delivery.rs`); `pushSealed.test.js` generic copy for no key, no subscription, malformed blob or plaintext, and old payloads; `test_a_v1_notify_without_sealed_still_pushes_the_191_payload`. |
+| 7 | Deep links stay inside the app: the service worker and the app's message listener refuse anything outside `/app/#/`, and the listener accepts messages only from this origin's active service worker. | [x] | `pushSealed.test.js` sealed url outside `/app/#/` refused; `pushOpen.test.js` rejects six wrong sources and eight off-app urls and accepts the active worker and the controller; `sw.test.js` postMessage, navigate fallback and cold-start `openWindow`, each carrying the `from=push` mark, and no mark on an off-app url; `shellLinkedAgent.test.js`: a notification open (postMessage, or a cold start whose mark the router strips with `replaceState`) lands on the latest message once, while a plain `?agent=` link, a topic link, a reload and the next link after a notification land on the unread line; `router.test.js` the mark never reaches a route or a written hash. |
+| 8 | Every failure falls back to the #191 generic notification, and content building or sealing never fails or delays the notify itself. | [x] | `a_bad_stored_key_falls_back_to_generic_and_the_notify_still_posts`, `a_bad_key_beside_a_good_one_costs_only_its_own_entry`, `without_keys_or_content_the_request_is_the_191_shape`; sealing runs in the spawned task on the blocking pool within a 1 s budget, never under the app lock (`notify/delivery.rs`), and so does resolving an agent's workspace path on disk (`deferred_content_is_resolved_in_the_delivery_and_sealed`, `deferred_content_is_not_resolved_without_keys`, `deferred_content_that_says_nothing_sends_generic`); `pushSealed.test.js` generic copy for no key, no subscription, malformed blob or plaintext, and old payloads; `test_a_v1_notify_without_sealed_still_pushes_the_191_payload`. |
 | 9 | Keys over time: rotate on re-subscribe, revoke on disable, prune what the api reports unknown, bounded storage; schema 10 → 11 keeps existing data. | [x] | `pushKeySync.test.js` rotation, enable and disable/revoke; `the_keys_the_api_reports_unknown_are_forgotten`, `a_refused_notify_forgets_no_key` (only keys actually sealed to are pruned, so the api cannot delete others); `registering_past_the_cap_evicts_the_oldest`; `a_v10_store_opens_at_schema_11_with_push_keys_and_its_data_intact`; `test_sealed_sids_matching_no_live_subscription_are_reported_unknown`. |
 | 10 | Full gates and scans pass on the completed tree. | [x] | Recorded below. |
+| 11 | Blob length says nothing: every plaintext is padded to exactly 1024 bytes, and the caps keep the widest content inside it. | [x] | `every_blob_is_the_same_length_whatever_it_says` (a one-word phrase, ordinary content and the widest content each seal to 1,491 characters and open to 1,024 bytes of valid JSON), `the_padding_is_trailing_spaces`, `content_at_its_caps_fits_the_plaintext_and_the_blob` (four-byte, quoted and control characters, the longest url, `iat` at `i64::MIN`/`MAX`), `a_line_is_also_cut_to_its_json_bytes`, `a_url_past_its_cap_says_nothing`; the regenerated fixture is padded, Rust reproduces it byte for byte and Chromium opens it. Negative controls: without the padding, the fixed-length and fixture tests fail; with the body's byte cap lifted, the widest-content tests fail. |
 
 ## Final gate evidence
 
 All under `nice -n 10`, judged by exit code, on the completed tree.
 
 - Bridge: `cargo fmt --check` 0, `cargo clippy --all-targets -- -D warnings` 0,
-  `cargo test --no-fail-fast` 0 (3,594 passed, 0 failed, 8 ignored). The
+  `cargo test --no-fail-fast` 0 (3,601 passed, 0 failed, 8 ignored). The
   vendored webrtc gate was not run: nothing under `bridge/vendor` changed.
-- SPA: `npm run lint` 0, `npm test` 0 (485 files, 7,934 tests, Chromium
-  browser tests included), `npm run build` 0.
+- SPA: `npm run lint` 0, `npm test` 0 (485 files, 7,944 tests, Chromium
+  browser tests included; the end-to-end case ran, not skipped), `npm run build` 0.
 - skriftapp: `ruff check buildapp` 0, `pytest buildapp -q` 0 (694 passed, 1
   skipped).
-- `semgrep --config auto --error` on the 58 changed js/mjs/css/py/rs files: 0
+- `semgrep --config auto --error` on the 60 changed js/mjs/css/py/rs files: 0
   findings. `gitleaks git --log-opts=main..HEAD`: no leaks.
   `git diff --check main..HEAD`: clean. No shell file changed. No complexity
   ratchet entry was added.
@@ -142,7 +152,11 @@ All under `nice -n 10`, judged by exit code, on the completed tree.
   disabling the prune filter and the sid dedupe, a probe log line formatting
   `{title}` (bridge); ignoring the AAD, removing the nonce cap, removing the
   listener's source or url check, removing register/revoke, reverting the
-  land-on-latest change (SPA). Each made its tests fail.
+  land-on-latest change (SPA). After review: removing the padding, lifting
+  the body's byte cap, resolving deferred content eagerly on the caller
+  (bridge); landing every `?agent=` route on latest again, and withholding
+  the notification permission so subscribe fails `NotAllowedError` (SPA).
+  Each made its tests fail.
 
 **Final score: 100/100.** The notification's content shows on a lock screen by
 Zech's decision (no setting); that is a product choice, not an open control.

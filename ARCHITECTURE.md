@@ -280,8 +280,10 @@ and its controls are
 - The bridge keeps the keys in `push_keys` (store schema 11,
   `bridge/src/store/push_keys.rs`, at most 32). `spawn_notify` builds the
   content (`bridge/src/notify/content.rs`, `bridge/src/app/board/agent_push.rs`,
-  `bridge/src/app/tracker/push.rs`) and hands it to a spawned task, which seals
-  it per key off the app lock within a 1 s budget
+  `bridge/src/app/tracker/push.rs`) and hands it to a spawned task. An
+  agent's content leaves resolving its workspace's path on disk to that task.
+  The task seals the content per key off the app lock within a 1 s budget,
+  padded to a fixed 1024 bytes so no blob's length says which event happened
   (`bridge/src/notify/delivery.rs`, `bridge/src/notify/seal.rs`), signs a
   challenge that binds the sealed digest, and forgets the keys the api reports
   unknown. Any failure sends the #191 generic notify.
@@ -292,8 +294,10 @@ and its controls are
   kind and entity id; freshness window; nonce replay store) or shows the
   generic copy. A click reaches an open window as a `build.push.open` message,
   which `spa/src/push.js` accepts only from this origin's service worker and
-  only for an `/app/#/` link, and opens the linked conversation at its latest
-  message.
+  only for an `/app/#/` link. A cold start opens the link with a `from=push`
+  mark that the router takes off the URL (`takePushOpenMark`). Either way that
+  one open lands the linked conversation on its latest message; every other
+  `?agent=` link, a reload included, lands on the unread line.
 - The sealing is not sender-authenticated: forgery is prevented only because
   the notification public key travels only over E2EE and never reaches the
   api.

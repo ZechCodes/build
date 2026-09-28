@@ -18,6 +18,7 @@ mod entities;
 mod legacy;
 mod migrations;
 mod operations;
+mod push_keys;
 mod support;
 mod task_rename;
 mod tracker;

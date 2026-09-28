@@ -21,6 +21,8 @@ mod inbox;
 mod notices;
 mod pages;
 mod push;
+#[cfg(test)]
+pub(in crate::app) use push::news_phrase;
 mod refs;
 mod reminder;
 mod said;

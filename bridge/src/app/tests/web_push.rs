@@ -8,13 +8,15 @@
 //! - timeline news on a **watched**, unfinished task that is not the user's
 //!   own doing (`tracker::inbox::counts_as_unread`, #183/#189).
 //!
-//! Each push is content-free: the entity's opaque id and a generic kind
-//! (`agent` or `task`), nothing else.
+//! What the api sees of each push is the entity's opaque id and a generic kind
+//! (`agent` or `task`). What the browser shows — the content sealed to each
+//! notification key (#200) — is built here too, and its tests are at the end.
 
 use super::project_agent::{added_project, rooted, workspace};
 use super::tracker::{filed, tracked};
 use super::*;
 use crate::mcp::BridgeAction;
+use crate::notify::content::PushContent;
 
 const AGENT: &str = "agent";
 const TASK: &str = "task";
@@ -31,11 +33,33 @@ fn listening(state: AppState) -> AppState {
 }
 
 fn sent(state: &mut AppState) -> Vec<(String, &'static str)> {
+    state.sent_push_contents.clear();
     std::mem::take(&mut state.sent_notifies)
+}
+
+/// What each notify since the last drain would have sealed, by kind.
+fn sealed(state: &mut AppState, kind: &str) -> Vec<Option<PushContent>> {
+    let notifies = std::mem::take(&mut state.sent_notifies);
+    let contents = std::mem::take(&mut state.sent_push_contents);
+    notifies
+        .into_iter()
+        .zip(contents)
+        .filter(|((_, sent_kind), _)| *sent_kind == kind)
+        .map(|(_, content)| content)
+        .collect()
 }
 
 /// A project with one workspace conversation, as `(state, project, owner)`.
 fn project_with_workspace(root: &std::path::Path) -> (tempfile::TempDir, AppState, String, String) {
+    let (home, state, project_id, _workspace_id, owner) = workspace_conversation(root);
+    (home, state, project_id, owner)
+}
+
+/// The same, naming the workspace too:
+/// `(state, project, workspace, owner)`.
+fn workspace_conversation(
+    root: &std::path::Path,
+) -> (tempfile::TempDir, AppState, String, String, String) {
     let (home, repo) = init_repo();
     let repo = std::fs::canonicalize(&repo).unwrap();
     let mut state = listening(rooted(root));
@@ -47,7 +71,7 @@ fn project_with_workspace(root: &std::path::Path) -> (tempfile::TempDir, AppStat
     ));
     assert_eq!(ensured["ok"], true, "{ensured:?}");
     let owner = ensured["result"]["run_id"].as_str().unwrap().to_string();
-    (home, state, project_id, owner)
+    (home, state, project_id, workspace_id, owner)
 }
 
 /// One more agent on `owner`, watched unless `watched` says otherwise.
@@ -471,4 +495,225 @@ fn reading_a_task_pushes_nothing() {
     assert_eq!(read["ok"], true, "{read:?}");
 
     assert!(!sent(&mut state).iter().any(|(_, kind)| *kind == TASK));
+}
+
+// ---- sealed content (#200) ----------------------------------------------
+
+const DEVICE: &str = "device-under-test";
+
+fn named(state: &mut AppState, owner: &str, agent: &str, name: &str) {
+    state
+        .set_agent_name(owner, agent, name)
+        .expect("the agent takes the name");
+}
+
+/// An agent's push says who spoke and the first line of what it said, and
+/// links the workspace's Changes with the rail on that agent, written the
+/// way the SPA's router writes it.
+#[test]
+fn a_workspace_agents_push_carries_its_name_first_line_and_deep_link() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_home, mut state, project, workspace, owner) = workspace_conversation(tmp.path());
+    let agent = agent_on(&mut state, &owner, true);
+    named(&mut state, &owner, &agent, "Banner fade fixer");
+    sent(&mut state);
+
+    agent_says(
+        &mut state,
+        &owner,
+        &agent,
+        "\n  Fixed on   build/banner-fade\nand more",
+    );
+
+    let content = sealed(&mut state, AGENT).pop().flatten().expect("content");
+    assert_eq!(content.title, "Banner fade fixer");
+    assert_eq!(content.body, "Fixed on build/banner-fade");
+    assert_eq!(
+        content.url,
+        format!(
+            "/app/#/device/{DEVICE}/project/{project}/workspace/{workspace}/changes?agent={agent}"
+        )
+    );
+}
+
+/// An agent nobody named goes by its conversation's name, the way the rail
+/// says it.
+#[test]
+fn an_unnamed_agent_goes_by_its_workspace() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_home, mut state, _project, _workspace, owner) = workspace_conversation(tmp.path());
+    let agent = agent_on(&mut state, &owner, true);
+    sent(&mut state);
+
+    agent_says(&mut state, &owner, &agent, "done");
+
+    let content = sealed(&mut state, AGENT).pop().flatten().expect("content");
+    assert_eq!(content.title, "pushes");
+}
+
+/// The project agent's conversation is the project page with the rail on it.
+#[test]
+fn a_project_agents_push_links_the_project_page() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let mut state = listening(rooted(tmp.path()));
+    let project = added_project(&mut state, &repo);
+    let ensured = state.handle(req(
+        "project.ensure_conversation",
+        json!({ "project_id": project }),
+    ));
+    assert_eq!(ensured["ok"], true, "{ensured:?}");
+    let owner = ensured["result"]["run_id"].as_str().unwrap().to_string();
+    let agent = agent_on(&mut state, &owner, true);
+    named(&mut state, &owner, &agent, "Planner");
+    sent(&mut state);
+
+    agent_says(&mut state, &owner, &agent, "the plan is ready");
+
+    let content = sealed(&mut state, AGENT).pop().flatten().expect("content");
+    assert_eq!(content.title, "Planner");
+    assert_eq!(content.body, "the plan is ready");
+    assert_eq!(
+        content.url,
+        format!("/app/#/device/{DEVICE}/project/{project}?agent={agent}")
+    );
+}
+
+/// An attention event says what happened: its own summary's first line.
+#[test]
+fn an_agent_dying_mid_turn_says_so() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_home, mut state, _project, owner) = project_with_workspace(tmp.path());
+    let agent = agent_on(&mut state, &owner, true);
+    state.record_agent_working_since(&owner, &agent, Some(now_rfc3339()));
+    sent(&mut state);
+
+    state.close_turn_of_dead_agent(&owner, &agent);
+
+    let content = sealed(&mut state, AGENT).pop().flatten().expect("content");
+    assert_eq!(
+        content.body,
+        "The agent's session ended without reporting back"
+    );
+}
+
+/// A task's push is its number and title, and who said what: the newest
+/// comment's first line, cut to the cap.
+#[test]
+fn a_comment_pushes_the_task_title_and_the_first_line_said() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, who, id) = watched_task(&root);
+    named(&mut state, &who.0, &who.1, "Rail scroll");
+    sent(&mut state);
+    let long = "word ".repeat(60);
+
+    act(
+        &mut state,
+        &who,
+        BridgeAction::TrackerCommentTask {
+            task_id: id.clone(),
+            body: format!("\n{long}\nsecond line"),
+            attachments: Vec::new(),
+            refs: Vec::new(),
+            track: Some(false),
+            notify_user: None,
+            mention_user: None,
+        },
+    );
+
+    let content = sealed(&mut state, TASK).pop().flatten().expect("content");
+    let number = state.handle(req("tasks.get", json!({ "task_id": id })))["result"]["task"]
+        ["number"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(content.title, format!("#{number} push me"));
+    assert!(
+        content.body.starts_with("Rail scroll: word word"),
+        "{}",
+        content.body
+    );
+    assert_eq!(content.body.chars().count(), 160);
+    assert!(content.body.ends_with('…'));
+    assert_eq!(content.url, format!("/app/#/tasks/{id}"));
+}
+
+/// No comment, so the news is the event, in a phrase.
+#[test]
+fn a_move_and_an_assignment_push_a_phrase() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, who, id) = watched_task(&root);
+    named(&mut state, &who.0, &who.1, "Rail scroll");
+    sent(&mut state);
+
+    agent_moves(&mut state, &who, &id, "in_review");
+    let moved = sealed(&mut state, TASK).pop().flatten().expect("content");
+    assert_eq!(moved.body, "Rail scroll moved it to In review");
+
+    forget_debounce(&mut state);
+    act(
+        &mut state,
+        &who,
+        BridgeAction::TrackerAssignTask {
+            assignee: json!({ "kind": "user" }),
+            task_id: id,
+            note: None,
+            track: Some(false),
+            notify_user: None,
+        },
+    );
+    let assigned = sealed(&mut state, TASK).pop().flatten().expect("content");
+    assert_eq!(assigned.body, "Rail scroll assigned it to you");
+}
+
+/// The phrase table: every event that counts as news has words, and one
+/// without any sends no content, so that push goes out generic.
+#[test]
+fn the_news_phrases() {
+    use crate::tracker::{Actor, TaskEvent, TaskEventKind as Kind};
+    let phrase = |kind, payload: Value| {
+        crate::app::tracker::news_phrase(&TaskEvent::new(
+            "task-1",
+            Actor::Build,
+            kind,
+            payload,
+            "2026-09-27T00:00:00Z",
+        ))
+    };
+    assert_eq!(
+        phrase(Kind::Moved, json!({ "to": "done" })).as_deref(),
+        Some("moved it to Done")
+    );
+    assert_eq!(
+        phrase(Kind::Moved, json!({ "to": "someday" })).as_deref(),
+        Some("moved it")
+    );
+    assert_eq!(
+        phrase(
+            Kind::Assigned,
+            json!({ "assignee": { "kind": "agent", "agent_id": "a" } })
+        )
+        .as_deref(),
+        Some("assigned it")
+    );
+    assert_eq!(
+        phrase(Kind::Unassigned, json!({})).as_deref(),
+        Some("unassigned it")
+    );
+    assert_eq!(
+        phrase(Kind::Closed, json!({})).as_deref(),
+        Some("closed it")
+    );
+    assert_eq!(
+        phrase(Kind::Reopened, json!({})).as_deref(),
+        Some("reopened it")
+    );
+    assert_eq!(
+        phrase(Kind::Created, json!({})).as_deref(),
+        Some("filed it for you")
+    );
+    assert_eq!(phrase(Kind::Labelled, json!({})), None);
+    assert_eq!(phrase(Kind::WorkspaceIdle, json!({})), None);
 }

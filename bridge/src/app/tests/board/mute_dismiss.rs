@@ -755,6 +755,7 @@ fn one_piece_of_news_reaches_the_push_funnel_once() {
     state.push_agent_news(
         &run_id,
         vec![crate::app::board::attention::AgentNews {
+            agent_id: state.runs[&run_id].agents.sole().id.clone(),
             news,
             watched: true,
         }],

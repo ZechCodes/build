@@ -54,7 +54,7 @@ impl AppState {
     /// empty: a topic that has not been set was still read from a conversation
     /// that exists, but an unnamed agent has no name to report and the reader
     /// falls back to the ordinal.
-    fn agent_name(&self, entity_id: &str, agent_id: &str) -> Option<String> {
+    pub(in crate::app) fn agent_name(&self, entity_id: &str, agent_id: &str) -> Option<String> {
         self.entity_agents(entity_id)
             .ok()
             .and_then(|agents| agents.by_id(agent_id).and_then(|agent| agent.name.clone()))
@@ -76,7 +76,7 @@ impl AppState {
     /// A project's owner is asked about first: it is a run in the project's
     /// scratch directory, which is no workspace's root, so asking the other way
     /// round would answer nothing for it.
-    fn conversation_owner_ref(&self, entity_id: &str) -> Option<AgentOwnerRef> {
+    pub(in crate::app) fn conversation_owner_ref(&self, entity_id: &str) -> Option<AgentOwnerRef> {
         let project_id = self.projects.project_id_of(entity_id)?;
         if self.is_project_conversation_owner(entity_id) {
             let project = self.projects.get(project_id)?;

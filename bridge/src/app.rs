@@ -21,6 +21,7 @@ mod git;
 mod github;
 mod mcp;
 mod projects;
+mod push_keys;
 mod rpc;
 mod rtc;
 mod runs;
@@ -177,6 +178,7 @@ use projects::{
     default_projects_dir, AgentChoiceArgs, Project, ProjectRegistry, ProjectSourceArgs,
     WorkspaceAgentAddress, WorkspaceDirectoryArgs,
 };
+pub use push_keys::PushKeyRefusal;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -490,8 +492,9 @@ pub struct AppState {
     /// holds — consulted at every spawn that has one to spend, so a dead one is
     /// cleared where it is read instead of costing a session to find out.
     resume_id_probe: ResumeIdProbe,
-    /// Web-push notifier, if configured: one content-free notify whenever
-    /// something adds to the unread counter (#191).
+    /// Web-push notifier, if configured: one notify whenever something adds
+    /// to the unread counter (#191). The api sees only ids and ciphertext;
+    /// what the push says is sealed to each registered key (#200).
     notifier: Option<Notifier>,
     /// The `gh` that `github.repos` runs.
     github: crate::github::GithubCli,
@@ -501,6 +504,10 @@ pub struct AppState {
     /// `(entity_id, kind)`: what the tests read instead of an api.
     #[cfg(test)]
     pub(in crate::app) sent_notifies: Vec<(String, &'static str)>,
+    /// What each of those notifies would have sealed, in the same order:
+    /// the content the tests read instead of opening a blob.
+    #[cfg(test)]
+    pub(in crate::app) sent_push_contents: Vec<Option<crate::notify::content::PushContent>>,
     /// Which peer connection each E2EE session has (spec §Signaling), and the
     /// factory that builds them. The bridge is always the answerer, so there is
     /// nothing here until a browser offers; a bridge with no peer transport
@@ -670,6 +677,8 @@ impl AppState {
             notify_throttle: NotifyThrottle::default(),
             #[cfg(test)]
             sent_notifies: Vec::new(),
+            #[cfg(test)]
+            sent_push_contents: Vec::new(),
             peers: PeersSlot::new(SessionPeers::with_factory(Arc::new(NoPeerFactory))),
             changes,
             watchers,
@@ -719,7 +728,8 @@ impl AppState {
     }
 
     /// Enable web-push notifications: everything that adds to the unread
-    /// counter fires one signed, content-free notify at the api (#191).
+    /// counter fires one signed notify at the api (#191), its content sealed
+    /// so the api sees only ids and ciphertext (#200).
     pub fn with_notifier(mut self, notifier: Notifier) -> Self {
         self.notifier = Some(notifier);
         self

@@ -1,10 +1,9 @@
-// The task work item's surface: two persistent columns, the planned stages and
-// the stage viewer. No tabs — the conversation is the agent rail.
+// The legacy plan page: two persistent columns, the planned stages and the
+// stage viewer, read-only. No tabs — the conversation is the agent rail.
 //
 // Thin by design — the surface itself is core/taskView.js, which owns its
-// poll, its repaint freeze, the doc-comment layer and the worktree/agent
-// assignment control. This file is the route's host: it names the task and
-// keeps the URL on the open stage. The rail and the console beside it are the
+// reads and its repaint freeze. This file is the route's host: it names the
+// plan and keeps the URL on the open stage. The rail and the console beside it are the
 // shell's (core/shell.js) — this page reads the selection it has to share with
 // them and mounts neither.
 
@@ -13,8 +12,6 @@ import { App, go } from "../app.js";
 import { hashFromRoute } from "../core/router.js";
 import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
 import { surfaceContext } from "../core/surfaceContext.js";
-import { deviceFeedNow } from "../core/feedRows.js";
-import { deviceCatalog } from "../core/inboxDevices.js";
 import { mountTaskView } from "../core/taskView.js";
 import { shellSelection } from "../core/shell.js";
 import "../styles/shell.css";
@@ -63,7 +60,7 @@ export async function renderTask() {
 
   // A task carries exactly one agent session, and the rail beside this page is
   // where you talk to it — including the first message, which is what starts it.
-  // The surface below reads and writes that same conversation, so it takes the
+  // The surface below reads that same conversation, so it takes the
   // shell's handle for which agent it is rather than minting a second one.
   const agentSelection = shellSelection();
 
@@ -72,17 +69,9 @@ export async function renderTask() {
     projectId,
     deviceId,
     agentSelection,
-    viewingContext: App.viewingContext,
     initialStageId: selectedStageId,
     callRpc,
     navigate: go,
-    // The harnesses on offer are this machine's, asked for the way every other
-    // surface asks: by the device its link names.
-    loadCatalog: () => deviceCatalog(deviceId),
-    // The branches an implementation can be sent into are the feed's own branch
-    // rows, so the assignment control reads the same list the inbox does —
-    // out of the cache, which is where that list is.
-    loadWorkItems: async () => deviceFeedNow(deviceId)?.items || [],
     onSelectStage: (stageId) => {
       selectedStageId = stageId;
       syncHash();

@@ -1,16 +1,12 @@
 // @vitest-environment jsdom
-// The task view as it behaves: two persistent columns, a stage selection that
-// never costs the list, doc comments that go out as anchored conversation
-// messages, and the assignment control feeding the implement verbs.
+// The legacy plan page as it behaves: two persistent columns, a stage
+// selection that never costs the list, and nothing that would ask the bridge
+// to change a plan — every such verb is refused, so the page is read-only.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { mountTaskView, openingStageId, docAnnotatable } from "../src/core/taskView.js";
-import { FIRST_PAGE_ITEMS } from "../src/core/thread.js";
+import { mountTaskView, openingStageId } from "../src/core/taskView.js";
 import { createAgentSelection } from "../src/core/agentSelection.js";
-import { entryKeyOf } from "../src/core/inbox.js";
-import { INBOX_SCOPE } from "../src/core/inboxView.js";
-import { pendingIn, resetOptimistic } from "../src/core/optimistic.js";
 import { dismissAllNotices } from "../src/core/notify.js";
 import { armChangeEvents, dispatchChangeEvent, resetChangeEvents } from "../src/core/changeEvents.js";
 import { wipeCache } from "../src/core/localCache.js";
@@ -136,88 +132,17 @@ describe("openingStageId", () => {
   });
 });
 
-describe("docAnnotatable", () => {
-  it("takes comments on a readable planned or approved doc only", () => {
-    expect(docAnnotatable(stage(), "ready")).toBe(true);
-    expect(docAnnotatable(stage({ approval: "approved" }), "ready")).toBe(true);
-    expect(docAnnotatable(stage(), "loading")).toBe(false);
-    expect(docAnnotatable(stage({ approval: "superseded" }), "ready")).toBe(false);
-    expect(docAnnotatable(null, "ready")).toBe(false);
-  });
-});
-
-async function answerConfirm(ok) {
-  await flush();
-  const scrim = document.getElementById("confirm-scrim");
-  expect(scrim, "a confirmation was expected").toBeTruthy();
-  scrim.querySelector(ok ? "[data-confirm-ok]" : "[data-confirm-cancel]").click();
-  await flush();
-}
-
 describe("the task view", () => {
   beforeEach(async () => {
     if (typeof indexedDB === "undefined") globalThis.indexedDB = new IDBFactory();
     globalThis.IDBKeyRange = IDBKeyRange;
     await wipeCache();
     document.body.innerHTML = "";
-    resetOptimistic();
   });
   afterEach(() => {
     resetChangeEvents();
     vi.restoreAllMocks();
     dismissAllNotices();
-    resetOptimistic();
-  });
-
-  describe("deleting an abandoned task", () => {
-    const abandoned = () => taskPayload({ state: "abandoned" });
-
-    it("leaves the task surface the instant the delete is confirmed, before task.delete answers", async () => {
-      const gone = [];
-      const { host, view, calls } = await mount({
-        task: abandoned(),
-        onGone: () => gone.push(true),
-        hold: { "task.delete": true },
-      });
-      host.querySelector("#taskdelete").click();
-      await answerConfirm(true);
-
-      expect(gone).toEqual([true]);
-      expect(calls.some(([method]) => method === "task.delete")).toBe(true);
-      const held = pendingIn(INBOX_SCOPE);
-      expect(held).toHaveLength(1);
-      expect(held[0].kind).toBe("remove");
-      expect(held[0].key).toBe(entryKeyOf({ kind: "task", task_id: "task-1", project_id: "proj-1" }));
-      view.dispose();
-    });
-
-    it("opens no record and reaches no daemon when the confirmation is declined", async () => {
-      const gone = [];
-      const { host, view, calls } = await mount({ task: abandoned(), onGone: () => gone.push(true) });
-      host.querySelector("#taskdelete").click();
-      await answerConfirm(false);
-
-      expect(gone).toEqual([]);
-      expect(calls.some(([method]) => method === "task.delete")).toBe(false);
-      expect(pendingIn(INBOX_SCOPE)).toEqual([]);
-      view.dispose();
-    });
-
-    it("puts the task's inbox row back and says why when the delete is refused", async () => {
-      const { host, view } = await mount({
-        task: abandoned(),
-        fail: { "task.delete": "the plan is still implementing" },
-        onGone: () => {},
-      });
-      host.querySelector("#taskdelete").click();
-      await answerConfirm(true);
-      await flush();
-
-      expect(pendingIn(INBOX_SCOPE)).toEqual([]);
-      const summaries = [...document.querySelectorAll(".notice-summary")].map((node) => node.textContent);
-      expect(summaries).toEqual(["Could not delete this task"]);
-      view.dispose();
-    });
   });
 
   it("paints both columns at once — the stage list beside the open stage's doc", async () => {
@@ -229,6 +154,64 @@ describe("the task view", () => {
     expect(host.querySelector(".tabrow")).toBeNull();
     expect(host.querySelector(".stageback")).toBeNull();
     view.dispose();
+  });
+
+  // Plans are history: the bridge refuses every verb that would move one, so
+  // the page is a record of what was planned and built, and offers nothing
+  // that would ask it to change.
+  describe("a read-only record", () => {
+    const MUTATION_CONTROLS = [
+      "#taskdelete",
+      "#approvetask",
+      "#approveall",
+      "#implementall",
+      "#approvestage",
+      "#implementstage",
+      "#sendnotes",
+      "#assigntoggle",
+      ".ivassign",
+      ".cc-x",
+      ".cssend",
+      ".csgeneral",
+    ];
+    const controlsOn = (host) => MUTATION_CONTROLS.filter((selector) => host.querySelector(selector));
+
+    it("offers no mutation on a plan under review with comments open", async () => {
+      const commented = stage({
+        open_comments: 1,
+        comments: [{ id: "message-7", body: "why", state: "open", anchor: { heading_path: ["Wire"] } }],
+      });
+      const { host, view } = await mount({ stages: [commented, stage({ id: "s2" })] });
+      expect(controlsOn(host)).toEqual([]);
+      view.dispose();
+    });
+
+    it("offers no mutation on a ready plan whose next stage could have been implemented", async () => {
+      const stages = [
+        stage({ id: "s1", approval: "approved", state: "approved", execution: "complete" }),
+        stage({ id: "s2", title: "Render", approval: "approved", state: "approved", execution: "pending" }),
+      ];
+      const { host, view } = await mount({ task: taskPayload({ state: "approved" }), stages });
+      host.querySelectorAll(".stagerow")[1].click();
+      await flush();
+      expect(controlsOn(host)).toEqual([]);
+      view.dispose();
+    });
+
+    it("offers no delete on an abandoned plan", async () => {
+      const { host, view } = await mount({ task: taskPayload({ state: "abandoned" }) });
+      expect(controlsOn(host)).toEqual([]);
+      view.dispose();
+    });
+
+    it("sends nothing but reads", async () => {
+      const { host, view, calls } = await mount({ stages: [stage(), stage({ id: "s2" })] });
+      host.querySelectorAll(".stagerow")[1].click();
+      await pushMoved();
+      const reads = new Set(["entity.seen", "task.get", "task.stages", "task.doc", "task.stage_doc", "task.stage_diff"]);
+      expect(calls.map(([method]) => method).filter((method) => !reads.has(method))).toEqual([]);
+      view.dispose();
+    });
   });
 
   it("opens the first stage awaiting approval and tells its host which one", async () => {
@@ -394,26 +377,6 @@ describe("the task view", () => {
     view.dispose();
   });
 
-  it("approves every planned stage from the list, one call per stage", async () => {
-    const { host, view, calls } = await mount({ stages: [stage(), stage({ id: "s2" })] });
-    host.querySelector("#approveall").click();
-    await flush();
-    const approvals = calls.filter(([method]) => method === "task.stage_approve").map(([, params]) => params.stage_id);
-    expect(approvals).toEqual(["s1", "s2"]);
-    view.dispose();
-  });
-
-  it("approves the open stage from the viewer", async () => {
-    const { host, view, calls } = await mount();
-    host.querySelector("#approvestage").click();
-    await flush();
-    expect(calls).toContainEqual([
-      "task.stage_approve",
-      { task_id: "task-1", stage_id: "s1", thread_limit: FIRST_PAGE_ITEMS },
-    ]);
-    view.dispose();
-  });
-
   // There is no validation gate: a stage is building, then complete. A
   // complete stage offers its stable diff, and nothing offers to send a stage
   // "back to fix" — that verb went with the gate.
@@ -433,137 +396,7 @@ describe("the task view", () => {
     view.dispose();
   });
 
-  it("offers to implement the next stage once every stage before it is complete", async () => {
-    const stages = [
-      stage({ id: "s1", approval: "approved", state: "approved", execution: "complete" }),
-      stage({ id: "s2", title: "Render", approval: "approved", state: "approved", execution: "pending" }),
-    ];
-    const { host, view } = await mount({ task: taskPayload({ state: "approved" }), stages });
-    host.querySelectorAll(".stagerow")[1].click();
-    await flush();
-    expect(host.querySelector("#implementstage")).toBeTruthy();
-    view.dispose();
-  });
-
-  // A note to the agent is a turn: durable the moment the daemon takes it, and
-  // answered before the agent it wakes exists. A reply that outlives the
-  // browser's timer must not have the reviewer write the note again.
-  it("clears the note and raises nothing when the post outlives the timer", async () => {
-    const { host, view, calls } = await mount({ timeout: { "thread.post": true } });
-    const general = host.querySelector(".csgeneral");
-    general.value = "have another look at the wire stage";
-    general.dispatchEvent(new Event("input"));
-    await flush();
-
-    host.querySelector(".cssend").click();
-    await flush();
-
-    expect(calls.some(([method]) => method === "thread.post")).toBe(true);
-    expect(document.querySelector("#notices .notice.error")).toBe(null);
-    expect(host.querySelector(".csgeneral").value).toBe("");
-    view.dispose();
-  });
-
-  it("sends a doc comment as an anchored message on the task's conversation", async () => {
-    const { host, view, calls } = await mount();
-    const docEl = host.querySelector("#stagedoc");
-    const heading = docEl.querySelector("h1");
-    // Stand in for the selection flow: the layer turns a selected passage into
-    // a pending comment, and the tray sends it.
-    const selection = {
-      anchorNode: heading.firstChild,
-      focusNode: heading.firstChild,
-      toString: () => "Wire",
-      getRangeAt: () => ({ getBoundingClientRect: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }),
-      isCollapsed: false,
-      rangeCount: 1,
-    };
-    vi.spyOn(window, "getSelection").mockReturnValue({ ...selection, removeAllRanges: () => {} });
-    document.dispatchEvent(new Event("selectionchange"));
-    await new Promise((resolve) => setTimeout(resolve, 400));
-    document.querySelector(".comment-pop .cp-add").click();
-    document.querySelector(".comment-pop .cp-input").value = "why items[]?";
-    document.querySelector(".comment-pop .cp-save").click();
-    await flush();
-    expect(host.querySelector(".pcomment")).toBeTruthy();
-    host.querySelector(".cssend").click();
-    await flush();
-    const posted = calls.find(([method]) => method === "task.comment_add");
-    expect(posted[1].task_id).toBe("task-1");
-    expect(posted[1].stage_id).toBe("s1");
-    expect(posted[1].body).toBe("why items[]?");
-    expect(posted[1].anchor.heading_path).toEqual(["Wire"]);
-    expect(posted[1].anchor.line_start).toBe(1);
-    view.dispose();
-  });
-
-  it("keeps a comment batch on the agent selected when the send began", async () => {
-    let releaseComment;
-    const commentHeld = new Promise((resolve) => { releaseComment = resolve; });
-    const selection = createAgentSelection("agent:one");
-    const { host, view, calls } = await mount({
-      agentSelection: selection,
-      beforeReply: (method) => method === "task.comment_add" ? commentHeld : undefined,
-    });
-    const heading = host.querySelector("#stagedoc h1");
-    vi.spyOn(window, "getSelection").mockReturnValue({
-      anchorNode: heading.firstChild,
-      focusNode: heading.firstChild,
-      toString: () => "Wire",
-      getRangeAt: () => ({ getBoundingClientRect: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }),
-      isCollapsed: false,
-      rangeCount: 1,
-      removeAllRanges: () => {},
-    });
-    document.dispatchEvent(new Event("selectionchange"));
-    await new Promise((resolve) => setTimeout(resolve, 400));
-    document.querySelector(".comment-pop .cp-add").click();
-    document.querySelector(".comment-pop .cp-input").value = "anchor this";
-    document.querySelector(".comment-pop .cp-save").click();
-    host.querySelector(".csgeneral").value = "general note";
-    host.querySelector(".csgeneral").dispatchEvent(new Event("input"));
-    host.querySelector(".cssend").click();
-    await flush();
-
-    selection.set("agent:two");
-    releaseComment();
-    await flush();
-
-    const post = calls.find(([method]) => method === "thread.post");
-    expect(post[1].agent_id).toBe("agent:one");
-    view.dispose();
-  });
-
-  // A drag is a comment that has not been said yet: the popover opens only once
-  // the handles settle, so until then nothing but the selection itself knows the
-  // reader is holding a passage of this doc.
-  it("leaves the doc alone while a passage is being selected on it", async () => {
-    const stages = [stage()];
-    const { host, view } = await mount({ stages });
-    const heading = host.querySelector("#stagedoc h1");
-    vi.spyOn(window, "getSelection").mockReturnValue({
-      anchorNode: heading.firstChild,
-      focusNode: heading.firstChild,
-      toString: () => "Wire",
-      isCollapsed: false,
-      rangeCount: 1,
-      removeAllRanges: () => {},
-      getRangeAt: () => ({ getBoundingClientRect: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }),
-    });
-
-    stages[0].title = "Rewired underneath";
-    await pushMoved();
-    expect(host.contains(heading), "the doc the selection points into was replaced").toBe(true);
-    expect(host.textContent).not.toContain("Rewired underneath");
-
-    // Letting go hands the surface back: the next push draws what moved.
-    vi.restoreAllMocks();
-    await pushMoved();
-    expect(host.textContent).toContain("Rewired underneath");
-    view.dispose();
-  });
-
-  it("hangs the comments already on the doc in its margin, and withdraws one by its message id", async () => {
+  it("hangs the comments already on the doc in its margin, and offers no way to withdraw one", async () => {
     const commented = stage({
       open_comments: 1,
       comments: [
@@ -575,160 +408,8 @@ describe("the task view", () => {
     expect(marker).toBeTruthy();
     expect(marker.dataset.marker).toBe("wire");
     expect(host.querySelector('.commentcard[data-id="message-7"]')).toBeTruthy();
-    host.querySelector(".commentcard .cc-x").click();
-    await flush();
-    expect(calls).toContainEqual(["task.comment_delete", { task_id: "task-1", comment_id: "message-7" }]);
-    view.dispose();
-  });
-
-  it("dispatches Implement All with the assignment's overrides", async () => {
-    const ready = taskPayload({ state: "approved", stages: [{ id: "s1", state: "approved" }] });
-    const { host, view, calls } = await mount({
-      task: ready,
-      stages: [stage({ state: "approved", approval: "approved" })],
-      loadCatalog: async () => ({ providers: [{ id: "claude", label: "Claude Code", models: [], efforts: ["high"] }] }),
-    });
-    host.querySelector("#assigntoggle").click();
-    await flush();
-    const base = document.querySelector(".assign-pop #assignbase");
-    base.value = "release";
-    base.dispatchEvent(new Event("input"));
-    host.querySelector("#implementall").click();
-    await flush();
-    // Dispatch is a decisive gate: the modal outlines what happens, and taking
-    // it is what sends the verb.
-    document.querySelector("#confirm-scrim [data-confirm-ok]").click();
-    await flush();
-    const dispatched = calls.find(([method]) => method === "task.implement_all");
-    expect(dispatched[1]).toEqual({
-      task_id: "task-1",
-      base_branch: "release",
-      provider: "claude_adk",
-      thread_limit: FIRST_PAGE_ITEMS,
-    });
-    view.dispose();
-  });
-
-  // Opening an implementation cuts a checkout, which the daemon runs with its
-  // state lock released. A reply the browser stopped waiting for is not a
-  // refusal: the task's own next answer names the run that was opened.
-  it("carries on when the implement outlives the browser's timer", async () => {
-    const routed = [];
-    const ready = taskPayload({ state: "approved", stages: [{ id: "s1", state: "approved" }] });
-    const { host, view, calls } = await mount({
-      task: ready,
-      stages: [stage({ state: "approved", approval: "approved" })],
-      timeout: { "task.implement_all": true },
-      navigate: (route) => routed.push(route),
-    });
-    const before = calls.filter(([method]) => method === "task.get").length;
-
-    host.querySelector("#implementall").click();
-    await flush();
-    document.querySelector("#confirm-scrim [data-confirm-ok]").click();
-    await flush();
-
-    expect(document.querySelectorAll(".notice")).toHaveLength(0);
-    expect(routed).toEqual([]);
-    expect(calls.filter(([method]) => method === "task.get").length).toBeGreaterThan(before);
-    view.dispose();
-  });
-
-  it("offers either checkout, and refuses an existing agent because implementation is a handoff", async () => {
-    const { host, view } = await mount();
-    host.querySelector("#assigntoggle").click();
-    await flush();
-    const panel = document.querySelector(".assign-pop");
-    const worktree = panel.querySelector("#assignworktree");
-    expect([...worktree.options].map((option) => option.value)).toEqual(["new", "existing"]);
-    expect(worktree.querySelector('option[value="existing"]').disabled).toBe(false);
-    expect(panel.querySelector("#assignagent").querySelector('option[value="existing"]').disabled).toBe(true);
-    expect(panel.querySelector(".ivassign-gap").textContent).toMatch(/fresh agent/i);
-    view.dispose();
-  });
-
-  it("keeps the assignment out of the rail: a control that opens it, never the fields", async () => {
-    const { host, view } = await mount();
-    const rail = host.querySelector(".ivstages");
-    const rowsBefore = rail.querySelectorAll(".ivassign > *").length;
-    host.querySelector("#assigntoggle").click();
-    await flush();
-    // Open, and the rail says so — but the rail has not grown by a single node.
-    expect(host.querySelector("#assigntoggle").getAttribute("aria-expanded")).toBe("true");
-    expect(rail.querySelectorAll(".ivassign > *")).toHaveLength(rowsBefore);
-    expect(rail.querySelector("select")).toBeNull();
-    expect(rail.querySelector("#assignbase")).toBeNull();
-    expect(document.querySelector(".assign-pop #assignbase")).toBeTruthy();
-    view.dispose();
-  });
-
-  it("shuts the overlay on Done, and says so back in the rail", async () => {
-    const { host, view } = await mount();
-    host.querySelector("#assigntoggle").click();
-    await flush();
-    document.querySelector(".assign-pop [data-assign-close]").click();
-    await flush();
-    expect(document.querySelector(".assign-pop")).toBeNull();
-    expect(host.querySelector("#assigntoggle").getAttribute("aria-expanded")).toBe("false");
-    view.dispose();
-  });
-
-  it("takes the overlay with it when the surface goes away", async () => {
-    const { host, view } = await mount();
-    host.querySelector("#assigntoggle").click();
-    await flush();
-    expect(document.querySelector(".assign-pop")).toBeTruthy();
-    view.dispose();
-    expect(document.querySelector(".assign-pop")).toBeNull();
-  });
-
-  it("holds a choice made in the overlay across a push", async () => {
-    const { host, view } = await mount({});
-    host.querySelector("#assigntoggle").click();
-    await flush();
-    const worktree = document.querySelector(".assign-pop #assignworktree");
-    worktree.value = "existing";
-    worktree.dispatchEvent(new Event("change"));
-    await flush();
-    await pushMoved();
-    expect(document.querySelector(".assign-pop #assignworktree").value).toBe("existing");
-    expect(host.querySelector(".ivassign-sum").textContent).toMatch(/existing worktree/i);
-    view.dispose();
-  });
-
-  it("dispatches Implement All into the branch the reviewer picked", async () => {
-    const ready = taskPayload({ state: "approved", stages: [{ id: "s1", state: "approved" }] });
-    const { host, view, calls } = await mount({
-      task: ready,
-      stages: [stage({ state: "approved", approval: "approved" })],
-      loadWorkItems: async () => [
-        { kind: "branch", project_id: "proj-1", branch: "feature-x", worktree_id: "wt-1" },
-        { kind: "branch", project_id: "proj-1", branch: "main", worktree_id: null },
-      ],
-    });
-    host.querySelector("#assigntoggle").click();
-    await flush();
-    const target = document.querySelector(".assign-pop #assignworktree");
-    target.value = "existing";
-    target.dispatchEvent(new Event("change"));
-    await flush();
-    const branch = document.querySelector(".assign-pop #assignworktreeid");
-    // A row with no worktree has no checkout to hand over.
-    expect([...branch.options].map((option) => option.value)).toEqual(["", "wt-1"]);
-    branch.value = "wt-1";
-    branch.dispatchEvent(new Event("change"));
-    await flush();
-    host.querySelector("#implementall").click();
-    await flush();
-    document.querySelector("#confirm-scrim [data-confirm-ok]").click();
-    await flush();
-    const dispatched = calls.find(([method]) => method === "task.implement_all");
-    expect(dispatched[1]).toEqual({
-      task_id: "task-1",
-      worktree_id: "wt-1",
-      provider: "claude_adk",
-      thread_limit: FIRST_PAGE_ITEMS,
-    });
+    expect(host.querySelector(".commentcard .cc-x")).toBeNull();
+    expect(calls.map(([method]) => method)).not.toContain("task.comment_delete");
     view.dispose();
   });
 

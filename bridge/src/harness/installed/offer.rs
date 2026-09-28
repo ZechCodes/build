@@ -102,13 +102,17 @@ impl ModelOffer {
     }
 
     /// What the CLI listed, in its order, labelled as the catalog labels a
-    /// model it knows. A CLI that listed nothing is offered the whole catalog.
+    /// model it knows. A CLI that listed nothing, or an empty list, is offered
+    /// the whole catalog: an empty list would refuse every session.
     pub fn listed(
         catalog: &[ModelOption],
         reading: Option<&CliReading>,
         efforts: &'static [&'static str],
     ) -> Self {
-        let Some(listed) = reading.and_then(|reading| reading.listed.as_ref()) else {
+        let Some(listed) = reading
+            .and_then(|reading| reading.listed.as_ref())
+            .filter(|listed| !listed.is_empty())
+        else {
             return Self::whole(catalog, reading);
         };
         ModelOffer {

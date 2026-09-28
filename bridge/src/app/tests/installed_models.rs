@@ -263,3 +263,121 @@ fn a_project_agent_set_to_an_unrunnable_model_starts_on_the_harness_default() {
         Some("claude-opus-5-5")
     );
 }
+
+/// Claude Code reports a version, as a session does: the stand-in answers it
+/// at once.
+fn claude_now_at(readings: &Arc<Readings>, clis: &InstalledClis, raw: &'static str) {
+    *clis.claude.lock().unwrap() = raw;
+    readings.observe_version(
+        "claude",
+        &crate::harness::installed::VERSION_FLAG,
+        &semver::Version::parse(raw).unwrap(),
+    );
+}
+
+fn agent_tab_count(state: &Arc<Mutex<AppState>>) -> usize {
+    let app = state.lock().unwrap();
+    app.session_registry
+        .tab_keys()
+        .iter()
+        .filter(|key| !app.session_registry.tab_is_shell(key))
+        .count()
+}
+
+/// A model the installed CLI cannot run is never started, on either road to a
+/// session: `agent.add` refuses to make the agent, and an agent made while
+/// the CLI could run it is refused its next start, with the same sentence on
+/// the agent, on its conversation and on the message that asked. The message
+/// is certainly undelivered, not uncertain.
+#[test]
+fn a_refused_model_never_spawns_and_says_why() {
+    const REFUSAL: &str = "Build cannot start Claude Sonnet 5.5 here: Claude Code 2.1.280 is installed, and Claude Sonnet 5.5 needs 2.1.284 or newer. An older Claude Code refuses it or runs it with too small a context window. Update Claude Code, or choose another model.";
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = super::tracker::tracked(&state_root);
+    let clis = InstalledClis::leaked("2.1.280");
+    let readings = Readings::answering_inline(clis);
+    state.cli_readings = Arc::clone(&readings);
+    let workspace_id = super::project_agent::workspace(&mut state, &project_id, "sonnet");
+    let conversation = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": workspace_id }),
+    ));
+    let entity_id = conversation["result"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let on_sonnet = json!({
+        "entity_id": entity_id,
+        "provider": "claude_adk",
+        "model": "claude-sonnet-5-5",
+    });
+
+    let refused = state.handle(req("agent.add", on_sonnet.clone()));
+
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert_eq!(refused["error"], REFUSAL);
+    let listed = state.handle(req("agent.list", json!({ "entity_id": entity_id })));
+    assert_eq!(listed["result"]["agents"], json!([]), "no agent was made");
+
+    // Made while Claude Code ran it, and started once.
+    claude_now_at(&readings, clis, "2.1.284");
+    let added = state.handle(req("agent.add", on_sonnet));
+    assert_eq!(added["ok"], true, "{added}");
+    let agent_id = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+    let post = |state: &Arc<Mutex<AppState>>, operation: &str| {
+        let posted = state.lock().unwrap().handle(req(
+            "thread.post",
+            json!({
+                "entity_id": entity_id,
+                "agent_id": agent_id,
+                "operation_id": operation,
+                "body": "look at the retry path",
+            }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted}");
+        deliver_pending_agent_turns(state);
+    };
+    let state = state.shared();
+    post(&state, "op-while-it-ran");
+    assert_eq!(agent_tab_count(&state), 1, "it ran on 2.1.284");
+
+    // Claude Code goes back to 2.1.280, and the session ends.
+    claude_now_at(&readings, clis, "2.1.280");
+    {
+        let mut app = state.lock().unwrap();
+        let root = app.entity_agent_root(&entity_id).unwrap();
+        let key = TabKey::agent(&AppState::canonical_root(&root), &agent_id);
+        app.retire_tab(&key, "closed");
+    }
+    assert_eq!(agent_tab_count(&state), 0);
+    post(&state, "op-refused");
+
+    assert_eq!(agent_tab_count(&state), 0, "nothing was started");
+    let mut app = state.lock().unwrap();
+    let listed = app.handle(req("agent.list", json!({ "entity_id": entity_id })));
+    assert_eq!(
+        listed["result"]["agents"][0]["start_error"], REFUSAL,
+        "{listed}"
+    );
+    let run = app.handle(req("run.get", json!({ "run_id": entity_id })));
+    assert_eq!(run["result"]["last_error"], REFUSAL, "{run}");
+    let message = app
+        .agent_conversation(&entity_id, Some(&agent_id))
+        .unwrap()
+        .items
+        .iter()
+        .find_map(|item| match item {
+            crate::thread::ThreadItem::Message(message)
+                if message.operation_id.as_deref() == Some("op-refused") =>
+            {
+                Some(message.clone())
+            }
+            _ => None,
+        })
+        .expect("the refused operation owns a message");
+    assert_eq!(
+        message.delivery_status,
+        Some(crate::thread::MessageDeliveryStatus::Failed)
+    );
+}

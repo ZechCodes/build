@@ -70,6 +70,14 @@ fn inline(clock: &'static HandClock) -> Arc<Readings> {
     )
 }
 
+/// [`inline`] readings that ask `cli` whichever CLI is meant, as a spawn
+/// does, by the harness's own probe.
+fn inline_standing_in(clock: &'static HandClock, cli: &'static ScriptedCli) -> Arc<Readings> {
+    let mut readings = inline(clock);
+    Arc::get_mut(&mut readings).expect("just made").stand_in = Some(cli);
+    readings
+}
+
 fn version(raw: &str) -> Version {
     Version::parse(raw).unwrap()
 }
@@ -296,10 +304,94 @@ fn a_model_codex_does_not_list_is_refused() {
 }
 
 /// The process-wide readings of a test build never ask, so every spawn a test
-/// makes is let through.
+/// makes on them is let through.
 #[test]
 fn the_unit_test_readings_refuse_nothing() {
+    assert!(refuse_unrunnable(
+        readings(),
+        &choice(AgentProvider::ClaudeAdk, Some("claude-sonnet-5-5"))
+    )
+    .is_ok());
+}
+
+/// Claude Code updated after its answer was read: a refusal on an answer
+/// older than [`REFUSAL_FRESHNESS`] asks again first, and the answer it gets
+/// decides.
+#[test]
+fn a_stale_refusal_asks_the_cli_again_first() {
+    let cli = ScriptedCli::leaked("2.1.280");
+    let clock = HandClock::leaked();
+    let readings = inline_standing_in(clock, cli);
+    let sonnet = choice(AgentProvider::ClaudeAdk, Some("claude-sonnet-5-5"));
+    readings.reading("claude", cli);
+    cli.set("2.1.284");
+
+    clock.advance(REFUSAL_FRESHNESS - Duration::from_secs(1));
     assert!(
-        refuse_unrunnable(&choice(AgentProvider::ClaudeAdk, Some("claude-sonnet-5-5"))).is_ok()
+        refuse_unrunnable(&readings, &sonnet).is_err(),
+        "a fresh answer refuses on its own word"
     );
+    assert_eq!(cli.asked(), 1);
+
+    clock.advance(Duration::from_secs(1));
+    assert_eq!(refuse_unrunnable(&readings, &sonnet), Ok(()));
+    assert_eq!(cli.asked(), 2);
+    assert_eq!(
+        readings.reading("claude", cli).unwrap().version,
+        Some(version("2.1.284")),
+        "the answer asked for is kept"
+    );
+}
+
+#[test]
+fn a_stale_refusal_that_still_holds_says_why() {
+    let cli = ScriptedCli::leaked("2.1.280");
+    let clock = HandClock::leaked();
+    let readings = inline_standing_in(clock, cli);
+    readings.reading("claude", cli);
+    clock.advance(REFUSAL_FRESHNESS);
+
+    let refused = refuse_unrunnable(
+        &readings,
+        &choice(AgentProvider::Claude, Some("claude-sonnet-5-5")),
+    );
+
+    assert!(refused
+        .unwrap_err()
+        .starts_with("Build cannot start Claude Sonnet 5.5 here"));
+    assert_eq!(cli.asked(), 2);
+}
+
+/// A model the CLI runs is never cause to ask it anything.
+#[test]
+fn a_runnable_model_asks_nothing_before_it_starts() {
+    let cli = ScriptedCli::leaked("2.1.284");
+    let clock = HandClock::leaked();
+    let readings = inline_standing_in(clock, cli);
+    readings.reading("claude", cli);
+    clock.advance(REFUSAL_FRESHNESS * 2);
+
+    assert_eq!(
+        refuse_unrunnable(
+            &readings,
+            &choice(AgentProvider::ClaudeAdk, Some("claude-sonnet-5-5"))
+        ),
+        Ok(())
+    );
+    assert_eq!(cli.asked(), 1);
+}
+
+/// What an RPC may refuse on: only a fresh answer, and never by asking.
+#[test]
+fn a_held_refusal_needs_a_fresh_answer() {
+    let cli = ScriptedCli::leaked("2.1.280");
+    let clock = HandClock::leaked();
+    let readings = inline_standing_in(clock, cli);
+    let sonnet = choice(AgentProvider::ClaudeAdk, Some("claude-sonnet-5-5"));
+    readings.reading("claude", cli);
+
+    assert!(held_refusal(&readings, &sonnet).is_some());
+    clock.advance(REFUSAL_FRESHNESS);
+    assert_eq!(held_refusal(&readings, &sonnet), None);
+    assert_eq!(cli.asked(), 1);
 }

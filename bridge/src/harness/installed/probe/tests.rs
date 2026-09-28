@@ -268,14 +268,37 @@ done"#
 /// may itself have been started by an agent).
 #[test]
 fn a_probe_runs_in_the_home_directory_as_nobody_s_agent() {
-    // SAFETY: set before anything reads it, and no other test reads it.
-    std::env::set_var("CLAUDECODE", "1");
     let dir = tempfile::tempdir().unwrap();
     let cli = fake_cli(
         dir.path(),
         "claude",
         r#"[ "$(pwd -P)" = "$(cd "$HOME" && pwd -P)" ] || exit 5
-[ -z "${CLAUDECODE+set}" ] || exit 6
+echo 2.1.284"#,
+    );
+    let command = child::command(cli.to_str().unwrap(), &["--version"], false);
+    let envs: Vec<_> = command.get_envs().collect();
+
+    assert_eq!(
+        VERSION_FLAG.read(cli.to_str().unwrap()).version,
+        Some(version("2.1.284"))
+    );
+    for marker in crate::harness::INHERITED_AGENT_MARKERS {
+        assert!(
+            envs.contains(&(std::ffi::OsStr::new(marker), None)),
+            "{marker} is removed: {envs:?}"
+        );
+    }
+}
+
+/// A probe never installs a CLI: a mise wrapper run with nothing installed
+/// would download it, and the deadline would kill that download halfway.
+#[test]
+fn a_probe_tells_mise_to_stay_offline() {
+    let dir = tempfile::tempdir().unwrap();
+    let cli = fake_cli(
+        dir.path(),
+        "claude",
+        r#"[ "$MISE_OFFLINE" = 1 ] || exit 7
 echo 2.1.284"#,
     );
 
@@ -283,6 +306,38 @@ echo 2.1.284"#,
         VERSION_FLAG.read(cli.to_str().unwrap()).version,
         Some(version("2.1.284"))
     );
+}
+
+/// A list with nothing in it Build could start says nothing about what codex
+/// runs, whether codex listed nothing or nothing it listed could be a model.
+#[test]
+fn a_codex_that_lists_nothing_usable_reads_as_listing_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    for (name, data) in [
+        ("empty", "[]"),
+        (
+            "unusable",
+            r#"[{"id":"--effort"},{"id":"gpt 6; rm -rf ~"}]"#,
+        ),
+    ] {
+        let cli = fake_cli(
+            dir.path(),
+            name,
+            &format!(
+                r#"while read -r line; do
+  case "$line" in
+    *'"initialize"'*) echo '{{"id":1,"result":{{"userAgent":"build_bridge_probe/0.155.1"}}}}' ;;
+    *'"model/list"'*) printf '%s\n' '{{"id":2,"result":{{"data":{data},"nextCursor":null}}}}' ;;
+  esac
+done"#
+            ),
+        );
+
+        let reading = CODEX_MODEL_LIST.read(cli.to_str().unwrap());
+
+        assert_eq!(reading.version, Some(version("0.155.1")), "{name}");
+        assert_eq!(reading.listed, None, "{name}");
+    }
 }
 
 /// The real CLIs on this machine, asked the way the bridge asks them. Needs

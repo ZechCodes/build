@@ -40,23 +40,7 @@ impl ProbeChild {
     /// directory it starts in for a project-local pin, and the answer wanted
     /// is the machine's. Stdin is a pipe only for a child that is talked to.
     pub(super) fn start(binary: &str, args: &[&str], talks: bool) -> std::io::Result<Self> {
-        let mut command = Command::new(binary);
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            command.process_group(0);
-        }
-        for marker in INHERITED_AGENT_MARKERS {
-            command.env_remove(marker);
-        }
-        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-        let mut child = command
-            .args(args)
-            .stdin(if talks { Stdio::piped() } else { Stdio::null() })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .current_dir(home.unwrap_or_else(std::env::temp_dir))
-            .spawn()?;
+        let mut child = command(binary, args, talks).spawn()?;
         let lines = read_lines(child.stdout.take());
         Ok(Self {
             child,
@@ -105,6 +89,33 @@ impl ProbeChild {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
+}
+
+/// The command a probe runs. Offline to mise: a wrapper on `PATH` that runs
+/// `mise use` or `mise x` installs the CLI when no version of it is, and a
+/// probe is often the first thing to run on a new machine. Killed at the
+/// deadline, that install is left half-downloaded until the next spawn
+/// finishes it; offline, mise runs what is installed or fails at once, and a
+/// probe that fails reads as knowing nothing.
+pub(super) fn command(binary: &str, args: &[&str], talks: bool) -> Command {
+    let mut command = Command::new(binary);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    for marker in INHERITED_AGENT_MARKERS {
+        command.env_remove(marker);
+    }
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    command
+        .env("MISE_OFFLINE", "1")
+        .args(args)
+        .stdin(if talks { Stdio::piped() } else { Stdio::null() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .current_dir(home.unwrap_or_else(std::env::temp_dir));
+    command
 }
 
 impl Drop for ProbeChild {

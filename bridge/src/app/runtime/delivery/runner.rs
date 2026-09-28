@@ -220,11 +220,15 @@ impl DeliveryRunner {
             if let Some(operation_id) = turn.operation_id.as_deref() {
                 let next = match &delivered {
                     Ok(DeliveryOutcome::Deferred) => OperationStatus::Queued,
-                    Ok(DeliveryOutcome::Delivered(_)) => OperationStatus::Delivered,
+                    // Settled with its reason: a failure, and a certain one.
+                    Ok(DeliveryOutcome::Delivered(_) | DeliveryOutcome::Refused(_)) => {
+                        OperationStatus::Delivered
+                    }
                     Err(_) => OperationStatus::Uncertain,
                 };
                 let execution_error = match &delivered {
                     Ok(DeliveryOutcome::Delivered(None)) => Some(AGENT_START_DECLINED_SESSION_OVER),
+                    Ok(DeliveryOutcome::Refused(why)) => Some(why.as_str()),
                     Err(error) => Some(error.as_str()),
                     _ => None,
                 };
@@ -245,6 +249,7 @@ impl DeliveryRunner {
                 // agent says why nothing opened.
                 Ok(DeliveryOutcome::Delivered(None)) => s.record_agent_start_declined(&turn),
                 Ok(DeliveryOutcome::Delivered(Some(_))) => {}
+                Ok(DeliveryOutcome::Refused(why)) => s.record_agent_start_unrunnable(&turn, &why),
                 Ok(DeliveryOutcome::Deferred) => {
                     s.delivery_queue.requeue(turn);
                 }

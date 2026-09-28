@@ -406,7 +406,6 @@ pub(in crate::app) fn build_agent(qa_agent: bool, context: HarnessContext) -> Ag
         // with; Orchestrator submits the prompt through the session.
         Agent::WarmBuilder(Arc::new(
             move |_prompt: &str, choice: &ModelChoice, options: &SpawnOptions| {
-                crate::harness::installed::refuse_unrunnable(choice)?;
                 let harness = harness_for(choice.provider);
                 harness.prepare_workspace(&options.cwd);
                 harness.spec(choice, options, &context)

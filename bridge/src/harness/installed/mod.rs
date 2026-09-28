@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use semver::Version;
 use tokio::sync::watch;
 
-use crate::harness::{harness_for, Harness, HarnessError};
+use crate::harness::{harness_for, Harness};
 use crate::models::{AgentProvider, ModelChoice};
 
 pub(crate) mod offer;
@@ -31,6 +31,11 @@ pub use probe::{CliProbe, CODEX_MODEL_LIST, NO_PROBE, VERSION_FLAG};
 
 /// How long an answer stands before the next ask for it asks the CLI again.
 pub const READING_TTL: Duration = Duration::from_secs(10 * 60);
+
+/// How old an answer may be and still refuse a session on its own word. An
+/// older one is asked again first, so a CLI updated a minute ago is not
+/// refused for the version it replaced.
+pub const REFUSAL_FRESHNESS: Duration = Duration::from_secs(30);
 
 /// What one installed CLI said about itself.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -134,6 +139,15 @@ impl Readings {
         binary: &'static str,
         probe: &'static dyn CliProbe,
     ) -> Option<Arc<CliReading>> {
+        self.held_with_age(binary, probe).0
+    }
+
+    /// [`Self::reading`], with how old it is.
+    fn held_with_age(
+        self: &Arc<Self>,
+        binary: &'static str,
+        probe: &'static dyn CliProbe,
+    ) -> (Option<Arc<CliReading>>, Option<Duration>) {
         let stale = {
             let mut entries = self.entries.lock().unwrap();
             let entry = entries.entry(binary).or_default();
@@ -145,6 +159,40 @@ impl Readings {
         if stale {
             self.ask(binary, probe);
         }
+        let entries = self.entries.lock().unwrap();
+        let Some(entry) = entries.get(binary) else {
+            return (None, None);
+        };
+        let age = entry
+            .read_at
+            .map(|read_at| (self.now)().duration_since(read_at));
+        (entry.reading.clone(), age)
+    }
+
+    /// What `binary` says, asked again here and now unless its answer is
+    /// younger than `fresh`: the caller waits on the CLI, for at most the
+    /// probe's deadline. Only for a caller off every RPC and the event loop —
+    /// the spawn gate, which is about to start the CLI anyway. Readings that
+    /// never ask answer what they hold.
+    pub fn fresh_reading(
+        self: &Arc<Self>,
+        binary: &'static str,
+        probe: &'static dyn CliProbe,
+        fresh: Duration,
+    ) -> Option<Arc<CliReading>> {
+        let young = {
+            let entries = self.entries.lock().unwrap();
+            entries
+                .get(binary)
+                .and_then(|entry| entry.read_at)
+                .is_some_and(|read_at| (self.now)().duration_since(read_at) < fresh)
+        };
+        if young || self.schedule.is_none() {
+            return self.held(binary);
+        }
+        #[cfg(test)]
+        let probe = self.stand_in.unwrap_or(probe);
+        self.record(binary, probe.read(binary), false);
         self.held(binary)
     }
 
@@ -200,18 +248,21 @@ impl Readings {
         let readings = Arc::clone(self);
         schedule(Box::new(move || {
             let reading = probe.read(binary);
-            readings.record(binary, reading);
+            readings.record(binary, reading, true);
         }));
     }
 
-    fn record(&self, binary: &'static str, reading: CliReading) {
+    /// Keep what `binary` said. `ends_ask` for the answer to the ask
+    /// [`Self::claim_ask`] claimed; an answer read in place leaves that ask
+    /// running.
+    fn record(&self, binary: &'static str, reading: CliReading, ends_ask: bool) {
         let changed = {
             let mut entries = self.entries.lock().unwrap();
             let entry = entries.entry(binary).or_default();
             let changed = entry.reading.as_deref() != Some(&reading);
             entry.reading = Some(Arc::new(reading));
             entry.read_at = Some((self.now)());
-            entry.asking = false;
+            entry.asking &= !ends_ask;
             changed
         };
         if changed {
@@ -252,14 +303,30 @@ pub fn model_offer_from(readings: &Arc<Readings>, provider: AgentProvider) -> Mo
 /// it is started: an older Claude Code gets a 400 from the API on every turn,
 /// or runs the model at a 200k window, and neither says so where the person
 /// who chose the model will look (#203). A CLI Build knows nothing about is
-/// never refused.
-pub fn refuse_unrunnable(choice: &ModelChoice) -> Result<(), HarnessError> {
+/// never refused, and one whose answer is older than [`REFUSAL_FRESHNESS`] is
+/// asked again before it is: this waits on the CLI, so it is for the spawn
+/// path alone, which runs off every RPC.
+pub fn refuse_unrunnable(readings: &Arc<Readings>, choice: &ModelChoice) -> Result<(), String> {
     let harness = harness_for(choice.provider);
-    let reading = readings().reading(harness.binary(), harness.cli_probe());
-    match refusal(harness, choice, reading.as_deref()) {
-        Some(why) => Err(HarnessError::Refused(why)),
-        None => Ok(()),
+    let held = readings.reading(harness.binary(), harness.cli_probe());
+    if refusal(harness, choice, held.as_deref()).is_none() {
+        return Ok(());
     }
+    let fresh = readings.fresh_reading(harness.binary(), harness.cli_probe(), REFUSAL_FRESHNESS);
+    refusal(harness, choice, fresh.as_deref()).map_or(Ok(()), Err)
+}
+
+/// Why `choice` would be refused on what `readings` hold now, without asking
+/// any CLI: for an RPC, which cannot wait on one. Only an answer younger than
+/// [`REFUSAL_FRESHNESS`] refuses; an older one leaves the verdict to the
+/// spawn, which asks again first.
+pub fn held_refusal(readings: &Arc<Readings>, choice: &ModelChoice) -> Option<String> {
+    let harness = harness_for(choice.provider);
+    let (reading, read_at) = readings.held_with_age(harness.binary(), harness.cli_probe());
+    if read_at.is_none_or(|age| age >= REFUSAL_FRESHNESS) {
+        return None;
+    }
+    refusal(harness, choice, reading.as_deref())
 }
 
 fn refusal(

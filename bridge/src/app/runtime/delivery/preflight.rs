@@ -4,6 +4,7 @@ use crate::app::{
     DeliveryPreflight, LifecycleDiagnostic, PendingAgentTurn, Spawned, TabKey,
     TAB_CLOSED_UNDER_A_TURN,
 };
+use crate::delivery::StartFailure;
 use crate::harness::{AgentStatus, Turn, TurnChoiceSupport, TurnReceiptSupport};
 use crate::store::now_rfc3339;
 use crate::timing::FrameTimer;
@@ -206,7 +207,7 @@ pub(in crate::app) fn deliver(
         DeliveryPreflight::Deferred => return Ok(DeliveryOutcome::Deferred),
         DeliveryPreflight::Declined => return Ok(DeliveryOutcome::Delivered(None)),
     };
-    let Some((wire_id, spawned)) = ensure_agent_tab(
+    let opened = ensure_agent_tab(
         state,
         root,
         AgentSpawnRequest {
@@ -218,8 +219,12 @@ pub(in crate::app) fn deliver(
             phase,
         },
         timer,
-    )?
-    else {
+    );
+    let Some((wire_id, spawned)) = (match opened {
+        Ok(opened) => opened,
+        Err(StartFailure::Refused(why)) => return Ok(DeliveryOutcome::Refused(why)),
+        Err(StartFailure::Failed(error)) => return Err(error),
+    }) else {
         return Ok(DeliveryOutcome::Delivered(None));
     };
     let prompt = say.as_ref().map(|say| match spawned {

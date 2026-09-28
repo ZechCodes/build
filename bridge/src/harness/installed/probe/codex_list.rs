@@ -66,10 +66,13 @@ impl AppServer {
         self.send(&json!({ "method": "initialized" }))?;
         let initialized = self.answer(INITIALIZE_ID)?;
         let version = initialized["userAgent"].as_str().and_then(version_in);
+        // A list with nothing Build could start on says nothing about what
+        // codex runs; taken as the truth, it would refuse every session.
         let listed = self
             .list()
             .map_err(|why| eprintln!("cli probe: codex model/list: {why}"))
-            .ok();
+            .ok()
+            .filter(|listed| !listed.is_empty());
         Ok(CliReading { version, listed })
     }
 

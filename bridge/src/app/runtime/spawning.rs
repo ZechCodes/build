@@ -4,7 +4,7 @@ use crate::app::{
     spawn_tab_pumps, AgentSpawnRequest, AppState, McpTokenLease, SpawnAvailability,
     SpawnClaimToken, Tab, TabKey, TabRole, NO_TERMINAL_LEFT, SPAWN_NEVER_OPENED,
 };
-use crate::delivery::{AgentSpawnPlan, ReadyToSpawn};
+use crate::delivery::{AgentSpawnPlan, ReadyToSpawn, StartFailure};
 #[cfg(test)]
 use crate::harness::Turn;
 use crate::harness::{
@@ -83,12 +83,12 @@ impl SpawnHolding {
     /// be handed to the session replacing it. There is no such session now, and
     /// the grid is in no registry for a reaper or a close to reach: they are
     /// told here or they are told never.
-    pub(in crate::app) fn abandon(
+    pub(in crate::app) fn abandon<E>(
         self,
         state: &Arc<Mutex<AppState>>,
-        error: String,
+        error: E,
         timer: &FrameTimer,
-    ) -> String {
+    ) -> E {
         if let Some(screen) = &self.carried {
             screen.close(SPAWN_NEVER_OPENED);
         }
@@ -206,7 +206,7 @@ pub(in crate::app) fn ensure_agent_tab(
     root: &std::path::Path,
     request: AgentSpawnRequest<'_>,
     timer: &FrameTimer,
-) -> Result<Option<(String, Spawned)>, String> {
+) -> Result<Option<(String, Spawned)>, StartFailure> {
     let key = TabKey::agent(&AppState::canonical_root(root), request.agent_id);
     let reserved = match claim_agent_spawn(state, &key, &request, timer)? {
         SpawnDecision::Live(wire_id) => return Ok(Some((wire_id, Spawned::Warm))),
@@ -385,6 +385,7 @@ pub(in crate::app) fn reserve_agent_spawn(
             recorded_resume_id,
             probes: s.session_probes(),
             session_token: session_token.clone(),
+            cli_readings: Arc::clone(&s.cli_readings),
         },
         role: TabRole::Agent {
             owner: owner.to_string(),
@@ -447,7 +448,7 @@ pub(in crate::app) fn open_agent_session(
     key: &TabKey,
     conversation_id: &str,
     timer: &FrameTimer,
-) -> Result<Option<OpenedSession>, String> {
+) -> Result<Option<OpenedSession>, StartFailure> {
     let ReservedSpawn {
         plan,
         role,
@@ -498,6 +499,7 @@ pub(in crate::app) fn open_agent_session(
             ),
         )
         .map(|(tab, output)| (tab, output, recorded_name_is_gone))
+        .map_err(StartFailure::Failed)
     });
     match opened {
         Ok((mut tab, output, recorded_name_is_gone)) => {

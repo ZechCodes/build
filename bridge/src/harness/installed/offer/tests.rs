@@ -216,6 +216,22 @@ fn a_cli_that_listed_nothing_is_offered_the_whole_catalog() {
     assert_eq!(offer.cli_version, version_only.version);
 }
 
+/// An empty list is no list: taken as one, it would offer nothing and refuse
+/// every session.
+#[test]
+fn a_cli_that_listed_an_empty_list_is_offered_the_whole_catalog() {
+    let empty = CliReading {
+        version: Some(Version::parse("0.155.1").unwrap()),
+        listed: Some(Vec::new()),
+    };
+
+    let offer = ModelOffer::listed(&codex_catalog(), Some(&empty), &EFFORTS);
+
+    assert_eq!(ids(&offer), ["gpt-6-sol", "gpt-5.2"]);
+    assert_eq!(offer.refusal("gpt-6-sol", "Codex"), None);
+    assert_eq!(offer.refusal("gpt-5.2", "Codex"), None);
+}
+
 #[test]
 fn the_whole_catalog_says_the_version_it_read() {
     let offer = ModelOffer::whole(&catalog(), Some(&at("0.86.1")));

@@ -240,6 +240,10 @@ pub(in crate::app) enum DeliveryOutcome {
     /// requires a restart and the current turn has not reached a safe boundary.
     /// No provider call has happened; the durable intent is safe to queue.
     Deferred,
+    /// The agent's session was not running, and starting one was refused
+    /// before anything started: the installed CLI cannot run its model. The
+    /// sentence says so to the person who chose it. Certainly not delivered.
+    Refused(String),
 }
 
 pub(in crate::app) enum DeliveryPreflight {

@@ -927,7 +927,26 @@ impl AppState {
             self.settle_router_session(&turn.owner);
             return;
         }
-        let reason = format!("could not reach the agent: {error}");
+        self.record_agent_start_error(turn, format!("could not reach the agent: {error}"));
+    }
+
+    /// A turn's agent was not started because the installed CLI cannot run
+    /// its model: `why` is already the sentence the person who chose that
+    /// model reads, and says what to do.
+    pub(in crate::app) fn record_agent_start_unrunnable(
+        &mut self,
+        turn: &PendingAgentTurn,
+        why: &str,
+    ) {
+        if self.router_sessions.contains_key(&turn.owner) {
+            eprintln!("router {}: {why}", turn.owner);
+            self.settle_router_session(&turn.owner);
+            return;
+        }
+        self.record_agent_start_error(turn, why.to_string());
+    }
+
+    fn record_agent_start_error(&mut self, turn: &PendingAgentTurn, reason: String) {
         // Both facts land in the one mutation. The entity's `last_error` is
         // the surface's line about the work; the agent's `start_error` is its
         // own word about the session it was asked to open, which is what the

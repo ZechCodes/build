@@ -481,8 +481,8 @@ impl AppState {
             .and_then(|run| run.run.plan_id.as_ref())
             .map(|id| id.0.clone())
         {
-            if let Err(error) = self.refresh_task_scheduler_activity(&task_id) {
-                eprintln!("task scheduler {task_id}: {error}");
+            if let Err(error) = self.refresh_task_activity(&task_id) {
+                eprintln!("task activity {task_id}: {error}");
             }
         }
     }

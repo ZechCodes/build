@@ -422,9 +422,9 @@ impl AppState {
     }
 
     /// Route an agent's `done` to its owner's lifecycle transition, by owner
-    /// lookup (plans map, then runs map), without draining: a report that
-    /// carries a Task's scheduler on to its next stage hands that git back
-    /// HERE, to the socket that can release the guard before running it. The
+    /// lookup (plans map, then runs map), without draining: a report whose
+    /// follow-up has git to run hands that git back HERE, to the socket that
+    /// can release the guard before running it. The
     /// `done` twin of [`AppState::dispatch_deferring`].
     #[cfg(test)]
     pub(in crate::app) fn done_deferring(

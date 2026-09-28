@@ -32,8 +32,8 @@ pub(in crate::app) fn plan_stage_json(active: &ActivePlan, doc: &StageDoc) -> Va
 /// the first stage is the answer.
 ///
 /// One predicate, three readers — boot's activity reconstruction, the
-/// scheduler's target stage, and the Task's rendered activity — because what counts as settled has to move for all of
-/// them at once.
+/// activity a report refreshes, and the Task's rendered activity — because
+/// what counts as settled has to move for all of them at once.
 pub(in crate::app) fn next_unsettled_stage<'a>(
     stages: &'a [StageDoc],
     run: Option<&ActiveRun>,
@@ -122,6 +122,45 @@ impl AppState {
                 .insert("thread".to_string(), thread);
         }
         Ok(view)
+    }
+
+    pub(crate) fn task_stage_diff(&mut self, params: &Value) -> Result<Value, String> {
+        let task_id = require_str(params, "task_id")?;
+        let stage_id = require_str(params, "stage_id")?;
+        // Resolve the lineage that actually owns this immutable boundary, not
+        // merely the newest attempt. A later failed/restarted implementation
+        // must not hide a completed stage from an earlier retained lineage.
+        let mut lineages = self
+            .runs
+            .values()
+            .filter(|run| run.run.plan_id.as_ref().map(|id| id.0.as_str()) == Some(&task_id))
+            .filter(|run| {
+                run.stage_progress(&stage_id).is_some_and(|progress| {
+                    progress.start_sha.is_some() && progress.completion_sha.is_some()
+                })
+            })
+            .collect::<Vec<_>>();
+        lineages.sort_by_key(|run| {
+            self.board
+                .attention()
+                .clock(&run.run.id.0)
+                .created_at
+                .unwrap_or_default()
+        });
+        let run_id = lineages
+            .last()
+            .map(|run| run.run.id.0.clone())
+            .or_else(|| {
+                self.current_task_implementation(&task_id)
+                    .map(|run| run.run.id.0.clone())
+            })
+            .ok_or("task has no implementation lineage")?;
+        let mut run_params = params.clone();
+        run_params
+            .as_object_mut()
+            .ok_or("task params must be an object")?
+            .insert("run_id".to_string(), json!(run_id));
+        self.plan_run_stage_diff(&run_params, Some(task_id))
     }
 
     pub(crate) fn task_stages(&mut self, params: &Value) -> Result<Value, String> {

@@ -84,7 +84,7 @@ describe("adapter selection", () => {
 
   it("a 2.0 bridge greeting this SPA: each capability it names is on", () => {
     const selected = selectAdapter(greetingV1());
-    expect(selected.major).toBe(2);
+    expect(selected.major).toBe(3);
     expect(selected.create(vi.fn()).capabilities).toEqual({
       // The kinds come through as the greeting states them: a caller asks
       // whether this bridge carries the one it is about to name, because every
@@ -127,8 +127,25 @@ describe("adapter selection", () => {
     expect(selected.create(vi.fn())).toEqual({ stale: true });
   });
 
-  it("a 3.x bridge with only a 2.x adapter: the app is the one to update", () => {
-    expect(selectAdapter({ api_version: "3.0.1" })).toEqual({ unsupported: "app", version: "3.0.1" });
+  // 3.0.0 removed verbs this SPA never called (#207), so one adapter speaks to
+  // both sides of the break: the app can roll before the bridge restarts.
+  it("a 3.x bridge against this SPA: served, no gate", () => {
+    for (const version of ["3.0.0", "3.0.1", "3.9.0"]) {
+      const selected = selectAdapter(greetingV1({ api_version: version }));
+      expect(selected.unsupported).toBe(undefined);
+      expect(selected.major).toBe(3);
+      expect(selected.create(vi.fn()).capabilities.changes.subscriptions).toBe(true);
+    }
+  });
+
+  it("a 2.x bridge against this SPA: still served while the bridge rolls", () => {
+    for (const version of ["2.0.0", "2.1.0", "2.2.0"]) {
+      expect(selectAdapter(greetingV1({ api_version: version })).unsupported).toBe(undefined);
+    }
+  });
+
+  it("a 4.x bridge against this SPA: the app is the one to update", () => {
+    expect(selectAdapter({ api_version: "4.0.0" })).toEqual({ unsupported: "app", version: "4.0.0" });
   });
 
   it("a 2.x bridge with only a v3 adapter: the bridge is the one to update", () => {
@@ -147,7 +164,7 @@ describe("adapter selection", () => {
     for (const greeting of [null, undefined, {}, { push_events: true }]) {
       const selected = selectAdapter(greeting);
       expect(selected.version).toBe("0.0.0");
-      expect(selected.major).toBe(2);
+      expect(selected.major).toBe(3);
       expect(selected.create(vi.fn()).capabilities).toEqual({
         changes: { subscriptions: false, kinds: [] },
         requests: { priority: false },
@@ -256,12 +273,14 @@ describe("named capabilities", () => {
 });
 
 describe("the adapter", () => {
-  it("declares major 2, where tasks are named tasks (#190)", () => {
-    expect(v1.major).toBe(2);
-    expect(v1.range).toBe(">=2.0.0 <3.0.0");
+  it("declares major 3 and still admits 2.x, whose verbs it shares (#207)", () => {
+    expect(v1.major).toBe(3);
+    expect(v1.range).toBe(">=2.0.0 <4.0.0");
     expect(satisfies("1.30.0", v1.range)).toBe(false);
     expect(satisfies("2.0.0", v1.range)).toBe(true);
     expect(satisfies("2.9.4", v1.range)).toBe(true);
+    expect(satisfies("3.0.0", v1.range)).toBe(true);
+    expect(satisfies("4.0.0", v1.range)).toBe(false);
   });
 
   it("passes a call through and returns its result", async () => {

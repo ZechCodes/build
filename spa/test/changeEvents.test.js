@@ -260,7 +260,7 @@ describe("the greeting", () => {
     const call = vi.fn(async () => ({ push_events: true }));
     await greetBridge(call);
     expect(call).toHaveBeenCalledWith("session.hello", {
-      client: { name: "spa", version: expect.any(String), api_range: ">=2.0.0 <3.0.0" },
+      client: { name: "spa", version: expect.any(String), api_range: ">=2.0.0 <4.0.0" },
       changes: "subscriptions",
     });
     expect(call.mock.calls[0][1].client.version).not.toBe("");

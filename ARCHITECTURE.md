@@ -245,8 +245,9 @@ runtime that starts them.
   reads (`task.get`, `task.stages`, `task.doc`, `task.stage_doc`,
   `task.stage_diff`) stay for stored plans, and so do the `run.*` verbs an
   adopted worktree's review uses. A removed verb answers `unknown_method`.
-  The SPA's adapter claims `>=2.2.0 <4.0.0`: it calls nothing 2.2.0 lacks,
-  so the app can roll before the bridge.
+  The SPA's adapter claims `>=2.0.0 <4.0.0`: it calls nothing a 2.x bridge
+  lacks (what 2.x added after 2.0.0 is capability-gated), so the app can
+  roll before the bridge.
 - `session.hello` is answered by `session_hello` in
   `bridge/src/app/runtime/terminals.rs`. The reply carries `api_version`,
   `capabilities`, `push_events`, `events` and the `changes` subscription settings.
@@ -880,7 +881,7 @@ refuses when that device cannot answer.
   client's `api_range`. `greetBridge()` then selects an adapter and arms the
   change subscriptions.
 - `selectAdapter()` in `spa/src/core/bridgeApi/index.js` checks the bridge's
-  `api_version` against `SPA_API_RANGE` (`>=2.2.0 <4.0.0`). A greeting with
+  `api_version` against `SPA_API_RANGE` (`>=2.0.0 <4.0.0`). A greeting with
   no version, or no greeting at all, reads as `PRE_ALPHA_API_VERSION`
   (`0.0.0`). For compatibility, that is matched at the lowest adapter's floor
   rather than rejected. Any other version outside the range returns

@@ -1,11 +1,13 @@
-// The adapter for API major 2: everything this SPA knows about the wire. The
+// The adapter for API major 3: everything this SPA knows about the wire. The
 // module keeps its v1 name — 2.0.0 broke one thing, the task rename (#190):
 // every tracker and plan verb and feature name moved to `tasks.*` or
 // `task.*`, so a 1.x bridge is gated as behind rather than served names it
-// does not know.
+// does not know. 3.0.0 only removed verbs and pushes this SPA never used
+// (#207), so the same adapter still serves every 2.x bridge: the app can roll
+// before the bridge restarts.
 //
 // A surface never asks what version the bridge reports — it asks the adapter's
-// `capabilities`, the names in the greeting. Every 2.x bridge sends the list;
+// `capabilities`, the names in the greeting. Every 2.x and 3.x bridge sends the list;
 // the minor table that stood in for it on bridges before 1.22 went with 1.x.
 //
 // The adapter also owns error normalisation. A refusal carries `error_code`,
@@ -16,10 +18,10 @@
 import { satisfies } from "../semver.js";
 
 /** The range of bridge versions this adapter claims. */
-export const range = ">=2.0.0 <3.0.0";
+export const range = ">=2.0.0 <4.0.0";
 
 /** The API major it is the adapter for. */
-export const major = 2;
+export const major = 3;
 
 /** `ApiError.code` for a refusal that named none. */
 export const UNKNOWN_CODE = "unknown";

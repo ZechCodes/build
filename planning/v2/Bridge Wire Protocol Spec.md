@@ -570,8 +570,8 @@ has been seen in `bridge.stats` for a month.
   `run.request_changes`, `run.message`, `run.git_action`, `run.abandon`). No
   stored data changes.
   As with 2.0.0, before release the bridge serves no 2.x client. The SPA's
-  adapter instead claims `>=2.2.0 <4.0.0`, because it calls nothing 2.2.0
-  lacks. That lets the app deploy before the bridge restarts. A 2.x tab
+  adapter instead claims `>=2.0.0 <4.0.0`, because it calls nothing a 2.x
+  bridge lacks (2.1 and 2.2 additions are capability-gated). That lets the app deploy before the bridge restarts. A 2.x tab
   meeting a 3.x bridge shows the "app is behind" gate, which offers a reload
   onto the served bundle.
 - `PROTOCOL_VERSION` (envelope), the MCP protocol date, and the Cargo

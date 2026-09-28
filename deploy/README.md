@@ -314,9 +314,9 @@ desktop one-liner works on the production site.
 
 ## Known-stale harnesses
 
-`web/qa-reconnect.mjs` and `web/real-agent.mjs` still speak the pre-auth gateway
-protocol (no `authenticate` first frame) and still call `openSession` with its
-pre-peer signature; both need updating before they run against this stack.
+`web/qa-reconnect.mjs` still speaks the pre-auth gateway protocol (no
+`authenticate` first frame) and still calls `openSession` with its pre-peer
+signature; it needs updating before it runs against this stack.
 `web/e2e.mjs`, `web/qa.mjs`, `web/wire-check.mjs`, `web/pair.mjs`,
 `web/pair-another.mjs` and `web/skrift-flow.mjs` are current.
 

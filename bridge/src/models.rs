@@ -799,6 +799,30 @@ mod tests {
         );
     }
 
+    /// Sonnet 5.5 (in the CLI's catalog from 2.1.284) sits directly above
+    /// Sonnet 5, with the same effort levels and window as Sonnet 5.
+    #[test]
+    fn sonnet_5_5_is_in_both_claude_providers_catalogs_above_sonnet_5() {
+        claude_providers_offer("claude-sonnet-5-5", "Claude Sonnet 5.5");
+        for provider in CLAUDE_PROVIDERS {
+            let ids: Vec<_> = catalog_of(provider)
+                .models
+                .iter()
+                .map(|model| model.id)
+                .collect();
+            let at = ids
+                .iter()
+                .position(|id| *id == "claude-sonnet-5-5")
+                .unwrap();
+            assert_eq!(ids[at - 1], "claude-opus-4-8");
+            assert_eq!(ids[at + 1], "claude-sonnet-5");
+        }
+        assert_eq!(
+            context_window_of(AgentProvider::ClaudeAdk, "claude-sonnet-5-5[1m]"),
+            Some(1_000_000)
+        );
+    }
+
     /// GPT-6 Sol and Luna (announced 2026-09-22) follow Astra on both codex
     /// carriers; Sol takes every reasoning level as the 5.6 Sol did, Luna
     /// stops at max as the 5.6 Luna did.

@@ -73,6 +73,13 @@ impl Harness for ClaudeHarness {
                 context_window: Some(1_000_000),
             },
             ModelOption {
+                id: "claude-sonnet-5-5",
+                label: "Claude Sonnet 5.5",
+                supports_effort: true,
+                efforts: &EFFORT_LEVELS,
+                context_window: Some(1_000_000),
+            },
+            ModelOption {
                 id: "claude-sonnet-5",
                 label: "Claude Sonnet 5",
                 supports_effort: true,

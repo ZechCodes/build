@@ -14,7 +14,6 @@ import {
   inboxEmptyHtml,
   inboxEntries,
   inboxRowHtml,
-  taskDoneConfirm,
   mergePendingRows,
   recentIsOpen,
   recentToggleHtml,
@@ -844,19 +843,6 @@ describe("the Done confirmations", () => {
     expect(branchDoneConfirm(entry).actions.some((action) => action.toLowerCase().includes("task"))).toBe(false);
   });
 
-  it("archives a task with its stage plans", () => {
-    const [entry] = listed([task()]);
-    const confirm = taskDoneConfirm(entry);
-    expect(confirm.actions.join(" ")).toContain("stage plans");
-    expect(confirm.danger).toBe(false);
-  });
-
-  it("warns when no branch ever implemented the task being filed away", () => {
-    const [entry] = listed([
-      task({ finish: { warnings: [{ code: "unimplemented", message: "No branch has implemented this task" }] } }),
-    ]);
-    expect(taskDoneConfirm(entry).warnings).toEqual(["No branch has implemented this task"]);
-  });
 });
 
 // ---- captures ----------------------------------------------------------------

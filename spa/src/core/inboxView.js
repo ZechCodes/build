@@ -27,7 +27,6 @@ import {
   entryKeyOf,
   inboxEmptyHtml,
   inboxRowHtml,
-  taskDoneConfirm,
   mergePendingRows,
   recentIsOpen,
   recentToggleHtml,
@@ -814,15 +813,14 @@ async function dismissEntry(entry) {
   });
 }
 
-/** The RPC behind Done. On a branch it DELETES: the branch (where the bridge
+/** The RPC behind Done on a branch. It DELETES: the branch (where the bridge
  *  deletes it, `target.deletesBranch`), its checkout and its records go,
- *  which is what Done on a branch means. On a task it archives. Neither is
- *  refused for the state of the work — what the destruction costs came down
- *  with the row and was confirmed through. */
+ *  which is what Done on a branch means. It is not refused for the state of
+ *  the work — what the destruction costs came down with the row and was
+ *  confirmed through. */
 export async function finishWorkItem(target, optionId = BRANCH_DONE_OPTION) {
   const call = verbCall(target, finishDoing(target));
-  if (target.kind === "task") await call("plan.archive", { plan_id: target.taskId });
-  else sayBranchFinishNotice(target, await sendBranchFinish(target, call, optionId));
+  sayBranchFinishNotice(target, await sendBranchFinish(target, call, optionId));
   // Done ends the work, and an ending is an attention event. The user did this
   // here, so this entry is already read. The task an unmerged branch leaves
   // behind is NOT: it comes back to the inbox asking for somebody, and the
@@ -839,7 +837,6 @@ function sayBranchFinishNotice(target, answer) {
 
 /** What Done does, in the words a refusal names it by. */
 function finishDoing(target) {
-  if (target.kind === "task") return "archive this task";
   return target.deletesBranch ? "delete this branch" : "remove this checkout";
 }
 
@@ -865,9 +862,8 @@ async function sendBranchFinish(target, call, optionId) {
 async function finishEntry(entry) {
   if (!entry) return;
   // What Done on this machine does to the branch, from the cache (#87).
-  const target = entry.kind === "task" ? entry : { ...entry, deletesBranch: await readBranchDelete(entry.deviceId) };
-  const confirmation = entry.kind === "task" ? taskDoneConfirm(entry) : branchDoneConfirm(target);
-  if (!(await confirmAction(confirmation))) return;
+  const target = { ...entry, deletesBranch: await readBranchDelete(entry.deviceId) };
+  if (!(await confirmAction(branchDoneConfirm(target)))) return;
   // Confirmation is the decisive moment: the row goes now, and the git work
   // (and the push that confirms it) carries on behind it.
   await optimisticVerb(entry, {

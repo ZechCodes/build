@@ -251,11 +251,8 @@ describe("a press on a machine that is away", () => {
 
   // Done off a row's menu and off a branch's own page both finish through
   // finishWorkItem, and the page shows what it throws.
-  it("says why Done on a task or a branch did nothing", async () => {
+  it("says why Done on a branch did nothing", async () => {
     const { finishWorkItem } = modules.inboxView;
-    await expect(finishWorkItem({ kind: "task", deviceId: DEVICE, taskId: "task-7" })).rejects.toThrow(
-      "Build cannot archive this task because this machine is away.",
-    );
     // #87: this machine's bridge keeps the branch, so Done there removes only
     // the checkout, and the refusal names that.
     await expect(finishWorkItem({ kind: "branch", deviceId: DEVICE, projectId: PROJECT, branch: "fix" })).rejects.toThrow(

@@ -288,6 +288,7 @@ describe("the file the route names", () => {
     location.hash = "#/device/dev-1/project/p1/branch/build%2Flogin/files";
     ({ App } = await import("../src/app.js"));
     await (await import("../src/core/localCache.js")).wipeCache();
+    await (await import("../src/core/localUiStore.js")).wipeUiRecords();
     ({ renderBranch } = await import("../src/views/branchView.js"));
     // The surface takes its caller from the machine its link names.
     let adoptDeviceSession;

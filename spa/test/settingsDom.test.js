@@ -102,6 +102,8 @@ beforeEach(async () => {
   pushReading = async () => "unsupported";
   const { wipeCache } = await import("../src/core/localCache.js");
   await wipeCache();
+  const { wipeUiRecords } = await import("../src/core/localUiStore.js");
+  await wipeUiRecords();
   vi.clearAllMocks();
   deviceListeners.clear();
   devices = [
@@ -122,10 +124,10 @@ beforeEach(async () => {
 });
 
 it("paints the cached notification state before the browser answers, then writes the fresh reading", async () => {
-  const { readCached, writeCached } = await import("../src/core/localCache.js");
+  const { readUiRecord, writeUiRecord } = await import("../src/core/localUiStore.js");
   const { uiAddress } = await import("../src/core/localUiState.js");
   const address = uiAddress({ view: "settings", kind: "push" });
-  await writeCached(address, { state: "enabled", permission: "granted", subscribed: true });
+  await writeUiRecord(address, { state: "enabled", permission: "granted", subscribed: true });
   let answer;
   pushReading = () => new Promise((resolve) => { answer = resolve; });
   const rendering = renderSettings();
@@ -133,13 +135,13 @@ it("paints the cached notification state before the browser answers, then writes
   answer("denied");
   await rendering;
   await vi.waitFor(() => expect($("#pushtoggle").textContent).toBe("Blocked"));
-  expect((await readCached(address)).value).toMatchObject({ state: "denied", subscribed: false });
+  expect((await readUiRecord(address)).value).toMatchObject({ state: "denied", subscribed: false });
 });
 
 it("wires a cached enabled notification toggle while the fresh state is pending", async () => {
-  const { writeCached } = await import("../src/core/localCache.js");
+  const { writeUiRecord } = await import("../src/core/localUiStore.js");
   const { uiAddress } = await import("../src/core/localUiState.js");
-  await writeCached(uiAddress({ view: "settings", kind: "push" }), { state: "enabled", permission: "granted", subscribed: true });
+  await writeUiRecord(uiAddress({ view: "settings", kind: "push" }), { state: "enabled", permission: "granted", subscribed: true });
   const read = vi.fn(() => new Promise(() => {}));
   pushReading = read;
   await renderSettings();

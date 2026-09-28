@@ -69,6 +69,7 @@ vi.mock("../src/terminal/pane.js", () => ({
   },
 }));
 
+const { wipeUiRecords } = await import("../src/core/localUiStore.js");
 const { consoleCacheScope, emptyConsoleWorld, seedConsoleWorld } = await import("./consoleWorld.js");
 const { TerminalSocketLost } = await import("../src/terminal/session.js");
 const { App } = await import("../src/app.js");
@@ -90,6 +91,7 @@ beforeEach(async () => {
   localStorage.clear();
   resetConsoleMemory();
   await emptyConsoleWorld();
+  await wipeUiRecords();
   status.reset();
   for (const fn of Object.values(manager)) fn.mockReset();
   manager.input.mockResolvedValue(undefined);

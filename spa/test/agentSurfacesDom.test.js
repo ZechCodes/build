@@ -15,6 +15,7 @@ import {
 
 const SURFACES_KEY = "branch-1:agent-1";
 vi.mock("../src/core/localCache.js", () => import("./memoryCache.js"));
+vi.mock("../src/core/localUiStore.js", () => import("./memoryUiStore.js"));
 
 const snapshot = () => surfacesSnapshot();
 

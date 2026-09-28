@@ -10,7 +10,7 @@ import {
 } from "../src/core/composer.js";
 import { createChatRepository } from "../src/core/chatRepository.js";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { readCached } from "../src/core/localCache.js";
+import { readUiRecord } from "../src/core/localUiStore.js";
 
 const IDS = { input: "ti", send: "ts", hint: "th" };
 const MARKUP_IDS = { inputId: "ti", sendId: "ts", hintId: "th", placeholder: "Say something…" };
@@ -265,13 +265,13 @@ describe("attaching", () => {
     host.dispatchEvent(dropOf([new File(["a"], "held.txt", { type: "text/plain" })]));
     await vi.waitFor(() => expect(release).toBeTypeOf("function"));
     const address = { deviceId: "device-held-upload", entityId: "thread-1", kind: "ui-draft", sub: "chat:agent:run-1:agent-1" };
-    await vi.waitFor(async () => expect((await readCached(address))?.value.attachments[0].status).toBe("failed"));
+    await vi.waitFor(async () => expect((await readUiRecord(address))?.value.attachments[0].status).toBe("failed"));
     await vi.waitFor(() => expect(announced).toHaveBeenCalled());
     expect(chat.readAttachments()[0]).toMatchObject({ name: "held.txt", status: "uploading" });
     expect(chat.readAttachments()[0].pending).toBeInstanceOf(Promise);
     release();
     await vi.waitFor(() => expect(chat.readAttachments()[0].status).toBe("ready"));
-    await vi.waitFor(async () => expect((await readCached(address))?.value.attachments[0].status).toBe("ready"));
+    await vi.waitFor(async () => expect((await readUiRecord(address))?.value.attachments[0].status).toBe("ready"));
     repository.dispose();
   });
 

@@ -53,6 +53,7 @@ globalThis.IntersectionObserver = class {
 
 const { scopeFor } = await import("../src/core/cacheScope.js");
 const { cachedSubKeys, deleteCached, readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
+const { wipeUiRecords } = await import("../src/core/localUiStore.js");
 const { BODY_PAGE_BYTES, dropBodyPages, readBodyPages, writeBodyPage } = await import("../src/core/bodyPages.js");
 const { WHOLE_READ } = await import("../src/core/cacheLifetime.js");
 const { renderFilesTab } = await import("../src/views/files.js");
@@ -91,6 +92,7 @@ beforeEach(async () => {
   observations = 0;
   observers.splice(0);
   await wipeCache();
+  await wipeUiRecords();
 });
 
 afterEach(() => {

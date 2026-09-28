@@ -92,7 +92,8 @@ const { routeFromHash } = await import("../src/core/router.js");
 const { adoptDeviceSession } = await import("../src/core/deviceContexts.js");
 const { rememberDeviceFilter } = await import("../src/core/deviceFilter.js");
 const { stampWorkspace } = await import("../src/core/feedMerge.js");
-const { readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
+const { writeCached, wipeCache } = await import("../src/core/localCache.js");
+const { readUiRecord, writeUiRecord, wipeUiRecords } = await import("../src/core/localUiStore.js");
 const { uiAddress } = await import("../src/core/localUiState.js");
 
 /** What each machine answers. A workspace read the bar makes is made on the
@@ -150,6 +151,7 @@ beforeEach(async () => {
   if (!savedFeed) savedFeed = feed;
   await stopToolbar();
   await wipeCache();
+  await wipeUiRecords();
   if (!document.getElementById("shell")) document.body.innerHTML = bodyHtml;
   localStorage.clear();
   App.gated = false;
@@ -481,8 +483,8 @@ describe("the project menu", () => {
   it("mounts its cached scope, open list and query without a click", async () => {
     await stopToolbar();
     App.route = { name: "inbox" };
-    await writeCached(uiAddress({ view: "toolbar", kind: "filter", sub: "project" }), { projectKey: "dev-1/p2" });
-    await writeCached(uiAddress({ view: "toolbar", kind: "menu", sub: "jump" }), {
+    await writeUiRecord(uiAddress({ view: "toolbar", kind: "filter", sub: "project" }), { projectKey: "dev-1/p2" });
+    await writeUiRecord(uiAddress({ view: "toolbar", kind: "menu", sub: "jump" }), {
       open: true, select: "project", list: "projects", query: "mas",
     });
     await initToolbar();
@@ -495,11 +497,11 @@ describe("the project menu", () => {
   it("repaints an open menu and project scope on external cache writes", async () => {
     const menuAddress = uiAddress({ view: "toolbar", kind: "menu", sub: "jump" });
     const scopeAddress = uiAddress({ view: "toolbar", kind: "filter", sub: "project" });
-    await writeCached(menuAddress, { open: true, select: "project", list: "projects", query: "" });
+    await writeUiRecord(menuAddress, { open: true, select: "project", list: "projects", query: "" });
     await waitMenuList("projects");
-    await writeCached(scopeAddress, { projectKey: "dev-1/p2" });
+    await writeUiRecord(scopeAddress, { projectKey: "dev-1/p2" });
     await vi.waitFor(() => expect(menu().querySelector(".mi.current .mt").textContent).toBe("mascot"));
-    await writeCached(menuAddress, { open: false });
+    await writeUiRecord(menuAddress, { open: false });
     await waitMenuClosed();
   });
 
@@ -637,7 +639,7 @@ describe("the project you pick, against a feed that keeps ticking", () => {
     await waitMenuClosed();
     App.route = { name: "task", deviceId: "dev-1", projectId: "p1", id: "plan-1" };
     toolbarRouteChanged();
-    await vi.waitFor(async () => expect((await readCached(uiAddress({ view: "toolbar", kind: "filter", sub: "project" }))).value.projectKey).toBe("dev-1/p1"));
+    await vi.waitFor(async () => expect((await readUiRecord(uiAddress({ view: "toolbar", kind: "filter", sub: "project" }))).value.projectKey).toBe("dev-1/p1"));
     expect((await openJump("project")).querySelector(".mi.current .mt").textContent).toBe("relaydb");
   });
 });
@@ -809,7 +811,7 @@ describe("an account with more than one device", () => {
     await waitMenuList("workspaces");
 
     const address = uiAddress({ view: "toolbar", kind: "filter", sub: "project" });
-    const stored = (await readCached(address)).value.projectKey;
+    const stored = (await readUiRecord(address)).value.projectKey;
     expect(stored).toBe("dev-1/p2");
     expect(splitDeviceKey(stored)).toEqual({ deviceId: "dev-1", projectId: "p2" });
 

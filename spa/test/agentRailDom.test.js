@@ -94,10 +94,11 @@ const { releaseScope, scopeFor } = await import("../src/core/cacheScope.js");
 const { adoptBridgeSelection, adoptDeviceSession, contextFor, knownDeviceContext, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
 const { createChatRepository } = await import("../src/core/chatRepository.js");
 const { evictEntity, mergeCached, readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
+const { readUiRecord, wipeUiRecords, writeUiRecord } = await import("../src/core/localUiStore.js");
 const { uiAddress } = await import("../src/core/localUiState.js");
 const { deviceModelsAddress } = await import("../src/core/settingsRecords.js");
 const pinnedAddress = uiAddress({ view: "agent-rail", kind: "fold", sub: "pinned" });
-const pinnedValue = async () => (await readCached(pinnedAddress))?.value?.pinned;
+const pinnedValue = async () => (await readUiRecord(pinnedAddress))?.value?.pinned;
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { motionSettled } = await import("../src/core/motion.js");
 const { insertRecord, resetOptimistic, runOptimistic } = await import("../src/core/optimistic.js");
@@ -250,6 +251,7 @@ beforeEach(async () => {
   resetOptimistic();
   resetDeviceContexts(); // and with them the last test's harness catalog
   await wipeCache();
+  await wipeUiRecords();
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   calls = [];
   payload = branchRow();
@@ -809,6 +811,7 @@ describe("the rail over a machine that is asked nothing", () => {
   // something to press.
   it("takes up the row when one arrives for a work item the disk did not hold", async () => {
     await wipeCache();
+    await wipeUiRecords();
     payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
     rail = mountAgentRail(railHost(), railAddress());
     await flush();
@@ -889,6 +892,7 @@ describe("the rail over a machine that is asked nothing", () => {
   // task surface cache-only and this goes with it.
   it("asks a task for its agents, because nothing writes a task a row", async () => {
     await wipeCache();
+    await wipeUiRecords();
     await writeRailThread("plan-1", "ag-1", { items: [said(1, "on the task")] });
     payload = { task_id: "plan-1", project_id: "p1", agents: [agent()], thread: { items: [said(1, "on the task")] } };
     rail = mountAgentRail(railHost(), railAddress({ kind: "task", projectId: "p1", taskId: "plan-1" }));
@@ -903,6 +907,7 @@ describe("the rail over a machine that is asked nothing", () => {
 
   it("paints a remembered cached conversation before the roster arrives, then falls back in the same frame", async () => {
     await wipeCache();
+    await wipeUiRecords();
     chatRepository.railView("task:plan-1").chooseAgent("ag-remembered");
     await writeRailThread("plan-1", "ag-remembered", { items: [said(1, "remembered cached words")] });
     await writeRailThread("plan-1", "ag-first", { items: [said(1, "first delivered agent words")] });
@@ -936,6 +941,7 @@ describe("the rail over a machine that is asked nothing", () => {
 
   it("reads a workspace transcript from cache before its roster row exists", async () => {
     await wipeCache();
+    await wipeUiRecords();
     chatRepository.railView("workspace:ws-late").chooseAgent("ag-remembered");
     await writeRailBoard({
       projects: [{ project_id: "p1", name: "build" }],
@@ -960,6 +966,7 @@ describe("the rail over a machine that is asked nothing", () => {
 
   it("recovers an unwatched workspace agent whose owner is absent from the board", async () => {
     await wipeCache();
+    await wipeUiRecords();
     chatRepository.railView("workspace:ws-unwatched").chooseAgent("ag-1");
     const hiddenRun = { run_id: "run-3", project_id: "p1", agents: [agent({ watched: false })] };
     await writeRailBoard({
@@ -1085,6 +1092,7 @@ describe("the rail over a machine that is asked nothing", () => {
 
   it("redraws the remembered workspace head and composer when its hidden run reaches the cache", async () => {
     await wipeCache();
+    await wipeUiRecords();
     chatRepository.railView("workspace:ws-unwatched").chooseAgent("ag-1");
     await writeRailBoard({
       workspaces: [{ id: "ws-unwatched", project_id: "p1", name: "Quiet work", entity_id: "run-3" }],
@@ -1107,6 +1115,7 @@ describe("the rail over a machine that is asked nothing", () => {
 
   it("keeps a project agent usable when its run is absent from inbox items", async () => {
     await wipeCache();
+    await wipeUiRecords();
     await writeRailBoard({ projects: [{ project_id: "p1", name: "build", entity_id: "run-3" }] });
     await writeCached({ deviceId: "dev-1", entityId: "", kind: "feed" }, {
       items: [], runs: [{ run_id: "run-3", project_id: "p1", agents: [agent({ watched: false })] }],
@@ -1125,6 +1134,7 @@ describe("the rail over a machine that is asked nothing", () => {
 
   it("turns a stale remembered workspace conversation into the new-agent view after an authoritative empty roster", async () => {
     await wipeCache();
+    await wipeUiRecords();
     chatRepository.railView("workspace:ws-empty").chooseAgent("ag-removed");
     await writeRailBoard({
       projects: [{ project_id: "p1", name: "build" }],
@@ -1574,7 +1584,7 @@ describe("the bubble strip", () => {
       await vi.waitFor(() => expect(scopeOut()).toBeTruthy());
       scopeOut().click();
       await vi.waitFor(() => expect(sectionNamed("Busy workspace")).toBeTruthy());
-      await vi.waitFor(async () => expect((await readCached(uiAddress({ deviceId: "dev-1", entityId: "p1",
+      await vi.waitFor(async () => expect((await readUiRecord(uiAddress({ deviceId: "dev-1", entityId: "p1",
         view: "agent-rail", kind: "overview-scope", sub: "workspace:ws-one" })))?.value).toEqual({ kind: "project" }));
 
       rail.dispose();
@@ -3376,7 +3386,7 @@ describe("focusing the composer on a freshly created branch", () => {
 
   it("expands a rail the human had collapsed, so there is a composer to focus at all", async () => {
     freshBranch();
-    await writeCached(pinnedAddress, { pinned: false });
+    await writeUiRecord(pinnedAddress, { pinned: false });
     await mount({ kind: "branch", projectId: "p1", branch: "build/login", autofocusComposer: true });
     expect(panel()).toBeTruthy();
     expect(document.activeElement).toBe(panel().querySelector("#railinput"));
@@ -4439,7 +4449,7 @@ describe("the agent's surfaces, seeded from the local cache", () => {
   });
 
   it("opens the remembered kind's viewer on the saved snapshot", async () => {
-    await writeCached(uiAddress({ entityId: "run-3:ag-1", view: "agent-surfaces", kind: "menu" }), { kind: "shells" });
+    await writeUiRecord(uiAddress({ entityId: "run-3:ag-1", view: "agent-surfaces", kind: "menu" }), { kind: "shells" });
     await saveSurfaces("ag-1", shellsRunning("cargo test"));
     answerNothing();
     await mount();
@@ -4451,9 +4461,9 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     answerNothing();
     await mount();
     const address = uiAddress({ entityId: "run-3:ag-1", view: "agent-surfaces", kind: "menu" });
-    await writeCached(address, { kind: "shells" });
+    await writeUiRecord(address, { kind: "shells" });
     await vi.waitFor(() => expect(railHost().querySelector(".surface-shells")?.textContent).toContain("cargo test"));
-    await writeCached(address, { kind: null });
+    await writeUiRecord(address, { kind: null });
     await vi.waitFor(() => expect(railHost().querySelector('[data-surface-kind="shells"]')?.getAttribute("aria-pressed")).toBe("false"));
   });
 

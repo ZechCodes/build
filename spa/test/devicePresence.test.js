@@ -13,6 +13,7 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../src/core/localCache.js", () => import("./memoryCache.js"));
+vi.mock("../src/core/localUiStore.js", () => import("./memoryUiStore.js"));
 
 const connection = vi.hoisted(() => ({
   openDeviceSessions: vi.fn(() => ({ first: Promise.resolve(null), settled: Promise.resolve([]) })),

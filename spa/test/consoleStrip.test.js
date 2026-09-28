@@ -41,6 +41,7 @@ vi.mock("../src/terminal/pane.js", () => ({
   },
 }));
 
+const { wipeUiRecords } = await import("../src/core/localUiStore.js");
 const { consoleBranchRow, consoleCacheScope, emptyConsoleWorld, seedConsoleWorld } = await import("./consoleWorld.js");
 const { App } = await import("../src/app.js");
 const { consoleGrowHtml, consoleHeadHtml, consoleNewTerminalHtml, consoleTabHtml, mountConsole, resetConsoleMemory } =
@@ -88,6 +89,7 @@ beforeEach(async () => {
   localStorage.clear();
   resetConsoleMemory();
   await emptyConsoleWorld();
+  await wipeUiRecords();
   started = recordAnimations();
   manager.listTerminals.mockReset().mockResolvedValue([]);
   manager.createTerminal.mockReset().mockResolvedValue({ term_id: "term-9" });

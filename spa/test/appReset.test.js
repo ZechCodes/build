@@ -26,6 +26,7 @@ vi.mock("../src/core/surfaceTabs.js", () => ({ mountAgentTab: () => ({ dispose()
 
 const { resetApplication } = await import("../src/app.js");
 const { readCached, writeCached } = await import("../src/core/localCache.js");
+const { readUiRecord, writeUiRecord } = await import("../src/core/localUiStore.js");
 
 const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -43,5 +44,13 @@ describe("resetApplication", () => {
 
     expect(await readCached({ deviceId: "dev-1", entityId: "ws-1", kind: "status" })).toBeUndefined();
     expect(await readCached({ deviceId: "dev-2", entityId: "", kind: "feed" })).toBeUndefined();
+  });
+
+  it("wipes the previous account's unsent drafts and UI state too", async () => {
+    const draft = { deviceId: "dev-1", entityId: "conv-1", kind: "ui-draft", sub: "chat:" };
+    await writeUiRecord(draft, { body: "theirs" });
+
+    resetApplication();
+    await vi.waitFor(async () => expect(await readUiRecord(draft)).toBeUndefined());
   });
 });

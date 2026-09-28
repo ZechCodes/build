@@ -14,6 +14,7 @@ import { surfacesSnapshot } from "./surfacesFixture.js";
 
 vi.mock("../src/core/notify.js", () => ({ notifyError: () => {}, notifySuccess: () => {} }));
 vi.mock("../src/core/localCache.js", () => import("./memoryCache.js"));
+vi.mock("../src/core/localUiStore.js", () => import("./memoryUiStore.js"));
 
 const SURFACES_KEY = "branch-1:agent-1";
 

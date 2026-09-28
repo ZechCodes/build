@@ -10,6 +10,7 @@ const { App, go } = vi.hoisted(() => ({ App: {}, go: vi.fn() }));
 vi.mock("../src/app.js", () => ({ App, go, DEVICE_FILTER_KEY: "build.deviceFilter" }));
 vi.mock("../src/api.js", () => ({ fetchDevices: vi.fn() }));
 vi.mock("../src/core/localCache.js", () => import("./memoryCache.js"));
+vi.mock("../src/core/localUiStore.js", () => import("./memoryUiStore.js"));
 vi.mock("../src/connection.js", () => ({
   syncDeviceRecoveryPresence: vi.fn(), deviceRecoverySnapshot: () => [], onDeviceRecoveryChanged: () => () => {},
   // The wake listeners the gate arms and disarms (#60).

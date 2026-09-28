@@ -353,3 +353,37 @@ describe("the agents nobody here watches (#105)", () => {
     expect(marked(root)).toEqual(["busy-quiet"]);
   });
 });
+
+// A working agent's unread is from before the run in flight: its word must not
+// read over the live work (#201). Failures still come first, and the unread
+// count still reaches the workspace heading.
+describe("an agent working past an unread message (#201)", () => {
+  const stale = { working: true, unread_count: 1, unread_reason: "done" };
+
+  it("says Working, not the Finished it said before this run", () => {
+    expect(overview.overviewState(stale)).toMatchObject({ state: "working", word: "Working" });
+    for (const reason of ["agent_message", "blocked", "idle_unreported", "interrupted"]) {
+      expect(overview.overviewState({ ...stale, unread_reason: reason }).word).toBe("Working");
+    }
+  });
+
+  it("still says Failed first", () => {
+    expect(overview.overviewState({ ...stale, unread_reason: "run_failed" }).word).toBe("Failed");
+    expect(overview.overviewState({ ...stale, start_error: "no binary" }).word).toBe("Failed to start");
+  });
+
+  it("keeps the unread on the row and its heading, and sorts with what needs the reader", () => {
+    const [working] = overview.overviewRows([{ agent: agent("busy", stale), workspaceId: "ws",
+      section: "workspace", sectionName: "Workspace ws" }], [{ items: [] }]);
+    expect(working).toMatchObject({ stateWord: "Working", unread: true, unreadCount: 1 });
+    const quietWaiting = { ...working, id: "quiet", working: false, unread: true, state: "waiting",
+      stateWord: "Unread", lastAgentMessageAt: 9 };
+    document.body.innerHTML = overview.overviewHtml([quietWaiting, { ...working, lastAgentMessageAt: 10 }],
+      { showProjectAgents: false });
+    expect([...document.querySelectorAll("[data-overview-agent]")].map((node) => node.dataset.overviewAgent))
+      .toEqual(["busy", "quiet"]);
+    expect(document.querySelector('.rail-overview-need[title="2 unread"]')).toBeTruthy();
+    const section = { rows: [{ ...working, state: "working" }] };
+    expect(overview.sectionRank(section)).toBe(3);
+  });
+});

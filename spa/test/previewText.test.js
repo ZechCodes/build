@@ -84,10 +84,12 @@ describe("modelWord", () => {
 });
 
 describe("overviewState", () => {
-  it("ranks a failed start over unread over working over starting over idle", () => {
+  it("ranks a failed start over a failed run over working over unread over starting over idle", () => {
     expect(overviewState({ start_error: "boom", working: true, unread_count: 1 }).state).toBe("error");
     expect(overviewState({ unread_count: 1, unread_reason: "run_failed" })).toMatchObject({ state: "error", word: "Failed" });
-    expect(overviewState({ unread_count: 1, unread_reason: "blocked", working: true })).toMatchObject({ state: "waiting", word: "Blocked" });
+    expect(overviewState({ unread_count: 1, unread_reason: "run_failed", working: true })).toMatchObject({ state: "error", word: "Failed" });
+    expect(overviewState({ unread_count: 1, unread_reason: "blocked", working: true })).toMatchObject({ state: "working", word: "Working" });
+    expect(overviewState({ unread_count: 1, unread_reason: "blocked" })).toMatchObject({ state: "waiting", word: "Blocked" });
     expect(overviewState({ unread_count: 2 })).toMatchObject({ state: "waiting", word: "Unread", detail: "2 unread" });
     expect(overviewState({ working: true })).toMatchObject({ state: "working", word: "Working" });
     expect(overviewState({ state: "starting" })).toMatchObject({ state: "starting", word: "Starting" });
@@ -104,7 +106,7 @@ describe("overviewHtml workspace summary", () => {
 
   it("pulses while an agent works, even when that agent also has an unread message", () => {
     const rows = overviewRows([entry("busy", { working: true, unread_count: 1, unread_reason: "agent_message" })], [{ items: [] }]);
-    expect(rows[0].state).toBe("waiting");
+    expect(rows[0].state).toBe("working");
     expect(summary(rows)).toContain('class="rail-overview-live" title="1 working" role="img" aria-label="1 working"');
     expect(summary(rows)).toContain('title="1 unread">1<');
     expect(summary(rows)).not.toContain("rail-overview-idle");

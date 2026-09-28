@@ -219,7 +219,7 @@ describe("the project's agent on a workspace's strip", () => {
     project = projectPayload({ agents: [agent("pa-1", { unread_count: 3, working: true })] });
     await mountWorkspaceRail();
 
-    expect(projectBubble().title).toBe("Project agent for build — 3 unread");
+    expect(projectBubble().title).toBe("Project agent for build — working");
     expect(projectBubble().querySelector(".rail-count").textContent).toBe("3");
     expect(projectBubble().classList.contains("working")).toBe(true);
   });

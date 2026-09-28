@@ -16,6 +16,7 @@ import {
   effortOptionsHtml,
   effortSupported,
   modelInCatalog,
+  modelNoteHtml,
   modelOptionsHtml,
   providerOptionsHtml,
 } from "./modelPicker.js";
@@ -50,7 +51,8 @@ export function projectAgentPanelHtml() {
         <div class="field" style="flex:1;min-width:150px"><label for="projectagentharness">Agent</label>
           <select id="projectagentharness" disabled><option>loading…</option></select></div>
         <div class="field" style="flex:1;min-width:150px"><label for="projectagentmodel">Model</label>
-          <select id="projectagentmodel" disabled><option>loading…</option></select></div>
+          <select id="projectagentmodel" disabled><option>loading…</option></select>
+          <div id="projectagentmodelnote"></div></div>
         <div class="field" style="flex:1;min-width:150px"><label for="projectagenteffort">Reasoning effort</label>
           <select id="projectagenteffort" disabled><option>loading…</option></select></div>
       </div>
@@ -76,6 +78,7 @@ function offeredHarness(providers, providerId) {
 export async function mountProjectAgentSetting(host, { callRpc, deviceId = "", onSaved = async () => {} }) {
   const harness = host.querySelector("#projectagentharness");
   const model = host.querySelector("#projectagentmodel");
+  const modelNote = host.querySelector("#projectagentmodelnote");
   const effort = host.querySelector("#projectagenteffort");
   const saved = host.querySelector("#projectagentsaved");
   const error = host.querySelector("#projectagenterr");
@@ -97,7 +100,8 @@ export async function mountProjectAgentSetting(host, { callRpc, deviceId = "", o
     const models = offered.models || [];
     const takesEffort = effortSupported(models, choice.model);
     harness.innerHTML = providerOptionsHtml(providers, choice.provider);
-    model.innerHTML = modelOptionsHtml(models, choice.model);
+    model.innerHTML = modelOptionsHtml(models, choice.model, offered);
+    if (modelNote) modelNote.innerHTML = modelNoteHtml(offered);
     effort.innerHTML = effortOptionsHtml(
       offered.efforts || [],
       takesEffort ? choice.effort : "",

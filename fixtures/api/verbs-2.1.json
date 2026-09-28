@@ -1,6 +1,6 @@
 {
-  "api_version": "2.0.0",
-  "commit": "e2105d8d",
+  "api_version": "2.1.0",
+  "commit": "8f015903",
   "generated_by": "scripts/api-verbs-manifest.mjs",
   "verbs": [
     "agent.add",
@@ -87,6 +87,8 @@
     "project.remove_source",
     "project.set_isolation",
     "project.set_remote",
+    "push.registerKey",
+    "push.revokeKey",
     "run.abandon",
     "run.adopt",
     "run.create",
@@ -276,6 +278,8 @@
     "project.remove_source",
     "project.set_isolation",
     "project.set_remote",
+    "push.registerKey",
+    "push.revokeKey",
     "requests.priority",
     "requests.receipts",
     "rtc.close",

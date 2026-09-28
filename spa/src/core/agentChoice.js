@@ -16,6 +16,7 @@ import {
   effortSupported,
   matchCatalogModel,
   modelInCatalog,
+  modelNoteHtml,
   modelOptionsHtml,
   modelParams,
   providerOptionsHtml,
@@ -73,7 +74,8 @@ export function agentChoicePanelHtml(catalog, choice, { prefix = "agent-choice",
       <label for="${esc(prefix)}-provider">Agent</label>
       <select id="${esc(prefix)}-provider">${providerOptionsHtml(offered.providers, providerId)}</select>
       <label for="${esc(prefix)}-model">Model</label>
-      <select id="${esc(prefix)}-model">${modelOptionsHtml(models, choice.model)}</select>
+      <select id="${esc(prefix)}-model">${modelOptionsHtml(models, choice.model, forProvider)}</select>
+      ${modelNoteHtml(forProvider)}
       <label for="${esc(prefix)}-effort">Effort</label>
       <select id="${esc(prefix)}-effort"${effortSupported(models, choice.model) ? "" : " disabled"}>${effortOptionsHtml(
         forProvider.efforts || [],

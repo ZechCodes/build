@@ -117,6 +117,9 @@ export function creatableCatalog(catalog) {
       label: family.genericLabel,
       models: servedProvider.models || [],
       efforts: servedProvider.efforts || [],
+      cli_name: servedProvider.cli_name,
+      cli_version: servedProvider.cli_version,
+      unavailable: servedProvider.unavailable || [],
     };
   });
   return { ...catalog, providers };

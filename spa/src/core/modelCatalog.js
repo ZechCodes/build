@@ -11,6 +11,16 @@
 import { normalizeModelCatalog } from "./modelPicker.js";
 import { deviceModelsAddress, watchSettingsRecord } from "./settingsRecords.js";
 
+/** Each device's catalog, for the `models.changed` its bridge pushes. */
+const catalogsByDevice = new Map();
+
+/** A machine's bridge says one of its agent CLIs changed what it runs (#203):
+ *  its catalog is asked again, if any surface has wanted it, and the answer
+ *  lands in the cache like any other. */
+export function modelsChangedOn(deviceId) {
+  catalogsByDevice.get(deviceId)?.();
+}
+
 /** What a bridge that cannot be asked offers: the harness's own default, and
  *  nothing to choose between. An older bridge without the RPC answers the same,
  *  which is exactly what it supports. */
@@ -109,6 +119,11 @@ export function createModelCatalog(context, {
     return asking;
   };
 
+  const askAgain = () => {
+    if (wanted && canAsk()) void readQuietly();
+  };
+  catalogsByDevice.set(context.deviceId, askAgain);
+
   return {
     /** This device's catalog, asked for once. */
     async modelCatalog() {
@@ -137,6 +152,7 @@ export function createModelCatalog(context, {
       return () => listeners.delete(listener);
     },
     disposeModelCatalog() {
+      if (catalogsByDevice.get(context.deviceId) === askAgain) catalogsByDevice.delete(context.deviceId);
       record.dispose();
       listeners.clear();
     },

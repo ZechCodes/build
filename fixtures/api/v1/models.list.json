@@ -75,7 +75,12 @@
           }
         ],
         "binary": "claude",
-        "installed": true
+        "installed": true,
+        "cli_name": "Claude Code",
+        "cli_version": "2.1.280",
+        "unavailable": [
+          { "id": "claude-sonnet-5-5", "label": "Claude Sonnet 5.5", "requires_cli": "2.1.284" }
+        ]
       },
       {
         "id": "codex_app_server",
@@ -104,7 +109,10 @@
           }
         ],
         "binary": "codex",
-        "installed": true
+        "installed": true,
+        "cli_name": "Codex",
+        "cli_version": "0.155.1",
+        "unavailable": []
       }
     ]
   },

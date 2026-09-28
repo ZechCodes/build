@@ -23,7 +23,7 @@ import {
   WORKTREE_TARGETS,
   AGENT_TARGETS,
 } from "./taskModel.js";
-import { catalogForProvider, creatableCatalog, effortOptionsHtml, modelOptionsHtml, providerOptionsHtml, normalizeModelCatalog } from "./modelPicker.js";
+import { catalogForProvider, creatableCatalog, effortOptionsHtml, modelNoteHtml, modelOptionsHtml, providerOptionsHtml, normalizeModelCatalog } from "./modelPicker.js";
 import { chosenProviderId } from "./agentChoice.js";
 import { fieldTraits } from "./fieldTraits.js";
 
@@ -128,7 +128,8 @@ export function assignmentPanelHtml({ assignment, catalog = {}, worktrees = [] }
       ${branchField}
       <label class="ivfield"><span>Agent</span><select id="assignagent">${options(AGENT_TARGETS, assignment.agent)}</select></label>
       <label class="ivfield"><span>Provider</span><select id="assignprovider">${providerOptionsHtml(full.providers, provider)}</select></label>
-      <label class="ivfield"><span>Model</span><select id="assignmodel">${modelOptionsHtml(forProvider.models, assignment.model || "")}</select></label>
+      <label class="ivfield"><span>Model</span><select id="assignmodel">${modelOptionsHtml(forProvider.models, assignment.model || "", forProvider)}</select></label>
+      ${modelNoteHtml(forProvider)}
       <label class="ivfield"><span>Effort</span><select id="assigneffort">${effortOptionsHtml(forProvider.efforts, assignment.effort || "")}</select></label>
       <div class="ivassign-gap">${rules.map((rule) => `<div>${esc(rule)}</div>`).join("")}</div>
     </div>`;

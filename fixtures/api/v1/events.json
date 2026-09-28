@@ -325,6 +325,9 @@
       "can_install": true
     },
     {
+      "type": "models.changed"
+    },
+    {
       "type": "term.output",
       "term_id": "term-1",
       "data": "aGVsbG8gd29ybGQK",

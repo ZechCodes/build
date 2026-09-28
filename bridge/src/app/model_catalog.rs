@@ -7,11 +7,9 @@
 
 use std::sync::Arc;
 
-use serde_json::json;
-
 use super::AppState;
 use crate::carrier::SessionSender;
-use crate::changes::MODELS_CHANGED_EVENT;
+use crate::changes::models_changed_payload;
 use crate::harness::harness_for;
 use crate::harness::installed::{model_offer_from, Readings};
 use crate::models::{AgentProvider, AgentRole, ModelChoice, RoleModel};
@@ -40,7 +38,7 @@ impl AppState {
         let session_id = sender.session_id().to_string();
         let task = runtime.spawn(async move {
             while changes.changed().await.is_ok() {
-                if !sender.push(json!({ "type": MODELS_CHANGED_EVENT })) {
+                if !sender.push(models_changed_payload()) {
                     break;
                 }
             }

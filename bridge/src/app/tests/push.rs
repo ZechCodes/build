@@ -144,7 +144,8 @@ async fn the_greeting_announces_push_events() {
             "board.changed",
             "entity.changed",
             "changes",
-            "bridge.update_status"
+            "bridge.update_status",
+            "models.changed"
         ]),
         "{hello:?}"
     );
@@ -168,8 +169,9 @@ async fn the_greeting_announces_push_events() {
     // which is why it is a literal here and an edit every time it moves. 1.3.0
     // is the task tracker: ten `tasks.*` verbs and an `tasks` change kind;
     // 2.0.0 is its rename to tasks (#190); 2.1.0 adds the notification
-    // keys sealed push content goes to (#200).
-    assert_eq!(hello["result"]["api_version"], "2.1.0", "{hello:?}");
+    // keys sealed push content goes to (#200); 2.2.0 offers only what the
+    // installed agent CLIs run, and says when that changes (#203).
+    assert_eq!(hello["result"]["api_version"], "2.2.0", "{hello:?}");
     assert!(
         hello["result"]["coalesce_window_ms"]
             .as_u64()

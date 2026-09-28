@@ -136,6 +136,11 @@ pub const ANNOUNCED_EVENTS: [&str; 5] = [
 /// differently now (#203). Carries nothing else: the catalog is asked again.
 pub const MODELS_CHANGED_EVENT: &str = "models.changed";
 
+/// The whole of a [`MODELS_CHANGED_EVENT`] push.
+pub fn models_changed_payload() -> serde_json::Value {
+    serde_json::json!({ "type": MODELS_CHANGED_EVENT })
+}
+
 // ------------------------------------------------------------ the wire ---
 
 /// What moved about an entity, at the grain a subscription filters on.

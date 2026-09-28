@@ -7,7 +7,7 @@
 // Watching is a mark on the agent, not a section of its own.
 import { readCachedMany, subscribeCache } from "./localCache.js";
 import { threadCacheAddress } from "./conversationCache.js";
-import { AGENT_STARTING, providerLabel, railEntity } from "./agentRailModel.js";
+import { AGENT_STARTING, isFailedReason, providerLabel, railEntity } from "./agentRailModel.js";
 import { agentDisplayName } from "./agentName.js";
 import { firstLine } from "./activityDigest.js";
 import { EVENT_META } from "./threadEvents.js";
@@ -47,10 +47,6 @@ export function overviewSnippet(agent, thread) {
 
 // ---- what a row says about its agent ---------------------------------------
 
-/** The attention kinds that mean something went wrong rather than something
- *  is waiting: the row wears the error tone for these. */
-const FAILED_REASONS = new Set(["run_failed", "stage_failed", "recovery_failed"]);
-
 /** The one word a waiting row wears, by what made it unread; the full sentence
  *  (core/inbox.js) is its tooltip. */
 const WAITING_WORD = {
@@ -70,7 +66,7 @@ export const OVERVIEW_STATES = Object.freeze({
 
 const failedStart = (agent) => (agent.start_error
   ? { state: OVERVIEW_STATES.error, word: "Failed to start", detail: String(agent.start_error) } : null);
-const failedRun = (agent) => (agent.unread_count && FAILED_REASONS.has(agent.unread_reason)
+const failedRun = (agent) => (agent.unread_count && isFailedReason(agent.unread_reason)
   ? { state: OVERVIEW_STATES.error, word: "Failed", detail: unreadReasonText(agent.unread_reason, "agent") } : null);
 const waitingOnReader = (agent) => (agent.unread_count
   ? { state: OVERVIEW_STATES.waiting, word: WAITING_WORD[agent.unread_reason] || "Unread",
@@ -82,9 +78,12 @@ const startingUp = (agent) => (agent.state === AGENT_STARTING
 const IDLE = Object.freeze({ state: OVERVIEW_STATES.idle, word: "Idle", detail: "" });
 
 /** The readings in the order they win: a failed start is the thing to know
- *  whatever else the agent has said, then a failed run, then what is waiting
- *  for the reader, then work in flight, then a session on its way. */
-const STATE_READINGS = [failedStart, failedRun, waitingOnReader, workingNow, startingUp];
+ *  whatever else the agent has said, then a failed run, then work in flight,
+ *  then what is waiting for the reader, then a session on its way. Work in
+ *  flight beats the waiting word because that word is from before this run: an
+ *  agent that finished and was handed more is working, not "Finished" (#201).
+ *  Its unread still counts on the row and the workspace heading. */
+const STATE_READINGS = [failedStart, failedRun, workingNow, waitingOnReader, startingUp];
 
 /** An agent's state as the overview says it: `state` is one of
  *  OVERVIEW_STATES, `word` the short label the row wears, `detail` the longer
@@ -152,10 +151,12 @@ export function overviewRows(entries, threads) {
  *  offers the rest on that workspace's own overview. */
 export const WORKSPACE_PREVIEW_AGENTS = 3;
 
-/** Where a row sorts within its workspace: what needs the reader, then what is
- *  working, then the rest — and among equals, the one heard from last. */
+/** Where a row sorts within its workspace: what needs the reader — an unread
+ *  message even while the agent works on — then what is working, then the rest;
+ *  among equals, the one heard from last. */
 const ROW_RANK = { error: 3, waiting: 3, working: 2, starting: 2, idle: 1 };
-const rowRank = (row) => ROW_RANK[row.state] || 1;
+const needsReader = (row) => row.unread || ROW_RANK[row.state] === ROW_RANK.waiting;
+const rowRank = (row) => (needsReader(row) ? ROW_RANK.waiting : ROW_RANK[row.state] || 1);
 const byAttention = (one, other) => rowRank(other) - rowRank(one) || other.lastAgentMessageAt - one.lastAgentMessageAt;
 
 /** Whether the reader watches the agent on this row. A row from a bridge that
@@ -191,7 +192,7 @@ const latestAgentMessage = (section) => Math.max(0, ...section.rows.map((row) =>
  *  reader first, then one with work in flight, then the quiet ones with
  *  agents, then the empty; among equals, the one heard from last. */
 export function sectionRank(section) {
-  if (section.rows.some((row) => row.state === OVERVIEW_STATES.error || row.state === OVERVIEW_STATES.waiting)) return 3;
+  if (section.rows.some(needsReader)) return 3;
   if (section.rows.some((row) => row.state === OVERVIEW_STATES.working || row.state === OVERVIEW_STATES.starting)) return 2;
   return section.rows.length ? 1 : 0;
 }
@@ -265,7 +266,7 @@ const workingDotHtml = (working) => {
  *  the working dot, and — outside this span — the +. */
 const summaryHtml = (section) => {
   // The pulse follows the agent's working flag, not its state word: an agent
-  // working with an unread message reads "Unread", and is still at work.
+  // failed with an unread message reads "Failed", and is still at work.
   const working = section.rows.filter((row) => row.working).length;
   const unread = section.rows.reduce((total, row) => total + row.unreadCount, 0);
   const failed = section.rows.filter((row) => row.state === OVERVIEW_STATES.error).length;

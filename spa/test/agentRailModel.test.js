@@ -163,6 +163,17 @@ describe("an agent whose start has been asked for", () => {
   });
 });
 
+// A working agent's unread is from before the run in flight (#201): the tip
+// says it is working, not the "finished" it said last time. Failures stay.
+describe("an agent working past an unread message (#201)", () => {
+  it("says working over a stale reason, and failed over working", () => {
+    expect(bubbleTip(agent({ topic: "Fix login redirect", working: true, unread_count: 1, unread_reason: "done" })))
+      .toBe("Fix login redirect — working");
+    expect(bubbleTip(agent({ topic: "Fix login redirect", working: true, unread_count: 1, unread_reason: "run_failed" })))
+      .not.toMatch(/working$/);
+  });
+});
+
 describe("whether the turn in flight can be stopped", () => {
   it("is yes only for an agent that is working and announced the interrupt", () => {
     expect(agentCanInterrupt(agent({ working: true, can_interrupt: true }))).toBe(true);
@@ -384,7 +395,7 @@ describe("the project's agent on a workspace's strip", () => {
     });
     expect(bubble.unread).toBe(2);
     expect(bubble.working).toBe(true);
-    expect(bubble.title).toBe("Project agent for build — 2 unread");
+    expect(bubble.title).toBe("Project agent for build — working");
   });
 
   it("is the open conversation while the panel is on it, and nothing else is", () => {

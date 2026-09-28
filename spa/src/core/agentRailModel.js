@@ -137,11 +137,20 @@ export function agentPattern(ordinal) {
   return ((place - 1) % AGENT_PATTERN_COUNT) + 1;
 }
 
+/** The attention kinds that mean something went wrong rather than something
+ *  is waiting: an agent wears them even over work in flight. */
+const FAILED_REASONS = new Set(["run_failed", "stage_failed", "recovery_failed"]);
+export const isFailedReason = (reason) => FAILED_REASONS.has(reason);
+
+/** Whether an agent's unread says what it is doing now. A failure always does;
+ *  any other reason is from before the run in flight, so working outranks it —
+ *  an agent that finished and was handed more is working, not finished (#201). */
+const unreadIsNews = (agent) => !!agent.unread_count && (!agent.working || isFailedReason(agent.unread_reason));
+
 /** The one thing this agent's bubble is waiting on, or "" when it waits on
- *  nothing. Unread wins over working — an agent that asked something while it
- *  kept going is still asking. */
+ *  nothing: a failure, then work in flight, then the unread it left. */
 function bubbleNews(agent, heading) {
-  if (agent && agent.unread_count) {
+  if (agent && unreadIsNews(agent)) {
     return unreadReasonText(agent.unread_reason, "agent") || `${agent.unread_count} unread`;
   }
   if (agent && agent.working) return "working";
@@ -197,11 +206,11 @@ export const RAIL_SEPARATOR_ENTRY = Object.freeze({
 export const projectInitial = (name) => (String(name || "").trim().slice(0, 1) || "?").toUpperCase();
 
 /** What the project's bubble is waiting on, in the same order an agent's is
- *  (core/agentRailModel.js `bubbleNews`): unread over working. */
+ *  (`bubbleNews`): a failure, then work in flight, then the unread left. */
 function projectAgentNews(agents) {
   const unread = agents.reduce((total, agent) => total + (agent.unread_count || 0), 0);
-  const asking = agents.find((agent) => agent.unread_count);
-  if (unread) return unreadReasonText(asking?.unread_reason, "agent") || `${unread} unread`;
+  const asking = agents.find(unreadIsNews);
+  if (asking) return unreadReasonText(asking.unread_reason, "agent") || `${unread} unread`;
   return agents.some((agent) => agent.working) ? "working" : "";
 }
 

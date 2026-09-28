@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
-// UI records use the real IndexedDB cache and its address announcements.
+// UI records use the real IndexedDB UI store and its address announcements.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
-let cache, ui, focus, menus, runs;
+let cache, store, ui, focus, menus, runs;
 
 beforeEach(async () => {
   vi.resetModules();
@@ -12,6 +12,7 @@ beforeEach(async () => {
   sessionStorage.clear();
   document.body.innerHTML = "";
   cache = await import("../src/core/localCache.js");
+  store = await import("../src/core/localUiStore.js");
   ui = await import("../src/core/localUiState.js");
   focus = await import("../src/core/focusMemory.js");
   menus = await import("../src/core/filterMenuControl.js");
@@ -19,19 +20,40 @@ beforeEach(async () => {
 });
 
 describe("local UI cache wiring", () => {
+  it("keeps its records in the UI store, never the replica cache", async () => {
+    const address = ui.uiAddress({ deviceId: "dev-1", entityId: "conversation-1", view: "chat", kind: "draft" });
+    const record = ui.watchUiState(address, () => {}, { debounceMs: 5 });
+    await record.ready;
+    await record.write({ text: "unsent" });
+    expect((await store.readUiRecord(address)).value.text).toBe("unsent");
+    expect(await cache.readCached(address)).toBeUndefined();
+    record.dispose();
+  });
+
+  it("mounts a draft an older build left in the replica store, carried across before the first paint", async () => {
+    const address = ui.uiAddress({ deviceId: "dev-1", entityId: "conversation-1", view: "chat", kind: "draft" });
+    await cache.writeCached(address, { text: "typed before the upgrade" });
+    const painted = [];
+    const record = ui.watchUiState(address, (value) => painted.push(value.text), { debounceMs: 5 });
+    await record.ready;
+    expect(painted).toEqual(["typed before the upgrade"]);
+    expect(await cache.readCached(address)).toBeUndefined();
+    record.dispose();
+  });
+
   it("mounts a draft from disk, then repaints only after a write is read back", async () => {
     const address = ui.uiAddress({ deviceId: "dev-1", entityId: "conversation-1", view: "chat", kind: "draft" });
-    await cache.writeCached(address, { text: "before reload" });
+    await store.writeUiRecord(address, { text: "before reload" });
     const painted = [];
     const record = ui.watchUiState(address, (value) => painted.push(value.text), { debounceMs: 5 });
     await record.ready;
     expect(painted).toEqual(["before reload"]);
 
-    await cache.writeCached(address, { text: "another tab" });
+    await store.writeUiRecord(address, { text: "another tab" });
     await vi.waitFor(() => expect(painted.at(-1)).toBe("another tab"));
     record.schedule({ text: "after typing" });
     await vi.waitFor(() => expect(painted.at(-1)).toBe("after typing"));
-    expect((await cache.readCached(address)).value.text).toBe("after typing");
+    expect((await store.readUiRecord(address)).value.text).toBe("after typing");
     record.dispose();
   });
 
@@ -40,12 +62,12 @@ describe("local UI cache wiring", () => {
     root.innerHTML = '<button id="first">First</button><button id="second">Second</button>';
     document.body.append(root);
     const address = ui.uiAddress({ deviceId: "dev-1", entityId: "project-1", view: "project", kind: "focus" });
-    await cache.writeCached(address, { selector: "button:nth-child(1)" });
+    await store.writeUiRecord(address, { selector: "button:nth-child(1)" });
     const dispose = focus.mountFocusMemory(root, "project", { deviceId: "dev-1", entityId: "project-1" });
     await vi.waitFor(() => expect(document.activeElement).toBe(root.querySelector("#first")));
     root.querySelector("#second").focus();
-    await vi.waitFor(async () => expect((await cache.readCached(address)).value.selector).toBe("button:nth-child(2)"));
-    await cache.writeCached(address, { selector: "button:nth-child(1)" });
+    await vi.waitFor(async () => expect((await store.readUiRecord(address)).value.selector).toBe("button:nth-child(2)"));
+    await store.writeUiRecord(address, { selector: "button:nth-child(1)" });
     await dispose.settled();
     expect(document.activeElement).toBe(root.querySelector("#second"));
     dispose();
@@ -53,12 +75,12 @@ describe("local UI cache wiring", () => {
 
   it("flushes a debounced draft on pagehide before a remount", async () => {
     const address = ui.uiAddress({ entityId: "conversation-reload", view: "chat", kind: "draft" });
-    await cache.writeCached(address, { text: "older text" });
+    await store.writeUiRecord(address, { text: "older text" });
     const first = ui.watchUiState(address, () => {}, { debounceMs: 60_000 });
     await first.ready;
     first.schedule({ text: "last keystroke" });
     window.dispatchEvent(new Event("pagehide"));
-    await vi.waitFor(async () => expect((await cache.readCached(address))?.value?.text).toBe("last keystroke"));
+    await vi.waitFor(async () => expect((await store.readUiRecord(address))?.value?.text).toBe("last keystroke"));
     first.dispose();
 
     const painted = [];
@@ -71,7 +93,7 @@ describe("local UI cache wiring", () => {
   it("discards a journal older than another tab's draft, and an old entry after send", async () => {
     const address = ui.uiAddress({ deviceId: "dev-1", entityId: "conversation-stale", view: "chat", kind: "draft" });
     const key = `build.ui.pending:${JSON.stringify([address.deviceId, address.entityId, address.kind, address.sub])}`;
-    await cache.writeCached(address, { text: "first" });
+    await store.writeUiRecord(address, { text: "first" });
     const first = ui.watchUiState(address, () => {}, { debounceMs: 60_000 });
     await first.ready;
     first.schedule({ text: "unfinished" });
@@ -82,12 +104,12 @@ describe("local UI cache wiring", () => {
     first.dispose({ flushPending: false });
 
     sessionStorage.setItem(key, journal);
-    await cache.writeCached(address, { text: "newer tab" });
+    await store.writeUiRecord(address, { text: "newer tab" });
     const painted = [];
     const second = ui.watchUiState(address, (saved) => painted.push(saved.text), { debounceMs: 60_000 });
     await second.ready;
     expect(painted.at(-1)).toBe("newer tab");
-    expect((await cache.readCached(address)).value.text).toBe("newer tab");
+    expect((await store.readUiRecord(address)).value.text).toBe("newer tab");
     expect(sessionStorage.getItem(key)).toBeNull();
 
     second.schedule({ text: "before send" });
@@ -98,7 +120,7 @@ describe("local UI cache wiring", () => {
     sessionStorage.setItem(key, beforeSend);
     const afterSend = ui.watchUiState(address, (saved) => painted.push(saved.text), { debounceMs: 60_000 });
     await afterSend.ready;
-    expect((await cache.readCached(address)).value.text).toBe("");
+    expect((await store.readUiRecord(address)).value.text).toBe("");
     expect(painted.at(-1)).toBe("");
     expect(sessionStorage.getItem(key)).toBeNull();
     afterSend.dispose();
@@ -110,10 +132,10 @@ describe("local UI cache wiring", () => {
     let finishCompeting;
     const competing = new Promise((resolve) => { finishCompeting = resolve; });
     let raced = false;
-    const stopCompeting = cache.subscribeCache(address, () => {
+    const stopCompeting = store.subscribeUiRecords(address, () => {
       if (raced) return;
       raced = true;
-      void cache.writeCached(address, { text: "newer other writer" }).then(finishCompeting);
+      void store.writeUiRecord(address, { text: "newer other writer" }).then(finishCompeting);
     });
     const painted = [];
     const first = ui.watchUiState(address, (saved) => painted.push(saved.text), { debounceMs: 60_000 });
@@ -122,7 +144,7 @@ describe("local UI cache wiring", () => {
     await competing;
     await vi.waitFor(() => expect(painted.at(-1)).toBe("newer other writer"));
     expect(painted).not.toContain("old local writer");
-    expect((await cache.readCached(address)).value.text).toBe("newer other writer");
+    expect((await store.readUiRecord(address)).value.text).toBe("newer other writer");
     window.dispatchEvent(new Event("pagehide"));
     expect(sessionStorage.getItem(key)).toBeNull();
     first.dispose({ flushPending: false });
@@ -131,7 +153,7 @@ describe("local UI cache wiring", () => {
     const reloaded = ui.watchUiState(address, (saved) => painted.push(saved.text), { debounceMs: 60_000 });
     await reloaded.ready;
     expect(painted.at(-1)).toBe("newer other writer");
-    expect((await cache.readCached(address)).value.text).toBe("newer other writer");
+    expect((await store.readUiRecord(address)).value.text).toBe("newer other writer");
     reloaded.dispose();
   });
 
@@ -173,13 +195,13 @@ describe("local UI cache wiring", () => {
     sessionStorage.clear();
     const address = ui.uiAddress({ entityId: "large", view: "chat", kind: "draft" });
     const key = `build.ui.pending:${JSON.stringify(["", address.entityId, address.kind, address.sub])}`;
-    await cache.writeCached(address, { text: "kept" });
+    await store.writeUiRecord(address, { text: "kept" });
     const oversized = JSON.stringify({ at: Date.now(), source: "old", sequence: 1, value: { text: "x".repeat(ui.UI_JOURNAL_ENTRY_MAX_BYTES) } });
     sessionStorage.setItem(key, oversized);
     const restored = ui.watchUiState(address, () => {}, { debounceMs: 60_000 });
     await restored.ready;
     expect(sessionStorage.getItem(key)).toBeNull();
-    expect((await cache.readCached(address)).value.text).toBe("kept");
+    expect((await store.readUiRecord(address)).value.text).toBe("kept");
     restored.schedule({ text: "x".repeat(ui.UI_JOURNAL_ENTRY_MAX_BYTES) });
     window.dispatchEvent(new Event("pagehide"));
     expect(sessionStorage.getItem(key)).toBeNull();
@@ -189,12 +211,12 @@ describe("local UI cache wiring", () => {
     expect(sessionStorage.getItem(key)).toBeNull();
     await restored.flush();
     restored.dispose({ flushPending: false });
-    await cache.writeCached(address, { text: "kept" });
+    await store.writeUiRecord(address, { text: "kept" });
     sessionStorage.setItem(key, JSON.stringify({ at: Date.now() + 1, source: "old", sequence: 2, value: { content_b64: "file bytes" } }));
     const refused = ui.watchUiState(address, () => {}, { debounceMs: 60_000 });
     await refused.ready;
     expect(sessionStorage.getItem(key)).toBeNull();
-    expect((await cache.readCached(address)).value.text).toBe("kept");
+    expect((await store.readUiRecord(address)).value.text).toBe("kept");
     refused.dispose();
 
     for (let index = 0; index < 5; index += 1) {
@@ -216,7 +238,7 @@ describe("local UI cache wiring", () => {
     const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("quota"); });
     expect(() => window.dispatchEvent(new Event("pagehide"))).not.toThrow();
     setItem.mockRestore();
-    await vi.waitFor(async () => expect((await cache.readCached(address))?.value.text).toBe("still usable"));
+    await vi.waitFor(async () => expect((await store.readUiRecord(address))?.value.text).toBe("still usable"));
     record.dispose();
   });
 
@@ -224,23 +246,23 @@ describe("local UI cache wiring", () => {
     const host = document.createElement("div");
     document.body.append(host);
     const address = ui.uiAddress({ deviceId: "dev-1", entityId: "project-1", view: "tasks", kind: "menu", sub: "labels" });
-    await cache.writeCached(address, { open: true, query: "bug" });
+    await store.writeUiRecord(address, { open: true, query: "bug" });
     const menu = menus.mountFilterMenu(host, { name: "labels", label: "Labels", onChange: () => {}, cacheAddress: address });
     menu.update([{ value: "bug", label: "Bug" }], []);
     await vi.waitFor(() => expect(menu.element.querySelector(".fmenu-pop").hidden).toBe(false));
     expect(menu.element.querySelector(".fmenu-search").value).toBe("bug");
-    await cache.writeCached(address, { open: false, query: "bug" });
+    await store.writeUiRecord(address, { open: false, query: "bug" });
     await vi.waitFor(() => expect(menu.element.querySelector(".fmenu-pop").hidden).toBe(true));
     menu.dispose();
   });
 
   it("restores a thread run fold and repaints an external fold write", async () => {
     const address = ui.uiAddress({ deviceId: "dev-1", entityId: "run-1", view: "thread", kind: "fold", sub: "agent-1" });
-    await cache.writeCached(address, { openKeys: ["42"] });
+    await store.writeUiRecord(address, { openKeys: ["42"] });
     const changed = vi.fn();
     const activity = runs.createActivityRuns({ deviceId: "dev-1", entityId: "run-1", agentId: "agent-1", call: vi.fn(), onChange: changed });
     await vi.waitFor(() => expect(activity.isOpen(42)).toBe(true));
-    await cache.writeCached(address, { openKeys: [] });
+    await store.writeUiRecord(address, { openKeys: [] });
     await vi.waitFor(() => expect(activity.isOpen(42)).toBe(false));
     expect(changed).toHaveBeenCalledTimes(2);
     activity.dispose();

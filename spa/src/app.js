@@ -17,6 +17,7 @@ import { toolbarRouteChanged } from "./core/toolbar.js";
 import { askToOpenLinkedAgent, standShell } from "./core/shell.js";
 import { clearCacheScope } from "./core/cacheScope.js";
 import { wipeCache } from "./core/localCache.js";
+import { wipeUiRecords } from "./core/localUiStore.js";
 import { routeChanged } from "./core/cacheSync.js";
 import { canAnswer, contextFor, deviceContextIdentity, onDeviceStateChanged, resetDeviceContexts } from "./core/deviceContexts.js";
 import { createViewingContext } from "./core/viewingContext.js";
@@ -74,7 +75,7 @@ export const App = {
  * would call before replacing the account, and what a suite calls between
  * cases so one test's devices cannot answer the next one's reads.
  *
- * THIS IS THE ONLY CALLER OF `wipeCache`, and there is deliberately no second
+ * THIS IS THE ONLY CALLER OF `wipeCache` (and `wipeUiRecords`), and there is deliberately no second
  * one for signing out. Signing out navigates away from this document: the tab
  * that would have to do the wiping is gone before it could, and the next
  * account arrives in a new document that calls this on its way in. A wipe
@@ -110,7 +111,9 @@ export function resetApplication() {
   // The cache is what the app paints from, so the previous account's board,
   // conversations and diffs go with its devices. Not awaited: the reset is
   // synchronous, and every address it could be read through is already dead.
+  // Its unsent drafts and UI state are in their own store, and go too.
   void wipeCache();
+  void wipeUiRecords();
 }
 
 export function rememberSelectedDevice(deviceId) {

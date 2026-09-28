@@ -161,7 +161,7 @@ describe("service worker notificationclick deep-linking", () => {
     expect(win.focus).toHaveBeenCalled();
     expect(win.postMessage).toHaveBeenCalledWith({
       type: "build.push.open",
-      url: "/app/#/device/d/project/p/workspace/w/changes?agent=a",
+      url: "/app/#/device/d/project/p/workspace/w/changes?agent=a&from=push",
     });
     expect(win.navigate).not.toHaveBeenCalled();
     expect(worker.openWindow).not.toHaveBeenCalled();
@@ -175,7 +175,7 @@ describe("service worker notificationclick deep-linking", () => {
     worker.handlers.notificationclick(event);
     await Promise.all(waits);
     expect(win.focus).toHaveBeenCalled();
-    expect(win.navigate).toHaveBeenCalledWith("/app/#/task/t1/diff");
+    expect(win.navigate).toHaveBeenCalledWith("/app/#/task/t1/diff?from=push");
     expect(worker.openWindow).not.toHaveBeenCalled();
   });
 
@@ -190,7 +190,7 @@ describe("service worker notificationclick deep-linking", () => {
     worker.handlers.notificationclick(event);
     await Promise.all(waits);
     expect(win.navigate).toHaveBeenCalled();
-    expect(worker.openWindow).toHaveBeenCalledWith("/app/#/task/t9/plan");
+    expect(worker.openWindow).toHaveBeenCalledWith("/app/#/task/t9/plan?from=push");
     expect(console.warn).toHaveBeenCalled();
   });
 
@@ -202,7 +202,7 @@ describe("service worker notificationclick deep-linking", () => {
     worker.handlers.notificationclick(event);
     await Promise.all(waits);
     expect(other.postMessage).not.toHaveBeenCalled();
-    expect(worker.openWindow).toHaveBeenCalledWith("/app/#/task/t4/plan");
+    expect(worker.openWindow).toHaveBeenCalledWith("/app/#/task/t4/plan?from=push");
   });
 
   it("opens a new window on a cold start, where the router reads the hash at boot", async () => {
@@ -211,6 +211,19 @@ describe("service worker notificationclick deep-linking", () => {
     const { event, waits } = clickEvent("/app/#/task/t2/plan");
     worker.handlers.notificationclick(event);
     await Promise.all(waits);
-    expect(worker.openWindow).toHaveBeenCalledWith("/app/#/task/t2/plan");
+    expect(worker.openWindow).toHaveBeenCalledWith("/app/#/task/t2/plan?from=push");
+  });
+
+  // #200 review: the mark tells the app this open came from a notification, so
+  // it lands on the latest message; only a link inside the app is marked.
+  it("marks only links inside the app as a notification open", async () => {
+    for (const url of ["/app/", "/app/settings", "/elsewhere/#/device/d"]) {
+      const worker = loadWorker();
+      worker.self.clients.matchAll = vi.fn(() => Promise.resolve([]));
+      const { event, waits } = clickEvent(url);
+      worker.handlers.notificationclick(event);
+      await Promise.all(waits);
+      expect(worker.openWindow).toHaveBeenCalledWith(url);
+    }
   });
 });

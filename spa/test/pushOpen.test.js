@@ -59,6 +59,11 @@ describe("the app's build.push.open listener", () => {
     expect(open).toHaveBeenCalledWith("#/device/dev-1/project/proj-1/workspace/ws-1/changes?agent=agent-1");
   });
 
+  it("routes to a notification-marked link, the mark kept for the app to take", async () => {
+    await post({ type: "build.push.open", url: `${LINK}&from=push` });
+    expect(open).toHaveBeenCalledWith("#/device/dev-1/project/proj-1/workspace/ws-1/changes?agent=agent-1&from=push");
+  });
+
   it("accepts the page's controller too", async () => {
     const controller = new FakeServiceWorker(OWN);
     container.controller = controller;
@@ -86,6 +91,8 @@ describe("the app's build.push.open listener", () => {
       "/app/settings",
       "/app/",
       "/elsewhere/#/device/d",
+      "/elsewhere/#/device/d?from=push",
+      "https://evil.example/app/#/device/d?agent=a&from=push",
       "javascript:alert(1)",
       42,
       undefined,

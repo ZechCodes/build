@@ -125,7 +125,7 @@ const projectStanding = (route) =>
  * to converse with, and an empty strip is the honest answer. The bar, the
  * regions and the inbox rail are still there; only the bubbles are not.
  */
-export function shellPartsForRoute(route = {}) {
+export function shellPartsForRoute(route = {}, { fromNotification = false } = {}) {
   const parts = STANDING[route.name]?.(route);
   if (!parts) return null;
   const deviceId = route.deviceId || null;
@@ -134,11 +134,13 @@ export function shellPartsForRoute(route = {}) {
     mintsProjectConversation: parts.mintsProjectConversation,
     // The agent a conversation link names (`?agent=…`, core/router.js): the
     // rail comes up standing on it, whichever kind of page it landed on.
-    // A link opens the conversation at its latest message, not at the unread
-    // line: it came from something that just said what that message is.
+    // A notification's link opens the conversation at its latest message, not
+    // at the unread line: the notification just said what that message is.
+    // Every other link (a topic link, a reload, back/forward) lands on the
+    // unread line.
     rail: {
       ...parts.rail, deviceId, openAgentId: route.agent || null, addingAgent: route.newAgent === true,
-      landOnLatest: !!route.agent,
+      landOnLatest: fromNotification && !!route.agent,
     },
     console: parts.console ? { ...parts.console, deviceId } : null,
   };
@@ -167,9 +169,10 @@ export function shellSelection() {
  * selection it has to share. Returns that selection.
  */
 export function standShell(route) {
-  const reopensAgent = linkReopensAgent(route);
+  const fromNotification = takeNotificationOpen();
+  const reopensAgent = linkReopensAgent(route, fromNotification);
   collapseChatOnNavigation(route);
-  const parts = shellPartsForRoute(route);
+  const parts = shellPartsForRoute(route, { fromNotification });
   // The rail and the console page what they show out of the records, so they
   // stand beside a surface whether or not its machine can answer, exactly as
   // the surface does (core/surfaceContext.js). Only a machine nothing here has
@@ -215,21 +218,28 @@ function standRail(parts, context) {
 }
 
 // A notification click asked for the conversation its link names, even where
-// the URL already names it (core/app.js `followNotificationLink`).
+// the URL already names it (core/app.js `followNotificationLink`, and a cold
+// start on a notification's link, core/app.js `readRoute`).
 let agentAsked = false;
 
-/** The next stand opens the conversation its route names, even over the same
- *  standing and the same agent. */
+/** The next stand is a notification open: it opens the conversation its route
+ *  names, even over the same standing and the same agent, at its latest
+ *  message. One-shot, taken by the stand it causes. */
 export function askToOpenLinkedAgent() {
   agentAsked = true;
+}
+
+/** Whether this stand is the one a notification asked for, clearing the ask. */
+function takeNotificationOpen() {
+  const asked = agentAsked;
+  agentAsked = false;
+  return asked;
 }
 
 /** Whether this stand must put the rail on the agent its route names over a
  *  standing that is already up: a notification asked, or the link names
  *  another agent than the last stand did. Read before the stand moves on. */
-function linkReopensAgent(route) {
-  const asked = agentAsked;
-  agentAsked = false;
+function linkReopensAgent(route, asked) {
   const previous = stoodAgent;
   stoodAgent = route.agent || null;
   if (!route.agent) return false;

@@ -196,13 +196,16 @@ it("shows a sealed push the real worker received, end to end, and a replay gener
       const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: serverKey });
       return { endpointHost: new URL(subscription.endpoint).host };
     } catch (error) {
-      return { error: `${error.name}: ${error.message}` };
+      return { errorName: error.name, error: `${error.name}: ${error.message}` };
     }
   });
   if (subscribed.error) {
-    // A real subscription needs the browser's push service over the network.
-    record(`end to end skipped: no push subscription (${subscribed.error})`);
+    // A real subscription needs the browser's push service over the network:
+    // only an unreachable one (AbortError) skips. Anything else, a refused
+    // permission grant included, is this test's setup breaking and fails it.
     await context.close();
+    expect(subscribed.errorName, `push subscription failed: ${subscribed.error}`).toBe("AbortError");
+    record(`end to end skipped: push service unreachable (${subscribed.error})`);
     test.skip();
     return;
   }

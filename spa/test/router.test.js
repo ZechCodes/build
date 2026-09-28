@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { conversationRoute, routeFromHash, hashFromRoute, withDeviceOrResolve } from "../src/core/router.js";
+import { conversationRoute, routeFromHash, hashFromRoute, takePushOpenMark, withDeviceOrResolve } from "../src/core/router.js";
 
 // A work URL that names no device names no machine: every device mints a
 // `proj-1`, so `#/project/proj-1/branch/main` parks on a resolve route carrying
@@ -772,4 +772,30 @@ describe("a notification's deep link", () => {
       expect(routeFromHash(hashFromRoute(route))).toEqual(route);
     });
   }
+});
+
+// #200 review: the service worker marks the link a notification click opens
+// (`from=push`, public/sw.js) so that one open lands on the latest message. The
+// mark is taken off before the route is read, and is never part of a route.
+describe("the notification-open mark", () => {
+  it("is taken off a link that carries it, leaving the rest of the query", () => {
+    expect(takePushOpenMark("#/device/d/project/p/workspace/w/changes?agent=a&from=push")).toEqual({
+      hash: "#/device/d/project/p/workspace/w/changes?agent=a",
+      fromPush: true,
+    });
+    expect(takePushOpenMark("#/task/t1/diff?from=push")).toEqual({ hash: "#/task/t1/diff", fromPush: true });
+  });
+
+  it("leaves a link without it untouched", () => {
+    for (const hash of ["#/device/d/project/p?agent=a", "#/device/d/project/p", "", "#/x?from=elsewhere"]) {
+      expect(takePushOpenMark(hash)).toEqual({ hash, fromPush: false });
+    }
+  });
+
+  it("never reaches a route, and no route writes it back", () => {
+    const route = routeFromHash("#/device/d/project/p/workspace/w/changes?agent=a&from=push");
+    expect(route).not.toHaveProperty("from");
+    expect(route).not.toHaveProperty("fromPush");
+    expect(hashFromRoute(route)).toBe("#/device/d/project/p/workspace/w/changes?agent=a");
+  });
 });

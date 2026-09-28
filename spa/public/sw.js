@@ -330,9 +330,19 @@ async function navigateOrOpen(client, url) {
   }
 }
 
+// A link inside the app is marked as a notification open (#200): the app lands
+// that one open on the latest message, then drops the mark from the URL
+// (src/core/router.js `takePushOpenMark`), so a reload lands on the unread line.
+const PUSH_OPEN_MARK = "from=push";
+
+function markedAsPushOpen(url) {
+  if (!url.startsWith(APP_LINK_PREFIX)) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}${PUSH_OPEN_MARK}`;
+}
+
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const url = (event.notification.data && event.notification.data.url) || "/app/";
+  const url = markedAsPushOpen((event.notification.data && event.notification.data.url) || "/app/");
   event.waitUntil(
     (async () => {
       const windows = await self.clients.matchAll({

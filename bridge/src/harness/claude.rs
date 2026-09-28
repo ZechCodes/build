@@ -13,7 +13,7 @@ use std::sync::Mutex;
 use serde_json::{json, Value};
 
 use crate::harness::{
-    is_a_filename, Harness, HarnessContext, SessionLocator, INHERITED_AGENT_MARKERS,
+    installed, is_a_filename, Harness, HarnessContext, SessionLocator, INHERITED_AGENT_MARKERS,
     REAL_TUI_SETTLE, REAL_TUI_SUBMIT_DELAY,
 };
 use crate::models::{AgentProvider, ModelChoice, ModelOption};
@@ -42,6 +42,11 @@ impl Harness for ClaudeHarness {
         "claude"
     }
 
+    /// Every row carries `min_cli`: the Claude Code version whose changelog
+    /// says "Added Claude <model>" (anthropics/claude-code CHANGELOG.md), cited
+    /// beside it. An older CLI is refused by the API or runs the model at a
+    /// 200k window it does not know better than (#203), so the picker hides
+    /// it. A new model's row is not complete without one.
     fn models(&self) -> Vec<ModelOption> {
         vec![
             ModelOption {
@@ -50,6 +55,8 @@ impl Harness for ClaudeHarness {
                 supports_effort: true,
                 efforts: &EFFORT_LEVELS,
                 context_window: Some(1_000_000),
+                // Claude Code CHANGELOG 2.1.257: "Added Claude Fable 5.1 (`claude-fable-5-1`)"
+                min_cli: Some("2.1.257"),
             },
             ModelOption {
                 id: "claude-opus-5-5",
@@ -57,6 +64,8 @@ impl Harness for ClaudeHarness {
                 supports_effort: true,
                 efforts: &EFFORT_LEVELS,
                 context_window: Some(1_000_000),
+                // Claude Code CHANGELOG 2.1.280: "Added Claude Opus 5.5 (`claude-opus-5-5`)"; 2.1.267 gets API 400 "version 2.1.280 or newer is required" (#203)
+                min_cli: Some("2.1.280"),
             },
             ModelOption {
                 id: "claude-opus-5",
@@ -64,6 +73,8 @@ impl Harness for ClaudeHarness {
                 supports_effort: true,
                 efforts: &EFFORT_LEVELS,
                 context_window: Some(1_000_000),
+                // Claude Code CHANGELOG 2.1.219: "Added Claude Opus 5 (`claude-opus-5`)"
+                min_cli: Some("2.1.219"),
             },
             ModelOption {
                 id: "claude-opus-4-8",
@@ -71,6 +82,8 @@ impl Harness for ClaudeHarness {
                 supports_effort: true,
                 efforts: &EFFORT_LEVELS,
                 context_window: Some(1_000_000),
+                // Claude Code CHANGELOG 2.1.154: "Opus 4.8 is here!" / "Added Claude Opus 4.8 support"
+                min_cli: Some("2.1.154"),
             },
             ModelOption {
                 id: "claude-sonnet-5-5",
@@ -78,6 +91,8 @@ impl Harness for ClaudeHarness {
                 supports_effort: true,
                 efforts: &EFFORT_LEVELS,
                 context_window: Some(1_000_000),
+                // Claude Code CHANGELOG 2.1.284: "Added Claude Sonnet 5.5 (`claude-sonnet-5-5`)"; 2.1.280 runs it at a 200k window (#203)
+                min_cli: Some("2.1.284"),
             },
             ModelOption {
                 id: "claude-sonnet-5",
@@ -85,6 +100,8 @@ impl Harness for ClaudeHarness {
                 supports_effort: true,
                 efforts: &EFFORT_LEVELS,
                 context_window: Some(1_000_000),
+                // Claude Code CHANGELOG 2.1.197: "Introducing Claude Sonnet 5 … native 1M-token context window"
+                min_cli: Some("2.1.197"),
             },
             ModelOption {
                 id: "claude-sonnet-4-6",
@@ -92,6 +109,8 @@ impl Harness for ClaudeHarness {
                 supports_effort: true,
                 efforts: &EFFORT_LEVELS,
                 context_window: Some(1_000_000),
+                // Claude Code CHANGELOG 2.1.45: "Added support for Claude Sonnet 4.6"
+                min_cli: Some("2.1.45"),
             },
             ModelOption {
                 id: "claude-haiku-4-5",
@@ -99,8 +118,22 @@ impl Harness for ClaudeHarness {
                 supports_effort: false,
                 efforts: &[],
                 context_window: Some(200_000),
+                // Claude Code CHANGELOG 2.0.17: "Added Haiku 4.5 to model selector!"
+                min_cli: Some("2.0.17"),
             },
         ]
+    }
+
+    fn cli_name(&self) -> &'static str {
+        "Claude Code"
+    }
+
+    fn cli_probe(&self) -> &'static dyn installed::CliProbe {
+        &installed::VERSION_FLAG
+    }
+
+    fn offer(&self, reading: Option<&installed::CliReading>) -> installed::ModelOffer {
+        installed::ModelOffer::by_version(&self.models(), reading)
     }
 
     fn effort_levels(&self) -> &'static [&'static str] {

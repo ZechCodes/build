@@ -38,7 +38,7 @@ impl AppState {
     /// top level for clients that predate `providers`.
     pub(crate) fn models_list(&self) -> Value {
         json!({
-            "models": harness_for(self.default_harness).models(),
+            "models": crate::harness::installed::model_offer(self.default_harness).models,
             "efforts": harness_for(self.default_harness).effort_levels(),
             "default_provider": self.default_harness,
             "agent_modes": self.agent_modes,

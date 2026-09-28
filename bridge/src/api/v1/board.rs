@@ -1014,6 +1014,24 @@ pub struct ProviderCatalog {
     pub binary: String,
     #[serde(default)]
     pub installed: bool,
+    /// What a person calls that program: "Claude Code", "Codex".
+    #[serde(default)]
+    pub cli_name: String,
+    /// The installed program's version, where it said one (#203). `models`
+    /// is what that version runs; absent, it is the whole catalog.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cli_version: Option<String>,
+    /// Catalogued models the installed program is too old for.
+    #[serde(default)]
+    pub unavailable: Vec<UnavailableModelRow>,
+}
+
+/// A model the installed program is too old for, and the version it needs.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct UnavailableModelRow {
+    pub id: String,
+    pub label: String,
+    pub requires_cli: String,
 }
 
 /// What a new agent can be started on. `models`/`efforts` are the default

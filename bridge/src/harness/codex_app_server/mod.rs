@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::harness::codex::{self, CodexHarness, CodexMcpConfig, EFFORT_LEVELS};
 use crate::harness::{
-    AgentSession, Harness, HarnessContext, HarnessError, OpenedSession, SessionOpenRequest,
+    installed, AgentSession, Harness, HarnessContext, HarnessError, OpenedSession, SessionOpenRequest,
     SessionOutput, INHERITED_AGENT_MARKERS,
 };
 use crate::models::{AgentProvider, ModelChoice, ModelOption};
@@ -76,6 +76,18 @@ impl Harness for CodexAppServerHarness {
 
     fn models(&self) -> Vec<ModelOption> {
         codex::models()
+    }
+
+    fn cli_name(&self) -> &'static str {
+        CodexHarness.cli_name()
+    }
+
+    fn cli_probe(&self) -> &'static dyn installed::CliProbe {
+        CodexHarness.cli_probe()
+    }
+
+    fn offer(&self, reading: Option<&installed::CliReading>) -> installed::ModelOffer {
+        CodexHarness.offer(reading)
     }
 
     fn effort_levels(&self) -> &'static [&'static str] {

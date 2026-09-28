@@ -13,6 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::harness::installed::{OfferedModel, UnavailableModel};
 use crate::harness::harness_for;
 
 /// The local coding-agent CLI used for an entity's sessions. Persisted on plans
@@ -144,6 +145,11 @@ pub struct ModelOption {
     /// Absent for a model whose window Build does not know.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
+    /// The oldest CLI that runs this model correctly: accepts it, and knows
+    /// its context window. Older ones are refused by the API or fall back to a
+    /// 200k window (#203). `None` for a harness whose CLI lists its own models.
+    #[serde(skip)]
+    pub min_cli: Option<&'static str>,
 }
 
 /// The context window of the model an agent runs, when its harness's catalog
@@ -165,7 +171,15 @@ pub fn context_window_of(provider: AgentProvider, model: &str) -> Option<u64> {
 pub struct ProviderCatalog {
     pub id: AgentProvider,
     pub label: &'static str,
-    pub models: Vec<ModelOption>,
+    /// What the installed CLI runs of this harness's catalog; the whole
+    /// catalog where the CLI could not say (#203).
+    pub models: Vec<OfferedModel>,
+    /// What a person calls that CLI, for a sentence about updating it.
+    pub cli_name: &'static str,
+    /// Its version, where it said one.
+    pub cli_version: Option<String>,
+    /// Catalogued models it is too old for, and the version each needs.
+    pub unavailable: Vec<UnavailableModel>,
     pub efforts: &'static [&'static str],
     /// The program this harness runs, as it is looked up on `PATH`.
     pub binary: &'static str,
@@ -183,10 +197,14 @@ pub fn provider_catalogs() -> Vec<ProviderCatalog> {
         .into_iter()
         .map(|provider| {
             let harness = harness_for(provider);
+            let offer = crate::harness::installed::model_offer(provider);
             ProviderCatalog {
                 id: provider,
                 label: harness.label(),
-                models: harness.models(),
+                models: offer.models,
+                cli_name: harness.cli_name(),
+                cli_version: offer.cli_version.map(|version| version.to_string()),
+                unavailable: offer.unavailable,
                 efforts: harness.effort_levels(),
                 binary: harness.binary(),
                 installed: binary_is_on_path(harness.binary()),
@@ -651,10 +669,10 @@ mod tests {
                 astra.efforts,
                 &["low", "medium", "high", "xhigh", "max", "ultra"]
             );
-            for effort in astra.efforts {
+            for effort in &astra.efforts {
                 let choice = ModelChoice {
                     provider,
-                    model: Some(astra.id.into()),
+                    model: Some(astra.id.clone()),
                     effort: Some((*effort).into()),
                 };
                 assert!(choice.validate().is_ok());
@@ -699,11 +717,11 @@ mod tests {
         let tui = catalog_of(AgentProvider::Codex);
         let app_server = catalog_of(AgentProvider::CodexAppServer);
         assert_eq!(
-            tui.models.iter().map(|model| model.id).collect::<Vec<_>>(),
+            tui.models.iter().map(|model| model.id.as_str()).collect::<Vec<_>>(),
             app_server
                 .models
                 .iter()
-                .map(|model| model.id)
+                .map(|model| model.id.as_str())
                 .collect::<Vec<_>>()
         );
         assert_eq!(tui.efforts, app_server.efforts);
@@ -786,7 +804,7 @@ mod tests {
             let ids: Vec<_> = catalog_of(provider)
                 .models
                 .iter()
-                .map(|model| model.id)
+                .map(|model| model.id.clone())
                 .collect();
             assert_eq!(
                 &ids[..3],
@@ -808,7 +826,7 @@ mod tests {
             let ids: Vec<_> = catalog_of(provider)
                 .models
                 .iter()
-                .map(|model| model.id)
+                .map(|model| model.id.clone())
                 .collect();
             let at = ids
                 .iter()
@@ -830,7 +848,7 @@ mod tests {
     fn gpt_6_sol_and_luna_follow_astra_on_both_codex_carriers() {
         for provider in [AgentProvider::Codex, AgentProvider::CodexAppServer] {
             let catalog = catalog_of(provider);
-            let ids: Vec<_> = catalog.models.iter().map(|model| model.id).collect();
+            let ids: Vec<_> = catalog.models.iter().map(|model| model.id.as_str()).collect();
             assert_eq!(
                 &ids[..4],
                 &["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol"]

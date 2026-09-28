@@ -5,11 +5,22 @@
 // one account can be running different releases and offer different agents — so
 // every device holds its own, and a surface that is about one machine asks that
 // machine's context rather than an ambient cache. It is read once per device
-// and kept: the answer only moves when the bridge's settings do, and the
-// Settings page says so by refreshing.
+// and kept: the answer moves when the bridge's settings do, which the Settings
+// page says by refreshing, and when one of the machine's agent CLIs changes,
+// which its bridge says with `models.changed` (#203).
 
 import { normalizeModelCatalog } from "./modelPicker.js";
 import { deviceModelsAddress, watchSettingsRecord } from "./settingsRecords.js";
+
+/** Each device's catalog, for the `models.changed` its bridge pushes. */
+const catalogsByDevice = new Map();
+
+/** A machine's bridge says one of its agent CLIs changed what it runs (#203):
+ *  its catalog is asked again, if any surface has wanted it, and the answer
+ *  lands in the cache like any other. */
+export function modelsChangedOn(deviceId) {
+  catalogsByDevice.get(deviceId)?.();
+}
 
 /** What a bridge that cannot be asked offers: the harness's own default, and
  *  nothing to choose between. An older bridge without the RPC answers the same,
@@ -109,6 +120,11 @@ export function createModelCatalog(context, {
     return asking;
   };
 
+  const askAgain = () => {
+    if (wanted && canAsk()) void readQuietly();
+  };
+  catalogsByDevice.set(context.deviceId, askAgain);
+
   return {
     /** This device's catalog, asked for once. */
     async modelCatalog() {
@@ -137,6 +153,7 @@ export function createModelCatalog(context, {
       return () => listeners.delete(listener);
     },
     disposeModelCatalog() {
+      if (catalogsByDevice.get(context.deviceId) === askAgain) catalogsByDevice.delete(context.deviceId);
       record.dispose();
       listeners.clear();
     },

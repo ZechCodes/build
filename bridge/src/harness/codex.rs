@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use crate::harness::{
-    Harness, HarnessContext, SessionLocator, INHERITED_AGENT_MARKERS, REAL_TUI_SETTLE,
+    installed, Harness, HarnessContext, SessionLocator, INHERITED_AGENT_MARKERS, REAL_TUI_SETTLE,
     REAL_TUI_SUBMIT_DELAY,
 };
 use crate::models::{AgentProvider, ModelChoice, ModelOption};
@@ -33,6 +33,7 @@ pub(super) fn models() -> Vec<ModelOption> {
             supports_effort: true,
             efforts: &EFFORT_LEVELS,
             context_window: None,
+            min_cli: None,
         },
         ModelOption {
             id: "gpt-6-sol",
@@ -40,6 +41,7 @@ pub(super) fn models() -> Vec<ModelOption> {
             supports_effort: true,
             efforts: &EFFORT_LEVELS,
             context_window: None,
+            min_cli: None,
         },
         ModelOption {
             id: "gpt-6-luna",
@@ -47,6 +49,7 @@ pub(super) fn models() -> Vec<ModelOption> {
             supports_effort: true,
             efforts: THROUGH_MAX,
             context_window: None,
+            min_cli: None,
         },
         ModelOption {
             id: "gpt-5.6-sol",
@@ -54,6 +57,7 @@ pub(super) fn models() -> Vec<ModelOption> {
             supports_effort: true,
             efforts: &EFFORT_LEVELS,
             context_window: None,
+            min_cli: None,
         },
         ModelOption {
             id: "gpt-5.6-terra",
@@ -61,6 +65,7 @@ pub(super) fn models() -> Vec<ModelOption> {
             supports_effort: true,
             efforts: &EFFORT_LEVELS,
             context_window: None,
+            min_cli: None,
         },
         ModelOption {
             id: "gpt-5.6-luna",
@@ -68,6 +73,7 @@ pub(super) fn models() -> Vec<ModelOption> {
             supports_effort: true,
             efforts: THROUGH_MAX,
             context_window: None,
+            min_cli: None,
         },
         ModelOption {
             id: "gpt-5.5",
@@ -75,6 +81,7 @@ pub(super) fn models() -> Vec<ModelOption> {
             supports_effort: true,
             efforts: THROUGH_XHIGH,
             context_window: None,
+            min_cli: None,
         },
         ModelOption {
             id: "gpt-5.2",
@@ -82,6 +89,7 @@ pub(super) fn models() -> Vec<ModelOption> {
             supports_effort: true,
             efforts: THROUGH_XHIGH,
             context_window: None,
+            min_cli: None,
         },
     ]
 }
@@ -97,17 +105,28 @@ impl Harness for CodexHarness {
         "Codex TUI"
     }
 
-    /// The curated catalog, most capable first. (cached: 2026-09)
-    ///
-    /// Codex has an experimental debug catalog command, but Build cannot assume
-    /// every installed CLI version exposes it; shipping the catalog keeps the
-    /// web contract deterministic.
     fn binary(&self) -> &'static str {
         "codex"
     }
 
+    /// The curated catalog, most capable first. (cached: 2026-09)
+    ///
+    /// What is offered is the installed CLI's own list ([`Harness::offer`]);
+    /// this is its labels, and the whole offer when the CLI cannot list.
     fn models(&self) -> Vec<ModelOption> {
         models()
+    }
+
+    fn cli_name(&self) -> &'static str {
+        "Codex"
+    }
+
+    fn cli_probe(&self) -> &'static dyn installed::CliProbe {
+        &installed::CODEX_MODEL_LIST
+    }
+
+    fn offer(&self, reading: Option<&installed::CliReading>) -> installed::ModelOffer {
+        installed::ModelOffer::listed(&self.models(), reading, &EFFORT_LEVELS)
     }
 
     fn effort_levels(&self) -> &'static [&'static str] {

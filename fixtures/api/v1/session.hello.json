@@ -3,7 +3,7 @@
   "since": "1.0.0",
   "params": {},
   "result": {
-    "api_version": "2.1.0",
+    "api_version": "2.2.0",
     "capabilities": [
       "agent.add",
       "agent.attach",
@@ -79,6 +79,7 @@
       "messages.context",
       "messages.fromAgent",
       "messages.taskNotices",
+      "models.installedCli",
       "models.list",
       "params.strict",
       "ping",
@@ -231,7 +232,8 @@
       "board.changed",
       "entity.changed",
       "changes",
-      "bridge.update_status"
+      "bridge.update_status",
+      "models.changed"
     ],
     "coalesce_window_ms": 250,
     "changes": {

@@ -75,7 +75,12 @@
           }
         ],
         "binary": "claude",
-        "installed": true
+        "installed": true,
+        "cli_name": "Claude Code",
+        "cli_version": "2.1.280",
+        "unavailable": [
+          { "id": "claude-sonnet-5-5", "label": "Claude Sonnet 5.5", "requires_cli": "2.1.284" }
+        ]
       },
       {
         "id": "codex_app_server",
@@ -104,8 +109,20 @@
           }
         ],
         "binary": "codex",
-        "installed": true
+        "installed": true,
+        "cli_name": "Codex",
+        "cli_version": "0.155.1",
+        "unavailable": []
       }
+    ]
+  },
+  "installed_cli": {
+    "since": "2.2.0",
+    "note": "Each provider offers only what its installed CLI runs (#203): cli_name and cli_version say which CLI and version it read, and unavailable names the catalogued models that CLI is too old for, with the version each needs. A models.changed push says to ask again. Announced as models.installedCli.",
+    "fields": [
+      "cli_name",
+      "cli_version",
+      "unavailable"
     ]
   },
   "errors": [

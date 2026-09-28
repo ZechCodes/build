@@ -97,7 +97,7 @@ impl AppState {
     /// spend: the setting, with the default harness standing where it names no
     /// harness of its own.
     pub(in crate::app) fn project_agent_choice(&self) -> ModelChoice {
-        self.project_agent.resolved(self.default_harness)
+        self.runnable_default(self.project_agent.resolved(self.default_harness))
     }
 
     /// The harness a project agent falls back to when the caller names none.

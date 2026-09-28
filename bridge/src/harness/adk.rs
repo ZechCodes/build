@@ -2,7 +2,7 @@
 
 use crate::harness::claude::ClaudeHarness;
 use crate::harness::{
-    AgentSession, Harness, HarnessContext, HarnessError, OpenedSession, SessionLocator,
+    installed, AgentSession, Harness, HarnessContext, HarnessError, OpenedSession, SessionLocator,
     SessionOpenRequest, SessionOutput, INHERITED_AGENT_MARKERS,
 };
 use crate::models::{AgentProvider, ModelChoice, ModelOption};
@@ -58,6 +58,18 @@ impl Harness for AdkHarness {
 
     fn models(&self) -> Vec<ModelOption> {
         ClaudeHarness.models()
+    }
+
+    fn cli_name(&self) -> &'static str {
+        ClaudeHarness.cli_name()
+    }
+
+    fn cli_probe(&self) -> &'static dyn installed::CliProbe {
+        ClaudeHarness.cli_probe()
+    }
+
+    fn offer(&self, reading: Option<&installed::CliReading>) -> installed::ModelOffer {
+        ClaudeHarness.offer(reading)
     }
 
     fn effort_levels(&self) -> &'static [&'static str] {

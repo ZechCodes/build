@@ -10,6 +10,8 @@ import {
   providerOptionsHtml,
   creatableCatalog,
   matchCatalogModel,
+  modelNoteHtml,
+  modelUpdateNote,
   STARTABLE_PROVIDERS,
 } from "../src/core/modelPicker.js";
 
@@ -303,5 +305,98 @@ describe("the catalog entry an announced model names", () => {
     expect(matchCatalogModel(MODELS, "claude-opus-4-8-mini")).toBe(null);
     expect(matchCatalogModel(MODELS, "")).toBe(null);
     expect(matchCatalogModel(undefined, "claude-opus-4-8")).toBe(null);
+  });
+});
+
+// #203: the bridge offers only what the installed CLI runs, and names the rest
+// with the version each needs.
+const OLD_CLAUDE_CODE = {
+  id: "claude_adk",
+  label: "Claude Code",
+  cli_name: "Claude Code",
+  cli_version: "2.1.267",
+  models: MODELS,
+  efforts: EFFORTS,
+  unavailable: [
+    { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", requires_cli: "2.1.284" },
+    { id: "claude-opus-5-5", label: "Claude Opus 5.5", requires_cli: "2.1.280" },
+  ],
+};
+
+describe("the note under a model picker", () => {
+  it("names the CLI, the version that brings every hidden model, and the models", () => {
+    expect(modelUpdateNote(OLD_CLAUDE_CODE)).toBe(
+      "Update Claude Code to 2.1.284+ for Claude Sonnet 5.5 and Claude Opus 5.5.",
+    );
+  });
+
+  it("names one model on its own", () => {
+    const one = { ...OLD_CLAUDE_CODE, unavailable: [OLD_CLAUDE_CODE.unavailable[0]] };
+    expect(modelUpdateNote(one)).toBe("Update Claude Code to 2.1.284+ for Claude Sonnet 5.5.");
+  });
+
+  it("lists three or more the way a sentence does", () => {
+    const three = {
+      ...OLD_CLAUDE_CODE,
+      unavailable: [
+        ...OLD_CLAUDE_CODE.unavailable,
+        { id: "claude-fable-5-1", label: "Claude Fable 5.1", requires_cli: "2.1.257" },
+      ],
+    };
+    expect(modelUpdateNote(three)).toBe(
+      "Update Claude Code to 2.1.284+ for Claude Sonnet 5.5, Claude Opus 5.5 and Claude Fable 5.1.",
+    );
+  });
+
+  it("compares versions as numbers, not text", () => {
+    const provider = {
+      ...OLD_CLAUDE_CODE,
+      unavailable: [
+        { id: "a", label: "A", requires_cli: "2.1.99" },
+        { id: "b", label: "B", requires_cli: "2.1.100" },
+      ],
+    };
+    expect(modelUpdateNote(provider)).toBe("Update Claude Code to 2.1.100+ for A and B.");
+  });
+
+  it("says nothing where the installed CLI runs everything, or the bridge is too old to say", () => {
+    expect(modelUpdateNote({ ...OLD_CLAUDE_CODE, unavailable: [] })).toBe("");
+    expect(modelUpdateNote({ id: "claude", models: MODELS })).toBe("");
+    expect(modelUpdateNote(null)).toBe("");
+    expect(modelNoteHtml({ id: "claude", models: MODELS })).toBe("");
+  });
+
+  it("draws the note escaped, in its own line", () => {
+    const html = modelNoteHtml({
+      ...OLD_CLAUDE_CODE,
+      unavailable: [{ id: "x", label: "<b>X</b>", requires_cli: "9.0.0" }],
+    });
+    expect(html).toContain('class="model-update-note"');
+    expect(html).toContain("&lt;b&gt;X&lt;/b&gt;");
+    expect(html).not.toContain("<b>X");
+  });
+});
+
+describe("a saved model the installed CLI is too old for", () => {
+  it("stays selected, named with the version it needs", () => {
+    const html = modelOptionsHtml(MODELS, "claude-sonnet-5-5", OLD_CLAUDE_CODE);
+    expect(html).toContain(
+      '<option value="claude-sonnet-5-5" selected>Claude Sonnet 5.5 (needs Claude Code 2.1.284+)</option>',
+    );
+  });
+
+  it("keeps an id no bridge named as itself", () => {
+    const html = modelOptionsHtml(MODELS, "claude-next", OLD_CLAUDE_CODE);
+    expect(html).toContain('<option value="claude-next" selected>claude-next</option>');
+  });
+});
+
+describe("the catalog a create surface offers, from a bridge that read its CLIs", () => {
+  it("carries each agent what its CLI said", () => {
+    const offered = creatableCatalog({ default_provider: "claude_adk", providers: [OLD_CLAUDE_CODE] });
+    const claude = catalogForProvider(offered, "claude_adk");
+    expect(claude.cli_name).toBe("Claude Code");
+    expect(claude.cli_version).toBe("2.1.267");
+    expect(claude.unavailable).toEqual(OLD_CLAUDE_CODE.unavailable);
   });
 });

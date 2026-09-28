@@ -15,6 +15,7 @@ import {
   effortOptionsHtml,
   effortSupported,
   modelInCatalog,
+  modelNoteHtml,
   modelOptionsHtml,
   providerOptionsHtml,
 } from "./modelPicker.js";
@@ -56,7 +57,8 @@ function harnessRowHtml(provider, preference, prefix) {
   return `<div class="field-row" data-harness="${esc(provider.id)}" style="display:flex;gap:10px;flex-wrap:wrap">
       <div class="field" style="${FIELD_STYLE}">
         <label for="${esc(prefix)}model-${esc(provider.id)}">${esc(provider.label)} model</label>
-        <select id="${esc(prefix)}model-${esc(provider.id)}" data-harness-model="${esc(provider.id)}">${modelOptionsHtml(models, preference.model)}</select>
+        <select id="${esc(prefix)}model-${esc(provider.id)}" data-harness-model="${esc(provider.id)}">${modelOptionsHtml(models, preference.model, provider)}</select>
+        ${modelNoteHtml(provider)}
       </div>
       <div class="field" style="${FIELD_STYLE}">
         <label for="${esc(prefix)}effort-${esc(provider.id)}">${esc(provider.label)} reasoning effort</label>

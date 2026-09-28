@@ -8,6 +8,7 @@ use crate::app::{
 use crate::app::{Tab, TabRole};
 use crate::carrier::SessionSender;
 use crate::harness::harness_for;
+use crate::harness::installed::held_refusal;
 use crate::harness::AgentStatus;
 use crate::models::{AgentProvider, ModelChoice};
 use crate::reaper::Retirement;
@@ -945,7 +946,7 @@ impl AppState {
             )?),
             None => None,
         };
-        let Some(entry) = self.role_models.for_role(role, capability) else {
+        let Some(entry) = self.role_model_here(role, capability) else {
             // Asked for something this device has nobody for. Saying so beats
             // quietly starting a model the user did not choose for the job.
             if let Some(wanted) = capability {
@@ -1064,6 +1065,12 @@ impl AppState {
                     DigestScope::List,
                 ),
             }));
+        }
+        // An agent nothing can start is refused before it is made. Only on a
+        // fresh answer: this verb cannot wait on a CLI, and a stale one is
+        // left to the spawn, which asks again before it refuses.
+        if let Some(why) = held_refusal(&self.cli_readings, &choice) {
+            return Err(why);
         }
         if let Some(name) = &name {
             let taken = self.entity_agents(&entity_id)?.iter().any(|agent| {

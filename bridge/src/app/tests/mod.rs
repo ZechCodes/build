@@ -101,6 +101,7 @@ mod untimed {
             &a_frame(state),
         )
         .map(|opened| opened.expect("the owner still has a session"))
+        .map_err(|failure| failure.to_string())
     }
 
     pub(super) fn deliver(
@@ -144,10 +145,11 @@ mod untimed {
             },
             &a_frame(state),
         )
-        .map(|delivered| match delivered {
-            DeliveryOutcome::Delivered(Some(delivered)) => delivered,
+        .and_then(|delivered| match delivered {
+            DeliveryOutcome::Delivered(Some(delivered)) => Ok(delivered),
             DeliveryOutcome::Delivered(None) => panic!("the owner still has a session"),
             DeliveryOutcome::Deferred => panic!("the test turn is immediately eligible"),
+            DeliveryOutcome::Refused(why) => Err(why),
         })
     }
 
@@ -209,6 +211,7 @@ mod filesystem;
 mod git;
 mod github;
 mod harness_models;
+mod installed_models;
 mod lifecycle_compat;
 mod merge_regressions;
 mod project_agent;

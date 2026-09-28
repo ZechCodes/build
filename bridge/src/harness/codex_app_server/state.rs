@@ -436,6 +436,10 @@ impl CodexSessionState {
         };
         match leading_user_agent_version(&user_agent) {
             Some(version) => {
+                crate::harness::installed::observe_version(
+                    crate::models::AgentProvider::CodexAppServer,
+                    &version.to_string(),
+                );
                 accept_version(version)?;
                 self.finish_initialize()
             }

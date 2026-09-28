@@ -13,9 +13,11 @@
 //! with the argv, the grid and the watcher its caller needs to open a child.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use portable_pty::PtySize;
 
+use crate::harness::installed::{refuse_unrunnable, Readings};
 use crate::harness::SessionLocator;
 use crate::models::{AgentProvider, ModelChoice};
 use crate::orchestrator::{Orchestrator, ResumeIdProbe, SessionLocatorFactory};
@@ -123,17 +125,46 @@ pub struct AgentSpawnPlan {
     pub recorded_resume_id: Option<String>,
     pub probes: SessionProbes,
     pub session_token: String,
+    /// What the installed CLIs said, which a spawn on a model the CLI cannot
+    /// run is refused on.
+    pub cli_readings: Arc<Readings>,
+}
+
+/// Why an agent did not start.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartFailure {
+    /// Refused before anything was started or written, in a sentence for the
+    /// person who chose what it was to run on. Certainly not started.
+    Refused(String),
+    /// Anything else, which may have got as far as starting a child.
+    Failed(String),
+}
+
+impl From<String> for StartFailure {
+    fn from(error: String) -> Self {
+        StartFailure::Failed(error)
+    }
+}
+
+impl std::fmt::Display for StartFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StartFailure::Refused(why) | StartFailure::Failed(why) => f.write_str(why),
+        }
+    }
 }
 
 impl AgentSpawnPlan {
-    /// Ask the transcript tree what this session continues, write `.build/`
-    /// into the checkout, and build the argv.
+    /// Refuse a model the installed CLI cannot run, then ask the transcript
+    /// tree what this session continues, write `.build/` into the checkout,
+    /// and build the argv.
     ///
     /// The scaffold is unconditional and idempotent: under
     /// `--strict-mcp-config` a missing config kills the harness before it reads
     /// a byte of the prompt, and the config is written per AGENT, so two agents
     /// sharing a checkout report as themselves.
-    pub fn probe_and_scaffold(self) -> Result<ReadyToSpawn, String> {
+    pub fn probe_and_scaffold(self) -> Result<ReadyToSpawn, StartFailure> {
+        refuse_unrunnable(&self.cli_readings, &self.model_choice).map_err(StartFailure::Refused)?;
         let provider = self.model_choice.provider;
         let pickup = self
             .probes

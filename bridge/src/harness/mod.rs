@@ -32,6 +32,7 @@ pub(crate) mod adk;
 pub(crate) mod claude;
 pub(crate) mod codex;
 pub(crate) mod codex_app_server;
+pub mod installed;
 pub(crate) mod pi;
 mod session;
 pub mod shell_tail;
@@ -150,6 +151,24 @@ pub trait Harness: Send + Sync {
 
     /// The curated model catalog, most capable first.
     fn models(&self) -> Vec<ModelOption>;
+
+    /// What a person calls the program this harness runs, in a sentence about
+    /// updating it: "Claude Code", not "Claude Code TUI".
+    fn cli_name(&self) -> &'static str {
+        self.label()
+    }
+
+    /// How the installed CLI is asked what it runs. Harnesses sharing a
+    /// [`Harness::binary`] share a probe, and so one reading.
+    fn cli_probe(&self) -> &'static dyn installed::CliProbe {
+        &installed::NO_PROBE
+    }
+
+    /// Which of [`Harness::models`] the installed CLI runs, as `reading` found
+    /// it. Everything, unless the harness can tell.
+    fn offer(&self, reading: Option<&installed::CliReading>) -> installed::ModelOffer {
+        installed::ModelOffer::whole(&self.models(), reading)
+    }
 
     /// Every reasoning effort this provider accepts, across all its models.
     /// A model may still accept only some of them ([`ModelOption::efforts`]).

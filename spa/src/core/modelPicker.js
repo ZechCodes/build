@@ -59,17 +59,62 @@ export function matchCatalogModel(models, modelId) {
 
 /** <option> list for the model select: harness default, catalog, and — when the
  *  current selection is not in the catalog (e.g. a task dispatched on a newer
- *  bridge) — the selection itself, so it never silently changes. */
-export function modelOptionsHtml(models, selectedId) {
+ *  bridge, or a model this machine's CLI is too old for) — the selection
+ *  itself, so it never silently changes. `provider` is the catalog entry the
+ *  models came from, which names what its CLI is too old for. */
+export function modelOptionsHtml(models, selectedId, provider = null) {
   const sel = (id) => (id === (selectedId || "") ? " selected" : "");
   const rows = [`<option value=""${sel("")}>Harness default</option>`];
   for (const m of models) {
     rows.push(`<option value="${esc(m.id)}"${sel(m.id)}>${esc(m.label)}</option>`);
   }
   if (selectedId && !models.some((m) => m.id === selectedId)) {
-    rows.push(`<option value="${esc(selectedId)}" selected>${esc(selectedId)}</option>`);
+    rows.push(`<option value="${esc(selectedId)}" selected>${esc(offCatalogLabel(selectedId, provider))}</option>`);
   }
   return rows.join("");
+}
+
+/** What a selection the picker does not offer is called: the model and the
+ *  CLI version it needs, where the bridge said; else its id. */
+function offCatalogLabel(selectedId, provider) {
+  const needed = unavailableOf(provider).find((model) => model.id === selectedId);
+  if (!needed) return selectedId;
+  return `${needed.label} (needs ${provider.cli_name} ${needed.requires_cli}+)`;
+}
+
+function unavailableOf(provider) {
+  return Array.isArray(provider?.unavailable) ? provider.unavailable : [];
+}
+
+/** The one line under a model picker when this machine's CLI is too old for
+ *  some of the harness's models: the CLI, the version that brings all of
+ *  them, and which they are. Empty when it runs everything, or the bridge
+ *  predates saying so (#203). */
+export function modelUpdateNote(provider) {
+  const missing = unavailableOf(provider);
+  if (!missing.length) return "";
+  const version = missing.map((model) => model.requires_cli).reduce(newerVersion);
+  return `Update ${provider.cli_name} to ${version}+ for ${sentenceList(missing.map((model) => model.label))}.`;
+}
+
+export function modelNoteHtml(provider) {
+  const note = modelUpdateNote(provider);
+  return note ? `<div class="model-update-note">${esc(note)}</div>` : "";
+}
+
+function newerVersion(a, b) {
+  const parts = (version) => String(version).split(".").map((part) => parseInt(part, 10) || 0);
+  const [left, right] = [parts(a), parts(b)];
+  for (let at = 0; at < Math.max(left.length, right.length); at += 1) {
+    const difference = (left[at] || 0) - (right[at] || 0);
+    if (difference) return difference > 0 ? a : b;
+  }
+  return a;
+}
+
+function sentenceList(words) {
+  if (words.length < 2) return words.join("");
+  return `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`;
 }
 
 /** Whether the effort select applies to the chosen model. Unknown ids pass

@@ -62,7 +62,7 @@ impl AppState {
         let by_role = crate::models::AgentRole::ALL
             .into_iter()
             .map(|role| {
-                let filled = self.role_models.for_role(role, None).map(|entry| {
+                let filled = self.role_model_here(role, None).map(|entry| {
                     json!({
                         "provider": entry.provider.unwrap_or(self.default_harness),
                         "model": entry.model,

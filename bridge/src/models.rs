@@ -489,9 +489,21 @@ impl RoleModels {
         role: AgentRole,
         capability: Option<AgentCapability>,
     ) -> Option<&RoleModel> {
+        self.for_role_where(role, capability, |_| true)
+    }
+
+    /// The same, passing over every entry `usable` turns down: a model this
+    /// machine's CLI cannot run gives the role to the next one declared for it.
+    pub fn for_role_where(
+        &self,
+        role: AgentRole,
+        capability: Option<AgentCapability>,
+        usable: impl Fn(&RoleModel) -> bool,
+    ) -> Option<&RoleModel> {
         self.0.iter().find(|entry| {
             entry.roles.contains(&role)
                 && capability.is_none_or(|wanted| entry.capability == wanted)
+                && usable(entry)
         })
     }
 

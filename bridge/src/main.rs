@@ -173,6 +173,9 @@ async fn serve() {
     relay::install_crypto_provider();
     adopt_login_path();
     place_children();
+    // On the PATH just adopted, so the first catalog a client asks for is
+    // what this machine's CLIs run. In the background; nothing waits on it.
+    build_bridge::harness::installed::warm();
     // A power loss can remove the helper's transient service while leaving a
     // candidate that fails before full app construction. Relaunch recovery as
     // early as possible so that candidate cannot strand its prior binary.

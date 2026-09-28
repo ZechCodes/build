@@ -181,3 +181,71 @@ async fn a_greeted_session_hears_when_an_installed_cli_changes() {
     assert!(model_ids(provider(&after, "claude_adk")).contains(&"claude-sonnet-5-5"));
     assert_eq!(provider(&after, "claude_adk")["unavailable"], json!([]));
 }
+
+fn reviewers_sonnet_5_5_then_opus_5_5() -> crate::models::RoleModels {
+    use crate::models::{AgentCapability, AgentRole, RoleModel};
+    let reviewer = |model: &str| RoleModel {
+        provider: Some(crate::models::AgentProvider::ClaudeAdk),
+        model: model.into(),
+        roles: vec![AgentRole::Reviewer],
+        capability: AgentCapability::Generalist,
+    };
+    crate::models::RoleModels(vec![
+        reviewer("claude-sonnet-5-5"),
+        reviewer("claude-opus-5-5"),
+    ])
+}
+
+/// A declared role is a default, not a pick: a model the installed CLI cannot
+/// run gives the role to the user's next choice for it.
+#[test]
+fn a_role_passes_over_a_model_the_installed_cli_cannot_run() {
+    let (dir, repo) = init_repo();
+    let mut state = AppState::new(repo, dir.path().join("wt"), "main", true, "/tmp/m.sock")
+        .with_cli_readings(Readings::answering_inline(InstalledClis::leaked("2.1.280")));
+    state.role_models = reviewers_sonnet_5_5_then_opus_5_5();
+
+    let table = state.harness_table();
+
+    assert_eq!(table["roles_in_effect"]["reviewer"]["model"], "claude-opus-5-5", "{table}");
+    assert_eq!(
+        table["role_models"][0]["model"], "claude-sonnet-5-5",
+        "what the user declared is kept as they said it"
+    );
+}
+
+#[test]
+fn a_role_keeps_its_first_choice_where_the_cli_runs_it() {
+    let (dir, repo) = init_repo();
+    let mut state = AppState::new(repo, dir.path().join("wt"), "main", true, "/tmp/m.sock")
+        .with_cli_readings(Readings::answering_inline(InstalledClis::leaked("2.1.284")));
+    state.role_models = reviewers_sonnet_5_5_then_opus_5_5();
+
+    assert_eq!(
+        state.harness_table()["roles_in_effect"]["reviewer"]["model"],
+        "claude-sonnet-5-5"
+    );
+}
+
+/// The project agent is minted on the device's setting; a model there the CLI
+/// cannot run leaves the harness's own default to start it.
+#[test]
+fn a_project_agent_set_to_an_unrunnable_model_starts_on_the_harness_default() {
+    let (dir, repo) = init_repo();
+    let mut state = AppState::new(repo, dir.path().join("wt"), "main", true, "/tmp/m.sock")
+        .with_cli_readings(Readings::answering_inline(InstalledClis::leaked("2.1.280")));
+    state.project_agent = crate::models::ProjectAgentChoice {
+        provider: Some(crate::models::AgentProvider::ClaudeAdk),
+        model: Some("claude-sonnet-5-5".into()),
+        effort: Some("high".into()),
+    };
+
+    let choice = state.project_agent_choice();
+
+    assert_eq!(choice.provider, crate::models::AgentProvider::ClaudeAdk);
+    assert_eq!(choice.model, None);
+    assert_eq!(choice.effort.as_deref(), Some("high"));
+
+    state.project_agent.model = Some("claude-opus-5-5".into());
+    assert_eq!(state.project_agent_choice().model.as_deref(), Some("claude-opus-5-5"));
+}

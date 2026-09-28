@@ -945,7 +945,7 @@ impl AppState {
             )?),
             None => None,
         };
-        let Some(entry) = self.role_models.for_role(role, capability) else {
+        let Some(entry) = self.role_model_here(role, capability) else {
             // Asked for something this device has nobody for. Saying so beats
             // quietly starting a model the user did not choose for the job.
             if let Some(wanted) = capability {

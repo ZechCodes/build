@@ -12,7 +12,9 @@ use serde_json::json;
 use super::AppState;
 use crate::carrier::SessionSender;
 use crate::changes::MODELS_CHANGED_EVENT;
-use crate::harness::installed::Readings;
+use crate::harness::harness_for;
+use crate::harness::installed::{model_offer_from, Readings};
+use crate::models::{AgentProvider, AgentRole, ModelChoice, RoleModel};
 
 impl AppState {
     /// Serve catalogs, and announce their changes, from `readings` rather
@@ -50,5 +52,38 @@ impl AppState {
         if let Some(task) = self.models_subscriptions.remove(session_id) {
             task.abort();
         }
+    }
+
+    /// Whether this machine's CLI for `provider` runs `model`, as far as it
+    /// has said.
+    fn runs_here(&self, provider: AgentProvider, model: &str) -> bool {
+        model_offer_from(&self.cli_readings, provider)
+            .refusal(model, harness_for(provider).cli_name())
+            .is_none()
+    }
+
+    /// The model the user declared first for `role`, of those this machine
+    /// runs.
+    pub(in crate::app) fn role_model_here(
+        &self,
+        role: AgentRole,
+        capability: Option<crate::models::AgentCapability>,
+    ) -> Option<&RoleModel> {
+        self.role_models.for_role_where(role, capability, |entry| {
+            self.runs_here(entry.provider.unwrap_or(self.default_harness), &entry.model)
+        })
+    }
+
+    /// `choice`, less a model this machine's CLI cannot run: a default the
+    /// user set is started on the harness's own model rather than refused.
+    pub(in crate::app) fn runnable_default(&self, mut choice: ModelChoice) -> ModelChoice {
+        if choice
+            .model
+            .as_deref()
+            .is_some_and(|model| !self.runs_here(choice.provider, model))
+        {
+            choice.model = None;
+        }
+        choice
     }
 }

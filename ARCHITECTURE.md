@@ -116,11 +116,10 @@ verb is a thin read or write.
 
 **Frames.** A request is `{id, method, params}`; a reply is
 `{id, ok: true, result}` or `{id, ok: false, error, error_code, retryable, details}`.
-A push is a frame with a `type` that answers no pending request. Pushes can carry
-an `id`: the legacy `entity.changed` push is `{type: "entity.changed", id}`
-(`ChangeKey::payload` in `bridge/src/changes.rs`). So the SPA's
-`spa/src/core/sessionRpc.js` first matches `id` against its pending calls, and
-treats a frame with a `type` that matches none as a push. Contract fixtures for
+A push is a frame with a `type` that answers no pending request. The SPA's
+`spa/src/core/sessionRpc.js` first matches `id` against its pending calls
+(replies and admission receipts), and treats a frame with a `type` that
+matches none as a push. Contract fixtures for
 every verb live in `fixtures/api/v1/` and are checked by
 `bridge/tests/api_contract.rs` and `spa/test/apiContract.test.js`.
 
@@ -157,11 +156,12 @@ is deferred and runs with the lock released.
 **Push events.** `ChangeBus` in `bridge/src/changes.rs` collects changes.
 `ChangeBus::run` flushes the first change on an idle bus at once, then holds a
 250 ms window (`DEFAULT_COALESCE_WINDOW`) open before the next flush. Changes
-noted inside the window go out together when it closes. A
-session that greeted with `changes: "subscriptions"` gets `changes` frames only
-for what it subscribed to with `changes.subscribe`. The events the bridge
-announces are `ANNOUNCED_EVENTS` in the same file (`board.changed`,
-`entity.changed`, `changes`, `bridge.update_status`, `models.changed`). Terminal output
+noted inside the window go out together when it closes. Every session gets
+`changes` frames only for what it subscribed to with `changes.subscribe`. A
+greeting that omits `changes: "subscriptions"` is still accepted and gets the
+same subscriptions session: the legacy invalidation pushes went in 3.0.0. The
+events the bridge announces are `ANNOUNCED_EVENTS` in the same file
+(`changes`, `bridge.update_status`, `models.changed`). Terminal output
 (`term.output`, `term.reset`, `term.closed`) comes from `bridge/src/screen.rs`.
 Example pushes are in `fixtures/api/v1/events.json`.
 
@@ -210,7 +210,7 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `2.2.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.0.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
@@ -228,7 +228,7 @@ runtime that starts them.
   (#104). 1.30.0 adds `thread.attachmentChunks` (`offset`/`length` on
   `thread.attachment`) and `fs.mediaRawPages` (`range.raw` on `fs.read` for
   exact image, audio and video byte pages through 64 MiB). 2.0.0 is the task
-  rename (#190), the one break so far: every tracker and plan verb and feature
+  rename (#190), the first break: every tracker and plan verb and feature
   name moved to `tasks.*` or `task.*`, so a 1.x bridge and a 2.x SPA gate
   each other as out of date. The modules and fixtures keep their `v1` names.
   2.1.0 adds `push.registerKey` and `push.revokeKey` (sealed push content,
@@ -236,7 +236,17 @@ runtime that starts them.
   offer only what each harness's installed CLI runs, each provider carrying
   `cli_name`, `cli_version` and `unavailable` (the models that CLI is too old
   for, with `requires_cli`), and a `models.changed` push says to ask again
-  (#203; see Harnesses and the agents' slice).
+  (#203; see Harnesses and the agents' slice). 3.0.0 is the pre-release
+  cut (#207), the second break: it removes the verbs no client called (every
+  `plan.*` alias, the retired planning mutations on `task.*` and `run.*`,
+  and unused reads and writes such as `branch.get`, `git.branches`,
+  `tasks.link` and `worktree.create`), the legacy `board.changed` and
+  `entity.changed` pushes, and the old task scheduler. The historical plan
+  reads (`task.get`, `task.stages`, `task.doc`, `task.stage_doc`,
+  `task.stage_diff`) stay for stored plans, and so do the `run.*` verbs an
+  adopted worktree's review uses. A removed verb answers `unknown_method`.
+  The SPA's adapter claims `>=2.2.0 <4.0.0`: it calls nothing 2.2.0 lacks,
+  so the app can roll before the bridge.
 - `session.hello` is answered by `session_hello` in
   `bridge/src/app/runtime/terminals.rs`. The reply carries `api_version`,
   `capabilities`, `push_events`, `events` and the `changes` subscription settings.
@@ -870,17 +880,16 @@ refuses when that device cannot answer.
   client's `api_range`. `greetBridge()` then selects an adapter and arms the
   change subscriptions.
 - `selectAdapter()` in `spa/src/core/bridgeApi/index.js` checks the bridge's
-  `api_version` against `SPA_API_RANGE` (`>=1.2.0 <2.0.0`). A greeting with
+  `api_version` against `SPA_API_RANGE` (`>=2.2.0 <4.0.0`). A greeting with
   no version, or no greeting at all, reads as `PRE_ALPHA_API_VERSION`
   (`0.0.0`). For compatibility, that is matched at the lowest adapter's floor
   rather than rejected. Any other version outside the range returns
   `{unsupported: "bridge" | "app"}`, and `spa/src/views/versionGate.js` says
   which side needs updating.
-- `capabilitiesOf()` in `spa/src/core/bridgeApi/v1/index.js` turns the greeting
-  into feature flags. A greeting with a `capabilities` array (1.22.0 and later)
-  is taken as-is. For older bridges (`>=1.0.0 <1.22.0`), the frozen
-  `LEGACY_CAPABILITIES` table infers features from the minor version and
-  greeting flags. New features get a name, never a legacy row.
+- `capabilitiesOf()` in `spa/src/core/bridgeApi/v1/index.js` turns the greeting's
+  `capabilities` array into feature flags. Every bridge the adapter admits sends
+  one; the minor-version table that stood in for it went with 1.x. New features
+  get a name.
 - Surfaces read the flags with `bridgeCapabilities(deviceId)`
   (`spa/src/core/changeEvents.js`), which falls back to `NO_CAPABILITIES`.
 - A flag that changes what a view draws is written to the cache at the

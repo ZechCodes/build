@@ -294,6 +294,14 @@ tell (Part 2) without probing. A session that calls `changes.subscribe`
 while in legacy mode is switched to subscriptions on that call and its
 legacy subscription is dropped.
 
+**Amended in 3.0.0 (#207):** legacy mode is gone. `board.changed` and
+`entity.changed` are no longer sent or announced, and `events` lists
+`changes`, `bridge.update_status` and `models.changed`. A greeting that
+omits `changes` is still accepted, never refused, and gets a subscriptions
+session: it hears nothing until it calls `changes.subscribe`. The greeting
+still reports `changes.subscriptions: true`, so a 2.x tab that greets
+legacy-first re-greets and subscribes as before.
+
 #### Step 1.6: SPA
 
 Rewritten after the fact (the cache-first overhaul). What this step
@@ -350,9 +358,10 @@ sequence; a row a press moved is written into the row's record and the
 board's list, and the `state` push confirms it. Views never hold a second
 store.
 
-Legacy `board.changed` / `entity.changed` are still sent by the bridge and
-no longer read by this client: a hint is news a view would have to go to the
-wire to act on. Removing them from the bridge is its own commit, later.
+Legacy `board.changed` / `entity.changed` were never read by this client: a
+hint is news a view would have to go to the wire to act on. 3.0.0 removed
+them from the bridge (#207), and the SPA now asks for subscriptions in its
+first greeting.
 
 #### Step 1.7: items carry bodies (stage 2)
 
@@ -527,8 +536,8 @@ has been seen in `bridge.stats` for a month.
   Part 1 is `1.1.0`.
 - **Major**: a method or field removed or renamed, a param made required, a
   field's meaning or type changed, an enum documented as closed extended.
-  The `plan.*` aliases over `task.*` (`app/rpc.rs`, `alias_param`) are the
-  kind of thing a major retires.
+  The `plan.*` aliases over `task.*` were the kind of thing a major retires;
+  3.0.0 retired them.
 - **Release cadence**: one minor number covers all additive wire changes in
   a release. Do not advance the minor separately for each new verb, field, or
   capability. A breaking change advances the major.
@@ -542,6 +551,29 @@ has been seen in `bridge.stats` for a month.
 - 2.1.0 adds `push.registerKey` and `push.revokeKey`: a browser registers its
   notification key so the bridge can seal push content to it (#200,
   `Push Content Security Checklist.md`).
+- 3.0.0 is the pre-release cut (#207): every verb no client called is
+  removed, so a removed verb answers `unknown_method`. That covers every
+  `plan.*` alias, and the retired planning mutations on `task.*` (create,
+  list, diff, approve, send_notes, stage_approve, stage_revise, comment_add,
+  comment_delete, archive, delete, implement_stage, implement_all,
+  set_auto_advance, request_changes, git_action). On `run.*` it covers
+  create, get, stage_dispatch, stage_send_notes, set_auto_advance, delete,
+  release, finish and stage_diff. It also removes `agent.list`,
+  `archive.list`, `branch.get`, `capture.list`, `changes.list`,
+  `git.branch_delete`, `git.branches`, `git.checkout`, `git.unstage`,
+  `project.add`, `project.clone`, `project.diff`, `tasks.dismiss`,
+  `tasks.for_agent`, `tasks.link`, `tasks.track`, `tasks.untrack`,
+  `worktree.create` and `worktree.finish`, plus the legacy push mode (step
+  1.5). Kept: the historical plan reads (`task.get`, `task.stages`,
+  `task.doc`, `task.stage_doc`, `task.stage_diff`) for stored plans, and the
+  `run.*` verbs an adopted worktree's review uses (`run.adopt`, `run.diff`,
+  `run.request_changes`, `run.message`, `run.git_action`, `run.abandon`). No
+  stored data changes.
+  As with 2.0.0, before release the bridge serves no 2.x client. The SPA's
+  adapter instead claims `>=2.2.0 <4.0.0`, because it calls nothing 2.2.0
+  lacks. That lets the app deploy before the bridge restarts. A 2.x tab
+  meeting a 3.x bridge shows the "app is behind" gate, which offers a reload
+  onto the served bundle.
 - `PROTOCOL_VERSION` (envelope), the MCP protocol date, and the Cargo
   version stay separate. They version different things.
 

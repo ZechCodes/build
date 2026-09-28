@@ -5,7 +5,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
-let bridgeAdapter, bridgeCapabilities, changeEventsArmed, greetBridge, resetChangeEvents, watchChanges;
+let bridgeAdapter, bridgeCapabilities, changeEventsArmed, greetBridge, resetChangeEvents, subscriptionsActive, watchChanges;
 
 const NONE = {
   changes: { subscriptions: false, kinds: [] },
@@ -30,14 +30,14 @@ const subscribingGreeting = () => ({
   api_version: "2.0.0",
   capabilities: SUBSCRIBING_CAPABILITIES,
   push_events: true,
-  events: ["board.changed", "entity.changed", "changes"],
+  events: ["changes"],
   changes: { subscriptions: true, kinds: ["state", "thread", "git", "files"], batch_ms: { min: 1000, max: 600000 } },
 });
 
 beforeEach(async () => {
   vi.resetModules();
   vi.useFakeTimers();
-  ({ bridgeAdapter, bridgeCapabilities, changeEventsArmed, greetBridge, resetChangeEvents, watchChanges } =
+  ({ bridgeAdapter, bridgeCapabilities, changeEventsArmed, greetBridge, resetChangeEvents, subscriptionsActive, watchChanges } =
     await import("../src/core/changeEvents.js"));
 });
 
@@ -140,9 +140,12 @@ describe("the adapter a greeting selects", () => {
     expect(bridgeAdapter()).toBe(null);
   });
 
-  it("asks for subscriptions off the adapter's capabilities, not the raw greeting", async () => {
+  it("serves subscriptions off the adapter's capabilities, not the raw greeting", async () => {
     const call = vi.fn(async () => subscribingGreeting());
     await greetBridge(call);
-    expect(call.mock.calls.map(([, params]) => params.changes)).toEqual([undefined, "subscriptions"]);
+    expect(call.mock.calls.map(([, params]) => params.changes)).toEqual(["subscriptions"]);
+    expect(subscriptionsActive()).toBe(true);
+    await greetBridge(async () => ({ ...subscribingGreeting(), capabilities: [] }));
+    expect(subscriptionsActive()).toBe(false);
   });
 });

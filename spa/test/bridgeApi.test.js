@@ -13,7 +13,7 @@ const greetingV1 = (over = {}) => ({
   api_version: "2.0.0",
   capabilities: ALL_FEATURES,
   push_events: true,
-  events: ["board.changed", "entity.changed", "changes"],
+  events: ["changes"],
   changes: {
     subscriptions: true,
     mode: "subscriptions",
@@ -271,17 +271,17 @@ describe("the adapter", () => {
     expect(call).toHaveBeenCalledWith("board.list", {});
   });
 
-  it("names the events the greeting names, and the legacy pair when it names none", () => {
-    expect(v1.create(vi.fn(), greetingV1()).events).toEqual([
-      "board.changed",
-      "entity.changed",
-      "changes",
-    ]);
-    expect(v1.create(vi.fn(), { api_version: "1.0.0", push_events: true }).events).toEqual([
-      "board.changed",
-      "entity.changed",
-    ]);
-    expect(v1.create(vi.fn(), { api_version: "1.0.0" }).events).toEqual([]);
+  it("names the events the greeting names, and none when it names none", () => {
+    expect(v1.create(vi.fn(), greetingV1()).events).toEqual(["changes"]);
+    // The legacy pair a push-only bridge was assumed to send went with 3.0.0.
+    expect(v1.create(vi.fn(), { api_version: "2.0.0", push_events: true }).events).toEqual([]);
+    expect(v1.create(vi.fn(), { api_version: "2.0.0" }).events).toEqual([]);
+  });
+
+  it("no longer lists the legacy board.changed / entity.changed pushes", () => {
+    expect(v1.EVENT_TYPES).not.toContain("board.changed");
+    expect(v1.EVENT_TYPES).not.toContain("entity.changed");
+    expect(v1.EVENT_TYPES).toContain("changes");
   });
 
   it("turns a coded rejection into an ApiError carrying code, retryable and details", async () => {
@@ -356,11 +356,8 @@ describe("the adapter", () => {
   it("parses the events it knows and no-ops on the ones it does not", () => {
     const changes = { type: "changes", subscription_id: "s-focus", items: [{ entity_id: "run-7" }] };
     expect(v1.parseEvent(changes)).toEqual(changes);
-    expect(v1.parseEvent({ type: "board.changed" })).toEqual({ type: "board.changed" });
-    expect(v1.parseEvent({ type: "entity.changed", id: "run-7" })).toEqual({
-      type: "entity.changed",
-      id: "run-7",
-    });
+    expect(v1.parseEvent({ type: "board.changed" })).toBe(null);
+    expect(v1.parseEvent({ type: "entity.changed", id: "run-7" })).toBe(null);
     expect(v1.parseEvent({ type: "invented.later", payload: 1 })).toBe(null);
     expect(v1.parseEvent(null)).toBe(null);
     expect(v1.parseEvent({ id: "r1", ok: true })).toBe(null);

@@ -44,8 +44,6 @@ export const ERROR_CODES = Object.freeze([
  *  a throw — a later bridge may add one. `fixtures/api/v1/events.json` carries
  *  one example of each, and both ends are held to it. */
 export const EVENT_TYPES = Object.freeze([
-  "board.changed",
-  "entity.changed",
   "changes",
   "term.output",
   "term.reset",
@@ -54,9 +52,6 @@ export const EVENT_TYPES = Object.freeze([
   "bridge.update_status",
   "models.changed",
 ]);
-
-/** What a bridge that pushes but names no event list sends: the legacy pair. */
-const LEGACY_EVENTS = Object.freeze(["board.changed", "entity.changed"]);
 
 /** A refusal, whichever shape it arrived in. */
 export class ApiError extends Error {
@@ -160,9 +155,9 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
   };
 }
 
+/** The pushes the greeting names. A greeting that names none claims none. */
 function eventsOf(greeting) {
-  if (Array.isArray(greeting?.events)) return greeting.events.filter((name) => typeof name === "string");
-  return greeting?.push_events === true ? [...LEGACY_EVENTS] : [];
+  return Array.isArray(greeting?.events) ? greeting.events.filter((name) => typeof name === "string") : [];
 }
 
 /**

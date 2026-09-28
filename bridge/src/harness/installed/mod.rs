@@ -110,9 +110,7 @@ impl Readings {
             Arc::new(Instant::now),
             READING_TTL,
         );
-        Arc::get_mut(&mut readings)
-            .expect("just made")
-            .stand_in = Some(probe);
+        Arc::get_mut(&mut readings).expect("just made").stand_in = Some(probe);
         readings
     }
 
@@ -264,7 +262,11 @@ pub fn refuse_unrunnable(choice: &ModelChoice) -> Result<(), HarnessError> {
     }
 }
 
-fn refusal(harness: &dyn Harness, choice: &ModelChoice, reading: Option<&CliReading>) -> Option<String> {
+fn refusal(
+    harness: &dyn Harness,
+    choice: &ModelChoice,
+    reading: Option<&CliReading>,
+) -> Option<String> {
     let model = choice.model.as_deref()?;
     harness.offer(reading).refusal(model, harness.cli_name())
 }

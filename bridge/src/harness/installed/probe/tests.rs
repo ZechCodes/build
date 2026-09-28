@@ -18,7 +18,10 @@ fn version(raw: &str) -> Version {
 
 #[test]
 fn versions_read_out_of_every_cli_s_own_words() {
-    assert_eq!(version_in("2.1.280 (Claude Code)"), Some(version("2.1.280")));
+    assert_eq!(
+        version_in("2.1.280 (Claude Code)"),
+        Some(version("2.1.280"))
+    );
     assert_eq!(version_in("codex-cli 0.155.1\n"), Some(version("0.155.1")));
     assert_eq!(
         version_in("build_bridge/0.155.1 (Linux Unknown; x86_64) unknown"),
@@ -26,7 +29,10 @@ fn versions_read_out_of_every_cli_s_own_words() {
     );
     assert_eq!(version_in("0.86.1"), Some(version("0.86.1")));
     assert_eq!(version_in("v1.2.3"), Some(version("1.2.3")));
-    assert_eq!(version_in("2.2.0-beta.1 (Claude Code)"), Some(version("2.2.0-beta.1")));
+    assert_eq!(
+        version_in("2.2.0-beta.1 (Claude Code)"),
+        Some(version("2.2.0-beta.1"))
+    );
     assert_eq!(version_in("Claude Code, some build"), None);
     assert_eq!(version_in(""), None);
 }
@@ -209,11 +215,20 @@ fn a_missing_codex_reads_as_knowing_nothing() {
 fn a_cli_that_says_too_much_is_cut_off() {
     let dir = tempfile::tempdir().unwrap();
     let endless_lines = fake_cli(dir.path(), "lines", "yes '2.1.280 (Claude Code)'");
-    let endless_line = fake_cli(dir.path(), "line", "echo 2.1.280; head -c 2000000 /dev/zero | tr '\\0' a");
+    let endless_line = fake_cli(
+        dir.path(),
+        "line",
+        "echo 2.1.280; head -c 2000000 /dev/zero | tr '\\0' a",
+    );
 
     for cli in [&endless_lines, &endless_line] {
         let started = Instant::now();
-        assert_eq!(VERSION_FLAG.read(cli.to_str().unwrap()), CliReading::default(), "{}", cli.display());
+        assert_eq!(
+            VERSION_FLAG.read(cli.to_str().unwrap()),
+            CliReading::default(),
+            "{}",
+            cli.display()
+        );
         assert!(
             started.elapsed() < PROBE_DEADLINE,
             "cut off by what it said, not by the clock"

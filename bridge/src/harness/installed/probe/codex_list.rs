@@ -87,7 +87,12 @@ impl AppServer {
             }))?;
             let answered: ModelListPage = serde_json::from_value(self.answer(id)?)
                 .map_err(|why| std::io::Error::other(format!("unreadable model/list: {why}")))?;
-            listed.extend(answered.data.into_iter().filter_map(ListedModel::from_listed));
+            listed.extend(
+                answered
+                    .data
+                    .into_iter()
+                    .filter_map(ListedModel::from_listed),
+            );
             listed.truncate(MAX_MODELS);
             match answered.next_cursor {
                 Some(next) => cursor = Some(next),
@@ -183,5 +188,8 @@ impl ListedModel {
 }
 
 fn clipped(text: &str, most: usize) -> String {
-    text.chars().filter(|c| !c.is_control()).take(most).collect()
+    text.chars()
+        .filter(|c| !c.is_control())
+        .take(most)
+        .collect()
 }

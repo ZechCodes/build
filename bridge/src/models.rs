@@ -13,8 +13,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::harness::installed::{OfferedModel, UnavailableModel};
 use crate::harness::harness_for;
+use crate::harness::installed::{OfferedModel, UnavailableModel};
 
 /// The local coding-agent CLI used for an entity's sessions. Persisted on plans
 /// and runs so changing a later default never moves existing work to a different
@@ -741,7 +741,10 @@ mod tests {
         let tui = catalog_of(AgentProvider::Codex);
         let app_server = catalog_of(AgentProvider::CodexAppServer);
         assert_eq!(
-            tui.models.iter().map(|model| model.id.as_str()).collect::<Vec<_>>(),
+            tui.models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
             app_server
                 .models
                 .iter()
@@ -872,7 +875,11 @@ mod tests {
     fn gpt_6_sol_and_luna_follow_astra_on_both_codex_carriers() {
         for provider in [AgentProvider::Codex, AgentProvider::CodexAppServer] {
             let catalog = catalog_of(provider);
-            let ids: Vec<_> = catalog.models.iter().map(|model| model.id.as_str()).collect();
+            let ids: Vec<_> = catalog
+                .models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect();
             assert_eq!(
                 &ids[..4],
                 &["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol"]

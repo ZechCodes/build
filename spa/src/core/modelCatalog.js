@@ -5,8 +5,9 @@
 // one account can be running different releases and offer different agents — so
 // every device holds its own, and a surface that is about one machine asks that
 // machine's context rather than an ambient cache. It is read once per device
-// and kept: the answer only moves when the bridge's settings do, and the
-// Settings page says so by refreshing.
+// and kept: the answer moves when the bridge's settings do, which the Settings
+// page says by refreshing, and when one of the machine's agent CLIs changes,
+// which its bridge says with `models.changed` (#203).
 
 import { normalizeModelCatalog } from "./modelPicker.js";
 import { deviceModelsAddress, watchSettingsRecord } from "./settingsRecords.js";

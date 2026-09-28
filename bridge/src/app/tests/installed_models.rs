@@ -165,7 +165,11 @@ async fn a_greeted_session_hears_when_an_installed_cli_changes() {
     assert_eq!(first_news, Some(json!({ "type": "models.changed" })));
 
     // The same answer asked again is no news.
-    readings.observe_version("claude", &crate::harness::installed::VERSION_FLAG, &semver::Version::parse("2.1.280").unwrap());
+    readings.observe_version(
+        "claude",
+        &crate::harness::installed::VERSION_FLAG,
+        &semver::Version::parse("2.1.280").unwrap(),
+    );
     assert_eq!(
         next_models_changed(&mut rx, &key, Duration::from_millis(300)).await,
         None
@@ -173,7 +177,11 @@ async fn a_greeted_session_hears_when_an_installed_cli_changes() {
 
     // Claude Code is updated, and a session says so.
     *clis.claude.lock().unwrap() = "2.1.284";
-    readings.observe_version("claude", &crate::harness::installed::VERSION_FLAG, &semver::Version::parse("2.1.284").unwrap());
+    readings.observe_version(
+        "claude",
+        &crate::harness::installed::VERSION_FLAG,
+        &semver::Version::parse("2.1.284").unwrap(),
+    );
     assert!(next_models_changed(&mut rx, &key, Duration::from_secs(5))
         .await
         .is_some());
@@ -207,7 +215,10 @@ fn a_role_passes_over_a_model_the_installed_cli_cannot_run() {
 
     let table = state.harness_table();
 
-    assert_eq!(table["roles_in_effect"]["reviewer"]["model"], "claude-opus-5-5", "{table}");
+    assert_eq!(
+        table["roles_in_effect"]["reviewer"]["model"], "claude-opus-5-5",
+        "{table}"
+    );
     assert_eq!(
         table["role_models"][0]["model"], "claude-sonnet-5-5",
         "what the user declared is kept as they said it"
@@ -247,5 +258,8 @@ fn a_project_agent_set_to_an_unrunnable_model_starts_on_the_harness_default() {
     assert_eq!(choice.effort.as_deref(), Some("high"));
 
     state.project_agent.model = Some("claude-opus-5-5".into());
-    assert_eq!(state.project_agent_choice().model.as_deref(), Some("claude-opus-5-5"));
+    assert_eq!(
+        state.project_agent_choice().model.as_deref(),
+        Some("claude-opus-5-5")
+    );
 }

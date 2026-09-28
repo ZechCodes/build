@@ -79,7 +79,9 @@ fn a_first_ask_reads_the_cli() {
     let cli = ScriptedCli::leaked("2.1.280");
     let readings = inline(HandClock::leaked());
 
-    let reading = readings.reading("claude", cli).expect("an inline ask has landed");
+    let reading = readings
+        .reading("claude", cli)
+        .expect("an inline ask has landed");
 
     assert_eq!(reading.version, Some(version("2.1.280")));
     assert_eq!(cli.asked(), 1);
@@ -159,7 +161,10 @@ fn one_ask_at_a_time_per_cli() {
         READING_TTL,
     );
 
-    assert!(readings.reading("claude", cli).is_none(), "nothing has landed");
+    assert!(
+        readings.reading("claude", cli).is_none(),
+        "nothing has landed"
+    );
     readings.reading("claude", cli);
     readings.observe_version("claude", cli, &version("2.1.284"));
 
@@ -237,9 +242,17 @@ fn what_the_installed_cli_runs_is_started() {
     let harness = harness_for(AgentProvider::ClaudeAdk);
     let reading = claude_at("2.1.280");
 
-    for model in [Some("claude-opus-5-5"), Some("claude-haiku-4-5-20251001"), None] {
+    for model in [
+        Some("claude-opus-5-5"),
+        Some("claude-haiku-4-5-20251001"),
+        None,
+    ] {
         assert_eq!(
-            refusal(harness, &choice(AgentProvider::ClaudeAdk, model), Some(&reading)),
+            refusal(
+                harness,
+                &choice(AgentProvider::ClaudeAdk, model),
+                Some(&reading)
+            ),
             None,
             "{model:?}"
         );
@@ -286,5 +299,7 @@ fn a_model_codex_does_not_list_is_refused() {
 /// makes is let through.
 #[test]
 fn the_unit_test_readings_refuse_nothing() {
-    assert!(refuse_unrunnable(&choice(AgentProvider::ClaudeAdk, Some("claude-sonnet-5-5"))).is_ok());
+    assert!(
+        refuse_unrunnable(&choice(AgentProvider::ClaudeAdk, Some("claude-sonnet-5-5"))).is_ok()
+    );
 }

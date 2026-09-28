@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::harness::codex::{self, CodexHarness, CodexMcpConfig, EFFORT_LEVELS};
 use crate::harness::{
-    installed, AgentSession, Harness, HarnessContext, HarnessError, OpenedSession, SessionOpenRequest,
-    SessionOutput, INHERITED_AGENT_MARKERS,
+    installed, AgentSession, Harness, HarnessContext, HarnessError, OpenedSession,
+    SessionOpenRequest, SessionOutput, INHERITED_AGENT_MARKERS,
 };
 use crate::models::{AgentProvider, ModelChoice, ModelOption};
 use crate::orchestrator::SpawnOptions;

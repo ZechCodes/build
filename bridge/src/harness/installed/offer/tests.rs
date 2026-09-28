@@ -37,7 +37,10 @@ fn ids(offer: &ModelOffer) -> Vec<&str> {
 fn a_cli_older_than_a_model_s_minimum_is_not_offered_it() {
     let offer = ModelOffer::by_version(&catalog(), Some(&at("2.1.280")));
 
-    assert_eq!(ids(&offer), ["claude-opus-5-5", "claude-opus-5", "claude-haiku-4-5"]);
+    assert_eq!(
+        ids(&offer),
+        ["claude-opus-5-5", "claude-opus-5", "claude-haiku-4-5"]
+    );
     assert_eq!(
         offer.unavailable,
         [UnavailableModel {
@@ -102,7 +105,9 @@ fn a_too_new_model_is_refused_with_why_and_what_to_do() {
 fn a_dated_id_is_its_catalog_model() {
     let offer = ModelOffer::by_version(&catalog(), Some(&at("2.1.280")));
 
-    assert!(offer.refusal("claude-sonnet-5-5-20260901", "Claude Code").is_some());
+    assert!(offer
+        .refusal("claude-sonnet-5-5-20260901", "Claude Code")
+        .is_some());
     assert_eq!(
         offer.refusal("claude-sonnet-5-5-beta", "Claude Code"),
         None,

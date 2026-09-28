@@ -108,6 +108,21 @@ describe("a flat menu's rows", () => {
   });
 });
 
+describe("a menu's note", () => {
+  it("is escaped text under the rows, each with its own id", () => {
+    document.body.innerHTML = menuButtonMarkup("Model", [SHELLS], { note: "<b>old</b>" })
+      + menuButtonMarkup("Model", [SHELLS], { note: "again" });
+    const [first, second] = [...document.querySelectorAll(".menu-note")];
+    expect(first.innerHTML).toBe("&lt;b&gt;old&lt;/b&gt;");
+    expect(first.id).not.toBe(second.id);
+    expect(first.closest(".splitmenu").getAttribute("aria-describedby")).toBe(first.id);
+    document.body.innerHTML = menuButtonMarkup("Model", [SHELLS]);
+    expect(document.querySelector(".menu-note")).toBeNull();
+    expect(document.querySelector(".splitmenu").hasAttribute("aria-describedby")).toBe(false);
+    document.body.innerHTML = "";
+  });
+});
+
 describe("driving a split menu from the keyboard", () => {
   let onChoose;
   let container;

@@ -12,6 +12,7 @@ export const SPLIT_BUTTON_SELECTOR = ".splitbtn";
 const CARET_SELECTOR = ".caret";
 const SPLIT_MENU_SELECTOR = ".splitmenu";
 const MENU_ITEM_SELECTOR = ".mi";
+const MENU_NOTE_SELECTOR = ".menu-note";
 
 /** The app's button vocabulary a split button can be painted in: the accent
  *  primary (the default — a surface's decisive verb) or the mini secondary the
@@ -61,28 +62,40 @@ function menuGroupsHtml(groups) {
     .join("");
 }
 
-const menuHtml = (rowsHtml, name) =>
-  `<div class="splitmenu" hidden role="menu"${name ? ` aria-label="${esc(name)}"` : ""}>${rowsHtml}</div>`;
+/** A line of text at the menu's foot that is not a choice: no action, out of
+ *  the keyboard's walk (which moves between `.mi` rows only), and read to
+ *  assistive tech as the menu's description rather than as an item. Each
+ *  gets its own id, since the menu names it by one. */
+let menuNoteCount = 0;
+const menuNoteHtml = (note, id) =>
+  note ? `<div class="menu-note model-update-note" id="${id}" role="none">${esc(note)}</div>` : "";
+
+const menuHtml = (rowsHtml, name, note = "") => {
+  const noteId = note ? `menu-note-${(menuNoteCount += 1)}` : "";
+  const described = noteId ? ` aria-describedby="${noteId}"` : "";
+  return `<div class="splitmenu" hidden role="menu"${name ? ` aria-label="${esc(name)}"` : ""}${described}>${rowsHtml}${menuNoteHtml(note, noteId)}</div>`;
+};
 
 /** The opener's word to assistive tech: it holds a menu, shut until pressed.
  *  `mountSplitMenu` keeps the second half true. */
 const POPUP_ATTRIBUTES = ' aria-haspopup="menu" aria-expanded="false"';
 
-function menuButtonHtml(label, rowsHtml, { title = "", icon = false, arrow = true } = {}) {
+function menuButtonHtml(label, rowsHtml, { title = "", icon = false, arrow = true, note = "" } = {}) {
   const titled = title ? ` title="${esc(title)}" aria-label="${esc(title)}"` : "";
   const opener = icon
     ? `<button type="button" class="iconbtn caret"${titled}${POPUP_ATTRIBUTES}>${esc(label)}</button>`
     : `<button type="button" class="btn mini caret"${titled}${POPUP_ATTRIBUTES}>${esc(label)}${arrow ? ' <span class="disclosure-caret" aria-hidden="true">▾</span>' : ""}</button>`;
   return `<div class="splitbtn${icon ? " splitbtn-icon" : ""}">
     ${opener}
-    ${menuHtml(rowsHtml, title)}
+    ${menuHtml(rowsHtml, title, note)}
   </div>`;
 }
 
 /** Pure markup for the menu half ALONE: one button that opens it, and the same
  *  rows a split button's caret drops. For a menu that is a selection rather
  *  than a verb — there is no default action to press, so there is no primary
- *  button to press it with. Wire it with `mountSplitMenu`. */
+ *  button to press it with. Wire it with `mountSplitMenu`. `shape.note` puts
+ *  a line of text under the rows (`menuNoteHtml`). */
 export function menuButtonMarkup(label, options, shape = {}) {
   return menuButtonHtml(label, menuItemsHtml(options), shape);
 }
@@ -309,10 +322,12 @@ function sightTopOf(menu, row) {
  *  take focus out of sight, where Enter chooses what the reader cannot see.
  *  Measured in layout units: the reveal animates the menu's height, so a
  *  scroll made while it plays can land wrong, and `focusRow` measures again
- *  once motion has settled. */
+ *  once motion has settled. The menu's note is pinned over its foot
+ *  (`menuNoteHtml`), so what is in sight stops at the note. */
 function scrollRowIntoMenu(menu, row) {
   const above = sightTopOf(menu, row) - menu.scrollTop;
-  const below = rowTopWithin(menu, row) + row.offsetHeight - menu.scrollTop - menu.clientHeight;
+  const sightHeight = menu.clientHeight - (menu.querySelector(MENU_NOTE_SELECTOR)?.offsetHeight || 0);
+  const below = rowTopWithin(menu, row) + row.offsetHeight - menu.scrollTop - sightHeight;
   if (above < 0) menu.scrollTop += above;
   else if (below > 0) menu.scrollTop += below;
 }

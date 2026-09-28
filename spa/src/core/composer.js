@@ -34,6 +34,7 @@ import {
   modelMenuLabel,
   modelMenuSelection,
   modelMenuTitle,
+  modelMenuNote,
   modelSelectorOptions,
   reasoningSelectorLabel,
   reasoningSelectorOptions,
@@ -343,7 +344,7 @@ export function mountComposerModelMenu(root, { ids, onChoose, cacheKey = null })
     modelSlot.innerHTML = menuButtonMarkup(
       modelMenuLabel(catalog, provider, { ...choice, effort: "" }, activeModel),
       modelSelectorOptions(catalog, provider, choice),
-      { title: modelMenuTitle(catalog, provider, choice, activeModel), arrow: false },
+      { title: modelMenuTitle(catalog, provider, choice, activeModel), arrow: false, note: modelMenuNote(catalog, provider) },
     );
     ({ closeMenu: closeModelMenu, openMenu: openModelMenu } = mountSplitMenu(modelSlot, {
       onChoose: choose,

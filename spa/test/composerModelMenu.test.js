@@ -255,3 +255,92 @@ describe("the model the agent is running on", () => {
     expect(button().textContent).toContain("Claude Haiku 4.5");
   });
 });
+
+describe("the update note (#205)", () => {
+  // An old CLI: the bridge hides the models it cannot run and says which.
+  const OLD_CLI_CATALOG = {
+    ...CATALOG,
+    providers: [
+      {
+        ...CATALOG.providers[0],
+        cli_name: "Claude Code",
+        cli_version: "2.1.280",
+        unavailable: [{ id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", requires_cli: "2.1.284" }],
+      },
+      CATALOG.providers[1],
+    ],
+  };
+  const NOTE = "Update Claude Code to 2.1.284+ for Claude Sonnet 5.5.";
+  const mountOld = (choice = { provider: "claude_adk", model: "claude-opus-5", effort: "high" }, options = {}) => {
+    const mounted = mount(choice, options);
+    mounted.control.set(OLD_CLI_CATALOG, choice.provider, choice, options.activeModel || "", options.activeEffort || "");
+    return mounted;
+  };
+  const note = () => menu().querySelector(".menu-note");
+
+  it("sits at the foot of the model list, muted, when the CLI is too old for some models", () => {
+    mountOld();
+    button().click();
+    expect(note().textContent).toBe(NOTE);
+    expect(note().classList.contains("model-update-note")).toBe(true);
+    expect(menu().lastElementChild).toBe(note());
+    expect(items()).toEqual(["model:claude-opus-5", "model:claude-haiku-4-5"]);
+  });
+
+  it("shows on an existing agent's menu too", () => {
+    mountOld({ provider: "claude_adk", model: "", effort: "" }, { activeModel: "claude-opus-5", activeEffort: "high" });
+    expect(note().textContent).toBe(NOTE);
+  });
+
+  it("is absent when the CLI runs every model, and from the reasoning menu", () => {
+    mount({ provider: "claude_adk", model: "claude-opus-5", effort: "high" });
+    expect(note()).toBeNull();
+    mountOld();
+    expect(reasoningMenu().querySelector(".menu-note")).toBeNull();
+  });
+
+  it("is text to a screen reader, never an option", () => {
+    mountOld();
+    expect(note().getAttribute("role")).toBe("none");
+    expect(note().hasAttribute("tabindex")).toBe(false);
+    expect(note().hasAttribute("data-action")).toBe(false);
+    expect(menu().getAttribute("aria-describedby")).toBe(note().id);
+    expect(note().id).not.toBe("");
+  });
+
+  it("does nothing when pressed and keeps the menu open", () => {
+    const { onChoose } = mountOld();
+    button().click();
+    note().click();
+    note().dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    expect(onChoose).not.toHaveBeenCalled();
+    expect(menu().hidden).toBe(false);
+  });
+
+  it("never covers the row the keyboard lands on", () => {
+    mountOld();
+    const define = (element, values) => Object.entries(values).forEach(([key, value]) =>
+      Object.defineProperty(element, key, { configurable: true, get: () => value }));
+    [...menu().querySelectorAll(".mi")].forEach((row, index) =>
+      define(row, { offsetTop: index * 40, offsetHeight: 40, offsetParent: menu() }));
+    define(menu(), { clientHeight: 60 });
+    define(note(), { offsetHeight: 30 });
+    button().focus();
+    button().dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
+    // The last row ends at 80; above a 30px note in a 60px menu, that is a
+    // scroll of 50, not the 20 that would leave it under the note.
+    expect(menu().scrollTop).toBe(50);
+  });
+
+  it("is skipped by the keyboard", () => {
+    const { onChoose } = mountOld();
+    button().focus();
+    button().dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
+    expect(document.activeElement.dataset.action).toBe("model:claude-haiku-4-5");
+    menu().dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(document.activeElement.dataset.action).toBe("model:claude-opus-5");
+    menu().dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true }));
+    menu().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(onChoose).toHaveBeenCalledWith(expect.objectContaining({ model: "claude-haiku-4-5" }));
+  });
+});

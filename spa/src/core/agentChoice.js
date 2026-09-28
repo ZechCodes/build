@@ -17,6 +17,7 @@ import {
   matchCatalogModel,
   modelInCatalog,
   modelNoteHtml,
+  modelUpdateNote,
   modelOptionsHtml,
   modelParams,
   providerOptionsHtml,
@@ -142,6 +143,13 @@ export function modelMenuOptions(catalog, providerId, choice) {
     menuOption("effort", "", "Default effort", "", !choice.effort),
     ...levels.map((level) => menuOption("effort", level, level, "", level === choice.effort)),
   ];
+}
+
+/** The line under the menu's models when this machine's CLI is too old for
+ *  some of them (#203): the menu lists only what it can run, so this is where
+ *  the rest are named. */
+export function modelMenuNote(catalog, providerId) {
+  return modelUpdateNote(catalogForProvider(catalog || {}, providerId));
 }
 
 /** The model and reasoning controls are separate in the composer so both

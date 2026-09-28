@@ -3,8 +3,8 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 let createCommentLayer;
-let readCached;
-let writeCached;
+let readUiRecord;
+let writeUiRecord;
 let uiAddress;
 const address = { deviceId: "dev-1", entityId: "run-1", kind: "ui-draft", sub: "changes:comments" };
 const host = () => document.querySelector("#changes");
@@ -21,7 +21,7 @@ beforeEach(async () => {
   globalThis.IDBKeyRange = IDBKeyRange;
   document.body.innerHTML = '<div id="changes"><div class="file" data-key="M:src/a.js"><button class="fcmt">Comment</button></div></div>';
   ({ createCommentLayer } = await import("../src/core/changesComments.js"));
-  ({ readCached, writeCached } = await import("../src/core/localCache.js"));
+  ({ readUiRecord, writeUiRecord } = await import("../src/core/localUiStore.js"));
   ({ uiAddress } = await import("../src/core/localUiState.js"));
 });
 
@@ -32,10 +32,10 @@ it("keeps anchored comments across remount, then clears them after sending", asy
   const input = document.querySelector(".cp-input");
   input.value = "Please check this line";
   document.querySelector(".cp-save").click();
-  await vi.waitFor(async () => expect((await readCached(address))?.value.comments).toHaveLength(1));
+  await vi.waitFor(async () => expect((await readUiRecord(address))?.value.comments).toHaveLength(1));
   first.dispose();
 
-  await writeCached(uiAddress({ deviceId: "dev-1", entityId: "run-2", view: "changes", kind: "draft", sub: "comments" }), { comments: [] });
+  await writeUiRecord(uiAddress({ deviceId: "dev-1", entityId: "run-2", view: "changes", kind: "draft", sub: "comments" }), { comments: [] });
   const otherChanged = vi.fn();
   const other = layer(vi.fn(async () => {}), "run-2", otherChanged);
   other.attach(host());
@@ -50,6 +50,6 @@ it("keeps anchored comments across remount, then clears them after sending", asy
   await second.send();
   expect(submit).toHaveBeenCalledOnce();
   expect(submit.mock.calls[0][0][0]).toMatchObject({ body: "Please check this line" });
-  await vi.waitFor(async () => expect((await readCached(address))?.value.comments).toEqual([]));
+  await vi.waitFor(async () => expect((await readUiRecord(address))?.value.comments).toEqual([]));
   second.dispose();
 });

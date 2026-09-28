@@ -13,6 +13,7 @@ globalThis.IDBKeyRange = IDBKeyRange;
 
 const { scopeFor } = await import("../src/core/cacheScope.js");
 const { readCached, wipeCache, writeCached } = await import("../src/core/localCache.js");
+const { readUiRecord, wipeUiRecords } = await import("../src/core/localUiStore.js");
 const { directoryCacheId } = await import("../src/core/directoryScope.js");
 const { renderFilesTab } = await import("../src/views/files.js");
 const { greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
@@ -86,6 +87,7 @@ beforeEach(async () => {
   answer.mockClear();
   window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
   await wipeCache();
+  await wipeUiRecords();
 });
 
 afterEach(() => {
@@ -150,7 +152,7 @@ describe("folding a root", () => {
     await vi.waitFor(() => expect(heads(first.host)[0].getAttribute("aria-expanded")).toBe("false"));
     expect(section(first.host, "repo").querySelector(".froot-list").hidden).toBe(true);
     expect(section(first.host, "assets").querySelector(".froot-list").hidden).toBe(false);
-    expect((await readCached({ deviceId: "dev-1", entityId: LAYOUT, kind: "ui-files", sub: "roots" }))?.value)
+    expect((await readUiRecord({ deviceId: "dev-1", entityId: LAYOUT, kind: "ui-files", sub: "roots" }))?.value)
       .toEqual({ collapsed: ["repo"] });
     unmount(first.host);
 

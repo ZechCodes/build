@@ -60,6 +60,7 @@ vi.mock("../src/terminal/pane.js", () => ({
 
 const { scopeFor } = await import("../src/core/cacheScope.js");
 const { readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
+const { wipeUiRecords } = await import("../src/core/localUiStore.js");
 const { mountConsole, resetConsoleMemory } = await import("../src/core/console.js");
 
 const flush = async () => {
@@ -113,6 +114,7 @@ beforeEach(async () => {
   localStorage.clear();
   resetConsoleMemory();
   await wipeCache();
+  await wipeUiRecords();
   manager.listTerminals.mockReset().mockResolvedValue([]);
   manager.createTerminal.mockReset().mockResolvedValue({ term_id: "term-9" });
   manager.closeTerminal.mockReset().mockResolvedValue(undefined);

@@ -408,7 +408,7 @@ describe("the task", () => {
   });
 
   it("restores an unsent comment and clears it only after a successful send", async () => {
-    const { readCached } = await import("../src/core/localCache.js");
+    const { readUiRecord } = await import("../src/core/localUiStore.js");
     const { uiAddress } = await import("../src/core/localUiState.js");
     const address = uiAddress({ deviceId: "dev-1", entityId: "task-1", view: "tracker-task", kind: "draft", sub: "proj-1" });
     await mount({}, { waitForPaint: false });
@@ -416,7 +416,7 @@ describe("the task", () => {
     const field = host.querySelector("#task-comment");
     field.value = "Keep this thought";
     field.dispatchEvent(new Event("input", { bubbles: true }));
-    await vi.waitFor(async () => expect((await readCached(address))?.value.body).toBe("Keep this thought"));
+    await vi.waitFor(async () => expect((await readUiRecord(address))?.value.body).toBe("Keep this thought"));
     page.dispose();
     await mount({ taskId: "task-2" }, { waitForPaint: false });
     await vi.waitFor(() => expect(host.querySelector("#task-comment")).not.toBeNull());
@@ -426,7 +426,7 @@ describe("the task", () => {
     await vi.waitFor(() => expect(host.querySelector("#task-comment")?.value).toBe("Keep this thought"));
     host.querySelector("[data-task-composer]").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await vi.waitFor(() => expect(listed("tasks.comment")).toHaveLength(1));
-    await vi.waitFor(async () => expect((await readCached(address))?.value.body).toBe(""));
+    await vi.waitFor(async () => expect((await readUiRecord(address))?.value.body).toBe(""));
   });
 
   it("repaints from a task-cache write while tasks.get stays absent", async () => {
@@ -1257,7 +1257,7 @@ describe("the comment box across what arrives while typing", () => {
   });
 
   it("keeps the selection and the field's scroll when another tab writes a different draft", async () => {
-    const { writeCached } = await import("../src/core/localCache.js");
+    const { writeUiRecord } = await import("../src/core/localUiStore.js");
     const { uiAddress } = await import("../src/core/localUiState.js");
     const address = uiAddress({ deviceId: "dev-1", entityId: "task-1", view: "tracker-task", kind: "draft", sub: "proj-1" });
     await mount();
@@ -1271,7 +1271,7 @@ describe("the comment box across what arrives while typing", () => {
     field.setSelectionRange(2, 4);
     fieldScroll = 40;
 
-    await writeCached(address, { body: "abcdefgh" }, { source: "another-tab", sequence: 1 });
+    await writeUiRecord(address, { body: "abcdefgh" }, { source: "another-tab", sequence: 1 });
     await settle();
     expect(host.querySelector("#task-comment")).toBe(field);
     expect(document.activeElement).toBe(field);
@@ -1281,7 +1281,7 @@ describe("the comment box across what arrives while typing", () => {
 
     // A shorter draft clamps the selection to what it holds.
     field.setSelectionRange(5, 7);
-    await writeCached(address, { body: "abc" }, { source: "another-tab", sequence: 2 });
+    await writeUiRecord(address, { body: "abc" }, { source: "another-tab", sequence: 2 });
     await settle();
     expect(field.value).toBe("abc");
     expect([field.selectionStart, field.selectionEnd]).toEqual([3, 3]);

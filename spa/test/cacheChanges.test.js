@@ -39,7 +39,7 @@ const headersOnly = () => ({
   patch_bytes: 400000,
 });
 
-let mountGitPane, cache, scopeOf;
+let mountGitPane, cache, uiStore, scopeOf;
 
 const settle = async () => {
   for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 0));
@@ -52,6 +52,7 @@ beforeEach(async () => {
   document.body.innerHTML = "";
   ({ scopeFor: scopeOf } = await import("../src/core/cacheScope.js"));
   cache = await import("../src/core/localCache.js");
+  uiStore = await import("../src/core/localUiStore.js");
   ({ mountGitPane } = await import("../src/core/gitPane.js"));
 });
 
@@ -86,8 +87,8 @@ describe("the cached first paint", () => {
     await vi.waitFor(() => expect(document.querySelector(".cp-input")).not.toBeNull());
     document.querySelector(".cp-input").value = "Keep this inline note";
     document.querySelector(".cp-save").click();
-    await vi.waitFor(async () => expect((await cache.readCached(address))?.value.comments).toHaveLength(1));
-    expect(await cache.readCached({ ...address, sub: "changes:comments" })).toBeUndefined();
+    await vi.waitFor(async () => expect((await uiStore.readUiRecord(address))?.value.comments).toHaveLength(1));
+    expect(await uiStore.readUiRecord({ ...address, sub: "changes:comments" })).toBeUndefined();
     first.pane.dispose();
 
     const sendRpc = liveRpc();
@@ -100,7 +101,7 @@ describe("the cached first paint", () => {
     second.container.querySelector(".crow").click();
     await vi.waitFor(() => expect(second.container.querySelector(".pcomment")?.textContent).toContain("Keep this inline note"));
     second.container.querySelector(".csbox-actions .btn:not(.caret)").click();
-    await vi.waitFor(async () => expect((await cache.readCached(address))?.value.comments).toEqual([]));
+    await vi.waitFor(async () => expect((await uiStore.readUiRecord(address))?.value.comments).toEqual([]));
     expect(sendRpc.mock.calls.some(([method]) => method === "run.request_changes")).toBe(true);
     second.pane.dispose();
   });
@@ -109,10 +110,10 @@ describe("the cached first paint", () => {
     await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, status());
     await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" }, log());
     const address = { deviceId: "dev-1", entityId: "run-1", kind: "ui-presentation", sub: "changes" };
-    await cache.writeCached(address, { sortOrder: "alphabetical", noiseExpanded: ["uncommitted"], fileFolds: {}, fileMenuPath: null });
+    await uiStore.writeUiRecord(address, { sortOrder: "alphabetical", noiseExpanded: ["uncommitted"], fileFolds: {}, fileMenuPath: null });
     const { container, pane } = mountPaneNow(vi.fn(() => new Promise(() => {})));
     await vi.waitFor(() => expect(container.querySelector(".diffsort-select")?.value).toBe("alphabetical"));
-    await cache.writeCached(address, { sortOrder: "latest", noiseExpanded: [], fileFolds: {}, fileMenuPath: null });
+    await uiStore.writeUiRecord(address, { sortOrder: "latest", noiseExpanded: [], fileFolds: {}, fileMenuPath: null });
     await vi.waitFor(() => expect(container.querySelector(".diffsort-select")?.value).toBe("latest"));
     pane.dispose();
   });

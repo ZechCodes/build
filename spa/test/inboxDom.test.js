@@ -196,18 +196,18 @@ describe("the workspace inbox", () => {
   });
 
   it("closes a restored menu state when the reader presses outside it", async () => {
-    const { writeCached, readCached } = await import("../src/core/localCache.js");
+    const { writeUiRecord, readUiRecord } = await import("../src/core/localUiStore.js");
     const { uiAddress } = await import("../src/core/localUiState.js");
     const address = uiAddress({ view: "inbox", kind: "menu", sub: "entry" });
     feed([workspace()]);
     unmountInboxList();
-    await writeCached(address, { key: "workspace:dev-1/workspace-1" });
+    await writeUiRecord(address, { key: "workspace:dev-1/workspace-1" });
     mountInboxList();
     await vi.waitFor(() => expect(rows()[0]?.dataset.key).toBe("workspace:dev-1/workspace-1"));
-    expect((await readCached(address)).value.key).toBe("workspace:dev-1/workspace-1");
+    expect((await readUiRecord(address)).value.key).toBe("workspace:dev-1/workspace-1");
     await vi.waitFor(async () => {
       document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
-      expect((await readCached(address))?.value.key).toBeNull();
+      expect((await readUiRecord(address))?.value.key).toBeNull();
     });
   });
   it("paints workspace rows with project and directory context", () => {
@@ -381,15 +381,15 @@ describe("the projects face", () => {
   });
 
   it("restores a project fold from cache and repaints an external fold write", async () => {
-    const { writeCached } = await import("../src/core/localCache.js");
+    const { writeUiRecord } = await import("../src/core/localUiStore.js");
     const address = { deviceId: "", entityId: "", kind: "ui-fold", sub: "inbox:projects" };
     unmountInboxList();
-    await writeCached(address, { entries: [["dev-1/project-1", true]] });
+    await writeUiRecord(address, { entries: [["dev-1/project-1", true]] });
     mountInboxList();
     feed([workspace()]);
     setInboxView("projects");
     await vi.waitFor(() => expect(document.querySelector('[data-project="dev-1/project-1"]').classList.contains("inbox-folded")).toBe(true));
-    await writeCached(address, { entries: [["dev-1/project-1", false]] });
+    await writeUiRecord(address, { entries: [["dev-1/project-1", false]] });
     await vi.waitFor(() => expect(document.querySelector('[data-project="dev-1/project-1"]').classList.contains("inbox-folded")).toBe(false));
   });
   it("opens settings on the owning device and leaves a deleted project's route", async () => {
@@ -795,16 +795,16 @@ const failedCapture = (over = {}) =>
 
 describe("captures on the rail", () => {
   it("restores and redraws the destination picker from real cache records", async () => {
-    const { writeCached } = await import("../src/core/localCache.js");
+    const { writeUiRecord } = await import("../src/core/localUiStore.js");
     const { uiAddress } = await import("../src/core/localUiState.js");
     const address = uiAddress({ view: "inbox-captures", kind: "menu" });
     unmountInboxList();
-    await writeCached(address, { key: "capture:cap-1", branchProject: null });
+    await writeUiRecord(address, { key: "capture:cap-1", branchProject: null });
     mountInboxList();
     feed([], undefined, [routedCapture()]);
     await waitForRerouteMenu();
 
-    await writeCached(address, { key: null, branchProject: null });
+    await writeUiRecord(address, { key: null, branchProject: null });
     await vi.waitFor(() => expect(captureRowFor("cap-1")?.querySelector(".reroute-menu")).toBeNull());
   });
 

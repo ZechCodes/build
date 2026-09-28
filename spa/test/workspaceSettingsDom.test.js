@@ -4,7 +4,8 @@
 // its checkouts with it.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { wipeCache, writeCached, readCached } from "../src/core/localCache.js";
+import { wipeCache, writeCached } from "../src/core/localCache.js";
+import { wipeUiRecords, writeUiRecord, readUiRecord } from "../src/core/localUiStore.js";
 import { uiAddress } from "../src/core/localUiState.js";
 import { deviceModelsAddress, projectSettingsAddress, workspaceSettingsAddress } from "../src/core/settingsRecords.js";
 
@@ -69,6 +70,7 @@ const slot = () => workspaceDefaultsStorage("dev-1/ws-1");
 
 beforeEach(async () => {
   await wipeCache();
+  await wipeUiRecords();
   confirmAction.mockReset();
   notifyError.mockReset();
   localStorage.clear();
@@ -85,30 +87,30 @@ describe("the workspace settings sheet", () => {
   it("restores a cached name and directory form before either pull answers", async () => {
     const address = uiAddress({ deviceId: "dev-1", entityId: WORKSPACE.id, view: "workspace-settings", kind: "draft" });
     await writeCached(workspaceSettingsAddress("dev-1", WORKSPACE.id), { id: WORKSPACE.id, project_id: "proj-1", directories: [] });
-    await writeCached(address, { name: "cached rename", directory: { kind: "remote", remote: "git@example.com:team/repo.git", name: "repo", path: "" } });
+    await writeUiRecord(address, { name: "cached rename", directory: { kind: "remote", remote: "git@example.com:team/repo.git", name: "repo", path: "" } });
     const pending = vi.fn(() => new Promise(() => {}));
     open({ callRpc: pending });
     await vi.waitFor(() => expect($("#wslabel").value).toBe("cached rename"));
     await vi.waitFor(() => expect($("#wsdirremote")?.value).toBe("git@example.com:team/repo.git"));
     expect($("#wsdirlabel").value).toBe("repo");
     expect(pending).toHaveBeenCalledWith("workspace.get", { workspace_id: WORKSPACE.id });
-    await writeCached(address, { name: "external rename", directory: { kind: "remote", remote: "git@example.com:team/other.git", name: "other", path: "" } });
+    await writeUiRecord(address, { name: "external rename", directory: { kind: "remote", remote: "git@example.com:team/other.git", name: "other", path: "" } });
     await vi.waitFor(() => expect($("#wslabel").value).toBe("external rename"));
     expect($("#wsdirremote").value).toBe("git@example.com:team/other.git");
     expect($("#wsdirlabel").value).toBe("other");
     type("my unsent rename");
-    await vi.waitFor(async () => expect((await readCached(address))?.value.name).toBe("my unsent rename"));
+    await vi.waitFor(async () => expect((await readUiRecord(address))?.value.name).toBe("my unsent rename"));
   });
   it("keeps restored directory inputs wired after the cache replaces their fields", async () => {
     const address = uiAddress({ deviceId: "dev-1", entityId: WORKSPACE.id, view: "workspace-settings", kind: "draft" });
     await writeCached(workspaceSettingsAddress("dev-1", WORKSPACE.id), { id: WORKSPACE.id, project_id: "proj-1", directories: [] });
-    await writeCached(address, { name: null, directory: { kind: "remote", remote: "git@example.com:old.git", name: "old", path: "" } });
+    await writeUiRecord(address, { name: null, directory: { kind: "remote", remote: "git@example.com:old.git", name: "old", path: "" } });
     open({ callRpc: vi.fn(() => new Promise(() => {})) });
     await vi.waitFor(() => expect($("#wsdirremote")?.value).toBe("git@example.com:old.git"));
     const remote = $("#wsdirremote");
     remote.value = "git@example.com:new.git";
     remote.dispatchEvent(new Event("input", { bubbles: true }));
-    await vi.waitFor(async () => expect((await readCached(address))?.value.directory.remote).toBe("git@example.com:new.git"));
+    await vi.waitFor(async () => expect((await readUiRecord(address))?.value.directory.remote).toBe("git@example.com:new.git"));
     $("#wscancel").click();
     open({ callRpc: vi.fn(() => new Promise(() => {})) });
     await vi.waitFor(() => expect($("#wsdirremote")?.value).toBe("git@example.com:new.git"));
@@ -194,7 +196,7 @@ describe("the workspace settings sheet", () => {
     expect(onRenamed).toHaveBeenCalled();
     expect(shown()).toBe(false);
     const address = uiAddress({ deviceId: "dev-1", entityId: WORKSPACE.id, view: "workspace-settings", kind: "draft" });
-    expect((await readCached(address)).value.name).toBeNull();
+    expect((await readUiRecord(address)).value.name).toBeNull();
   });
 
   it("says in the sheet why a rename was refused, and leaves it open to try again", async () => {

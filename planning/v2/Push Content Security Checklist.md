@@ -1,6 +1,6 @@
 # Push content security checklist
 
-**Status:** in progress (#200)
+**Status:** verified (10/10 controls)
 
 **Scope:** sealed push content, #200. A browser push says what happened (a
 task's title and its news, an agent's name and the first line of what it
@@ -111,13 +111,38 @@ order delivery. A blob that fails either check shows the generic copy.
 
 | # | Control | Status | Required evidence |
 |---|---|---|---|
-| 1 | The api, the push service and the logs see only sids and ciphertext: no title, body or url text leaves the bridge outside a sealed blob, and no bridge log line carries it. | [ ] | |
-| 2 | The api forwards each blob byte-identical, never decodes, parses, stores or logs it, and validates only its shape. | [ ] | |
-| 3 | The three implementations agree on the fixture: Rust reproduces the blob byte-for-byte and opens it, Chromium WebCrypto opens it. | [ ] | |
-| 4 | The AAD binds sid, kind and entity id: changing any one fails decryption. | [ ] | |
-| 5 | The notification private key is non-extractable, lives only in the browser, and its public key travels only over E2EE. | [ ] | |
-| 6 | Freshness and nonce replay: out-of-window and repeated blobs show the generic copy; blobs from bridges with skewed clocks inside the window, in any order, show content. | [ ] | |
-| 7 | Deep links stay inside the app: the service worker and the app's message listener refuse anything outside `/app/#/`, and the listener accepts messages only from this origin's active service worker. | [ ] | |
-| 8 | Every failure falls back to the #191 generic notification, and content building or sealing never fails or delays the notify itself. | [ ] | |
-| 9 | Keys over time: rotate on re-subscribe, revoke on disable, prune what the api reports unknown, bounded storage; schema 10 → 11 keeps existing data. | [ ] | |
-| 10 | Full gates and scans pass on the completed tree. | [ ] | |
+| 1 | The api, the push service and the logs see only sids and ciphertext: no title, body or url text leaves the bridge outside a sealed blob, and no bridge log line carries it. | [x] | `sealed_entries_carry_the_words_and_the_request_carries_none` (no title, body or url anywhere in the POST), `no_log_line_on_the_push_path_formats_content_or_keys` (a source scan of every `eprintln!`/`log::` on the push path; a probe line formatting `{title}` failed it), `debug_never_prints_the_words`, `a_keys_debug_print_hides_the_key`, `errors_name_the_failure_and_nothing_else`. |
+| 2 | The api forwards each blob byte-identical, never decodes, parses, stores or logs it, and validates only its shape. | [x] | `test_a_sealed_notify_forwards_the_blob_byte_identical_to_its_subscription`, `test_a_blob_that_is_not_ciphertext_is_forwarded_unchanged`, `test_a_failed_sealed_delivery_logs_neither_blob_nor_payload`, `test_a_delivery_failure_never_logs_the_blob_or_payload` (transport, push-service error, gone), `test_the_real_sender_never_logs_the_blob_or_payload`, `test_a_badly_shaped_sealed_is_refused` (20 cases). The delivery-failure warning now logs the sid and exception type only. |
+| 3 | The three implementations agree on the fixture: Rust reproduces the blob byte-for-byte and opens it, Chromium WebCrypto opens it. | [x] | `the_seal_reproduces_the_fixture_blob_byte_for_byte`, `the_fixture_blob_opens_to_the_fixture_plaintext`; Chromium 152 `opens the fixture with Chromium's WebCrypto and shows its title and body` (`spa/test/browser/pushSealedChromium.test.js`); the SPA's test sealer also reproduces the blob; `test_notify_challenge_v2_equals_the_fixture` and `the_v2_challenge_matches_the_fixture` hold the signed challenge. |
+| 4 | The AAD binds sid, kind and entity id: changing any one fails decryption. | [x] | `changing_any_one_of_sid_kind_or_entity_fails_to_open` (Rust); `pushSealed.test.js` tampered sid, kind and entity each show the generic copy, and the sid is computed from the worker's own subscription, never the payload; Chromium tampered-entity case. |
+| 5 | The notification private key is non-extractable, lives only in the browser, and its public key travels only over E2EE. | [x] | `pushKeys.js` generates with `extractable: false`; the Chromium end-to-end case logs `private key extractable=false`; `pushKeySync.test.js` registers only over `push.registerKey` on bridges that announce it; no api route accepts a notification key. Authenticity rests on this and is stated as such above: the sealing is not sender-authenticated. |
+| 6 | Freshness and nonce replay: out-of-window and repeated blobs show the generic copy; blobs from bridges with skewed clocks inside the window, in any order, show content. | [x] | `pushSealed.test.js`: window edges at +300/+301/−300/−301 s, stale and future `iat`, replay across a fresh worker, skewed bridges out of order, the 256 cap and pruning by age, `PUSH_TTL_SECONDS` equal to `web_push.py`'s; Chromium end to end: the same blob delivered twice shows content then the generic copy. |
+| 7 | Deep links stay inside the app: the service worker and the app's message listener refuse anything outside `/app/#/`, and the listener accepts messages only from this origin's active service worker. | [x] | `pushSealed.test.js` sealed url outside `/app/#/` refused; `pushOpen.test.js` rejects six wrong sources and eight off-app urls and accepts the active worker and the controller; `sw.test.js` postMessage, navigate fallback and cold-start `openWindow`; `shellLinkedAgent.test.js` and `agentRailDom.test.js` open the linked chat at its latest message. |
+| 8 | Every failure falls back to the #191 generic notification, and content building or sealing never fails or delays the notify itself. | [x] | `a_bad_stored_key_falls_back_to_generic_and_the_notify_still_posts`, `a_bad_key_beside_a_good_one_costs_only_its_own_entry`, `without_keys_or_content_the_request_is_the_191_shape`; sealing runs in the spawned task on the blocking pool within a 1 s budget, never under the app lock (`notify/delivery.rs`); `pushSealed.test.js` generic copy for no key, no subscription, malformed blob or plaintext, and old payloads; `test_a_v1_notify_without_sealed_still_pushes_the_191_payload`. |
+| 9 | Keys over time: rotate on re-subscribe, revoke on disable, prune what the api reports unknown, bounded storage; schema 10 → 11 keeps existing data. | [x] | `pushKeySync.test.js` rotation, enable and disable/revoke; `the_keys_the_api_reports_unknown_are_forgotten`, `a_refused_notify_forgets_no_key` (only keys actually sealed to are pruned, so the api cannot delete others); `registering_past_the_cap_evicts_the_oldest`; `a_v10_store_opens_at_schema_11_with_push_keys_and_its_data_intact`; `test_sealed_sids_matching_no_live_subscription_are_reported_unknown`. |
+| 10 | Full gates and scans pass on the completed tree. | [x] | Recorded below. |
+
+## Final gate evidence
+
+All under `nice -n 10`, judged by exit code, on the completed tree.
+
+- Bridge: `cargo fmt --check` 0, `cargo clippy --all-targets -- -D warnings` 0,
+  `cargo test --no-fail-fast` 0 (3,594 passed, 0 failed, 8 ignored). The
+  vendored webrtc gate was not run: nothing under `bridge/vendor` changed.
+- SPA: `npm run lint` 0, `npm test` 0 (485 files, 7,934 tests, Chromium
+  browser tests included), `npm run build` 0.
+- skriftapp: `ruff check buildapp` 0, `pytest buildapp -q` 0 (694 passed, 1
+  skipped).
+- `semgrep --config auto --error` on the 58 changed js/mjs/css/py/rs files: 0
+  findings. `gitleaks git --log-opts=main..HEAD`: no leaks.
+  `git diff --check main..HEAD`: clean. No shell file changed. No complexity
+  ratchet entry was added.
+- Negative controls, each restored after: logging the exception text, dropping
+  the sealed digest, altering the blob (api); changing the AAD separator,
+  disabling the prune filter and the sid dedupe, a probe log line formatting
+  `{title}` (bridge); ignoring the AAD, removing the nonce cap, removing the
+  listener's source or url check, removing register/revoke, reverting the
+  land-on-latest change (SPA). Each made its tests fail.
+
+**Final score: 100/100.** The notification's content shows on a lock screen by
+Zech's decision (no setting); that is a product choice, not an open control.

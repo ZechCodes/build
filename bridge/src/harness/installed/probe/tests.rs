@@ -284,3 +284,18 @@ echo 2.1.284"#,
         Some(version("2.1.284"))
     );
 }
+
+/// The real CLIs on this machine, asked the way the bridge asks them. Needs
+/// them installed, so it is run by hand: `cargo test --lib -- --ignored
+/// the_installed_clis_answer`.
+#[test]
+#[ignore = "asks the claude and codex installed on this machine"]
+fn the_installed_clis_answer() {
+    let claude = VERSION_FLAG.read("claude");
+    let codex = CODEX_MODEL_LIST.read("codex");
+    println!("claude: {claude:?}");
+    println!("codex: {codex:?}");
+    assert!(claude.version.is_some());
+    assert!(codex.version.is_some());
+    assert!(codex.listed.is_some_and(|listed| !listed.is_empty()));
+}

@@ -474,7 +474,8 @@ catalog seen through what its installed CLI said, and that is what
   `codex app-server` (`initialize`, then `model/list` with hidden models),
   because only the CLI knows the account's list. The picker gets the unhidden
   models in the CLI's order; a session may start on any listed one. The curated
-  list is the fallback when the CLI cannot list.
+  list is the fallback when the CLI cannot list, or lists nothing Build could
+  start.
 - Pi is not asked, and offers its catalog whole.
 
 `Readings` holds each CLI's last answer. Nothing waits on a CLI: a read answers
@@ -485,11 +486,19 @@ binary on `PATH` is a wrapper that never changes when mise updates what is
 behind it, so no file is watched. A CLI that is missing, hangs, or answers
 unreadably offers the whole catalog, as before. Each probe runs the program by
 name with fixed arguments and no shell, from the home directory, with a 3 s
-deadline, bounded output and its process group killed afterwards
-(`probe/child.rs`; `planning/v2/Installed CLI Probe Security Checklist.md`). A
+deadline, bounded output and its process group killed afterwards, and with
+`MISE_OFFLINE=1`, so a mise wrapper never starts an install that the deadline
+would cut off halfway (`probe/child.rs`; `planning/v2/Installed CLI Probe Security Checklist.md`). A
 changed answer is pushed as `models.changed` (`bridge/src/app/model_catalog.rs`).
-`refuse_unrunnable` refuses, before exec, a session on a model the CLI cannot
-run, in a sentence saying which version it needs. A role (`role_models`) or the
+A spawn is refused on a model the CLI cannot run, before anything is written
+or started: `AgentSpawnPlan::probe_and_scaffold` (`bridge/src/delivery.rs`)
+asks `refuse_unrunnable` with the `AppState`'s readings, which asks the CLI
+again first when its answer is over 30 s old (a spawn runs off every RPC, so
+it may wait out that one probe). The sentence says which version the model
+needs; it is the agent's `start_error` and its conversation's `last_error`, and
+the message that asked is settled as failed, not uncertain. `agent.add`
+refuses such a model on a fresh answer alone, since an RPC cannot wait on a
+CLI. A role (`role_models`) or the
 project-agent setting that names such a model is a default rather than a pick:
 the role passes to the next declared model, and the project agent starts on
 the harness's own default.

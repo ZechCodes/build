@@ -133,12 +133,13 @@ const UNAVAILABLE = Object.freeze({ committed: false, unavailable: true });
  * One database: `name` at `version`, one object `store`, built by `upgrade`
  * (handed the open request) whenever the version on disk is older.
  * `diagnostic` names it in the connection diagnostics ring and `label` on the
- * console.
+ * console. `dropNewer` is for a database of copies only: one a newer build
+ * left behind is deleted and started cold. Without it, that one stands down.
  *
  * Answers `transact` (one transaction, see below), its `read`/`write`
  * shorthands, `health`, `available` and `setRecoveryTiming`.
  */
-export function createIdbDatabase({ name, version, store: storeName, upgrade, diagnostic, label }) {
+export function createIdbDatabase({ name, version, store: storeName, upgrade, diagnostic, label, dropNewer = false }) {
   /** Set when the database met an error no reopen can fix; it answers nothing
    *  for the rest of the session. */
   let disabled = false;
@@ -383,12 +384,13 @@ export function createIdbDatabase({ name, version, store: storeName, upgrade, di
   }
 
   /** Open this build's version. A database a newer build left behind — this
-   *  build was rolled back to — answers VersionError, which no reopen fixes:
-   *  it is dropped and starts cold, rather than standing down on every page
-   *  load until someone clears the site's data. */
+   *  build was rolled back to — answers VersionError, which no reopen fixes.
+   *  One that holds only copies (`dropNewer`) is dropped and starts cold,
+   *  rather than standing down on every page load until someone clears the
+   *  site's data. Any other stands down, keeping what the newer build wrote. */
   async function openThisVersion() {
     const opened = await openOnce();
-    if (opened.error?.name !== "VersionError") return opened;
+    if (!dropNewer || opened.error?.name !== "VersionError") return opened;
     cacheEvent("cache-dropped-newer", {});
     const dropped = await deleteDatabase();
     return dropped.error ? dropped : openOnce();

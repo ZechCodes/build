@@ -84,6 +84,8 @@ export const CACHE_DIAGNOSTIC = "local-cache";
 
 const database = createIdbDatabase({
   name: DB_NAME, version: DB_VERSION, store: STORE, upgrade, diagnostic: CACHE_DIAGNOSTIC, label: "local cache",
+  // Every record here but the `ui-*` ones not yet carried is a copy.
+  dropNewer: true,
 });
 
 /** For tests: a faster recovery schedule. Answers the one it replaced. */
@@ -476,12 +478,15 @@ async function takeCountInStore(key, floor) {
   throw outcome.error || new Error("Build could not update the shared cache counter.");
 }
 
-/** Drop every record one entity holds on one device — a single range delete,
- *  which is why the entity sits second in the key. */
+/** Drop every record one entity holds on one device — range deletes, which
+ *  is why the entity sits second in the key. The `ui-*` records a build
+ *  before the UI store left here are skipped until they are carried: every
+ *  kind starting `ui-` sorts between the two ranges. */
 export function evictEntity(deviceId, entityId) {
   const prefix = `${encodeURIComponent(deviceId)}|${encodeURIComponent(entityId)}|`;
   return wroteStore((store) => {
-    store.delete(prefixRange(prefix));
+    store.delete(IDBKeyRange.bound(prefix, `${prefix}ui-`, false, true));
+    store.delete(IDBKeyRange.bound(`${prefix}ui.`, `${prefix}\uffff`, false, true));
     return null;
   }).then((wrote) => {
     if (wrote) announce([encodeURIComponent(deviceId), encodeURIComponent(entityId)]);
@@ -571,9 +576,10 @@ export async function cachedRecords(prefixAddress) {
 }
 
 /** Delete named records — one transaction, then one announcement each, so a
- *  surface holding a record that has aged out hears it go. */
+ *  surface holding a record that has aged out hears it go. A `ui-*` record is
+ *  never a replica's to drop: only its carry removes it. */
 export function deleteCached(addresses) {
-  const keys = addresses.map(recordKey);
+  const keys = addresses.map(recordKey).filter((key) => !isUiRecordKey(key));
   if (!keys.length) return Promise.resolve();
   return wroteStore((store) => {
     for (const key of keys) store.delete(key);

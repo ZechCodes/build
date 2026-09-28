@@ -112,6 +112,25 @@ describe("the local UI store", () => {
     await store.wipeUiRecords();
     expect(await store.readUiRecord(DRAFT)).toBeUndefined();
   });
+
+  it("keeps every draft when a build with an older version of it opens", async () => {
+    // A rollback, or a stale tab: this store at v2, then a build that knows
+    // only v1. That build stands down; it never drops what is here.
+    await store.writeUiRecord(DRAFT, { body: "written before the rollback" });
+    await new Promise((resolve, reject) => {
+      const request = indexedDB.open("build-ui", 2);
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        request.result.close();
+        resolve();
+      };
+    });
+    await reload();
+    expect(await store.readUiRecord(DRAFT)).toBeUndefined();
+    await store.writeUiRecord(FOLD, { open: true });
+    expect(Object.keys(await rawRecords("build-ui"))).toEqual([DRAFT_KEY]);
+    expect((await rawRecords("build-ui"))[DRAFT_KEY].value).toEqual({ body: "written before the rollback" });
+  });
 });
 
 describe("replica lifetime never reaches a draft", () => {
@@ -131,6 +150,21 @@ describe("replica lifetime never reaches a draft", () => {
     await lifetime.expireWorkspaceData("dev-1", "conv-1", Date.now() + 365 * 24 * 3600 * 1000);
     expect(await cache.readCached(REPLICA)).toBeUndefined();
     expect((await store.readUiRecord(DRAFT)).value).toEqual({ body: "keep me" });
+  });
+
+  it("is not evicted or swept from the replica store before it is carried", async () => {
+    const lifetime = await import("../src/core/cacheLifetime.js");
+    // A draft an older tab wrote where that build keeps drafts, beside a
+    // replica record of the same entity.
+    await cache.writeCached(DRAFT, { body: "not carried yet" });
+    await cache.writeCached(REPLICA, { head: "abc" });
+    await cache.evictEntity("dev-1", "conv-1");
+    await lifetime.evictWorkspaceData("dev-1", "conv-1");
+    await lifetime.expireWorkspaceData("dev-1", "conv-1", Date.now() + 365 * 24 * 3600 * 1000);
+    await cache.deleteCached([DRAFT]);
+    expect(Object.keys(await rawRecords("build-cache"))).toEqual([DRAFT_KEY]);
+    await store.adoptCachedUiRecords();
+    expect((await store.readUiRecord(DRAFT)).value).toEqual({ body: "not carried yet" });
   });
 
   it("survives the replica database being dropped outright", async () => {
@@ -239,6 +273,65 @@ describe("drafts a build before the split left in the replica store", () => {
     await olderTab.writeCached(DRAFT, { body: "typed in the older tab" });
     await vi.waitFor(async () => expect((await store.readUiRecord(DRAFT))?.value).toEqual({ body: "typed in the older tab" }));
     await vi.waitFor(async () => expect(await rawRecords("build-cache")).toEqual({}));
+  });
+
+  it("are not carried into the next account by a pass running through a reset", async () => {
+    freshFactory();
+    await seedOldCache(4, { [DRAFT_KEY]: oldDraft("the last account's") });
+    // Hold the pass between reading the replica store and writing here.
+    let read;
+    const hasRead = new Promise((resolve) => { read = resolve; });
+    let release;
+    const released = new Promise((resolve) => { release = resolve; });
+    vi.resetModules();
+    vi.doMock("../src/core/localCache.js", async (importOriginal) => {
+      const actual = await importOriginal();
+      return {
+        ...actual,
+        cachedUiRecords: async () => {
+          const held = await actual.cachedUiRecords();
+          read();
+          await released;
+          return held;
+        },
+      };
+    });
+    try {
+      cache = await import("../src/core/localCache.js");
+      store = await import("../src/core/localUiStore.js");
+    } finally {
+      vi.doUnmock("../src/core/localCache.js");
+    }
+    const pass = store.adoptCachedUiRecords();
+    await hasRead;
+    await Promise.all([cache.wipeCache(), store.wipeUiRecords()]);
+    release();
+    await pass;
+    await store.adoptCachedUiRecords();
+    expect(await rawRecords("build-ui")).toEqual({});
+    expect(await rawRecords("build-cache")).toEqual({});
+  });
+
+  it("do not hold a mount's first read past its bound while the replica is away", async () => {
+    freshFactory();
+    await seedOldCache(3, { [DRAFT_KEY]: oldDraft("from v3") });
+    // An older tab holds the replica at v3 and never lets the upgrade through.
+    const holder = await new Promise((resolve) => {
+      const request = indexedDB.open("build-cache", 3);
+      request.onsuccess = () => resolve(request.result);
+    });
+    await reload();
+    const heard = [];
+    store.subscribeUiRecords(DRAFT, () => heard.push("draft"));
+    const started = Date.now();
+    expect(await store.readUiRecord(DRAFT)).toBeUndefined();
+    const waited = Date.now() - started;
+    expect(waited).toBeGreaterThanOrEqual(1400);
+    expect(waited).toBeLessThan(4000);
+    // The older tab goes; the draft is carried and announced.
+    holder.close();
+    await vi.waitFor(async () => expect((await store.readUiRecord(DRAFT))?.value).toEqual({ body: "from v3" }));
+    expect(heard).toContain("draft");
   });
 
   it("leave a replica-store draft rewritten mid-carry for the next pass", async () => {

@@ -43,6 +43,9 @@ export const setUiStoreRecoveryTiming = (next) => database.setRecoveryTiming(nex
 
 let adopting = Promise.resolve(0);
 let firstAdoption = null;
+/** Raised by every wipe. A carry pass that read the replica store before a
+ *  wipe holds the last account's records, and writes none of them after. */
+let wipes = 0;
 
 /** How long a read waits for the page's first carry pass. A mount that read
  *  before a carried draft arrived would paint an empty composer, and the
@@ -58,11 +61,15 @@ const isNewer = (candidate, current) => !current || (current.source && current.s
   : (Number(current.at) || 0) < (Number(candidate.at) || 0));
 
 /** Put each carried record that is newer than what is here, in one
- *  transaction. Answers the keys it put, or null when nothing committed. */
-function putNewer(entries) {
+ *  transaction, unless a wipe came after `wipedAt`. Answers the keys it put,
+ *  or null when nothing committed. */
+function putNewer(entries, wipedAt) {
   const put = [];
   return database.write((store) => {
     put.length = 0;
+    // A wipe's transaction is created when it is asked for, so one asked for
+    // before this callback runs clears after nothing this pass puts.
+    if (wipes !== wipedAt) return null;
     for (const { address, record } of entries) {
       const key = recordKey(address);
       const current = store.get(key);
@@ -76,9 +83,10 @@ function putNewer(entries) {
 }
 
 async function adoptOnce() {
+  const wipedAt = wipes;
   const entries = (await cachedUiRecords()).filter((entry) => entry.record);
-  if (!entries.length) return 0;
-  const put = await putNewer(entries);
+  if (!entries.length || wipes !== wipedAt) return 0;
+  const put = await putNewer(entries, wipedAt);
   // Nothing leaves the replica store until this store has committed it.
   if (!put) return 0;
   for (const key of put) announce(partsOfKey(key));
@@ -166,8 +174,10 @@ export function subscribeUiRecords(prefixAddress, listener) {
 }
 
 /** Drop every record — for the account reset that precedes the next account,
- *  never for a replica's lifetime. */
+ *  never for a replica's lifetime. A carry pass already under way writes
+ *  nothing after it. */
 export function wipeUiRecords() {
+  wipes += 1;
   return database.write((store) => {
     store.clear();
     return null;

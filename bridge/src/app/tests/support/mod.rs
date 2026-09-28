@@ -9,9 +9,7 @@ pub(in crate::app::tests) use super::board::attention::{
 pub(in crate::app::tests) use super::board::mute_dismiss::{commit_in, work_item_row_for};
 pub(in crate::app::tests) use super::conversations::attachments::ONE_PIXEL_PNG;
 pub(in crate::app::tests) use super::filesystem::{add_external_worktree, local_branch_exists};
-pub(in crate::app::tests) use super::git::repository::{
-    init_repo_with_origin, origin_with_pushed_branch,
-};
+pub(in crate::app::tests) use super::git::repository::init_repo_with_origin;
 pub(in crate::app::tests) use super::git::status::{file_entry, git_gui_state, has_file_entry};
 pub(in crate::app::tests) use super::protocol::activity::{
     activity_of, activity_rows, run_on_a_headless_provider,

@@ -601,9 +601,9 @@ impl AppState {
             // for `apply_deferred` too.
             Some(deferred) => (outcome, Some(deferred)),
             None => {
-                if let Ok(result) = &outcome {
+                if outcome.is_ok() {
                     // Only a verb that SUCCEEDED counts: a rejected action never happened.
-                    self.stamp_interaction_for(method, params, result);
+                    self.stamp_interaction_for(method, params);
                 }
                 (outcome, None)
             }
@@ -643,7 +643,7 @@ impl AppState {
         };
         match &applied {
             Ok(result) => {
-                self.stamp_interaction_for(method, params, result);
+                self.stamp_interaction_for(method, params);
                 // HERE, not before the drain: the decide half only claimed the
                 // checkout, and a browser told to refetch then would have read
                 // the state this write-back is about to replace.

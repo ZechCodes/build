@@ -213,15 +213,6 @@ impl AppState {
         }
     }
 
-    pub(crate) fn capture_list(&self) -> Value {
-        let captures: Vec<Value> = self
-            .captures_oldest_first()
-            .into_iter()
-            .map(capture_json)
-            .collect();
-        json!({ "captures": captures })
-    }
-
     pub(crate) fn capture_get(&self, params: &Value) -> Result<Value, String> {
         let capture_id = require_str(params, "capture_id")?;
         let capture = self

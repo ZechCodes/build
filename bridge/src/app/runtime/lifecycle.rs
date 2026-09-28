@@ -14,7 +14,7 @@ pub(in crate::app) use runner::WorktreeLifecycleJob;
 pub(in crate::app) use runner::{LifecycleOutcome, LifecycleSettlement};
 pub(in crate::app) use settlements::{
     AbandonSettlement, AdoptImplementationSettlement, AdoptionSettlement, CreateWorktreeSettlement,
-    DeleteSettlement, DispatchSettlement, InitializeRepositorySettlement,
-    OpenImplementationSettlement, PlanWorkspaceSettlement, ProjectRegistrationSettlement,
-    RestoreImplementationSettlement, SetRemoteSettlement,
+    DispatchSettlement, InitializeRepositorySettlement, OpenImplementationSettlement,
+    PlanWorkspaceSettlement, ProjectRegistrationSettlement, RestoreImplementationSettlement,
+    SetRemoteSettlement,
 };

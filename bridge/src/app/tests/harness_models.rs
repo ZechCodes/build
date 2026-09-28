@@ -406,7 +406,10 @@ fn unrooted_state_has_no_phantom_project_until_one_is_added() {
     assert_eq!(listed["projects"].as_array().unwrap().len(), 0);
 
     let added = state
-        .dispatch("project.add", &json!({"path": repo.to_string_lossy()}))
+        .dispatch(
+            "project.create",
+            &open_folder(json!({"path": repo.to_string_lossy()})),
+        )
         .unwrap();
     assert!(added["project_id"].as_str().unwrap().starts_with("proj-"));
     let listed = state.dispatch("project.list", &json!({})).unwrap();

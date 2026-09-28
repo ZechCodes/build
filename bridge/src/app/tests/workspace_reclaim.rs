@@ -63,10 +63,7 @@ pub(super) fn linked_workspace() -> (
     let (mut state, project_id) = tracked_with_origin(&state_root);
     let ws = workspace(&mut state, &project_id, "quiet");
     let task = task_id(&filed(&mut state, &project_id, "Quiet work"));
-    let linked = state.handle(req(
-        "tasks.link",
-        json!({ "task_id": task, "workspace_id": ws }),
-    ));
+    let linked = link_task(&mut state, json!({ "task_id": task, "workspace_id": ws }));
     assert_eq!(linked["ok"], true, "{linked:?}");
     // Deterministic terminals: plain bash, whatever the machine's login shell.
     state.term_shell = "/bin/bash".into();
@@ -112,7 +109,7 @@ fn project_agent_notices(state: &Arc<Mutex<AppState>>, project_id: &str) -> Vec<
         .as_str()
         .unwrap()
         .to_string();
-    let agents = call(state, "agent.list", json!({ "entity_id": owner }));
+    let agents = agent_roster(&mut state.lock().unwrap(), json!({ "entity_id": owner }));
     let Some(agent_id) = agents["result"]["agents"][0]["id"]
         .as_str()
         .map(str::to_string)

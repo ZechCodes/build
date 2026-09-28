@@ -16,26 +16,15 @@ pub enum DiscardedCheckout {
         project: Orchestrator,
         worktree: Worktree,
     },
-    Pruned {
-        project: Orchestrator,
-        worktree: Worktree,
-    },
     Kept,
 }
 impl DiscardedCheckout {
-    fn removal(&self) -> Option<(&Orchestrator, &Worktree, bool)> {
-        match self {
-            Self::Kept => None,
-            Self::Removed { project, worktree } => Some((project, worktree, true)),
-            Self::Pruned { project, worktree } => Some((project, worktree, false)),
-        }
-    }
     fn discard(&self, writers: &[Retirement], run_id: &str) -> WorktreeChange {
-        let Some((project, worktree, keep_branch)) = self.removal() else {
+        let Self::Removed { project, worktree } = self else {
             return WorktreeChange::nothing();
         };
         Retirement::wait_all(writers, crate::orchestrator::CHECKOUT_REAP_WAIT, run_id);
-        project.discard_checkout(worktree, keep_branch);
+        project.discard_checkout(worktree, /* keep_branch */ true);
         match worktree.path.exists() {
             false => WorktreeChange {
                 gone: vec![crate::worktree::canonical_root(&worktree.path)],

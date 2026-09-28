@@ -124,24 +124,6 @@ impl AppState {
         Ok(view)
     }
 
-    pub(crate) fn plan_list(&self) -> Value {
-        let plans: Vec<Value> = self
-            .plans
-            .iter()
-            .map(|(id, active)| self.plan_view(id, active, ThreadDetail::Digest, DigestScope::List))
-            .collect();
-        json!({ "plans": plans })
-    }
-
-    pub(crate) fn task_list(&self) -> Value {
-        let tasks: Vec<Value> = self
-            .plans
-            .iter()
-            .map(|(id, active)| self.plan_view(id, active, ThreadDetail::Digest, DigestScope::List))
-            .collect();
-        json!({ "tasks": tasks, "plans": tasks })
-    }
-
     pub(crate) fn task_stages(&mut self, params: &Value) -> Result<Value, String> {
         let task_id = require_str(params, "task_id")?;
         let task = self.plans.get(&task_id).ok_or("unknown task_id")?;
@@ -213,18 +195,6 @@ impl AppState {
         self.current_task_implementation(task_id)
             .filter(|run| !run.run.state.is_terminal())
             .map(|run| run.run.id.0.clone())
-    }
-
-    /// The whole Task an implementation RPC answers with — every field of the
-    /// board's task view, with `thread_detail` saying how much of its
-    /// conversation rides along.
-    pub(in crate::app) fn task_view_full(
-        &self,
-        task_id: &str,
-        thread_detail: ThreadDetail,
-    ) -> Result<Value, String> {
-        let task = self.plans.get(task_id).ok_or("unknown task_id")?;
-        Ok(self.plan_view(task_id, task, thread_detail, DigestScope::Detail))
     }
 
     pub(in crate::app) fn current_task_implementation(&self, task_id: &str) -> Option<&ActiveRun> {

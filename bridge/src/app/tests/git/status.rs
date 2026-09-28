@@ -362,20 +362,6 @@ fn git_status_decomposes_a_staged_rename_into_delete_plus_add() {
     let new = file_entry(&res["result"], "RENAMED.md");
     assert_eq!(new["index_status"], "A");
     assert_eq!(new["staged"], "full");
-
-    // Unstaging both paths fully restores the index: the old path is back
-    // (its only change is the worktree deletion), the new path untracked.
-    let unstaged = state.handle(req(
-        "git.unstage",
-        json!({ "project_id": project_id, "paths": ["README.md", "RENAMED.md"] }),
-    ));
-    assert_eq!(unstaged["ok"], true, "{unstaged:?}");
-    let old = file_entry(&unstaged["result"], "README.md");
-    assert_eq!(old["staged"], "none");
-    assert_eq!(old["worktree_status"], "D");
-    let new = file_entry(&unstaged["result"], "RENAMED.md");
-    assert_eq!(new["staged"], "none");
-    assert_eq!(new["index_status"], "?");
 }
 
 /// `git.diff` is where a body comes from now that `git.status` carries
@@ -431,7 +417,7 @@ fn git_status_on_an_unborn_head_has_a_null_head() {
 }
 
 #[test]
-fn git_stage_and_unstage_round_trip_through_status() {
+fn git_stage_answers_with_the_fresh_status() {
     let (dir, repo) = init_repo();
     let mut state = git_gui_state(&dir, &repo);
     let project_id = state.project_at(0).id.clone();
@@ -446,15 +432,6 @@ fn git_stage_and_unstage_round_trip_through_status() {
     let entry = file_entry(&staged["result"], "work.txt");
     assert_eq!(entry["staged"], "full");
     assert_eq!(entry["index_status"], "A");
-
-    let unstaged = state.handle(req(
-        "git.unstage",
-        json!({ "project_id": project_id, "paths": ["work.txt"] }),
-    ));
-    assert_eq!(unstaged["ok"], true, "{unstaged:?}");
-    let entry = file_entry(&unstaged["result"], "work.txt");
-    assert_eq!(entry["staged"], "none");
-    assert_eq!(entry["index_status"], "?");
 }
 
 #[test]
@@ -506,14 +483,6 @@ fn git_stage_treats_paths_as_literals_never_globs() {
         "none"
     );
 
-    // Unstage is literal too.
-    let unstaged = state.handle(req(
-        "git.unstage",
-        json!({ "project_id": project_id, "paths": ["*"] }),
-    ));
-    assert_eq!(unstaged["ok"], true, "{unstaged:?}");
-    assert_eq!(file_entry(&unstaged["result"], "*")["staged"], "none");
-
     // Without a file actually named "*", the request errors instead of
     // matching everything.
     let (dir2, repo2) = init_repo();
@@ -548,58 +517,6 @@ fn git_stage_silently_drops_the_mcp_config() {
     ));
     assert_eq!(res["ok"], true, "{res:?}");
     assert!(!has_file_entry(&res["result"], ".build/mcp.json"));
-}
-
-#[test]
-fn git_unstage_works_on_an_unborn_head() {
-    let (dir, repo) = init_unborn_repo();
-    let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.project_at(0).id.clone();
-    std::fs::write(repo.join("first.txt"), "hello\n").unwrap();
-    let staged = state.handle(req(
-        "git.stage",
-        json!({ "project_id": project_id, "paths": ["first.txt"] }),
-    ));
-    assert_eq!(file_entry(&staged["result"], "first.txt")["staged"], "full");
-
-    // No HEAD to reset to — the index entry is dropped instead.
-    let unstaged = state.handle(req(
-        "git.unstage",
-        json!({ "project_id": project_id, "paths": ["first.txt"] }),
-    ));
-    assert_eq!(unstaged["ok"], true, "{unstaged:?}");
-    let entry = file_entry(&unstaged["result"], "first.txt");
-    assert_eq!(entry["staged"], "none");
-    assert_eq!(entry["index_status"], "?");
-}
-
-#[test]
-fn git_unstage_on_an_unborn_head_survives_a_post_stage_edit() {
-    let (dir, repo) = init_unborn_repo();
-    let mut state = git_gui_state(&dir, &repo);
-    let project_id = state.project_at(0).id.clone();
-    std::fs::write(repo.join("first.txt"), "v1\n").unwrap();
-    state.handle(req(
-        "git.stage",
-        json!({ "project_id": project_id, "paths": ["first.txt"] }),
-    ));
-    // Edit after staging: the staged copy now differs from the worktree
-    // copy, which `git rm --cached` refuses without -f.
-    std::fs::write(repo.join("first.txt"), "v2\n").unwrap();
-
-    let unstaged = state.handle(req(
-        "git.unstage",
-        json!({ "project_id": project_id, "paths": ["first.txt"] }),
-    ));
-    assert_eq!(unstaged["ok"], true, "{unstaged:?}");
-    let entry = file_entry(&unstaged["result"], "first.txt");
-    assert_eq!(entry["staged"], "none");
-    assert_eq!(entry["index_status"], "?");
-    // --cached never touches the worktree file: the edit survives.
-    assert_eq!(
-        std::fs::read_to_string(repo.join("first.txt")).unwrap(),
-        "v2\n"
-    );
 }
 
 #[test]
@@ -660,10 +577,7 @@ fn git_commit_rejects_empty_messages_and_an_empty_stage() {
     }
 
     // Drain the stage, then a commit has nothing to do.
-    state.handle(req(
-        "git.unstage",
-        json!({ "project_id": project_id, "paths": ["staged.txt"] }),
-    ));
+    git_in(&repo, &["rm", "--cached", "-q", "staged.txt"]);
     let nothing = state.handle(req(
         "git.commit",
         json!({ "project_id": project_id, "message": "msg" }),

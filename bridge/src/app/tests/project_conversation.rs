@@ -27,7 +27,7 @@ fn ensure(state: &mut AppState, project_id: &str) -> Value {
 }
 
 fn added_project(state: &mut AppState, repo: &Path) -> String {
-    let project = state.handle(req("project.add", json!({ "path": repo })));
+    let project = state.handle(req("project.create", open_folder(json!({ "path": repo }))));
     assert_eq!(project["ok"], true, "{project:?}");
     project["result"]["project_id"]
         .as_str()

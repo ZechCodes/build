@@ -49,25 +49,15 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             TasksAssignParams,
             TaskAssigned
         ),
-        v1_method!("tasks.link", tasks_link, TasksLinkParams, TaskAnswer),
         v1_method!("tasks.close", tasks_close, TasksCloseParams, TaskAnswer),
         v1_method!("tasks.reopen", tasks_reopen, TaskIdParams, TaskAnswer),
-        v1_method!("tasks.track", tasks_track, TasksTrackParams, TaskAnswer),
-        v1_method!("tasks.untrack", tasks_untrack, TasksTrackParams, TaskAnswer),
         v1_method!("tasks.watch", tasks_watch, TaskIdParams, TaskAnswer),
-        v1_method!("tasks.dismiss", tasks_dismiss, TaskIdParams, TaskAnswer),
         v1_method!("tasks.unwatch", tasks_unwatch, TaskIdParams, TaskAnswer),
         v1_method!(
             "tasks.read_through",
             tasks_read_through,
             TasksReadThroughParams,
             TaskAnswer
-        ),
-        v1_method!(
-            "tasks.for_agent",
-            tasks_for_agent,
-            TasksForAgentParams,
-            TasksForAgent
         ),
         v1_method!("tasks.columns", tasks_columns, ProjectIdParams, TaskColumns),
         v1_method!(
@@ -226,27 +216,6 @@ pub struct TaskAttachmentRef {
     pub name: Option<String>,
 }
 
-/// One or more of the five link keys. Naming none is refused.
-#[derive(Debug, Default, Deserialize, Serialize)]
-pub struct TasksLinkParams {
-    #[serde(deserialize_with = "crate::renamed_ids::current")]
-    pub task_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub branch: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub commit: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub conversation_id: Option<String>,
-    #[serde(
-        default,
-        deserialize_with = "crate::renamed_ids::current_optional",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub parent_task_id: Option<String>,
-}
-
 /// Hand a task to somebody, and start them on it.
 ///
 /// One tagged `assignee` covering all five kinds — `user`, `project_agent`,
@@ -267,18 +236,6 @@ pub struct TasksAssignParams {
     pub note: Option<String>,
 }
 
-/// One agent starts or stops watching one task.
-///
-/// The wire verb names the agent because it is the USER's — a person on the
-/// board may subscribe any agent of the task's project. A tool cannot: it
-/// forces the caller, the way it cannot sign a comment as somebody else.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct TasksTrackParams {
-    #[serde(deserialize_with = "crate::renamed_ids::current")]
-    pub task_id: String,
-    pub agent_id: String,
-}
-
 /// How far the user has read one task.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TasksReadThroughParams {
@@ -287,12 +244,6 @@ pub struct TasksReadThroughParams {
     /// The last event the user has seen. Never moved backwards.
     #[serde(deserialize_with = "crate::renamed_ids::current")]
     pub event_id: String,
-}
-
-/// What one agent is on.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct TasksForAgentParams {
-    pub agent_id: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -510,27 +461,6 @@ pub struct TaskDetail {
     pub timeline: Vec<TaskTimelineEntry>,
 }
 
-/// One task as a list somebody scans shows it: enough to recognise and to
-/// order by, and not the body.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct TaskDigest {
-    pub task_id: String,
-    pub number: u64,
-    pub title: String,
-    pub state: String,
-    pub status: String,
-    pub updated_at: String,
-}
-
-/// What one agent holds and what it watches. An assigned task is in both:
-/// the two questions are different.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct TasksForAgent {
-    pub agent_id: String,
-    pub assigned: Vec<TaskDigest>,
-    pub tracking: Vec<TaskDigest>,
-}
-
 /// One kanban column: the slug that is stored, the name that is shown.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TaskColumn {
@@ -674,10 +604,6 @@ fn tasks_assign(
     .map_err(refine)
 }
 
-fn tasks_link(app: &mut AppState, params: TasksLinkParams) -> Result<Answer<TaskAnswer>, ApiError> {
-    answer(app.tasks_link(&params.wire())).map_err(refine)
-}
-
 fn tasks_close(
     app: &mut AppState,
     params: TasksCloseParams,
@@ -693,10 +619,6 @@ fn tasks_watch(app: &mut AppState, params: TaskIdParams) -> Result<Answer<TaskAn
     answer(app.tasks_watch(&params.wire())).map_err(refine)
 }
 
-fn tasks_dismiss(app: &mut AppState, params: TaskIdParams) -> Result<Answer<TaskAnswer>, ApiError> {
-    answer(app.tasks_dismiss(&params.wire())).map_err(refine)
-}
-
 fn tasks_unwatch(app: &mut AppState, params: TaskIdParams) -> Result<Answer<TaskAnswer>, ApiError> {
     answer(app.tasks_unwatch(&params.wire())).map_err(refine)
 }
@@ -706,27 +628,6 @@ fn tasks_read_through(
     params: TasksReadThroughParams,
 ) -> Result<Answer<TaskAnswer>, ApiError> {
     answer(app.tasks_read_through(&params.wire())).map_err(refine)
-}
-
-fn tasks_track(
-    app: &mut AppState,
-    params: TasksTrackParams,
-) -> Result<Answer<TaskAnswer>, ApiError> {
-    answer(app.tasks_track(&params.wire())).map_err(refine)
-}
-
-fn tasks_untrack(
-    app: &mut AppState,
-    params: TasksTrackParams,
-) -> Result<Answer<TaskAnswer>, ApiError> {
-    answer(app.tasks_untrack(&params.wire())).map_err(refine)
-}
-
-fn tasks_for_agent(
-    app: &mut AppState,
-    params: TasksForAgentParams,
-) -> Result<Answer<TasksForAgent>, ApiError> {
-    answer(app.tasks_for_agent(&params.wire())).map_err(refine)
 }
 
 fn tasks_columns(

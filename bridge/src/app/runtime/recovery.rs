@@ -118,26 +118,6 @@ pub(in crate::app) fn merge_archived_worktree_facts(
     }
 }
 
-pub(in crate::app) fn archived_worktree_json(record: &PersistedArchivedWorktree) -> Value {
-    json!({
-        "worktree_id": record.worktree_id,
-        "name": record.worktree_name,
-        "path": record.worktree_path,
-        "branch": record.branch,
-        "head_sha": record.head_sha,
-        "upstream": record.upstream,
-        "unpushed": record.unpushed,
-        "dirty_files": record.dirty_files,
-        "uncommitted": {
-            "files_changed": record.uncommitted_files,
-            "insertions": record.uncommitted_insertions,
-            "deletions": record.uncommitted_deletions,
-        },
-        "action": record.action,
-        "archived_at": record.archived_at,
-    })
-}
-
 /// What a conversation says when the agent's PROCESS ended with a turn still in
 /// flight: nobody is coming back to hand it over, so the turn is closed here.
 ///

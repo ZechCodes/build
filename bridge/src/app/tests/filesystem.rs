@@ -719,33 +719,3 @@ fn fs_read_rejects_lexical_and_symlink_escapes() {
         "{dir_escape:?}"
     );
 }
-#[test]
-fn project_diff_shape_and_unknown_project() {
-    let (dir, repo) = init_repo();
-    let mut state = AppState::new(
-        repo.clone(),
-        dir.path().join("wt"),
-        "main",
-        true,
-        "/tmp/test-mcp.sock",
-    );
-    let project_id = state.project_at(0).id.clone();
-    std::fs::write(repo.join("uncommitted.txt"), "dirty\n").unwrap();
-
-    let res = state.handle(req("project.diff", json!({ "project_id": project_id })));
-    assert_eq!(res["ok"], true, "{res:?}");
-    assert_eq!(res["result"]["project_id"], project_id);
-    assert_eq!(res["result"]["branch"], "main");
-    assert!(res["result"]["path"].as_str().unwrap().contains("repo"));
-    assert!(res["result"]["stat"]["files_changed"].as_u64().unwrap() >= 1);
-    let files = res["result"]["files"].as_array().unwrap();
-    assert!(files.iter().any(|f| f["path"] == "uncommitted.txt"));
-    assert!(res["result"]["patch"]
-        .as_str()
-        .unwrap()
-        .contains("uncommitted.txt"));
-
-    let unknown = state.handle(req("project.diff", json!({ "project_id": "proj-99" })));
-    assert_eq!(unknown["ok"], false, "{unknown:?}");
-    assert_eq!(unknown["error"], "unknown project_id");
-}

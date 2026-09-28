@@ -8,31 +8,17 @@ use super::*;
 fn silence_follows_the_default_harness_and_every_token_is_concrete() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let provider_of = |state: &mut AppState, params: Value| {
-        let filed = state
-            .plan_create(&params)
-            .expect("the legacy fixture is filed");
-        let plan_id = filed["plan_id"].as_str().expect("the fixture has an id");
-        state.plans[plan_id].model_choice.provider
+    let provider_of = |state: &AppState, params: Value| {
+        model_choice_from(&params, state.default_harness)
+            .expect("the choice resolves")
+            .provider
     };
 
-    assert_eq!(
-        provider_of(
-            &mut state,
-            json!({ "goal": "silence takes the default", "dispatch": false })
-        ),
-        AgentProvider::ClaudeAdk
-    );
+    assert_eq!(provider_of(&state, json!({})), AgentProvider::ClaudeAdk);
 
     let set = state.handle(req("settings.set", json!({ "default_harness": "codex" })));
     assert_eq!(set["ok"], true, "{set:?}");
-    assert_eq!(
-        provider_of(
-            &mut state,
-            json!({ "goal": "and follows it when it moves", "dispatch": false })
-        ),
-        AgentProvider::Codex
-    );
+    assert_eq!(provider_of(&state, json!({})), AgentProvider::Codex);
 
     for (token, provider) in [
         ("claude", AgentProvider::Claude),
@@ -42,38 +28,11 @@ fn silence_follows_the_default_harness_and_every_token_is_concrete() {
         ("pi", AgentProvider::Pi),
     ] {
         assert_eq!(
-            provider_of(
-                &mut state,
-                json!({ "goal": format!("named {token}"), "dispatch": false, "provider": token })
-            ),
+            provider_of(&state, json!({ "provider": token })),
             provider,
             "{token} names one harness"
         );
     }
-}
-
-#[test]
-fn pi_setting_drives_omitted_coding_provider_without_overriding_a_concrete_provider() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let set = state.handle(req("settings.set", json!({ "default_harness": "pi" })));
-    assert_eq!(set["ok"], true, "{set:?}");
-
-    let omitted = state
-        .plan_create(&json!({ "goal": "use the account default", "dispatch": false }))
-        .expect("the legacy fixture is filed");
-    assert_eq!(omitted["provider"], "pi", "{omitted:?}");
-    assert_eq!(omitted["agents"][0]["provider"], "pi");
-
-    let concrete = state
-        .plan_create(&json!({
-            "goal": "keep the provider displayed by the client",
-            "dispatch": false,
-            "provider": "codex",
-        }))
-        .expect("the legacy fixture is filed");
-    assert_eq!(concrete["provider"], "codex", "{concrete:?}");
-    assert_eq!(concrete["agents"][0]["provider"], "codex");
 }
 
 /// A client that names a concrete carrier gets that carrier. The setting
@@ -83,24 +42,21 @@ fn pi_setting_drives_omitted_coding_provider_without_overriding_a_concrete_provi
 fn a_concretely_named_provider_is_honored_whatever_the_setting_says() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let provider_of = |state: &mut AppState, goal: &str, provider: &str| {
-        let filed = state
-            .plan_create(&json!({ "goal": goal, "dispatch": false, "provider": provider }))
-            .expect("the legacy fixture is filed");
-        let plan_id = filed["plan_id"].as_str().expect("the fixture has an id");
-        state.plans[plan_id].model_choice.provider
+    let provider_of = |state: &AppState, provider: &str| {
+        model_choice_from(&json!({ "provider": provider }), state.default_harness)
+            .expect("the choice resolves")
+            .provider
     };
 
     for default in ["claude_adk", "claude", "codex", "codex_app_server", "pi"] {
         let set = state.handle(req("settings.set", json!({ "default_harness": default })));
         assert_eq!(set["ok"], true, "{set:?}");
+        assert_eq!(provider_of(&state, "claude_adk"), AgentProvider::ClaudeAdk);
+        assert_eq!(provider_of(&state, "codex"), AgentProvider::Codex);
         assert_eq!(
-            provider_of(&mut state, &format!("adk under {default}"), "claude_adk"),
-            AgentProvider::ClaudeAdk
-        );
-        assert_eq!(
-            provider_of(&mut state, &format!("codex under {default}"), "codex"),
-            AgentProvider::Codex
+            provider_of(&state, "pi"),
+            AgentProvider::Pi,
+            "a concrete pi under {default}"
         );
     }
 }
@@ -112,13 +68,7 @@ fn a_concretely_named_provider_is_honored_whatever_the_setting_says() {
 fn changing_the_setting_migrates_no_entity_that_already_exists() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let filed = state
-        .plan_create(&json!({ "goal": "filed under the old default", "dispatch": false }))
-        .expect("the legacy fixture is filed");
-    let plan_id = filed["plan_id"]
-        .as_str()
-        .expect("the fixture has an id")
-        .to_string();
+    let plan_id = file_legacy_task(&mut state, "filed under the old default");
     let before = state.entity_model_choice(&plan_id).unwrap();
     assert_eq!(before.provider, AgentProvider::ClaudeAdk);
 

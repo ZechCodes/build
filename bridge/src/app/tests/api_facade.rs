@@ -23,6 +23,42 @@ fn an_unknown_method_is_refused_with_a_structured_error() {
     assert_eq!(refused["details"], json!({ "method": "no.such_verb" }));
 }
 
+/// The verbs cut before release (#207) are gone, not refused: one per family
+/// answers `unknown_method` exactly as a verb this bridge never had.
+#[test]
+fn a_verb_cut_before_release_is_an_unknown_method() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    for method in [
+        "plan.create",
+        "plan.get",
+        "task.approve",
+        "task.create",
+        "run.create",
+        "run.get",
+        "tasks.link",
+        "tasks.for_agent",
+        "archive.list",
+        "agent.list",
+        "changes.list",
+        "git.checkout",
+        "project.add",
+        "worktree.create",
+    ] {
+        let refused = state.handle(req(method, json!({})));
+        assert_eq!(refused["ok"], false, "{method}: {refused}");
+        assert_eq!(
+            refused["error_code"], "unknown_method",
+            "{method}: {refused}"
+        );
+        assert_eq!(refused["error"], format!("unknown method: {method}"));
+        assert!(
+            !crate::api::capabilities(true).contains(&method),
+            "{method} is still announced"
+        );
+    }
+}
+
 #[test]
 fn a_typed_verb_missing_a_required_param_answers_invalid_params() {
     let (dir, repo) = init_repo();
@@ -68,8 +104,8 @@ fn v1_serves_every_family_and_the_legacy_route_answers_none_of_them() {
         ("fs.list", &json!({})),
         ("board.list", &json!({})),
         ("thread.page", &json!({})),
-        ("task.list", &json!({})),
-        ("run.get", &json!({})),
+        ("task.get", &json!({})),
+        ("run.diff", &json!({})),
     ] {
         assert!(
             crate::api::v1::dispatch(&mut state, method, params).is_some(),
@@ -119,23 +155,15 @@ fn the_qa_stream_verbs_are_unknown_unless_the_qa_agent_is_on() {
 /// entry here is a sentence the facade does not yet understand. The list may
 /// only shrink: naming a code for one of these removes its line; a new verb
 /// or a reworded refusal that lands here fails the test.
-const INTERNAL_REFUSALS: &[(&str, usize)] = &[
-    ("git.checkout", 1),
-    ("git.branch_delete", 1),
-    ("task.diff", 1),
-    ("task.stage_diff", 1),
-    ("entity.dismiss", 1),
-];
+const INTERNAL_REFUSALS: &[(&str, usize)] = &[("task.stage_diff", 1), ("entity.dismiss", 1)];
 
 /// Verbs whose fixture params reach outside the state under test — a path
 /// under `~`, a remote to clone, a settings write — so only the empty probe
 /// is sent to them.
 const FIXTURE_PROBE_REACHES_OUTSIDE: &[&str] = &[
     "fs.mkdir",
-    "project.add",
     // Its fixture names a folder under `~` to open as a source.
     "project.add_source",
-    "project.clone",
     "project.create",
     // Its confirmed fixture would remove the project used by later probes.
     "project.delete",
@@ -248,8 +276,8 @@ fn a_deferred_git_verb_answering_its_declared_shape_is_published() {
 /// Walked over every road a refusal can take out of the facade, because the
 /// shape is a property of the reply and not of any one verb: the unknown
 /// method, a typed v1 param check, a legacy-route `Err(String)` with no code
-/// of its own, a refusal decided off the lock and applied on the way back,
-/// and the retirement guard that runs before either route.
+/// of its own, and a refusal decided off the lock and applied on the way
+/// back.
 #[test]
 fn every_refusal_carries_the_string_error_beside_its_code() {
     let (dir, repo) = init_repo();
@@ -276,15 +304,9 @@ fn every_refusal_carries_the_string_error_beside_its_code() {
         ),
         (
             "a refusal decided off the lock",
-            "git.checkout",
-            json!({ "project_id": project_id, "branch": "no-such-branch" }),
-            "internal",
-        ),
-        (
-            "the retirement guard",
-            "run.create",
-            json!({ "goal": "retired" }),
-            "unavailable",
+            "git.checkout_ref",
+            json!({ "project_id": project_id, "full_ref": "refs/heads/no-such-branch" }),
+            "not_found",
         ),
     ];
     for (road, method, params, code) in refusals {
@@ -305,15 +327,17 @@ fn every_refusal_carries_the_string_error_beside_its_code() {
     }
 
     // The off-lock road above is only that road if the verb does defer: a
-    // `git.checkout` that had quietly become synchronous would still have
+    // `git.checkout_ref` that had quietly become synchronous would still have
     // passed the walk. Run the job to its end rather than dropping a claim.
-    let params = json!({ "project_id": project_id, "branch": "no-such-branch" });
-    let (_, deferred) = state.dispatch_deferring("git.checkout", &params);
+    let params = json!({ "project_id": project_id, "full_ref": "refs/heads/no-such-branch" });
+    let (_, deferred) = state.dispatch_deferring("git.checkout_ref", &params);
     let done = deferred
-        .expect("git.checkout decides its git off the lock")
+        .expect("git.checkout_ref decides its git off the lock")
         .run();
     assert!(
-        state.apply_deferred("git.checkout", &params, done).is_err(),
+        state
+            .apply_deferred("git.checkout_ref", &params, done)
+            .is_err(),
         "the refusal walked above is the one the write-back half carries"
     );
 }

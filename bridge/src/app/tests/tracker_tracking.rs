@@ -1,7 +1,7 @@
 //! Who is watching a task, and what one agent is on (spec: Tasks →
 //! Tracking).
 
-use super::project_agent::{added_project, project_agent, workspace};
+use super::project_agent::{added_project, workspace};
 use super::tracker::{filed, tracked};
 use super::*;
 use crate::mcp::{DoneReport, DoneStatus};
@@ -60,18 +60,12 @@ fn tracking_adds_the_agent_and_untracking_takes_it_off() {
         "nobody yet"
     );
 
-    let tracking = state.handle(req(
-        "tasks.track",
-        json!({ "task_id": id, "agent_id": watcher }),
-    ));
+    let tracking = set_task_tracking(&mut state, &id, &watcher, true);
     assert_eq!(tracking["ok"], true, "{tracking:?}");
     assert_eq!(tracking["result"]["task"]["trackers"], json!([watcher]));
     assert_eq!(event_kinds(&mut state, &id), vec!["created", "tracked"]);
 
-    let untracking = state.handle(req(
-        "tasks.untrack",
-        json!({ "task_id": id, "agent_id": watcher }),
-    ));
+    let untracking = set_task_tracking(&mut state, &id, &watcher, false);
     assert_eq!(untracking["ok"], true, "{untracking:?}");
     assert_eq!(untracking["result"]["task"]["trackers"], json!([]));
     assert_eq!(
@@ -91,21 +85,12 @@ fn tracking_twice_and_untracking_nothing_write_no_event() {
     let id = task_id(&filed(&mut state, &project_id, "one"));
 
     // Untracking one that was never tracked changes nothing.
-    let never = state.handle(req(
-        "tasks.untrack",
-        json!({ "task_id": id, "agent_id": watcher }),
-    ));
+    let never = set_task_tracking(&mut state, &id, &watcher, false);
     assert_eq!(never["ok"], true, "a no-op is legible, not a refusal");
     assert_eq!(event_kinds(&mut state, &id), vec!["created"]);
 
-    state.handle(req(
-        "tasks.track",
-        json!({ "task_id": id, "agent_id": watcher }),
-    ));
-    state.handle(req(
-        "tasks.track",
-        json!({ "task_id": id, "agent_id": watcher }),
-    ));
+    set_task_tracking(&mut state, &id, &watcher, true);
+    set_task_tracking(&mut state, &id, &watcher, true);
     assert_eq!(trackers(&mut state, &id), vec![watcher], "one entry");
     assert_eq!(
         event_kinds(&mut state, &id),
@@ -167,107 +152,6 @@ fn assignment_tracks_the_agent_it_hands_the_work_to() {
     );
 }
 
-/// An agent of another project cannot be made to watch, and the task is left
-/// as it was.
-#[test]
-fn an_agent_outside_the_tasks_project_cannot_be_made_to_watch() {
-    let tmp = tempfile::tempdir().unwrap();
-    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
-    let (_home, mut state, project_id) = tracked(&state_root);
-    let id = task_id(&filed(&mut state, &project_id, "one"));
-
-    let elsewhere = tempfile::tempdir().unwrap();
-    let other_repo = init_repo_named(elsewhere.path(), "other");
-    let other_repo = std::fs::canonicalize(&other_repo).unwrap();
-    let other_project = added_project(&mut state, &other_repo);
-    let (_owner, foreign) = project_agent(&mut state, &other_project);
-
-    let refused = state.handle(req(
-        "tasks.track",
-        json!({ "task_id": id, "agent_id": foreign }),
-    ));
-    assert_eq!(refused["ok"], false, "{refused:?}");
-    assert!(
-        refused["error"]
-            .as_str()
-            .unwrap()
-            .contains(&format!("is not in project {project_id}")),
-        "{refused:?}"
-    );
-    assert_eq!(trackers(&mut state, &id), Vec::<String>::new());
-
-    let nobody = state.handle(req(
-        "tasks.track",
-        json!({ "task_id": id, "agent_id": "agent-nobody" }),
-    ));
-    assert!(
-        nobody["error"]
-            .as_str()
-            .unwrap()
-            .contains("unknown agent_id"),
-        "{nobody:?}"
-    );
-}
-
-/// `tasks.for_agent` answers digests in two lists, newest-updated first, and
-/// an assigned task is in both.
-#[test]
-fn the_per_agent_read_answers_what_it_holds_and_what_it_watches() {
-    let tmp = tempfile::tempdir().unwrap();
-    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
-    let (_home, mut state, project_id) = tracked(&state_root);
-    let ws = workspace(&mut state, &project_id, "here");
-    let (_entity, other) = coding_agent(&mut state, &project_id, "elsewhere");
-
-    let held = task_id(&filed(&mut state, &project_id, "held"));
-    let handed = state.handle(req(
-        "tasks.assign",
-        json!({ "task_id": held, "assignee": { "kind": "new_agent", "workspace_id": ws } }),
-    ));
-    let holder = handed["result"]["dispatch"]["agent_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    let watched = task_id(&filed(&mut state, &project_id, "watched"));
-    state.handle(req(
-        "tasks.track",
-        json!({ "task_id": watched, "agent_id": holder }),
-    ));
-    filed(&mut state, &project_id, "neither");
-
-    let read = state.handle(req("tasks.for_agent", json!({ "agent_id": holder })));
-    assert_eq!(read["ok"], true, "{read:?}");
-    let ids = |key: &str| -> Vec<String> {
-        read["result"][key]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|entry| entry["task_id"].as_str().unwrap().to_string())
-            .collect()
-    };
-    assert_eq!(ids("assigned"), vec![held.clone()]);
-    assert_eq!(
-        ids("tracking"),
-        vec![watched.clone(), held.clone()],
-        "assignment tracks too, so the held task is in BOTH lists"
-    );
-
-    // A digest is enough to recognise and to order by, and not the body.
-    let entry = &read["result"]["assigned"][0];
-    assert_eq!(entry["number"], 1);
-    assert_eq!(entry["title"], "held");
-    assert_eq!(entry["state"], "open");
-    assert!(entry["status"].is_string());
-    assert!(entry["updated_at"].is_string());
-    assert!(entry.get("body").is_none(), "a digest carries no body");
-
-    // Another agent of the same project holds and watches nothing.
-    let empty = state.handle(req("tasks.for_agent", json!({ "agent_id": other })));
-    assert_eq!(empty["result"]["assigned"], json!([]));
-    assert_eq!(empty["result"]["tracking"], json!([]));
-}
-
 // ------------------------------------------------------------- notices ---
 
 /// The notices sitting on one agent's conversation, newest last.
@@ -310,10 +194,7 @@ fn a_change_reaches_every_tracker_but_the_agent_that_made_it() {
     let id = task_id(&filed(&mut state, &project_id, "Kanban drag"));
 
     for who in [&actor, &watcher] {
-        state.handle(req(
-            "tasks.track",
-            json!({ "task_id": id, "agent_id": who.1 }),
-        ));
+        set_task_tracking(&mut state, &id, &who.1, true);
     }
 
     // The actor moves it through its own tool, so the bridge knows who acted.
@@ -361,10 +242,7 @@ fn a_notice_names_an_actor_who_was_not_tracking_the_task() {
     let actor = coding_agent(&mut state, &project_id, "author workspace");
     let watcher = coding_agent(&mut state, &project_id, "reader workspace");
     let id = task_id(&filed(&mut state, &project_id, "one"));
-    state.handle(req(
-        "tasks.track",
-        json!({ "task_id": id, "agent_id": watcher.1 }),
-    ));
+    set_task_tracking(&mut state, &id, &watcher.1, true);
     state
         .on_agent_mcp_action(
             &actor.0,
@@ -392,10 +270,7 @@ fn an_assignment_notice_names_an_unwatched_target_agent() {
     let target = coding_agent(&mut state, &project_id, "target workspace");
     let watcher = coding_agent(&mut state, &project_id, "reader workspace");
     let id = task_id(&filed(&mut state, &project_id, "one"));
-    let tracked = state.handle(req(
-        "tasks.track",
-        json!({ "task_id": id, "agent_id": watcher.1 }),
-    ));
+    let tracked = set_task_tracking(&mut state, &id, &watcher.1, true);
     assert_eq!(tracked["ok"], true, "{tracked:?}");
     let assigned = state.handle(req(
         "tasks.assign",
@@ -424,10 +299,7 @@ fn a_comment_notice_names_the_comment_and_carries_none_of_it() {
     let (_home, mut state, project_id) = tracked(&state_root);
     let watcher = coding_agent(&mut state, &project_id, "watcher");
     let id = task_id(&filed(&mut state, &project_id, "one"));
-    state.handle(req(
-        "tasks.track",
-        json!({ "task_id": id, "agent_id": watcher.1 }),
-    ));
+    set_task_tracking(&mut state, &id, &watcher.1, true);
 
     state.handle(req(
         "tasks.comment",
@@ -462,10 +334,7 @@ fn a_notice_starts_the_tracking_agents_turn() {
     let (_home, mut state, project_id) = tracked(&state_root);
     let watcher = coding_agent(&mut state, &project_id, "watcher");
     let id = task_id(&filed(&mut state, &project_id, "one"));
-    state.handle(req(
-        "tasks.track",
-        json!({ "task_id": id, "agent_id": watcher.1 }),
-    ));
+    set_task_tracking(&mut state, &id, &watcher.1, true);
     // Nothing queued yet: the tracking call itself woke nobody.
     assert!(state.delivery_queue.take_ready(|_| false).is_empty());
 
@@ -496,10 +365,7 @@ fn a_notice_starts_the_tracking_agents_turn() {
 fn watching(state: &mut AppState, project_id: &str, title: &str) -> ((String, String), String) {
     let watcher = coding_agent(state, project_id, "watcher");
     let id = task_id(&filed(state, project_id, title));
-    state.handle(req(
-        "tasks.track",
-        json!({ "task_id": id, "agent_id": watcher.1 }),
-    ));
+    set_task_tracking(state, &id, &watcher.1, true);
     state.delivery_queue.take_ready(|_| false);
     (watcher, id)
 }
@@ -672,10 +538,7 @@ fn a_change_that_changes_nothing_wakes_nobody() {
     let (_home, mut state, project_id) = tracked(&state_root);
     let watcher = coding_agent(&mut state, &project_id, "watcher");
     let id = task_id(&filed(&mut state, &project_id, "one"));
-    state.handle(req(
-        "tasks.track",
-        json!({ "task_id": id, "agent_id": watcher.1 }),
-    ));
+    set_task_tracking(&mut state, &id, &watcher.1, true);
 
     // It is already in Backlog.
     state.handle(req(
@@ -689,10 +552,7 @@ fn a_change_that_changes_nothing_wakes_nobody() {
 
     // And somebody else starting to watch is not a change to the task.
     let other = coding_agent(&mut state, &project_id, "other");
-    state.handle(req(
-        "tasks.track",
-        json!({ "task_id": id, "agent_id": other.1 }),
-    ));
+    set_task_tracking(&mut state, &id, &other.1, true);
     assert!(
         notices(&mut state, &watcher.0, &watcher.1).is_empty(),
         "who else is watching is not a change to the task"

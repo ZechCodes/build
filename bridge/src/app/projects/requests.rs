@@ -1,6 +1,5 @@
 use super::{
-    canonical_source_path, repo_name_from_url, requested_base_branch, safe_mount_name,
-    usable_project_name, ProjectSource,
+    canonical_source_path, repo_name_from_url, safe_mount_name, usable_project_name, ProjectSource,
 };
 use crate::app::config::accept_isolation;
 use crate::app::{expand_tilde, require_str, AppState};
@@ -182,27 +181,6 @@ impl WorktreeMutation for OpenProjectSources {
 }
 
 impl AppState {
-    /// Register a project from a host path. Validates it is a git repo with the
-    /// requested base branch before adding, so a bad path fails loudly here rather
-    /// than at first dispatch.
-    pub(crate) fn project_add(&mut self, params: &Value) -> Result<Value, String> {
-        if params.get("sources").is_some() {
-            return self.project_from_sources(params, None);
-        }
-        let path = require_str(params, "path")?;
-        let path = expand_tilde(&path);
-        self.defer_project(
-            path.clone(),
-            path.display().to_string(),
-            PendingState::Creating,
-            OpenRepo {
-                requested_base: requested_base_branch(params),
-                path,
-            },
-            crate::app::runtime::lifecycle::ProjectRegistrationSettlement,
-        )
-    }
-
     pub(crate) fn project_init_git(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let project = self
@@ -250,36 +228,6 @@ impl AppState {
             state,
         );
         self.defer_lifecycle(row, mutation, settlement)
-    }
-
-    /// Clone a remote into the projects folder and register it as a project. The
-    /// base branch defaults to the clone's checked-out branch.
-    pub(crate) fn project_clone(&mut self, params: &Value) -> Result<Value, String> {
-        let url = require_str(params, "url")?;
-        let name = match params
-            .get("name")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            Some(named) => named.to_string(),
-            None => repo_name_from_url(&url),
-        };
-        let name = usable_project_name(name)?;
-        let dest = self.projects_dir.join(&name);
-        self.defer_project(
-            dest.clone(),
-            name.clone(),
-            PendingState::Creating,
-            CloneRepo {
-                url,
-                name,
-                dest,
-                projects_dir: self.projects_dir.clone(),
-                requested_base: requested_base_branch(params),
-            },
-            crate::app::runtime::lifecycle::ProjectRegistrationSettlement,
-        )
     }
 
     /// Create a brand-new git repo (with an initial commit so its base branch

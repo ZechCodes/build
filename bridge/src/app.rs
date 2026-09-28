@@ -41,10 +41,8 @@ mod worktrees;
 pub(in crate::app) use self::board::cache::DiffCacheEntry;
 #[cfg(test)]
 pub(in crate::app) use self::board::cache::DiffCacheKey;
-#[cfg(test)]
-pub(in crate::app) use self::board::cache::EXTERNAL_SCAN_INTERVAL;
 pub(in crate::app) use self::board::cache::{
-    scan_may_yet_show_it, DiffComputeObserver, ExternalWorktreeRows, WORKSPACE_SUMMARY_TTL,
+    DiffComputeObserver, ExternalWorktreeRows, WORKSPACE_SUMMARY_TTL,
 };
 pub(in crate::app) use self::board::views::{working_time_json, EntitylessRow};
 pub(in crate::app) use self::board_index::{BoardIndex, CacheEffect, RefreshClaim};
@@ -125,13 +123,13 @@ pub(in crate::app) use self::runtime::pumps::{
 pub(in crate::app) use self::runtime::pumps::{
     end_of_session, spawn_activity_pump, spawn_status_pump,
 };
-pub(in crate::app) use self::runtime::recovery::{
-    archived_worktree_json, load_stored_tasks, merge_archived_worktree_facts,
-    reconcile_missing_run_worktree, record_session_death_in_thread,
-};
 #[cfg(test)]
 pub(in crate::app) use self::runtime::recovery::{
     classify_stage_publication, unregistered_restore_for,
+};
+pub(in crate::app) use self::runtime::recovery::{
+    load_stored_tasks, merge_archived_worktree_facts, reconcile_missing_run_worktree,
+    record_session_death_in_thread,
 };
 pub(in crate::app) use self::runtime::sessions::{
     agent_tab_id, build_agent, default_resume_id_probe, default_session_locator_factory,
@@ -157,11 +155,9 @@ pub(in crate::app) use self::runtime::terminals::{
 };
 pub(in crate::app) use self::streams::{sha256_hex, stream_start, StreamState};
 pub(in crate::app) use self::tasks::documents::{attach_plan_operation_turn, comment_json};
-pub(in crate::app) use self::tasks::scheduler::scheduler_request;
 pub(in crate::app) use self::tasks::sessions::PlanDraftingStarted;
 pub(in crate::app) use self::tasks::views::{
-    dispatchable_next_run_stage, next_unsettled_stage, plan_stage_json, plan_state_str,
-    stage_doc_state_str,
+    dispatchable_next_run_stage, next_unsettled_stage, plan_state_str,
 };
 
 #[cfg(test)]

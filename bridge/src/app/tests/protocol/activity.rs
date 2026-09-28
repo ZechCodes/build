@@ -123,7 +123,7 @@ async fn a_reporting_session_pumps_its_work_into_the_conversation() {
     );
 
     let mut s = state.lock().unwrap();
-    let view = s.handle(req("run.get", json!({ "run_id": "run-activity" })));
+    let view = run_detail(&mut s, json!({ "run_id": "run-activity" }));
     assert_eq!(
         view["result"]["unread_count"], 0,
         "an agent working is not an agent addressing anyone: {view:?}"
@@ -289,9 +289,8 @@ async fn a_headless_agent_turns_a_message_into_activity_and_leaves() {
     .await
     .expect("the session Build opened is closed when the child's stream ends");
     assert_eq!(open_session_count(&state, "run-headless"), 0);
-    let listed = call(
-        &handler,
-        "agent.list",
+    let listed = agent_roster(
+        &mut state.lock().unwrap(),
         json!({ "entity_id": "run-headless" }),
     );
     let bubble = &listed["result"]["agents"][0];
@@ -303,7 +302,10 @@ async fn a_headless_agent_turns_a_message_into_activity_and_leaves() {
         bubble["working"], false,
         "and an agent that has left is not working: {bubble:?}"
     );
-    let view = call(&handler, "run.get", json!({ "run_id": "run-headless" }));
+    let view = run_detail(
+        &mut state.lock().unwrap(),
+        json!({ "run_id": "run-headless" }),
+    );
     assert_eq!(
         view["result"]["unread_count"], 0,
         "an agent working is not an agent addressing anyone: {view:?}"
@@ -381,7 +383,10 @@ async fn a_failed_answer_closes_the_call_it_answers() {
     )
     .await;
 
-    let view = call(&handler, "run.get", json!({ "run_id": "run-failed-tool" }));
+    let view = run_detail(
+        &mut state.lock().unwrap(),
+        json!({ "run_id": "run-failed-tool" }),
+    );
     assert_eq!(
         view["result"]["unread_count"], 0,
         "a failed tool call still asks the human for nothing: {view:?}"

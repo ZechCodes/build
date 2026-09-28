@@ -41,7 +41,7 @@ fn a_detail_poll_that_names_no_page_ships_the_conversation_whole() {
     let mut state = qa_state(&repo, dir.path());
     let held = run_with_long_conversation(&mut state, "run-unbounded", 250);
 
-    let opened = state.handle(req("run.get", json!({ "run_id": "run-unbounded" })));
+    let opened = run_detail(&mut state, json!({ "run_id": "run-unbounded" }));
     let thread = &opened["result"]["thread"];
     assert_eq!(
         thread["items"].as_array().unwrap().len(),
@@ -64,10 +64,10 @@ fn a_detail_poll_that_names_no_page_ships_the_conversation_whole() {
     let last_sequence = thread["items"].as_array().unwrap().last().unwrap()["data"]["sequence"]
         .as_u64()
         .unwrap();
-    let delta = state.handle(req(
-        "run.get",
+    let delta = run_detail(
+        &mut state,
         json!({ "run_id": "run-unbounded", "thread_after_sequence": last_sequence }),
-    ));
+    );
     let delta_thread = &delta["result"]["thread"];
     assert!(
         delta_thread["items"].as_array().unwrap().is_empty(),
@@ -85,10 +85,10 @@ fn a_detail_poll_cannot_ask_for_more_conversation_than_a_page_carries() {
     let mut state = qa_state(&repo, dir.path());
     run_with_long_conversation(&mut state, "run-greedy", 250);
 
-    let greedy = state.handle(req(
-        "run.get",
+    let greedy = run_detail(
+        &mut state,
         json!({ "run_id": "run-greedy", "thread_limit": 10_000 }),
-    ));
+    );
     let thread = &greedy["result"]["thread"];
     assert_eq!(
         thread["items"].as_array().unwrap().len(),
@@ -108,10 +108,10 @@ fn a_detail_poll_whose_limit_is_not_a_plain_integer_still_gets_a_page() {
     let held = run_with_long_conversation(&mut state, "run-odd-limit", 250);
 
     let page_of = |state: &mut AppState, limit: Value| {
-        let answer = state.handle(req(
-            "run.get",
+        let answer = run_detail(
+            state,
             json!({ "run_id": "run-odd-limit", "thread_limit": limit }),
-        ));
+        );
         answer["result"]["thread"].clone()
     };
 
@@ -156,13 +156,13 @@ fn a_detail_poll_that_asks_for_a_page_of_a_long_conversation_gets_one_not_all_of
     let mut state = qa_state(&repo, dir.path());
     let held = run_with_long_conversation(&mut state, "run-long", 250);
 
-    let opened = state.handle(req(
-        "run.get",
+    let opened = run_detail(
+        &mut state,
         json!({
             "run_id": "run-long",
             "thread_limit": crate::thread::DEFAULT_THREAD_PAGE,
         }),
-    ));
+    );
     let thread = &opened["result"]["thread"];
     let items = thread["items"].as_array().unwrap();
     assert_eq!(
@@ -229,13 +229,13 @@ fn a_cursored_poll_after_a_restart_reships_a_mutation_under_the_tail() {
         "the restart loaded the conversation whole, so the delta proves nothing"
     );
 
-    let delta = restarted.handle(req(
-        "run.get",
+    let delta = run_detail(
+        &mut restarted,
         json!({
             "run_id": "run-restart-delta",
             "thread_after_sequence": cursor,
         }),
-    ));
+    );
     let thread = &delta["result"]["thread"];
     let items = thread["items"].as_array().unwrap();
     assert!(
@@ -249,13 +249,13 @@ fn a_cursored_poll_after_a_restart_reships_a_mutation_under_the_tail() {
     // And it drains: the high-water mark it names is past the mutations it
     // just shipped, so the tab asks once and stops asking.
     let advanced = thread["thread_last_sequence"].as_u64().unwrap();
-    let drained = restarted.handle(req(
-        "run.get",
+    let drained = run_detail(
+        &mut restarted,
         json!({
             "run_id": "run-restart-delta",
             "thread_after_sequence": advanced,
         }),
-    ));
+    );
     assert!(
         drained["result"]["thread"]["items"]
             .as_array()
@@ -657,10 +657,7 @@ fn conversation_reads_reject_invalid_or_stale_explicit_identity() {
 /// `thread.activity` paths read — with the run's own span, which is what a
 /// client asks for and what the entity's own lifecycle events shift.
 fn conversation_with_a_long_run(state: &mut AppState, calls: usize) -> (String, u64, u64) {
-    let task = state
-        .plan_create(&json!({ "goal": "trim the retry loop", "dispatch": false }))
-        .expect("create a stored legacy plan below the retired RPC boundary");
-    let task_id = task["plan_id"].as_str().unwrap().to_string();
+    let task_id = file_legacy_task(state, "trim the retry loop");
     let agent_id = primary_agent_id(state, &task_id);
     state
         .edit_agent_conversation(&task_id, &agent_id, |thread, _| {

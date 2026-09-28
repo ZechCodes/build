@@ -540,11 +540,9 @@ pub(in crate::app::tests) fn commit_in(checkout: &std::path::Path, message: &str
     git_in(checkout, &["commit", "-m", message]);
 }
 
-/// Adopting a bare worktree is what brings its row onto the feed at all —
-/// releasing it hands the worktree back to the human, and the row goes
-/// with it, the same as it never having been adopted.
+/// Adopting a bare worktree is what brings its row onto the feed at all.
 #[test]
-fn adopting_a_bare_worktree_brings_its_row_and_releasing_it_takes_it_away() {
+fn adopting_a_bare_worktree_brings_its_row() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let project_id = state.project_at(0).id.clone();
@@ -571,22 +569,12 @@ fn adopting_a_bare_worktree_brings_its_row_and_releasing_it_takes_it_away() {
     let row = branch_row(&mut state, "loose");
     assert_eq!(row["run_id"], run_id_of(&adopted), "{row:?}");
     assert_eq!(row["dismissed"], false, "{row:?}");
-
-    let released = state.handle(req("run.release", json!({ "run_id": run_id_of(&adopted) })));
-    assert_eq!(released["ok"], true, "{released:?}");
-    assert!(
-        work_item_rows(&mut state)
-            .iter()
-            .all(|row| row["branch"] != json!("loose")),
-        "released back to a bare worktree — off the feed again: {:?}",
-        work_item_rows(&mut state)
-    );
 }
 
 /// A checkout Build never cut has no entity, no conversation and nothing to
 /// file away, so commits cannot revive the row once it is cleared. It is
-/// reachable by name (`branch.get`) rather than on the inbox, which lists
-/// work started in Build.
+/// named by its branch rather than listed on the inbox, which lists work
+/// started in Build.
 #[test]
 fn clearing_a_bare_checkouts_row_holds_across_its_own_commits() {
     let (dir, repo) = init_repo();
@@ -629,8 +617,8 @@ fn a_row_dismissal_names_exactly_one_row() {
     let other = init_repo_named(dir.path(), "other");
     let mut state = qa_state(&repo, dir.path());
     let added = state.handle(req(
-        "project.add",
-        json!({ "path": other.to_str().unwrap() }),
+        "project.create",
+        open_folder(json!({ "path": other.to_str().unwrap() })),
     ));
     assert_eq!(added["ok"], true, "{added:?}");
     let project_id = state.project_at(0).id.clone();
@@ -719,16 +707,11 @@ fn a_row_dismissal_refuses_what_it_cannot_clear() {
     );
 }
 
-/// The row of a checkout Build never cut, read the one way a client can
-/// reach it: by name. The inbox lists work started in Build, so it is not
-/// there.
+/// The row of a checkout Build never cut, by name. The inbox lists work
+/// started in Build, so it is not there.
 fn bare_row(state: &mut AppState, project_id: &str, branch: &str) -> Value {
-    let got = state.handle(req(
-        "branch.get",
-        json!({ "project_id": project_id, "branch": branch }),
-    ));
-    assert_eq!(got["ok"], true, "{got:?}");
-    got["result"].clone()
+    checkout_row(state, project_id, branch)
+        .unwrap_or_else(|| panic!("a checkout of {project_id} is on {branch}"))
 }
 
 /// A planned run and its Task share one conversation. One piece of news on

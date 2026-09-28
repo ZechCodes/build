@@ -373,47 +373,6 @@ fn the_unread_count_leaves_out_the_users_own_words() {
     assert_eq!(row_for(&mut state, &id)["unread"], json!(1));
 }
 
-/// Done is a mark, not a flag: the row clears, and the next thing that
-/// happens to the task brings it back on its own.
-#[test]
-fn dismissing_clears_the_row_until_the_next_event() {
-    let tmp = tempfile::tempdir().unwrap();
-    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
-    let (_home, mut state, project_id) = tracked(&state_root);
-    let who = coding_agent(&mut state, &project_id, "here");
-    let id = agent_files(&mut state, &who, "done with this", Some(true));
-    assert_eq!(row_for(&mut state, &id)["done_until_next"], false);
-
-    let cleared = state.handle(req("tasks.dismiss", json!({ "task_id": id })));
-    assert_eq!(cleared["ok"], true, "{cleared:?}");
-    assert_eq!(
-        row_for(&mut state, &id)["done_until_next"],
-        true,
-        "cleared, and still a row"
-    );
-
-    state
-        .on_agent_mcp_action(
-            &who.0,
-            &who.1,
-            BridgeAction::TrackerCommentTask {
-                task_id: id.clone(),
-                body: "one more thing".into(),
-                refs: Vec::new(),
-                track: None,
-                attachments: Vec::new(),
-                notify_user: None,
-                mention_user: None,
-            },
-        )
-        .expect("an agent says something new");
-    assert_eq!(
-        row_for(&mut state, &id)["done_until_next"],
-        false,
-        "the next event is past the mark"
-    );
-}
-
 /// The row carries what the inbox draws, and its subtitle is the reader's
 /// voice of the same line an agent would be sent — no comment ids and no tool
 /// names in front of a person.

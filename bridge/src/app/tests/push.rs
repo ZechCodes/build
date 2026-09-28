@@ -102,13 +102,7 @@ pub(in crate::app::tests) fn change_events(pushes: &[Value]) -> Vec<Value> {
 /// would publish. These tests cover the push fanout, not Task creation.
 fn publish_legacy_task(state: &Arc<Mutex<AppState>>, goal: &str) -> String {
     let mut state = state.lock().unwrap();
-    let task = state
-        .plan_create(&json!({ "goal": goal, "dispatch": false }))
-        .expect("the legacy task fixture is filed through the domain seam");
-    let task_id = task["plan_id"]
-        .as_str()
-        .expect("the legacy task has an id")
-        .to_string();
+    let task_id = file_legacy_task(&mut state, goal);
     state.note_board_changed();
     state.note_entity_changed(&task_id);
     task_id
@@ -140,13 +134,7 @@ async fn the_greeting_announces_push_events() {
     );
     assert_eq!(
         hello["result"]["events"],
-        json!([
-            "board.changed",
-            "entity.changed",
-            "changes",
-            "bridge.update_status",
-            "models.changed"
-        ]),
+        json!(["changes", "bridge.update_status", "models.changed"]),
         "{hello:?}"
     );
     // Step 1.5: what a Part 1 adapter reads instead of probing — now
@@ -157,7 +145,7 @@ async fn the_greeting_announces_push_events() {
         hello["result"]["changes"],
         json!({
             "subscriptions": true,
-            "mode": "legacy",
+            "mode": "subscriptions",
             "kinds": ["state", "thread", "git", "files", "terminals", "tasks"],
             "items": "bodies",
             "batch_ms": { "min": 1000, "max": 600_000 },
@@ -524,12 +512,6 @@ async fn a_subscription_covering_a_worktree_starts_its_watcher() {
     assert_eq!(subscribed["result"]["watch"], "live", "{subscribed:?}");
     assert!(state.lock().unwrap().watchers().is_watching(&project_id));
 
-    let listed = handler.call(sender.clone(), req("changes.list", json!({})));
-    assert_eq!(
-        listed["result"]["subscriptions"][0]["subscription_id"],
-        "s-focus"
-    );
-
     let unsubscribed = handler.call(
         sender.clone(),
         req(
@@ -693,8 +675,8 @@ async fn a_state_item_finds_a_checkout_past_a_project_nothing_has_scanned() {
     let second = init_repo_named(dir.path(), "second-repo");
     let added = call(
         &handler,
-        "project.add",
-        json!({ "path": second.display().to_string(), "base_branch": "main" }),
+        "project.create",
+        open_folder(json!({ "path": second.display().to_string(), "base_branch": "main" })),
     );
     assert_eq!(added["ok"], true, "{added:?}");
     let second_id = added["result"]["project_id"]
@@ -771,8 +753,8 @@ async fn a_board_item_carries_the_project_list_when_a_project_arrives() {
     let second = crate::git_fixture::init_repo_named(dir.path(), "second-repo");
     let added = call(
         &handler,
-        "project.add",
-        json!({ "path": second.display().to_string(), "base_branch": "main" }),
+        "project.create",
+        open_folder(json!({ "path": second.display().to_string(), "base_branch": "main" })),
     );
     assert_eq!(added["ok"], true, "{added:?}");
 
@@ -963,11 +945,14 @@ async fn a_git_item_carries_the_shapes_the_client_would_have_pulled() {
         git["unpushed"].get("patch").is_none(),
         "a patch is what the item deliberately leaves for the review surface: {git:?}"
     );
-    let diff = call(
-        &handler,
-        "project.diff",
-        json!({ "project_id": project_id }),
-    );
+    // The project's own working diff, rendered the way the item measured it.
+    let repo_path = state.lock().unwrap().project_at(0).repo_path.clone();
+    let diff = crate::app::ReadSubject::Project {
+        project_id: project_id.clone(),
+        repo_path,
+    }
+    .render(crate::diff::DiffPaths::All)
+    .expect("the project's working diff renders");
     assert_eq!(
         git["diff"],
         Value::Null,
@@ -975,11 +960,11 @@ async fn a_git_item_carries_the_shapes_the_client_would_have_pulled() {
     );
     assert_eq!(
         git["diff_bytes"].as_u64(),
-        Some(diff["result"]["patch"].as_str().unwrap().len() as u64),
-        "the size it names is the body `project.diff` answers with: {git:?}"
+        Some(diff["patch"].as_str().unwrap().len() as u64),
+        "the size it names is the size of the working diff: {git:?}"
     );
     assert!(
-        diff["result"]["patch"]
+        diff["patch"]
             .as_str()
             .is_some_and(|patch| patch.contains("a small change")),
         "and that body is still there for the surface that asks: {diff:?}"
@@ -1534,70 +1519,50 @@ fn terminals_item(pushes: &[Value], entity_id: &str) -> Option<Value> {
         .map(|item| item["terminals"].clone())
 }
 
-/// Step 1.5, the legacy default: a client that greets with NO `changes`
-/// param is subscribed to today's events and to nothing else. A real
-/// mutation over the wire reaches it as `{"type":"board.changed"}` and
-/// `{"type":"entity.changed","id":…}` — those keys and no others, the bytes
-/// a pre-subscriptions client parses — and never as a `changes` frame. The
-/// session beside it that greeted with `"changes": "subscriptions"` hears
-/// nothing at all from the same mutation until it subscribes, and then hears
-/// only its own subscription's frame.
+/// A greeting with NO `changes` param is what a tab still running a
+/// pre-3.0 SPA sends first. It is accepted, never refused, and it opens a
+/// subscriptions session like any other: the reply still advertises
+/// `changes.subscriptions` and the same `changes` settings, so that SPA
+/// re-greets with `"changes": "subscriptions"` and subscribes. The retired
+/// `board.changed` / `entity.changed` pushes never reach it, and once it
+/// subscribes it hears its own `changes` frames.
 #[tokio::test]
-async fn a_legacy_greeting_hears_only_the_legacy_frames_for_a_real_mutation() {
+async fn a_greeting_without_changes_is_a_subscriptions_session_with_no_legacy_pushes() {
     let (dir, repo) = init_repo();
-    let (state, handler, _sender, mut legacy_rx, legacy_key) =
-        greeted_push_session(&repo, dir.path());
-    let (opted_in, opted_in_rx, opted_in_key) = SessionSender::observable("opted-in");
-    let mut opted_in_rx = PushReceiver {
-        rx: opted_in_rx,
-        bus: state.lock().unwrap().changes(),
-    };
-    let greeting = handler.call(
-        opted_in.clone(),
-        req("session.hello", json!({ "changes": "subscriptions" })),
+    let (state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let greeting = handler.call(sender.clone(), req("session.hello", json!({})));
+    assert_eq!(greeting["ok"], true, "{greeting:?}");
+    assert!(
+        greeting["result"]["capabilities"]
+            .as_array()
+            .is_some_and(|names| names.contains(&json!("changes.subscriptions"))),
+        "{greeting:?}"
     );
+    assert_eq!(greeting["result"]["changes"]["subscriptions"], true);
     assert_eq!(greeting["result"]["changes"]["mode"], "subscriptions");
     let run_id = {
         let mut app = state.lock().unwrap();
-        planned_run_in_review(&mut app, "legacy hears this").1
+        planned_run_in_review(&mut app, "nobody hears this the old way").1
     };
-    settled_pushes(&mut legacy_rx, &legacy_key).await;
-    settled_pushes(&mut opted_in_rx, &opted_in_key).await;
+    settled_pushes(&mut rx, &key).await;
 
-    // A real mutation over the wire, not a hand-published note.
+    // A real mutation over the wire, and the hand-published notes beside it.
     let posted = call(
         &handler,
         "thread.post",
         json!({ "entity_id": run_id, "body": "a real mutation" }),
     );
     assert_eq!(posted["ok"], true, "{posted:?}");
-
-    let board = json!({ "type": "board.changed" });
-    let entity = json!({ "type": "entity.changed", "id": run_id });
-    let mut legacy = pushes_until(&mut legacy_rx, &legacy_key, |pushes| {
-        pushes.contains(&board) && pushes.contains(&entity)
-    })
-    .await;
-    legacy.extend(settled_pushes(&mut legacy_rx, &legacy_key).await);
-    for frame in &legacy {
-        assert!(
-            *frame == board || *frame == entity,
-            "a legacy session hears the two legacy frames and nothing else, \
-             with no key beyond the ones it always carried: {frame:?}"
-        );
-    }
-    assert!(legacy.contains(&board), "{legacy:?}");
-    assert!(legacy.contains(&entity), "{legacy:?}");
+    state.lock().unwrap().note_board_changed();
+    state.lock().unwrap().note_entity_changed(&run_id);
     assert_eq!(
-        settled_pushes(&mut opted_in_rx, &opted_in_key).await,
+        settled_pushes(&mut rx, &key).await,
         Vec::<Value>::new(),
-        "a session that opted into subscriptions hears nothing until it subscribes"
+        "an unsubscribed session hears nothing, and never a legacy frame"
     );
 
-    // ... and once it subscribes it hears its own frame, which is the one a
-    // legacy session never sees.
     let subscribed = handler.call(
-        opted_in.clone(),
+        sender.clone(),
         req(
             "changes.subscribe",
             json!({
@@ -1608,22 +1573,19 @@ async fn a_legacy_greeting_hears_only_the_legacy_frames_for_a_real_mutation() {
         ),
     );
     assert_eq!(subscribed["ok"], true, "{subscribed:?}");
-    settled_pushes(&mut opted_in_rx, &opted_in_key).await;
+    settled_pushes(&mut rx, &key).await;
     state.lock().unwrap().note_entity_changed(&run_id);
 
+    let pushes = settled_pushes(&mut rx, &key).await;
     assert!(
-        settled_pushes(&mut opted_in_rx, &opted_in_key)
-            .await
-            .iter()
-            .any(|push| push["type"] == "changes"),
-        "the subscribed session hears the new frame"
+        pushes.iter().any(|push| push["type"] == "changes"),
+        "the subscribed session hears its frame: {pushes:?}"
     );
     assert!(
-        settled_pushes(&mut legacy_rx, &legacy_key)
-            .await
+        pushes
             .iter()
-            .all(|push| push["type"] != "changes"),
-        "the legacy session never hears one"
+            .all(|push| push["type"] != "board.changed" && push["type"] != "entity.changed"),
+        "{pushes:?}"
     );
 }
 

@@ -19,22 +19,10 @@ use std::sync::{Arc, Mutex};
 /// something about it. An agent's own work never appears here; if it did, the
 /// rail would reorder itself while you watched.
 pub(in crate::app) const INTERACTION_VERBS: &[(&str, &str)] = &[
-    ("plan.stage_doc", "plan_id"),
-    ("plan.approve", "plan_id"),
-    ("plan.stage_approve", "plan_id"),
-    ("plan.send_notes", "plan_id"),
-    ("plan.stage_send_notes", "plan_id"),
-    ("plan.comment_add", "plan_id"),
-    ("plan.message", "plan_id"),
-    ("plan.abandon", "plan_id"),
     ("run.request_changes", "run_id"),
     ("run.message", "run_id"),
     ("run.git_action", "run_id"),
-    ("run.stage_dispatch", "run_id"),
-    ("run.stage_send_notes", "run_id"),
-    ("run.set_auto_advance", "run_id"),
     ("run.abandon", "run_id"),
-    ("run.release", "run_id"),
     ("run.adopt", "worktree_id"),
     ("workspace.ensure_conversation", "workspace_id"),
     ("project.ensure_conversation", "project_id"),
@@ -76,8 +64,6 @@ pub(in crate::app) const USER_ACTIVITY_VERBS: &[&str] = &[
     "entity.seen",
     "fs.mkdir",
     "fs.write",
-    "git.branch_delete",
-    "git.checkout",
     "git.checkout_ref",
     "git.commit",
     "git.discard",
@@ -88,24 +74,17 @@ pub(in crate::app) const USER_ACTIVITY_VERBS: &[&str] = &[
     "git.stage",
     "git.stash",
     "git.stash_pop",
-    "git.unstage",
     "tasks.assign",
     "tasks.attach",
     "tasks.close",
     "tasks.comment",
     "tasks.create",
-    "tasks.dismiss",
-    "tasks.link",
     "tasks.read_through",
     "tasks.reopen",
-    "tasks.track",
-    "tasks.untrack",
     "tasks.unwatch",
     "tasks.update",
     "tasks.watch",
-    "project.add",
     "project.add_source",
-    "project.clone",
     "project.create",
     "project.delete",
     "project.init_git",
@@ -114,11 +93,8 @@ pub(in crate::app) const USER_ACTIVITY_VERBS: &[&str] = &[
     "project.set_remote",
     "run.abandon",
     "run.adopt",
-    "run.delete",
-    "run.finish",
     "run.git_action",
     "run.message",
-    "run.release",
     "run.request_changes",
     "settings.set",
     "term.create",
@@ -133,8 +109,6 @@ pub(in crate::app) const USER_ACTIVITY_VERBS: &[&str] = &[
     "workspace.remove_directory",
     "workspace.rename",
     "workspace.retry",
-    "worktree.create",
-    "worktree.finish",
 ];
 
 /// Dispatch one decrypted request frame. [`session_scoped`] answers the verbs
@@ -440,7 +414,6 @@ fn allowed_during_project_deletion(method: &str) -> bool {
             | "bridge.stats"
             | "bridge.update_status"
             | "bridge.check_update"
-            | "changes.list"
             | "changes.subscribe"
             | "changes.unsubscribe"
             | "rtc.offer"
@@ -451,22 +424,17 @@ fn allowed_during_project_deletion(method: &str) -> bool {
             | "term.ack"
             | "term.resize"
             | "agent.attach"
-            | "agent.list"
             | "stream.events"
             | "stream.state"
-            | "archive.list"
             | "archived.list"
             | "board.list"
             | "capture.get"
-            | "capture.list"
             | "models.list"
             | "project.list"
-            | "project.diff"
             | "settings.get"
             | "fs.list"
             | "fs.read"
             | "fs.tree"
-            | "git.branches"
             | "git.changeset_diff"
             | "git.diff"
             | "git.log"
@@ -474,22 +442,12 @@ fn allowed_during_project_deletion(method: &str) -> bool {
             | "git.show"
             | "git.status"
             | "git.unpushed"
-            | "task.diff"
             | "task.stage_diff"
             | "task.doc"
             | "task.get"
-            | "task.list"
             | "task.stage_doc"
             | "task.stages"
-            | "plan.doc"
-            | "plan.get"
-            | "plan.list"
-            | "plan.stage_doc"
-            | "plan.stages"
             | "run.diff"
-            | "run.stage_diff"
-            | "run.get"
-            | "branch.get"
             | "worktree.diff"
             | "thread.activity"
             | "thread.attachment"
@@ -499,22 +457,6 @@ fn allowed_during_project_deletion(method: &str) -> bool {
             | "workspace.get"
             | "workspace.list"
             | "workspace.git_init_options"
-    )
-}
-
-/// Legacy documents remain readable, but workspaces no longer launch or
-/// mutate the retired task/planning workflow.
-fn retired_planning_operation(method: &str) -> bool {
-    if method.starts_with("task.") || method.starts_with("plan.") {
-        let action = method.split_once('.').map(|(_, action)| action);
-        return !matches!(
-            action,
-            Some("get" | "list" | "doc" | "stages" | "stage_doc" | "stage_diff" | "diff")
-        );
-    }
-    matches!(
-        method,
-        "run.create" | "run.stage_dispatch" | "run.stage_send_notes" | "run.set_auto_advance"
     )
 }
 
@@ -635,14 +577,9 @@ impl AppState {
     /// v1 first, legacy second (wire spec Part 2, step 2.2). A verb
     /// [`api::v1`] registers is answered from its typed handler; everything
     /// else falls through to [`AppState::route_legacy`], whose bare
-    /// `Err(String)` has no code of its own and so reads as `internal`.
-    ///
-    /// The retirement guard runs before BOTH. Planning was retired upstream by
-    /// keeping its verbs served and making the mutating ones refuse, so the
-    /// check has to precede the facade that would otherwise run them: a
-    /// retired verb answers [`crate::app::tasks::TASKS_RETIRED_ERROR`], not
-    /// `unknown_method`, and its reads (`get`, `list`, `doc`, the stage and
-    /// diff reads) go on through v1 untouched.
+    /// `Err(String)` has no code of its own and so reads as `internal`. A verb
+    /// neither answers is `unknown_method` — which is what every verb cut
+    /// before release (#207) now is.
     ///
     /// [`api::v1`]: crate::api::v1
     pub(in crate::app) fn route(
@@ -652,13 +589,6 @@ impl AppState {
     ) -> Result<Value, ApiError> {
         if self.project_deletion_in_progress && !allowed_during_project_deletion(method) {
             return Err(ApiError::unavailable(PROJECT_DELETION_IN_PROGRESS));
-        }
-        if retired_planning_operation(method) {
-            // `unavailable`, not `internal`: the verb is served and its
-            // refusal is understood — the capability behind it is gone.
-            return Err(ApiError::unavailable(
-                crate::app::tasks::TASKS_RETIRED_ERROR,
-            ));
         }
         if let Some(answered) = crate::api::v1::dispatch(self, method, params) {
             return answered;
@@ -702,41 +632,13 @@ impl AppState {
     /// Stamp the entity a successful verb acted on, if that verb counts as an
     /// interaction. One table rather than fifteen call sites: the policy is the
     /// kind of thing that drifts when it lives next to the code it describes.
-    pub(in crate::app) fn stamp_interaction_for(
-        &mut self,
-        method: &str,
-        params: &Value,
-        result: &Value,
-    ) {
+    pub(in crate::app) fn stamp_interaction_for(&mut self, method: &str, params: &Value) {
         let param = |key: &str| params.get(key).and_then(Value::as_str).map(str::to_string);
-        let mut touched: Vec<String> = INTERACTION_VERBS
+        let touched: Vec<String> = INTERACTION_VERBS
             .iter()
             .filter(|(verb, _)| *verb == method)
             .filter_map(|(_, key)| param(key))
             .collect();
-        // Implementing a task is an interaction with BOTH: the plan you acted
-        // on and the run you just made.
-        if method == "run.create" {
-            touched.extend(param("plan_id"));
-            touched.extend(
-                result
-                    .get("run_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-            );
-        }
-        // A worktree Build itself cut enters the rail as already-interacted: you
-        // made it on purpose, and it is waiting for you to do something in it.
-        // (A worktree made outside Build stays in the Worktrees row until you
-        // act on it here — nothing stamps it, so nothing surfaces it.)
-        if method == "worktree.create" {
-            touched.extend(
-                result
-                    .get("worktree_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-            );
-        }
         for id in touched {
             self.touch_attention(&id);
         }

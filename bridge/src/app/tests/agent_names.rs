@@ -35,7 +35,7 @@ fn agent_on(state: &mut AppState, project_id: &str, workspace_name: &str) -> (St
 
 /// The agent as a client reads it off `agent.list`.
 fn listed(state: &mut AppState, entity_id: &str, agent_id: &str) -> Value {
-    let listed = state.handle(req("agent.list", json!({ "entity_id": entity_id })));
+    let listed = agent_roster(state, json!({ "entity_id": entity_id }));
     listed["result"]["agents"]
         .as_array()
         .unwrap()
@@ -506,10 +506,7 @@ fn the_name_travels_with_everything_the_agent_is_named_on() {
 
     // And on the notice about a task it changed.
     let id = task_id(&filed(&mut state, &project_id, "Kanban drag"));
-    state.handle(req(
-        "tasks.track",
-        json!({ "task_id": id, "agent_id": watcher }),
-    ));
+    set_task_tracking(&mut state, &id, &watcher, true);
     state
         .on_agent_mcp_action(
             &entity_id,

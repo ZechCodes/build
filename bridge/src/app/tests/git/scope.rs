@@ -133,20 +133,24 @@ fn workspace_git_scope_requires_an_exact_git_source() {
 
 // ---- git scope keyed on an external worktree ------------------------------
 
-/// Mint an unbound worktree and hand back (project_id, worktree_id, path).
-fn bare_worktree(state: &mut AppState, name: &str) -> (String, String, PathBuf) {
+/// Cut an unbound worktree by hand and hand back (project_id, worktree_id,
+/// path): a checkout Build did not make, which the scan names.
+fn bare_worktree(
+    state: &mut AppState,
+    repo: &std::path::Path,
+    dir: &std::path::Path,
+    name: &str,
+) -> (String, String, PathBuf) {
     let project_id = state.project_at(0).id.clone();
-    let created = state.handle(req(
-        "worktree.create",
-        json!({ "project_id": project_id, "name": name }),
-    ));
-    assert_eq!(created["ok"], true, "{created:?}");
-    let result = &created["result"];
-    (
-        project_id,
-        result["worktree_id"].as_str().unwrap().to_string(),
-        PathBuf::from(result["path"].as_str().unwrap()),
-    )
+    let path = add_external_worktree(repo, dir, name, &format!("build/{name}"));
+    let worktree_id = state
+        .scan_external_worktrees_now(&project_id)
+        .unwrap()
+        .into_iter()
+        .find(|worktree| worktree.path == crate::worktree::canonical_root(&path))
+        .expect("the scan names the hand-made worktree")
+        .id;
+    (project_id, worktree_id, path)
 }
 
 /// The whole git GUI — status, staging, commit, history — works on a
@@ -156,7 +160,7 @@ fn bare_worktree(state: &mut AppState, name: &str) -> (String, String, PathBuf) 
 fn the_git_gui_scopes_to_an_external_worktree() {
     let (dir, repo) = init_repo();
     let mut state = git_gui_state(&dir, &repo);
-    let (project_id, worktree_id, path) = bare_worktree(&mut state, "scratch");
+    let (project_id, worktree_id, path) = bare_worktree(&mut state, &repo, dir.path(), "scratch");
     let scope = json!({ "project_id": project_id, "worktree_id": worktree_id });
     std::fs::write(path.join("only-here.txt"), "in the worktree\n").unwrap();
 
@@ -201,11 +205,12 @@ fn the_git_gui_scopes_to_an_external_worktree() {
 fn branch_operations_switch_the_worktree_they_are_scoped_to() {
     let (dir, repo) = init_repo();
     let mut state = git_gui_state(&dir, &repo);
-    let (project_id, worktree_id, path) = bare_worktree(&mut state, "scratch");
+    let (project_id, worktree_id, path) = bare_worktree(&mut state, &repo, dir.path(), "scratch");
 
+    git_in(&path, &["branch", "side-quest"]);
     let checked_out = state.handle(req(
-        "git.checkout",
-        json!({ "project_id": project_id, "worktree_id": worktree_id, "branch": "side-quest", "create": true }),
+        "git.checkout_ref",
+        json!({ "project_id": project_id, "worktree_id": worktree_id, "full_ref": "refs/heads/side-quest" }),
     ));
     assert_eq!(checked_out["ok"], true, "{checked_out:?}");
     assert_eq!(checked_out["result"]["branch"], json!("side-quest"));
@@ -219,277 +224,6 @@ fn branch_operations_switch_the_worktree_they_are_scoped_to() {
     assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), "side-quest");
     let primary = state.handle(req("git.status", json!({ "project_id": project_id })));
     assert_eq!(primary["result"]["branch"], json!("main"));
-}
-
-/// The rail's worktree affordance (the FAB's smaller sibling): mint a
-/// worktree with NO run, no agent and no session — a directory the human
-/// then opens a terminal or an agent tab in. It is unbound, so the scan
-/// reports it exactly like a worktree made by hand, and the usual
-/// adopt-on-first-mutation path still applies.
-#[test]
-fn worktree_create_mints_an_unbound_worktree_the_scan_can_see() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let project_id = state.project_at(0).id.clone();
-
-    let created = state.handle(req(
-        "worktree.create",
-        json!({ "project_id": project_id, "name": "scratch" }),
-    ));
-    assert_eq!(created["ok"], true, "{created:?}");
-    let result = &created["result"];
-    let worktree_id = result["worktree_id"].as_str().unwrap().to_string();
-    assert!(
-        result["branch"].as_str().unwrap().starts_with("build/"),
-        "{result:?}"
-    );
-    assert!(std::path::Path::new(result["path"].as_str().unwrap()).is_dir());
-    assert_eq!(result["project_id"], json!(project_id));
-
-    // Nothing was dispatched: no run, no session, no task lifecycle.
-    assert!(state.runs.is_empty(), "a bare worktree is not a run");
-
-    // The scan sees it under the id the create returned, so the client can
-    // navigate straight to its surface.
-    let listed = state.scan_external_worktrees_now(&project_id).unwrap();
-    assert!(
-        listed.iter().any(|w| w.id == worktree_id),
-        "{worktree_id} missing from {listed:?}"
-    );
-
-    // A second one does not collide with the first.
-    let second = state.handle(req(
-        "worktree.create",
-        json!({ "project_id": project_id, "name": "scratch" }),
-    ));
-    assert_eq!(second["ok"], true, "{second:?}");
-    assert_ne!(second["result"]["branch"], result["branch"]);
-    assert_ne!(second["result"]["worktree_id"], result["worktree_id"]);
-}
-
-/// The name the human typed decides the directory and the branch, through the
-/// same slugifier every other branch name goes through — it is UNTRUSTED text
-/// on its way to a path and a `git` argv.
-#[test]
-fn worktree_create_names_the_branch_after_the_name() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let project_id = state.project_at(0).id.clone();
-
-    let created = state.handle(req(
-        "worktree.create",
-        json!({ "project_id": project_id, "name": "Mascot Model Spike!" }),
-    ));
-    assert_eq!(created["ok"], true, "{created:?}");
-    assert_eq!(created["result"]["branch"], "build/mascot-model-spike");
-    assert!(created["result"]["path"]
-        .as_str()
-        .unwrap()
-        .ends_with("mascot-model-spike"));
-
-    // The same name twice cannot collide on disk or on a ref.
-    let again = state.handle(req(
-        "worktree.create",
-        json!({ "project_id": project_id, "name": "Mascot Model Spike!" }),
-    ));
-    assert_eq!(again["ok"], true, "{again:?}");
-    assert_ne!(again["result"]["branch"], created["result"]["branch"]);
-}
-
-/// A name that slugifies to nothing would silently become some fallback word,
-/// so it is refused instead — the human named it, and the name has to survive.
-#[test]
-fn worktree_create_requires_a_usable_name() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let project_id = state.project_at(0).id.clone();
-
-    for name in ["", "   ", "***", "!!!"] {
-        let res = state.handle(req(
-            "worktree.create",
-            json!({ "project_id": project_id, "name": name }),
-        ));
-        assert_eq!(res["ok"], false, "{name:?} -> {res:?}");
-    }
-    assert!(
-        state.handle(req("worktree.create", json!({ "project_id": project_id })))["ok"] == false
-    );
-}
-
-/// The create modal's other half: a branch that already exists is checked
-/// out into a Build-managed worktree, with nothing cut and no commit of
-/// its lost. The branch is somebody's work; Build is only borrowing it a
-/// directory.
-#[test]
-fn worktree_create_checks_out_an_existing_local_branch_without_cutting() {
-    let (dir, repo) = init_repo();
-    git_in(&repo, &["checkout", "-q", "-b", "theirs"]);
-    std::fs::write(repo.join("theirs.txt"), "their work\n").unwrap();
-    git_in(&repo, &["add", "."]);
-    git_in(&repo, &["commit", "-m", "their work"]);
-    git_in(&repo, &["checkout", "-q", "main"]);
-    let tip = git2::Repository::open(&repo)
-        .unwrap()
-        .find_branch("theirs", git2::BranchType::Local)
-        .unwrap()
-        .get()
-        .target()
-        .unwrap();
-    let mut state = qa_state(&repo, dir.path());
-    let project_id = state.project_at(0).id.clone();
-
-    let created = state.handle(req(
-        "worktree.create",
-        json!({ "project_id": project_id, "branch": "theirs" }),
-    ));
-    assert_eq!(created["ok"], true, "{created:?}");
-    let result = &created["result"];
-    assert_eq!(result["branch"], "theirs", "{result:?}");
-    assert_eq!(result["branch_was_cut"], false, "{result:?}");
-    let path = std::path::PathBuf::from(result["path"].as_str().unwrap());
-    assert_eq!(
-        std::fs::read_to_string(path.join("theirs.txt")).unwrap(),
-        "their work\n",
-        "the checkout carries the branch's own work"
-    );
-    assert_eq!(
-        git2::Repository::open(&repo)
-            .unwrap()
-            .find_branch("theirs", git2::BranchType::Local)
-            .unwrap()
-            .get()
-            .target()
-            .unwrap(),
-        tip,
-        "the branch itself was not moved"
-    );
-    assert!(state.runs.is_empty(), "a checkout is not a run");
-    let listed = state.external_worktrees(&project_id).worktrees;
-    assert!(listed
-        .iter()
-        .any(|w| w.id == result["worktree_id"].as_str().unwrap()));
-}
-
-/// A branch only a remote carries is fetched and made local with its
-/// upstream set — the bug this affordance exists to fix was cutting an
-/// empty branch of the same name over the top of the team's work.
-#[test]
-fn worktree_create_fetches_a_branch_only_a_remote_carries() {
-    let (dir, _repo, origin) = init_repo_with_origin();
-    let clone = origin_with_pushed_branch(&dir, &origin, "feature-x");
-    let mut state = qa_state(&clone, dir.path());
-    let project_id = state.project_at(0).id.clone();
-
-    let created = state.handle(req(
-        "worktree.create",
-        json!({ "project_id": project_id, "branch": "feature-x" }),
-    ));
-    assert_eq!(created["ok"], true, "{created:?}");
-    let result = &created["result"];
-    assert_eq!(result["branch"], "feature-x", "{result:?}");
-    assert_eq!(result["branch_was_cut"], false, "{result:?}");
-    let path = std::path::PathBuf::from(result["path"].as_str().unwrap());
-    assert!(
-        path.join("work.rs").is_file(),
-        "the remote work came with it"
-    );
-    let config = git2::Repository::open(&clone).unwrap().config().unwrap();
-    assert_eq!(
-        config.get_string("branch.feature-x.remote").unwrap(),
-        "origin"
-    );
-    assert_eq!(
-        config.get_string("branch.feature-x.merge").unwrap(),
-        "refs/heads/feature-x"
-    );
-}
-
-/// Git refuses to check one branch out twice, and the raw refusal tells
-/// the user nothing they can act on. Every checkout that could be holding
-/// it is named instead — the run to open, the worktree to adopt, or the
-/// repository's own checkout.
-#[test]
-fn worktree_create_names_the_checkout_already_holding_a_branch() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let project_id = state.project_at(0).id.clone();
-    let run_id = adopted_run(&mut state, &repo, dir.path(), "run-owned");
-    add_external_worktree(&repo, dir.path(), "by-hand", "by-hand");
-    let external_worktree_id = external_id(&mut state, &project_id, Some("by-hand"));
-    let primary_id = crate::worktree::repository_branch_holder(&repo)
-        .unwrap()
-        .expect("the repository is on a branch")
-        .0;
-
-    for (branch, holder) in [
-        ("run-owned", run_id.as_str()),
-        ("by-hand", external_worktree_id.as_str()),
-        ("main", primary_id.as_str()),
-    ] {
-        let refused = state.handle(req(
-            "worktree.create",
-            json!({ "project_id": project_id, "branch": branch }),
-        ));
-        assert_eq!(refused["ok"], false, "{branch}: {refused:?}");
-        let error = refused["error"].as_str().unwrap();
-        assert!(error.contains(branch), "{branch}: {error}");
-        assert!(
-            error.contains(holder),
-            "{branch}: {error} names no checkout to act on"
-        );
-    }
-}
-
-/// Naming a branch means that branch. A name nothing anywhere holds is a
-/// mistake to be told about, never a fresh empty branch wearing it —
-/// cutting one from base is what `name` is for.
-#[test]
-fn worktree_create_refuses_a_branch_no_ref_holds() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let project_id = state.project_at(0).id.clone();
-
-    let refused = state.handle(req(
-        "worktree.create",
-        json!({ "project_id": project_id, "branch": "nobody-cut-this" }),
-    ));
-    assert_eq!(refused["ok"], false, "{refused:?}");
-    assert!(git2::Repository::open(&repo)
-        .unwrap()
-        .find_branch("nobody-cut-this", git2::BranchType::Local)
-        .is_err());
-
-    for spelling in ["HEAD", "-dashed", "not a ref name", ""] {
-        let refused = state.handle(req(
-            "worktree.create",
-            json!({ "project_id": project_id, "branch": spelling }),
-        ));
-        assert_eq!(refused["ok"], false, "{spelling:?}: {refused:?}");
-    }
-}
-
-/// The two slots mean opposite things — a branch that exists, or words to
-/// cut a new one after — so a call that gives both has said nothing.
-#[test]
-fn worktree_create_takes_exactly_one_of_branch_and_name() {
-    let (dir, repo) = init_repo();
-    git_in(&repo, &["branch", "theirs"]);
-    let mut state = qa_state(&repo, dir.path());
-    let project_id = state.project_at(0).id.clone();
-
-    let refused = state.handle(req(
-        "worktree.create",
-        json!({ "project_id": project_id, "branch": "theirs", "name": "theirs" }),
-    ));
-    assert_eq!(refused["ok"], false, "{refused:?}");
-
-    let refused = state.handle(req("worktree.create", json!({ "project_id": project_id })));
-    assert_eq!(refused["ok"], false, "{refused:?}");
-    let message = refused["error"].as_str().unwrap();
-    assert!(
-        message.contains("branch") && message.contains("name"),
-        "the refusal names both slots: {message}"
-    );
 }
 
 /// With a checkout's registration pruned, nothing on disk says whether
@@ -514,15 +248,4 @@ fn only_a_run_build_cut_its_own_checkout_for_vouches_for_its_branch() {
         unregistered_restore_for(state.runs.get(&run_id).unwrap()),
         crate::worktree::UnregisteredRestore::Write(crate::worktree::BranchTeardown::DeletesBranch)
     );
-}
-
-#[test]
-fn worktree_create_rejects_an_unknown_project() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let res = state.handle(req(
-        "worktree.create",
-        json!({ "project_id": "proj-nope", "name": "scratch" }),
-    ));
-    assert_eq!(res["ok"], false, "{res:?}");
 }

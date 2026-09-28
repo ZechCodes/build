@@ -3,7 +3,7 @@ use crate::app::OffLockGate;
 use serde_json::Value;
 
 use super::super::AppState;
-use super::{BranchListingScope, BranchScope, GitScope};
+use super::GitScope;
 
 /// One `git.*` verb: the checkout the app mutex resolved for it, the git call
 /// to make there with the mutex released, and whether its answer invalidates
@@ -25,18 +25,6 @@ impl GitCallScope for GitScope {
         if app.git_scope_is_current(self) {
             app.invalidate_git_scope_caches(self);
         }
-    }
-}
-
-impl GitCallScope for BranchScope {
-    fn invalidate(&self, app: &mut AppState) {
-        app.invalidate_branch_scope_caches(self);
-    }
-}
-
-impl GitCallScope for BranchListingScope {
-    fn invalidate(&self, app: &mut AppState) {
-        self.checkout.invalidate(app);
     }
 }
 

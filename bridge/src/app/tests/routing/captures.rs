@@ -67,10 +67,9 @@ fn a_capture_is_durable_before_anything_routes_it() {
 
     // And a fresh daemon over the same store still has it.
     let mut rebooted = qa_state(&repo, dir.path());
-    let listed = rebooted.handle(req("capture.list", json!({})));
-    let captures = listed["result"]["captures"].as_array().unwrap();
+    let captures = capture_rows(&mut rebooted);
     assert_eq!(captures.len(), 1);
-    assert_eq!(captures[0]["id"], capture_id.as_str());
+    assert_eq!(captures[0]["capture_id"], capture_id.as_str());
 
     let fetched = rebooted.handle(req("capture.get", json!({ "capture_id": capture_id })));
     assert_eq!(fetched["ok"], true, "{fetched:?}");

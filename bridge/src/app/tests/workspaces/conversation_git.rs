@@ -22,7 +22,7 @@ fn a_workspace_conversation_reads_git_from_its_git_directory() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = init_repo_named(tmp.path(), "code");
     let mut state = app(tmp.path());
-    let added = state.handle(req("project.add", json!({"path": repo})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": repo}))));
     let project_id = added["result"]["project_id"].as_str().unwrap().to_string();
     let workspace = create_workspace(&mut state, &project_id, "work");
     let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
@@ -55,7 +55,7 @@ fn workspace_conversation_files_share_the_source_root_while_terminals_keep_the_c
     let tmp = tempfile::tempdir().unwrap();
     let repo = init_repo_named(tmp.path(), "code");
     let mut state = app(tmp.path());
-    let added = state.handle(req("project.add", json!({"path": repo})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": repo}))));
     let project_id = added["result"]["project_id"].as_str().unwrap().to_string();
     let workspace = create_workspace(&mut state, &project_id, "work");
     let workspace_id = workspace["workspace_id"].as_str().unwrap();
@@ -95,7 +95,7 @@ fn a_workspace_conversation_is_a_git_subject_at_its_git_directory() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = init_repo_named(tmp.path(), "code");
     let mut state = app(tmp.path());
-    let added = state.handle(req("project.add", json!({"path": repo})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": repo}))));
     let project_id = added["result"]["project_id"].as_str().unwrap().to_string();
     let workspace = create_workspace(&mut state, &project_id, "work");
     let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
@@ -114,7 +114,7 @@ fn the_workspace_list_names_each_conversation_entity() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = init_repo_named(tmp.path(), "code");
     let mut state = app(tmp.path());
-    let added = state.handle(req("project.add", json!({"path": repo})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": repo}))));
     let project_id = added["result"]["project_id"].as_str().unwrap().to_string();
     let spoken = create_workspace(&mut state, &project_id, "spoken");
     let quiet = create_workspace(&mut state, &project_id, "quiet");

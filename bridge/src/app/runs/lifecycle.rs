@@ -1,19 +1,16 @@
-use crate::app::WorktreeLifecycleJob;
 use crate::app::{
-    abandoned_branch_summary, close_abandoned_run_conversations, err, has_agent_choice,
-    model_choice_from, parse_viewing_context, reconcile_missing_run_worktree,
-    record_current_stage_started, require_str, run_state_str, thread_detail, AppState, DigestScope,
-    ImplementationCaller, PendingAgentTurn, NEW_THREAD_MESSAGES_PROMPT,
+    abandoned_branch_summary, close_abandoned_run_conversations, err, model_choice_from,
+    parse_viewing_context, reconcile_missing_run_worktree, record_current_stage_started,
+    require_str, thread_detail, AppState, DigestScope, PendingAgentTurn,
+    NEW_THREAD_MESSAGES_PROMPT,
 };
 use crate::lifecycle::{
-    AdoptCheckout, AdoptImplementation, AdoptionTarget, DiscardCheckout, DiscardedCheckout,
-    ImplementationCheckout, OpenImplementation, PendingRow,
+    AdoptCheckout, AdoptionTarget, DiscardCheckout, DiscardedCheckout, PendingRow,
 };
 use crate::models::ModelChoice;
-use crate::orchestrator::{ActiveRun, AgentTurn, ImplementableTask, RunSource};
+use crate::orchestrator::{ActiveRun, AgentTurn};
 use crate::run::{run_transition, RunEvent, RunId, RunState};
 use crate::store::now_rfc3339;
-use crate::thread::ThreadDetail;
 use serde_json::{json, Value};
 
 /// A run opened around a checkout that is ready for it: the record, the agent
@@ -28,23 +25,6 @@ pub(in crate::app) struct OpenedImplementation {
     pub(in crate::app) agent_id: String,
     pub(in crate::app) checkout_event: crate::thread::ThreadEventKind,
     pub(in crate::app) checkout_summary: String,
-}
-
-/// `run.create` asked: it hears the run it opened, and a failure is its own
-/// answer — nothing was armed on the way in.
-pub(in crate::app) struct RunOpenedView {
-    pub(in crate::app) detail: ThreadDetail,
-}
-
-impl ImplementationCaller for RunOpenedView {
-    fn opened(self: Box<Self>, state: &mut AppState, run_id: &str) -> Result<Value, String> {
-        let active = state.runs.get(run_id).ok_or("unknown run_id")?;
-        Ok(state.run_view(run_id, active, self.detail, DigestScope::Detail))
-    }
-
-    fn refused(self: Box<Self>, _state: &mut AppState, error: String) -> String {
-        error
-    }
 }
 
 impl AppState {
@@ -80,219 +60,6 @@ impl AppState {
 
 impl AppState {
     // ---- Run surface ----------------------------------------------------------
-
-    /// Create a run implementing an approved plan. Single-active-writer: a
-    /// second concurrent run of the same plan is rejected at dispatch.
-    ///
-    /// A run always has a plan behind it: the goal-only dispatch is gone, and an
-    /// unplanned coding session is now an agent tab (`term.create` with `kind`),
-    /// driven by the human who opened it.
-    pub(crate) fn run_create(&mut self, params: &Value) -> Result<Value, String> {
-        let plan_id = require_str(params, "plan_id")?;
-        let job = self.open_implementation(
-            &plan_id,
-            params,
-            Box::new(RunOpenedView {
-                detail: thread_detail(params),
-            }),
-        )?;
-        Ok(self.defer_job(job))
-    }
-
-    /// Settle everything a Task's implementation needs before any git runs —
-    /// the run's id, the checkout it works in, the model its agent runs on —
-    /// and hand the git itself to the drain.
-    ///
-    /// Shared by `run.create` and by the Task scheduler, which differ only in
-    /// `caller`: who is waiting for the run, and what a failure leaves written
-    /// on the Task.
-    pub(in crate::app) fn open_implementation(
-        &mut self,
-        task_id: &str,
-        params: &Value,
-        caller: Box<dyn ImplementationCaller>,
-    ) -> Result<WorktreeLifecycleJob, String> {
-        // Targeting: a Task can be implemented into a checkout that already
-        // exists instead of one cut for it (Decisions §Task view — the stage
-        // column's assignment control).
-        if let Some(worktree_id) = params
-            .get("worktree_id")
-            .and_then(Value::as_str)
-            .filter(|id| !id.is_empty())
-        {
-            let worktree_id = worktree_id.to_string();
-            return self.adopt_implementation_checkout(task_id, &worktree_id, params, caller);
-        }
-        if !self.plans.contains_key(task_id) {
-            return Err("unknown plan_id".to_string());
-        }
-        let project_id = self.project_of(task_id)?;
-        let requested_choice = model_choice_from(params, self.default_harness)?;
-        let base = params
-            .get("base_branch")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| self.plans[task_id].base_branch.clone());
-        let has_active_run = self.runs.values().any(|r| {
-            r.run.plan_id.as_ref().map(|p| p.0.as_str()) == Some(task_id)
-                && !r.run.state.is_terminal()
-        });
-        let store = self.require_store()?.clone();
-        let plan = &self.plans[task_id];
-        let model_choice = if has_agent_choice(params) {
-            requested_choice
-        } else {
-            plan.model_choice.clone()
-        };
-        let title = plan.plan.goal.clone();
-        let task = ImplementableTask::judge(RunSource {
-            plan,
-            has_active_run,
-        })
-        .map_err(err)?;
-        let project = self.orch_for(&project_id)?.clone();
-        let resolved = self.resolved_isolation(&project_id);
-        let run_id = format!("run-{}", uuid::Uuid::new_v4());
-        // The ref this implementation is about to cut is on the row, so a
-        // create or a dispatch claiming the same one collides here rather than
-        // in git.
-        let row = PendingRow::creating(run_id.clone(), Some(project_id.clone()), title)
-            .on_branch(crate::worktree::branch_name_for(task.slug()))
-            .implementing(task_id.to_string())
-            .isolated_as(resolved.isolation);
-        self.reserve_lifecycle(
-            row,
-            OpenImplementation {
-                project,
-                task,
-                base_branch: base,
-                run_id: run_id.clone(),
-                store,
-                model_choice: model_choice.clone(),
-                resolved,
-            },
-            crate::app::runtime::lifecycle::OpenImplementationSettlement {
-                project_id,
-                task_id: task_id.to_string(),
-                run_id,
-                model_choice,
-                caller,
-            },
-        )
-    }
-
-    /// Implement a Task into a checkout that already exists, named by the
-    /// `worktree_id` the feed's branch rows carry.
-    ///
-    /// The branch's run adopts the implementation — one branch, one run — so a
-    /// checkout Build has never seen is adopted first, and a branch already
-    /// implementing a DIFFERENT Task is refused: two Tasks writing one branch
-    /// would make neither one's diff readable.
-    pub(in crate::app) fn adopt_implementation_checkout(
-        &mut self,
-        task_id: &str,
-        worktree_id: &str,
-        params: &Value,
-        caller: Box<dyn ImplementationCaller>,
-    ) -> Result<WorktreeLifecycleJob, String> {
-        if !self.plans.contains_key(task_id) {
-            return Err("unknown plan_id".to_string());
-        }
-        let project_id = self.project_of(task_id)?;
-        let requested_choice = model_choice_from(params, self.default_harness)?;
-        let (run_id, checkout) = match self.run_owning_worktree_id(&project_id, worktree_id) {
-            Some(run_id) => {
-                // The repository is not a worktree to hand a Task: committing
-                // stage docs there lands them on the branch the human is
-                // standing on. Nothing mints such a run any more; a store
-                // written before workspaces can still hold one.
-                if self.stands_in_the_repository(&run_id, &self.runs[&run_id]) {
-                    return Err(
-                        "cannot implement into the project's repository — it is what workspaces \
-                         are cut from, not a worktree to hand over"
-                            .to_string(),
-                    );
-                }
-                if let Some(other) = self.runs[&run_id]
-                    .run
-                    .plan_id
-                    .as_ref()
-                    .filter(|id| id.0 != task_id)
-                {
-                    return Err(format!(
-                        "cannot implement into {}: it is already implementing Task {} — finish \
-                         or abandon that implementation first",
-                        self.runs[&run_id].worktree.branch(),
-                        other.0
-                    ));
-                }
-                let checkout = self.runs[&run_id].worktree.path.clone();
-                (run_id, ImplementationCheckout::Owned(checkout))
-            }
-            // Nobody owns it yet, so this implementation's git takes it over
-            // first — the scan that resolves the card and the checkpoint commit
-            // that writes Build's ownership into it, both off the lock, and the
-            // run they mint is the one the implementation is written onto.
-            None => (
-                format!("run-{}", uuid::Uuid::new_v4()),
-                ImplementationCheckout::Unowned {
-                    target: AdoptionTarget {
-                        worktree_id: worktree_id.to_string(),
-                        excluded: self.bound_worktree_paths(),
-                    },
-                    base_branch: self.base_for(&project_id)?,
-                },
-            ),
-        };
-
-        let has_active_run = self.runs.iter().any(|(id, run)| {
-            id != &run_id
-                && run.run.plan_id.as_ref().map(|p| p.0.as_str()) == Some(task_id)
-                && !run.run.state.is_terminal()
-        });
-        let model_choice = if has_agent_choice(params) {
-            requested_choice
-        } else {
-            self.plans[task_id].model_choice.clone()
-        };
-        let store = self.require_store()?.clone();
-        let plan = &self.plans[task_id];
-        let title = plan.plan.goal.clone();
-        let task = ImplementableTask::judge(RunSource {
-            plan,
-            has_active_run,
-        })
-        .map_err(err)?;
-        let project = self.orch_for(&project_id)?.clone();
-        // The run stays on the board while its checkout is checkpointed: it is
-        // the same run either way, and a run that vanished from every poll for
-        // the length of two commits would read as one that had been abandoned.
-        // What the row holds is the checkout, which nothing else may claim
-        // until this hand-over is written down.
-        let row = PendingRow::creating(run_id.clone(), Some(project_id.clone()), title)
-            .on_checkout(worktree_id.to_string())
-            .implementing(task_id.to_string());
-        self.reserve_lifecycle(
-            row,
-            AdoptImplementation {
-                project,
-                project_id: project_id.clone(),
-                task,
-                run_id: run_id.clone(),
-                checkout,
-                store,
-                model_choice: model_choice.clone(),
-            },
-            crate::app::runtime::lifecycle::AdoptImplementationSettlement {
-                project_id,
-                task_id: task_id.to_string(),
-                run_id,
-                model_choice,
-                caller,
-            },
-        )
-    }
 
     /// `run.create`'s apply half on a checkout that was cut for it: open the
     /// run around what the git prepared, and answer whoever asked.
@@ -701,74 +468,6 @@ impl AppState {
         Ok(())
     }
 
-    /// Delete a terminal run from the board: prune any leftover worktree,
-    /// remove the durable record, drop the bookkeeping. Terminal runs only
-    /// (merged/abandoned/archived/failed) — a live run must be abandoned first.
-    pub(crate) fn run_delete(&mut self, params: &Value) -> Result<Value, String> {
-        let run_id = require_str(params, "run_id")?;
-        let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        let state = active.run.state;
-        if !matches!(
-            state,
-            RunState::Merged | RunState::Abandoned | RunState::Archived | RunState::Failed
-        ) {
-            return Err(format!(
-                "run.delete: run is {} — only terminal runs \
-                 (merged/abandoned/archived/failed) can be deleted",
-                run_state_str(&state)
-            ));
-        }
-        // A planned implementation is durable Task lineage: its immutable
-        // stage boundaries and publication evidence must outlive card cleanup.
-        // Archived lineages are already filtered from board.list, so preserve
-        // the record while keeping the legacy delete call idempotently useful.
-        if active.run.plan_id.is_some() {
-            return Ok(json!({ "ok": true, "retained_as_task_lineage": true }));
-        }
-        if let Some(workspace_id) = self.surviving_workspace_of_run(&run_id) {
-            return Err(format!(
-                "run.delete: {run_id} owns workspace {workspace_id}; delete the workspace instead"
-            ));
-        }
-        let checkout_path = active.worktree.path.clone();
-        // A failed run still holds its worktree; deleting an adopted run's card
-        // must never delete the user's files (delete removes the card, not the
-        // worktree it was minted around).
-        let prunes_checkout = checkout_path.exists() && !active.adopted;
-        let title = active.run.goal.clone();
-        // A run recovered after its repository was moved or deleted has no
-        // project mapping at all, and that stale card is exactly what a delete
-        // is for. There is then no orchestrator to prune with, so the delete
-        // clears the card and leaves whatever is on disk alone.
-        let project_id = self.projects.project_id_of(&run_id).map(str::to_string);
-        let project = project_id
-            .as_deref()
-            .and_then(|id| self.orch_for(id).ok())
-            .cloned();
-
-        let settlement_run_id = run_id.clone();
-        let settlement_project_id = project_id.clone();
-        self.discard_run(
-            run_id,
-            project_id,
-            title,
-            move |worktree| match (prunes_checkout, project) {
-                (true, Some(project)) => DiscardedCheckout::Pruned {
-                    project,
-                    worktree: worktree.clone(),
-                },
-                _ => DiscardedCheckout::Kept,
-            },
-            (),
-            move |active| crate::app::runtime::lifecycle::DeleteSettlement {
-                active,
-                run_id: settlement_run_id,
-                project_id: settlement_project_id,
-                checkout: checkout_path,
-            },
-        )
-    }
-
     /// Forget every trace of a run whose record has been deleted. The map entry
     /// itself went in the decide phase; this is the bookkeeping beside it.
     pub(in crate::app) fn forget_run(&mut self, run_id: &str) {
@@ -865,50 +564,5 @@ impl AppState {
             })
             .and_then(|checkout| checkout.branch.clone())
             .unwrap_or_else(|| self.project_name_by_id(project_id))
-    }
-
-    /// Un-adopt: drop the run record and its binding, leaving every file
-    /// untouched. Legal on adopted runs in any non-terminal state.
-    pub(crate) fn run_release(&mut self, params: &Value) -> Result<Value, String> {
-        let run_id = require_str(params, "run_id")?;
-        let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        if !active.adopted {
-            return Err("run.release: only adopted runs can be released".to_string());
-        }
-        if active.run.state.is_terminal() {
-            return Err(format!(
-                "run.release: run is {} — use run.delete to clear it off the board",
-                run_state_str(&active.run.state)
-            ));
-        }
-        if let Some(workspace_id) = self.surviving_workspace_of_run(&run_id) {
-            return Err(format!(
-                "run.release: {run_id} owns workspace {workspace_id}; delete the workspace instead"
-            ));
-        }
-        self.preserve_entity_task_identities(&run_id)?;
-        let project_id = self.projects.project_id_of(&run_id).map(str::to_string);
-        if let Some(store) = &self.store {
-            match project_id.as_deref() {
-                Some(project_id) => store.delete_run_retaining_inbox_messages(&run_id, project_id),
-                None => store.delete_run(&run_id),
-            }
-            .map_err(|e| format!("run store: {e}"))?;
-        }
-        let active = self.runs.remove(&run_id).expect("checked above");
-        // Un-adopting hands the worktree back to the human; Build's agent in it
-        // reported `done` to a run that no longer exists, so it goes with the
-        // run. Reopening the Agent tab there adopts again. The receipts are
-        // dropped: the tabs left the registry, which is what makes the agents
-        // unaddressable, and nothing here is waiting to delete a directory.
-        self.retire_agent_tabs(&active.worktree.path);
-        self.forget_run(&run_id);
-        // Build touches no disk here, so the checkout it hands back is
-        // described by the scan this claims rather than by an amendment.
-        if let Some(project_id) = project_id {
-            self.rescan_external_worktrees(&project_id);
-        }
-        self.reap_orphaned_terminals();
-        Ok(json!({ "ok": true }))
     }
 }

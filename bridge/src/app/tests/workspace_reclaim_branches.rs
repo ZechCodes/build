@@ -337,9 +337,8 @@ fn a_branch_already_gone_is_not_reported() {
 fn a_branch_deleted_in_one_source_and_kept_in_another_is_told_apart() {
     let (tmp, state, project, task) = two_source_project();
     let ws = super::project_agent::workspace(&mut state.lock().unwrap(), &project, "pair");
-    let linked = call(
-        &state,
-        "tasks.link",
+    let linked = link_task(
+        &mut state.lock().unwrap(),
         json!({ "task_id": task, "workspace_id": ws }),
     );
     assert_eq!(linked["ok"], true, "{linked:?}");

@@ -332,10 +332,10 @@ impl CompactingAgent {
         self.state.lock().unwrap().handle(req(method, params))
     }
 
-    /// The agent as `agent.list` shows it — the same list the project agent
-    /// reads through `list_workspace_agents`.
+    /// The agent as its entity's roster shows it — the same list the project
+    /// agent reads through `list_workspace_agents`.
     fn listed(&self) -> Value {
-        let listed = self.handle("agent.list", json!({ "entity_id": RUN }));
+        let listed = agent_roster(&mut self.state.lock().unwrap(), json!({ "entity_id": RUN }));
         assert_eq!(listed["ok"], true, "{listed:?}");
         listed["result"]["agents"][0].clone()
     }

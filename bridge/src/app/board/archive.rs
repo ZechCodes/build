@@ -1,48 +1,12 @@
-use crate::app::{
-    archived_worktree_json, merge_archived_worktree_facts, plan_state_str, require_str,
-    run_state_str, DigestScope,
-};
+use crate::app::{merge_archived_worktree_facts, plan_state_str, run_state_str};
 use crate::run::RunState;
 use crate::store::WorktreeFinishStatus;
-use crate::thread::ThreadDetail;
 
 use serde_json::{json, Value};
 
 use super::super::AppState;
 
 impl AppState {
-    /// Archived plans and external worktrees for one project, grouped by kind.
-    /// Canonical project path is the durable join because project ids remint.
-    pub(crate) fn archive_list(&self, params: &Value) -> Result<Value, String> {
-        let project_id = require_str(params, "project_id")?;
-        let project = self
-            .projects
-            .iter()
-            .find(|project| project.id == project_id)
-            .ok_or("unknown project_id")?;
-        let project_path = project.repo_path.display().to_string();
-        let plans = self
-            .plans
-            .iter()
-            .filter(|(plan_id, active)| {
-                active.plan.archived_at.is_some() && self.project_path_for(plan_id) == project_path
-            })
-            .map(|(plan_id, active)| {
-                self.plan_view(plan_id, active, ThreadDetail::Digest, DigestScope::List)
-            })
-            .collect::<Vec<_>>();
-        let worktrees = self
-            .board
-            .archived_values()
-            .filter(|record| {
-                record.project_path == project_path
-                    && record.status == WorktreeFinishStatus::Archived
-            })
-            .map(archived_worktree_json)
-            .collect::<Vec<_>>();
-        Ok(json!({ "plans": plans, "worktrees": worktrees }))
-    }
-
     /// Everything finished, across every project, newest first: archived
     /// tasks, archived runs, and the archived worktrees no run stands behind.
     ///

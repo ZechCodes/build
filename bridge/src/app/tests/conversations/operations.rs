@@ -445,10 +445,7 @@ fn thread_post_refuses_a_retired_plan_without_changing_its_state() {
         PlanState::Failed,
         PlanState::IdleUnreported,
     ] {
-        let plan = state
-            .plan_create(&json!({ "goal": "park me", "dispatch": false }))
-            .expect("legacy fixture is created below the retired RPC boundary");
-        let plan_id = plan_id_of(&plan);
+        let plan_id = file_legacy_task(&mut state, "park me");
         state.plans.get_mut(&plan_id).unwrap().plan.state = parked;
 
         let posted = state.handle(req(
@@ -549,7 +546,7 @@ fn run_post_and_mcp_read_the_same_conversation() {
         .iter()
         .any(|item| matches!(item, crate::thread::ThreadItem::Message(message) if message.body == "shared implementation note")));
 
-    let run_view = state.handle(req("run.get", json!({ "run_id": run_id })));
+    let run_view = run_detail(&mut state, json!({ "run_id": run_id }));
     assert!(run_view["result"]["thread"]["items"]
         .as_array()
         .unwrap()

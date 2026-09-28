@@ -211,12 +211,6 @@ impl WorktreeManager {
         }
         segments.join("-")
     }
-    /// Where the checkout for `name` goes. The name a caller asks for is the
-    /// name it gets unless [`create`](Self::create) has to suffix it, so this
-    /// is where a checkout is expected rather than where one is.
-    pub fn path_for(&self, name: &str) -> PathBuf {
-        self.worktrees_root.join(name)
-    }
     /// Build the branch name for a slug in Build's namespace.
     pub(super) fn branch_name(&self, slug: &str) -> String {
         branch_name_for(slug)

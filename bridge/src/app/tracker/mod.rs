@@ -346,9 +346,11 @@ impl AppState {
         }))
     }
 
-    /// `tasks.link` — one or more of the five link keys, each writing a
-    /// `linked` event for the link that was not already there.
-    pub(crate) fn tasks_link(&mut self, params: &Value) -> Result<Value, String> {
+    /// What the retired `tasks.link` did (#207), for the tests that link a
+    /// task by hand: the links asked for, through the checks the MCP
+    /// `link_task` runs, signed by the user.
+    #[cfg(test)]
+    pub(in crate::app) fn link_task_as_user(&mut self, params: &Value) -> Result<Value, String> {
         let task_id = require_str(params, "task_id")?;
         let (project_id, task) = self.tracker_task(&task_id)?;
         let asked = edits::asked_links(params)?;

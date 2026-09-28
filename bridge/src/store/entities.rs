@@ -387,21 +387,6 @@ impl Store {
             )
             .expect("the corrupt row is written");
     }
-    /// Test-only: read an archived worktree's stored JSON, so a test can put
-    /// the record back in a half-finished state the way an interrupted daemon
-    /// would have left it.
-    #[cfg(test)]
-    pub fn archived_worktree_json(&self, worktree_id: &str) -> Option<String> {
-        self.connection()
-            .query_row(
-                "SELECT record FROM archived_worktrees WHERE id = ?1",
-                [worktree_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .ok()
-            .flatten()
-    }
     /// Test-only counterpart of [`archived_worktree_json`](Self::archived_worktree_json).
     #[cfg(test)]
     pub fn set_archived_worktree_json(&self, worktree_id: &str, record: &str) {

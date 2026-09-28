@@ -21,15 +21,6 @@ fn legacy_task_and_run_load_without_removing_their_checkout() {
     assert_eq!(task["result"]["task_id"], "plan-1", "{task:?}");
     assert_eq!(task["result"]["goal"], "drafting", "{task:?}");
 
-    let tasks = state.handle(req("task.list", json!({})));
-    assert!(
-        tasks["result"]["tasks"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|row| row["task_id"] == "plan-1"),
-        "{tasks:?}"
-    );
     assert!(
         checkout.is_dir(),
         "loading legacy state preserves its checkout"

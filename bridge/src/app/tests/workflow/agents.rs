@@ -11,7 +11,7 @@ fn a_bubble_is_titled_by_its_topic_or_by_the_first_thing_asked_of_it() {
     let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-title");
     let agent_id = primary_agent_id(&state, &run_id);
     let bubble = |state: &mut AppState| -> Value {
-        let listed = state.handle(req("agent.list", json!({ "entity_id": run_id })));
+        let listed = agent_roster(state, json!({ "entity_id": run_id }));
         listed["result"]["agents"][0].clone()
     };
     assert_eq!(
@@ -64,7 +64,7 @@ fn set_topic_names_the_conversation_on_the_agents_bubble() {
     let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-topic");
     let agent_id = primary_agent_id(&state, &run_id);
     let bubble = |state: &mut AppState| -> Value {
-        let listed = state.handle(req("agent.list", json!({ "entity_id": run_id })));
+        let listed = agent_roster(state, json!({ "entity_id": run_id }));
         listed["result"]["agents"][0].clone()
     };
     assert_eq!(
@@ -131,7 +131,7 @@ fn the_agent_digest_says_whether_its_agent_has_a_terminal() {
         .entity_agent_root(&run_id)
         .expect("the adopted worktree");
     let bubble = |state: &mut AppState| -> Value {
-        let listed = state.handle(req("agent.list", json!({ "entity_id": run_id })));
+        let listed = agent_roster(state, json!({ "entity_id": run_id }));
         listed["result"]["agents"][0].clone()
     };
 
@@ -237,7 +237,7 @@ fn agent_add_gives_a_branch_a_second_conversation() {
     assert_eq!(added["result"]["agent"]["provider"], "codex");
     assert_eq!(added["result"]["agent"]["state"], "idle");
 
-    let listed = state.handle(req("agent.list", json!({ "entity_id": run_id })));
+    let listed = agent_roster(&mut state, json!({ "entity_id": run_id }));
     let agents = listed["result"]["agents"].as_array().unwrap();
     assert_eq!(agents.len(), 2, "{listed:?}");
     assert_eq!(agents[0]["id"], primary_agent);
@@ -358,10 +358,7 @@ fn done_records_on_the_authenticated_agents_canonical_conversation() {
 fn agent_add_is_refused_on_a_retired_task() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let plan = state
-        .plan_create(&json!({ "goal": "one agent only", "dispatch": false }))
-        .expect("legacy fixture is created below the retired RPC boundary");
-    let plan_id = plan["plan_id"].as_str().unwrap().to_string();
+    let plan_id = file_legacy_task(&mut state, "one agent only");
 
     let refused = state.handle(req("agent.add", json!({ "entity_id": plan_id })));
     assert_eq!(refused["ok"], false, "{refused:?}");
@@ -530,7 +527,7 @@ fn agent_remove_takes_an_added_agent_back_off_the_branch() {
         assert_eq!(left[0]["id"], primary_agent);
         assert_eq!(left[0]["ordinal"], 1);
 
-        let listed = state.handle(req("agent.list", json!({ "entity_id": run_id })));
+        let listed = agent_roster(&mut state, json!({ "entity_id": run_id }));
         assert_eq!(listed["result"]["agents"].as_array().unwrap().len(), 1);
         assert!(
             state.runs[&run_id].agents.by_id(&second_agent).is_none(),
@@ -556,7 +553,7 @@ fn agent_remove_takes_an_added_agent_back_off_the_branch() {
     } // daemon dies
 
     let mut reloaded = qa_state(&repo, dir.path());
-    let listed = reloaded.handle(req("agent.list", json!({ "entity_id": run_id })));
+    let listed = agent_roster(&mut reloaded, json!({ "entity_id": run_id }));
     let agents = listed["result"]["agents"].as_array().unwrap();
     assert_eq!(agents.len(), 1, "the removal was persisted: {listed:?}");
     assert_eq!(agents[0]["id"], primary_agent);
@@ -693,10 +690,7 @@ fn agent_remove_refuses_a_task_and_an_unknown_agent_but_never_the_primary() {
     assert_eq!(unknown_entity["ok"], false, "{unknown_entity:?}");
 
     // A legacy task is readable, but its roster is frozen.
-    let plan = state
-        .plan_create(&json!({ "goal": "one agent only", "dispatch": false }))
-        .expect("legacy fixture is created below the retired RPC boundary");
-    let plan_id = plan["plan_id"].as_str().unwrap().to_string();
+    let plan_id = file_legacy_task(&mut state, "one agent only");
     let task_agent = primary_agent_id(&state, &plan_id);
     let task = state.handle(req(
         "agent.remove",
@@ -725,7 +719,7 @@ fn agent_remove_refuses_a_task_and_an_unknown_agent_but_never_the_primary() {
     ));
     assert_eq!(last_gone["ok"], true, "{last_gone:?}");
     assert!(state.runs[&run_id].agents.is_empty());
-    let listed = state.handle(req("agent.list", json!({ "entity_id": run_id })));
+    let listed = agent_roster(&mut state, json!({ "entity_id": run_id }));
     assert_eq!(
         listed["result"]["agents"].as_array().unwrap().len(),
         0,
@@ -841,7 +835,7 @@ fn unread_counts_per_agent_and_the_entry_is_their_union() {
 
     // The human has read everything that exists so far.
     state.handle(req("entity.seen", json!({ "entity_id": run_id })));
-    let view = state.handle(req("run.get", json!({ "run_id": run_id })));
+    let view = run_detail(&mut state, json!({ "run_id": run_id }));
     assert_eq!(view["result"]["unread_count"], 0, "{view:?}");
 
     // Each agent says something; both are attention-class.
@@ -855,7 +849,7 @@ fn unread_counts_per_agent_and_the_entry_is_their_union() {
         state.finish_run_mutation(run_id.clone(), run).unwrap();
     }
 
-    let view = state.handle(req("run.get", json!({ "run_id": run_id })));
+    let view = run_detail(&mut state, json!({ "run_id": run_id }));
     assert_eq!(view["result"]["unread_count"], 2, "{view:?}");
     let digests = view["result"]["agents"].as_array().unwrap();
     assert_eq!(digests.len(), 2, "{digests:?}");
@@ -869,7 +863,7 @@ fn unread_counts_per_agent_and_the_entry_is_their_union() {
         json!({ "entity_id": run_id, "agent_id": second_agent }),
     ));
     assert_eq!(seen["ok"], true, "{seen:?}");
-    let view = state.handle(req("run.get", json!({ "run_id": run_id })));
+    let view = run_detail(&mut state, json!({ "run_id": run_id }));
     assert_eq!(view["result"]["unread_count"], 1, "{view:?}");
     let digests = view["result"]["agents"].as_array().unwrap();
     let unread_of = |agent_id: &str| {
@@ -909,10 +903,7 @@ fn seeing_a_window_leaves_the_message_below_its_floor_unread() {
     }
     state.finish_run_mutation(run_id.clone(), run).unwrap();
 
-    let window = state.handle(req(
-        "run.get",
-        json!({ "run_id": run_id, "thread_limit": 10 }),
-    ));
+    let window = run_detail(&mut state, json!({ "run_id": run_id, "thread_limit": 10 }));
     assert_eq!(window["result"]["unread_count"], 1, "{window:?}");
     let floor = window["result"]["thread"]["oldest_sequence"]
         .as_u64()
@@ -927,10 +918,7 @@ fn seeing_a_window_leaves_the_message_below_its_floor_unread() {
         }),
     ));
     assert_eq!(seen["ok"], true, "{seen:?}");
-    let view = state.handle(req(
-        "run.get",
-        json!({ "run_id": run_id, "thread_limit": 10 }),
-    ));
+    let view = run_detail(&mut state, json!({ "run_id": run_id, "thread_limit": 10 }));
     assert_eq!(
         view["result"]["unread_count"], 1,
         "a window that never held the message cannot have read it: {view:?}"
@@ -947,10 +935,7 @@ fn seeing_a_window_leaves_the_message_below_its_floor_unread() {
         }),
     ));
     assert_eq!(seen["ok"], true, "{seen:?}");
-    let view = state.handle(req(
-        "run.get",
-        json!({ "run_id": run_id, "thread_limit": 10 }),
-    ));
+    let view = run_detail(&mut state, json!({ "run_id": run_id, "thread_limit": 10 }));
     assert_eq!(view["result"]["unread_count"], 0, "{view:?}");
 }
 
@@ -1073,37 +1058,37 @@ fn a_detail_poll_answers_with_the_named_agents_conversation() {
 
     // Named nothing: the conversation every surface before the rail asked
     // for — the entity's first agent's.
-    let default_view = state.handle(req("run.get", json!({ "run_id": run_id })));
+    let default_view = run_detail(&mut state, json!({ "run_id": run_id }));
     assert_eq!(
         thread_bodies(&default_view["result"]["thread"]),
         vec!["first-agent-marker".to_string()],
         "{default_view:?}"
     );
 
-    let first_view = state.handle(req(
-        "run.get",
+    let first_view = run_detail(
+        &mut state,
         json!({ "run_id": run_id, "agent_id": primary_agent }),
-    ));
+    );
     assert_eq!(
         thread_bodies(&first_view["result"]["thread"]),
         vec!["first-agent-marker".to_string()],
         "{first_view:?}"
     );
 
-    let second_view = state.handle(req(
-        "run.get",
+    let second_view = run_detail(
+        &mut state,
         json!({ "run_id": run_id, "agent_id": second_agent }),
-    ));
+    );
     assert_eq!(
         thread_bodies(&second_view["result"]["thread"]),
         vec!["second-agent-marker".to_string()],
         "{second_view:?}"
     );
 
-    let unknown = state.handle(req(
-        "run.get",
+    let unknown = run_detail(
+        &mut state,
         json!({ "run_id": run_id, "agent_id": "agent-NOSUCHTHING" }),
-    ));
+    );
     assert_eq!(unknown["ok"], false, "{unknown:?}");
     assert!(
         unknown["error"]
@@ -1112,106 +1097,6 @@ fn a_detail_poll_answers_with_the_named_agents_conversation() {
             .contains("unknown agent_id"),
         "{unknown:?}"
     );
-}
-
-/// `branch.get` is the branch surface's read, and it carries the run's view
-/// whole — including which agent's conversation the caller asked for.
-#[test]
-fn branch_get_carries_the_named_agents_conversation() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let (_, _, second_agent) =
-        branch_with_two_conversations(&mut state, &repo, dir.path(), "feature-branch-threads");
-    let project_id = state.project_at(0).id.clone();
-
-    let default_row = state.handle(req(
-        "branch.get",
-        json!({ "project_id": project_id, "branch": "feature-branch-threads" }),
-    ));
-    assert_eq!(
-        thread_bodies(&default_row["result"]["run"]["thread"]),
-        vec!["first-agent-marker".to_string()],
-        "{default_row:?}"
-    );
-
-    let selected = state.handle(req(
-        "branch.get",
-        json!({
-            "project_id": project_id,
-            "branch": "feature-branch-threads",
-            "agent_id": second_agent
-        }),
-    ));
-    assert_eq!(
-        thread_bodies(&selected["result"]["run"]["thread"]),
-        vec!["second-agent-marker".to_string()],
-        "{selected:?}"
-    );
-
-    let unknown = state.handle(req(
-        "branch.get",
-        json!({
-            "project_id": project_id,
-            "branch": "feature-branch-threads",
-            "agent_id": "agent-NOSUCHTHING"
-        }),
-    ));
-    assert_eq!(unknown["ok"], false, "{unknown:?}");
-    assert!(
-        unknown["error"]
-            .as_str()
-            .unwrap()
-            .contains("unknown agent_id"),
-        "{unknown:?}"
-    );
-}
-
-/// `branch.get` is the branch surface's read, and that surface paints no
-/// conversation — the rail beside it does, off its own paged read of this
-/// same RPC. So the surface asks for the smallest page there is, and the
-/// bound has to hold on both roads through the run view: the poll that
-/// named an agent (the rail's bubble is open) and the poll that named none.
-#[test]
-fn branch_get_ships_the_page_the_branch_surface_asked_for() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-bounded-branch");
-    let primary_agent = primary_agent_id(&state, &run_id);
-    let held = {
-        let active = state.runs.get_mut(&run_id).unwrap();
-        for turn in 0..250 {
-            primary_thread_mut(&mut active.agents).post_user(
-                format!("turn {turn}"),
-                None,
-                now_rfc3339(),
-            );
-        }
-        primary_thread(&active.agents).items.len()
-    };
-    let project_id = state.project_at(0).id.clone();
-
-    for scope in [json!({}), json!({ "agent_id": primary_agent })] {
-        let mut params = json!({
-            "project_id": project_id,
-            "branch": "feature-bounded-branch",
-            "thread_limit": 1,
-        });
-        for (key, value) in scope.as_object().unwrap() {
-            params[key] = value.clone();
-        }
-        let read = state.handle(req("branch.get", params));
-        assert_eq!(read["ok"], true, "{read:?}");
-        let thread = &read["result"]["run"]["thread"];
-        assert_eq!(thread["items"].as_array().unwrap().len(), 1, "{read:?}");
-        // Bounded, and still honest about the conversation behind the
-        // window: the count is the whole of it, and there is more above.
-        assert_eq!(thread["thread_total"], held as u64, "{read:?}");
-        assert_eq!(thread["has_more"], true, "{read:?}");
-        assert!(
-            !thread["items"].to_string().contains("turn 0\""),
-            "{read:?}"
-        );
-    }
 }
 
 /// A workspace adopted from a run is another route to the same conversation,
@@ -1300,22 +1185,22 @@ fn the_thread_cursor_is_read_against_the_named_agents_conversation() {
     ));
     assert_eq!(posted["ok"], true, "{posted:?}");
 
-    let full = state.handle(req(
-        "run.get",
+    let full = run_detail(
+        &mut state,
         json!({ "run_id": run_id, "agent_id": second_agent }),
-    ));
+    );
     let items = full["result"]["thread"]["items"].as_array().unwrap();
     assert_eq!(items.len(), 2, "{full:?}");
     let cursor = items[0]["data"]["sequence"].as_u64().unwrap();
 
-    let delta = state.handle(req(
-        "run.get",
+    let delta = run_detail(
+        &mut state,
         json!({
             "run_id": run_id,
             "agent_id": second_agent,
             "thread_after_sequence": cursor
         }),
-    ));
+    );
     assert_eq!(
         thread_bodies(&delta["result"]["thread"]),
         vec!["and one more".to_string()],
@@ -1325,10 +1210,10 @@ fn the_thread_cursor_is_read_against_the_named_agents_conversation() {
 
     // The same cursor against the FIRST agent's conversation reads its own
     // sequences: its one message is older, so it is already held.
-    let other = state.handle(req(
-        "run.get",
+    let other = run_detail(
+        &mut state,
         json!({ "run_id": run_id, "thread_after_sequence": cursor }),
-    ));
+    );
     assert!(
         thread_bodies(&other["result"]["thread"]).is_empty(),
         "{other:?}"
@@ -1381,10 +1266,7 @@ fn per_message_read_reports_preserve_explicit_agent_isolation() {
 fn task_get_honors_the_agent_it_was_addressed_to() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let task = state
-        .plan_create(&json!({ "goal": "one conversation", "dispatch": false }))
-        .expect("legacy fixture is created below the retired RPC boundary");
-    let task_id = task["plan_id"].as_str().unwrap().to_string();
+    let task_id = file_legacy_task(&mut state, "one conversation");
     let agent_id = primary_agent_id(&state, &task_id);
 
     let named = state.handle(req(

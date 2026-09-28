@@ -280,7 +280,10 @@ async fn a_delivery_that_fails_in_the_background_lands_on_its_entity() {
     );
     wait_for_deliveries(&state).await;
 
-    let got = call(&handler, "run.get", json!({ "run_id": "run-unreachable" }));
+    let got = run_detail(
+        &mut state.lock().unwrap(),
+        json!({ "run_id": "run-unreachable" }),
+    );
     assert!(
         got["result"]["last_error"]
             .as_str()

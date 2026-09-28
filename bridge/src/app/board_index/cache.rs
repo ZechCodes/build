@@ -305,11 +305,6 @@ impl DiffCache {
     }
 
     #[cfg(test)]
-    pub(in crate::app) fn seed_run_stat(&mut self, run_id: String, stat: Value) {
-        self.run_stat_cache.insert(run_id, (Instant::now(), stat));
-    }
-
-    #[cfg(test)]
     pub(in crate::app) fn clear_external_scan(&mut self, project_id: &str) {
         self.project_cache
             .get_mut(project_id)
@@ -326,15 +321,6 @@ impl DiffCache {
         if let Some((computed_at, _, _)) = self.workspace_summary_cache.get_mut(workspace_id) {
             *computed_at -= age;
         }
-    }
-
-    #[cfg(test)]
-    pub(in crate::app) fn age_external_scan(&mut self, project_id: &str, age: std::time::Duration) {
-        self.project_cache
-            .get_mut(project_id)
-            .and_then(|project| project.external_scan.as_mut())
-            .expect("a scan to age")
-            .scanned_at -= age;
     }
 
     pub(in crate::app) fn store_entry_for_adapter(

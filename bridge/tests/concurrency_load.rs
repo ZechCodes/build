@@ -1,11 +1,11 @@
 //! The load test `Bridge Concurrency Spec.md` asks for, in its Verification
 //! section: three PTY sessions streaming output while `board.list`,
-//! `thread.post` and `worktree.create` are timed. p95 under 200 ms for the
+//! `thread.post` and `workspace.create` are timed. p95 under 200 ms for the
 //! reads, under 500 ms for the writes.
 //!
 //! It is the whole daemon: real frames through the real [`FrameHandler`] and
 //! the real [`FrameClock`], real PTYs with real children painting into real
-//! screens, real git under `worktree.create`, and a real delivery behind every
+//! screens, real git under `workspace.create`, and a real delivery behind every
 //! `thread.post`. Nothing is stubbed except the harness, which is the daemon's
 //! own QA agent (`sh -c "printf …; cat >/dev/null"`) — no provider binary is
 //! ever looked for, so the numbers are the bridge's own.
@@ -140,10 +140,10 @@ async fn the_daemon_answers_reads_and_writes_while_three_ptys_flood() {
     };
     let creating = Callers::spawn(
         &handler,
-        "worktree.create",
+        "workspace.create",
         CREATE_INTERVAL,
         until,
-        move |n| json!({ "project_id": project_id, "name": format!("load {n}") }),
+        move |n| json!({ "project_id": project_id, "name": format!("load {n}"), "isolation": "worktree" }),
     );
 
     let reads = reading.join();

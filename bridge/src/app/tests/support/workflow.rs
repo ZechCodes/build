@@ -102,13 +102,6 @@ pub(in crate::app::tests) fn row_with<'a>(rows: &'a Value, key: &str, id: &str) 
         .unwrap_or_else(|| panic!("no {key} {id}: {rows:?}"))
 }
 
-pub(in crate::app::tests) fn plan_id_of(res: &Value) -> String {
-    res.get("result").unwrap_or(res)["plan_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("no plan_id: {res:?}"))
-        .to_string()
-}
-
 pub(in crate::app::tests) fn run_id_of(res: &Value) -> String {
     res.get("result").unwrap_or(res)["run_id"]
         .as_str()
@@ -116,26 +109,45 @@ pub(in crate::app::tests) fn run_id_of(res: &Value) -> String {
         .to_string()
 }
 
-/// A run in review, minted the only way runs are minted now: author a plan
-/// with the scripted agent, approve it and both of its stage docs, implement
-/// stage one, then dispatch stage two (whose completion opens review).
-/// Returns `(plan_id, run_id)`. The goal-only "Quick task" dispatch this
-/// replaces is gone — see `run_create_refuses_a_goal_without_a_plan`.
+/// File a legacy Task record the way the retired `plan.create` with
+/// `dispatch: false` did — an inert plan on the default project, on the
+/// account's default harness — and answer its id. The Task workflow's verbs
+/// are gone (#207), but stored Tasks still load, so the tests that read them
+/// install one directly.
+pub(in crate::app::tests) fn file_legacy_task(state: &mut AppState, goal: &str) -> String {
+    let project_id = state.default_project().expect("the fixture has a project");
+    let base = state.base_for(&project_id).expect("the project has a base");
+    let model_choice = crate::app::model_choice_from(&json!({}), state.default_harness)
+        .expect("the default harness resolves");
+    let plan_id = format!("plan-{}", uuid::Uuid::new_v4());
+    let active = state
+        .orch_for(&project_id)
+        .expect("the project has an orchestrator")
+        .create_plan(
+            crate::plan::PlanId::new(&plan_id),
+            goal.to_string(),
+            &base,
+            model_choice,
+        );
+    state.projects.bind_entity(plan_id.clone(), project_id);
+    state
+        .finish_plan_mutation(plan_id.clone(), active)
+        .expect("the legacy task fixture is durable");
+    plan_id
+}
+
+/// A legacy Task and its implementation, left where an old workflow left
+/// them: the plan approved, both stages built, the run in review.
+///
+/// Task workflow RPCs are gone, but many non-workflow tests still need the
+/// durable shape an old Task and its implementation left behind. Build that
+/// shape through the domain seams so those tests do not accidentally keep
+/// the retired public surface alive.
 pub(in crate::app::tests) fn planned_run_in_review(
     state: &mut AppState,
     goal: &str,
 ) -> (String, String) {
-    // Task workflow RPCs are intentionally retired, but many non-workflow
-    // tests still need the durable shape an old Task and its implementation
-    // left behind. Build that shape through the domain seams so those tests do
-    // not accidentally keep the retired public surface alive.
-    let plan = state
-        .plan_create(&json!({ "goal": goal, "dispatch": false }))
-        .expect("the legacy plan fixture is filed");
-    let plan_id = plan["plan_id"]
-        .as_str()
-        .expect("the legacy plan fixture has an id")
-        .to_string();
+    let plan_id = file_legacy_task(state, goal);
     let project_id = state.project_of(&plan_id).expect("the plan has a project");
     let orch = state
         .orch_for(&project_id)
@@ -154,17 +166,14 @@ pub(in crate::app::tests) fn planned_run_in_review(
     state
         .qa_simulate_plan(&project_id, &mut active)
         .expect("the scripted planner authors the legacy plan");
+    // What the retired stage and plan approvals left on the record.
+    for stage in &mut active.stages {
+        stage.state = crate::plan::StageDocState::Approved;
+    }
+    active.plan.state = crate::plan::PlanState::Approved;
     state
         .finish_plan_mutation(plan_id.clone(), active)
-        .expect("the planned fixture is durable");
-    for stage_id in ["first-half", "second-half"] {
-        state
-            .plan_stage_approve(&json!({ "plan_id": plan_id, "stage_id": stage_id }))
-            .expect("the legacy stage is approved");
-    }
-    state
-        .plan_approve(&json!({ "plan_id": plan_id }))
-        .expect("the legacy plan is approved");
+        .expect("the approved fixture is durable");
 
     let plan = state.plans.get(&plan_id).expect("the plan remains live");
     let task = ImplementableTask::judge(RunSource {
@@ -183,23 +192,29 @@ pub(in crate::app::tests) fn planned_run_in_review(
     state
         .qa_simulate_stage_build(&project_id, &mut run, &plan_docs)
         .expect("the first legacy stage is built");
-    state
-        .projects
-        .bind_entity(run_id.clone(), project_id.clone());
-    state
-        .finish_run_mutation(run_id.clone(), run)
-        .expect("the legacy run is durable");
-    state
-        .run_stage_dispatch(&json!({ "run_id": run_id, "stage_id": "second-half" }))
+    // The second stage, dispatched the way the retired `run.stage_dispatch`
+    // did — its turn queued for the run's agent — then built.
+    let second = crate::app::dispatchable_next_run_stage(&run, &plan_docs)
+        .expect("the second legacy stage is dispatchable");
+    let turn = orch
+        .dispatch_run_stage(&mut run, &plan_docs, &second, None)
         .expect("the second legacy stage dispatches");
-    let mut run = state.runs.remove(&run_id).expect("the run remains live");
+    state
+        .delivery_queue
+        .enqueue(PendingAgentTurn::for_run(&run_id, &mut run, turn));
     state
         .qa_simulate_stage_build(&project_id, &mut run, &plan_docs)
         .expect("the second legacy stage is built");
     assert_eq!(run.run.state, RunState::Review);
     state
+        .projects
+        .bind_entity(run_id.clone(), project_id.clone());
+    state
         .finish_run_mutation(run_id.clone(), run)
         .expect("the reviewed legacy run is durable");
+    state
+        .record_task_current_stage_started(&run_id, &plan_docs)
+        .expect("the stage start is on the task's conversation");
     (plan_id, run_id)
 }
 
@@ -276,4 +291,115 @@ pub(in crate::app::tests) fn spawned_provider(
         TabRole::Agent { provider, .. } => provider,
         TabRole::Shell => panic!("{agent_id} opened a shell, not an agent session"),
     }
+}
+
+/// The `project.create` that opens one existing folder as a project, named
+/// after it — what the retired `project.add` did (#207). `added` is what
+/// `project.add` took: a `path`, and optionally a `base_branch`.
+pub(in crate::app::tests) fn open_folder(added: Value) -> Value {
+    if let Some(sources) = added.get("sources") {
+        // `project.add` also took the multi-source form `project.create`
+        // takes, which wants a name: the first folder's, as `project.add`
+        // inferred it.
+        let mut created = added.clone();
+        if created.get("name").is_none() {
+            let first = &sources[0];
+            let named = first["path"]
+                .as_str()
+                .or_else(|| first["remote"].as_str())
+                .and_then(|path| std::path::Path::new(path.trim_end_matches(".git")).file_name())
+                .and_then(|name| name.to_str())
+                .unwrap_or("project")
+                .to_string();
+            created["name"] = json!(named);
+        }
+        return created;
+    }
+    let path = added["path"]
+        .as_str()
+        .expect("a folder to open")
+        .to_string();
+    let name = std::path::Path::new(&path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("project")
+        .to_string();
+    let mut source = json!({ "path": path });
+    if let Some(base_branch) = added.get("base_branch") {
+        source["base_branch"] = base_branch.clone();
+    }
+    json!({ "name": name, "sources": [source] })
+}
+
+/// A run's detail view as the retired `run.get` answered it, read straight
+/// off the run (#207), in the envelope `handle` would have wrapped it in.
+pub(in crate::app::tests) fn run_detail(state: &mut AppState, params: Value) -> Value {
+    match state.run_get(&params) {
+        Ok(result) => json!({ "ok": true, "result": result }),
+        Err(error) => json!({ "ok": false, "error": error }),
+    }
+}
+
+/// An entity's agents as the retired `agent.list` answered them (#207), in
+/// the envelope `handle` would have wrapped them in.
+pub(in crate::app::tests) fn agent_roster(state: &mut AppState, params: Value) -> Value {
+    match state.agent_list(&params) {
+        Ok(result) => json!({ "ok": true, "result": result }),
+        Err(error) => json!({ "ok": false, "error": error }),
+    }
+}
+
+/// The work-item row of the checkout on `branch` in `project_id` — the row
+/// the retired `branch.get` answered with (#207), without its run view.
+pub(in crate::app::tests) fn checkout_row(
+    state: &mut AppState,
+    project_id: &str,
+    branch: &str,
+) -> Option<Value> {
+    let checkouts = state.external_worktrees_json();
+    state.work_items(&checkouts.rows).into_iter().find(|row| {
+        row["kind"] == crate::branch::WorkItemKind::Branch.as_str()
+            && row["project_id"] == json!(project_id)
+            && row["branch"] == json!(branch)
+    })
+}
+
+/// Link a tracker task by hand, as the retired `tasks.link` did (#207), in
+/// the envelope `handle` would have wrapped the answer in.
+pub(in crate::app::tests) fn link_task(state: &mut AppState, params: Value) -> Value {
+    match state.link_task_as_user(&params) {
+        Ok(result) => json!({ "ok": true, "result": result }),
+        Err(error) => json!({ "ok": false, "error": error }),
+    }
+}
+
+/// Put `agent_id` on a tracker task's watchers, or take it off, as the user —
+/// what the retired `tasks.track` / `tasks.untrack` did (#207).
+pub(in crate::app::tests) fn set_task_tracking(
+    state: &mut AppState,
+    task_id: &str,
+    agent_id: &str,
+    tracking: bool,
+) -> Value {
+    let answered = state.tracker_task(task_id).and_then(|(project_id, task)| {
+        state.set_tracking(
+            &project_id,
+            task,
+            agent_id,
+            tracking,
+            crate::tracker::Actor::User,
+            None,
+        )
+    });
+    match answered {
+        Ok(result) => json!({ "ok": true, "result": result }),
+        Err(error) => json!({ "ok": false, "error": error }),
+    }
+}
+
+/// The refusal a hand link meets, as a sentence.
+pub(in crate::app::tests) fn link_refusal(state: &mut AppState, params: Value) -> String {
+    let answered = link_task(state, params);
+    assert_eq!(answered["ok"], false, "{answered:?}");
+    answered["error"].as_str().unwrap_or_default().to_string()
 }

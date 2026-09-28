@@ -20,7 +20,7 @@ fn deleting_a_source_after_dispatch_does_not_recreate_or_initialize_it() {
     let source = tmp.path().join("source");
     std::fs::create_dir(&source).unwrap();
     let mut state = app(tmp.path());
-    let added = state.handle(req("project.add", json!({"path": source})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": source}))));
     let workspace = create_workspace(
         &mut state,
         added["result"]["project_id"].as_str().unwrap(),
@@ -49,7 +49,7 @@ fn replacing_a_source_after_dispatch_does_not_initialize_the_replacement() {
     std::fs::create_dir(&source).unwrap();
     std::fs::write(source.join("original.txt"), "original\n").unwrap();
     let mut state = app(tmp.path());
-    let added = state.handle(req("project.add", json!({"path": source})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": source}))));
     let workspace = create_workspace(
         &mut state,
         added["result"]["project_id"].as_str().unwrap(),
@@ -76,7 +76,7 @@ fn removing_workspace_and_project_before_settlement_keeps_both_outcomes() {
     let source = tmp.path().join("source");
     std::fs::create_dir(&source).unwrap();
     let mut state = app(tmp.path());
-    let added = state.handle(req("project.add", json!({"path": source})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": source}))));
     let workspace = create_workspace(
         &mut state,
         added["result"]["project_id"].as_str().unwrap(),
@@ -110,7 +110,7 @@ fn source_config_persistence_failure_is_retryable_after_git_was_created() {
     let config = tmp.path().join("config.json");
     std::fs::create_dir(&source).unwrap();
     let mut state = app(tmp.path()).with_config(&config).unwrap();
-    let added = state.handle(req("project.add", json!({"path": source})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": source}))));
     let workspace = create_workspace(
         &mut state,
         added["result"]["project_id"].as_str().unwrap(),
@@ -149,7 +149,7 @@ fn both_targets_at_the_same_canonical_path_share_one_initialization_outcome() {
         .unwrap()
         .target();
     let mut state = app(tmp.path());
-    let added = state.handle(req("project.add", json!({"path": source})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": source}))));
     let project_id = added["result"]["project_id"].as_str().unwrap();
     let workspace = state.workspaces.adopt_root(
         project_id,
@@ -198,8 +198,8 @@ fn repeated_both_keeps_the_sources_configured_base_when_head_differs() {
     git_in(&source, &["checkout", "-b", "develop"]);
     let mut state = app(tmp.path());
     let added = state.handle(req(
-        "project.add",
-        json!({"path": source, "base_branch": "release"}),
+        "project.create",
+        open_folder(json!({"path": source, "base_branch": "release"})),
     ));
     let project_id = added["result"]["project_id"].as_str().unwrap();
     // The project's own checkout is never listed; the verb reaches it by id.

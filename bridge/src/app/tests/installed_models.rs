@@ -317,7 +317,7 @@ fn a_refused_model_never_spawns_and_says_why() {
 
     assert_eq!(refused["ok"], false, "{refused}");
     assert_eq!(refused["error"], REFUSAL);
-    let listed = state.handle(req("agent.list", json!({ "entity_id": entity_id })));
+    let listed = agent_roster(&mut state, json!({ "entity_id": entity_id }));
     assert_eq!(listed["result"]["agents"], json!([]), "no agent was made");
 
     // Made while Claude Code ran it, and started once.
@@ -355,12 +355,12 @@ fn a_refused_model_never_spawns_and_says_why() {
 
     assert_eq!(agent_tab_count(&state), 0, "nothing was started");
     let mut app = state.lock().unwrap();
-    let listed = app.handle(req("agent.list", json!({ "entity_id": entity_id })));
+    let listed = agent_roster(&mut app, json!({ "entity_id": entity_id }));
     assert_eq!(
         listed["result"]["agents"][0]["start_error"], REFUSAL,
         "{listed}"
     );
-    let run = app.handle(req("run.get", json!({ "run_id": entity_id })));
+    let run = run_detail(&mut app, json!({ "run_id": entity_id }));
     assert_eq!(run["result"]["last_error"], REFUSAL, "{run}");
     let message = app
         .agent_conversation(&entity_id, Some(&agent_id))

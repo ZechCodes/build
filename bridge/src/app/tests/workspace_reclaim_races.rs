@@ -932,11 +932,7 @@ fn a_commit_after_the_reclaim_measured_keeps_the_workspace() {
 fn a_reclaim_wakes_nobody_watching_the_task() {
     let (_tmp, state, project_id, ws, task) = linked_workspace();
     let watcher = coding_agent(&mut state.lock().unwrap(), &project_id, "watcher");
-    let tracked = call(
-        &state,
-        "tasks.track",
-        json!({ "task_id": task, "agent_id": watcher.1 }),
-    );
+    let tracked = set_task_tracking(&mut state.lock().unwrap(), &task, &watcher.1, true);
     assert_eq!(tracked["ok"], true, "{tracked:?}");
     finish(&state, &task);
     {

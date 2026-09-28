@@ -35,7 +35,6 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             ChangesetDiffResult
         ),
         v1_method!("git.stage", git_stage, GitPathsParams, StatusPayload),
-        v1_method!("git.unstage", git_unstage, GitPathsParams, StatusPayload),
         v1_method!("git.discard", git_discard, GitPathsParams, StatusPayload),
         v1_method!("git.commit", git_commit, GitCommitParams, GitCommitResult),
         v1_method!("git.fetch", git_fetch, ScopeParams, StatusPayload),
@@ -48,24 +47,6 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             git_merge_abort,
             ScopeParams,
             StatusPayload
-        ),
-        v1_method!(
-            "git.branches",
-            git_branches,
-            BranchScopeParams,
-            BranchListResult
-        ),
-        v1_method!(
-            "git.checkout",
-            git_checkout,
-            GitCheckoutParams,
-            StatusPayload
-        ),
-        v1_method!(
-            "git.branch_delete",
-            git_branch_delete,
-            GitBranchDeleteParams,
-            BranchListResult
         ),
         v1_method!("git.refs", git_refs, ScopeParams, RefListResult),
         v1_method!(
@@ -86,25 +67,12 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
         v1_method!("fs.read", fs_read, FsReadParams, FsFileResult),
         v1_method!("fs.write", fs_write, FsWriteParams, FsFileResult),
         v1_method!(
-            "project.diff",
-            project_diff,
-            ProjectDiffParams,
-            ProjectDiffResult
-        ),
-        v1_method!(
             "worktree.diff",
             worktree_diff,
             WorktreeDiffParams,
             WorktreeDiffResult
         ),
         v1_method!("run.diff", run_diff, RunDiffParams, RunDiffResult),
-        v1_method!(
-            "run.stage_diff",
-            run_stage_diff,
-            RunStageDiffParams,
-            StageDiffResult
-        ),
-        v1_method!("task.diff", task_diff, TaskDiffParams, RunDiffResult),
         v1_method!(
             "task.stage_diff",
             task_stage_diff,
@@ -146,16 +114,6 @@ pub struct ScopeParams {
     /// beside the ids above (`entity_ids_of` in `app/rpc.rs`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entity_id: Option<String>,
-}
-
-/// The scope of a verb that addresses the repository's branches rather than
-/// one checkout's working tree: project, optionally narrowed to an external
-/// worktree. A run's branch belongs to the run lifecycle, so no `run_id`.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct BranchScopeParams {
-    pub project_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktree_id: Option<String>,
 }
 
 /// How many commits a CURSORED `git.log` answers with when the caller names
@@ -273,24 +231,6 @@ pub struct GitPushParams {
     pub force: Option<bool>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct GitCheckoutParams {
-    #[serde(flatten)]
-    pub scope: BranchScopeParams,
-    pub branch: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub create: Option<bool>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct GitBranchDeleteParams {
-    #[serde(flatten)]
-    pub scope: BranchScopeParams,
-    pub branch: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub force: Option<bool>,
-}
-
 /// `fs.list` browses the host's directories, before any project exists — the
 /// one verb here with no scope at all.
 #[derive(Debug, Deserialize, Serialize)]
@@ -397,16 +337,6 @@ pub struct ChangesetDiffParams {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct ProjectDiffParams {
-    pub project_id: String,
-    /// Whether the patch text rides the answer. `false` asks for the shape a
-    /// list paints and leaves the hunks to the surface that opens them. Absent
-    /// means yes, so an older client is answered as before.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub patch: Option<bool>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
 pub struct WorktreeDiffParams {
     pub project_id: String,
     pub worktree_id: String,
@@ -435,19 +365,6 @@ pub struct RunDiffParams {
     /// connect. Absent means yes, so an older client is answered as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub patch: Option<bool>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct RunStageDiffParams {
-    pub run_id: String,
-    pub stage_id: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct TaskDiffParams {
-    pub task_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub if_diff_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -671,12 +588,6 @@ pub struct BranchRow {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct BranchListResult {
-    pub current: String,
-    pub branches: Vec<BranchRow>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
 pub struct FsListEntry {
     pub name: String,
     pub path: String,
@@ -735,20 +646,6 @@ pub struct FsFileResult {
 /// A modification time per changed path that still exists in the checkout,
 /// in milliseconds since the epoch (see [`StatusFile::edited_at`]).
 pub type FileEditedAt = BTreeMap<String, u64>;
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct ProjectDiffResult {
-    pub project_id: String,
-    pub branch: String,
-    pub path: String,
-    pub stat: DiffStat,
-    pub files: Vec<DiffFileRow>,
-    /// Absent when the caller asked for the shape without it
-    /// (`patch: false`): the rows and the key name a body the surface
-    /// that opens it reads for itself.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub patch: Option<String>,
-}
 
 /// HEAD as the refs picker names it: the branch it is on, or the commit a
 /// detached checkout sits at.
@@ -1005,13 +902,6 @@ fn git_stage(
     answer(app.git_stage(&params.wire()))
 }
 
-fn git_unstage(
-    app: &mut AppState,
-    params: GitPathsParams,
-) -> Result<Answer<StatusPayload>, ApiError> {
-    answer(app.git_unstage(&params.wire()))
-}
-
 fn git_discard(
     app: &mut AppState,
     params: GitPathsParams,
@@ -1056,27 +946,6 @@ fn git_merge_abort(
     answer(app.git_merge_abort(&params.wire()))
 }
 
-fn git_branches(
-    app: &mut AppState,
-    params: BranchScopeParams,
-) -> Result<Answer<BranchListResult>, ApiError> {
-    answer(app.git_branches(&params.wire()))
-}
-
-fn git_checkout(
-    app: &mut AppState,
-    params: GitCheckoutParams,
-) -> Result<Answer<StatusPayload>, ApiError> {
-    answer(app.git_checkout(&params.wire()))
-}
-
-fn git_branch_delete(
-    app: &mut AppState,
-    params: GitBranchDeleteParams,
-) -> Result<Answer<BranchListResult>, ApiError> {
-    answer(app.git_branch_delete(&params.wire()))
-}
-
 fn git_refs(app: &mut AppState, params: ScopeParams) -> Result<Answer<RefListResult>, ApiError> {
     answer(app.git_refs(&params.wire()))
 }
@@ -1115,13 +984,6 @@ fn fs_write(app: &mut AppState, params: FsWriteParams) -> Result<Answer<FsFileRe
     answer(app.fs_write(&params.wire()))
 }
 
-fn project_diff(
-    app: &mut AppState,
-    params: ProjectDiffParams,
-) -> Result<Answer<ProjectDiffResult>, ApiError> {
-    answer(app.project_diff(&params.wire()))
-}
-
 fn worktree_diff(
     app: &mut AppState,
     params: WorktreeDiffParams,
@@ -1131,20 +993,6 @@ fn worktree_diff(
 
 fn run_diff(app: &mut AppState, params: RunDiffParams) -> Result<Answer<RunDiffResult>, ApiError> {
     answer(app.run_diff(&params.wire()))
-}
-
-fn run_stage_diff(
-    app: &mut AppState,
-    params: RunStageDiffParams,
-) -> Result<Answer<StageDiffResult>, ApiError> {
-    answer(app.run_stage_diff(&params.wire()))
-}
-
-fn task_diff(
-    app: &mut AppState,
-    params: TaskDiffParams,
-) -> Result<Answer<RunDiffResult>, ApiError> {
-    answer(app.task_run_action(&params.wire(), "diff"))
 }
 
 fn task_stage_diff(

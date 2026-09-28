@@ -1250,4 +1250,3 @@ const branchKeptWords = (name, machine) => ({
   taskReturned: "Return the task it implements to the inbox",
   confirmLabel: "Remove",
 });
-

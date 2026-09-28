@@ -108,4 +108,3 @@ describe("merge failure reason extraction", () => {
     expect(mergeFailureReason(undefined)).toBeNull();
   });
 });
-

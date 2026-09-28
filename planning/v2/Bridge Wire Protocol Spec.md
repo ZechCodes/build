@@ -539,6 +539,9 @@ has been seen in `bridge.stats` for a month.
   plan verb and feature name moved to `tasks.*` or `task.*`. By
   Zech's call (2026-09-27) it serves no 1.x client and the SPA serves no 1.x
   bridge: the two update together, and each gates the other as out of date.
+- 2.1.0 adds `push.registerKey` and `push.revokeKey`: a browser registers its
+  notification key so the bridge can seal push content to it (#200,
+  `Push Content Security Checklist.md`).
 - `PROTOCOL_VERSION` (envelope), the MCP protocol date, and the Cargo
   version stay separate. They version different things.
 

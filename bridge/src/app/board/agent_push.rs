@@ -1,11 +1,14 @@
 //! What an agent's push says (#200): the agent's name, the first line of the
 //! attention-class item that made it news, and the deep link to its
-//! conversation. Built under the app lock from what the lock already holds;
-//! sealed later, off it (`AppState::spawn_notify`). The words go only into
-//! that sealed content — never into a log.
+//! conversation. Read under the app lock from what the lock already holds;
+//! the workspace's path is resolved, and the whole sealed, later and off it
+//! (`AppState::spawn_notify`). The words go only into that sealed content —
+//! never into a log.
 
 use crate::app::AppState;
-use crate::notify::content::{conversation_url, first_line, ConversationPlace, PushContent};
+use crate::notify::content::{
+    conversation_url, first_line, ConversationPlace, PendingContent, PushContent,
+};
 use crate::thread::{AgentOwnerKind, ThreadEventKind, ThreadItem};
 
 impl AppState {
@@ -16,28 +19,36 @@ impl AppState {
     /// wear (`conversation_owner_ref`): a workspace's conversation owner is
     /// the run whose worktree is that workspace's root; a project's is the run
     /// on the project's scratch root. Either way the project is the one the
-    /// entity is registered under.
+    /// entity is registered under. Which root the run's is resolves through
+    /// the disk, so that step is deferred to the spawned delivery: here only
+    /// the candidates are read out of the app state.
     pub(in crate::app) fn agent_push_content(
         &self,
         entity_id: &str,
         agent_id: &str,
         attention_sequence: Option<u64>,
-    ) -> Option<PushContent> {
-        let owner = self.conversation_owner_ref(entity_id)?;
-        let project_id = self.projects.project_id_of(entity_id)?;
-        let place = match owner.kind {
-            AgentOwnerKind::Workspace => ConversationPlace::Workspace {
-                project_id,
-                workspace_id: &owner.id,
-            },
-            AgentOwnerKind::Project => ConversationPlace::Project { project_id },
-        };
-        let url = conversation_url(self.notifier.as_ref()?.device_id(), &place, agent_id);
-        let title = self
-            .agent_name(entity_id, agent_id)
-            .unwrap_or_else(|| owner.name.clone());
+    ) -> Option<PendingContent> {
+        let owners = self.conversation_owner_candidates(entity_id)?;
+        let project_id = self.projects.project_id_of(entity_id)?.to_string();
+        let device_id = self.notifier.as_ref()?.device_id().to_string();
+        let name = self.agent_name(entity_id, agent_id);
         let body = self.attention_line(entity_id, agent_id, attention_sequence?)?;
-        PushContent::new(&title, &body, url)
+        let agent_id = agent_id.to_string();
+        Some(PendingContent::Deferred(Box::new(move || {
+            let owner = owners.resolve()?;
+            let place = match owner.kind {
+                AgentOwnerKind::Workspace => ConversationPlace::Workspace {
+                    project_id: &project_id,
+                    workspace_id: &owner.id,
+                },
+                AgentOwnerKind::Project => ConversationPlace::Project {
+                    project_id: &project_id,
+                },
+            };
+            let url = conversation_url(&device_id, &place, &agent_id);
+            let title = name.unwrap_or_else(|| owner.name.clone());
+            PushContent::new(&title, &body, url)
+        })))
     }
 
     /// The first line of the item at `sequence` on the agent's conversation.

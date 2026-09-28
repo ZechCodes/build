@@ -10,7 +10,7 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
-use super::content::PushContent;
+use super::content::{PendingContent, PushContent};
 use super::seal::{self, Binding};
 use super::{unix_seconds, Notifier, SealedEntry};
 use crate::store::push_keys::PushKey;
@@ -24,8 +24,9 @@ const SEAL_BUDGET: Duration = Duration::from_secs(1);
 pub struct Delivery {
     pub entity_id: String,
     pub kind: &'static str,
-    /// The words to seal; `None` sends the #191 generic notify.
-    pub content: Option<PushContent>,
+    /// The words to seal; `None`, or content that resolves to nothing, sends
+    /// the #191 generic notify.
+    pub content: Option<PendingContent>,
 }
 
 impl Notifier {
@@ -33,14 +34,17 @@ impl Notifier {
     /// forget the keys the api reports unknown. Fails only when the notify
     /// itself does.
     pub async fn deliver(&self, delivery: Delivery, keys: Option<Store>) -> Result<(), String> {
-        let sealed = sealed_within_budget(keys.clone(), &delivery).await;
+        let Delivery {
+            entity_id,
+            kind,
+            content,
+        } = delivery;
+        let sealed = sealed_within_budget(keys.clone(), &entity_id, kind, content).await;
         let sealed_to: HashSet<String> = sealed
             .iter()
             .map(|entry| entry.subscription_id.clone())
             .collect();
-        let reply = self
-            .notify(&delivery.entity_id, delivery.kind, sealed)
-            .await?;
+        let reply = self.notify(&entity_id, kind, sealed).await?;
         let unknown: Vec<String> = reply
             .unknown_subscriptions
             .into_iter()
@@ -51,21 +55,32 @@ impl Notifier {
     }
 }
 
-/// The sealed entries for `delivery`, or none when there is nothing to seal,
+/// The sealed entries for `content`, or none when there is nothing to seal,
 /// nobody to seal to, or the work overruns [`SEAL_BUDGET`]. Runs on the
-/// blocking pool: the store read waits on the store's own mutex.
-async fn sealed_within_budget(keys: Option<Store>, delivery: &Delivery) -> Vec<SealedEntry> {
-    let (Some(store), Some(content)) = (keys, delivery.content.clone()) else {
+/// blocking pool: the store read waits on the store's own mutex, and a
+/// deferred content step reads the disk.
+async fn sealed_within_budget(
+    keys: Option<Store>,
+    entity_id: &str,
+    kind: &'static str,
+    content: Option<PendingContent>,
+) -> Vec<SealedEntry> {
+    let (Some(store), Some(content)) = (keys, content) else {
         return Vec::new();
     };
-    let entity_id = delivery.entity_id.clone();
-    let kind = delivery.kind;
+    let entity_id = entity_id.to_string();
     let work = tokio::task::spawn_blocking(move || {
         let keys = store.list_push_keys().unwrap_or_else(|error| {
             eprintln!("push notify: cannot read notification keys: {error}");
             Vec::new()
         });
-        seal_to_keys(&keys, &entity_id, kind, &content, unix_seconds())
+        if keys.is_empty() {
+            return Vec::new();
+        }
+        match content.resolve() {
+            Some(content) => seal_to_keys(&keys, &entity_id, kind, &content, unix_seconds()),
+            None => Vec::new(),
+        }
     });
     match tokio::time::timeout(SEAL_BUDGET, work).await {
         Ok(Ok(sealed)) => sealed,

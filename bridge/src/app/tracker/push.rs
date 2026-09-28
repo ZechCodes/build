@@ -26,7 +26,7 @@ impl AppState {
             .notify_throttle
             .should_notify(&write.task.id, crate::notify::unix_seconds())
         {
-            let content = self.task_push_content(write);
+            let content = self.task_push_content(write).map(Into::into);
             self.spawn_notify(write.task.id.clone(), crate::notify::TASK_KIND, content);
         }
     }

@@ -7,6 +7,10 @@
 //! at post time, from what it knew then, because a workspace can be renamed and
 //! a topic changes with the work.
 
+use std::path::PathBuf;
+
+use crate::app::projects::scratch_dir;
+use crate::app::workspaces::same_path;
 use crate::app::AppState;
 use crate::thread::{AgentIdentity, AgentOwnerKind, AgentOwnerRef};
 
@@ -72,32 +76,75 @@ impl AppState {
     }
 
     /// The workspace or project this conversation owner stands for.
+    pub(in crate::app) fn conversation_owner_ref(&self, entity_id: &str) -> Option<AgentOwnerRef> {
+        self.conversation_owner_candidates(entity_id)?.resolve()
+    }
+
+    /// What [`Self::conversation_owner_ref`] decides between, read out of the
+    /// app state without touching the disk, so the paths can be resolved
+    /// after the app lock is let go (#200's push content).
+    pub(in crate::app) fn conversation_owner_candidates(
+        &self,
+        entity_id: &str,
+    ) -> Option<OwnerCandidates> {
+        let project_id = self.projects.project_id_of(entity_id)?;
+        let root = self.runs.get(entity_id)?.worktree.path.clone();
+        Some(OwnerCandidates {
+            root,
+            project: self.projects.get(project_id).map(|project| {
+                (
+                    scratch_dir(&self.state_root, &project.repo_path),
+                    AgentOwnerRef {
+                        kind: AgentOwnerKind::Project,
+                        id: project.id.clone(),
+                        name: project.name.clone(),
+                    },
+                )
+            }),
+            workspaces: self
+                .workspaces
+                .list(Some(project_id))
+                .into_iter()
+                .map(|workspace| {
+                    (
+                        workspace.root.clone(),
+                        AgentOwnerRef {
+                            kind: AgentOwnerKind::Workspace,
+                            id: workspace.id.clone(),
+                            name: workspace.name.clone(),
+                        },
+                    )
+                })
+                .collect(),
+        })
+    }
+}
+
+/// An entity's run root, and the project scratch root and workspace roots it
+/// may be. Owned, so it can leave the app lock.
+pub(in crate::app) struct OwnerCandidates {
+    root: PathBuf,
+    /// The project's scratch root and its owner, when the project is known.
+    project: Option<(PathBuf, AgentOwnerRef)>,
+    workspaces: Vec<(PathBuf, AgentOwnerRef)>,
+}
+
+impl OwnerCandidates {
+    /// Which one the root is, through symlinks ([`same_path`]), so this reads
+    /// the disk: once per workspace at most.
     ///
     /// A project's owner is asked about first: it is a run in the project's
     /// scratch directory, which is no workspace's root, so asking the other way
     /// round would answer nothing for it.
-    pub(in crate::app) fn conversation_owner_ref(&self, entity_id: &str) -> Option<AgentOwnerRef> {
-        let project_id = self.projects.project_id_of(entity_id)?;
-        if self.is_project_conversation_owner(entity_id) {
-            let project = self.projects.get(project_id)?;
-            return Some(AgentOwnerRef {
-                kind: AgentOwnerKind::Project,
-                id: project.id.clone(),
-                name: project.name.clone(),
-            });
+    pub(in crate::app) fn resolve(self) -> Option<AgentOwnerRef> {
+        if let Some((scratch, project)) = self.project {
+            if same_path(&self.root, &scratch) {
+                return Some(project);
+            }
         }
-        let root = self
-            .runs
-            .get(entity_id)
-            .map(|run| run.worktree.path.clone())?;
         self.workspaces
-            .list(Some(project_id))
             .into_iter()
-            .find(|workspace| crate::app::workspaces::same_path(&workspace.root, &root))
-            .map(|workspace| AgentOwnerRef {
-                kind: AgentOwnerKind::Workspace,
-                id: workspace.id.clone(),
-                name: workspace.name.clone(),
-            })
+            .find(|(workspace_root, _)| same_path(workspace_root, &self.root))
+            .map(|(_, owner)| owner)
     }
 }

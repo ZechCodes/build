@@ -3,7 +3,7 @@
 //! the keys the api reports unknown are forgotten.
 
 use super::*;
-use crate::notify::content::task_url;
+use crate::notify::content::{task_url, PendingContent};
 use crate::notify::seal::{open, Binding};
 use crate::notify::{notify_challenge_for, NotifyRequest, TASK_KIND};
 use crate::transport;
@@ -11,6 +11,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use p256::elliptic_curve::sec1::ToEncodedPoint;
 use p256::SecretKey;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -33,6 +35,10 @@ fn content() -> PushContent {
 }
 
 fn delivery(content: Option<PushContent>) -> Delivery {
+    deferred_delivery(content.map(PendingContent::Ready))
+}
+
+fn deferred_delivery(content: Option<PendingContent>) -> Delivery {
     Delivery {
         entity_id: ENTITY.to_string(),
         kind: TASK_KIND,
@@ -290,4 +296,76 @@ fn a_subscription_is_sealed_to_once() {
     };
     let sealed = seal_to_keys(&[key.clone(), key], ENTITY, TASK_KIND, &content(), 1);
     assert_eq!(sealed.len(), 1);
+}
+
+/// Content whose last part (a workspace's path, resolved on disk) is left to
+/// the spawned task: it is resolved there, on the blocking pool, and sealed
+/// like any other.
+#[tokio::test]
+async fn deferred_content_is_resolved_in_the_delivery_and_sealed() {
+    let (_dir, store) = store();
+    let (secret, public) = recipient();
+    store.upsert_push_key(&sid(1), &public, 1).unwrap();
+    let api = api(accepted()).await;
+    let caller = std::thread::current().id();
+    let resolved_on = Arc::new(std::sync::Mutex::new(None));
+    let seen = resolved_on.clone();
+    let pending = PendingContent::Deferred(Box::new(move || {
+        *seen.lock().unwrap() = Some(std::thread::current().id());
+        Some(content())
+    }));
+
+    api.notifier
+        .deliver(deferred_delivery(Some(pending)), Some(store.clone()))
+        .await
+        .expect("delivered");
+
+    let (_, request) = posted(&api).await;
+    assert_eq!(request.sealed.len(), 1);
+    let binding = Binding {
+        subscription_id: &request.sealed[0].subscription_id,
+        kind: TASK_KIND,
+        entity_id: ENTITY,
+    };
+    let opened: serde_json::Value =
+        serde_json::from_slice(&open(&secret, binding, &request.sealed[0].blob).unwrap()).unwrap();
+    assert_eq!(opened["title"], TITLE);
+    let resolved_on = resolved_on.lock().unwrap().expect("resolved");
+    assert_ne!(resolved_on, caller, "resolved on the blocking pool");
+}
+
+/// Nobody to seal to: the deferred part is never resolved at all.
+#[tokio::test]
+async fn deferred_content_is_not_resolved_without_keys() {
+    let (_dir, empty) = store();
+    for keys in [Some(empty.clone()), None] {
+        let api = api(accepted()).await;
+        let resolved = Arc::new(AtomicBool::new(false));
+        let flag = resolved.clone();
+        let pending = PendingContent::Deferred(Box::new(move || {
+            flag.store(true, Ordering::SeqCst);
+            Some(content())
+        }));
+        api.notifier
+            .deliver(deferred_delivery(Some(pending)), keys)
+            .await
+            .unwrap();
+        assert!(!resolved.load(Ordering::SeqCst));
+    }
+}
+
+/// Deferred content that resolves to nothing sends the generic notify.
+#[tokio::test]
+async fn deferred_content_that_says_nothing_sends_generic() {
+    let (_dir, store) = store();
+    let (_, public) = recipient();
+    store.upsert_push_key(&sid(1), &public, 1).unwrap();
+    let api = api(accepted()).await;
+    let pending = PendingContent::Deferred(Box::new(|| None));
+    api.notifier
+        .deliver(deferred_delivery(Some(pending)), Some(store.clone()))
+        .await
+        .unwrap();
+    let (_, request) = posted(&api).await;
+    assert!(request.sealed.is_empty());
 }

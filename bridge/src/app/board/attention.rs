@@ -259,13 +259,16 @@ impl AppState {
         &mut self,
         entity_id: String,
         kind: &'static str,
-        content: Option<crate::notify::content::PushContent>,
+        content: Option<crate::notify::content::PendingContent>,
     ) {
         #[cfg(test)]
-        {
+        let content = {
+            use crate::notify::content::PendingContent;
+            let resolved = content.and_then(PendingContent::resolve);
             self.sent_notifies.push((entity_id.clone(), kind));
-            self.sent_push_contents.push(content.clone());
-        }
+            self.sent_push_contents.push(resolved.clone());
+            resolved.map(PendingContent::Ready)
+        };
         let Some(notifier) = &self.notifier else {
             return;
         };

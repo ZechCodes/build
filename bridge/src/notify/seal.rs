@@ -9,6 +9,7 @@
 //! key    = HKDF-SHA256(salt = empty, ikm = shared,
 //!                      info = "build-push-v1" ‖ epk ‖ recipient public, L = 32)
 //! aad    = "build-push-v1" ‖ 0 ‖ sid ‖ 0 ‖ kind ‖ 0 ‖ entity id
+//! plaintext = the JSON, padded with trailing spaces to 1024 bytes
 //! ```
 //!
 //! This is ECIES with an ephemeral sender key, so it is **not
@@ -41,7 +42,7 @@ const UNCOMPRESSED_POINT_LEN: usize = 65;
 const NONCE_LEN: usize = 12;
 /// A subscription id is `b64u(SHA-256(endpoint))`: 32 bytes, 43 characters.
 const SUBSCRIPTION_ID_LEN: usize = 43;
-/// The plaintext never exceeds 1 KiB.
+/// Every plaintext is padded to exactly 1 KiB.
 pub const PLAINTEXT_MAX_BYTES: usize = 1024;
 /// Nor the blob 2048 characters.
 pub const BLOB_MAX_CHARS: usize = 2048;
@@ -172,9 +173,17 @@ fn plaintext_json(content: &PushContent, iat: i64) -> Result<Vec<u8>, SealError>
         iat,
     })
     .map_err(|_| SealError::Cipher)?;
+    pad(plaintext)
+}
+
+/// `plaintext` with trailing spaces to exactly [`PLAINTEXT_MAX_BYTES`], so
+/// every blob is the same length and its size says nothing about the event.
+/// JSON allows the whitespace; serde and `JSON.parse` both skip it.
+fn pad(mut plaintext: Vec<u8>) -> Result<Vec<u8>, SealError> {
     if plaintext.len() > PLAINTEXT_MAX_BYTES {
         return Err(SealError::PlaintextTooLarge);
     }
+    plaintext.resize(PLAINTEXT_MAX_BYTES, b' ');
     Ok(plaintext)
 }
 

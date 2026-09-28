@@ -1,8 +1,8 @@
 """Regenerates ``sealed-v1.json``, the cross-language vector for sealed push
 content (#200). Python's ``cryptography`` is a third implementation beside the
-bridge's (ring) and the service worker's (WebCrypto): both of those must open
-this blob, and the bridge must reproduce it byte-for-byte from the same fixed
-ephemeral key and nonce.
+bridge's (RustCrypto ``p256``, ``hkdf`` and ``aes-gcm``) and the service
+worker's (WebCrypto): both of those must open this blob, and the bridge must
+reproduce it byte-for-byte from the same fixed ephemeral key and nonce.
 
 Run from the repo root: ``skriftapp/.venv/bin/python fixtures/push/generate.py``.
 The scheme is specified in ``planning/v2/Push Content Security Checklist.md``.
@@ -19,6 +19,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 LABEL = b"build-push-v1"
+PLAINTEXT_BYTES = 1024
 
 
 def b64url(data: bytes) -> str:
@@ -65,6 +66,8 @@ def main() -> None:
         separators=(",", ":"),
         ensure_ascii=False,
     ).encode()
+    # Every plaintext is padded with trailing spaces to exactly 1024 bytes.
+    plaintext = plaintext.ljust(PLAINTEXT_BYTES, b" ")
 
     recipient_public = raw_public(recipient)
     ephemeral_public = raw_public(ephemeral)

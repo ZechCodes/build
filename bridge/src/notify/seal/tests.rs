@@ -2,6 +2,7 @@
 //! and to the scheme's bindings and caps.
 
 use super::*;
+use crate::notify::content::URL_MAX_BYTES;
 use serde_json::Value;
 
 fn vector() -> Value {
@@ -155,19 +156,66 @@ fn a_random_seal_round_trips_and_is_fresh_every_time() {
     );
 }
 
-/// The largest content the caps allow — every character four bytes — still
-/// fits the plaintext and blob caps.
+/// The blob every seal makes: version, ephemeral key, nonce, the padded
+/// plaintext and the tag, base64url.
+const SEALED_BLOB_CHARS: usize =
+    (1 + UNCOMPRESSED_POINT_LEN + NONCE_LEN + PLAINTEXT_MAX_BYTES + 16).div_ceil(3) * 4 - 1;
+
+/// The widest content the caps allow: every character as long as JSON
+/// writes it (four-byte, escaped, or a control character's `\u00XX`), the
+/// longest url, and the longest `iat`.
+fn widest_contents() -> Vec<PushContent> {
+    let url = format!("/app/#/{}", "x".repeat(URL_MAX_BYTES - "/app/#/".len()));
+    ["🚀", "\"", "\u{1}", "a"]
+        .into_iter()
+        .map(|unit| PushContent::new(&unit.repeat(400), &unit.repeat(900), url.clone()).unwrap())
+        .collect()
+}
+
+/// The largest content the caps allow still fits the plaintext and blob caps.
 #[test]
 fn content_at_its_caps_fits_the_plaintext_and_the_blob() {
     let (_, public) = random_recipient();
-    let wide = PushContent::new(
-        &"🚀".repeat(200),
-        &"🚀".repeat(400),
-        crate::notify::content::task_url("task-01ARZ3NDEKTSV4RRFFQ69G5FAV"),
-    )
-    .unwrap();
-    let blob = seal(&public, binding(), &wide, 1_790_000_000).unwrap();
-    assert!(blob.len() <= BLOB_MAX_CHARS, "{}", blob.len());
+    for wide in widest_contents() {
+        for iat in [i64::MIN, i64::MAX, 1_790_000_000] {
+            let blob = seal(&public, binding(), &wide, iat)
+                .unwrap_or_else(|e| panic!("{wide:?} {iat}: {e}"));
+            assert!(blob.len() <= BLOB_MAX_CHARS, "{}", blob.len());
+        }
+    }
+}
+
+/// Every blob is the same length whatever it says, so its size cannot tell
+/// the api or the push service which event happened (control 11).
+#[test]
+fn every_blob_is_the_same_length_whatever_it_says() {
+    let (secret, public) = random_recipient();
+    let short = PushContent::new("A", "Merged", "/app/#/tasks/t".into()).unwrap();
+    let mut contents = vec![short, content()];
+    contents.extend(widest_contents());
+    for said in &contents {
+        let blob = seal(&public, binding(), said, 1_790_000_000).unwrap();
+        assert_eq!(blob.len(), SEALED_BLOB_CHARS, "{said:?}");
+        let opened = open(&secret, binding(), &blob).unwrap();
+        assert_eq!(opened.len(), PLAINTEXT_MAX_BYTES, "{said:?}");
+        let parsed: Value = serde_json::from_slice(&opened).expect("padding is JSON whitespace");
+        assert_eq!(parsed["title"], said.title.as_str());
+    }
+    assert_eq!(SEALED_BLOB_CHARS, 1491);
+}
+
+/// The padding is trailing spaces after the JSON, nothing else.
+#[test]
+fn the_padding_is_trailing_spaces() {
+    let (secret, public) = random_recipient();
+    let blob = seal(&public, binding(), &content(), 7).unwrap();
+    let opened = String::from_utf8(open(&secret, binding(), &blob).unwrap()).unwrap();
+    let json = opened.trim_end_matches(' ');
+    assert!(json.ends_with('}'), "{json}");
+    assert_eq!(
+        json,
+        r##"{"v":1,"title":"#12 Fix the banner","body":"Rail scroll: ready for review","url":"/app/#/tasks/task-1","iat":7}"##
+    );
 }
 
 #[test]

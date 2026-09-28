@@ -642,6 +642,19 @@ In practice:
   `subscribeCache(prefix, listener)` announces every write to listeners on a
   matching prefix, and a `BroadcastChannel` carries the announcements to other
   tabs.
+- **Drafts and UI state are not replicas** (#206). `spa/src/core/localUiState.js`
+  keeps unsent drafts, folds, menus and the other `ui-*` records in their own
+  database, `build-ui` (`spa/src/core/localUiStore.js`), versioned apart from
+  `build-cache`. A replica schema bump, the lifetime sweeps, `evictEntity`,
+  and an older tab deleting `build-cache` on a `VersionError` never reach it;
+  only the account reset (`resetApplication`) wipes it. Builds before the
+  split kept `ui-*` records in `build-cache`: they are carried across,
+  newer-only, at a page's first UI-store use (mount reads wait for that pass,
+  bounded) and whenever another tab announces a `ui-*` write on the replica
+  channel, then removed from `build-cache` if unchanged. The replica upgrade
+  keeps `ui-*` records until they are carried. Both databases share the
+  connection handling in `spa/src/core/idbDatabase.js` and the key, stamp and
+  announcement helpers in `spa/src/core/idbRecords.js`.
 - **A lost connection is weather, not a verdict** (#169). iOS drops a suspended
   page's IndexedDB connection, and the first opens after a resume fail with
   `UnknownError: Connection to Indexed Database server lost`. The cache reopens

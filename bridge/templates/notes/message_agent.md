@@ -9,4 +9,5 @@ reports to the user and reaches no agent, whatever its status, so ending your
 turn answers nobody. When another agent asked you for something, send the answer
 with `message_agent` first, then report to the user briefly — what you did, not
 a second copy of what you already sent. Nothing you send with `message_agent`
-reaches the user, and `post_thread_message` is the only thing they see.
+reaches the user: they read your `post_thread_message` sends and what you
+write on the tasks they are on.

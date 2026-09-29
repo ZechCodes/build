@@ -60,11 +60,21 @@ anything assigned to you, your own changes are never sent back to you, and
 `untrack_task` stops it — being unassigned does not, because handing work on is
 often exactly when you still want to know how it went.
 
-`notify_user: true` puts a task in front of the USER. Tracking is for you;
-this is for them. Use it when the user asked for the task, or when what you
-filed or said is something they will want to see: a task you were told to
-open, a question on a task only they can answer, work handed to them. Leave
-it off for the tasks agents file among themselves — an inbox that fills with
-work nobody asked the user to look at is one they stop reading. It takes the
-same call: `create_task`, `comment_task` and `assign_task` each accept it,
-so telling them costs nothing extra.
+`mention_user: true` and `notify_user: true` put a task in front of the USER.
+Tracking is for you; these are for them, and both are off by default.
+`mention_user` asks; `notify_user` is only for a task the user asked to
+follow. Ask when you need the user's decision or feedback, at the moment you
+need it: nothing is watched in advance. A task filed from something the user
+reported is not one they asked to follow. An inbox that fills with work nobody
+needs them on is one they stop reading. `create_task` and `comment_task` take
+both, and `assign_task` takes `notify_user`, so involving the user costs no
+extra call.
+
+Once the user is on a task (they filed it, commented on it, or were asked on
+it), talk to them about it on the task with `comment_task`: questions, results
+and meaningful progress, not every step. When they write on it, reply there. A
+question asked in your thread is answered in your thread, even when it is about
+a task. When the result is on a task, the Complete in your thread is one line
+that points to it. When you answer what the user wrote, move it forward: settle
+the question, make the call, or add the detail that was missing. Do not quote
+it or say it back.

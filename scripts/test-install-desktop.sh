@@ -95,12 +95,12 @@ run_case() {
         BUILD_RELEASES_REPO=example/releases /bin/sh "$script" > "$TEST_ROOT/output" 2>&1 || status=$?
     case "$mode" in
         success|pinned)
-            [ "$status" = 0 ] && [ ! -e "$target/previous" ] || return 1
+            if ! { [ "$status" = 0 ] && [ ! -e "$target/previous" ]; }; then return 1; fi
             if [ "$TEST_OS" = Linux ]; then
-                [ -x "$target/build-desktop" ] && [ -x "$TEST_ROOT/home/.local/bin/build-desktop" ] || return 1
+                if ! { [ -x "$target/build-desktop" ] && [ -x "$TEST_ROOT/home/.local/bin/build-desktop" ]; }; then return 1; fi
                 [ -f "$TEST_ROOT/home/.local/share/applications/build-desktop.desktop" ] || return 1
             else
-                [ -f "$target/Contents/MacOS/Build" ] && [ -L "$target/Contents/Current" ] || return 1
+                if ! { [ -f "$target/Contents/MacOS/Build" ] && [ -L "$target/Contents/Current" ]; }; then return 1; fi
             fi
             if [ "$mode" = pinned ]; then
                 ! grep -q desktop-latest "$TEST_ROOT/urls" || return 1
@@ -110,7 +110,7 @@ run_case() {
             fi
             grep -q 'release-desktop' "$TEST_ROOT/cosign-args" || return 1
             ;;
-        *) [ "$status" != 0 ] && [ "$(cat "$target/previous")" = previous ] || return 1;;
+        *) if ! { [ "$status" != 0 ] && [ "$(cat "$target/previous")" = previous ]; }; then return 1; fi;;
     esac
 }
 check() {

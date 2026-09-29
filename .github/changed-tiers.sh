@@ -42,7 +42,7 @@ deployed_commit() {
 # so they cover everything either tier is still owed. Either unknown, or two
 # commits that are not on one line, means the base is unknown.
 older_commit() {
-    [ -n "$1" ] && [ -n "$2" ] || return 0
+    if [ -z "$1" ] || [ -z "$2" ]; then return 0; fi
     if git -C "$REPO" merge-base --is-ancestor "$1" "$2"; then
         printf '%s\n' "$1"
     elif git -C "$REPO" merge-base --is-ancestor "$2" "$1"; then

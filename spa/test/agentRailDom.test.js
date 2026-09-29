@@ -873,11 +873,14 @@ describe("the rail over a machine that is asked nothing", () => {
   it("adds the bubble a row brings without asking anything", async () => {
     payload = branchRow({ agents: three() });
     await mount();
+    // The mount's own read of the open agent's cold conversation is not the
+    // push's: let it go out before the calls are cleared.
+    await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(1));
     calls.length = 0;
 
     await pushRow(branchRow({ agents: [...three(), agent({ id: "ag-4", ordinal: 4 })] }));
 
-    expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-1", "ag-2", "ag-3", "ag-4", ""]);
+    await vi.waitFor(() => expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-1", "ag-2", "ag-3", "ag-4", ""]));
     expect(calls).toEqual([]);
   });
 

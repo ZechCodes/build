@@ -2045,7 +2045,6 @@ export function chatPaintFingerprint({
   unreadFrom,
   detailLevel,
   agentLabels,
-  refLinks,
   slice,
 }) {
   return [
@@ -2063,12 +2062,9 @@ export function chatPaintFingerprint({
     // A tracking notice names an agent, and that name comes off the feed: a
     // rename has to repaint a line that is already on screen.
     agentLabels || "",
-    // What the reference resolver can answer for (#63). The list lands after
-    // the first paint, and when it does, prose becomes links. The rail's own
-    // signature of its project, until #231 retires it for the index's version
-    // beside it — which covers every project, so a reference to another
-    // project's workspace repaints on the next paint the rail asks for (#229).
-    refLinks || "",
+    // What the reference index can answer for (#229). A list lands after the
+    // first paint, and when it does, prose becomes links; the version covers
+    // every project, so a reference to another project's workspace repaints.
     referenceIndexVersion(),
     // How much of the conversation the panel draws (core/timelineSlice.js): a
     // reader asking for more changes nothing else here.

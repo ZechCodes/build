@@ -3,6 +3,7 @@ import {
   DONE_SINCE_CAP_MS, dashboardSections, doneGroups, doneMoveToday, doneSessionStart, doneSince, doneSinceCutoff,
   latestCachedAgentActivity, standingOf,
 } from "../src/core/trackerDashboardModel.js";
+import { holdReferenceSources } from "../src/core/referenceIndex.js";
 
 const PROJECT = "device-1/proj-1";
 const NOW = Date.parse("2026-09-22T20:00:00Z");
@@ -38,6 +39,32 @@ describe("Dashboard cache projection", () => {
     });
     expect(sections.active).toEqual([{ task: work, agentName: "Editor · Writer", activity: "Checking links", working: true }]);
     expect(dashboardSections([work], { feed, projectKey: PROJECT, nowMs: NOW }).active[0].activity).toBe("");
+  });
+
+  // The line is what an agent wrote, so it reads the way every other preview
+  // does (core/markdown.js, #231): the marks off, and a reference as the words
+  // its link would carry, off the shared index — another project's included.
+  it("reads the activity line through the one markdown entry point", () => {
+    const work = task("work", { number: 7, assignee: { kind: "agent", agent_id: "agent-1" } });
+    const feed = {
+      projects: [],
+      workspaces: [
+        { projectKey: PROJECT, entity_id: "run-1", workspace_id: "ws-1", name: "Editor" },
+        { projectKey: "device-2/proj-9", workspace_id: "ws-9", name: "Elsewhere" },
+      ],
+      items: [{ projectKey: PROJECT, entity_id: "run-1", agents: [{ id: "agent-1", name: "Writer", working: true }] }],
+    };
+    const activityOf = () => dashboardSections([work], {
+      feed, projectKey: PROJECT, nowMs: NOW,
+      activityByAgent: new Map([["agent-1", "Checking **links** on @workspace:Elsewhere for #7"]]),
+    }).active[0].activity;
+    try {
+      expect(activityOf()).toBe("Checking links on @workspace:Elsewhere for #7");
+      holdReferenceSources({ feed, tasks: { [PROJECT]: [{ id: "work", number: 7, title: "Fix the links" }] } });
+      expect(activityOf()).toBe("Checking links on Elsewhere for #7 Fix the links");
+    } finally {
+      holdReferenceSources({});
+    }
   });
 
   it("keeps only a mid-turn agent in Working and the other agent holders in Assigned", () => {

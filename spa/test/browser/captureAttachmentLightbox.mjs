@@ -66,7 +66,7 @@ const mountTask = async (page, basePath) => {
     host.innerHTML = taskRender.taskPageHtml(answer.task, {
       rows: timeline.timelineRows(answer.timeline), unreadFrom: null,
       columns: [{ id: "in_review", name: "In review" }],
-      agentLabels: {}, agentProviders: {}, projectName: "Build", refLinks: null,
+      agentLabels: {}, agentProviders: {}, projectName: "Build",
       links: [], watch: null, draft: "", labelsDraft: "", busy: false,
       sending: false, attachable: false, hasFiles: false,
     });

@@ -418,6 +418,37 @@ describe("the Dashboard", () => {
     expect(host.querySelector('[data-dashboard-tab="needsYou"] .task-dashboard-count').textContent).toBe("4");
   });
 
+  // The activity line reads a reference as its words, off the shared index
+  // (#231), and the index can learn a name after the row is drawn — here
+  // another project's workspace — with nothing else on the Dashboard moving.
+  it("redraws the activity line when the reference index learns a name it wrote", async () => {
+    const index = await import("../src/core/referenceIndex.js");
+    const working = task({ id: "working", number: 4, title: "Work", assignee: { kind: "agent", agent_id: "agent-1" } });
+    await trackerCache.writeTasksRecord("dev-1", "proj-1", { tasks: [working], columns: columns() });
+    const { threadCacheAddress } = await import("../src/core/conversationCache.js");
+    await cache.writeCached(threadCacheAddress({ deviceId: "dev-1", entityId: "run-1", agentId: "agent-1", conversationId: "conv-1" }), {
+      items: [{ type: "message", data: { role: "agent", body: "Porting @workspace:Elsewhere" } }],
+    });
+    const activeFeed = { ...feed, items: [{ ...feed.items[0], agents: [{ id: "agent-1", working: true, conversation_id: "conv-1" }] }] };
+    call = vi.fn(() => new Promise(() => {}));
+    try {
+      await mount({ feed: () => activeFeed, defaultView: undefined });
+      await chooseTab("active");
+      await vi.waitFor(() => expect(host.querySelector('[data-dashboard-section="active"] .task-dashboard-detail').textContent)
+        .toMatch(/Porting @workspace:Elsewhere$/));
+
+      index.holdReferenceSources({
+        feed: { workspaces: [{ projectKey: "dev-2/proj-9", workspace_id: "ws-9", name: "Elsewhere" }], projects: [], items: [] },
+        tasks: {},
+      });
+      await flush();
+
+      expect(host.querySelector('[data-dashboard-section="active"] .task-dashboard-detail').textContent).toMatch(/Porting Elsewhere$/);
+    } finally {
+      index.holdReferenceSources({});
+    }
+  });
+
   it("redraws from real conversation and detail cache writes, with no bridge answer", async () => {
     const working = task({ id: "working", number: 4, title: "Work", assignee: { kind: "agent", agent_id: "agent-1" } });
     const done = task({ id: "done", number: 3, title: "Done", status: "done", state: "closed" });

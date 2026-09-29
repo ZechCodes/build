@@ -59,6 +59,7 @@ import { openTaskComposer } from "./taskComposer.js";
 import { carriesTaskAttachments } from "./taskAttachments.js";
 import { labelsOf } from "./trackerFilters.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
+import { subscribeReferenceIndex } from "./referenceIndex.js";
 
 export const TASK_PAGE_SIZE = 25;
 const VIEW_IDS = new Set([DASHBOARD_VIEW, LIST_VIEW, BOARD_VIEW]);
@@ -417,6 +418,9 @@ export function mountTasksPane(host, options) {
   });
   activity = createTrackerAgentActivityFeed({ deviceId: state.deviceId, onChange: () => paint() });
   void activity.updateFeed(state.feed(), state.projectKey);
+  // The Dashboard's activity line reads each reference as its words, off the
+  // shared index, which can learn a name after the line is drawn.
+  const referencesWatcher = subscribeReferenceIndex(() => paint());
 
   /** The board's columns ARE the statuses, so narrowing by one there would
    *  empty every other column rather than filter anything. The three filters
@@ -760,6 +764,7 @@ export function mountTasksPane(host, options) {
       ruleWatcher?.();
       details.dispose();
       activity.dispose();
+      referencesWatcher();
       queryUnsubscribe?.();
       reads.dispose();
       chrome.dispose();

@@ -20,15 +20,7 @@ const OWNERS = {
   "core/markdownLinks.js": ["core/markdown.js"],
   "core/markdownBlocks.js": ["core/markdown.js"],
   "core/previewText.js": ["core/markdown.js"],
-  "core/referenceTargets.js": [
-    "core/referenceIndex.js",
-    // EXCEPTION, not precedent: the rail still builds the per-project resolver
-    // #63 gave it and hands it to a timeline that no longer reads it, because
-    // #225 and #226 were editing agentRail.js when #229 landed. #231 swaps its
-    // chat fingerprint to the shared index and deletes `referenceLinks`; it
-    // removes this line, and nothing else may be added here.
-    "core/agentRail.js",
-  ],
+  "core/referenceTargets.js": ["core/referenceIndex.js"],
 };
 
 /// What each module may be asked for by anyone. `referenceIndex.js` is filled

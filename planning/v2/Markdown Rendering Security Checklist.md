@@ -7,7 +7,7 @@ This checklist covers the SPA's markdown renderer, an XSS boundary: everything a
 
 | # | Control | Score | Verification |
 |---|---|---:|---|
-| 1 | One entry point: no module under `spa/src/` renders markdown, parses references or builds a resolver except through `markdownHtml`; the one named exception (`agentRail.js`, until #231) is listed in the guard | 10/10 | `spa/test/markdownEntry.test.js` |
+| 1 | One entry point: no module under `spa/src/` renders markdown, parses references or builds a resolver except through `markdownHtml`; the guard names no exceptions | 10/10 | `spa/test/markdownEntry.test.js` |
 | 2 | Every input character is escaped before any tag is added, in every block (paragraph, heading, list item, quote, table cell, fence) and every mode (block, inline) | 10/10 | `markdownSafety.test.js` "emits only the renderer's own tags and attributes, in every block and mode"; negative control: removing `esc` from the inline path fails it |
 | 3 | Only an allow-listed set of tags and attributes is emitted; no `on*` attribute, no `src`, no free `style` (a table cell's `text-align` only), and an ordered list's `start` is a number of at most nine digits the renderer parsed | 10/10 | `markdownSafety.test.js` `violations()` over every payload and context |
 | 4 | No URL from the input becomes a link: `javascript:`, `data:` and remote URLs stay text, images are never emitted; every `href` is a route written by `core/router.js` `hashFromRoute` and starts `#/` | 10/10 | `markdownSafety.test.js` "writes no link for a javascript: or data: URL", `href` check in `violations()` |

@@ -17,7 +17,6 @@
 // Pure: no DOM, no cache, no router.
 
 import { workspaceDisplayName } from "./workspaceModel.js";
-import { actorName } from "./trackerLineWords.js";
 import { workspaceAgents } from "./trackerAssignee.js";
 import { deviceKey } from "./deviceKey.js";
 
@@ -28,78 +27,13 @@ const PROJECT_AGENT_PREFIX = "project-";
 const sameText = (left, right) =>
   String(left || "").trim().toLowerCase() === String(right || "").trim().toLowerCase();
 
-/** A workspace by the name a reader would write, or by its id — an agent that
- *  knows only the id should not have to learn the name to point at it. */
-const workspaceNamed = (workspaces, said) =>
-  (workspaces || []).find((workspace) => {
-    const id = workspace.workspace_id || workspace.id;
-    return id === said || sameText(workspaceDisplayName(workspace), said);
-  }) || null;
-
-/** The workspace one agent stands in, out of the picker's own grouping. */
-const groupHolding = (groups, agentId) =>
-  (groups || []).find((group) => (group.agents || []).some((agent) => agent.id === agentId)) || null;
-
-const identityAgent = (id, identity, identities, workspaces, at) => {
-  const workspaceId = identity.workspace_id;
-  if (!identity.available || !workspaceId || !workspaces.some((workspace) =>
-    (workspace.workspace_id || workspace.id) === workspaceId)) return null;
-  return { ...at, workspaceId, agentId: id,
-    name: actorName({ kind: "agent", agent_id: id }, { identities }) };
-};
-
-/**
- * The resolver core/markdownLinks.js asks, built from what this surface holds.
- *
- * `place` is where the reader is — the machine and the project every route is
- * written from. Without both there is nowhere to send anyone, so this answers
- * null and the renderer leaves every reference as prose.
- *
- * `tasks` is the project's task list as the tracker caches it, `workspaces`
- * the feed's for this project, and `agentGroups` what `workspaceAgents`
- * answers: the same three lists the task page and the conversation already
- * paint from, so a link can only point at something the reader could have
- * opened anyway.
- */
-export function referenceLinks({ place, tasks = [], workspaces = [], agentGroups = [], identities = {} } = {}) {
-  const deviceId = place?.deviceId;
-  const projectId = place?.projectId;
-  if (!deviceId || !projectId) return null;
-  const at = { deviceId, projectId };
-  return {
-    task(number) {
-      const found = (tasks || []).find((task) => Number(task.number) === Number(number));
-      return found?.id ? { ...at, taskId: found.id, title: found.title || "" } : null;
-    },
-
-    workspace(said) {
-      const found = workspaceNamed(workspaces, said);
-      if (!found) return null;
-      return { ...at, workspaceId: found.workspace_id || found.id, name: workspaceDisplayName(found) };
-    },
-
-    agent(id) {
-      if (String(id || "").startsWith(PROJECT_AGENT_PREFIX)) {
-        return identities[id]?.available === false ? null : { ...at, agentId: id };
-      }
-      const identity = identities[id];
-      if (identity) return identityAgent(id, identity, identities, workspaces, at);
-      const group = groupHolding(agentGroups, id);
-      if (!group) return null;
-      const agent = group.agents.find((one) => one.id === id);
-      return { ...at, workspaceId: group.workspaceId, agentId: id, name: agent?.label || "" };
-    },
-  };
-}
-
 // ─── The whole account's index (#229) ────────────────────────────────────────
 //
-// `referenceLinks` above answers for the one project a surface stands in, out
-// of the lists that surface holds. What follows answers for everything this
-// client has read — every machine, every project — so a reference to another
-// project's workspace resolves too, and every surface answers the same way
-// because they all ask the same index (core/referenceIndex.js). It is still
-// only caches: the feed, and the task lists the tracker has written.
+// What follows answers for everything this client has read — every machine,
+// every project — so a reference to another project's workspace resolves too,
+// and every surface answers the same way because they all ask the same index
+// (core/referenceIndex.js). It is only caches: the feed, and the task lists
+// the tracker has written.
 //
 // Each answer is one of three things. A place is a link. `null` means the list
 // that would hold it is held and it is not in it: the reader is told so

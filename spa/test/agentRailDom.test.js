@@ -5686,6 +5686,28 @@ describe("a chat paint with nothing to say", () => {
     expect(markSurvived()).toBe(false);
     expect(railHost().querySelector(".thread-items").textContent).toContain("and the next");
   });
+
+  // A reference resolves against the app-wide index (core/referenceIndex.js),
+  // which can learn a name after the line is painted — here another project's
+  // workspace — and nothing on the rail itself moves when it does (#231).
+  it("paints again when the reference index learns a name the chat wrote", async () => {
+    const index = await import("../src/core/referenceIndex.js");
+    try {
+      payload = conversationOf([said(1, "Look at @workspace:Elsewhere")]);
+      await mount();
+      expect(railHost().querySelector(".thread-items a.md-ref")).toBe(null);
+
+      index.holdReferenceSources({
+        feed: { workspaces: [{ projectKey: "device-9/p9", workspace_id: "ws-9", name: "Elsewhere" }], projects: [], items: [] },
+        tasks: {},
+      });
+      await flush();
+
+      expect(railHost().querySelector(".thread-items a.md-ref")?.textContent).toContain("Elsewhere");
+    } finally {
+      index.holdReferenceSources({});
+    }
+  });
 });
 
 // The rail merges every device's rows, and every machine mints a `p1`. The work

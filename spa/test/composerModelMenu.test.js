@@ -12,7 +12,8 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { composerHtml, composerPartIds, mountComposerModelMenu } from "../src/core/composer.js";
-import { readCached, wipeCache, writeCached } from "../src/core/localCache.js";
+import { wipeCache } from "../src/core/localCache.js";
+import { readUiRecord, wipeUiRecords, writeUiRecord } from "../src/core/localUiStore.js";
 import { uiAddress } from "../src/core/localUiState.js";
 
 globalThis.indexedDB = new IDBFactory();
@@ -63,18 +64,19 @@ beforeEach(() => {
 describe("where the menu sits", () => {
   it("restores and redraws an open conversation menu from real cache writes", async () => {
     await wipeCache();
+    await wipeUiRecords();
     const address = uiAddress({ entityId: "conversation-menu", view: "composer", kind: "menu", sub: "model" });
-    await writeCached(address, { open: "model" });
+    await writeUiRecord(address, { open: "model" });
     const { control } = mount({ provider: "claude_adk", model: "", effort: "" }, { cacheKey: "conversation-menu" });
     await control.ready;
     expect(menu().hidden).toBe(false);
 
-    await writeCached(address, { open: "reasoning" });
+    await writeUiRecord(address, { open: "reasoning" });
     await vi.waitFor(() => expect(reasoningMenu().hidden).toBe(false));
     expect(menu().hidden).toBe(true);
 
     reasoningButton().click();
-    await vi.waitFor(async () => expect((await readCached(address))?.value?.open).toBeNull());
+    await vi.waitFor(async () => expect((await readUiRecord(address))?.value?.open).toBeNull());
     control.dispose();
   });
 

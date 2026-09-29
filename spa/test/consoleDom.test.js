@@ -58,7 +58,7 @@ const { consoleBranchRow, consoleCacheScope, emptyConsoleWorld, seedConsoleTermi
 const { App } = await import("../src/app.js");
 const { mountConsole, resetConsoleMemory } = await import("../src/core/console.js");
 const { consoleKey, markConsoleTerminal, takeConsoleTerminal } = await import("../src/core/consoleModel.js");
-const { readCached, writeCached } = await import("../src/core/localCache.js");
+const { readUiRecord, wipeUiRecords, writeUiRecord } = await import("../src/core/localUiStore.js");
 const { uiAddress } = await import("../src/core/localUiState.js");
 
 const flush = async () => {
@@ -116,6 +116,7 @@ beforeEach(async () => {
   calls = [];
   panes.length = 0;
   await emptyConsoleWorld();
+  await wipeUiRecords();
   branchRow = consoleBranchRow();
   manager.listTerminals.mockReset().mockResolvedValue([]);
   manager.createTerminal.mockReset().mockResolvedValue({ term_id: "term-9" });
@@ -269,12 +270,12 @@ describe("the sizes", () => {
   });
 
   it("repaints an open console when its cached fold record changes", async () => {
-    await writeCached(sizeAddress(), { size: "half", reopenSize: "half" });
+    await writeUiRecord(sizeAddress(), { size: "half", reopenSize: "half" });
     await seedConsoleWorld({ terminals: ["term-1"] });
     panel = mountConsole(region(), branchAddress());
     await vi.waitFor(() => expect(size()).toBe("half"));
 
-    await writeCached(sizeAddress(), { size: "full", reopenSize: "full" });
+    await writeUiRecord(sizeAddress(), { size: "full", reopenSize: "full" });
     await vi.waitFor(() => expect(size()).toBe("full"));
     expect(region().querySelector(".console-grow").getAttribute("aria-label")).toBe("Half the view");
   });
@@ -331,7 +332,7 @@ describe("the terminals", () => {
 });
 
 describe("a console with no terminals", () => {
-  const storedSize = async () => (await readCached(sizeAddress()))?.value?.size ?? null;
+  const storedSize = async () => (await readUiRecord(sizeAddress()))?.value?.size ?? null;
 
   it("opens on the tab that was pressed", async () => {
     await mountOver(["term-1", "term-2"]);
@@ -374,7 +375,7 @@ describe("a console with no terminals", () => {
   });
 
   it("renders shut when the size it remembers is open and nothing is running", async () => {
-    await writeCached(sizeAddress(), { size: "half", reopenSize: "half" });
+    await writeUiRecord(sizeAddress(), { size: "half", reopenSize: "half" });
     await mountOver([]);
     expect(size()).toBe("collapsed");
     expect(region().querySelector(".console-body").textContent).toBe("");
@@ -390,7 +391,7 @@ describe("a console with no terminals", () => {
   });
 
   it("stays shut until the checkout it remembers as open has something in it", async () => {
-    await writeCached(sizeAddress(), { size: "half", reopenSize: "half" });
+    await writeUiRecord(sizeAddress(), { size: "half", reopenSize: "half" });
     await seedConsoleWorld({ terminals: [] });
     panel = mountConsole(region(), branchAddress());
     await flush();

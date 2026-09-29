@@ -12,6 +12,7 @@ globalThis.IDBKeyRange = IDBKeyRange;
 
 const { scopeFor } = await import("../src/core/cacheScope.js");
 const { readCached, wipeCache, writeCached } = await import("../src/core/localCache.js");
+const { wipeUiRecords } = await import("../src/core/localUiStore.js");
 const { cacheFileBody } = await import("../src/core/cacheLifetime.js");
 const { renderFilesTab } = await import("../src/views/files.js");
 
@@ -102,6 +103,7 @@ beforeEach(async () => {
   writeAnswer = () => new Promise(() => {});
   pointer("coarse");
   await wipeCache();
+  await wipeUiRecords();
 });
 
 afterEach(() => {

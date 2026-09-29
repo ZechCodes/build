@@ -41,6 +41,7 @@ const { uiAddress } = await import("../src/core/localUiState.js");
 const { resetChangeEvents } = await import("../src/core/changeEvents.js");
 const { resetOptimistic } = await import("../src/core/optimistic.js");
 const { wipeCache, writeCached, readCached } = await import("../src/core/localCache.js");
+const { wipeUiRecords, writeUiRecord, readUiRecord } = await import("../src/core/localUiStore.js");
 const { writeRailBoard, writeRailWorkItem } = await import("./railCacheFixture.js");
 
 const DEVICE_ID = "device-1";
@@ -207,6 +208,7 @@ beforeEach(async () => {
   document.body.innerHTML = '<div id="agent-rail"></div>';
   localStorage.clear();
   await wipeCache();
+  await wipeUiRecords();
   conversation = CONVERSATION;
   resetAgentRailMemory();
   resetOptimistic();
@@ -379,7 +381,7 @@ describe("the level a conversation opens at", () => {
   });
 
   it("gives way to what the reader last chose for that conversation", async () => {
-    await writeCached(detailAddress(PROJECT_OWNER, "conversation-pa-1"), { level: "all" });
+    await writeUiRecord(detailAddress(PROJECT_OWNER, "conversation-pa-1"), { level: "all" });
 
     await mountProjectRail();
 
@@ -394,7 +396,7 @@ describe("remembering the choice", () => {
 
     await choose("agent");
 
-    expect((await readCached(detailAddress("run-workspace", "conversation-wa-1"))).value.level).toBe("agent");
+    expect((await readUiRecord(detailAddress("run-workspace", "conversation-wa-1"))).value.level).toBe("agent");
   });
 
   it("holds through a remount", async () => {

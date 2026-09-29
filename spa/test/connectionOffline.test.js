@@ -29,6 +29,7 @@ vi.mock("../src/core/peerLink.js", () => ({ openPeerLink: (options) => wire.open
 // settles on the event loop this suite has faked, so the store is the
 // in-memory double instead — same addresses, same announcements.
 vi.mock("../src/core/localCache.js", () => import("./memoryCache.js"));
+vi.mock("../src/core/localUiStore.js", () => import("./memoryUiStore.js"));
 const account = vi.hoisted(() => ({ fetchDevices: null }));
 vi.mock("../src/api.js", () => ({
   fetchGatewayToken: async () => "tok",

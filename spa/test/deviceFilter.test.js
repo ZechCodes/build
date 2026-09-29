@@ -26,7 +26,7 @@ vi.mock("../src/core/taskFeed.js", () => ({
 
 const { App } = await import("../src/app.js");
 const { filterByDevice, rememberDeviceFilter } = await import("../src/core/deviceFilter.js");
-const cache = await import("../src/core/localCache.js");
+const uiStore = await import("../src/core/localUiStore.js");
 
 const row = (deviceId, id) => ({ id, deviceId, projectKey: `${deviceId}/p1`, project_id: "p1" });
 
@@ -101,13 +101,13 @@ describe("remembering which machines the inbox shows", () => {
     await rememberDeviceFilter("dev-b");
 
     expect(App.deviceFilter).toBe("dev-b");
-    expect((await cache.readCached({ deviceId: "", entityId: "", kind: "ui-filter", sub: "inbox:device" })).value.deviceId).toBe("dev-b");
+    expect((await uiStore.readUiRecord({ deviceId: "", entityId: "", kind: "ui-filter", sub: "inbox:device" })).value.deviceId).toBe("dev-b");
     expect(painted).toHaveLength(1);
 
     await rememberDeviceFilter(null);
 
     expect(App.deviceFilter).toBe(null);
-    expect((await cache.readCached({ deviceId: "", entityId: "", kind: "ui-filter", sub: "inbox:device" })).value.deviceId).toBe(null);
+    expect((await uiStore.readUiRecord({ deviceId: "", entityId: "", kind: "ui-filter", sub: "inbox:device" })).value.deviceId).toBe(null);
     expect(painted).toHaveLength(2);
   });
 });

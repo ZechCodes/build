@@ -8,7 +8,9 @@ const { openBrowser } = vi.hoisted(() => ({ openBrowser: vi.fn() }));
 vi.mock("../src/sheets/browser.js", () => ({ openBrowser }));
 let openNewRepo;
 let writeCached;
-let readCached;
+let writeUiRecord;
+let readUiRecord;
+let wipeUiRecords;
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 const waitForBrowserCall = (index) => vi.waitFor(() => expect(openBrowser.mock.calls[index]).toBeDefined());
 let callRpc;
@@ -27,7 +29,9 @@ beforeEach(async () => {
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
   ({ openNewRepo } = await import("../src/sheets/newRepo.js"));
-  ({ writeCached, readCached } = await import("../src/core/localCache.js"));
+  ({ writeCached } = await import("../src/core/localCache.js"));
+  ({ writeUiRecord, readUiRecord, wipeUiRecords } = await import("../src/core/localUiStore.js"));
+  await wipeUiRecords();
   vi.resetAllMocks(); document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
   callRpc = vi.fn(async (method) => method === "settings.get" ? { projects_dir: "/projects" } : { project_id: "p1" });
 });
@@ -45,7 +49,7 @@ it("names the machine the folders come from", () => {
 
 it("restores an unsent project draft from cache without asking a device", async () => {
   const address = { deviceId: "", entityId: "", kind: "ui-draft", sub: "new-project:" };
-  await writeCached(address, { name: "cached project", sources: [], selectedDeviceId: "lap" });
+  await writeUiRecord(address, { name: "cached project", sources: [], selectedDeviceId: "lap" });
   const calls = openSelectableSheet(undefined);
   await vi.waitFor(() => expect(document.querySelector("#nrproject").value).toBe("cached project"));
   expect(document.querySelector("#nrdevice").value).toBe("lap");
@@ -54,7 +58,7 @@ it("restores an unsent project draft from cache without asking a device", async 
 
 it("drops another device's local folder when its saved device is gone", async () => {
   const address = { deviceId: "", entityId: "", kind: "ui-draft", sub: "new-project:" };
-  await writeCached(address, {
+  await writeUiRecord(address, {
     name: "moved project", selectedDeviceId: "removed-device",
     sources: [{ id: 1, kind: "path", path: "/removed/private", name: "private", base_branch: "", automaticName: false }],
   });
@@ -62,7 +66,7 @@ it("drops another device's local folder when its saved device is gone", async ()
   await vi.waitFor(() => expect(document.querySelector("#nrproject")?.value).toBe("moved project"));
   await vi.waitFor(() => expect(document.querySelector("[data-source-row]")?.textContent).toContain("No folder selected"));
   expect(document.querySelector("#nrdevice").value).toBe("lap");
-  await vi.waitFor(async () => expect((await readCached(address))?.value.sources[0].path).toBe(""));
+  await vi.waitFor(async () => expect((await readUiRecord(address))?.value.sources[0].path).toBe(""));
   document.querySelector("#nrdo").click();
   expect(calls.lap).not.toHaveBeenCalledWith("project.create", expect.anything());
   expect(document.querySelector("#nrerr").textContent).toContain("Choose");
@@ -70,7 +74,7 @@ it("drops another device's local folder when its saved device is gone", async ()
 
 it("keeps the current device when restoring a draft made on another paired device", async () => {
   const address = { deviceId: "", entityId: "", kind: "ui-draft", sub: "new-project:" };
-  await writeCached(address, {
+  await writeUiRecord(address, {
     name: "from laptop", selectedDeviceId: "lap",
     sources: [{ id: 1, kind: "path", path: "/lap/private", pathDeviceId: "lap", name: "private", base_branch: "", automaticName: false }],
   });
@@ -93,10 +97,10 @@ it("writes the project draft after typing and clears it when creation succeeds",
   const name = document.querySelector("#nrproject");
   name.value = "new project";
   name.dispatchEvent(new Event("input"));
-  await vi.waitFor(async () => expect((await readCached(address))?.value.name).toBe("new project"));
+  await vi.waitFor(async () => expect((await readUiRecord(address))?.value.name).toBe("new project"));
   document.querySelector("#nrdo").click();
   await vi.waitFor(() => expect(done).toHaveBeenCalled());
-  expect((await readCached(address)).value.name).toBe("");
+  expect((await readUiRecord(address)).value.name).toBe("");
 });
 
 it("opens the folder picker from cached device settings while the settings pull is absent", async () => {
@@ -224,7 +228,7 @@ it("choosing a device shows the rest of the form and starts at the folders", () 
 
 it("a restored draft with no device waits on the device choice, and its values survive the reveal", async () => {
   const address = { deviceId: "", entityId: "", kind: "ui-draft", sub: "new-project:" };
-  await writeCached(address, {
+  await writeUiRecord(address, {
     name: "Skrift", selectedDeviceId: "",
     sources: [{ id: 1, kind: "remote", path: "", remote: "skrift", name: "skrift", base_branch: "", automaticName: true }],
   });
@@ -240,7 +244,7 @@ it("a restored draft with no device waits on the device choice, and its values s
 
 it("a restored draft that names an available device opens on the full form", async () => {
   const address = { deviceId: "", entityId: "", kind: "ui-draft", sub: "new-project:" };
-  await writeCached(address, { name: "cached project", sources: [], selectedDeviceId: "lap" });
+  await writeUiRecord(address, { name: "cached project", sources: [], selectedDeviceId: "lap" });
   openSelectableSheet();
   await vi.waitFor(() => expect(document.querySelector("#nrproject")?.value).toBe("cached project"));
   expect(partsShown()).toEqual(formParts);
@@ -409,24 +413,24 @@ it("a draft keeps whether its name was typed or followed a folder", async () => 
   const remote = { id: 1, kind: "remote", path: "", remote: "git@github.com:ZechCodes/Skrift.git", name: "Skrift", base_branch: "", automaticName: true };
   openSelectableSheet(undefined, "desk");
   addRemoteRow("git@github.com:ZechCodes/Skrift.git");
-  await vi.waitFor(async () => expect((await readCached(address))?.value).toMatchObject({ name: "Skrift", nameAutomatic: true }));
+  await vi.waitFor(async () => expect((await readUiRecord(address))?.value).toMatchObject({ name: "Skrift", nameAutomatic: true }));
   typeName("Mine");
-  await vi.waitFor(async () => expect((await readCached(address))?.value).toMatchObject({ name: "Mine", nameAutomatic: false }));
+  await vi.waitFor(async () => expect((await readUiRecord(address))?.value).toMatchObject({ name: "Mine", nameAutomatic: false }));
 
   document.querySelector("#nrcancel").click();
   document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
-  await writeCached(address, { name: "Skrift", nameAutomatic: true, sources: [remote], selectedDeviceId: "desk" });
+  await writeUiRecord(address, { name: "Skrift", nameAutomatic: true, sources: [remote], selectedDeviceId: "desk" });
   openSelectableSheet(undefined, "desk");
   await vi.waitFor(() => expect(nameField()?.value).toBe("Skrift"));
   const row = document.querySelector("[data-source-value]");
   row.value = "git@github.com:ZechCodes/renamed.git"; row.dispatchEvent(new Event("input"));
   expect(nameField().value).toBe("renamed"); // still following: it was never typed
   // Let that edit's draft write land before the next opening's draft is set.
-  await vi.waitFor(async () => expect((await readCached(address))?.value).toMatchObject({ name: "renamed", nameAutomatic: true }));
+  await vi.waitFor(async () => expect((await readUiRecord(address))?.value).toMatchObject({ name: "renamed", nameAutomatic: true }));
 
   document.querySelector("#nrcancel").click();
   document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
-  await writeCached(address, { name: "Mine", nameAutomatic: false, sources: [remote], selectedDeviceId: "desk" });
+  await writeUiRecord(address, { name: "Mine", nameAutomatic: false, sources: [remote], selectedDeviceId: "desk" });
   openSelectableSheet(undefined, "desk");
   await vi.waitFor(() => expect(nameField()?.value).toBe("Mine"));
   const again = document.querySelector("[data-source-value]");
@@ -470,7 +474,7 @@ it("removing the first folder creates under the next one's name", async () => {
 
 it("a draft from before nameAutomatic keeps the name it holds as typed", async () => {
   const address = { deviceId: "", entityId: "", kind: "ui-draft", sub: "new-project:" };
-  await writeCached(address, {
+  await writeUiRecord(address, {
     name: "Legacy", selectedDeviceId: "desk",
     sources: [{ id: 1, kind: "remote", path: "", remote: "git@github.com:ZechCodes/Skrift.git", name: "Skrift", base_branch: "", automaticName: true }],
   });

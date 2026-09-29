@@ -514,9 +514,9 @@ describe("the advanced panel", () => {
     $("[data-agent-choice-toggle]").click();
     $("#compose-choice-provider").value = "codex";
     $("#compose-choice-provider").dispatchEvent(new Event("change", { bubbles: true }));
-    const { readCached } = await import("../src/core/localCache.js");
+    const { readUiRecord } = await import("../src/core/localUiStore.js");
     const { uiAddress } = await import("../src/core/localUiState.js");
-    await vi.waitFor(async () => expect((await readCached(uiAddress({ deviceId: "dev-1", view: "compose", kind: "draft" })))?.value.choice.model).toBe("gpt"));
+    await vi.waitFor(async () => expect((await readUiRecord(uiAddress({ deviceId: "dev-1", view: "compose", kind: "draft" })))?.value.choice.model).toBe("gpt"));
     await vi.waitFor(() => expect($("#compose-choice-model").value).toBe("gpt"));
   });
 

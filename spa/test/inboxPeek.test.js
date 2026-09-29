@@ -21,6 +21,7 @@ vi.mock("../src/core/inboxView.js", () => ({
   setInboxView: vi.fn(),
 }));
 vi.mock("../src/core/localCache.js", () => import("./memoryCache.js"));
+vi.mock("../src/core/localUiStore.js", () => import("./memoryUiStore.js"));
 
 const hover = (element, type) =>
   element.dispatchEvent(new window.MouseEvent(type, { bubbles: false }));

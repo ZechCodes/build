@@ -1,8 +1,10 @@
 // Local interaction state uses the same address → write → announcement → read
-// path as bridge records. A view owns its address and decides how to paint it.
-// The helper never hands a proposed value straight to the painter.
+// path as bridge records, in its own store (core/localUiStore.js) that no
+// replica schema bump, sweep or eviction reaches. A view owns its address and
+// decides how to paint it. The helper never hands a proposed value straight
+// to the painter.
 
-import { readCached, subscribeCache, writeCached, writeCachedIfNewer } from "./localCache.js";
+import { readUiRecord, subscribeUiRecords, writeUiRecord, writeUiRecordIfNewer } from "./localUiStore.js";
 
 // IndexedDB cannot finish a new transaction once the document is torn down.
 // A page exit puts only its unfinished draft in this tab's synchronous journal;
@@ -125,14 +127,14 @@ export function watchUiState(address, paint, { debounceMs = 0 } = {}) {
 
   const read = (mountedRevision = revision) => {
     const next = reads.then(async () => {
-      const record = await readCached(address);
+      const record = await readUiRecord(address);
       if (!disposed && !dirty && mountedRevision === revision && record) paint(record.value);
       return record?.value;
     });
     reads = next.catch(() => {});
     return next;
   };
-  const unwatch = subscribeCache(address, () => { void read(); });
+  const unwatch = subscribeUiRecords(address, () => { void read(); });
   const journaled = pendingFor(address, debounceMs);
 
   const commit = (value, editAt = Date.now()) => {
@@ -142,7 +144,7 @@ export function watchUiState(address, paint, { debounceMs = 0 } = {}) {
     unresolvedAt = editAt;
     const committedRevision = revision;
     const next = writes.then(async () => {
-      await writeCached(address, value, { source, sequence: committedRevision });
+      await writeUiRecord(address, value, { source, sequence: committedRevision });
       await reads;
       // Announcements from earlier writes can arrive after a newer local edit.
       // Only the newest committed value may repaint the active control.
@@ -197,7 +199,7 @@ export function watchUiState(address, paint, { debounceMs = 0 } = {}) {
     globalThis.document?.addEventListener?.("visibilitychange", flushWhenHidden);
   }
   const ready = journaled === undefined ? read() : (async () => {
-    await writeCachedIfNewer(address, journaled.value, journaled);
+    await writeUiRecordIfNewer(address, journaled.value, journaled);
     releasePending(address);
     return read();
   })();

@@ -8,6 +8,7 @@
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { scopeFor } from "../src/core/cacheScope.js";
 import { writeCached, wipeCache } from "../src/core/localCache.js";
+import { wipeUiRecords } from "../src/core/localUiStore.js";
 
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
@@ -43,7 +44,7 @@ export async function seedConsoleTerminals(ids, { deviceId = "dev-1", row = cons
   await writeCached({ deviceId, entityId: entityOf(row), kind: "terminals" }, { tabs: termTabs(ids) });
 }
 
-export const emptyConsoleWorld = () => wipeCache();
+export const emptyConsoleWorld = () => Promise.all([wipeCache(), wipeUiRecords()]);
 
 /** The cache a console mounted for one device writes under. */
 export const consoleCacheScope = (deviceId = "dev-1") => scopeFor(deviceId);

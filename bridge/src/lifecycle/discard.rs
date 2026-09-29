@@ -11,18 +11,22 @@ impl BeforeRemoval for () {
     type Output = ();
     fn judge(self) {}
 }
+/// What a discard does to the run's checkout: removes it, or keeps it.
 pub enum DiscardedCheckout {
-    Removed {
-        project: Orchestrator,
-        worktree: Worktree,
-    },
+    Removed(Box<RemovedCheckout>),
     Kept,
+}
+/// The checkout a discard removes, and the project that removes it.
+pub struct RemovedCheckout {
+    pub project: Orchestrator,
+    pub worktree: Worktree,
 }
 impl DiscardedCheckout {
     fn discard(&self, writers: &[Retirement], run_id: &str) -> WorktreeChange {
-        let Self::Removed { project, worktree } = self else {
+        let Self::Removed(removed) = self else {
             return WorktreeChange::nothing();
         };
+        let RemovedCheckout { project, worktree } = removed.as_ref();
         Retirement::wait_all(writers, crate::orchestrator::CHECKOUT_REAP_WAIT, run_id);
         project.discard_checkout(worktree, /* keep_branch */ true);
         match worktree.path.exists() {

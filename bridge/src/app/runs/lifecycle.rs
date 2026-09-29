@@ -5,7 +5,7 @@ use crate::app::{
     NEW_THREAD_MESSAGES_PROMPT,
 };
 use crate::lifecycle::{
-    AdoptCheckout, AdoptionTarget, DiscardCheckout, DiscardedCheckout, PendingRow,
+    AdoptCheckout, AdoptionTarget, DiscardCheckout, DiscardedCheckout, PendingRow, RemovedCheckout,
 };
 use crate::models::ModelChoice;
 use crate::orchestrator::{ActiveRun, AgentTurn};
@@ -310,10 +310,10 @@ impl AppState {
             title,
             move |worktree| match keeps_checkout {
                 true => DiscardedCheckout::Kept,
-                false => DiscardedCheckout::Removed {
+                false => DiscardedCheckout::Removed(Box::new(RemovedCheckout {
                     project,
                     worktree: worktree.clone(),
-                },
+                })),
             },
             stages,
             move |active| crate::app::runtime::lifecycle::AbandonSettlement {

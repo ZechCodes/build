@@ -10,7 +10,7 @@ mod rows;
 mod task;
 
 pub use adoption::{adopt, AdoptCheckout, AdoptionTarget};
-pub use discard::{BeforeRemoval, DiscardCheckout, DiscardedCheckout};
+pub use discard::{BeforeRemoval, DiscardCheckout, DiscardedCheckout, RemovedCheckout};
 #[cfg(test)]
 pub use dispatch::{fail_dispatch_at, BranchDispatchStep};
 pub use dispatch::{DispatchCheckout, DispatchTarget};

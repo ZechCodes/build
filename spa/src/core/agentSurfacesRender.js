@@ -145,7 +145,7 @@ function agentDetailsHtml(row) {
     <dl class="${AGENT_FACTS_CLASS}">
       ${optionalAgentFactHtml("Description", row.description)}
       ${optionalAgentFactHtml("State", agentState(row))}
-      ${optionalAgentFactHtml("Model", row.model, { className: "surface-row-model" })}
+      ${optionalAgentFactHtml("Model", row.modelName || row.model, { className: "surface-row-model" })}
       ${optionalAgentFactHtml("Reasoning effort", row.reasoningEffort, { className: "surface-row-effort" })}
       ${optionalAgentFactHtml("Current activity", row.lastTool)}
       ${optionalAgentFactHtml(row.error ? "Error" : "Result", result, { className: resultClass })}
@@ -157,11 +157,16 @@ function agentDetailsHtml(row) {
   </div>`;
 }
 
+/** The model on a row's head (#257): its short name, whole, never clipped;
+ *  the full label in its title. */
+function headModelHtml(row) {
+  if (!row.model) return "";
+  return `<span class="surface-row-model surface-row-head-model" title="${esc(row.modelName || row.model)}">${esc(row.model)}</span>`;
+}
+
 export function agentRowHtml(row, { openedAgentKeys = new Set() } = {}) {
   const open = openedAgentKeys.has(row.key) ? " open" : "";
-  const model = row.model
-    ? clippedTextHtml(row.model, { className: "surface-row-model surface-row-head-model", pressable: false })
-    : "";
+  const model = headModelHtml(row);
   return `<details class="surface-row surface-agent" data-key="${esc(row.key)}"${open}>
     <summary class="${ROW_HEAD_CLASS} surface-agent-summary">
       ${stateMarkHtml(row.stateMark)}
@@ -286,22 +291,21 @@ const UNREACHABLE_BUILD_AGENT_TITLES = {
 };
 const NOWHERE_TO_OPEN_TITLE = (name) => `Build has nowhere to open ${name}'s chat yet.`;
 
+/** What a press on a Build agent's row does, naming the workspace it opens
+ *  in: the row itself no longer does (#257). */
+const openBuildAgentTitle = (row) => (row.workspaceName
+  ? `Open ${row.subject}'s chat in ${row.workspaceName}`
+  : `Open ${row.subject}'s chat`);
+
 /** One Build agent this agent made: a press opens its chat. The whole row is
  *  the button, so nothing inside it is pressable on its own. A Build agent
  *  whose chat has no page to open on (#221) is drawn as a plain row that says
  *  why, never as a button that does nothing. */
 export function buildAgentRowHtml(row) {
-  const where = row.workspaceName
-    ? `<span class="surface-row-stat surface-build-agent-where">${esc(row.workspaceName)}</span>`
-    : "";
-  const model = row.model
-    ? clippedTextHtml(row.model, { className: "surface-row-model surface-row-head-model", pressable: false })
-    : "";
   const head = `<span class="${ROW_HEAD_CLASS}">
       ${stateMarkHtml(row.stateMark)}
       ${clippedTextHtml(row.subject, { className: ROW_LABEL_CLASS, pressable: false })}
-      ${model}
-      ${where}
+      ${headModelHtml(row)}
       ${clockHtml(row.clock, row.runningSince)}
     </span>`;
   if (!row.chatKind) {
@@ -314,7 +318,7 @@ export function buildAgentRowHtml(row) {
   return `<button type="button" class="surface-row surface-build-agent" data-key="${esc(row.key)}"
     data-build-agent="${esc(row.id)}" data-entity-id="${esc(row.entityId || "")}"
     data-workspace-id="${esc(row.workspaceId || "")}" data-kind="${esc(row.chatKind)}"
-    title="${esc(`Open ${row.subject}'s chat`)}">
+    title="${esc(openBuildAgentTitle(row))}">
     ${head}
   </button>`;
 }

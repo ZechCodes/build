@@ -25,7 +25,7 @@ async function mountSeededRail(page, basePath) {
   await loadBrowserModules(page, {
     rail: "src/core/agentRail.js", cache: "src/core/localCache.js", lineageSupport: "src/core/agentLineageSupport.js",
   }, basePath);
-  await page.evaluate(async () => {
+  await page.evaluate(async (workspaceTitle) => {
     const { mountAgentRail } = window.__layoutModules.rail;
     const { writeCached } = window.__layoutModules.cache;
     const device = "layout-device";
@@ -40,14 +40,14 @@ async function mountSeededRail(page, basePath) {
       }],
     });
     await writeCached({ deviceId: device, entityId: "layout-ws-run", kind: "row", sub: "" }, {
-      kind: "workspace", run_id: "layout-ws-run", workspace_id: "layout-ws", title: "Fix the login redirect for every single sign-on provider",
+      kind: "workspace", run_id: "layout-ws-run", workspace_id: "layout-ws", title: workspaceTitle,
       project_id: "layout-project", agents: [
-        // A model the catalog does not know, so the row shows its whole raw id (#226).
-        { id: "worker", ordinal: 1, provider: "claude_adk", state: "live", name: "Login fixer", created_by: "boss",
-          model: "claude-opus-5-5-20260915-experimental-preview", active_model: "claude-opus-5-5-20260915-experimental-preview",
+        // Long names, so the name is what gives way; the models are short (#257).
+        { id: "worker", ordinal: 1, provider: "claude_adk", state: "live", name: "Divider for markdown horizontal rules", created_by: "boss",
+          model: "claude-opus-5-5", active_model: "claude-opus-5-5",
           working: true, working_time: { since }, unread_count: 0 },
-        { id: "helper", ordinal: 2, provider: "claude_adk", state: "idle", name: "Docs helper", created_by: "boss",
-          working: false, unread_count: 0 },
+        { id: "helper", ordinal: 2, provider: "codex", state: "idle", name: "Docs helper for every sign-on provider", created_by: "boss",
+          model: "gpt-6-astra", working: false, unread_count: 0 },
         { id: "bystander", ordinal: 3, provider: "claude_adk", state: "idle", name: "Not mine", working: false, unread_count: 0 },
       ],
     });
@@ -55,11 +55,16 @@ async function mountSeededRail(page, basePath) {
     window.__layoutRail = mountAgentRail(document.querySelector("#agent-rail"), {
       kind: "project", deviceId: device, projectId: "layout-project", entityId: "layout-project-run",
       call: async (method) => method === "models.list"
-        ? { default_provider: "claude_adk", providers: [{ id: "claude_adk", label: "Claude Code", models: [], efforts: [] }] }
+        ? { default_provider: "claude_adk", providers: [
+          { id: "claude_adk", label: "Claude Code", models: [{ id: "claude-opus-5-5", label: "Claude Opus 5.5" }], efforts: [] },
+          { id: "codex", label: "Codex", models: [{ id: "gpt-6-astra", label: "GPT-6-Astra" }], efforts: [] },
+        ] }
         : { items: [] },
     });
-  });
+  }, WORKSPACE_TITLE);
 }
+
+const WORKSPACE_TITLE = "Review #253: markdown dividers in every theme";
 
 /** The narrowest the agent's name gets on a Build agent row: enough to read
  *  a short name whole and a long one's start (#226). */
@@ -106,7 +111,9 @@ for (const [name, viewport] of VIEWPORTS) {
             name: box(row.querySelector(".surface-row-label")),
             head: box(row.querySelector(".surface-row-head")),
             parts: [...row.querySelectorAll(".surface-row-head > *")].map(box),
+            text: row.textContent,
             model: row.querySelector(".surface-row-model")?.textContent || "",
+            modelFits: (({ scrollWidth, clientWidth }) => ({ scrollWidth, clientWidth }))(row.querySelector(".surface-row-model")),
           })),
           overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
         };
@@ -115,12 +122,19 @@ for (const [name, viewport] of VIEWPORTS) {
       assert.deepEqual(read.subagents, ["Explore the rail"]);
       // Only what this agent made, running first; the bystander is nobody's.
       assert.deepEqual(read.builds, ["worker", "helper"]);
+      for (const theme of ["light", "dark"]) {
+        await page.evaluate((value) => { document.documentElement.dataset.theme = value; }, theme);
+        await captureLayout(page, `build-agents-panel-${name}-${theme}.png`);
+      }
+      await page.evaluate(() => { delete document.documentElement.dataset.theme; });
       assert.ok(inViewport(read.firstBuild, viewport), `the first Build agent is on screen: ${JSON.stringify(read.firstBuild)}`);
       assert.ok(read.overflow <= 0, `nothing scrolls sideways (${read.overflow}px)`);
-      // #226: a long model id and a long workspace name give way before the
-      // agent's name does, and nothing on the row runs past its edge.
-      assert.equal(read.buildRows[0].model, "claude-opus-5-5-20260915-experimental-preview");
-      for (const { row, head, name: label, parts } of read.buildRows) {
+      // #257: each row wears its model's short name, whole, and no longer
+      // names its workspace; the agent's name is what gives way (#226).
+      assert.deepEqual(read.buildRows.map((row) => row.model), ["Opus 5.5", "6 Astra"]);
+      for (const { row, head, name: label, parts, text, modelFits } of read.buildRows) {
+        assert.ok(modelFits.scrollWidth <= modelFits.clientWidth, `the model is not clipped: ${JSON.stringify(modelFits)}`);
+        assert.ok(!text.includes(WORKSPACE_TITLE), `the row leaves its workspace to the tooltip: ${text}`);
         assert.ok(label.width >= MIN_NAME_WIDTH, `the name keeps a readable width: ${label.width}px`);
         // The name takes up the slack, so the row's last part (the clock, on a
         // running row) ends at the row's right edge, in line with the rows above.
@@ -131,8 +145,6 @@ for (const [name, viewport] of VIEWPORTS) {
           if (part.width > 0) assert.ok(part.x + part.width <= row.x + row.width + 1, `a row part runs past the row: ${JSON.stringify({ part, row })}`);
         }
       }
-      await captureLayout(page, `build-agents-panel-${name}.png`);
-
       await page.locator('.surface-build-agent[data-build-agent="worker"]').click();
       await page.waitForFunction(() => location.hash.includes("layout-ws"), null, { timeout: 5000 });
       const hash = await page.evaluate(() => decodeURIComponent(location.hash));

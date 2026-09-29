@@ -1,5 +1,6 @@
 import { elapsedClock, runningClock } from "./agentRailModel.js";
 import { buildAgentChatKind } from "./agentLineageModel.js";
+import { shortModelNameOr } from "./agentChoice.js";
 
 export const WORKFLOW_ENTRY_KIND = "workflows";
 export const AGENT_ENTRY_KIND = "subagents";
@@ -290,14 +291,19 @@ function lastToolText(lastTool) {
 }
 
 /** An entry's model as the rail names it, for the harness the entry says it
- *  runs on — or, naming none, the agent in focus's. */
-const modelLabelOf = (entry, modelLabel) => (entry.model ? modelLabel(entry.model, entry.provider) : "");
+ *  runs on — or, naming none, the agent in focus's: the short name a row
+ *  wears, and the full label its title and details keep (#257). */
+function modelNamesOf(entry, modelLabel) {
+  if (!entry.model) return { model: "", modelName: "" };
+  const modelName = modelLabel(entry.model, entry.provider);
+  return { model: shortModelNameOr(entry.model, modelName), modelName };
+}
 
 function agentRow(entry, modelLabel) {
   return {
     label: entry.label || "",
     description: entry.description,
-    model: modelLabelOf(entry, modelLabel),
+    ...modelNamesOf(entry, modelLabel),
     reasoningEffort: entry.reasoning_effort,
     tokens: Number.isFinite(entry.tokens) ? entry.tokens : null,
     toolCalls: Number.isFinite(entry.tool_calls) ? entry.tool_calls : null,
@@ -336,7 +342,7 @@ export function buildAgentRows(surfaces, { nowMs = 0, hereEntityId = null, model
       state: entry.state || "",
       stateMark: BUILD_AGENT_STATE_MARKS[entry.state] || null,
       subject: entry.name || entry.id || "",
-      model: modelLabelOf(entry, modelLabel),
+      ...modelNamesOf(entry, modelLabel),
       kind: entry.kind || "",
       workspaceName: entry.workspace_name || "",
       entityId: entry.entity_id || null,

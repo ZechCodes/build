@@ -496,10 +496,18 @@ describe("agentRows", () => {
   });
 
   it("names a model through the label it is handed, and by its id without one", () => {
-    const agents = [{ id: "a1", model: "claude-opus-5", state: "running" }];
-    expect(agentRows(agents, { modelLabel: (id) => `Opus 5 · ${id}` })[0].model).toBe("Opus 5 · claude-opus-5");
-    expect(agentRows(agents)[0].model).toBe("claude-opus-5");
+    const agents = [{ id: "a1", model: "house-model", state: "running" }];
+    expect(agentRows(agents, { modelLabel: (id) => `Local ${id}` })[0].modelName).toBe("Local house-model");
+    expect(agentRows(agents)[0].modelName).toBe("house-model");
     expect(agentRows([{ id: "a1", state: "running" }])[0].model).toBe("");
+  });
+
+  // #257: a row wears the short name; the full label rides along for its title.
+  it("shortens the model a row wears, and keeps the full label beside it", () => {
+    const agents = [{ id: "a1", model: "claude-opus-5-5", state: "running" }];
+    const [row] = agentRows(agents, { modelLabel: () => "Claude Opus 5.5" });
+    expect([row.model, row.modelName]).toEqual(["Opus 5.5", "Claude Opus 5.5"]);
+    expect(agentRows([{ id: "a1", model: "house-model", state: "running" }])[0].model).toBe("house-model");
   });
 
   it("keys two id-less agents apart", () => {
@@ -785,7 +793,7 @@ describe("the wire the bridge actually builds", () => {
       ["Summarize", 1, 1],
     ]);
     expect(phases[0].rows.map((agent) => agent.label)).toEqual(["line-counter", "char-counter"]);
-    expect(phases[0].rows[0].model).toBe(recorded.workflows[0].phases[0].agents[0].model);
+    expect(phases[0].rows[0].modelName).toBe(recorded.workflows[0].phases[0].agents[0].model);
     expect(phases[0].rows[0].tokens).toBe(recorded.workflows[0].phases[0].agents[0].tokens);
   });
 });
@@ -834,7 +842,7 @@ describe("the Build agents beside the sub-agents", () => {
 
   it("gives each Build agent a row that names where its chat is, running ones first", () => {
     const rows = buildAgentRows({ [BUILD_AGENTS_KEY]: [
-      worker("idle-one", "idle", { name: "Docs", workspace_name: "Write docs", model: "Opus 5" }),
+      worker("idle-one", "idle", { name: "Docs", workspace_name: "Write docs", model: "claude-opus-5" }),
       worker("busy", "running", { started_at: 1000 }),
     ] }, { nowMs: 61000 });
     expect(rows.map((row) => row.id)).toEqual(["busy", "idle-one"]);
@@ -843,7 +851,7 @@ describe("the Build agents beside the sub-agents", () => {
       stateMark: { mark: "running", label: "Working" }, runningSince: 1000, clock: "1:00",
     });
     expect(rows[1]).toMatchObject({
-      subject: "Docs", workspaceName: "Write docs", model: "Opus 5",
+      subject: "Docs", workspaceName: "Write docs", model: "Opus 5", modelName: "claude-opus-5",
       stateMark: { mark: "pending", label: "Idle" }, runningSince: null,
     });
   });

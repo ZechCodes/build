@@ -1374,7 +1374,8 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   font-size:10.5px; }
 .surface-row-line { display:flex; align-items:baseline; gap:6px; min-width:0; }
 .surface-row-model, .surface-row-effort { flex:none; }
-.surface-row-head-model { max-width:40%; }
+/* A row's model is its short name, whole (#257): the label beside it gives way. */
+.surface-row-head-model { flex-shrink:0; white-space:nowrap; }
 .surface-row-detail { flex:1 1 auto; min-width:0; }
 .surface-row-stats { display:flex; flex-wrap:wrap; gap:8px; }
 .surface-row-error { color:var(--red); }
@@ -1418,15 +1419,10 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .surface-build-agent .surface-clip { cursor:inherit; }
 .surface-build-agent-unreachable { cursor:default; }
 .surface-build-agent:focus-visible { outline:1px solid var(--accent); outline-offset:-1px; }
-.surface-build-agent-where { flex:none; max-width:45%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-/* #226: on a narrow row the workspace gives way first, then the model; the
-   agent's name keeps a readable width. Too narrow for all three, the
-   workspace goes: the row's tooltip and its destination still name it. */
-.surface-build-agent { container-type:inline-size; }
+/* #257: status · name · short model · clock. The workspace is left to the
+   row's title and where it opens. The name gives way, down to a readable
+   6em (#226); the model never does. */
 .surface-build-agent .surface-row-label { flex:1 1 auto; min-width:6em; }
-.surface-build-agent .surface-row-model { flex:0 10 auto; min-width:0; display:block; white-space:nowrap; text-overflow:ellipsis; }
-.surface-build-agent .surface-build-agent-where { flex:0 100 auto; min-width:0; }
-@container (max-width:300px) { .surface-build-agent-where { display:none; } }
 .surface-completed[open] { margin-top:10px; padding-top:0; }
 .rail-surfaces-viewer .surface-completed-head { display:none; }
 .surface-completed-head { padding:2px 6px; cursor:pointer; color:var(--dim); font-size:10.5px;

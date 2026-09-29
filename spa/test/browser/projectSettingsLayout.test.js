@@ -68,12 +68,17 @@ for (const { label, width, height } of [
           });
           return { left: box.left, right: box.right, top: box.top, bottom: box.bottom, inside };
         });
-        return { bodyLeft: body.left + padding, bodyRight: body.right, headings, cards, viewport: innerWidth };
+        const emptyNotes = [...document.querySelectorAll(".ps-source [data-source-warning], .ps-source [data-source-status]")]
+          .filter((note) => note.textContent === "")
+          .map((note) => getComputedStyle(note).display);
+        return { bodyLeft: body.left + padding, bodyRight: body.right, headings, cards, emptyNotes, viewport: innerWidth };
       });
 
       expect(layout.headings.map((heading) => heading.text)).toEqual(["General", "Sources", "Isolation", "Danger zone"]);
       for (const heading of layout.headings) expect(Math.abs(heading.left - layout.bodyLeft)).toBeLessThanOrEqual(1);
       expect(layout.cards).toHaveLength(4);
+      expect(layout.emptyNotes).toHaveLength(8);
+      expect(new Set(layout.emptyNotes)).toEqual(new Set(["none"]));
       for (const card of layout.cards) {
         expect(card.inside).toBe(true);
         expect(Math.abs(card.left - layout.bodyLeft)).toBeLessThanOrEqual(1);

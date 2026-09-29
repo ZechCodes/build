@@ -36,7 +36,9 @@ for (const { label, width, height } of [
       const rows = await page.evaluate(() => [...document.querySelectorAll(".projrow")].map((row) => {
         const box = row.getBoundingClientRect();
         const button = row.querySelector(".projsettings").getBoundingClientRect();
-        return { rowRight: box.right, buttonRight: button.right, buttonHeight: button.height };
+        const count = [...row.querySelectorAll("span")].find((span) => /sources?$/.test(span.textContent));
+        return { rowRight: box.right, buttonRight: button.right, buttonHeight: button.height,
+          countLines: Math.round(count.getBoundingClientRect().height / parseFloat(getComputedStyle(count).lineHeight)) };
       }));
 
       await captureLayout(page, `device-project-rows-${label}.png`);
@@ -44,6 +46,7 @@ for (const { label, width, height } of [
       for (const row of rows) {
         expect(Math.abs(row.rowRight - row.buttonRight)).toBeLessThanOrEqual(1);
         expect(row.buttonHeight).toBeLessThan(40);
+        expect(row.countLines).toBe(1);
       }
     }, { width, height });
   });

@@ -37,7 +37,7 @@ const projectRowHtml = (project) => `
   <div class="projrow"><span class="pname">${esc(project.name)}</span>
     <span class="ppath">${esc(project.path)}</span>
     <span class="dim" style="font-size:11.5px">${projectFactsHtml(project)}</span>
-    <span class="dim" style="font-size:11.5px">${sourceCountText(project)}</span>
+    <span class="dim" style="font-size:11.5px;white-space:nowrap">${sourceCountText(project)}</span>
     <button class="btn mini projsettings" data-id="${esc(project.project_id)}">Settings…</button></div>`;
 
 const sourceCountText = (project) => {

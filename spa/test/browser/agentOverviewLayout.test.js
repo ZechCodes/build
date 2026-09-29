@@ -85,10 +85,10 @@ it("shows the agent overview in the chat panel's own box, docked and as a popove
     const popoverOverview = await page.evaluate(rects);
     assert.equal(popoverOverview.workHit, "root");
     assert.equal(Math.round(popoverOverview.rail.width), Math.round(popoverOverview.strip.width));
-    await page.locator("#workspace-action").click();
-    assert.equal(await page.evaluate(() => window.__workspaceClicks), 2);
     // The popover's notch points at the overview's control, measured the way
-    // it is for a bubble: the control's middle, along the panel's edge.
+    // it is for a bubble: the control's middle, along the panel's edge. Read
+    // while the card is out and still: the press on the work below dismisses
+    // it, and a panel sliding shut no longer stands where its notch was set.
     const notch = await page.evaluate(() => {
       const panel = document.querySelector("#rail-panel");
       const toggle = document.querySelector(".rail-overview-toggle").getBoundingClientRect();
@@ -97,6 +97,8 @@ it("shows the agent overview in the chat panel's own box, docked and as a popove
     });
     assert.equal(notch.anchor, "overview");
     assert.equal(notch.offset, notch.wanted);
+    await page.locator("#workspace-action").click();
+    assert.equal(await page.evaluate(() => window.__workspaceClicks), 2);
 
     // Another bubble while it is out: the same card, now the conversation.
     await page.locator('[data-bubble="agent"]').click();

@@ -103,6 +103,7 @@ import { replyOrNothing } from "./session.js";
 import { bridgeCapabilities } from "./changeEvents.js";
 import { fetchThreadAttachment } from "./threadAttachmentPages.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
+import { subscribeReferenceIndex } from "./referenceIndex.js";
 import { agentLabels as agentLabelsOf, workspaceAgents } from "./trackerAssignee.js";
 import { toolbarIdentity } from "./toolbarModel.js";
 import { esc } from "./text.js";
@@ -142,7 +143,6 @@ import { mountAgentSurfaces, openSurfaceOverlay } from "./agentSurfaces.js";
 import { mountAgentTasks } from "./trackerAgentTasksEntry.js";
 import { mountAgentLineage } from "./agentLineage.js";
 import { buildAgentChatRoute } from "./agentLineageModel.js";
-import { referenceLinks } from "./referenceTargets.js";
 import { BUILD_AGENTS_KEY, TASKS_ENTRY_KIND } from "./agentSurfacesModel.js";
 import { mountAgentObservation } from "./agentObservation.js";
 import { createTaskCompletionTracker } from "./taskCompletionModel.js";
@@ -2697,34 +2697,6 @@ function mountRailOnContext(host, context, swap) {
     return agentLabelsOf(workspaceAgents(feedView, deviceKey(place.deviceId, place.projectId)));
   };
 
-  /** What a reference written in a message points at (#56, wired in #63): the
-   *  project's tasks as this rail has already read them, its workspaces, and
-   *  the agents standing in them. Nothing is fetched for this — a reference to
-   *  something this client has not read stays the words the agent typed. */
-  const conversationRefLinks = () => {
-    const place = conversationPlace();
-    if (!place.projectId || !place.deviceId) return null;
-    const key = deviceKey(place.deviceId, place.projectId);
-    return referenceLinks({
-      place,
-      tasks: tasksBlock?.tasks() || [],
-      workspaces: (feedView?.workspaces || []).filter((workspace) => workspace.projectKey === key),
-      agentGroups: workspaceAgents(feedView, key),
-    });
-  };
-
-  /** What the resolver can answer for, as the paint sees it: how many tasks
-   *  have been read and how far they reach. In the fingerprint because a list
-   *  landing after the paint turns prose into links, and nothing else on the
-   *  row would have moved. */
-  const refLinksSignature = () => {
-    const tasks = tasksBlock?.tasks() || [];
-    const workspaces = (feedView?.workspaces || []).filter((workspace) =>
-      workspace.projectKey === deviceKey(conversationPlace().deviceId, conversationPlace().projectId));
-    const ids = workspaces.map((workspace) => workspace.workspace_id || workspace.id).sort().join(",");
-    return `${tasks.length}:${tasks.reduce((highest, task) => Math.max(highest, task.number || 0), 0)}:${ids}`;
-  };
-
   /** The names as the paint sees them. In the fingerprint because a feed that
    *  renames an agent has to repaint a line already on screen, and out of it
    *  nothing else would notice. */
@@ -2748,7 +2720,6 @@ function mountRailOnContext(host, context, swap) {
       unreadFrom,
       detailLevel: detailLevel(),
       agentLabels: agentLabelsSignature(),
-      refLinks: refLinksSignature(),
       slice: `${timelineSlice.signature()}:${threadCache.hasOlderItems()}`,
       ...threadOfferState(threadState),
     });
@@ -2788,7 +2759,6 @@ function mountRailOnContext(host, context, swap) {
       workspaces: (feedView?.workspaces || []).filter((workspace) =>
         workspace.projectKey === deviceKey(conversationPlace().deviceId, conversationPlace().projectId)),
       agentLabels: conversationAgentLabels(),
-      refLinks: conversationRefLinks(),
       // So a timeline the level emptied says so, rather than claiming the
       // conversation has nothing on the record.
       hiddenByLevel: held.length - shown.length,
@@ -3917,6 +3887,11 @@ function mountRailOnContext(host, context, swap) {
     // The fingerprint decides whether it actually repaints.
     paintChat();
   });
+  // A reference in a message resolves against the app-wide index, which can
+  // learn a name after the line is painted — another project's workspace, a
+  // task list read later. The index version is in the chat fingerprint, so
+  // only a change that could move an answer repaints.
+  const unsubscribeReferenceIndex = subscribeReferenceIndex(() => paintChat());
 
   // The feed names this work item — agents included — and its snapshot replays
   // synchronously at subscribe, so the strip and the panel stand up on it in
@@ -4006,6 +3981,7 @@ function mountRailOnContext(host, context, swap) {
     stopFollowingCatalog();
     unsubscribePending();
     unsubscribeFeed();
+    unsubscribeReferenceIndex();
     unsubscribeComposerController?.();
     unsubscribeComposerController = null;
   };

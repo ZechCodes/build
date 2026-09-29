@@ -64,7 +64,7 @@ const mountTaskFixture = async (page, basePath, { width = "100vw", height = "100
       rows, unreadFrom, columns: [
         { id: "backlog", name: "Backlog" }, { id: "in_progress", name: "In progress" },
       ],
-      agentLabels: {}, agentProviders: {}, projectName: "Build", refLinks: null,
+      agentLabels: {}, agentProviders: {}, projectName: "Build",
       links: [], watch: null, draft: "", labelsDraft: "", busy: false,
       sending: false, attachable: false, hasFiles: false,
     });

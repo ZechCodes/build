@@ -14,7 +14,6 @@
 // agent should type.
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { referenceLinks } from "../src/core/referenceTargets.js";
 import { markdownHtml } from "../src/core/markdown.js";
 import { holdReferenceSources } from "../src/core/referenceIndex.js";
 import { threadHtml } from "../src/core/thread.js";
@@ -23,8 +22,6 @@ import { taskPageHtml } from "../src/core/trackerTaskRender.js";
 const place = { deviceId: "dev-1", projectId: "proj-1", projectKey: "dev-1/proj-1", projectName: "Build" };
 const tasks = [{ id: "task-01M2A", number: 42, title: "Tasks list shows open tasks by default" }];
 const workspaces = [{ id: "ws-1", workspace_id: "ws-1", name: "tasks-spa", projectKey: "dev-1/proj-1" }];
-const agentGroups = [{ workspaceId: "ws-1", name: "tasks-spa", agents: [{ id: "agent-01M2A", label: "tasks-spa · Agent 1" }] }];
-const links = () => referenceLinks({ place, tasks, workspaces, agentGroups });
 
 const hostOf = (html) => {
   const host = document.createElement("div");
@@ -34,34 +31,6 @@ const hostOf = (html) => {
 const anchors = (html) => [...hostOf(html).querySelectorAll("a")].map((a) => ({ href: a.getAttribute("href"), text: a.textContent, title: a.getAttribute("title") }));
 
 describe("what a reference names", () => {
-  it("answers nothing at all without a place to route from", () => {
-    expect(referenceLinks({ place: { projectId: "proj-1" }, tasks })).toBeNull();
-  });
-
-  it("finds a task by its number", () => {
-    expect(links().task(42)).toEqual({ deviceId: "dev-1", projectId: "proj-1", taskId: "task-01M2A", title: tasks[0].title });
-    expect(links().task(9999)).toBeNull();
-  });
-
-  it("finds a workspace by the name a reader writes, or by its id", () => {
-    expect(links().workspace("tasks-spa")?.workspaceId).toBe("ws-1");
-    expect(links().workspace("TASKS-SPA")?.workspaceId).toBe("ws-1");
-    expect(links().workspace("ws-1")?.workspaceId).toBe("ws-1");
-    expect(links().workspace("no-such-workspace")).toBeNull();
-  });
-
-  it("finds an agent in the workspace it stands in", () => {
-    expect(links().agent("agent-01M2A")).toMatchObject({ workspaceId: "ws-1", agentId: "agent-01M2A" });
-    expect(links().agent("agent-NOPE")).toBeNull();
-  });
-
-  // It stands in no workspace, so it is reached on the project's own page —
-  // and it is never in the picker's groups, which is why it is asked about by
-  // its id rather than looked up.
-  it("knows the project's own agent without a workspace", () => {
-    expect(links().agent("project-01M2SCB")).toEqual({ deviceId: "dev-1", projectId: "proj-1", agentId: "project-01M2SCB" });
-  });
-
   it("leaves a deleted project agent's prose reference without a destination", () => {
     const identities = { "project-01M2SCB": { agent_id: "project-01M2SCB", available: false } };
     holdReferenceSources({ feed: { projects: [], workspaces, items: [] }, tasks: {} });

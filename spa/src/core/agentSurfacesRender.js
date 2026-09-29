@@ -4,6 +4,7 @@ import { modalDialogHtml } from "./modal.js";
 import { outcomeMarkHtml } from "./outcomeMark.js";
 import {
   AGENT_ENTRY_KIND,
+  BUILD_AGENTS_KEY,
   CHECKLIST_ENTRY_KIND,
   SHELL_ENTRY_KIND,
 } from "./agentSurfacesModel.js";
@@ -37,6 +38,9 @@ const VIEWER_CLASS = {
   workflowAgents: "surface-phase-agents",
   running: "surface-running",
   completed: "surface-completed-rows",
+  buildAgents: "surface-build-agents",
+  subagentsGroup: "surface-group-subagents",
+  buildAgentsGroup: "surface-group-build",
   [AGENT_ENTRY_KIND]: "surface-subagents",
   [SHELL_ENTRY_KIND]: "surface-shells",
   [CHECKLIST_ENTRY_KIND]: "surface-checklist",
@@ -256,6 +260,42 @@ export function completedFoldHtml(count, rowsHtml = "") {
     ${completedFoldHeadHtml(count)}
     <div class="${VIEWER_CLASS.completed}">${rowsHtml}</div>
   </details>`;
+}
+
+/** One of the Agents viewer's two groups (#216): a heading, and the list it
+ *  heads. Hidden until it has rows, so an agent that made no Build agents is
+ *  not told it has none. */
+const agentGroupHtml = (group, className, head, listHtml) => `<section class="surface-group ${className}" data-group="${esc(group)}" hidden>
+    <h4 class="surface-group-head">${esc(head)}</h4>
+    ${listHtml}
+  </section>`;
+
+/** The Agents viewer: the harness's sub-agents, their finished ones folded
+ *  inside the same group, then the Build agents this agent made. */
+export function agentsViewerHtml() {
+  return `<div class="${VIEWER_CLASS.viewer} ${VIEWER_CLASS[AGENT_ENTRY_KIND]}">
+    ${agentGroupHtml(AGENT_ENTRY_KIND, VIEWER_CLASS.subagentsGroup, "Sub-agents", `<div class="${VIEWER_CLASS.running}"></div>`)}
+    ${agentGroupHtml(BUILD_AGENTS_KEY, VIEWER_CLASS.buildAgentsGroup, "Build agents", `<div class="${VIEWER_CLASS.buildAgents}" ${KEYED_LIST_ATTRIBUTE}></div>`)}
+  </div>`;
+}
+
+/** One Build agent this agent made: a press opens its chat. The whole row is
+ *  the button, so nothing inside it is pressable on its own. */
+export function buildAgentRowHtml(row) {
+  const title = `Open ${row.subject}'s chat`;
+  const where = row.workspaceName
+    ? `<span class="surface-row-stat surface-build-agent-where">${esc(row.workspaceName)}</span>`
+    : "";
+  return `<button type="button" class="surface-row surface-build-agent" data-key="${esc(row.key)}"
+    data-build-agent="${esc(row.id)}" data-entity-id="${esc(row.entityId || "")}"
+    data-workspace-id="${esc(row.workspaceId || "")}" title="${esc(title)}">
+    <span class="${ROW_HEAD_CLASS}">
+      ${stateMarkHtml(row.stateMark)}
+      ${clippedTextHtml(row.subject, { className: ROW_LABEL_CLASS, pressable: false })}
+      ${where}
+      ${clockHtml(row.clock, row.runningSince)}
+    </span>
+  </button>`;
 }
 
 export function runningAndCompletedViewerHtml(kind, { running, completed }, renderRow) {

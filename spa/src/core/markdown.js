@@ -13,18 +13,23 @@
 import { esc } from "./text.js";
 import { blocksHtml } from "./markdownBlocks.js";
 import { expandReferences, plainReferences } from "./markdownLinks.js";
+import { webLinks } from "./markdownWebLinks.js";
 import { plainPreview } from "./previewText.js";
 import { referenceResolver } from "./referenceIndex.js";
 
-/** One line's inline vocabulary — code spans, strong, and the references
- *  (core/markdownLinks.js) — over escaped text. References expand AFTER the
- *  code spans and never inside one: a message explaining this syntax is mostly
- *  examples, and they have to stay literal. */
+/** One line's inline vocabulary — code spans, strong, web links
+ *  (core/markdownWebLinks.js) and the references (core/markdownLinks.js) —
+ *  over escaped text. Links are read AFTER the code spans and never inside
+ *  one: a message explaining this syntax is mostly examples, and they have to
+ *  stay literal. Web links go before references, so a `#42` inside a link's
+ *  label or address stays part of that link. */
 const inlineHtml = (text, links) =>
   expandReferences(
-    esc(text)
-      .replace(/`([^`]+)`/g, "<code>$1</code>")
-      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>"),
+    webLinks(
+      esc(text)
+        .replace(/`([^`]+)`/g, "<code>$1</code>")
+        .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>"),
+    ),
     links,
   );
 

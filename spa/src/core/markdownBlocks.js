@@ -1,5 +1,5 @@
 // The block half of the one markdown renderer: paragraphs, headings, lists,
-// quotes, tables and fences, over lines. core/markdown.js `markdownHtml` is the only
+// quotes, rules, tables and fences, over lines. core/markdown.js `markdownHtml` is the only
 // caller (spa/test/markdownEntry.test.js); the inline vocabulary — code spans,
 // strong, references — is handed in as `inline`, which escapes everything it is
 // given before adding its own fixed tags.
@@ -148,6 +148,18 @@ function readQuote(lines, at, context) {
 /// CODE_BLOCK_CLASS is: every surface's quotes look alike.
 const QUOTE_CLASS = "md-quote";
 
+/// A thematic break (#253): three or more of one of `-`, `*` or `_`, spaces
+/// and tabs allowed between and around them, up to three spaces of indent.
+/// There are no setext headings here, so a `---` under a line of prose is a
+/// rule and not that line's underline. It is tested before a list item, since
+/// `- - -` and `* * *` read as both and CommonMark makes them breaks.
+const THEMATIC_BREAK = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
+
+/// The class a rule wears, stamped for the reason CODE_BLOCK_CLASS is.
+const RULE_CLASS = "md-rule";
+
+const readRule = (lines, at) => ({ html: `<hr class="${RULE_CLASS}">`, next: at + 1 });
+
 // Nine digits at most, as CommonMark reads a number: longer is prose.
 const LIST_ITEM = /^( *)([-*+]|\d{1,9}[.)])( +)(.*)$/;
 
@@ -167,7 +179,7 @@ const indentOf = (line) => line.length - line.trimStart().length;
  *  kind of marker. */
 const sameList = (line, first) => {
   const item = itemAt(line);
-  return Boolean(item && item.indent === first.indent && item.ordered === first.ordered);
+  return Boolean(item && !THEMATIC_BREAK.test(line) && item.indent === first.indent && item.ordered === first.ordered);
 };
 
 /** The line where an item's own lines end: every line indented past its
@@ -183,10 +195,11 @@ function itemEnd(lines, from, first) {
 }
 
 /** One item: its first line's content and the lines under it, taken back to
- *  the item's own margin. A single line is inline; more is a document, whose
- *  first paragraph sits on the item's line the way a tight list reads. */
+ *  the item's own margin. A single line is inline, unless it is a rule
+ *  (`* ---`); more is a document, whose first paragraph sits on the item's
+ *  line the way a tight list reads. */
 function itemHtml(item, body, context) {
-  if (!body.length) return `<li>${context.inline(item.content)}</li>`;
+  if (!body.length && !THEMATIC_BREAK.test(item.content)) return `<li>${context.inline(item.content)}</li>`;
   const lines = [item.content, ...body.map((line) => line.slice(Math.min(indentOf(line), item.contentAt)))];
   return `<li>${blocksOf(lines, deeper(context)).replace(/^<p>([\s\S]*?)<\/p>/, "$1")}</li>`;
 }
@@ -230,18 +243,47 @@ const nests = (context) => context.depth < MAX_DEPTH;
  *  and a line ending in two spaces or a backslash breaks with a `<br>`. */
 const HARD_BREAK = /( {2,}|\\)$/;
 
-/** The paragraph at this line: every line to a blank one or to a line another
- *  block starts, joined the way CommonMark reads prose wrapped at a width. */
-function readParagraph(lines, at, context) {
-  const parts = [];
-  let next = at;
-  do {
-    const line = lines[next];
+/// A setext underline (#253): `===` under a paragraph makes it a level-1
+/// heading and `---` a level-2 one. Unlike a rule it takes no inner spaces, so
+/// `- - -` under prose is still a rule.
+const SETEXT_UNDERLINE = /^ {0,3}(=+|-+)[ \t]*$/;
+const SETEXT_LEVELS = { "=": 1, "-": 2 };
+
+/** The line a paragraph starting here stops at: a blank line, an underline,
+ *  or a line another block starts. Its first line is always its own. */
+function paragraphEnd(lines, at, context) {
+  let next = at + 1;
+  const continues = (line) => line.trim() && !SETEXT_UNDERLINE.test(line) && !interrupts(lines, next, context);
+  while (next < lines.length && continues(lines[next])) next += 1;
+  return next;
+}
+
+/** A paragraph's lines as a heading of the level its underline names, the
+ *  text joined as one line and its id taken from it, as an ATX heading's is. */
+function setextHeading(prose, underline, context) {
+  const level = SETEXT_LEVELS[underline.trim()[0]];
+  const raw = prose.map((line) => line.trim().replace(/\\$/, "")).join(" ");
+  return `<h${level}${context.idAttr(raw)}>${context.inline(raw)}</h${level}>`;
+}
+
+/** A paragraph's lines joined the way CommonMark reads prose wrapped at a
+ *  width. */
+function paragraphHtml(prose, context) {
+  const parts = prose.map((line) => {
     const text = context.inline(line.trim().replace(/\\$/, ""));
-    parts.push(HARD_BREAK.test(line) ? `${text}<br>` : text);
-    next += 1;
-  } while (next < lines.length && lines[next].trim() && !interrupts(lines, next, context));
-  return { html: `<p>${parts.join(" ").replace(/<br> /g, "<br>")}</p>`, next };
+    return HARD_BREAK.test(line) ? `${text}<br>` : text;
+  });
+  return `<p>${parts.join(" ").replace(/<br> /g, "<br>")}</p>`;
+}
+
+/** The paragraph at this line: every line to a blank one or to a line another
+ *  block starts — or, when an underline ends it, the setext heading it is. */
+function readParagraph(lines, at, context) {
+  const end = paragraphEnd(lines, at, context);
+  const prose = lines.slice(at, end);
+  const underline = lines[end];
+  if (underline !== undefined && SETEXT_UNDERLINE.test(underline)) return { html: setextHeading(prose, underline, context), next: end + 1 };
+  return { html: paragraphHtml(prose, context), next: end };
 }
 
 /** A blank line ends whatever came before it and draws nothing. */
@@ -256,6 +298,7 @@ const BLOCKS = [
   { starts: (lines, at) => !lines[at].trim(), read: readBlank },
   { starts: (lines, at) => FENCE.test(lines[at]), read: readFence },
   { starts: (lines, at, context) => nests(context) && QUOTE.test(lines[at]), read: readQuote },
+  { starts: (lines, at) => THEMATIC_BREAK.test(lines[at]), read: readRule },
   { starts: (lines, at, context) => nests(context) && LIST_ITEM.test(lines[at]), read: readList },
   { starts: tableStarts, read: readTable },
   { starts: (lines, at) => HEADING.test(lines[at]), read: readHeading },

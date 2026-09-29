@@ -18,7 +18,7 @@ import { holdReferenceSources } from "../src/core/referenceIndex.js";
 
 /// The tags the renderer may emit, and the attributes each may carry.
 const ALLOWED = {
-  P: [], BR: [], STRONG: [], CODE: ["class"], PRE: ["class"], UL: [], OL: ["start"], LI: [],
+  P: [], BR: [], HR: ["class"], STRONG: [], CODE: ["class"], PRE: ["class"], UL: [], OL: ["start"], LI: [],
   H1: ["id"], H2: ["id"], H3: ["id"], H4: ["id"], H5: ["id"], H6: ["id"],
   BLOCKQUOTE: ["class"], DIV: ["class"], TABLE: [], THEAD: [], TBODY: [], TR: [],
   TH: ["style"], TD: ["style"], A: ["class", "href", "title"], SPAN: ["class", "title"],
@@ -62,6 +62,9 @@ const CONTEXTS = [
   (payload) => payload,
   (payload) => `# ${payload}`,
   (payload) => `###### ${payload}`,
+  (payload) => `${payload}\n===`,
+  (payload) => `${payload}\n\n---\n\n${payload}\n***`,
+  (payload) => `* ---\n> ${payload}\n> - - -`,
   (payload) => `- ${payload}`,
   (payload) => `1. ${payload}\n   > ${payload}`,
   (payload) => `> ${payload}\n>\n> - ${payload}`,

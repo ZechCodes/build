@@ -1713,6 +1713,12 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .md-quote { margin:6px 0; padding:0 0 0 12px; border-left:3px solid var(--line3); color:var(--ink2); }
 .md-quote > :first-child { margin-top:0; }
 .md-quote > :last-child { margin-bottom:0; }
+/* A thematic break (#253) is the app's own divider: one hairline in the token
+   the cards and section dividers are drawn in, never the browser's inset
+   two-tone line. Its margin is a little more than a paragraph's, and
+   collapses with theirs, so it reads as a break between sections rather than
+   a line crowding the prose. */
+.md-rule { height:0; margin:12px 0; border:0; border-top:1px solid var(--line2); }
 a.md-ref { color:var(--accent); text-decoration:none; }
 a.md-ref:hover { text-decoration:underline; }
 .md-ref-code { font-family:var(--mono); font-size:.92em; }

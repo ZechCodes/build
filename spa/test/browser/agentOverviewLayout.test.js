@@ -11,6 +11,13 @@ const markup = `<div id="shell"><aside id="inbox-rail"></aside><div id="view">
   </div><div id="console-region"></div>
 </div></div>`;
 
+/** Runs in the page: nothing measured is still moving. The rail's own width
+ *  moves on a 240 ms transition as the panel docks or lets go, and the panel on
+ *  its own motion; a rect read before both end is a frame of the move. Each
+ *  element's own animations only — a working agent's pulse never ends. */
+const railSettled = () => ["#agent-rail", ".rail-panel"]
+  .every((selector) => !document.querySelector(selector)?.getAnimations().length);
+
 const rects = () => {
   const rect = (selector) => {
     const { x, y, width, height } = document.querySelector(selector).getBoundingClientRect();
@@ -68,7 +75,7 @@ it("shows the agent overview in the chat panel's own box, docked and as a popove
     assert.ok(dockedPanel.panel.width > 0);
     await page.locator(".rail-overview-toggle").click();
     await page.waitForSelector("#rail-panel .rail-overview-list");
-    await page.waitForFunction(() => !document.querySelector(".rail-panel")?.getAnimations().length);
+    await page.waitForFunction(railSettled);
     const dockedOverview = await page.evaluate(rects);
     // #148: the overview is a body of the one panel, so it has the panel's box.
     sameRect(dockedOverview.panel, dockedPanel.panel);
@@ -81,7 +88,7 @@ it("shows the agent overview in the chat panel's own box, docked and as a popove
 
     await page.locator("#rail-panel .pinbtn").click();
     await page.waitForSelector("#agent-rail.rail-popover:not([data-panel-transition])");
-    await page.waitForFunction(() => !document.querySelector(".rail-panel")?.getAnimations().length);
+    await page.waitForFunction(railSettled);
     const popoverOverview = await page.evaluate(rects);
     assert.equal(popoverOverview.workHit, "root");
     assert.equal(Math.round(popoverOverview.rail.width), Math.round(popoverOverview.strip.width));
@@ -103,7 +110,7 @@ it("shows the agent overview in the chat panel's own box, docked and as a popove
     // Another bubble while it is out: the same card, now the conversation.
     await page.locator('[data-bubble="agent"]').click();
     await page.waitForFunction(() => !document.querySelector("#rail-panel .rail-overview-list"));
-    await page.waitForFunction(() => !document.querySelector(".rail-panel")?.getAnimations().length);
+    await page.waitForFunction(railSettled);
     const popoverPanel = await page.evaluate(rects);
     sameRect(popoverOverview.panel, popoverPanel.panel);
     sameRect(popoverOverview.strip, popoverPanel.strip);
@@ -258,7 +265,7 @@ it("keeps the heading's pill, dot and + on one gap and in one column", async () 
     await page.waitForSelector(".rail-overview-toggle", { timeout: 5000 });
     await page.locator(".rail-overview-toggle").click();
     await page.waitForFunction(() => document.querySelectorAll("#rail-panel .rail-overview-section").length >= 5, null, { timeout: 5000 });
-    await page.waitForFunction(() => !document.querySelector(".rail-panel")?.getAnimations().length);
+    await page.waitForFunction(railSettled);
 
     const heads = await page.evaluate(() => {
       const box = (node) => { const { left, right, top, bottom, width, height } = node.getBoundingClientRect(); return { left, right, top, bottom, width, height }; };
@@ -323,7 +330,7 @@ it("opens Add from a press on the working dot as from the + itself, and the dot 
     await page.waitForSelector(".rail-overview-toggle", { timeout: 5000 });
     await page.locator(".rail-overview-toggle").click();
     await page.waitForFunction(() => document.querySelectorAll("#rail-panel .rail-overview-section").length >= 5, null, { timeout: 5000 });
-    await page.waitForFunction(() => !document.querySelector(".rail-panel")?.getAnimations().length);
+    await page.waitForFunction(railSettled);
 
     const centre = (name, selector) => page.evaluate(([sectionName, wanted]) => {
       const { left, right, top, bottom } = document.querySelector(`.rail-overview-section[aria-label="${sectionName}"] .rail-overview-section-head ${wanted}`).getBoundingClientRect();

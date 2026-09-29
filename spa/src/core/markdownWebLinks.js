@@ -37,7 +37,6 @@ const SCHEMES = {
 };
 
 /// Whitespace and control characters: C0, space, DEL and C1.
-// eslint-disable-next-line no-control-regex
 const INVISIBLE = /[\u0000- \u007f-\u009f]/g;
 
 /**
@@ -111,36 +110,40 @@ function readDestination(html, at) {
   return { url: address.url, title: title?.title ?? "", end: close + 1 };
 }
 
+/** Past the code span opening at `at`: it is stepped over whole. */
+function pastCode(html, at) {
+  const close = html.indexOf(CODE_CLOSE, at);
+  return close < 0 ? html.length : close + CODE_CLOSE.length;
+}
+
+/** The link whose label closes at `close`, written to `state` — or nothing,
+ *  leaving it as written, when its address is refused. */
+function writeLink(html, close, destination, state) {
+  const href = safeWebHref(unesc(destination.url));
+  if (!href) return;
+  const label = html.slice(state.opener + 1, close);
+  state.out += html.slice(state.copied, state.opener) + anchor(href, label, unesc(destination.title));
+  state.copied = destination.end;
+}
+
+/** One step of the reader at `index`, answering where the next one starts.
+ *  The innermost `[` before a `](` opens the label. */
+function readAt(html, index, state) {
+  if (html.startsWith(CODE_OPEN, index)) return pastCode(html, index);
+  if (html[index] === "[") state.opener = index;
+  if (html[index] !== "]") return index + 1;
+  const destination = state.opener >= 0 && html[index + 1] === "(" ? readDestination(html, index + 2) : null;
+  if (destination) writeLink(html, index, destination, state);
+  state.opener = -1;
+  return destination ? destination.end : index + 1;
+}
+
 /** Every `[label](address)` in one line of escaped HTML made a link, and
- *  every refused one left as written. The innermost `[` before a `](` opens
- *  the label; a code span is stepped over whole. */
+ *  every refused one left as written. */
 function inlineLinks(html) {
-  let out = "";
-  let copied = 0;
-  let opener = -1;
-  for (let index = 0; index < html.length; ) {
-    if (html.startsWith(CODE_OPEN, index)) {
-      const close = html.indexOf(CODE_CLOSE, index);
-      index = close < 0 ? html.length : close + CODE_CLOSE.length;
-      continue;
-    }
-    const character = html[index];
-    if (character === "[") opener = index;
-    const destination = character === "]" && opener >= 0 && html[index + 1] === "(" ? readDestination(html, index + 2) : null;
-    if (character === "]") opener = destination ? opener : -1;
-    if (!destination) {
-      index += 1;
-      continue;
-    }
-    const href = safeWebHref(unesc(destination.url));
-    if (href) {
-      out += html.slice(copied, opener) + anchor(href, html.slice(opener + 1, index), unesc(destination.title));
-      copied = destination.end;
-    }
-    opener = -1;
-    index = destination.end;
-  }
-  return out + html.slice(copied);
+  const state = { out: "", copied: 0, opener: -1 };
+  for (let index = 0; index < html.length; ) index = readAt(html, index, state);
+  return state.out + html.slice(state.copied);
 }
 
 // ─── Bare addresses ──────────────────────────────────────────────────────────

@@ -104,6 +104,7 @@ for (const [name, viewport] of VIEWPORTS) {
           buildRows: [...group("build_agents").querySelectorAll(".surface-build-agent")].map((row) => ({
             row: box(row),
             name: box(row.querySelector(".surface-row-label")),
+            head: box(row.querySelector(".surface-row-head")),
             parts: [...row.querySelectorAll(".surface-row-head > *")].map(box),
             model: row.querySelector(".surface-row-model")?.textContent || "",
           })),
@@ -119,8 +120,13 @@ for (const [name, viewport] of VIEWPORTS) {
       // #226: a long model id and a long workspace name give way before the
       // agent's name does, and nothing on the row runs past its edge.
       assert.equal(read.buildRows[0].model, "claude-opus-5-5-20260915-experimental-preview");
-      for (const { row, name: label, parts } of read.buildRows) {
+      for (const { row, head, name: label, parts } of read.buildRows) {
         assert.ok(label.width >= MIN_NAME_WIDTH, `the name keeps a readable width: ${label.width}px`);
+        // The name takes up the slack, so the row's last part (the clock, on a
+        // running row) ends at the row's right edge, in line with the rows above.
+        const last = parts.filter((part) => part.width > 0).at(-1);
+        assert.ok(Math.abs(last.x + last.width - (head.x + head.width)) <= 1,
+          `the row's last part ends at its right edge: ${JSON.stringify({ last, head })}`);
         for (const part of parts) {
           if (part.width > 0) assert.ok(part.x + part.width <= row.x + row.width + 1, `a row part runs past the row: ${JSON.stringify({ part, row })}`);
         }

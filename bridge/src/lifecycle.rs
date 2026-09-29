@@ -25,5 +25,6 @@ pub use projects::{CloneRepo, CreateRepo, InitializeRepo, OpenRepo, SetRemote};
 pub(crate) use publication::classify_stage_publication;
 pub use publication::{StagePublicationQuery, StagePublications};
 pub use rows::{PendingRow, PendingState, WorktreeChange};
+pub(crate) use source_update::refuse_unusable_branch_name;
 pub use source_update::{CheckoutFailed, SourceUpdated, UpdateSource, WorkspaceCheckout};
 pub use task::{Performed, WorktreeMutation};

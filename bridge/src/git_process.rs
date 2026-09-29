@@ -83,7 +83,36 @@ pub(crate) fn run_command_with_deadline(
     args: &[&OsStr],
     deadline: Duration,
 ) -> std::io::Result<Output> {
+    run_with_environment(executable, dir, args, deadline, &[])
+}
+
+/// What a git child needs so that nothing asks anyone anything: no askpass
+/// program for a username, password or passphrase, whether git's own
+/// (`GIT_ASKPASS` set but empty outranks `core.askPass` and `SSH_ASKPASS`) or
+/// ssh's (`SSH_ASKPASS_REQUIRE=never`, which a desktop session's `DISPLAY`
+/// would otherwise switch on). With the terminal prompt already off, a
+/// remote that wants a secret fails instead of waiting.
+const UNATTENDED: &[(&str, &str)] = &[("GIT_ASKPASS", ""), ("SSH_ASKPASS_REQUIRE", "never")];
+
+/// A git child nobody is at the keyboard for: a background fetch. Everything
+/// [`run_command_with_deadline`] promises, and no prompt of any kind.
+pub(crate) fn run_git_unattended(
+    dir: &Path,
+    args: &[&OsStr],
+    deadline: Duration,
+) -> std::io::Result<Output> {
+    run_with_environment(OsStr::new("git"), dir, args, deadline, UNATTENDED)
+}
+
+fn run_with_environment(
+    executable: &OsStr,
+    dir: &Path,
+    args: &[&OsStr],
+    deadline: Duration,
+    environment: &[(&str, &str)],
+) -> std::io::Result<Output> {
     let mut command = Command::new(executable);
+    command.envs(environment.iter().copied());
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;

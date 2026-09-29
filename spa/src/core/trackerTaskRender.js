@@ -10,7 +10,7 @@
 // Pure: HTML in, no DOM, no app imports. core/trackerTaskPage.js mounts it.
 
 import { esc } from "./text.js";
-import { renderMarkdown } from "./markdown.js";
+import { markdownHtml } from "./markdown.js";
 import { hashFromRoute } from "./router.js";
 import { columnsOf, PRIORITIES, stateLabel } from "./trackerModel.js";
 import { taskAvatarHtml } from "./taskAvatar.js";
@@ -41,12 +41,21 @@ export const taskHeadHtml = (task, { watch = null } = {}) => `<header class="tas
     ${task.labels?.length ? `<div class="task-page-labels">${labelsHtml(task.labels)}</div>` : ""}
   </header>`;
 
+/** Markdown written on this task, read from where the page stands: the project
+ *  a `#42` in it means, and every actor the task carries, departed ones too
+ *  (#229). */
+const taskMarkdownHtml = (text, context) =>
+  markdownHtml(text, {
+    place: { deviceId: context.deviceId, projectId: context.projectId },
+    identities: context.identities,
+  });
+
 /** The body, as markdown. A task with an empty body says so rather than
  *  leaving a gap a reader has to interpret. */
-export const taskBodyHtml = (task, refLinks = null) =>
+export const taskBodyHtml = (task, context = {}) =>
   task.body
-    // renderMarkdown escapes all input before adding its fixed safe tag set.
-    ? `<div class="task-page-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(task.body, { links: refLinks })}</div>`
+    // markdownHtml escapes all input before adding its fixed safe tag set.
+    ? `<div class="task-page-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ taskMarkdownHtml(task.body, context)}</div>`
     : `<p class="task-page-body empty">No description.</p>`;
 
 /**
@@ -73,7 +82,7 @@ const commentHtml = (row, context) => `<li class="task-entry task-comment${row.m
     ${taskAvatarHtml(row.actor, context)}
     <div class="task-comment-card">
       <div class="task-entry-head"><strong>${actorIdentityHtml(row.actor, context)}</strong>${whenHtml(row)}</div>
-      <div class="task-comment-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(row.body, { links: context.refLinks })}</div>
+      <div class="task-comment-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ taskMarkdownHtml(row.body, context)}</div>
       ${attachmentListHtml(row.attachments, { className: "task-comment-attachments" })}
     </div>
   </li>`;
@@ -281,7 +290,7 @@ export function taskPageParts(task, context) {
   return {
     main: [
       { name: "head", html: taskHeadHtml(task, context) },
-      { name: "body", html: taskBodyHtml(task, context.refLinks) },
+      { name: "body", html: taskBodyHtml(task, context) },
       { name: "attachments", html: taskAttachmentsHtml(task.attachments) },
       { name: "timeline", html: timeline.frame },
       {
@@ -300,7 +309,7 @@ export function taskPageHtml(task, context) {
   return `<div class="task-page">
     <div class="task-page-main">
       ${taskHeadHtml(task, context)}
-      ${taskBodyHtml(task, context.refLinks)}
+      ${taskBodyHtml(task, context)}
       ${taskAttachmentsHtml(task.attachments)}
       ${timelineHtml(context.rows, context)}
       ${composerHtml(context.draft, context.sending, context.attachable, context.hasFiles)}

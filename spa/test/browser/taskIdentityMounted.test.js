@@ -14,11 +14,11 @@ it.each(["list", "board"])("opens the mounted %s assignment picker before and af
     await page.evaluate(async ({ fixture, view }) => {
       const { cache, tasksPane } = window.__layoutModules;
       const task = structuredClone(fixture.result.task);
-      const workspace = { id: "ws-3f2a91c4", workspace_id: "ws-3f2a91c4", name: "spa-flaky-tests", projectKey: "dev-1|proj-1" };
-      const feed = { projects: [{ id: "proj-1", name: "Build", projectKey: "dev-1|proj-1" }], workspaces: [workspace], items: [] };
+      const workspace = { id: "ws-3f2a91c4", workspace_id: "ws-3f2a91c4", name: "spa-flaky-tests", projectKey: "dev-1/proj-1" };
+      const feed = { projects: [{ id: "proj-1", name: "Build", projectKey: "dev-1/proj-1" }], workspaces: [workspace], items: [] };
       await cache.writeTasksRecord("dev-1", "proj-1", { tasks: [task], columns: [] });
       const pane = tasksPane.mountTasksPane(document.querySelector("#tasks"), {
-        deviceId: "dev-1", projectId: "proj-1", projectKey: "dev-1|proj-1", view,
+        deviceId: "dev-1", projectId: "proj-1", projectKey: "dev-1/proj-1", view,
         feed: () => feed, callRpc: () => new Promise(() => {}),
         catalog: () => ({ providers: [] }), refreshCatalog: async () => ({ providers: [] }), navigate: () => {},
       });
@@ -62,9 +62,10 @@ it("opens each unwatched identity from mounted task, list, board and notice, the
       taskPage: "src/core/trackerTaskPage.js",
       tasksPane: "src/core/trackerTasksPane.js",
       notice: "src/core/trackerNotice.js",
+      references: "src/core/referenceIndex.js",
     }, basePath);
     await page.evaluate(async (fixture) => {
-      const { cache, taskPage, tasksPane, notice } = window.__layoutModules;
+      const { cache, taskPage, tasksPane, notice, references } = window.__layoutModules;
       const agentId = "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E";
       const workspaceId = "ws-3f2a91c4";
       const actor = { kind: "agent", agent_id: agentId };
@@ -78,10 +79,13 @@ it("opens each unwatched identity from mounted task, list, board and notice, the
         { type: "event", id: "te-mounted", kind: "assigned", actor: { kind: "user" }, payload: { assignee: actor }, at: "2026-09-23T19:01:00Z" },
         { type: "event", id: "te-dispatched", kind: "dispatched", actor: { kind: "user" }, payload: { agent_id: agentId }, at: "2026-09-23T19:02:00Z" },
       ];
-      const feed = { projects: [{ id: "proj-1", name: "Build", projectKey: "dev-1|proj-1" }],
+      const feed = { projects: [{ id: "proj-1", name: "Build", projectKey: "dev-1/proj-1" }],
         workspaces: [{ id: workspaceId, workspace_id: workspaceId, name: "spa-flaky-tests",
-          projectKey: "dev-1|proj-1", entity_id: "run-unwatched" }], items: [] };
-      const common = { deviceId: "dev-1", projectId: "proj-1", projectKey: "dev-1|proj-1",
+          projectKey: "dev-1/proj-1", entity_id: "run-unwatched", deviceId: "dev-1", project_id: "proj-1" }], items: [] };
+      // The app fills the reference index from this same feed
+      // (core/referenceIndexFeed.js, #229); nothing here starts that feed.
+      references.holdReferenceSources({ feed, tasks: {} });
+      const common = { deviceId: "dev-1", projectId: "proj-1", projectKey: "dev-1/proj-1",
         feed: () => feed, callRpc: async (method) => method === "tasks.get" ? { task, timeline }
           : method === "tasks.list" ? { tasks: [task], columns: [] } : {},
         catalog: () => ({ providers: [] }), refreshCatalog: async () => ({ providers: [] }), navigate: () => {} };
@@ -98,7 +102,7 @@ it("opens each unwatched identity from mounted task, list, board and notice, the
         }, { place: common, projectName: "Build", workspaces: feed.workspaces });
       };
       renderNotice();
-      window.__identityMounted = { feed, page, list, board, renderNotice };
+      window.__identityMounted = { feed, page, list, board, renderNotice, references };
     }, answer);
 
     await page.waitForFunction(() => document.querySelector("#task .task-comment .task-entry-head a[href*='agent=']") &&
@@ -117,6 +121,7 @@ it("opens each unwatched identity from mounted task, list, board and notice, the
     await page.evaluate(() => {
       const mounted = window.__identityMounted;
       mounted.feed.workspaces = [];
+      mounted.references.holdReferenceSources({ feed: { ...mounted.feed }, tasks: {} });
       mounted.page.feedMoved();
       mounted.list.feedMoved();
       mounted.board.feedMoved();

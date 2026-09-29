@@ -23,6 +23,7 @@
 // Pure: no DOM, no app imports.
 
 import { esc } from "./text.js";
+import { markdownHtml } from "./markdown.js";
 import { hashFromRoute } from "./router.js";
 import { taskLinkRows } from "./trackerLinks.js";
 
@@ -59,9 +60,13 @@ function cardLinksHtml(envelope, place) {
 
 /** The task's body, shut or open as the caller measured it, with the caller's
  *  press under it. The fold is a class on the body and the press names what it
- *  controls, which is the whole of how `wireThreadArrivals` reaches it. */
-const foldHtml = (body, { bodyId = "", folded = false, pressHtml = "" }) =>
-  `<div class="thread-task-body${folded ? " thread-arrival-folded" : ""}"${bodyId ? ` id="${esc(bodyId)}"` : ""}><span class="thread-task-text">${esc(body)}</span></div>
+ *  controls, which is the whole of how `wireThreadArrivals` reaches it. The
+ *  body is markdown like every other body, through the one renderer (#229):
+ *  it was escaped prose, so a task's headings, lists and references read as
+ *  their marks on the card and as a document on the task's own page. */
+const foldHtml = (body, { bodyId = "", folded = false, pressHtml = "", place = null }) =>
+  // markdownHtml escapes all input before adding its fixed safe tag set.
+  `<div class="thread-task-body${folded ? " thread-arrival-folded" : ""}"${bodyId ? ` id="${esc(bodyId)}"` : ""}><div class="thread-task-text markdown">${markdownHtml(body, { place })}</div></div>
     ${pressHtml || ""}`;
 
 /**

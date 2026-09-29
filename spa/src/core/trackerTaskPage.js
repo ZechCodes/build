@@ -20,7 +20,6 @@ import {
   taskAddress,
   taskRecord,
   taskRecordAt,
-  tasksAddress,
   readTaskRecord,
   readTasksRecord,
   writeTaskRecord,
@@ -46,7 +45,7 @@ import {
   taskPageParts,
 } from "./trackerTaskRender.js";
 import { patchParts } from "./partPatch.js";
-import { referenceLinks } from "./referenceTargets.js";
+import { subscribeReferenceIndex } from "./referenceIndex.js";
 import { mountComposerAttachments } from "./composer.js";
 import { carriesTaskAttachments } from "./taskAttachments.js";
 import { carriesWatching, readThrough, watchStateOf } from "./trackerWatch.js";
@@ -87,7 +86,6 @@ export function mountTaskPage(host, options) {
     busy: false,
     sending: false,
     loaded: false,
-    tasks: [],
     disposed: false,
     picker: null,
     // The tray's entries are the VIEW's draft, not the DOM's: a bridge that
@@ -247,13 +245,6 @@ export function mountTaskPage(host, options) {
     deviceId: state.deviceId,
     projectId: state.projectId,
     projectName: projectName(state.feed(), state.projectKey),
-    refLinks: referenceLinks({
-      place: place(),
-      tasks: state.tasks,
-      workspaces: projectWorkspaces(),
-      agentGroups: groups(),
-      identities: state.task.identities || {},
-    }),
     rows: state.rows,
     unreadFrom,
     links: taskLinkRows(state.task, place(), state.feed()),
@@ -426,33 +417,19 @@ export function mountTaskPage(host, options) {
     ]);
     if (state.disposed) return;
     state.columns = columnsOf(list?.columns);
-    takeList(list);
     if (!cached?.task || state.task) return;
     take(cached, { live: false });
     reads.seen(at); // this copy is as old as the cache's stamp, not as old as now
     paint();
   }
 
-  /** The project's list, which is what a `#42` written in a comment is
-   *  resolved against (#63).
-   *
-   *  Kept up with rather than read once: this page is often the FIRST thing
-   *  opened on a device, and the list lands behind it — read once at mount, a
-   *  task number rendered as prose and stayed prose while the task it names
-   *  sat one press away. The record is the cache's own, so this costs a read
-   *  when the list moves and nothing at all when it does not. */
-  function takeList(list) {
-    const tasks = list?.tasks || [];
-    if (tasks.length === state.tasks.length && tasks.every((task, at) => task.id === state.tasks[at]?.id)) return false;
-    state.tasks = tasks;
-    return true;
-  }
-
-  const listWatcher = subscribeCache(tasksAddress(state.deviceId, state.projectId), async () => {
-    const list = await readTasksRecord(state.deviceId, state.projectId);
-    if (state.disposed) return;
-    if (takeList(list)) paint();
-  });
+  /** What a reference written on this page names is the shared index's
+   *  answer (core/referenceIndex.js, #229): the project's task list, the
+   *  feed's workspaces and agents, every project's. This page is often the
+   *  FIRST thing opened on a device and those land behind it, so a change that
+   *  could move an answer repaints — prose becomes a link while the reader
+   *  looks. The paint is part-patched, so nothing that did not move is touched. */
+  const referencesWatcher = subscribeReferenceIndex(() => paint());
 
   /** Detail writes are announcements, never payload delivery. Re-read the
    *  record they named and only then let it reach the renderer. */
@@ -710,7 +687,7 @@ export function mountTaskPage(host, options) {
       stopWaitingForReader();
       watcher.dispose();
       taskWatcher?.();
-      listWatcher?.();
+      referencesWatcher();
       reads.dispose();
       unreadMarker.leave();
       unreadPill.dispose();

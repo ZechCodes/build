@@ -182,6 +182,10 @@ describe("mounted task identity links", () => {
       timeline: [{ type: "comment", id: "tc-unwatched", author: agent,
         body: "I can take this.", created_at: "2026-09-19T10:12:00Z" }],
     } : {});
+    // What a reference in the body names comes off the index the app fills
+    // from this same feed (core/referenceIndexFeed.js, #229).
+    const index = await import("../src/core/referenceIndex.js");
+    index.holdReferenceSources({ feed, tasks: {} });
     await mount({}, { waitForPaint: false });
     await vi.waitFor(() => expect(host.querySelector(".task-comment .task-entry-head a[href*='agent=']")).not.toBeNull());
     expect(host.querySelector(".task-page-body a[href*='agent=']")).not.toBeNull();
@@ -189,6 +193,7 @@ describe("mounted task identity links", () => {
     expect(host.querySelector(".task-links a[href*='workspace']")).not.toBeNull();
 
     feed.workspaces = [];
+    index.holdReferenceSources({ feed: { ...feed }, tasks: {} });
     page.feedMoved();
     expect(host.querySelector(".task-comment .task-entry-head a[href*='agent=']")).toBeNull();
     expect(host.querySelector(".task-page-body a[href*='agent=']")).toBeNull();

@@ -39,7 +39,8 @@
 /// here — that is a line-level rule and this runs inline.
 const TASK = /(^|[^\w#&])#(\d+)(?:\/c\/([A-Za-z0-9_-]+))?\b/g;
 
-/// A workspace or an agent: `@workspace:<name or id>`, `@agent:<id>`.
+/// A workspace, an agent or a project: `@workspace:<name or id>`,
+/// `@agent:<id>`, `@project:<name or id>` (#229).
 ///
 /// The keyword and the colon are what keep this clear of email (no leading
 /// `@`) and of npm scopes (a slash, no colon). The value runs to whitespace or
@@ -51,7 +52,14 @@ const TASK = /(^|[^\w#&])#(\d+)(?:\/c\/([A-Za-z0-9_-]+))?\b/g;
 /// the end of the word, so the reference named "build." and nothing answered
 /// for it (#63).
 const NAME = "[A-Za-z0-9_-]+(?:[.][A-Za-z0-9_-]+)*";
-const NAMED = new RegExp(`(^|[^\\w@/])@(workspace|agent):(${NAME})`, "g");
+const NAMED = new RegExp(`(^|[^\\w@/])@(workspace|agent|project):(${NAME})`, "g");
+
+/// What each `@` keyword names, as the fields a caller reads.
+const NAMED_FIELDS = {
+  workspace: (name) => ({ kind: "workspace", name }),
+  agent: (id) => ({ kind: "agent", id }),
+  project: (name) => ({ kind: "project", name }),
+};
 
 /// Something inside a workspace: `[[<workspace>:<path>]]`, with an optional
 /// `#L10` or `#L10-L20`.
@@ -59,6 +67,11 @@ const NAMED = new RegExp(`(^|[^\\w@/])@(workspace|agent):(${NAME})`, "g");
 /// `[[…]]` is free by construction: this renderer has no link syntax of its
 /// own, and double brackets are not CommonMark either. Both sides of the colon
 /// must carry something, so `[[a.js]]` and `[[ws:]]` are not references.
+///
+/// The left side may say which source directory of a workspace it means —
+/// `[[<workspace>/<directory>:<path>]]` (#229). It is read whole here: a
+/// workspace's name is the user's own text and may hold a slash, so which slash
+/// splits it is the resolver's question (core/referenceTargets.js).
 const BRACKETED = /\[\[([^\]:[]+):([^\]]+)\]\]/g;
 
 /// The line a bracketed reference ends on, if any. A range opens at its start:
@@ -114,8 +127,7 @@ export function referencesIn(text) {
   const source = text || "";
   const found = [
     ...matchesOf(source, TASK, (match) => ({ kind: "task", number: Number(match[2]), ...(match[3] ? { commentId: match[3] } : null) })),
-    ...matchesOf(source, NAMED, (match) =>
-      match[2] === "workspace" ? { kind: "workspace", name: match[3] } : { kind: "agent", id: match[3] }),
+    ...matchesOf(source, NAMED, (match) => NAMED_FIELDS[match[2]](match[3])),
     ...matchesOf(source, BRACKETED, (match) => bracketed(match[1].trim(), match[2].trim()), { boundary: false }),
   ].sort((one, other) => one.start - other.start);
   return found.map((reference) => ({ ...reference, raw: source.slice(reference.start, reference.end) }));

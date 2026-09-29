@@ -1,7 +1,8 @@
 import { agentName } from "./agentName.js";
 import { isAgentMessage } from "./unreadAnchor.js";
 import { esc } from "./text.js";
-import { renderMarkdown } from "./markdown.js";
+import { markdownHtml } from "./markdown.js";
+import { referenceIndexVersion } from "./referenceIndex.js";
 import { conversationRoute, hashFromRoute } from "./router.js";
 import { RENDERED_FOLD_ATTRIBUTE, patchElement, patchInnerHtml } from "./domPatch.js";
 import { patchList } from "./patchList.js";
@@ -849,14 +850,14 @@ function messageCardHtml(message, agentLabel, context) {
   // What marks a message is `outcome` — the whole record of a reported outcome.
   // The body IS the report: the agent's `done` summary, in markdown, which is
   // why no card of lists sits under it any more.
-  // renderMarkdown escapes all input before adding its fixed safe tag set.
+  // markdownHtml escapes all input before adding its fixed safe tag set.
   return `
       ${outcomeMarkerHtml(message.outcome, agentLabel)}
       ${resolvedRevisionHtml(message)}
       ${anchorLabel(message.anchor)}
       ${messageContextHtml(message)}
       ${handedTaskHtml(message, context)}
-      ${body ? `<div class="thread-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(body, { links: context.refLinks })}</div>` : ""}
+      ${body ? `<div class="thread-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ markdownHtml(body, { place: context.place })}</div>` : ""}
       ${attachmentsHtml(message.attachments, threadState)}
       ${linksHtml(message.links)}
       ${optionsHtml(message, live, offer, threadState)}
@@ -944,19 +945,19 @@ const sentPressHtml = (key, bodyId, open, preview) =>
 ///
 /// Open, the second line is the press that shuts it again rather than the first
 /// line a second time: the body underneath already starts with those words.
-function sentMessageHtml(message, { place, threadState, refLinks }) {
+function sentMessageHtml(message, { place, threadState }) {
   const key = messageKey(message);
   const bodyId = `thread-sent-${esc(key)}`;
   const open = threadState.sentIsOpen(key);
   const body = String(message.body || "");
-  // renderMarkdown escapes all input before adding its fixed safe tag set.
+  // markdownHtml escapes all input before adding its fixed safe tag set.
   return `<article class="thread-message thread-sent"${sequenceAttribute(message)}>
     <div class="thread-sent-head">
       <span class="thread-sent-label">Sent a message to ${conversationLinksHtml(message.sent_to, place, "thread-sent")}</span>
       ${timeHtml(message.created_at)}
     </div>
     ${sentPressHtml(key, bodyId, open, firstLine(body).trim())}
-    <div class="thread-body markdown" id="${bodyId}"${open ? "" : " hidden"}>${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(body, { links: refLinks })}</div>
+    <div class="thread-body markdown" id="${bodyId}"${open ? "" : " hidden"}>${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ markdownHtml(body, { place })}</div>
   </article>`;
 }
 
@@ -998,7 +999,7 @@ function noticeMessageHtml(message, context) {
   }
   return row(`<details class="thread-notice-more">
       <summary class="thread-task-notice"><span class="thread-task-said">${esc(summary)}</span></summary>
-      <div class="thread-notice-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(message.body || "", { links: context.refLinks })}</div>
+      <div class="thread-notice-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ markdownHtml(message.body || "", { place: context.place })}</div>
     </details>`);
 }
 
@@ -1272,15 +1273,15 @@ function toolOutcomeHtml(outcome) {
 /// IS its content — the same line the collapsed run shows, through the same
 /// `activityMeat` — with the kind on the icon for a reader who cannot see it,
 /// and the mark riding the content it is a fact about.
-function activityHtml(event, meta, agentLabel, foldedChildrenHtml = "") {
+function activityHtml(event, meta, agentLabel, foldedChildrenHtml, place) {
   const summary = String(event.summary || "").trim();
   const sequence = sequenceAttribute(event);
   const head = `<span class="thread-event-icon" role="img" aria-label="${esc(eventLabel(meta, agentLabel))}">${esc(meta.icon)}</span>
     <span class="thread-activity-preview">${esc(activityMeat(event, meta, agentLabel))}</span>
     ${toolOutcomeHtml(event.outcome)}
     ${timeHtml(event.created_at)}`;
-  // renderMarkdown escapes all input before adding its fixed safe tag set.
-  const body = `${summary ? `<div class="thread-event-detail">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(summary)}</div>` : ""}${linksHtml(event.links)}${foldedChildrenHtml}`;
+  // markdownHtml escapes all input before adding its fixed safe tag set.
+  const body = `${summary ? `<div class="thread-event-detail">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ markdownHtml(summary, { place })}</div>` : ""}${linksHtml(event.links)}${foldedChildrenHtml}`;
   if (!body) return `<div class="thread-event thread-activity thread-quiet-row"${sequence}>${head}</div>`;
   return `<details class="thread-event thread-activity thread-quiet-row"${sequence}>
     <summary class="thread-activity-head">${head}</summary>
@@ -1528,15 +1529,15 @@ function foldActivityRuns(rows, digests, view) {
 }
 
 // eslint-disable-next-line complexity -- ratchet: eventHtml is at 11, cap 10 — reduce it, then drop this line
-function eventHtml(event, agentLabel = "Agent", foldedChildrenHtml = "") {
+function eventHtml(event, agentLabel = "Agent", foldedChildrenHtml = "", place = null) {
   const meta = EVENT_META[event.event] || { label: String(event.event || "event").replaceAll("_", " "), icon: "•" };
-  if (meta.activity) return activityHtml(event, meta, agentLabel, foldedChildrenHtml);
+  if (meta.activity) return activityHtml(event, meta, agentLabel, foldedChildrenHtml, place);
   const label = event.event === "compaction" && event.summary
     ? event.summary
     : eventLabel(meta, agentLabel);
   const detail = event.revision_id
     ? `<button class="thread-revision-link" data-revision="${esc(event.revision_id)}">${esc(event.revision_id)}</button>`
-    : event.event !== "done" && event.event !== "compaction" && event.summary ? renderMarkdown(event.summary) : "";
+    : event.event !== "done" && event.event !== "compaction" && event.summary ? markdownHtml(event.summary, { place }) : "";
   return `<div class="thread-event ${meta.tone || ""}">
     <span class="thread-event-icon" aria-hidden="true">${esc(meta.icon)}</span>
     <div class="thread-event-content"><div><strong>${esc(label)}</strong> ${timeHtml(event.created_at)}</div>${detail ? `<div class="thread-event-detail">${detail}</div>` : ""}${linksHtml(event.links)}</div>
@@ -1553,7 +1554,7 @@ const TOOL_CALL_KIND = "tool_use";
 /// sees is one row and several. Every reading comes from the same parent map:
 /// the html of what folds under a row, the rows that row stands for, and the
 /// calls among them.
-function threadFolding(items, agentLabel) {
+function threadFolding(items, agentLabel, place) {
   const eventItems = items.filter((item) => item.type !== "message");
   const sequenceOf = (item) => (item.data || {}).sequence;
   const parentSequenceOf = (item) => (item.data || {}).parent_sequence;
@@ -1575,7 +1576,7 @@ function threadFolding(items, agentLabel) {
     if (!children || alreadyDrawn.has(sequence)) return "";
     const drawn = new Set([...alreadyDrawn, sequence]);
     return `<div class="thread-activity-children">${children
-      .map((child) => eventHtml(child.data || {}, agentLabel, foldedChildrenHtmlOf(sequenceOf(child), drawn)))
+      .map((child) => eventHtml(child.data || {}, agentLabel, foldedChildrenHtmlOf(sequenceOf(child), drawn), place))
       .join("")}</div>`;
   };
   /// A row and everything folded under it, at every depth, each visited once
@@ -1615,7 +1616,7 @@ function threadFolding(items, agentLabel) {
     }
     return at;
   };
-  return { foldedItems, foldedChildrenHtmlOf, rowsUnder, toolCallsUnder, ownerSequenceOf };
+  return { foldedItems, foldedChildrenHtmlOf, rowsUnder, toolCallsUnder, ownerSequenceOf, place };
 }
 
 export function revealThreadSequence(scroller, sequence) {
@@ -1658,7 +1659,7 @@ function activityRow(item, index, agentLabel, folding) {
   const meta = activityMetaOf(event);
   const row = withLazyHtml(
     { key: rowKey(event, index), item },
-    () => eventHtml(event, agentLabel, folding.foldedChildrenHtmlOf(event.sequence)),
+    () => eventHtml(event, agentLabel, folding.foldedChildrenHtmlOf(event.sequence), folding.place),
   );
   if (!meta) return row;
   return Object.assign(row, {
@@ -1689,12 +1690,12 @@ const drawsNoRow = (message) =>
   // would be the same words a second time.
   || !!message.answers_options_of;
 
-function messageRow(item, index, agentLabel, { threadId, spoken, threadState, place, agentLabels, refLinks }) {
+function messageRow(item, index, agentLabel, { threadId, spoken, threadState, place, agentLabels }) {
   const message = item.data || {};
   if (drawsNoRow(message)) return [];
   const offer = offerKey(threadId, message.id);
   const live = spoken && !threadState.isSending(offer);
-  const context = { live, offer, threadState, place, agentLabels, refLinks };
+  const context = { live, offer, threadState, place, agentLabels };
   return [withLazyHtml({ key: rowKey(message, index), item }, () => messageHtml(message, agentLabel, context))];
 }
 
@@ -1706,15 +1707,15 @@ function messageRow(item, index, agentLabel, { threadId, spoken, threadState, pl
 /// and for the children of an open run, so a fetched run's rows are the rows
 /// the window would have drawn for the same items.
 function timelineRowsOf(sourceItems, agentLabel, threadId, view) {
-  return rowsOfTimeline(timelineOf(sourceItems, agentLabel), 0, threadId, view);
+  return rowsOfTimeline(timelineOf(sourceItems, agentLabel, view.place), 0, threadId, view);
 }
 
 /// The items that stand as rows of their own, read without drawing any: what
 /// is left once startup noise is dropped and the rows folded under the call
 /// that spawned them are taken out.
-function timelineOf(sourceItems, agentLabel) {
+function timelineOf(sourceItems, agentLabel, place) {
   const items = sourceItems.filter((item) => !isStartupEvent(item));
-  const folding = threadFolding(items, agentLabel);
+  const folding = threadFolding(items, agentLabel, place);
   const topLevelItems = items.filter((item) => !folding.foldedItems.has(item));
   // Which message may still be answered with a chip: the last one said, and
   // only that one. An event between it and now changes nothing — a commit
@@ -1727,11 +1728,11 @@ function timelineOf(sourceItems, agentLabel) {
 /// each item sits in the whole timeline, so a row drawn from a slice is the row
 /// the whole would have drawn.
 function rowsOfTimeline({ agentLabel, folding, topLevelItems, lastSpoken }, from, threadId, view) {
-  const { threadState, place, agentLabels, refLinks } = view;
+  const { threadState, place, agentLabels } = view;
   return topLevelItems.slice(from).flatMap((item, offset) => {
     const index = from + offset;
     return item.type === "message"
-      ? messageRow(item, index, agentLabel, { threadId, spoken: index === lastSpoken, threadState, place, agentLabels, refLinks })
+      ? messageRow(item, index, agentLabel, { threadId, spoken: index === lastSpoken, threadState, place, agentLabels })
       : [activityRow(item, index, agentLabel, folding)];
   });
 }
@@ -1831,10 +1832,6 @@ export function timelineEntries(
     // tracking notice's "X did Y" — and X has to be a name the reader knows.
     agentLabels = {},
     workspaces,
-    // What a written reference points at (core/referenceTargets.js): the
-    // resolver #56 left injectable, so `#42` and `@workspace:build` in a
-    // message open the thing they name. None, and they stay prose (#63).
-    refLinks = null,
     hiddenByLevel = 0,
     // How much of the conversation to draw (core/timelineSlice.js): none draws
     // all of it, which is what every surface but the agent panel asks for.
@@ -1848,14 +1845,13 @@ export function timelineEntries(
     agentLabel,
     agentLabels,
     workspaces,
-    refLinks,
     threadId,
     threadState,
     place,
     openRuns: openRuns || NO_RUNS_OPEN,
     runItemsOf: runItemsOf || noRunItems,
   };
-  const timeline = timelineOf(sourceItems, agentLabel);
+  const timeline = timelineOf(sourceItems, agentLabel, place);
   const { spans, rows } = entrySpansOf(timeline.topLevelItems);
   // The slice is cut before anything is drawn, so the rows above it cost
   // nothing: no markup, and no reading of what each one says (#158).
@@ -2068,8 +2064,12 @@ export function chatPaintFingerprint({
     // rename has to repaint a line that is already on screen.
     agentLabels || "",
     // What the reference resolver can answer for (#63). The list lands after
-    // the first paint, and when it does, prose becomes links.
+    // the first paint, and when it does, prose becomes links. The rail's own
+    // signature of its project, until #231 retires it for the index's version
+    // beside it — which covers every project, so a reference to another
+    // project's workspace repaints on the next paint the rail asks for (#229).
     refLinks || "",
+    referenceIndexVersion(),
     // How much of the conversation the panel draws (core/timelineSlice.js): a
     // reader asking for more changes nothing else here.
     slice || "",

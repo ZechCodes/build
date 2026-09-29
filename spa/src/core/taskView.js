@@ -22,7 +22,7 @@
 import { el } from "../dom.js";
 import { esc } from "./text.js";
 import { createAgentSelection } from "./agentSelection.js";
-import { renderMarkdown } from "./markdown.js";
+import { markdownHtml } from "./markdown.js";
 import { initPaneDrawer, paneDrawerHtml } from "./paneDrawer.js";
 import { notifyError } from "./notify.js";
 import { planDocPaneState, shouldFetchPlanDoc } from "./taskActions.js";
@@ -261,7 +261,7 @@ export function mountTaskView(
       hasContents: Boolean(singleDoc),
     });
     viewerHost.innerHTML = `<div class="plan${state === "ready" ? " markdown" : ""}" id="stagedoc">${
-      state === "ready" ? renderMarkdown(singleDoc)
+      state === "ready" ? markdownHtml(singleDoc, { place: { deviceId, projectId: project } })
       : state === "unavailable" ? `<div class="plan-empty">${esc(DOCS_UNAVAILABLE)}</div>`
       : state === "error" ? docErrorPaneHtml("plan")
       : '<div class="plan-loading">✦ loading the plan…</div>'
@@ -276,7 +276,7 @@ export function mountTaskView(
   };
 
   const docHtmlFor = (state) => {
-    if (state === "ready") return renderMarkdown(docContents());
+    if (state === "ready") return markdownHtml(docContents(), { place: { deviceId, projectId: project } });
     if (state === "unavailable") return `<div class="plan-empty">${esc(DOCS_UNAVAILABLE)}</div>`;
     if (state === "error") return docErrorPaneHtml("stage");
     return '<div class="plan-loading">✦ loading stage document…</div>';

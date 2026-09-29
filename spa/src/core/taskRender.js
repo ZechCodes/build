@@ -11,6 +11,7 @@
 
 import "../styles/surfaces.css";
 import { esc } from "./text.js";
+import { markdownHtml } from "./markdown.js";
 import { anchorLocationLabel, slugifyHeading } from "./anchors.js";
 import { PLAN_STATE_LABEL, planChipClass, RUN_STATE_LABEL, runChipClass } from "./entityPresentation.js";
 import { STAGE_STATE_LABEL, stageStateToken, stageStateChipClass, stageNeighbors } from "./taskModel.js";
@@ -105,7 +106,7 @@ export function docCommentCardHtml(comment) {
   const reply = addressed && comment.agent_reply ? `<div class="cc-reply"><span class="cc-reply-k">agent</span> ${esc(comment.agent_reply)}</div>` : "";
   return `<div class="commentcard${addressed ? " addressed" : ""}" data-id="${esc(comment.id)}">
     ${commentAnchorHtml(comment.anchor, comment.path)}
-    <span class="cc-body">${esc(comment.body || "")}</span>
+    <span class="cc-body">${markdownHtml(comment.body || "", { mode: "inline" })}</span>
     ${reply}</div>`;
 }
 

@@ -596,7 +596,9 @@
 /* The task's own body, folded to five lines until it is asked for: a hand-off
    carries the whole task, and the whole task is not what the next line of the
    conversation is about. */
-.thread-task-body { font-size:12px; color:var(--ink2); white-space:pre-wrap; }
+.thread-task-body { font-size:12px; color:var(--ink2); }
+.thread-task-text > :first-child { margin-top:0; }
+.thread-task-text > :last-child { margin-bottom:0; }
 /* The fold is the arrival fold — same class, same length, same press
    (core/thread.js) — over the task's own body rather than over a card. */
 .thread-task-body.thread-arrival-folded .thread-task-text {

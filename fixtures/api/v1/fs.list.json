@@ -18,6 +18,7 @@
     ]
   },
   "errors": [
+    "not_found",
     "invalid_params",
     "internal"
   ]

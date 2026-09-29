@@ -618,7 +618,10 @@ describe("one selection in one panel (#148)", () => {
   const atWidth = (width) => Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
   const control = (which) => railHost().querySelector(
     which === "overview" ? '[data-bubble="overview"]' : which === "add" ? '[data-bubble="add"]' : `[data-agent="${which}"]`);
+  // A bubble is painted off the row's cache record: wait for it, not a count
+  // of turns after mount.
   const press = async (which) => {
+    await vi.waitFor(() => expect(control(which)).toBeTruthy());
     control(which).click();
     await flush();
   };

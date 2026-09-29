@@ -34,6 +34,21 @@ describe("what a reference is", () => {
       .toEqual([["agent", "agent-01M2ZQ"]]);
   });
 
+  // #229: a project is named the way a workspace is.
+  it("reads a project by name or id", () => {
+    expect(found("filed on @project:Skrift, and @project:proj-2.").map((r) => [r.kind, r.name]))
+      .toEqual([["project", "Skrift"], ["project", "proj-2"]]);
+  });
+
+  // #229: a workspace with several source directories names the one it means
+  // after a slash, inside the brackets. What the slash splits is the
+  // resolver's to decide — a workspace name may hold one — so this reads the
+  // whole of it as the workspace.
+  it("reads a directory-scoped place as one workspace field", () => {
+    expect(found("[[skrift-fixes/skrift:src/app.py#L3]]").map((r) => [r.kind, r.workspace, r.path, r.line]))
+      .toEqual([["file", "skrift-fixes/skrift", "src/app.py", 3]]);
+  });
+
   it("reads a file in a workspace", () => {
     expect(found("[[tasks-board:bridge/src/mcp.rs]]").map((r) => [r.kind, r.workspace, r.path]))
       .toEqual([["file", "tasks-board", "bridge/src/mcp.rs"]]);

@@ -29,8 +29,7 @@ import { approveDevice, fetchDownloads, lookupDevice, mintInstallCommand } from 
 import { currentPlatformKey } from "../core/platform.js";
 import { downloadsPlaceholderHtml, mountDownloads } from "../core/downloads.js";
 import { openAddDevice } from "../sheets/addDevice.js";
-import { startFeed, stopFeed, subscribeFeed } from "../core/taskFeed.js";
-import { feedReferenceIndex } from "../core/referenceIndexFeed.js";
+import { startFeed, stopFeed } from "../core/taskFeed.js";
 import { startCacheSync } from "../core/cacheSync.js";
 import { startGithubRepos } from "../core/githubRepos.js";
 import { initInboxRail } from "../core/inboxShell.js";
@@ -43,12 +42,6 @@ import { fieldTraits } from "../core/fieldTraits.js";
  *  what stops the feed). Without this the three-second watch below would stop
  *  and restart both of them on every tick it spends waiting for a machine. */
 let cacheReadersUp = false;
-
-/** The reference index's feed (#229), started with the first cache readers and
- *  kept: it is a listener on the feed and on task-list records, so it reads
- *  nothing of its own while the feed is stood down, and what it last held is
- *  what the cache last said. */
-let referenceIndexUp = false;
 
 // The gate screens are self-contained — body.gated hides the inbox rail (and
 // its reopen toggle), the toolbar, the agent rail and the console via CSS while
@@ -84,7 +77,6 @@ function startCacheReaders() {
  *  nothing, so the cache is filled again rather than trusted. */
 function restartCacheReaders() {
   cacheReadersUp = true;
-  if (!referenceIndexUp) referenceIndexUp = Boolean(feedReferenceIndex({ subscribeFeed }));
   startCacheSync();
   void startGithubRepos();
   return startFeed();

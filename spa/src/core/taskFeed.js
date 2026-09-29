@@ -29,6 +29,7 @@ import { mergeFeeds, withoutProject } from "./feedMerge.js";
 import { syncDevice } from "./cacheSync.js";
 import { DEVICES_ADDRESS, readCached, subscribeCache } from "./localCache.js";
 import { isAtLeastAsFresh, withCacheFreshness } from "./cacheFreshness.js";
+import { feedReferenceIndex } from "./referenceIndexFeed.js";
 
 const subscribers = new Set();
 const byDevice = new Map(); // deviceId → that device's last snapshot
@@ -189,12 +190,25 @@ async function watchKnownDevices() {
   return Promise.all(ids.map((deviceId) => watchDevice(deviceId)));
 }
 
+/** Whether the reference index (core/referenceIndex.js) is being filled from
+ *  this feed (#229). Started with the first feed and kept: it is a listener
+ *  on the snapshots delivered here and on the task lists' records, so it reads
+ *  nothing of its own while the feed is stood down, and what it last held is
+ *  what the cache last said. */
+let referenceIndexFed = false;
+function startReferenceIndex() {
+  if (referenceIndexFed) return;
+  referenceIndexFed = true;
+  feedReferenceIndex({ subscribeFeed });
+}
+
 /** Start reading the cache. Answers when every known device's records have been
  *  read, so a caller painting a shell off disk can put the rail's rows in the
  *  same frame as the shell. */
 export function startFeed() {
   stopFeed();
   running = true;
+  startReferenceIndex();
   unwatchDevices = subscribeCache(DEVICES_ADDRESS, () => void watchKnownDevices());
   liveContexts().forEach((context) => watchDevice(context.deviceId));
   return watchKnownDevices();

@@ -16,9 +16,11 @@ import { esc } from "./text.js";
 import { workspaceDisplayName } from "./workspaceModel.js";
 import { tasksAddress } from "./trackerCache.js";
 import { assignedTo, isFinished } from "./trackerAgentTasks.js";
-import { plainPreview } from "./previewText.js";
+import { markdownHtml } from "./markdown.js";
 import { ICON_CHEVRON_RIGHT, ICON_EYE_OFF } from "./icons.js";
 
+/** One line of what an agent said, through the one renderer (#229). */
+const plainPreview = (text) => markdownHtml(text, { mode: "plain" });
 const newest = (items, predicate) => [...items].reverse().find(predicate);
 const isMessage = (item) => item?.type === "message";
 const sequence = (item) => Number(item?.data?.sequence) || 0;

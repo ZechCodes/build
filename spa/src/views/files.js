@@ -43,7 +43,7 @@ import {
   wholeBytesPainter,
   wholeTextPainter,
 } from "../core/pagedFileView.js";
-import { renderMarkdown } from "../core/markdown.js";
+import { markdownHtml } from "../core/markdown.js";
 import { langForPath } from "../core/highlight.js";
 import { initPaneDrawer, paneDrawerHtml } from "../core/paneDrawer.js";
 import { isDotenvPath, renderDotenvSourceHtml, SPOILER_DOTS } from "../core/secrets.js";
@@ -143,7 +143,7 @@ function previewBodyHtml(path, file, showSource) {
     if (mode === "binary" || mode === "toolarge") return sizePlaceholder(mode, file.size);
     return `${sourcePreviewHtml(path, decodeBase64Text(file.content_b64))}${truncNotice}`;
   }
-  if (mode === "markdown") return `<div class="plan">${renderMarkdown(decodeBase64Text(file.content_b64))}</div>${truncNotice}`;
+  if (mode === "markdown") return `<div class="plan">${markdownHtml(decodeBase64Text(file.content_b64))}</div>${truncNotice}`;
   if (mode === "html") return `<iframe class="fhtml" sandbox="" src="data:text/html;base64,${file.content_b64}"></iframe>`;
   if (mode === "svg") return '<img class="fimg" alt="">';
   if (mode === "image") return '<img class="fimg" alt="" style="max-width:100%">';

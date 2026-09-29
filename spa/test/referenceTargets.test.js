@@ -13,9 +13,10 @@
 // EXPLAINS this syntax is mostly examples, and they have to read as what an
 // agent should type.
 
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { referenceLinks } from "../src/core/referenceTargets.js";
-import { renderMarkdown } from "../src/core/markdown.js";
+import { markdownHtml } from "../src/core/markdown.js";
+import { holdReferenceSources } from "../src/core/referenceIndex.js";
 import { threadHtml } from "../src/core/thread.js";
 import { taskPageHtml } from "../src/core/trackerTaskRender.js";
 
@@ -62,32 +63,39 @@ describe("what a reference names", () => {
   });
 
   it("leaves a deleted project agent's prose reference without a destination", () => {
-    const refLinks = referenceLinks({ place, identities: {
-      "project-01M2SCB": { agent_id: "project-01M2SCB", available: false },
-    } });
-    const html = threadHtml(
-      { id: "c-1", items: [{ type: "message", data: { id: "m-1", sequence: 1,
-        role: "agent", body: "Ask @agent:project-01M2SCB." } }] },
-      { place, refLinks },
-    );
-    expect(refLinks.agent("project-01M2SCB")).toBeNull();
+    const identities = { "project-01M2SCB": { agent_id: "project-01M2SCB", available: false } };
+    holdReferenceSources({ feed: { projects: [], workspaces, items: [] }, tasks: {} });
+    const html = markdownHtml("Ask @agent:project-01M2SCB.", { place, identities });
+    holdReferenceSources({});
     expect(anchors(html)).toEqual([]);
     expect(hostOf(html).textContent).toContain("@agent:project-01M2SCB");
   });
 });
 
-// Every form, through the renderer the surfaces call.
+// Every form, through the surfaces — which since #229 all ask the one index
+// (core/referenceIndex.js) rather than a resolver each was handed.
 const FORMS = [
-  { name: "a task", wrote: "Rolled #42 this morning.", reads: "#42" },
-  { name: "a workspace", wrote: "Cut on @workspace:tasks-spa.", reads: "@workspace:tasks-spa" },
-  { name: "an agent", wrote: "Handed to @agent:agent-01M2A.", reads: "@agent:agent-01M2A" },
-  { name: "a file", wrote: "See [[tasks-spa:spa/src/core/thread.js#L42]].", reads: "[[tasks-spa:spa/src/core/thread.js#L42]]" },
+  { name: "a task", wrote: "Rolled #42 this morning.", reads: "#42 Tasks list shows open tasks by default" },
+  { name: "a workspace", wrote: "Cut on @workspace:tasks-spa.", reads: "tasks-spa" },
+  { name: "an agent", wrote: "Handed to @agent:agent-01M2A.", reads: "tasks-spa · Agent 1" },
+  { name: "a file", wrote: "See [[tasks-spa:spa/src/core/thread.js#L42]].", reads: "spa/src/core/thread.js:42" },
 ];
 
+const indexed = () => holdReferenceSources({
+  feed: {
+    projects: [{ id: "proj-1", deviceId: "dev-1", projectKey: "dev-1/proj-1", name: "Build" }],
+    workspaces,
+    items: [{ projectKey: "dev-1/proj-1", entity_id: "ws-1", agents: [{ id: "agent-01M2A" }] }],
+  },
+  tasks: { "dev-1/proj-1": tasks },
+});
+
 describe("a reference in a chat message", () => {
+  beforeEach(indexed);
+  afterEach(() => holdReferenceSources({}));
   const said = (body) => threadHtml(
     { id: "c-1", items: [{ type: "message", data: { id: "m-1", sequence: 1, role: "agent", body } }] },
-    { place, refLinks: links() },
+    { place },
   );
 
   for (const { name, wrote, reads } of FORMS) {
@@ -98,11 +106,12 @@ describe("a reference in a chat message", () => {
     });
   }
 
-  it("leaves a reference nothing answers for as the words that were typed", () => {
+  it("marks a reference the index looked for and did not find, as the words that were typed", () => {
     const html = said("Try @workspace:no-such-workspace and #9999.");
     expect(anchors(html)).toEqual([]);
     expect(hostOf(html).textContent).toContain("@workspace:no-such-workspace");
     expect(hostOf(html).textContent).toContain("#9999");
+    expect(hostOf(html).querySelectorAll(".md-ref-missing")).toHaveLength(2);
   });
 
   // A message explaining the syntax is mostly examples.
@@ -112,21 +121,32 @@ describe("a reference in a chat message", () => {
     expect(hostOf(html).querySelector("code").textContent).toBe("#42");
   });
 
-  it("expands nothing at all when the surface passes no resolver", () => {
-    const html = threadHtml(
-      { id: "c-1", items: [{ type: "message", data: { id: "m-1", sequence: 1, role: "agent", body: "Rolled #42." } }] },
-      { place },
-    );
-    expect(anchors(html)).toEqual([]);
+  // #229: the screenshot. A Skrift agent's message named a workspace of its
+  // own project; it did resolve, but read as its own brackets in body colour.
+  it("labels a commit by its workspace and short SHA, the brackets on the hover", () => {
+    const [anchor] = anchors(said("Ready at [[tasks-spa:commit:c9875571]], but held."));
+    expect(anchor.text).toBe("tasks-spa · c9875571");
+    expect(anchor.title).toContain("[[tasks-spa:commit:c9875571]]");
+  });
+
+  it("links a workspace of another project the account holds", () => {
+    holdReferenceSources({
+      feed: { projects: [], items: [], workspaces: [{ id: "ws-9", workspace_id: "ws-9", name: "skrift-0-2-1-validation", projectKey: "dev-1/proj-2" }] },
+      tasks: {},
+    });
+    const [anchor] = anchors(said("See [[skrift-0-2-1-validation:commit:c9875571]]."));
+    expect(anchor?.href).toContain("/project/proj-2/workspace/ws-9/");
   });
 });
 
 describe("a reference in a comment on the task page", () => {
+  beforeEach(indexed);
+  afterEach(() => holdReferenceSources({}));
   const task = { id: "task-1", number: 63, title: "A task", state: "open", status: "in_progress", labels: [], links: {} };
   const page = (body) => taskPageHtml(task, {
     columns: [], rows: [{ type: "comment", key: "c1", actor: { kind: "user" }, body, at: "2026-09-21T00:00:00Z" }],
     links: [], draft: "", labelsDraft: "", busy: false, sending: false,
-    agentLabels: {}, projectName: "Build", refLinks: links(),
+    agentLabels: {}, projectName: "Build", deviceId: "dev-1", projectId: "proj-1",
   });
 
   for (const { name, wrote, reads } of FORMS) {
@@ -137,29 +157,44 @@ describe("a reference in a comment on the task page", () => {
     });
   }
 
-  it("leaves an unknown workspace as text", () => {
+  it("leaves an unknown workspace unlinked", () => {
     expect(anchors(page("On @workspace:no-such-workspace."))).toEqual([]);
   });
 
   it("leaves a reference inside a code span literal", () => {
     expect(anchors(page("Write `@agent:agent-01M2A` to point at one."))).toEqual([]);
   });
+
+  // A task carries every actor on it; an agent the feed has lost is still
+  // named by the task's own identities.
+  it("resolves an agent through the task's identities", () => {
+    const html = taskPageHtml(task, {
+      columns: [], rows: [{ type: "comment", key: "c1", actor: { kind: "user" }, body: "Ask @agent:agent-XYZ.", at: "2026-09-21T00:00:00Z" }],
+      links: [], draft: "", labelsDraft: "", busy: false, sending: false,
+      agentLabels: {}, projectName: "Build", deviceId: "dev-1", projectId: "proj-1",
+      identities: { "agent-XYZ": { agent_id: "agent-XYZ", available: true, workspace_id: "ws-1", name: "Quill" } },
+    });
+    expect(anchors(html)[0]?.text).toBe("Quill");
+  });
 });
 
 describe("the task's own body", () => {
+  beforeEach(indexed);
+  afterEach(() => holdReferenceSources({}));
   const task = { id: "task-1", number: 63, title: "A task", state: "open", status: "in_progress", labels: [], links: {}, body: "Follows #42." };
   it("links what it names", () => {
     const html = taskPageHtml(task, {
       columns: [], rows: [], links: [], draft: "", labelsDraft: "", busy: false, sending: false,
-      agentLabels: {}, projectName: "Build", refLinks: links(),
+      agentLabels: {}, projectName: "Build", deviceId: "dev-1", projectId: "proj-1",
     });
-    expect(anchors(html)[0]?.text).toBe("#42");
+    expect(anchors(html)[0]?.text).toBe("#42 Tasks list shows open tasks by default");
   });
 });
 
-// The renderer's own contract, unchanged: no resolver, no expansion.
-describe("the renderer without a resolver", () => {
+// Before the index has read anything, every form is the words that were typed.
+describe("the renderer before the index is filled", () => {
   it("leaves every form as prose", () => {
-    for (const { wrote } of FORMS) expect(renderMarkdown(wrote)).not.toContain("<a ");
+    holdReferenceSources({});
+    for (const { wrote } of FORMS) expect(markdownHtml(wrote, { place })).not.toContain("<a ");
   });
 });

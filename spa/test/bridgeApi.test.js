@@ -102,6 +102,7 @@ describe("adapter selection", () => {
       branches: { finishDelete: false },
       push: { registerKey: false, revokeKey: false },
       agents: { createdBy: false },
+      projects: { updateSource: false },
     });
   });
 
@@ -180,6 +181,7 @@ describe("adapter selection", () => {
         branches: { finishDelete: false },
         push: { registerKey: false, revokeKey: false },
         agents: { createdBy: false },
+        projects: { updateSource: false },
       });
     }
   });
@@ -398,6 +400,14 @@ describe("agents.createdBy", () => {
     expect(v1.capabilitiesOf({ api_version: "3.1.0", capabilities: ["agents.createdBy"] }).agents.createdBy).toBe(true);
     expect(v1.capabilitiesOf({ api_version: "3.1.0", capabilities: [] }).agents.createdBy).toBe(false);
     expect(v1.capabilitiesOf({ api_version: "3.1.0" }).agents.createdBy).toBe(false);
+  });
+});
+
+describe("project.update_source", () => {
+  it("is on only when the greeting names the verb, never inferred from a minor (#228)", () => {
+    expect(v1.capabilitiesOf({ api_version: "3.2.0", capabilities: ["project.update_source"] }).projects.updateSource).toBe(true);
+    expect(v1.capabilitiesOf({ api_version: "3.2.0", capabilities: [] }).projects.updateSource).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "3.2.0" }).projects.updateSource).toBe(false);
   });
 });
 

@@ -27,7 +27,25 @@ const GREETING = {
   capabilities: ["tasks.watching", "tasks.attachments"],
   tasks: { watching: true, attachments: true },
 };
-const project = { project_id: PROJECT, name: "Build", path: "/work/build", sources: [{ id: "src-1", name: "api", path: "/work/api" }] };
+const project = {
+  project_id: PROJECT,
+  name: "Build",
+  path: "/work/build",
+  sources: [
+    { id: "src-1", name: "api", path: "/work/api", is_git: true, base_branch: "main", remote: null },
+    { id: "src-2", name: "docs", path: "/work/docs", is_git: true, base_branch: "main", remote: null },
+  ],
+};
+/** The first source's card: on a machine never greeted, its remote is the
+ *  sheet's one edit, saved through `project.set_remote` (#228). */
+const firstCard = () => $('#sheet .ps-source[data-source-id="src-1"]');
+const saveFirstRemote = (url) => {
+  const remote = firstCard().querySelector('input[data-field="remote"]');
+  remote.value = url;
+  remote.dispatchEvent(new Event("input"));
+  firstCard().querySelector("[data-save-source]").click();
+};
+const firstCardError = () => firstCard().querySelector("[data-source-error]");
 const workspace = {
   id: "ws-1",
   project_id: PROJECT,
@@ -148,29 +166,27 @@ describe("a press on a machine that is away", () => {
       const { writeProjectSetting } = await import("../src/core/settingsRecords.js");
       await writeProjectSetting(DEVICE, project);
       block().querySelector("[data-project-settings]").click();
-      await vi.waitFor(() => expect($("#pssave")).not.toBe(null), WAIT);
+      await vi.waitFor(() => expect(firstCard()?.querySelector("[data-save-source]")).toBeTruthy(), WAIT);
     });
 
     it("says why the remote was not saved", async () => {
-      $("#psremote").value = "git@example.com:build.git";
-      $("#pssave").click();
-      await vi.waitFor(() => expect($("#pserr").textContent).not.toBe(""), WAIT);
-      expect($("#pserr").textContent).toBe("Build cannot save this project's remote because this machine is away.");
+      saveFirstRemote("git@example.com:build.git");
+      await vi.waitFor(() => expect(firstCardError().textContent).not.toBe(""), WAIT);
+      expect(firstCardError().textContent).toBe("Build cannot save this folder's remote because this machine is away.");
       expect(sentVerbs()).toEqual([]);
     });
 
     it("sends the remote once the machine is back, though the sheet opened while it was away", async () => {
       await connect();
       await vi.waitFor(() => expect(block().classList.contains("inbox-offline")).toBe(false), WAIT);
-      $("#psremote").value = "git@example.com:build.git";
-      $("#pssave").click();
+      saveFirstRemote("git@example.com:build.git");
       await vi.waitFor(() => expect(sentVerbs()).toContain("project.set_remote"), WAIT);
       expect(call).toHaveBeenCalledWith("project.set_remote", { project_id: PROJECT, url: "git@example.com:build.git" });
-      expect($("#pserr").textContent).toBe("");
+      expect(firstCardError().textContent).toBe("");
     });
 
     it("says why a folder was not removed", async () => {
-      $('[data-remove-source="src-1"]').click();
+      $('[data-remove-source="src-2"]').click();
       await vi.waitFor(() => expect($("#pssrcerr").textContent).not.toBe(""), WAIT);
       expect($("#pssrcerr").textContent).toBe("Build cannot remove this folder from this project because this machine is away.");
       expect(sentVerbs()).toEqual([]);
@@ -192,13 +208,12 @@ describe("a press on a machine that is away", () => {
     await connect();
     await vi.waitFor(() => expect(block().classList.contains("inbox-offline")).toBe(false), WAIT);
     block().querySelector("[data-project-settings]").click();
-    await vi.waitFor(() => expect($("#pssave")).not.toBe(null), WAIT);
+    await vi.waitFor(() => expect(firstCard()?.querySelector("[data-save-source]")).toBeTruthy(), WAIT);
     modules.deviceContexts.setContextOffline(DEVICE, { offline: true });
     call.mockClear();
-    $("#psremote").value = "git@example.com:build.git";
-    $("#pssave").click();
-    await vi.waitFor(() => expect($("#pserr").textContent).not.toBe(""), WAIT);
-    expect($("#pserr").textContent).toBe("Build cannot save this project's remote because this machine is away.");
+    saveFirstRemote("git@example.com:build.git");
+    await vi.waitFor(() => expect(firstCardError().textContent).not.toBe(""), WAIT);
+    expect(firstCardError().textContent).toBe("Build cannot save this folder's remote because this machine is away.");
     expect(sentVerbs()).toEqual([]);
   });
 

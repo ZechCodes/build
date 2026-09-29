@@ -624,7 +624,8 @@ function openBlockHead(projectKey) {
  *  does not name is still a change to the project's settings. */
 const SETTINGS_DOING = {
   "project.list": "open this project's settings",
-  "project.set_remote": "save this project's remote",
+  "project.set_remote": "save this folder's remote",
+  "project.update_source": "change this folder",
   "project.set_isolation": "change this project's isolation",
   "project.add_source": "add a folder to this project",
   "project.remove_source": "remove this folder from this project",

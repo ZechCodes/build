@@ -178,7 +178,7 @@ for (const theme of ["dark", "light"]) {
     const text = await waitForText(page, "stays code", "chat message");
     await page.locator("a.md-link").first().waitFor({ timeout: 10_000 });
     const message = text.locator("xpath=ancestor-or-self::*[.//a[contains(@class,'md-link')]][1]");
-    console.log(`chat ${theme}:`, JSON.stringify(await describeLinks(message), null, 1));
+    console.log("chat", theme, JSON.stringify(await describeLinks(message), null, 1));
     await settle(page);
     await shootAround(page, message, `${output}/chat-${theme}.png`);
     await page.screenshot({ path: `${output}/chat-full-${theme}.png` });
@@ -190,7 +190,7 @@ for (const theme of ["dark", "light"]) {
     const text = await waitForText(page, "This unblocks", "task comment");
     await page.locator("a.md-link").first().waitFor({ timeout: 10_000 });
     const comment = text.locator("xpath=ancestor-or-self::li[contains(@class,'task-comment')][1]");
-    console.log(`comment ${theme}:`, JSON.stringify(await describeLinks(comment), null, 1));
+    console.log("comment", theme, JSON.stringify(await describeLinks(comment), null, 1));
     await settle(page);
     await shootAround(page, comment, `${output}/comment-${theme}.png`);
     await page.screenshot({ path: `${output}/comment-full-${theme}.png` });

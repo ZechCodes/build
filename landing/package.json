@@ -7,7 +7,7 @@
   "scripts": {
     "build": "astro build",
     "dev": "astro dev",
-    "test": "node --test test/"
+    "test": "node --test 'test/**/*.test.js' 'test/**/*.test.mjs'"
   },
   "dependencies": {
     "astro": "^7.3.3",

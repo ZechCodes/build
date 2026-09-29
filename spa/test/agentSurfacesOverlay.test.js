@@ -45,6 +45,7 @@ const { openSurfaceOverlay } = await import("../src/core/agentSurfaces.js");
 const { AGENT_ENTRY_KIND, SHELL_ENTRY_KIND, WORKFLOW_ENTRY_KIND } = await import("../src/core/agentSurfacesModel.js");
 const { wipeCache } = await import("../src/core/localCache.js");
 const { writeRailWorkItem } = await import("./railCacheFixture.js");
+const { rememberAgentLineageSupport } = await import("../src/core/agentLineageSupport.js");
 
 const surfaces = () => surfacesSnapshot({ subagents: [], checklist: [] });
 
@@ -626,5 +627,42 @@ describe("the overlay's own height", () => {
     expect(shellCss).not.toContain(".modal-surface");
     expect(appCss).toMatch(/\.modal\.modal-surface\s*\{[^}]*max-height/);
     expect(appCss).toMatch(/\.modal-surface\s+\.surface-overlay-body\s*\{[^}]*overflow-y:auto/);
+  });
+});
+
+// #223: a Build agent on this branch, made by the agent in the panel, has no
+// page of its own to open on — the branch's rail is where its chat is, so the
+// rail tells the Agents panel which entity it is on and the row opens here.
+describe("a Build agent on the rail's own branch", () => {
+  const withWorker = () => {
+    const row = branchRow();
+    // Working, so the Agents pill stands on the status row to be pressed.
+    row.agents.push({ ...row.agents[0], id: "ag-2", ordinal: 2, name: "Login fixer", created_by: "ag-1", working: true, surfaces: null });
+    return row;
+  };
+  const buildAgentRows = () => [...panel().querySelectorAll(".surface-build-agents > .surface-build-agent")];
+
+  it("is a button in the Agents panel, and a press opens it in place", async () => {
+    payload = withWorker();
+    await mount();
+    // The bridge greets as one that names makers (the fixture's own greeting
+    // did not), and the lineage reader hears it off the cache.
+    await rememberAgentLineageSupport("dev-1", { agents: { createdBy: true } });
+    await vi.waitFor(() => expect(panel().querySelector(`[data-surface-kind="${AGENT_ENTRY_KIND}"]`)).not.toBe(null));
+    const hash = location.hash;
+    panel().querySelector(`[data-surface-kind="${AGENT_ENTRY_KIND}"]`).click();
+    await vi.waitFor(() => expect(buildAgentRows()).toHaveLength(1));
+
+    const [row] = buildAgentRows();
+    expect(document.querySelector('.rail-bubble[data-agent="ag-1"]').getAttribute("aria-expanded")).toBe("true");
+    expect(row.tagName).toBe("BUTTON");
+    expect(row.dataset.buildAgent).toBe("ag-2");
+    row.click();
+    await flush();
+
+    // Here: no page change, and the strip's ag-2 bubble is the open one.
+    expect(location.hash).toBe(hash);
+    const expanded = (id) => document.querySelector(`.rail-bubble[data-agent="${id}"]`).getAttribute("aria-expanded");
+    expect([expanded("ag-1"), expanded("ag-2")]).toEqual(["false", "true"]);
   });
 });

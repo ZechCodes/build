@@ -315,10 +315,15 @@ export function agentRows(agents, reading = {}) {
 
 const startedAtMs = (entry) => (Number.isFinite(entry.started_at) ? entry.started_at : null);
 
+/** Where a Build agent's chat opens: its own page, or — for one with none,
+ *  such as a branch's (#223) — here, when this rail is the entity it is on. */
+const chatKindOf = (entry, hereEntityId) => buildAgentChatKind({ kind: entry.kind, workspaceId: entry.workspace_id })
+  || (entry.entity_id && entry.entity_id === hereEntityId ? "here" : null);
+
 /** The Build agents this agent made, as the Agents viewer's second group
  *  draws them: running first, and each carrying where its chat is, for the
  *  press that opens it — or no page at all, for a row nothing opens. */
-export function buildAgentRows(surfaces, { nowMs = 0 } = {}) {
+export function buildAgentRows(surfaces, { nowMs = 0, hereEntityId = null } = {}) {
   const entries = companionsOf(surfaces, AGENT_ENTRY_KIND);
   const rows = keyedBy("build-agent", entries, (entry) => {
     const running = companionIsRunning(entry);
@@ -331,7 +336,7 @@ export function buildAgentRows(surfaces, { nowMs = 0 } = {}) {
       workspaceName: entry.workspace_name || "",
       entityId: entry.entity_id || null,
       workspaceId: entry.workspace_id || null,
-      chatKind: buildAgentChatKind({ kind: entry.kind, workspaceId: entry.workspace_id }),
+      chatKind: chatKindOf(entry, hereEntityId),
       ...entryClock(startedAtMs(entry), null, running, nowMs),
     };
   });

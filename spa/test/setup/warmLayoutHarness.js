@@ -8,6 +8,18 @@
 
 import { withLayoutPage } from "../browser/layoutHarness.mjs";
 
+// Far past the worst cold start seen, so only a hang reaches it — and a hang
+// then fails the run here instead of holding CI until the job's own limit.
+const WARM_UP_BUDGET_MS = 120_000;
+
 export default async function warmLayoutHarness() {
-  await withLayoutPage(async ({ page }) => page.evaluate(() => document.readyState));
+  let timer;
+  const hung = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`the layout harness did not start in ${WARM_UP_BUDGET_MS} ms`)), WARM_UP_BUDGET_MS);
+  });
+  try {
+    await Promise.race([withLayoutPage(async ({ page }) => page.evaluate(() => document.readyState)), hung]);
+  } finally {
+    clearTimeout(timer);
+  }
 }

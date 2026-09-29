@@ -207,6 +207,28 @@ fn the_internal_refusal_census_can_only_shrink() {
     );
 }
 
+/// A folder that is not there is the caller's to fix, not the bridge's: the
+/// census probes `fs.list` at `~/Projects`, which a machine without one
+/// answers this way. The sentence stays as it was — the browser sheet reads
+/// the OS's "No such file or directory" to fall back to the home folder.
+#[test]
+fn fs_list_names_a_missing_folder_not_found() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let missing = dir.path().join("not-here");
+    let refusal = state
+        .dispatch_api("fs.list", &json!({ "path": missing.to_str().unwrap() }))
+        .unwrap_err();
+    assert_eq!(refusal.code(), "not_found", "{}", refusal.message());
+    assert!(
+        refusal
+            .message()
+            .ends_with("No such file or directory (os error 2)"),
+        "{}",
+        refusal.message()
+    );
+}
+
 /// A `git.*` verb answers through the deferred drain, so the check inside
 /// `api::v1::answer` sees only the `Value::Null` placeholder. The declared
 /// result type travels with the job instead, and the drain holds the real

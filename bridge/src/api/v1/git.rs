@@ -939,7 +939,19 @@ fn git_unpushed(
 }
 
 fn fs_list(app: &mut AppState, params: FsListParams) -> Result<Answer<FsListResult>, ApiError> {
-    answer(app.fs_list(&params.wire()))
+    answer(app.fs_list(&params.wire())).map_err(name_a_missing_folder)
+}
+
+/// A folder that is not there reads `not_found`, its sentence unchanged: the
+/// browser sheet matches the OS's own words to fall back to the home folder.
+fn name_a_missing_folder(error: ApiError) -> ApiError {
+    let missing = std::io::Error::from_raw_os_error(2).to_string();
+    match error {
+        ApiError::Internal { .. } if error.message().ends_with(&missing) => {
+            ApiError::not_found(error.message())
+        }
+        error => error,
+    }
 }
 
 fn fs_mkdir(app: &mut AppState, params: FsMkdirParams) -> Result<Answer<FsMkdirResult>, ApiError> {

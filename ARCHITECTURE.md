@@ -210,7 +210,7 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.0.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.1.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
@@ -245,6 +245,14 @@ runtime that starts them.
   reads (`task.get`, `task.stages`, `task.doc`, `task.stage_doc`,
   `task.stage_diff`) stay for stored plans, and so do the `run.*` verbs an
   adopted worktree's review uses. A removed verb answers `unknown_method`.
+  3.1.0 adds `agents.createdBy` (#216): an agent made by another agent's
+  Build MCP call (`add_workspace_agent`, or `assign_task` to a new agent or
+  workspace) carries `created_by` on its digest. Only the bridge's own
+  callers set it; `agent.add` refuses the param. The SPA reads it off the
+  cached rows (`spa/src/core/agentLineage.js`): the creator's Agents panel
+  lists those Build agents apart from its harness sub-agents, and an agent
+  counts as running while any agent in its panel runs, transitively
+  (`spa/src/core/agentLineageModel.js`).
   The SPA's adapter claims `>=2.0.0 <4.0.0`: it calls nothing a 2.x bridge
   lacks (what 2.x added after 2.0.0 is capability-gated), so the app can
   roll before the bridge.

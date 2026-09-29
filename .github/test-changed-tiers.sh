@@ -198,7 +198,7 @@ name="build-app waits for the bridge checks whenever a bridge change is owed"
 job="$(build_app_job)"
 missing=""
 for need in bridge interop; do
-    printf '%s\n' "$job" | grep -Eq "^    needs: \[.*[[ ]$need[],]" || missing="$missing needs:$need"
+    printf '%s\n' "$job" | grep -Eq "^    needs: \[.*[[ ]${need}[],]" || missing="$missing needs:$need"
 done
 for clause in "needs.changes.outputs.bridge != 'true'" \
     "needs.bridge.result == 'success'" \

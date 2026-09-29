@@ -69,7 +69,11 @@ import { srcJsFiles, srcSourceOf } from "./treeFiles.js";
 // actions went with the verbs the bridge refuses, the page's mount and render
 // lost the branches that wired them, and a doc comment card names its anchor
 // through a helper.
-const RATCHETED_FUNCTIONS = 40;
+// 39 since the markdown renderer reads blocks (#229): renderMarkdown's one
+// loop over every kind of line became a reader per block in
+// core/markdownBlocks.js — a fence, a heading, a list, a table, a paragraph —
+// each asked in turn at the line it stands on.
+const RATCHETED_FUNCTIONS = 39;
 
 const DISABLE = "eslint-disable-next-line complexity";
 // A block or file-level disable would switch the rule off for everything

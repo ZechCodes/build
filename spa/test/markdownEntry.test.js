@@ -18,6 +18,7 @@ import { srcJsFiles, srcSourceOf } from "./treeFiles.js";
 const OWNERS = {
   "core/markdownRefs.js": ["core/markdownLinks.js"],
   "core/markdownLinks.js": ["core/markdown.js"],
+  "core/markdownBlocks.js": ["core/markdown.js"],
   "core/previewText.js": ["core/markdown.js"],
   "core/referenceTargets.js": [
     "core/referenceIndex.js",

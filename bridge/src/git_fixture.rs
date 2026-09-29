@@ -40,10 +40,18 @@ pub fn init_repo_with_readme(parent: &Path, name: &str, readme: &str) -> PathBuf
 }
 
 /// Run one git command in `dir`, failing the test the moment git does.
+///
+/// Every command commits as the fixture's own identity, so a clone — which
+/// does not copy the source's `user.*` config — still commits on a machine
+/// with no global identity, a CI runner's.
 pub fn git_in(dir: &Path, args: &[&str]) {
     let status = Command::new("git")
         .args(args)
         .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "Test")
+        .env("GIT_AUTHOR_EMAIL", "test@build.ing")
+        .env("GIT_COMMITTER_NAME", "Test")
+        .env("GIT_COMMITTER_EMAIL", "test@build.ing")
         .status()
         .unwrap();
     assert!(status.success(), "git {args:?} failed");

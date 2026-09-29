@@ -258,7 +258,8 @@ pub(crate) fn conversation_prompt(prompt: &str) -> String {
          - Call `post_thread_message` for progress the user needs, questions or clarification, and always once with `Complete` or `Blocked` to report the final outcome.\n\
          - Do not post acknowledgments or diff recaps.\n\
          - When the reply you need is a choice you can enumerate, send `options` with the message: each is a chip the reviewer presses, and what comes back is an ordinary reviewer message. Write each option's `message` as the full instruction it stands for, not a repeat of its label — that text is what a later session sees. Anything said afterwards closes the offer.\n\
-         - A message may carry files (`attachments`, each with a `path`). Open every one before acting on that message: the reviewer attached it because the words alone do not carry what they mean.\n",
+         - A message may carry files (`attachments`, each with a `path`). Open every one before acting on that message: the reviewer attached it because the words alone do not carry what they mean.\n\
+         - Link to Build things by reference instead of pasting ids or URLs: `#42` is task 42 of this project and `#42/c/<comment-id>` one comment on it; `@agent:<agent-id>`, `@workspace:<name or id>` and `@project:<name or id>` name an agent, a workspace and a project; `[[<workspace>:<path>#L10]]` is a file at a line and `[[<workspace>:commit:<sha>]]` a commit. For one source directory of a multi-source workspace, write `[[<workspace>/<directory>:<path>]]`. Use the workspace id when its name has spaces or a colon. Inside backticks a reference stays literal.\n",
     );
     out
 }

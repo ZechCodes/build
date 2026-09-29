@@ -189,4 +189,10 @@ describe("addresses that are refused", () => {
     expect(second.getAttribute("href")).toBe("https://b.test/");
     for (const link of webLinksIn(host)) expect(link.getAttributeNames().sort()).toEqual(["class", "href", "rel", "target"]);
   });
+
+  it("escapes a title that tries to leave its attribute", () => {
+    const [link] = webLinksIn(rendered(`[x](https://a.test 'x" onmouseover="alert(1)')`));
+    expect(link.getAttribute("title")).toBe('x" onmouseover="alert(1)');
+    expect(link.hasAttribute("onmouseover")).toBe(false);
+  });
 });

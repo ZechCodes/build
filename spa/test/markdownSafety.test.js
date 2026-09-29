@@ -73,6 +73,7 @@ const PAYLOADS = [
   "[x](vbscript:msgbox(1)) [y](file:///etc/passwd) [z](//evil.test)",
   '[x](https://a.test/"onmouseover="alert(1)) https://b.test/"onmouseover="alert(1)',
   '[x](https://a.test "\"><img src=x onerror=alert(1)>")',
+  `[x](https://a.test 'x" onmouseover="alert(1)') [y](https://a.test "<img src=x onerror=alert(1)>")`,
   "[<img src=x onerror=alert(1)>](https://a.test) https://a.test/<svg/onload=alert(1)>",
   "[x](https://a.test/`code`) `[y](https://b.test)`",
 ];

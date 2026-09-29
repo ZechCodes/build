@@ -92,6 +92,7 @@ const NO_CAPABILITIES = Object.freeze({
   threads: Object.freeze({ postOperations: false, attachmentChunks: false }),
   branches: Object.freeze({ finishDelete: false }),
   push: Object.freeze({ registerKey: false, revokeKey: false }),
+  agents: Object.freeze({ createdBy: false }),
 });
 
 // Event mode is a fact about one bridge, so it is held per device: one machine

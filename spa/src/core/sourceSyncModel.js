@@ -45,3 +45,19 @@ export function syncStatusLine(source, now = Date.now()) {
   const line = sync && LINES[sync.state];
   return line ? line(source, sync, now) : "Not synced yet.";
 }
+
+const attemptOf = (source) => source?.sync?.last_attempt_ms ?? -1;
+
+/** `project` with each source's `sync` taken from `listed` (the same project
+ *  as the pushed project list has it) where that one is newer, or null when
+ *  none is. Only the sync moves: the rest of the row is the sheet's own. */
+export function withNewerSyncs(project, listed) {
+  const listedById = new Map((listed?.sources || []).map((source) => [source.id, source]));
+  const newer = (source) => attemptOf(listedById.get(source.id)) > attemptOf(source);
+  const sources = project.sources || [];
+  if (!sources.some(newer)) return null;
+  return {
+    ...project,
+    sources: sources.map((source) => (newer(source) ? { ...source, sync: listedById.get(source.id).sync } : source)),
+  };
+}

@@ -162,7 +162,8 @@ fn a_source_that_predates_the_setting_syncs() {
 
     let state = configured(&root, &config);
     let project = state.projects.get("proj-1").unwrap();
-    assert!(SYNC_BASE_FOR_EXISTING_SOURCES);
+    // The decision itself, pinned: flipping it is a one-line change here.
+    const { assert!(SYNC_BASE_FOR_EXISTING_SOURCES) };
     assert_eq!(project.sources[0].sync_base, None);
     assert!(project.sources[0].syncs_base());
     assert_eq!(state.project_json(project)["sources"][0]["sync_base"], true);

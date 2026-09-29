@@ -11,8 +11,9 @@ import { uiAddress, watchUiState } from "../core/localUiState.js";
 import { fieldTraits } from "../core/fieldTraits.js";
 import { refreshGithubRepos } from "../core/githubRepos.js";
 import { attachRepoPicker, disposeRepoPickers } from "./repoPicker.js";
-import { readSourceEditSupport, readSourceSyncSupport, SOURCE_EDIT_SUPPORT_KIND } from "../core/sourceEditSupport.js";
+import { readSourceSupport, SOURCE_EDIT_SUPPORT_KIND } from "../core/sourceEditSupport.js";
 import { mountSourceCards, readSourceEdits, restoreSourceEdits, sourceEditing, sourcesSectionHtml } from "./projectSources.js";
+import { withNewerSyncs } from "../core/sourceSyncModel.js";
 
 /** The project's own name. It is the first source's folder's, and is not a
  *  source's label: a source is renamed on its card. */
@@ -133,21 +134,21 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
   // Whether this machine edits sources in place is a fact a greeting writes
   // to the cache; the cards repaint when it lands.
   const readSupport = async () => {
-    editsSources = await readSourceEditSupport(deviceId);
-    syncsBase = await readSourceSyncSupport(deviceId);
+    ({ editsSources, syncsBase } = await readSourceSupport(deviceId));
     if (painted) paint(painted);
   };
   // The bridge's source sync service writes each sync onto the project's
   // row, and the project list push brings the row to this device's list:
-  // the sheet takes it from there.
-  const adoptListedRow = async () => {
+  // the sheet takes each newer sync from there, and nothing else.
+  const adoptListedSyncs = async () => {
     const listed = (await readCached({ deviceId, entityId: "", kind: "projects" }))?.value;
     const row = Array.isArray(listed) ? listed.find((project) => project.project_id === projectId) : null;
-    if (row && JSON.stringify(row.sources) !== JSON.stringify(painted?.sources)) await record.write(row);
+    const synced = painted && withNewerSyncs(painted, row);
+    if (synced) await record.write(synced);
   };
   const unsubscribeSupport = subscribeCache({ deviceId }, (address) => {
     if (address?.kind === SOURCE_EDIT_SUPPORT_KIND) void readSupport();
-    if (address?.kind === "projects" && !address.entityId) void adoptListedRow();
+    if (address?.kind === "projects" && !address.entityId) void adoptListedSyncs();
   });
   const close = () => {
     repoAsk.stop();

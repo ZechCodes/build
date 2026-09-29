@@ -25,18 +25,20 @@ export function rememberSourceEditSupport(deviceId, capabilities) {
     (held?.editsSources === editsSources && held?.syncsBase === syncsBase ? null : { editsSources, syncsBase }));
 }
 
-async function readSupport(deviceId) {
-  if (!deviceId) return {};
-  return (await readCached(sourceEditSupportAddress(deviceId)))?.value || {};
+/** Both facts in one read: whether this machine's project sources can be
+ *  edited in place, and whether it keeps their base branches in step with
+ *  their remotes (and so offers the setting and Sync now). */
+export async function readSourceSupport(deviceId) {
+  const held = deviceId ? (await readCached(sourceEditSupportAddress(deviceId)))?.value : null;
+  return { editsSources: held?.editsSources === true, syncsBase: held?.syncsBase === true };
 }
 
 /** Whether this machine's project sources can be edited in place. */
 export async function readSourceEditSupport(deviceId) {
-  return (await readSupport(deviceId)).editsSources === true;
+  return (await readSourceSupport(deviceId)).editsSources;
 }
 
-/** Whether this machine keeps its sources' base branches in step with their
- *  remotes, and so offers the setting and Sync now. */
+/** Whether this machine keeps its sources' base branches up to date. */
 export async function readSourceSyncSupport(deviceId) {
-  return (await readSupport(deviceId)).syncsBase === true;
+  return (await readSourceSupport(deviceId)).syncsBase;
 }

@@ -272,7 +272,10 @@ fn a_base_branch_git_would_read_as_an_option_is_refused() {
     let report = sync_base(&pair.base, "--upload-pack=touch", NOW);
 
     let failure = failed(&report);
-    assert!(failure.reason.contains("not a branch name Git accepts"), "{failure:?}");
+    assert!(
+        failure.reason.contains("not a branch name Git accepts"),
+        "{failure:?}"
+    );
     assert!(!report.fetched);
 }
 

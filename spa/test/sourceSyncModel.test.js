@@ -2,7 +2,7 @@
 // remote (#267), read only off the cached row.
 
 import { describe, expect, it } from "vitest";
-import { syncStatusLine } from "../src/core/sourceSyncModel.js";
+import { syncStatusLine, withNewerSyncs } from "../src/core/sourceSyncModel.js";
 
 const NOW = 1_800_000_000_000;
 const MIN = 60_000;
@@ -55,5 +55,25 @@ describe("syncStatusLine", () => {
 
   it("says a checkout with no remote has nothing to sync with", () => {
     expect(syncStatusLine(source(status({ state: "no_remote" })), NOW)).toBe("No remote to sync with.");
+  });
+});
+
+describe("withNewerSyncs", () => {
+  const project = { project_id: "proj-1", sources: [source(status({ last_attempt_ms: 10 })), { id: "source-2", sync_base: false, sync: null }] };
+
+  it("takes a newer sync from the pushed list, and only the sync", () => {
+    const listed = { sources: [{ ...source(status({ last_attempt_ms: 20, commits: 3 })), sync_base: false, name: "renamed" }] };
+    const taken = withNewerSyncs(project, listed);
+    expect(taken.sources[0].sync.commits).toBe(3);
+    expect(taken.sources[0].sync_base).toBe(true);
+    expect(taken.sources[0].name).toBeUndefined();
+    expect(taken.sources[1]).toBe(project.sources[1]);
+  });
+
+  it("keeps what the sheet holds when the list is no newer, or carries no sources", () => {
+    expect(withNewerSyncs(project, { sources: [source(status({ last_attempt_ms: 10 }))] })).toBeNull();
+    expect(withNewerSyncs(project, { sources: [source(status({ last_attempt_ms: 5 }))] })).toBeNull();
+    expect(withNewerSyncs(project, { project_id: "proj-1" })).toBeNull();
+    expect(withNewerSyncs(project, null)).toBeNull();
   });
 });

@@ -164,10 +164,9 @@ change_case "a path that only contains a relay source's name is not one" \
     bridge/src/bin/relay.rs.orig "$MOVED_BRIDGE" lookalike
 
 name="every path relay-sources lists exists in this tree"
-missing=""
-for path in $(grep -Ev '^(#|$)' "$SCRIPT_DIR/relay-sources"); do
-    [ -e "$SCRIPT_DIR/../$path" ] || missing="$missing $path"
-done
+missing="$(grep -Ev '^(#|$)' "$SCRIPT_DIR/relay-sources" | while IFS= read -r path; do
+    [ -e "$SCRIPT_DIR/../$path" ] || printf ' %s' "$path"
+done)"
 if [ -z "$missing" ]; then pass "$name"; else fail "$name" "missing:$missing"; fi
 
 name="the summary goes to stderr, only key=value lines to stdout"

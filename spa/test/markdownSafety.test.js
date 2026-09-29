@@ -76,6 +76,10 @@ const PAYLOADS = [
   `[x](https://a.test 'x" onmouseover="alert(1)') [y](https://a.test "<img src=x onerror=alert(1)>")`,
   "[<img src=x onerror=alert(1)>](https://a.test) https://a.test/<svg/onload=alert(1)>",
   "[x](https://a.test/`code`) `[y](https://b.test)`",
+  // Review #260 bypass probes.
+  "[x](&#106;avascript:alert(1)) [y](\uFF4Aavascript:alert(1)) [z](<javascript:alert(1)>) [w](blob:https://a.test/b)",
+  "[x](https:\t//evil.test) [y](mailto:a@b.test\r\nBcc:c@d.test) [z](https://a.test/\u0000\"onx=1)",
+  "[a **b](https://a.test) c** [[x](https://a.test)](https://b.test)",
 ];
 
 /** Each payload in every block that can hold it. */

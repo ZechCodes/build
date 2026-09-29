@@ -156,6 +156,13 @@ describe("addresses that are refused", () => {
     "https:///evil.test",
     "https:\\\\evil.test",
     "javascript&#58;alert(1)",
+    // Review #260: entities, lookalikes, a tab after the scheme, an angle-bracket target.
+    "&#106;avascript:alert(1)",
+    "&#x6A;avascript:alert(1)",
+    "\uFF4Aavascript:alert(1)",
+    "https\uFF1A//evil.test",
+    "https:\t//evil.test",
+    "<javascript:alert(1)>",
   ];
 
   it("renders each refused inline link as the words typed", () => {
@@ -188,6 +195,19 @@ describe("addresses that are refused", () => {
     expect(first.textContent).toBe("<img src=x onerror=alert(1)>");
     expect(second.getAttribute("href")).toBe("https://b.test/");
     for (const link of webLinksIn(host)) expect(link.getAttributeNames().sort()).toEqual(["class", "href", "rel", "target"]);
+  });
+
+  // Review #260: a scheme wrapped around an allowed one never becomes the href,
+  // a control character inside a host is dropped from the href, and a mailto:
+  // stays a mailto: whatever follows it (its ?cc=/&body= are RFC 6068 fields;
+  // raw CR/LF are stripped, and a second address after them is refused).
+  it("writes only an http, https or mailto href whatever wraps or follows the address", () => {
+    for (const source of ["[x](blob:https://a.test/b)", "[x](view-source:https://a.test)", "[x](jar:https://a.test!/)"]) {
+      for (const href of hrefs(source)) expect([source, href]).toEqual([source, expect.stringMatching(/^https:\/\//)]);
+    }
+    expect(hrefs("[x](https://good.test\u0000.evil.test)")).toEqual(["https://good.test.evil.test"]);
+    expect(hrefs("[x](mailto:javascript:alert(1)@x.test)")).toEqual(["mailto:javascript:alert(1)@x.test"]);
+    expect(safeWebHref("mailto:a@b.test\r\nBcc: c@d.test")).toBeNull();
   });
 
   it("escapes a title that tries to leave its attribute", () => {

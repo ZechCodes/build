@@ -100,7 +100,7 @@ pub(in crate::app) use self::runtime::deferred::{
     DeferredJob, DeferredNext, DeferredRead, DeferredWork, OffLockJob, ProjectListRow, ReadSubject,
 };
 pub(in crate::app) use self::runtime::delivery::preflight::{
-    chosen_option_id, deliver, NEW_THREAD_MESSAGES_PROMPT, WORKING_INDICATOR_NOTICE,
+    chosen_option_id, deliver, NEW_THREAD_MESSAGES_PROMPT,
 };
 pub(in crate::app) use self::runtime::delivery::runner::{DeliveryRunner, AGENT_DELIVERY_METHOD};
 pub(in crate::app) use self::runtime::delivery::types::{

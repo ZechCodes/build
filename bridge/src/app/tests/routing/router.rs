@@ -1,28 +1,5 @@
 use super::*;
 
-/// The retired Task destination refuses before routing the capture or creating a plan.
-#[test]
-fn a_router_cannot_create_a_task_from_a_capture() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let project_id = state.project_at(0).id.clone();
-    let (capture_id, _) = captured(&mut state, "keep this as captured work");
-
-    let refused = state.router_action(
-        &capture_id,
-        BridgeAction::CreateTask {
-            project_id,
-            goal: "must not become a plan".to_string(),
-            rationale: Some("legacy router choice".to_string()),
-        },
-    );
-
-    assert_eq!(refused.unwrap_err(), crate::app::tasks::TASKS_RETIRED_ERROR);
-    assert!(state.plans.is_empty());
-    let capture = capture_record(&mut state, &capture_id);
-    assert!(capture["routing"].is_null(), "{capture:?}");
-}
-
 // ==== the router: what decides where a capture goes ======================
 
 /// Take a capture and hand back its id and the router session deciding it —
@@ -292,8 +269,9 @@ fn asked_with_two_options(state: &mut AppState, capture_id: &str) {
         .unwrap();
 }
 
-/// The router's suggestions reach `capture.get` and the feed row, numbered and whole. Anything less and the decision surface has
-/// a question with no buttons under it.
+/// The router's suggestions reach `capture.get` and the feed row, numbered
+/// and whole. Anything less and the decision surface has a question with no
+/// buttons under it.
 #[test]
 fn the_options_a_router_offers_reach_every_surface_that_shows_the_capture() {
     let (dir, repo) = init_repo();
@@ -940,11 +918,15 @@ fn neither_session_kind_can_call_the_others_tools() {
     );
 
     let router_reaching_in = state
-        .router_action(&capture_id, BridgeAction::ReadUnreadMessages)
+        .router_action(
+            &capture_id,
+            BridgeAction::SetTopic {
+                topic: "routing".to_string(),
+            },
+        )
         .unwrap_err();
     assert!(
-        router_reaching_in.contains("read_unread_messages")
-            && router_reaching_in.contains("coding tool"),
+        router_reaching_in.contains("set_topic") && router_reaching_in.contains("coding tool"),
         "{router_reaching_in}"
     );
 }

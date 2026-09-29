@@ -403,3 +403,40 @@ pub(in crate::app::tests) fn link_refusal(state: &mut AppState, params: Value) -
     assert_eq!(answered["ok"], false, "{answered:?}");
     answered["error"].as_str().unwrap_or_default().to_string()
 }
+
+/// What the entity's primary agent finds unread on its conversation, read
+/// the way a delivery marks it (`Thread::read_unread`). The retired
+/// `read_unread_messages` tool answered the same (#207).
+pub(in crate::app::tests) fn read_unread(state: &mut AppState, entity_id: &str) -> Value {
+    let agent_id = state
+        .entity_agents(entity_id)
+        .and_then(|agents| agents.resolve(None).map(|agent| agent.id.clone()))
+        .expect("the entity has an agent");
+    let now = now_rfc3339();
+    state
+        .edit_agent_conversation(entity_id, &agent_id, |thread, _| {
+            Ok(json!({ "thread_id": thread.id, "messages": thread.read_unread(&now) }))
+        })
+        .expect("the agent's conversation reads")
+}
+
+/// A browser subscribed to every kind of every entity, straight on the bus:
+/// what makes a noted change pending at all, now that nothing is heard
+/// unasked. Hold the receiver for as long as the browser should stay
+/// subscribed — a push that cannot land drops the session.
+pub(in crate::app::tests) fn a_browser_watching_everything(
+    state: &AppState,
+) -> tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope> {
+    let (browser, rx, _key) = SessionSender::observable("browser-watching-everything");
+    state.changes().subscribe(
+        &browser,
+        crate::changes::SubscriptionSpec {
+            id: "s-everything".to_string(),
+            scope: crate::changes::Scope::All,
+            kinds: crate::changes::KindSet::all(),
+            mode: Default::default(),
+            priority: Default::default(),
+        },
+    );
+    rx
+}

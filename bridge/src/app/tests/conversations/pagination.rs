@@ -208,9 +208,7 @@ fn a_cursored_poll_after_a_restart_reships_a_mutation_under_the_tail() {
     // The agent reads the mailbox, which bumps the `updated_sequence` of
     // every message in it — including the ones at the very start of the
     // conversation, which the restart is about to leave in the store.
-    state
-        .on_mcp_action("run-restart-delta", BridgeAction::ReadUnreadMessages)
-        .unwrap();
+    read_unread(&mut state, "run-restart-delta");
     let active = state
         .runs
         .remove("run-restart-delta")

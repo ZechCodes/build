@@ -886,26 +886,11 @@ impl Thread {
             })
             .collect()
     }
-    /// Read one accepted operation, independent of every other unread cursor.
-    /// Repeating the scoped read returns the same messages and only the first
-    /// read advances their seen metadata.
-    pub fn read_operation_messages(
-        &mut self,
-        operation_id: &str,
-        from_sequence: u64,
-        through_sequence: u64,
-        now: &str,
-    ) -> Vec<ThreadMessage> {
-        self.read_operation_messages_with_working(
-            operation_id,
-            from_sequence,
-            through_sequence,
-            now,
-            true,
-        )
-    }
-    /// Native delivery acknowledgement stamps the same message metadata but
-    /// must not reopen work after an agent reply already closed the turn.
+    /// Native delivery's acknowledgement of one accepted operation,
+    /// independent of every other unread cursor: it stamps the messages seen
+    /// and must not reopen work after an agent reply already closed the turn.
+    /// Repeating it returns the same messages and only the first advances
+    /// their seen metadata.
     pub fn read_native_operation_messages(
         &mut self,
         operation_id: &str,
@@ -913,13 +898,33 @@ impl Thread {
         through_sequence: u64,
         now: &str,
     ) -> Vec<ThreadMessage> {
-        self.read_operation_messages_with_working(
-            operation_id,
-            from_sequence,
-            through_sequence,
-            now,
-            false,
-        )
+        let mut messages = Vec::new();
+        for item in &mut self.items {
+            let ThreadItem::Message(message) = item else {
+                continue;
+            };
+            if message.operation_id.as_deref() != Some(operation_id)
+                || message.sequence < from_sequence
+                || message.sequence > through_sequence
+            {
+                continue;
+            }
+            let mut changed = false;
+            if message.delivery_status != Some(MessageDeliveryStatus::Seen) {
+                message.delivery_status = Some(MessageDeliveryStatus::Seen);
+                changed = true;
+            }
+            if message.seen_at.is_none() {
+                message.seen_at = Some(now.to_string());
+                changed = true;
+            }
+            if changed {
+                self.next_sequence += 1;
+                message.updated_sequence = self.next_sequence;
+            }
+            messages.push(message.clone());
+        }
+        messages
     }
     /// Receipt for a native turn sent through the legacy, operationless path.
     /// It updates only reviewer messages in the exact range and leaves the
@@ -956,45 +961,6 @@ impl Thread {
                 message.updated_sequence = self.next_sequence;
             }
             messages.push(message.clone());
-        }
-        messages
-    }
-    fn read_operation_messages_with_working(
-        &mut self,
-        operation_id: &str,
-        from_sequence: u64,
-        through_sequence: u64,
-        now: &str,
-        mark_working: bool,
-    ) -> Vec<ThreadMessage> {
-        let mut messages = Vec::new();
-        for item in &mut self.items {
-            let ThreadItem::Message(message) = item else {
-                continue;
-            };
-            if message.operation_id.as_deref() != Some(operation_id)
-                || message.sequence < from_sequence
-                || message.sequence > through_sequence
-            {
-                continue;
-            }
-            let mut changed = false;
-            if message.delivery_status != Some(MessageDeliveryStatus::Seen) {
-                message.delivery_status = Some(MessageDeliveryStatus::Seen);
-                changed = true;
-            }
-            if message.seen_at.is_none() {
-                message.seen_at = Some(now.to_string());
-                changed = true;
-            }
-            if changed {
-                self.next_sequence += 1;
-                message.updated_sequence = self.next_sequence;
-            }
-            messages.push(message.clone());
-        }
-        if mark_working && !messages.is_empty() {
-            self.conversation_working = true;
         }
         messages
     }
@@ -1059,12 +1025,6 @@ impl Thread {
             self.next_sequence += 1;
             message.updated_sequence = self.next_sequence;
         }
-    }
-    /// Record the working-state half of an authorized operation read when its
-    /// exact messages live below this process's bounded resident tail.
-    pub fn note_operation_read(&mut self, now: &str) {
-        self.conversation_working = true;
-        self.conversation_activity_at_summary = Some(now.to_string());
     }
     /// Merge a sequence minted by a narrow store-side historical mutation into
     /// this bounded resident view so a later append cannot reuse it.

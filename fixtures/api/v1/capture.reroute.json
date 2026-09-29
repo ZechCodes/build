@@ -4,7 +4,8 @@
   "params": {
     "capture_id": "capture-9af2",
     "project_id": "proj-1",
-    "kind": "task"
+    "kind": "branch",
+    "branch": "relay-timeout"
   },
   "result": {
     "id": "capture-9af2",
@@ -14,8 +15,8 @@
     "state": "routed",
     "routing": {
       "project_id": "proj-1",
-      "kind": "task",
-      "target_id": "plan-6f1c",
+      "kind": "branch",
+      "target_id": "relay-timeout",
       "routed_at": "2026-09-13T09:40:31.004Z",
       "rationale": "rerouted by the user"
     },

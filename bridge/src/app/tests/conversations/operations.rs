@@ -69,9 +69,7 @@ fn thread_post_persists_and_delivers_each_messages_viewing_context() {
     ));
     assert_eq!(posted["ok"], true, "{posted:?}");
 
-    let unread = state
-        .on_mcp_action(&run_id, BridgeAction::ReadUnreadMessages)
-        .unwrap();
+    let unread = read_unread(&mut state, &run_id);
     let delivered = unread["messages"].as_array().unwrap();
     let contextual: Vec<_> = delivered
         .iter()
@@ -167,9 +165,7 @@ fn pressing_a_suggested_action_answers_the_agent_and_marks_the_offer() {
     // And the agent hears the option's longer text, as a message like any
     // other — the reason to write one is that this is what survives into a
     // session that no longer remembers the offer.
-    let read = state
-        .on_mcp_action(&run_id, BridgeAction::ReadUnreadMessages)
-        .unwrap();
+    let read = read_unread(&mut state, &run_id);
     let unread = read["messages"].as_array().unwrap();
     let last = unread.last().unwrap();
     assert_eq!(last["body"], "Revert the commit that turned the tests red.");
@@ -354,9 +350,7 @@ fn thread_post_in_review_posts_unread_and_moves_no_state() {
         "a post starts no agent"
     );
 
-    let unread = state
-        .on_mcp_action(&run_id, BridgeAction::ReadUnreadMessages)
-        .unwrap();
+    let unread = read_unread(&mut state, &run_id);
     assert_eq!(unread["messages"][0]["body"], "just a review note");
 }
 
@@ -422,11 +416,7 @@ async fn thread_post_addressed_to_run_nudges_its_live_agent() {
             && !echoed.contains("read_unread_messages"),
         "the active implementation agent must be nudged: {echoed:?}"
     );
-    let unread = state
-        .lock()
-        .unwrap()
-        .on_mcp_action(&run_id, BridgeAction::ReadUnreadMessages)
-        .unwrap();
+    let unread = read_unread(&mut state.lock().unwrap(), &run_id);
     assert!(unread["messages"]
         .as_array()
         .unwrap()
@@ -553,9 +543,7 @@ fn run_post_and_mcp_read_the_same_conversation() {
         .iter()
         .any(|item| item["data"]["body"] == "shared implementation note"));
     let run_conversation = primary_thread(&state.runs[&run_id].agents).id.clone();
-    let unread = state
-        .on_mcp_action(&run_id, BridgeAction::ReadUnreadMessages)
-        .unwrap();
+    let unread = read_unread(&mut state, &run_id);
     assert_eq!(unread["thread_id"], run_conversation);
     assert!(unread["messages"]
         .as_array()
@@ -607,67 +595,6 @@ fn queued_operation_turn<'a>(state: &'a AppState, operation_id: &str) -> &'a Pen
         .queued()
         .find(|turn| turn.operation_id.as_deref() == Some(operation_id))
         .expect("the accepted operation queued its immutable turn")
-}
-
-fn assert_scoped_operation_reads(state: &mut AppState, run_id: &str, agent_id: &str) {
-    let generic = state
-        .on_agent_mcp_action(run_id, agent_id, BridgeAction::ReadUnreadMessages)
-        .unwrap();
-    assert_eq!(generic["messages"], json!([]));
-
-    let other_agent = state
-        .runs
-        .get_mut(run_id)
-        .unwrap()
-        .agents
-        .add(run_id, ModelChoice::default(), &now_rfc3339())
-        .id
-        .clone();
-    let unauthorized = state.on_agent_mcp_action(
-        run_id,
-        &other_agent,
-        BridgeAction::ReadOperationMessages {
-            operation_id: "operation-second".into(),
-        },
-    );
-    assert!(unauthorized.unwrap_err().contains("does not belong"));
-
-    let read_second = state
-        .on_agent_mcp_action(
-            run_id,
-            agent_id,
-            BridgeAction::ReadOperationMessages {
-                operation_id: "operation-second".into(),
-            },
-        )
-        .unwrap();
-    assert_eq!(
-        read_second["messages"][0]["body"],
-        "only model B may consume this"
-    );
-    let repeated = state
-        .on_agent_mcp_action(
-            run_id,
-            agent_id,
-            BridgeAction::ReadOperationMessages {
-                operation_id: "operation-second".into(),
-            },
-        )
-        .unwrap();
-    assert_eq!(repeated["messages"], read_second["messages"]);
-    let read_first = state
-        .on_agent_mcp_action(
-            run_id,
-            agent_id,
-            BridgeAction::ReadOperationMessages {
-                operation_id: "operation-first".into(),
-            },
-        )
-        .unwrap();
-    assert_eq!(
-        read_first["messages"][0]["body"],
-        "only model A may consume this"
-    );
 }
 
 fn assert_operation_payload_snapshots(state: &AppState) {
@@ -764,8 +691,6 @@ fn operation_reads_are_bounded_to_the_exact_agent_and_payload() {
         Some("claude-opus-5")
     );
     assert_operation_payload_snapshots(&state);
-
-    assert_scoped_operation_reads(&mut state, &run_id, &agent_id);
 }
 
 #[test]
@@ -1253,11 +1178,7 @@ fn thread_post_at_a_review_gate_reaches_the_agent_without_moving_the_run() {
         "the agent is talked to, never replaced"
     );
     // Durable regardless: the next session's catch-up carries it.
-    let unread = state
-        .lock()
-        .unwrap()
-        .on_mcp_action(&run_id, BridgeAction::ReadUnreadMessages)
-        .unwrap();
+    let unread = read_unread(&mut state.lock().unwrap(), &run_id);
     assert_eq!(unread["messages"][0]["body"], "a note for later");
 }
 

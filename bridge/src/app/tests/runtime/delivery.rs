@@ -856,7 +856,7 @@ async fn authenticated_listener_rejects_rotated_and_wrong_tokens_and_keeps_canon
             json!({
                 "task_id": agent_id,
                 "session_token": token,
-                "request": { "action": "read_unread_messages" }
+                "request": { "action": "set_topic", "topic": "authentication" }
             }),
         )
         .await;
@@ -871,7 +871,7 @@ async fn authenticated_listener_rejects_rotated_and_wrong_tokens_and_keeps_canon
         json!({
             "task_id": agent_id,
             "session_token": current_token,
-            "request": { "action": "read_unread_messages" }
+            "request": { "action": "set_topic", "topic": "authentication" }
         }),
     )
     .await;

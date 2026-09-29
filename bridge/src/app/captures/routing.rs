@@ -196,10 +196,7 @@ impl AppState {
         // session would leave two artifacts and one record naming one of them.
         // The user is not bound by this: rerouting is exactly the act of
         // choosing a second destination, and it settles the first one.
-        if matches!(
-            action,
-            BridgeAction::CreateTask { .. } | BridgeAction::DispatchBranch { .. }
-        ) {
+        if matches!(action, BridgeAction::DispatchBranch { .. }) {
             self.require_undecided(capture_id)?;
         }
         match action {
@@ -210,17 +207,6 @@ impl AppState {
                 agent_id,
                 limit,
             } => self.router_read_conversation(&entity_id, agent_id.as_deref(), limit),
-            BridgeAction::CreateTask {
-                project_id,
-                goal,
-                rationale,
-            } => self.route_to_task(
-                capture_id,
-                &project_id,
-                &goal,
-                rationale,
-                the_dispatch_itself,
-            ),
             BridgeAction::DispatchBranch {
                 project_id,
                 branch,
@@ -309,21 +295,6 @@ impl AppState {
             "conversation_id": address.conversation_id,
             "transcript": self.catch_up_packet(thread, limit, None),
         }))
-    }
-
-    /// Compatibility boundary for callers that still request the retired
-    /// Task destination. Captures remain unrouted and no planning record or
-    /// session is created.
-    pub(in crate::app) fn route_to_task(
-        &mut self,
-        capture_id: &str,
-        project_id: &str,
-        goal: &str,
-        rationale: Option<String>,
-        answer: fn(&crate::capture::Capture, Value) -> Value,
-    ) -> Result<Value, String> {
-        let _ = (capture_id, project_id, goal, rationale, answer);
-        Err(crate::app::tasks::TASKS_RETIRED_ERROR.to_string())
     }
 
     /// The confident destination: an agent on a branch, working. One call, and

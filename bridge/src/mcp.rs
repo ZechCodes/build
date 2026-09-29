@@ -107,10 +107,6 @@ pub struct Handled {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum BridgeAction {
-    ReadUnreadMessages,
-    ReadOperationMessages {
-        operation_id: String,
-    },
     PostThreadMessage {
         /// Whether the agent keeps working after this post (a progress note)
         /// rather than handing the turn back. See the tool description.
@@ -161,12 +157,6 @@ pub enum BridgeAction {
         entity_id: String,
         agent_id: Option<String>,
         limit: usize,
-    },
-    /// File an inert task: a record, no worktree, no agent. Router only.
-    CreateTask {
-        project_id: String,
-        goal: String,
-        rationale: Option<String>,
     },
     /// Put an agent on a branch with an instruction. Router only.
     DispatchBranch {
@@ -280,10 +270,9 @@ pub enum BridgeAction {
 
     // ---------------------------------------------------- task tracker ---
     // The per-project task tracker (spec: Tasks), on the coding and project
-    // surfaces alike. Every one of them is `Tracker`-prefixed so it cannot be
-    // read as `CreateTask` above, which is the ROUTER's and belongs to the
-    // retired plan flow — the two share a tool NAME on disjoint surfaces, the
-    // way `post_thread_message` already does, and nothing else.
+    // surfaces alike. Every one of them is `Tracker`-prefixed, the name the
+    // tracker's actions have carried since the router's own `CreateTask` went
+    // with the retired plan flow.
     //
     // None of these takes a project or an author. The scope is the calling
     // agent's own project, and the author is the calling agent; a call that
@@ -410,8 +399,6 @@ impl BridgeAction {
     /// The tool this action came from, for errors that have to name it.
     pub fn tool_name(&self) -> &'static str {
         match self {
-            BridgeAction::ReadUnreadMessages => "read_unread_messages",
-            BridgeAction::ReadOperationMessages { .. } => "read_unread_messages",
             BridgeAction::PostThreadMessage { .. } => "post_thread_message",
             BridgeAction::SearchConversation { .. } => "search_conversation",
             BridgeAction::SetTopic { .. } => "set_topic",
@@ -422,7 +409,6 @@ impl BridgeAction {
             BridgeAction::ListProjects => "list_projects",
             BridgeAction::ListWork => "list_work",
             BridgeAction::ReadConversation { .. } => "read_conversation",
-            BridgeAction::CreateTask { .. } => "create_task",
             BridgeAction::DispatchBranch { .. } => "dispatch_branch",
             BridgeAction::AskUser { .. } => "ask_user",
             BridgeAction::RouterMessage { .. } => "post_thread_message",
@@ -465,9 +451,6 @@ impl BridgeAction {
     /// surface is what [`surface_name`](Self::surface_name) names.
     pub fn surfaces(&self) -> &'static [McpSurface] {
         match self {
-            BridgeAction::ReadUnreadMessages | BridgeAction::ReadOperationMessages { .. } => {
-                &[McpSurface::Coding]
-            }
             BridgeAction::PostThreadMessage { .. }
             | BridgeAction::SearchConversation { .. }
             | BridgeAction::SetTopic { .. }
@@ -478,7 +461,6 @@ impl BridgeAction {
             BridgeAction::ListProjects
             | BridgeAction::ListWork
             | BridgeAction::ReadConversation { .. }
-            | BridgeAction::CreateTask { .. }
             | BridgeAction::DispatchBranch { .. }
             | BridgeAction::AskUser { .. }
             | BridgeAction::RouterMessage { .. } => &[McpSurface::Router],
@@ -3839,8 +3821,10 @@ mod tests {
 
         for (action, name, surface) in [
             (
-                BridgeAction::ReadUnreadMessages,
-                "read_unread_messages",
+                BridgeAction::SetTopic {
+                    topic: "routing".to_string(),
+                },
+                "set_topic",
                 McpSurface::Coding,
             ),
             (

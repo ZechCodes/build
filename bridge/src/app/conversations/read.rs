@@ -1,7 +1,6 @@
 use super::AppState;
-use crate::app::{require_str, WORKING_INDICATOR_NOTICE};
-use crate::operation::THREAD_POST_METHOD;
-use crate::store::{now_rfc3339, Store};
+use crate::app::require_str;
+use crate::store::Store;
 use crate::thread::ThreadDetail;
 use serde_json::{json, Value};
 
@@ -202,75 +201,6 @@ pub(in crate::app) fn conversation_owner_param(params: &Value) -> Result<String,
 }
 
 impl AppState {
-    pub(in crate::app) fn read_operation_messages_for_agent(
-        &mut self,
-        entity_id: &str,
-        agent_id: &str,
-        operation_id: &str,
-    ) -> Result<Value, String> {
-        let receipt = self
-            .operation_receipt(operation_id)?
-            .ok_or_else(|| format!("unknown operation_id: {operation_id}"))?;
-        let delivery = receipt
-            .delivery
-            .as_ref()
-            .ok_or_else(|| "read_unread_messages: operation has no delivery intent".to_string())?;
-        let address = self.resolve_conversation_address(entity_id, Some(agent_id))?;
-        if receipt.method != THREAD_POST_METHOD
-            || delivery.owner_id != entity_id
-            || delivery.agent_id != agent_id
-            || receipt.conversation_id != address.conversation_id
-        {
-            return Err("read_unread_messages: operation does not belong to this agent".into());
-        }
-        let payload = delivery
-            .payload
-            .as_ref()
-            .ok_or_else(|| "read_unread_messages: operation has no bounded payload".to_string())?;
-        let messages = payload.messages.clone();
-        let start = payload.start_sequence;
-        let end = payload.end_sequence;
-        let now = now_rfc3339();
-        let acknowledged_sequence = if let Some(store) = self.store.as_ref() {
-            Some(
-                store
-                    .acknowledge_operation_messages(
-                        &receipt.conversation_id,
-                        operation_id,
-                        start,
-                        end,
-                        &now,
-                    )
-                    .map_err(|error| format!("operation message store: {error}"))?,
-            )
-        } else {
-            None
-        };
-        let result = self.edit_agent_conversation(entity_id, agent_id, |thread, _| {
-            thread.read_operation_messages(operation_id, start, end, &now);
-            if let Some(sequence) = acknowledged_sequence {
-                thread.advance_sequence_to(sequence);
-            }
-            thread.note_operation_read(&now);
-            Ok(json!({
-                "thread_id": thread.id,
-                "agent_id": thread.agent.id,
-                "messages": messages,
-                "working": WORKING_INDICATOR_NOTICE,
-            }))
-        });
-        if let Ok(value) = &result {
-            if value["messages"]
-                .as_array()
-                .is_some_and(|messages| !messages.is_empty())
-            {
-                self.start_agent_working(entity_id, agent_id, &now);
-            }
-            self.observe_conversation_working(entity_id, &now);
-        }
-        result
-    }
-
     /// Answer a history query out of the conversations this agent may read.
     ///
     /// That is its own, and — when it is implementing a Task — the Task's,

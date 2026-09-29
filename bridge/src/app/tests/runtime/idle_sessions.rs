@@ -415,44 +415,6 @@ fn a_pty_quiet_past_the_threshold_is_never_working() {
     );
 }
 
-/// Reading is what STARTS the reviewer's Working indicator (it stamps
-/// seen_at), and only a posted reply stops it. An agent that is never told
-/// that leaves the line running after it has finished — so the read itself
-/// has to say so, in the one place the agent is guaranteed to look.
-#[test]
-fn reading_messages_says_it_started_the_working_indicator() {
-    let mut thread = crate::thread::Thread::new("run-read");
-    thread.post_user("do the thing", None, "2026-08-09T18:00:00Z");
-
-    let read = apply_thread_action(
-        &mut thread,
-        BridgeAction::ReadUnreadMessages,
-        "2026-08-09T18:00:01Z",
-    )
-    .expect("reading succeeds");
-    let notice = read["working"]
-        .as_str()
-        .expect("a read that returned messages explains the indicator it started");
-    assert!(
-        notice.contains("post_thread_message"),
-        "it must name the tool that stops it: {notice}"
-    );
-
-    // Nothing unread: nothing was marked seen, so nothing was started and
-    // there is nothing to explain.
-    let empty = apply_thread_action(
-        &mut thread,
-        BridgeAction::ReadUnreadMessages,
-        "2026-08-09T18:00:02Z",
-    )
-    .expect("an empty read succeeds");
-    assert!(empty["messages"].as_array().unwrap().is_empty());
-    assert!(
-        empty["working"].is_null(),
-        "an empty read starts no indicator: {empty}"
-    );
-}
-
 /// A crash's only explanation is usually the thing the harness printed
 /// before it died — codex refusing to start its required MCP server, a
 /// provider saying the account is out of quota. Reporting a bare exit code

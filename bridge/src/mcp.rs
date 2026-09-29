@@ -2464,7 +2464,7 @@ mod tests {
         let description = v["result"]["tools"][0]["description"].as_str().unwrap();
         let lowered = description.to_lowercase();
         assert!(
-            lowered.contains("only way the user can see")
+            lowered.contains("only way they see what you say")
                 && lowered.contains("always call it once"),
             "the ambiguity carve-out must be stated here, not deferred to a block \
              that compaction removes: {description}"
@@ -2926,6 +2926,105 @@ mod tests {
                 "{description}"
             );
         }
+    }
+
+    /// When an agent involves the user (#232): each surface states the rules
+    /// it carries in the one wording `test_support::user_involvement` holds,
+    /// and none still calls the thread the only place the user reads.
+    #[test]
+    fn every_surface_says_when_to_involve_the_user_in_the_same_words() {
+        use crate::test_support::user_involvement::*;
+        for owner in ["agent-01H", "project-01H"] {
+            let tools = DoneServer::for_owner(owner).tools();
+            let tool = |name: &str| {
+                tools
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|tool| tool["name"] == name)
+                    .unwrap_or_else(|| panic!("{owner} offers {name}"))
+                    .clone()
+            };
+            let text = |value: &Value| value.as_str().unwrap().to_string();
+            let thread = text(&tool("post_thread_message")["description"]);
+            let create = tool("create_task");
+            let comment = tool("comment_task");
+            let assign = tool("assign_task");
+            let expectations: Vec<(&str, String, &[&str])> = vec![
+                (
+                    "post_thread_message",
+                    thread.clone(),
+                    &[ON_A_TASK, ASKED_IN_THREAD, RESULT_ON_TASK],
+                ),
+                (
+                    "create_task",
+                    text(&create["description"]),
+                    &[FLAG_SPLIT, REPORTED],
+                ),
+                (
+                    "create_task.notify_user",
+                    text(&create["inputSchema"]["properties"]["notify_user"]["description"]),
+                    &[WATCH_TASK, REPORTED],
+                ),
+                (
+                    "comment_task",
+                    text(&comment["description"]),
+                    &[ON_A_TASK, REPLY_THERE, ASKED_IN_THREAD, BUILD_ON, FLAG_SPLIT],
+                ),
+                (
+                    "comment_task.notify_user",
+                    text(&comment["inputSchema"]["properties"]["notify_user"]["description"]),
+                    &[WATCH_TASK],
+                ),
+                (
+                    "assign_task.notify_user",
+                    text(&assign["inputSchema"]["properties"]["notify_user"]["description"]),
+                    &[WATCH_TASK, REPORTED],
+                ),
+                (
+                    "assign_task.assignee.notify_user",
+                    text(
+                        &assign["inputSchema"]["properties"]["assignee"]["properties"]
+                            ["notify_user"]["description"],
+                    ),
+                    &[WATCH_AGENT],
+                ),
+                (
+                    "message_agent",
+                    text(&tool("message_agent")["description"]),
+                    &[],
+                ),
+            ];
+            for (name, description, rules) in &expectations {
+                for rule in *rules {
+                    assert!(
+                        says(description, rule),
+                        "{owner} {name} does not say {rule:?}: {description}"
+                    );
+                }
+                for stale in ["only way the user", "only thing the user sees"] {
+                    assert!(
+                        !description.contains(stale),
+                        "{owner} {name} still says {stale:?}: {description}"
+                    );
+                }
+            }
+            assert!(
+                thread.to_lowercase().contains("always call it once"),
+                "{owner}: {thread}"
+            );
+        }
+        let project = DoneServer::for_owner("project-01H").tools();
+        let add = project
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "add_workspace_agent")
+            .unwrap();
+        let flag = add["inputSchema"]["properties"]["notify_user"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(says(flag, WATCH_AGENT), "{flag}");
     }
 
     #[test]

@@ -799,7 +799,7 @@ mod tests {
             let text = collapse_whitespace(template);
             let sentences: &[&str] = if name == "project_agent" {
                 &[
-                    "`post_thread_message` is the only thing the user sees, and it reaches no agent.",
+                    "`post_thread_message` is how the user hears from you in your thread, and it reaches no agent.",
                     "A reply to an agent is a `message_agent` send",
                     "Nothing is forwarded",
                 ]
@@ -970,6 +970,35 @@ mod tests {
     /// tools of its own (#190). The note says which is which before anything
     /// else, so an agent never files steps on the board or thinks TaskCreate
     /// put something there.
+    /// Every template with the task tools says when the user is involved on a
+    /// task (#232), in the one wording the tool descriptions use; the old
+    /// advice to watch whatever the user asked for is gone.
+    #[test]
+    fn every_template_with_the_task_tools_says_when_to_involve_the_user() {
+        use crate::test_support::user_involvement::*;
+        let t = Templates::default();
+        for (name, template) in templates_with_the_task_tools(&t) {
+            for rule in [
+                FLAG_SPLIT,
+                REPORTED,
+                ON_A_TASK,
+                REPLY_THERE,
+                ASKED_IN_THREAD,
+                RESULT_ON_TASK,
+                BUILD_ON,
+            ] {
+                assert!(says(template, rule), "{name} does not say {rule:?}");
+            }
+            assert!(
+                !says(template, "Use it when the user asked for the task"),
+                "{name} still watches what the user asked for"
+            );
+            for stale in ["is the only thing they see", "is the only thing the user sees"] {
+                assert!(!says(template, stale), "{name} still says {stale:?}");
+            }
+        }
+    }
+
     #[test]
     fn the_task_tools_say_a_build_task_is_not_the_harness_own_list() {
         let text = collapse_whitespace(TASK_TOOLS_NOTE);

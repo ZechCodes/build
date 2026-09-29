@@ -271,7 +271,9 @@ fn a_base_branch_git_would_read_as_an_option_is_refused() {
 
     let report = sync_base(&pair.base, "--upload-pack=touch", NOW);
 
-    assert!(!failed(&report).needs_you);
+    let failure = failed(&report);
+    assert!(failure.reason.contains("not a branch name Git accepts"), "{failure:?}");
+    assert!(!report.fetched);
 }
 
 /// The url a remote is checked by is the one git will use, after

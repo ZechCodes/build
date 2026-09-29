@@ -2,7 +2,9 @@
 
 Scope: every client-named Git remote and source folder a project verb hands to
 git or writes into a project (#228): `project.create`, `project.add_source`,
-`project.update_source`, `project.set_remote` and `workspace.add_directory`.
+`project.update_source`, `project.set_remote` and `workspace.add_directory`;
+and the fetch and fast-forward that keep a source's base branch in step with
+its remote (#267: the service, a workspace cut, `project.sync_source`).
 A remote reaches git as a process argument, never through a shell, so the
 threat is git reading the text as something other than a location.
 
@@ -23,3 +25,9 @@ threat is git reading the text as something other than a location.
 | A workspace checkout git will not rewrite is never passed off as moved: its `origin` is read back after every write, and the answer's `checkouts_failed` names it (workspace, path, git's reason) so the SPA can say it is still on the old remote. Nothing is rolled back. | `a_checkout_git_cannot_rewrite_is_reported_and_the_rest_still_move`, `a_checkout_that_keeps_its_remote_when_it_is_taken_off_is_reported`, `a_workspace_copy_git_cannot_rewrite_is_named_in_the_answer`; `names the workspaces a remote change could not reach` (`spa/test/projectSettings.test.js`). |
 | A source label is one bounded line with no control characters. | `an_edit_names_a_real_source_and_something_to_change`. |
 | Everything a source row carries is escaped when the SPA paints it. | `escapes what the project record carries` (`spa/test/projectSettings.test.js`); the cards render every value through `esc`. |
+| A base sync fetches only from a url Build would accept from a client: the one git resolves (after `url.<base>.insteadOf`) is held to `usable_remote_url` before git fetches, and the remote's name is checked against git's rules and placed after `--`. | `a_remote_git_would_rewrite_into_a_helper_is_refused_before_git_fetches`, `a_remote_that_reads_as_an_option_is_refused_before_git_fetches` (`bridge/src/source_sync/tests.rs`). Each fails without the check. |
+| A base sync passes no client text where git reads options: the base branch is checked as a branch name and handed over only inside a full `refs/heads/…` / `refs/remotes/…` name. | `a_base_branch_git_would_read_as_an_option_is_refused`. |
+| A base sync cannot lose work: fetch has no `+`, the checkout moves only by `merge --ff-only` when clean with no operation in progress, and a ref moves only by compare-and-swap `update-ref`. Local commits, uncommitted or staged changes, a branch checked out in another worktree, and a ref that moved meanwhile are left as they are. | `a_base_with_commits_the_remote_does_not_have_is_left_alone`, `uncommitted_changes_in_the_base_checkout_are_never_touched`, `staged_changes_count_as_uncommitted`, `a_merge_in_progress_is_left_alone`, `an_untracked_file_the_fast_forward_would_overwrite_is_kept_and_named`, `a_base_checked_out_in_another_worktree_is_left_alone`, `a_ref_that_moves_between_the_read_and_the_swap_is_not_overwritten`. |
+| A background fetch never prompts and never hangs: no terminal prompt, no askpass program (git's or ssh's), and the whole process group killed at the deadline (10 s at a cut, 30 s otherwise). A remote that wanted a person is left off the timer until someone syncs by hand. | `a_remote_that_wants_a_password_fails_without_asking_for_one` (fails without the unattended environment: the configured askpass ran), `a_fetch_that_never_answers_is_killed_at_its_deadline_and_needs_you`, `a_source_that_needed_you_waits_for_sync_now`. |
+| Credentials git echoes in a url are taken out of every sync reason before it is stored, sent or shown. | `credentials_in_a_url_are_taken_out_of_what_git_said`. |
+| A sync's reason is escaped when the SPA paints it. | `escapes what a sync's reason carries` (`spa/test/projectSettings.test.js`). |

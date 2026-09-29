@@ -258,6 +258,10 @@ runtime that starts them.
   base branch, remote and (past the first) folder. See Projects and sources.
   The SPA's settings sheet offers those edits only on a machine whose
   greeting names the verb.
+  3.3.0 adds `sources.syncBase` (#267): each source row carries `sync_base`
+  and `sync` (what the last sync of its base concluded),
+  `project.update_source` takes `sync_base`, and `project.sync_source` asks
+  for a sync now. See Projects and sources.
   The SPA's adapter claims `>=2.0.0 <4.0.0`: it calls nothing a 2.x bridge
   lacks (what 2.x added after 2.0.0 is capability-gated), so the app can
   roll before the bridge.
@@ -388,6 +392,32 @@ project's home (orchestrator, registry identity) and cannot move.
   is not rolled back or hidden: `checkouts_failed` names it
   (`workspace_id`, `path`, git's `reason`), still on the old remote, and the
   source's own change stands.
+
+**Keeping a base in step with its remote** (#267). A Git source whose
+`sync_base` is on (the default for new sources and, unset, for existing ones:
+`SYNC_BASE_FOR_NEW_SOURCES` and `SYNC_BASE_FOR_EXISTING_SOURCES` in
+`bridge/src/app/projects/mod.rs`) has its base branch fetched and
+fast-forwarded, never merged, rebased, reset or forced
+(`bridge/src/source_sync.rs`). The fetch takes the base branch alone, from
+the url git resolves (rewrites applied) once it passes `usable_remote_url`,
+with no prompt of any kind (`run_git_unattended` in
+`bridge/src/git_process.rs`) and killed at its deadline. Where the base is
+checked out in the source's own clean checkout, `merge --ff-only` moves it
+with its files; where it is checked out nowhere, a compare-and-swap
+`update-ref` moves the ref alone. Local commits, uncommitted changes, an
+operation in progress, the branch checked out in another worktree, and a
+remote without the branch are reported and left alone. Three things sync
+(`bridge/src/app/projects/base_sync.rs`): a service, 30 s after startup and
+then every five minutes, with the app lock released; every workspace cut,
+first, for each source with the setting on (10 s, the sources side by side,
+and the fetch skipped when one landed in the last minute), which goes ahead
+from the base as it stood and puts `warnings` on its answer, so an agent's
+`create_workspace` or `assign_task` hears them; and `project.sync_source`
+(Sync now). A remote that wanted a person or never answered is left off the
+timer until one of the other two syncs it. One sync runs per checkout at a
+time. Each row's `sync` is kept in the store's `meta` table
+(`bridge/src/store/source_sync.rs`), and a sync that lands notes the project
+list changed.
 
 `project.set_remote` is the same edit on the first source, kept for older
 clients. Every remote a client names, on any verb, passes

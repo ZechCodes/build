@@ -6,7 +6,7 @@ use crate::app::{
 };
 use crate::isolation::{Isolation, IsolationAvailability};
 use crate::lifecycle::{PendingRow, WorktreeChange};
-use crate::worktree::{git_remote_origin, ExternalWorktree};
+use crate::worktree::ExternalWorktree;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 
@@ -490,22 +490,19 @@ impl ProjectListRow {
         } else {
             Isolation::default()
         };
+        let sources = self
+            .sources
+            .iter()
+            .map(crate::app::projects::ProjectSource::wire)
+            .collect::<Vec<_>>();
         json!({
             "project_id": self.project_id,
             "name": self.name,
             "path": self.repo_path.display().to_string(),
             "base_branch": self.base_branch,
             "is_git": self.is_git,
-            "remote": self.is_git.then(|| git_remote_origin(&self.repo_path)).flatten(),
-            "sources": self.sources.iter().enumerate().map(|(index, source)| json!({
-                "id": source.id,
-                "name": source.name,
-                "mount": source.mount,
-                "path": source.path.display().to_string(),
-                "is_git": source.is_git,
-                "base_branch": source.base_branch,
-                "remote": source.remote.clone().or_else(|| (index == 0 && source.is_git).then(|| git_remote_origin(&source.path)).flatten()),
-            })).collect::<Vec<_>>(),
+            "remote": crate::app::projects::primary_remote(&sources),
+            "sources": sources,
             "isolation": self.isolation,
             "isolation_default": self.isolation_default,
             "isolation_effective": effective,

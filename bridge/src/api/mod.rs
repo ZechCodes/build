@@ -26,7 +26,7 @@ use std::collections::BTreeSet;
 /// and the legacy `board.changed`/`entity.changed` pushes.
 /// 3.1.0 adds `agents.createdBy`: an agent's digest names the agent whose
 /// Build MCP call made it (#216).
-pub const API_VERSION: &str = "3.1.0";
+pub const API_VERSION: &str = "3.2.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.

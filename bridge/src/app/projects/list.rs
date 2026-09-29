@@ -1,4 +1,4 @@
-use super::Project;
+use super::{Project, ProjectSource};
 use crate::app::{AppState, DeferredRead, DeferredWork, ProjectListRow, ReadSubject};
 use serde_json::{json, Value};
 
@@ -73,28 +73,25 @@ impl AppState {
     /// inherits), what the account chose, what its next checkout will be, and
     /// what its volume can make.
     ///
-    /// The remote is passed in rather than read here: a verb that just wrote it
-    /// knows what it wrote, and every read of it is a git subprocess that has
-    /// to be made somewhere the caller can see.
-    pub(in crate::app) fn project_json(&self, p: &Project, remote: Option<String>) -> Value {
+    /// A project has no remote of its own: each source's is its checkout's
+    /// `origin` ([`ProjectSource::origin`]). The row's `remote` is its first
+    /// source's, kept for clients that predate per-source remotes.
+    pub(in crate::app) fn project_json(&self, p: &Project) -> Value {
         let available = p.orch.worktrees().availability();
         let effective = self.decide_isolation(p, &available).isolation;
+        let sources = p
+            .sources
+            .iter()
+            .map(ProjectSource::wire)
+            .collect::<Vec<_>>();
         json!({
             "project_id": p.id,
             "name": p.name,
             "path": p.repo_path.display().to_string(),
             "base_branch": p.base_branch,
             "is_git": p.is_git,
-            "remote": remote,
-            "sources": p.sources.iter().enumerate().map(|(index, source)| json!({
-                "id": source.id,
-                "name": source.name,
-                "mount": source.mount,
-                "path": source.path.display().to_string(),
-                "is_git": source.is_git,
-                "base_branch": source.base_branch,
-                "remote": source.remote.as_ref().or(if index == 0 { remote.as_ref() } else { None }),
-            })).collect::<Vec<_>>(),
+            "remote": primary_remote(&sources),
+            "sources": sources,
             "isolation": p.isolation,
             "isolation_default": self.isolation,
             "isolation_effective": effective,
@@ -103,4 +100,13 @@ impl AppState {
             "last_activity_ms": self.session_summary(&p.id).last_activity_ms,
         })
     }
+}
+
+/// The remote a client that predates per-source remotes shows for the whole
+/// project: its first source's.
+pub(in crate::app) fn primary_remote(sources: &[Value]) -> Value {
+    sources
+        .first()
+        .map(|source| source["remote"].clone())
+        .unwrap_or(Value::Null)
 }

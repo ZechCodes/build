@@ -1,5 +1,6 @@
-// The projects one machine holds: what is registered there, what each one
-// pushes to, and adding another.
+// The projects one machine holds: what is registered there, the folders each
+// is cut from, and adding another. A project has no remote of its own; each of
+// its sources has one, shown and edited in the project's settings (#228).
 //
 // A project is a fact of the daemon that registered it — its path, its base
 // branch, the bare id that daemon minted — so every read and write here is that
@@ -9,7 +10,7 @@
 import { esc } from "../core/text.js";
 import { isolationLabel } from "../core/isolation.js";
 import { openNewRepo } from "../sheets/newRepo.js";
-import { openSetRemote } from "../sheets/setRemote.js";
+import { openProjectSettings } from "../sheets/projectSettings.js";
 import { App } from "../app.js";
 import { creationCall } from "../core/inboxDevices.js";
 import { deviceProjectsAddress, projectSettingsAddress, watchSettingsRecord } from "../core/settingsRecords.js";
@@ -36,8 +37,13 @@ const projectRowHtml = (project) => `
   <div class="projrow"><span class="pname">${esc(project.name)}</span>
     <span class="ppath">${esc(project.path)}</span>
     <span class="dim" style="font-size:11.5px">${projectFactsHtml(project)}</span>
-    <span class="premote">${project.remote ? "⇄ " + esc(project.remote) : '<span class="dim">no remote</span>'}</span>
-    ${project.is_git === false ? "" : `<button class="btn mini setremote" data-id="${esc(project.project_id)}">Set remote…</button>`}</div>`;
+    <span class="dim" style="font-size:11.5px;white-space:nowrap">${sourceCountText(project)}</span>
+    <button class="btn mini projsettings" data-id="${esc(project.project_id)}">Settings…</button></div>`;
+
+const sourceCountText = (project) => {
+  const count = (project.sources || []).length || 1;
+  return count === 1 ? "1 source" : `${count} sources`;
+};
 
 /**
  * Mount the panel on one machine's caller, and read what that machine holds.
@@ -52,7 +58,7 @@ export async function mountDeviceProjects(host, { callRpc, deviceId, deviceName,
   const record = watchSettingsRecord(deviceProjectsAddress(deviceId), (projects) => {
     if (!panel.isConnected || !Array.isArray(projects)) return;
     list.innerHTML = projects.map(projectRowHtml).join("") || '<div class="dim" style="font-size:13px">No projects yet.</div>';
-    wireRemotes(projects);
+    wireSettings();
   }, { owner: panel });
 
   const refresh = async () => {
@@ -68,14 +74,10 @@ export async function mountDeviceProjects(host, { callRpc, deviceId, deviceName,
     }
   };
 
-  const wireRemotes = (projects) => {
-    list.querySelectorAll(".setremote").forEach((button) => {
+  const wireSettings = () => {
+    list.querySelectorAll(".projsettings").forEach((button) => {
       button.onclick = () =>
-        openSetRemote(
-          projects.find((project) => project.project_id === button.dataset.id),
-          refresh,
-          { callRpc, deviceId },
-        );
+        openProjectSettings(button.dataset.id, { callRpc, deviceId, onDeleted: refresh });
     });
   };
 

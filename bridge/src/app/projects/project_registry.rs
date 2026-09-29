@@ -143,6 +143,38 @@ impl ProjectRegistry {
         Ok(primary)
     }
 
+    /// Write an edited source's record, when the source is still where the
+    /// edit found it: a source removed or moved while its git ran is not
+    /// resurrected. The first source's base is the project's.
+    pub(in crate::app) fn update_source(
+        &mut self,
+        project_id: &str,
+        source_id: &str,
+        expected_path: &Path,
+        record: super::SourceRecord,
+    ) -> Result<(), String> {
+        let project = self
+            .projects
+            .iter_mut()
+            .find(|project| project.id == project_id)
+            .ok_or_else(|| format!("unknown project: {project_id}"))?;
+        let source = project
+            .sources
+            .iter_mut()
+            .find(|source| source.id == source_id && source.path == expected_path)
+            .ok_or_else(|| format!("source {source_id} changed while it was being edited"))?;
+        if let Some(name) = record.name {
+            source.name = name;
+        }
+        source.path = record.path;
+        source.is_git = record.is_git;
+        source.base_branch = record.base_branch;
+        if project.repo_path == source.path {
+            project.base_branch = source.base_branch.clone();
+        }
+        Ok(())
+    }
+
     pub(in crate::app) fn set_sources(
         &mut self,
         project_id: &str,

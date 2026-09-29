@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-// The ⋯ menu's Project settings sheet: what the bridge actually holds for a
-// project (name, path, base branch) plus the one project-level mutation it
-// exposes for an existing project — project.set_remote.
+// The ⋯ menu's Project settings sheet: the project's name, a card per source
+// (each with its own label, folder, base branch and remote), isolation, and
+// deletion. A project has no remote of its own (#228): each source's is its
+// checkout's origin, edited on that source's card.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { openProjectSettings } from "../src/sheets/projectSettings.js";
@@ -9,6 +10,7 @@ import { wipeCache, writeCached } from "../src/core/localCache.js";
 import { wipeUiRecords, writeUiRecord, readUiRecord } from "../src/core/localUiStore.js";
 import { uiAddress } from "../src/core/localUiState.js";
 import { projectSettingsAddress } from "../src/core/settingsRecords.js";
+import { sourceEditSupportAddress } from "../src/core/sourceEditSupport.js";
 
 const confirmAction = vi.fn();
 vi.mock("../src/core/confirm.js", () => ({ confirmAction: (...args) => confirmAction(...args) }));
@@ -19,6 +21,22 @@ const PROJECT = {
   path: "/Users/z/Projects/build",
   base_branch: "main",
   remote: "git@github.com:example/build.git",
+  sources: [
+    { id: "source-1", name: "build", mount: "build", path: "/Users/z/Projects/build", is_git: true, base_branch: "main", remote: "git@github.com:example/build.git" },
+    { id: "source-2", name: "docs", mount: "docs", path: "/Users/z/Projects/docs", is_git: true, base_branch: "main", remote: null },
+  ],
+};
+
+const DRAFT = uiAddress({ deviceId: "dev-1", entityId: PROJECT.project_id, view: "project-settings", kind: "draft" });
+
+/** A machine whose greeting named `project.update_source`. */
+const editsInPlace = () => writeCached(sourceEditSupportAddress("dev-1"), { editsSources: true });
+
+const card = (sourceId) => [...document.querySelectorAll("#sheet .ps-source")].find((element) => element.dataset.sourceId === sourceId);
+const input = (sourceId, field) => card(sourceId)?.querySelector(`input[data-field="${field}"]`);
+const type = (element, value) => {
+  element.value = value;
+  element.dispatchEvent(new Event("input"));
 };
 
 beforeEach(async () => {
@@ -29,52 +47,205 @@ beforeEach(async () => {
 });
 
 describe("openProjectSettings", () => {
-  it("restores and updates an unsaved remote through the local cache", async () => {
-    const address = uiAddress({ deviceId: "dev-1", entityId: PROJECT.project_id, view: "project-settings", kind: "draft" });
+  it("lays the sheet out as General, Sources, Isolation and Danger zone", async () => {
+    const callRpc = vi.fn().mockResolvedValue({ projects: [PROJECT] });
+    openProjectSettings("proj-1", { callRpc });
+    await vi.waitFor(() => expect(document.querySelector("#psproject")?.value).toBe("build"));
+    const sheet = document.getElementById("sheet");
+    expect(sheet.querySelector(":scope > .settings-sheet-frame > .settings-sheet-header h3").textContent).toBe("Project settings");
+    expect([...sheet.querySelectorAll(".settings-sheet-body > .ps-section > h4")].map((h) => h.textContent))
+      .toEqual(["General", "Sources", "Isolation", "Danger zone"]);
+    expect(sheet.querySelector("#psdelete").closest(".ps-section").querySelector("h4").textContent).toBe("Danger zone");
+    expect(sheet.querySelector("[data-isolation=select]").closest(".ps-section").querySelector("h4").textContent).toBe("Isolation");
+  });
+
+  it("shows the project's name read-only, as the project's and not a source's, and no project-level remote", async () => {
+    const callRpc = vi.fn().mockResolvedValue({ projects: [PROJECT] });
+    openProjectSettings("proj-1", { callRpc });
+    await vi.waitFor(() => expect(document.querySelector("#psproject")?.value).toBe("build"));
+    const general = document.querySelector("#psproject").closest(".ps-section");
+    expect(general.querySelector("label[for=psproject]").textContent).toBe("Project name");
+    expect(document.querySelector("#psproject").readOnly).toBe(true);
+    expect(general.querySelector(".ps-source")).toBeNull();
+    expect(document.querySelector("#psremote")).toBeNull();
+    expect(document.querySelector("#pspath")).toBeNull();
+    expect(document.querySelector("#psbranch")).toBeNull();
+    expect(document.querySelector("#sheet").textContent).not.toContain("Origin remote");
+  });
+
+  it("gives every source a card holding its label, folder, base branch, remote and remove", async () => {
+    await editsInPlace();
+    const callRpc = vi.fn().mockResolvedValue({ projects: [PROJECT] });
+    openProjectSettings("proj-1", { callRpc, deviceId: "dev-1" });
+    await vi.waitFor(() => expect(input("source-2", "name")?.readOnly).toBe(false));
+    expect(document.querySelectorAll("#sheet .ps-source")).toHaveLength(2);
+    expect(input("source-1", "remote").value).toBe("git@github.com:example/build.git");
+    expect(input("source-2", "remote").value).toBe("");
+    expect(input("source-2", "path").value).toBe("/Users/z/Projects/docs");
+    expect(input("source-2", "base_branch").value).toBe("main");
+    expect(input("source-1", "path").readOnly).toBe(true);
+    expect(card("source-1").textContent).toContain("project's home");
+    expect(input("source-2", "path").readOnly).toBe(false);
+    expect(card("source-2").querySelector('[data-remove-source="source-2"]')).not.toBeNull();
+    expect(card("source-2").querySelector('[data-save-source="source-2"]').disabled).toBe(true);
+    expect(card("source-2").querySelector(".ps-source-tag").textContent).toBe("Git repository");
+  });
+
+  it("shows a plain folder without a base branch or remote", async () => {
+    await editsInPlace();
+    const folder = { ...PROJECT, sources: [PROJECT.sources[0], { id: "source-3", name: "assets", mount: "assets", path: "/a", is_git: false }] };
+    openProjectSettings("proj-1", { callRpc: vi.fn().mockResolvedValue({ projects: [folder] }), deviceId: "dev-1" });
+    await vi.waitFor(() => expect(card("source-3")).toBeTruthy());
+    expect(input("source-3", "base_branch")).toBeNull();
+    expect(input("source-3", "remote")).toBeNull();
+    expect(card("source-3").querySelector(".ps-source-tag").textContent).toBe("Folder");
+  });
+
+  it("saves only what changed on a card through project.update_source, and says how many checkouts followed", async () => {
+    await editsInPlace();
+    const saved = {
+      ...PROJECT,
+      sources: [PROJECT.sources[0], { ...PROJECT.sources[1], name: "Docs", remote: "git@github.com:example/docs.git" }],
+      checkouts_updated: 2,
+    };
+    const callRpc = vi.fn(async (method) => (method === "project.list" ? { projects: [PROJECT] } : saved));
+    openProjectSettings("proj-1", { callRpc, deviceId: "dev-1" });
+    await vi.waitFor(() => expect(input("source-2", "name")?.readOnly).toBe(false));
+    type(input("source-2", "name"), " Docs ");
+    type(input("source-2", "remote"), "git@github.com:example/docs.git");
+    const save = card("source-2").querySelector("[data-save-source]");
+    expect(save.disabled).toBe(false);
+    save.click();
+    await vi.waitFor(() => expect(card("source-2").querySelector("[data-source-status]").textContent).toContain("2 existing workspace checkouts"));
+    expect(callRpc).toHaveBeenCalledWith("project.update_source", {
+      project_id: "proj-1",
+      source_id: "source-2",
+      name: "Docs",
+      remote: "git@github.com:example/docs.git",
+    });
+    expect(input("source-2", "name").value).toBe("Docs");
+    expect(card("source-2").querySelector("[data-save-source]").disabled).toBe(true);
+    expect(document.getElementById("scrim").classList.contains("show")).toBe(true);
+  });
+
+  it("names the workspaces a remote change could not reach", async () => {
+    await editsInPlace();
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "workspaces" }, [
+      { id: "ws-1", name: "Fix <login>", project_id: "proj-1" },
+    ]);
+    const saved = {
+      ...PROJECT,
+      sources: [PROJECT.sources[0], { ...PROJECT.sources[1], remote: "git@github.com:example/docs.git" }],
+      checkouts_updated: 1,
+      checkouts_failed: [
+        { workspace_id: "ws-1", path: "/w/ws-1/docs", reason: "could not lock config file" },
+        { workspace_id: "ws-gone", path: "/w/ws-gone/docs", reason: "could not lock config file" },
+      ],
+    };
+    const callRpc = vi.fn(async (method) => (method === "project.list" ? { projects: [PROJECT] } : saved));
+    openProjectSettings("proj-1", { callRpc, deviceId: "dev-1" });
+    await vi.waitFor(() => expect(input("source-2", "remote")?.readOnly).toBe(false));
+    type(input("source-2", "remote"), "git@github.com:example/docs.git");
+    card("source-2").querySelector("[data-save-source]").click();
+    const warning = () => card("source-2").querySelector("[data-source-warning]");
+    await vi.waitFor(() => expect(warning().textContent).toContain("old remote"));
+    expect(warning().textContent).toBe(
+      "2 existing workspaces still use the old remote because Git could not change it there: Fix <login>, /w/ws-gone/docs.",
+    );
+    expect(warning().innerHTML).toContain("Fix &lt;login&gt;");
+    expect(card("source-2").querySelector("[data-source-status]").textContent).toContain("1 existing workspace checkout now uses");
+  });
+
+  it("keeps the card's edits and names the refusal on that card", async () => {
+    await editsInPlace();
+    const callRpc = vi.fn(async (method) => {
+      if (method === "project.list") return { projects: [PROJECT] };
+      throw new Error("A Git remote cannot start with a dash.");
+    });
+    openProjectSettings("proj-1", { callRpc, deviceId: "dev-1" });
+    await vi.waitFor(() => expect(input("source-2", "remote")?.readOnly).toBe(false));
+    type(input("source-2", "remote"), "--upload-pack=sh");
+    card("source-2").querySelector("[data-save-source]").click();
+    await vi.waitFor(() => expect(card("source-2").querySelector("[data-source-error]").textContent).toContain("dash"));
+    expect(input("source-2", "remote").value).toBe("--upload-pack=sh");
+    expect(card("source-1").querySelector("[data-source-error]").textContent).toBe("");
+    expect(card("source-2").querySelector("[data-save-source]").disabled).toBe(false);
+  });
+
+  it("on a bridge without project.update_source, edits only the first source's remote, through project.set_remote", async () => {
+    const callRpc = vi.fn(async (method) => (method === "project.list" ? { projects: [PROJECT] } : PROJECT));
+    openProjectSettings("proj-1", { callRpc, deviceId: "dev-1" });
+    await vi.waitFor(() => expect(input("source-1", "remote")).toBeTruthy());
+    expect(input("source-1", "remote").readOnly).toBe(false);
+    expect(input("source-1", "name").readOnly).toBe(true);
+    expect(input("source-2", "remote").readOnly).toBe(true);
+    expect(input("source-2", "base_branch").readOnly).toBe(true);
+    expect(card("source-2").querySelector("[data-save-source]")).toBeNull();
+    expect(document.querySelector("#sheet").textContent).toContain("Update Build on this device");
+    type(input("source-1", "remote"), "git@github.com:example/other.git");
+    card("source-1").querySelector("[data-save-source]").click();
+    await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("project.set_remote", {
+      project_id: "proj-1",
+      url: "git@github.com:example/other.git",
+    }));
+  });
+
+  it("offers the in-place edits as soon as a greeting says the machine takes them", async () => {
+    const callRpc = vi.fn(async () => ({ projects: [PROJECT] }));
+    openProjectSettings("proj-1", { callRpc, deviceId: "dev-1" });
+    await vi.waitFor(() => expect(input("source-2", "name")?.readOnly).toBe(true));
+    await editsInPlace();
+    await vi.waitFor(() => expect(input("source-2", "name").readOnly).toBe(false));
+  });
+
+  it("restores and updates an unsaved card edit through the local cache", async () => {
+    await editsInPlace();
     await writeCached(projectSettingsAddress("dev-1", PROJECT.project_id), PROJECT);
-    await writeUiRecord(address, { remote: "cached remote", source: null, focusId: "" });
+    await writeUiRecord(DRAFT, { edits: { "source-2": { remote: "cached remote" } }, source: null, focusId: "" });
     openProjectSettings(PROJECT.project_id, { callRpc: vi.fn(() => new Promise(() => {})), deviceId: "dev-1" });
-    await vi.waitFor(() => expect(document.querySelector("#psremote")?.value).toBe("cached remote"));
-    await writeUiRecord(address, { remote: "another tab remote", source: null, focusId: "" });
-    await vi.waitFor(() => expect(document.querySelector("#psremote").value).toBe("another tab remote"));
-    const remote = document.querySelector("#psremote");
-    remote.value = "typed remote";
-    remote.dispatchEvent(new Event("input"));
-    await vi.waitFor(async () => expect((await readUiRecord(address))?.value.remote).toBe("typed remote"));
+    await vi.waitFor(() => expect(input("source-2", "remote")?.value).toBe("cached remote"));
+    expect(card("source-2").querySelector("[data-save-source]").disabled).toBe(false);
+    await writeUiRecord(DRAFT, { edits: { "source-2": { remote: "another tab remote" } }, source: null, focusId: "" });
+    await vi.waitFor(() => expect(input("source-2", "remote").value).toBe("another tab remote"));
+    type(input("source-2", "remote"), "typed remote");
+    await vi.waitFor(async () => expect((await readUiRecord(DRAFT))?.value.edits["source-2"].remote).toBe("typed remote"));
     document.querySelector("#pscancel").click();
     openProjectSettings(PROJECT.project_id, { callRpc: vi.fn(() => new Promise(() => {})), deviceId: "dev-1" });
-    await vi.waitFor(() => expect(document.querySelector("#psremote")?.value).toBe("typed remote"));
+    await vi.waitFor(() => expect(input("source-2", "remote")?.value).toBe("typed remote"));
   });
-  it("keeps a focused remote draft when a delayed project.list repaints the sheet", async () => {
+
+  it("keeps a focused card edit when a delayed project.list repaints the sheet", async () => {
+    await editsInPlace();
     await writeCached(projectSettingsAddress("dev-1", PROJECT.project_id), PROJECT);
     let answerList;
     const callRpc = vi.fn(() => new Promise((resolve) => { answerList = resolve; }));
     openProjectSettings(PROJECT.project_id, { callRpc, deviceId: "dev-1" });
-    await vi.waitFor(() => expect(document.querySelector("#psremote")?.value).toBe(PROJECT.remote));
-    const remote = document.querySelector("#psremote");
+    await vi.waitFor(() => expect(input("source-2", "remote")?.readOnly).toBe(false));
+    const remote = input("source-2", "remote");
     remote.value = "my unsaved remote";
     remote.focus();
     remote.setSelectionRange(3, 3);
     answerList({ projects: [{ ...PROJECT, name: "from bridge" }] });
     await vi.waitFor(() => expect(document.querySelector("#psproject").value).toBe("from bridge"));
-    expect(document.querySelector("#psremote").value).toBe("my unsaved remote");
-    expect(document.activeElement).toBe(document.querySelector("#psremote"));
-    expect(document.querySelector("#psremote").selectionStart).toBe(3);
+    expect(input("source-2", "remote").value).toBe("my unsaved remote");
+    expect(document.activeElement).toBe(input("source-2", "remote"));
+    expect(input("source-2", "remote").selectionStart).toBe(3);
   });
 
-  it("keeps a focused remote draft through a project cache announcement", async () => {
+  it("keeps a focused card edit through a project cache announcement", async () => {
+    await editsInPlace();
     const address = projectSettingsAddress("dev-1", PROJECT.project_id);
     await writeCached(address, PROJECT);
     const sheet = openProjectSettings(PROJECT.project_id, { callRpc: vi.fn(() => new Promise(() => {})), deviceId: "dev-1" });
-    await vi.waitFor(() => expect(document.querySelector("#psremote")?.value).toBe(PROJECT.remote));
-    const remote = document.querySelector("#psremote");
-    remote.value = "my unsaved remote";
-    remote.focus();
+    await vi.waitFor(() => expect(input("source-2", "name")?.readOnly).toBe(false));
+    const name = input("source-2", "name");
+    name.value = "my unsaved label";
+    name.focus();
     await writeCached(address, { ...PROJECT, name: "renamed" });
     await sheet.whenCachePainted();
     expect(document.querySelector("#psproject").value).toBe("renamed");
-    expect(document.querySelector("#psremote").value).toBe("my unsaved remote");
-    expect(document.activeElement).toBe(document.querySelector("#psremote"));
+    expect(input("source-2", "name").value).toBe("my unsaved label");
+    expect(document.activeElement).toBe(input("source-2", "name"));
   });
 
   it("keeps an unfinished add-remote form when the project record changes", async () => {
@@ -110,6 +281,7 @@ describe("openProjectSettings", () => {
     back.click();
     await vi.waitFor(() => expect(document.querySelector("#psproject")?.value).toBe("renamed"));
   });
+
   it("paints the cached project while project.list has no answer", async () => {
     await writeCached(projectSettingsAddress("dev-1", PROJECT.project_id), PROJECT);
     const callRpc = vi.fn(() => new Promise(() => {}));
@@ -118,68 +290,22 @@ describe("openProjectSettings", () => {
     expect(callRpc).toHaveBeenCalledWith("project.list");
   });
 
-  it("shows the project's identity read-only and its remote as the one editable field", async () => {
-    const callRpc = vi.fn().mockResolvedValue({ projects: [PROJECT] });
-    openProjectSettings("proj-1", { callRpc });
-    await vi.waitFor(() => expect(document.querySelector("#psproject")?.value).toBe("build"));
-    expect(document.getElementById("scrim").classList.contains("show")).toBe(true);
-    const sheet = document.getElementById("sheet");
-    expect(sheet.querySelector(":scope > .settings-sheet-frame > .settings-sheet-header h3").textContent).toBe("Project settings");
-    expect(sheet.querySelector(".settings-sheet-body #psproject")).not.toBeNull();
-    expect(sheet.querySelector("#psproject").value).toBe("build");
-    expect(sheet.querySelector("#pspath").value).toBe("/Users/z/Projects/build");
-    expect(sheet.querySelector("#psbranch").value).toBe("main");
-    expect(sheet.querySelector("#psremote").value).toBe("git@github.com:example/build.git");
-    expect(sheet.querySelector("#psproject").readOnly).toBe(true);
-    expect(sheet.querySelector("#pspath").readOnly).toBe(true);
-    expect(sheet.querySelector("#psbranch").readOnly).toBe(true);
-  });
-
   it("asks only the caller it was handed", async () => {
     // Whoever opens the sheet has already resolved which machine this project
     // is on, and hands the sheet that machine's caller: the id it sends is the
     // bare one that machine's daemon minted, so asking anybody else would read
     // one device's project through another's bridge.
-    const callRpc = vi.fn().mockResolvedValue({ projects: [PROJECT] });
-    openProjectSettings("proj-1", { callRpc });
-    await vi.waitFor(() => expect(document.querySelector("#psremote")).toBeTruthy());
-    document.getElementById("psremote").value = "git@github.com:example/other.git";
-    document.getElementById("pssave").click();
-    await vi.waitFor(() => expect(document.querySelector("#scrim").classList.contains("show")).toBe(false));
-    expect(callRpc).toHaveBeenCalledWith("project.set_remote", {
+    await editsInPlace();
+    const callRpc = vi.fn(async (method) => (method === "project.list" ? { projects: [PROJECT] } : PROJECT));
+    openProjectSettings("proj-1", { callRpc, deviceId: "dev-1" });
+    await vi.waitFor(() => expect(input("source-2", "base_branch")?.readOnly).toBe(false));
+    type(input("source-2", "base_branch"), "develop");
+    card("source-2").querySelector("[data-save-source]").click();
+    await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("project.update_source", {
       project_id: "proj-1",
-      url: "git@github.com:example/other.git",
-    });
-  });
-
-  it("saves the remote through the bridge's own method and closes", async () => {
-    const callRpc = vi.fn().mockImplementation((method) =>
-      method === "project.list" ? Promise.resolve({ projects: [PROJECT] }) : Promise.resolve({}),
-    );
-    openProjectSettings("proj-1", { callRpc });
-    await vi.waitFor(() => expect(document.querySelector("#psremote")).toBeTruthy());
-    document.getElementById("psremote").value = "git@github.com:example/other.git";
-    document.getElementById("pssave").click();
-    await vi.waitFor(() => expect(document.querySelector("#scrim").classList.contains("show")).toBe(false));
-    expect(callRpc).toHaveBeenCalledWith("project.set_remote", {
-      project_id: "proj-1",
-      url: "git@github.com:example/other.git",
-    });
-    expect(document.getElementById("scrim").classList.contains("show")).toBe(false);
-  });
-
-  it("keeps the sheet open and names the failure when the save is rejected", async () => {
-    const callRpc = vi.fn().mockImplementation((method) =>
-      method === "project.list"
-        ? Promise.resolve({ projects: [PROJECT] })
-        : Promise.reject(new Error("not a git remote")),
-    );
-    openProjectSettings("proj-1", { callRpc });
-    await vi.waitFor(() => expect(document.querySelector("#pssave")).toBeTruthy());
-    document.getElementById("pssave").click();
-    await vi.waitFor(() => expect(document.querySelector("#pserr").textContent).toContain("not a git remote"));
-    expect(document.getElementById("pserr").textContent).toContain("not a git remote");
-    expect(document.getElementById("scrim").classList.contains("show")).toBe(true);
+      source_id: "source-2",
+      base_branch: "develop",
+    }));
   });
 
   it("reports a project the bridge no longer knows rather than an empty sheet", async () => {
@@ -187,7 +313,7 @@ describe("openProjectSettings", () => {
     openProjectSettings("proj-9", { callRpc });
     await vi.waitFor(() => expect(document.querySelector("#sheet").textContent).toContain("no longer"));
     expect(document.getElementById("sheet").textContent).toContain("no longer");
-    expect(document.getElementById("psremote")).toBeNull();
+    expect(document.querySelector("#sheet .ps-source")).toBeNull();
   });
 
   // The one project-level choice about how work is checked out. The sheet
@@ -271,7 +397,7 @@ describe("openProjectSettings", () => {
     );
   });
 
-  it("keeps the remote's save separate from the isolation's refusal", async () => {
+  it("keeps the project's errors separate from the isolation's refusal", async () => {
     const row = { ...PROJECT, isolation: null, isolation_default: "worktree", isolation_available: { rift: true } };
     const callRpc = vi.fn().mockImplementation((method) =>
       method === "project.list"
@@ -294,15 +420,18 @@ describe("openProjectSettings", () => {
   });
 
   it("escapes what the project record carries", async () => {
+    const hostile = { id: 'x"><i>', name: '"><img src=x>', mount: "m", path: "<b>p</b>", is_git: true, base_branch: "<u>b</u>", remote: '"><svg onload=x>' };
     const callRpc = vi.fn().mockResolvedValue({
-      projects: [{ ...PROJECT, name: '"><img src=x>', path: "<b>p</b>" }],
+      projects: [{ ...PROJECT, name: '"><img src=x>', path: "<b>p</b>", sources: [PROJECT.sources[0], hostile] }],
     });
     openProjectSettings("proj-1", { callRpc });
     await vi.waitFor(() => expect(document.querySelector("#psproject")?.value).toBe('"><img src=x>'));
     const sheet = document.getElementById("sheet");
     expect(sheet.querySelector("img")).toBeNull();
     expect(sheet.querySelector("b")).toBeNull();
+    expect(sheet.querySelector("i, u, svg")).toBeNull();
     expect(sheet.querySelector("#psproject").value).toBe('"><img src=x>');
+    expect(input(hostile.id, "remote").value).toBe('"><svg onload=x>');
   });
 });
 
@@ -346,7 +475,7 @@ describe("project deletion", () => {
     await vi.waitFor(() => expect(document.querySelector("#psdelete")).toBeTruthy());
     document.querySelector("#psdelete").click();
     await vi.waitFor(() => expect(finishDelete).toBeTypeOf("function"));
-    expect(document.querySelector("#pssave").disabled).toBe(true);
+    expect(document.querySelector("#psaddfolder").disabled).toBe(true);
     document.querySelector("#sheet").innerHTML = "Another sheet";
     finishDelete({ deleted: true });
     await vi.waitFor(() => expect(onDeleted).toHaveBeenCalled());
@@ -391,10 +520,11 @@ describe("project sources", () => {
     expect(document.querySelectorAll("#sheet [data-remove-source]").length).toBe(2);
 
     document.querySelector('[data-remove-source="source-2"]').click();
-    await vi.waitFor(() => expect(document.querySelectorAll("#sheet [data-remove-source]")).toHaveLength(1));
+    await vi.waitFor(() => expect(document.querySelectorAll("#sheet .ps-source")).toHaveLength(1));
 
     expect(callRpc).toHaveBeenCalledWith("project.remove_source", { project_id: "proj-1", source_id: "source-2" });
-    expect(document.querySelectorAll("#sheet [data-remove-source]").length).toBe(1);
+    // A project keeps at least one source, so its last one offers no Remove.
+    expect(document.querySelectorAll("#sheet [data-remove-source]").length).toBe(0);
   });
 
   it("says in the sheet why a removal was refused", async () => {

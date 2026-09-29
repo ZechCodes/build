@@ -13,7 +13,30 @@ pub(in crate::app) struct ProjectSource {
     pub(in crate::app) path: std::path::PathBuf,
     pub(in crate::app) is_git: bool,
     pub(in crate::app) base_branch: String,
-    pub(in crate::app) remote: Option<String>,
+}
+
+impl ProjectSource {
+    /// The remote this source clones from and pushes to: its checkout's
+    /// `origin`, read where git keeps it. The config holds no copy, so there
+    /// is nothing to drift from the checkout.
+    pub(in crate::app) fn origin(&self) -> Option<String> {
+        self.is_git
+            .then(|| crate::worktree::git_origin_url(&self.path))
+            .flatten()
+    }
+
+    /// The source as every project row carries it.
+    pub(in crate::app) fn wire(&self) -> serde_json::Value {
+        serde_json::json!({
+            "id": self.id,
+            "name": self.name,
+            "mount": self.mount,
+            "path": self.path.display().to_string(),
+            "is_git": self.is_git,
+            "base_branch": self.base_branch,
+            "remote": self.origin(),
+        })
+    }
 }
 
 mod agent_tools;
@@ -28,10 +51,20 @@ pub(in crate::app) use conversation::PROJECT_SCRATCH_DIR_NAME;
 mod deletion;
 mod lifecycle;
 mod list;
+pub(in crate::app) use list::primary_remote;
 mod project_registry;
 #[cfg(test)]
 mod project_registry_tests;
 mod requests;
+mod source_update;
+
+/// What an edit leaves a source's record as. `None` keeps its label.
+pub(in crate::app) struct SourceRecord {
+    pub(in crate::app) name: Option<String>,
+    pub(in crate::app) path: std::path::PathBuf,
+    pub(in crate::app) is_git: bool,
+    pub(in crate::app) base_branch: String,
+}
 
 use project_registry::ProjectCandidate;
 pub(in crate::app) use project_registry::ProjectRegistry;
@@ -236,10 +269,6 @@ impl AppState {
                                 .and_then(Value::as_str)
                                 .unwrap_or("main")
                                 .to_string(),
-                            remote: source
-                                .get("remote")
-                                .and_then(Value::as_str)
-                                .map(str::to_string),
                         })
                     })
                     .collect::<Vec<_>>();
@@ -315,7 +344,6 @@ impl AppState {
             path: repo_path.clone(),
             is_git,
             base_branch: base_branch.clone(),
-            remote: None,
         }];
         self.project_candidate_with_sources_at(
             repo_path,

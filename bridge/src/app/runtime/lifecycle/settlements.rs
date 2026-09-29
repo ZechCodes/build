@@ -253,7 +253,7 @@ impl LifecycleSettlement<InitializedRepository> for InitializeRepositorySettleme
             .projects
             .get(&initialized.project_id)
             .expect("project was just marked");
-        Ok(state.project_json(project, None))
+        Ok(state.project_json(project))
     }
 }
 pub struct SetRemoteSettlement {
@@ -265,6 +265,8 @@ impl LifecycleSettlement<RemoteChanged> for SetRemoteSettlement {
         state: &mut AppState,
         result: Result<RemoteChanged, String>,
     ) -> Result<Value, String> {
-        state.settle_remote_change(&self.project_id, result?)
+        // The row reads the remote back from the checkout it was written to.
+        result?;
+        state.settle_remote_change(&self.project_id)
     }
 }

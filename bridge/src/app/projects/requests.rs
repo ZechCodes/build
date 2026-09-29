@@ -5,9 +5,9 @@ use crate::app::config::accept_isolation;
 use crate::app::{expand_tilde, require_str, AppState};
 use crate::lifecycle::{
     CloneRepo, CreateRepo, InitializeRepo, OpenRepo, PendingRow, PendingState, Performed,
-    SetRemote, WorktreeChange, WorktreeMutation,
+    WorktreeChange, WorktreeMutation,
 };
-use crate::worktree::git_remote_origin;
+use crate::remote_url::usable_remote_url;
 use serde_json::Value;
 
 struct SourceRequest {
@@ -39,10 +39,7 @@ impl TakenSourceNames {
     fn over(sources: &[ProjectSource]) -> Self {
         TakenSourceNames {
             paths: sources.iter().map(|source| source.path.clone()).collect(),
-            remotes: sources
-                .iter()
-                .filter_map(|source| source.remote.clone())
-                .collect(),
+            remotes: sources.iter().filter_map(ProjectSource::origin).collect(),
             mounts: sources.iter().map(|source| source.mount.clone()).collect(),
         }
     }
@@ -163,7 +160,6 @@ impl WorktreeMutation for OpenProjectSources {
                 path: opened.path.clone(),
                 is_git: opened.is_git,
                 base_branch: opened.base.clone(),
-                remote: opened.remote.clone().or(request.remote),
             });
             if primary.is_none() {
                 primary = Some(opened);
@@ -210,7 +206,7 @@ impl AppState {
     /// its git to the drain. The directory is the row's identity: there is no
     /// project id until the git lands, and what two project verbs collide over
     /// is the folder, not a name.
-    fn defer_project<T, S>(
+    pub(super) fn defer_project<T, S>(
         &mut self,
         dest: std::path::PathBuf,
         title: String,
@@ -256,6 +252,13 @@ impl AppState {
             None => self.projects_dir.clone(),
         };
         let dest = parent.join(&name);
+        let remote = params
+            .get("remote")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|remote| !remote.is_empty())
+            .map(usable_remote_url)
+            .transpose()?;
         self.defer_project(
             dest.clone(),
             name.clone(),
@@ -264,12 +267,7 @@ impl AppState {
                 name,
                 dest,
                 base_branch,
-                remote: params
-                    .get("remote")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|remote| !remote.is_empty())
-                    .map(str::to_string),
+                remote,
             },
             crate::app::runtime::lifecycle::ProjectRegistrationSettlement,
         )
@@ -298,6 +296,8 @@ impl AppState {
         if path_text.is_some() == remote.is_some() {
             return Err("each source must specify exactly one of path or remote".to_string());
         }
+        let remote = remote.map(usable_remote_url).transpose()?;
+        let remote = remote.as_deref();
         let path = path_text.map(expand_tilde);
         let canonical = path.as_deref().map(canonical_source_path).transpose()?;
         if let Some(candidate) = &canonical {
@@ -321,7 +321,8 @@ impl AppState {
                 .projects
                 .iter()
                 .flat_map(|project| &project.sources)
-                .any(|source| source.remote.as_deref() == Some(remote))
+                .filter_map(ProjectSource::origin)
+                .any(|origin| crate::worktree::remotes_match(&origin, remote))
             {
                 return Err(format!("source remote is already registered: {remote}"));
             }
@@ -494,38 +495,33 @@ impl AppState {
             .projects
             .get(&project_id)
             .expect("the project was just resolved");
-        let remote = git_remote_origin(&project.repo_path);
-        Ok(self.project_json(project, remote))
+        Ok(self.project_json(project))
     }
 
-    /// Set (or clear, with an empty url) a project's `origin` remote.
+    /// `project.set_remote`, for clients that predate per-source remotes: a
+    /// project has no remote of its own, so this is its first source's,
+    /// edited the way `project.update_source` edits any source's. An empty
+    /// url takes `origin` off.
     pub(crate) fn project_set_remote(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let url = require_str(params, "url")?;
         let project = self
             .projects
-            .iter()
-            .find(|project| project.id == project_id)
+            .get(&project_id)
             .ok_or_else(|| format!("unknown project: {project_id}"))?;
         if !project.is_git {
             return Err("project is not a git repository; initialize Git first".to_string());
         }
-        let repo_path = project.repo_path.clone();
-        let title = project.name.clone();
-        // The repository is the row's identity here as it is for every other
-        // project verb: what a second `set_remote` collides with is the config
-        // file it would be rewriting, and nothing about the project's record
-        // is being minted or taken away.
-        self.defer_project(
-            repo_path.clone(),
-            title,
-            PendingState::Updating,
-            SetRemote {
-                repo_path,
-                url: url.trim().to_string(),
-            },
-            crate::app::runtime::lifecycle::SetRemoteSettlement { project_id },
-        )
+        let source_id = project
+            .sources
+            .first()
+            .map(|source| source.id.clone())
+            .ok_or_else(|| "a project must have at least one source".to_string())?;
+        self.project_update_source(&serde_json::json!({
+            "project_id": project_id,
+            "source_id": source_id,
+            "remote": url,
+        }))
     }
 
     /// Set (or clear, with a null isolation) a project's override of the
@@ -554,7 +550,6 @@ impl AppState {
             .projects
             .get(&project_id)
             .expect("the project was just resolved");
-        let remote = git_remote_origin(&project.repo_path);
-        Ok(self.project_json(project, remote))
+        Ok(self.project_json(project))
     }
 }

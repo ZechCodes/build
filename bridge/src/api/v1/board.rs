@@ -69,6 +69,12 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             ProjectRow
         ),
         v1_method!(
+            "project.update_source",
+            project_update_source,
+            ProjectUpdateSourceParams,
+            ProjectSourceUpdated
+        ),
+        v1_method!(
             "project.set_isolation",
             project_set_isolation,
             ProjectSetIsolationParams,
@@ -229,6 +235,30 @@ pub struct ProjectAddSourceParams {
 pub struct ProjectRemoveSourceParams {
     pub project_id: String,
     pub source_id: String,
+}
+
+/// Edit one source in place (since 3.2.0). Each part is optional, and at
+/// least one must be named.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ProjectUpdateSourceParams {
+    pub project_id: String,
+    pub source_id: String,
+    /// The label shown for the source. Its folder name inside workspaces
+    /// (`mount`) does not change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Another folder for the source to stand on. Refused for the first
+    /// source, which is the project's home.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// A branch the source's checkout has, locally or on `origin`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_branch: Option<String>,
+    /// The checkout's new `origin`; empty takes it off. Written to the
+    /// source's checkout, and to each workspace checkout with a repository of
+    /// its own that still named the old one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -506,6 +536,41 @@ pub struct ProjectRow {
     /// What this project's next checkout will actually be.
     pub isolation_effective: String,
     pub isolation_available: IsolationAvailabilityView,
+}
+
+/// One source of a project. `remote` is its checkout's `origin`, read from
+/// the checkout; `null` for a folder, or a checkout with none.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ProjectSourceRow {
+    pub id: String,
+    pub name: String,
+    pub mount: String,
+    pub path: String,
+    pub is_git: bool,
+    pub base_branch: String,
+    pub remote: Option<String>,
+}
+
+/// `project.update_source`'s answer: the project row with its sources, how
+/// many existing workspace checkouts had their `origin` moved with the
+/// source's, and which ones git could not move. Those are left on the old
+/// remote; the source's own change stands.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ProjectSourceUpdated {
+    #[serde(flatten)]
+    pub project: ProjectRow,
+    pub sources: Vec<ProjectSourceRow>,
+    pub checkouts_updated: u64,
+    pub checkouts_failed: Vec<CheckoutLeftBehind>,
+}
+
+/// A workspace checkout that still names the source's old remote because
+/// git refused to change it, with git's reason.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CheckoutLeftBehind {
+    pub workspace_id: String,
+    pub path: String,
+    pub reason: String,
 }
 
 /// A project as `project.list` answers for it: the row above, and the
@@ -1076,6 +1141,15 @@ fn project_remove_source(
     answer(app.project_remove_source(&params.wire())).map_err(refine)
 }
 
+/// The git runs off the app mutex, so this answers the placeholder and the
+/// drain publishes the edited row.
+fn project_update_source(
+    app: &mut AppState,
+    params: ProjectUpdateSourceParams,
+) -> Result<Answer<ProjectSourceUpdated>, ApiError> {
+    answer(app.project_update_source(&params.wire())).map_err(refine)
+}
+
 fn project_set_isolation(
     app: &mut AppState,
     params: ProjectSetIsolationParams,
@@ -1195,6 +1269,11 @@ mod tests {
     #[test]
     fn the_project_remove_source_fixture_round_trips() {
         round_trips("project.remove_source");
+    }
+
+    #[test]
+    fn the_project_update_source_fixture_round_trips() {
+        round_trips("project.update_source");
     }
 
     #[test]

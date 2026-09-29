@@ -7,6 +7,7 @@ mod planning;
 mod projects;
 mod publication;
 mod rows;
+mod source_update;
 mod task;
 
 pub use adoption::{adopt, AdoptCheckout, AdoptionTarget};
@@ -24,4 +25,5 @@ pub use projects::{CloneRepo, CreateRepo, InitializeRepo, OpenRepo, SetRemote};
 pub(crate) use publication::classify_stage_publication;
 pub use publication::{StagePublicationQuery, StagePublications};
 pub use rows::{PendingRow, PendingState, WorktreeChange};
+pub use source_update::{CheckoutFailed, SourceUpdated, UpdateSource, WorkspaceCheckout};
 pub use task::{Performed, WorktreeMutation};

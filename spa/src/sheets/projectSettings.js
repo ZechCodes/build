@@ -6,34 +6,28 @@ import { isolationFieldHtml, mountIsolation, projectIsolationTarget } from "../c
 import { settingsSheetHtml } from "./settingsSheet.js";
 import { openBrowser } from "./browser.js";
 import { deviceSettingsAddress, projectSettingsAddress, removeProjectSetting, watchSettingsRecord, writeProjectSetting } from "../core/settingsRecords.js";
-import { deleteCached, readCached } from "../core/localCache.js";
+import { deleteCached, readCached, subscribeCache } from "../core/localCache.js";
 import { uiAddress, watchUiState } from "../core/localUiState.js";
 import { fieldTraits } from "../core/fieldTraits.js";
 import { refreshGithubRepos } from "../core/githubRepos.js";
 import { attachRepoPicker, disposeRepoPickers } from "./repoPicker.js";
+import { readSourceEditSupport, SOURCE_EDIT_SUPPORT_KIND } from "../core/sourceEditSupport.js";
+import { mountSourceCards, readSourceEdits, restoreSourceEdits, sourceEditing, sourcesSectionHtml } from "./projectSources.js";
 
-const field = (label, id, value) =>
-  `<div class="field"><label>${esc(label)}</label>
-    <input id="${id}" style="width:100%" ${fieldTraits("identifier")} value="${esc(value || "")}" readonly /></div>`;
+/** The project's own name. It is the first source's folder's, and is not a
+ *  source's label: a source is renamed on its card. */
+const generalHtml = (project) => `<section class="ps-section" aria-labelledby="ps-general-h"><h4 id="ps-general-h">General</h4>
+    <div class="field"><label for="psproject">Project name</label>
+      <input id="psproject" style="width:100%" ${fieldTraits("identifier")} value="${esc(project.name || "")}" readonly>
+      <div class="dim ps-hint">Named after the project's first folder.</div></div></section>`;
 
-const sourceKind = (source) =>
-  source.is_git === false ? "Folder" : `Git repository${source.base_branch ? ` · ${esc(source.base_branch)}` : ""}`;
+const isolationHtml = () => `<section class="ps-section" aria-labelledby="ps-isolation-h"><h4 id="ps-isolation-h">Isolation</h4>
+    ${isolationFieldHtml()}</section>`;
 
-const sourceHtml = (source, index) => `<div class="field"><label for="pssource-${index}">${esc(source.mount || source.name || `Folder ${index + 1}`)}</label>
-    <input id="pssource-${index}" style="width:100%" ${fieldTraits("identifier")} value="${esc(source.path || source.remote || "")}" readonly>
-    <div class="row"><div class="dim">${sourceKind(source)}</div>
-      <button class="btn danger mini" type="button" style="margin-left:auto" data-remove-source="${esc(source.id)}">Remove</button></div></div>`;
-
-/** The folders every NEW workspace is cut from. A workspace already standing
- *  keeps the directories it was cut with, which is why adding one here says so
- *  rather than pretending the change reaches back. */
-const sourcesHtml = (project) => `<fieldset style="border:0;padding:0;margin:0"><legend>Workspace folders</legend>
-  ${(project.sources || []).map(sourceHtml).join("")}
-  <div class="dim">New workspaces are cut from these. A workspace that already exists keeps its own directories.</div>
-  <div class="row"><button class="btn" id="psaddfolder" type="button">Add folder…</button>
-    <button class="btn" id="psaddremote" type="button">Add Git remote…</button></div>
-  <div id="psaddsource"></div>
-  <div class="adderr" id="pssrcerr" role="alert"></div></fieldset>`;
+const dangerHtml = () => `<section class="ps-section ps-danger" aria-labelledby="ps-danger-h"><h4 id="ps-danger-h">Danger zone</h4>
+    <p class="sub">Delete this project and all of its workspaces from Build. Files and unsaved changes in Build-managed workspaces will be permanently removed. Original project folders and external checkouts are kept.</p>
+    <button class="btn danger" id="psdelete">Delete project…</button>
+    <div class="adderr" id="pserr" role="alert"></div></section>`;
 
 /** Where to clone the remote from, and what to call the folder it lands in. A
  *  folder already on the device is picked in the browser instead. */
@@ -47,12 +41,13 @@ const addSourceHtml = () => `<div class="field">
   </div>`;
 
 /** Keep edits that have not been sent to the bridge when a project record
- * changes underneath this sheet. The add-source form is a second local draft. */
+ * changes underneath this sheet: every card's, and the add-source form's. */
 function focusedDraft(sheet) {
   const focused = sheet.ownerDocument.activeElement;
+  const typed = focused && sheet.contains(focused) && typeof focused.selectionStart === "number";
   return {
     focusId: focused && sheet.contains(focused) ? focused.id : "",
-    selection: focused?.id === "psremote" ? [focused.selectionStart, focused.selectionEnd] : null,
+    selection: typed ? [focused.selectionStart, focused.selectionEnd] : null,
   };
 }
 
@@ -61,13 +56,11 @@ function sourceDraft(sheet) {
   return sourceUrl ? { url: sourceUrl.value, name: sheet.querySelector("#pssourcelabel").value } : null;
 }
 
-function captureDraft(sheet, paintedRemote) {
-  const remote = sheet.querySelector("#psremote");
+function captureDraft(sheet, project) {
   return {
-    remote: remote && remote.value !== paintedRemote ? remote.value : null,
+    edits: project ? readSourceEdits(sheet, project) : {},
     ...focusedDraft(sheet),
     source: sourceDraft(sheet),
-    remoteError: sheet.querySelector("#pserr")?.textContent || "",
     sourceError: sheet.querySelector("#pssrcerr")?.textContent || "",
   };
 }
@@ -78,28 +71,36 @@ const draftPart = (live, saved, displayed) =>
 const combineDraft = (live, saved, displayed = {}) => ({
   ...saved,
   ...live,
-  remote: draftPart(live.remote, saved?.remote, displayed.remote),
+  edits: draftPart(live.edits, saved?.edits, displayed.edits ?? {}) || {},
   source: draftPart(live.source, saved?.source, displayed.source),
   focusId: live.focusId || saved?.focusId || "",
 });
 
-function restoreDraft(sheet, draft) {
-  if (draft.remote !== null) sheet.querySelector("#psremote").value = draft.remote;
-  if (draft.source) {
+function restoreAddSource(sheet, source) {
+  if (source) {
     if (!sheet.querySelector("#psremoteurl")) sheet.querySelector("#psaddremote").click();
-    sheet.querySelector("#psremoteurl").value = draft.source.url;
-    sheet.querySelector("#pssourcelabel").value = draft.source.name;
+    sheet.querySelector("#psremoteurl").value = source.url;
+    sheet.querySelector("#pssourcelabel").value = source.name;
   } else if (sheet.querySelector("#psremoteurl")) {
     disposeRepoPickers(sheet.querySelector("#psaddsource"));
     sheet.querySelector("#psaddsource").innerHTML = "";
   }
-  sheet.querySelector("#pserr").textContent = draft.remoteError;
-  sheet.querySelector("#pssrcerr").textContent = draft.sourceError;
-  const focused = draft.focusId && sheet.querySelector(`#${draft.focusId}`);
-  if (focused && (sheet.ownerDocument.activeElement === sheet.ownerDocument.body || sheet.contains(sheet.ownerDocument.activeElement))) {
-    focused.focus();
-    if (draft.selection) focused.setSelectionRange(...draft.selection);
-  }
+}
+
+function restoreFocus(sheet, draft) {
+  const found = draft.focusId && sheet.ownerDocument.getElementById(draft.focusId);
+  const focused = found && sheet.contains(found) ? found : null;
+  const free = sheet.ownerDocument.activeElement === sheet.ownerDocument.body || sheet.contains(sheet.ownerDocument.activeElement);
+  if (!focused || !free) return;
+  focused.focus();
+  if (draft.selection && typeof focused.setSelectionRange === "function") focused.setSelectionRange(...draft.selection);
+}
+
+function restoreDraft(sheet, project, draft) {
+  restoreSourceEdits(sheet, project, draft.edits);
+  restoreAddSource(sheet, draft.source);
+  sheet.querySelector("#pssrcerr").textContent = draft.sourceError || "";
+  restoreFocus(sheet, draft);
 }
 
 /** Opened with the caller of the machine this project is on: whoever opens the
@@ -111,20 +112,32 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
   $("#scrim").classList.add("show");
   let frame = sheet.firstElementChild;
   let view = "settings";
-  let paintedRemote = "";
+  let painted = null;
+  let editsSources = false;
+  const notices = {};
   let cachedDraft = null;
   let displayedDraft = {};
   let draftRecord;
   const saveDraft = (debounced = false) => {
-    const snapshot = captureDraft(sheet, paintedRemote);
+    const snapshot = captureDraft(sheet, painted);
     if (debounced) draftRecord?.schedule(snapshot);
     else void draftRecord?.write(snapshot);
   };
   const current = () => sheet.isConnected && sheet.firstElementChild === frame && $("#scrim").classList.contains("show");
   // Asked again when the machine greets while THIS opening is on screen.
   const repoAsk = refreshGithubRepos(deviceId, callRpc, { wanted: current });
+  // Whether this machine edits sources in place is a fact a greeting writes
+  // to the cache; the cards repaint when it lands.
+  const readSupport = async () => {
+    editsSources = await readSourceEditSupport(deviceId);
+    if (painted) paint(painted);
+  };
+  const unsubscribeSupport = subscribeCache({ deviceId }, (address) => {
+    if (address?.kind === SOURCE_EDIT_SUPPORT_KIND) void readSupport();
+  });
   const close = () => {
     repoAsk.stop();
+    unsubscribeSupport();
     disposeRepoPickers(sheet);
     record.dispose();
     draftRecord?.dispose();
@@ -145,60 +158,33 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
 
   const paint = (project) => {
     if (!current() || view !== "settings") return;
-    const live = captureDraft(sheet, paintedRemote);
+    const live = captureDraft(sheet, painted);
     const draft = combineDraft(live, cachedDraft, displayedDraft);
+    const editing = sourceEditing(editsSources);
     disposeRepoPickers(sheet);
     sheet.innerHTML = settingsSheetHtml({
       title: "Project settings",
-      subtitleHtml: "Name, location and base branch come from the repository Build was pointed at.",
-      bodyHtml: `
-      ${field("Project label", "psproject", project.name)}
-      ${field("Repository path", "pspath", project.path)}
-      ${field("Base branch", "psbranch", project.base_branch)}
-      ${sourcesHtml(project)}
-      ${isolationFieldHtml()}
-      <div class="field"><label>Origin remote</label>
-        <input id="psremote" placeholder="git@github.com:org/repo.git" style="width:100%" ${fieldTraits("identifier")} value="${esc(project.remote || "")}" /></div>
-      <div class="row"><button class="btn" id="pscancel" style="margin-left:auto">Close</button>
-        <button class="btn primary" id="pssave">Save remote</button></div>
-      <div class="adderr" id="pserr"></div>
-      <section class="field" style="margin-top:24px;border-top:1px solid var(--line);padding-top:16px">
-        <h4>Delete project</h4>
-        <p class="sub">Delete this project and all of its workspaces from Build. Files and unsaved changes in Build-managed workspaces will be permanently removed. Original project folders and external checkouts are kept.</p>
-        <button class="btn danger" id="psdelete">Delete project…</button>
-      </section>`,
+      bodyHtml: `${generalHtml(project)}
+      ${sourcesSectionHtml(project, { editing, editsSources, notices })}
+      ${isolationHtml()}
+      ${dangerHtml()}
+      <div class="row"><button class="btn" id="pscancel" style="margin-left:auto">Close</button></div>`,
     });
     frame = sheet.firstElementChild;
-    paintedRemote = project.remote || "";
+    painted = project;
     mountIsolation(sheet, { callRpc, target: projectIsolationTarget(project), deviceId, fromProjectRecord: true });
     mountSources(project, {
-      callRpc, record, deviceId,
+      callRpc, record, deviceId, editing,
       saveDraft,
+      onSaved: (sourceId, notice) => { notices[sourceId] = notice; },
       onFrameChange: () => { frame = sheet.firstElementChild; view = "browser"; },
       onReturn: () => { view = "settings"; void record.read(); },
     });
-    restoreDraft(sheet, draft);
-    if (draft.remote === cachedDraft?.remote) displayedDraft.remote = draft.remote;
+    restoreDraft(sheet, project, draft);
+    if (draft.edits === cachedDraft?.edits) displayedDraft.edits = draft.edits;
     if (draft.source === cachedDraft?.source) displayedDraft.source = draft.source;
-    $("#psremote").oninput = () => saveDraft(true);
     $("#pscancel").onclick = close;
     $("#psdelete").onclick = () => deleteProject(project, { callRpc, onDeleted, close, deviceId });
-    $("#pssave").onclick = async () => {
-      const save = $("#pssave");
-      save.disabled = true;
-      save.textContent = "saving…";
-      $("#pserr").textContent = "";
-      try {
-        const changed = await callRpc("project.set_remote", { project_id: projectId, url: $("#psremote").value.trim() });
-        if (changed?.project_id) await writeProjectSetting(deviceId, changed);
-        await draftRecord?.write({ remote: null, source: null, focusId: "" });
-        close();
-      } catch (e) {
-        $("#pserr").textContent = e.message;
-        save.disabled = false;
-        save.textContent = "Save remote";
-      }
-    };
   };
   const record = watchSettingsRecord(projectSettingsAddress(deviceId, projectId), (project) => {
     if (project) paint(project);
@@ -206,11 +192,12 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
   draftRecord = watchUiState(uiAddress({ deviceId, entityId: projectId, view: "project-settings", kind: "draft" }), (saved) => {
     if (!saved || !current()) return;
     cachedDraft = saved;
-    if (view !== "settings" || !sheet.querySelector("#psremote")) return;
-    const live = captureDraft(sheet, paintedRemote);
-    restoreDraft(sheet, combineDraft(live, saved, displayedDraft));
-    displayedDraft = { remote: saved.remote, source: saved.source };
+    if (view !== "settings" || !painted || !sheet.querySelector("#psproject")) return;
+    const live = captureDraft(sheet, painted);
+    restoreDraft(sheet, painted, combineDraft(live, saved, displayedDraft));
+    displayedDraft = { edits: saved.edits ?? {}, source: saved.source };
   }, { debounceMs: 180 });
+  void readSupport();
   void record.pull(async () => {
     const listed = await callRpc("project.list");
     const project = (listed.projects || []).find((candidate) => candidate.project_id === projectId);
@@ -223,39 +210,35 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
   return { whenCachePainted: record.whenPainted };
 }
 
-/** The source controls: a Remove per folder, and the two ways one is added.
+/** The source controls: the cards, and the two ways a source is added.
  *
  *  Every write answers the project row itself, so the sheet repaints from what
  *  the bridge said rather than from what it hoped. */
-function mountSources(project, { callRpc, record, deviceId, saveDraft, onFrameChange, onReturn }) {
-  const write = async (method, params, button) => {
-    const error = $("#pssrcerr");
-    error.textContent = "";
+function mountSources(project, { callRpc, record, deviceId, editing, saveDraft, onSaved, onFrameChange, onReturn }) {
+  const write = async (send, button, error, onDone) => {
+    if (error) error.textContent = "";
     button.disabled = true;
     try {
-      const changed = await callRpc(method, params);
-      await writeProjectSetting(deviceId, changed);
+      const changed = await send();
+      if (changed?.project_id) await writeProjectSetting(deviceId, changed);
+      await onDone?.(changed);
       await record.read();
+      saveDraft();
+      return changed;
     } catch (thrown) {
       button.disabled = false;
-      if (error.isConnected) error.textContent = thrown.message;
+      if (error?.isConnected) error.textContent = thrown.message;
       else notifyError("The project's folders were not changed", thrown.message);
+      return null;
     }
   };
-  document.querySelectorAll("#sheet [data-remove-source]").forEach((button) => {
-    button.onclick = () =>
-      void write(
-        "project.remove_source",
-        { project_id: project.project_id, source_id: button.dataset.removeSource },
-        button,
-      );
-  });
-  $("#psaddremote").onclick = () => openAddRemote(project, { write, saveDraft, deviceId });
+  mountSourceCards($("#sheet"), project, { editing, callRpc, deviceId, write, saveDraft, onSaved });
+  $("#psaddremote").onclick = () => openAddRemote(project, { write, callRpc, saveDraft, deviceId });
   $("#psaddfolder").onclick = () => void browseForSource(project, { callRpc, deviceId, onFrameChange, onReturn });
 }
 
 /** Say where to clone the remote from, and what to call it. */
-function openAddRemote(project, { write, saveDraft, deviceId }) {
+function openAddRemote(project, { write, callRpc, saveDraft, deviceId }) {
   const host = $("#psaddsource");
   disposeRepoPickers(host);
   host.innerHTML = addSourceHtml();
@@ -271,9 +254,9 @@ function openAddRemote(project, { write, saveDraft, deviceId }) {
       return;
     }
     void write(
-      "project.add_source",
-      { project_id: project.project_id, remote, ...(name ? { name } : {}) },
+      () => callRpc("project.add_source", { project_id: project.project_id, remote, ...(name ? { name } : {}) }),
       $("#pssourceadd"),
+      $("#pssrcerr"),
     );
   };
   $("#psremoteurl").focus();

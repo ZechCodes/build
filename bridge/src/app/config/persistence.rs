@@ -59,7 +59,6 @@ impl AppState {
                         "path": source.path.display().to_string(),
                         "is_git": source.is_git,
                         "base_branch": source.base_branch,
-                        "remote": source.remote,
                     })).collect::<Vec<_>>(),
                 });
                 if let Some(isolation) = p.isolation {

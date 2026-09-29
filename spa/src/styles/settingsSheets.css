@@ -33,3 +33,95 @@
   overscroll-behavior:contain;
   padding:16px;
 }
+
+/* Project settings (#228): General, Sources, Isolation and Danger zone, each
+   a section under its own heading, with a card per source. */
+.ps-section {
+  padding:16px 0;
+  border-top:1px solid var(--line);
+}
+
+.ps-section:first-child {
+  padding-top:0;
+  border-top:0;
+}
+
+.sheet .ps-section > h4 {
+  margin:0;
+  font-size:13px;
+  font-weight:600;
+  color:var(--ink);
+}
+
+.ps-section > .sub,
+.ps-section > p.dim {
+  margin:4px 0 0;
+}
+
+.ps-danger > h4 {
+  color:var(--red);
+}
+
+.ps-hint {
+  font-size:11.5px;
+}
+
+.ps-source {
+  margin-top:12px;
+  padding:12px;
+  border:1px solid var(--line);
+  border-radius:10px;
+  background:var(--panel2);
+}
+
+.ps-source-head {
+  display:flex;
+  align-items:center;
+  gap:8px;
+  min-width:0;
+}
+
+.ps-source-title {
+  font-size:13px;
+  font-weight:600;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+
+.ps-source-tag {
+  flex:none;
+  margin-left:auto;
+  padding:1px 8px;
+  border:1px solid var(--line3);
+  border-radius:999px;
+  font-size:11px;
+  color:var(--ink2);
+}
+
+.ps-source .field:first-of-type {
+  margin-top:8px;
+}
+
+.ps-source [data-source-error]:empty,
+.ps-source [data-source-status]:empty,
+.ps-source [data-source-warning]:empty,
+.ps-source-foot:empty {
+  display:none;
+}
+
+.ps-source [data-source-status] {
+  margin-top:8px;
+  font-size:12px;
+}
+
+.ps-source [data-source-warning] {
+  margin-top:6px;
+  font-size:12px;
+  color:var(--amber);
+}
+
+.sheet .ps-source-foot {
+  justify-content:flex-end;
+  margin-top:10px;
+}

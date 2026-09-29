@@ -210,7 +210,7 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.1.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.2.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
@@ -254,6 +254,10 @@ runtime that starts them.
   lists those Build agents apart from its harness sub-agents, and an agent
   counts as running while any agent in its panel runs, transitively
   (`spa/src/core/agentLineageModel.js`).
+  3.2.0 adds `project.update_source` (#228), which edits one source's label,
+  base branch, remote and (past the first) folder. See Projects and sources.
+  The SPA's settings sheet offers those edits only on a machine whose
+  greeting names the verb.
   The SPA's adapter claims `>=2.0.0 <4.0.0`: it calls nothing a 2.x bridge
   lacks (what 2.x added after 2.0.0 is capability-gated), so the app can
   roll before the bridge.
@@ -361,6 +365,37 @@ Sources with no git repository bypass the manager. The workspace code in
 under worktree isolation. Under Rift isolation it makes a Rift snapshot, and it
 falls back to a plain copy, recorded as a downgrade, when Rift is unavailable
 or fails before writing anything.
+
+**Projects and sources.** A project is one or more sources
+(`ProjectSource`, `bridge/src/app/projects/mod.rs`), each a folder with a
+label (`name`), the folder name it mounts under in workspaces (`mount`,
+fixed once a source exists), a base branch, and whether it is a Git
+repository. A project has no remote of its own. A source's remote is its
+checkout's `origin`, read from the checkout for every row
+(`ProjectSource::origin`, via git2 in process). `config.json` keeps no copy of
+it, and ignores the copy older bridges wrote. The project row's `path`,
+`base_branch` and `remote` are its first source's. That first source is the
+project's home (orchestrator, registry identity) and cannot move.
+`project.update_source` (`bridge/src/app/projects/source_update.rs`, git in
+`bridge/src/lifecycle/source_update.rs`) edits a source in place:
+- A new base branch must be a branch the checkout has.
+- A new folder is held to what `project.add_source` holds one to.
+- A new remote is written to the source's checkout with
+  `git remote set-url`/`add`/`remove`. Each existing workspace checkout that
+  has its own repository (a Rift or plain copy) and still names the old
+  `origin` follows it; a worktree shares the source's config anyway. The
+  answer's `checkouts_updated` counts them. A checkout git will not rewrite
+  is not rolled back or hidden: `checkouts_failed` names it
+  (`workspace_id`, `path`, git's `reason`), still on the old remote, and the
+  source's own change stands.
+
+`project.set_remote` is the same edit on the first source, kept for older
+clients. Every remote a client names, on any verb, passes
+`usable_remote_url` (`bridge/src/remote_url.rs`): no leading `-`, no
+whitespace or control characters, no `transport::` helper, no ssh user,
+host or port starting with `-` or holding a `%` (git decodes it), and only
+https/http/ssh/git/file urls, `user@host:path` or an absolute path. Git is
+handed a `--` before it.
 
 A workspace brings together one checkout per project source. Its manifest is
 `.build-workspace.json`, and they are indexed by `WorkspaceRegistry`

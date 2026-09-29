@@ -14,6 +14,7 @@
 //
 // Read off the cached rows alone; no DOM, no app imports.
 
+import { agentDisplayName } from "./agentName.js";
 import { entityIdOf } from "./entityId.js";
 
 const NOTHING_RUNNING = Object.freeze({ running: false, agentsRunning: 0, since: null });
@@ -102,4 +103,30 @@ export function withRollup(agent, lineage) {
   const rollup = lineage.rollup(agent.id);
   if (!rollup.agentsRunning) return agent;
   return { ...agent, agents_running: rollup.agentsRunning, agents_since: rollup.since };
+}
+
+/** Where a Build agent stands on its creator's panel. */
+const buildAgentState = (member, rollup) => {
+  if (rollup.running) return "running";
+  return member.agent.start_error ? "failed" : "idle";
+};
+
+/** The Build agents this agent made, as entries on its Agents surface — or
+ *  none at all for an agent that made nothing, which keeps the pill away. */
+export function buildAgentEntries(lineage, agentId) {
+  const made = lineage ? lineage.createdBy(agentId) : [];
+  if (!made.length) return null;
+  return made.map((member) => {
+    const rollup = lineage.rollup(member.agent.id);
+    const since = Date.parse(rollup.since || "");
+    return {
+      id: member.agent.id,
+      name: agentDisplayName(member.agent),
+      state: buildAgentState(member, rollup),
+      started_at: Number.isFinite(since) ? since : null,
+      entity_id: member.entityId,
+      workspace_id: member.workspaceId,
+      workspace_name: member.workspaceName,
+    };
+  });
 }

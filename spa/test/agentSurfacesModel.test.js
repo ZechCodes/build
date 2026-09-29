@@ -4,11 +4,13 @@ import { memoryStorage, refusingStorage } from "./memoryStorage.js";
 import { recordedSurfaces } from "./recordedSurfaces.js";
 import {
   AGENT_ENTRY_KIND,
+  BUILD_AGENTS_KEY,
   SHELL_ENTRY_KIND,
   SURFACE_PILL_GRACE_MS,
   WORKFLOW_ENTRY_KIND,
   advanceSurfaceVisibility,
   agentRows,
+  buildAgentRows,
   entryClock,
   emptySurfaceVisibility,
   nextSurfacePillExpiry,
@@ -796,5 +798,63 @@ describe("the model is pure", () => {
     expect(source).not.toContain("fetch(");
     expect(source).not.toContain("Date.now");
     expect(source.match(/localStorage/g) || []).toHaveLength(2);
+  });
+});
+
+// #216: the Agents surface lists the Build agents this agent made beside its
+// harness sub-agents. They ride the snapshot under their own key — not a kind
+// of their own, since they share the Agents pill and viewer.
+describe("the Build agents beside the sub-agents", () => {
+  const worker = (id, state, over = {}) => ({ id, name: id, state, entity_id: `run-${id}`, workspace_id: `ws-${id}`, ...over });
+
+  it("puts up the Agents pill for Build agents alone, counting the ones running", () => {
+    const surfaces = { [BUILD_AGENTS_KEY]: [worker("a", "running"), worker("b", "idle")] };
+    expect(surfacePills(surfaces)).toEqual([{ kind: AGENT_ENTRY_KIND, label: "Agents", count: 1 }]);
+  });
+
+  it("counts running sub-agents and running Build agents on the one pill", () => {
+    const surfaces = {
+      subagents: [{ id: "s1", label: "Reader", state: "running" }],
+      [BUILD_AGENTS_KEY]: [worker("a", "running")],
+    };
+    expect(surfacePills(surfaces)[0].count).toBe(2);
+    expect(surfaceMenuOptions(surfaces)[0]).toEqual({ id: AGENT_ENTRY_KIND, label: "Agents", description: "2 running" });
+  });
+
+  it("lets the pill go after the grace once no Build agent runs, like a settled sub-agent", () => {
+    const surfaces = { [BUILD_AGENTS_KEY]: [worker("a", "idle")] };
+    expect(surfacePills(surfaces, emptySurfaceVisibility(), 0)).toEqual([]);
+    expect(surfaceMenuOptions(surfaces).map((option) => option.id)).toEqual([AGENT_ENTRY_KIND]);
+  });
+
+  it("keeps the sub-agents' rows free of Build agents", () => {
+    const surfaces = { [BUILD_AGENTS_KEY]: [worker("a", "running")] };
+    expect(surfaceRows(AGENT_ENTRY_KIND, surfaces)).toEqual([]);
+  });
+
+  it("gives each Build agent a row that names where its chat is, running ones first", () => {
+    const rows = buildAgentRows({ [BUILD_AGENTS_KEY]: [
+      worker("idle-one", "idle", { name: "Docs", workspace_name: "Write docs", model: "Opus 5" }),
+      worker("busy", "running", { started_at: 1000 }),
+    ] }, { nowMs: 61000 });
+    expect(rows.map((row) => row.id)).toEqual(["busy", "idle-one"]);
+    expect(rows[0]).toMatchObject({
+      subject: "busy", entityId: "run-busy", workspaceId: "ws-busy",
+      stateMark: { mark: "running", label: "Working" }, runningSince: 1000, clock: "1:00",
+    });
+    expect(rows[1]).toMatchObject({
+      subject: "Docs", workspaceName: "Write docs", model: "Opus 5",
+      stateMark: { mark: "pending", label: "Idle" }, runningSince: null,
+    });
+  });
+
+  it("marks a Build agent that never started as failed", () => {
+    const [row] = buildAgentRows({ [BUILD_AGENTS_KEY]: [worker("broken", "failed")] });
+    expect(row.stateMark).toEqual({ mark: "error", label: "Failed to start" });
+  });
+
+  it("gives no rows for a snapshot with no Build agents", () => {
+    expect(buildAgentRows(null)).toEqual([]);
+    expect(buildAgentRows({ subagents: [{ id: "s1", state: "running" }] })).toEqual([]);
   });
 });

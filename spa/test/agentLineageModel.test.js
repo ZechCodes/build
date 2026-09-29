@@ -7,7 +7,7 @@
 // has a running agent in its panel too.
 
 import { describe, expect, it } from "vitest";
-import { agentLineage, lineageMembers, withRollup } from "../src/core/agentLineageModel.js";
+import { agentLineage, buildAgentEntries, lineageMembers, withRollup } from "../src/core/agentLineageModel.js";
 
 const row = (kind, over = {}) => ({ kind, project_id: "proj-1", run_id: `run-${over.workspace_id || kind}`, ...over });
 const agent = (id, over = {}) => ({ id, ordinal: 1, working: false, ...over });
@@ -115,5 +115,34 @@ describe("an agent with the rollup laid on", () => {
   it("is the same agent when nothing in its panel runs", () => {
     const quiet = agent("worker-2");
     expect(withRollup(quiet, lineage)).toBe(quiet);
+  });
+});
+
+describe("the Build agents an agent's panel lists", () => {
+  const lineage = lineageOf([
+    row("project", { agents: [agent("boss")] }),
+    row("workspace", { workspace_id: "ws-a", title: "Fix login", agents: [
+      agent("worker", { created_by: "boss", name: "Login fixer" }),
+    ] }),
+    row("workspace", { workspace_id: "ws-b", title: "Docs", agents: [
+      agent("busy", { created_by: "boss", ordinal: 2, working: true, working_time: { since: "2026-09-28T10:00:00Z" } }),
+      agent("broken", { created_by: "boss", ordinal: 3, start_error: "Claude Code 2.1 cannot run Opus 5.5" }),
+    ] }),
+  ]);
+
+  it("names each by what the rail calls it, with where its chat is", () => {
+    expect(buildAgentEntries(lineage, "boss")).toEqual([
+      { id: "worker", name: "Login fixer", state: "idle", started_at: null,
+        entity_id: "run-ws-a", workspace_id: "ws-a", workspace_name: "Fix login" },
+      { id: "busy", name: "Agent 2", state: "running", started_at: Date.parse("2026-09-28T10:00:00Z"),
+        entity_id: "run-ws-b", workspace_id: "ws-b", workspace_name: "Docs" },
+      { id: "broken", name: "Agent 3", state: "failed", started_at: null,
+        entity_id: "run-ws-b", workspace_id: "ws-b", workspace_name: "Docs" },
+    ]);
+  });
+
+  it("is none at all for an agent that made nothing, so no pill is put up for it", () => {
+    expect(buildAgentEntries(lineage, "worker")).toBeNull();
+    expect(buildAgentEntries(null, "boss")).toBeNull();
   });
 });

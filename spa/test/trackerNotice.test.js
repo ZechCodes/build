@@ -88,7 +88,7 @@ describe("the line, from the structured field", () => {
   });
 
   it("uses the name this client has for an agent when it has one", () => {
-    const line = taskNoticeLineHtml(taskNoticeOf(stated()), {
+    const line = text(stated(), {
       place: PLACE,
       agentLabels: { "agent-01M2XXGQ": "tasks-spa · Agent 1" },
     });

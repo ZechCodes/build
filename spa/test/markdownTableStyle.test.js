@@ -53,12 +53,27 @@ describe("a markdown table in a narrow column", () => {
   });
 
   it("shows an edge shadow on the side there is still table to reach", () => {
-    // A cover in the host's background rides the content; the shadow under it is
-    // pinned to the box. Lose either attachment and the affordance is a smear.
-    const background = ruleOf(".mdtable")["background"];
-    expect(background).toContain("var(--mdtable-cover)");
-    expect(background.match(/local/g)).toHaveLength(2);
-    expect(background.match(/scroll/g)).toHaveLength(2);
+    // The shadows are sized by the table's own scroll timeline (#253), not
+    // hidden under covers in a guessed host colour: a cover that missed its host
+    // drew a band down each edge of a table that did not scroll at all. The
+    // pixels are checked in Chromium, on several hosts, by
+    // test/browser/markdownTableEdgesLayout.test.js.
+    const table = ruleOf(".mdtable");
+    expect(table["background"]).not.toMatch(/local|--mdtable-cover/);
+    expect(table["background"]).toContain("var(--mdtable-shade-left)");
+    expect(table["background"]).toContain("var(--mdtable-shade-right)");
+  });
+
+  it("runs the shading animation only where a scroll timeline exists", () => {
+    // A browser without scroll-driven animations drops animation-timeline and
+    // plays the animation on the document timeline, 0s long, filled at its
+    // last keyframe: a 14px left band on every table, fitting ones included.
+    // So the animation lives only inside the @supports block that needs it.
+    const withoutComments = STYLES.replace(/\/\*[\s\S]*?\*\//g, "");
+    const gated = /@supports \(animation-timeline: scroll\(\)\) \{\s*\.mdtable \{\s*animation:mdtable-edges linear both; animation-timeline:scroll\(self inline\); \}\s*\}/;
+    expect(withoutComments).toMatch(gated);
+    const ungated = withoutComments.replace(gated, "");
+    expect(ungated).not.toMatch(/animation(-timeline)?:\s*(mdtable-edges|scroll\()/);
   });
 
   it("gives a table the conversation card's full width, gutter to gutter", () => {

@@ -660,23 +660,38 @@ main#root.surface { max-width:none;
    sits in has to scroll in place, or a six-column run report takes the whole
    conversation panel's width with it. Row separators only, no vertical rules —
    the same flat, line-based surface every other list in the app is. */
-/* The one sign that a table runs wider than its column is a pair of edge
-   shadows. A macOS scrollbar only shows itself mid-scroll, so a clipped last
-   column reads as a rendering bug until the reader happens to drag it. Two
-   pairs of gradients say it instead: a shadow pinned to each edge (`scroll`),
-   and over it a cover in the host's own background that travels with the
-   content (`local`). At rest each cover hides its shadow; scroll, and the cover
-   slides away to leave the shadow on the side there is still table to reach.
-   Every surface renderMarkdown paints into — a conversation card, .plan — is
-   --panel, and --mdtable-cover names that colour for the one that is not. */
-.mdtable { margin:8px 0 12px; max-width:100%; overflow-x:auto; --mdtable-cover:var(--panel);
+/* The one sign that a table runs wider than its column is a shadow on the edge
+   there is still table to reach. A macOS scrollbar only shows itself
+   mid-scroll, so a clipped last column reads as a rendering bug until the
+   reader happens to drag it.
+   The shading is driven by the table's own scroll position (#253): a
+   scroll-driven animation sizes a shadow pinned to each edge, from nothing at
+   the end the reader is already at to full width everywhere else. A table that
+   fits has no scroll range, so the timeline is inactive and both widths stay
+   at their initial 0 — no shading, whatever surface it sits on. (It used to be
+   drawn always and hidden under covers painted in --panel, which showed as
+   dark bands on every host that is not --panel: a tinted comment, the reader's
+   bubble, a plan doc.) A browser without scroll-driven animations skips the
+   @supports block below, shows no shading and leaves the cue to its
+   scrollbar. */
+@property --mdtable-shade-left { syntax:"<length>"; inherits:false; initial-value:0px; }
+@property --mdtable-shade-right { syntax:"<length>"; inherits:false; initial-value:0px; }
+@keyframes mdtable-edges {
+  0% { --mdtable-shade-left:0px; --mdtable-shade-right:14px; }
+  4%, 96% { --mdtable-shade-left:14px; --mdtable-shade-right:14px; }
+  100% { --mdtable-shade-left:14px; --mdtable-shade-right:0px; }
+}
+.mdtable { margin:8px 0 12px; max-width:100%; overflow-x:auto;
+  --mdtable-shade:color-mix(in srgb, var(--line) 85%, transparent);
   background:
-    linear-gradient(to right, var(--mdtable-cover), transparent) 0 0 / 22px 100% no-repeat local,
-    linear-gradient(to left, var(--mdtable-cover), transparent) 100% 0 / 22px 100% no-repeat local,
-    linear-gradient(to right, color-mix(in srgb, var(--line) 85%, transparent), transparent)
-      0 0 / 14px 100% no-repeat scroll,
-    linear-gradient(to left, color-mix(in srgb, var(--line) 85%, transparent), transparent)
-      100% 0 / 14px 100% no-repeat scroll; }
+    linear-gradient(to right, var(--mdtable-shade), transparent) 0 0 / var(--mdtable-shade-left) 100% no-repeat,
+    linear-gradient(to left, var(--mdtable-shade), transparent) 100% 0 / var(--mdtable-shade-right) 100% no-repeat; }
+/* Gated: a browser that cannot read animation-timeline would play the
+   animation on the document timeline instead, 0s long and filled at its last
+   keyframe, and band the left edge of every table. */
+@supports (animation-timeline: scroll()) {
+  .mdtable { animation:mdtable-edges linear both; animation-timeline:scroll(self inline); }
+}
 .mdtable table { border-collapse:collapse; min-width:100%; font-variant-numeric:tabular-nums; }
 /* A cell breaks on spaces. Its host — a conversation card above all — wraps
    anywhere so a pasted path can never widen the column, but a cell inheriting
@@ -694,7 +709,7 @@ main#root.surface { max-width:none;
 /* plan */
 /* The doc card sits INSIDE a panel, so it takes the inner step (--panel2) and
    no outline at all; the tone is the whole boundary. */
-.plan { background:var(--panel2); border:0; border-radius:12px; padding:26px 30px; margin-bottom:14px; --mdtable-cover:var(--panel2); }
+.plan { background:var(--panel2); border:0; border-radius:12px; padding:26px 30px; margin-bottom:14px; }
 .plan h1 { font-size:20px; margin:0 0 12px; } .plan h2 { font-size:15px; margin:18px 0 6px; }
 .plan h3 { font-size:13.5px; margin:14px 0 5px; } .plan :is(h4, h5, h6) { font-size:13px; margin:12px 0 4px; } .plan p { margin:8px 0; color:var(--ink); }
 .plan ul,.plan ol { margin:6px 0; padding-left:22px; } .plan li { margin:3px 0; }
@@ -1457,7 +1472,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .fpbody { padding:calc(var(--file-preview-head) + 14px) 14px 14px; overflow:auto; flex:1; min-height:0;
   scroll-padding-top:var(--file-preview-head); }
 .file-editor-layer { margin-top:var(--file-preview-head); padding-top:14px; }
-.fpbody .plan { border:none; padding:0; margin-bottom:0; background:none; --mdtable-cover:var(--panel); }
+.fpbody .plan { border:none; padding:0; margin-bottom:0; background:none; }
 .fsrc { margin:0; overflow:auto; }
 .fsrc table { min-width:100%; border-collapse:collapse; font-family:var(--mono); font-size:12.5px; }
 .fsrc td { vertical-align:top; white-space:pre; }
@@ -1713,6 +1728,12 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .md-quote { margin:6px 0; padding:0 0 0 12px; border-left:3px solid var(--line3); color:var(--ink2); }
 .md-quote > :first-child { margin-top:0; }
 .md-quote > :last-child { margin-bottom:0; }
+/* A thematic break (#253) is the app's own divider: one hairline in the token
+   the cards and section dividers are drawn in, never the browser's inset
+   two-tone line. Its margin is a little more than a paragraph's, and
+   collapses with theirs, so it reads as a break between sections rather than
+   a line crowding the prose. */
+.md-rule { height:0; margin:12px 0; border:0; border-top:1px solid var(--line2); }
 a.md-ref { color:var(--accent); text-decoration:none; }
 a.md-ref:hover { text-decoration:underline; }
 .md-ref-code { font-family:var(--mono); font-size:.92em; }
@@ -1744,9 +1765,6 @@ a.md-ref:hover { text-decoration:underline; }
 .thread-event-content { min-width:0; padding-top:3px; }
 .thread-event-content strong { color:var(--ink2); }
 .thread-event-detail { margin-top:4px; color:var(--dim); white-space:pre-wrap; overflow-wrap:anywhere; }
-/* An event's detail is printed on the rail itself, not on a card, so a table in
-   one covers its edge shadows in the rail's colour. */
-.thread-event-detail .mdtable { --mdtable-cover:var(--bg); }
 .thread-event-detail p { margin:0 0 6px; }
 .thread-event-detail p:last-child, .thread-event-detail ul:last-child { margin-bottom:0; }
 .thread-event-detail ul { margin:4px 0 8px; padding-left:19px; }

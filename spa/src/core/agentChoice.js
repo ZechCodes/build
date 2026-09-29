@@ -182,7 +182,50 @@ export function activeModelLabel(catalog, providerId, modelId) {
   return model ? model.label : modelId;
 }
 
-const withChoiceEffort = (name, choice) => (choice.effort ? `${name} · ${choice.effort}` : name);
+const capitalized = (word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+const versionOf = (major, minor) => (minor ? `${major}.${minor}` : major);
+
+/** How a compact row names a model (#257): a Claude family and its version,
+ *  or a GPT version and its codename. The version is one or two digits, so a
+ *  date after it ("-20251001") is never read as one. */
+const SHORT_MODEL_RULES = [
+  {
+    pattern: /\b(opus|sonnet|haiku|fable)[-\s]+(\d{1,2})(?:[-.\s](\d{1,2}))?(?!\d)/i,
+    name: ([, family, major, minor]) => `${capitalized(family)} ${versionOf(major, minor)}`,
+  },
+  {
+    pattern: /\bgpt[-\s]?(\d{1,2})(?:[-.](\d{1,2}))?[-\s]+([a-z]+(?:[-\s][a-z]+)*)\b/i,
+    name: ([, major, minor, codename]) => `${versionOf(major, minor)} ${codename.split(/[-\s]/).map(capitalized).join(" ")}`,
+  },
+];
+
+/** A model id or label as its short name ("claude-opus-5-5" → "Opus 5.5",
+ *  "gpt-6-astra" → "6 Astra"), or "" for one no rule knows. */
+export function shortModelName(text) {
+  const source = String(text || "");
+  for (const rule of SHORT_MODEL_RULES) {
+    const match = source.match(rule.pattern);
+    if (match) return rule.name(match);
+  }
+  return "";
+}
+
+/** Whether a rule knows a short name for this model, by its id or its label:
+ *  one that has none is shown whole, and may wrap (#257). */
+export const hasShortModelName = (modelId, fullLabel) => !!(shortModelName(modelId) || shortModelName(fullLabel));
+
+/** A model's short name, read from its id and else from its full label,
+ *  falling back to that full label. */
+export const shortModelNameOr = (modelId, fullLabel) =>
+  shortModelName(modelId) || shortModelName(fullLabel) || fullLabel;
+
+/** The model as a compact row wears it (#257). Blank only when there is no
+ *  model. Full names stay in tooltips and the picker. */
+export function shortModelLabel(catalog, providerId, modelId) {
+  return shortModelNameOr(modelId, activeModelLabel(catalog, providerId, modelId));
+}
+
+const withChoiceEffort =(name, choice) => (choice.effort ? `${name} · ${choice.effort}` : name);
 
 const pendingModelLabel = (catalog, providerId, choice) => {
   const model = modelInCatalog(catalogForProvider(catalog || {}, providerId).models || [], choice.model);

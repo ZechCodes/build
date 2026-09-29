@@ -264,14 +264,14 @@ describe("openSurfaceOverlay", () => {
   it("paints rows with the width it has, naming models through the label it was handed", () => {
     const held = openSurfaceOverlay(AGENT_ENTRY_KIND, {
       onOpenThreadItem: () => {},
-      modelLabel: (modelId) => `Opus 5 · ${modelId}`,
+      modelLabel: (modelId) => `Local ${modelId}`,
     });
     held.set({
       subagents: [{ id: "a1", label: "reader", state: "running", model: "opus", tokens: 1200, tool_calls: 4 }],
     });
 
     const row = overlayRows()[0];
-    expect(row.querySelector(".surface-row-model").textContent).toBe("Opus 5 · opus");
+    expect(row.querySelector(".surface-row-model").textContent).toBe("Local opus");
     expect(row.querySelector(".surface-agent-facts").textContent).toContain("Tokens");
     expect(row.querySelector(".surface-agent-facts").textContent).toContain("1200");
     held.close();
@@ -473,7 +473,9 @@ describe("the model a surface row names", () => {
     menuItem(WORKFLOW_ENTRY_KIND).click();
     await flush();
 
-    expect(document.querySelector(".modal-surface .surface-row-model").textContent).toBe("Opus 5 · 1m");
+    // The row wears the short name (#257); its title keeps the catalog's label.
+    const model = document.querySelector(".modal-surface .surface-row-model");
+    expect([model.textContent, model.title]).toEqual(["Opus 5", "Opus 5 · 1m"]);
   });
 
   it("falls back to the id itself while the catalog holds no such model", async () => {
@@ -735,6 +737,7 @@ describe("a Build agent on the rail's own branch", () => {
     await vi.waitFor(() => expect(panel().querySelector(`[data-surface-kind="${AGENT_ENTRY_KIND}"]`)).not.toBe(null));
     panel().querySelector(`[data-surface-kind="${AGENT_ENTRY_KIND}"]`).click();
     await vi.waitFor(() => expect(buildAgentRows()).toHaveLength(1));
-    await vi.waitFor(() => expect(buildAgentRows()[0].querySelector(".surface-row-model")?.textContent).toBe("GPT-6 Astra"));
+    await vi.waitFor(() => expect(buildAgentRows()[0].querySelector(".surface-row-model")?.title).toBe("GPT-6 Astra"));
+    expect(buildAgentRows()[0].querySelector(".surface-row-model").textContent).toBe("6 Astra");
   });
 });

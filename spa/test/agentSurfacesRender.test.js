@@ -149,7 +149,8 @@ describe("agentRowHtml", () => {
 
     expect([...summary.children].slice(1).map((child) => child.className)).toEqual([
       "surface-clip surface-row-label",
-      "surface-clip surface-row-model surface-row-head-model",
+      // Never clipped (#257): "haiku" has no short name, so it may wrap.
+      "surface-row-model surface-row-head-model surface-row-model-raw",
       "surface-row-clock",
     ]);
     expect(summary.querySelector(".surface-row-head-model").title).toBe("haiku");
@@ -181,8 +182,18 @@ describe("agentRowHtml", () => {
   });
 
   it("prints the model name the row arrived with", () => {
-    const named = agentRows([readerEntry], { modelLabel: (id) => `Opus 5 · ${id}` })[0];
-    expect(parseHtml(agentRowHtml(named)).querySelector(".surface-row-model").textContent).toBe("Opus 5 · haiku");
+    const named = agentRows([readerEntry], { modelLabel: (id) => `Local ${id}` })[0];
+    expect(parseHtml(agentRowHtml(named)).querySelector(".surface-row-model").textContent).toBe("Local haiku");
+  });
+
+  // #257: the summary wears the short name; its title and the details keep
+  // the full label, where there is room for it.
+  it("shortens the model in the summary and names it whole in its title and details", () => {
+    const named = agentRows([{ ...readerEntry, model: "claude-haiku-4-5-20251001" }], { modelLabel: () => "Claude Haiku 4.5" })[0];
+    const row = parseHtml(agentRowHtml(named)).firstElementChild;
+    const summaryModel = row.querySelector(".surface-agent-summary > .surface-row-model");
+    expect([summaryModel.textContent, summaryModel.title]).toEqual(["Haiku 4.5", "Claude Haiku 4.5"]);
+    expect(factValue(row, "Model")).toBe("Claude Haiku 4.5");
   });
 
   it("keeps the delegated task and reasoning effort visible beside the canonical agent path", () => {
@@ -200,7 +211,7 @@ describe("agentRowHtml", () => {
 
     expect(row.querySelector(".surface-row-label").textContent).toBe("/root/tool_display");
     expect(factValue(row, "Description")).toBe("Explain tool activity in the timeline");
-    expect(row.querySelector(".surface-row-model").textContent).toBe("gpt-5.6-sol");
+    expect(row.querySelector(".surface-row-model").textContent).toBe("5.6 Sol");
     expect(row.querySelector(".surface-row-effort").textContent).toBe("high");
     expect(factValue(row, "State")).toBe("Running");
   });

@@ -166,14 +166,14 @@ describe("mountSurfaceViewer", () => {
   });
 
   it("names a model through the label its caller hands it, and by its id without one", () => {
-    const named = mount(WORKFLOW_ENTRY_KIND, { modelLabel: (id) => `Opus 5 · ${id}` });
-    named.set(withModel("claude-opus-5"));
-    expect(document.querySelector(".surface-row-model").textContent).toBe("Opus 5 · claude-opus-5");
+    const named = mount(WORKFLOW_ENTRY_KIND, { modelLabel: (id) => `Local ${id}` });
+    named.set(withModel("house-model"));
+    expect(document.querySelector(".surface-row-model").textContent).toBe("Local house-model");
     named.dispose();
 
     const raw = mount(WORKFLOW_ENTRY_KIND);
-    raw.set(withModel("claude-opus-5"));
-    expect(document.querySelector(".surface-row-model").textContent).toBe("claude-opus-5");
+    raw.set(withModel("house-model"));
+    expect(document.querySelector(".surface-row-model").textContent).toBe("house-model");
     raw.dispose();
   });
 

@@ -10,7 +10,10 @@ use std::path::PathBuf;
 /// The one place a project's facts are read, whichever door reached the
 /// directory: opened where it stands, cloned into the projects folder, or
 /// created from nothing.
-fn open_repo(path: PathBuf, requested_base: Option<String>) -> Result<OpenedRepository, String> {
+pub(super) fn open_repo(
+    path: PathBuf,
+    requested_base: Option<String>,
+) -> Result<OpenedRepository, String> {
     let path = std::fs::canonicalize(&path).unwrap_or(path);
     if !path.is_dir() {
         return Err(format!("not a directory: {}", path.display()));

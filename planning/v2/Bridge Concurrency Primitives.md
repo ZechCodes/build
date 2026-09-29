@@ -1358,7 +1358,9 @@ build settled differently, and why:
   `Option<String>` and every project row's is `None`: nothing the board lists
   stands where such a row does, so `pending_rows_json` skips them rather than
   handing `board.list` a row whose `entity_id` is a folder hash beside rows
-  whose ids are runs and checkouts. `PendingState` gained `Updating` for
+  whose ids are runs and checkouts. (Since #228, `project.set_remote` is
+  `project.update_source` on the first source, and every source edit reserves
+  that source's folder the same way.) `PendingState` gained `Updating` for
   `set_remote`, which mints nothing and takes nothing away — borrowing
   `Creating` told the board a registered project was being created, and told
   the user's refusal message the same. The rows that do render now name their

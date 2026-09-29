@@ -56,6 +56,15 @@ mod project_registry;
 #[cfg(test)]
 mod project_registry_tests;
 mod requests;
+mod source_update;
+
+/// What an edit leaves a source's record as. `None` keeps its label.
+pub(in crate::app) struct SourceRecord {
+    pub(in crate::app) name: Option<String>,
+    pub(in crate::app) path: std::path::PathBuf,
+    pub(in crate::app) is_git: bool,
+    pub(in crate::app) base_branch: String,
+}
 
 use project_registry::ProjectCandidate;
 pub(in crate::app) use project_registry::ProjectRegistry;

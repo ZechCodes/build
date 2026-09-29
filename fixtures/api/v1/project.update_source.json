@@ -1,0 +1,53 @@
+{
+  "method": "project.update_source",
+  "since": "3.2.0",
+  "params": {
+    "project_id": "proj-1",
+    "source_id": "source-2",
+    "name": "Docs",
+    "base_branch": "develop",
+    "remote": "git@github.com:ada/docs.git"
+  },
+  "result": {
+    "project_id": "proj-1",
+    "name": "build",
+    "path": "/home/ada/code/build",
+    "base_branch": "main",
+    "is_git": true,
+    "remote": "git@github.com:ada/build.git",
+    "isolation": null,
+    "isolation_default": "worktree",
+    "isolation_effective": "worktree",
+    "isolation_available": {
+      "rift": false,
+      "reason": "rift is not installed on this device"
+    },
+    "sources": [
+      {
+        "id": "source-1",
+        "name": "build",
+        "mount": "build",
+        "path": "/home/ada/code/build",
+        "is_git": true,
+        "base_branch": "main",
+        "remote": "git@github.com:ada/build.git"
+      },
+      {
+        "id": "source-2",
+        "name": "Docs",
+        "mount": "docs",
+        "path": "/home/ada/code/docs",
+        "is_git": true,
+        "base_branch": "develop",
+        "remote": "git@github.com:ada/docs.git"
+      }
+    ],
+    "checkouts_updated": 1
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "conflict",
+    "internal"
+  ]
+}

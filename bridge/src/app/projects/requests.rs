@@ -5,7 +5,7 @@ use crate::app::config::accept_isolation;
 use crate::app::{expand_tilde, require_str, AppState};
 use crate::lifecycle::{
     CloneRepo, CreateRepo, InitializeRepo, OpenRepo, PendingRow, PendingState, Performed,
-    SetRemote, WorktreeChange, WorktreeMutation,
+    WorktreeChange, WorktreeMutation,
 };
 use crate::remote_url::usable_remote_url;
 use serde_json::Value;
@@ -206,7 +206,7 @@ impl AppState {
     /// its git to the drain. The directory is the row's identity: there is no
     /// project id until the git lands, and what two project verbs collide over
     /// is the folder, not a name.
-    fn defer_project<T, S>(
+    pub(super) fn defer_project<T, S>(
         &mut self,
         dest: std::path::PathBuf,
         title: String,
@@ -498,35 +498,30 @@ impl AppState {
         Ok(self.project_json(project))
     }
 
-    /// Set (or clear, with an empty url) a project's `origin` remote.
+    /// `project.set_remote`, for clients that predate per-source remotes: a
+    /// project has no remote of its own, so this is its first source's,
+    /// edited the way `project.update_source` edits any source's. An empty
+    /// url takes `origin` off.
     pub(crate) fn project_set_remote(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let url = require_str(params, "url")?;
-        let url = match url.trim() {
-            "" => String::new(),
-            named => usable_remote_url(named)?,
-        };
         let project = self
             .projects
-            .iter()
-            .find(|project| project.id == project_id)
+            .get(&project_id)
             .ok_or_else(|| format!("unknown project: {project_id}"))?;
         if !project.is_git {
             return Err("project is not a git repository; initialize Git first".to_string());
         }
-        let repo_path = project.repo_path.clone();
-        let title = project.name.clone();
-        // The repository is the row's identity here as it is for every other
-        // project verb: what a second `set_remote` collides with is the config
-        // file it would be rewriting, and nothing about the project's record
-        // is being minted or taken away.
-        self.defer_project(
-            repo_path.clone(),
-            title,
-            PendingState::Updating,
-            SetRemote { repo_path, url },
-            crate::app::runtime::lifecycle::SetRemoteSettlement { project_id },
-        )
+        let source_id = project
+            .sources
+            .first()
+            .map(|source| source.id.clone())
+            .ok_or_else(|| "a project must have at least one source".to_string())?;
+        self.project_update_source(&serde_json::json!({
+            "project_id": project_id,
+            "source_id": source_id,
+            "remote": url,
+        }))
     }
 
     /// Set (or clear, with a null isolation) a project's override of the

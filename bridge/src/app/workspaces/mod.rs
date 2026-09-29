@@ -1,4 +1,5 @@
 use crate::app::git::deferred::DeferredGitWork;
+use crate::app::projects::base_sync::{cut_warnings, sync_before_cut, SyncSubject, Synced};
 use crate::app::{model_choice_from, require_str, AppState, DeferredGit, DeferredWork};
 use crate::isolation::{remove_directory_with_rift_root, Isolation};
 use crate::workspace::{Workspace, WorkspaceDirectory, WorkspaceRegistry, WorkspaceSource};
@@ -27,6 +28,10 @@ struct WorkspaceCreateWork {
     unpublished: bool,
     sources: Vec<WorkspaceSource>,
     isolation: Isolation,
+    /// The sources whose base is brought up to date before the cut (#267).
+    base_syncs: Vec<SyncSubject>,
+    /// What those syncs concluded, for the settlement to write.
+    synced: std::sync::Mutex<Vec<Synced>>,
 }
 
 impl DeferredGitWork for WorkspaceCreateWork {
@@ -35,6 +40,10 @@ impl DeferredGitWork for WorkspaceCreateWork {
     }
 
     fn run(&self, _params: &Value) -> Result<Value, String> {
+        *self
+            .synced
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = sync_before_cut(&self.base_syncs);
         let mut registry = match WorkspaceRegistry::load(&self.registry_root) {
             Ok(registry) => registry,
             Err(error) => {
@@ -97,6 +106,23 @@ impl DeferredGitWork for WorkspaceCreateWork {
             }
         };
         Ok(workspace_json(&workspace))
+    }
+
+    /// Write what the base syncs concluded, and tell whoever asked for the
+    /// workspace which bases it may have been cut from behind their remote.
+    fn settle(&self, app: &mut AppState, mut result: Value) -> Result<Value, String> {
+        let synced = std::mem::take(
+            &mut *self
+                .synced
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        let warnings = cut_warnings(&synced);
+        app.settle_source_syncs(synced, crate::app::projects::base_sync::now_ms());
+        if !warnings.is_empty() {
+            result["warnings"] = json!(warnings);
+        }
+        Ok(result)
     }
 
     fn invalidate(&self, app: &mut AppState) {
@@ -558,6 +584,8 @@ impl AppState {
                 unpublished: true,
                 sources,
                 isolation,
+                base_syncs: self.cut_sync_subjects(&project_id),
+                synced: Default::default(),
             }),
             params: params.clone(),
             invalidates: true,
@@ -729,6 +757,8 @@ impl AppState {
                 unpublished: false,
                 sources,
                 isolation: workspace.isolation,
+                base_syncs: self.cut_sync_subjects(&workspace.project_id),
+                synced: Default::default(),
             }),
             params: params.clone(),
             invalidates: true,

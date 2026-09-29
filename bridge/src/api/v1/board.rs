@@ -75,6 +75,12 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             ProjectSourceUpdated
         ),
         v1_method!(
+            "project.sync_source",
+            project_sync_source,
+            ProjectSyncSourceParams,
+            SourceSyncRequested
+        ),
+        v1_method!(
             "project.set_isolation",
             project_set_isolation,
             ProjectSetIsolationParams,
@@ -259,6 +265,24 @@ pub struct ProjectUpdateSourceParams {
     /// its own that still named the old one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote: Option<String>,
+    /// Keep the source's base branch in step with its remote, fast-forward
+    /// only (since 3.3.0, `sources.syncBase`). Turning it on syncs at once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_base: Option<bool>,
+}
+
+/// Sync one source's base branch with its remote now (since 3.3.0), whatever
+/// its setting says. The service does it; the source's row says how it went.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ProjectSyncSourceParams {
+    pub project_id: String,
+    pub source_id: String,
+}
+
+/// The sync is on its way; the project list is noted changed when it lands.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SourceSyncRequested {
+    pub pending: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -549,6 +573,32 @@ pub struct ProjectSourceRow {
     pub is_git: bool,
     pub base_branch: String,
     pub remote: Option<String>,
+    /// Whether the base branch is kept in step with its remote (since 3.3.0).
+    #[serde(default)]
+    pub sync_base: bool,
+    /// What the last sync concluded; `null` before the first (since 3.3.0).
+    #[serde(default)]
+    pub sync: Option<SourceSyncView>,
+}
+
+/// What the last sync of a source's base branch concluded (#267).
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SourceSyncView {
+    /// `synced`, `skipped`, `failed` or `no_remote`.
+    pub state: String,
+    /// Why it was skipped or failed, in a sentence, credentials taken out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub ahead: u64,
+    pub behind: u64,
+    /// How far the last sync moved the base forward.
+    pub commits: u64,
+    /// The remote wanted a person or never answered; the timer leaves the
+    /// source until it is synced by hand.
+    pub needs_you: bool,
+    pub last_attempt_ms: i64,
+    pub last_synced_ms: Option<i64>,
+    pub last_fetched_ms: Option<i64>,
 }
 
 /// `project.update_source`'s answer: the project row with its sources, how
@@ -1148,6 +1198,13 @@ fn project_update_source(
     params: ProjectUpdateSourceParams,
 ) -> Result<Answer<ProjectSourceUpdated>, ApiError> {
     answer(app.project_update_source(&params.wire())).map_err(refine)
+}
+
+fn project_sync_source(
+    app: &mut AppState,
+    params: ProjectSyncSourceParams,
+) -> Result<Answer<SourceSyncRequested>, ApiError> {
+    answer(app.project_sync_source(&params.wire())).map_err(refine)
 }
 
 fn project_set_isolation(

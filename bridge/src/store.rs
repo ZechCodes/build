@@ -61,6 +61,7 @@ mod migrations;
 mod operations;
 pub mod push_keys;
 mod schema;
+mod source_sync;
 mod task_rename;
 mod tracker;
 mod user_session;

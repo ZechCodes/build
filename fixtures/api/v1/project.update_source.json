@@ -6,7 +6,8 @@
     "source_id": "source-2",
     "name": "Docs",
     "base_branch": "develop",
-    "remote": "git@github.com:ada/docs.git"
+    "remote": "git@github.com:ada/docs.git",
+    "sync_base": true
   },
   "result": {
     "project_id": "proj-1",
@@ -30,7 +31,18 @@
         "path": "/home/ada/code/build",
         "is_git": true,
         "base_branch": "main",
-        "remote": "git@github.com:ada/build.git"
+        "remote": "git@github.com:ada/build.git",
+        "sync_base": true,
+        "sync": {
+          "state": "synced",
+          "ahead": 0,
+          "behind": 0,
+          "commits": 2,
+          "needs_you": false,
+          "last_attempt_ms": 1790000000000,
+          "last_synced_ms": 1790000000000,
+          "last_fetched_ms": 1790000000000
+        }
       },
       {
         "id": "source-2",
@@ -39,7 +51,19 @@
         "path": "/home/ada/code/docs",
         "is_git": true,
         "base_branch": "develop",
-        "remote": "git@github.com:ada/docs.git"
+        "remote": "git@github.com:ada/docs.git",
+        "sync_base": true,
+        "sync": {
+          "state": "skipped",
+          "reason": "develop has 1 commit origin does not.",
+          "ahead": 1,
+          "behind": 3,
+          "commits": 0,
+          "needs_you": false,
+          "last_attempt_ms": 1790000000000,
+          "last_synced_ms": 1789990000000,
+          "last_fetched_ms": 1790000000000
+        }
       }
     ],
     "checkouts_updated": 1,

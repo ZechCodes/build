@@ -26,7 +26,7 @@ use std::collections::BTreeSet;
 /// and the legacy `board.changed`/`entity.changed` pushes.
 /// 3.1.0 adds `agents.createdBy`: an agent's digest names the agent whose
 /// Build MCP call made it (#216).
-pub const API_VERSION: &str = "3.2.0";
+pub const API_VERSION: &str = "3.3.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -89,6 +89,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "settings.projectAgent",
     "settings.roleModels",
     "settings.workspaceLifecycle",
+    "sources.syncBase", // Since 3.3.0: sync_base/sync on source rows, sync_base on project.update_source (#267).
     "thread.attachmentChunks", // Since 1.30.0: offset/length on thread.attachment.
     "threads.newestDeltaPagination",
     "threads.postOperations",

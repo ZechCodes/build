@@ -13,9 +13,51 @@ pub(in crate::app) struct ProjectSource {
     pub(in crate::app) path: std::path::PathBuf,
     pub(in crate::app) is_git: bool,
     pub(in crate::app) base_branch: String,
+    /// Whether the base branch is kept in step with its remote (#267), as
+    /// chosen. `None` has never been chosen and reads as
+    /// [`SYNC_BASE_FOR_EXISTING_SOURCES`].
+    pub(in crate::app) sync_base: Option<bool>,
+    /// What the last sync of the base concluded, `None` before the first.
+    pub(in crate::app) sync_status: Option<base_sync::SyncStatus>,
 }
 
+/// Whether a source that predates the setting keeps its base in step with
+/// its remote. The user's call (#267, Sep 29 2026): on, like a new one.
+pub(in crate::app) const SYNC_BASE_FOR_EXISTING_SOURCES: bool = true;
+
+/// Whether a source added from now on keeps its base in step with its
+/// remote, until someone turns it off (#267).
+pub(in crate::app) const SYNC_BASE_FOR_NEW_SOURCES: bool = true;
+
 impl ProjectSource {
+    /// A source as it is first added: nothing synced yet, and syncing as a
+    /// new source does.
+    pub(in crate::app) fn added(
+        id: String,
+        name: String,
+        mount: String,
+        path: std::path::PathBuf,
+        is_git: bool,
+        base_branch: String,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            mount,
+            path,
+            is_git,
+            base_branch,
+            sync_base: Some(SYNC_BASE_FOR_NEW_SOURCES),
+            sync_status: None,
+        }
+    }
+
+    /// Whether the bridge keeps this source's base in step with its remote:
+    /// only a Git repository has one to keep.
+    pub(in crate::app) fn syncs_base(&self) -> bool {
+        self.is_git && self.sync_base.unwrap_or(SYNC_BASE_FOR_EXISTING_SOURCES)
+    }
+
     /// The remote this source clones from and pushes to: its checkout's
     /// `origin`, read where git keeps it. The config holds no copy, so there
     /// is nothing to drift from the checkout.
@@ -35,12 +77,15 @@ impl ProjectSource {
             "is_git": self.is_git,
             "base_branch": self.base_branch,
             "remote": self.origin(),
+            "sync_base": self.syncs_base(),
+            "sync": self.sync_status,
         })
     }
 }
 
 mod agent_tools;
 mod agent_writes;
+pub(in crate::app) mod base_sync;
 pub(in crate::app) use agent_writes::{
     AgentChoiceArgs, ProjectSourceArgs, WorkspaceAgentAddress, WorkspaceDirectoryArgs,
 };
@@ -64,6 +109,8 @@ pub(in crate::app) struct SourceRecord {
     pub(in crate::app) path: std::path::PathBuf,
     pub(in crate::app) is_git: bool,
     pub(in crate::app) base_branch: String,
+    /// A new choice of whether the base is kept in step. `None` keeps it.
+    pub(in crate::app) sync_base: Option<bool>,
 }
 
 use project_registry::ProjectCandidate;
@@ -254,6 +301,7 @@ impl AppState {
                             .map(safe_mount_name)
                             .unwrap_or_else(|| safe_mount_name(&name));
                         let is_git = path.join(".git").exists();
+                        let sync_base = source.get("sync_base").and_then(Value::as_bool);
                         Some(ProjectSource {
                             id: source
                                 .get("id")
@@ -269,6 +317,8 @@ impl AppState {
                                 .and_then(Value::as_str)
                                 .unwrap_or("main")
                                 .to_string(),
+                            sync_base,
+                            sync_status: None,
                         })
                     })
                     .collect::<Vec<_>>();
@@ -337,14 +387,14 @@ impl AppState {
             .and_then(|s| s.to_str())
             .unwrap_or("project")
             .to_string();
-        let sources = vec![ProjectSource {
-            id: "source-1".to_string(),
-            name: name.clone(),
-            mount: safe_mount_name(&name),
-            path: repo_path.clone(),
+        let sources = vec![ProjectSource::added(
+            "source-1".to_string(),
+            name.clone(),
+            safe_mount_name(&name),
+            repo_path.clone(),
             is_git,
-            base_branch: base_branch.clone(),
-        }];
+            base_branch.clone(),
+        )];
         self.project_candidate_with_sources_at(
             repo_path,
             base_branch,

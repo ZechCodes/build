@@ -171,6 +171,7 @@ pub(crate) use config::{announce_isolation_downgrade, expand_tilde};
 use config::{default_state_root, DEFAULT_HARNESS};
 #[cfg(test)]
 use config::{read_config, ConfigPersistStep};
+pub use projects::base_sync::{SourceSyncPolicy, SyncPass};
 use projects::{
     default_projects_dir, AgentChoiceArgs, Project, ProjectRegistry, ProjectSourceArgs,
     WorkspaceAgentAddress, WorkspaceDirectoryArgs,
@@ -451,6 +452,12 @@ pub struct AppState {
     /// Wakes the reclaim service early, when a task linking a workspace
     /// finishes.
     reclaim_nudge: std::sync::Arc<tokio::sync::Notify>,
+    /// Sources somebody asked to sync now (#267), by project and source id,
+    /// until the source sync service takes them.
+    source_sync_requested: std::collections::HashSet<(String, String)>,
+    /// Wakes the source sync service for `source_sync_requested`.
+    source_sync_nudge: std::sync::Arc<tokio::sync::Notify>,
+    source_sync_stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// What the reclaim service runs under: its budgets, for
     /// `workspace.reclaim` as much as for a sweep.
     reclaim_policy: crate::reclaim::ReclaimPolicy,
@@ -660,6 +667,9 @@ impl AppState {
             reminded_holdings: HashMap::new(),
             workspace_lifecycle: HashMap::new(),
             reclaim_nudge: Default::default(),
+            source_sync_requested: Default::default(),
+            source_sync_nudge: Default::default(),
+            source_sync_stop: Default::default(),
             reclaim_reserved: HashMap::new(),
             reclaim_policy: Default::default(),
             reclaim_settings: Default::default(),

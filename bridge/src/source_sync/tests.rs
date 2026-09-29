@@ -487,3 +487,20 @@ fn credentials_in_a_url_are_taken_out_of_what_git_said() {
     );
     assert_eq!(without_credentials("no url here"), "no url here");
 }
+
+#[test]
+fn a_second_sync_of_one_checkout_waits_for_the_first_and_knows_it_did() {
+    let dir = tempfile::tempdir().unwrap();
+    let (first, waited) = SyncLock::acquire(dir.path(), Duration::ZERO).unwrap();
+    assert!(!waited);
+    assert!(SyncLock::acquire(dir.path(), Duration::from_millis(50)).is_none());
+
+    let path = dir.path().to_path_buf();
+    let second = std::thread::spawn(move || {
+        SyncLock::acquire(&path, Duration::from_secs(5)).map(|(_, waited)| waited)
+    });
+    std::thread::sleep(Duration::from_millis(50));
+    drop(first);
+
+    assert_eq!(second.join().unwrap(), Some(true));
+}

@@ -73,6 +73,33 @@ impl ProjectRegistry {
         self.projects.iter()
     }
 
+    /// One source of one project, to write what its sync concluded.
+    pub(in crate::app) fn source_mut(
+        &mut self,
+        project_id: &str,
+        source_id: &str,
+    ) -> Option<&mut ProjectSource> {
+        self.projects
+            .iter_mut()
+            .find(|project| project.id == project_id)?
+            .sources
+            .iter_mut()
+            .find(|source| source.id == source_id)
+    }
+
+    /// Every source of every project, with its project's id.
+    pub(in crate::app) fn sources_mut(
+        &mut self,
+    ) -> impl Iterator<Item = (&str, &mut ProjectSource)> {
+        self.projects.iter_mut().flat_map(|project| {
+            let project_id = project.id.as_str();
+            project
+                .sources
+                .iter_mut()
+                .map(move |source| (project_id, source))
+        })
+    }
+
     pub(in crate::app) fn get(&self, project_id: &str) -> Option<&Project> {
         self.projects
             .iter()
@@ -169,6 +196,9 @@ impl ProjectRegistry {
         source.path = record.path;
         source.is_git = record.is_git;
         source.base_branch = record.base_branch;
+        if let Some(sync_base) = record.sync_base {
+            source.sync_base = Some(sync_base);
+        }
         if project.repo_path == source.path {
             project.base_branch = source.base_branch.clone();
         }

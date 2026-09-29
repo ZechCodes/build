@@ -364,3 +364,60 @@ fn same_directory(left: &Path, right: &Path) -> bool {
         _ => left == right,
     }
 }
+
+/// One sync at a time per checkout: the service, a cut and the Sync now
+/// button never fetch into the same repository together.
+pub struct SyncLock {
+    path: PathBuf,
+}
+
+fn held_checkouts() -> &'static (
+    std::sync::Mutex<std::collections::HashSet<PathBuf>>,
+    std::sync::Condvar,
+) {
+    static HELD: std::sync::OnceLock<(
+        std::sync::Mutex<std::collections::HashSet<PathBuf>>,
+        std::sync::Condvar,
+    )> = std::sync::OnceLock::new();
+    HELD.get_or_init(Default::default)
+}
+
+impl SyncLock {
+    /// The checkout at `path`, once no other sync holds it, waiting at most
+    /// `within`. The flag says whether another sync had it first, so a cut
+    /// that waited can take what that sync fetched instead of fetching again.
+    pub fn acquire(path: &Path, within: Duration) -> Option<(Self, bool)> {
+        let (held, released) = held_checkouts();
+        let expiry = std::time::Instant::now() + within;
+        let mut guard = held.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut waited = false;
+        while guard.contains(path) {
+            waited = true;
+            let left = expiry.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return None;
+            }
+            guard = released
+                .wait_timeout(guard, left)
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .0;
+        }
+        guard.insert(path.to_path_buf());
+        Some((
+            Self {
+                path: path.to_path_buf(),
+            },
+            waited,
+        ))
+    }
+}
+
+impl Drop for SyncLock {
+    fn drop(&mut self) {
+        let (held, released) = held_checkouts();
+        held.lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.path);
+        released.notify_all();
+    }
+}

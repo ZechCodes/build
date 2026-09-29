@@ -218,6 +218,7 @@ impl AppState {
         self.rebuild_session_summaries()?;
         self.rebuild_user_session()?;
         self.restore_workspace_lifecycle()?;
+        self.restore_source_syncs()?;
         self.restore_operations(operations);
         self.seed_conversation_attention_sequences();
         self.seed_anchors_for_records_without_one();

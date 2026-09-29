@@ -80,7 +80,10 @@ describe("modelWord", () => {
     expect(modelWord({ active_model: "claude-opus-5" })).toBe("Opus 5");
     expect(modelWord({ model: "claude-fable-5-1" })).toBe("Fable 5.1");
     expect(modelWord({ active_model: "claude-haiku-4-5-20251001" })).toBe("Haiku 4.5");
-    expect(modelWord({ active_model: "gpt-6-astra" })).toBe("GPT 6 Astra");
+    expect(modelWord({ active_model: "gpt-6-astra" })).toBe("6 Astra");
+    // #257: one rule table for every compact row; what it does not know is
+    // shown as it is.
+    expect(modelWord({ active_model: "llama-3-70b" })).toBe("llama-3-70b");
     expect(modelWord({ active_model: "", model: "", provider: "codex" })).toBe("Codex TUI");
     expect(modelWord({ provider: "claude_adk" })).toBe("Claude Code");
   });

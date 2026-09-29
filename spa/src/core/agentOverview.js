@@ -17,6 +17,7 @@ import { workspaceDisplayName } from "./workspaceModel.js";
 import { tasksAddress } from "./trackerCache.js";
 import { assignedTo, isFinished } from "./trackerAgentTasks.js";
 import { markdownHtml } from "./markdown.js";
+import { shortModelLabel } from "./agentChoice.js";
 import { ICON_CHEVRON_RIGHT, ICON_EYE_OFF } from "./icons.js";
 
 /** One line of what an agent said, through the one renderer (#229). */
@@ -104,29 +105,14 @@ export function overviewState(agent) {
   return IDLE;
 }
 
-const DATE_TOKEN = /^\d{8}$/;
-const NUMERIC = /^\d+$/;
-const UPPER = new Set(["gpt", "o1", "o3", "o4"]);
+const modelIdOf = (agent) => String(agent?.active_model || agent?.model || "").trim();
 
-/** The tokens of a model id that say nothing on a row: the vendor, and a date. */
-const silentToken = (token) => token === "claude" || DATE_TOKEN.test(token);
-const capitalized = (token) => (UPPER.has(token) ? token.toUpperCase() : token.charAt(0).toUpperCase() + token.slice(1));
-/** Whether a number continues the version the last word ended on ("5", "1" → "5.1"). */
-const continuesVersion = (words, token) => NUMERIC.test(token) && words.length > 0
-  && NUMERIC.test(words[words.length - 1].split(".").pop());
-const addModelToken = (words, token) => {
-  if (silentToken(token)) return words;
-  if (continuesVersion(words, token)) return [...words.slice(0, -1), `${words[words.length - 1]}.${token}`];
-  return [...words, capitalized(token)];
-};
-
-/** A model id as a row can wear it: "claude-opus-5" → "Opus 5",
- *  "gpt-6-astra" → "GPT 6 Astra", "claude-haiku-4-5-20251001" → "Haiku 4.5".
- *  The harness's name when the agent runs on its default. */
+/** A model id as a row can wear it: its short name (#257), "claude-opus-5" →
+ *  "Opus 5", "gpt-6-astra" → "6 Astra". The harness's name when the agent
+ *  runs on its default. */
 export function modelWord(agent) {
-  const id = String(agent?.active_model || agent?.model || "").trim();
-  if (!id) return providerLabel(agent?.provider);
-  return id.split(/[-/]/).filter(Boolean).reduce(addModelToken, []).join(" ") || id;
+  const id = modelIdOf(agent);
+  return id ? shortModelLabel(null, agent?.provider, id) : providerLabel(agent?.provider);
 }
 
 export function overviewRows(entries, threads) {
@@ -140,6 +126,7 @@ export function overviewRows(entries, threads) {
       sectionName: entries[index].sectionName || "Agents",
       name: agentDisplayName(agent),
       model: modelWord(state),
+      modelName: modelIdOf(state) || modelWord(state),
       effort: String(state.effort || ""),
       snippet: overviewSnippet(state, threads[index]),
       lastAgentMessageAt: agentMessageTime(threads[index]),
@@ -178,7 +165,8 @@ const watchHtml = (row) => (isUnwatched(row)
 
 const rowHtml = (row) => {
   const classes = ["rail-overview-row", isUnwatched(row) ? "rail-overview-row-unwatched" : ""].filter(Boolean).join(" ");
-  const modelTitle = row.effort ? `${row.model} · ${row.effort}` : row.model;
+  const modelName = row.modelName || row.model;
+  const modelTitle = row.effort ? `${modelName} · ${row.effort}` : modelName;
   return `<button type="button" class="${classes}" data-state="${esc(row.state)}" data-overview-agent="${esc(row.id)}" data-overview-source="${esc(row.source)}" data-overview-workspace="${esc(row.workspaceId)}">
     <span class="rail-overview-dot" aria-hidden="true"></span>
     <span class="rail-overview-who"><span class="rail-overview-name">${esc(row.name)}</span><span class="rail-overview-model" title="${esc(modelTitle)}">${esc(row.model)}</span></span>

@@ -27,20 +27,11 @@
 //   agent(id)      → { deviceId, projectId, workspaceId?, agentId, name? }
 //   project(name)  → { deviceId, projectId, name? }
 
-import { esc } from "./text.js";
+// The references are read off escaped HTML, so a path carrying `&` arrives as
+// `&amp;` and the resolver must be asked about the real one: `unesc`.
+import { esc, unesc } from "./text.js";
 import { hashFromRoute } from "./router.js";
 import { referencesIn } from "./markdownRefs.js";
-
-/** Text that has been through `esc`, back as it was written. The references are
- *  read off escaped HTML, so a path carrying `&` arrives as `&amp;` and the
- *  resolver must be asked about the real one. */
-const unesc = (value) =>
-  value
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&amp;/g, "&");
 
 /** Where a workspace's own page is: its Changes, which is what a workspace
  *  link means by the workspace. A reference naming one source directory of it
@@ -181,7 +172,11 @@ function markupFor(reference, links) {
 /// Code and existing anchors are already complete HTML. URL text and Markdown
 /// link targets may carry `#42` as a fragment, where it is part of that URL.
 /// Keep each whole span literal before looking for Build references beside it.
-const PROTECTED_SPAN = /<code>[\s\S]*?<\/code>|<a\b[^>]*>[\s\S]*?<\/a>|\]\([^\s)]*\)|(?:https?:\/\/|www\.)[^\s<>"']+/g;
+///
+/// A link target stops at the next bracket or parenthesis as well as at its
+/// `)`: read to the end of the line instead, every `](` in a run of them
+/// rescanned the rest of it, and 50,000 of them took six seconds (#256).
+const PROTECTED_SPAN = /<code>[\s\S]*?<\/code>|<a\b[^>]*>[\s\S]*?<\/a>|\]\([^\s()[\]]*\)|(?:https?:\/\/|www\.)[^\s<>"']+/g;
 
 /** The stretches of `html` that are outside protected spans, in order. */
 function outsideProtected(html) {

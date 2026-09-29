@@ -578,3 +578,79 @@ describe("project sources", () => {
     expect(document.querySelectorAll("#sheet [data-remove-source]").length).toBe(3);
   });
 });
+
+// #267: each Git source's card keeps its base branch in step with its remote.
+describe("keeping a source's base branch up to date", () => {
+  const SYNCED = {
+    state: "synced", ahead: 0, behind: 0, commits: 2, needs_you: false,
+    last_attempt_ms: Date.now() - 180_000, last_synced_ms: Date.now() - 180_000, last_fetched_ms: Date.now() - 180_000,
+  };
+  const SYNCING = {
+    ...PROJECT,
+    sources: [
+      { ...PROJECT.sources[0], sync_base: true, sync: SYNCED },
+      { ...PROJECT.sources[1], sync_base: false, sync: null },
+      { id: "source-3", name: "assets", mount: "assets", path: "/a", is_git: false, base_branch: "main", remote: null, sync_base: false, sync: null },
+    ],
+  };
+  const syncsBase = () => writeCached(sourceEditSupportAddress("dev-1"), { editsSources: true, syncsBase: true });
+  const toggle = (sourceId) => card(sourceId)?.querySelector("[data-sync-base]");
+  const statusOf = (sourceId) => card(sourceId)?.querySelector("[data-sync-status]")?.textContent;
+
+  it("shows the setting and the last sync on each Git source, and nothing on a folder", async () => {
+    await syncsBase();
+    openProjectSettings("proj-1", { callRpc: vi.fn().mockResolvedValue({ projects: [SYNCING] }), deviceId: "dev-1" });
+    await vi.waitFor(() => expect(toggle("source-1")).toBeTruthy());
+    expect(toggle("source-1").checked).toBe(true);
+    expect(statusOf("source-1")).toBe("Synced 3m ago · moved main forward 2 commits.");
+    expect(toggle("source-2").checked).toBe(false);
+    expect(statusOf("source-2")).toBe("Off. New workspaces start from main as it stands.");
+    expect(card("source-3").querySelector("[data-source-sync]")).toBeNull();
+  });
+
+  it("offers none of it on a bridge that does not sync bases", async () => {
+    await editsInPlace();
+    openProjectSettings("proj-1", { callRpc: vi.fn().mockResolvedValue({ projects: [SYNCING] }), deviceId: "dev-1" });
+    await vi.waitFor(() => expect(card("source-1")).toBeTruthy());
+    expect(document.querySelector("#sheet [data-source-sync]")).toBeNull();
+  });
+
+  it("saves the setting the moment it is changed", async () => {
+    await syncsBase();
+    const turnedOff = { ...SYNCING, sources: [{ ...SYNCING.sources[0], sync_base: false }, ...SYNCING.sources.slice(1)] };
+    const callRpc = vi.fn(async (method) => (method === "project.list" ? { projects: [SYNCING] } : turnedOff));
+    openProjectSettings("proj-1", { callRpc, deviceId: "dev-1" });
+    await vi.waitFor(() => expect(toggle("source-1")).toBeTruthy());
+    toggle("source-1").checked = false;
+    toggle("source-1").dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(statusOf("source-1")).toBe("Off. New workspaces start from main as it stands."));
+    expect(callRpc).toHaveBeenCalledWith("project.update_source", { project_id: "proj-1", source_id: "source-1", sync_base: false });
+    expect(toggle("source-1").checked).toBe(false);
+  });
+
+  it("asks for a sync with Sync now, says it is syncing, and paints the result when the list push lands", async () => {
+    await syncsBase();
+    const callRpc = vi.fn(async (method) => (method === "project.list" ? { projects: [SYNCING] } : { pending: true }));
+    openProjectSettings("proj-1", { callRpc, deviceId: "dev-1" });
+    await vi.waitFor(() => expect(toggle("source-1")).toBeTruthy());
+    card("source-1").querySelector("[data-sync-now]").click();
+    await vi.waitFor(() => expect(statusOf("source-1")).toBe("Syncing…"));
+    expect(callRpc).toHaveBeenCalledWith("project.sync_source", { project_id: "proj-1", source_id: "source-1" });
+
+    const landed = { ...SYNCED, state: "skipped", reason: "main has 1 commit origin does not.", ahead: 1, behind: 2, commits: 0, last_attempt_ms: Date.now() };
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "projects" }, [
+      { ...SYNCING, sources: [{ ...SYNCING.sources[0], sync: landed }, ...SYNCING.sources.slice(1)] },
+    ]);
+    await vi.waitFor(() => expect(statusOf("source-1")).toBe("Skipped just now (1 ahead, 2 behind): main has 1 commit origin does not."));
+  });
+
+  it("escapes what a sync's reason carries", async () => {
+    await syncsBase();
+    const hostile = { ...SYNCED, state: "failed", reason: "<img src=x onerror=alert(1)>" };
+    const project = { ...SYNCING, sources: [{ ...SYNCING.sources[0], sync: hostile }] };
+    openProjectSettings("proj-1", { callRpc: vi.fn().mockResolvedValue({ projects: [project] }), deviceId: "dev-1" });
+    await vi.waitFor(() => expect(toggle("source-1")).toBeTruthy());
+    expect(card("source-1").querySelector("img")).toBeNull();
+    expect(statusOf("source-1")).toContain("<img src=x onerror=alert(1)>");
+  });
+});

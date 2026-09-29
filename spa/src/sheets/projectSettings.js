@@ -11,7 +11,7 @@ import { uiAddress, watchUiState } from "../core/localUiState.js";
 import { fieldTraits } from "../core/fieldTraits.js";
 import { refreshGithubRepos } from "../core/githubRepos.js";
 import { attachRepoPicker, disposeRepoPickers } from "./repoPicker.js";
-import { readSourceEditSupport, SOURCE_EDIT_SUPPORT_KIND } from "../core/sourceEditSupport.js";
+import { readSourceEditSupport, readSourceSyncSupport, SOURCE_EDIT_SUPPORT_KIND } from "../core/sourceEditSupport.js";
 import { mountSourceCards, readSourceEdits, restoreSourceEdits, sourceEditing, sourcesSectionHtml } from "./projectSources.js";
 
 /** The project's own name. It is the first source's folder's, and is not a
@@ -114,6 +114,10 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
   let view = "settings";
   let painted = null;
   let editsSources = false;
+  let syncsBase = false;
+  // Sources whose Sync now was pressed, by the last attempt their row showed
+  // then: "Syncing…" until the row says a newer one.
+  const syncing = new Map();
   const notices = {};
   let cachedDraft = null;
   let displayedDraft = {};
@@ -130,10 +134,20 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
   // to the cache; the cards repaint when it lands.
   const readSupport = async () => {
     editsSources = await readSourceEditSupport(deviceId);
+    syncsBase = await readSourceSyncSupport(deviceId);
     if (painted) paint(painted);
+  };
+  // The bridge's source sync service writes each sync onto the project's
+  // row, and the project list push brings the row to this device's list:
+  // the sheet takes it from there.
+  const adoptListedRow = async () => {
+    const listed = (await readCached({ deviceId, entityId: "", kind: "projects" }))?.value;
+    const row = Array.isArray(listed) ? listed.find((project) => project.project_id === projectId) : null;
+    if (row && JSON.stringify(row.sources) !== JSON.stringify(painted?.sources)) await record.write(row);
   };
   const unsubscribeSupport = subscribeCache({ deviceId }, (address) => {
     if (address?.kind === SOURCE_EDIT_SUPPORT_KIND) void readSupport();
+    if (address?.kind === "projects" && !address.entityId) void adoptListedRow();
   });
   const close = () => {
     repoAsk.stop();
@@ -165,7 +179,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     sheet.innerHTML = settingsSheetHtml({
       title: "Project settings",
       bodyHtml: `${generalHtml(project)}
-      ${sourcesSectionHtml(project, { editing, editsSources, notices })}
+      ${sourcesSectionHtml(project, { editing, editsSources, notices, sync: { syncsBase, syncing } })}
       ${isolationHtml()}
       ${dangerHtml()}
       <div class="row"><button class="btn" id="pscancel" style="margin-left:auto">Close</button></div>`,
@@ -177,6 +191,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
       callRpc, record, deviceId, editing,
       saveDraft,
       onSaved: (sourceId, notice) => { notices[sourceId] = notice; },
+      onSyncAsked: (source) => { syncing.set(source.id, source.sync?.last_attempt_ms ?? null); },
       onFrameChange: () => { frame = sheet.firstElementChild; view = "browser"; },
       onReturn: () => { view = "settings"; void record.read(); },
     });
@@ -214,7 +229,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
  *
  *  Every write answers the project row itself, so the sheet repaints from what
  *  the bridge said rather than from what it hoped. */
-function mountSources(project, { callRpc, record, deviceId, editing, saveDraft, onSaved, onFrameChange, onReturn }) {
+function mountSources(project, { callRpc, record, deviceId, editing, saveDraft, onSaved, onSyncAsked, onFrameChange, onReturn }) {
   const write = async (send, button, error, onDone) => {
     if (error) error.textContent = "";
     button.disabled = true;
@@ -232,7 +247,7 @@ function mountSources(project, { callRpc, record, deviceId, editing, saveDraft, 
       return null;
     }
   };
-  mountSourceCards($("#sheet"), project, { editing, callRpc, deviceId, write, saveDraft, onSaved });
+  mountSourceCards($("#sheet"), project, { editing, callRpc, deviceId, write, saveDraft, onSaved, onSyncAsked });
   $("#psaddremote").onclick = () => openAddRemote(project, { write, callRpc, saveDraft, deviceId });
   $("#psaddfolder").onclick = () => void browseForSource(project, { callRpc, deviceId, onFrameChange, onReturn });
 }

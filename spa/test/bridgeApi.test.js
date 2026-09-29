@@ -102,7 +102,7 @@ describe("adapter selection", () => {
       branches: { finishDelete: false },
       push: { registerKey: false, revokeKey: false },
       agents: { createdBy: false },
-      projects: { updateSource: false },
+      projects: { updateSource: false, syncBase: false },
     });
   });
 
@@ -181,7 +181,7 @@ describe("adapter selection", () => {
         branches: { finishDelete: false },
         push: { registerKey: false, revokeKey: false },
         agents: { createdBy: false },
-        projects: { updateSource: false },
+        projects: { updateSource: false, syncBase: false },
       });
     }
   });
@@ -408,6 +408,14 @@ describe("project.update_source", () => {
     expect(v1.capabilitiesOf({ api_version: "3.2.0", capabilities: ["project.update_source"] }).projects.updateSource).toBe(true);
     expect(v1.capabilitiesOf({ api_version: "3.2.0", capabilities: [] }).projects.updateSource).toBe(false);
     expect(v1.capabilitiesOf({ api_version: "3.2.0" }).projects.updateSource).toBe(false);
+  });
+});
+
+describe("sources.syncBase", () => {
+  it("is on only when the greeting names it, never inferred from a minor (#267)", () => {
+    expect(v1.capabilitiesOf({ api_version: "3.3.0", capabilities: ["sources.syncBase"] }).projects.syncBase).toBe(true);
+    expect(v1.capabilitiesOf({ api_version: "3.3.0", capabilities: [] }).projects.syncBase).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "3.3.0" }).projects.syncBase).toBe(false);
   });
 });
 

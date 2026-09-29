@@ -12,6 +12,7 @@ import { readCached } from "../core/localCache.js";
 import { workspaceDisplayName } from "../core/workspaceModel.js";
 import { fieldTraits } from "../core/fieldTraits.js";
 import { attachRepoPicker } from "./repoPicker.js";
+import { mountSyncControls, syncControlsHtml } from "./sourceSyncControls.js";
 
 /** The parts of a source a card shows, in the order it shows them. */
 const FIELDS = ["name", "path", "base_branch", "remote"];
@@ -62,13 +63,14 @@ function fieldHtml(source, index, field, editing) {
         value="${esc(paintedValue(source, field))}"${editable ? "" : " readonly"}>${hint}</div>`;
 }
 
-function cardHtml(source, index, { editing, removable, notice }) {
+function cardHtml(source, index, { editing, removable, notice, sync }) {
   const kind = source.is_git === false ? "Folder" : "Git repository";
   const editable = shownFields(source).some((field) => editing.editable(field, index));
   return `<article class="ps-source" data-source-id="${esc(source.id)}" data-source-index="${index}">
     <header class="ps-source-head"><span class="ps-source-title">${esc(paintedValue(source, "name") || `Folder ${index + 1}`)}</span>
       <span class="ps-source-tag">${kind}</span></header>
     ${shownFields(source).map((field) => fieldHtml(source, index, field, editing)).join("")}
+    ${syncControlsHtml(source, index, sync)}
     <div class="adderr" data-source-error role="alert"></div>
     <div class="dim" data-source-status role="status">${esc(notice?.status || "")}</div>
     <div class="ps-source-warning" data-source-warning role="alert">${esc(notice?.warning || "")}</div>
@@ -79,7 +81,7 @@ function cardHtml(source, index, { editing, removable, notice }) {
 }
 
 /** The section: a card per source, then the two ways one is added. */
-export function sourcesSectionHtml(project, { editing, editsSources, notices = {} }) {
+export function sourcesSectionHtml(project, { editing, editsSources, notices = {}, sync = {} }) {
   const sources = project.sources || [];
   const removable = sources.length > 1;
   const older = editsSources
@@ -88,7 +90,7 @@ export function sourcesSectionHtml(project, { editing, editsSources, notices = {
   return `<section class="ps-section" aria-labelledby="ps-sources-h"><h4 id="ps-sources-h">Sources</h4>
     <p class="sub">New workspaces are cut from these folders. A workspace that already exists keeps its own directories.</p>
     ${older}
-    ${sources.map((source, index) => cardHtml(source, index, { editing, removable, notice: notices[source.id] })).join("")}
+    ${sources.map((source, index) => cardHtml(source, index, { editing, removable, notice: notices[source.id], sync })).join("")}
     <div class="row"><button class="btn" id="psaddfolder" type="button">Add folder…</button>
       <button class="btn" id="psaddremote" type="button">Add Git remote…</button></div>
     <div id="psaddsource"></div>
@@ -173,10 +175,11 @@ async function cachedWorkspaces(deviceId) {
  * onDone)` puts in the cache; the sheet repaints from there once `onDone`
  * has settled.
  */
-export function mountSourceCards(sheet, project, { editing, callRpc, deviceId, write, saveDraft, onSaved }) {
+export function mountSourceCards(sheet, project, { editing, callRpc, deviceId, write, saveDraft, onSaved, onSyncAsked }) {
   sheet.querySelectorAll(".ps-source").forEach((card) => {
     const source = sourceOf(project, card);
     if (!source) return;
+    mountSyncControls(card, source, { callRpc, projectId: project.project_id, write, onSyncAsked });
     card.querySelectorAll("input[data-field]:not([readonly])").forEach((input) => {
       input.oninput = () => { markDirty(card, source); saveDraft(true); };
     });

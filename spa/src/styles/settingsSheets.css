@@ -125,3 +125,12 @@
   justify-content:flex-end;
   margin-top:10px;
 }
+
+/* #267: keeping a Git source's base branch up to date. */
+.ps-sync [data-sync-status] {
+  margin-top:4px;
+}
+
+.sheet .ps-sync .row {
+  margin-top:6px;
+}

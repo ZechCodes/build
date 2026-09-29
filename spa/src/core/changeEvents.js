@@ -94,7 +94,7 @@ const NO_CAPABILITIES = Object.freeze({
   branches: Object.freeze({ finishDelete: false }),
   push: Object.freeze({ registerKey: false, revokeKey: false }),
   agents: Object.freeze({ createdBy: false }),
-  projects: Object.freeze({ updateSource: false }),
+  projects: Object.freeze({ updateSource: false, syncBase: false }),
 });
 
 // Event mode is a fact about one bridge, so it is held per device: one machine

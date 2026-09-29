@@ -1797,7 +1797,8 @@ describe("the bubble strip", () => {
   it("offers no second agent on a task", async () => {
     payload = { task_id: "plan-1", project_id: "p1", agents: [agent()], thread: { items: [] } };
     await mount({ kind: "task", projectId: "p1", taskId: "plan-1" });
-    expect(bubbles().map((b) => b.dataset.bubble)).toEqual(["agent"]);
+    // The strip holds a ghost until the task's roster lands.
+    await vi.waitFor(() => expect(bubbles().map((b) => b.dataset.bubble)).toEqual(["agent"]));
   });
 
   // The reviewer's screenshot: pressing + created an agent silently on the

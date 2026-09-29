@@ -19,6 +19,11 @@ const DEADLOCK_GUARD: Duration = Duration::from_secs(5);
 /// Hold the app mutex until the section triggered by `due` has entered. The
 /// test observes its actual thread, while the holder's separate watchdog
 /// breaks a worker/lock deadlock so the test can report it.
+///
+/// `due` runs only once the lock is held and the observer registered, so a
+/// timer-driven task must be spawned inside it: a tick that falls between the
+/// two would block on the lock unobserved, and the holder would wait out its
+/// watchdog for a section it can no longer see (#243).
 async fn the_worker_progresses_while_the_lock_is_held(
     state: &Arc<Mutex<AppState>>,
     due: impl FnOnce(),
@@ -165,27 +170,30 @@ async fn a_byte_pumps_death_rites_wait_for_the_app_mutex_off_the_workers() {
 async fn the_idle_monitor_waits_for_the_app_mutex_off_the_workers() {
     let dir = tempfile::tempdir().unwrap();
     let state = unrooted_state(dir.path());
-    AppState::spawn_idle_monitor(Arc::clone(&state), Duration::from_secs(600), TICK);
-
-    the_worker_progresses_while_the_lock_is_held(&state, || {}).await;
+    the_worker_progresses_while_the_lock_is_held(&state, || {
+        AppState::spawn_idle_monitor(Arc::clone(&state), Duration::from_secs(600), TICK);
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn the_terminal_reaper_waits_for_the_app_mutex_off_the_workers() {
     let dir = tempfile::tempdir().unwrap();
     let state = unrooted_state(dir.path());
-    AppState::spawn_terminal_reaper(Arc::clone(&state), TICK);
-
-    the_worker_progresses_while_the_lock_is_held(&state, || {}).await;
+    the_worker_progresses_while_the_lock_is_held(&state, || {
+        AppState::spawn_terminal_reaper(Arc::clone(&state), TICK);
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn the_update_check_waits_for_the_app_mutex_off_the_workers() {
     let dir = tempfile::tempdir().unwrap();
     let state = unrooted_state(dir.path());
-    AppState::spawn_update_checks(Arc::clone(&state), TICK);
-
-    the_worker_progresses_while_the_lock_is_held(&state, || {}).await;
+    the_worker_progresses_while_the_lock_is_held(&state, || {
+        AppState::spawn_update_checks(Arc::clone(&state), TICK);
+    })
+    .await;
 }
 
 /// The workspace reclaim service's policy: sweeps back to back, so one always

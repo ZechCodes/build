@@ -320,18 +320,20 @@ mod tests {
                 template.contains("`body` is the whole report"),
                 "{template}"
             );
-            assert!(
-                crate::test_support::user_involvement::says(
-                    template,
-                    crate::test_support::user_involvement::RESULT_ON_TASK
-                ),
-                "the whole report's one exception (#232): {template}"
-            );
             for asked in ["what changed", "verified", "reverse-engineer", "left out"] {
                 assert!(template.contains(asked), "{asked} missing from {template}");
             }
             assert!(!template.contains("completion_report"), "{template}");
         }
+    }
+
+    /// The report note itself carries the whole report's one exception
+    /// (#232): the templates around it also carry the task-tools note, which
+    /// says it too, so asserting on a whole template cannot tell them apart.
+    #[test]
+    fn the_report_note_says_a_result_on_the_users_task_is_one_line() {
+        use crate::test_support::user_involvement::{says, RESULT_ON_TASK};
+        assert!(says(DONE_SUMMARY_ASK, RESULT_ON_TASK), "{DONE_SUMMARY_ASK}");
     }
 
     #[test]

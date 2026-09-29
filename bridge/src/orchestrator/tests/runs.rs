@@ -485,6 +485,35 @@ fn conversation_prompt_teaches_every_reference_shape() {
     }
 }
 
+/// Every cold prompt says where the user is talked to (#232): the thread, and
+/// the tasks they are on, in the one wording the tool descriptions use.
+#[test]
+fn conversation_prompt_says_where_the_user_is_talked_to() {
+    use crate::test_support::user_involvement::*;
+    let prompt = conversation_prompt("do the work");
+    for rule in [
+        ON_A_TASK,
+        REPLY_THERE,
+        ASKED_IN_THREAD,
+        RESULT_ON_TASK,
+        BUILD_ON,
+        WHOLE_REPORT_UNLESS,
+    ] {
+        assert!(says(&prompt, rule), "{rule:?} missing: {prompt}");
+    }
+    assert!(
+        says(
+            &prompt,
+            "The user reads this thread and the Build tasks they are on."
+        ),
+        "{prompt}"
+    );
+    assert!(
+        !prompt.contains("The user sees only messages sent through"),
+        "the thread is not the only place the user reads: {prompt}"
+    );
+}
+
 #[test]
 fn conversation_prompt_instructs_clarifying_reply_for_ambiguous_comments() {
     let prompt = conversation_prompt("do the work");

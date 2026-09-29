@@ -246,16 +246,20 @@ pub(crate) fn conversation_prompt(prompt: &str) -> String {
     // it by reference — never restate these bullets elsewhere, restated copies
     // drift. The ambiguity rule stays above the silent-directive allowance so
     // an in-order reader hits the carve-out before committing to silence.
+    // The exception is when to involve the user (#232): the task tools carry
+    // those rules too, so each is one sentence held word for word in
+    // test_support::user_involvement, which is what stops the copies drifting.
     out.push_str(
         "\n\nBuild conversation protocol:\n\
          - First, call `set_topic` with the objective of this conversation in 2-4 words (e.g. \"Unify prompt delivery\"). The conversation header shows it and says \"Starting\" until you do. Call it again if the objective changes.\n\
          - Act on the current instruction and exact accepted messages in the native payload. Use conversation context and catch-up packets only as background.\n\
-         - The user sees only messages sent through `post_thread_message`. Terminal output and ordinary assistant responses are not visible in Build.\n\
+         - The user reads this thread and the Build tasks they are on. In this thread only `post_thread_message` reaches them. Terminal output and ordinary assistant responses are not visible in Build.\n\
+         - Once the user is on a task (they filed it, commented on it, were asked on it, or asked to follow it), talk to them about it on the task with `comment_task`: questions, results and meaningful progress, not every step. When they write on it, reply there. A question asked in your thread is answered in your thread, even when it is about a task. When the result is on a task the user is on, the Complete in your thread is one line that points to it. When you answer what the user wrote, move it forward: settle the question, make the call, or add the detail that was missing. Do not quote it or say it back.\n\
          - For long-running work with several meaningful steps, use the native checklist or plan tool available in this session so the user can track progress in Build. Do not create one for brief, one-step work, and do not invent a tool that is absent from your tool list. Keep it accurate: mark work in progress when it begins, update it at each meaningful advance, and mark every item complete only after it is complete; mark blocked work as blocked when the tool supports that state.\n\
-         - Every `post_thread_message` needs a status: `Working` for a progress update while continuing, `Waiting` when the next step needs a user response, `Blocked` when work cannot proceed, and `Complete` when the objective is finished. `Complete` and `Blocked` also end the turn: they are the completion report, so the body carries the whole of it.\n\
+         - Every `post_thread_message` needs a status: `Working` for a progress update while continuing, `Waiting` when the next step needs a user response, `Blocked` when work cannot proceed, and `Complete` when the objective is finished. `Complete` and `Blocked` also end the turn: they are the completion report, so the body carries the whole of it unless the result is on a task the user is on.\n\
          - If a reviewer message reads as either a question or an ambiguous directive, post a one-line clarifying reply via `post_thread_message` instead of silently changing code.\n\
          - You may implement an unambiguous directive without replying; the next revision is its acknowledgment.\n\
-         - Call `post_thread_message` for progress the user needs, questions or clarification, and always once with `Complete` or `Blocked` to report the final outcome.\n\
+         - Call `post_thread_message` for meaningful progress on what you were asked in this thread, questions or clarification, and always once with `Complete` or `Blocked` to report the final outcome.\n\
          - Do not post acknowledgments or diff recaps.\n\
          - When the reply you need is a choice you can enumerate, send `options` with the message: each is a chip the reviewer presses, and what comes back is an ordinary reviewer message. Write each option's `message` as the full instruction it stands for, not a repeat of its label — that text is what a later session sees. Anything said afterwards closes the offer.\n\
          - A message may carry files (`attachments`, each with a `path`). Open every one before acting on that message: the reviewer attached it because the words alone do not carry what they mean.\n\

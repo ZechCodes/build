@@ -705,7 +705,7 @@ impl DoneServer {
                 // means it is the ONE statement guaranteed to still be
                 // in context when an ambiguous message actually arrives.
                 // A pointer would resolve to nothing exactly then.
-                "description": "Send a message to the user. This tool is the only way the user can see your messages; terminal output and ordinary assistant responses are not visible to them. Every call needs a status: Complete when the objective is met, Blocked when an environment or implementation problem prevents progress, Waiting when you need a user response, or Working for a progress update while you continue. Always call it once with Complete or Blocked as the final outcome.",
+                "description": "Send a message in this thread. The user reads this thread and the Build tasks they are on. In this thread, this tool is the only way they see what you say; terminal output and ordinary assistant responses are not visible to them. Once the user is on a task (they filed it, commented on it, were asked on it, or asked to follow it), talk to them about it on the task with comment_task: questions, results and meaningful progress, not every step. A question asked in your thread is answered in your thread, even when it is about a task. When the result is on a task the user is on, the Complete in your thread is one line that points to it. Every call needs a status: Complete when the objective is met, Blocked when an environment or implementation problem prevents progress, Waiting when you need a user response, or Working for a progress update while you continue. Always call it once with Complete or Blocked as the final outcome.",
                 "inputSchema": Self::message_input_schema()
             }),
             json!({
@@ -951,7 +951,7 @@ impl DoneServer {
             }),
             json!({
                 "name": "create_task",
-                "description": "File a Build task: a card on your project's board, not an entry in your harness's own task or todo list. Two things it is for: work you have found and are NOT doing — a task is cheap, and something you noticed and did not write down exists only in this conversation — and work you ARE doing that runs to more than one step, filed and assigned to yourself so the user can see what is in progress without opening your conversation. It is filed, not started; assign it to start anyone on it, yourself included. If its body asks the user for a decision, pass mention_user: true so it reaches Needs you until they read it; a question in the body alone does not.",
+                "description": "File a Build task: a card on your project's board, not an entry in your harness's own task or todo list. Two things it is for: work you have found and are NOT doing — a task is cheap, and something you noticed and did not write down exists only in this conversation — and work you ARE doing that runs to more than one step, filed and assigned to yourself so the user can see what is in progress without opening your conversation. It is filed, not started; assign it to start anyone on it, yourself included. mention_user asks; notify_user is only for a task the user asked to follow. Pass mention_user: true when the body asks the user for a decision or feedback, so it reaches Needs you until they read it; a question in the body alone does not. A task filed from something the user reported is not one they asked to follow.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -967,11 +967,11 @@ impl DoneServer {
                         },
                         "notify_user": {
                             "type": "boolean",
-                            "description": "Watch this task for the user. Watching alone does not put it in Needs you or ask them for an answer. To ask, pass mention_user: true when filing, comment later with mention_user: true, or assign the task to the user."
+                            "description": "Watch this task for the user. Off by default: pass true only when the user asked to follow it. A task filed from something the user reported is not one they asked to follow. Watching alone does not put it in Needs you or ask them for an answer. To ask, pass mention_user: true when filing, comment later with mention_user: true, or assign the task to the user."
                         },
                         "mention_user": {
                             "type": "boolean",
-                            "description": "Put this new task in the user's Needs you until they read it, and watch it for them. Use when the task body asks the user to read or answer a decision; leave it off for bookkeeping."
+                            "description": "Put this new task in the user's Needs you until they read it, and watch it for them. Off by default: use it only when the body asks the user for a decision or feedback; leave it off for bookkeeping."
                         }
                     },
                     "required": ["title"]
@@ -979,7 +979,7 @@ impl DoneServer {
             }),
             json!({
                 "name": "comment_task",
-                "description": "Say something on a task. This is how progress on a task you were handed becomes visible: the conversation you are in is yours, and the task is where the user and the other agents look. It is also where you ANSWER: a comment on a task you hold is a question, and it is answered here rather than in your own thread — the user reads the task, not your conversation. The same goes for asking: a question about a task that came from outside your conversation goes here, because the assigner and the user both read the task and the answer comes back to you. For any decision the user must make, pass mention_user: true; that puts the task in Needs you until the user reads it. A question left only in the task body does not ask them; notify_user on create or assign only watches.",
+                "description": "Say something on a task. This is how progress on a task you were handed becomes visible: the conversation you are in is yours, and the task is where the user and the other agents look. Once the user is on a task (they filed it, commented on it, were asked on it, or asked to follow it), talk to them about it on the task with comment_task: questions, results and meaningful progress, not every step. When they write on it, reply there. A question asked in your thread is answered in your thread, even when it is about a task. The task is also where you ANSWER: a comment on a task you hold is a question, and it is answered here rather than in your own thread. The same goes for asking: a question about a task that came from outside your conversation goes here, because the assigner and the user both read the task and the answer comes back to you. When you answer what the user wrote, move it forward: settle the question, make the call, or add the detail that was missing. Do not quote it or say it back. Pass mention_user: true for a decision or feedback you need from the user now; it puts the task in Needs you until they read it. On a comment, notify_user is only for feedback you need from the user; leave it off for progress on a task the user follows, since watching already shows it. A question left only in the task body does not ask them.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -989,11 +989,11 @@ impl DoneServer {
                         "attachments": attachments,
                         "notify_user": {
                             "type": "boolean",
-                            "description": "Watch this task for the user and mark this comment as needing their attention; the unread comment puts it in Needs you until they read it. Use mention_user: true for a question or decision addressed to the user."
+                            "description": "Watch this task for the user and mark this comment as needing their attention; the unread comment puts it in Needs you until they read it. Off by default. On a comment, notify_user is only for feedback you need from the user; leave it off for progress on a task the user follows, since watching already shows it. Use mention_user: true for a question or decision addressed to the user."
                         },
                         "mention_user": {
                             "type": "boolean",
-                            "description": "Put this task in the user's Needs you until they read this comment, and watch it for them. Use for any decision the user must read or answer; leave it off for bookkeeping."
+                            "description": "Put this task in the user's Needs you until they read this comment, and watch it for them. Use it for a decision or feedback the user must give; leave it off for progress and bookkeeping."
                         },
                         "refs": {
                             "type": "array",
@@ -1032,7 +1032,7 @@ impl DoneServer {
                                 "harness": { "type": "string", "description": "What a new agent runs on. Omit for the user's default." },
                                 "model": { "type": "string" },
                                 "effort": { "type": "string" },
-                                "notify_user": { "type": "boolean", "description": "With kind=new_workspace or new_agent: watch the new agent and show its workspace in the USER's inbox. Pass true when the user asked to follow that agent's work. Otherwise the new agent is unwatched. This is separate from the top-level notify_user, which watches the task." }
+                                "notify_user": { "type": "boolean", "description": "With kind=new_workspace or new_agent: watch the new agent and show its workspace in the USER's inbox. Off by default: pass true only when the user asked to follow its work; starting work they asked for is not that. This is separate from the top-level notify_user, which watches the task." }
                             },
                             "required": ["kind"],
                             "allOf": [
@@ -1044,7 +1044,7 @@ impl DoneServer {
                         "track": track,
                         "notify_user": {
                             "type": "boolean",
-                            "description": "Watch this task for the user. Watching alone does not put it in Needs you or ask them for an answer. Assign it to kind=user to ask them directly, or use mention_user on create_task or comment_task."
+                            "description": "Watch this task for the user. Off by default: pass true only when the user asked to follow it. A task filed from something the user reported is not one they asked to follow. Watching alone does not put it in Needs you or ask them for an answer. Assign it to kind=user to ask them directly, or use mention_user on create_task or comment_task."
                         }
                     },
                     "required": ["task_id", "assignee"]
@@ -1363,7 +1363,7 @@ impl DoneServer {
             }),
             json!({
                 "name": "add_workspace_agent",
-                "description": "Put a new agent on one of your workspaces, in its own conversation there. The workspace gets a conversation of its own if it has none yet. Nothing is said to the agent until you message it. The agent is unwatched unless you pass notify_user: true when the user asked to follow its work.",
+                "description": "Put a new agent on one of your workspaces, in its own conversation there. The workspace gets a conversation of its own if it has none yet. Nothing is said to the agent until you message it. The agent is unwatched unless you pass notify_user: true.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -1374,7 +1374,7 @@ impl DoneServer {
                         "model": { "type": "string", "description": "A model id, when the user named one. list_harnesses is where the ids are. Omit to take the user's own choice for the role." },
                         "effort": Self::effort_enum(),
                         "name": { "type": "string", "minLength": 1, "description": "Required. A short name describing the agent's job, like \"Flaky test fixer\". It is what you and the user will see instead of \"Agent 2\"." },
-                        "notify_user": { "type": "boolean", "description": "Watch this new agent and show its workspace in the USER's inbox. Pass true when the user asked to follow its work; omit for an unwatched agent." }
+                        "notify_user": { "type": "boolean", "description": "Watch this new agent and show its workspace in the USER's inbox. Off by default: pass true only when the user asked to follow its work; starting work they asked for is not that." }
                     },
                     "required": ["workspace_id", "name"]
                 }
@@ -1496,7 +1496,7 @@ impl DoneServer {
             }
         }), compaction::compact_agent_tool(), json!({
             "name": "post_thread_message",
-            "description": "Send a message to the user. This is the only way the user sees what you say. Use status=Complete for an outcome or an answer, Waiting when the next step is the user's call, Blocked when you cannot proceed without them, or Working only while a long read on their question is still going, never as a progress report.",
+            "description": "Send a message in your thread with the user. In this thread it is the only way they see what you say. Once the user is on a task (they filed it, commented on it, were asked on it, or asked to follow it), talk to them about it on the task with comment_task: questions, results and meaningful progress, not every step. A question asked in your thread is answered in your thread, even when it is about a task. When the result is on a task the user is on, the Complete in your thread is one line that points to it. Use status=Complete for an outcome or an answer, Waiting when the next step is the user's call, Blocked when you cannot proceed without them, or Working only while a long read on their question is still going, never as a progress report.",
             "inputSchema": Self::project_message_input_schema()
         }), json!({
             "name": "message_agent",
@@ -2298,14 +2298,14 @@ fn project_message(id: Value, params: Option<&Value>) -> Handled {
     )
 }
 
-const SUMMARY_DESCRIPTION: &str = concat!("The full report of this turn, in markdown, written for a reviewer who will not open the activity log. Lead with the outcome in one sentence, then say what changed and where (the files that carry it and why), how you verified it and what you could not, the decisions a reviewer would otherwise have to reverse-engineer, and what you deliberately left out or that remains at risk. Leave a heading out rather than pad it. If blocked or failed, lead with what is needed instead.", reference_shapes_note!());
+const SUMMARY_DESCRIPTION: &str = concat!("The full report of this turn, in markdown, written for a reviewer who will not open the activity log. Lead with the outcome in one sentence, then say what changed and where (the files that carry it and why), how you verified it and what you could not, the decisions a reviewer would otherwise have to reverse-engineer, and what you deliberately left out or that remains at risk. Leave a heading out rather than pad it. If blocked or failed, lead with what is needed instead. When the result is on a task the user is on, the Complete in your thread is one line that points to it.", reference_shapes_note!());
 
 /// What `set_topic` says about itself on every `tools/list`. The cold prompt
 /// asks for the call; this is what is still in context when the agent makes
 /// it, so it carries the shape rule itself.
 /// The one tool a session with no memory of the work needs to know exists, so
 /// the description says what to do INSTEAD of scrolling: ask a question.
-const MESSAGE_AGENT_DESCRIPTION: &str = "Say something to another agent working this project: a question for whoever is on the piece you depend on, or work to hand over. It arrives knowing you sent it and not the user, and when that agent finishes the turn its report comes back to you as a message. You cannot message yourself, and no agent outside this project is reachable. This talks to an agent; post_thread_message talks to the user, and is still the only thing the user sees.";
+const MESSAGE_AGENT_DESCRIPTION: &str = "Say something to another agent working this project: a question for whoever is on the piece you depend on, or work to hand over. It arrives knowing you sent it and not the user, and when that agent finishes the turn its report comes back to you as a message. You cannot message yourself, and no agent outside this project is reachable. This talks to an agent. post_thread_message talks to the user in your thread, and comment_task talks to them on the tasks they are on.";
 
 const SEARCH_CONVERSATION_DESCRIPTION: &str = "Search your Build conversation history — every past message and event, including the ones from sessions before yours. Use it whenever you need context you do not have: what was decided about a file, why a commit was made, what the reviewer already asked for. Search rather than replay: never scroll the terminal or re-read the whole conversation to find something. Filters combine, results are newest first, and each hit is an excerpt with its sequence number, not the full item.";
 
@@ -2464,7 +2464,7 @@ mod tests {
         let description = v["result"]["tools"][0]["description"].as_str().unwrap();
         let lowered = description.to_lowercase();
         assert!(
-            lowered.contains("only way the user can see")
+            lowered.contains("only way they see what you say")
                 && lowered.contains("always call it once"),
             "the ambiguity carve-out must be stated here, not deferred to a block \
              that compaction removes: {description}"
@@ -2926,6 +2926,130 @@ mod tests {
                 "{description}"
             );
         }
+    }
+
+    /// When an agent involves the user (#232): each surface states the rules
+    /// it carries in the one wording `test_support::user_involvement` holds,
+    /// and none still calls the thread the only place the user reads.
+    #[test]
+    fn every_surface_says_when_to_involve_the_user_in_the_same_words() {
+        use crate::test_support::user_involvement::*;
+        for owner in ["agent-01H", "project-01H"] {
+            let tools = DoneServer::for_owner(owner).tools();
+            let tool = |name: &str| {
+                tools
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|tool| tool["name"] == name)
+                    .unwrap_or_else(|| panic!("{owner} offers {name}"))
+                    .clone()
+            };
+            let text = |value: &Value| value.as_str().unwrap().to_string();
+            let thread = text(&tool("post_thread_message")["description"]);
+            let create = tool("create_task");
+            let comment = tool("comment_task");
+            let assign = tool("assign_task");
+            let expectations: Vec<(&str, String, &[&str])> = vec![
+                (
+                    "post_thread_message",
+                    thread,
+                    &[ON_A_TASK, ASKED_IN_THREAD, RESULT_ON_TASK],
+                ),
+                (
+                    "post_thread_message.body",
+                    text(
+                        &tool("post_thread_message")["inputSchema"]["properties"]["body"]
+                            ["description"],
+                    ),
+                    // The coding surface's body is the whole report
+                    // (SUMMARY_DESCRIPTION); the project agent's never was.
+                    if owner == "agent-01H" {
+                        &[RESULT_ON_TASK]
+                    } else {
+                        &[]
+                    },
+                ),
+                (
+                    "create_task",
+                    text(&create["description"]),
+                    &[FLAG_SPLIT, REPORTED],
+                ),
+                (
+                    "create_task.notify_user",
+                    text(&create["inputSchema"]["properties"]["notify_user"]["description"]),
+                    &[WATCH_TASK, REPORTED],
+                ),
+                (
+                    "comment_task",
+                    text(&comment["description"]),
+                    &[
+                        ON_A_TASK,
+                        REPLY_THERE,
+                        ASKED_IN_THREAD,
+                        "The task is also where you ANSWER",
+                        BUILD_ON,
+                        COMMENT_NOTIFY,
+                    ],
+                ),
+                (
+                    "comment_task.notify_user",
+                    text(&comment["inputSchema"]["properties"]["notify_user"]["description"]),
+                    &[COMMENT_NOTIFY],
+                ),
+                (
+                    "assign_task.notify_user",
+                    text(&assign["inputSchema"]["properties"]["notify_user"]["description"]),
+                    &[WATCH_TASK, REPORTED],
+                ),
+                (
+                    "assign_task.assignee.notify_user",
+                    text(
+                        &assign["inputSchema"]["properties"]["assignee"]["properties"]
+                            ["notify_user"]["description"],
+                    ),
+                    &[WATCH_AGENT],
+                ),
+                (
+                    "message_agent",
+                    text(&tool("message_agent")["description"]),
+                    &[],
+                ),
+            ];
+            for (name, description, rules) in &expectations {
+                for rule in *rules {
+                    assert!(
+                        says(description, rule),
+                        "{owner} {name} does not say {rule:?}: {description}"
+                    );
+                }
+                for stale in ["only way the user", "only thing the user sees"] {
+                    assert!(
+                        !description.contains(stale),
+                        "{owner} {name} still says {stale:?}: {description}"
+                    );
+                }
+            }
+        }
+        let project = DoneServer::for_owner("project-01H").tools();
+        let add = project
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "add_workspace_agent")
+            .unwrap();
+        let flag = add["inputSchema"]["properties"]["notify_user"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(says(flag, WATCH_AGENT), "{flag}");
+        let description = add["description"].as_str().unwrap();
+        assert!(
+            says(
+                description,
+                "The agent is unwatched unless you pass notify_user: true."
+            ),
+            "{description}"
+        );
     }
 
     #[test]

@@ -327,6 +327,15 @@ mod tests {
         }
     }
 
+    /// The report note itself carries the whole report's one exception
+    /// (#232): the templates around it also carry the task-tools note, which
+    /// says it too, so asserting on a whole template cannot tell them apart.
+    #[test]
+    fn the_report_note_says_a_result_on_the_users_task_is_one_line() {
+        use crate::test_support::user_involvement::{says, RESULT_ON_TASK};
+        assert!(says(DONE_SUMMARY_ASK, RESULT_ON_TASK), "{DONE_SUMMARY_ASK}");
+    }
+
     #[test]
     fn the_plan_document_templates_ask_for_no_report() {
         let t = Templates::default();
@@ -799,7 +808,7 @@ mod tests {
             let text = collapse_whitespace(template);
             let sentences: &[&str] = if name == "project_agent" {
                 &[
-                    "`post_thread_message` is the only thing the user sees, and it reaches no agent.",
+                    "`post_thread_message` is how the user hears from you in your thread, and it reaches no agent.",
                     "A reply to an agent is a `message_agent` send",
                     "Nothing is forwarded",
                 ]
@@ -956,12 +965,45 @@ mod tests {
             // And the rules that were there before these three arrived.
             for kept in [
                 "read it with `get_task` before you start",
-                "Comment your progress on it with `comment_task` as you go",
+                "Comment meaningful progress on it with `comment_task` as you go",
                 "Move it to In review with `move_task` when you report Complete.",
                 "Hand work off by ASSIGNING the task, not by messaging.",
                 "File a Build task for follow-up work you find and do not do.",
             ] {
                 assert!(text.contains(kept), "{name} dropped an older rule: {text}");
+            }
+        }
+    }
+
+    /// Every template with the task tools says when the user is involved on a
+    /// task (#232), in the one wording the tool descriptions use; the old
+    /// advice to watch whatever the user asked for is gone.
+    #[test]
+    fn every_template_with_the_task_tools_says_when_to_involve_the_user() {
+        use crate::test_support::user_involvement::*;
+        let t = Templates::default();
+        for (name, template) in templates_with_the_task_tools(&t) {
+            for rule in [
+                FLAG_SPLIT,
+                REPORTED,
+                ON_A_TASK,
+                REPLY_THERE,
+                ASKED_IN_THREAD,
+                RESULT_ON_TASK,
+                BUILD_ON,
+                COMMENT_NOTIFY,
+            ] {
+                assert!(says(template, rule), "{name} does not say {rule:?}");
+            }
+            assert!(
+                !says(template, "Use it when the user asked for the task"),
+                "{name} still watches what the user asked for"
+            );
+            for stale in [
+                "is the only thing they see",
+                "is the only thing the user sees",
+            ] {
+                assert!(!says(template, stale), "{name} still says {stale:?}");
             }
         }
     }

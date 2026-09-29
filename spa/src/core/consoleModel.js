@@ -84,7 +84,7 @@ export function grownConsoleSize(size) {
  * `term.list`/`term.create` take (`{run_id}`, `{project_id, worktree_id}`,
  * `{project_id}`), or null when nothing here names a directory.
  *
- * `row` is the branch's `branch.get` payload; a task needs none — its agent
+ * `row` is the branch's row (views/branchSeed.js); a task needs none — its agent
  * runs in the project's own checkout, which the project alone names.
  */
 const scopeResolvers = {

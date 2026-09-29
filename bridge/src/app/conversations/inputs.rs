@@ -1,5 +1,5 @@
 use super::post::post_operation_value;
-use crate::app::{optional_nonempty_string, require_str, WORKING_INDICATOR_NOTICE};
+use crate::app::{optional_nonempty_string, require_str};
 use crate::mcp::BridgeAction;
 use crate::operation::{OperationPayload, OperationReceipt};
 use crate::store::now_rfc3339;
@@ -116,23 +116,6 @@ pub(in crate::app) fn apply_thread_action(
     now: &str,
 ) -> Result<Value, String> {
     match action {
-        BridgeAction::ReadUnreadMessages => {
-            let messages = thread.read_unread(now);
-            // Marking a message seen is what starts the reviewer's "Working"
-            // line and its timer, and only a posted reply stops it. The agent
-            // cannot infer that, and the tool result is the one place it is
-            // guaranteed to read at exactly the moment it becomes true.
-            let working = (!messages.is_empty()).then_some(WORKING_INDICATOR_NOTICE);
-            Ok(json!({
-                "thread_id": thread.id,
-                "agent_id": thread.agent.id,
-                "messages": messages,
-                "working": working,
-            }))
-        }
-        BridgeAction::ReadOperationMessages { .. } => {
-            Err("operation-scoped reads require an authenticated agent".to_string())
-        }
         BridgeAction::PostThreadMessage {
             body,
             still_working,

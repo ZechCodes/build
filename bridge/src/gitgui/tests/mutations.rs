@@ -50,7 +50,7 @@ fn checkout_refused_mid_cherry_pick_names_the_cherry_pick() {
     assert!(!git_run(dir.path(), &["cherry-pick", "feature"])
         .status
         .success());
-    let err = checkout(dir.path(), "feature", false).unwrap_err();
+    let err = checkout_ref(dir.path(), "refs/heads/feature").unwrap_err();
     assert!(err.contains("cherry-pick"), "{err}");
     assert!(!err.contains("merge"), "must not name the wrong op: {err}");
 }

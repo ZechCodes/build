@@ -169,14 +169,13 @@ impl AppState {
             self.begin_routing(&capture_id)?;
             return self.capture_get(&json!({ "capture_id": capture_id }));
         };
+        // A branch is the one destination there is: the Task destination went
+        // with the planning workflow, and names no destination here (#207).
         let kind = params
             .get("kind")
             .and_then(Value::as_str)
-            .unwrap_or(crate::capture::CaptureTarget::Task.as_str())
+            .unwrap_or(crate::capture::CaptureTarget::Branch.as_str())
             .to_string();
-        if kind == crate::capture::CaptureTarget::Task.as_str() {
-            return Err(crate::app::tasks::TASKS_RETIRED_ERROR.to_string());
-        }
         // A router still deciding this capture would route it a second time on
         // top of the user's own choice.
         self.abandon_router_session(&capture_id);
@@ -211,15 +210,6 @@ impl AppState {
                 "capture.reroute: {other:?} is not a destination — branch is the supported work"
             )),
         }
-    }
-
-    pub(crate) fn capture_list(&self) -> Value {
-        let captures: Vec<Value> = self
-            .captures_oldest_first()
-            .into_iter()
-            .map(capture_json)
-            .collect();
-        json!({ "captures": captures })
     }
 
     pub(crate) fn capture_get(&self, params: &Value) -> Result<Value, String> {

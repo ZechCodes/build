@@ -9,9 +9,7 @@ pub(in crate::app::tests) use super::board::attention::{
 pub(in crate::app::tests) use super::board::mute_dismiss::{commit_in, work_item_row_for};
 pub(in crate::app::tests) use super::conversations::attachments::ONE_PIXEL_PNG;
 pub(in crate::app::tests) use super::filesystem::{add_external_worktree, local_branch_exists};
-pub(in crate::app::tests) use super::git::repository::{
-    init_repo_with_origin, origin_with_pushed_branch,
-};
+pub(in crate::app::tests) use super::git::repository::init_repo_with_origin;
 pub(in crate::app::tests) use super::git::status::{file_entry, git_gui_state, has_file_entry};
 pub(in crate::app::tests) use super::protocol::activity::{
     activity_of, activity_rows, run_on_a_headless_provider,
@@ -20,7 +18,9 @@ pub(in crate::app::tests) use super::protocol::session::{tool_call_rows, tool_ca
 pub(in crate::app::tests) use super::protocol::status::{
     insert_agent_tab, insert_dictated_agent_tab,
 };
-pub(in crate::app::tests) use super::push::{change_events, greeted_push_session, settled_pushes};
+pub(in crate::app::tests) use super::push::{
+    changed_entities, greeted_push_session, settled_pushes, watch_everything,
+};
 pub(in crate::app::tests) use super::routing::captures::capture_rows;
 pub(in crate::app::tests) use super::routing::router::{capture_record, captured};
 pub(in crate::app::tests) use super::rtc::{offer, signaling_fixture};

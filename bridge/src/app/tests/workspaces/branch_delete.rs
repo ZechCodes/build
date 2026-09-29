@@ -7,7 +7,7 @@ use super::*;
 
 /// A workspace on `repo`'s project, and the branch its checkout carries.
 fn workspace_on_branch(state: &mut AppState, repo: &Path, name: &str) -> (String, String) {
-    let added = state.handle(req("project.add", json!({"path": repo})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": repo}))));
     assert_eq!(added["ok"], true, "{added:?}");
     let project_id = added["result"]["project_id"].as_str().unwrap().to_string();
     let workspace = create_workspace(state, &project_id, name);
@@ -114,7 +114,7 @@ fn done_with_delete_never_deletes_main() {
     let tmp = tempfile::tempdir().unwrap();
     let (repo, _) = repo_with_origin(tmp.path(), "repo");
     let mut state = app(tmp.path());
-    let added = state.handle(req("project.add", json!({"path": repo})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": repo}))));
     let project_id = added["result"]["project_id"].as_str().unwrap().to_string();
     let workspace = create_workspace(&mut state, &project_id, "on-main");
     let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
@@ -153,7 +153,7 @@ fn finish_trunk_remembering(remembered: Option<&str>) {
     git_in(&repo, &["push", "-q", "origin", "trunk"]);
     git_in(&origin, &["symbolic-ref", "HEAD", "refs/heads/trunk"]);
     let mut state = app(tmp.path());
-    let added = state.handle(req("project.add", json!({"path": repo})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": repo}))));
     let project_id = added["result"]["project_id"].as_str().unwrap().to_string();
     let workspace = create_workspace(&mut state, &project_id, "on-trunk");
     let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();

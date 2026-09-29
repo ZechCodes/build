@@ -47,8 +47,8 @@ fn hours_ago(hours: i64) -> String {
 
 /// The feed shows one row shape per branch, keyed by branch. A worktree
 /// Build never cut or adopted is a second source `work_items` still folds
-/// in (`branch.get` deep-links to it), but `board_list`'s feed leaves it
-/// out — it is not work the user started in Build. The project's own
+/// in, but `board_list`'s feed leaves it out — it is not work the user
+/// started in Build. The project's own
 /// checkout is not a source at all: work happens in workspaces, so `main`
 /// earns no row.
 #[test]
@@ -93,7 +93,7 @@ fn the_feed_folds_runs_and_worktrees_into_branch_rows() {
     assert_eq!(adopted["muted"], false, "{adopted:?}");
     assert!(adopted["stat"]["insertions"].is_u64(), "{adopted:?}");
 
-    // Discoverable on disk, resolvable by name, but not on the feed:
+    // Discoverable on disk, but not on the feed:
     // Build never cut or adopted it, so it is not the user's in-flight
     // work.
     assert!(
@@ -103,14 +103,6 @@ fn the_feed_folds_runs_and_worktrees_into_branch_rows() {
             .into_iter()
             .any(|w| w.branch.as_deref() == Some("feature-stray")),
         "still discoverable for adoption"
-    );
-    let routed = state.handle(req(
-        "branch.get",
-        json!({ "project_id": project_id, "branch": "feature-stray" }),
-    ));
-    assert_eq!(
-        routed["ok"], true,
-        "branch.get still deep-links to it: {routed:?}"
     );
     assert!(
         work_item_rows(&mut state)
@@ -142,10 +134,7 @@ fn the_feed_folds_runs_and_worktrees_into_branch_rows() {
 fn retired_tasks_are_absent_from_the_board_but_remain_readable() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let task = state
-        .plan_create(&json!({ "goal": "legacy task", "dispatch": false }))
-        .expect("legacy fixture is created below the retired RPC boundary");
-    let task_id = task["plan_id"].as_str().unwrap().to_string();
+    let task_id = file_legacy_task(&mut state, "legacy task");
 
     let rows = work_item_rows(&mut state);
     assert!(
@@ -325,46 +314,4 @@ fn a_branch_always_offers_done_and_says_what_it_would_cost() {
         ahead["finish"]["warnings"][0]["ref"], "origin/feature-done",
         "{ahead:?}"
     );
-}
-
-/// `#/project/<id>/branch/<name>` resolves through one verb, to the run
-/// underneath when there is one and to the bare checkout when there is not.
-#[test]
-fn branch_get_resolves_a_branch_to_what_is_underneath_it() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-routed");
-    add_external_worktree(&repo, dir.path(), "loose", "feature-loose");
-    let project_id = state.project_at(0).id.clone();
-    // Made behind Build's back, so it reaches the board the way anything
-    // made outside Build does: on the next scan, not on the next read.
-    state.scan_external_worktrees_now(&project_id).unwrap();
-
-    let routed = state.handle(req(
-        "branch.get",
-        json!({ "project_id": project_id, "branch": "feature-routed" }),
-    ));
-    assert_eq!(routed["ok"], true, "{routed:?}");
-    let routed = &routed["result"];
-    assert_eq!(routed["kind"], "branch", "{routed:?}");
-    assert_eq!(routed["run_id"], run_id, "{routed:?}");
-    assert_eq!(routed["run"]["run_id"], run_id, "{routed:?}");
-    assert!(
-        routed["run"]["thread"]["items"].is_array(),
-        "the underlying view carries the full conversation: {routed:?}"
-    );
-
-    let loose = state.handle(req(
-        "branch.get",
-        json!({ "project_id": project_id, "branch": "feature-loose" }),
-    ));
-    assert_eq!(loose["ok"], true, "{loose:?}");
-    assert!(loose["result"]["run"].is_null(), "{loose:?}");
-    assert!(loose["result"]["worktree_path"].is_string(), "{loose:?}");
-
-    let missing = state.handle(req(
-        "branch.get",
-        json!({ "project_id": project_id, "branch": "never-existed" }),
-    ));
-    assert_eq!(missing["ok"], false, "{missing:?}");
 }

@@ -60,15 +60,15 @@ fn project_add_validates_and_dedupes() {
     );
     // A non-repo path is rejected.
     let bad = state.handle(req(
-        "project.add",
-        json!({ "path": "/definitely/not/a/repo" }),
+        "project.create",
+        open_folder(json!({ "path": "/definitely/not/a/repo" })),
     ));
     assert_eq!(bad["ok"], false);
     // A real repo is added and listed.
     let (_dir_c, repo_c) = init_repo();
     let ok = state.handle(req(
-        "project.add",
-        json!({ "path": repo_c.to_str().unwrap() }),
+        "project.create",
+        open_folder(json!({ "path": repo_c.to_str().unwrap() })),
     ));
     assert_eq!(ok["ok"], true, "{ok:?}");
     assert_eq!(
@@ -80,8 +80,8 @@ fn project_add_validates_and_dedupes() {
     );
     // Adding the same repo again is idempotent (deduped by canonical path).
     state.handle(req(
-        "project.add",
-        json!({ "path": repo_c.to_str().unwrap() }),
+        "project.create",
+        open_folder(json!({ "path": repo_c.to_str().unwrap() })),
     ));
     assert_eq!(
         state.handle(req("project.list", json!({})))["result"]["projects"]
@@ -106,7 +106,7 @@ fn plain_folder_add_does_not_initialize_git_and_can_be_initialized_explicitly() 
         "/tmp/test-mcp.sock",
     );
 
-    let added = state.handle(req("project.add", json!({"path": plain})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": plain}))));
     assert_eq!(added["ok"], true, "{added:?}");
     assert_eq!(added["result"]["is_git"], false);
     assert!(!plain.join(".git").exists());
@@ -145,7 +145,7 @@ fn plain_folder_persists_and_remains_browsable_after_reload() {
         .with_config(&config)
         .unwrap();
         assert_eq!(
-            state.handle(req("project.add", json!({"path": plain})))["ok"],
+            state.handle(req("project.create", open_folder(json!({"path": plain}))))["ok"],
             true
         );
     }
@@ -185,28 +185,6 @@ fn plain_folder_persists_and_remains_browsable_after_reload() {
         .unwrap();
     assert_eq!(board_project["is_git"], false);
     assert!(!plain.join(".git").exists());
-}
-
-#[test]
-fn adding_subdirectory_of_parent_repo_registers_that_folder_as_plain() {
-    let (dir, repo) = init_repo();
-    let nested = repo.join("nested");
-    std::fs::create_dir(&nested).unwrap();
-    let mut state = AppState::new(
-        repo,
-        dir.path().join("wt"),
-        "main",
-        true,
-        "/tmp/test-mcp.sock",
-    );
-
-    let added = state.handle(req("project.add", json!({"path": nested})));
-    assert_eq!(added["ok"], true, "{added:?}");
-    assert_eq!(added["result"]["is_git"], false);
-    assert_eq!(
-        added["result"]["path"],
-        std::fs::canonicalize(nested).unwrap().display().to_string()
-    );
 }
 
 /// Project rows probe repository config and volume capabilities. Those reads
@@ -269,8 +247,8 @@ fn project_add_reads_the_default_branch_with_the_state_lock_free() {
     let added = frame_on_a_thread(
         &state,
         "s-add",
-        "project.add",
-        json!({ "path": repo_b.to_str().unwrap() }),
+        "project.create",
+        open_folder(json!({ "path": repo_b.to_str().unwrap() })),
     );
     gate_handle.wait_for_arrival();
     assert!(
@@ -292,55 +270,6 @@ fn project_add_reads_the_default_branch_with_the_state_lock_free() {
         state.lock().unwrap().projects.len(),
         2,
         "the project is registered by the epilogue"
-    );
-}
-
-/// The clone lands somewhere the decide phase never saw, so what the reply
-/// says about the project is read out of the directory git left.
-#[test]
-fn project_clone_registers_its_project_from_the_landed_path() {
-    let (dir_src, repo_src) = init_repo();
-    let mut app = AppState::new(
-        repo_src.clone(),
-        dir_src.path().join("wt"),
-        "main",
-        true,
-        "/tmp/test-mcp.sock",
-    );
-    app.projects_dir = dir_src.path().join("projects");
-    let projects_dir = app.projects_dir.clone();
-    let (gate, gate_handle) = OffLockGate::new();
-    app.off_lock_gate = Some(gate);
-    let state = app.shared();
-
-    let cloned = frame_on_a_thread(
-        &state,
-        "s-clone",
-        "project.clone",
-        json!({ "url": repo_src.to_str().unwrap(), "name": "landed" }),
-    );
-    gate_handle.wait_for_arrival();
-    let listed = frame_on_a_thread(&state, "s-list", "project.list", json!({}))
-        .recv_timeout(Duration::from_secs(10))
-        .expect("the project list answers while a repository is being cloned");
-    assert_eq!(listed["ok"], true, "{listed:?}");
-
-    gate_handle.release();
-    let cloned = cloned
-        .recv_timeout(Duration::from_secs(60))
-        .expect("the clone answers once its git is done");
-    assert_eq!(cloned["ok"], true, "{cloned:?}");
-    let landed = std::path::PathBuf::from(cloned["result"]["path"].as_str().unwrap());
-    assert_eq!(
-        landed,
-        crate::worktree::canonical_root(&projects_dir.join("landed")),
-        "{cloned:?}"
-    );
-    assert!(landed.join("README.md").exists(), "the clone is on disk");
-    assert_eq!(
-        cloned["result"]["remote"].as_str().map(str::to_string),
-        git_remote_origin(&landed),
-        "the reply carries the origin the clone wired"
     );
 }
 
@@ -496,41 +425,6 @@ fn a_second_create_of_one_directory_is_refused_by_the_row_guarding_it() {
     );
 }
 
-/// A clone whose git failed leaves nothing at all: no project, no row on
-/// the board, and a destination the retry finds as empty as this one did.
-#[test]
-fn a_clone_that_fails_rolls_its_reservation_back_and_leaves_no_row() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    state.projects_dir = dir.path().join("projects");
-    let destination = state.projects_dir.join("doomed");
-
-    let failed = state.handle(req(
-        "project.clone",
-        json!({
-            "url": dir.path().join("not-a-repository").to_str().unwrap(),
-            "name": "doomed",
-        }),
-    ));
-
-    assert_eq!(failed["ok"], false, "{failed:?}");
-    assert_eq!(
-        state.projects.len(),
-        1,
-        "the failed clone registered a project"
-    );
-    assert!(
-        state.pending_rows.is_empty(),
-        "the failed clone left its row on the board"
-    );
-    let board = state.handle(req("board.list", json!({})));
-    assert!(pending_on_the_board(&board).is_empty(), "{board:?}");
-    assert!(
-        !destination.exists(),
-        "the half-written destination outlived the clone that failed"
-    );
-}
-
 /// A project verb reserves the folder it is reaching for — two clones into
 /// one directory are one clone — but a folder is not a card, so the board's
 /// list of cards is never handed a row for it.
@@ -546,8 +440,8 @@ fn a_project_verb_reserves_its_directory_without_a_row_on_the_board() {
     let cloning = frame_on_a_thread(
         &state,
         "s-clone",
-        "project.clone",
-        json!({ "url": repo_src.to_str().unwrap(), "name": "landing" }),
+        "project.create",
+        json!({ "name": "landing", "sources": [{ "remote": repo_src.to_str().unwrap() }] }),
     );
     gate_handle.wait_for_arrival();
 
@@ -563,8 +457,8 @@ fn a_project_verb_reserves_its_directory_without_a_row_on_the_board() {
     let second = frame_on_a_thread(
         &state,
         "s-second",
-        "project.clone",
-        json!({ "url": repo_src.to_str().unwrap(), "name": "landing" }),
+        "project.create",
+        json!({ "name": "landing", "sources": [{ "remote": repo_src.to_str().unwrap() }] }),
     )
     .recv_timeout(Duration::from_secs(10))
     .expect("the second clone is answered");
@@ -602,8 +496,8 @@ fn project_add_persistence_failures_leave_state_and_user_repo_unchanged() {
         state.config_persist_failure = Some(failure);
 
         let response = state.handle(req(
-            "project.add",
-            json!({ "path": added_repo.to_str().unwrap() }),
+            "project.create",
+            open_folder(json!({ "path": added_repo.to_str().unwrap() })),
         ));
 
         assert_eq!(response["ok"], false, "{response:?}");
@@ -611,72 +505,6 @@ fn project_add_persistence_failures_leave_state_and_user_repo_unchanged() {
         assert_eq!(state.project_list(), projects_before);
         assert_eq!(state.projects.next_id(), next_project_before);
         assert!(added_repo.join(".git").exists(), "user repo must remain");
-    }
-}
-
-#[test]
-fn project_clone_persistence_failures_leave_state_and_remove_new_clone() {
-    for failure in [ConfigPersistStep::Write, ConfigPersistStep::Rename] {
-        let directory = tempfile::tempdir().unwrap();
-        let (_initial_repo_directory, initial_repo) = init_repo();
-        let (_source_directory, source_repo) = init_repo();
-        let config = directory.path().join("config.json");
-        let projects_dir = directory.path().join("projects");
-        std::fs::create_dir(&projects_dir).unwrap();
-        let existing_clone_path = projects_dir.join("existing-project");
-        git2::Repository::clone(source_repo.to_str().unwrap(), &existing_clone_path).unwrap();
-        let clone_path = projects_dir.join("cloned-project");
-        let mut state = AppState::new(
-            initial_repo,
-            directory.path().join("worktrees"),
-            "main",
-            true,
-            "/tmp/test-mcp.sock",
-        )
-        .with_config(&config)
-        .unwrap();
-        state.projects_dir = projects_dir;
-        let projects_before = state.project_list();
-        let next_project_before = state.projects.next_id();
-        state.config_persist_failure = Some(failure);
-
-        let existing_response = state.handle(req(
-            "project.clone",
-            json!({
-                "url": source_repo.to_str().unwrap(),
-                "name": "existing-project",
-            }),
-        ));
-
-        assert_eq!(existing_response["ok"], false, "{existing_response:?}");
-        assert!(existing_response["error"]
-            .as_str()
-            .unwrap()
-            .contains("injected"));
-        assert_eq!(state.project_list(), projects_before);
-        assert_eq!(state.projects.next_id(), next_project_before);
-        assert!(
-            existing_clone_path.join(".git").exists(),
-            "an existing checkout is user-owned"
-        );
-
-        let response = state.handle(req(
-            "project.clone",
-            json!({
-                "url": source_repo.to_str().unwrap(),
-                "name": "cloned-project",
-            }),
-        ));
-
-        assert_eq!(response["ok"], false, "{response:?}");
-        assert!(response["error"].as_str().unwrap().contains("injected"));
-        assert_eq!(state.project_list(), projects_before);
-        assert_eq!(state.projects.next_id(), next_project_before);
-        assert!(
-            !clone_path.exists(),
-            "failed clone registration is cleaned up"
-        );
-        assert!(source_repo.join(".git").exists(), "source repo must remain");
     }
 }
 
@@ -830,64 +658,6 @@ fn fs_mkdir_creates_one_plain_directory_and_rejects_unsafe_names() {
 }
 
 #[test]
-fn settings_set_then_clone_registers_project() {
-    let (dir_src, repo_src) = init_repo();
-    let (dir_a, repo_a) = init_repo();
-    let mut state = AppState::new(
-        repo_a,
-        dir_a.path().join("wt"),
-        "main",
-        true,
-        "/tmp/test-mcp.sock",
-    );
-    // Point the projects folder at a temp location.
-    let projects_dir = dir_src.path().join("projects");
-    let set = state.handle(req(
-        "settings.set",
-        json!({ "projects_dir": projects_dir.to_str().unwrap() }),
-    ));
-    assert_eq!(set["ok"], true, "{set:?}");
-    assert!(
-        state.handle(req("settings.get", json!({})))["result"]["projects_dir"]
-            .as_str()
-            .unwrap()
-            .contains("projects")
-    );
-
-    // Clone the source repo into the projects folder and register it.
-    let cloned = state.handle(req(
-        "project.clone",
-        json!({ "url": repo_src.to_str().unwrap() }),
-    ));
-    assert_eq!(cloned["ok"], true, "{cloned:?}");
-    let clone_path = cloned["result"]["path"].as_str().unwrap().to_string();
-    assert!(std::path::Path::new(&clone_path).join("README.md").exists());
-    assert_eq!(
-        state.handle(req("project.list", json!({})))["result"]["projects"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
-
-    // Cloning the same repo again registers the existing checkout — no error, no
-    // duplicate, same path (not a second clone).
-    let again = state.handle(req(
-        "project.clone",
-        json!({ "url": repo_src.to_str().unwrap() }),
-    ));
-    assert_eq!(again["ok"], true, "{again:?}");
-    assert_eq!(again["result"]["path"].as_str().unwrap(), clone_path);
-    assert_eq!(
-        state.handle(req("project.list", json!({})))["result"]["projects"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
-    );
-}
-
-#[test]
 fn config_persists_projects_and_dir_across_reload() {
     let tmp = tempfile::tempdir().unwrap();
     let (_dir_a, repo_a) = init_repo();
@@ -904,8 +674,8 @@ fn config_persists_projects_and_dir_across_reload() {
         .with_config(&cfg)
         .unwrap();
         state.handle(req(
-            "project.add",
-            json!({ "path": repo_b.to_str().unwrap() }),
+            "project.create",
+            open_folder(json!({ "path": repo_b.to_str().unwrap() })),
         ));
         state.handle(req(
             "settings.set",

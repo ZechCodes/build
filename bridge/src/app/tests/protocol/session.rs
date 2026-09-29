@@ -131,7 +131,10 @@ async fn the_idle_sweep_spares_an_agent_holding_a_background_task_and_no_other()
             .is_empty(),
         "the turn is over and the work is not: silence here is not an anomaly"
     );
-    let got = call(&handler, "run.get", json!({ "run_id": "run-background" }));
+    let got = run_detail(
+        &mut state.lock().unwrap(),
+        json!({ "run_id": "run-background" }),
+    );
     assert_eq!(got["result"]["state"], "building", "{got:?}");
 
     let posted = call(
@@ -166,7 +169,10 @@ async fn the_idle_sweep_spares_an_agent_holding_a_background_task_and_no_other()
         vec!["run-background".to_string()],
         "with nothing live and nothing said, the sweep demotes as it always did"
     );
-    let got = call(&handler, "run.get", json!({ "run_id": "run-background" }));
+    let got = run_detail(
+        &mut state.lock().unwrap(),
+        json!({ "run_id": "run-background" }),
+    );
     assert_eq!(got["result"]["state"], "idle_unreported", "{got:?}");
 }
 
@@ -205,9 +211,8 @@ async fn an_agent_working_only_a_background_task_offers_no_interrupt() {
     // The result closed the turn behind the task line, so what the digest
     // reports as working can only be the task.
     let bubble = wait_for(Duration::from_secs(10), || {
-        let listed = call(
-            &handler,
-            "agent.list",
+        let listed = agent_roster(
+            &mut state.lock().unwrap(),
             json!({ "entity_id": "run-tasks-only" }),
         );
         let bubble = listed["result"]["agents"][0].clone();
@@ -355,8 +360,10 @@ async fn a_post_that_interrupts_stops_the_turn_and_hands_over_the_message() {
     )
     .await;
 
-    let bubble = call(&handler, "agent.list", json!({ "entity_id": "run-steer" }))["result"]
-        ["agents"][0]
+    let bubble = agent_roster(
+        &mut state.lock().unwrap(),
+        json!({ "entity_id": "run-steer" }),
+    )["result"]["agents"][0]
         .clone();
     assert_eq!(bubble["working"], true, "{bubble:?}");
     assert_eq!(
@@ -473,9 +480,8 @@ async fn an_interrupt_the_io_refuses_still_hands_over_the_message() {
     )
     .await;
 
-    let bubble = call(
-        &handler,
-        "agent.list",
+    let bubble = agent_roster(
+        &mut state.lock().unwrap(),
         json!({ "entity_id": "run-refuses" }),
     )["result"]["agents"][0]
         .clone();
@@ -1138,6 +1144,7 @@ async fn one_sweep_tick_writes_down_the_model_a_session_announced() {
         "one tick puts the model the child announced on the agent's record"
     );
 
+    let _browser = a_browser_watching_everything(&state.lock().unwrap());
     state.lock().unwrap().changes().flush();
     capture_conversation_names(&state);
     assert!(

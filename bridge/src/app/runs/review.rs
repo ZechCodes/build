@@ -1,7 +1,7 @@
 use crate::app::{
-    append_user_thread_messages, dispatchable_next_run_stage, err, has_agent_choice,
-    model_choice_from, parse_thread_inputs, require_str, thread_detail, AppState, DigestScope,
-    PendingAgentTurn, ReadSubject, NEW_THREAD_MESSAGES_PROMPT,
+    append_user_thread_messages, dispatchable_next_run_stage, err, parse_thread_inputs,
+    require_str, thread_detail, AppState, PendingAgentTurn, ReadSubject,
+    NEW_THREAD_MESSAGES_PROMPT,
 };
 use crate::run::{PublicationAttempt, RunState, StagePublication};
 use crate::store::now_rfc3339;
@@ -73,13 +73,6 @@ impl AppState {
             params.get("if_diff_key").and_then(Value::as_str),
             crate::app::wants_patch(params),
         ))
-    }
-
-    /// Immutable stage review surface. Unlike `run.diff`, this never reads the
-    /// working directory or current HEAD: it resolves only the two object ids
-    /// persisted when the stage was dispatched and successfully validated.
-    pub(crate) fn run_stage_diff(&mut self, params: &Value) -> Result<Value, String> {
-        self.plan_run_stage_diff(params, None)
     }
 
     /// `run.stage_diff`, with the task that asked for it when a task
@@ -176,107 +169,6 @@ impl AppState {
         outcome?;
         persisted?;
         Ok(view)
-    }
-
-    pub(crate) fn run_stage_dispatch(&mut self, params: &Value) -> Result<Value, String> {
-        let run_id = require_str(params, "run_id")?;
-        let stage_id = require_str(params, "stage_id")?;
-        let model_override = if has_agent_choice(params) {
-            Some(model_choice_from(params, self.default_harness)?)
-        } else {
-            None
-        };
-        let project_id = self.project_of(&run_id)?;
-        let plan_docs = {
-            let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-            self.owning_plan_stage_docs(active)
-        };
-        let mut active = self.take_run(&run_id)?;
-        let outcome = (|| -> Result<(), String> {
-            let turn = self
-                .orch_for(&project_id)?
-                .dispatch_run_stage(&mut active, &plan_docs, &stage_id, model_override)
-                .map_err(err)?;
-            self.delivery_queue
-                .enqueue(PendingAgentTurn::for_run(&run_id, &mut active, turn));
-            self.qa_drive_run(&project_id, &mut active, &plan_docs)
-        })();
-        let persisted = self.finish_run_mutation(run_id.clone(), active);
-        outcome?;
-        persisted?;
-        self.record_task_current_stage_started(&run_id, &plan_docs)?;
-        self.auto_advance_run(&run_id);
-        let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, thread_detail(params), DigestScope::Detail))
-    }
-
-    /// Send a stage's open comments (persisted on the owning plan) to a fresh
-    /// mid-run revision session in the RUN's worktree — the stage-gate
-    /// analogue of `plan.stage_send_notes`, which is illegal once the plan is
-    /// Approved. The run owns the session; the plan owns the docs; the
-    /// revision's `done` ingests the rewritten docs back to the store.
-    pub(crate) fn run_stage_send_notes(&mut self, params: &Value) -> Result<Value, String> {
-        let run_id = require_str(params, "run_id")?;
-        let stage_id = require_str(params, "stage_id")?;
-        let project_id = self.project_of(&run_id)?;
-        let plan_id = self
-            .runs
-            .get(&run_id)
-            .ok_or("unknown run_id")?
-            .run
-            .plan_id
-            .as_ref()
-            .map(|p| p.0.clone())
-            .ok_or("this run implements no plan — there are no plan docs to revise")?;
-        let mut active = self.take_run(&run_id)?;
-        let mut plan = self.plans.remove(&plan_id);
-        let outcome = (|| -> Result<(), String> {
-            let plan = plan.as_mut().ok_or("unknown plan_id")?;
-            let turn = self
-                .orch_for(&project_id)?
-                .send_run_stage_notes(&mut active, plan, &stage_id)
-                .map_err(err)?;
-            self.delivery_queue
-                .enqueue(PendingAgentTurn::for_run(&run_id, &mut active, turn));
-            if self.qa_agent {
-                self.qa_simulate_run_stage_revise(&project_id, &mut active, plan)?;
-            }
-            Ok(())
-        })();
-        // Both entities re-insert before any error propagates — the
-        // take → finish_mutation invariant covers the plan here too.
-        let plan_persisted = plan.map(|plan| self.finish_plan_mutation(plan_id, plan));
-        let persisted = self.finish_run_mutation(run_id.clone(), active);
-        outcome?;
-        if let Some(persisted) = plan_persisted {
-            persisted?;
-        }
-        persisted?;
-        let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, thread_detail(params), DigestScope::Detail))
-    }
-
-    /// "Run all": arm/disarm auto-advance, then (armed) run every dispatchable
-    /// approved stage to its verdict.
-    pub(crate) fn run_set_auto_advance(&mut self, params: &Value) -> Result<Value, String> {
-        let run_id = require_str(params, "run_id")?;
-        let enabled = params
-            .get("enabled")
-            .and_then(Value::as_bool)
-            .ok_or("missing required param: enabled")?;
-        let mut active = self.take_run(&run_id)?;
-        if active.run.state.is_terminal() {
-            self.runs.insert(run_id, active);
-            return Err("cannot set auto_advance on a terminal run".to_string());
-        }
-        active.auto_advance = enabled;
-        let persisted = self.finish_run_mutation(run_id.clone(), active);
-        persisted?;
-        if enabled {
-            self.auto_advance_run(&run_id);
-        }
-        let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, thread_detail(params), DigestScope::Detail))
     }
 
     /// If a run is parked at the stage gate with run-all armed and a next

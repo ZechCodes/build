@@ -40,37 +40,6 @@ async fn merged_rtc_offer_and_failure_cleanup_leave_the_mutex_free() {
 }
 
 #[test]
-fn merged_branch_holder_creation_and_refusal_leave_the_mutex_free() {
-    for branch in ["available", "main"] {
-        let (dir, repo) = init_repo();
-        let git = git2::Repository::open(&repo).unwrap();
-        git.branch(
-            "available",
-            &git.head().unwrap().peel_to_commit().unwrap(),
-            false,
-        )
-        .unwrap();
-        let mut app = qa_state(&repo, dir.path());
-        let project_id = app.project_at(0).id.clone();
-        let (gate, held) = OffLockGate::new();
-        app.off_lock_gate = Some(gate);
-        let state = app.shared();
-        let creating = frame_on_a_thread(
-            &state,
-            "holder",
-            "worktree.create",
-            json!({ "project_id": project_id, "branch": branch }),
-        );
-        held.wait_for_arrival();
-        assert_unrelated_frame_completes(&state);
-        held.release();
-        let reply = creating.recv_timeout(Duration::from_secs(30)).unwrap();
-        assert_eq!(reply["ok"], branch == "available", "{reply}");
-        assert!(state.lock().unwrap().pending_rows.is_empty());
-    }
-}
-
-#[test]
 fn merged_branch_dispatch_revalidates_the_holder_snapshot_before_apply() {
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
@@ -137,32 +106,6 @@ fn merged_branch_holder_dispatch_joins_the_run_before_the_repository_or_refuses_
             );
         }
         assert_eq!(state.lock().unwrap().runs.len(), 1);
-    }
-}
-
-#[test]
-fn merged_branch_holder_listing_and_git_failure_leave_the_mutex_free() {
-    for fails in [false, true] {
-        let (dir, repo) = init_repo();
-        let mut app = qa_state(&repo, dir.path());
-        let project_id = app.project_at(0).id.clone();
-        let (gate, held) = OffLockGate::new();
-        app.off_lock_gate = Some(gate);
-        let state = app.shared();
-        let listing = frame_on_a_thread(
-            &state,
-            "list-holder",
-            "git.branches",
-            json!({ "project_id": project_id }),
-        );
-        held.wait_for_arrival();
-        assert_unrelated_frame_completes(&state);
-        if fails {
-            std::fs::rename(repo.join(".git"), repo.join("git-unavailable")).unwrap();
-        }
-        held.release();
-        let reply = listing.recv_timeout(Duration::from_secs(30)).unwrap();
-        assert_eq!(reply["ok"], !fails, "{reply}");
     }
 }
 

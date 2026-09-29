@@ -892,7 +892,7 @@ fn a_tools_harness_becomes_the_wires_provider() {
     let made = handed["dispatch"]["agent_id"].as_str().unwrap().to_string();
     let entity_id = handed["dispatch"]["entity_id"].as_str().unwrap();
 
-    let roster = state.handle(req("agent.list", json!({ "entity_id": entity_id })));
+    let roster = agent_roster(&mut state, json!({ "entity_id": entity_id }));
     let agent = roster["result"]["agents"]
         .as_array()
         .unwrap()

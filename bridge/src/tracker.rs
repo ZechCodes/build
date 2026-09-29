@@ -207,7 +207,7 @@ impl Assignee {
 ///
 /// Every list is ordered by when its entry was added, deduped, and capped at
 /// [`MAX_LINKS_PER_KIND`]. `conversation_ids` holds conversation OWNER ids
-/// (`run-…`), which is what `agent.list` and `thread.page` are addressed by, so
+/// (`run-…`), which is what `thread.page` and the agent verbs are addressed by, so
 /// a task page can open the conversation working it without a second lookup.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskLinks {

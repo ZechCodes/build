@@ -458,11 +458,6 @@ impl AppState {
         self.board.diff_mut().clear_external_scan(project_id);
     }
 
-    #[cfg(test)]
-    pub(in crate::app) fn age_external_scan_for_test(&mut self, project_id: &str, age: Duration) {
-        self.board.diff_mut().age_external_scan(project_id, age);
-    }
-
     /// Age one workspace's cached summary so the next read walks its tree
     /// again. A workspace nothing has summarized yet is already stale.
     #[cfg(test)]
@@ -583,13 +578,6 @@ impl AppState {
             .diff()
             .run_stat(run_id)
             .map(|cached| cached.value.clone())
-    }
-
-    /// When this project's last scan attempt settled, whether it landed a list
-    /// or gave up on a repository it could not read. What the interval is
-    /// measured from, so a broken repo is not walked again by every poll.
-    pub(in crate::app) fn scan_settled_at(&self, project_id: &str) -> Option<std::time::Instant> {
-        self.board.diff().external_scan(project_id).settled_at
     }
 
     /// The last scan of a project's checkouts, if one has ever landed.

@@ -348,15 +348,12 @@ fn merged_branch_finish_closes_the_tasks_that_link_its_workspace() {
     state.runs.get_mut(&run_id).unwrap().run.state = crate::run::RunState::Merged;
 
     let worked = task_id(&filed(&mut state, &project_id, "worked here"));
-    state.handle(req(
-        "tasks.link",
-        json!({ "task_id": worked, "workspace_id": ws }),
-    ));
+    link_task(&mut state, json!({ "task_id": worked, "workspace_id": ws }));
     let other = task_id(&filed(&mut state, &project_id, "worked elsewhere"));
-    state.handle(req(
-        "tasks.link",
+    link_task(
+        &mut state,
         json!({ "task_id": other, "workspace_id": elsewhere }),
-    ));
+    );
     let unlinked = task_id(&filed(&mut state, &project_id, "nowhere"));
 
     let finished = state.handle(req(
@@ -430,10 +427,7 @@ fn unmerged_branch_finish_leaves_linked_tasks_open() {
     let linked = ["first linked task", "second linked task"]
         .map(|title| task_id(&filed(&mut state, &project_id, title)));
     for id in &linked {
-        let answer = state.handle(req(
-            "tasks.link",
-            json!({ "task_id": id, "workspace_id": ws }),
-        ));
+        let answer = link_task(&mut state, json!({ "task_id": id, "workspace_id": ws }));
         assert_eq!(answer["ok"], true, "{answer:?}");
     }
 
@@ -470,10 +464,7 @@ fn task_identity_survives_workspace_finish() {
     let (mut state, project_id) = tracked_with_origin(&state_root);
     let ws = workspace(&mut state, &project_id, "identity checkout");
     let id = task_id(&filed(&mut state, &project_id, "identity in history"));
-    let linked = state.handle(req(
-        "tasks.link",
-        json!({ "task_id": id, "workspace_id": ws }),
-    ));
+    let linked = link_task(&mut state, json!({ "task_id": id, "workspace_id": ws }));
     assert_eq!(linked["ok"], true, "{linked:?}");
     let ensured = state.handle(req(
         "workspace.ensure_conversation",
@@ -712,12 +703,12 @@ fn unread_legacy_identities_survive_roster_removal() {
                 assert_eq!(result["ok"], true, "{result:?}");
             }
             let linked_id = task_id(&filed(&mut state, &project_id, "Linked work"));
-            let linked = state.handle(req(
-                "tasks.link",
+            let linked = link_task(
+                &mut state,
                 json!({
                     "task_id": linked_id, "workspace_id": ws,
                 }),
-            ));
+            );
             assert_eq!(linked["ok"], true, "{linked:?}");
             let store = state.tracker_store().unwrap();
             let mut old = store.load_tracker_task(&id).unwrap().unwrap();
@@ -851,10 +842,7 @@ fn a_finish_does_not_reclose_a_task_that_was_already_closed() {
     let (mut state, project_id) = tracked_with_origin(&state_root);
     let ws = workspace(&mut state, &project_id, "here");
     let id = task_id(&filed(&mut state, &project_id, "closed by hand"));
-    state.handle(req(
-        "tasks.link",
-        json!({ "task_id": id, "workspace_id": ws }),
-    ));
+    link_task(&mut state, json!({ "task_id": id, "workspace_id": ws }));
     state.handle(req(
         "tasks.close",
         json!({ "task_id": id, "reason": "not doing this" }),
@@ -1116,10 +1104,7 @@ fn done_with_delete_logs_the_deleted_branch_on_the_linked_task() {
         .to_string();
     let id = task_id(&filed(&mut state, &project_id, "implemented on a branch"));
     let untouched = task_id(&filed(&mut state, &project_id, "somewhere else"));
-    let linked = state.handle(req(
-        "tasks.link",
-        json!({ "task_id": id, "workspace_id": ws }),
-    ));
+    let linked = link_task(&mut state, json!({ "task_id": id, "workspace_id": ws }));
     assert_eq!(linked["ok"], true, "{linked:?}");
 
     let finished = state.handle(req(

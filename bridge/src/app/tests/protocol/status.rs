@@ -666,6 +666,7 @@ fn choosing_a_model_stales_the_entity_for_every_browser() {
         "run-stale-choice",
         RunState::Building,
     );
+    let _browser = a_browser_watching_everything(&state);
     state.changes().flush();
     assert!(!state.changes().has_pending());
     let agent_id = primary_agent_id(&state, "run-stale-choice");
@@ -731,7 +732,7 @@ fn the_idle_sweep_reads_the_exit_and_the_quiet_off_the_session() {
         vec!["run-swept".to_string()],
         "silence past the threshold is the anomaly the sweep exists for"
     );
-    let got = state.handle(req("run.get", json!({ "run_id": "run-swept" })));
+    let got = run_detail(&mut state, json!({ "run_id": "run-swept" }));
     assert_eq!(got["result"]["state"], "idle_unreported", "{got:?}");
     assert!(
         got["result"]["last_error"].is_null(),
@@ -750,7 +751,7 @@ fn the_idle_sweep_reads_the_exit_and_the_quiet_off_the_session() {
         state.mark_idle_tasks(Duration::from_secs(300)),
         vec!["run-swept".to_string()],
     );
-    let got = state.handle(req("run.get", json!({ "run_id": "run-swept" })));
+    let got = run_detail(&mut state, json!({ "run_id": "run-swept" }));
     assert!(
         got["result"]["last_error"]
             .as_str()
@@ -1004,18 +1005,25 @@ async fn stamping_happens_on_the_path_the_relay_uses() {
     let (state, handler) = shared_state_and_handler(&repo, dir.path());
     let project_id = state.lock().unwrap().project_at(0).id.clone();
 
-    let created = handler.call(
+    add_external_worktree(&repo, dir.path(), "over-the-wire", "over-the-wire");
+    let worktree_id = state
+        .lock()
+        .unwrap()
+        .scan_external_worktrees_now(&project_id)
+        .unwrap()
+        .into_iter()
+        .find(|worktree| worktree.branch.as_deref() == Some("over-the-wire"))
+        .expect("the external worktree is discoverable")
+        .id;
+
+    let adopted = handler.call(
         SessionSender::detached("s1"),
         req(
-            "worktree.create",
-            json!({ "project_id": project_id, "name": "over the wire" }),
+            "run.adopt",
+            json!({ "project_id": project_id, "worktree_id": worktree_id }),
         ),
     );
-    assert_eq!(created["ok"], true, "{created:?}");
-    let worktree_id = created["result"]["worktree_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    assert_eq!(adopted["ok"], true, "{adopted:?}");
     assert!(
         state
             .lock()

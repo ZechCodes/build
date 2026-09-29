@@ -221,42 +221,34 @@ pub(in crate::app) fn terminal_size(cols: u16, rows: u16) -> PtySize {
 }
 
 /// Greet a browser session: announce what this bridge pushes, and subscribe the
-/// session to it.
+/// session to the update-status and models pushes.
 ///
-/// `"changes"` picks which push contract the session speaks (wire spec, step
-/// 1.5). `"legacy"` — the default, and what every client that predates
-/// subscriptions sends — is today's behaviour: the session hears
-/// `board.changed` / `entity.changed` for every entity on the device.
-/// `"subscriptions"` means it hears nothing until it calls
-/// `changes.subscribe`, and drops any legacy subscription it already had, so
-/// a reconnecting client that switches contracts is not served both.
+/// Every session speaks the subscriptions contract: it hears no change until
+/// it calls `changes.subscribe`. The `"changes"` param a client greets with is
+/// still accepted and changes nothing — the legacy `board.changed` /
+/// `entity.changed` contract it once chose between was cut (#207). A tab still
+/// running an older SPA greets without it first, reads `changes.subscriptions`
+/// off the answer, and greets again asking for subscriptions.
 ///
 /// `push_events: true` is the feature detection. A bridge that predates push
 /// invalidation answers `unknown method: session.hello`, and a client that
 /// predates it never asks — so a new SPA against an old bridge, and an old SPA
 /// against this one, both fall back to polling with nothing to configure.
 ///
-/// Idempotent: a client may greet again after a reconnect, and the bus keeps
-/// one subscription per session id.
+/// Idempotent: a client may greet again after a reconnect.
 pub(in crate::app) fn session_hello(
     state: &Arc<Mutex<AppState>>,
     sender: &SessionSender,
     params: &Value,
     timer: &FrameTimer,
 ) -> Result<Value, String> {
-    // The subscribe and the client record both happen with the app mutex
-    // released — each takes its own leaf lock, and nothing in this daemon may
-    // nest one lock inside another it did not have to.
+    // The client record happens with the app mutex released — it takes its
+    // own leaf lock, and nothing in this daemon may nest one lock inside
+    // another it did not have to.
     let (changes, qa_agent) = {
         let app = timer.lock(state);
         (app.changes(), app.qa_agent)
     };
-    let subscriptions = params.get("changes").and_then(Value::as_str) == Some("subscriptions");
-    if subscriptions {
-        changes.unsubscribe_legacy(sender.session_id());
-    } else {
-        changes.subscribe_legacy(sender);
-    }
     {
         let mut app = timer.lock(state);
         app.subscribe_update_status(sender);
@@ -278,7 +270,7 @@ pub(in crate::app) fn session_hello(
         // its name, and the clamp on a batch interval.
         "changes": {
             "subscriptions": true,
-            "mode": if subscriptions { "subscriptions" } else { "legacy" },
+            "mode": "subscriptions",
             "kinds": Kind::ALL.map(Kind::as_str),
             // `"bodies"`: every item carries the shape it names, so a client
             // paints from the push instead of refetching after it. The one

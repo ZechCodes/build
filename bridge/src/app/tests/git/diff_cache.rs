@@ -401,7 +401,8 @@ async fn a_first_scan_never_runs_under_the_app_mutex() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_landed_first_scan_invalidates_the_browser() {
     let (dir, repo) = init_repo();
-    let (state, handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let (state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    watch_everything(&handler, &sender);
     add_external_worktree(&repo, dir.path(), "loose", "feature-loose");
     let gate = gate_scan_computes(&state);
 
@@ -413,8 +414,11 @@ async fn a_landed_first_scan_invalidates_the_browser() {
     gate.release();
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
-            let events = change_events(&settled_pushes(&mut rx, &key).await);
-            if events.iter().any(|event| event["type"] == "board.changed") {
+            let moved = changed_entities(&settled_pushes(&mut rx, &key).await);
+            if moved
+                .iter()
+                .any(|entity| entity == crate::changes::BOARD_ITEM_ID)
+            {
                 return;
             }
         }
@@ -429,7 +433,8 @@ async fn a_landed_first_scan_invalidates_the_browser() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_landed_first_diffstat_invalidates_the_browser() {
     let (dir, repo) = init_repo();
-    let (state, handler, _sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let (state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    watch_everything(&handler, &sender);
     let run_id = {
         let mut app = state.lock().unwrap();
         adopted_run(&mut app, &repo, dir.path(), "stat-run")
@@ -444,8 +449,11 @@ async fn a_landed_first_diffstat_invalidates_the_browser() {
     poll_board(&handler).await;
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
-            let events = change_events(&settled_pushes(&mut rx, &key).await);
-            if events.iter().any(|event| event["type"] == "board.changed") {
+            let moved = changed_entities(&settled_pushes(&mut rx, &key).await);
+            if moved
+                .iter()
+                .any(|entity| entity == crate::changes::BOARD_ITEM_ID)
+            {
                 return;
             }
         }
@@ -697,71 +705,6 @@ async fn an_off_lock_job_under_a_runtime_applies_what_it_decided() {
     assert_eq!(outcome, Ok("decided"));
 }
 
-/// "Nothing has looked yet" is not the answer "there is no such checkout",
-/// and every read that can miss says which one it means in the same words.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_missed_checkout_says_whether_a_scan_has_ever_landed() {
-    let (dir, repo) = init_repo();
-    let (state, _handler) = shared_qa_state_and_handler(&repo, dir.path());
-    let project_id = state.lock().unwrap().project_at(0).id.clone();
-    add_external_worktree(&repo, dir.path(), "loose", "feature-loose");
-    // A second project, whose own checkouts have been scanned. Whether the
-    // scan can still show a checkout is a fact about one project, never
-    // about the board as a whole.
-    let other_repo = init_repo_named(dir.path(), "other");
-    let other_id = {
-        let mut app = state.lock().unwrap();
-        let added = app
-            .dispatch(
-                "project.add",
-                &json!({ "path": other_repo.to_string_lossy() }),
-            )
-            .expect("the second project registers");
-        let id = added["project_id"].as_str().unwrap().to_string();
-        app.scan_external_worktrees_now(&id)
-            .expect("its checkouts are scanned");
-        id
-    };
-    // The checkout scan is held open, so every read below is answered by a
-    // project nothing has scanned.
-    let gate = gate_scan_computes(&state);
-
-    let refusals: Vec<String> = {
-        let mut app = state.lock().unwrap();
-        vec![
-            app.resolve_external_worktree(&project_id, "wt-000000000000")
-                .expect_err("no scan has landed to resolve an id against"),
-            app.dispatch(
-                "entity.dismiss",
-                &json!({ "project_id": project_id, "branch": "feature-loose" }),
-            )
-            .expect_err("no scan has landed to find the row in"),
-        ]
-    };
-    for refusal in &refusals {
-        assert!(
-            refusal.contains("no scan of this project's checkouts has landed"),
-            "the refusal blamed the checkout for a scan nobody has run: {refusal}"
-        );
-    }
-
-    let missed = state
-        .lock()
-        .unwrap()
-        .dispatch(
-            "branch.get",
-            &json!({ "project_id": other_id, "branch": "nothing-is-on-this" }),
-        )
-        .expect_err("no checkout of the scanned project is on that branch");
-    assert!(
-        missed.contains("made outside Build since the last scan"),
-        "a scanned project's miss was answered out of an unscanned neighbour's scan: {missed}"
-    );
-
-    gate.wait_for_arrival();
-    gate.release();
-}
-
 /// A project whose scan has never landed has nothing to amend. The create
 /// says so and stops: it neither cancels the first scan that is running to
 /// find its checkout anyway, nor tells the browser about an edit it did not
@@ -776,6 +719,7 @@ fn a_create_before_the_first_scan_leaves_the_running_scan_alone() {
         .expect("it is a checkout");
     let scan = DiffCacheKey::ExternalScan(project_id.clone());
     let _claim = state.claim_diff_refresh_for_test(scan.clone());
+    let _browser = a_browser_watching_everything(&state);
     state.changes.flush();
 
     state.note_worktree_appeared(&project_id, described);
@@ -805,6 +749,7 @@ fn a_removal_of_a_checkout_the_scan_never_had_leaves_the_running_scan_alone() {
     state.scan_external_worktrees_now(&project_id).unwrap();
     let scan = DiffCacheKey::ExternalScan(project_id.clone());
     let _claim = state.claim_diff_refresh_for_test(scan.clone());
+    let _browser = a_browser_watching_everything(&state);
     state.changes.flush();
 
     state.note_worktree_gone(&project_id, &dir.path().join("never-in-the-list"));
@@ -835,6 +780,7 @@ fn re_noting_an_unchanged_checkout_leaves_the_running_scan_alone() {
     let known = state.scan_external_worktrees_now(&project_id).unwrap()[0].clone();
     let scan = DiffCacheKey::ExternalScan(project_id.clone());
     let _claim = state.claim_diff_refresh_for_test(scan.clone());
+    let _browser = a_browser_watching_everything(&state);
     state.changes.flush();
 
     state.note_worktree_appeared(&project_id, known);
@@ -915,158 +861,6 @@ fn a_scan_that_cannot_read_its_repository_settles_the_board() {
         computes.load(std::sync::atomic::Ordering::SeqCst),
         1,
         "a repository that cannot be read was re-scanned by the next poll"
-    );
-}
-
-/// A create is not a reason to forget every other checkout. The new one
-/// joins the last scan, so the very next board poll ships it without any
-/// repository walk at all.
-#[test]
-fn a_created_worktree_joins_the_scan_cache_instead_of_clearing_it() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let project_id = state.project_at(0).id.clone();
-    add_external_worktree(&repo, dir.path(), "already-here", "feature-here");
-    state.scan_external_worktrees_now(&project_id).unwrap();
-    let scanned_at = state
-        .external_scan_of(&project_id)
-        .expect("seeded above")
-        .scanned_at;
-
-    let created = state.handle(req(
-        "worktree.create",
-        json!({ "project_id": project_id, "name": "scratch" }),
-    ));
-    assert_eq!(created["ok"], true, "{created:?}");
-    let worktree_id = created["result"]["worktree_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    let cache = state
-        .external_scan_of(&project_id)
-        .expect("the create emptied the whole project's scan");
-    assert!(
-        cache.worktrees.iter().any(|w| w.id == worktree_id),
-        "the new checkout is in the cache the board reads: {:?}",
-        cache.worktrees
-    );
-    assert!(
-        cache
-            .worktrees
-            .iter()
-            .any(|w| w.branch.as_deref() == Some("feature-here")),
-        "the checkouts that were already there are still there: {:?}",
-        cache.worktrees
-    );
-    assert_eq!(
-        cache.scanned_at, scanned_at,
-        "an amended list is exactly as old as the scan that filled it"
-    );
-
-    // And the board ships it with no scan of its own.
-    let scans = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let counted = Arc::clone(&scans);
-    state.diff_compute_observer = Some(Arc::new(move |key| {
-        if matches!(key, DiffCacheKey::ExternalScan(_)) {
-            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }
-    }));
-    let board = state.handle(req("board.list", json!({})));
-    assert_eq!(board["result"]["scanning"], json!(false), "{board:?}");
-    assert!(
-        board["result"]["external_worktrees"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|w| w["worktree_id"] == json!(worktree_id)),
-        "{board:?}"
-    );
-    assert_eq!(
-        scans.load(std::sync::atomic::Ordering::SeqCst),
-        0,
-        "the board rescanned the repository for a checkout it had been handed"
-    );
-}
-
-/// Age a project's last scan past the interval, so the next read of it
-/// claims a rescan.
-fn age_out_scan(state: &Arc<Mutex<AppState>>, project_id: &str) {
-    let mut app = state.lock().unwrap();
-    app.age_external_scan_for_test(project_id, EXTERNAL_SCAN_INTERVAL + Duration::from_secs(1));
-}
-
-/// A create that lands while a scan of the same repository is walking it.
-/// The walk describes the repository as it was before the create, so what
-/// it finds is dropped — but its claim is held to the end, because letting
-/// it go lets the very next read start a second walk behind the first and
-/// then lets the first land on top of the amendment.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_create_during_a_scan_outlives_that_scans_landing() {
-    let (dir, repo) = init_repo();
-    let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
-    let project_id = state.lock().unwrap().project_at(0).id.clone();
-    add_external_worktree(&repo, dir.path(), "already-here", "feature-here");
-    settled_board(&handler).await;
-    age_out_scan(&state, &project_id);
-
-    let gate = gate_scan_computes(&state);
-    poll_board(&handler).await;
-    gate.wait_for_arrival();
-
-    let created = {
-        let handler = handler.clone();
-        let project_id = project_id.clone();
-        tokio::task::spawn_blocking(move || {
-            call(
-                &handler,
-                "worktree.create",
-                json!({ "project_id": project_id, "name": "scratch" }),
-            )
-        })
-        .await
-        .unwrap()
-    };
-    assert_eq!(created["ok"], true, "{created:?}");
-    let worktree_id = created["result"]["worktree_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    let scan = DiffCacheKey::ExternalScan(project_id.clone());
-    assert!(
-        state.lock().unwrap().diff_refresh_is_running(&scan),
-        "the create un-claimed the scan it had already overtaken"
-    );
-    poll_board(&handler).await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(
-        !gate.has_pending_arrival(),
-        "a second walk of the same repository started behind the first"
-    );
-
-    gate.release();
-    tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            if !state.lock().unwrap().diff_refresh_is_running(&scan) {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .expect("the superseded scan lands and lets its claim go");
-
-    let listed = state
-        .lock()
-        .unwrap()
-        .external_scan_of(&project_id)
-        .expect("the amended scan is still there")
-        .worktrees
-        .clone();
-    assert!(
-        listed.iter().any(|w| w.id == worktree_id),
-        "the pre-create walk landed on top of the checkout the create had added: {listed:?}"
     );
 }
 

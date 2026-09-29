@@ -29,38 +29,6 @@ fn run_adopt_refuses_the_projects_own_checkout() {
     );
 }
 
-/// A run standing in the project's repository is what a store written before
-/// workspaces holds. Abandon removes a run's checkout and delete prunes it —
-/// and neither may remove the repository. The guard is the canonical path,
-/// not a flag on the record, so it holds for a run this daemon never minted.
-#[test]
-fn discarding_a_run_standing_in_the_repository_never_removes_it() {
-    for verb in ["run.abandon", "run.delete"] {
-        let (dir, repo) = init_repo();
-        let mut state = qa_state(&repo, dir.path());
-        let run_id = adopted_run(&mut state, &repo, dir.path(), "was-a-worktree");
-        // What a legacy repo-root adoption left behind: the run's checkout IS
-        // the project's repository.
-        let run = state.runs.get_mut(&run_id).unwrap();
-        run.worktree.path = AppState::canonical_root(&repo);
-        if verb == "run.delete" {
-            // Only a terminal run can be deleted, and a native one is the arm
-            // that would prune.
-            run.run.state = RunState::Abandoned;
-            run.adopted = false;
-        }
-
-        let discarded = state.handle(req(verb, json!({ "run_id": run_id })));
-
-        assert_eq!(discarded["ok"], true, "{verb}: {discarded:?}");
-        assert!(
-            repo.join("README.md").exists(),
-            "{verb} removed the project's repository"
-        );
-        assert!(repo.join(".git").exists(), "{verb} removed the repository");
-    }
-}
-
 /// A merge lands the run's branch on the base branch through the project's
 /// repository. For a run standing in that repository the target IS the
 /// checkout being merged, so both merge actions are refused before any git
@@ -113,7 +81,7 @@ fn a_persisted_repo_root_run_is_restored_without_its_retired_flag() {
 
     let mut state = qa_state(&repo, dir.path());
 
-    let got = state.handle(req("run.get", json!({ "run_id": "run-legacy-root" })));
+    let got = run_detail(&mut state, json!({ "run_id": "run-legacy-root" }));
     assert_eq!(got["ok"], true, "the legacy run is restored: {got:?}");
     assert_eq!(got["result"]["worktree_path"], root, "{got:?}");
     assert!(

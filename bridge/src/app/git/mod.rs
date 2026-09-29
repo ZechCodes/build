@@ -1,11 +1,8 @@
 use crate::app::{DeferredGit, DeferredWork, GitCallScope, ScopedGitCall};
-use crate::lifecycle::holders::BranchHolder;
 use crate::store::now_rfc3339;
 pub(in crate::app) mod deferred;
 
 use serde_json::{json, Value};
-
-use crate::lifecycle::holders::ProjectCheckouts;
 
 use super::{require_str, AppState, ReadSubject};
 
@@ -38,45 +35,7 @@ pub(in crate::app) struct GitScopeWorktree {
     pub(in crate::app) base_branch: String,
 }
 
-/// The checkout a branch operation acts on, and which cached summary describes
-/// it: a project's repository, or one of that project's worktrees.
-pub(in crate::app) struct BranchScope {
-    pub(in crate::app) project_id: String,
-    pub(in crate::app) repo_path: std::path::PathBuf,
-    pub(in crate::app) base_branch: String,
-    pub(in crate::app) external_worktree: bool,
-}
-
-/// A branch verb that answers with the project's branches: the checkout it
-/// was scoped to, plus the checkouts the rows are stamped from.
-pub(in crate::app) struct BranchListingScope {
-    pub(in crate::app) checkout: BranchScope,
-    pub(in crate::app) checkouts: ProjectCheckouts,
-}
-
-/// The answer `git.branches` and `git.branch_delete` share: gitgui's git facts
-/// about every offerable branch, each row stamped with the checkout holding it.
-/// Every held branch is published first, so a row weighs what its checkout
-/// holds rather than what the project last saw of it.
-pub(in crate::app) fn stamped_branch_list(scope: &BranchListingScope) -> Result<Value, String> {
-    let ownership = scope.checkouts.holders()?;
-    scope.checkouts.publish_held_branches(&ownership)?;
-    let listing =
-        crate::gitgui::branch_list(&scope.checkout.repo_path, &scope.checkout.base_branch)?;
-    let branches: Vec<Value> = listing
-        .rows
-        .into_iter()
-        .map(|row| {
-            let holder = BranchHolder::of(&ownership, &row.name);
-            let mut fields = row.into_json();
-            fields["holder"] = holder.into_json();
-            fields
-        })
-        .collect();
-    Ok(json!({ "current": listing.current, "branches": branches }))
-}
-
-/// Parse the required `paths` param of `git.stage`/`git.unstage`: a non-empty
+/// Parse the required `paths` param of `git.stage`/`git.discard`: a non-empty
 /// array of repo-relative strings.
 pub(in crate::app) fn require_path_list(params: &Value) -> Result<Vec<String>, String> {
     let paths = params
@@ -215,23 +174,6 @@ impl GitScope {
 }
 
 impl AppState {
-    /// The primary checkout's uncommitted-changes review surface (spec §5.2):
-    /// same shape as `worktree.diff` so `parseDiff`/`diffFilesHtml` reuse is
-    /// mechanical.
-    pub(crate) fn project_diff(&mut self, params: &Value) -> Result<Value, String> {
-        let project_id = require_str(params, "project_id")?;
-        let repo_path = self.project_repo_path(&project_id)?;
-        Ok(self.defer_conditional_read(
-            ReadSubject::Project {
-                project_id,
-                repo_path,
-            },
-            None,
-            None,
-            crate::app::wants_patch(params),
-        ))
-    }
-
     /// The primary checkout of a project that has one. A project registered
     /// as a plain folder has no changeset to read, and says so rather than
     /// answering an empty one.
@@ -466,39 +408,6 @@ impl AppState {
         Ok(self.defer_git_work(scope, work, params, invalidates))
     }
 
-    /// [`AppState::defer_git`] for the verbs that address the repository's
-    /// branches rather than one checkout's working tree.
-    pub(in crate::app) fn defer_branch_git(
-        &mut self,
-        params: &Value,
-        invalidates: bool,
-        work: fn(&BranchScope, &Value) -> Result<Value, String>,
-    ) -> Result<Value, String> {
-        let scope = self.resolve_branch_scope(params)?;
-        if invalidates {
-            self.refuse_writers_while_reserved(&scope.repo_path)?;
-        }
-        Ok(self.defer_git_work(scope, work, params, invalidates))
-    }
-
-    /// [`AppState::defer_branch_git`] for the verbs that render the project's
-    /// branches. They alone carry [`ProjectCheckouts`], which a checkout verb
-    /// has no row to stamp with; the drain asks git who holds what.
-    pub(in crate::app) fn defer_branch_listing(
-        &mut self,
-        params: &Value,
-        invalidates: bool,
-        work: fn(&BranchListingScope, &Value) -> Result<Value, String>,
-    ) -> Result<Value, String> {
-        let checkout = self.resolve_branch_scope(params)?;
-        let checkouts = self.project_checkouts(&checkout.project_id)?;
-        let scope = BranchListingScope {
-            checkout,
-            checkouts,
-        };
-        Ok(self.defer_git_work(scope, work, params, invalidates))
-    }
-
     pub(in crate::app) fn defer_git_work<S: GitCallScope + 'static>(
         &mut self,
         scope: S,
@@ -539,18 +448,6 @@ impl AppState {
         }
         git.call.invalidate(self);
         result
-    }
-
-    /// A branch switch swaps the whole tree, so whichever summary described
-    /// the scoped checkout is stale. The project's own checkout has none: the
-    /// board lists workspaces, and nothing on it is read off the repository.
-    pub(in crate::app) fn invalidate_branch_scope_caches(&mut self, scope: &BranchScope) {
-        if !self.projects.iter().any(|p| p.id == scope.project_id) {
-            return;
-        }
-        if scope.external_worktree {
-            self.rescan_external_worktrees(&scope.project_id);
-        }
     }
 
     /// Whether the entity a git scope spoke for is still on the board.
@@ -679,15 +576,6 @@ impl AppState {
         })
     }
 
-    /// `git.unstage` — the inverse of `git.stage`, same response shape.
-    pub(crate) fn git_unstage(&mut self, params: &Value) -> Result<Value, String> {
-        self.defer_git(params, true, |scope, params| {
-            let paths = require_path_list(params)?;
-            crate::gitgui::unstage_paths(&scope.repo_path, &paths)?;
-            scope.status_payload()
-        })
-    }
-
     /// `git.commit` — commit exactly what is staged with the user's message.
     /// On a task scope the commit changes the tree the board summarizes, so
     /// the cached diffstat is dropped and the task's updated-at stamped; the
@@ -725,38 +613,6 @@ impl AppState {
         }
     }
 
-    /// Resolve the checkout a branch operation acts on: the project's
-    /// repository, or one of its external worktrees when the caller names one. A
-    /// run worktree's branch is owned by the run lifecycle, so a `run_id` (or
-    /// its legacy `task_id` spelling) is refused outright.
-    pub(in crate::app) fn resolve_branch_scope(
-        &mut self,
-        params: &Value,
-    ) -> Result<BranchScope, String> {
-        if params.get("task_id").is_some() || params.get("run_id").is_some() {
-            return Err("branch operations are project- or worktree-scope only".to_string());
-        }
-        let project_id = require_str(params, "project_id")?;
-        let project = self.project_for(&project_id)?;
-        let base_branch = project.base_branch.clone();
-        let primary_repo_path = project.repo_path.clone();
-        let (repo_path, external_worktree) = match params.get("worktree_id").and_then(Value::as_str)
-        {
-            Some(worktree_id) => (
-                self.resolve_external_worktree(&project_id, worktree_id)?
-                    .path,
-                true,
-            ),
-            None => (primary_repo_path, false),
-        };
-        Ok(BranchScope {
-            project_id,
-            repo_path,
-            base_branch,
-            external_worktree,
-        })
-    }
-
     /// `git.fetch` — `git fetch --prune`, then the fresh status payload.
     pub(crate) fn git_fetch(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_git(params, true, |scope, _| {
@@ -785,42 +641,6 @@ impl AppState {
                 .unwrap_or(false);
             crate::gitgui::push(&scope.repo_path, force)?;
             scope.status_payload()
-        })
-    }
-
-    /// `git.branches` — every branch the project can offer, once each (the same
-    /// list whichever checkout is scoped: branches are the repository's, not
-    /// one checkout's), each stamped with the checkout that holds it.
-    pub(crate) fn git_branches(&mut self, params: &Value) -> Result<Value, String> {
-        self.defer_branch_listing(params, false, |scope, _| stamped_branch_list(scope))
-    }
-
-    /// `git.checkout` — switch the scoped checkout to (or create) a branch,
-    /// then the fresh status payload.
-    pub(crate) fn git_checkout(&mut self, params: &Value) -> Result<Value, String> {
-        self.defer_branch_git(params, true, |scope, params| {
-            let branch = require_str(params, "branch")?;
-            let create = params
-                .get("create")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            crate::gitgui::checkout(&scope.repo_path, &branch, create)?;
-            crate::gitgui::status_payload(&scope.repo_path)
-        })
-    }
-
-    /// `git.branch_delete` — delete a local branch, then the fresh branch list.
-    pub(crate) fn git_branch_delete(&mut self, params: &Value) -> Result<Value, String> {
-        let checkout = self.resolve_branch_scope(params)?;
-        self.refuse_writers_while_reserved(&checkout.repo_path)?;
-        self.defer_branch_listing(params, false, |scope, params| {
-            let branch = require_str(params, "branch")?;
-            let force = params
-                .get("force")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            crate::gitgui::branch_delete(&scope.checkout.repo_path, &branch, force)?;
-            stamped_branch_list(scope)
         })
     }
 

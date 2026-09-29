@@ -312,10 +312,10 @@ fn a_link_must_name_something_of_this_tasks_project() {
     let id = task_id(&filed(&mut state, &project_id, "one"));
     let ws = workspace(&mut state, &project_id, "here");
 
-    let linked = state.handle(req(
-        "tasks.link",
+    let linked = link_task(
+        &mut state,
         json!({ "task_id": id, "workspace_id": ws, "branch": "build/x" }),
-    ));
+    );
     assert_eq!(linked["ok"], true, "{linked:?}");
     assert_eq!(
         linked["result"]["task"]["links"]["workspace_ids"],
@@ -327,10 +327,7 @@ fn a_link_must_name_something_of_this_tasks_project() {
     );
 
     // Linking the same workspace again adds nothing and says nothing.
-    state.handle(req(
-        "tasks.link",
-        json!({ "task_id": id, "workspace_id": ws }),
-    ));
+    link_task(&mut state, json!({ "task_id": id, "workspace_id": ws }));
     let kinds: Vec<String> = state.handle(req("tasks.get", json!({ "task_id": id })))["result"]
         ["timeline"]
         .as_array()
@@ -340,21 +337,16 @@ fn a_link_must_name_something_of_this_tasks_project() {
         .collect();
     assert_eq!(kinds, vec!["created", "linked", "linked"], "{kinds:?}");
 
-    assert!(refused(
+    assert!(link_refusal(
         &mut state,
-        "tasks.link",
         json!({ "task_id": id, "workspace_id": "ws-nobody" })
     )
     .contains("unknown workspace_id"));
-    assert!(refused(
-        &mut state,
-        "tasks.link",
-        json!({ "task_id": id, "commit": "nothex" })
-    )
-    .contains("commit link is invalid"));
     assert!(
-        refused(&mut state, "tasks.link", json!({ "task_id": id })).contains("name a workspace_id")
+        link_refusal(&mut state, json!({ "task_id": id, "commit": "nothex" }))
+            .contains("commit link is invalid")
     );
+    assert!(link_refusal(&mut state, json!({ "task_id": id })).contains("name a workspace_id"));
 }
 
 /// A parent is one task of the same project, never itself, and never a link
@@ -367,26 +359,24 @@ fn a_parent_link_refuses_itself_and_refuses_a_cycle() {
     let parent = task_id(&filed(&mut state, &project_id, "parent"));
     let child = task_id(&filed(&mut state, &project_id, "child"));
 
-    assert!(refused(
+    assert!(link_refusal(
         &mut state,
-        "tasks.link",
         json!({ "task_id": child, "parent_task_id": child })
     )
     .contains("its own parent"));
 
-    let linked = state.handle(req(
-        "tasks.link",
+    let linked = link_task(
+        &mut state,
         json!({ "task_id": child, "parent_task_id": parent }),
-    ));
+    );
     assert_eq!(linked["ok"], true, "{linked:?}");
     assert_eq!(
         linked["result"]["task"]["links"]["parent_task_id"],
         parent.as_str()
     );
 
-    let cycle = refused(
+    let cycle = link_refusal(
         &mut state,
-        "tasks.link",
         json!({ "task_id": parent, "parent_task_id": child }),
     );
     assert!(cycle.contains("close a loop"), "{cycle}");
@@ -423,10 +413,7 @@ fn a_comments_references_are_fenced_by_shape_and_then_by_the_task() {
     assert!(unrooted.contains("link the workspace"), "{unrooted}");
 
     let ws = workspace(&mut state, &project_id, "here");
-    state.handle(req(
-        "tasks.link",
-        json!({ "task_id": id, "workspace_id": ws }),
-    ));
+    link_task(&mut state, json!({ "task_id": id, "workspace_id": ws }));
     let accepted = state.handle(req(
         "tasks.comment",
         json!({ "task_id": id, "body": "look", "refs": [
@@ -448,7 +435,7 @@ fn a_comments_references_are_fenced_by_shape_and_then_by_the_task() {
         json!({ "task_id": id, "body": "at", "refs": [{ "kind": "commit", "sha": sha }] }),
     );
     assert!(stray.contains("not one this task links"), "{stray}");
-    state.handle(req("tasks.link", json!({ "task_id": id, "commit": sha })));
+    link_task(&mut state, json!({ "task_id": id, "commit": sha }));
     let now_known = state.handle(req(
         "tasks.comment",
         json!({ "task_id": id, "body": "at", "refs": [{ "kind": "commit", "sha": sha }] }),
@@ -564,19 +551,7 @@ fn the_tracker_does_not_reach_the_retired_plan_flow() {
     let (_home, mut state, project_id) = tracked(&state_root);
     filed(&mut state, &project_id, "one");
 
-    let plans = state.handle(req("task.list", json!({})));
-    assert_eq!(plans["ok"], true, "{plans:?}");
-    assert!(
-        plans["result"]["tasks"]
-            .as_array()
-            .map(|tasks| tasks.is_empty())
-            .unwrap_or(true),
-        "a tracker task is not a plan: {plans:?}"
-    );
-
-    // And the plan flow's own mutating verbs are still retired.
-    let retired = state.handle(req("task.create", json!({ "goal": "x" })));
-    assert_eq!(retired["ok"], false, "{retired:?}");
+    assert!(state.plans.is_empty(), "a tracker task is not a plan");
 }
 
 // ------------------------------------------------- attachments (#57) ---

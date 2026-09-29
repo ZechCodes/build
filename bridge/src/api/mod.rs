@@ -21,7 +21,10 @@ use std::collections::BTreeSet;
 /// keys push content is sealed to.
 /// 2.2.0 adds the `models.changed` push and, on every provider catalog, the
 /// installed CLI's name and version and the models it is too old for (#203).
-pub const API_VERSION: &str = "2.2.0";
+/// 3.0.0 is the pre-release cut (#207): the verbs and pushes no client used
+/// are gone, among them every `plan.*` alias, the retired planning mutations
+/// and the legacy `board.changed`/`entity.changed` pushes.
+pub const API_VERSION: &str = "3.0.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.

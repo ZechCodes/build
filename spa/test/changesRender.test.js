@@ -4,7 +4,6 @@ import {
   commitRowHtml,
   uncommittedHeaderHtml,
   commitHeaderHtml,
-  docCommentTrayHtml,
   commentTrayHtml,
   changesetPlaceholderHtml,
 } from "../src/core/changesRender.js";
@@ -222,10 +221,6 @@ describe("commentTrayHtml", () => {
     // Where a note is written is the box under the diff, which is always on
     // screen; an empty tray has nothing left to say.
     expect(commentTrayHtml([])).toBe("");
-  });
-
-  it("keeps the doc surface's general draft in its own box across repaints", () => {
-    expect(docCommentTrayHtml([], { generalDraft: "one more thing" })).toContain("one more thing");
   });
 
   it("escapes comment text, snippets, and paths", () => {

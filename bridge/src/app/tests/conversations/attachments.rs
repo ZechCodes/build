@@ -49,9 +49,7 @@ fn an_attached_file_lands_in_the_worktree_and_rides_the_message() {
     ));
     assert_eq!(posted["ok"], true, "{posted:?}");
 
-    let unread = state
-        .on_mcp_action(&run_id, BridgeAction::ReadUnreadMessages)
-        .unwrap();
+    let unread = read_unread(&mut state, &run_id);
     let message = &unread["messages"][0];
     assert_eq!(message["body"], "the button is misaligned here");
     assert_eq!(message["attachments"][0]["path"], path);
@@ -237,9 +235,7 @@ fn a_file_can_be_sent_with_no_words_at_all() {
     ));
     assert_eq!(posted["ok"], true, "{posted:?}");
 
-    let unread = state
-        .on_mcp_action(&run_id, BridgeAction::ReadUnreadMessages)
-        .unwrap();
+    let unread = read_unread(&mut state, &run_id);
     assert_eq!(unread["messages"][0]["body"], "");
     assert_eq!(
         unread["messages"][0]["attachments"][0]["name"],

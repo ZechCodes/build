@@ -28,17 +28,17 @@
 //! `Arc` (a producer or pump to spawn), which `dispatch` deliberately has no
 //! access to; they stay on the legacy route in `app/rpc.rs::dispatch_frame`.
 //!
-//! Also note the retirement guard at the top of `AppState::route`: planning
-//! was retired upstream by keeping its verbs served and making the mutating
-//! ones refuse, so `task.approve` and friends never reach the handlers
-//! registered for them here. Their reads still do.
+//! The retired planning workflow keeps only its reads (`task.get`,
+//! `task.stages`, `task.doc`, `task.stage_doc`, `task.stage_diff`), for the
+//! Tasks stored before it was retired; every verb that mutated it was cut
+//! (#207) and answers `unknown_method` like any verb this bridge never had.
 //!
-//! Families: [`board`] (`board.list`, `archive.list`, `archived.list`,
-//! `project.*`, `capture.*`, `settings.*`, `models.list`), [`thread`]
-//! (`thread.*`, `agent.add/choose/remove/list`), [`changes`]
-//! (`changes.subscribe/unsubscribe/list`), [`git`] (`git.*`, `fs.*`,
-//! and the diff reads), [`github`] (`github.repos`), [`lifecycle`] (`task.*`, `plan.*`, `run.*`,
-//! `branch.*`, `worktree.create/finish`, `entity.*`),
+//! Families: [`board`] (`board.list`, `archived.list`, `project.*`,
+//! `capture.*`, `settings.*`, `models.list`), [`thread`] (`thread.*`,
+//! `agent.add/choose/remove`), [`changes`] (`changes.subscribe/unsubscribe`),
+//! [`git`] (`git.*`, `fs.*`, and the diff reads), [`github`]
+//! (`github.repos`), [`lifecycle`] (the `task.*` reads, `run.*`,
+//! `branch.dispatch/finish`, `entity.*`),
 //! [`workspace`] (`workspace.*`), [`updates`] (`bridge.update_status`,
 //! `bridge.check_update`, `bridge.install_update`), [`push`] (`push.registerKey`,
 //! `push.revokeKey`, the notification keys sealed push content goes to),

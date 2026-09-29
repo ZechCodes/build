@@ -383,10 +383,7 @@ fn a_detail_polls_page_reaches_the_words_under_a_starved_tail() {
     };
 
     let mut state = qa_state(&repo, dir.path());
-    let answer = state.handle(req(
-        "run.get",
-        json!({ "run_id": run_id, "thread_limit": 20 }),
-    ));
+    let answer = run_detail(&mut state, json!({ "run_id": run_id, "thread_limit": 20 }));
     let thread = &answer["result"]["thread"];
     let said: Vec<&str> = thread["items"]
         .as_array()
@@ -525,13 +522,7 @@ fn a_page_over_an_activity_heavy_conversation_still_shows_what_was_said() {
     let (dir, repo) = init_repo();
     let task_id = {
         let mut state = qa_state(&repo, dir.path());
-        let task = state
-            .plan_create(&json!({
-                "goal": "trim the retry loop",
-                "dispatch": false,
-            }))
-            .expect("create a stored legacy plan below the retired RPC boundary");
-        let task_id = task["plan_id"].as_str().unwrap().to_string();
+        let task_id = file_legacy_task(&mut state, "trim the retry loop");
         let agent_id = primary_agent_id(&state, &task_id);
         state
             .edit_agent_conversation(&task_id, &agent_id, |thread, _| {
@@ -637,13 +628,7 @@ fn a_page_over_an_activity_heavy_conversation_still_shows_what_was_said() {
 fn a_first_page_that_cannot_reach_the_store_ships_no_activity_digests() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let task = state
-        .plan_create(&json!({
-            "goal": "trim the retry loop",
-            "dispatch": false,
-        }))
-        .expect("create a stored legacy plan below the retired RPC boundary");
-    let task_id = task["plan_id"].as_str().unwrap().to_string();
+    let task_id = file_legacy_task(&mut state, "trim the retry loop");
     let agent_id = primary_agent_id(&state, &task_id);
     state
         .edit_agent_conversation(&task_id, &agent_id, |thread, _| {
@@ -723,45 +708,13 @@ fn reading_a_run_does_not_count_as_touching_it() {
 
     // Reading the run changes nothing about interaction.
     let before = attention_of(&mut state, &run_id);
-    state.handle(req("run.get", json!({ "run_id": run_id })));
+    run_detail(&mut state, json!({ "run_id": run_id }));
     state.handle(req("run.diff", json!({ "run_id": run_id })));
     assert_eq!(
         attention_of(&mut state, &run_id),
         before,
         "reading is not acting"
     );
-}
-
-/// A worktree Build cut is something you asked for, so it arrives already
-/// touched and surfaces in the rail. One made outside Build waits in the
-/// Worktrees row until you act on it here.
-#[test]
-fn a_build_made_worktree_arrives_touched_and_a_hand_made_one_does_not() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let project_id = state.project_at(0).id.clone();
-
-    let created = state.handle(req(
-        "worktree.create",
-        json!({ "project_id": project_id, "name": "spike" }),
-    ));
-    let build_made = created["result"]["worktree_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    add_external_worktree(&repo, dir.path(), "by-hand", "by-hand");
-    state.scan_external_worktrees_now(&project_id).unwrap();
-    let hand_made = state
-        .scan_external_worktrees_now(&project_id)
-        .unwrap()
-        .into_iter()
-        .find(|w| w.branch.as_deref() == Some("by-hand"))
-        .expect("the hand-made worktree is discoverable")
-        .id;
-
-    assert_eq!(attention_of(&mut state, &build_made)["interacted"], true);
-    assert_eq!(attention_of(&mut state, &hand_made)["interacted"], false);
 }
 
 /// Seen is versioned: looking at something does not make it seen forever.

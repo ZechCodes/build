@@ -127,7 +127,7 @@ fn operation_acknowledgement_updates_a_message_below_the_resident_tail() {
     );
     let previous_last = loaded.task.agents[0].thread.last_sequence();
     let acknowledged_sequence = reopened
-        .acknowledge_operation_messages(
+        .acknowledge_native_operation_messages(
             &record.agents[0].id,
             "old-op",
             sequence,

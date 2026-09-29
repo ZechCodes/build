@@ -222,38 +222,6 @@ impl LifecycleSettlement<StagePublications> for AbandonSettlement {
         }
     }
 }
-pub struct DeleteSettlement {
-    pub active: Box<ActiveRun>,
-    pub run_id: String,
-    pub project_id: Option<String>,
-    pub checkout: std::path::PathBuf,
-}
-impl LifecycleSettlement<()> for DeleteSettlement {
-    fn settle(self, state: &mut AppState, result: Result<(), String>) -> Result<Value, String> {
-        if let Err(error) = result {
-            state.runs.insert(self.run_id, *self.active);
-            return Err(error);
-        }
-        if let Some(store) = &state.store {
-            let deletion = match self.project_id.as_deref() {
-                Some(project_id) => {
-                    store.delete_run_retaining_inbox_messages(&self.run_id, project_id)
-                }
-                None => store.delete_run(&self.run_id),
-            };
-            if let Err(error) = deletion {
-                state.runs.insert(self.run_id, *self.active);
-                return Err(format!("run store: {error}"));
-            }
-        }
-        state.forget_run(&self.run_id);
-        if let Some(project_id) = self.project_id.filter(|_| self.checkout.exists()) {
-            state.rescan_external_worktrees(&project_id);
-        }
-        state.reap_orphaned_terminals();
-        Ok(json!({"ok":true}))
-    }
-}
 
 pub struct ProjectRegistrationSettlement;
 impl LifecycleSettlement<OpenedRepository> for ProjectRegistrationSettlement {

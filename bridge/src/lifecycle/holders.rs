@@ -5,7 +5,6 @@ use std::path::PathBuf;
 
 use crate::orchestrator::Orchestrator;
 use crate::worktree::{ExternalWorktree, Worktree};
-use serde_json::{json, Value};
 
 /// A snapshot of the records whose checkouts Git must inspect.
 #[derive(Clone)]
@@ -36,33 +35,6 @@ impl ProjectCheckouts {
             primary,
         })
     }
-
-    /// Make every held branch's tip the project's before the project's refs
-    /// are read (Work Isolation spec §0.4). A linked worktree's already is; a
-    /// clone's is not until published, and a listing that skipped this would
-    /// weigh a clone's branch by what the project last saw of it. The
-    /// project's own checkout holds nothing to publish: its refs are the
-    /// project's.
-    pub fn publish_held_branches(&self, ownership: &BranchOwnershipIndex) -> Result<(), String> {
-        let worktrees = self.project.worktrees();
-        let external = ownership.external.iter().filter_map(|checkout| {
-            checkout
-                .branch
-                .clone()
-                .map(|branch| (checkout.path.clone(), branch))
-        });
-        let runs = self
-            .run_checkouts
-            .iter()
-            .filter(|(_, checkout)| checkout.path != self.primary_repo_path)
-            .map(|(_, checkout)| (checkout.path.clone(), checkout.branch()));
-        for (path, branch) in external.chain(runs) {
-            worktrees
-                .publish(&path, &branch)
-                .map_err(|error| format!("publishing {branch} from {}: {error}", path.display()))?;
-        }
-        Ok(())
-    }
 }
 
 pub struct BranchOwnershipIndex {
@@ -86,17 +58,6 @@ pub enum BranchHolderKind {
 }
 
 impl BranchHolderKind {
-    /// What this kind of holder is called on the wire, so a client picks the
-    /// verb a held branch offers by reading a name rather than by re-deciding
-    /// which of several holders outranks the others.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            BranchHolderKind::Run => "run",
-            BranchHolderKind::ProjectRepository => "project_repository",
-            BranchHolderKind::ExternalWorktree => "external_worktree",
-        }
-    }
-
     /// What this kind of holder is called, for a user being told which one has
     /// the branch they asked for.
     pub fn holder_noun(self) -> &'static str {
@@ -159,11 +120,5 @@ impl BranchHolder {
                 source.holder_noun()
             )
         })
-    }
-
-    pub fn into_json(self) -> Value {
-        json!(self
-            .holder
-            .map(|(source, id)| json!({ "kind": source.as_str(), "id": id })))
     }
 }

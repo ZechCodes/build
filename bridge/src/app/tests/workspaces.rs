@@ -104,7 +104,7 @@ fn git_init_can_target_workspace_copy_without_mutating_its_source() {
     std::fs::create_dir(&plain).unwrap();
     std::fs::write(plain.join("kept.txt"), "keep me\n").unwrap();
     let mut state = app(tmp.path());
-    let added = state.handle(req("project.add", json!({"path": plain})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": plain}))));
     let project_id = added["result"]["project_id"].as_str().unwrap();
     let workspace = create_workspace(&mut state, project_id, "work");
     let workspace_id = workspace["workspace_id"].as_str().unwrap();
@@ -140,7 +140,7 @@ fn git_init_source_refreshes_an_adopted_same_path_workspace() {
     let plain = tmp.path().join("plain");
     std::fs::create_dir(&plain).unwrap();
     let mut state = app(tmp.path());
-    let added = state.handle(req("project.add", json!({"path": plain})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": plain}))));
     let project_id = added["result"]["project_id"].as_str().unwrap();
     // The project's own checkout is never listed (it is not a place to work),
     // but the verb still reaches it by its id.
@@ -204,7 +204,7 @@ fn git_init_reconciles_an_existing_repository_and_preserves_its_branch() {
     let plain = tmp.path().join("plain");
     std::fs::create_dir(&plain).unwrap();
     let mut state = app(tmp.path());
-    let added = state.handle(req("project.add", json!({"path": plain})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": plain}))));
     let project_id = added["result"]["project_id"].as_str().unwrap();
     let workspace = create_workspace(&mut state, project_id, "work");
     let workspace_id = workspace["workspace_id"].as_str().unwrap();
@@ -246,8 +246,8 @@ fn git_init_rejects_a_nul_branch_without_writing_git_metadata() {
     std::fs::create_dir(&plain).unwrap();
     let mut state = app(tmp.path());
     let added = state.handle(req(
-        "project.add",
-        json!({"path": plain, "base_branch": "bad\u{0}branch"}),
+        "project.create",
+        open_folder(json!({"path": plain, "base_branch": "bad\u{0}branch"})),
     ));
     let project_id = added["result"]["project_id"].as_str().unwrap();
     let workspace = create_workspace(&mut state, project_id, "work");
@@ -273,7 +273,7 @@ fn git_init_rejects_a_symlink_swapped_workspace_directory() {
     std::fs::create_dir(&source).unwrap();
     std::fs::create_dir(&replacement).unwrap();
     let mut state = app(tmp.path());
-    let added = state.handle(req("project.add", json!({"path": source})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": source}))));
     let workspace = create_workspace(
         &mut state,
         added["result"]["project_id"].as_str().unwrap(),
@@ -309,7 +309,7 @@ fn git_init_rejects_a_symlink_swapped_project_source() {
     std::fs::create_dir(&source).unwrap();
     std::fs::create_dir(&replacement).unwrap();
     let mut state = app(tmp.path());
-    let added = state.handle(req("project.add", json!({"path": source})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": source}))));
     let workspace = create_workspace(
         &mut state,
         added["result"]["project_id"].as_str().unwrap(),
@@ -342,7 +342,7 @@ fn git_init_refuses_a_dangling_git_marker_without_replacing_it() {
     let source = tmp.path().join("source");
     std::fs::create_dir(&source).unwrap();
     let mut state = app(tmp.path());
-    let added = state.handle(req("project.add", json!({"path": source})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": source}))));
     let workspace = create_workspace(
         &mut state,
         added["result"]["project_id"].as_str().unwrap(),
@@ -375,7 +375,7 @@ fn git_init_both_reports_partial_success_and_retries_without_duplicate_initializ
     let source = tmp.path().join("source");
     std::fs::create_dir(&source).unwrap();
     let mut state = app(tmp.path());
-    let added = state.handle(req("project.add", json!({"path": source})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": source}))));
     let workspace = create_workspace(
         &mut state,
         added["result"]["project_id"].as_str().unwrap(),
@@ -416,7 +416,7 @@ fn git_init_preserves_an_unborn_repository_branch() {
     let source = tmp.path().join("source");
     std::fs::create_dir(&source).unwrap();
     let mut state = app(tmp.path());
-    let added = state.handle(req("project.add", json!({"path": source})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": source}))));
     let workspace = create_workspace(
         &mut state,
         added["result"]["project_id"].as_str().unwrap(),
@@ -451,8 +451,8 @@ fn git_init_uses_a_resolvable_configured_base_without_moving_head() {
         .unwrap();
     let mut state = app(tmp.path());
     let added = state.handle(req(
-        "project.add",
-        json!({"path": source, "base_branch": "release"}),
+        "project.create",
+        open_folder(json!({"path": source, "base_branch": "release"})),
     ));
     let workspace = create_workspace(
         &mut state,
@@ -656,7 +656,7 @@ fn finished_workspace_message_keeps_project_session_after_restart() {
             .unwrap()
             .with_task_store(&store)
             .unwrap();
-        let project = state.handle(req("project.add", json!({"path": repo})));
+        let project = state.handle(req("project.create", open_folder(json!({"path": repo}))));
         assert_eq!(project["ok"], true, "{project:?}");
         let project_id = project["result"]["project_id"]
             .as_str()
@@ -712,7 +712,7 @@ fn removed_agent_keeps_workspace_and_project_session_anchor_after_restart() {
             .unwrap()
             .with_task_store(&store)
             .unwrap();
-        let project = state.handle(req("project.add", json!({"path": repo})));
+        let project = state.handle(req("project.create", open_folder(json!({"path": repo}))));
         assert_eq!(project["ok"], true, "{project:?}");
         let project_id = project["result"]["project_id"]
             .as_str()
@@ -775,7 +775,7 @@ fn removed_agent_keeps_workspace_and_project_session_anchor_after_restart() {
 }
 
 #[test]
-fn run_delete_and_merge_release_refuse_a_surviving_workspace_owner() {
+fn a_merge_release_refuses_a_surviving_workspace_owner() {
     let tmp = tempfile::tempdir().unwrap();
     let (repo, _) = repo_with_origin(tmp.path(), "workspace-release-guard-repo");
     let context =
@@ -784,7 +784,7 @@ fn run_delete_and_merge_release_refuse_a_surviving_workspace_owner() {
         AppState::new_unrooted_configured(tmp.path().join("worktrees"), "main", true, context)
             .with_task_store(tmp.path().join("store"))
             .unwrap();
-    let project = state.handle(req("project.add", json!({"path": repo})));
+    let project = state.handle(req("project.create", open_folder(json!({"path": repo}))));
     let project_id = project["result"]["project_id"].as_str().unwrap();
     let workspace = create_workspace(&mut state, project_id, "surviving");
     let workspace_id = workspace["workspace_id"].as_str().unwrap();
@@ -806,15 +806,6 @@ fn run_delete_and_merge_release_refuse_a_surviving_workspace_owner() {
         .unwrap()
         .contains("delete the workspace"));
     assert!(state.runs.contains_key(&run_id));
-
-    state.runs.get_mut(&run_id).unwrap().run.state = crate::run::RunState::Failed;
-    let deleted = state.handle(req("run.delete", json!({"run_id":run_id})));
-    assert_eq!(deleted["ok"], false, "{deleted:?}");
-    assert!(deleted["error"]
-        .as_str()
-        .unwrap()
-        .contains("delete the workspace"));
-    assert!(state.runs.contains_key(&run_id));
 }
 
 #[test]
@@ -827,7 +818,7 @@ fn workspace_conversation_persistence_failure_leaves_no_owner_and_can_retry() {
         AppState::new_unrooted_configured(tmp.path().join("worktrees"), "main", true, context)
             .with_task_store(tmp.path().join("store"))
             .unwrap();
-    let project = state.handle(req("project.add", json!({"path": repo})));
+    let project = state.handle(req("project.create", open_folder(json!({"path": repo}))));
     let project_id = project["result"]["project_id"].as_str().unwrap();
     let workspace = create_workspace(&mut state, project_id, "retry-chat");
     let workspace_id = workspace["workspace_id"].as_str().unwrap();
@@ -861,7 +852,7 @@ fn a_workspace_done_removed_has_no_conversation_to_ensure() {
     let tmp = tempfile::tempdir().unwrap();
     let (repo, _) = repo_with_origin(tmp.path(), "repo");
     let mut state = app(tmp.path());
-    let project = state.handle(req("project.add", json!({"path": repo})));
+    let project = state.handle(req("project.create", open_folder(json!({"path": repo}))));
     let project_id = project["result"]["project_id"].as_str().unwrap();
     let workspace = create_workspace(&mut state, project_id, "finished");
     let workspace_id = workspace["workspace_id"].as_str().unwrap();
@@ -881,29 +872,6 @@ fn a_workspace_done_removed_has_no_conversation_to_ensure() {
         .unwrap()
         .contains("unknown workspace_id"));
     assert!(state.runs.is_empty());
-}
-
-#[test]
-fn legacy_run_finish_routes_a_workspace_conversation_owner_to_its_workspace() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (repo, _) = repo_with_origin(tmp.path(), "repo");
-    let mut state = app(tmp.path());
-    let project = state.handle(req("project.add", json!({"path": repo})));
-    let project_id = project["result"]["project_id"].as_str().unwrap();
-    let workspace = create_workspace(&mut state, project_id, "finish-by-owner");
-    let workspace_id = workspace["workspace_id"].as_str().unwrap();
-    let ensured = state.handle(req(
-        "workspace.ensure_conversation",
-        json!({"workspace_id": workspace_id}),
-    ));
-    let run_id = ensured["result"]["run_id"].as_str().unwrap();
-
-    let finished = state.handle(req("run.finish", json!({"run_id": run_id})));
-    assert_eq!(finished["ok"], true, "{finished:?}");
-    assert_eq!(finished["result"]["complete"], true, "{finished:?}");
-    assert_eq!(finished["result"]["deleted"], true, "{finished:?}");
-    let detail = state.handle(req("workspace.get", json!({"workspace_id": workspace_id})));
-    assert_eq!(detail["ok"], false, "{detail:?}");
 }
 
 #[test]
@@ -995,8 +963,8 @@ fn project_add_sources_also_materializes_a_workspace() {
     std::fs::write(docs.join("guide.md"), "guide\n").unwrap();
     let mut state = app(tmp.path());
     let added = state.handle(req(
-        "project.add",
-        json!({"name": "product", "sources": [{"path": repo}, {"path": docs}]}),
+        "project.create",
+        open_folder(json!({"name": "product", "sources": [{"path": repo}, {"path": docs}]})),
     ));
     assert_eq!(added["ok"], true, "{added:?}");
     let project_id = added["result"]["project_id"].as_str().unwrap();
@@ -1262,7 +1230,7 @@ fn neighbor_workspace_working_in_it(
     log: &SessionLog,
 ) -> TabKey {
     let (repo, _) = repo_with_origin(parent, "neighbor-repo");
-    let project = state.handle(req("project.add", json!({"path": repo})));
+    let project = state.handle(req("project.create", open_folder(json!({"path": repo}))));
     let project_id = project["result"]["project_id"]
         .as_str()
         .unwrap()
@@ -1294,7 +1262,7 @@ fn done_refuses_while_an_agent_works_then_stops_every_agent_at_its_root() {
     let tmp = tempfile::tempdir().unwrap();
     let (repo, _) = repo_with_origin(tmp.path(), "repo");
     let mut state = app(tmp.path());
-    let project = state.handle(req("project.add", json!({"path": repo})));
+    let project = state.handle(req("project.create", open_folder(json!({"path": repo}))));
     let project_id = project["result"]["project_id"].as_str().unwrap();
     let workspace = create_workspace(&mut state, project_id, "inbox-done");
     let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
@@ -1372,7 +1340,7 @@ fn persisted_workspaces_are_discovered_after_app_restart() {
         let mut state = AppState::new_unrooted(&worktrees, "main", true, "/tmp/test-mcp.sock")
             .with_config(&config)
             .unwrap();
-        let project = state.handle(req("project.add", json!({"path": repo})));
+        let project = state.handle(req("project.create", open_folder(json!({"path": repo}))));
         let project_id = project["result"]["project_id"]
             .as_str()
             .unwrap()
@@ -1457,8 +1425,8 @@ fn a_workspace_with_a_failed_plain_source_cannot_finish() {
         .success());
     let mut state = app(tmp.path());
     let project = state.handle(req(
-        "project.add",
-        json!({"name": "plain", "sources": [{"path": plain}]}),
+        "project.create",
+        open_folder(json!({"name": "plain", "sources": [{"path": plain}]})),
     ));
     assert_eq!(project["ok"], true, "{project:?}");
     let project_id = project["result"]["project_id"].as_str().unwrap();
@@ -1505,14 +1473,14 @@ fn a_later_source_failure_removes_prior_git_checkout_branch_and_workspace() {
         crate::git_process::run_git(&repo, &["worktree", "list", "--porcelain"]).unwrap();
     let mut state = app(tmp.path());
     let project = state.handle(req(
-        "project.add",
-        json!({
+        "project.create",
+        open_folder(json!({
             "name": "mixed",
             "sources": [
                 {"name": "repo", "path": repo},
                 {"name": "plain", "path": plain}
             ]
-        }),
+        })),
     ));
     assert_eq!(project["ok"], true, "{project:?}");
     let project_id = project["result"]["project_id"].as_str().unwrap();
@@ -1565,7 +1533,7 @@ fn workspace_create_preserves_free_form_name_and_uses_a_safe_branch() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = init_repo_named(tmp.path(), "repo");
     let mut state = app(tmp.path());
-    let project = state.handle(req("project.add", json!({"path": repo})));
+    let project = state.handle(req("project.create", open_folder(json!({"path": repo}))));
     let project_id = project["result"]["project_id"].as_str().unwrap();
     let name = "  Bridge wire interface / 🦀 ..  ";
 
@@ -1590,7 +1558,7 @@ fn repeated_workspace_names_use_distinct_checkout_registrations() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = init_repo_named(tmp.path(), "repo");
     let mut state = app(tmp.path());
-    let project = state.handle(req("project.add", json!({"path": repo})));
+    let project = state.handle(req("project.create", open_folder(json!({"path": repo}))));
     let project_id = project["result"]["project_id"].as_str().unwrap();
 
     let first = create_workspace(&mut state, project_id, "same name");
@@ -2071,7 +2039,7 @@ fn a_workspace_row_offers_done_once_its_git_work_is_clean_and_pushed() {
     let tmp = tempfile::tempdir().unwrap();
     let (repo, _) = repo_with_origin(tmp.path(), "repo");
     let mut state = app(tmp.path());
-    let project = state.handle(req("project.add", json!({"path": repo})));
+    let project = state.handle(req("project.create", open_folder(json!({"path": repo}))));
     let project_id = project["result"]["project_id"]
         .as_str()
         .unwrap()
@@ -2156,7 +2124,10 @@ fn done_waits_for_a_directory_no_repository_publishes() {
 
     // A workspace that is nothing but ordinary directories is the same fact
     // with nothing beside it.
-    let plain_only = state.handle(req("project.add", json!({"path": plain})));
+    let loose = tmp.path().join("loose-assets");
+    std::fs::create_dir(&loose).unwrap();
+    std::fs::write(loose.join("logo.svg"), "<svg/>\n").unwrap();
+    let plain_only = state.handle(req("project.create", open_folder(json!({"path": loose}))));
     let plain_project = plain_only["result"]["project_id"]
         .as_str()
         .unwrap()

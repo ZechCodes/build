@@ -96,7 +96,11 @@ impl RecoveryCase {
         .with_task_store(root.path().join("store"))
         .unwrap()
         .into_handler();
-        let project = result(&handler, "project.add", json!({ "path": repo }))["project_id"]
+        let project = result(
+            &handler,
+            "project.create",
+            json!({ "name": "repo", "sources": [{ "path": repo }] }),
+        )["project_id"]
             .as_str()
             .unwrap()
             .to_string();
@@ -131,11 +135,13 @@ impl RecoveryCase {
             .as_str()
             .unwrap()
             .to_string();
-        result(
-            &handler,
-            "tasks.link",
-            json!({ "task_id": task, "workspace_id": workspace_id }),
-        );
+        // Linked in the store: no verb links a task to a workspace by hand
+        // since `tasks.link` was cut (#207), and a stored link is what the
+        // finish reads.
+        let store = build_bridge::store::Store::new(root.path().join("store")).unwrap();
+        let mut linked = store.load_tracker_task(&task).unwrap().unwrap();
+        linked.links.workspace_ids.push(workspace_id.clone());
+        store.save_tracker_task_activity(&linked, &[], &[]).unwrap();
 
         let attempts = root.path().join("attempts");
         Self {

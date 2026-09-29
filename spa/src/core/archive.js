@@ -34,7 +34,8 @@ const STATE_LABEL = {
   created: "Never started",
 };
 
-/** What `worktree.finish` did with the checkout. */
+/** What finishing the branch did with its checkout, as the archive recorded
+ *  it. */
 const ACTION_LABEL = {
   delete: "Checkout deleted",
   cleanup: "Checkout removed, branch kept",

@@ -1,5 +1,5 @@
 //! The thread family: `thread.*` and the roster verbs `agent.add`,
-//! `agent.choose`, `agent.remove`, `agent.list`. (`agent.attach` and
+//! `agent.choose`, `agent.remove`. (`agent.attach` and
 //! `agent.start` need the session or the shared handle and stay legacy.)
 //!
 //! Same shape as `git.rs`: typed params in, the existing implementation
@@ -90,7 +90,6 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             ConversationSettingsParams,
             ConversationSettings
         ),
-        v1_method!("agent.list", agent_list, AgentListParams, AgentRoster),
     ]
 }
 
@@ -350,11 +349,6 @@ pub struct ConversationSettingsParams {
         skip_serializing_if = "Option::is_none"
     )]
     pub max_context_tokens: super::board::Named<u64>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct AgentListParams {
-    pub entity_id: String,
 }
 
 // --------------------------------------------------------------- results ---
@@ -642,8 +636,8 @@ pub struct AgentChoice {
     pub choice_revision: u64,
 }
 
-/// The entity's agents in rail order: what `agent.list` reads and what
-/// `agent.remove` answers with, naming the agent that went.
+/// The entity's agents in rail order: what `agent.remove` answers with,
+/// naming the agent that went.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AgentRoster {
     pub entity_id: String,
@@ -807,13 +801,6 @@ fn agent_remove(
     answer(app.agent_remove(&params.wire())).map_err(refine)
 }
 
-fn agent_list(
-    app: &mut AppState,
-    params: AgentListParams,
-) -> Result<Answer<AgentRoster>, ApiError> {
-    answer(app.agent_list(&params.wire())).map_err(refine)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -872,11 +859,6 @@ mod tests {
     #[test]
     fn the_agent_remove_fixture_round_trips() {
         round_trips("agent.remove");
-    }
-
-    #[test]
-    fn the_agent_list_fixture_round_trips() {
-        round_trips("agent.list");
     }
 
     #[test]

@@ -563,12 +563,6 @@ impl Orchestrator {
         );
         append_stage_catalog(rendered, &active.stages, |_| "not started".to_string())
     }
-    /// Where the checkout for `slug` will go if nothing is in its way. The
-    /// decide phase of a create has no directory to hash an id out of yet, and
-    /// this is the path it expects one at.
-    pub fn planned_checkout_path(&self, slug: &str) -> PathBuf {
-        self.worktrees.path_for(slug)
-    }
     /// Materialize a plan's canonical docs into a fresh run worktree and
     /// commit them, returning the commit sha that baselines the run's review
     /// diff.

@@ -1,4 +1,4 @@
-use super::history::{commit_summary_json, head_commit_id, open_repo};
+use super::history::{commit_summary_json, open_repo};
 use super::status::{is_untracked_status, repo_state_label};
 use serde_json::Value;
 use std::path::Path;
@@ -46,27 +46,6 @@ pub fn stage_paths(repo_path: &Path, paths: &[String]) -> Result<(), String> {
         return Ok(());
     }
     let mut args = vec!["add", "--"];
-    args.extend(surviving.iter().map(String::as_str));
-    run_git(repo_path, &args).map(|_| ())
-}
-
-/// `git.unstage`: `git reset -q HEAD -- <paths…>`, or — when HEAD is unborn
-/// and there is nothing to reset to — drop the index entries with
-/// `git rm -f -r -q --cached -- <paths…>`. The `-f` is required whenever the
-/// staged copy differs from the worktree copy (on an unborn HEAD "differs
-/// from HEAD" is always true), and is safe: `--cached` never touches the
-/// worktree file.
-pub fn unstage_paths(repo_path: &Path, paths: &[String]) -> Result<(), String> {
-    let surviving = stageable_paths(paths)?;
-    if surviving.is_empty() {
-        return Ok(());
-    }
-    let repo = open_repo(repo_path)?;
-    let mut args = if head_commit_id(&repo)?.is_some() {
-        vec!["reset", "-q", "HEAD", "--"]
-    } else {
-        vec!["rm", "-f", "-r", "-q", "--cached", "--"]
-    };
     args.extend(surviving.iter().map(String::as_str));
     run_git(repo_path, &args).map(|_| ())
 }

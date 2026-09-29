@@ -929,10 +929,6 @@ describe("the surface's text column", () => {
     "the task rail's head": inRail(".ivhead"),
     "a stage in the task rail": inRail(".ivstages .stagerow"),
     "the task rail with no stages": inRail(".ivstages .empty"),
-    // The assignment's fields are not a row of the rail at all — they are the
-    // overlay that row opens, and an overlay stands on the frame, not the
-    // column.
-    "the task rail's assignment control": inRail(".ivassign-head"),
     "the task rail's lineage": inRail(".ivlineage"),
   };
 

@@ -42,8 +42,8 @@
 //
 // The events are then routed by entity id to the surfaces showing it. A
 // surface that gave an `onChanges` receives the items and does its own key
-// comparison; one that did not gets its poll callback run, exactly as a legacy
-// `entity.changed` ran it. Either way the safety poll stays behind it.
+// comparison; one that did not gets its refresh callback run. Either way the
+// safety poll stays behind it.
 //
 // The board item carries the one key this file compares itself: `state.revision`,
 // the counter the bridge bumps on every `note_board`. A flush repeating the
@@ -123,7 +123,6 @@ function newBridgeState(deviceId) {
     adapter: null,
     apiVersion: PRE_ALPHA_API_VERSION,
     subscriptions: false, // whether this session is serving the contract
-    want: false, // whether the next greeting asks for it up front
     live: new Map(), // subscription_id → the spec this bridge is holding
     boardRevision: null, // the newest revision this device's feed has read for
     chain: Promise.resolve(),
@@ -230,9 +229,9 @@ export function subscriptionsActive(deviceId = null) {
   return bridgeFor(deviceId)?.subscriptions === true;
 }
 
-/** Hear about a device's contract flipping — a reconnect onto an older bridge
- *  falls back to legacy, and whoever timed itself off subscriptions must
- *  re-time. Called with `(deviceId, active)`. */
+/** Hear about a device's contract flipping — a reconnect onto a bridge that
+ *  serves no subscriptions drops them, and whoever timed itself off
+ *  subscriptions must re-time. Called with `(deviceId, active)`. */
 export function onSubscriptionsChange(fn) {
   modeListeners.add(fn);
   return () => modeListeners.delete(fn);
@@ -622,8 +621,8 @@ function coveredBy(watcher, items) {
  * it a `state` body would have it apply a row it never asked to hear about.
  *
  * A watcher that named no kinds asked the bridge for nothing and hears items
- * whole; an item carrying no kind at all is the bare "something moved" a
- * legacy event was, and is handed on as it arrived.
+ * whole; an item carrying no kind at all is a bare "something moved", and is
+ * handed on as it arrived.
  */
 function forKinds(watcher, item) {
   if (!watcher.kinds.length) return item;
@@ -646,7 +645,7 @@ const itemsFor = (watcher, items) =>
     .filter(Boolean);
 
 /** Hand a watcher what moved. A surface with no `onChanges` has no key to
- *  compare, so the item is the same news `entity.changed` was: refetch. */
+ *  compare, so the item only says something moved: refetch. */
 function deliverChanges(watcher, items) {
   if (!watcher.onChanges) {
     deliver(watcher);
@@ -728,11 +727,8 @@ function dispatchItems(payload, deviceId) {
 }
 
 /** Who each kind of event wakes. A subscription flush is routed item by item,
- *  and that is the whole of what this client acts on: the bridge still sends
- *  the bare `board.changed` / `entity.changed` of the legacy mode, and nothing
- *  here reads them — a client that painted on a hint would be reading the wire
- *  from a view again. A kind with no entry here is an event this client does
- *  not act on. */
+ *  and that is the whole of what this client acts on. A kind with no entry
+ *  here is an event this client does not act on. */
 const EVENT_DISPATCHERS = new Map([["changes", dispatchItems]]);
 
 /** Events about the machine rather than anything on it, acted on whether or
@@ -779,49 +775,25 @@ function clientDeclaration() {
   };
 }
 
-/** What the adapter this greeting selects says the bridge can do — read off
- *  the greeting through the adapter, never probed for. Nothing is installed
- *  here: the greeting that ends the negotiation is the one that installs. */
-function capabilitiesFor(greeting, call) {
-  const selection = selectAdapter(greeting);
-  return selection.unsupported ? NO_CAPABILITIES : selection.create(call).capabilities;
-}
-
-/** Whether this bridge serves subscriptions. A bridge that predates them
- *  says nothing here and is left on the legacy events. */
-const advertisesSubscriptions = (greeting, call) => capabilitiesFor(greeting, call).changes.subscriptions === true;
-
-async function hello(call, subscriptions, strict = false) {
+/** Greet in subscriptions mode, the only mode a bridge serves: there is no
+ *  legacy greeting to start from and no second greeting to switch over. A
+ *  bridge that does not advertise `changes.subscriptions` in its answer is
+ *  asked for nothing. */
+async function hello(call, strict = false) {
   try {
-    return await call("session.hello", {
-      client: clientDeclaration(),
-      ...(subscriptions ? { changes: "subscriptions" } : {}),
-    });
+    return await call("session.hello", { client: clientDeclaration(), changes: "subscriptions" });
   } catch (error) {
     if (strict && !/unknown method|method not found/i.test(String(error?.message || ""))) throw error;
     return null; // an old bridge, or one that dropped mid-greeting
   }
 }
 
-/**
- * Greet, and ask for the subscriptions contract only where the greeting
- * advertises it. The first greeting to an unknown bridge is a legacy one — the
- * contract cannot be asked for before the bridge has said it serves it — and a
- * second greeting switches the session over. Once a bridge has answered that
- * way the ask rides the first greeting of every later session with it; a bridge
- * that does not serve it ignores the field and answers legacy, which puts the
- * client back where it started.
- */
-async function negotiate(call, deviceId, isCurrent, strict) {
-  const want = bridgeFor(deviceId)?.want === true;
-  const greeting = await hello(call, want, strict);
-  // A slower old device can answer after its session has been replaced. Its
-  // features and gap belong to that old session, not to this device now.
-  if (!isCurrent()) return { greeting, current: false };
-  if (want || !advertisesSubscriptions(greeting, call)) return { greeting, current: true };
-  const asked = await hello(call, true, strict);
-  if (!isCurrent()) return { greeting, current: false };
-  return { greeting: asked || greeting, current: true };
+/** Greet once. A slower old device can answer after its session has been
+ *  replaced: its features and gap belong to that old session, not to this
+ *  device now. */
+async function negotiate(call, isCurrent, strict) {
+  const greeting = await hello(call, strict);
+  return { greeting, current: isCurrent() };
 }
 
 /** The session this device's desired map is now held on. It holds none of it
@@ -834,8 +806,7 @@ function adoptGreetedSession(state, call) {
   // board item of the new session always refreshes.
   state.boardRevision = null;
   state.live.clear();
-  state.want = bridgeCapabilities(state.deviceId).changes.subscriptions;
-  setSubscriptionsMode(state, state.want);
+  setSubscriptionsMode(state, bridgeCapabilities(state.deviceId).changes.subscriptions);
   scheduleSync(state.deviceId);
 }
 
@@ -884,7 +855,7 @@ export async function greetBridge(
     strict = false,
   } = {},
 ) {
-  const { greeting, current } = await negotiate(call, deviceId, isCurrent, strict);
+  const { greeting, current } = await negotiate(call, isCurrent, strict);
   if (!current || !isCurrent()) return changeEventsArmed(deviceId);
   const adapter = install(selectAdapter(greeting));
   // Installing announces device state; a listener may issue another greeting

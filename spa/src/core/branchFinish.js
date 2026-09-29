@@ -64,7 +64,8 @@ function branchFinishOptions(branch, deletesBranch) {
 }
 
 /**
- * The close-out control for one `branch.get` row: `{ shown, options }`.
+ * The close-out control for one branch row (the surface's row for the branch,
+ * views/branchSeed.js): `{ shown, options }`.
  *
  * `shown` false hides it outright — a branch no checkout on this device carries
  * has nothing to delete. `can_finish` is the
@@ -106,8 +107,8 @@ export function branchFinishNotice(name, answer) {
 
 /** The name the inbox is holding this branch's row under. A row with no entity
  *  of its own is named by its project, and a project is only named once the
- *  device is said with it — a `branch.get` answer is one device's and carries
- *  no such name, so the caller says which project key this surface is on. */
+ *  device is said with it — a branch row is one device's and carries no such
+ *  name, so the caller says which project key this surface is on. */
 export function branchInboxKey(row, { projectId, branch, projectKey }) {
   return entryKeyOf({
     ...row,
@@ -118,7 +119,7 @@ export function branchInboxKey(row, { projectId, branch, projectKey }) {
   });
 }
 
-/** The four facts Done speaks about, read off a `branch.get` row: which branch,
+/** The four facts Done speaks about, read off a branch row: which branch,
  *  the task it implements, whether the work landed, and what the bridge says
  *  the deletion would cost. `fallbackBranch` names the row the URL asked for,
  *  for a read that has not answered yet. */

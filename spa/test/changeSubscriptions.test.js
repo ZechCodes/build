@@ -3,7 +3,7 @@
 // what it wants — scope, kinds, cadence, priority — and the manager keeps the
 // bridge's subscription set equal to that map: on mount, on unmount, on greet,
 // and on every reconnect. A bridge that does not advertise subscriptions is
-// left in legacy mode with today's poll behaviour, unchanged.
+// asked for nothing.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
@@ -19,7 +19,7 @@ const SUBSCRIBING_GREETING = {
   push_events: true,
   api_version: "2.0.0",
   capabilities: SUBSCRIBING_CAPABILITIES,
-  events: ["board.changed", "entity.changed", "changes"],
+  events: ["changes"],
   changes: {
     subscriptions: true,
     mode: "legacy",
@@ -70,15 +70,14 @@ afterEach(() => {
 });
 
 describe("negotiating the contract", () => {
-  it("re-greets in subscriptions mode once the greeting advertises them", async () => {
+  it("asks for subscriptions in the first and only greeting", async () => {
     await changeEvents.greetBridge(subscribingBridge());
-    expect(hellos()).toHaveLength(2);
-    expect(hellos()[0].changes).toBeUndefined();
-    expect(hellos()[1].changes).toBe("subscriptions");
+    expect(hellos()).toHaveLength(1);
+    expect(hellos()[0].changes).toBe("subscriptions");
     expect(changeEvents.subscriptionsActive()).toBe(true);
   });
 
-  it("greets in subscriptions mode straight away on the next session", async () => {
+  it("greets in subscriptions mode on every later session too", async () => {
     await changeEvents.greetBridge(subscribingBridge());
     calls.length = 0;
     await changeEvents.greetBridge(call);
@@ -86,21 +85,20 @@ describe("negotiating the contract", () => {
     expect(hellos()[0].changes).toBe("subscriptions");
   });
 
-  it("stays legacy against a bridge that advertises nothing, and subscribes to nothing", async () => {
+  it("subscribes to nothing on a bridge that does not advertise subscriptions", async () => {
     changeEvents.watchChanges({ refresh: () => {}, entity: "run-7", kinds: ["state", "git"] });
     await changeEvents.greetBridge(legacyBridge());
     await settle();
     expect(hellos()).toHaveLength(1);
-    expect(hellos()[0].changes).toBeUndefined();
+    expect(hellos()[0].changes).toBe("subscriptions");
     expect(changeEvents.subscriptionsActive()).toBe(false);
     expect(subscribes()).toEqual([]);
   });
 
-  it("falls back to legacy when a reconnect lands on a bridge without subscriptions", async () => {
+  it("drops subscriptions when a reconnect lands on a bridge without them", async () => {
     changeEvents.watchChanges({ refresh: () => {}, entity: "run-7", kinds: ["git"] });
     await changeEvents.greetBridge(subscribingBridge());
     await settle();
-    // The old bridge ignores the field it does not know and answers legacy.
     calls.length = 0;
     await changeEvents.greetBridge(legacyBridge());
     await settle();

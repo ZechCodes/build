@@ -278,7 +278,7 @@ fn a_tool_call(agent: &mut std::os::unix::net::UnixStream) {
     let frame = json!({
         "task_id": "run-tool",
         "session_token": "not-the-token",
-        "request": { "action": "read_unread_messages" },
+        "request": { "action": "set_topic", "topic": "tools" },
     });
     agent
         .write_all(format!("{frame}\n").as_bytes())

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::harness::stream_fixtures::{
-    recorded_workflow_surfaces, SUBAGENT_SPAWNING_CALL_ID, SUBAGENT_TASK_ID, WORKFLOW_TASK_ID,
+    recorded_workflow_surfaces, SUBAGENT_SPAWNING_CALL_ID, WORKFLOW_TASK_ID,
 };
 use crate::harness::surfaces::{AgentSurfaces, SurfaceRevision};
 use crate::harness::{AgentSession, HarnessError, Turn};

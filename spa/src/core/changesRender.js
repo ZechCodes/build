@@ -17,7 +17,6 @@ import { esc, humanAge } from "./text.js";
 import { lineRangeSuffix } from "./anchors.js";
 import { uncommittedTotals, hasUncommittedChanges } from "./changesModel.js";
 import { diffSortHtml } from "./diffSort.js";
-import { fieldTraits } from "./fieldTraits.js";
 
 const TRUNCATED_NOTICE = '<div class="ftrunc">diff truncated at 1 MiB — the counts above are exact</div>';
 
@@ -149,18 +148,6 @@ export function commentTrayHtml(comments) {
   const count = `${pending.length} comment${pending.length === 1 ? "" : "s"} ready to send`;
   return `<div class="plan-feedback csfeedback"><div class="cslist">${pendingCommentRowsHtml(pending)}</div>
     <div class="cstrayfoot"><span class="hint">${count}</span><button class="btn mini cscancel">Clear</button></div></div>`;
-}
-
-/** The task doc's tray: the same pending rows, and the surface's own note box
- *  and actionbar under them.
- *
- *  A doc is read top to bottom once, not scrolled through a hundred times, so
- *  it keeps the box at the END of what it is about — the Changes surface pinned
- *  its own below the scroller because the stack is long enough to lose it. */
-export function docCommentTrayHtml(comments, { generalDraft = "" } = {}) {
-  return `<div class="plan-feedback csfeedback"><div class="cslist">${pendingCommentRowsHtml(comments)}</div>
-    <textarea class="csgeneral plan-general" ${fieldTraits("prose")} placeholder="Add a general comment about these changes…">${esc(generalDraft)}</textarea></div>
-    <div class="actionbar"><span class="hint cshint"></span><div class="right csactions"></div></div>`;
 }
 
 /** The bar the selection raises: how many files are in hand, approving all of

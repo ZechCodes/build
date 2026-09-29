@@ -44,58 +44,6 @@ fn assert_no_digest_carries_surfaces(verb: &str, payload: &Value) {
     }
 }
 
-#[test]
-fn branch_get_carries_the_open_agents_surfaces() {
-    let (dir, mut state, run_id) = a_branch_whose_agent_runs(
-        "feature-surfaced",
-        DictatedSession::reporting(AgentStatus::Working)
-            .showing_surfaces(recorded_workflow_surfaces()),
-    );
-    let agent_id = primary_agent_id(&state, &run_id);
-    let project_id = state.project_at(0).id.clone();
-
-    let answered = state.handle(req(
-        "branch.get",
-        json!({
-            "project_id": project_id,
-            "branch": "feature-surfaced",
-            "agent_id": agent_id,
-            "thread_after_sequence": 0
-        }),
-    ));
-
-    assert_eq!(answered["ok"], true, "{answered:?}");
-    let row = &answered["result"];
-    assert_eq!(
-        row["run"]["agents"][0]["surfaces"]["workflows"][0]["name"], "readme-analysis",
-        "{row:?}"
-    );
-    assert_eq!(
-        row["agents"][0]["surfaces"]["subagents"][0]["id"], SUBAGENT_TASK_ID,
-        "the rail reads a branch's agents off the row: {row:?}"
-    );
-
-    let repo_path = state.project_at(0).repo_path.clone();
-    add_external_worktree(&repo_path, dir.path(), "bare-checkout", "feature-bare");
-    state
-        .scan_external_worktrees_now(&project_id)
-        .expect("the new checkout is discoverable");
-
-    let bare = state.handle(req(
-        "branch.get",
-        json!({ "project_id": project_id, "branch": "feature-bare" }),
-    ));
-    assert_eq!(bare["ok"], true, "{bare:?}");
-    let bare = &bare["result"];
-    assert!(bare["run"].is_null(), "{bare:?}");
-    assert_eq!(
-        bare["agents"],
-        json!([]),
-        "a bare checkout has no run view to take agents from, so the rail still reads the candidate row's own array: {bare:?}"
-    );
-    drop(dir);
-}
-
 fn the_only_digest_carrying_surfaces(verb: &str, payload: &Value) -> Value {
     let surfaced: Vec<Value> = agent_digests_within(payload)
         .into_iter()
@@ -117,7 +65,7 @@ fn every_detail_verb_carries_the_open_agents_surfaces() {
         DictatedSession::reporting(AgentStatus::Working)
             .showing_surfaces(recorded_workflow_surfaces()),
     );
-    let answered = state.handle(req("run.get", json!({ "run_id": run_id })));
+    let answered = run_detail(&mut state, json!({ "run_id": run_id }));
     assert_eq!(answered["ok"], true, "run.get: {answered:?}");
     let surfaces = the_only_digest_carrying_surfaces("run.get", &answered["result"]);
     assert_eq!(surfaces["workflows"][0]["id"], WORKFLOW_TASK_ID);
@@ -180,7 +128,7 @@ fn no_digest_answering_a_mutation_carries_surfaces() {
         DictatedSession::reporting(AgentStatus::Working)
             .showing_surfaces(recorded_workflow_surfaces()),
     );
-    let answered = state.handle(req("agent.list", json!({ "entity_id": run_id })));
+    let answered = agent_roster(&mut state, json!({ "entity_id": run_id }));
     assert_eq!(answered["ok"], true, "agent.list: {answered:?}");
     assert_no_digest_carries_surfaces("agent.list", &answered["result"]);
 
@@ -229,16 +177,10 @@ fn an_agent_whose_session_reports_no_surfaces_carries_no_key() {
         DictatedSession::reporting(AgentStatus::Working),
     );
 
-    let got = state.handle(req(
-        "branch.get",
-        json!({
-            "project_id": state.project_at(0).id.clone(),
-            "branch": "feature-silent"
-        }),
-    ));
+    let got = run_detail(&mut state, json!({ "run_id": run_id }));
 
     assert_eq!(got["ok"], true, "{got:?}");
-    let digest = &got["result"]["run"]["agents"][0];
+    let digest = &got["result"]["agents"][0];
     assert_eq!(digest["id"], primary_agent_id(&state, &run_id), "{got:?}");
     assert!(
         digest.get("surfaces").is_none(),
@@ -271,10 +213,10 @@ async fn a_subagents_call_sequence_names_the_row_of_the_call_that_spawned_it() {
     .await
     .expect("the Agent call mints a row");
 
-    let while_running = state
-        .lock()
-        .unwrap()
-        .handle(req("run.get", json!({ "run_id": "run-spawning" })));
+    let while_running = run_detail(
+        &mut state.lock().unwrap(),
+        json!({ "run_id": "run-spawning" }),
+    );
     assert_eq!(
         while_running["result"]["agents"][0]["surfaces"]["subagents"][0]["call_sequence"],
         json!(spawning_call_sequence(&while_running["result"])),
@@ -300,10 +242,10 @@ async fn a_subagents_call_sequence_names_the_row_of_the_call_that_spawned_it() {
     .await
     .expect("the answer lands on the call's own row");
 
-    let after_answer = state
-        .lock()
-        .unwrap()
-        .handle(req("run.get", json!({ "run_id": "run-spawning" })));
+    let after_answer = run_detail(
+        &mut state.lock().unwrap(),
+        json!({ "run_id": "run-spawning" }),
+    );
     assert_eq!(
         after_answer["result"]["agents"][0]["surfaces"]["subagents"][0]["call_sequence"],
         json!(spawning_call_sequence(&after_answer["result"])),
@@ -341,7 +283,8 @@ fn spawning_call_sequence(view: &Value) -> u64 {
 #[tokio::test]
 async fn a_revision_bump_that_mints_no_row_stales_the_owning_entity() {
     let (dir, repo) = init_repo();
-    let (state, _handler, _sender, mut rx, session_key) = greeted_push_session(&repo, dir.path());
+    let (state, handler, sender, mut rx, session_key) = greeted_push_session(&repo, dir.path());
+    watch_everything(&handler, &sender);
     let root = {
         let mut s = state.lock().unwrap();
         insert_run(
@@ -391,14 +334,14 @@ async fn a_revision_bump_that_mints_no_row_stales_the_owning_entity() {
 
     note_the_board_then_bump_each_revision_once(&state, &revisions);
 
-    let events = change_events(&settled_pushes(&mut rx, &session_key).await);
+    let moved = changed_entities(&settled_pushes(&mut rx, &session_key).await);
     assert_eq!(
-        events
+        moved
             .iter()
-            .filter(|event| **event == json!({ "type": "entity.changed", "id": "run-invalidated" }))
+            .filter(|entity| *entity == "run-invalidated")
             .count(),
         1,
-        "five separately watched bumps inside one window are one stale-detail event: {events:?}"
+        "five separately watched bumps inside one window are one item: {moved:?}"
     );
     let s = state.lock().unwrap();
     assert!(
@@ -412,7 +355,8 @@ async fn a_revision_bump_that_mints_no_row_stales_the_owning_entity() {
 #[tokio::test]
 async fn a_surface_only_session_invalidates_its_owning_entity() {
     let (dir, repo) = init_repo();
-    let (state, _handler, _sender, mut rx, session_key) = greeted_push_session(&repo, dir.path());
+    let (state, handler, sender, mut rx, session_key) = greeted_push_session(&repo, dir.path());
+    watch_everything(&handler, &sender);
     let revision = SurfaceRevision::default();
     let key = {
         let mut s = state.lock().unwrap();
@@ -431,18 +375,18 @@ async fn a_surface_only_session_invalidates_its_owning_entity() {
         )
     };
     spawn_activity_pump(&state, key, None);
-    let initial_events = change_events(&settled_pushes(&mut rx, &session_key).await);
+    let initial = changed_entities(&settled_pushes(&mut rx, &session_key).await);
     assert!(
-        initial_events.contains(&json!({ "type": "entity.changed", "id": "run-surface-only" })),
-        "subscription publishes the already-cached initial snapshot: {initial_events:?}"
+        initial.iter().any(|entity| entity == "run-surface-only"),
+        "subscription publishes the already-cached initial snapshot: {initial:?}"
     );
 
     revision.bump();
 
-    let events = change_events(&settled_pushes(&mut rx, &session_key).await);
+    let moved = changed_entities(&settled_pushes(&mut rx, &session_key).await);
     assert!(
-        events.contains(&json!({ "type": "entity.changed", "id": "run-surface-only" })),
-        "a surface revision invalidates detail without an activity stream: {events:?}"
+        moved.iter().any(|entity| entity == "run-surface-only"),
+        "a surface revision invalidates detail without an activity stream: {moved:?}"
     );
     let s = state.lock().unwrap();
     assert!(

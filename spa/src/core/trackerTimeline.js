@@ -73,7 +73,7 @@ const labelChange = (payload) => {
 };
 
 /** What a `linked` event linked. The payload carries the link that was added,
- *  which is one of the five keys `tasks.link` takes. */
+ *  which is one of the five keys a task link names. */
 const linkChange = (payload) => {
   const named = ["workspace_id", "branch", "commit", "conversation_id", "parent_task_id"]
     .map((key) => (payload[key] ? `${key.replace(/_/g, " ")} ${payload[key]}` : ""))

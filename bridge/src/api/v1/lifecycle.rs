@@ -1,21 +1,20 @@
-//! The lifecycle family: `task.*`, `plan.*`, `run.*`, `branch.*`,
-//! `worktree.create`, `worktree.finish`, `entity.*`.
-//! (The diff reads — `run.diff`, `run.stage_diff`, `task.diff`,
+//! The lifecycle family: the reads of the retired planning workflow
+//! (`task.get`, `task.stages`, `task.doc`, `task.stage_doc`), the run verbs
+//! that still act on a run (`run.request_changes`, `run.git_action`,
+//! `run.message`, `run.abandon`, `run.adopt`), `branch.dispatch`,
+//! `branch.finish` and `entity.*`. (The diff reads — `run.diff` and
 //! `task.stage_diff` — are the git family's.)
 //!
-//! Two halves, converted independently and kept apart on purpose: the
-//! `task.*` / `plan.*` half below, and the `run.*` / `branch.*` /
-//! `worktree.*` half under the section marker at the bottom. Append to your
-//! own section; never reorder the other's.
+//! Two halves, kept apart on purpose: the `task.*` / `entity.*` half below,
+//! and the `run.*` / `branch.*` half under the section marker at the bottom.
 //!
-//! `plan.*` is the deprecated alias of `task.*` (spec step 2.1: the kind of
-//! thing a major retires). An alias pair is ONE typed handler: [`TaskRef`]
-//! reads either spelling and writes both back out, so the plan-store
+//! A task is still named either way: [`TaskRef`] reads `task_id` or the
+//! pre-2.0 `plan_id` and writes both back out, so the plan-store
 //! implementation underneath — which still names the id `plan_id` — keeps
 //! reading exactly what it always read, and the canonical `task_id` is what
 //! the contract states.
 
-use super::{answer, deferral_placeholder, Answer, Handler, NoParams, WireParams};
+use super::{answer, deferral_placeholder, Answer, Handler, WireParams};
 use crate::api::ApiError;
 use crate::app::AppState;
 use crate::{v1_method, v1_methods};
@@ -26,125 +25,14 @@ use serde::{Deserialize, Serialize, Serializer};
 pub fn methods() -> &'static [(&'static str, Handler)] {
     v1_methods![
         // ---- task/plan
-        v1_method!("task.create", task_create, TaskCreateParams, TaskView),
-        v1_method!("plan.create", task_create, TaskCreateParams, TaskView),
         v1_method!("task.get", task_get, TaskDetailParams, TaskView),
-        v1_method!("plan.get", task_get, TaskDetailParams, TaskView),
-        v1_method!("task.list", task_list, NoParams, TaskListResult),
-        v1_method!("plan.list", plan_list, NoParams, PlanListResult),
         v1_method!("task.doc", task_doc, TaskRefParams, TaskDocResult),
-        v1_method!("plan.doc", task_doc, TaskRefParams, TaskDocResult),
         v1_method!("task.stages", task_stages, TaskRefParams, TaskStagesResult),
-        v1_method!("plan.stages", plan_stages, TaskRefParams, PlanStagesResult),
         v1_method!(
             "task.stage_doc",
             task_stage_doc,
             StageRefParams,
             StageDocResult
-        ),
-        v1_method!(
-            "plan.stage_doc",
-            task_stage_doc,
-            StageRefParams,
-            StageDocResult
-        ),
-        v1_method!("task.approve", task_approve, TaskMutationParams, TaskView),
-        v1_method!("plan.approve", task_approve, TaskMutationParams, TaskView),
-        v1_method!(
-            "task.send_notes",
-            task_send_notes,
-            SendNotesParams,
-            TaskView
-        ),
-        v1_method!(
-            "plan.send_notes",
-            task_send_notes,
-            SendNotesParams,
-            TaskView
-        ),
-        v1_method!(
-            "task.stage_approve",
-            task_stage_approve,
-            StageMutationParams,
-            TaskView
-        ),
-        v1_method!(
-            "plan.stage_approve",
-            task_stage_approve,
-            StageMutationParams,
-            TaskView
-        ),
-        v1_method!(
-            "task.stage_revise",
-            task_stage_revise,
-            StageMutationParams,
-            TaskView
-        ),
-        v1_method!(
-            "plan.stage_send_notes",
-            task_stage_revise,
-            StageMutationParams,
-            TaskView
-        ),
-        v1_method!("plan.message", task_message, TaskMessageParams, TaskView),
-        v1_method!("plan.abandon", task_abandon, TaskMutationParams, TaskView),
-        v1_method!(
-            "task.comment_add",
-            task_comment_add,
-            CommentAddParams,
-            CommentAddResult
-        ),
-        v1_method!(
-            "plan.comment_add",
-            task_comment_add,
-            CommentAddParams,
-            CommentAddResult
-        ),
-        v1_method!(
-            "task.comment_delete",
-            task_comment_delete,
-            CommentDeleteParams,
-            Acknowledged
-        ),
-        v1_method!(
-            "plan.comment_delete",
-            task_comment_delete,
-            CommentDeleteParams,
-            Acknowledged
-        ),
-        v1_method!("task.archive", task_archive, TaskMutationParams, TaskView),
-        v1_method!("plan.archive", task_archive, TaskMutationParams, TaskView),
-        v1_method!("task.delete", task_delete, TaskRefParams, Acknowledged),
-        v1_method!("plan.delete", task_delete, TaskRefParams, Acknowledged),
-        v1_method!(
-            "task.implement_stage",
-            task_implement_stage,
-            ImplementStageParams,
-            TaskView
-        ),
-        v1_method!(
-            "task.implement_all",
-            task_implement_all,
-            ImplementAllParams,
-            TaskView
-        ),
-        v1_method!(
-            "task.set_auto_advance",
-            task_set_auto_advance,
-            SetAutoAdvanceParams,
-            TaskView
-        ),
-        v1_method!(
-            "task.request_changes",
-            task_request_changes,
-            RequestChangesParams,
-            TaskView
-        ),
-        v1_method!(
-            "task.git_action",
-            task_git_action,
-            TaskGitActionParams,
-            TaskView
         ),
         v1_method!("entity.seen", entity_seen, EntitySeenParams, Acknowledged),
         v1_method!("entity.mute", entity_mute, EntityMuteParams, MuteResult),
@@ -156,30 +44,10 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
         ),
         // ---- end task/plan (the run/branch/worktree half appends below)
         // ---- run/branch/worktree
-        v1_method!("run.create", run_create, RunCreateParams, RunView),
-        v1_method!("run.get", run_get, RunViewParams, RunView),
         v1_method!(
             "run.request_changes",
             run_request_changes,
             RunRequestChangesParams,
-            RunView
-        ),
-        v1_method!(
-            "run.stage_dispatch",
-            run_stage_dispatch,
-            RunStageDispatchParams,
-            RunView
-        ),
-        v1_method!(
-            "run.stage_send_notes",
-            run_stage_send_notes,
-            RunStageParams,
-            RunView
-        ),
-        v1_method!(
-            "run.set_auto_advance",
-            run_set_auto_advance,
-            RunAutoAdvanceParams,
             RunView
         ),
         v1_method!(
@@ -190,16 +58,7 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
         ),
         v1_method!("run.message", run_message, RunMessageParams, RunView),
         v1_method!("run.abandon", run_abandon, RunViewParams, RunView),
-        v1_method!("run.delete", run_delete, RunIdParams, RunAck),
         v1_method!("run.adopt", run_adopt, RunAdoptParams, RunAdoptResult),
-        v1_method!("run.release", run_release, RunIdParams, RunAck),
-        v1_method!(
-            "run.finish",
-            run_finish,
-            RunFinishParams,
-            WorkspaceFinishResult
-        ),
-        v1_method!("branch.get", branch_get, BranchGetParams, BranchWorkItem),
         v1_method!(
             "branch.dispatch",
             branch_dispatch,
@@ -210,18 +69,6 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             "branch.finish",
             branch_finish,
             BranchFinishParams,
-            WorkspaceFinishResult
-        ),
-        v1_method!(
-            "worktree.create",
-            worktree_create,
-            WorktreeCreateParams,
-            CreatedWorktreeResult
-        ),
-        v1_method!(
-            "worktree.finish",
-            worktree_finish,
-            WorktreeFinishParams,
             WorkspaceFinishResult
         ),
         // ---- end run/branch/worktree
@@ -251,14 +98,13 @@ pub type ThreadCursor = serde_json::Value;
 /// Carried verbatim until the thread family names the embedded form.
 pub type ThreadPayload = serde_json::Value;
 
-/// One agent's bubble, as `agent.list` renders it — the thread family's
-/// shape, named once, there.
+/// One agent's bubble — the thread family's shape, named once, there.
 pub type AgentDigest = crate::api::v1::thread::AgentDigest;
 
 /// The task a verb acts on.
 ///
-/// Reads either spelling — `task_id` (canonical) or `plan_id` (the `plan.*`
-/// alias) — and writes BOTH back to the implementation underneath, which is
+/// Reads either spelling — `task_id` (canonical) or `plan_id` (the pre-2.0
+/// name) — and writes BOTH back to the implementation underneath, which is
 /// what the legacy route's `alias_param` did by hand at each call site.
 #[derive(Debug, Deserialize)]
 pub struct TaskRef {
@@ -318,16 +164,6 @@ pub struct TaskRefParams {
     pub task: TaskRef,
 }
 
-/// A mutation that answers with the task: the id, and how much of the
-/// conversation the answer carries.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct TaskMutationParams {
-    #[serde(flatten)]
-    pub task: TaskRef,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thread_limit: Option<ThreadLimit>,
-}
-
 /// The detail poll: the whole task, with the conversation window the surface
 /// is holding.
 #[derive(Debug, Deserialize, Serialize)]
@@ -338,168 +174,12 @@ pub struct TaskDetailParams {
     pub thread: ThreadWindowParams,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct TaskCreateParams {
-    /// What the task is for, in the human's own words.
-    pub goal: String,
-    /// The account's default project when absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub project_id: Option<String>,
-    /// `false` files the record and starts nothing — an inert task, whose
-    /// first `thread.post` opens the planning session. Defaults to `true`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dispatch: Option<bool>,
-    /// The harness to plan with; the account's default when absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effort: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thread_limit: Option<ThreadLimit>,
-}
-
 /// A read of one stage's document.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct StageRefParams {
     #[serde(flatten)]
     pub task: TaskRef,
     pub stage_id: String,
-}
-
-/// A mutation aimed at one stage.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct StageMutationParams {
-    #[serde(flatten)]
-    pub task: TaskRef,
-    pub stage_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thread_limit: Option<ThreadLimit>,
-}
-
-/// Notes back to the task's agent: a batch of anchored messages, or the one
-/// unanchored body the pre-batch clients send.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct SendNotesParams {
-    #[serde(flatten)]
-    pub task: TaskRef,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub messages: Option<Vec<ReviewerMessageParams>>,
-    /// The single-body spelling, required when `messages` is absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub comments: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub viewing_context: Option<crate::thread::ViewingContext>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thread_limit: Option<ThreadLimit>,
-}
-
-/// A freeform human message to the task's agent.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct TaskMessageParams {
-    #[serde(flatten)]
-    pub task: TaskRef,
-    pub message: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub viewing_context: Option<crate::thread::ViewingContext>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thread_limit: Option<ThreadLimit>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct CommentAddParams {
-    #[serde(flatten)]
-    pub task: TaskRef,
-    pub stage_id: String,
-    pub body: String,
-    /// Absent for a comment on the document as a whole.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub anchor: Option<crate::thread::DocAnchor>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub viewing_context: Option<crate::thread::ViewingContext>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct CommentDeleteParams {
-    #[serde(flatten)]
-    pub task: TaskRef,
-    pub comment_id: String,
-}
-
-/// Open — or carry on — a task's implementation.
-///
-/// The checkout is chosen here or not at all: `worktree_id` implements into a
-/// checkout that already exists (which adopts it), and `base_branch` names
-/// what a checkout cut for this task is cut from. Naming any of
-/// `provider`/`model`/`effort` overrides the task's own choice for the
-/// implementation agent.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct ImplementAllParams {
-    #[serde(flatten)]
-    pub task: TaskRef,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktree_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub base_branch: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effort: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thread_limit: Option<ThreadLimit>,
-}
-
-/// The same, aimed at one approved stage rather than the whole manifest.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct ImplementStageParams {
-    #[serde(flatten)]
-    pub implement: ImplementAllParams,
-    pub stage_id: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct SetAutoAdvanceParams {
-    #[serde(flatten)]
-    pub task: TaskRef,
-    pub enabled: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thread_limit: Option<ThreadLimit>,
-}
-
-/// Diff comments to the task's implementation. The implementation agent is
-/// the run's own; an `agent_id` naming the TASK's agent is not on that
-/// roster, so this verb does not take one.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct RequestChangesParams {
-    #[serde(flatten)]
-    pub task: TaskRef,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub messages: Option<Vec<ReviewerMessageParams>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub comments: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub viewing_context: Option<crate::thread::ViewingContext>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub conversation_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thread_limit: Option<ThreadLimit>,
-}
-
-/// Publish a task's implementation: `commit`, `push`, `merge`,
-/// `merge_push`. Documented as open.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct TaskGitActionParams {
-    #[serde(flatten)]
-    pub task: TaskRef,
-    pub action: String,
-    /// `prune` (the default), `keep`, or `release` — merge actions only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cleanup: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thread_limit: Option<ThreadLimit>,
 }
 
 /// The human has read one entry as it stands.
@@ -703,32 +383,11 @@ pub struct TaskView {
     pub stages: Vec<TaskStageRow>,
 }
 
-/// `task.list` — the same list twice, under both names, for the clients that
-/// predate the rename.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct TaskListResult {
-    pub tasks: Vec<TaskView>,
-    pub plans: Vec<TaskView>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct PlanListResult {
-    pub plans: Vec<TaskView>,
-}
-
 /// The single-document task's plan, read from the canonical store.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TaskDocResult {
     pub plan_path: String,
     pub contents: String,
-}
-
-/// The stage board of a multi-stage task, with each stage's comments.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct PlanStagesResult {
-    pub task_id: String,
-    pub plan_id: String,
-    pub stages: Vec<TaskStageRow>,
 }
 
 /// The stage board plus what the current implementation has done to it.
@@ -749,11 +408,6 @@ pub struct StageDocResult {
     pub stage_id: String,
     pub path: String,
     pub contents: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct CommentAddResult {
-    pub comment: CommentView,
 }
 
 /// The verb did what it was asked and has nothing to report back.
@@ -796,20 +450,8 @@ pub enum DismissResult {
 
 // --------------------------------------------------- task/plan: handlers ---
 
-fn task_create(app: &mut AppState, params: TaskCreateParams) -> Result<Answer<TaskView>, ApiError> {
-    answer(app.plan_create(&params.wire()))
-}
-
 fn task_get(app: &mut AppState, params: TaskDetailParams) -> Result<Answer<TaskView>, ApiError> {
     answer(app.plan_get(&params.wire()))
-}
-
-fn task_list(app: &mut AppState, _params: NoParams) -> Result<Answer<TaskListResult>, ApiError> {
-    answer(Ok(app.task_list()))
-}
-
-fn plan_list(app: &mut AppState, _params: NoParams) -> Result<Answer<PlanListResult>, ApiError> {
-    answer(Ok(app.plan_list()))
 }
 
 fn task_doc(app: &mut AppState, params: TaskRefParams) -> Result<Answer<TaskDocResult>, ApiError> {
@@ -823,123 +465,11 @@ fn task_stages(
     answer(app.task_stages(&params.wire()))
 }
 
-fn plan_stages(
-    app: &mut AppState,
-    params: TaskRefParams,
-) -> Result<Answer<PlanStagesResult>, ApiError> {
-    answer(app.plan_stages(&params.wire()))
-}
-
 fn task_stage_doc(
     app: &mut AppState,
     params: StageRefParams,
 ) -> Result<Answer<StageDocResult>, ApiError> {
     answer(app.plan_stage_doc(&params.wire()))
-}
-
-fn task_approve(
-    app: &mut AppState,
-    params: TaskMutationParams,
-) -> Result<Answer<TaskView>, ApiError> {
-    answer(app.plan_approve(&params.wire()))
-}
-
-fn task_send_notes(
-    app: &mut AppState,
-    params: SendNotesParams,
-) -> Result<Answer<TaskView>, ApiError> {
-    answer(app.plan_send_notes(&params.wire()))
-}
-
-fn task_stage_approve(
-    app: &mut AppState,
-    params: StageMutationParams,
-) -> Result<Answer<TaskView>, ApiError> {
-    answer(app.plan_stage_approve(&params.wire()))
-}
-
-fn task_stage_revise(
-    app: &mut AppState,
-    params: StageMutationParams,
-) -> Result<Answer<TaskView>, ApiError> {
-    answer(app.plan_stage_send_notes(&params.wire()))
-}
-
-fn task_message(
-    app: &mut AppState,
-    params: TaskMessageParams,
-) -> Result<Answer<TaskView>, ApiError> {
-    answer(app.plan_message(&params.wire()))
-}
-
-fn task_abandon(
-    app: &mut AppState,
-    params: TaskMutationParams,
-) -> Result<Answer<TaskView>, ApiError> {
-    answer(app.plan_abandon(&params.wire()))
-}
-
-fn task_comment_add(
-    app: &mut AppState,
-    params: CommentAddParams,
-) -> Result<Answer<CommentAddResult>, ApiError> {
-    answer(app.plan_comment_add(&params.wire()))
-}
-
-fn task_comment_delete(
-    app: &mut AppState,
-    params: CommentDeleteParams,
-) -> Result<Answer<Acknowledged>, ApiError> {
-    answer(app.plan_comment_delete(&params.wire()))
-}
-
-fn task_archive(
-    app: &mut AppState,
-    params: TaskMutationParams,
-) -> Result<Answer<TaskView>, ApiError> {
-    answer(app.plan_archive(&params.wire()))
-}
-
-fn task_delete(
-    app: &mut AppState,
-    params: TaskRefParams,
-) -> Result<Answer<Acknowledged>, ApiError> {
-    answer(app.plan_delete(&params.wire()))
-}
-
-fn task_implement_stage(
-    app: &mut AppState,
-    params: ImplementStageParams,
-) -> Result<Answer<TaskView>, ApiError> {
-    answer(app.task_implement_stage(&params.wire()))
-}
-
-fn task_implement_all(
-    app: &mut AppState,
-    params: ImplementAllParams,
-) -> Result<Answer<TaskView>, ApiError> {
-    answer(app.task_implement_all(&params.wire()))
-}
-
-fn task_set_auto_advance(
-    app: &mut AppState,
-    params: SetAutoAdvanceParams,
-) -> Result<Answer<TaskView>, ApiError> {
-    answer(app.task_set_auto_advance(&params.wire()))
-}
-
-fn task_request_changes(
-    app: &mut AppState,
-    params: RequestChangesParams,
-) -> Result<Answer<TaskView>, ApiError> {
-    answer(app.task_run_action(&params.wire(), "request_changes"))
-}
-
-fn task_git_action(
-    app: &mut AppState,
-    params: TaskGitActionParams,
-) -> Result<Answer<TaskView>, ApiError> {
-    answer(app.task_run_action(&params.wire(), "git_action"))
 }
 
 fn entity_seen(
@@ -1025,41 +555,10 @@ mod task_plan_tests {
     }
 
     fixture_tests! {
-        task_create => "task.create",
-        plan_create => "plan.create",
         task_get => "task.get",
-        plan_get => "plan.get",
-        task_list => "task.list",
-        plan_list => "plan.list",
         task_doc => "task.doc",
-        plan_doc => "plan.doc",
         task_stages => "task.stages",
-        plan_stages => "plan.stages",
         task_stage_doc => "task.stage_doc",
-        plan_stage_doc => "plan.stage_doc",
-        task_approve => "task.approve",
-        plan_approve => "plan.approve",
-        task_send_notes => "task.send_notes",
-        plan_send_notes => "plan.send_notes",
-        task_stage_approve => "task.stage_approve",
-        plan_stage_approve => "plan.stage_approve",
-        task_stage_revise => "task.stage_revise",
-        plan_stage_send_notes => "plan.stage_send_notes",
-        plan_message => "plan.message",
-        plan_abandon => "plan.abandon",
-        task_comment_add => "task.comment_add",
-        plan_comment_add => "plan.comment_add",
-        task_comment_delete => "task.comment_delete",
-        plan_comment_delete => "plan.comment_delete",
-        task_archive => "task.archive",
-        plan_archive => "plan.archive",
-        task_delete => "task.delete",
-        plan_delete => "plan.delete",
-        task_implement_stage => "task.implement_stage",
-        task_implement_all => "task.implement_all",
-        task_set_auto_advance => "task.set_auto_advance",
-        task_request_changes => "task.request_changes",
-        task_git_action => "task.git_action",
         entity_seen => "entity.seen",
         entity_mute => "entity.mute",
         entity_dismiss => "entity.dismiss",
@@ -1069,19 +568,16 @@ mod task_plan_tests {
 // ==== run/branch/worktree ==================================================
 
 //
-// The run lifecycle (`run.*`), the work item the feed and the URLs speak
-// (`branch.get` / `branch.dispatch` / `branch.finish`), and the bare checkout
-// verbs beside them (`worktree.create` / `worktree.finish`).
+// The run verbs that still act on a run (`run.*`), and the work item the
+// feed and the URLs speak (`branch.dispatch` / `branch.finish`).
 //
 // Every mutation here answers with the run view the pre-facade implementation
 // already built — [`RunView`] names its shape — except the ones that answer
 // about a checkout instead ([`WorkspaceFinishResult`],
-// [`CreatedWorktreeResult`], [`DispatchedAgentResult`])
-// and the two that only acknowledge ([`RunAck`]). `run.create`, `run.abandon`,
-// `run.delete`, `run.finish`, `branch.dispatch`, `branch.finish`,
-// `worktree.create` and `worktree.finish` hand their git to the off-lock
-// drain, so what the handler itself returns is the placeholder [`Answer`]
-// documents and the drain fills in.
+// [`DispatchedAgentResult`]). `run.abandon`, `run.adopt`, `branch.dispatch`
+// and `branch.finish` hand their git to the off-lock drain, so what the
+// handler itself returns is the placeholder [`Answer`] documents and the
+// drain fills in.
 //
 // The shared wire above is shared: [`ThreadWindowParams`],
 // [`ReviewerMessageParams`], [`AttentionView`] and [`FinishView`] are the
@@ -1110,34 +606,6 @@ pub struct RunViewParams {
     pub view: ThreadWindowParams,
 }
 
-/// A run named and nothing else asked of it: the two verbs that answer an
-/// acknowledgement rather than a view.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct RunIdParams {
-    pub run_id: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct RunCreateParams {
-    /// The Task to implement. `task_id` is the spelling the rest of the v1
-    /// surface uses and is read as an alias; what travels on to the
-    /// implementation is `plan_id`, which is still the durable identity of a
-    /// Task and what the refusal for a missing one names.
-    #[serde(alias = "task_id")]
-    pub plan_id: String,
-    /// Implement into a checkout that already exists rather than one cut for
-    /// the Task.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktree_id: Option<String>,
-    /// What the run's branch is cut from; the Task's own base when absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub base_branch: Option<String>,
-    #[serde(flatten)]
-    pub choice: RunAgentChoiceParams,
-    #[serde(flatten)]
-    pub view: ThreadWindowParams,
-}
-
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RunRequestChangesParams {
     pub run_id: String,
@@ -1149,36 +617,6 @@ pub struct RunRequestChangesParams {
     /// one of `messages` and `comments` is required.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comments: Option<String>,
-    #[serde(flatten)]
-    pub view: ThreadWindowParams,
-}
-
-/// A stage of a run named: `run.stage_send_notes`, and the base the two stage
-/// verbs that ask for more are built on.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct RunStageParams {
-    pub run_id: String,
-    pub stage_id: String,
-    #[serde(flatten)]
-    pub view: ThreadWindowParams,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct RunStageDispatchParams {
-    pub run_id: String,
-    pub stage_id: String,
-    #[serde(flatten)]
-    pub choice: RunAgentChoiceParams,
-    #[serde(flatten)]
-    pub view: ThreadWindowParams,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct RunAutoAdvanceParams {
-    pub run_id: String,
-    /// Arm ("run all") or disarm. Required: there is no default answer to
-    /// "should this keep going by itself".
-    pub enabled: bool,
     #[serde(flatten)]
     pub view: ThreadWindowParams,
 }
@@ -1225,26 +663,6 @@ pub struct RunAdoptParams {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct RunFinishParams {
-    pub run_id: String,
-    /// How the checkout is retired: `delete`, `cleanup`, `push`, or `merge`.
-    ///
-    /// Optional since the finish became the workspace's: the workspace decides
-    /// what retiring it means, and callers that still send an action are
-    /// accepted unchanged rather than refused.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub action: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct BranchGetParams {
-    pub project_id: String,
-    pub branch: String,
-    #[serde(flatten)]
-    pub view: ThreadWindowParams,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
 pub struct BranchDispatchParams {
     pub project_id: String,
     /// What the agent is being asked to do. Never empty — an empty
@@ -1276,28 +694,6 @@ pub struct BranchFinishParams {
     /// branch ends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unlink: Option<bool>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct WorktreeCreateParams {
-    pub project_id: String,
-    /// A branch that already exists, here or on a remote: Build borrows it a
-    /// directory and cuts nothing.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub branch: Option<String>,
-    /// Words to cut a new branch after. Exactly one of `branch` and `name`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct WorktreeFinishParams {
-    pub project_id: String,
-    pub worktree_id: String,
-    /// `delete`, `cleanup`, `push`, or `merge`. Optional for the same reason
-    /// [`RunFinishParams::action`] is.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub action: Option<String>,
 }
 
 // --------------------------------------- run/branch/worktree: results ---
@@ -1398,105 +794,6 @@ pub struct RunView {
     pub stages: Vec<RunStageView>,
 }
 
-/// A verb that only says it happened. `run.delete` on a planned
-/// implementation keeps the record — a Task's lineage outlives its card —
-/// and says so.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct RunAck {
-    pub ok: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub retained_as_task_lineage: Option<bool>,
-}
-
-/// What was sitting in a checkout's tree that no commit held.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct UncommittedStat {
-    pub files_changed: u64,
-    pub insertions: u64,
-    pub deletions: u64,
-}
-
-/// What a checkout carries, as the inbox counts it.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct WorkItemStatView {
-    pub files_changed: u64,
-    pub insertions: u64,
-    pub deletions: u64,
-    pub uncommitted: UncommittedStat,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ahead: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub behind: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub upstream: Option<String>,
-    /// The one ref both counts are measured against: the tracking branch, or
-    /// the project's base branch when there is none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub comparison_ref: Option<String>,
-}
-
-/// How long the agent on this row has been working.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct WorkingTimeView {
-    pub since: String,
-    /// Absent when the timestamp could not be read.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub seconds: Option<u64>,
-}
-
-/// One inbox row for a branch, with the run behind it when Build owns one:
-/// the row `board.list` renders, plus `run`.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct BranchWorkItem {
-    /// Always `branch` here.
-    pub kind: String,
-    pub project_id: String,
-    pub project: String,
-    /// Absent only for a checkout git could name no branch for.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub branch: Option<String>,
-    pub title: String,
-    /// The run's state, or `idle` for a checkout Build owns no run in.
-    pub state: String,
-    pub unread: bool,
-    pub unread_count: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub unread_reason: Option<String>,
-    pub working: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub working_time: Option<WorkingTimeView>,
-    pub agents: Vec<AgentDigest>,
-    pub stat: WorkItemStatView,
-    /// The sort key the inbox orders on; absent on a row with no record
-    /// behind it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resume_at: Option<String>,
-    /// Where this row sits in the inbox; absent for a checkout with neither a
-    /// commit nor a record to date it by.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub anchor: Option<String>,
-    /// When somebody last spoke on this work item.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_activity: Option<String>,
-    pub can_finish: bool,
-    /// What Done would cost. Warnings the client confirms through, never a
-    /// refusal.
-    pub finish: FinishView,
-    pub muted: bool,
-    pub dismissed: bool,
-    pub worktree_path: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktree_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_id: Option<String>,
-    /// The run behind the branch; absent for a bare checkout, which has no
-    /// agent to name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run: Option<Box<RunView>>,
-}
-
 /// One repository a finish tried to push, and whether it went.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct FinishedRepository {
@@ -1507,13 +804,12 @@ pub struct FinishedRepository {
     pub reason: Option<String>,
 }
 
-/// What Done answers, for every one of its spellings.
+/// What `branch.finish` answers.
 ///
-/// `run.finish`, `branch.finish` and `worktree.finish` all resolve to the
-/// workspace behind the id they were given and run the same finish
-/// (`AppState::workspace_finish_legacy`), so all three answer this: whether
-/// the whole workspace came to rest, and what became of each repository in
-/// it, and that it is gone. The old per-checkout archive record went with the
+/// It resolves the branch to the workspace behind it and runs that
+/// workspace's finish (`AppState::workspace_finish_legacy`): whether the
+/// whole workspace came to rest, what became of each repository in it, and
+/// that it is gone. The old per-checkout archive record went with the
 /// per-checkout finish that produced it.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct WorkspaceFinishResult {
@@ -1564,26 +860,6 @@ pub struct DispatchedAgentResult {
     pub agent_id: String,
 }
 
-/// A bare worktree, cut.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct CreatedWorktreeResult {
-    pub project_id: String,
-    pub worktree_id: String,
-    /// The id the placeholder row stood under while the git ran.
-    pub pending_worktree_id: String,
-    /// A new branch was cut for it, rather than an existing one borrowed.
-    pub branch_was_cut: bool,
-    pub branch: String,
-    pub name: String,
-    pub path: String,
-    /// `worktree` or `cow`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub isolation: Option<String>,
-    /// Why the isolation the project asked for could not be used.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub isolation_note: Option<String>,
-}
-
 // ------------------------------------ run/branch/worktree: refinement ---
 
 /// A refusal the run lifecycle raises that the generic classifier cannot
@@ -1617,7 +893,7 @@ fn refine(error: ApiError) -> ApiError {
 const BUSY: [&str; 2] = ["wait for that to finish", "wait for that to complete"];
 
 /// The request was legible and the state said no.
-const CONFLICT: [&str; 12] = [
+const CONFLICT: [&str; 8] = [
     // Done, refused because the work is still only in the workspace, or
     // because the checkout is not Build's to remove, or because the branch it
     // was asked to delete is still in use or holds the only copy of work.
@@ -1626,32 +902,21 @@ const CONFLICT: [&str; 12] = [
     "Build cannot remove an adopted checkout",
     "Cannot delete a workspace",
     "illegal run transition",
-    "only terminal runs",
-    "only adopted runs can be released",
-    "cannot set auto_advance on a terminal run",
     "cannot be merged",
     "cannot be finished or archived",
     "already started with action",
-    "there are no plan docs to revise",
 ];
 
 /// The thing named does not exist here, though the message does not start
 /// with the word the generic classifier looks for.
-const NOT_FOUND: [&str; 2] = [
-    "no checkout of this project is on branch",
-    // Done, given an id that resolves to no workspace.
+const NOT_FOUND: [&str; 1] = [
+    // Done, given a branch that resolves to no workspace.
     "no matching workspace",
 ];
 
 /// A word in the request is not one this bridge knows. `unknown <thing>`
 /// otherwise reads as a missing entity, which these are not.
-const INVALID: [&str; 5] = [
-    "unknown git action:",
-    "unknown agent provider:",
-    "is not a branch name",
-    "takes exactly one of",
-    "needs at least one letter or number",
-];
+const INVALID: [&str; 2] = ["unknown git action:", "unknown agent provider:"];
 
 /// The conversation a stale `conversation_id` should have named: what the
 /// agent is bound to now, so the retry has somewhere to go.
@@ -1664,40 +929,11 @@ fn bound_conversation_id(message: &str) -> Option<String> {
 
 // -------------------------------------- run/branch/worktree: handlers ---
 
-fn run_create(app: &mut AppState, params: RunCreateParams) -> Result<Answer<RunView>, ApiError> {
-    answer(app.run_create(&params.wire())).map_err(refine)
-}
-
-fn run_get(app: &mut AppState, params: RunViewParams) -> Result<Answer<RunView>, ApiError> {
-    answer(app.run_get(&params.wire())).map_err(refine)
-}
-
 fn run_request_changes(
     app: &mut AppState,
     params: RunRequestChangesParams,
 ) -> Result<Answer<RunView>, ApiError> {
     answer(app.run_request_changes(&params.wire())).map_err(refine)
-}
-
-fn run_stage_dispatch(
-    app: &mut AppState,
-    params: RunStageDispatchParams,
-) -> Result<Answer<RunView>, ApiError> {
-    answer(app.run_stage_dispatch(&params.wire())).map_err(refine)
-}
-
-fn run_stage_send_notes(
-    app: &mut AppState,
-    params: RunStageParams,
-) -> Result<Answer<RunView>, ApiError> {
-    answer(app.run_stage_send_notes(&params.wire())).map_err(refine)
-}
-
-fn run_set_auto_advance(
-    app: &mut AppState,
-    params: RunAutoAdvanceParams,
-) -> Result<Answer<RunView>, ApiError> {
-    answer(app.run_set_auto_advance(&params.wire())).map_err(refine)
 }
 
 fn run_git_action(
@@ -1715,37 +951,11 @@ fn run_abandon(app: &mut AppState, params: RunViewParams) -> Result<Answer<RunVi
     answer(app.run_abandon(&params.wire())).map_err(refine)
 }
 
-fn run_delete(app: &mut AppState, params: RunIdParams) -> Result<Answer<RunAck>, ApiError> {
-    answer(app.run_delete(&params.wire())).map_err(refine)
-}
-
 fn run_adopt(
     app: &mut AppState,
     params: RunAdoptParams,
 ) -> Result<Answer<RunAdoptResult>, ApiError> {
     answer(app.run_adopt(&params.wire())).map_err(refine)
-}
-
-fn run_release(app: &mut AppState, params: RunIdParams) -> Result<Answer<RunAck>, ApiError> {
-    answer(app.run_release(&params.wire())).map_err(refine)
-}
-
-fn run_finish(
-    app: &mut AppState,
-    params: RunFinishParams,
-) -> Result<Answer<WorkspaceFinishResult>, ApiError> {
-    answer(
-        app.workspace_finish_legacy(&params.wire())
-            .map(deferral_placeholder),
-    )
-    .map_err(refine)
-}
-
-fn branch_get(
-    app: &mut AppState,
-    params: BranchGetParams,
-) -> Result<Answer<BranchWorkItem>, ApiError> {
-    answer(app.branch_get(&params.wire())).map_err(refine)
 }
 
 fn branch_dispatch(
@@ -1766,30 +976,11 @@ fn branch_finish(
     .map_err(refine)
 }
 
-fn worktree_create(
-    app: &mut AppState,
-    params: WorktreeCreateParams,
-) -> Result<Answer<CreatedWorktreeResult>, ApiError> {
-    answer(app.worktree_create(&params.wire())).map_err(refine)
-}
-
-fn worktree_finish(
-    app: &mut AppState,
-    params: WorktreeFinishParams,
-) -> Result<Answer<WorkspaceFinishResult>, ApiError> {
-    answer(
-        app.workspace_finish_legacy(&params.wire())
-            .map(deferral_placeholder),
-    )
-    .map_err(refine)
-}
-
 // ----------------------------------------- run/branch/worktree: tests ---
 
 #[cfg(test)]
 mod run_branch_worktree_tests {
     use super::*;
-    use crate::api::v1::parse_params;
 
     fn round_trips(method: &str) {
         crate::api::v1::testing::fixture_round_trips(methods(), method);
@@ -1807,40 +998,13 @@ mod run_branch_worktree_tests {
     }
 
     run_fixture_tests! {
-        run_create => "run.create",
-        run_get => "run.get",
         run_request_changes => "run.request_changes",
-        run_stage_dispatch => "run.stage_dispatch",
-        run_stage_send_notes => "run.stage_send_notes",
-        run_set_auto_advance => "run.set_auto_advance",
         run_git_action => "run.git_action",
         run_message => "run.message",
         run_abandon => "run.abandon",
-        run_delete => "run.delete",
         run_adopt => "run.adopt",
-        run_release => "run.release",
-        run_finish => "run.finish",
-        branch_get => "branch.get",
         branch_dispatch => "branch.dispatch",
         branch_finish => "branch.finish",
-        worktree_create => "worktree.create",
-        worktree_finish => "worktree.finish",
-    }
-
-    /// A Task can be named either way, and what reaches the implementation
-    /// is the spelling it still reads.
-    #[test]
-    fn run_create_takes_a_task_under_both_names() {
-        let canonical: RunCreateParams =
-            parse_params(&serde_json::json!({ "task_id": "task-7" })).unwrap();
-        let deprecated: RunCreateParams =
-            parse_params(&serde_json::json!({ "plan_id": "task-7" })).unwrap();
-        assert_eq!(canonical.wire()["plan_id"], "task-7");
-        assert_eq!(deprecated.wire()["plan_id"], "task-7");
-        let missing = parse_params::<RunCreateParams>(&serde_json::json!({ "goal": "quick" }))
-            .expect_err("a run implements a task or nothing");
-        assert_eq!(missing.message(), "missing required param: plan_id");
-        assert_eq!(missing.code(), "invalid_params");
     }
 
     #[test]
@@ -1875,17 +1039,5 @@ mod run_branch_worktree_tests {
         assert_eq!(missing.code(), "not_found");
         let unnamed = refine(ApiError::classify("unknown git action: rebase".to_string()));
         assert_eq!(unnamed.code(), "invalid_params");
-    }
-
-    /// A branch nobody has a checkout on is a missing thing, not a broken
-    /// bridge: the message says so and the code has to agree.
-    #[test]
-    fn a_branch_with_no_checkout_is_not_found() {
-        let refused = refine(ApiError::classify(
-            "branch.get: no checkout of this project is on branch build/gone (the scan has \
-             settled)"
-                .to_string(),
-        ));
-        assert_eq!(refused.code(), "not_found");
     }
 }

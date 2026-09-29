@@ -29,13 +29,6 @@ pub fn current<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::
     String::deserialize(deserializer).map(|id| current_id(&id))
 }
 
-/// The same for a param that may be absent.
-pub fn current_optional<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<String>, D::Error> {
-    Option::<String>::deserialize(deserializer).map(|id| id.as_deref().map(current_id))
-}
-
 #[cfg(test)]
 mod tests {
     use super::current_id;

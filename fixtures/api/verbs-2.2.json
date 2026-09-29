@@ -1,6 +1,6 @@
 {
-  "api_version": "2.1.0",
-  "commit": "8f015903",
+  "api_version": "2.2.0",
+  "commit": "1e0e86a9",
   "generated_by": "scripts/api-verbs-manifest.mjs",
   "verbs": [
     "agent.add",
@@ -247,6 +247,7 @@
     "messages.context",
     "messages.fromAgent",
     "messages.taskNotices",
+    "models.installedCli",
     "models.list",
     "params.strict",
     "ping",

@@ -37,9 +37,8 @@ fn project_with_two_dirty_files(
     (state, handler, project_id)
 }
 
-/// The per-file counts every diff row carries now, on the whole-changeset
-/// read as much as the narrowed one: they are what a stack with no hunks
-/// loaded draws its `+`/`−` from, and what the review bar sums.
+/// The per-file counts every diff row carries: they are what a stack with no
+/// hunks loaded draws its `+`/`−` from, and what the review bar sums.
 #[test]
 fn a_diff_row_says_what_its_file_weighs() {
     let (dir, repo) = init_repo();
@@ -47,8 +46,8 @@ fn a_diff_row_says_what_its_file_weighs() {
 
     let diff = call(
         &handler,
-        "project.diff",
-        json!({ "project_id": project_id }),
+        "git.changeset_diff",
+        json!({ "project_id": project_id, "paths": ["small.txt", "large.txt"] }),
     );
 
     assert_eq!(diff["ok"], true, "{diff:?}");
@@ -330,10 +329,6 @@ fn every_diff_read_survives_having_its_patch_left_off() {
     };
 
     for (method, params) in [
-        (
-            "project.diff",
-            json!({ "project_id": project_id, "patch": false }),
-        ),
         (
             "worktree.diff",
             json!({ "project_id": project_id, "worktree_id": worktree_id, "patch": false }),

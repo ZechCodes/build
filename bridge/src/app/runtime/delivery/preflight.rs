@@ -13,12 +13,6 @@ use std::sync::{Arc, Mutex};
 
 pub(in crate::app) use crate::orchestrator::NEW_THREAD_MESSAGES_PROMPT;
 
-/// What a read has to tell the agent about the indicator it just started.
-/// Reading stamps `seen_at`, which is what the reviewer sees as "Working" with
-/// a running timer; posting a reply (`still_working` omitted or false) hands the
-/// turn back and stops it.
-pub(in crate::app) const WORKING_INDICATOR_NOTICE: &str = "Receiving these messages started the reviewer's \"Working\" indicator and its timer on the newest message. It runs until you call post_thread_message: status=Working keeps it running, while Waiting hands the turn back and Complete or Blocked records the final outcome. The user sees only messages sent with that tool. Do not leave the indicator running after you have finished.";
-
 /// Mint the `Compaction` row for a command said to a terminal session, which
 /// has no event stream of its own to report the compaction's start.
 pub(super) fn record_command_activity(

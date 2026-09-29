@@ -879,7 +879,7 @@ function menuHtml(entry, open) {
   const items = [];
   if (entry.canFinish) {
     items.push(menuItemHtml(`data-done="${esc(entry.key)}"`, "Done",
-      entry.kind === "task" ? "File the task away" : "Delete the branch and its checkout"));
+      "Delete the branch and its checkout"));
   }
   items.push(menuItemHtml(`data-dismiss="${esc(entry.key)}"`, "Clear from inbox", "Moves it to Recent until a new message"));
   if (entry.entityId) {
@@ -1250,15 +1250,3 @@ const branchKeptWords = (name, machine) => ({
   taskReturned: "Return the task it implements to the inbox",
   confirmLabel: "Remove",
 });
-
-/** Done on a task: it goes to the archive, where it can be read again. */
-export function taskDoneConfirm(entry) {
-  return {
-    title: "Done with this task?",
-    intro: "The task is filed away, and can be read again from the archive.",
-    warnings: entry.warnings || [],
-    actions: ["Move the task and its stage plans to the archive", "Take it off the inbox"],
-    confirmLabel: "Done",
-    danger: false,
-  };
-}

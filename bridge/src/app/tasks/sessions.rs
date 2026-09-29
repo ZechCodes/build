@@ -1,39 +1,16 @@
 use crate::app::WorktreeLifecycleJob;
 use crate::app::{
-    append_plan_stage_announcements, attach_plan_operation_turn, err, model_choice_from,
-    record_report_in_thread, require_str, thread_detail, with_post_receipt, AppState,
-    PendingAgentTurn, PlanSessionOpening,
+    append_plan_stage_announcements, attach_plan_operation_turn, err, record_report_in_thread,
+    with_post_receipt, AppState, PendingAgentTurn, PlanSessionOpening,
 };
 use crate::lifecycle::{OpenPlanWorkspace, PendingRow};
 use crate::mcp::{DoneReport, DoneStatus};
-use crate::models::ModelChoice;
 use crate::operation::OperationReceipt;
 use crate::orchestrator::{ActivePlan, AgentTurn};
-use crate::plan::{PlanId, StageDoc};
+use crate::plan::StageDoc;
 use crate::store::now_rfc3339;
 use crate::thread::ThreadDetail;
 use serde_json::Value;
-
-/// `plan.create` asked: the Task's record, its first turn, and the view the
-/// caller wanted.
-pub(in crate::app) struct TaskOpened {
-    pub(in crate::app) project_id: String,
-    pub(in crate::app) plan_id: String,
-    pub(in crate::app) goal: String,
-    pub(in crate::app) base_branch: String,
-    pub(in crate::app) model_choice: ModelChoice,
-    pub(in crate::app) detail: ThreadDetail,
-}
-
-impl PlanSessionOpening for TaskOpened {
-    fn open(
-        self: Box<Self>,
-        state: &mut AppState,
-        workspace: crate::orchestrator::PlanWorkspace,
-    ) -> Result<Value, String> {
-        state.open_planned_task(*self, workspace)
-    }
-}
 
 /// The first message to an inert Task asked: the session it never had, and the
 /// Task's own view — with the sequence the message landed at, which is what
@@ -82,96 +59,6 @@ impl PlanSessionOpening for PlanDraftingStarted {
 impl AppState {
     // ---- Plan surface ---------------------------------------------------------
 
-    /// Author a new plan: open a planning workspace (the primary checkout plus
-    /// a scratch docs dir) and a plan agent session (the docs land canonically
-    /// in the store on `done`).
-    ///
-    /// `dispatch: false` files the record and starts nothing — an inert task,
-    /// which is what the router and the toolbar's New task create. The first
-    /// `thread.post` to it starts the planning session.
-    pub(crate) fn plan_create(&mut self, params: &Value) -> Result<Value, String> {
-        let goal = require_str(params, "goal")?;
-        let project_id = match params.get("project_id").and_then(Value::as_str) {
-            Some(p) => p.to_string(),
-            None => self.default_project()?,
-        };
-        let base = self.base_for(&project_id)?;
-        let model_choice = model_choice_from(params, self.default_harness)?;
-        self.require_store()?;
-        let plan_id = format!("plan-{}", uuid::Uuid::new_v4());
-        if !params
-            .get("dispatch")
-            .and_then(Value::as_bool)
-            .unwrap_or(true)
-        {
-            let active = self.orch_for(&project_id)?.create_plan(
-                PlanId::new(&plan_id),
-                goal,
-                &base,
-                model_choice,
-            );
-            self.projects
-                .bind_entity(plan_id.clone(), project_id.clone());
-            let (view, persisted) =
-                self.answer_plan_mutation(plan_id, active, thread_detail(params));
-            persisted?;
-            return Ok(view);
-        }
-        let job = self.reserve_plan_workspace(
-            &plan_id,
-            project_id.clone(),
-            goal.clone(),
-            Box::new(TaskOpened {
-                project_id,
-                plan_id: plan_id.clone(),
-                goal,
-                base_branch: base,
-                model_choice,
-                detail: thread_detail(params),
-            }),
-        )?;
-        Ok(self.defer_job(job))
-    }
-
-    /// `plan.create`'s apply half: the Task's record, its first turn, and the
-    /// view the caller asked for. The workspace its agent works in is on disk
-    /// by now, which is why nothing here can fail on a directory.
-    ///
-    /// What a failure here leaves is the workspace: a scratch docs dir for a
-    /// Task that never opened, and the `.build/` config the next plan this
-    /// project drafts overwrites. Removing either is filesystem work, which an
-    /// epilogue may not do; neither is a checkout or a branch, so no board is
-    /// missing anything.
-    pub(in crate::app) fn open_planned_task(
-        &mut self,
-        opened: TaskOpened,
-        workspace: crate::orchestrator::PlanWorkspace,
-    ) -> Result<Value, String> {
-        let TaskOpened {
-            project_id,
-            plan_id,
-            goal,
-            base_branch,
-            model_choice,
-            detail,
-        } = opened;
-        let project = self.orch_for(&project_id)?.clone();
-        let mut active =
-            project.create_plan(PlanId::new(&plan_id), goal, &base_branch, model_choice);
-        let turn = project
-            .open_plan_drafting(&mut active, workspace)
-            .map_err(err)?;
-        self.projects
-            .bind_entity(plan_id.clone(), project_id.clone());
-        self.queue_plan_turn(&plan_id, &active, turn);
-        if self.qa_agent {
-            self.qa_simulate_plan(&project_id, &mut active)?;
-        }
-        let (view, persisted) = self.answer_plan_mutation(plan_id, active, detail);
-        persisted?;
-        Ok(view)
-    }
-
     /// Reserve the workspace an inert Task's first planning session needs.
     ///
     /// `Ok(None)` is "there is nothing to start": the session is already
@@ -214,9 +101,8 @@ impl AppState {
     /// it holds is the one workspace every door writes into, so a second door
     /// waits rather than racing this one's `.build/` config.
     ///
-    /// The project comes from the caller: a Task being created is not in
-    /// `entity_project` until its epilogue runs, and `plan.create` reserves
-    /// through here like every other door.
+    /// The project comes from the caller rather than `entity_project`, like
+    /// every other door.
     pub(in crate::app) fn reserve_plan_workspace(
         &mut self,
         task_id: &str,

@@ -4,9 +4,8 @@
 // against a live app + relay + bridge (deploy/compose.real.yml): the greeting's
 // version and capabilities, `bridge.stats`' client census and priority queues,
 // `changes.subscribe` in both cadences, the `changes` push a real filesystem
-// write produces, the envelope's `"priority": "background"`, the structured
-// error codes, and the legacy `board.changed` / `entity.changed` session that
-// must never see a `changes` frame.
+// write produces, the envelope's `"priority": "background"` and the structured
+// error codes.
 //
 // It rides the same wire the SPA does: the relay socket is a rendezvous that
 // mints this device's session and carries the peer negotiation, and it is shut
@@ -37,7 +36,7 @@ const preferDeviceId = process.env.PREFER_DEVICE_ID || null;
 const bridgeExec = (process.env.BRIDGE_EXEC ||
   "docker compose -f ../deploy/compose.real.yml exec -T bridge").split(/\s+/);
 const bridgeFile = process.env.BRIDGE_FILE || "/repo/README.md";
-const API_RANGE = ">=1.0.0 <2.0.0";
+const API_RANGE = ">=2.0.0 <4.0.0";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const show = (value) => JSON.stringify(value);
@@ -114,9 +113,14 @@ async function writeIntoSampleRepo(marker) {
 // ---------------------------------------------------------------- checks ---
 
 async function greetingAndProbe(s) {
+  // The one greeting: subscriptions is the only mode a bridge serves.
   const hello = await s.call("session.hello", {
     client: { name: "wire-check", version: "0", api_range: API_RANGE },
+    changes: "subscriptions",
   });
+  if (hello.changes?.mode !== "subscriptions") {
+    throw new Error(`session.hello did not answer in subscriptions mode: ${show(hello.changes)}`);
+  }
   check(
     "a",
     'session.hello reports 1.1.0, push_events and the changes capability',
@@ -236,34 +240,6 @@ async function unsubscribed(s) {
   check("h", "no changes frame arrives within 3s of unsubscribing", seen.length === 0, `saw ${show(seen)}`);
 }
 
-async function legacy(login, projectId) {
-  const s = await session(login);
-  const hello = await s.call("session.hello", {
-    client: { name: "wire-check-legacy", version: "0", api_range: API_RANGE },
-  });
-  const from = Date.now();
-  await s.call("workspace.create", {
-    project_id: projectId,
-    name: `wire-check-legacy-${Date.now()}`,
-    isolation: "worktree",
-  });
-  const legacyEvents = await waitFor(() => {
-    const seen = s.pushes
-      .filter(({ at, push }) => at >= from && ["board.changed", "entity.changed"].includes(push.type))
-      .map(({ push }) => push);
-    return seen.length ? seen : null;
-  }, 5000);
-  await sleep(1000);
-  const changeFrames = changesSince(s.pushes, from);
-  check(
-    "i",
-    "a legacy session gets board.changed / entity.changed and never a changes frame",
-    !!legacyEvents && changeFrames.length === 0 && hello.changes?.mode === "legacy",
-    `greeting.changes.mode=${hello.changes?.mode} legacy=${show(legacyEvents)} changes=${show(changeFrames)}`,
-  );
-  s.close();
-}
-
 // ------------------------------------------------------------------ main ---
 
 async function main() {
@@ -280,23 +256,12 @@ async function main() {
   if (!project) throw new Error("no project on the bridge — is BRIDGE_REPO adopted?");
   console.log(`\n  sample repo entity: ${project.project_id} (${project.path})\n`);
 
-  // The greeting that switches this session off the legacy events.
-  const greeting = await s.call("session.hello", {
-    client: { name: "wire-check", version: "0", api_range: API_RANGE },
-    changes: "subscriptions",
-  });
-  if (greeting.changes?.mode !== "subscriptions") {
-    throw new Error(`session.hello did not switch to subscriptions: ${show(greeting.changes)}`);
-  }
-
   await subscribe(s, project.project_id);
   await pushes(s, project.project_id);
   await backgroundPriority(s, project.project_id);
   await errors(s);
   await unsubscribed(s);
   s.close();
-
-  await legacy(login, project.project_id);
 
   const failed = results.filter((result) => !result.ok);
   console.log(`\n${results.length - failed.length}/${results.length} wire checks passed`);

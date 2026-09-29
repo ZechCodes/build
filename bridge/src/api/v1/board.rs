@@ -1,4 +1,4 @@
-//! The board family: the feed and the archive (`board.list`, `archive.list`,
+//! The board family: the feed and the archive (`board.list`,
 //! `archived.list`), the project surface (`project.*` less the diff reads the
 //! git family owns), the capture surface (`capture.*`), and what the Account
 //! page reads and writes (`settings.*`, `models.list`), and the user
@@ -11,12 +11,11 @@
 //! off-lock drain, so what those handlers return is the placeholder
 //! [`Answer`] documents; everything else here answers inline.
 //!
-//! Rows that belong to another family's entity — a task view, a run view, a
-//! feed item — are carried here as [`TaskRow`], [`RunRow`] and
-//! [`FeedItemRow`]: the keys the board itself is read by are named and typed,
-//! and the rest of the entity's shape rides in `rest` rather than being
-//! restated (and left to drift) in a second place. `task.get` and `run.get`
-//! are where those shapes are stated whole.
+//! Rows that belong to another family's entity — a run view, a feed item —
+//! are carried here as [`RunRow`] and [`FeedItemRow`]: the keys the board
+//! itself is read by are named and typed, and the rest of the entity's shape
+//! rides in `rest` rather than being restated (and left to drift) in a second
+//! place.
 
 use super::lifecycle::RunAgentChoiceParams;
 use super::{answer, Answer, Handler, NoParams, WireParams};
@@ -31,12 +30,6 @@ use std::collections::BTreeMap;
 pub fn methods() -> &'static [(&'static str, Handler)] {
     v1_methods![
         v1_method!("board.list", board_list, NoParams, BoardListResult),
-        v1_method!(
-            "archive.list",
-            archive_list,
-            ProjectParams,
-            ArchiveListResult
-        ),
         v1_method!("archived.list", archived_list, NoParams, ArchivedListResult),
         v1_method!(
             "project.delete",
@@ -45,17 +38,10 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             ProjectDeleteResult
         ),
         v1_method!("project.list", project_list, NoParams, ProjectListResult),
-        v1_method!("project.add", project_add, ProjectAddParams, ProjectRow),
         v1_method!(
             "project.create",
             project_create,
             ProjectCreateParams,
-            ProjectRow
-        ),
-        v1_method!(
-            "project.clone",
-            project_clone,
-            ProjectCloneParams,
             ProjectRow
         ),
         v1_method!(
@@ -100,7 +86,6 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             CaptureCreateParams,
             Capture
         ),
-        v1_method!("capture.list", capture_list, NoParams, CaptureListResult),
         v1_method!("capture.get", capture_get, CaptureParams, Capture),
         v1_method!(
             "capture.answer",
@@ -155,8 +140,7 @@ pub struct ProjectDeleteResult {
     pub deleted: bool,
 }
 
-/// A verb that names one project and nothing else: `archive.list`,
-/// `project.init_git`.
+/// A verb that names one project and nothing else: `project.init_git`.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ProjectParams {
     pub project_id: String,
@@ -191,29 +175,6 @@ pub struct ProjectSourceParams {
     pub base_branch: Option<String>,
 }
 
-/// Register a project over what is already on the device.
-///
-/// Two forms. `path` alone is the original one-repository project. `sources`
-/// is the multi-source form: one project over several directories, which the
-/// implementation takes instead of `path` when it is present — which is why
-/// `path` is optional HERE and required THERE. Sending neither is refused by
-/// the implementation with the `missing required param: path` it always sent.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct ProjectAddParams {
-    /// A host path, absolute or `~`-relative; it must already be a git repo.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-    /// The repository's own checked-out branch when absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub base_branch: Option<String>,
-    /// The multi-source form. Takes precedence over `path`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sources: Option<Vec<ProjectSourceParams>>,
-    /// Names the multi-source project; the first source's name when absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-}
-
 /// Make a project's repository, or open one over several directories the way
 /// [`ProjectAddParams`] describes. `sources`, when present, is what is used
 /// and the rest of these are ignored.
@@ -233,18 +194,6 @@ pub struct ProjectCreateParams {
     /// Wired as `origin` at creation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct ProjectCloneParams {
-    pub url: String,
-    /// The folder to clone into, under the projects folder; derived from the
-    /// URL's last segment when absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    /// The clone's own checked-out branch when absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub base_branch: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -596,29 +545,9 @@ pub struct BoardProjectRow {
     pub is_git: bool,
 }
 
-/// The keys of an entity view that the board is read by, over the rest of the
-/// shape `task.get` / `run.get` / `branch.get` state whole.
+/// The keys of an entity view that the board is read by, over the rest of its
+/// shape.
 pub type OtherKeys = BTreeMap<String, serde_json::Value>;
-
-/// One task on the board (`board.list`'s `tasks` and `plans`, and
-/// `archive.list`'s `plans`).
-#[derive(Debug, Deserialize, Serialize)]
-pub struct TaskRow {
-    pub task_id: String,
-    /// The same id under the name the pre-redesign SPA reads.
-    pub plan_id: String,
-    pub goal: String,
-    pub state: String,
-    pub project_id: String,
-    pub project: String,
-    pub muted: bool,
-    pub dismissed: bool,
-    pub unread: bool,
-    /// The same fact as `unread`, under the name the SPA already reads.
-    pub needs_attention: bool,
-    #[serde(flatten)]
-    pub rest: OtherKeys,
-}
 
 /// One run on the board.
 #[derive(Debug, Deserialize, Serialize)]
@@ -833,38 +762,6 @@ pub struct WorkSummaryView {
     pub clean: bool,
 }
 
-/// The line census an archived checkout was carrying when it went.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct UncommittedStat {
-    pub files_changed: u64,
-    pub insertions: u64,
-    pub deletions: u64,
-}
-
-/// One archived checkout of a project, as the record kept of it reads.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct ArchivedWorktreeRow {
-    pub worktree_id: String,
-    pub name: String,
-    pub path: String,
-    pub branch: Option<String>,
-    pub head_sha: String,
-    pub upstream: Option<String>,
-    pub unpushed: Option<u64>,
-    pub dirty_files: u64,
-    pub uncommitted: UncommittedStat,
-    /// `merged`, `pushed`, `discarded` — how the branch was finished.
-    pub action: String,
-    pub archived_at: Option<String>,
-}
-
-/// One project's archive, grouped by kind.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct ArchiveListResult {
-    pub plans: Vec<TaskRow>,
-    pub worktrees: Vec<ArchivedWorktreeRow>,
-}
-
 /// One finished thing, in the one shape the archive lists every kind of
 /// finished thing in: the keys another kind fills are `null` here.
 #[derive(Debug, Deserialize, Serialize)]
@@ -895,11 +792,6 @@ pub struct ArchivedItem {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ArchivedListResult {
     pub items: Vec<ArchivedItem>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct CaptureListResult {
-    pub captures: Vec<Capture>,
 }
 
 /// What a cancelled capture leaves behind: the id, and that it is gone.
@@ -1126,13 +1018,6 @@ fn board_list(app: &mut AppState, _params: NoParams) -> Result<Answer<BoardListR
     answer(Ok(app.board_list()))
 }
 
-fn archive_list(
-    app: &mut AppState,
-    params: ProjectParams,
-) -> Result<Answer<ArchiveListResult>, ApiError> {
-    answer(app.archive_list(&params.wire())).map_err(refine)
-}
-
 fn archived_list(
     app: &mut AppState,
     _params: NoParams,
@@ -1147,25 +1032,11 @@ fn project_list(
     answer(Ok(app.defer_project_list()))
 }
 
-fn project_add(
-    app: &mut AppState,
-    params: ProjectAddParams,
-) -> Result<Answer<ProjectRow>, ApiError> {
-    answer(app.project_add(&params.wire())).map_err(refine)
-}
-
 fn project_create(
     app: &mut AppState,
     params: ProjectCreateParams,
 ) -> Result<Answer<ProjectRow>, ApiError> {
     answer(app.project_create(&params.wire())).map_err(refine)
-}
-
-fn project_clone(
-    app: &mut AppState,
-    params: ProjectCloneParams,
-) -> Result<Answer<ProjectRow>, ApiError> {
-    answer(app.project_clone(&params.wire())).map_err(refine)
 }
 
 fn project_init_git(
@@ -1224,13 +1095,6 @@ fn capture_create(
     params: CaptureCreateParams,
 ) -> Result<Answer<Capture>, ApiError> {
     answer(app.capture_create(&params.wire())).map_err(refine)
-}
-
-fn capture_list(
-    app: &mut AppState,
-    _params: NoParams,
-) -> Result<Answer<CaptureListResult>, ApiError> {
-    answer(Ok(app.capture_list()))
 }
 
 fn capture_get(app: &mut AppState, params: CaptureParams) -> Result<Answer<Capture>, ApiError> {
@@ -1294,11 +1158,6 @@ mod tests {
     }
 
     #[test]
-    fn the_archive_list_fixture_round_trips() {
-        round_trips("archive.list");
-    }
-
-    #[test]
     fn the_archived_list_fixture_round_trips() {
         round_trips("archived.list");
     }
@@ -1309,18 +1168,8 @@ mod tests {
     }
 
     #[test]
-    fn the_project_add_fixture_round_trips() {
-        round_trips("project.add");
-    }
-
-    #[test]
     fn the_project_create_fixture_round_trips() {
         round_trips("project.create");
-    }
-
-    #[test]
-    fn the_project_clone_fixture_round_trips() {
-        round_trips("project.clone");
     }
 
     #[test]
@@ -1361,11 +1210,6 @@ mod tests {
     #[test]
     fn the_capture_create_fixture_round_trips() {
         round_trips("capture.create");
-    }
-
-    #[test]
-    fn the_capture_list_fixture_round_trips() {
-        round_trips("capture.list");
     }
 
     #[test]

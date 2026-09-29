@@ -124,18 +124,6 @@ impl PendingRow {
             ..self
         }
     }
-
-    /// The Task this verb is opening an implementation of. A Task has one
-    /// active writer, and the run that will be it is not in the run map until
-    /// the git has landed — so the row is the gate for the length of that git,
-    /// and a second implementation of the same Task is refused while it
-    /// stands.
-    pub fn implementing(self, task_id: String) -> PendingRow {
-        PendingRow {
-            implements: Some(task_id),
-            ..self
-        }
-    }
 }
 
 /// What is happening to the row. Rendered, never branched on.

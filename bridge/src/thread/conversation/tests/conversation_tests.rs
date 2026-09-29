@@ -323,7 +323,7 @@ fn managed_message_delivery_status_is_scoped_and_seen_is_terminal() {
         sent,
         "an equal status does not bump"
     );
-    thread.read_operation_messages("op-1", 1, 1, "2026-07-24T12:02:00Z");
+    thread.read_native_operation_messages("op-1", 1, 1, "2026-07-24T12:02:00Z");
     thread.set_operation_delivery_status("op-1", 1, 1, MessageDeliveryStatus::Queued);
 
     let messages: Vec<_> = thread

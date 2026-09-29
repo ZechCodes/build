@@ -64,7 +64,12 @@ import { srcJsFiles, srcSourceOf } from "./treeFiles.js";
 // two counts above and this one are the cache-first branch, and land beside
 // the four that review prioritization took with it below.
 // 48 after the cache-first Git split retired another ratcheted function.
-const RATCHETED_FUNCTIONS = 48;
+// 40 since the legacy plan page is read-only (#207): the assignment overlay,
+// the gate in the stage list, the implement params and summary, and the stage
+// actions went with the verbs the bridge refuses, the page's mount and render
+// lost the branches that wired them, and a doc comment card names its anchor
+// through a helper.
+const RATCHETED_FUNCTIONS = 40;
 
 const DISABLE = "eslint-disable-next-line complexity";
 // A block or file-level disable would switch the rule off for everything

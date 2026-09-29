@@ -302,13 +302,6 @@
       ]
     },
     {
-      "type": "board.changed"
-    },
-    {
-      "type": "entity.changed",
-      "id": "run-7"
-    },
-    {
       "type": "bridge.update_status",
       "running_version": "0.2.0",
       "platform": "linux-x86_64",

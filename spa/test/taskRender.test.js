@@ -5,14 +5,11 @@ import {
   stageRowHtml,
   stageListHtml,
   lineageHtml,
-  assignmentHtml,
-  assignmentPanelHtml,
   stageViewerHtml,
   stageNavHtml,
   docCommentCardHtml,
   docMarkerParts,
 } from "../src/core/taskRender.js";
-import { implementParams } from "../src/core/taskModel.js";
 
 const task = (overrides = {}) => ({
   task_id: "task-1",
@@ -27,10 +24,6 @@ const task = (overrides = {}) => ({
 const stagesData = (stages) => ({ stages });
 
 const stage = (overrides = {}) => ({ id: "s1", title: "Wire", state: "planned", ...overrides });
-
-const assignment = { worktree: "new", agent: "new", base: "", provider: "claude", model: "", effort: "" };
-
-const catalog = { providers: [{ id: "claude", label: "Claude Code", models: [], efforts: ["high"] }] };
 
 describe("stageRowHtml", () => {
   it("numbers the stage, states where it is, and carries its open-comment count", () => {
@@ -57,7 +50,6 @@ describe("stageListHtml", () => {
       task: task(),
       stagesData: stagesData([stage(), stage({ id: "s2", title: "Render" })]),
       selectedStageId: "s1",
-      assignment,
     });
     expect(html).toContain("READY TO REVIEW");
     expect(html).toContain("Build");
@@ -73,36 +65,25 @@ describe("stageListHtml", () => {
       task: task(),
       stagesData: stagesData([stage()]),
       selectedStageId: "s1",
-      assignment,
     });
     expect(html).not.toContain("Rebuild the task view");
     expect(html).not.toContain("ivtitle");
   });
 
-  it("offers approve-all only while every stage is still planned", () => {
-    const planned = stageListHtml({ task: task(), stagesData: stagesData([stage(), stage({ id: "s2" })]), assignment });
-    expect(planned).toContain('id="approveall"');
-    const mixed = stageListHtml({
-      task: task(),
-      stagesData: stagesData([stage(), stage({ id: "s2", state: "approved" })]),
-      assignment,
-    });
-    expect(mixed).not.toContain('id="approveall"');
-  });
-
-  it("offers the task gate at plan_review and the dispatch once the task is ready", () => {
-    const review = stageListHtml({ task: task({ state: "plan_review" }), stagesData: stagesData([stage()]), assignment });
-    expect(review).toContain('id="approvetask"');
-    const ready = stageListHtml({
-      task: task({ state: "approved", stages: [{ id: "s1", state: "approved" }] }),
-      stagesData: stagesData([stage({ state: "approved" })]),
-      assignment,
-    });
-    expect(ready).toContain('id="implementall"');
+  // Plans are history, and the bridge refuses every verb that would move one:
+  // the head says where the plan stands and offers nothing to do about it.
+  it("offers no gate, dispatch, delete or assignment in any state", () => {
+    for (const state of ["plan_review", "approved", "abandoned"]) {
+      const html = stageListHtml({ task: task({ state }), stagesData: stagesData([stage(), stage({ id: "s2" })]) });
+      for (const id of ["approveall", "approvetask", "implementall", "taskdelete", "assigntoggle"]) {
+        expect(html).not.toContain(`id="${id}"`);
+      }
+      expect(html).not.toContain("ivassign");
+    }
   });
 
   it("says so rather than showing an empty list when there are no stages yet", () => {
-    const html = stageListHtml({ task: task({ state: "drafting" }), stagesData: stagesData([]), assignment });
+    const html = stageListHtml({ task: task({ state: "drafting" }), stagesData: stagesData([]) });
     expect(html).toContain("No stages yet");
   });
 });
@@ -121,102 +102,6 @@ describe("lineageHtml", () => {
   it("renders nothing at all for a task nobody has implemented", () => {
     expect(lineageHtml([])).toBe("");
     expect(lineageHtml(undefined)).toBe("");
-  });
-});
-
-describe("assignmentHtml", () => {
-  it("says the handoff in one line and nothing else", () => {
-    const html = assignmentHtml({ assignment, open: false });
-    expect(html).toContain("New worktree · New agent · claude");
-    expect(html).not.toContain("<select");
-  });
-
-  it("stays that one line while the overlay it opens is open", () => {
-    // The rail is a list of stages: the fields live in the overlay, so the row
-    // only ever marks itself as the thing standing open.
-    const html = assignmentHtml({ assignment, open: true });
-    expect(html).not.toContain("<select");
-    expect(html).not.toContain("<input");
-    expect(html).toContain('aria-expanded="true"');
-    expect(html).toContain('aria-haspopup="dialog"');
-  });
-});
-
-describe("assignmentPanelHtml", () => {
-  it("opens onto both targets, offering an existing agent only to say why it cannot be used", () => {
-    const html = assignmentPanelHtml({ assignment, catalog });
-    expect(html).toContain('value="existing"');
-    expect(html).toContain("disabled");
-    expect(html).toMatch(/fresh agent/i);
-  });
-
-  it("offers a way out that is not a choice", () => {
-    expect(assignmentPanelHtml({ assignment, catalog })).toContain("data-assign-close");
-  });
-
-  it("carries the base-branch and model choice the dispatch would use", () => {
-    const html = assignmentPanelHtml({ assignment: { ...assignment, base: "release" }, catalog });
-    expect(html).toContain('value="release"');
-    expect(html).toContain("Claude Code");
-  });
-
-  it("swaps the base branch for a branch picker once an existing checkout is the target", () => {
-    const html = assignmentPanelHtml({
-      assignment: { ...assignment, worktree: "existing", worktreeId: "wt-1" },
-      catalog,
-      worktrees: [
-        { id: "wt-1", label: "feature-x" },
-        { id: "wt-2", label: "feature-y" },
-      ],
-    });
-    expect(html).toContain('id="assignworktreeid"');
-    expect(html).not.toContain('id="assignbase"');
-    expect(html).toContain('value="wt-1" selected');
-    expect(html).toContain("feature-y");
-  });
-});
-
-// The panel paints an offer of two agents, and the dispatch it sits above has
-// to send the one it painted: a select saying "Claude Code" that creates a TUI
-// agent is the mismatch this pair exists to catch.
-describe("the assignment's agent select and the dispatch under it", () => {
-  const fourHarnesses = {
-    default_provider: "claude_adk",
-    providers: [
-      {
-        id: "claude_adk",
-        label: "Claude Code",
-        models: [{ id: "opus", label: "Opus", supports_effort: true }],
-        efforts: ["high"],
-      },
-      { id: "claude", label: "Claude Code TUI", models: [], efforts: [] },
-      { id: "codex_app_server", label: "Codex", models: [], efforts: [] },
-      { id: "codex", label: "Codex TUI", models: [], efforts: [] },
-    ],
-  };
-  const stale = { ...assignment, provider: "claude", model: "opus", effort: "high" };
-
-  it("offers the two agents, painting a stale carrier as the one it clamps to", () => {
-    const html = assignmentPanelHtml({ assignment: stale, catalog: fourHarnesses });
-    expect(html).toContain('<option value="claude_adk" selected>Claude Code</option>');
-    expect(html).toContain('<option value="codex">Codex</option>');
-    expect(html).not.toContain("Claude Code TUI");
-  });
-
-  it("dispatches the agent the select painted, not the stale token behind it", () => {
-    expect(implementParams("task-1", stale, { catalog: fourHarnesses })).toEqual({
-      task_id: "task-1",
-      provider: "claude_adk",
-      model: "opus",
-      effort: "high",
-    });
-  });
-
-  it("dispatches an untouched assignment with the agent the select displays", () => {
-    expect(implementParams("task-1", { ...assignment, provider: "" }, { catalog: fourHarnesses })).toEqual({
-      task_id: "task-1",
-      provider: "claude_adk",
-    });
   });
 });
 
@@ -339,7 +224,10 @@ describe("docCommentCardHtml", () => {
   it("is addressed by the id of the message it IS", () => {
     const html = docCommentCardHtml(comment({ anchor: { heading_path: ["Plan"], snippet: "x", line_start: 4, line_end: 6 } }));
     expect(html).toContain('data-id="message-7"');
-    expect(html).toContain('data-del="message-7"');
+  });
+
+  it("offers no withdraw on an open comment: the page is a record", () => {
+    expect(docCommentCardHtml(comment({ anchor: null }))).not.toContain("cc-x");
   });
 
   it("says where it points: the heading chain and the lines it was written on", () => {
@@ -352,10 +240,9 @@ describe("docCommentCardHtml", () => {
     expect(html).toContain("docs/stage-1.md:3");
   });
 
-  it("calls an unanchored comment general, and offers no withdraw once addressed", () => {
+  it("calls an unanchored comment general, and carries the agent's reply once addressed", () => {
     const html = docCommentCardHtml(comment({ state: "addressed", agent_reply: "done", anchor: null }));
     expect(html).toContain("(general)");
     expect(html).toContain("cc-reply");
-    expect(html).not.toContain("cc-x");
   });
 });

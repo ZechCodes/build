@@ -20,7 +20,7 @@ pub(super) fn rooted(state_root: &Path) -> AppState {
 }
 
 pub(super) fn added_project(state: &mut AppState, repo: &Path) -> String {
-    let project = state.handle(req("project.add", json!({ "path": repo })));
+    let project = state.handle(req("project.create", open_folder(json!({ "path": repo }))));
     assert_eq!(project["ok"], true, "{project:?}");
     project["result"]["project_id"]
         .as_str()
@@ -1104,7 +1104,7 @@ fn a_project_agent_can_explicitly_watch_a_new_workspace_agent() {
             serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(added["agent"]["watched"], watched, "{added:?}");
         let entity_id = added["entity_id"].as_str().unwrap();
-        let detail = state.handle(req("run.get", json!({ "run_id": entity_id })));
+        let detail = run_detail(&mut state, json!({ "run_id": entity_id }));
         assert_eq!(
             detail["result"]["agents"][0]["watched"], watched,
             "{detail:?}"

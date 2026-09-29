@@ -751,49 +751,22 @@ impl AppState {
             .unwrap_or_default()
     }
 
-    /// Compatibility entry for the old finish routes. It resolves their
-    /// branch/run/worktree identity to the adopted single-directory workspace
-    /// and then uses the same non-destructive push completion flow.
+    /// `branch.finish`: resolve the branch to the workspace whose directory
+    /// is on it and run that workspace's non-destructive push completion.
     ///
-    /// `branch.finish` with `action: "delete"` also deletes the local branch
-    /// it resolved the workspace by (`branch_delete`); any other action, or
-    /// none, keeps it.
+    /// With `action: "delete"` it also deletes the local branch it resolved
+    /// the workspace by (`branch_delete`); any other action, or none, keeps
+    /// it.
     pub(crate) fn workspace_finish_legacy(&mut self, params: &Value) -> Result<Value, String> {
         self.adopt_legacy_workspaces();
-        if params.get("workspace_id").is_some() {
-            return self.workspace_finish(params);
-        }
-        let direct = params
-            .get("run_id")
-            .or_else(|| params.get("worktree_id"))
-            .and_then(Value::as_str);
         let branch = params.get("branch").and_then(Value::as_str);
         let project_id = params.get("project_id").and_then(Value::as_str);
-        let owned_root = direct.and_then(|run_id| {
-            self.runs.get(run_id).map(|run| {
-                (
-                    self.projects
-                        .project_id_of(run_id)
-                        .unwrap_or_default()
-                        .to_string(),
-                    run.worktree.path.clone(),
-                )
-            })
-        });
         let workspace_id = self
             .workspaces
             .list(project_id)
             .into_iter()
             .find(|workspace| {
-                direct.is_some_and(|id| {
-                    workspace.id == id
-                        || workspace
-                            .directories
-                            .iter()
-                            .any(|directory| directory.id == id)
-                }) || owned_root.as_ref().is_some_and(|(owner_project_id, root)| {
-                    workspace.project_id == *owner_project_id && same_path(&workspace.root, root)
-                }) || branch.is_some_and(|branch| {
+                branch.is_some_and(|branch| {
                     workspace
                         .directories
                         .iter()

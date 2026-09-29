@@ -422,9 +422,9 @@ impl AppState {
     }
 
     /// Route an agent's `done` to its owner's lifecycle transition, by owner
-    /// lookup (plans map, then runs map), without draining: a report that
-    /// carries a Task's scheduler on to its next stage hands that git back
-    /// HERE, to the socket that can release the guard before running it. The
+    /// lookup (plans map, then runs map), without draining: a report whose
+    /// follow-up has git to run hands that git back HERE, to the socket that
+    /// can release the guard before running it. The
     /// `done` twin of [`AppState::dispatch_deferring`].
     #[cfg(test)]
     pub(in crate::app) fn done_deferring(
@@ -702,9 +702,6 @@ impl AppState {
         if let Some(answered) = self.compaction_action(sender, &action) {
             return answered;
         }
-        if let BridgeAction::ReadOperationMessages { operation_id } = &action {
-            return self.read_operation_messages_for_agent(entity_id, agent_id, operation_id);
-        }
         if let BridgeAction::SearchConversation { query } = &action {
             return self.search_agent_conversations(entity_id, agent_id, query);
         }
@@ -724,7 +721,6 @@ impl AppState {
             BridgeAction::PostThreadMessage { still_working, .. } => Some(*still_working),
             _ => None,
         };
-        let reads_unread = matches!(action, BridgeAction::ReadUnreadMessages);
         // Where an agent speaks — its own conversation, or its Task's when it
         // is the implementation's first — is one rule, and it is
         // `edit_agent_conversation`'s.
@@ -732,10 +728,7 @@ impl AppState {
         let result = self.edit_agent_conversation(entity_id, agent_id, |thread, _| {
             apply_thread_action(thread, action, &now)
         });
-        if let Ok(value) = &result {
-            if reads_unread && value["working"].is_string() {
-                self.start_agent_working(entity_id, agent_id, &now);
-            }
+        if result.is_ok() {
             match posted_still_working {
                 Some(true) => self.start_agent_working(entity_id, agent_id, &now),
                 Some(false) => self.record_agent_working_since(entity_id, agent_id, None),

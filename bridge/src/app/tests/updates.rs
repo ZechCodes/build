@@ -154,13 +154,10 @@ fn idle_install_counts_queued_settling_and_in_flight_turns() {
 fn idle_install_counts_recorded_work_without_a_live_tab() {
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
-    let created = app
-        .plan_create(&json!({"goal":"Keep the agent working", "dispatch":false}))
-        .unwrap();
-    let plan_id = created["plan_id"].as_str().unwrap();
+    let plan_id = file_legacy_task(&mut app, "Keep the agent working");
     let agent = app
         .plans
-        .get_mut(plan_id)
+        .get_mut(&plan_id)
         .unwrap()
         .agents
         .iter_mut()

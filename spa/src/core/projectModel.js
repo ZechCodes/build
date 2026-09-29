@@ -10,7 +10,7 @@ import { directoryTab } from "./workspaceModel.js";
  *
  * The route names the machine the project is on, since every machine mints a
  * `proj-1` of its own. A project the feed has not stamped — the answer to a
- * fresh project.add, which came off one bridge and knows it — names none, and
+ * fresh project.create, which came off one bridge and knows it — names none, and
  * its caller stamps the device it asked. */
 export function projectRoute(project) {
   const projectId = project && (project.project_id || project.id);

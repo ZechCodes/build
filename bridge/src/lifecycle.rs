@@ -1,9 +1,7 @@
 mod adoption;
-mod create;
 mod discard;
 mod dispatch;
 pub mod holders;
-mod implementation;
 mod outputs;
 mod planning;
 mod projects;
@@ -12,14 +10,10 @@ mod rows;
 mod task;
 
 pub use adoption::{adopt, AdoptCheckout, AdoptionTarget};
-pub use create::CreateWorktree;
-pub use discard::{BeforeRemoval, DiscardCheckout, DiscardedCheckout};
+pub use discard::{BeforeRemoval, DiscardCheckout, DiscardedCheckout, RemovedCheckout};
 #[cfg(test)]
 pub use dispatch::{fail_dispatch_at, BranchDispatchStep};
 pub use dispatch::{DispatchCheckout, DispatchTarget};
-pub use implementation::{
-    AdoptImplementation, ImplementationCheckout, OpenImplementation, RestoreImplementationCheckout,
-};
 pub use outputs::{
     AdoptedImplementation, AdoptionPrepared, CreatedCheckout, DispatchReached, DispatchedCheckout,
     ImplementationPrepared, InitializedRepository, JoinedCheckout, OpenedPlanWorkspace,

@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn archived_worktrees_load_into_archive_list_after_restart() {
+fn archived_worktrees_load_into_archived_list_after_restart() {
     let (dir, repo) = init_repo();
     let worktree_path = dir.path().join("historical-finish");
     let record = PersistedArchivedWorktree {
@@ -34,9 +34,8 @@ fn archived_worktrees_load_into_archive_list_after_restart() {
     }
 
     let mut reloaded = qa_state(&repo, dir.path());
-    let project_id = reloaded.project_at(0).id.clone();
-    let archive = reloaded.handle(req("archive.list", json!({ "project_id": project_id })));
-    let restored = archive["result"]["worktrees"]
+    let archive = reloaded.handle(req("archived.list", json!({})));
+    let restored = archive["result"]["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -127,8 +126,8 @@ async fn workspace_finish_refuses_an_adopted_checkout_and_leaves_its_terminal() 
     let finished = handler.call(
         SessionSender::detached("s1"),
         req(
-            "worktree.finish",
-            json!({ "project_id": project_id, "worktree_id": worktree_id, "action": "cleanup" }),
+            "branch.finish",
+            json!({ "project_id": project_id, "branch": "terminal-finish", "action": "cleanup" }),
         ),
     );
     assert_eq!(finished["ok"], false, "{finished:?}");

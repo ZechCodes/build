@@ -33,7 +33,7 @@ fn add_directory_cuts_a_git_source_onto_a_workspace_branch() {
     let repo = init_repo_named(tmp.path(), "code");
     let extra = init_repo_named(tmp.path(), "docs");
     let mut state = app(tmp.path());
-    let added = state.handle(req("project.add", json!({"path": repo})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": repo}))));
     let project_id = added["result"]["project_id"].as_str().unwrap().to_string();
     let workspace = create_workspace(&mut state, &project_id, "work");
     let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
@@ -86,7 +86,7 @@ fn add_directory_copies_a_folder_that_is_no_project_source() {
     std::fs::create_dir(&assets).unwrap();
     std::fs::write(assets.join("logo.svg"), b"<svg/>").unwrap();
     let mut state = app(tmp.path());
-    let added = state.handle(req("project.add", json!({"path": repo})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": repo}))));
     let project_id = added["result"]["project_id"].as_str().unwrap().to_string();
     let workspace = create_workspace(&mut state, &project_id, "work");
     let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
@@ -123,7 +123,7 @@ fn add_directory_refuses_a_workspace_this_bridge_does_not_have() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = init_repo_named(tmp.path(), "code");
     let mut state = app(tmp.path());
-    state.handle(req("project.add", json!({"path": repo})));
+    state.handle(req("project.create", open_folder(json!({"path": repo}))));
 
     let refused = state.handle(req(
         "workspace.add_directory",
@@ -144,11 +144,11 @@ fn remove_directory_unregisters_the_worktree_and_takes_the_folder() {
     let extra = init_repo_named(tmp.path(), "docs");
     let mut state = app(tmp.path());
     let project = state.handle(req(
-        "project.add",
-        json!({
+        "project.create",
+        open_folder(json!({
             "name": "mixed",
             "sources": [{"name": "code", "path": repo}, {"name": "docs", "path": extra}],
-        }),
+        })),
     ));
     assert_eq!(project["ok"], true, "{project:?}");
     let project_id = project["result"]["project_id"]
@@ -193,7 +193,7 @@ fn remove_directory_refuses_a_directory_the_workspace_does_not_have() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = init_repo_named(tmp.path(), "code");
     let mut state = app(tmp.path());
-    let added = state.handle(req("project.add", json!({"path": repo})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": repo}))));
     let project_id = added["result"]["project_id"].as_str().unwrap().to_string();
     let workspace = create_workspace(&mut state, &project_id, "work");
     let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
@@ -217,11 +217,12 @@ fn a_directory_change_tells_the_browsers_standing_in_the_workspace() {
     let assets = tmp.path().join("assets");
     std::fs::create_dir(&assets).unwrap();
     let mut state = app(tmp.path());
-    let added = state.handle(req("project.add", json!({"path": repo})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": repo}))));
     let project_id = added["result"]["project_id"].as_str().unwrap().to_string();
     let workspace = create_workspace(&mut state, &project_id, "work");
     let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
 
+    let _browser = a_browser_watching_everything(&state);
     state.changes().flush();
     let grown = state.handle(req(
         "workspace.add_directory",
@@ -258,7 +259,7 @@ fn add_directory_clones_a_remote_into_the_workspace() {
         ],
     );
     let mut state = app(tmp.path());
-    let added = state.handle(req("project.add", json!({"path": repo})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": repo}))));
     let project_id = added["result"]["project_id"].as_str().unwrap().to_string();
     let workspace = create_workspace(&mut state, &project_id, "work");
     let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
@@ -297,7 +298,7 @@ fn remove_directory_refuses_an_adopted_workspace_standing_on_the_source() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = init_repo_named(tmp.path(), "code");
     let mut state = app(tmp.path());
-    let added = state.handle(req("project.add", json!({"path": repo})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": repo}))));
     let project_id = added["result"]["project_id"].as_str().unwrap().to_string();
 
     let refused = state.handle(req(
@@ -320,7 +321,7 @@ fn remove_directory_refuses_a_directory_holding_a_source_repository() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = init_repo_named(tmp.path(), "code");
     let mut state = app(tmp.path());
-    let added = state.handle(req("project.add", json!({"path": repo})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": repo}))));
     let project_id = added["result"]["project_id"].as_str().unwrap().to_string();
     let workspace = create_workspace(&mut state, &project_id, "work");
     let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
@@ -328,7 +329,7 @@ fn remove_directory_refuses_a_directory_holding_a_source_repository() {
     // A second project opened over a folder inside the workspace's checkout:
     // its source repository now stands under the directory being removed.
     let nested = init_repo_named(&checkout, "vendor");
-    let second = state.handle(req("project.add", json!({"path": nested})));
+    let second = state.handle(req("project.create", open_folder(json!({"path": nested}))));
     assert_eq!(second["ok"], true, "{second:?}");
 
     let refused = state.handle(req(
@@ -352,11 +353,11 @@ fn remove_directory_refuses_while_an_agent_is_working_in_the_workspace() {
     let extra = init_repo_named(tmp.path(), "docs");
     let mut state = app(tmp.path());
     let project = state.handle(req(
-        "project.add",
-        json!({
+        "project.create",
+        open_folder(json!({
             "name": "mixed",
             "sources": [{"name": "code", "path": repo}, {"name": "docs", "path": extra}],
-        }),
+        })),
     ));
     let project_id = project["result"]["project_id"]
         .as_str()
@@ -405,9 +406,9 @@ fn add_directory_refuses_a_path_that_is_another_projects_source() {
     let mine = init_repo_named(tmp.path(), "mine");
     let theirs = init_repo_named(tmp.path(), "theirs");
     let mut state = app(tmp.path());
-    let added = state.handle(req("project.add", json!({"path": mine})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": mine}))));
     let project_id = added["result"]["project_id"].as_str().unwrap().to_string();
-    let other = state.handle(req("project.add", json!({"path": theirs})));
+    let other = state.handle(req("project.create", open_folder(json!({"path": theirs}))));
     assert_eq!(other["ok"], true, "{other:?}");
     let workspace = create_workspace(&mut state, &project_id, "work");
     let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
@@ -444,7 +445,7 @@ fn a_rename_waits_while_a_directory_is_being_added() {
     let assets = tmp.path().join("assets");
     std::fs::create_dir(&assets).unwrap();
     let mut state = app(tmp.path());
-    let added = state.handle(req("project.add", json!({"path": repo})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": repo}))));
     let project_id = added["result"]["project_id"].as_str().unwrap().to_string();
     let workspace = create_workspace(&mut state, &project_id, "work");
     let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();

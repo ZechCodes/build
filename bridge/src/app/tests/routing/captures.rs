@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn capture_reroute_refuses_the_retired_task_destination_without_mutating_the_capture() {
+fn capture_reroute_refuses_a_task_destination_without_mutating_the_capture() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let project_id = state.project_at(0).id.clone();
@@ -14,7 +14,12 @@ fn capture_reroute_refuses_the_retired_task_destination_without_mutating_the_cap
     ));
 
     assert_eq!(refused["ok"], false, "{refused:?}");
-    assert_eq!(refused["error"], crate::app::tasks::TASKS_RETIRED_ERROR);
+    assert!(
+        refused["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("\"task\" is not a destination")),
+        "{refused:?}"
+    );
     assert!(state.plans.is_empty());
     assert_eq!(capture_record(&mut state, &capture_id), before);
 }
@@ -67,10 +72,9 @@ fn a_capture_is_durable_before_anything_routes_it() {
 
     // And a fresh daemon over the same store still has it.
     let mut rebooted = qa_state(&repo, dir.path());
-    let listed = rebooted.handle(req("capture.list", json!({})));
-    let captures = listed["result"]["captures"].as_array().unwrap();
+    let captures = capture_rows(&mut rebooted);
     assert_eq!(captures.len(), 1);
-    assert_eq!(captures[0]["id"], capture_id.as_str());
+    assert_eq!(captures[0]["capture_id"], capture_id.as_str());
 
     let fetched = rebooted.handle(req("capture.get", json!({ "capture_id": capture_id })));
     assert_eq!(fetched["ok"], true, "{fetched:?}");

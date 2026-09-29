@@ -1,20 +1,12 @@
 //! Push invalidation: the bridge telling every connected browser that
 //! something changed, instead of waiting to be polled.
 //!
-//! Two events go out on the browser's own session, in the frame shape it
-//! already parses for terminal pushes (a payload with a `type`):
-//!
-//! ```text
-//! {"type":"board.changed"}                    feed-level state moved
-//! {"type":"entity.changed","id":"run-7"}      one entity's detail moved
-//! ```
-//!
-//! `board.changed` says the feed is stale — a task lifecycle transition, the
-//! inbox/attention map, a capture, an agent coming or going. `entity.changed`
-//! says one task/branch/run's thread, stages, git state or diff is stale. A
-//! client that holds both refetches what it is showing; nothing about WHAT
-//! changed rides the wire, so the events stay content-free like every other
-//! signal Build sends about work it cannot read.
+//! A session subscribes (`changes.subscribe`) to the entities and kinds it is
+//! showing, and hears `changes` frames for exactly those: one item per entity
+//! that moved, carrying the body of what moved (its row, its conversation
+//! since the last frame, its git shapes, the files that changed), so a client
+//! paints from the push rather than refetching after it. A session that
+//! subscribes to nothing hears nothing.
 //!
 //! **Terminal output is not a change.** It has its own push path
 //! (`term.output` / `term.reset`), and routing a byte storm through here would
@@ -23,17 +15,18 @@
 //! # The two halves, and why they are separate
 //!
 //! Noting a change happens deep inside mutations that run holding the app
-//! mutex. Sending one encrypts a frame per subscriber. So [`ChangeBus::note`]
-//! only inserts a key into a set behind a leaf mutex — no I/O, no encryption,
-//! nothing that can block on anything but itself — and [`ChangeBus::flush`],
-//! driven by a task that holds no app lock, does the sending.
+//! mutex. Sending one encrypts a frame per subscription. So a note only
+//! inserts into a subscription's pending map behind a leaf mutex — no I/O, no
+//! encryption, nothing that can block on anything but itself — and
+//! [`ChangeBus::flush`], driven by a task that holds no app lock, does the
+//! sending.
 //!
 //! That split is also the coalescer. A flush collapses everything noted since
-//! the last one into ONE event per key, and the driver
+//! the last one into ONE item per entity, and the driver
 //! ([`ChangeBus::spawn_flusher`]) flushes at most once per
 //! [`ChangeBus::window`]: the first change on an idle bus goes out at once,
-//! and a burst behind it costs one event per key per window rather than one
-//! per mutation.
+//! and a burst behind it costs one frame per window rather than one per
+//! mutation.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -51,21 +44,20 @@ use crate::carrier::SessionSender;
 /// (a stage sweep, an agent writing a file a second) costs a handful of frames.
 pub const DEFAULT_COALESCE_WINDOW: Duration = Duration::from_millis(250);
 
-/// How long one entity's own event waits before it may be repeated.
+/// How long one entity's worktree item waits before it may be repeated.
 ///
-/// The bus's window collapses a burst of notes into one event; this bounds how
-/// often the SAME entity's event goes out at all, for the origin that fires on
-/// every file an agent writes. A browser repaints a git surface off it, and a
-/// second is as often as a human reads one. It is also the floor under a
-/// realtime subscription's `git` and `files` items (wire spec, step 1.3).
+/// The bus's window collapses a burst of notes into one item; this bounds how
+/// often the SAME entity's `git` and `files` items go out at all, for the
+/// origin that fires on every file an agent writes. A browser repaints a git
+/// surface off it, and a second is as often as a human reads one: the floor
+/// under a realtime subscription's worktree items (wire spec, step 1.3).
 pub const ENTITY_SETTLE_WINDOW: Duration = Duration::from_secs(1);
 
 /// The most keys one un-flushed window holds before it gives up on precision.
 ///
-/// Applies to the legacy key set and, separately, to each subscription's
-/// pending map. Past the cap the whole batch collapses to
-/// [`ChangeKey::Board`] / a bare board item, which already tells a client to
-/// refetch everything.
+/// Applies to each subscription's pending map. Past the cap the whole batch
+/// collapses to a bare board item, which already tells a client to refetch
+/// everything.
 const PENDING_KEY_CAP: usize = 512;
 
 /// How many entities one subscription remembers conversation cursors for.
@@ -122,15 +114,10 @@ pub const BOARD_ITEM_ID: &str = "board";
 pub const CHANGES_EVENT: &str = "changes";
 
 /// The change events a browser session can be told about, announced in the
-/// `session.hello` greeting so a client knows what it may hear. The first two
-/// are the legacy pair; `changes` is what a subscription delivers.
-pub const ANNOUNCED_EVENTS: [&str; 5] = [
-    "board.changed",
-    "entity.changed",
-    CHANGES_EVENT,
-    "bridge.update_status",
-    MODELS_CHANGED_EVENT,
-];
+/// `session.hello` greeting so a client knows what it may hear. `changes` is
+/// what a subscription delivers.
+pub const ANNOUNCED_EVENTS: [&str; 3] =
+    [CHANGES_EVENT, "bridge.update_status", MODELS_CHANGED_EVENT];
 
 /// A CLI on this machine changed what it runs, so `models.list` would answer
 /// differently now (#203). Carries nothing else: the catalog is asked again.
@@ -424,8 +411,7 @@ impl<'a> FromIterator<&'a str> for KindNames {
     }
 }
 
-/// One subscription, exactly as `changes.subscribe` states it and
-/// `changes.list` answers it. `K` is how its kinds are held: a [`KindSet`]
+/// One subscription, exactly as `changes.subscribe` states it. `K` is how its kinds are held: a [`KindSet`]
 /// once read, [`KindNames`] while the verb is still reading them.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct SubscriptionSpec<K = KindSet> {
@@ -625,47 +611,6 @@ pub struct EntityFacts {
 /// lookup for the thread tails, never on the flusher's async worker and never
 /// under a lock this module holds.
 pub type FactsSource = Arc<dyn Fn(&[FactsRequest]) -> Vec<EntityFacts> + Send + Sync>;
-
-// --------------------------------------------------------- legacy events ---
-
-/// What changed, at the grain a browser refetches in.
-///
-/// `Ord` (and the variant order) is the wire order of one flush: the feed
-/// first, then entities by id — so a client that reloads the feed and the
-/// entity it is showing does it in that order.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ChangeKey {
-    /// Feed-level state: task lifecycle, inbox/attention, capture, agent
-    /// liveness — anything the board reads.
-    Board,
-    /// One task/branch/run: its thread, stages, git state or diff.
-    Entity(String),
-}
-
-impl ChangeKey {
-    /// The payload a browser receives for this key.
-    pub fn payload(&self) -> Value {
-        match self {
-            ChangeKey::Board => json!({ "type": "board.changed" }),
-            ChangeKey::Entity(id) => json!({ "type": "entity.changed", "id": id }),
-        }
-    }
-}
-
-/// What one un-flushed window holds, for the legacy events.
-#[derive(Default)]
-struct Pending {
-    /// Noted since the last flush. A set, so a thousand notes of one key are
-    /// one event.
-    keys: BTreeSet<ChangeKey>,
-    /// The subset of `keys` noted through a worktree kind, which may not go
-    /// out again inside [`ENTITY_SETTLE_WINDOW`].
-    settled: BTreeSet<ChangeKey>,
-    /// Past [`PENDING_KEY_CAP`] the window gave up naming entities and stands
-    /// as a bare [`ChangeKey::Board`] until it is flushed. Latched, so the
-    /// notes that keep arriving cannot start refilling the set behind it.
-    collapsed: bool,
-}
 
 // ------------------------------------------------------- subscriptions ---
 
@@ -1279,29 +1224,25 @@ fn git_payload(facts: Option<&EntityFacts>) -> Value {
 /// them released.
 #[derive(Default)]
 struct Due {
-    legacy: Vec<ChangeKey>,
     frames: Vec<DueFrame>,
     requests: Vec<FactsRequest>,
 }
 
 impl Due {
     fn is_empty(&self) -> bool {
-        self.legacy.is_empty() && self.frames.is_empty()
+        self.frames.is_empty()
     }
 }
 
 /// Every browser session that asked for push invalidation, and the changes
 /// waiting to reach them.
 pub struct ChangeBus {
-    /// One entry per legacy subscriber, keyed by its session id. Dropped when
-    /// a push fails: a sender that cannot send has no connection left.
-    subscribers: Mutex<Vec<SessionSender>>,
     /// Every live subscription, in the order it was made — the flush order
-    /// within one priority.
+    /// within one priority. A session whose push fails loses all of its
+    /// subscriptions: a sender that cannot send has no connection left.
     subscriptions: Mutex<Vec<Subscription>>,
-    pending: Mutex<Pending>,
-    /// Set whenever anything gains its first key, so the flusher wakes on the
-    /// change rather than on a tick.
+    /// Set whenever a subscription gains something to send, so the flusher
+    /// wakes on the change rather than on a tick.
     wake: tokio::sync::Notify,
     window: Duration,
     /// Monotonic, bumped by every [`ChangeBus::note_board`]: a client holding
@@ -1315,10 +1256,6 @@ pub struct ChangeBus {
     /// that wants the kinds without the keys. A flush then costs no lookup
     /// and no blocking thread at all.
     facts: Option<FactsSource>,
-    /// When each key last reached a browser, pruned to
-    /// [`ENTITY_SETTLE_WINDOW`] on every flush: an older entry can hold
-    /// nothing back, so this never grows with the entities a bridge has seen.
-    emitted_at: Mutex<HashMap<ChangeKey, tokio::time::Instant>>,
     #[cfg(test)]
     completed_test_cycles: tokio::sync::watch::Sender<(u64, bool)>,
     /// Records the worker that completed each subscription frame's encryption.
@@ -1353,16 +1290,13 @@ impl ChangeBus {
         #[cfg(test)]
         let (completed_test_cycles, _) = tokio::sync::watch::channel((0, true));
         Arc::new(ChangeBus {
-            subscribers: Mutex::new(Vec::new()),
             subscriptions: Mutex::new(Vec::new()),
-            pending: Mutex::new(Pending::default()),
             wake: tokio::sync::Notify::new(),
             window,
             board_revision: AtomicU64::new(0),
             polled: Mutex::new(BTreeSet::new()),
             board_entities,
             facts,
-            emitted_at: Mutex::new(HashMap::new()),
             #[cfg(test)]
             completed_test_cycles,
             #[cfg(test)]
@@ -1392,14 +1326,11 @@ impl ChangeBus {
     /// in Off mode deliberately holds changes until it is enabled again.
     #[cfg(test)]
     fn has_test_pending(&self) -> bool {
-        let legacy_pending = !self.pending.lock().unwrap().keys.is_empty();
-        legacy_pending
-            || self
-                .subscriptions
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|sub| sub.spec.mode != Mode::Off && !sub.pending.is_empty())
+        self.subscriptions
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|sub| sub.spec.mode != Mode::Off && !sub.pending.is_empty())
     }
 
     /// How long changes collapse together before the next flush.
@@ -1412,52 +1343,14 @@ impl ChangeBus {
         self.board_revision.load(Ordering::SeqCst)
     }
 
-    // ------------------------------------------------------- legacy path ---
-
-    /// Start hearing the legacy events on this session (`session.hello` with
-    /// no `changes` field, or `"changes": "legacy"`). Re-subscribing a session
-    /// id replaces its sender — a reconnected browser keeps one subscription,
-    /// not two.
-    pub fn subscribe_legacy(&self, sender: &SessionSender) {
-        let mut subscribers = self.subscribers.lock().unwrap();
-        subscribers.retain(|existing| existing.session_id() != sender.session_id());
-        subscribers.push(sender.clone());
-    }
-
-    /// Stop hearing the legacy events, keeping any subscriptions: what
-    /// `"changes": "subscriptions"` and the first `changes.subscribe` do.
-    pub fn unsubscribe_legacy(&self, session_id: &str) {
-        self.subscribers
-            .lock()
-            .unwrap()
-            .retain(|existing| existing.session_id() != session_id);
-    }
-
-    /// Stop hearing anything — the session closed.
-    pub fn unsubscribe(&self, session_id: &str) {
-        self.unsubscribe_legacy(session_id);
-        self.subscriptions
-            .lock()
-            .unwrap()
-            .retain(|sub| sub.session.session_id() != session_id);
-    }
-
-    /// How many sessions hear the legacy events.
-    pub fn subscriber_count(&self) -> usize {
-        self.subscribers.lock().unwrap().len()
-    }
-
     // -------------------------------------------------------- the verbs ---
 
     /// Upsert one subscription for this session (`changes.subscribe`).
     ///
     /// Re-sending an id with a new mode is how a client changes cadence: the
     /// spec is replaced and the pending items are kept, so an `off`
-    /// subscription turned back on has no gap in what it will report. The
-    /// call also drops the session's legacy subscription — a session that
-    /// subscribes has left legacy mode (step 1.5).
+    /// subscription turned back on has no gap in what it will report.
     pub fn subscribe(&self, session: &SessionSender, sub: SubscriptionSpec) -> SubscribeOutcome {
-        self.unsubscribe_legacy(session.session_id());
         let watch = self.watch_state(&sub);
         let now = Instant::now();
         let mut subscriptions = self.subscriptions.lock().unwrap();
@@ -1484,6 +1377,14 @@ impl ChangeBus {
         SubscribeOutcome { watch }
     }
 
+    /// Stop hearing anything — the session closed.
+    pub fn unsubscribe(&self, session_id: &str) {
+        self.subscriptions
+            .lock()
+            .unwrap()
+            .retain(|sub| sub.session.session_id() != session_id);
+    }
+
     /// Drop one subscription (`changes.unsubscribe`).
     pub fn unsubscribe_one(&self, session_id: &str, sub_id: &str) {
         self.subscriptions
@@ -1492,8 +1393,9 @@ impl ChangeBus {
             .retain(|sub| !sub.is(session_id, sub_id));
     }
 
-    /// This session's subscriptions, in the order they were made
-    /// (`changes.list`).
+    /// This session's subscriptions, in the order they were made — what the
+    /// tests read back.
+    #[cfg(test)]
     pub fn list(&self, session_id: &str) -> Vec<SubscriptionSpec> {
         self.subscriptions
             .lock()
@@ -1557,42 +1459,17 @@ impl ChangeBus {
 
     // --------------------------------------------------------- the notes ---
 
-    /// Record that something changed.
+    /// One kind of one entity moved.
     ///
-    /// SAFE UNDER THE APP MUTEX, and the reason this type exists: it takes one
-    /// leaf mutex, inserts into a set, and returns. No encryption, no channel a
-    /// slow reader can fill, no I/O of any kind — nothing a caller holding the
-    /// app lock could block the whole daemon on.
-    pub fn note(&self, key: ChangeKey) {
-        let mut pending = self.pending.lock().unwrap();
-        if pending.collapsed {
-            return;
-        }
-        if pending.keys.len() >= PENDING_KEY_CAP {
-            pending.collapsed = true;
-            pending.keys.clear();
-            pending.settled.clear();
-            pending.keys.insert(ChangeKey::Board);
-        } else {
-            pending.keys.insert(key);
-        }
-        drop(pending);
-        self.wake.notify_one();
-    }
-
-    /// One kind of one entity moved: the subscription path, and the legacy
-    /// `entity.changed` beside it.
+    /// SAFE UNDER THE APP MUTEX, and the reason this type exists: it takes
+    /// leaf mutexes, inserts into each subscription that asked, and returns.
+    /// No encryption, no channel a slow reader can fill, no I/O of any kind —
+    /// nothing a caller holding the app lock could block the whole daemon on.
     pub fn note_kind(&self, entity_id: &str, kind: Kind) {
         self.note_subscriptions(entity_id, kind, &[]);
-        self.note_legacy_entity(entity_id, kind);
     }
 
     /// This checkout's tab list moved.
-    ///
-    /// The subscription path only. The legacy events say "the feed is stale"
-    /// and "this entity's detail is stale", and a shell opening in a checkout
-    /// is neither — a legacy client reads its tabs off `term.list` when the
-    /// human opens the console, never off the board.
     pub fn note_terminals(&self, entity_id: &str) {
         self.note_subscriptions(entity_id, Kind::Terminals, &[]);
     }
@@ -1600,26 +1477,21 @@ impl ChangeBus {
     /// These working-tree paths moved, relative to the worktree root.
     pub fn note_files(&self, entity_id: &str, paths: &[String]) {
         self.note_subscriptions(entity_id, Kind::Files, paths);
-        self.note_legacy_entity(entity_id, Kind::Files);
     }
 
     /// These tasks of this project moved (spec: Tasks → Push).
     ///
-    /// The subscription path ONLY. No legacy `entity.changed` and no board
-    /// bump: a client in legacy mode has no tasks surface to refetch, and
-    /// bumping the board on every comment would repaint the feed for something
-    /// the feed does not show.
+    /// No board bump: bumping the board on every comment would repaint the
+    /// feed for something the feed does not show.
     pub fn note_tasks(&self, project_id: &str, task_ids: &[String]) {
         self.note_subscriptions(project_id, Kind::Tasks, task_ids);
     }
 
-    /// The feed is stale: bump the revision a client compares against, note
-    /// the board item for every subscription that watches the feed, and note
-    /// the legacy `board.changed`.
+    /// The feed is stale: bump the revision a client compares against, and
+    /// note the board item for every subscription that watches the feed.
     pub fn note_board(&self) {
         self.board_revision.fetch_add(1, Ordering::SeqCst);
         self.note_subscriptions(BOARD_ITEM_ID, Kind::State, &[]);
-        self.note(ChangeKey::Board);
     }
 
     /// The feed moved, and so did one of the lists a client caches whole:
@@ -1640,10 +1512,8 @@ impl ChangeBus {
     /// This entity is stale — and so is the feed, which shows a row for it.
     ///
     /// Both the kinds an entity's own detail is made of: its row, and its
-    /// conversation. That is what the legacy `entity.changed` beside it has
-    /// always meant — "its thread, stages, git state or diff moved" — and it
-    /// is the only origin a conversation has, since an item lands through
-    /// the same mutation tail every other change does. A conversation that
+    /// conversation. It is the only origin a conversation has, since an item
+    /// lands through the same mutation tail every other change does. A conversation that
     /// did not move costs its subscription an unchanged tip, which is what
     /// the tip is for.
     pub fn note_entity(&self, id: &str) {
@@ -1652,29 +1522,14 @@ impl ChangeBus {
         self.note_board();
     }
 
-    /// This entity is stale, at the pace a browser can paint — its own event
-    /// goes out at most once per [`ENTITY_SETTLE_WINDOW`], the feed at the
-    /// bus's own window.
+    /// This entity's git is stale, at the pace a browser can paint — its item
+    /// goes out at most once per [`ENTITY_SETTLE_WINDOW`].
     ///
     /// For an origin that fires as fast as an agent writes files: the TTL
     /// refresh, which is the `git` kind arriving without a watcher. Every
     /// other caller wants [`note_entity`](Self::note_entity).
     pub fn note_entity_settled(&self, id: &str) {
         self.note_kind(id, Kind::Git);
-    }
-
-    /// The legacy half of a note: the entity's own event, paced by the settle
-    /// window for the worktree kinds, plus the feed.
-    fn note_legacy_entity(&self, entity_id: &str, kind: Kind) {
-        let entity = ChangeKey::Entity(entity_id.to_string());
-        if kind.is_worktree() {
-            let mut pending = self.pending.lock().unwrap();
-            if !pending.collapsed {
-                pending.settled.insert(entity.clone());
-            }
-        }
-        self.note(entity);
-        self.note(ChangeKey::Board);
     }
 
     /// Resolve one note to every subscription that asked for it.
@@ -1697,22 +1552,18 @@ impl ChangeBus {
 
     /// Whether anything is waiting to go out.
     pub fn has_pending(&self) -> bool {
-        !self.pending.lock().unwrap().keys.is_empty()
-            || self
-                .subscriptions
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|sub| !sub.pending.is_empty())
+        self.subscriptions
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|sub| !sub.pending.is_empty())
     }
 
     // -------------------------------------------------------- the flush ---
 
-    /// Send everything due: one legacy event per distinct key noted since the
-    /// last flush — less the settled keys still inside their window, which
-    /// stay pending — and one `changes` frame per due subscription, foreground
-    /// first. Drops every subscriber whose connection is gone. Returns the
-    /// number of frames one subscriber was sent.
+    /// Send everything due: one `changes` frame per due subscription,
+    /// foreground first. Drops every session whose connection is gone.
+    /// Returns the number of frames sent.
     ///
     /// MUST NOT run holding the app mutex: it encrypts a frame per subscriber.
     /// The facts source runs inline here; [`ChangeBus::run`] is the caller
@@ -1749,10 +1600,7 @@ impl ChangeBus {
     /// first, so a background flush due in the same turn waits behind them.
     fn take_due(&self) -> Due {
         let now = Instant::now();
-        let mut due = Due {
-            legacy: self.take_due_keys(),
-            ..Due::default()
-        };
+        let mut due = Due::default();
         // Read before the subscriptions lock: the board's list is somebody
         // else's leaf lock, and this module nests none.
         let covered: BTreeSet<String> = (self.board_entities)().into_iter().collect();
@@ -1784,10 +1632,8 @@ impl ChangeBus {
     }
 
     /// Encrypt and send. A subscription whose push fails takes every
-    /// subscription of that session with it, as one failing push drops a
-    /// legacy subscriber.
+    /// subscription of that session with it.
     fn deliver(&self, due: Due, facts: Vec<EntityFacts>) -> usize {
-        let sent = self.deliver_legacy(&due.legacy);
         let by_entity: BTreeMap<&str, &EntityFacts> = facts
             .iter()
             .map(|fact| (fact.entity_id.as_str(), fact))
@@ -1811,7 +1657,7 @@ impl ChangeBus {
         for session_id in dead {
             self.unsubscribe(&session_id);
         }
-        sent + frames
+        frames
     }
 
     /// Put back what this frame was owed and could not carry.
@@ -1871,61 +1717,6 @@ impl ChangeBus {
         for (entity_id, tips) in sent {
             sub.record_thread_tips(entity_id, tips, now);
         }
-    }
-
-    fn deliver_legacy(&self, keys: &[ChangeKey]) -> usize {
-        if keys.is_empty() {
-            return 0;
-        }
-        let payloads: Vec<Value> = keys.iter().map(ChangeKey::payload).collect();
-        let mut subscribers = self.subscribers.lock().unwrap();
-        subscribers.retain(|subscriber| {
-            for payload in &payloads {
-                if !subscriber.push(payload.clone()) {
-                    return false;
-                }
-            }
-            true
-        });
-        payloads.len()
-    }
-
-    /// What this flush may send on the legacy path. A settled key a browser
-    /// heard about inside [`ENTITY_SETTLE_WINDOW`] stays pending instead, and
-    /// holding one back wakes the flusher so the next turn sends it.
-    fn take_due_keys(&self) -> Vec<ChangeKey> {
-        let mut pending = self.pending.lock().unwrap();
-        if pending.keys.is_empty() {
-            return Vec::new();
-        }
-        let (held, due) = self.split_off_unsettled(std::mem::take(&mut *pending));
-        let holding_back = !held.is_empty();
-        pending.settled.clone_from(&held);
-        pending.keys = held;
-        drop(pending);
-        if holding_back {
-            self.wake.notify_one();
-        }
-        due
-    }
-
-    /// The noted keys, split into the ones held back by the settle window and
-    /// the ones due now — which are stamped as emitted on the way out.
-    ///
-    /// Pruning first is what makes `contains_key` mean "emitted inside the
-    /// window", and what keeps the map bounded.
-    fn split_off_unsettled(&self, noted: Pending) -> (BTreeSet<ChangeKey>, Vec<ChangeKey>) {
-        let now = tokio::time::Instant::now();
-        let mut emitted_at = self.emitted_at.lock().unwrap();
-        emitted_at.retain(|_, at| now.duration_since(*at) < ENTITY_SETTLE_WINDOW);
-        let (held, due): (BTreeSet<ChangeKey>, BTreeSet<ChangeKey>) = noted
-            .keys
-            .into_iter()
-            .partition(|key| noted.settled.contains(key) && emitted_at.contains_key(key));
-        for key in &due {
-            emitted_at.insert(key.clone(), now);
-        }
-        (held, due.into_iter().collect())
     }
 
     /// Drive [`flush`](Self::flush) forever: wake on the first note or on the
@@ -2090,7 +1881,7 @@ fn fact_requests(frames: &[DueFrame]) -> Vec<FactsRequest> {
 }
 
 #[cfg(test)]
-mod tests {
+mod subscriptions {
     use super::*;
 
     /// Move a paused clock forward by `step` and let the flusher act on it.
@@ -2098,13 +1889,13 @@ mod tests {
     /// `advance` wakes the timers it passes; the yield is what gives the task
     /// they woke a turn to run before the assertion looks. Without it the test
     /// would race the scheduler instead of the clock — the same race, moved.
-    pub(super) async fn settle(step: Duration) {
+    async fn settle(step: Duration) {
         tokio::time::advance(step).await;
         tokio::task::yield_now().await;
     }
 
     /// Drain everything a subscriber was pushed, decrypted.
-    pub(super) fn drained(
+    fn drained(
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
         key: &str,
     ) -> Vec<Value> {
@@ -2114,275 +1905,6 @@ mod tests {
         }
         seen
     }
-
-    #[test]
-    fn a_noted_change_reaches_every_subscriber_on_flush() {
-        let bus = ChangeBus::new(DEFAULT_COALESCE_WINDOW);
-        let (one, mut one_rx, one_key) = SessionSender::observable("s-one");
-        let (two, mut two_rx, two_key) = SessionSender::observable("s-two");
-        bus.subscribe_legacy(&one);
-        bus.subscribe_legacy(&two);
-
-        bus.note_board();
-        assert_eq!(bus.flush(), 1);
-
-        assert_eq!(
-            drained(&mut one_rx, &one_key),
-            vec![json!({ "type": "board.changed" })]
-        );
-        assert_eq!(
-            drained(&mut two_rx, &two_key),
-            vec![json!({ "type": "board.changed" })]
-        );
-    }
-
-    #[test]
-    fn an_entity_change_names_the_entity_and_stales_the_feed() {
-        let bus = ChangeBus::new(DEFAULT_COALESCE_WINDOW);
-        let (sender, mut rx, key) = SessionSender::observable("s-1");
-        bus.subscribe_legacy(&sender);
-
-        bus.note_entity("run-7");
-        bus.flush();
-
-        assert_eq!(
-            drained(&mut rx, &key),
-            vec![
-                json!({ "type": "board.changed" }),
-                json!({ "type": "entity.changed", "id": "run-7" }),
-            ]
-        );
-    }
-
-    #[test]
-    fn a_burst_of_notes_collapses_to_one_event_per_key() {
-        let bus = ChangeBus::new(DEFAULT_COALESCE_WINDOW);
-        let (sender, mut rx, key) = SessionSender::observable("s-1");
-        bus.subscribe_legacy(&sender);
-
-        for _ in 0..200 {
-            bus.note_board();
-            bus.note_entity("run-7");
-            bus.note_entity("run-8");
-        }
-        assert_eq!(bus.flush(), 3, "one event per distinct key");
-
-        assert_eq!(
-            drained(&mut rx, &key),
-            vec![
-                json!({ "type": "board.changed" }),
-                json!({ "type": "entity.changed", "id": "run-7" }),
-                json!({ "type": "entity.changed", "id": "run-8" }),
-            ]
-        );
-    }
-
-    #[test]
-    fn a_flush_with_nothing_noted_sends_nothing() {
-        let bus = ChangeBus::new(DEFAULT_COALESCE_WINDOW);
-        let (sender, mut rx, key) = SessionSender::observable("s-1");
-        bus.subscribe_legacy(&sender);
-
-        assert_eq!(bus.flush(), 0);
-        assert!(drained(&mut rx, &key).is_empty());
-    }
-
-    #[test]
-    fn an_unsubscribed_session_hears_nothing_more() {
-        let bus = ChangeBus::new(DEFAULT_COALESCE_WINDOW);
-        let (sender, mut rx, key) = SessionSender::observable("s-1");
-        bus.subscribe_legacy(&sender);
-        bus.unsubscribe("s-1");
-
-        bus.note_board();
-        bus.flush();
-
-        assert!(drained(&mut rx, &key).is_empty());
-        assert_eq!(bus.subscriber_count(), 0);
-    }
-
-    #[test]
-    fn resubscribing_a_session_id_keeps_one_subscription() {
-        let bus = ChangeBus::new(DEFAULT_COALESCE_WINDOW);
-        let (first, _first_rx, _first_key) = SessionSender::observable("s-1");
-        let (second, mut rx, key) = SessionSender::observable("s-1");
-        bus.subscribe_legacy(&first);
-        bus.subscribe_legacy(&second);
-
-        bus.note_board();
-        bus.flush();
-
-        assert_eq!(bus.subscriber_count(), 1);
-        assert_eq!(
-            drained(&mut rx, &key),
-            vec![json!({ "type": "board.changed" })]
-        );
-    }
-
-    #[test]
-    fn a_dead_subscriber_is_dropped() {
-        let bus = ChangeBus::new(DEFAULT_COALESCE_WINDOW);
-        let (sender, rx, _key) = SessionSender::observable("s-gone");
-        bus.subscribe_legacy(&sender);
-        drop(rx); // the connection went away
-
-        bus.note_board();
-        bus.flush();
-
-        assert_eq!(bus.subscriber_count(), 0);
-    }
-
-    #[test]
-    fn an_unflushed_window_past_the_cap_collapses_to_the_board() {
-        let bus = ChangeBus::new(DEFAULT_COALESCE_WINDOW);
-        let (sender, mut rx, key) = SessionSender::observable("s-1");
-        bus.subscribe_legacy(&sender);
-
-        for n in 0..(PENDING_KEY_CAP + 50) {
-            bus.note(ChangeKey::Entity(format!("run-{n}")));
-        }
-        assert_eq!(bus.flush(), 1);
-
-        assert_eq!(
-            drained(&mut rx, &key),
-            vec![json!({ "type": "board.changed" })]
-        );
-    }
-
-    /// An ordinary entity note keeps the bus's own window: two flushes, two
-    /// events. Only the settled origin is paced.
-    #[test]
-    fn an_ordinary_entity_note_is_never_held_back() {
-        let bus = ChangeBus::new(DEFAULT_COALESCE_WINDOW);
-
-        bus.note_entity("run-7");
-        assert_eq!(bus.flush(), 2);
-        bus.note_entity("run-7");
-        assert_eq!(bus.flush(), 2);
-    }
-
-    /// The origin that fires on every file an agent writes: the entity's own
-    /// event is repeated no more than once per settle window, while the feed
-    /// keeps staling at the bus's window.
-    #[tokio::test(start_paused = true)]
-    async fn a_settled_entity_reaches_a_browser_once_per_settle_window() {
-        let bus = ChangeBus::new(DEFAULT_COALESCE_WINDOW);
-        let (sender, mut rx, key) = SessionSender::observable("s-1");
-        bus.subscribe_legacy(&sender);
-
-        bus.note_entity_settled("run-7");
-        bus.flush();
-        assert_eq!(
-            drained(&mut rx, &key),
-            vec![
-                json!({ "type": "board.changed" }),
-                json!({ "type": "entity.changed", "id": "run-7" }),
-            ]
-        );
-
-        bus.note_entity_settled("run-7");
-        bus.flush();
-        assert_eq!(
-            drained(&mut rx, &key),
-            vec![json!({ "type": "board.changed" })],
-            "the entity was heard about a moment ago"
-        );
-        assert!(bus.has_pending(), "and is still queued, not dropped");
-
-        tokio::time::advance(ENTITY_SETTLE_WINDOW).await;
-        bus.flush();
-        assert_eq!(
-            drained(&mut rx, &key),
-            vec![json!({ "type": "entity.changed", "id": "run-7" })]
-        );
-    }
-
-    /// Nothing more is noted after the storm, so the held-back event only goes
-    /// out if holding it back woke the flusher again.
-    #[tokio::test(start_paused = true)]
-    async fn a_held_back_entity_goes_out_when_its_window_closes() {
-        let bus = ChangeBus::new(Duration::from_millis(150));
-        let (sender, mut rx, key) = SessionSender::observable("s-1");
-        bus.subscribe_legacy(&sender);
-        ChangeBus::spawn_flusher(Arc::clone(&bus));
-
-        bus.note_entity_settled("run-7");
-        settle(Duration::from_millis(30)).await;
-        assert_eq!(
-            drained(&mut rx, &key),
-            vec![
-                json!({ "type": "board.changed" }),
-                json!({ "type": "entity.changed", "id": "run-7" }),
-            ]
-        );
-
-        for _ in 0..50 {
-            bus.note_entity_settled("run-7");
-        }
-        settle(Duration::from_millis(200)).await;
-        assert_eq!(
-            drained(&mut rx, &key),
-            vec![json!({ "type": "board.changed" })],
-            "the storm's entity event waits out the settle window"
-        );
-
-        settle(ENTITY_SETTLE_WINDOW).await;
-        assert_eq!(
-            drained(&mut rx, &key),
-            vec![json!({ "type": "entity.changed", "id": "run-7" })]
-        );
-    }
-
-    /// The driver's contract: the first change on an idle bus goes out at once,
-    /// and everything noted behind it inside the window is one more flush, not
-    /// one per mutation.
-    ///
-    /// On a paused clock, not a real one: the assertions are about which side
-    /// of the window a flush falls on, and read against the wall clock they
-    /// were a race — a 30 ms sleep that overran the 150 ms window under a
-    /// loaded machine turned "the storm waits" into a failure about nothing.
-    /// `advance` moves the clock by exactly what the contract talks about.
-    #[tokio::test(start_paused = true)]
-    async fn the_flusher_sends_at_most_one_batch_per_window() {
-        let bus = ChangeBus::new(Duration::from_millis(150));
-        let (sender, mut rx, key) = SessionSender::observable("s-1");
-        bus.subscribe_legacy(&sender);
-        ChangeBus::spawn_flusher(Arc::clone(&bus));
-
-        bus.note_board();
-        settle(Duration::from_millis(30)).await;
-        assert_eq!(
-            drained(&mut rx, &key),
-            vec![json!({ "type": "board.changed" })],
-            "an idle bus sends the first change straight away"
-        );
-
-        for _ in 0..500 {
-            bus.note_board();
-            bus.note_entity("run-7");
-        }
-        settle(Duration::from_millis(30)).await;
-        assert!(
-            drained(&mut rx, &key).is_empty(),
-            "the window is still open — the storm waits"
-        );
-
-        settle(Duration::from_millis(200)).await;
-        assert_eq!(
-            drained(&mut rx, &key),
-            vec![
-                json!({ "type": "board.changed" }),
-                json!({ "type": "entity.changed", "id": "run-7" }),
-            ],
-            "a thousand notes are two events"
-        );
-    }
-}
-
-#[cfg(test)]
-mod subscriptions {
-    use super::tests::{drained, settle};
-    use super::*;
 
     /// A subscription over one entity, all kinds, at a cadence.
     fn spec(id: &str, scope: Scope, mode: Mode, priority: Priority) -> SubscriptionSpec {
@@ -2690,7 +2212,7 @@ mod subscriptions {
         );
 
         bus.note_kind("run-7", Kind::Git);
-        assert_eq!(bus.flush(), 3, "two legacy events and one frame");
+        assert_eq!(bus.flush(), 1, "one frame");
         assert_eq!(frames(drained(&mut rx, &key)).len(), 1);
 
         settle(DEFAULT_COALESCE_WINDOW).await;
@@ -2938,35 +2460,7 @@ mod subscriptions {
         );
     }
 
-    /// Subscribing is how a session leaves legacy mode; the two contracts are
-    /// never served to one session at once.
-    #[test]
-    fn subscribing_drops_the_sessions_legacy_events() {
-        let bus = ChangeBus::new(DEFAULT_COALESCE_WINDOW);
-        let (sender, mut rx, key) = SessionSender::observable("s-1");
-        bus.subscribe_legacy(&sender);
-        bus.subscribe(
-            &sender,
-            spec(
-                "s-focus",
-                Scope::Entity("run-7".into()),
-                Mode::Realtime,
-                Priority::Foreground,
-            ),
-        );
-
-        bus.note_entity("run-7");
-        bus.flush();
-
-        let seen = drained(&mut rx, &key);
-        assert_eq!(bus.subscriber_count(), 0);
-        assert!(
-            seen.iter().all(|push| push["type"] == CHANGES_EVENT),
-            "{seen:?}"
-        );
-    }
-
-    /// `changes.list` and `changes.unsubscribe`, per session.
+    /// What a session holds, and `changes.unsubscribe`, per session.
     #[test]
     fn a_session_lists_and_drops_its_own_subscriptions() {
         let bus = ChangeBus::new(DEFAULT_COALESCE_WINDOW);

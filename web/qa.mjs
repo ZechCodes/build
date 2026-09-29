@@ -55,7 +55,7 @@ async function relayRefusesAppRpc({ mintGatewayToken, device }) {
   const rendezvous = await openRendezvous({ relayUrl, mintGatewayToken });
   try {
     const signaling = await openRelaySignalingSession({ rendezvous, transport, device });
-    await signaling.call("session.hello", { client: { name: "qa", version: "0", api_range: ">=1.0.0 <2.0.0" } });
+    await signaling.call("session.hello", { client: { name: "qa", version: "0", api_range: ">=2.0.0 <4.0.0" } });
     return null;
   } catch (error) {
     return error;
@@ -146,14 +146,13 @@ async function main() {
   check("workspace terminal prepares isolated QA sources", !!(await waitFor(() => pushedText(pushes, setupTerm.term_id).includes(setupMarker))));
   await term.call("term.close", { term_id: setupTerm.term_id });
 
-  const project = await call("project.add", {
+  const project = await call("project.create", {
     name: `qa-mixed-${tag}`,
-    sources: [
-      { name: "api", remote: `file://${remotePath}` },
-      { name: "assets", path: plainPath },
-    ],
+    sources: [{ name: "api", remote: `file://${remotePath}` }],
   });
-  check("project.add accepts remote and path sources", !!project.project_id, project.project_id);
+  check("project.create accepts a remote source", !!project.project_id, project.project_id);
+  const extended = await call("project.add_source", { project_id: project.project_id, name: "assets", path: plainPath });
+  check("project.add_source adds a path source", extended.project_id === project.project_id, extended.project_id);
 
   const workspace = await call("workspace.create", {
     project_id: project.project_id,

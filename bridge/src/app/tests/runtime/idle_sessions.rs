@@ -415,44 +415,6 @@ fn a_pty_quiet_past_the_threshold_is_never_working() {
     );
 }
 
-/// Reading is what STARTS the reviewer's Working indicator (it stamps
-/// seen_at), and only a posted reply stops it. An agent that is never told
-/// that leaves the line running after it has finished — so the read itself
-/// has to say so, in the one place the agent is guaranteed to look.
-#[test]
-fn reading_messages_says_it_started_the_working_indicator() {
-    let mut thread = crate::thread::Thread::new("run-read");
-    thread.post_user("do the thing", None, "2026-08-09T18:00:00Z");
-
-    let read = apply_thread_action(
-        &mut thread,
-        BridgeAction::ReadUnreadMessages,
-        "2026-08-09T18:00:01Z",
-    )
-    .expect("reading succeeds");
-    let notice = read["working"]
-        .as_str()
-        .expect("a read that returned messages explains the indicator it started");
-    assert!(
-        notice.contains("post_thread_message"),
-        "it must name the tool that stops it: {notice}"
-    );
-
-    // Nothing unread: nothing was marked seen, so nothing was started and
-    // there is nothing to explain.
-    let empty = apply_thread_action(
-        &mut thread,
-        BridgeAction::ReadUnreadMessages,
-        "2026-08-09T18:00:02Z",
-    )
-    .expect("an empty read succeeds");
-    assert!(empty["messages"].as_array().unwrap().is_empty());
-    assert!(
-        empty["working"].is_null(),
-        "an empty read starts no indicator: {empty}"
-    );
-}
-
 /// A crash's only explanation is usually the thing the harness printed
 /// before it died — codex refusing to start its required MCP server, a
 /// provider saying the account is out of quota. Reporting a bare exit code
@@ -659,7 +621,7 @@ fn mark_idle_demotes_a_quiet_plan_and_run() {
     );
     let demoted = state.mark_idle_tasks(Duration::from_secs(3600));
     assert!(demoted.contains(&"run-idle".to_string()), "{demoted:?}");
-    let got = state.handle(req("run.get", json!({ "run_id": "run-idle" })));
+    let got = run_detail(&mut state, json!({ "run_id": "run-idle" }));
     assert_eq!(got["result"]["state"], "idle_unreported", "{got:?}");
     assert!(got["result"]["last_error"]
         .as_str()
@@ -704,7 +666,7 @@ fn mark_idle_leaves_an_agent_stopped_at_a_usage_limit_alone() {
     let demoted = state.mark_idle_tasks(Duration::from_secs(3600));
 
     assert!(!demoted.contains(&"run-limited".to_string()), "{demoted:?}");
-    let got = state.handle(req("run.get", json!({ "run_id": "run-limited" })));
+    let got = run_detail(&mut state, json!({ "run_id": "run-limited" }));
     assert_eq!(got["result"]["state"], "building", "{got:?}");
 }
 
@@ -793,10 +755,10 @@ fn a_delivery_that_never_reaches_an_agent_is_visible_on_its_entity() {
 
     deliver_pending_agent_turns(&state);
 
-    let got = state
-        .lock()
-        .unwrap()
-        .handle(req("run.get", json!({ "run_id": "run-unreachable" })));
+    let got = run_detail(
+        &mut state.lock().unwrap(),
+        json!({ "run_id": "run-unreachable" }),
+    );
     let last_error = got["result"]["last_error"].as_str().unwrap_or_default();
     assert!(
         last_error.contains("could not reach the agent"),
@@ -844,10 +806,10 @@ fn a_start_that_never_reached_a_harness_says_so_on_its_agent() {
 
     deliver_pending_agent_turns(&state);
 
-    let got = state
-        .lock()
-        .unwrap()
-        .handle(req("run.get", json!({ "run_id": "run-no-start" })));
+    let got = run_detail(
+        &mut state.lock().unwrap(),
+        json!({ "run_id": "run-no-start" }),
+    );
     let agent = &got["result"]["agents"][0];
     assert!(
         agent["start_error"]
@@ -881,10 +843,7 @@ fn a_fresh_turn_forgets_the_last_start_failure() {
     // this one ends. The marks it holds are released when it drops.
     let _taken = state.lock().unwrap().take_pending_turns();
 
-    let got = state
-        .lock()
-        .unwrap()
-        .handle(req("run.get", json!({ "run_id": "run-retry" })));
+    let got = run_detail(&mut state.lock().unwrap(), json!({ "run_id": "run-retry" }));
     assert!(
         got["result"]["agents"][0]["start_error"].is_null(),
         "the turn now on its way answers for the session, not the one before it: {got:?}"
@@ -962,7 +921,7 @@ fn a_working_run_with_no_agent_tab_is_an_anomaly_not_a_skip() {
         vec!["run-tabless".to_string()],
         "a working run with no agent at all must be demoted, not skipped"
     );
-    let got = state.handle(req("run.get", json!({ "run_id": "run-tabless" })));
+    let got = run_detail(&mut state, json!({ "run_id": "run-tabless" }));
     assert_eq!(got["result"]["state"], "idle_unreported", "{got:?}");
     // No harness exited here, so no exit-code claim is invented.
     assert!(got["result"]["last_error"].is_null(), "{got:?}");

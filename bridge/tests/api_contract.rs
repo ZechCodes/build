@@ -148,7 +148,7 @@ fn every_fixture_verb_has_an_advertised_capability() {
 #[test]
 fn media_page_features_are_announced_together() {
     let advertised: BTreeSet<&str> = capabilities(false).into_iter().collect();
-    assert_eq!(API_VERSION, "2.2.0");
+    assert_eq!(API_VERSION, "3.0.0");
     assert!(advertised.contains("thread.attachmentChunks"));
     assert!(advertised.contains("fs.mediaRawPages"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
@@ -566,11 +566,6 @@ fn every_event_example_is_what_the_bridge_serialises() {
     assert!(!examples.is_empty(), "events.json states no examples");
     for event in &examples {
         match event["type"].as_str().expect("an event names its type") {
-            "board.changed" => assert_eq!(*event, changes::ChangeKey::Board.payload()),
-            "entity.changed" => {
-                let id = event["id"].as_str().expect("entity.changed names an id");
-                assert_eq!(*event, changes::ChangeKey::Entity(id.to_string()).payload());
-            }
             changes::CHANGES_EVENT => {
                 assert!(event["subscription_id"].is_string(), "changes: id");
                 let items = event["items"].as_array().expect("changes: items");

@@ -504,130 +504,6 @@ fn a_create_that_cannot_clone_falls_back_and_says_so_on_the_conversation() {
     );
 }
 
-/// A bare worktree has no run, no agent and no conversation, so the only
-/// place the fallback can reach the human who asked for it is the answer to
-/// the ask — the same sentence the log and every thread carry.
-#[test]
-fn a_bare_worktree_that_cannot_be_cloned_says_so_in_its_answer() {
-    let (dir, repo) = init_repo();
-    let mut state = state_on_an_unclonable_project(dir.path(), &repo);
-    state.isolation = Isolation::Rift;
-    let project_id = state.project_at(0).id.clone();
-
-    let created = state.handle(req(
-        "worktree.create",
-        json!({ "project_id": project_id, "name": "somewhere to work" }),
-    ));
-
-    assert_eq!(created["ok"], true, "{created:?}");
-    let result = &created["result"];
-    assert_eq!(result["isolation"], "worktree", "{result:?}");
-    let note = result["isolation_note"].as_str().unwrap_or_default();
-    assert!(
-        note.starts_with("Created a git worktree: Rift isolation is unavailable here — ")
-            && note.contains("linked worktree"),
-        "the answer carries the volume's own sentence: {result:?}"
-    );
-    let path = std::path::PathBuf::from(result["path"].as_str().unwrap_or_default());
-    assert_eq!(
-        Isolation::of(&path),
-        Some(Isolation::Worktree),
-        "and the checkout is the one this volume can make: {path:?}"
-    );
-}
-
-/// The row that stands where a checkout will be says how that checkout is
-/// being made, and what it says is the resolver's answer rather than the
-/// account's ask: a board watching a create appear reads the same fact off
-/// the row that it will read off the card.
-#[test]
-fn a_creating_row_carries_the_isolation_the_checkout_is_being_made_as() {
-    let (dir, repo) = init_repo();
-    let mut app = state_on_an_unclonable_project(dir.path(), &repo);
-    app.isolation = Isolation::Rift;
-    let project_id = app.project_at(0).id.clone();
-    let (gate, gate_handle) = OffLockGate::new();
-    app.off_lock_gate = Some(gate);
-    let state = app.shared();
-
-    let created = frame_on_a_thread(
-        &state,
-        "s-create",
-        "worktree.create",
-        json!({ "project_id": project_id, "name": "Scratch Space" }),
-    );
-    gate_handle.wait_for_arrival();
-
-    let board = frame_on_a_thread(&state, "s-board", "board.list", json!({}))
-        .recv_timeout(Duration::from_secs(10))
-        .expect("the board answers while the checkout is being cut");
-    let pending = pending_on_the_board(&board);
-    assert_eq!(
-        pending[0]["isolation"],
-        json!("worktree"),
-        "the row says what this volume can make, not what the account asked for: {pending:?}"
-    );
-
-    gate_handle.release();
-    let created = created
-        .recv_timeout(Duration::from_secs(30))
-        .expect("the create answers once its git is done");
-    assert_eq!(created["ok"], true, "{created:?}");
-}
-
-/// And on a volume that clones, the same create is a clone from the row
-/// onwards: what the board is told while the git runs is what the checkout
-/// turns out to be, and a clone that was made announces no fallback.
-#[test]
-fn a_create_under_cloning_stands_as_a_clone_and_settles_as_one() {
-    let (dir, repo) = init_repo();
-    if !crate::isolation::probe::rift_or_skip(dir.path()) {
-        return;
-    }
-    let mut app = qa_state(&repo, dir.path());
-    app.isolation = Isolation::Rift;
-    let project_id = app.project_at(0).id.clone();
-    let (gate, gate_handle) = OffLockGate::new();
-    app.off_lock_gate = Some(gate);
-    let state = app.shared();
-
-    let created = frame_on_a_thread(
-        &state,
-        "s-create",
-        "worktree.create",
-        json!({ "project_id": project_id, "name": "Scratch Space" }),
-    );
-    gate_handle.wait_for_arrival();
-
-    let board = frame_on_a_thread(&state, "s-board", "board.list", json!({}))
-        .recv_timeout(Duration::from_secs(10))
-        .expect("the board answers while the clone is being made");
-    let pending = pending_on_the_board(&board);
-    assert_eq!(
-        pending[0]["isolation"],
-        json!("rift"),
-        "the row says the checkout being made is a clone: {pending:?}"
-    );
-
-    gate_handle.release();
-    let created = created
-        .recv_timeout(Duration::from_secs(30))
-        .expect("the create answers once its git is done");
-    assert_eq!(created["ok"], true, "{created:?}");
-    let result = &created["result"];
-    assert_eq!(result["isolation"], "rift", "{result:?}");
-    assert!(
-        result["isolation_note"].is_null(),
-        "a clone that was made announces no fallback: {result:?}"
-    );
-    let path = std::path::PathBuf::from(result["path"].as_str().unwrap_or_default());
-    assert_eq!(
-        Isolation::of(&path),
-        Some(Isolation::Rift),
-        "and what stands on disk is the clone: {path:?}"
-    );
-}
-
 /// The whole feature, end to end, on a volume that clones: the account
 /// chooses cloning, the run that follows lives in a clone of the project
 /// rather than a linked worktree, every surface that reads its work still
@@ -693,8 +569,12 @@ fn a_run_dispatched_under_cloning_lives_in_a_clone_and_finish_refuses_it() {
     // not Build's to remove whatever its isolation, before asking where the
     // work went.
     let finished = state.handle(req(
-        "run.finish",
-        json!({ "run_id": run_id, "action": "merge" }),
+        "branch.finish",
+        json!({
+            "project_id": state.project_of(&run_id).unwrap(),
+            "branch": state.runs[&run_id].worktree.branch(),
+            "action": "merge",
+        }),
     ));
     assert_eq!(finished["ok"], false, "{finished:?}");
     assert_eq!(finished["error_code"], "conflict", "{finished:?}");
@@ -726,8 +606,12 @@ fn a_run_in_a_worktree_is_refused_by_done_as_an_adopted_checkout() {
     );
 
     let finished = state.handle(req(
-        "run.finish",
-        json!({ "run_id": run_id, "action": "merge" }),
+        "branch.finish",
+        json!({
+            "project_id": state.project_of(&run_id).unwrap(),
+            "branch": state.runs[&run_id].worktree.branch(),
+            "action": "merge",
+        }),
     ));
     assert_eq!(finished["ok"], false, "{finished:?}");
     assert_eq!(finished["error_code"], "conflict", "{finished:?}");

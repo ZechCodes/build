@@ -1395,7 +1395,8 @@ impl AppState {
         }
     }
 
-    /// `agent.list` — the entity's agents, in rail order.
+    /// The entity's agents, in rail order: what `list_workspace_agents` and a
+    /// workspace's detail read.
     pub(crate) fn agent_list(&mut self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
         Ok(json!({

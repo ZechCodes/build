@@ -1,7 +1,7 @@
-//! The changes family: `changes.subscribe`, `changes.unsubscribe`,
-//! `changes.list` (wire spec Part 1, step 1.1).
+//! The changes family: `changes.subscribe` and `changes.unsubscribe` (wire
+//! spec Part 1, step 1.1).
 //!
-//! Three verbs over [`crate::changes::ChangeBus`], and the only family whose
+//! Two verbs over [`crate::changes::ChangeBus`], and the only family whose
 //! subject is the session itself: a subscription is an address to push to, so
 //! every verb here needs the caller's own [`SessionSender`]. [`dispatch`]
 //! deliberately carries only `AppState`, so the frame handler names the
@@ -13,8 +13,7 @@
 //! [`dispatch`]: crate::api::v1::dispatch
 //!
 //! The params ARE the wire types: [`SubscriptionSpec`] is what
-//! `changes.subscribe` takes and what `changes.list` answers with, so the
-//! fixture holds one shape rather than two copies of it. Subscribe is an
+//! `changes.subscribe` takes. Subscribe is an
 //! upsert by `subscription_id`; re-sending an id with a new mode is how a
 //! client changes cadence, and the bus keeps what that subscription already
 //! held.
@@ -24,7 +23,7 @@
 //! is refused by name — every one of them, in `details.kinds` — and a client
 //! can drop exactly those and ask again (announced as `changes.refusedKinds`).
 
-use super::{Handler, NoParams};
+use super::Handler;
 use crate::api::ApiError;
 use crate::app::{AppState, WatchAnswer};
 use crate::carrier::SessionSender;
@@ -48,7 +47,6 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             UnsubscribeParams,
             Unsubscribed
         ),
-        v1_method!("changes.list", changes_list, NoParams, SubscriptionList),
     ]
 }
 
@@ -106,11 +104,6 @@ pub struct Unsubscribed {
     pub ok: bool,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct SubscriptionList {
-    pub subscriptions: Vec<SubscriptionSpec>,
-}
-
 // -------------------------------------------------------------- handlers ---
 
 /// Upsert one subscription for the calling session.
@@ -145,14 +138,6 @@ fn changes_unsubscribe(
         .unsubscribe_one(session.session_id(), &params.subscription_id);
     app.defer_watch(WatchAnswer::Unsubscribed);
     Ok(Unsubscribed { ok: true })
-}
-
-/// What this session is subscribed to — the SPA's reconnect diff.
-fn changes_list(app: &mut AppState, _params: NoParams) -> Result<SubscriptionList, ApiError> {
-    let session = caller()?;
-    Ok(SubscriptionList {
-        subscriptions: app.changes().list(session.session_id()),
-    })
 }
 
 /// The spec with its kinds read, or `invalid_params` naming every kind this
@@ -216,11 +201,6 @@ mod tests {
     #[test]
     fn the_changes_unsubscribe_fixture_round_trips() {
         round_trips("changes.unsubscribe");
-    }
-
-    #[test]
-    fn the_changes_list_fixture_round_trips() {
-        round_trips("changes.list");
     }
 
     fn focus() -> SubscriptionSpec {

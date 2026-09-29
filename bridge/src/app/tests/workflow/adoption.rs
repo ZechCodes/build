@@ -3,39 +3,6 @@ use super::*;
 // ---- adopt / release / delete --------------------------------------------
 
 #[test]
-fn releasing_a_nonworkspace_run_keeps_its_project_message_after_restart() {
-    let (dir, repo) = init_repo();
-    let project_id;
-    let anchor = crate::session_summary::message_millis("2026-09-01T00:00:00Z").unwrap();
-    {
-        let mut state = qa_state(&repo, dir.path());
-        project_id = state.project_at(0).id.clone();
-        let run_id = adopted_run(&mut state, &repo, dir.path(), "release-history");
-        let agent_id = primary_agent_id(&state, &run_id);
-        let mut active = state.runs.remove(&run_id).unwrap();
-        active
-            .agents
-            .by_id_mut(&agent_id)
-            .unwrap()
-            .thread
-            .post_user("project history", None, "2026-09-01T00:00:00Z");
-        state.finish_run_mutation(run_id.clone(), active).unwrap();
-        let released = state.handle(req("run.release", json!({"run_id":run_id})));
-        assert_eq!(released["ok"], true, "{released:?}");
-    }
-    let restarted = qa_state(&repo, dir.path());
-    let projects = restarted.project_list();
-    let project = projects["projects"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|project| project["project_id"] == project_id)
-        .unwrap();
-    assert_eq!(project["session_started_ms"], anchor);
-    assert_eq!(project["last_activity_ms"], anchor);
-}
-
-#[test]
 fn merge_release_cleanup_keeps_a_nonworkspace_message_after_restart() {
     let (dir, repo) = init_repo();
     let anchor = crate::session_summary::message_millis("2026-09-01T00:00:00Z").unwrap();
@@ -96,17 +63,10 @@ fn run_adopt_mints_no_agent_and_every_surface_still_answers() {
         "adoption speaks to nobody, so it creates nobody"
     );
 
-    let got = state.handle(req(
-        "branch.get",
-        json!({ "project_id": project_id, "branch": "feature-agentless" }),
-    ));
-    assert_eq!(got["ok"], true, "{got:?}");
-    assert_eq!(
-        got["result"]["agents"].as_array().unwrap().len(),
-        0,
-        "{got:?}"
-    );
-    let listed = state.handle(req("agent.list", json!({ "entity_id": run_id })));
+    let row = checkout_row(&mut state, &project_id, "feature-agentless")
+        .expect("the adopted checkout has a row");
+    assert_eq!(row["agents"].as_array().unwrap().len(), 0, "{row:?}");
+    let listed = agent_roster(&mut state, json!({ "entity_id": run_id }));
     assert_eq!(listed["result"]["agents"].as_array().unwrap().len(), 0);
     // The board reads a row off it, and the idle sweep walks past it,
     // rather than either one reaching for an agent that is not there —
@@ -357,65 +317,6 @@ fn a_dispatched_branch_mints_its_agent_on_the_dispatchs_own_choice() {
     );
 }
 
-#[test]
-fn run_adopt_release_and_delete() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let project_id = state.project_at(0).id.clone();
-    let _ext_path = add_external_worktree(&repo, dir.path(), "feature-x", "feature-x");
-    // Resolve the scanner-minted worktree id (match by branch; the scanner
-    // canonicalizes paths, which differ from the raw join on macOS).
-    let worktree_id = state
-        .scan_external_worktrees_now(&project_id)
-        .unwrap()
-        .into_iter()
-        .find(|w| w.branch.as_deref() == Some("feature-x"))
-        .expect("the external worktree is discoverable")
-        .id;
-    let adopted = state.handle(req(
-        "run.adopt",
-        json!({ "project_id": project_id, "worktree_id": worktree_id }),
-    ));
-    assert_eq!(adopted["result"]["state"], "review", "{adopted:?}");
-    assert_eq!(adopted["result"]["adopted"], true);
-    let run_id = run_id_of(&adopted);
-    // Build's agent in that worktree reports `done` for THIS run.
-    let root = AppState::canonical_root(&state.runs[&run_id].worktree.path);
-    let (tab, _rx) = Tab::spawn_agent(
-        run_id.clone(),
-        crate::agent::derived_agent_id(&run_id),
-        test_agent_session_request(
-            AgentProvider::default(),
-            warm_tui_spec(),
-            root.clone(),
-            terminal_size(120, 40),
-        ),
-    )
-    .unwrap();
-    let agent_pid = agent_pid(&tab).expect("a live agent");
-    state
-        .session_registry
-        .test_insert_tab(derived_agent_key(&root, &run_id), tab);
-
-    // Release drops the record, keeps the files.
-    let released = state.handle(req("run.release", json!({ "run_id": run_id })));
-    assert_eq!(released["ok"], true, "{released:?}");
-    assert!(!state.runs.contains_key(&run_id));
-    assert!(
-        root.exists(),
-        "un-adopting must never touch the user's files"
-    );
-    // …and takes Build's agent with it: an agent whose owner is gone would
-    // report `done` into the unknown-entity log forever.
-    assert!(
-        !state
-            .session_registry
-            .contains(&derived_agent_key(&root, &run_id)),
-        "releasing a run closes the agent it owned"
-    );
-    assert!(process_reaped(agent_pid), "the agent is killed AND reaped");
-}
-
 /// A branch view has two surfaces that can each mutate first — the agent
 /// rail and the Changes review — so two adoptions of the same checkout can
 /// arrive back to back. The second must land on the run the first minted.
@@ -571,7 +472,7 @@ fn run_adopt_answers_from_its_epilogue_with_the_runs_own_view() {
     assert_eq!(adopted["result"]["branch"], "feature-y", "{adopted:?}");
     assert_eq!(adopted["result"]["adopted"], true, "{adopted:?}");
     let run_id = run_id_of(&adopted);
-    let fetched = state.handle(req("run.get", json!({ "run_id": run_id })));
+    let fetched = run_detail(&mut state, json!({ "run_id": run_id }));
     assert_eq!(
         fetched["result"]["worktree_path"], adopted["result"]["worktree_path"],
         "the deferred reply is the run's own view: {fetched:?}"
@@ -640,9 +541,14 @@ fn two_adopts_of_one_checkout_converge_on_one_run() {
     // And the id it names is one every other verb accepts: a reply that
     // promises a run must promise a durable one.
     let converged = run_id_of(&retried);
-    let fetched = frame_on_a_thread(&state, "s-two", "run.get", json!({ "run_id": converged }))
-        .recv_timeout(Duration::from_secs(10))
-        .expect("run.get is answered");
+    let fetched = frame_on_a_thread(
+        &state,
+        "s-two",
+        "entity.seen",
+        json!({ "entity_id": converged }),
+    )
+    .recv_timeout(Duration::from_secs(10))
+    .expect("entity.seen is answered");
     assert_eq!(
         fetched["ok"], true,
         "the id the second asker converged on resolves: {fetched:?}"

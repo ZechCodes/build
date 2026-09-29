@@ -1,28 +1,5 @@
 use super::*;
 
-/// The retired Task destination refuses before routing the capture or creating a plan.
-#[test]
-fn a_router_cannot_create_a_task_from_a_capture() {
-    let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
-    let project_id = state.project_at(0).id.clone();
-    let (capture_id, _) = captured(&mut state, "keep this as captured work");
-
-    let refused = state.router_action(
-        &capture_id,
-        BridgeAction::CreateTask {
-            project_id,
-            goal: "must not become a plan".to_string(),
-            rationale: Some("legacy router choice".to_string()),
-        },
-    );
-
-    assert_eq!(refused.unwrap_err(), crate::app::tasks::TASKS_RETIRED_ERROR);
-    assert!(state.plans.is_empty());
-    let capture = capture_record(&mut state, &capture_id);
-    assert!(capture["routing"].is_null(), "{capture:?}");
-}
-
 // ==== the router: what decides where a capture goes ======================
 
 /// Take a capture and hand back its id and the router session deciding it —
@@ -292,9 +269,9 @@ fn asked_with_two_options(state: &mut AppState, capture_id: &str) {
         .unwrap();
 }
 
-/// The router's suggestions reach `capture.get`, `capture.list` and the
-/// feed row, numbered and whole. Anything less and the decision surface has
-/// a question with no buttons under it.
+/// The router's suggestions reach `capture.get` and the feed row, numbered
+/// and whole. Anything less and the decision surface has a question with no
+/// buttons under it.
 #[test]
 fn the_options_a_router_offers_reach_every_surface_that_shows_the_capture() {
     let (dir, repo) = init_repo();
@@ -322,12 +299,6 @@ fn the_options_a_router_offers_reach_every_surface_that_shows_the_capture() {
     let record = capture_record(&mut state, &capture_id);
     assert_eq!(record["question"]["options"], expected);
     assert_eq!(record["question"]["chosen_option_id"], Value::Null);
-
-    let listed = state.handle(req("capture.list", json!({})));
-    assert_eq!(
-        listed["result"]["captures"][0]["question"]["options"],
-        expected
-    );
 
     let row = capture_rows(&mut state).remove(0);
     assert_eq!(row["question"]["options"], expected);
@@ -497,10 +468,6 @@ fn cancelling_a_capture_ends_the_routing_and_removes_it() {
     assert!(!state.router_sessions.contains_key(&capture_id));
     assert!(!scratch.exists(), "the router's scratch goes with it");
     assert_eq!(capture_rows(&mut state), Vec::<Value>::new());
-    assert_eq!(
-        state.handle(req("capture.list", json!({})))["result"]["captures"],
-        json!([])
-    );
     assert_eq!(
         Store::new(dir.path().join("store"))
             .expect("store opens")
@@ -938,10 +905,7 @@ fn neither_session_kind_can_call_the_others_tools() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let goal = "add a greeting";
-    let task = state
-        .plan_create(&json!({ "goal": goal, "dispatch": false }))
-        .expect("the stored task fixture is filed through the domain seam");
-    let task_id = task["plan_id"].as_str().unwrap().to_string();
+    let task_id = file_legacy_task(&mut state, goal);
     let (capture_id, _) = captured(&mut state, "ship it");
 
     let coding_reaching_out = state
@@ -954,11 +918,15 @@ fn neither_session_kind_can_call_the_others_tools() {
     );
 
     let router_reaching_in = state
-        .router_action(&capture_id, BridgeAction::ReadUnreadMessages)
+        .router_action(
+            &capture_id,
+            BridgeAction::SetTopic {
+                topic: "routing".to_string(),
+            },
+        )
         .unwrap_err();
     assert!(
-        router_reaching_in.contains("read_unread_messages")
-            && router_reaching_in.contains("coding tool"),
+        router_reaching_in.contains("set_topic") && router_reaching_in.contains("coding tool"),
         "{router_reaching_in}"
     );
 }

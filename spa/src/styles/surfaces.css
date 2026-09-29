@@ -104,16 +104,14 @@
   --diff-sticky-top:calc(0px - var(--pane-top)); }
 @media (max-width: 900px) { .ivviewer { padding-left:0; } }
 
-/* The task's own head: where it stands and its gate. What the task asks for
-   is the conversation's first message, so the head never repeats it. */
+/* The plan's own head: where it stands. What the plan asks for is the
+   conversation's first message, so the head never repeats it. */
 /* The head is told from the list by the room under it, not by a rule. */
 .ivhead { padding:12px 13px 16px var(--pane-gutter); }
 .ivmeta { display:flex; align-items:center; gap:8px; }
 .ivmeta .chip { margin-left:0; }
 .ivproject { font-size:11.5px; color:var(--dim); min-width:0; overflow:hidden;
   text-overflow:ellipsis; white-space:nowrap; }
-.ivgate { display:flex; flex-wrap:wrap; gap:7px; margin-top:11px; }
-.ivgate:empty { display:none; }
 /* A section label inside the rail — the same quiet header the commit rail uses. */
 .ivsec { font-size:11px; font-family:var(--mono); letter-spacing:.08em; color:var(--dim); font-weight:650;
   text-transform:uppercase; display:block; margin-top:18px; }
@@ -131,43 +129,6 @@
 .ivstages .stagerow.sel .stagetitle { color:var(--accent); }
 .ivstages .stagerow .stagetitle { font-size:13px; }
 .ivstages .empty { padding:12px 13px 12px var(--pane-gutter); }
-
-/* The assignment control: one line saying what the handoff would be, which opens
-   the overlay holding the targets and the overrides the dispatch carries. The
-   line is the whole of it in the rail — open or shut, the row is one row. */
-.ivassign { margin-top:18px; }
-.ivassign-head { display:flex; align-items:center; gap:10px;
-  width:100%; text-align:left; font:inherit; background:none; border:none; cursor:pointer;
-  padding:11px 13px 11px var(--pane-gutter); }
-.ivassign-head:hover { background:var(--line2); }
-.ivassign-text { display:flex; flex-direction:column; align-items:flex-start; gap:3px; min-width:0; }
-.ivassign-sum { font-size:12px; color:var(--ink2); max-width:100%;
-  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.ivassign-caret { margin-left:auto; color:var(--ink2); }
-.ivassign.open .ivassign-sum, .ivassign.open .ivassign-caret { color:var(--accent); }
-
-/* The overlay itself: anchored under the control on a desktop (placed in JS,
-   which is what knows where the control ended up), standing on the bottom edge
-   of a phone, where there is no room to anchor into. */
-.assign-scrim { position:fixed; inset:0; z-index:150; }
-.assign-scrim.at-bottom { background:var(--scrim); }
-.assign-pop { position:fixed; box-sizing:border-box; background:var(--panel);
-  border:1px solid var(--line); border-radius:12px; box-shadow:0 24px 60px var(--shadow);
-  padding:11px 13px 13px; max-height:min(70vh, 520px); overflow-y:auto; }
-.assign-pop:focus { outline:none; }
-.assign-pop.at-bottom { left:0; right:0; bottom:0; top:auto; width:auto;
-  border-width:1px 0 0; border-radius:14px 14px 0 0; max-height:78vh;
-  padding-bottom:calc(13px + env(safe-area-inset-bottom, 0px)); }
-.assign-pop-head { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
-.assign-pop-head .btn { margin-left:auto; }
-.assign-fields { display:flex; flex-direction:column; gap:9px; }
-.ivfield { display:flex; flex-direction:column; gap:3px; font-size:11.5px; color:var(--dim); }
-.ivfield select, .ivfield input { font:inherit; font-size:13px; color:var(--ink);
-  background:var(--bg); border:1px solid var(--line); border-radius:7px; padding:6px 8px;
-  transition:border-color var(--motion-fast), box-shadow var(--motion-fast), background var(--motion-fast); }
-.ivfield select:focus-visible, .ivfield input:focus-visible { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--focus-ring); background:var(--panel); }
-.ivfield select:disabled, .ivfield option:disabled { color:var(--dim); }
-.ivassign-gap { font-size:11.5px; color:var(--amber); display:flex; flex-direction:column; gap:4px; }
 
 /* The implementations a task has had: its children, each one a branch. */
 .ivlineage { margin-top:18px; padding:11px 13px 4px var(--pane-gutter); }

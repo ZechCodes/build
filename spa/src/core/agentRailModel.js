@@ -2,8 +2,8 @@
 // about each of them, which conversation is open, and how a completion report
 // reads.
 //
-// The rail belongs to one work item — a branch or a task — and the bridge
-// answers for that item with one payload (branch.get / task.get) carrying its
+// The rail belongs to one work item — a branch or a task — and one payload
+// for that item (the branch's row, or a legacy plan's task.get) carries its
 // agents and its conversation. Everything here reads that payload; core/
 // agentRail.js renders and wires it.
 //

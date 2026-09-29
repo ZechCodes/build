@@ -67,23 +67,6 @@ impl Store {
     /// loading the rest of the conversation. The agent skeleton and selected
     /// item rows advance in one transaction, including when the messages sit
     /// below the bounded resident tail after restart.
-    pub fn acknowledge_operation_messages(
-        &self,
-        conversation_id: &str,
-        operation_id: &str,
-        start_sequence: u64,
-        end_sequence: u64,
-        now: &str,
-    ) -> Result<u64, StoreError> {
-        self.acknowledge_operation_messages_with_working(
-            conversation_id,
-            Some(operation_id),
-            start_sequence,
-            end_sequence,
-            now,
-            true,
-        )
-    }
     pub fn acknowledge_native_operation_messages(
         &self,
         conversation_id: &str,
@@ -92,13 +75,12 @@ impl Store {
         end_sequence: u64,
         now: &str,
     ) -> Result<u64, StoreError> {
-        self.acknowledge_operation_messages_with_working(
+        self.acknowledge_messages(
             conversation_id,
             Some(operation_id),
             start_sequence,
             end_sequence,
             now,
-            false,
         )
     }
     pub fn acknowledge_native_legacy_messages(
@@ -108,23 +90,15 @@ impl Store {
         end_sequence: u64,
         now: &str,
     ) -> Result<u64, StoreError> {
-        self.acknowledge_operation_messages_with_working(
-            conversation_id,
-            None,
-            start_sequence,
-            end_sequence,
-            now,
-            false,
-        )
+        self.acknowledge_messages(conversation_id, None, start_sequence, end_sequence, now)
     }
-    fn acknowledge_operation_messages_with_working(
+    fn acknowledge_messages(
         &self,
         conversation_id: &str,
         operation_id: Option<&str>,
         start_sequence: u64,
         end_sequence: u64,
         now: &str,
-        mark_working: bool,
     ) -> Result<u64, StoreError> {
         self.in_transaction(|tx| {
             let raw_agent: String = tx.query_row(
@@ -161,17 +135,8 @@ impl Store {
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            match (operation_id, mark_working) {
-                (Some(operation_id), true) => {
-                    agent.thread.read_operation_messages(
-                        operation_id,
-                        start_sequence,
-                        end_sequence,
-                        now,
-                    );
-                    agent.thread.note_operation_read(now);
-                }
-                (Some(operation_id), false) => {
+            match operation_id {
+                Some(operation_id) => {
                     agent.thread.read_native_operation_messages(
                         operation_id,
                         start_sequence,
@@ -179,12 +144,11 @@ impl Store {
                         now,
                     );
                 }
-                (None, false) => {
+                None => {
                     agent
                         .thread
                         .read_native_legacy_messages(start_sequence, end_sequence, now);
                 }
-                (None, true) => unreachable!("legacy acknowledgement never starts work"),
             }
             let acknowledged_sequence = agent
                 .thread

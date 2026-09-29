@@ -663,7 +663,7 @@ mod tests {
         });
         std::thread::sleep(Duration::from_millis(20));
         {
-            let timer = queued.start("worktree.create");
+            let timer = queued.start("workspace.create");
             *timer.lock(&state) += 1;
         }
         holder.join().unwrap();
@@ -671,7 +671,7 @@ mod tests {
         let lines = lines.lock().unwrap();
         assert_eq!(lines.len(), 1, "one line per slow frame: {lines:?}");
         let line = &lines[0];
-        assert!(line.starts_with("slow frame worktree.create "), "{line}");
+        assert!(line.starts_with("slow frame workspace.create "), "{line}");
         for label in ["total=", "queued=", "lock_wait=", "held=", "waiting="] {
             assert!(line.contains(label), "{label} missing from {line}");
         }
@@ -788,7 +788,7 @@ mod tests {
     fn a_frames_lock_time_is_summed_across_its_acquisitions() {
         let (clock, _) = recording_clock();
         let state = Arc::new(Mutex::new(0u32));
-        let timer = clock.frame("run.create");
+        let timer = clock.frame("branch.dispatch");
         for _ in 0..3 {
             let mut held = timer.lock(&state);
             *held += 1;

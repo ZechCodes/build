@@ -1,11 +1,13 @@
-// The adapter for API major 2: everything this SPA knows about the wire. The
+// The adapter for API major 3: everything this SPA knows about the wire. The
 // module keeps its v1 name — 2.0.0 broke one thing, the task rename (#190):
 // every tracker and plan verb and feature name moved to `tasks.*` or
 // `task.*`, so a 1.x bridge is gated as behind rather than served names it
-// does not know.
+// does not know. 3.0.0 only removed verbs and pushes this SPA never used
+// (#207), so the same adapter still serves every 2.x bridge: the app can roll
+// before the bridge restarts.
 //
 // A surface never asks what version the bridge reports — it asks the adapter's
-// `capabilities`, the names in the greeting. Every 2.x bridge sends the list;
+// `capabilities`, the names in the greeting. Every 2.x and 3.x bridge sends the list;
 // the minor table that stood in for it on bridges before 1.22 went with 1.x.
 //
 // The adapter also owns error normalisation. A refusal carries `error_code`,
@@ -16,10 +18,10 @@
 import { satisfies } from "../semver.js";
 
 /** The range of bridge versions this adapter claims. */
-export const range = ">=2.0.0 <3.0.0";
+export const range = ">=2.0.0 <4.0.0";
 
 /** The API major it is the adapter for. */
-export const major = 2;
+export const major = 3;
 
 /** `ApiError.code` for a refusal that named none. */
 export const UNKNOWN_CODE = "unknown";
@@ -44,8 +46,6 @@ export const ERROR_CODES = Object.freeze([
  *  a throw — a later bridge may add one. `fixtures/api/v1/events.json` carries
  *  one example of each, and both ends are held to it. */
 export const EVENT_TYPES = Object.freeze([
-  "board.changed",
-  "entity.changed",
   "changes",
   "term.output",
   "term.reset",
@@ -54,9 +54,6 @@ export const EVENT_TYPES = Object.freeze([
   "bridge.update_status",
   "models.changed",
 ]);
-
-/** What a bridge that pushes but names no event list sends: the legacy pair. */
-const LEGACY_EVENTS = Object.freeze(["board.changed", "entity.changed"]);
 
 /** A refusal, whichever shape it arrived in. */
 export class ApiError extends Error {
@@ -160,9 +157,9 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
   };
 }
 
+/** The pushes the greeting names. A greeting that names none claims none. */
 function eventsOf(greeting) {
-  if (Array.isArray(greeting?.events)) return greeting.events.filter((name) => typeof name === "string");
-  return greeting?.push_events === true ? [...LEGACY_EVENTS] : [];
+  return Array.isArray(greeting?.events) ? greeting.events.filter((name) => typeof name === "string") : [];
 }
 
 /**

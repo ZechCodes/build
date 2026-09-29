@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { diffCommentAnchor, docCommentAnchor, diffThreadMessages } from "../src/core/notes.js";
+import { diffCommentAnchor, diffThreadMessages } from "../src/core/notes.js";
 
 describe("diffCommentAnchor", () => {
   it("names the artifact, path, side and line span of the passage", () => {
@@ -34,25 +34,6 @@ describe("diffCommentAnchor", () => {
   });
 });
 
-describe("docCommentAnchor", () => {
-  it("carries the heading chain, the passage, and its source lines", () => {
-    expect(
-      docCommentAnchor({ headingPath: ["Plan", "Schema"], snippet: " use sqlite ", lineStart: 12, lineEnd: 18 }),
-    ).toEqual({ heading_path: ["Plan", "Schema"], snippet: "use sqlite", line_start: 12, line_end: 18 });
-  });
-
-  it("omits the range when the passage could not be found in the source", () => {
-    const anchor = docCommentAnchor({ headingPath: [], snippet: "bolded away", lineStart: 0, lineEnd: 0 });
-    expect(anchor).toEqual({ heading_path: [], snippet: "bolded away" });
-  });
-
-  it("collapses a one-line passage to the same start and end", () => {
-    expect(docCommentAnchor({ headingPath: ["A"], snippet: "s", lineStart: 5 })).toMatchObject({
-      line_start: 5,
-      line_end: 5,
-    });
-  });
-});
 
 describe("diffThreadMessages", () => {
   it("anchors each comment and leaves the general note unanchored", () => {

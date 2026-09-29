@@ -479,8 +479,8 @@ export function outsidePressDismisses({ inside, hasPendingConfirm, fileMenuOpen 
 const AGENT_MESSAGEABLE_STATES = ["building", "blocked", "failed", "idle_unreported", "interrupted"];
 
 /** The task-scope agent-commit options for a task's state + goal: "Ask agent to
- *  commit" (task.message) only while the task is messageable, then the Build
- *  auto-commit (task.git_action commit) always. */
+ *  commit" (run.message) only while the task is messageable, then the Build
+ *  auto-commit (run.git_action commit) always. */
 export function taskAgentCommitOptions(state, goal) {
   const options = [];
   if (AGENT_MESSAGEABLE_STATES.includes(state))

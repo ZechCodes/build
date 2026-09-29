@@ -6,7 +6,7 @@ use super::*;
 use crate::app::workspaces::is_scratch_checkout;
 
 fn add_repo_project(state: &mut AppState, repo: &Path) -> String {
-    let added = state.handle(req("project.add", json!({"path": repo})));
+    let added = state.handle(req("project.create", open_folder(json!({"path": repo}))));
     assert_eq!(added["ok"], true, "{added:?}");
     added["result"]["project_id"].as_str().unwrap().to_string()
 }

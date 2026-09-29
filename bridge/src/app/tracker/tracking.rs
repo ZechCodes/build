@@ -5,48 +5,12 @@
 //! — the notices a change delivers — is [`super::notices`]; this file is only
 //! the membership and the per-agent read.
 
-use super::{StoredAnswer, TaskWrite};
+use super::TaskWrite;
 use crate::app::{require_str, AppState};
-use crate::store::TaskFilter;
 use crate::tracker::{Actor, Task, TaskEventKind};
 use serde_json::{json, Value};
 
 impl AppState {
-    /// `tasks.track` — this agent wants to hear about this task.
-    ///
-    /// Idempotent, and quiet about it: an agent already watching answers the
-    /// task unchanged with no event. A set does not record being told twice.
-    pub(crate) fn tasks_track(&mut self, params: &Value) -> Result<Value, String> {
-        let (project_id, task, agent_id) = self.tracking_request(params)?;
-        self.set_tracking(&project_id, task, &agent_id, true, Actor::User, None)
-    }
-
-    /// `tasks.untrack` — stop hearing about it.
-    pub(crate) fn tasks_untrack(&mut self, params: &Value) -> Result<Value, String> {
-        let (project_id, task, agent_id) = self.tracking_request(params)?;
-        self.set_tracking(&project_id, task, &agent_id, false, Actor::User, None)
-    }
-
-    /// The task and the agent a tracking call names, both checked against the
-    /// project the task belongs to.
-    ///
-    /// An agent of another project is refused by name, the way every
-    /// project-scoped handler refuses one: a task's watchers are its own
-    /// project's agents, and an agent elsewhere could not read what it was
-    /// told anyway.
-    fn tracking_request(&mut self, params: &Value) -> Result<(String, Task, String), String> {
-        let task_id = require_str(params, "task_id")?;
-        let agent_id = require_str(params, "agent_id")?;
-        let (project_id, task) = self.tracker_task(&task_id)?;
-        let entity_id = self
-            .entity_of_agent(&agent_id)
-            .ok_or_else(|| format!("unknown agent_id: {agent_id}"))?;
-        if self.projects.project_id_of(&entity_id) != Some(project_id.as_str()) {
-            return Err(format!("agent {agent_id} is not in project {project_id}"));
-        }
-        Ok((project_id, task, agent_id))
-    }
-
     /// Add or remove one tracker, writing the event only when something
     /// actually changed.
     ///
@@ -159,89 +123,5 @@ impl AppState {
         // timeline that recorded every scroll would be a timeline nobody could
         // read.
         self.commit_task_write(&project_id, write, &now)
-    }
-
-    /// `tasks.dismiss` — clear this task's inbox row until something else
-    /// happens to it.
-    ///
-    /// The same Done a conversation row has. A mark rather than a flag: the
-    /// next event is past it and the row comes back on its own, so nothing has
-    /// to remember to unset anything.
-    pub(crate) fn tasks_dismiss(&mut self, params: &Value) -> Result<Value, String> {
-        let task_id = require_str(params, "task_id")?;
-        let (project_id, task) = self.tracker_task(&task_id)?;
-        let newest = self
-            .tracker_store()?
-            .load_tracker_timeline(&task.id)
-            .stored()?
-            .last()
-            .map(|entry| match entry {
-                crate::tracker::TimelineEntry::Comment(comment) => comment.id.clone(),
-                crate::tracker::TimelineEntry::Event(event) => event.id.clone(),
-            });
-        let now = crate::store::now_rfc3339();
-        let mut write = TaskWrite::by(Actor::User, task);
-        write.task.dismissed_through = newest;
-        // No event: clearing a row is the reader tidying their own inbox, not
-        // something that happened to the task.
-        self.commit_task_write(&project_id, write, &now)
-    }
-
-    /// `tasks.for_agent` — what one agent holds and what it watches.
-    ///
-    /// Two digest lists rather than two whole-task lists: this is a list
-    /// somebody scans, and the body of thirty tasks is not a list. A task
-    /// the agent both holds and watches appears in both, because the two
-    /// questions are different and a client showing one should not have to
-    /// know about the other.
-    pub(crate) fn tasks_for_agent(&mut self, params: &Value) -> Result<Value, String> {
-        let agent_id = require_str(params, "agent_id")?;
-        let entity_id = self
-            .entity_of_agent(&agent_id)
-            .ok_or_else(|| format!("unknown agent_id: {agent_id}"))?;
-        let project_id = self
-            .projects
-            .project_id_of(&entity_id)
-            .map(str::to_string)
-            .ok_or_else(|| format!("agent {agent_id} belongs to no project"))?;
-        let project_path = self.tracker_project_path(&project_id)?;
-        let mut tasks = self
-            .tracker_store()?
-            .list_tracker_tasks(&project_path, TaskFilter::default())
-            .stored()?;
-        // Newest-updated first: what a reader wants off a list like this is
-        // what moved, and `tasks.list`'s own order is by number, which is
-        // when it was filed rather than when it last mattered.
-        tasks.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
-        let digest = |task: &Task| {
-            json!({
-                "task_id": task.id,
-                "number": task.number,
-                "title": task.title,
-                "state": task.state.as_str(),
-                "status": task.status,
-                "updated_at": task.updated_at,
-            })
-        };
-        let assigned: Vec<Value> = tasks
-            .iter()
-            .filter(|task| {
-                task.assignee
-                    .as_ref()
-                    .and_then(crate::tracker::Assignee::agent_id)
-                    == Some(agent_id.as_str())
-            })
-            .map(digest)
-            .collect();
-        let tracking: Vec<Value> = tasks
-            .iter()
-            .filter(|task| task.is_tracked_by(&agent_id))
-            .map(digest)
-            .collect();
-        Ok(json!({
-            "agent_id": agent_id,
-            "assigned": assigned,
-            "tracking": tracking,
-        }))
     }
 }

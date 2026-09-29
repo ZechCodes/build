@@ -1,40 +1,31 @@
-// The task surface: a persistent two-column stages | stage viewer.
+// The legacy plan page: a persistent two-column stages | stage viewer.
 //
-// A task is a work item whose children are its stages and the implementations
-// that carried them out, so the left column is the task itself — its stages
-// with their states, the gate and approve actions, the worktree/agent
-// assignment control, and its implementation lineage — and the right column is
+// It is reachable only for historical plans — old links, archived plans, old
+// capture routings — and the bridge refuses every verb that would move one, so
+// the page is READ-ONLY: it reads the plan, its stages, their docs and stable
+// diffs, and offers nothing that would ask the plan to change.
+//
+// A plan is a work item whose children are its stages and the implementations
+// that carried them out, so the left column is the plan itself — its stages
+// with their states and its implementation lineage — and the right column is
 // whichever stage doc is open. There are no tabs and no drill-in: selecting a
 // stage swaps the viewer and the list stays where it is.
 //
-// Paints from the task's own records with a keyed freeze; the freeze also
-// holds while the reviewer is mid-comment or an action is in flight. Tasks
-// left the board, so nothing fills those records but this surface: it reads
-// through them (core/taskCache.js) on mount — the records paint the frame and
-// the machine is asked behind them — when a `state` push says the task moved,
-// and when a verb it sent changed something. There is no poll.
+// Paints from the task's own records with a keyed freeze. Tasks left the
+// board, so nothing fills those records but this surface: it reads through
+// them (core/taskCache.js) on mount — the records paint the frame and the
+// machine is asked behind them — and when a `state` push says the task moved.
+// There is no poll.
 // The pure pieces live in taskModel.js (decisions) and taskRender.js
 // (markup); this file is the wiring.
 
 import { el } from "../dom.js";
 import { esc } from "./text.js";
-import { openAssignmentOverlay } from "./assignmentOverlay.js";
 import { createAgentSelection } from "./agentSelection.js";
-import { docCommentAnchor } from "./notes.js";
 import { renderMarkdown } from "./markdown.js";
 import { initPaneDrawer, paneDrawerHtml } from "./paneDrawer.js";
 import { notifyError } from "./notify.js";
-import { confirmAction } from "./confirm.js";
-import {
-  approvePlanConfirm,
-  deletePlanConfirm,
-  implementConfirm,
-  implementBlockReason,
-  planDeletable,
-  planDocPaneState,
-  shouldFetchPlanDoc,
-  stageNotesTarget,
-} from "./taskActions.js";
+import { planDocPaneState, shouldFetchPlanDoc } from "./taskActions.js";
 import {
   DOCS_UNAVAILABLE,
   docErrorPaneHtml,
@@ -43,27 +34,11 @@ import {
   stageRowHtml,
   stageViewerHtml,
 } from "./taskRender.js";
-import {
-  defaultAssignment,
-  docMarkerGroups,
-  implementParams,
-  taskViewKey,
-  lineageRoute,
-  plannedStageIds,
-  stageApprovable,
-  stageStateToken,
-  worktreeChoices,
-} from "./taskModel.js";
-import { createDocCommentLayer, headingForKey } from "./taskDocComments.js";
-import { MUTATION_THREAD_PAGE, SMALLEST_THREAD_PAGE } from "./thread.js";
+import { docMarkerGroups, taskViewKey, lineageRoute, stageApprovable, stageStateToken } from "./taskModel.js";
+import { SMALLEST_THREAD_PAGE } from "./thread.js";
 import { patchElement } from "./domPatch.js";
 import { patchList } from "./patchList.js";
 import { watchChanges } from "./changeEvents.js";
-import { refreshFeed } from "./taskFeed.js";
-import { entryKeyOf } from "./inbox.js";
-import { INBOX_SCOPE } from "./inboxView.js";
-import { removeRecord, runOptimistic } from "./optimistic.js";
-import { replyOrNothing } from "./session.js";
 import {
   forgetTaskRecords,
   TASK_RECORD_KIND,
@@ -74,8 +49,8 @@ import {
 import { subscribeCache } from "./localCache.js";
 import { scrollWithin } from "./scrollWithin.js";
 
-/** Bind an async RPC to a button: disable + label while in flight, restore and
- *  raise a persistent expandable error notification on failure. */
+/** Bind an async read to a button: disable + label while in flight, restore
+ *  and raise a persistent expandable error notification on failure. */
 function bindAction(button, busyLabel, run) {
   if (!button) return;
   button.onclick = async () => {
@@ -102,26 +77,23 @@ export function openingStageId(stages, deepLinked) {
   return (awaiting || list[0]).id;
 }
 
-/** Whether the doc can still take comments: the bridge accepts them on
- *  planned/approved stage docs only, and only a doc that actually rendered has
- *  passages to select. */
-export function docAnnotatable(stage, paneState) {
-  if (!stage || paneState !== "ready") return false;
-  const approval = stage.approval || stage.state;
-  return approval === "planned" || approval === "approved";
+/** The rendered heading a marker key names, or null. Keys are heading slugs
+ *  (anchors.js), so they are matched as an attribute rather than through an id
+ *  selector — a slug can start with a digit, which no id selector accepts. */
+export function headingForKey(root, key) {
+  if (!root || !key || !/^[-\w]+$/.test(key)) return null;
+  const doc = root.querySelector("#stagedoc") || root;
+  return doc.querySelector(`[id="${key}"]`);
 }
 
 /**
  * mountTaskView(container, options) → { dispose }.
  *
- * `taskId` names the task; `callRpc(method, params)` is the RPC channel;
- * `navigate(route)` opens another surface; `loadCatalog()` resolves the model
- * catalog for the assignment control and `loadWorkItems()` its feed rows (the
- * branches an implementation can be sent into); `onSelectStage(stageId)` lets
- * the host keep the URL on the open stage; `onGone()` is called when the task
- * no longer exists.
+ * `taskId` names the task; `callRpc(method, params)` is the RPC channel, used
+ * for reads only; `navigate(route)` opens another surface;
+ * `onSelectStage(stageId)` lets the host keep the URL on the open stage;
+ * `onGone()` is called when the task no longer exists.
  */
-// eslint-disable-next-line complexity -- ratchet: mountTaskView is at 12, cap 10 — reduce it, then drop this line
 export function mountTaskView(
   container,
   {
@@ -129,18 +101,15 @@ export function mountTaskView(
     projectId = null,
     callRpc,
     navigate = () => {},
-    loadCatalog = async () => ({}),
-    loadWorkItems = async () => [],
     onSelectStage = () => {},
     onProject = () => {},
     onGone = () => {},
     deviceId = null,
     initialStageId = null,
-    // Whose conversation this surface is reading and writing into. A task
-    // carries exactly one agent session, so this all but always names it — but
-    // it is the rail's bubble that says so, and the poll asks with it.
+    // Whose conversation this surface is reading. A task carries exactly one
+    // agent session, so this all but always names it — but it is the rail's
+    // bubble that says so, and the read asks with it.
     agentSelection = createAgentSelection(),
-    viewingContext = null,
   } = {},
 ) {
   let disposed = false;
@@ -150,14 +119,9 @@ export function mountTaskView(
   let stageDoc = null; // { stage_id, contents } for the open stage
   let openStageDiffId = null;
   let stageDiff = null;
-  let catalog = {};
-  let workItems = [];
   let selectedStageId = initialStageId;
   let selectionSeeded = false;
-  let assignment = defaultAssignment(null);
-  let assignmentOverlay = null;
   let renderedKey = null;
-  let actionsInFlight = 0;
   let drawer = null;
   // The plan of a task that has no stage manifest at all (a migrated task
   // predating stages): one doc, read-only, so it is still readable here.
@@ -166,15 +130,12 @@ export function mountTaskView(
   // Per-stage doc-read latches: a stage_doc ERROR renders an error state and
   // stops that doc's refetch until the user re-selects it.
   const docErrors = new Set();
-  let cacheDirty = false;
   let cachePaintGeneration = 0;
 
   container.innerHTML = '<div class="taskview"><div class="empty">loading…</div></div>';
 
   let project = projectId;
   const currentProjectId = () => project;
-  /** The branches this task's implementation could be sent into. */
-  const worktrees = () => worktreeChoices(workItems, { projectId: currentProjectId(), taskId });
   const stages = () => stagesData.stages || [];
   const selectedStage = () => stages().find((stage) => stage.id === selectedStageId) || null;
   const docContents = () => (stageDoc && stageDoc.stage_id === selectedStageId ? stageDoc.contents || "" : "");
@@ -186,61 +147,6 @@ export function mountTaskView(
           hasContents: Boolean(docContents()),
         })
       : "ready";
-
-  const commentLayer = createDocCommentLayer({
-    docText: () => docContents(),
-    onChange: () => render(),
-    submit: async ({ comments, general }) => {
-      const stage = selectedStage();
-      if (!stage) throw new Error("no stage is open");
-      // One press is one addressed batch. Neither the stage picker nor the
-      // agent rail may retarget its later posts while an earlier comment is
-      // still crossing the bridge.
-      const destination = { stageId: stage.id, agentScope: agentSelection.scope() };
-      const context = viewingContext?.snapshot?.();
-      for (const comment of comments) {
-        await callRpc("task.comment_add", {
-          task_id: taskId,
-          stage_id: destination.stageId,
-          body: comment.comment,
-          anchor: docCommentAnchor(comment),
-          ...(context ? { viewing_context: context } : {}),
-        });
-      }
-      // The general note is a turn like any other: durable on the daemon's side
-      // the moment it answers, and answered before the agent it wakes exists.
-      // A reply that outlives the browser's timer leaves the comment posted, so
-      // raising here would only have the human write it again.
-      if (general)
-        await replyOrNothing(
-          callRpc("thread.post", {
-            entity_id: taskId,
-            ...destination.agentScope,
-            body: general,
-            ...(context ? { viewing_context: context } : {}),
-            ...MUTATION_THREAD_PAGE,
-          }),
-        );
-      viewingContext?.clearSelectionIfMatches?.(context);
-      renderedKey = null;
-      await refresh();
-    },
-  });
-
-  /** The user is filling in the assignment overlay, so the poll waits: the panel
-   *  is painted from what this view holds, and a pass that lands mid-choice is a
-   *  pass that repaints under their cursor. */
-  const assignmentBusy = () => Boolean(assignmentOverlay && assignmentOverlay.busy());
-
-  const guarded = async (work) => {
-    actionsInFlight += 1;
-    try {
-      return await work();
-    } finally {
-      actionsInFlight -= 1;
-      if (actionsInFlight === 0 && cacheDirty) scheduleCachePaint();
-    }
-  };
 
   // ---- the persistent skeleton ---------------------------------------------
 
@@ -257,16 +163,10 @@ export function mountTaskView(
     container.onclick = handleClick;
   };
 
-  // eslint-disable-next-line complexity -- ratchet: this callback is at 11, cap 10 — reduce it, then drop this line
   const render = () => {
     if (disposed || gone || !task) return;
     if (!container.querySelector(".ivsplit")) paintSkeleton();
-    const listHost = container.querySelector(".ivstages");
-    paintStageColumn(listHost);
-    wireStageList(listHost);
-    // The overlay is painted from the same held values, so a pass that changed
-    // them reaches it too. Its own paint is a no-op when they did not.
-    if (assignmentOverlay) assignmentOverlay.update();
+    paintStageColumn(container.querySelector(".ivstages"));
     const viewerHost = container.querySelector(".ivviewer");
     if (!stages().length) {
       renderSingleDoc(viewerHost);
@@ -282,10 +182,7 @@ export function mountTaskView(
       comments: (stage && stage.comments) || [],
     });
     if (stage) {
-      const feedback = viewerHost.querySelector(".ivstagefeedback");
-      if (feedback) feedback.innerHTML = commentLayer.trayHtml();
       mountDocMarkers(viewerHost, stage);
-      commentLayer.attach(viewerHost, { annotatable: docAnnotatable(stage, state) });
       wireStageNav(viewerHost);
       wireStageActions(viewerHost, stage);
     }
@@ -293,27 +190,15 @@ export function mountTaskView(
 
   /// The left column, kept rather than rewritten.
   ///
-  /// Its regions never trade places — head, stages, assignment, lineage — and
-  /// only the lineage comes and goes, at the end, so each is patched where it
-  /// stands. The stage rows are keyed by stage id, so picking a stage redraws
-  /// the two rows that changed and leaves the column, its scroll and the
-  /// assignment control exactly where they were.
+  /// Its regions never trade places — head, stages, lineage — and only the
+  /// lineage comes and goes, at the end, so each is patched where it stands.
+  /// The stage rows are keyed by stage id, so picking a stage redraws the two
+  /// rows that changed and leaves the column and its scroll exactly where they
+  /// were.
   const paintStageColumn = (listHost) => {
-    const next = el(
-      `<aside>${stageListHtml({
-        task,
-        stagesData,
-        selectedStageId,
-        assignment,
-        assignmentOpen: Boolean(assignmentOverlay),
-        worktrees: worktrees(),
-        blockReason: implementBlockReason(task) || "",
-        deletable: planDeletable(task.state),
-      })}</aside>`,
-    );
+    const next = el(`<aside>${stageListHtml({ task, stagesData, selectedStageId })}</aside>`);
     keepRegion(listHost, ".ivhead", next);
     paintStageRows(listHost, next);
-    keepRegion(listHost, ".ivassign", next);
     keepRegion(listHost, ".ivlineage", next);
   };
 
@@ -415,126 +300,6 @@ export function mountTaskView(
     }
   };
 
-  // ---- the left column's wiring --------------------------------------------
-
-  // A stage row and a lineage row outlive the paints, and a row that has just
-  // arrived has never been wired — so neither is wired at all: the surface's
-  // one click handler reads which row was pressed off the DOM.
-  const wireStageList = (listHost) => {
-    bindAction(listHost.querySelector("#approvetask"), "approving…", async () => {
-      if (!(await confirmAction(approvePlanConfirm()))) throw new Error("cancelled");
-      await guarded(() => callRpc("task.approve", { task_id: taskId, ...MUTATION_THREAD_PAGE }));
-      await refresh();
-    });
-    bindAction(listHost.querySelector("#approveall"), "approving…", async () => {
-      await guarded(async () => {
-        for (const stageId of plannedStageIds(stages())) {
-          await callRpc("task.stage_approve", { task_id: taskId, stage_id: stageId, ...MUTATION_THREAD_PAGE });
-        }
-      });
-      await refresh();
-    });
-    // The dispatch wears its own block reason, so a disabled one is disabled
-    // because the render said so — there is nothing left to bind.
-    const implementAll = listHost.querySelector("#implementall");
-    if (implementAll && !implementAll.disabled) {
-      bindAction(implementAll, "starting…", async () => {
-        const target = worktrees().find((choice) => choice.id === assignment.worktreeId);
-        const branch = assignment.worktree === "existing" && target ? target.label : null;
-        if (
-          !(await confirmAction(
-            implementConfirm({ base: assignment.base || task.base_branch || "the base branch", branch }),
-          ))
-        )
-          throw new Error("cancelled");
-        afterDispatch(await openImplementation("task.implement_all", implementParams(taskId, assignment, { catalog })));
-      });
-    }
-    wireAssignment(listHost);
-    wireRemoval(listHost);
-  };
-
-  const wireRemoval = (listHost) => {
-    bindAction(listHost.querySelector("#taskdelete"), "deleting…", async () => {
-      if (!(await confirmAction(deletePlanConfirm()))) throw new Error("cancelled");
-      gone = true;
-      onGone();
-      await runOptimistic({
-        scope: INBOX_SCOPE,
-        records: [removeRecord(entryKeyOf({ kind: "task", task_id: taskId, project_id: currentProjectId() }))],
-        call: () => callRpc("task.delete", { task_id: taskId }),
-        failureSummary: "Could not delete this task",
-      });
-      await refreshFeed();
-    });
-  };
-
-  /** The rail's assignment line: one row saying what the handoff would be, which
-   *  opens the overlay holding the fields. The overlay is painted from the same
-   *  held assignment the dispatch reads, so a poll repaint of the rail — or of
-   *  the overlay — restores exactly what was chosen. */
-  const wireAssignment = (listHost) => {
-    const toggle = listHost.querySelector("#assigntoggle");
-    if (toggle) toggle.onclick = () => (assignmentOverlay ? assignmentOverlay.close() : openAssignment());
-  };
-
-  const openAssignment = () => {
-    if (assignmentOverlay) return;
-    // Both are re-read every time the overlay opens: a branch that appeared, or
-    // was taken by another task, must be offered — or stop being.
-    if (!catalog.providers) loadCatalogOnce();
-    loadWorkItemsOnce();
-    assignmentOverlay = openAssignmentOverlay({
-      // The rail repaints on the poll, so the button this is anchored to is a
-      // different node by the next tick: it is looked up, never held.
-      getAnchor: () => container.querySelector("#assigntoggle"),
-      getAssignment: () => assignment,
-      setAssignment: (next) => {
-        assignment = next;
-        render();
-      },
-      getCatalog: () => catalog,
-      getWorktrees: () => worktrees(),
-      onClose: () => {
-        assignmentOverlay = null;
-        render();
-      },
-    });
-    render();
-  };
-
-  let catalogLoading = false;
-  const loadCatalogOnce = async () => {
-    if (catalogLoading) return;
-    catalogLoading = true;
-    try {
-      catalog = (await loadCatalog()) || {};
-    } catch {
-      catalog = {};
-    }
-    if (disposed) return;
-    if (assignmentOverlay) assignmentOverlay.update();
-    render();
-  };
-
-  /** The feed's work items, for the branch picker. Re-read every time the
-   *  control opens: a branch that appeared (or was taken by another task)
-   *  since the last look must be offered — or stop being. */
-  let workItemsLoading = false;
-  const loadWorkItemsOnce = async () => {
-    if (workItemsLoading) return;
-    workItemsLoading = true;
-    try {
-      workItems = (await loadWorkItems()) || [];
-    } catch {
-      workItems = [];
-    }
-    workItemsLoading = false;
-    if (disposed) return;
-    if (assignmentOverlay) assignmentOverlay.update();
-    render();
-  };
-
   // ---- the right column's wiring -------------------------------------------
 
   /** The doc pane's own way through the task: each step opens the stage it
@@ -547,26 +312,24 @@ export function mountTaskView(
     });
   };
 
-  /** The open stage's own actions: approve its plan while it is still planned,
-   *  send its open comments back for a revision, implement just this stage, and
-   *  read a completed stage's stable diff. */
-  // eslint-disable-next-line complexity -- ratchet: this callback is at 20, cap 10 — reduce it, then drop this line
+  /** The open stage's one action, a read: a completed stage's stable diff. */
   const wireStageActions = (viewerHost, stage) => {
     const actions = viewerHost.querySelector("#stageactions");
-    const stageHint = viewerHost.querySelector("#stagehint");
     if (!actions) return;
     const token = stageStateToken(stage);
-    const openComments = stage.open_comments || 0;
-    const notesTarget = stageNotesTarget(task);
-    const parts = [];
-    if (openComments > 0)
-      parts.push(`<button class="btn" id="sendnotes">Send ${openComments} comment${openComments === 1 ? "" : "s"}</button>`);
-    if (token === "complete" && stage.start_sha && stage.completion_sha)
-      parts.push('<button class="btn" id="stagediff">View stable diff</button>');
-    if (stageApprovable(stage)) parts.push('<button class="btn primary" id="approvestage">Approve stage plan</button>');
-    else if (task.state === "approved" && (stage.execution || "pending") === "pending" && predecessorsComplete(stage))
-      parts.push('<button class="btn primary" id="implementstage">Implement Stage</button>');
-    actions.innerHTML = parts.join("");
+    actions.innerHTML =
+      token === "complete" && stage.start_sha && stage.completion_sha
+        ? '<button class="btn" id="stagediff">View stable diff</button>'
+        : "";
+    paintStageDiff(viewerHost, stage);
+    wireStageDocRetry(viewerHost, stage);
+    bindAction(viewerHost.querySelector("#stagediff"), "loading…", () => openStageDiff(stage));
+    const stageHint = viewerHost.querySelector("#stagehint");
+    if (stageHint) stageHint.textContent = token === "building" ? "Agent is working on this stage." : "";
+  };
+
+  /** The open stage's stable diff, under its doc, once it has been read. */
+  const paintStageDiff = (viewerHost, stage) => {
     if (openStageDiffId === stage.id && stageDiff) {
       const pane = document.createElement("pre");
       pane.id = "stagediffpane";
@@ -575,7 +338,9 @@ export function mountTaskView(
         stageDiff.status === "available" ? stageDiff.patch || "No changes." : stageDiff.reason || "Stable diff unavailable.";
       viewerHost.querySelector("#stagedoc")?.after(pane);
     }
+  };
 
+  const wireStageDocRetry = (viewerHost, stage) => {
     const retry = viewerHost.querySelector("#stagedocretry");
     if (retry)
       retry.onclick = async () => {
@@ -587,68 +352,22 @@ export function mountTaskView(
         await forgetTaskRecords(deviceId, taskId);
         await refresh();
       };
+  };
 
-    bindAction(viewerHost.querySelector("#approvestage"), "approving…", async () => {
-      await guarded(() =>
-        callRpc("task.stage_approve", { task_id: taskId, stage_id: stage.id, ...MUTATION_THREAD_PAGE }),
-      );
-      await refresh();
-    });
-    bindAction(viewerHost.querySelector("#implementstage"), "starting…", async () => {
-      afterDispatch(
-        await openImplementation("task.implement_stage", implementParams(taskId, assignment, { catalog, stageId: stage.id })),
-      );
-    });
-    const sendNotes = viewerHost.querySelector("#sendnotes");
-    if (sendNotes) {
-      if (!notesTarget) {
-        sendNotes.disabled = true;
-        sendNotes.title = "Task ready — start an implementation to revise this stage.";
-      } else {
-        bindAction(sendNotes, "sending…", async () => {
-          const params =
-            notesTarget.method === "run.stage_send_notes"
-              ? { run_id: notesTarget.entityId, stage_id: stage.id, ...MUTATION_THREAD_PAGE }
-              : { task_id: taskId, stage_id: stage.id, ...MUTATION_THREAD_PAGE };
-          await guarded(() => callRpc(notesTarget.method, params));
-          await refresh();
-        });
-      }
+  const openStageDiff = async (stage) => {
+    openStageDiffId = stage.id;
+    const held = await readStoredTaskRecord(deviceId, taskId, `stagediff:${stage.id}`);
+    if (held !== undefined) {
+      stageDiff = held;
+      renderedKey = null;
+      render();
+      return;
     }
-    bindAction(viewerHost.querySelector("#stagediff"), "loading…", async () => {
-      openStageDiffId = stage.id;
-      const held = await readStoredTaskRecord(deviceId, taskId, `stagediff:${stage.id}`);
-      if (held !== undefined) {
-        stageDiff = held;
-        renderedKey = null;
-        render();
-        return;
-      }
-      // The answer is ignored. Its cache announcement re-reads the record and
-      // paints the pane through the normal view render.
-      await onDemandRecord(`stagediff:${stage.id}`, () =>
-        callRpc("task.stage_diff", { task_id: taskId, stage_id: stage.id }),
-      );
-    });
-    if (stageHint) stageHint.textContent = token === "building" ? "Agent is working on this stage." : "";
-  };
-
-  const predecessorsComplete = (stage) => {
-    const list = stages();
-    const index = list.findIndex((candidate) => candidate.id === stage.id);
-    return index >= 0 && list.slice(0, index).every((candidate) => stageStateToken(candidate) === "complete");
-  };
-
-  /** Ask the daemon to open an implementation, and answer with what it opened —
-   *  or nothing, when the reply outlives the browser's timer. The task's own
-   *  next answer names the run either way. */
-  const openImplementation = (method, params) =>
-    replyOrNothing(guarded(() => callRpc(method, { ...params, ...MUTATION_THREAD_PAGE })));
-
-  const afterDispatch = (result) => {
-    const runId = result && result.run_id;
-    if (runId) navigate({ name: "run", projectId: currentProjectId(), id: runId, tab: "changes" });
-    else refresh();
+    // The answer is ignored. Its cache announcement re-reads the record and
+    // paints the pane through the normal view render.
+    await onDemandRecord(`stagediff:${stage.id}`, () =>
+      callRpc("task.stage_diff", { task_id: taskId, stage_id: stage.id }),
+    );
   };
 
   // ---- selection, clicks, polling ------------------------------------------
@@ -660,10 +379,6 @@ export function mountTaskView(
     stageDiff = null;
     docErrors.delete(stageId);
     stageDoc = null;
-    // A pending doc comment names a passage of the stage it was written on, and
-    // the verb that posts it names that stage too — so it does not travel to
-    // another one.
-    commentLayer.clear();
     onSelectStage(stageId);
     renderedKey = null;
     render();
@@ -671,15 +386,9 @@ export function mountTaskView(
   };
 
   const handleClick = (event) => {
-    if (commentLayer.handleClick(event)) return;
     const marker = event.target.closest(".docmarker, .cc-crumb");
     if (marker) {
       scrollToMarker(marker.dataset.marker, marker.classList.contains("docmarker"));
-      return;
-    }
-    const remove = event.target.closest(".cc-x[data-del]");
-    if (remove) {
-      withdrawComment(remove.dataset.del);
       return;
     }
     const stageRow = event.target.closest(".stagerow[data-stage]");
@@ -709,22 +418,10 @@ export function mountTaskView(
     if (heading) scrollWithin(container.querySelector(".ivviewer"), heading, { block: "center" });
   };
 
-  const withdrawComment = async (commentId) => {
-    try {
-      await guarded(() => callRpc("task.comment_delete", { task_id: taskId, comment_id: commentId }));
-    } catch (e) {
-      notifyError("Withdrawing the comment failed", (e && e.message) || "error");
-      return;
-    }
-    renderedKey = null;
-    await refresh();
-  };
-
   /** The task was deleted out from under this view: latch a terminal state
    *  (nothing repaints over it, nothing else is fetched) with a way back. */
   const renderGone = () => {
     gone = true;
-    if (assignmentOverlay) assignmentOverlay.close();
     if (drawer) {
       drawer.dispose();
       drawer = null;
@@ -735,10 +432,8 @@ export function mountTaskView(
     if (back) back.onclick = () => onGone();
   };
 
-  /** One pass of the surface's payloads. `force` bypasses the freeze (a repaint
-   *  after the user's own action must land). */
   /** One of this task's records, read through the cache. `force` is a push
-   *  (or a verb this surface sent) saying the record is behind. */
+   *  (or a retry) saying the record is behind. */
   const taskRecord = (sub, read, force = false, cacheOnly = false) =>
     cacheOnly
       ? readStoredTaskRecord(deviceId, taskId, sub)
@@ -796,12 +491,12 @@ export function mountTaskView(
   /**
    * Read what this surface paints and draw it.
    *
-   * `reread` says the records are behind — a push naming the task, or a verb
-   * this surface sent — and is what makes the read go to the machine rather
-   * than answering off disk. `repaint` overrides the keyed freeze, which is
-   * for the verb's own answer and nothing else: a push that carried no change
-   * must leave the step the reader is aiming at, and the passage they are
-   * selecting, exactly where they are.
+   * `reread` says the records are behind — a push naming the task, a stage
+   * selection or a retry — and is what makes the read go to the machine
+   * rather than answering off disk. `repaint` overrides the keyed freeze,
+   * which is for the reader's own step and nothing else: a push that carried
+   * no change must leave the step the reader is aiming at, and the passage
+   * they are selecting, exactly where they are.
    */
   // eslint-disable-next-line complexity -- ratchet: this callback is at 22, cap 10 — reduce it, then drop this line
   const load = async ({ reread = false, repaint = false, cacheOnly = false, cacheGeneration = 0 } = {}) => {
@@ -819,10 +514,8 @@ export function mountTaskView(
     }
     if (disposed || gone || (cacheGeneration && cacheGeneration !== cachePaintGeneration)) return;
     if (!payload || !stagesPayload) return;
-    const first = !task;
     task = payload;
     stagesData = stagesPayload || { stages: [] };
-    if (first) assignment = defaultAssignment(payload);
     if (payload.project_id && payload.project_id !== project) {
       project = payload.project_id;
       onProject(project);
@@ -847,11 +540,7 @@ export function mountTaskView(
       doc: stages().length ? docContents() : singleDoc || "",
     })}|${JSON.stringify([openStageDiffId, stageDiff])}`;
     const rendered = Boolean(container.querySelector(".ivsplit"));
-    if (!force && rendered && (key === renderedKey || actionsInFlight > 0 || commentLayer.busy() || assignmentBusy())) {
-      if (cacheOnly && key !== renderedKey) cacheDirty = true;
-      return;
-    }
-    cacheDirty = false;
+    if (!force && rendered && key === renderedKey) return;
     renderedKey = key;
     render();
   };
@@ -907,8 +596,9 @@ export function mountTaskView(
     if (held !== undefined) stageDiff = held;
   };
 
-  /** Read the task again from its machine and draw the answer: a verb this
-   *  surface sent moved something, and the records it paints from are behind. */
+  /** Read the task again from its machine and draw the answer: the reader
+   *  stepped somewhere or asked again, and the records it paints from may be
+   *  behind. */
   const refresh = () => load({ reread: true, repaint: true });
 
   /** A word from outside: a push naming the task, or the mount catching up on
@@ -917,9 +607,8 @@ export function mountTaskView(
    *  It is the one thing that says the plan itself may have been rewritten
    *  under the reader — the daemon revises a stage doc from planned and from
    *  approved alike — so it puts the records this surface fills on demand
-   *  behind as well as the two it always reads. A verb this surface sent is
-   *  not such a word: it moved what it named, and the answer to it is what
-   *  `refresh` already reads. */
+   *  behind as well as the two it always reads. The reader's own step is not
+   *  such a word: what it asked for is what `refresh` already reads. */
   const readOnWord = () => {
     wordCount += 1;
     return load({ reread: true });
@@ -947,23 +636,26 @@ export function mountTaskView(
     queueMicrotask(() => void load({ cacheOnly: true, cacheGeneration: generation }));
   }
 
-  const cacheWatcher = subscribeCache(
-    { deviceId: deviceId || "", entityId: taskId, kind: TASK_RECORD_KIND },
-    (changed) => {
-      const sub = changed.sub || "";
-      if (sub === "doc") {
-        singleDocError = false;
-        singleDoc = null;
-      } else if (sub.startsWith("stage:")) {
-        const stageId = sub.slice("stage:".length);
-        docErrors.delete(stageId);
-        if (selectedStageId === stageId) stageDoc = null;
-      } else if (sub === `stagediff:${openStageDiffId}`) {
-        stageDiff = null;
-      }
-      scheduleCachePaint();
-    },
-  );
+  /** A record of this task changed in the cache: let go of what was held for
+   *  it, and paint from the cache again. */
+  const onCachedRecord = (changed) => {
+    const sub = changed.sub || "";
+    if (sub === "doc") {
+      singleDocError = false;
+      singleDoc = null;
+    } else if (sub.startsWith("stage:")) {
+      const stageId = sub.slice("stage:".length);
+      docErrors.delete(stageId);
+      if (selectedStageId === stageId) stageDoc = null;
+    } else if (sub === `stagediff:${openStageDiffId}`) {
+      stageDiff = null;
+    }
+    scheduleCachePaint();
+  };
+  const watchCachedRecords = () =>
+    subscribeCache({ deviceId: deviceId || "", entityId: taskId, kind: TASK_RECORD_KIND }, onCachedRecord);
+
+  const cacheWatcher = watchCachedRecords();
   void mountRead();
   // The task is the entity: its own plan/stage/thread mutations are what stale
   // this surface, and the push naming it is what says so. There is nothing
@@ -986,8 +678,6 @@ export function mountTaskView(
       disposed = true;
       watcher.dispose();
       cacheWatcher?.();
-      if (assignmentOverlay) assignmentOverlay.close();
-      commentLayer.dispose();
       if (drawer) {
         drawer.dispose();
         drawer = null;

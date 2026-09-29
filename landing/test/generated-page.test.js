@@ -44,6 +44,14 @@ describe("the generated landing document", () => {
     assert.ok(!html.includes("{{platforms}}"));
   });
 
+  it("titles the GitHub links as the public source, without an invitation", () => {
+    const titles = [...html.matchAll(/href="\{\{repository_url\}\}" title="([^"]*)"/g)].map(
+      (match) => match[1],
+    );
+    assert.deepEqual(titles, ["Build’s source code on GitHub", "Build’s source code on GitHub"]);
+    assert.ok(!/invitation/i.test(titles.join(" ")));
+  });
+
   it("tells the story in eight acts, in order, each with a stage hook", () => {
     const acts = [...html.matchAll(/data-act="(\d)"/g)].map((match) => match[1]);
     assert.deepEqual(acts, ["1", "2", "3", "4", "5", "6", "7", "8"]);

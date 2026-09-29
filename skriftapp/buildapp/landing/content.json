@@ -2,7 +2,7 @@
   "source": {
     "repository": "ZechCodes/build",
     "repository_url": "https://github.com/ZechCodes/build",
-    "repository_public": false,
+    "repository_public": true,
     "checked_at": "2026-09-18T00:01:38Z",
     "implementation_sources": [
       "README.md",

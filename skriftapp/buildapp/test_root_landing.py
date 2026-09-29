@@ -176,9 +176,9 @@ def test_an_unbuilt_landing_answers_service_unavailable_in_one_plain_sentence(
     assert UNBUILT_LANDING_MESSAGE == "The landing page has not been built yet."
 
 
-def test_a_private_repository_leaves_the_activity_section_off_the_page(built_page):
+def test_an_empty_activity_cache_leaves_the_activity_section_off_the_page(built_page):
     content = load_content()
-    assert content["source"]["repository_public"] is False
+    assert content["source"]["repository_public"] is True
     assert content["activity"]["entries"] == []
     html = render_landing_page()
     # An empty "built in the open" section says less than no section.

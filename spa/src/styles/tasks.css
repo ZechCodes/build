@@ -708,28 +708,34 @@
 }
 .thread-task-action { display:flex; align-items:baseline; gap:5px; flex-wrap:nowrap; white-space:nowrap; }
 .thread-task-who { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; }
-/* A notice is ONE line when the whole of it fits (#217). When it does not it
-   stacks all at once — never a partial wrap: the action on the first line and
-   each section (number, target, who) indented on a line of its own. Which of
-   the two a notice is depends on its words, so core/noticeFit.js measures the
-   one-line form and sets `.is-stacked`; the one line clips rather than widening
-   the conversation until it does (#212). */
-.thread-task-notice { display:block; white-space:nowrap; overflow:hidden; }
-.thread-task-notice.is-stacked { display:flex; flex-direction:column; }
+/* Build's own notices ("Build restarted while …") wrap as prose (#212): a
+   line of words, broken between them, and inside a word too long for the
+   line rather than widening the conversation. */
+.thread-task-notice { display:block; white-space:normal; overflow-wrap:anywhere; }
+/* A task notice is ONE line when the whole of it fits (#217). When it does
+   not it stacks all at once — never a partial wrap: what happened and to which
+   task on the first line, each name (the assignee, who did it) indented on a
+   line of its own. Which of the two a notice is depends on its words, so
+   core/noticeFit.js measures the one-line form and sets `data-fit`; the one
+   line clips rather than widening the conversation until it does (#212). */
+.thread-task-notice[data-task-notice] { white-space:nowrap; overflow:hidden; overflow-wrap:normal; }
+.thread-task-notice[data-fit="stacked"] { display:flex; flex-direction:column; }
 /* The verb's link is inline text here, not the flex row an action line is. */
 .thread-task-notice a.thread-task-action { display:inline; }
-.thread-task-notice.is-stacked > * { min-width:0; overflow:hidden; text-overflow:ellipsis; }
-.thread-task-notice.is-stacked > .thread-task-section { margin-left:14px; }
-/* Stacked, a name is the agent beside the "by" or "to" that introduces it and
-   the workspace on the line under it; the separator only reads on one line. */
-.thread-task-notice.is-stacked > :is(.thread-task-by, .thread-task-to) { display:flex; align-items:baseline; column-gap:.3em; }
-.thread-task-notice.is-stacked .thread-task-name {
+.thread-task-notice[data-fit="stacked"] > * { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+/* Stacked, a name is the agent beside the "to" or "by" that introduces it and
+   the workspace on the line under it; the separator only reads on one line.
+   The word is one width whichever it is, so every workspace starts at one x. */
+.thread-task-notice[data-fit="stacked"] > .thread-task-section {
+  display:flex; align-items:baseline; column-gap:.3em; margin-left:14px; }
+.thread-task-notice[data-fit="stacked"] .thread-task-word { flex:none; width:1.3em; }
+.thread-task-notice[data-fit="stacked"] .thread-task-name {
   display:grid; grid-template-columns:auto minmax(0, 1fr); align-items:baseline; min-width:0; }
-.thread-task-notice.is-stacked .thread-task-name-sep { display:none; }
-.thread-task-notice.is-stacked .thread-task-actor-mark { grid-column:1; grid-row:1; align-self:center; }
-.thread-task-notice.is-stacked .thread-task-agent-name { grid-column:2; grid-row:1; }
-.thread-task-notice.is-stacked .thread-task-workspace { grid-column:2; grid-row:2; }
-.thread-task-notice.is-stacked :is(.thread-task-agent-name, .thread-task-workspace) {
+.thread-task-notice[data-fit="stacked"] .thread-task-name-sep { display:none; }
+.thread-task-notice[data-fit="stacked"] .thread-task-actor-mark { grid-column:1; grid-row:1; align-self:center; }
+.thread-task-notice[data-fit="stacked"] .thread-task-agent-name { grid-column:2; grid-row:1; }
+.thread-task-notice[data-fit="stacked"] .thread-task-workspace { grid-column:2; grid-row:2; }
+.thread-task-notice[data-fit="stacked"] :is(.thread-task-agent-name, .thread-task-workspace) {
   min-width:0; overflow:hidden; text-overflow:ellipsis; }
 a.thread-task-action:hover, a.thread-task-notice:hover { color:var(--ink2); }
 a.thread-task-action:focus-visible, a.thread-task-notice:focus-visible {

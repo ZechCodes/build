@@ -210,8 +210,11 @@ const nameHtml = (name, mark, href) => (href
   ? `<a class="thread-task-name" href="${esc(href)}">${namePartsHtml(name, mark)}</a>`
   : `<span class="thread-task-name">${namePartsHtml(name, mark)}</span>`);
 
-/** One section of the line: the number, the target, who did it. */
-const sectionHtml = (kind, inner) => `<span class="thread-task-section thread-task-${kind}">${inner}</span>`;
+/** One name on the line — the assignee, who did it — which the stacked form
+ *  puts on its own indented line. The word introducing it ("to", "by") is its
+ *  own box, so every name starts at the same x under the one above. */
+const sectionHtml = (kind, word, name) =>
+  `<span class="thread-task-section thread-task-${kind}"><span class="thread-task-word">${word}</span> ${name}</span>`;
 
 const noticeSaidHtml = (verb, taskHref) => {
   if (!verb) return "";
@@ -222,32 +225,41 @@ const noticeSaidHtml = (verb, taskHref) => {
 const noticeNumberHtml = (notice, taskHref) => {
   const number = `#${esc(String(notice.number ?? ""))}`;
   return taskHref
-    ? `<a class="thread-task-number thread-task-section" href="${esc(taskHref)}">${number}</a>`
-    : `<span class="thread-task-number thread-task-section">${number}</span>`;
+    ? `<a class="thread-task-number" href="${esc(taskHref)}">${number}</a>`
+    : `<span class="thread-task-number">${number}</span>`;
 };
 
-/** Where a move landed, or whom an assignment went to — the assignee named
- *  as the actor is, with their mark and a link to their conversation. */
-const noticeTargetHtml = (notice, target, reading, linkContext) => {
-  if (!target) return "";
-  if (notice.action !== "assigned" || !notice.assignee) return sectionHtml("to", `to ${esc(target)}`);
+/** Whom an assignment went to: a name, drawn as the actor's is, with their
+ *  mark and a link to their conversation. Anything else a verb points at — a
+ *  column — is part of what happened and stays on the first line. */
+const namesAnAssignee = (notice) => notice.action === "assigned" && Boolean(notice.assignee);
+
+const noticeAssigneeHtml = (notice, reading, linkContext) => {
   const assignee = actorName(notice.assignee, noticeReading(notice, reading));
   const mark = noticeActorMarkHtml({ ...notice.assignee, identity: notice.assignee_identity }, reading.projectName);
-  return sectionHtml("to", `to ${nameHtml(assignee, mark, linkContext && actorHref(notice.assignee, linkContext))}`);
+  return sectionHtml("to", "to", nameHtml(assignee, mark, linkContext && actorHref(notice.assignee, linkContext)));
+};
+
+/** The first line, whole in either form: what happened and to which task —
+ *  "Commented on #216", "Moved #32 to In review" (#217, the maintainer: "keep
+ *  the issue number on the same line as the action"). */
+const noticeHeadHtml = (notice, verb, target, taskHref) => {
+  const column = target && !namesAnAssignee(notice) ? ` to ${esc(target)}` : "";
+  const said = [noticeSaidHtml(verb, taskHref), noticeNumberHtml(notice, taskHref)].filter(Boolean).join(" ");
+  return `<span class="thread-task-first-line">${said}${column}</span>`;
 };
 
 const noticeByHtml = (notice, who, reading, linkContext) => {
   if (!who) return "";
   const mark = noticeActorMarkHtml(notice.actor, reading.projectName);
-  return sectionHtml("by", `by ${nameHtml(who, mark, linkContext && actorHref(notice.actor, linkContext))}`);
+  return sectionHtml("by", "by", nameHtml(who, mark, linkContext && actorHref(notice.actor, linkContext)));
 };
 
 const noticeSpansHtml = (notice, did, who, reading, taskHref = "", linkContext = null) => {
   const { verb, target } = actionParts(did);
   return [
-    noticeSaidHtml(verb, taskHref),
-    noticeNumberHtml(notice, taskHref),
-    noticeTargetHtml(notice, target, reading, linkContext),
+    noticeHeadHtml(notice, verb, target, taskHref),
+    target && namesAnAssignee(notice) ? noticeAssigneeHtml(notice, reading, linkContext) : "",
     noticeByHtml(notice, who, reading, linkContext),
   ].filter(Boolean).join(" ");
 };

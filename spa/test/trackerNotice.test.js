@@ -279,10 +279,10 @@ describe("the shape of the row", () => {
     // it reads "Created #39 A title" (the maintainer, 21:19Z), covered in
     // trackerActionLine.test.js. A notice leads with its verb since #217,
     // so a line too long for the width can stack under it.
-    const leads = [[said(notice_()), "thread-task-said"], [said(action_({ action: "commented" })), "thread-task-number"]];
+    const leads = [[said(notice_()), ".thread-task-first-line > .thread-task-said"], [said(action_({ action: "commented" })), ".thread-task-number"]];
     for (const [row, first] of leads) {
       const line = row.querySelector("a, span");
-      expect(line.firstElementChild.classList.contains(first)).toBe(true);
+      expect(line.querySelector(first)).toBe(line.firstElementChild.matches(first) ? line.firstElementChild : line.firstElementChild.firstElementChild);
       expect(line.querySelector(".thread-task-line-title")).toBeNull();
       expect(line.textContent).not.toContain("Kanban drag does not persist");
       expect(line.textContent).not.toContain("A title");

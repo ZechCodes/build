@@ -141,6 +141,7 @@ import { timedPaint } from "./paintTiming.js";
 import { mountAgentSurfaces, openSurfaceOverlay } from "./agentSurfaces.js";
 import { mountAgentTasks } from "./trackerAgentTasksEntry.js";
 import { mountAgentLineage } from "./agentLineage.js";
+import { buildAgentChatRoute } from "./agentLineageModel.js";
 import { referenceLinks } from "./referenceTargets.js";
 import { BUILD_AGENTS_KEY, TASKS_ENTRY_KIND } from "./agentSurfacesModel.js";
 import { mountAgentObservation } from "./agentObservation.js";
@@ -3239,15 +3240,16 @@ function mountRailOnContext(host, context, swap) {
   };
 
   /** A press on a Build agent in the Agents panel opens its chat: here, when
-   *  it is on this rail's own work item, else on its workspace's page. */
-  const openBuildAgent = ({ agentId, entityId, workspaceId }) => {
-    if (entityId && entityId === entity.entityId) {
-      openAgent(agentId);
+   *  it is on this rail's own work item, else on the page it lives on — its
+   *  workspace's, or the project's. A row with neither is not pressable. */
+  const openBuildAgent = (where) => {
+    if (where.entityId && where.entityId === entity.entityId) {
+      openAgent(where.agentId);
       paint();
       return;
     }
-    if (!workspaceId) return;
-    go({ name: "workspace", deviceId: context.deviceId, projectId: lineageProjectId, workspaceId, tab: "changes", agent: agentId });
+    const route = buildAgentChatRoute(where, { deviceId: context.deviceId, projectId: lineageProjectId });
+    if (route) go(route);
   };
 
   const syncSurfaces = () => {

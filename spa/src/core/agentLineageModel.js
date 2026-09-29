@@ -16,6 +16,7 @@
 
 import { agentDisplayName } from "./agentName.js";
 import { entityIdOf } from "./entityId.js";
+import { conversationRoute } from "./router.js";
 
 const NOTHING_RUNNING = Object.freeze({ running: false, agentsRunning: 0, since: null });
 
@@ -139,8 +140,27 @@ export function buildAgentEntries(lineage, agentId) {
       entity_id: member.entityId,
       workspace_id: member.workspaceId,
       workspace_name: member.workspaceName,
+      kind: member.kind,
     };
   });
+}
+
+/** The pages a Build agent's chat opens on (#221): its workspace's, or the
+ *  project's for an agent that has no workspace. */
+const CHAT_PAGES = {
+  workspace: ({ workspaceId }) => !!workspaceId,
+  project: () => true,
+};
+
+/** Which page a Build agent's chat opens on, or null when it is on neither —
+ *  its row is then not pressable at all, rather than pressable for nothing. */
+export const buildAgentChatKind = ({ kind, workspaceId }) => (CHAT_PAGES[kind]?.({ workspaceId }) ? kind : null);
+
+/** The route a press on a Build agent's row goes to: the same conversation
+ *  route every other link to an agent's chat is written from. */
+export function buildAgentChatRoute({ agentId, kind, workspaceId }, { deviceId, projectId }) {
+  const page = buildAgentChatKind({ kind, workspaceId });
+  return page ? conversationRoute({ kind: page, projectId, deviceId, workspaceId, agentId }) : null;
 }
 
 /** What the lineage answers depend on, as one string: who made whom, where

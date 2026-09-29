@@ -7,7 +7,8 @@
 // has a running agent in its panel too.
 
 import { describe, expect, it } from "vitest";
-import { agentLineage, buildAgentEntries, lineageMembers, withRollup } from "../src/core/agentLineageModel.js";
+import { agentLineage, buildAgentChatRoute, buildAgentEntries, lineageMembers, withRollup } from "../src/core/agentLineageModel.js";
+import { conversationRoute } from "../src/core/router.js";
 
 const row = (kind, over = {}) => ({ kind, project_id: "proj-1", run_id: `run-${over.workspace_id || kind}`, ...over });
 const agent = (id, over = {}) => ({ id, ordinal: 1, working: false, ...over });
@@ -156,16 +157,37 @@ describe("the Build agents an agent's panel lists", () => {
   it("names each by what the rail calls it, with where its chat is", () => {
     expect(buildAgentEntries(lineage, "boss")).toEqual([
       { id: "worker", name: "Login fixer", state: "idle", started_at: null,
-        entity_id: "run-ws-a", workspace_id: "ws-a", workspace_name: "Fix login" },
+        entity_id: "run-ws-a", workspace_id: "ws-a", workspace_name: "Fix login", kind: "workspace" },
       { id: "busy", name: "Agent 2", state: "running", started_at: Date.parse("2026-09-28T10:00:00Z"),
-        entity_id: "run-ws-b", workspace_id: "ws-b", workspace_name: "Docs" },
+        entity_id: "run-ws-b", workspace_id: "ws-b", workspace_name: "Docs", kind: "workspace" },
       { id: "broken", name: "Agent 3", state: "failed", started_at: null,
-        entity_id: "run-ws-b", workspace_id: "ws-b", workspace_name: "Docs" },
+        entity_id: "run-ws-b", workspace_id: "ws-b", workspace_name: "Docs", kind: "workspace" },
     ]);
   });
 
   it("is none at all for an agent that made nothing, so no pill is put up for it", () => {
     expect(buildAgentEntries(lineage, "worker")).toBeNull();
     expect(buildAgentEntries(null, "boss")).toBeNull();
+  });
+});
+
+// #221: the chat a Build agent's row opens is the one every other link to an
+// agent's conversation opens, and a row whose chat has no page opens nothing.
+describe("where a press on a Build agent goes", () => {
+  const place = { deviceId: "dev-1", projectId: "proj-1" };
+
+  it("is the conversation route of a workspace's agent", () => {
+    expect(buildAgentChatRoute({ agentId: "worker", kind: "workspace", workspaceId: "ws-a" }, place))
+      .toEqual(conversationRoute({ kind: "workspace", projectId: "proj-1", deviceId: "dev-1", workspaceId: "ws-a", agentId: "worker" }));
+  });
+
+  it("is the project's conversation route for an agent with no workspace", () => {
+    expect(buildAgentChatRoute({ agentId: "deputy", kind: "project", workspaceId: null }, place))
+      .toEqual(conversationRoute({ kind: "project", projectId: "proj-1", deviceId: "dev-1", agentId: "deputy" }));
+  });
+
+  it("is nowhere for an agent on neither", () => {
+    expect(buildAgentChatRoute({ agentId: "stray", kind: "branch", workspaceId: null }, place)).toBeNull();
+    expect(buildAgentChatRoute({ agentId: "lost", kind: "workspace", workspaceId: null }, place)).toBeNull();
   });
 });

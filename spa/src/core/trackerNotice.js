@@ -163,15 +163,27 @@ function actionTarget(notice, reading) {
 const columnName = (slug) =>
   FALLBACK_COLUMNS.find((column) => column.id === slug)?.name ?? String(slug).replace(/_/g, " ");
 
-/** The whole line as words, which is also what the hover text is built from. */
+/**
+ * What happened, apart from what it happened to. The line leads with the verb
+ * (#217) and the target is a section of its own — a line of its own when the
+ * notice stacks — so a phrase that carries its target ("moved to Done",
+ * "assigned to Agent 2") is cut at its "to".
+ */
+const TO = " to ";
+const actionParts = (did) => {
+  const at = did.indexOf(TO);
+  return at === -1 ? { verb: did, target: "" } : { verb: did.slice(0, at), target: did.slice(at + TO.length) };
+};
+const capitalised = (text) => text.charAt(0).toUpperCase() + text.slice(1);
+
+/** The whole line as words: "Moved #41 to In review by transport-liveness · Agent 1". */
 export function noticeLineText(notice, reading = {}) {
-  const did = noticeAction(notice, reading);
+  const { verb, target } = actionParts(noticeAction(notice, reading));
   const who = actorName(notice?.actor, reading);
-  return [`#${notice?.number ?? ""}`, did, who ? `by ${who}` : ""].filter(Boolean).join(" ");
+  return [capitalised(verb), `#${notice?.number ?? ""}`, target && `to ${target}`, who && `by ${who}`]
+    .filter(Boolean).join(" ");
 }
 
-/** The number, what happened, and who did it — each its own span so the
- *  stylesheet can hold the number fixed and let nothing else push it away. */
 const noticeActorMarkHtml = (actor, projectName) => {
   if (actor?.kind === "project_agent" || actor?.agent_id?.startsWith("project-")) {
     return `<span class="thread-task-actor-mark is-project" aria-hidden="true">${esc(projectInitial(projectName || "Build"))}</span>`;
@@ -180,54 +192,65 @@ const noticeActorMarkHtml = (actor, projectName) => {
   return provider ? `<span class="thread-task-actor-mark" aria-hidden="true">${harnessIconHtml(provider)}</span>` : "";
 };
 
-/** An agent's name as the pieces a narrow line may break between (#212):
- *  "airlock-queue · Queue hardener" is the workspace and the agent, and a
- *  phone breaks at the " · " before it breaks either. A piece too long for a
- *  line of its own breaks after a `-`, `/` or `.`, never mid-word; the mark
- *  rides the first piece so it never sits alone at a line's end. */
+/** An agent's name, "airlock-queue · Queue hardener": the workspace and the
+ *  agent. On one line they read as written; stacked, the agent's name stays
+ *  beside the "by" that introduces it and the workspace sits under it
+ *  (styles/tasks.css). Either part too long for its line ellipsises, its whole
+ *  text kept as hover text. One name, one link. */
 const NAME_SEPARATOR = " · ";
-const breakableAtBoundaries = (text) => esc(text).replace(/([-/.])/g, "$1<wbr>");
-const namePartsHtml = (name, mark = "") => String(name).split(NAME_SEPARATOR)
-  .map((part, index) => `<span class="thread-task-name-part">${index ? "· " : mark}${breakableAtBoundaries(part)}</span>`)
-  .join(" ");
+const namePartHtml = (kind, text) => `<span class="thread-task-${kind}" title="${esc(text)}">${esc(text)}</span>`;
+const namePartsHtml = (name, mark) => {
+  const parts = String(name).split(NAME_SEPARATOR);
+  const agent = namePartHtml("agent-name", parts.pop());
+  if (!parts.length) return `${mark}${agent}`;
+  const workspace = namePartHtml("workspace", parts.join(NAME_SEPARATOR));
+  return `${mark}${workspace}<span class="thread-task-name-sep">${NAME_SEPARATOR}</span>${agent}`;
+};
+const nameHtml = (name, mark, href) => (href
+  ? `<a class="thread-task-name" href="${esc(href)}">${namePartsHtml(name, mark)}</a>`
+  : `<span class="thread-task-name">${namePartsHtml(name, mark)}</span>`);
 
-const noticeActionMarkup = (notice, did, reading, linkContext = null) => {
-  if (notice.action !== "assigned" || !notice.assignee) return esc(did);
-  const target = actorName(notice.assignee, noticeReading(notice, reading));
-  const icon = noticeActorMarkHtml({ ...notice.assignee, identity: notice.assignee_identity }, reading.projectName);
-  const href = linkContext && actorHref(notice.assignee, linkContext);
-  const named = namePartsHtml(target, icon);
-  return `assigned to&nbsp;${href ? `<a class="thread-task-agent-link" href="${esc(href)}">${named}</a>` : named}`;
+/** One section of the line: the number, the target, who did it. */
+const sectionHtml = (kind, inner) => `<span class="thread-task-section thread-task-${kind}">${inner}</span>`;
+
+const noticeSaidHtml = (verb, taskHref) => {
+  if (!verb) return "";
+  const said = esc(capitalised(verb));
+  return `<span class="thread-task-said">${taskHref ? `<a class="thread-task-action" href="${esc(taskHref)}">${said}</a>` : said}</span>`;
 };
 
 const noticeNumberHtml = (notice, taskHref) => {
   const number = `#${esc(String(notice.number ?? ""))}`;
   return taskHref
-    ? `<a class="thread-task-number" href="${esc(taskHref)}">${number}</a>`
-    : `<span class="thread-task-number">${number}</span>`;
+    ? `<a class="thread-task-number thread-task-section" href="${esc(taskHref)}">${number}</a>`
+    : `<span class="thread-task-number thread-task-section">${number}</span>`;
 };
 
-const noticeSaidHtml = (notice, did, reading, taskHref, linkContext) => {
-  if (!did) return "";
-  const said = taskHref && notice.action !== "assigned"
-    ? `<a class="thread-task-action" href="${esc(taskHref)}">${esc(did)}</a>`
-    : noticeActionMarkup(notice, did, reading, linkContext);
-  return `<span class="thread-task-said">${said}</span>`;
+/** Where a move landed, or whom an assignment went to — the assignee named
+ *  as the actor is, with their mark and a link to their conversation. */
+const noticeTargetHtml = (notice, target, reading, linkContext) => {
+  if (!target) return "";
+  if (notice.action !== "assigned" || !notice.assignee) return sectionHtml("to", `to ${esc(target)}`);
+  const assignee = actorName(notice.assignee, noticeReading(notice, reading));
+  const mark = noticeActorMarkHtml({ ...notice.assignee, identity: notice.assignee_identity }, reading.projectName);
+  return sectionHtml("to", `to ${nameHtml(assignee, mark, linkContext && actorHref(notice.assignee, linkContext))}`);
 };
 
 const noticeByHtml = (notice, who, reading, linkContext) => {
   if (!who) return "";
-  const name = namePartsHtml(who, noticeActorMarkHtml(notice.actor, reading.projectName));
-  const href = linkContext && actorHref(notice.actor, linkContext);
-  return `<span class="thread-task-by">by&nbsp;${href
-    ? `<a class="thread-task-agent-link" href="${esc(href)}">${name}</a>` : name}</span>`;
+  const mark = noticeActorMarkHtml(notice.actor, reading.projectName);
+  return sectionHtml("by", `by ${nameHtml(who, mark, linkContext && actorHref(notice.actor, linkContext))}`);
 };
 
-const noticeSpansHtml = (notice, did, who, reading, taskHref = "", linkContext = null) => [
-  noticeNumberHtml(notice, taskHref),
-  noticeSaidHtml(notice, did, reading, taskHref, linkContext),
-  noticeByHtml(notice, who, reading, linkContext),
-].filter(Boolean).join(" ");
+const noticeSpansHtml = (notice, did, who, reading, taskHref = "", linkContext = null) => {
+  const { verb, target } = actionParts(did);
+  return [
+    noticeSaidHtml(verb, taskHref),
+    noticeNumberHtml(notice, taskHref),
+    noticeTargetHtml(notice, target, reading, linkContext),
+    noticeByHtml(notice, who, reading, linkContext),
+  ].filter(Boolean).join(" ");
+};
 
 const noticeLinkContext = (notice, place, workspaces) => {
   if (!place) return null;
@@ -247,28 +270,25 @@ const noticeWrapHtml = (notice, said, href, hover, split) => {
 };
 
 /**
- * The line: `#41 moved to In review by transport-liveness · Agent 1`.
+ * The line: `Moved #41 to In review by transport-liveness · Agent 1`.
  *
  * The maintainer, on the lines as #40 shipped them: "Relevant info is getting
  * pushed out of view … Move what happened first and don't show the task
- * title."
+ * title." And on #217, when a long one wrapped into five ragged lines: lead
+ * with the action, and when the line does not fit put each section on its
+ * own indented line (core/noticeFit.js decides which).
  *
- * So the number leads — it is the deep link and the thing a person says out
- * loud — then what happened, then who did it. The title is gone from the line
- * entirely: it was the longest part and the first to be cut off, and it is the
- * heading of the page the link opens. It stays as hover text, where length
- * costs nothing.
+ * So what happened leads, then the number — the deep link and the thing a
+ * person says out loud — then where it went and who did it. The title is not
+ * on the line: it was the longest part and the first to be cut off, and it is
+ * the heading of the page the link opens. It stays as hover text, where
+ * length costs nothing.
  */
 export function taskNoticeLineHtml(notice, { place = null, agentLabels = {}, projectName = "", workspaces } = {}) {
   if (!notice?.task_id) return "";
   const reading = { agentLabels, projectName };
   const did = noticeAction(notice, reading);
   const who = actorName(notice.actor, reading);
-  // The spaces between the spans are for the reader, not for the layout: flex
-  // drops whitespace-only nodes and `gap` does the spacing, but they stay in
-  // the text a screen reader speaks and a copy takes.
-  // The title the line no longer shows. Hover costs nothing and a reader who
-  // wants to know which task #41 is can ask without opening it.
   const hover = notice.title ? ` title="${esc(notice.title)}"` : "";
   const href = noticeHref(notice, place);
   const linkContext = noticeLinkContext(notice, place, workspaces);

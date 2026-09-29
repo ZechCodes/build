@@ -108,7 +108,7 @@ it("opens each unwatched identity from mounted task, list, board and notice, the
       "#task .task-comment .task-entry-head a", "#task .task-page-body a",
       "#task .task-assignee-current a", "#task .task-event a[href*='agent=']",
       "#list .task-assignee-link", "#board .task-assignee-link",
-      "#notice .thread-task-by a", "#notice .thread-task-said a",
+      "#notice .thread-task-by a", "#notice .thread-task-to a",
     ]) expect(await page.locator(selector).first().getAttribute("href"), selector).toContain("agent=");
     expect(await page.locator("#notice a.thread-task-number").getAttribute("href")).toContain("/tasks/task-mounted");
     expect(await page.locator("#list .task-assign[data-task-assign]").count()).toBe(1);

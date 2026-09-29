@@ -135,9 +135,9 @@ describe("bridge identity through the task cache", () => {
     }, { place, projectName: "Build" });
     const host = document.createElement("div");
     host.innerHTML = html;
-    expect(host.querySelector(".thread-task-said").textContent.replace(/\s+/g, " ").trim()).toBe("assigned to spa-flaky-tests · Fix drag");
-    expect(host.querySelector(".thread-task-said .rail-harness-icon")?.dataset.harnessIcon).toBe("codex_app_server");
-    expect(host.querySelector(".thread-task-said a[href*='agent=']")).not.toBeNull();
+    expect(host.querySelector(".thread-task-to").textContent.replace(/\s+/g, " ").trim()).toBe("to spa-flaky-tests · Fix drag");
+    expect(host.querySelector(".thread-task-to .rail-harness-icon")?.dataset.harnessIcon).toBe("codex_app_server");
+    expect(host.querySelector(".thread-task-to a[href*='agent=']")).not.toBeNull();
   });
 
   it("keeps a deleted notice agent as text while its task number still opens", () => {

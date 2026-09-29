@@ -16,6 +16,7 @@ const markup = (desktop) => `<div id="shell">${desktop ? '<aside id="inbox-rail"
 </div></div>`;
 
 const VIEWPORTS = [
+  ["narrow phone", { width: 320, height: 640 }],
   ["phone", { width: 390, height: 844 }],
   ["desktop", { width: 1440, height: 900 }],
 ];
@@ -39,9 +40,11 @@ async function mountSeededRail(page, basePath) {
       }],
     });
     await writeCached({ deviceId: device, entityId: "layout-ws-run", kind: "row", sub: "" }, {
-      kind: "workspace", run_id: "layout-ws-run", workspace_id: "layout-ws", title: "Fix the login redirect",
+      kind: "workspace", run_id: "layout-ws-run", workspace_id: "layout-ws", title: "Fix the login redirect for every single sign-on provider",
       project_id: "layout-project", agents: [
+        // A model the catalog does not know, so the row shows its whole raw id (#226).
         { id: "worker", ordinal: 1, provider: "claude_adk", state: "live", name: "Login fixer", created_by: "boss",
+          model: "claude-opus-5-5-20260915-experimental-preview", active_model: "claude-opus-5-5-20260915-experimental-preview",
           working: true, working_time: { since }, unread_count: 0 },
         { id: "helper", ordinal: 2, provider: "claude_adk", state: "idle", name: "Docs helper", created_by: "boss",
           working: false, unread_count: 0 },
@@ -57,6 +60,10 @@ async function mountSeededRail(page, basePath) {
     });
   });
 }
+
+/** The narrowest the agent's name gets on a Build agent row: enough to read
+ *  a short name whole and a long one's start (#226). */
+const MIN_NAME_WIDTH = 64;
 
 const inViewport = (box, viewport) => box && box.x >= -1 && box.y >= -1
   && box.x + box.width <= viewport.width + 1 && box.y + box.height <= viewport.height + 1;
@@ -94,6 +101,12 @@ for (const [name, viewport] of VIEWPORTS) {
           subagents: [...group("subagents").querySelectorAll(".surface-row-label")].map((label) => label.textContent),
           builds: [...group("build_agents").querySelectorAll(".surface-build-agent")].map((row) => row.dataset.buildAgent),
           firstBuild: box(group("build_agents").querySelector(".surface-build-agent")),
+          buildRows: [...group("build_agents").querySelectorAll(".surface-build-agent")].map((row) => ({
+            row: box(row),
+            name: box(row.querySelector(".surface-row-label")),
+            parts: [...row.querySelectorAll(".surface-row-head > *")].map(box),
+            model: row.querySelector(".surface-row-model")?.textContent || "",
+          })),
           overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
         };
       });
@@ -103,6 +116,15 @@ for (const [name, viewport] of VIEWPORTS) {
       assert.deepEqual(read.builds, ["worker", "helper"]);
       assert.ok(inViewport(read.firstBuild, viewport), `the first Build agent is on screen: ${JSON.stringify(read.firstBuild)}`);
       assert.ok(read.overflow <= 0, `nothing scrolls sideways (${read.overflow}px)`);
+      // #226: a long model id and a long workspace name give way before the
+      // agent's name does, and nothing on the row runs past its edge.
+      assert.equal(read.buildRows[0].model, "claude-opus-5-5-20260915-experimental-preview");
+      for (const { row, name: label, parts } of read.buildRows) {
+        assert.ok(label.width >= MIN_NAME_WIDTH, `the name keeps a readable width: ${label.width}px`);
+        for (const part of parts) {
+          if (part.width > 0) assert.ok(part.x + part.width <= row.x + row.width + 1, `a row part runs past the row: ${JSON.stringify({ part, row })}`);
+        }
+      }
       await captureLayout(page, `build-agents-panel-${name}.png`);
 
       await page.locator('.surface-build-agent[data-build-agent="worker"]').click();

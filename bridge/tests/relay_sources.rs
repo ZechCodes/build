@@ -9,7 +9,9 @@
 //! aside. The list's Rust sources must be exactly that set.
 //!
 //! The walk fails closed: a crate path it cannot resolve to a file, a glob of
-//! the crate root, and a file pulled in by `include!`-style macros are errors,
+//! the crate root, a file pulled in by `include!`-style macros, and anything
+//! that lets code name the library without a path the walk can read — a `use`
+//! of a crate root alone, `extern crate … as`, `#[macro_use]` — are errors,
 //! never skipped.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -20,6 +22,10 @@ use syn::buffer::{Cursor, TokenBuffer};
 use syn::visit::Visit;
 
 const RELAY_BIN: &str = "bin/relay.rs";
+
+/// The names a path can start at the root of a crate by. A `use` of one alone
+/// gives the root another name, which the walk would then not know as a root.
+const CRATE_ROOTS: [&str; 4] = ["crate", "self", "super", "build_bridge"];
 
 fn is_test_gated(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| {
@@ -34,6 +40,7 @@ fn item_attrs(item: &syn::Item) -> &[syn::Attribute] {
     match item {
         syn::Item::Const(i) => &i.attrs,
         syn::Item::Enum(i) => &i.attrs,
+        syn::Item::ExternCrate(i) => &i.attrs,
         syn::Item::Fn(i) => &i.attrs,
         syn::Item::Impl(i) => &i.attrs,
         syn::Item::Macro(i) => &i.attrs,
@@ -90,7 +97,9 @@ fn use_leaves(prefix: &mut Vec<String>, tree: &syn::UseTree, out: &mut Vec<(Stri
         }
         syn::UseTree::Rename(rename) => {
             let mut path = prefix.clone();
-            path.push(rename.ident.to_string());
+            if rename.ident != "self" {
+                path.push(rename.ident.to_string());
+            }
             out.push((rename.rename.to_string(), path));
         }
         syn::UseTree::Glob(_) => {
@@ -264,10 +273,48 @@ fn double_colon(cursor: Cursor) -> Option<Cursor> {
     (first.as_char() == ':' && second.as_char() == ':').then_some(after_second)
 }
 
+impl References<'_> {
+    /// `#[macro_use]` makes a module's macros callable by bare name, from
+    /// anywhere after it: no path in the caller says where they live.
+    fn refuse_macro_use(&mut self, attrs: &[syn::Attribute]) {
+        if attrs.iter().any(|attr| attr.path().is_ident("macro_use")) {
+            self.scan.errors.push(
+                "`#[macro_use]` makes macros callable by a bare name the walk cannot follow"
+                    .to_string(),
+            );
+        }
+    }
+
+    fn refuse_root_alias(&mut self, path: &[String]) {
+        if let [root] = path {
+            if CRATE_ROOTS.contains(&root.as_str()) {
+                self.scan.errors.push(format!(
+                    "`use` of `{root}` alone renames a crate root the walk cannot follow"
+                ));
+            }
+        }
+    }
+}
+
 impl<'ast> Visit<'ast> for References<'_> {
+    fn visit_file(&mut self, file: &'ast syn::File) {
+        self.refuse_macro_use(&file.attrs);
+        syn::visit::visit_file(self, file);
+    }
+
     fn visit_item(&mut self, item: &'ast syn::Item) {
         if !is_test_gated(item_attrs(item)) {
+            self.refuse_macro_use(item_attrs(item));
             syn::visit::visit_item(self, item);
+        }
+    }
+
+    fn visit_item_extern_crate(&mut self, item: &'ast syn::ItemExternCrate) {
+        if item.rename.is_some() {
+            self.scan.errors.push(format!(
+                "`extern crate {} as …` names a crate by an alias the walk cannot follow",
+                item.ident
+            ));
         }
     }
 
@@ -275,6 +322,7 @@ impl<'ast> Visit<'ast> for References<'_> {
         let mut leaves = Vec::new();
         use_leaves(&mut Vec::new(), &item.tree, &mut leaves);
         for (name, path) in leaves {
+            self.refuse_root_alias(&path);
             self.record(&path);
             if let Some(Ok(rooted)) = self.crate_rooted(&path) {
                 self.imports.insert(name, rooted);
@@ -744,4 +792,38 @@ fn a_glob_of_the_crate_root_is_refused() {
 fn a_file_included_by_macro_is_refused() {
     let result = fixture_closure("let _ = include_str!(\"banner.txt\");", &[]);
     assert_refused(result, "include_str!");
+}
+
+#[test]
+fn a_macro_use_module_is_refused() {
+    let lib = FIXTURE_LIB.replace("pub mod priority;", "#[macro_use]\npub mod priority;");
+    let priority =
+        format!("{FIXTURE_PRIORITY}macro_rules! relay_probe_value {{ () => {{ \"probe\" }} }}\n");
+    let result = fixture_closure(
+        "let _ = relay_probe_value!();",
+        &[("lib.rs", &lib), ("priority.rs", &priority)],
+    );
+    assert_refused(result, "#[macro_use]");
+}
+
+#[test]
+fn a_renamed_extern_crate_is_refused() {
+    let lib = format!("extern crate self as bb;\n{FIXTURE_LIB}");
+    assert_refused(fixture_closure("", &[("lib.rs", &lib)]), "extern crate");
+}
+
+#[test]
+fn an_alias_of_the_library_in_the_bin_is_refused() {
+    let bin = "use build_bridge as bb;\nfn main() { let _ = bb::priority::AGENTS_SLICE; }\n";
+    assert_refused(
+        fixture_closure("", &[("bin/relay.rs", bin)]),
+        "`build_bridge`",
+    );
+}
+
+#[test]
+fn an_alias_of_the_crate_root_in_the_library_is_refused() {
+    assert_refused(fixture_closure("use crate as c;", &[]), "`crate`");
+    assert_refused(fixture_closure("use crate::{self as c};", &[]), "`crate`");
+    assert_refused(fixture_closure("use super as up;", &[]), "`super`");
 }

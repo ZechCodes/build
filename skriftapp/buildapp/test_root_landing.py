@@ -49,7 +49,7 @@ FOOTER_ASSURANCE_COPY = "LOCAL-FIRST // E2E ENCRYPTED"
 FOOTER_COPYRIGHT_COPY = "© 2026 BUILD · GETBUILD.ING"
 
 CI_WORKFLOW_PATH = Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml"
-CANONICAL_REPOSITORY_URL = "https://github.com/ZechCodes/build-web"
+CANONICAL_REPOSITORY_URL = "https://github.com/ZechCodes/build"
 
 # A stand-in for the Astro output: a complete document carrying both server slots,
 # so these checks run on a tree that has never run `npm run build`.
@@ -176,9 +176,9 @@ def test_an_unbuilt_landing_answers_service_unavailable_in_one_plain_sentence(
     assert UNBUILT_LANDING_MESSAGE == "The landing page has not been built yet."
 
 
-def test_a_private_repository_leaves_the_activity_section_off_the_page(built_page):
+def test_an_empty_activity_cache_leaves_the_activity_section_off_the_page(built_page):
     content = load_content()
-    assert content["source"]["repository_public"] is False
+    assert content["source"]["repository_public"] is True
     assert content["activity"]["entries"] == []
     html = render_landing_page()
     # An empty "built in the open" section says less than no section.
@@ -225,6 +225,12 @@ def test_the_homepage_asks_for_exactly_two_values_at_request_time():
     assert slots["repository_url"] == escape(
         load_content()["source"]["repository_url"], quote=True
     )
+
+
+def test_the_shipped_content_names_the_canonical_repository():
+    source = load_content()["source"]
+    assert source["repository_url"] == CANONICAL_REPOSITORY_URL
+    assert f"https://github.com/{source['repository']}" == CANONICAL_REPOSITORY_URL
 
 
 def test_a_small_verified_activity_cache_renders_without_becoming_a_page_dependency():

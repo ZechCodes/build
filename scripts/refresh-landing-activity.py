@@ -18,7 +18,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-REPOSITORY = "ZechCodes/build-web"
+REPOSITORY = "ZechCodes/build"
 INCLUSION_LABEL = "landing-activity"
 API_ROOT = f"https://api.github.com/repos/{REPOSITORY}"
 CONTENT_PATH = (

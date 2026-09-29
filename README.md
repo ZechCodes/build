@@ -333,10 +333,10 @@ The web client imports the E2EE binding from a checkout of
 
 ```sh
 mkdir build-dev && cd build-dev
-git clone git@github.com:ZechCodes/build-web.git
+git clone git@github.com:ZechCodes/build.git
 git clone https://github.com/ZechCodes/build-secure-transport.git
 npm install --no-audit --no-fund --prefix build-secure-transport/js
-cd build-web
+cd build
 ```
 
 ### 2. Run the local stack

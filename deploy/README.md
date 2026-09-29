@@ -174,9 +174,9 @@ downloading a binary never means being handed this repository.
 | What | Where | Why |
 |---|---|---|
 | The releases repo, **public, with a default branch and at least one commit** | default `ZechCodes/build-releases` | `gh release create` needs a commit to hang the tag on. The workflow will not create it |
-| Secret `RELEASES_TOKEN` | build-web → Settings → Secrets | Fine-grained PAT with `contents: write` on the releases repo, and nothing else. The only secret the pipeline requires |
-| Variable `RELEASES_REPO` | build-web → Settings → Variables | Optional. Overrides the default owner/name. The api reads the same name from its own environment, and install.sh from `BUILD_RELEASES_REPO` — keep the three in step |
-| Secrets `APPLE_CERTIFICATE_P12`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_TEAM_ID`, `APPLE_ID`, `APPLE_APP_PASSWORD` | build-web → Settings → Secrets | Optional. All five present ⇒ the macOS binaries are Developer-ID signed and notarized. Any one missing ⇒ a warning is logged, signing is skipped, and the unsigned builds publish anyway |
+| Secret `RELEASES_TOKEN` | build → Settings → Secrets | Fine-grained PAT with `contents: write` on the releases repo, and nothing else. The only secret the pipeline requires |
+| Variable `RELEASES_REPO` | build → Settings → Variables | Optional. Overrides the default owner/name. The api reads the same name from its own environment, and install.sh from `BUILD_RELEASES_REPO` — keep the three in step |
+| Secrets `APPLE_CERTIFICATE_P12`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_TEAM_ID`, `APPLE_ID`, `APPLE_APP_PASSWORD` | build → Settings → Secrets | Optional. All five present ⇒ the macOS binaries are Developer-ID signed and notarized. Any one missing ⇒ a warning is logged, signing is skipped, and the unsigned builds publish anyway |
 
 Until those Apple credentials exist the macOS downloads are unsigned, and a
 macOS user gets one Gatekeeper refusal the first time they run the binary —

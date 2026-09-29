@@ -193,9 +193,20 @@ const callsTo = (method) => calls.filter((call) => call.method === method);
 const railStatus = () => railHost().querySelector("#rail-status");
 const railStatusLead = () => railHost().querySelector("#rail-status-lead");
 const railStatusPills = () => railHost().querySelector("#rail-status-pills");
+/** Open a kind's viewer from its pill. The pill is painted off the row's
+ *  cache record, so it is waited for rather than assumed after mount. */
 const openSurfacePill = async (kind) => {
-  railHost().querySelector(`[data-surface-kind="${kind}"]`).click();
+  const pill = () => railHost().querySelector(`[data-surface-kind="${kind}"]`);
+  await vi.waitFor(() => expect(pill()).toBeTruthy());
+  pill().click();
   await vi.waitFor(() => expect(railHost().querySelector(`.surface-${kind}`)).toBeTruthy());
+};
+/** Press the subagent row that points at a call. Its viewer paints rows only
+ *  once its fold record is read, so the row is waited for, not assumed. */
+const pressSubagentCall = async () => {
+  const row = () => railHost().querySelector(".surface-subagents [data-call-sequence]");
+  await vi.waitFor(() => expect(row()).toBeTruthy());
+  row().click();
 };
 const railStatusGit = () => railHost().querySelector("#rail-status-git");
 const workingWord = () => railHost().querySelector(".rail-status-working-word");
@@ -4354,10 +4365,9 @@ describe("the agent's surfaces, carried by the status row", () => {
     await mount();
 
     await openSurfacePill("subagents");
-    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
-    await flush();
+    await pressSubagentCall();
 
-    expect(notifyError).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(notifyError).toHaveBeenCalledTimes(1));
     expect(notifyError.mock.calls[0][0]).toContain("not in the loaded conversation");
   });
 });
@@ -5591,7 +5601,7 @@ describe("a run of activity in the rail", () => {
     await mount();
 
     await openSurfacePill("subagents");
-    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
+    await pressSubagentCall();
     await flush();
 
     expect(notifyError).not.toHaveBeenCalled();
@@ -5639,7 +5649,7 @@ describe("a run of activity in the rail", () => {
     await mount();
 
     await openSurfacePill("subagents");
-    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
+    await pressSubagentCall();
     await vi.waitFor(() => expect(railHost().querySelector('[data-sequence="12"]')).not.toBe(null));
 
     expect(notifyError).not.toHaveBeenCalled();
@@ -6164,7 +6174,7 @@ describe("a long conversation held in the cache", () => {
     scrollTo.mockClear();
 
     await openSurfacePill("subagents");
-    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
+    await pressSubagentCall();
     await flush();
 
     expect(notifyError).not.toHaveBeenCalled();
@@ -6226,7 +6236,7 @@ describe("a deep link to a call another run reaches across", () => {
   };
   const pressSurface = async () => {
     await openSurfacePill("subagents");
-    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
+    await pressSubagentCall();
     await flush();
   };
 
@@ -6287,7 +6297,7 @@ describe("a deep link past everything the cache holds", () => {
     const drawn = railHost().querySelectorAll(".thread-items > [data-sequence]").length;
 
     await openSurfacePill("subagents");
-    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
+    await pressSubagentCall();
     await flush();
 
     expect(railHost().querySelectorAll(".thread-items > [data-sequence]")).toHaveLength(drawn);
@@ -6311,7 +6321,7 @@ describe("a deep link past everything the cache holds", () => {
     expect(railHost().querySelector('.thread-items [data-sequence="1"]')).toBeNull();
 
     await openSurfacePill("subagents");
-    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
+    await pressSubagentCall();
     await flush();
 
     expect(notifyError).not.toHaveBeenCalled();
@@ -6358,7 +6368,7 @@ describe("review158 independent ownership cases", () => {
   };
   const press = async () => {
     await openSurfacePill("subagents");
-    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
+    await pressSubagentCall();
     await flush();
   };
 
@@ -6366,8 +6376,10 @@ describe("review158 independent ownership cases", () => {
     pointing(120, [call(1), call(2), ...range(3, 89), call(90), ...range(91, 99), call(100, 2), ...range(101, 109), call(110, 90), ...range(111, 119), call(120, 100), ...range(121, 160)]);
     await mount();
     await press();
+    // Reaching the owner reads the conversation's cache record: wait for the
+    // opened run to hold the call, not a count of turns.
+    await vi.waitFor(() => expect(railHost().querySelector('[data-key="1"][open] [data-sequence="120"]')).not.toBeNull());
     expect(notifyError).not.toHaveBeenCalled();
-    expect(railHost().querySelector('[data-key="1"][open] [data-sequence="120"]')).not.toBeNull();
   });
 
   it("resolves a top-level call within a hidden multievent run", async () => {

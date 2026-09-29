@@ -101,6 +101,7 @@ describe("adapter selection", () => {
       threads: { postOperations: false, attachmentChunks: false },
       branches: { finishDelete: false },
       push: { registerKey: false, revokeKey: false },
+      agents: { createdBy: false },
     });
   });
 
@@ -178,6 +179,7 @@ describe("adapter selection", () => {
         threads: { postOperations: false, attachmentChunks: false },
         branches: { finishDelete: false },
         push: { registerKey: false, revokeKey: false },
+        agents: { createdBy: false },
       });
     }
   });
@@ -388,6 +390,14 @@ describe("github.repos", () => {
     expect(v1.capabilitiesOf({ api_version: "2.0.0", capabilities: ["github.repos"] }).github.repos).toBe(true);
     expect(v1.capabilitiesOf({ api_version: "2.0.0", capabilities: [] }).github.repos).toBe(false);
     expect(v1.capabilitiesOf({ api_version: "2.0.0" }).github.repos).toBe(false);
+  });
+});
+
+describe("agents.createdBy", () => {
+  it("is on only when the greeting names it, never inferred from a minor (#221)", () => {
+    expect(v1.capabilitiesOf({ api_version: "3.1.0", capabilities: ["agents.createdBy"] }).agents.createdBy).toBe(true);
+    expect(v1.capabilitiesOf({ api_version: "3.1.0", capabilities: [] }).agents.createdBy).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "3.1.0" }).agents.createdBy).toBe(false);
   });
 });
 

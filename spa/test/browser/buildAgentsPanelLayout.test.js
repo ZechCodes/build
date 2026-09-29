@@ -21,11 +21,15 @@ const VIEWPORTS = [
 ];
 
 async function mountSeededRail(page, basePath) {
-  await loadBrowserModules(page, { rail: "src/core/agentRail.js", cache: "src/core/localCache.js" }, basePath);
+  await loadBrowserModules(page, {
+    rail: "src/core/agentRail.js", cache: "src/core/localCache.js", lineageSupport: "src/core/agentLineageSupport.js",
+  }, basePath);
   await page.evaluate(async () => {
     const { mountAgentRail } = window.__layoutModules.rail;
     const { writeCached } = window.__layoutModules.cache;
     const device = "layout-device";
+    // A bridge that announces agents.createdBy greeted this machine (#221).
+    await window.__layoutModules.lineageSupport.rememberAgentLineageSupport(device, { agents: { createdBy: true } });
     const since = new Date(Date.now() - 95_000).toISOString();
     await writeCached({ deviceId: device, entityId: "layout-project-run", kind: "row", sub: "" }, {
       kind: "project", run_id: "layout-project-run", project_id: "layout-project", agents: [{

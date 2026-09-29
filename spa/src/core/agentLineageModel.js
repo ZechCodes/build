@@ -61,14 +61,18 @@ function onMakerCycle(agentId, byId) {
   return false;
 }
 
-export function agentLineage(members) {
+/** Who made whom among `members`. `namesMakers` is whether their bridge
+ *  announces `agents.createdBy` (core/agentLineageSupport.js); without it no
+ *  agent counts as made by another, whatever its digest carries (#221). The
+ *  harness's own sub-agents roll up either way. */
+export function agentLineage(members, { namesMakers = true } = {}) {
   const byId = new Map(members.map((member) => [member.agent.id, member]));
   // An agent on a cycle counts as made by no one. Cut there, who made whom is
   // a forest, so every rollup below is the same whichever agent is asked
   // about first (#221).
   const children = new Map();
   for (const member of members) {
-    const creator = member.agent.created_by;
+    const creator = namesMakers ? member.agent.created_by : null;
     if (!creator || onMakerCycle(member.agent.id, byId)) continue;
     if (!children.has(creator)) children.set(creator, []);
     children.get(creator).push(member);

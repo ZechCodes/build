@@ -68,6 +68,7 @@ import { rememberBridgeUpdateStatus } from "./bridgeUpdates.js";
 import { modelsChangedOn } from "./modelCatalog.js";
 import { rememberNeedsYouRule } from "./needsYouRule.js";
 import { rememberBranchDelete } from "./branchDeleteSupport.js";
+import { rememberAgentLineageSupport } from "./agentLineageSupport.js";
 
 /** The wire API majors this build of the SPA speaks, declared in every
  *  greeting so `bridge.stats` can count who is still on which. */
@@ -896,6 +897,8 @@ function publishGreeting(call, deviceId, greeting, adapter, onGreeting) {
   void rememberNeedsYouRule(deviceId, state.adapter.capabilities);
   // And whether Done there deletes the branch (#87).
   void rememberBranchDelete(deviceId, state.adapter.capabilities);
+  // And whether its agents name the agent that made them (#221).
+  void rememberAgentLineageSupport(deviceId, state.adapter.capabilities);
   onGreeting(greeting);
   armChangeEvents(greeting, deviceId);
   adoptGreetedSession(state, call);

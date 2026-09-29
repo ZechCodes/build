@@ -7,13 +7,13 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
-const { App, openSession, openBrowser, openNewRepo, openSetRemote, refreshModelCatalog, contextFor, refreshFeed, fetchDevices, renameDevice, revokeDevice, retireDevice, confirmAction } =
+const { App, openSession, openBrowser, openNewRepo, openProjectSettings, refreshModelCatalog, contextFor, refreshFeed, fetchDevices, renameDevice, revokeDevice, retireDevice, confirmAction } =
   vi.hoisted(() => ({
     App: { devices: [], viewDispose: null },
     openSession: vi.fn(),
     openBrowser: vi.fn(),
     openNewRepo: vi.fn(),
-    openSetRemote: vi.fn(),
+    openProjectSettings: vi.fn(),
     refreshModelCatalog: vi.fn(async () => ({})),
     contextFor: vi.fn(),
     refreshFeed: vi.fn(async () => []),
@@ -44,7 +44,7 @@ vi.mock("../src/connection.js", () => ({
 }));
 vi.mock("../src/sheets/browser.js", () => ({ openBrowser }));
 vi.mock("../src/sheets/newRepo.js", () => ({ openNewRepo }));
-vi.mock("../src/sheets/setRemote.js", () => ({ openSetRemote }));
+vi.mock("../src/sheets/projectSettings.js", () => ({ openProjectSettings }));
 vi.mock("../src/api.js", () => ({ fetchDevices, renameDevice, revokeDevice }));
 vi.mock("../src/core/confirm.js", () => ({ confirmAction }));
 // The page reads this machine's own context for one thing only: whether its
@@ -220,7 +220,7 @@ describe("the machine's own panels", () => {
     expect(session.call).toHaveBeenCalledWith("project.list");
   });
 
-  it("lists the device's projects over its own connection, with Add project and Set remote on that connection", async () => {
+  it("lists the device's projects over its own connection, with Add project and Settings on that connection", async () => {
     await renderDeviceSettings();
     await vi.waitFor(() => expect(document.querySelectorAll("#projlist .projrow")).toHaveLength(1));
 
@@ -237,11 +237,15 @@ describe("the machine's own panels", () => {
     await addOptions.callRpcFor("other")("project.create", { name: "docs" });
     expect(session.call).toHaveBeenLastCalledWith("project.create", { name: "docs" });
 
-    document.querySelector("#projlist .setremote").click();
-    const [project, , remoteOptions] = openSetRemote.mock.calls[0];
-    expect(project.project_id).toBe("p1");
-    await remoteOptions.callRpc("project.set_remote", { project_id: "p1", url: "" });
-    expect(session.call).toHaveBeenLastCalledWith("project.set_remote", { project_id: "p1", url: "" });
+    // A project has no remote of its own (#228): the row names no remote, and
+    // its sources' remotes are edited in the project's settings.
+    expect(rows[0].querySelector(".premote")).toBeNull();
+    document.querySelector("#projlist .projsettings").click();
+    const [projectId, settingsOptions] = openProjectSettings.mock.calls[0];
+    expect(projectId).toBe("p1");
+    expect(settingsOptions.deviceId).toBe("other");
+    await settingsOptions.callRpc("project.list");
+    expect(session.call).toHaveBeenLastCalledWith("project.list");
   });
 
   it("mounts the agent modes, default harness and isolation panels over the same connection", async () => {

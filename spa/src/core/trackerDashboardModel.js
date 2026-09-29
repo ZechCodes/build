@@ -8,6 +8,8 @@ import { actorName } from "./trackerLineWords.js";
 import { firstLine } from "./activityDigest.js";
 import { PRIORITIES, columnName } from "./trackerModel.js";
 import { isFinished } from "./trackerAgentTasks.js";
+import { markdownHtml } from "./markdown.js";
+import { splitDeviceKey } from "./deviceKey.js";
 
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -161,11 +163,18 @@ export function doneGroups(entries, { nowMs, sessionStartedMs = null }) {
     .map(({ id, title, entries: grouped }) => ({ id, title, entries: grouped }));
 }
 
-const cachedActivity = (activityByAgent, agentId) => {
-  const snippet = activityByAgent instanceof Map
-    ? activityByAgent.get(agentId)
-    : activityByAgent?.[agentId];
-  return typeof snippet === "string" ? snippet.trim() : "";
+/** One agent's cached snippet as the row reads it: what the agent wrote, so
+ *  through the one markdown entry point (core/markdown.js) as a plain line —
+ *  the marks off, and each reference as the words its link would carry, read
+ *  in the project the Dashboard stands in. */
+const activityReader = (activityByAgent, projectKey) => {
+  const place = splitDeviceKey(projectKey);
+  return (agentId) => {
+    const snippet = activityByAgent instanceof Map
+      ? activityByAgent.get(agentId)
+      : activityByAgent?.[agentId];
+    return typeof snippet === "string" ? markdownHtml(snippet, { mode: "plain", place }).trim() : "";
+  };
 };
 
 /** Who holds a task, as its Assigned row says it: the name every other
@@ -183,7 +192,7 @@ const priorityRank = (priority) => -Math.max(0, PRIORITIES.findIndex((candidate)
 /** One priority-ordered pass partitions every open task not assigned to the
  *  user by holder and live agent state. An assigned agent absent from the feed
  *  is still assigned. */
-function activeAndBacklog(tasks, grouped, reading, activityByAgent, columns) {
+function activeAndBacklog(tasks, grouped, reading, activityOf, columns) {
   const working = [];
   const assigned = [];
   const backlog = [];
@@ -203,7 +212,7 @@ function activeAndBacklog(tasks, grouped, reading, activityByAgent, columns) {
     working.push({
       task,
       agentName: actorName({ kind: "agent", agent_id: holding.agent.id }, reading),
-      activity: cachedActivity(activityByAgent, holding.agent.id),
+      activity: activityOf(holding.agent.id),
       working: true,
     });
   }
@@ -242,7 +251,7 @@ export function dashboardSections(tasks, {
     agentLabels: agentLabels(workspaceAgents(feed, projectKey)),
     projectName: projectName(feed, projectKey),
   };
-  const placement = activeAndBacklog(tasks, grouped, reading, activityByAgent, columns);
+  const placement = activeAndBacklog(tasks, grouped, reading, activityReader(activityByAgent, projectKey), columns);
   const needsYou = (tasks || []).flatMap((task) => {
     const { reasons } = grouped.attentionById.get(task.id);
     return reasons.length ? [{ task, reasons, reasonLabels: reasons.map(attentionReasonLabel) }] : [];

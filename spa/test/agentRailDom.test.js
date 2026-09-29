@@ -4427,18 +4427,21 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     });
     answerNothing();
     await mount();
-    expect(pillKinds()).toEqual(["checklist"]);
+    // The seed is a cache read, and the viewer paints its rows once its own
+    // fold record is read: wait on each, not on a count of turns.
+    await vi.waitFor(() => expect(pillKinds()).toEqual(["checklist"]));
     await openTasks();
-    expect(railHost().querySelector(".surface-checklist").textContent).toContain("wire the seed");
+    await vi.waitFor(() => expect(railHost().querySelector(".surface-checklist").textContent).toContain("wire the seed"));
+    expect(pillKinds()).toEqual(["checklist"]);
   });
 
   it("seeds the same snapshot whole while the grace still holds", async () => {
     await saveSurfaces("ag-1", { ...shellsRunning("cargo test"), ...aChecklist });
     answerNothing();
     await mount();
-    expect(pillKinds()).toEqual(["shells", "checklist"]);
+    await vi.waitFor(() => expect(pillKinds()).toEqual(["shells", "checklist"]));
     await openTasks();
-    expect(railHost().querySelector(".surface-checklist-context").textContent).toContain("Last known");
+    await vi.waitFor(() => expect(railHost().querySelector(".surface-checklist-context").textContent).toContain("Last known"));
   });
 
   it("offers the seeded kinds in the header menu before the first read answers", async () => {
@@ -4520,9 +4523,9 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     });
     answerNothing();
     await mount();
-    expect(pillKinds()).toEqual(["checklist"]);
+    await vi.waitFor(() => expect(pillKinds()).toEqual(["checklist"]));
     await openTasks();
-    expect(railHost().querySelector(".surface-checklist").textContent).toContain("old process step");
+    await vi.waitFor(() => expect(railHost().querySelector(".surface-checklist").textContent).toContain("old process step"));
 
     await pushRow(branchRow({
       agents: [agent({ surface_session_generation: "surface-session-2", surfaces: null })],

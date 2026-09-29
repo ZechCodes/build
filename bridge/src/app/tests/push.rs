@@ -186,8 +186,9 @@ async fn the_greeting_announces_push_events() {
     // is the task tracker: ten `tasks.*` verbs and an `tasks` change kind;
     // 2.0.0 is its rename to tasks (#190); 2.1.0 adds the notification
     // keys sealed push content goes to (#200); 2.2.0 offers only what the
-    // installed agent CLIs run, and says when that changes (#203).
-    assert_eq!(hello["result"]["api_version"], "3.0.0", "{hello:?}");
+    // installed agent CLIs run, and says when that changes (#203); 3.0.0
+    // cuts what no client used (#207); 3.1.0 names who made an agent (#216).
+    assert_eq!(hello["result"]["api_version"], "3.1.0", "{hello:?}");
     assert!(
         hello["result"]["coalesce_window_ms"]
             .as_u64()

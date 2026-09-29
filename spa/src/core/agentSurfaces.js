@@ -15,6 +15,7 @@ import {
   SHELL_ENTRY_KIND,
   WORKFLOW_ENTRY_KIND,
   advanceSurfaceVisibility,
+  buildAgentRows,
   emptySurfaceVisibility,
   nextSurfacePillExpiry,
   openSurfaceKind,
@@ -37,6 +38,8 @@ import {
   TICKING_CLOCK_SELECTOR,
   WORKFLOW_HEAD_SELECTOR,
   agentRowHtml,
+  agentsViewerHtml,
+  buildAgentRowHtml,
   checklistItemHtml,
   taskSurfaceRowHtml,
   checklistContextHtml,
@@ -95,6 +98,24 @@ const runningAboveWhatFinished = (kind, renderRow) => ({
   },
 });
 
+/** The Agents viewer (#216): the sub-agents as every running-above-finished
+ *  kind draws them, their history folded inside their own group, then the
+ *  Build agents this agent made. Each group shows only while it has rows. */
+const subagentLists = runningAboveWhatFinished(AGENT_ENTRY_KIND, agentRowHtml).lists;
+
+const AGENTS_VIEWER_PLAN = {
+  frameHtmlWithEmptyLists: agentsViewerHtml,
+  foldHostSelector: SURFACE_SELECTOR.subagentsGroup,
+  lists: (paintContext) => [
+    ...subagentLists(paintContext),
+    { selector: SURFACE_SELECTOR.buildAgents, rows: buildAgentRows(paintContext.surfaces, paintContext.reading), render: buildAgentRowHtml },
+  ],
+  groups: ({ surfaces, reading }) => [
+    { selector: SURFACE_SELECTOR.subagentsGroup, shown: surfaceRows(AGENT_ENTRY_KIND, surfaces, reading).length > 0 },
+    { selector: SURFACE_SELECTOR.buildAgentsGroup, shown: buildAgentRows(surfaces, reading).length > 0 },
+  ],
+};
+
 const openNewlyRunningPhase = (opened, section, phase) => {
   if (!phase.open || opened.has(phase.key)) return;
   opened.add(phase.key);
@@ -119,7 +140,7 @@ const VIEWER_PLANS = {
   [WORKFLOW_ENTRY_KIND]: {
     frameHtmlWithEmptyLists: () => workflowViewerHtml({}, []),
   },
-  [AGENT_ENTRY_KIND]: runningAboveWhatFinished(AGENT_ENTRY_KIND, agentRowHtml),
+  [AGENT_ENTRY_KIND]: AGENTS_VIEWER_PLAN,
   [SHELL_ENTRY_KIND]: runningAboveWhatFinished(SHELL_ENTRY_KIND, shellRowHtml),
   [TASKS_ENTRY_KIND]: runningAboveWhatFinished(TASKS_ENTRY_KIND, taskSurfaceRowHtml),
   [CHECKLIST_ENTRY_KIND]: {
@@ -144,7 +165,28 @@ function expandClippedText(event) {
 
 const CLIP_KEYS = ["Enter", " "];
 
-export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = false, modelLabel, historyControl = null, cacheKey = null }) {
+function openBuildAgentFrom(event, onOpenBuildAgent) {
+  const row = event.target.closest("[data-build-agent]");
+  if (!row || !onOpenBuildAgent) return false;
+  event.preventDefault();
+  onOpenBuildAgent({
+    agentId: row.dataset.buildAgent,
+    entityId: row.dataset.entityId || null,
+    workspaceId: row.dataset.workspaceId || null,
+  });
+  return true;
+}
+
+function paintGroups(host, plan, paintContext) {
+  for (const group of plan.groups ? plan.groups(paintContext) : []) {
+    const section = host.querySelector(group.selector);
+    if (section) section.hidden = !group.shown;
+  }
+}
+
+export function mountSurfaceViewer(host, kind, {
+  onOpenThreadItem, onOpenBuildAgent = null, compact = false, modelLabel, historyControl = null, cacheKey = null,
+}) {
   const plan = VIEWER_PLANS[kind];
   if (!plan) throw new Error(`agentSurfaces: no viewer for kind "${kind}"`);
 
@@ -255,7 +297,7 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
       return null;
     }
     if (!standing) {
-      host.querySelector(SURFACE_SELECTOR.viewer).appendChild(el(completedFoldHtml(count)));
+      host.querySelector(plan.foldHostSelector || SURFACE_SELECTOR.viewer).appendChild(el(completedFoldHtml(count)));
     } else {
       patchElement(standing.querySelector(COMPLETED_FOLD_HEAD_SELECTOR), el(completedFoldHeadHtml(count)));
     }
@@ -351,6 +393,7 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
         if (!container) continue;
         paintList(container, list);
       }
+      paintGroups(host, plan, paintContext);
     }
     syncHistoryControl();
     applyCachedFolds();
@@ -374,7 +417,7 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
   };
 
   const onViewerPress = (event) => {
-    if (expandClippedText(event)) return;
+    if (expandClippedText(event) || openBuildAgentFrom(event, onOpenBuildAgent)) return;
     const workflow = event.target.closest("[data-workflow-index]");
     if (workflow) {
       const chosen = openWorkflow(surfaces, Number(workflow.dataset.workflowIndex))?.key ?? null;
@@ -467,7 +510,7 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
   };
 }
 
-export function openSurfaceOverlay(kind, { onOpenThreadItem, modelLabel, cacheKey = null, onClose = null, host = document.body }) {
+export function openSurfaceOverlay(kind, { onOpenThreadItem, onOpenBuildAgent = null, modelLabel, cacheKey = null, onClose = null, host = document.body }) {
   let viewer = null;
   const { body, close } = openModal({
     dialogHtml: surfaceOverlayHtml(surfaceKindLabel(kind)),
@@ -477,7 +520,9 @@ export function openSurfaceOverlay(kind, { onOpenThreadItem, modelLabel, cacheKe
       if (onClose) onClose();
     },
   });
-  viewer = mountSurfaceViewer(body.querySelector(SURFACE_OVERLAY_BODY_SELECTOR), kind, { onOpenThreadItem, modelLabel, cacheKey });
+  viewer = mountSurfaceViewer(body.querySelector(SURFACE_OVERLAY_BODY_SELECTOR), kind, {
+    onOpenThreadItem, onOpenBuildAgent: onOpenBuildAgent && ((where) => { close(); onOpenBuildAgent(where); }), modelLabel, cacheKey,
+  });
   return {
     kind,
     set(surfaces) {
@@ -487,7 +532,7 @@ export function openSurfaceOverlay(kind, { onOpenThreadItem, modelLabel, cacheKe
   };
 }
 
-export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem, modelLabel, onPillsChanged }) {
+export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem, onOpenBuildAgent = null, modelLabel, onPillsChanged }) {
   let surfaces = null;
   let paintedSurfaces = null;
   let chosenKind = null;
@@ -564,6 +609,7 @@ export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem
     const canvas = viewerCanvas(kind);
     viewer = mountSurfaceViewer(canvas, kind, {
       onOpenThreadItem,
+      onOpenBuildAgent,
       modelLabel,
       compact: true,
       cacheKey: key,

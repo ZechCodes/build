@@ -220,6 +220,13 @@ pub struct Agent {
     /// fallback for exactly as long as that lasts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// The agent whose Build MCP call made this one (#216): an
+    /// `add_workspace_agent`, or an `assign_task` to a new agent or a new
+    /// workspace. `None` for an agent the user made, and for every agent made
+    /// before the field existed. The client lists an agent's creations in its
+    /// activity panel and counts it running while any of them runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
     /// Whether this agent has already been asked to name itself.
     ///
     /// The ask rides the first turn of an unnamed agent, and
@@ -348,6 +355,7 @@ impl Agent {
             topic: None,
             name: None,
             name_asked: false,
+            created_by: None,
             watched: true,
             last_context_tokens: None,
             last_context_at: None,

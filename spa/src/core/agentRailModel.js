@@ -118,6 +118,18 @@ export const agentIsUp = (agent) => agentSessionIsLive(agent) || (!!agent && age
  *  Headlessness is not asked separately. Only a carrier with no terminal can
  *  answer this true today, and if one with a terminal ever could, the control
  *  belongs there too. */
+/** Whether an agent counts as running (#216): its own loop is, or an agent
+ *  in its activity panel is — a harness sub-agent, or a Build agent it made,
+ *  which core/agentLineage.js lays on as `agents_running`. What the dots, the
+ *  tip, the clock and the lists say. The interrupt below asks about the
+ *  agent's own loop alone, since that is the only turn it could stop. */
+export const agentIsRunning = (agent) => !!agent && (!!agent.working || agent.agents_running > 0);
+
+/** When an agent started running: its own turn, else the earliest running
+ *  agent in its panel. */
+const runningTime = (agent) => (agent && agent.working_time)
+  || (agent && agent.agents_since ? { since: agent.agents_since } : null);
+
 export function agentCanInterrupt(agent) {
   return !!(agent && agent.working) && agent.can_interrupt === true;
 }
@@ -153,7 +165,7 @@ function bubbleNews(agent, heading) {
   if (agent && unreadIsNews(agent)) {
     return unreadReasonText(agent.unread_reason, "agent") || `${agent.unread_count} unread`;
   }
-  if (agent && agent.working) return "working";
+  if (agentIsRunning(agent)) return "working";
   // A bubble whose agent has not named its work already opens on "Starting":
   // appending the session's own "starting…" behind it says the word twice and
   // tells the hover nothing the first one did not.
@@ -211,7 +223,7 @@ function projectAgentNews(agents) {
   const unread = agents.reduce((total, agent) => total + (agent.unread_count || 0), 0);
   const asking = agents.find(unreadIsNews);
   if (asking) return unreadReasonText(asking.unread_reason, "agent") || `${unread} unread`;
-  return agents.some((agent) => agent.working) ? "working" : "";
+  return agents.some(agentIsRunning) ? "working" : "";
 }
 
 /**
@@ -242,7 +254,7 @@ export function projectAgentBubble({ name = "", entityId = null, agents = [], ac
     unwatched,
     active,
     unread: agents.reduce((total, agent) => total + (agent.unread_count || 0), 0),
-    working: agents.some((agent) => !!agent.working),
+    working: agents.some(agentIsRunning),
   };
 }
 
@@ -353,7 +365,7 @@ function ownBubbles({ agents, selectedId, selectedKind, kind, chatCapable, canAd
     unwatched: !agentIsWatched(agent),
     active: selectedKind === "agent" && agent.id === selectedId,
     unread: agent.unread_count || 0,
-    working: !!agent.working,
+    working: agentIsRunning(agent),
     live: agentSessionIsLive(agent),
     starting: agent.state === AGENT_STARTING,
   }));
@@ -495,7 +507,7 @@ export function railWorkStatus(row, nowMs = Date.now(), conversationItems = [], 
   // A branch/task row may still carry the old entity aggregate. It is not an
   // agent timer: parallel agents have independent turns, so only the selected
   // agent's durable field may drive this clock.
-  const working = workingSeconds(agent && agent.working_time, nowMs);
+  const working = workingSeconds(runningTime(agent), nowMs);
   return {
     working: working === null ? "" : runningClock(working),
     starting: working === null ? startupText(startupStatusLine(conversationItems, agentLabel), nowMs) : "",

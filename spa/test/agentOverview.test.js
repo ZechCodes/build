@@ -387,3 +387,33 @@ describe("an agent working past an unread message (#201)", () => {
     expect(overview.sectionRank(section)).toBe(3);
   });
 });
+
+// #216: an agent whose own loop waits while agents in its panel run is a
+// working row, and its snippet says what is running for it.
+describe("an agent running through the agents in its panel", () => {
+  it("reads as working, and says how many agents run for it", () => {
+    const boss = agent("boss", { agents_running: 2 });
+    expect(overview.overviewState(boss)).toMatchObject({ state: "working", word: "Working", detail: "2 agents running" });
+    expect(overview.overviewSnippet(boss, { items: [] })).toBe("2 agents running");
+    expect(overview.overviewSnippet(agent("boss", { agents_running: 1 }), { items: [] })).toBe("1 agent running");
+  });
+
+  it("lays the rollup on every cached agent it reads, through the rail's decorate", async () => {
+    const projectAddress = rowAddress("run-overview");
+    await cache.writeCached(projectAddress, { kind: "project", agents: [agent("boss")] });
+    const paints = [];
+    const reader = overview.createAgentOverview({ scope, projectId: "project-1",
+      decorate: (one) => (one.id === "boss" ? { ...one, agents_running: 1 } : one),
+      sources: () => [{ slot: "current", kind: "project", entityId: "run-overview", section: "project",
+        sectionName: "Project agents", address: projectAddress }],
+      onRows: (rows) => paints.push(rows),
+    });
+    try {
+      reader.open();
+      await vi.waitFor(() => expect(paints.at(-1)).toHaveLength(1));
+      expect(paints.at(-1)[0]).toMatchObject({ id: "boss", working: true, state: "working" });
+    } finally {
+      reader.close();
+    }
+  });
+});

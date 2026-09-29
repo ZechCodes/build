@@ -8,6 +8,10 @@ export const CHECKLIST_ENTRY_KIND = "checklist";
  *  behind a pill, opened when the reader wants it, with what the agent is
  *  finished with folded away. */
 export const TASKS_ENTRY_KIND = "tasks";
+/** The Build agents this agent made through the Build MCP (#216). Not a kind
+ *  of its own: they share the Agents pill and viewer with the harness's
+ *  sub-agents, grouped apart from them. */
+export const BUILD_AGENTS_KEY = "build_agents";
 
 export const SURFACE_KINDS = [
   WORKFLOW_ENTRY_KIND,
@@ -59,6 +63,14 @@ const TASK_STATE_MARKS = {
   closed: { mark: DONE_MARK, label: "Closed" },
 };
 
+/** Where a Build agent stands, as its row says it: working (itself or through
+ *  an agent it made), waiting, or never started. */
+const BUILD_AGENT_STATE_MARKS = {
+  running: { mark: RUNNING_MARK, label: "Working" },
+  idle: { mark: PENDING_STATE, label: "Idle" },
+  failed: { mark: FAILED_MARK, label: "Failed to start" },
+};
+
 const STATE_MARKS_BY_KIND = {
   [WORKFLOW_ENTRY_KIND]: RUN_STATE_MARKS,
   [AGENT_ENTRY_KIND]: AGENT_STATE_MARKS,
@@ -89,6 +101,19 @@ function entriesOfKind(surfaces, kind) {
   const entries = surfaces[kind];
   return Array.isArray(entries) ? entries : [];
 }
+
+/** What rides beside a kind's own entries and counts toward its pill: the
+ *  Agents pill counts the Build agents with the sub-agents. */
+const COMPANION_ENTRIES = {
+  [AGENT_ENTRY_KIND]: (surfaces) => {
+    const entries = surfaces && surfaces[BUILD_AGENTS_KEY];
+    return Array.isArray(entries) ? entries : [];
+  },
+};
+
+const companionsOf = (surfaces, kind) => (COMPANION_ENTRIES[kind] ? COMPANION_ENTRIES[kind](surfaces) : []);
+
+const companionIsRunning = (entry) => BUILD_AGENT_STATE_MARKS[entry?.state]?.mark === RUNNING_MARK;
 
 function stateMarkIs(kind, entry, mark) {
   const stateMark = surfaceStateMark(kind, entry && entry.state);
@@ -123,7 +148,8 @@ export function openedSurfaceVisibility(visibility, kind, nowMs) {
 }
 
 function runningEntryCount(surfaces, kind) {
-  return entriesOfKind(surfaces, kind).filter((entry) => stateMarkIs(kind, entry, RUNNING_MARK)).length;
+  return entriesOfKind(surfaces, kind).filter((entry) => stateMarkIs(kind, entry, RUNNING_MARK)).length
+    + companionsOf(surfaces, kind).filter(companionIsRunning).length;
 }
 
 function checklistProgress(surfaces) {
@@ -162,7 +188,7 @@ export function surfaceKindLabel(kind) {
 function kindsWithContent(surfaces) {
   return SURFACE_KINDS.filter(
     (kind) =>
-      entriesOfKind(surfaces, kind).length > 0,
+      entriesOfKind(surfaces, kind).length > 0 || companionsOf(surfaces, kind).length > 0,
   ).map((kind) => ({
     kind,
     label: surfaceKindLabel(kind),
@@ -200,7 +226,7 @@ export function surfaceMenuGroup(surfaces) {
 export function nextSurfacePillExpiry(surfaces, visibility, nowMs) {
   const expiries = KINDS_THAT_LINGER.filter(
     (kind) =>
-      entriesOfKind(surfaces, kind).length > 0 &&
+      (entriesOfKind(surfaces, kind).length > 0 || companionsOf(surfaces, kind).length > 0) &&
       !runningEntryCount(surfaces, kind) &&
       !(visibility && visibility.openKind === kind),
   )
@@ -284,6 +310,30 @@ export function agentRows(agents, reading = {}) {
   const { modelLabel = rawModelId } = reading;
   const entries = Array.isArray(agents) ? agents : [];
   return keyedRows("agent", AGENT_ENTRY_KIND, entries, (entry) => agentRow(entry, modelLabel), reading);
+}
+
+const startedAtMs = (entry) => (Number.isFinite(entry.started_at) ? entry.started_at : null);
+
+/** The Build agents this agent made, as the Agents viewer's second group
+ *  draws them: running first, and each carrying where its chat is, for the
+ *  press that opens it. */
+export function buildAgentRows(surfaces, { nowMs = 0 } = {}) {
+  const entries = companionsOf(surfaces, AGENT_ENTRY_KIND);
+  const rows = keyedBy("build-agent", entries, (entry) => {
+    const running = companionIsRunning(entry);
+    return {
+      id: entry.id || null,
+      state: entry.state || "",
+      stateMark: BUILD_AGENT_STATE_MARKS[entry.state] || null,
+      subject: entry.name || entry.id || "",
+      model: entry.model || "",
+      workspaceName: entry.workspace_name || "",
+      entityId: entry.entity_id || null,
+      workspaceId: entry.workspace_id || null,
+      ...entryClock(startedAtMs(entry), null, running, nowMs),
+    };
+  });
+  return [...rows.filter((row) => row.state === "running"), ...rows.filter((row) => row.state !== "running")];
 }
 
 const ROW_NORMALISERS = {

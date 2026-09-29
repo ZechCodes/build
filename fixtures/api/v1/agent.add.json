@@ -32,5 +32,10 @@
       "name": "Rail scroll"
     }
   },
+  "created_by": {
+    "since": "3.1.0",
+    "note": "An agent made by another agent's Build MCP call (add_workspace_agent, or assign_task to a new agent or workspace) names that agent as created_by on its digest, wherever the digest is carried (#216). Absent for an agent the user made. agent.add itself cannot set it: the param is refused. Announced as agents.createdBy.",
+    "fields": ["created_by"]
+  },
   "errors": ["not_found", "invalid_params", "conflict", "internal"]
 }

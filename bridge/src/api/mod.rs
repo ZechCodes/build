@@ -24,7 +24,9 @@ use std::collections::BTreeSet;
 /// 3.0.0 is the pre-release cut (#207): the verbs and pushes no client used
 /// are gone, among them every `plan.*` alias, the retired planning mutations
 /// and the legacy `board.changed`/`entity.changed` pushes.
-pub const API_VERSION: &str = "3.0.0";
+/// 3.1.0 adds `agents.createdBy`: an agent's digest names the agent whose
+/// Build MCP call made it (#216).
+pub const API_VERSION: &str = "3.1.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -53,6 +55,7 @@ pub const QA_METHODS: &[&str] = &["stream.events", "stream.start", "stream.state
 /// Cross-verb wire features whose availability cannot be expressed by a
 /// single method name. The SPA consumes a subset as shape and behavior gates.
 pub const FEATURE_CAPABILITIES: &[&str] = &[
+    "agents.createdBy", // Since 3.1.0: created_by on an agent's digest (#216).
     "agents.names",
     "board.conversationSessions", // Since 1.28.0: a conversation row's own session_started_ms/last_activity_ms.
     "board.usageLimits",

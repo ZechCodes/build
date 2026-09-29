@@ -199,6 +199,7 @@ fn req(method: &str, params: Value) -> Frame {
 mod support;
 use support::*;
 
+mod agent_creators;
 mod agent_messages;
 mod agent_names;
 mod agent_roles;

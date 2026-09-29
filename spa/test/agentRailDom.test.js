@@ -994,10 +994,10 @@ describe("the rail over a machine that is asked nothing", () => {
     await writeRailThread("run-3", "ag-1", { items: [said(1, "A full cached conversation")] });
 
     rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", projectId: "p1", workspaceId: "ws-unwatched" }));
-    await flush();
-
-    expect(railHost().querySelector("#rail-body").textContent).toContain("A full cached conversation");
-    expect(headWho()).toBe(TOPICS["ag-1"]);
+    // Board, feed and conversation are each a cache read: wait for what they
+    // paint, not a count of turns.
+    await vi.waitFor(() => expect(railHost().querySelector("#rail-body").textContent).toContain("A full cached conversation"));
+    await vi.waitFor(() => expect(headWho()).toBe(TOPICS["ag-1"]));
     expect(railHost().querySelector("#railinput")).not.toBeNull();
     expect(callsTo("workspace.get")).toHaveLength(0);
   });

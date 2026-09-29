@@ -92,6 +92,7 @@ export default defineConfig({
           // trees and run them after the node/jsdom workers.
           maxWorkers: Math.min(2, testWorkers),
           sequence: { groupOrder: 1 },
+          globalSetup: ["./test/setup/warmLayoutHarness.js"],
         },
       },
     ],

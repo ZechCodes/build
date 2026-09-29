@@ -230,6 +230,14 @@ jobs:
       - name: eslint
         working-directory: spa
         run: npm run lint
+      # The layout checks measure in Liberation (spa/test/browser/fonts.conf).
+      # Chrome's package pulls it in on the runner image; install it if a
+      # future image drops it, rather than measuring in a silent fallback.
+      - name: Fonts the layout checks measure in
+        run: |
+          if ! fc-list -q "Liberation Sans" || ! fc-list -q "Liberation Mono"; then
+            sudo apt-get update && sudo apt-get install -y fonts-liberation
+          fi
       - name: vitest
         working-directory: spa
         run: npx vitest run

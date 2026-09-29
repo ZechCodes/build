@@ -41,10 +41,59 @@ pub fn init_repo_with_readme(parent: &Path, name: &str, readme: &str) -> PathBuf
 
 /// Run one git command in `dir`, failing the test the moment git does.
 pub fn git_in(dir: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let status = git_command(dir, args).status().unwrap();
+    assert!(status.success(), "git {args:?} failed");
+}
+
+/// One git command in `dir` as the fixture runs it, for a test that needs
+/// its output or expects it to fail.
+///
+/// Every command commits as the fixture's own identity, so a clone — which
+/// does not copy the source's `user.*` config — still commits on a machine
+/// with no global identity, a CI runner's. And none reads the machine's own
+/// global or system config: a `commit.gpgsign` there would sign fixtures with
+/// a real key, or stop at its passphrase.
+pub fn git_command(dir: &Path, args: &[&str]) -> Command {
+    let mut command = Command::new("git");
+    command
         .args(args)
         .current_dir(dir)
-        .status()
+        .env("GIT_AUTHOR_NAME", "Test")
+        .env("GIT_AUTHOR_EMAIL", "test@build.ing")
+        .env("GIT_COMMITTER_NAME", "Test")
+        .env("GIT_COMMITTER_EMAIL", "test@build.ing")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null");
+    command
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A machine that signs every commit with a key only its owner can use
+    /// must not reach a fixture's commits: the fixture neither signs with the
+    /// owner's real key nor prompts for its passphrase. `$HOME` stands in for
+    /// the machine's own config, set on the one command so no other test sees it.
+    #[test]
+    fn a_fixture_commit_reads_none_of_the_machines_git_config() {
+        let (dir, repo) = init_repo();
+        let home = dir.path().join("home");
+        std::fs::create_dir(&home).unwrap();
+        std::fs::write(
+            home.join(".gitconfig"),
+            "[commit]\n\tgpgsign = true\n[user]\n\tsigningkey = unusable\n[gpg]\n\tprogram = false\n",
+        )
         .unwrap();
-    assert!(status.success(), "git {args:?} failed");
+        let output = git_command(&repo, &["commit", "--allow-empty", "-m", "unsigned"])
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", &home)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }

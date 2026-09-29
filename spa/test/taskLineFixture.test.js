@@ -116,12 +116,21 @@ const withoutLucideVersion = (markup) => markup.replace(
 
 // The fixture carries relative times ("1 hour ago") rendered against the
 // clock, so the clock is frozen here or the committed markup rots by the hour.
+// It also carries wall-clock times ("restarted at 4:09 PM"), so the zone is
+// pinned to the one it was written in, or it reads differently on a UTC runner.
 const FROZEN_NOW = new Date("2026-09-20T22:30:00Z");
+const FIXTURE_ZONE = "America/New_York";
+const hostZone = process.env.TZ;
 beforeAll(() => {
+  process.env.TZ = FIXTURE_ZONE;
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(FROZEN_NOW);
 });
-afterAll(() => vi.useRealTimers());
+afterAll(() => {
+  vi.useRealTimers();
+  if (hostZone === undefined) delete process.env.TZ;
+  else process.env.TZ = hostZone;
+});
 
 describe("the markup the browser measurement is taken over", () => {
   it("is what the renderer produces", () => {

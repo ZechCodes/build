@@ -1738,6 +1738,12 @@ a.md-ref { color:var(--accent); text-decoration:none; }
 a.md-ref:hover { text-decoration:underline; }
 .md-ref-code { font-family:var(--mono); font-size:.92em; }
 .md-ref-missing { text-decoration:underline dotted var(--dim); text-underline-offset:3px; cursor:help; }
+/* A web link (#256) is in the accent like a reference, and carries a small ↗
+   after it: it leaves Build for a new tab or the system browser, where a
+   reference moves the reader within it. The mark is decoration, not a word. */
+a.md-link { color:var(--accent); text-decoration:none; overflow-wrap:anywhere; }
+a.md-link:hover { text-decoration:underline; }
+a.md-link::after { content:"\2197" / ""; margin-left:.12em; font-size:.8em; opacity:.7; }
 /* Inline code in prose still wraps with the sentence around it: only a fenced
    block scrolls. */
 .md-code code { white-space:inherit; }

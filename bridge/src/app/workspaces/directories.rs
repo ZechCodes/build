@@ -434,6 +434,7 @@ impl AppState {
             .ok_or_else(|| {
                 "workspace.add_directory: name a source_id, a path or a remote".to_string()
             })?;
+        let url = &crate::remote_url::usable_remote_url(url)?;
         let inferred = crate::app::projects::repo_name_from_url(url);
         let name = requested_name.unwrap_or(&inferred).to_string();
         let mount = self.free_mount(workspace, &name);

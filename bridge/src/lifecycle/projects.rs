@@ -1,5 +1,6 @@
 use crate::lifecycle::{OpenedRepository, RemoteChanged};
 use crate::lifecycle::{Performed, WorktreeChange, WorktreeMutation};
+use crate::remote_url::usable_remote_url;
 use crate::worktree::{git_default_branch, git_in, git_remote_origin, remotes_match};
 use std::path::PathBuf;
 
@@ -166,11 +167,12 @@ impl WorktreeMutation for CloneRepo {
             }
             return opened(self.dest, self.requested_base, false);
         }
+        let url = usable_remote_url(&self.url)?;
         std::fs::create_dir_all(&self.projects_dir)
             .map_err(|error| format!("cannot create projects folder: {error}"))?;
         let cloned = std::process::Command::new("git")
-            .arg("clone")
-            .arg(&self.url)
+            .args(["clone", "--"])
+            .arg(&url)
             .arg(&self.dest)
             .output()
             .map_err(|error| format!("could not run git: {error}"))?;
@@ -200,6 +202,7 @@ pub struct CreateRepo {
 
 impl CreateRepo {
     fn write(&self, dest: &std::path::Path) -> Result<(), String> {
+        let remote = self.remote.as_deref().map(usable_remote_url).transpose()?;
         let parent = dest
             .parent()
             .ok_or_else(|| format!("cannot create {}: it has no parent", dest.display()))?;
@@ -231,8 +234,8 @@ impl CreateRepo {
                 "Initial commit",
             ],
         )?;
-        if let Some(remote) = &self.remote {
-            git_in(dest, &["remote", "add", "origin", remote])?;
+        if let Some(remote) = remote {
+            git_in(dest, &["remote", "add", "--", "origin", &remote])?;
         }
         Ok(())
     }
@@ -279,17 +282,54 @@ impl WorktreeMutation for SetRemote {
                 None
             }
             (false, true) => {
-                git_in(&self.repo_path, &["remote", "set-url", "origin", &self.url])?;
-                Some(self.url)
+                let url = usable_remote_url(&self.url)?;
+                git_in(
+                    &self.repo_path,
+                    &["remote", "set-url", "--", "origin", &url],
+                )?;
+                Some(url)
             }
             (false, false) => {
-                git_in(&self.repo_path, &["remote", "add", "origin", &self.url])?;
-                Some(self.url)
+                let url = usable_remote_url(&self.url)?;
+                git_in(&self.repo_path, &["remote", "add", "--", "origin", &url])?;
+                Some(url)
             }
         };
         Ok(Performed {
             change: WorktreeChange::nothing(),
             output: RemoteChanged { remote },
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CloneRepo, SetRemote};
+    use crate::lifecycle::WorktreeMutation;
+
+    /// The mutations check the remote themselves too: a caller that forgot to
+    /// still cannot hand git an option where a url goes.
+    #[test]
+    fn the_git_that_takes_a_remote_refuses_one_that_reads_as_an_option() {
+        let dir = tempfile::tempdir().unwrap();
+        let clone = CloneRepo {
+            url: "--upload-pack=sh".to_string(),
+            name: "evil".to_string(),
+            dest: dir.path().join("evil"),
+            projects_dir: dir.path().to_path_buf(),
+            requested_base: None,
+        }
+        .perform();
+        assert!(clone.is_err());
+        assert!(!dir.path().join("evil").exists());
+
+        let repo = crate::git_fixture::init_repo_named(dir.path(), "code");
+        let set = SetRemote {
+            repo_path: repo.clone(),
+            url: "--mirror=fetch".to_string(),
+        }
+        .perform();
+        assert!(set.is_err());
+        assert_eq!(crate::worktree::git_remote_origin(&repo), None);
     }
 }

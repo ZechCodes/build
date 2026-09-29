@@ -7,6 +7,7 @@ use crate::lifecycle::{
     CloneRepo, CreateRepo, InitializeRepo, OpenRepo, PendingRow, PendingState, Performed,
     SetRemote, WorktreeChange, WorktreeMutation,
 };
+use crate::remote_url::usable_remote_url;
 use crate::worktree::git_remote_origin;
 use serde_json::Value;
 
@@ -256,6 +257,13 @@ impl AppState {
             None => self.projects_dir.clone(),
         };
         let dest = parent.join(&name);
+        let remote = params
+            .get("remote")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|remote| !remote.is_empty())
+            .map(usable_remote_url)
+            .transpose()?;
         self.defer_project(
             dest.clone(),
             name.clone(),
@@ -264,12 +272,7 @@ impl AppState {
                 name,
                 dest,
                 base_branch,
-                remote: params
-                    .get("remote")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|remote| !remote.is_empty())
-                    .map(str::to_string),
+                remote,
             },
             crate::app::runtime::lifecycle::ProjectRegistrationSettlement,
         )
@@ -298,6 +301,8 @@ impl AppState {
         if path_text.is_some() == remote.is_some() {
             return Err("each source must specify exactly one of path or remote".to_string());
         }
+        let remote = remote.map(usable_remote_url).transpose()?;
+        let remote = remote.as_deref();
         let path = path_text.map(expand_tilde);
         let canonical = path.as_deref().map(canonical_source_path).transpose()?;
         if let Some(candidate) = &canonical {
@@ -502,6 +507,10 @@ impl AppState {
     pub(crate) fn project_set_remote(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let url = require_str(params, "url")?;
+        let url = match url.trim() {
+            "" => String::new(),
+            named => usable_remote_url(named)?,
+        };
         let project = self
             .projects
             .iter()
@@ -520,10 +529,7 @@ impl AppState {
             repo_path.clone(),
             title,
             PendingState::Updating,
-            SetRemote {
-                repo_path,
-                url: url.trim().to_string(),
-            },
+            SetRemote { repo_path, url },
             crate::app::runtime::lifecycle::SetRemoteSettlement { project_id },
         )
     }

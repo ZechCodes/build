@@ -15,15 +15,26 @@
 # still judged on its own — the relay's rollout is a Recreate that drops every
 # WebSocket, and a tier already at HEAD is not made to pay that.
 #
+# The relay tier is narrower than bridge/: it moves only when a file the relay
+# image is built from moved (relay-sources, beside this script). A bridge-only
+# change moves the `bridge` checks tier instead, which runs the Rust suite and
+# the end-to-end stack and deploys nothing.
+#
 # Usage: APP_IMAGE=… RELAY_IMAGE=… .github/changed-tiers.sh [repo-dir]
 #   stdout: one `tier=true|false` line per tier, ready for $GITHUB_OUTPUT
 #   stderr: the same, as one line for a human
 set -eu
 
 REPO="${1:-.}"
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 
 APP_PATHS='^(spa|skriftapp|landing)/|^deploy/k8s/app\.yaml$|^scripts/install(-desktop)?\.sh$'
-RELAY_PATHS='^bridge/|^deploy/k8s/relay\.yaml$'
+# relay-sources as one anchored pattern, each path's metacharacters escaped. A
+# list with no paths yields an empty pattern, which matches every change.
+RELAY_PATHS="$(grep -Ev '^(#|$)' "$SCRIPT_DIR/relay-sources" \
+    | sed 's/[].[\\*^$+?(){}|]/\\&/g; s/.*/^&$/' | paste -sd '|' -)"
+# relay-sources is checked by a bridge test, so an edit to the list alone runs it.
+BRIDGE_PATHS='^bridge/|^\.github/relay-sources$'
 E2E_HARNESS_PATHS='^web/|^deploy/compose\.real\.yml$'
 
 # The commit an image tag names, or empty when the tag is not a commit this
@@ -63,23 +74,41 @@ moved_since() {
 
 app_base="$(deployed_commit "${APP_IMAGE:-}")"
 relay_base="$(deployed_commit "${RELAY_IMAGE:-}")"
-checks_base="$(older_commit "$app_base" "$relay_base")"
 
 app="$(moved_since "$app_base" "$APP_PATHS")"
 relay="$(moved_since "$relay_base" "$RELAY_PATHS")"
+
+# A relay none of whose sources moved is as good as HEAD, however old its tag:
+# bridge-only merges no longer roll it, so its tag can sit weeks behind, and
+# judging the checks from it would rerun every check on every push.
+if [ "$relay" = true ]; then
+    relay_current="$relay_base"
+else
+    relay_current="$(git -C "$REPO" rev-parse HEAD)"
+fi
+checks_base="$(older_commit "$app_base" "$relay_current")"
+
+# The Rust checks cover the relay they gate, so a relay move is a bridge move
+# even when the only change was relay.yaml.
+if [ "$relay" = true ]; then
+    bridge=true
+else
+    bridge="$(moved_since "$checks_base" "$BRIDGE_PATHS")"
+fi
 desktop="$(moved_since "$checks_base" '^desktop/|^scripts/build-desktop\.mjs$|^\.github/workflows/(ci|release-desktop)\.yml$')"
 scripts="$(moved_since "$checks_base" '^scripts/')"
 shell="$(moved_since "$checks_base" '\.sh$')"
-# The end-to-end suite exercises both tiers, so it runs when either moved and
-# when its own harness did — or a change to the test would skip the test.
-if [ "$app" = true ] || [ "$relay" = true ]; then
+# The end-to-end suite exercises the app, the relay and a real bridge, so it
+# runs when any of them moved and when its own harness did — or a change to
+# the test would skip the test.
+if [ "$app" = true ] || [ "$bridge" = true ]; then
     e2e=true
 else
     e2e="$(moved_since "$checks_base" "$E2E_HARNESS_PATHS")"
 fi
 
-for tier in app relay e2e desktop scripts shell; do
+for tier in app relay bridge e2e desktop scripts shell; do
     eval "printf '%s=%s\n' \"$tier\" \"\$$tier\""
 done
-printf 'production: app@%s relay@%s → app=%s relay=%s e2e=%s desktop=%s scripts=%s shell=%s\n' \
-    "${app_base:-unknown}" "${relay_base:-unknown}" "$app" "$relay" "$e2e" "$desktop" "$scripts" "$shell" >&2
+printf 'production: app@%s relay@%s → app=%s relay=%s bridge=%s e2e=%s desktop=%s scripts=%s shell=%s\n' \
+    "${app_base:-unknown}" "${relay_base:-unknown}" "$app" "$relay" "$bridge" "$e2e" "$desktop" "$scripts" "$shell" >&2

@@ -14,6 +14,7 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import {
   createThreadState,
   paintThreadKeepingPlace,
@@ -287,15 +288,17 @@ describe("a repaint that has something new to say", () => {
 });
 
 // The panel over the work is where a phone reads a conversation, and the rail
-// is the only thing that paints one. Three ticks of the same answer must leave
-// its scroller exactly as it found it.
-describe("the rail's poll on an unchanged conversation", () => {
+// is the only thing that paints one. It paints from the cache, so three ticks
+// that each land the same row again must leave its scroller exactly as it
+// found it.
+describe("the rail's ticks on an unchanged conversation", () => {
   const bodyHtml = readFileSync(resolve("index.html"), "utf8")
     .match(/<body>([\s\S]*)<\/body>/)[1];
 
   let App = null;
   let mountAgentRail = null;
   let resetAgentRailMemory = null;
+  let writeRailWorkItem = null;
   let rail = null;
 
   const flush = async () => {
@@ -303,7 +306,7 @@ describe("the rail's poll on an unchanged conversation", () => {
   };
 
   const now = "2026-08-13T12:00:00.000Z";
-  const row = () => ({
+  const row = (said = "on it") => ({
     kind: "branch",
     project_id: "p1",
     branch: "build/login",
@@ -317,7 +320,7 @@ describe("the rail's poll on an unchanged conversation", () => {
         thread_total: 2,
         items: [
           { type: "event", data: { event: "session_started", created_at: now, sequence: 1 } },
-          { type: "message", data: { role: "agent", body: "on it", created_at: now, sequence: 2 } },
+          { type: "message", data: { role: "agent", body: said, created_at: now, sequence: 2 } },
         ],
       },
     },
@@ -335,6 +338,8 @@ describe("the rail's poll on an unchanged conversation", () => {
       return 0;
     };
     vi.resetModules();
+    globalThis.indexedDB = new IDBFactory();
+    globalThis.IDBKeyRange = IDBKeyRange;
     vi.doMock("../src/core/taskFeed.js", () => ({
       subscribeFeed: () => () => {},
       startFeed: () => {},
@@ -364,12 +369,14 @@ describe("the rail's poll on an unchanged conversation", () => {
     }));
     ({ App } = await import("../src/app.js"));
     ({ mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js"));
+    ({ writeRailWorkItem } = await import("./railCacheFixture.js"));
 
     document.body.innerHTML = bodyHtml;
     localStorage.clear();
     resetAgentRailMemory();
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-    bridge.call = vi.fn(async (method) => (method === "branch.get" ? row() : {}));
+    bridge.call = vi.fn(async () => ({}));
+    await writeRailWorkItem(row());
     rail = mountAgentRail(document.getElementById("agent-rail"), {
       kind: "branch",
       deviceId: "dev-1",
@@ -377,6 +384,12 @@ describe("the rail's poll on an unchanged conversation", () => {
       branch: "build/login",
       call: (method, params) => bridge.call(method, params),
     });
+    // The open is a chain of cache reads, and on a loaded machine it outlasts
+    // any fixed count of turns (#220). The trial starts once the conversation
+    // is on screen and whatever that paint queued has run out.
+    await vi.waitFor(() => {
+      expect(document.getElementById("rail-body")?.textContent).toContain("on it");
+    }, { timeout: 30_000, interval: 5 });
     await flush();
   });
 
@@ -410,13 +423,26 @@ describe("the rail's poll on an unchanged conversation", () => {
     observer.observe(body, { childList: true, subtree: true, attributes: true, characterData: true });
 
     for (let tick = 0; tick < 3; tick += 1) {
+      await writeRailWorkItem(row());
       vi.advanceTimersByTime(1700);
       await flush();
     }
+    const trial = [...records, ...observer.takeRecords()];
+    records.length = 0;
+    // A loaded machine can land a tick's repaint after any fixed wait, where
+    // it would go unseen. So one row that does say something follows the
+    // three: once it is on screen every write before it has been painted, and
+    // what it moved must be its own words and nothing a late tick left.
+    await writeRailWorkItem(row("on it, and nearly done"));
+    await vi.waitFor(() => {
+      expect(body.textContent).toContain("on it, and nearly done");
+    }, { timeout: 30_000, interval: 5 });
+    await flush();
     records.push(...observer.takeRecords());
     observer.disconnect();
 
-    expect(records.map(describeRecord)).toEqual([]);
+    expect(trial.map(describeRecord)).toEqual([]);
+    expect(records.map(describeRecord)).toEqual(["characterData on #text."]);
     expect(writes).toEqual([]);
     expect(top).toBe(180);
   });

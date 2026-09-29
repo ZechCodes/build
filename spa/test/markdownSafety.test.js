@@ -18,7 +18,7 @@ import { holdReferenceSources } from "../src/core/referenceIndex.js";
 
 /// The tags the renderer may emit, and the attributes each may carry.
 const ALLOWED = {
-  P: [], BR: [], STRONG: [], CODE: ["class"], PRE: ["class"], UL: [], OL: [], LI: [],
+  P: [], BR: [], STRONG: [], CODE: ["class"], PRE: ["class"], UL: [], OL: ["start"], LI: [],
   H1: ["id"], H2: ["id"], H3: ["id"], H4: ["id"], H5: ["id"], H6: ["id"],
   BLOCKQUOTE: ["class"], DIV: ["class"], TABLE: [], THEAD: [], TBODY: [], TR: [],
   TH: ["style"], TD: ["style"], A: ["class", "href", "title"], SPAN: ["class", "title"],
@@ -171,6 +171,18 @@ describe("nesting that tries to exhaust the reader", () => {
     const html = markdownHtml(block.repeat(2000));
     expect(performance.now() - started).toBeLessThan(3000);
     expect(violations(html)).toEqual([]);
+  });
+
+  // #238: the list reader looked for the next filled line again at every blank
+  // one, so a run of blank lines after an item took quadratic time.
+  it("reads a long run of blank lines after a list item in linear time, plain and quoted", () => {
+    const blanks = "\n".repeat(40000);
+    for (const source of [`- a${blanks}- b`, `> - a${blanks.replace(/\n/g, "\n>")} - b`]) {
+      const started = performance.now();
+      const html = markdownHtml(source);
+      expect(performance.now() - started).toBeLessThan(500);
+      expect(html).toContain("<li>a</li><li>b</li>");
+    }
   });
 
   it("leaves an unclosed fence inside a quote closed at the quote's end", () => {

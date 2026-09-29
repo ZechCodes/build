@@ -148,7 +148,8 @@ function readQuote(lines, at, context) {
 /// CODE_BLOCK_CLASS is: every surface's quotes look alike.
 const QUOTE_CLASS = "md-quote";
 
-const LIST_ITEM = /^( *)([-*+]|\d+[.)])( +)(.*)$/;
+// Nine digits at most, as CommonMark reads a number: longer is prose.
+const LIST_ITEM = /^( *)([-*+]|\d{1,9}[.)])( +)(.*)$/;
 
 /** One item line, read: how far its marker is indented, whether it numbers,
  *  where its content starts, and the content. */
@@ -156,7 +157,8 @@ function itemAt(line) {
   const match = LIST_ITEM.exec(line ?? "");
   if (!match) return null;
   const [, indent, marker, gap, content] = match;
-  return { indent: indent.length, ordered: /\d/.test(marker), contentAt: indent.length + marker.length + gap.length, content };
+  const ordered = /\d/.test(marker);
+  return { indent: indent.length, ordered, start: ordered ? Number.parseInt(marker, 10) : null, contentAt: indent.length + marker.length + gap.length, content };
 }
 
 const indentOf = (line) => line.length - line.trimStart().length;
@@ -191,7 +193,9 @@ function itemHtml(item, body, context) {
 
 /** A list: its items in a row, a blank line between two of them keeping them
  *  one list. It ends at a line that is neither an item of it nor indented
- *  under one. */
+ *  under one. The next filled line is found once per item, so a run of blank
+ *  lines costs its length and no more (#238). An ordered list starts at its
+ *  first number. */
 function readList(lines, at, context) {
   const first = itemAt(lines[at]);
   let items = "";
@@ -200,11 +204,11 @@ function readList(lines, at, context) {
     const item = itemAt(lines[next]);
     const end = itemEnd(lines, next + 1, first);
     items += itemHtml(item, lines.slice(next + 1, end), context);
-    next = end;
-    while (next < lines.length && !lines[next].trim() && sameList(lines[nextFilled(lines, next)], first)) next += 1;
+    const filled = nextFilled(lines, end);
+    next = sameList(lines[filled], first) ? filled : end;
   }
-  const tag = first.ordered ? "ol" : "ul";
-  return { html: `<${tag}>${items}</${tag}>`, next };
+  if (!first.ordered) return { html: `<ul>${items}</ul>`, next };
+  return { html: `<ol${first.start === 1 ? "" : ` start="${first.start}"`}>${items}</ol>`, next };
 }
 
 /** The first line at or after `at` that is not blank. */

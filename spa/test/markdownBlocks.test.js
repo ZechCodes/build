@@ -93,6 +93,12 @@ describe("list items that hold blocks", () => {
     expect(markdownHtml("1. first\n2. second")).toBe("<ol><li>first</li><li>second</li></ol>");
   });
 
+  it("starts an ordered list at its first number", () => {
+    expect(markdownHtml("3. third\n4. fourth")).toBe('<ol start="3"><li>third</li><li>fourth</li></ol>');
+    expect(markdownHtml("0. zero")).toBe('<ol start="0"><li>zero</li></ol>');
+    expect(markdownHtml("1234567890. ten digits")).toBe("<p>1234567890. ten digits</p>");
+  });
+
   it("keeps items apart by a blank line in one list", () => {
     expect(markdownHtml("- one\n\n- two")).toBe("<ul><li>one</li><li>two</li></ul>");
   });

@@ -5882,8 +5882,11 @@ describe("a new agent on a project's rail", () => {
     }));
     await mountProjectRail({ project_agent: { provider: "codex", model: "gpt-5.6-sol", effort: "medium" } });
 
-    expect(chosenCard().dataset.provider).toBe("codex");
+    // The row and the machine's settings.get both land after mount's turns
+    // under load: wait for the card the setting chose, and for the call.
+    await vi.waitFor(() => expect(chosenCard()?.dataset.provider).toBe("codex"));
     await send("what is in this project?");
+    await vi.waitFor(() => expect(callsTo("agent.add")).toHaveLength(1));
     expect(callsTo("agent.add")[0].params).toMatchObject({
       entity_id: "run-project", provider: "codex", model: "gpt-5.6-sol", effort: "medium",
     });

@@ -705,7 +705,7 @@ impl DoneServer {
                 // means it is the ONE statement guaranteed to still be
                 // in context when an ambiguous message actually arrives.
                 // A pointer would resolve to nothing exactly then.
-                "description": "Send a message in this thread. The user reads this thread and the Build tasks they are on. In this thread, this tool is the only way they see what you say; terminal output and ordinary assistant responses are not visible to them. Once the user is on a task (they filed it, commented on it, or were asked on it), talk to them about it on the task with comment_task: questions, results and meaningful progress, not every step. A question asked in your thread is answered in your thread, even when it is about a task. When the result is on a task, the Complete in your thread is one line that points to it. Every call needs a status: Complete when the objective is met, Blocked when an environment or implementation problem prevents progress, Waiting when you need a user response, or Working for a progress update while you continue. Always call it once with Complete or Blocked as the final outcome.",
+                "description": "Send a message in this thread. The user reads this thread and the Build tasks they are on. In this thread, this tool is the only way they see what you say; terminal output and ordinary assistant responses are not visible to them. Once the user is on a task (they filed it, commented on it, were asked on it, or asked to follow it), talk to them about it on the task with comment_task: questions, results and meaningful progress, not every step. A question asked in your thread is answered in your thread, even when it is about a task. When the result is on a task the user is on, the Complete in your thread is one line that points to it. Every call needs a status: Complete when the objective is met, Blocked when an environment or implementation problem prevents progress, Waiting when you need a user response, or Working for a progress update while you continue. Always call it once with Complete or Blocked as the final outcome.",
                 "inputSchema": Self::message_input_schema()
             }),
             json!({
@@ -979,7 +979,7 @@ impl DoneServer {
             }),
             json!({
                 "name": "comment_task",
-                "description": "Say something on a task. This is how progress on a task you were handed becomes visible: the conversation you are in is yours, and the task is where the user and the other agents look. Once the user is on a task (they filed it, commented on it, or were asked on it), talk to them about it on the task with comment_task: questions, results and meaningful progress, not every step. When they write on it, reply there. A question asked in your thread is answered in your thread, even when it is about a task. It is also where you ANSWER: a comment on a task you hold is a question, and it is answered here rather than in your own thread. The same goes for asking: a question about a task that came from outside your conversation goes here, because the assigner and the user both read the task and the answer comes back to you. When you answer what the user wrote, move it forward: settle the question, make the call, or add the detail that was missing. Do not quote it or say it back. mention_user asks; notify_user is only for a task the user asked to follow. Pass mention_user: true for a decision or feedback you need from the user now; it puts the task in Needs you until they read it. A question left only in the task body does not ask them.",
+                "description": "Say something on a task. This is how progress on a task you were handed becomes visible: the conversation you are in is yours, and the task is where the user and the other agents look. Once the user is on a task (they filed it, commented on it, were asked on it, or asked to follow it), talk to them about it on the task with comment_task: questions, results and meaningful progress, not every step. When they write on it, reply there. A question asked in your thread is answered in your thread, even when it is about a task. The task is also where you ANSWER: a comment on a task you hold is a question, and it is answered here rather than in your own thread. The same goes for asking: a question about a task that came from outside your conversation goes here, because the assigner and the user both read the task and the answer comes back to you. When you answer what the user wrote, move it forward: settle the question, make the call, or add the detail that was missing. Do not quote it or say it back. Pass mention_user: true for a decision or feedback you need from the user now; it puts the task in Needs you until they read it. On a comment, notify_user is only for feedback you need from the user; leave it off for progress on a task the user follows, since watching already shows it. A question left only in the task body does not ask them.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -989,7 +989,7 @@ impl DoneServer {
                         "attachments": attachments,
                         "notify_user": {
                             "type": "boolean",
-                            "description": "Watch this task for the user and mark this comment as needing their attention; the unread comment puts it in Needs you until they read it. Off by default: pass true only when the user asked to follow it. Use mention_user: true for a question or decision addressed to the user."
+                            "description": "Watch this task for the user and mark this comment as needing their attention; the unread comment puts it in Needs you until they read it. Off by default. On a comment, notify_user is only for feedback you need from the user; leave it off for progress on a task the user follows, since watching already shows it. Use mention_user: true for a question or decision addressed to the user."
                         },
                         "mention_user": {
                             "type": "boolean",
@@ -1496,7 +1496,7 @@ impl DoneServer {
             }
         }), compaction::compact_agent_tool(), json!({
             "name": "post_thread_message",
-            "description": "Send a message in your thread with the user. In this thread it is the only way they see what you say. Once the user is on a task (they filed it, commented on it, or were asked on it), talk to them about it on the task with comment_task: questions, results and meaningful progress, not every step. A question asked in your thread is answered in your thread, even when it is about a task. When the result is on a task, the Complete in your thread is one line that points to it. Use status=Complete for an outcome or an answer, Waiting when the next step is the user's call, Blocked when you cannot proceed without them, or Working only while a long read on their question is still going, never as a progress report.",
+            "description": "Send a message in your thread with the user. In this thread it is the only way they see what you say. Once the user is on a task (they filed it, commented on it, were asked on it, or asked to follow it), talk to them about it on the task with comment_task: questions, results and meaningful progress, not every step. A question asked in your thread is answered in your thread, even when it is about a task. When the result is on a task the user is on, the Complete in your thread is one line that points to it. Use status=Complete for an outcome or an answer, Waiting when the next step is the user's call, Blocked when you cannot proceed without them, or Working only while a long read on their question is still going, never as a progress report.",
             "inputSchema": Self::project_message_input_schema()
         }), json!({
             "name": "message_agent",
@@ -2298,7 +2298,7 @@ fn project_message(id: Value, params: Option<&Value>) -> Handled {
     )
 }
 
-const SUMMARY_DESCRIPTION: &str = concat!("The full report of this turn, in markdown, written for a reviewer who will not open the activity log. Lead with the outcome in one sentence, then say what changed and where (the files that carry it and why), how you verified it and what you could not, the decisions a reviewer would otherwise have to reverse-engineer, and what you deliberately left out or that remains at risk. Leave a heading out rather than pad it. If blocked or failed, lead with what is needed instead.", reference_shapes_note!());
+const SUMMARY_DESCRIPTION: &str = concat!("The full report of this turn, in markdown, written for a reviewer who will not open the activity log. Lead with the outcome in one sentence, then say what changed and where (the files that carry it and why), how you verified it and what you could not, the decisions a reviewer would otherwise have to reverse-engineer, and what you deliberately left out or that remains at risk. Leave a heading out rather than pad it. If blocked or failed, lead with what is needed instead. When the result is on a task the user is on, the Complete in your thread is one line that points to it.", reference_shapes_note!());
 
 /// What `set_topic` says about itself on every `tools/list`. The cold prompt
 /// asks for the call; this is what is still in context when the agent makes
@@ -2962,7 +2962,13 @@ mod tests {
                         &tool("post_thread_message")["inputSchema"]["properties"]["body"]
                             ["description"],
                     ),
-                    &[RESULT_ON_TASK],
+                    // The coding surface's body is the whole report
+                    // (SUMMARY_DESCRIPTION); the project agent's never was.
+                    if owner == "agent-01H" {
+                        &[RESULT_ON_TASK]
+                    } else {
+                        &[]
+                    },
                 ),
                 (
                     "create_task",

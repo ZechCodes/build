@@ -5,3 +5,5 @@ and where (the files that carry it and why), how you verified it and what you
 could not, the decisions a reviewer would otherwise have to reverse-engineer,
 and what you deliberately left out or that remains at risk. Leave a heading out
 rather than pad it.
+When the result is on a task the user is on, the Complete in your thread is one
+line that points to it.

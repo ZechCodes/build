@@ -49,29 +49,40 @@ function earliest(moments) {
 
 const ownSince = (agent) => (agent.working ? agent.working_time?.since || null : null);
 
+/** Whether an agent's line of makers leads back to itself: a cycle no bridge
+ *  should write. Each agent names one maker, so its line is one walk up. */
+function onMakerCycle(agentId, byId) {
+  const seen = new Set();
+  for (let at = byId.get(agentId)?.agent.created_by; at && !seen.has(at); at = byId.get(at)?.agent.created_by) {
+    if (at === agentId) return true;
+    seen.add(at);
+  }
+  return false;
+}
+
 export function agentLineage(members) {
+  const byId = new Map(members.map((member) => [member.agent.id, member]));
+  // An agent on a cycle counts as made by no one. Cut there, who made whom is
+  // a forest, so every rollup below is the same whichever agent is asked
+  // about first (#221).
   const children = new Map();
   for (const member of members) {
     const creator = member.agent.created_by;
-    if (!creator) continue;
+    if (!creator || onMakerCycle(member.agent.id, byId)) continue;
     if (!children.has(creator)) children.set(creator, []);
     children.get(creator).push(member);
   }
-  const byId = new Map(members.map((member) => [member.agent.id, member]));
   const rollups = new Map();
 
-  /** One agent's rollup. `visiting` guards a cycle no bridge should write:
-   *  an agent met again on its own line counts as not running there. */
-  const rollupOf = (agentId, visiting) => {
+  /** One agent's rollup. */
+  const rollupOf = (agentId) => {
     if (rollups.has(agentId)) return rollups.get(agentId);
     const member = byId.get(agentId);
-    if (!member || visiting.has(agentId)) return NOTHING_RUNNING;
-    visiting.add(agentId);
+    if (!member) return NOTHING_RUNNING;
     const subagents = runningSubagents(member.agent);
     const madeRunning = (children.get(agentId) || [])
-      .map((child) => ({ child, rollup: rollupOf(child.agent.id, visiting) }))
+      .map((child) => ({ child, rollup: rollupOf(child.agent.id) }))
       .filter(({ rollup }) => rollup.running);
-    visiting.delete(agentId);
     const agentsRunning = subagents.length + madeRunning.length;
     const answer = {
       running: !!member.agent.working || agentsRunning > 0,
@@ -86,11 +97,12 @@ export function agentLineage(members) {
   };
 
   return {
-    /** The Build agents this agent made, as members, in the rows' order. */
+    /** The Build agents this agent made, as members, in the rows' order —
+     *  none that sit on a cycle of makers. */
     createdBy: (agentId) => (agentId && children.get(agentId)) || [],
     /** Whether the agent counts as running, how many agents in its panel
      *  run, and since when the earliest running thing has been going. */
-    rollup: (agentId) => rollupOf(agentId, new Set()),
+    rollup: rollupOf,
   };
 }
 

@@ -95,6 +95,29 @@ describe("the running rollup", () => {
     expect(lineage.rollup("a").running).toBe(false);
   });
 
+  // #221: a memo filled while a cycle was cut short must not make the answer
+  // depend on which agent the rail happened to ask about first.
+  it("answers a cycle the same whichever agent is asked about first", () => {
+    const cycle = () => lineageOf([row("workspace", { agents: [
+      agent("a", { created_by: "b" }),
+      agent("b", { created_by: "a", working: true, working_time: { since: "2026-09-28T10:00:00Z" } }),
+      agent("c", { created_by: "a", working: true, working_time: { since: "2026-09-28T09:00:00Z" } }),
+    ] })]);
+    const ids = ["a", "b", "c"];
+    const answersAskedFrom = (first) => {
+      const lineage = cycle();
+      lineage.rollup(first);
+      return Object.fromEntries(ids.map((id) => [id, lineage.rollup(id)]));
+    };
+    const answers = ids.map(answersAskedFrom);
+    expect(answers[1]).toEqual(answers[0]);
+    expect(answers[2]).toEqual(answers[0]);
+    // Agents on the cycle are made by no one for the rollup: a counts c, which
+    // it made off the cycle, and not b, whose line of makers leads back to it.
+    expect(answers[0].a).toEqual({ running: true, agentsRunning: 1, since: "2026-09-28T09:00:00Z" });
+    expect(answers[0].b).toEqual({ running: true, agentsRunning: 0, since: "2026-09-28T10:00:00Z" });
+  });
+
   it("answers idle for an agent it has never seen", () => {
     expect(lineageOf([]).rollup("nobody")).toEqual({ running: false, agentsRunning: 0, since: null });
   });

@@ -32,9 +32,10 @@ it("reconciles a real agent removal into mounted task, list and board identities
     await loadBrowserModules(page, {
       cache: "src/core/trackerCache.js", changes: "src/core/changeEvents.js",
       taskPage: "src/core/trackerTaskPage.js", tasksPane: "src/core/trackerTasksPane.js",
+      references: "src/core/referenceIndex.js",
     }, basePath);
     await page.evaluate(async (trace) => {
-      const { cache, changes, taskPage, tasksPane } = window.__layoutModules;
+      const { cache, changes, taskPage, tasksPane, references } = window.__layoutModules;
       const task = trace.before.get.task;
       const identity = task.identities[task.assignee.agent_id];
       const deviceId = "identity-removal-device";
@@ -42,9 +43,13 @@ it("reconciles a real agent removal into mounted task, list and board identities
       const projectKey = `${deviceId}|${projectId}`;
       const feed = {
         projects: [{ id: projectId, name: "Build", projectKey }],
-        workspaces: [{ id: identity.workspace_id, workspace_id: identity.workspace_id, name: identity.workspace_name, projectKey }],
+        workspaces: [{ id: identity.workspace_id, workspace_id: identity.workspace_id, name: identity.workspace_name, projectKey,
+          deviceId, project_id: projectId }],
         items: [], // These agents are unwatched; missing roster data is not deletion.
       };
+      // The app fills the reference index from this same feed
+      // (core/referenceIndexFeed.js, #229); nothing here starts that feed.
+      references.holdReferenceSources({ feed, tasks: {} });
       const replay = { phase: "before", calls: [], trace, deviceId, projectId, taskId: task.id, feed };
       const callRpc = async (method, params) => {
         replay.calls.push({ method, params, phase: replay.phase });

@@ -119,9 +119,14 @@ const placeOfKey = (projectKey) => {
  *  name a reader writes. */
 const directoryOf = (directory) => ({ sourceId: directory.source_id || "", name: directory.name || "" });
 
+/** Where a feed row lives: the machine and project it was stamped with
+ *  (core/feedMerge.js), or else the halves of its account-wide key. */
+const placeOfRow = (row) =>
+  row.deviceId && row.project_id ? { deviceId: row.deviceId, projectId: row.project_id } : placeOfKey(row.projectKey);
+
 /** One workspace, as every answer about it reads. */
 const workspaceEntry = (workspace) => ({
-  ...placeOfKey(workspace.projectKey),
+  ...placeOfRow(workspace),
   projectKey: workspace.projectKey,
   workspaceId: idOf(workspace),
   name: workspaceDisplayName(workspace),

@@ -909,9 +909,8 @@ mod tests {
             "{joined}"
         );
         assert!(
-            joined.ends_with(
-                "BindsTo as 1 build-bridge.service Before as 1 build-bridge.service 0"
-            ),
+            joined
+                .ends_with("BindsTo as 1 build-bridge.service Before as 1 build-bridge.service 0"),
             "{joined}"
         );
     }

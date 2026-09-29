@@ -94,7 +94,7 @@ describe("what a greeting settles on the device it greeted", () => {
   });
 
   it("names the side that is behind, and stops that machine answering", async () => {
-    const { context } = await greet("dev-b", { api_version: "3.0.0", push_events: true });
+    const { context } = await greet("dev-b", { api_version: "4.0.0", push_events: true });
     expect(context.adapter).toBe(null);
     expect(context.unsupported).toBe("app");
     expect(canAnswer(context)).toBe(false);

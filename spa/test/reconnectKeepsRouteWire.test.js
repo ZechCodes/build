@@ -332,7 +332,7 @@ it("builds the route again when the app-behind version gate lets the app back in
 
   // The machine's bridge was updated past this build: the next session greets
   // with a major nothing here speaks, and the gate takes the page.
-  wire.greeting = { api_version: "3.0.0" };
+  wire.greeting = { api_version: "4.0.0" };
   modules.connection.connectDevice(DEVICE).catch(() => {});
   await vi.waitFor(() => expect(document.querySelector("#root h1")?.textContent).toContain("This app is behind the bridge"));
   expect(teardown).toHaveBeenCalled();

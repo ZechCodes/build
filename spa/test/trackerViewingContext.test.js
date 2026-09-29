@@ -102,7 +102,7 @@ describe("the gate", () => {
     expect(carriesTaskContext("dev-1")).toBe(false);
     await greet("1.22.0", TASK_CONTEXT);
     expect(carriesTaskContext("dev-1")).toBe(false);
-    await greet("3.0.0", TASK_CONTEXT);
+    await greet("4.0.0", TASK_CONTEXT);
     expect(carriesTaskContext("dev-1")).toBe(false);
   });
 });

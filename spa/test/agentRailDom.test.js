@@ -910,11 +910,12 @@ describe("the rail over a machine that is asked nothing", () => {
     await writeRailThread("plan-1", "ag-1", { items: [said(1, "on the task")] });
     payload = { task_id: "plan-1", project_id: "p1", agents: [agent()], thread: { items: [said(1, "on the task")] } };
     rail = mountAgentRail(railHost(), railAddress({ kind: "task", projectId: "p1", taskId: "plan-1" }));
-    await flush();
+    // The roster comes back from task.get and the conversation off the cache:
+    // wait for what they paint, not a count of turns.
+    await vi.waitFor(() => expect(railHost().querySelector("#rail-body").textContent).toContain("on the task"));
 
     // One bubble and no `+`: a task carries exactly one agent.
-    expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-1"]);
-    expect(railHost().querySelector("#rail-body").textContent).toContain("on the task");
+    await vi.waitFor(() => expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-1"]));
     expect(callsTo("task.get")).toHaveLength(1);
     expect(calls.filter((call) => ["branch.get", "run.get", "workspace.get"].includes(call.method))).toEqual([]);
   });

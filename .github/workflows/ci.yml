@@ -403,21 +403,29 @@ jobs:
   # failure — while a real failure must still build nothing. `secrets` is
   # ungated, so it is the one that has to have actually succeeded.
 
-  # Gated on the app's OWN checks only. `bridge`, `interop` and `web-e2e` all
-  # compile Rust — `web-e2e` builds the whole stack in Docker — and none of them
-  # can go red because of a change under spa/. Waiting on them cost ~10 minutes
-  # per stylesheet. They still gate `build-relay`, which is the tier they test.
+  # Gated on the app's OWN checks, and on the Rust checks only while a bridge
+  # change is owed. Bridge-only merges deploy nothing, so the app's tag is what
+  # changed-tiers.sh judges owed bridge checks from: shipping the app past a
+  # bridge commit whose `bridge` or `interop` run was cancelled or red would
+  # forgive it (#251). Both are skipped at once when no bridge change is owed,
+  # so a stylesheet does not wait on them. `web-e2e` is deliberately NOT a
+  # need: it runs on every app push anyway (the stack at HEAD, bridge
+  # included), so nothing it covers is forgiven, and a need is waited for even
+  # when its result is not read — every stylesheet would sit ~10 minutes.
   build-app:
     name: build-app image (skriftapp)
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}-build-app
       cancel-in-progress: true
-    needs: [changes, spa, landing, skriftapp, scripts, shell, secrets]
+    needs: [changes, spa, landing, skriftapp, scripts, shell, bridge, interop, secrets]
     if: >-
       ${{ !cancelled()
           && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
           && github.ref == 'refs/heads/main'
           && needs.changes.outputs.app == 'true'
+          && (needs.changes.outputs.bridge != 'true'
+              || (needs.bridge.result == 'success'
+                  && needs.interop.result == 'success'))
           && needs.spa.result == 'success'
           && needs.landing.result == 'success'
           && needs.skriftapp.result == 'success'

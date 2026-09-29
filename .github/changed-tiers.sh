@@ -33,7 +33,8 @@ APP_PATHS='^(spa|skriftapp|landing)/|^deploy/k8s/app\.yaml$|^scripts/install(-de
 # list with no paths yields an empty pattern, which matches every change.
 RELAY_PATHS="$(grep -Ev '^(#|$)' "$SCRIPT_DIR/relay-sources" \
     | sed 's/[].[\\*^$+?(){}|]/\\&/g; s/.*/^&$/' | paste -sd '|' -)"
-BRIDGE_PATHS='^bridge/'
+# relay-sources is checked by a bridge test, so an edit to the list alone runs it.
+BRIDGE_PATHS='^bridge/|^\.github/relay-sources$'
 E2E_HARNESS_PATHS='^web/|^deploy/compose\.real\.yml$'
 
 # The commit an image tag names, or empty when the tag is not a commit this

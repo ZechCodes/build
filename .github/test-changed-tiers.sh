@@ -138,7 +138,7 @@ change_case() {
     echo changed >> "$cc_repo/$cc_path"
     git -C "$cc_repo" add -A && git -C "$cc_repo" commit -qm change
     run_case "$cc_repo" "$cc_repo.out" "$APP:$cc_base" "$RELAY:$cc_base"
-    assert_tiers "$cc_name" "$cc_repo.out" "$cc_want" && pass "$cc_name"
+    if assert_tiers "$cc_name" "$cc_repo.out" "$cc_want"; then pass "$cc_name"; fi
 }
 
 MOVED_BRIDGE="app=false relay=false bridge=true e2e=true desktop=false scripts=false shell=false"
@@ -162,6 +162,57 @@ change_case "the image recipe moves the relay" \
     bridge/Containerfile "$MOVED_RELAY" containerfile
 change_case "a path that only contains a relay source's name is not one" \
     bridge/src/bin/relay.rs.orig "$MOVED_BRIDGE" lookalike
+
+change_case "an edit to relay-sources alone runs the guard that checks it" \
+    .github/relay-sources "$MOVED_BRIDGE" relay-sources-list
+
+# Bridge commit B, then spa commits S and T (#251). B's checks are cancelled,
+# S's run owes them and deploys the app, T cancels S's Rust jobs. The tiers
+# judge T from the app's tag, S, so B is not owed again — which holds only
+# because build-app does not ship while a bridge change is owed and its checks
+# have not passed (web-e2e runs on every app push, so it forgives nothing). The
+# workflow half of that contract is checked next.
+SEQ_REPO="$WORK/sequence-repo"
+make_repo "$SEQ_REPO"
+SEQ_BASE="$(sha_of "$SEQ_REPO" HEAD)"
+echo b > "$SEQ_REPO/bridge/src/store.rs"
+git -C "$SEQ_REPO" add -A && git -C "$SEQ_REPO" commit -qm B
+echo s > "$SEQ_REPO/spa/src/main.js"
+git -C "$SEQ_REPO" add -A && git -C "$SEQ_REPO" commit -qm S
+SEQ_S="$(sha_of "$SEQ_REPO" HEAD)"
+echo t > "$SEQ_REPO/spa/src/main.js"
+git -C "$SEQ_REPO" add -A && git -C "$SEQ_REPO" commit -qm T
+
+name="an app deployed past a bridge commit certifies its checks: T owes the app alone"
+run_case "$SEQ_REPO" "$WORK/sequence" "$APP:$SEQ_S" "$RELAY:$SEQ_BASE"
+assert_tiers "$name" "$WORK/sequence" "app=true relay=false bridge=false e2e=true desktop=false scripts=false shell=false" && pass "$name"
+
+# build-app's job block in ci.yml, from its key to the next job's.
+build_app_job() {
+    awk '/^  build-app:$/ { inside = 1; print; next }
+         inside && /^  [a-z][a-z-]*:$/ { exit }
+         inside' "$SCRIPT_DIR/workflows/ci.yml"
+}
+
+name="build-app waits for the bridge checks whenever a bridge change is owed"
+job="$(build_app_job)"
+missing=""
+for need in bridge interop; do
+    printf '%s\n' "$job" | grep -Eq "^    needs: \[.*[[ ]$need[],]" || missing="$missing needs:$need"
+done
+for clause in "needs.changes.outputs.bridge != 'true'" \
+    "needs.bridge.result == 'success'" \
+    "needs.interop.result == 'success'"; do
+    printf '%s\n' "$job" | grep -Fq "$clause" || missing="$missing if:$clause"
+done
+if [ -z "$missing" ]; then pass "$name"; else fail "$name" "build-app lacks$missing"; fi
+
+name="build-app never waits for web-e2e, which runs on every app push"
+if printf '%s\n' "$job" | grep -Eq "^    needs: \[.*web-e2e"; then
+    fail "$name" "a stylesheet would wait for the whole-stack suite"
+else
+    pass "$name"
+fi
 
 name="every path relay-sources lists exists in this tree"
 missing="$(grep -Ev '^(#|$)' "$SCRIPT_DIR/relay-sources" | while IFS= read -r path; do

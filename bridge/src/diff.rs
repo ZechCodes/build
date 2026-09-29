@@ -1476,17 +1476,22 @@ line
     #[test]
     fn commit_range_diff_is_stable_after_later_commits_and_dirty_changes() {
         let (_dir, repo) = init_repo();
-        let git = |args: &[&str]| run_git(&repo, args).unwrap().trim().to_string();
-        let start = git(&["rev-parse", "HEAD"]);
+        let head = || {
+            run_git(&repo, &["rev-parse", "HEAD"])
+                .unwrap()
+                .trim()
+                .to_string()
+        };
+        let start = head();
         std::fs::write(repo.join("stage-one.txt"), "one\n").unwrap();
-        git(&["add", "."]);
-        git(&["commit", "-m", "stage one"]);
-        let completion = git(&["rev-parse", "HEAD"]);
+        git_in(&repo, &["add", "."]);
+        git_in(&repo, &["commit", "-m", "stage one"]);
+        let completion = head();
 
         let expected = diff_between_commits(&repo, &start, &completion, DiffPaths::All).unwrap();
         std::fs::write(repo.join("stage-two.txt"), "two\n").unwrap();
-        git(&["add", "."]);
-        git(&["commit", "-m", "stage two"]);
+        git_in(&repo, &["add", "."]);
+        git_in(&repo, &["commit", "-m", "stage two"]);
         std::fs::write(repo.join("dirty.txt"), "dirty\n").unwrap();
         let after = diff_between_commits(&repo, &start, &completion, DiffPaths::All).unwrap();
 

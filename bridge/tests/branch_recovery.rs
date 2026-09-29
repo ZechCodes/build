@@ -32,9 +32,13 @@ fn result(handler: &FrameHandler, method: &str, params: Value) -> Value {
 }
 
 fn git(dir: &Path, args: &[&str]) -> String {
+    // Nothing from the machine's own git config: a `commit.gpgsign` there
+    // would sign this fixture with a real key, or stop at its passphrase.
     let output = Command::new("/usr/bin/git")
         .current_dir(dir)
         .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .output()
         .unwrap();
     assert!(

@@ -289,11 +289,15 @@ function lastToolText(lastTool) {
   return [lastTool.name, lastTool.summary].filter(Boolean).join(" ");
 }
 
+/** An entry's model as the rail names it, for the harness the entry says it
+ *  runs on — or, naming none, the agent in focus's. */
+const modelLabelOf = (entry, modelLabel) => (entry.model ? modelLabel(entry.model, entry.provider) : "");
+
 function agentRow(entry, modelLabel) {
   return {
     label: entry.label || "",
     description: entry.description,
-    model: entry.model ? modelLabel(entry.model) : "",
+    model: modelLabelOf(entry, modelLabel),
     reasoningEffort: entry.reasoning_effort,
     tokens: Number.isFinite(entry.tokens) ? entry.tokens : null,
     toolCalls: Number.isFinite(entry.tool_calls) ? entry.tool_calls : null,
@@ -323,7 +327,7 @@ const chatKindOf = (entry, hereEntityId) => buildAgentChatKind({ kind: entry.kin
 /** The Build agents this agent made, as the Agents viewer's second group
  *  draws them: running first, and each carrying where its chat is, for the
  *  press that opens it — or no page at all, for a row nothing opens. */
-export function buildAgentRows(surfaces, { nowMs = 0, hereEntityId = null } = {}) {
+export function buildAgentRows(surfaces, { nowMs = 0, hereEntityId = null, modelLabel = rawModelId } = {}) {
   const entries = companionsOf(surfaces, AGENT_ENTRY_KIND);
   const rows = keyedBy("build-agent", entries, (entry) => {
     const running = companionIsRunning(entry);
@@ -332,7 +336,8 @@ export function buildAgentRows(surfaces, { nowMs = 0, hereEntityId = null } = {}
       state: entry.state || "",
       stateMark: BUILD_AGENT_STATE_MARKS[entry.state] || null,
       subject: entry.name || entry.id || "",
-      model: entry.model || "",
+      model: modelLabelOf(entry, modelLabel),
+      kind: entry.kind || "",
       workspaceName: entry.workspace_name || "",
       entityId: entry.entity_id || null,
       workspaceId: entry.workspace_id || null,

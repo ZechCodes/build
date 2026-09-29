@@ -157,11 +157,11 @@ describe("the Build agents an agent's panel lists", () => {
   it("names each by what the rail calls it, with where its chat is", () => {
     expect(buildAgentEntries(lineage, "boss")).toEqual([
       { id: "worker", name: "Login fixer", state: "idle", started_at: null,
-        entity_id: "run-ws-a", workspace_id: "ws-a", workspace_name: "Fix login", kind: "workspace" },
+        entity_id: "run-ws-a", workspace_id: "ws-a", workspace_name: "Fix login", kind: "workspace", model: "", provider: "" },
       { id: "busy", name: "Agent 2", state: "running", started_at: Date.parse("2026-09-28T10:00:00Z"),
-        entity_id: "run-ws-b", workspace_id: "ws-b", workspace_name: "Docs", kind: "workspace" },
+        entity_id: "run-ws-b", workspace_id: "ws-b", workspace_name: "Docs", kind: "workspace", model: "", provider: "" },
       { id: "broken", name: "Agent 3", state: "failed", started_at: null,
-        entity_id: "run-ws-b", workspace_id: "ws-b", workspace_name: "Docs", kind: "workspace" },
+        entity_id: "run-ws-b", workspace_id: "ws-b", workspace_name: "Docs", kind: "workspace", model: "", provider: "" },
     ]);
   });
 
@@ -189,5 +189,72 @@ describe("where a press on a Build agent goes", () => {
   it("is nowhere for an agent on neither", () => {
     expect(buildAgentChatRoute({ agentId: "stray", kind: "branch", workspaceId: null }, place)).toBeNull();
     expect(buildAgentChatRoute({ agentId: "lost", kind: "workspace", workspaceId: null }, place)).toBeNull();
+  });
+});
+
+// #226: the bridge files every agent on its run's branch row
+// (`board.list`'s `branch_candidate_from_run`) — a workspace's and the
+// project agent's included. Neither row says where it lives; the cached
+// workspace and project lists do, by naming the row's run as their own.
+describe("where a Build agent lives, off the rows the bridge actually writes", () => {
+  const runRow = (runId, agents, over = {}) => ({
+    kind: "branch", project_id: "proj-1", run_id: runId, branch: `build/${runId}`, title: `goal of ${runId}`,
+    worktree_path: `/work/${runId}`, task_id: null, agents, ...over,
+  });
+  const workspaces = [{ id: "ws-skrift", project_id: "proj-1", name: "Skrift 0.2.1 validation", entity_id: "run-ws", run_id: "run-ws", root: "/work/run-ws" }];
+  const projects = [{ project_id: "proj-1", name: "Build", entity_id: "run-project", run_id: "run-project" }];
+  const rows = [
+    runRow("run-project", [agent("boss"), agent("deputy", { created_by: "boss", ordinal: 2 })]),
+    runRow("run-ws", [agent("validator", { created_by: "boss", name: "Skrift validation" })]),
+    runRow("run-branch", [agent("brancher", { created_by: "boss" })]),
+  ];
+  const members = lineageMembers(rows, { projectId: "proj-1", workspaces, projects });
+  const entries = buildAgentEntries(agentLineage(members), "boss");
+  const entryOf = (id) => entries.find((entry) => entry.id === id);
+
+  it("is the workspace whose run the row is, named as the workspace is", () => {
+    expect(entryOf("validator")).toMatchObject({
+      kind: "workspace", workspace_id: "ws-skrift", workspace_name: "Skrift 0.2.1 validation", entity_id: "run-ws",
+    });
+    expect(buildAgentChatRoute({ agentId: "validator", kind: entryOf("validator").kind, workspaceId: "ws-skrift" }, { deviceId: "dev-1", projectId: "proj-1" }))
+      .not.toBeNull();
+  });
+
+  it("is the project for an agent on the project agent's own conversation", () => {
+    expect(entryOf("deputy")).toMatchObject({ kind: "project", workspace_id: null });
+  });
+
+  it("is still the branch for an agent on a branch no workspace or project owns", () => {
+    expect(entryOf("brancher")).toMatchObject({ kind: "branch", workspace_id: null, workspace_name: "goal of run-branch" });
+  });
+
+  it("reads the lists as optional, so a cache holding only rows answers as before", () => {
+    expect(lineageMembers(rows, { projectId: "proj-1" }).map((member) => member.kind)).toEqual(["branch", "branch", "branch", "branch"]);
+  });
+});
+
+describe("a Build agent row that names its workspace outright", () => {
+  it("opens on that workspace whatever kind of row carried it", () => {
+    expect(buildAgentChatRoute({ agentId: "worker", kind: "task", workspaceId: "ws-a" }, { deviceId: "dev-1", projectId: "proj-1" }))
+      .toEqual(conversationRoute({ kind: "workspace", projectId: "proj-1", deviceId: "dev-1", workspaceId: "ws-a", agentId: "worker" }));
+  });
+});
+
+describe("the model a Build agent runs", () => {
+  const entriesFor = (over) => buildAgentEntries(lineageOf([
+    row("project", { agents: [agent("boss")] }),
+    row("workspace", { workspace_id: "ws-a", agents: [agent("worker", { created_by: "boss", provider: "codex_app_server", ...over })] }),
+  ]), "boss");
+
+  it("is the model it is running now, with the harness that names it", () => {
+    expect(entriesFor({ model: "gpt-6-sol", active_model: "gpt-6-astra" })[0]).toMatchObject({ model: "gpt-6-astra", provider: "codex_app_server" });
+  });
+
+  it("is the model it will start on while it has not run", () => {
+    expect(entriesFor({ model: "gpt-6-sol", active_model: "" })[0]).toMatchObject({ model: "gpt-6-sol" });
+  });
+
+  it("is nothing for an agent whose digest names none", () => {
+    expect(entriesFor({})[0]).toMatchObject({ model: "" });
   });
 });

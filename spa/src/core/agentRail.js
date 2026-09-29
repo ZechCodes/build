@@ -3103,10 +3103,10 @@ function mountRailOnContext(host, context, swap) {
     disposeComposerClearance = mountComposerClearance(panel);
   };
 
-  const surfaceModelLabel = (modelId) => {
-    const agent = agentInFocus();
-    return activeModelLabel(catalog, agent ? agent.provider : "", modelId);
-  };
+  /** A surface row's model as the catalog names it, for the harness the row
+   *  says it runs on — a Build agent's own (#226) — else the agent in focus's. */
+  const surfaceModelLabel = (modelId, providerId = agentInFocus()?.provider || "") =>
+    activeModelLabel(catalog, providerId, modelId);
 
   /// A reference from a surface points at a call, and a call folded into a shut
   /// run has no row to point at — so the run it sits in is opened first, and

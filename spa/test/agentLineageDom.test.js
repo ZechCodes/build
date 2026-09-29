@@ -144,3 +144,30 @@ describe("gated on agents.createdBy", () => {
     await vi.waitFor(() => expect(reader.buildAgentsFor("boss")).toHaveLength(1));
   });
 });
+
+// #226: the rows the bridge writes are branch rows, a workspace's included.
+// Which workspace or project owns a row's run is in the cached lists, so the
+// reader joins those too — and hears them move.
+describe("where its Build agents live", () => {
+  const putList = (kind, value) => localCache.writeCached({ deviceId: "dev-1", entityId: "", kind }, value);
+  const onBranchRow = (runId, agents) => putRow(runId, { kind: "branch", branch: `build/${runId}`, title: `goal ${runId}`, agents });
+
+  it("names a workspace's agent by the workspace whose run its row is", async () => {
+    await putList("projects", [{ project_id: "proj-1", name: "Build", entity_id: "run-boss" }]);
+    await putList("workspaces", [{ id: "ws-a", project_id: "proj-1", name: "Skrift validation", entity_id: "run-a" }]);
+    await onBranchRow("run-boss", [{ id: "boss" }, { id: "deputy", created_by: "boss" }]);
+    await onBranchRow("run-a", [{ id: "worker", created_by: "boss" }]);
+    await mount();
+    const byId = Object.fromEntries(reader.buildAgentsFor("boss").map((entry) => [entry.id, entry]));
+    expect(byId.deputy).toMatchObject({ kind: "project", workspace_id: null });
+    expect(byId.worker).toMatchObject({ kind: "workspace", workspace_id: "ws-a", workspace_name: "Skrift validation" });
+  });
+
+  it("supplies again when the workspace list lands after the rows", async () => {
+    await onBranchRow("run-a", [{ id: "worker", created_by: "boss" }]);
+    await mount();
+    expect(reader.buildAgentsFor("boss")[0].kind).toBe("branch");
+    await putList("workspaces", [{ id: "ws-a", project_id: "proj-1", name: "Skrift validation", entity_id: "run-a" }]);
+    await vi.waitFor(() => expect(reader.buildAgentsFor("boss")[0]).toMatchObject({ kind: "workspace", workspace_id: "ws-a" }));
+  });
+});

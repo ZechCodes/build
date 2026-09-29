@@ -41,6 +41,9 @@ vi.mock("../src/core/surfaceTabs.js", () => ({ mountAgentTab: () => ({ dispose: 
 const { App } = await import("../src/app.js");
 const { adoptBridgeSelection, adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
 const { mountAgentRail, panelHeadHtml, resetAgentRailMemory } = await import("../src/core/agentRail.js");
+const { writeTasksRecord } = await import("../src/core/trackerCache.js");
+const { columns, task } = await import("./trackerWireFixture.js");
+const { TASKS_ENTRY_KIND } = await import("../src/core/agentSurfacesModel.js");
 const { openSurfaceOverlay } = await import("../src/core/agentSurfaces.js");
 const { AGENT_ENTRY_KIND, SHELL_ENTRY_KIND, WORKFLOW_ENTRY_KIND } = await import("../src/core/agentSurfacesModel.js");
 const { wipeCache } = await import("../src/core/localCache.js");
@@ -556,6 +559,56 @@ describe("the surface a menu option opens", () => {
     await flush();
 
     expect(overlay()).toBe(null);
+  });
+});
+
+// #225: the Build agents (#216) and the tasks (#34) come from the project's
+// cached rows and task list, not the digest — the ⋮ menu's overlay has to
+// draw them just as the pill's panel does.
+describe("a menu option over what the digest does not carry", () => {
+  it("opens Agents on the Build agents this agent made", async () => {
+    const row = branchRow();
+    row.agents.push({ ...row.agents[0], id: "ag-2", ordinal: 2, name: "Login fixer", created_by: "ag-1", surfaces: null });
+    payload = row;
+    await mount();
+    await rememberAgentLineageSupport("dev-1", { agents: { createdBy: true } });
+    await vi.waitFor(() => expect(menuItem(AGENT_ENTRY_KIND)).not.toBe(null));
+
+    menuCaret().click();
+    menuItem(AGENT_ENTRY_KIND).click();
+
+    await vi.waitFor(() =>
+      expect([...overlay().querySelectorAll(".surface-build-agents > .surface-build-agent")].map((one) => one.textContent))
+        .toEqual([expect.stringContaining("Login fixer")]));
+  });
+
+  it("opens Tasks on the tasks this agent carries", async () => {
+    await writeTasksRecord("dev-1", "p1", {
+      tasks: [task({ number: 7, id: "i7", title: "Fix login", status: "in_progress", assignee: { kind: "agent", agent_id: "ag-1" } })],
+      columns: columns(),
+    });
+    await mount();
+    await vi.waitFor(() => expect(menuItem(TASKS_ENTRY_KIND)).not.toBe(null));
+
+    menuCaret().click();
+    menuItem(TASKS_ENTRY_KIND).click();
+
+    await vi.waitFor(() => expect(overlay().textContent).toContain("#7 Fix login"));
+  });
+
+  it("takes a pushed task list while Tasks is open", async () => {
+    const mine = (number, title) =>
+      task({ number, id: `i${number}`, title, status: "in_progress", assignee: { kind: "agent", agent_id: "ag-1" } });
+    await writeTasksRecord("dev-1", "p1", { tasks: [mine(7, "Fix login")], columns: columns() });
+    await mount();
+    await vi.waitFor(() => expect(menuItem(TASKS_ENTRY_KIND)).not.toBe(null));
+    menuCaret().click();
+    menuItem(TASKS_ENTRY_KIND).click();
+    await vi.waitFor(() => expect(overlay().textContent).toContain("#7 Fix login"));
+
+    await writeTasksRecord("dev-1", "p1", { tasks: [mine(7, "Fix login"), mine(8, "Fix logout")], columns: columns() });
+
+    await vi.waitFor(() => expect(overlay().textContent).toContain("#8 Fix logout"));
   });
 });
 

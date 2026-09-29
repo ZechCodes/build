@@ -279,6 +279,13 @@ export function agentsViewerHtml() {
   </div>`;
 }
 
+/** Why a Build agent's row opens nothing, by the kind of row it is on (#226):
+ *  what the reader can do instead, where there is anything. */
+const UNREACHABLE_BUILD_AGENT_TITLES = {
+  branch: (name) => `${name} works on a branch outside any workspace. Its chat opens from that branch, not from here.`,
+};
+const NOWHERE_TO_OPEN_TITLE = (name) => `Build has nowhere to open ${name}'s chat yet.`;
+
 /** One Build agent this agent made: a press opens its chat. The whole row is
  *  the button, so nothing inside it is pressable on its own. A Build agent
  *  whose chat has no page to open on (#221) is drawn as a plain row that says
@@ -287,14 +294,18 @@ export function buildAgentRowHtml(row) {
   const where = row.workspaceName
     ? `<span class="surface-row-stat surface-build-agent-where">${esc(row.workspaceName)}</span>`
     : "";
+  const model = row.model
+    ? clippedTextHtml(row.model, { className: "surface-row-model surface-row-head-model", pressable: false })
+    : "";
   const head = `<span class="${ROW_HEAD_CLASS}">
       ${stateMarkHtml(row.stateMark)}
       ${clippedTextHtml(row.subject, { className: ROW_LABEL_CLASS, pressable: false })}
+      ${model}
       ${where}
       ${clockHtml(row.clock, row.runningSince)}
     </span>`;
   if (!row.chatKind) {
-    const why = `Build cannot open ${row.subject}'s chat from here: it is on neither a workspace nor the project.`;
+    const why = (UNREACHABLE_BUILD_AGENT_TITLES[row.kind] || NOWHERE_TO_OPEN_TITLE)(row.subject);
     return `<div class="surface-row surface-build-agent surface-build-agent-unreachable" data-key="${esc(row.key)}"
     title="${esc(why)}">
     ${head}

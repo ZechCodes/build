@@ -111,9 +111,18 @@ describe("a press on a Build agent", () => {
     expect(row.hasAttribute("tabindex")).toBe(false);
     expect(row.hasAttribute("data-build-agent")).toBe(false);
     expect(row.classList.contains("surface-build-agent-unreachable")).toBe(true);
-    expect(row.getAttribute("title")).toBe("Build cannot open Worker b1's chat from here: it is on neither a workspace nor the project.");
+    expect(row.getAttribute("title")).toBe("Worker b1 works on a branch outside any workspace. Its chat opens from that branch, not from here.");
     row.querySelector(".surface-row-label").click();
     expect(onOpenBuildAgent).not.toHaveBeenCalled();
+  });
+
+  // #226: a row of any other kind has nowhere at all, and says only that.
+  it("says plainly when a Build agent's chat has nowhere to open", () => {
+    mount({ onOpenBuildAgent: () => {} }).set({ [BUILD_AGENTS_KEY]: [buildAgent("t1", "idle", { kind: "task", workspace_id: null })] });
+    const [row] = buildRows();
+    expect(row.tagName).toBe("DIV");
+    expect(row.getAttribute("title")).toBe("Build has nowhere to open Worker t1's chat yet.");
+    expect(row.getAttribute("title")).not.toMatch(/neither/);
   });
 
   // #223: a branch has no page, but its own rail is where its agents' chats
@@ -136,7 +145,7 @@ describe("a press on a Build agent", () => {
       mount({ onOpenBuildAgent, hereEntityId: () => "branch-a" }).set({ [BUILD_AGENTS_KEY]: [onBranch("b2", "branch-b")] });
       const [row] = buildRows();
       expect(row.tagName).toBe("DIV");
-      expect(row.getAttribute("title")).toBe("Build cannot open Worker b2's chat from here: it is on neither a workspace nor the project.");
+      expect(row.getAttribute("title")).toBe("Worker b2 works on a branch outside any workspace. Its chat opens from that branch, not from here.");
       row.click();
       expect(onOpenBuildAgent).not.toHaveBeenCalled();
     });
@@ -159,5 +168,31 @@ describe("a press on a Build agent", () => {
       viewer.set({ [BUILD_AGENTS_KEY]: [onBranch("b1", "branch-a")] });
       expect(buildRows()[0].tagName).toBe("BUTTON");
     });
+  });
+});
+
+// #226: each Build agent row says what model it runs, labelled the way the
+// rail labels a model: by the harness that agent runs on.
+describe("the model on a Build agent's row", () => {
+  const modelLabel = (modelId, providerId) => `${modelId} on ${providerId}`;
+  const modelOf = (row) => row.querySelector(".surface-row-model")?.textContent;
+
+  it("is the agent's model, labelled for its own harness", () => {
+    mount({ onOpenBuildAgent: () => {}, modelLabel }).set({ [BUILD_AGENTS_KEY]: [
+      buildAgent("b1", "idle", { model: "gpt-6-astra", provider: "codex_app_server" }),
+    ] });
+    expect(modelOf(buildRows()[0])).toBe("gpt-6-astra on codex_app_server");
+  });
+
+  it("shows on a row nothing opens, too", () => {
+    mount({ modelLabel }).set({ [BUILD_AGENTS_KEY]: [
+      buildAgent("b1", "idle", { kind: "branch", workspace_id: null, model: "claude-opus-5-5", provider: "claude" }),
+    ] });
+    expect(modelOf(buildRows()[0])).toBe("claude-opus-5-5 on claude");
+  });
+
+  it("is absent for an agent whose digest names no model", () => {
+    mount({ onOpenBuildAgent: () => {}, modelLabel }).set({ [BUILD_AGENTS_KEY]: [buildAgent("b1", "idle")] });
+    expect(buildRows()[0].querySelector(".surface-row-model")).toBeNull();
   });
 });

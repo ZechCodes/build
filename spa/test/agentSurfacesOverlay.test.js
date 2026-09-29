@@ -718,4 +718,23 @@ describe("a Build agent on the rail's own branch", () => {
     const expanded = (id) => document.querySelector(`.rail-bubble[data-agent="${id}"]`).getAttribute("aria-expanded");
     expect([expanded("ag-1"), expanded("ag-2")]).toEqual(["false", "true"]);
   });
+  // #226: the row names the Build agent's model as the catalog names it for
+  // that agent's own harness, not the harness of the agent in the panel.
+  it("names the agent's model for the harness it runs on", async () => {
+    catalog = {
+      default_provider: "claude",
+      providers: [
+        { id: "claude", label: "Claude Code", models: [], efforts: [] },
+        { id: "codex_app_server", label: "Codex", models: [{ id: "gpt-6-astra", label: "GPT-6 Astra" }], efforts: [] },
+      ],
+    };
+    payload = withWorker();
+    Object.assign(payload.agents[1], { provider: "codex_app_server", model: "gpt-6-astra", active_model: "gpt-6-astra" });
+    await mount();
+    await rememberAgentLineageSupport("dev-1", { agents: { createdBy: true } });
+    await vi.waitFor(() => expect(panel().querySelector(`[data-surface-kind="${AGENT_ENTRY_KIND}"]`)).not.toBe(null));
+    panel().querySelector(`[data-surface-kind="${AGENT_ENTRY_KIND}"]`).click();
+    await vi.waitFor(() => expect(buildAgentRows()).toHaveLength(1));
+    await vi.waitFor(() => expect(buildAgentRows()[0].querySelector(".surface-row-model")?.textContent).toBe("GPT-6 Astra"));
+  });
 });

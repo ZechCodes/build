@@ -221,7 +221,7 @@ function mountSources(project, { callRpc, record, deviceId, editing, saveDraft, 
     try {
       const changed = await send();
       if (changed?.project_id) await writeProjectSetting(deviceId, changed);
-      onDone?.(changed);
+      await onDone?.(changed);
       await record.read();
       saveDraft();
       return changed;

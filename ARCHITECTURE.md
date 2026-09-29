@@ -384,12 +384,16 @@ project's home (orchestrator, registry identity) and cannot move.
   `git remote set-url`/`add`/`remove`. Each existing workspace checkout that
   has its own repository (a Rift or plain copy) and still names the old
   `origin` follows it; a worktree shares the source's config anyway. The
-  answer's `checkouts_updated` counts them.
+  answer's `checkouts_updated` counts them. A checkout git will not rewrite
+  is not rolled back or hidden: `checkouts_failed` names it
+  (`workspace_id`, `path`, git's `reason`), still on the old remote, and the
+  source's own change stands.
 
 `project.set_remote` is the same edit on the first source, kept for older
 clients. Every remote a client names, on any verb, passes
 `usable_remote_url` (`bridge/src/remote_url.rs`): no leading `-`, no
-whitespace or control characters, no `transport::` helper, and only
+whitespace or control characters, no `transport::` helper, no ssh user,
+host or port starting with `-`, and only
 https/http/ssh/git/file urls, `user@host:path` or an absolute path. Git is
 handed a `--` before it.
 

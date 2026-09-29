@@ -185,14 +185,16 @@ fn a_hostile_remote_is_refused_before_git_sees_it() {
     );
 }
 
-#[test]
-fn a_remote_moves_existing_workspace_copies_that_still_named_the_old_one() {
-    let mut f = fixture();
+/// A workspace whose docs directory is what a Rift or plain-copy checkout is:
+/// a repository of its own, with its own config, standing where the
+/// workspace's directory is, still naming the source's old remote.
+fn workspace_with_its_own_docs_copy(f: &mut Fixture, name: &str) -> (String, PathBuf) {
     let created = f.state.handle(req(
         "workspace.create",
-        json!({"project_id": f.project_id, "name": "work", "isolation": "worktree"}),
+        json!({"project_id": f.project_id, "name": name, "isolation": "worktree"}),
     ));
     assert_eq!(created["ok"], true, "{created:?}");
+    let workspace_id = created["result"]["id"].as_str().unwrap().to_string();
     let checkout = PathBuf::from(
         created["result"]["directories"]
             .as_array()
@@ -203,8 +205,6 @@ fn a_remote_moves_existing_workspace_copies_that_still_named_the_old_one() {
             .as_str()
             .unwrap(),
     );
-    // What a Rift or plain-copy checkout is: a repository of its own, with its
-    // own config, standing where the workspace's directory is.
     git_in(
         &f.docs,
         &["worktree", "remove", "--force", checkout.to_str().unwrap()],
@@ -227,6 +227,13 @@ fn a_remote_moves_existing_workspace_copies_that_still_named_the_old_one() {
             "git@example.com:old/docs.git",
         ],
     );
+    (workspace_id, checkout)
+}
+
+#[test]
+fn a_remote_moves_existing_workspace_copies_that_still_named_the_old_one() {
+    let mut f = fixture();
+    let (_, checkout) = workspace_with_its_own_docs_copy(&mut f, "work");
 
     let answer = f.update(
         "source-2",
@@ -235,9 +242,44 @@ fn a_remote_moves_existing_workspace_copies_that_still_named_the_old_one() {
 
     assert_eq!(answer["ok"], true, "{answer:?}");
     assert_eq!(answer["result"]["checkouts_updated"], 1, "{answer:?}");
+    assert_eq!(answer["result"]["checkouts_failed"], json!([]));
     assert_eq!(
         git_remote_origin(&checkout).as_deref(),
         Some("git@example.com:new/docs.git")
+    );
+}
+
+#[test]
+fn a_workspace_copy_git_cannot_rewrite_is_named_in_the_answer() {
+    let mut f = fixture();
+    let (stuck_id, stuck) = workspace_with_its_own_docs_copy(&mut f, "stuck");
+    let (_, moving) = workspace_with_its_own_docs_copy(&mut f, "moving");
+    // Another git holds the config's lock, so set-url cannot write it.
+    std::fs::write(stuck.join(".git/config.lock"), "").unwrap();
+
+    let answer = f.update(
+        "source-2",
+        json!({"remote": "git@example.com:new/docs.git"}),
+    );
+
+    assert_eq!(answer["ok"], true, "the source's change stands: {answer:?}");
+    assert_eq!(answer["result"]["checkouts_updated"], 1, "{answer:?}");
+    let failed = answer["result"]["checkouts_failed"].as_array().unwrap();
+    assert_eq!(failed.len(), 1, "{answer:?}");
+    assert_eq!(failed[0]["workspace_id"], stuck_id.as_str());
+    assert_eq!(failed[0]["path"], stuck.display().to_string());
+    assert!(!failed[0]["reason"].as_str().unwrap().is_empty());
+    assert_eq!(
+        git_remote_origin(&stuck).as_deref(),
+        Some("git@example.com:old/docs.git")
+    );
+    assert_eq!(
+        git_remote_origin(&moving).as_deref(),
+        Some("git@example.com:new/docs.git")
+    );
+    assert_eq!(
+        source(&answer["result"], "source-2")["remote"],
+        "git@example.com:new/docs.git"
     );
 }
 

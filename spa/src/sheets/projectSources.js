@@ -8,6 +8,8 @@
 // card paints what the checkout holds, not what was typed into it once.
 
 import { esc } from "../core/text.js";
+import { readCached } from "../core/localCache.js";
+import { workspaceDisplayName } from "../core/workspaceModel.js";
 import { fieldTraits } from "../core/fieldTraits.js";
 import { attachRepoPicker } from "./repoPicker.js";
 
@@ -68,7 +70,8 @@ function cardHtml(source, index, { editing, removable, notice }) {
       <span class="ps-source-tag">${kind}</span></header>
     ${shownFields(source).map((field) => fieldHtml(source, index, field, editing)).join("")}
     <div class="adderr" data-source-error role="alert"></div>
-    <div class="dim" data-source-status role="status">${esc(notice || "")}</div>
+    <div class="dim" data-source-status role="status">${esc(notice?.status || "")}</div>
+    <div class="ps-source-warning" data-source-warning role="alert">${esc(notice?.warning || "")}</div>
     <footer class="row ps-source-foot">${[
       removable ? `<button class="btn danger mini" type="button" data-remove-source="${esc(source.id)}">Remove</button>` : "",
       editable ? `<button class="btn primary mini" type="button" data-save-source="${esc(source.id)}" disabled>Save</button>` : "",
@@ -137,18 +140,38 @@ export function restoreSourceEdits(sheet, project, edits = {}) {
 }
 
 /** What a save says once it lands: how many existing workspace checkouts
- *  followed the remote, when any did. */
-export function savedNotice(changed) {
+ *  followed the remote, when any did, and — apart, as a warning — which
+ *  workspaces Git could not move and so still use the old one. A workspace
+ *  this device's cache knows is named; one it does not is named by its path. */
+export function savedNotice(changed, workspaces = []) {
   const moved = Number(changed?.checkouts_updated) || 0;
-  if (!moved) return "Saved.";
-  return `Saved. ${moved} existing workspace checkout${moved === 1 ? "" : "s"} now use${moved === 1 ? "s" : ""} the new remote.`;
+  const status = moved
+    ? `Saved. ${moved} existing workspace checkout${moved === 1 ? "" : "s"} now use${moved === 1 ? "s" : ""} the new remote.`
+    : "Saved.";
+  return { status, warning: leftBehindWarning(changed?.checkouts_failed, workspaces) };
+}
+
+function leftBehindWarning(failed, workspaces) {
+  if (!Array.isArray(failed) || !failed.length) return "";
+  const nameOf = (left) => {
+    const workspace = workspaces.find((candidate) => (candidate?.workspace_id || candidate?.id) === left.workspace_id);
+    return workspace ? workspaceDisplayName(workspace, left.path) : left.path;
+  };
+  const count = failed.length === 1 ? "1 existing workspace still uses" : `${failed.length} existing workspaces still use`;
+  return `${count} the old remote because Git could not change it there: ${failed.map(nameOf).join(", ")}.`;
+}
+
+async function cachedWorkspaces(deviceId) {
+  const record = await readCached({ deviceId, entityId: "", kind: "workspaces" });
+  return Array.isArray(record?.value) ? record.value : [];
 }
 
 /**
  * Wire every card: typing marks it dirty and keeps the draft, Save sends only
  * what changed through `editing.save`, Remove takes the source off. Each
  * write answers the project row, which `write(send, button, errorElement,
- * onDone)` puts in the cache; the sheet repaints from there.
+ * onDone)` puts in the cache; the sheet repaints from there once `onDone`
+ * has settled.
  */
 export function mountSourceCards(sheet, project, { editing, callRpc, deviceId, write, saveDraft, onSaved }) {
   sheet.querySelectorAll(".ps-source").forEach((card) => {
@@ -160,7 +183,7 @@ export function mountSourceCards(sheet, project, { editing, callRpc, deviceId, w
     const remote = card.querySelector('input[data-field="remote"]:not([readonly])');
     if (remote) attachRepoPicker(remote, deviceId);
     const save = card.querySelector("[data-save-source]");
-    if (save) save.onclick = () => void saveCard(card, source, { editing, callRpc, project, write, onSaved });
+    if (save) save.onclick = () => void saveCard(card, source, { editing, callRpc, deviceId, project, write, onSaved });
   });
   sheet.querySelectorAll("[data-remove-source]").forEach((button) => {
     button.onclick = () => void write(
@@ -171,13 +194,13 @@ export function mountSourceCards(sheet, project, { editing, callRpc, deviceId, w
   });
 }
 
-async function saveCard(card, source, { editing, callRpc, project, write, onSaved }) {
+async function saveCard(card, source, { editing, callRpc, deviceId, project, write, onSaved }) {
   const changes = cardChanges(card, source);
   const error = card.querySelector("[data-source-error]");
   await write(
     () => editing.save(callRpc, project.project_id, source, changes),
     card.querySelector("[data-save-source]"),
     error,
-    (changed) => onSaved(source.id, savedNotice(changed)),
+    async (changed) => onSaved(source.id, savedNotice(changed, await cachedWorkspaces(deviceId))),
   );
 }

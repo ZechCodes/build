@@ -10,9 +10,9 @@
 
 use super::{canonical_source_path, ProjectSource};
 use crate::app::{expand_tilde, require_str, AppState};
-use crate::lifecycle::{PendingState, SourceUpdated, UpdateSource};
+use crate::lifecycle::{PendingState, SourceUpdated, UpdateSource, WorkspaceCheckout};
 use crate::remote_url::usable_remote_url;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::path::PathBuf;
 
 /// Longer than any label a person types; a cap so nothing unbounded is stored.
@@ -144,13 +144,27 @@ impl AppState {
 
     /// Every workspace directory cut from this source, other than the source's
     /// own folder (an adopted workspace stands on it).
-    fn checkouts_cut_from(&self, project_id: &str, source: &ProjectSource) -> Vec<PathBuf> {
+    fn checkouts_cut_from(
+        &self,
+        project_id: &str,
+        source: &ProjectSource,
+    ) -> Vec<WorkspaceCheckout> {
         self.workspaces
             .list(Some(project_id))
             .into_iter()
-            .flat_map(|workspace| &workspace.directories)
-            .filter(|directory| directory.source_id == source.id && directory.path != source.path)
-            .map(|directory| directory.path.clone())
+            .flat_map(|workspace| {
+                workspace
+                    .directories
+                    .iter()
+                    .map(move |directory| (&workspace.id, directory))
+            })
+            .filter(|(_, directory)| {
+                directory.source_id == source.id && directory.path != source.path
+            })
+            .map(|(workspace_id, directory)| WorkspaceCheckout {
+                workspace_id: workspace_id.clone(),
+                path: directory.path.clone(),
+            })
             .collect()
     }
 
@@ -160,6 +174,17 @@ impl AppState {
         updated: SourceUpdated,
     ) -> Result<Value, String> {
         let checkouts_updated = updated.checkouts_updated;
+        let checkouts_failed: Vec<Value> = updated
+            .checkouts_failed
+            .iter()
+            .map(|failed| {
+                json!({
+                    "workspace_id": failed.workspace_id,
+                    "path": failed.path.display().to_string(),
+                    "reason": failed.reason,
+                })
+            })
+            .collect();
         self.projects.update_source(
             &address.project_id,
             &address.source_id,
@@ -178,6 +203,7 @@ impl AppState {
             .expect("the project was just updated");
         let mut row = self.project_json(project);
         row["checkouts_updated"] = checkouts_updated.into();
+        row["checkouts_failed"] = checkouts_failed.into();
         Ok(row)
     }
 }

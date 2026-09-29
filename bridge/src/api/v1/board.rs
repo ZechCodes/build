@@ -551,15 +551,26 @@ pub struct ProjectSourceRow {
     pub remote: Option<String>,
 }
 
-/// `project.update_source`'s answer: the project row with its sources, and
-/// how many existing workspace checkouts had their `origin` moved with the
-/// source's.
+/// `project.update_source`'s answer: the project row with its sources, how
+/// many existing workspace checkouts had their `origin` moved with the
+/// source's, and which ones git could not move. Those are left on the old
+/// remote; the source's own change stands.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ProjectSourceUpdated {
     #[serde(flatten)]
     pub project: ProjectRow,
     pub sources: Vec<ProjectSourceRow>,
     pub checkouts_updated: u64,
+    pub checkouts_failed: Vec<CheckoutLeftBehind>,
+}
+
+/// A workspace checkout that still names the source's old remote because
+/// git refused to change it, with git's reason.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CheckoutLeftBehind {
+    pub workspace_id: String,
+    pub path: String,
+    pub reason: String,
 }
 
 /// A project as `project.list` answers for it: the row above, and the

@@ -42,7 +42,14 @@
         "remote": "git@github.com:ada/docs.git"
       }
     ],
-    "checkouts_updated": 1
+    "checkouts_updated": 1,
+    "checkouts_failed": [
+      {
+        "workspace_id": "ws-7",
+        "path": "/home/ada/.build/worktrees/proj-1/ws-7/docs",
+        "reason": "error: could not lock config file .git/config: File exists"
+      }
+    ]
   },
   "errors": [
     "not_found",

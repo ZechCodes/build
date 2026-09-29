@@ -128,6 +128,34 @@ describe("openProjectSettings", () => {
     expect(document.getElementById("scrim").classList.contains("show")).toBe(true);
   });
 
+  it("names the workspaces a remote change could not reach", async () => {
+    await editsInPlace();
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "workspaces" }, [
+      { id: "ws-1", name: "Fix <login>", project_id: "proj-1" },
+    ]);
+    const saved = {
+      ...PROJECT,
+      sources: [PROJECT.sources[0], { ...PROJECT.sources[1], remote: "git@github.com:example/docs.git" }],
+      checkouts_updated: 1,
+      checkouts_failed: [
+        { workspace_id: "ws-1", path: "/w/ws-1/docs", reason: "could not lock config file" },
+        { workspace_id: "ws-gone", path: "/w/ws-gone/docs", reason: "could not lock config file" },
+      ],
+    };
+    const callRpc = vi.fn(async (method) => (method === "project.list" ? { projects: [PROJECT] } : saved));
+    openProjectSettings("proj-1", { callRpc, deviceId: "dev-1" });
+    await vi.waitFor(() => expect(input("source-2", "remote")?.readOnly).toBe(false));
+    type(input("source-2", "remote"), "git@github.com:example/docs.git");
+    card("source-2").querySelector("[data-save-source]").click();
+    const warning = () => card("source-2").querySelector("[data-source-warning]");
+    await vi.waitFor(() => expect(warning().textContent).toContain("old remote"));
+    expect(warning().textContent).toBe(
+      "2 existing workspaces still use the old remote because Git could not change it there: Fix <login>, /w/ws-gone/docs.",
+    );
+    expect(warning().innerHTML).toContain("Fix &lt;login&gt;");
+    expect(card("source-2").querySelector("[data-source-status]").textContent).toContain("1 existing workspace checkout now uses");
+  });
+
   it("keeps the card's edits and names the refusal on that card", async () => {
     await editsInPlace();
     const callRpc = vi.fn(async (method) => {

@@ -1,0 +1,21 @@
+# Every file the production relay image is built from, one repo path per line.
+# changed-tiers.sh redeploys the relay only when one of these differs from the
+# commit production runs; a change anywhere else under bridge/ is checked but
+# never rolls the relay, whose Recreate drops every WebSocket.
+#
+# The Rust sources are the relay bin and the bridge-crate modules it reaches.
+# bridge/tests/relay_sources.rs derives that set from the code and fails when
+# this list does not match it exactly, so a new `use crate::…` in the relay
+# path cannot slip past the deploy filter.
+#
+# Cargo.toml and Cargo.lock count whole: a dependency bump may be one the
+# relay links. vendor/ is not listed — the relay reaches no webrtc code.
+bridge/src/bin/relay.rs
+bridge/src/lib.rs
+bridge/src/relay_server.rs
+bridge/src/transport.rs
+bridge/Cargo.toml
+bridge/Cargo.lock
+bridge/Containerfile
+bridge/.dockerignore
+deploy/k8s/relay.yaml

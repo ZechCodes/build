@@ -53,6 +53,7 @@ jobs:
     outputs:
       app: ${{ steps.filter.outputs.app }}
       relay: ${{ steps.filter.outputs.relay }}
+      bridge: ${{ steps.filter.outputs.bridge }}
       e2e: ${{ steps.filter.outputs.e2e }}
       desktop: ${{ steps.filter.outputs.desktop }}
       scripts: ${{ steps.filter.outputs.scripts }}
@@ -96,7 +97,10 @@ jobs:
       group: ${{ github.workflow }}-${{ github.ref }}-bridge
       cancel-in-progress: true
     needs: [changes]
-    if: ${{ needs.changes.outputs.relay == 'true' }}
+    # Every bridge change, not only the relay's sources: the relay tier moves
+    # only when the relay image would differ (.github/relay-sources), and a
+    # bridge-only change still has to pass these.
+    if: ${{ needs.changes.outputs.bridge == 'true' }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -141,7 +145,7 @@ jobs:
       group: ${{ github.workflow }}-${{ github.ref }}-interop
       cancel-in-progress: true
     needs: [changes]
-    if: ${{ needs.changes.outputs.relay == 'true' }}
+    if: ${{ needs.changes.outputs.bridge == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -163,8 +167,9 @@ jobs:
       group: ${{ github.workflow }}-${{ github.ref }}-web-e2e
       cancel-in-progress: true
     needs: [changes]
-    # Exercises the whole stack, so it runs for either tier (and for its own
-    # harness) — but not for a docs- or workflow-only push, which ships nothing.
+    # Exercises the whole stack, so it runs for the app, the relay or any
+    # bridge change (and for its own harness) — but not for a docs- or
+    # workflow-only push, which ships nothing.
     if: ${{ needs.changes.outputs.e2e == 'true' }}
     runs-on: ubuntu-latest
     steps:

@@ -4456,7 +4456,9 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     await saveSurfaces("ag-1", shellsRunning("cargo test"));
     answerNothing();
     await mount();
-    expect(railHost().querySelector("#rail-surfaces-viewer").textContent).toContain("cargo test");
+    // The remembered kind, the snapshot and the viewer's fold are three cache
+    // reads: wait for the rows they paint, not a count of turns.
+    await vi.waitFor(() => expect(railHost().querySelector("#rail-surfaces-viewer").textContent).toContain("cargo test"));
   });
 
   it("repaints an open surface when its local cache record changes externally", async () => {

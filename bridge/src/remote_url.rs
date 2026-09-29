@@ -37,6 +37,9 @@ pub fn usable_remote_url(remote: &str) -> Result<String, String> {
             "Build does not use Git transport helpers (name::address) as remotes.".to_string(),
         );
     }
+    if names_a_host_git_would_read_as_an_option(remote) {
+        return Err("A Git remote's user, host or port cannot start with a dash.".to_string());
+    }
     if names_a_location(remote) {
         Ok(remote.to_string())
     } else {
@@ -55,6 +58,30 @@ fn names_a_transport_helper(remote: &str) -> bool {
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
     })
+}
+
+/// Git hands an ssh remote's user, host and port to `ssh` as arguments, so
+/// one that starts with a dash (`ssh://-oProxyCommand=sh/x`,
+/// `git@-oProxyCommand=sh:x`) would be read as an ssh option. Git refuses
+/// these itself these days; Build does not lean on that.
+fn names_a_host_git_would_read_as_an_option(remote: &str) -> bool {
+    let authority = match remote.split_once("://") {
+        Some((_, rest)) => rest.split('/').next().unwrap_or_default(),
+        None if remote.starts_with('/') => return false,
+        None => remote.split(':').next().unwrap_or_default(),
+    };
+    let (user, host_port) = authority
+        .rsplit_once('@')
+        .map_or(("", authority), |(user, host)| (user, host));
+    let (host, port) = match host_port.strip_prefix('[') {
+        Some(bracketed) => bracketed
+            .split_once(']')
+            .map_or((bracketed, ""), |(host, rest)| {
+                (host, rest.strip_prefix(':').unwrap_or(rest))
+            }),
+        None => host_port.split_once(':').unwrap_or((host_port, "")),
+    };
+    [user, host, port].iter().any(|part| part.starts_with('-'))
 }
 
 fn names_a_location(remote: &str) -> bool {
@@ -90,6 +117,7 @@ mod tests {
             "git://example.com/repo.git",
             "file:///srv/git/repo.git",
             "/home/zech/repos/tokens.git",
+            "/srv/git/a@-b:c.git",
             "HTTPS://example.com/repo",
         ] {
             assert_eq!(
@@ -106,6 +134,23 @@ mod tests {
             "--upload-pack=sh",
             "-oProxyCommand=sh",
             "--mirror=fetch",
+        ] {
+            assert!(usable_remote_url(remote).is_err(), "{remote}");
+        }
+    }
+
+    #[test]
+    fn an_ssh_host_user_or_port_git_would_read_as_an_option_is_refused() {
+        for remote in [
+            "ssh://-oProxyCommand=sh/x",
+            "ssh://git@-oProxyCommand=sh/x",
+            "ssh://-oProxyCommand=sh@example.com/x",
+            "ssh://git@example.com:-oProxyCommand=sh/x",
+            "git+ssh://-oProxyCommand=sh/x",
+            "ssh://[-oProxyCommand=sh]/x",
+            "git@-oProxyCommand=sh:x",
+            "git@-host:x",
+            "a@b@-oProxyCommand=sh:x",
         ] {
             assert!(usable_remote_url(remote).is_err(), "{remote}");
         }

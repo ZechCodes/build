@@ -36,7 +36,7 @@ const preferDeviceId = process.env.PREFER_DEVICE_ID || null;
 const bridgeExec = (process.env.BRIDGE_EXEC ||
   "docker compose -f ../deploy/compose.real.yml exec -T bridge").split(/\s+/);
 const bridgeFile = process.env.BRIDGE_FILE || "/repo/README.md";
-const API_RANGE = ">=1.0.0 <2.0.0";
+const API_RANGE = ">=2.0.0 <4.0.0";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const show = (value) => JSON.stringify(value);

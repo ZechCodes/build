@@ -466,7 +466,7 @@ async function main() {
   for (const one of [session, term, reader, prober].filter(Boolean)) await one.call("ping"); // each rides its channel before the socket goes
   await rendezvous.close();
   log(`device ${device.name} (${device.deviceId}); rendezvous closed; pair ${pairNow(link.peer).text}`);
-  await session.call("session.hello", { client: { name: "liveness-soak", version: "0", api_range: ">=1.0.0 <2.0.0" }, changes: "subscriptions" });
+  await session.call("session.hello", { client: { name: "liveness-soak", version: "0", api_range: ">=2.0.0 <4.0.0" }, changes: "subscriptions" });
 
   const [project] = (await session.call("project.list")).projects || [];
   if (HAMMER) await seedTasks(reader, project.project_id);

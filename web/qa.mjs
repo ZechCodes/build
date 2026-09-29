@@ -55,7 +55,7 @@ async function relayRefusesAppRpc({ mintGatewayToken, device }) {
   const rendezvous = await openRendezvous({ relayUrl, mintGatewayToken });
   try {
     const signaling = await openRelaySignalingSession({ rendezvous, transport, device });
-    await signaling.call("session.hello", { client: { name: "qa", version: "0", api_range: ">=1.0.0 <2.0.0" } });
+    await signaling.call("session.hello", { client: { name: "qa", version: "0", api_range: ">=2.0.0 <4.0.0" } });
     return null;
   } catch (error) {
     return error;

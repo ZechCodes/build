@@ -107,15 +107,17 @@ find "$payload" -type l -exec sh -c '
 ' sh "$payload" {} + || fail 'archive contains an escaping symlink'
 case "$platform" in
     macos-*)
-        [ -d "$work/payload/Build.app/Contents" ] && [ ! -L "$work/payload/Build.app" ] \
-            || fail 'archive does not contain Build.app'
+        if ! { [ -d "$work/payload/Build.app/Contents" ] && [ ! -L "$work/payload/Build.app" ]; }; then
+            fail 'archive does not contain Build.app'
+        fi
         [ "$(find "$work/payload" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" = 1 ] \
             || fail 'unexpected files outside Build.app'
         source="$work/payload/Build.app"
         ;;
     linux-*)
-        [ -f "$work/payload/build-desktop" ] && [ ! -L "$work/payload/build-desktop" ] \
-            || fail 'archive does not contain build-desktop'
+        if ! { [ -f "$work/payload/build-desktop" ] && [ ! -L "$work/payload/build-desktop" ]; }; then
+            fail 'archive does not contain build-desktop'
+        fi
         chmod 0755 "$work/payload/build-desktop"
         source="$work/payload"
         ;;

@@ -1,9 +1,20 @@
-// Minimal, safe markdown → HTML for plans and notification messages.
+// Minimal, safe markdown → HTML: the ONE way the SPA renders markdown (#229).
 // Everything is HTML-escaped; only the small vocabulary below is rendered.
+//
+// Every surface that shows something an agent or a person wrote — a chat
+// message, a task body, a comment, a plan doc, a file preview, a one-line
+// preview — calls `markdownHtml`, and nothing else in this file is exported.
+// So the escaping, the vocabulary and the references (core/markdownRefs.js)
+// are the same everywhere, and a reference resolves against the one index
+// every surface shares (core/referenceIndex.js). A surface's own shape — a
+// line, a block, a preview — is a `mode`, not a renderer of its own.
+// spa/test/markdownEntry.test.js fails a module that reaches around it.
 
 import { esc } from "./text.js";
 import { slugifyHeading } from "./anchors.js";
-import { expandReferences } from "./markdownLinks.js";
+import { expandReferences, plainReferences } from "./markdownLinks.js";
+import { plainPreview } from "./previewText.js";
+import { referenceResolver } from "./referenceIndex.js";
 
 /** One row's cells. The outer pipes are optional (GFM), and `\|` is a literal
  *  pipe inside a cell rather than a boundary — a regex column in a table would
@@ -66,7 +77,7 @@ function delimiterAlignments(line) {
  * So the renderer marks its own output (#50). Wherever it is rendered, the
  * block scrolls; nothing else does.
  */
-export const CODE_BLOCK_CLASS = "md-code";
+const CODE_BLOCK_CLASS = "md-code";
 
 /** The paragraph being read. Consecutive text lines are one paragraph joined by
  *  a space (a soft break), the way CommonMark reads prose wrapped at a line
@@ -91,29 +102,32 @@ function paragraphReader(inline) {
   };
 }
 
+/** One line's inline vocabulary — code spans, strong, and the references
+ *  (core/markdownLinks.js) — over escaped text. References expand AFTER the
+ *  code spans and never inside one: a message explaining this syntax is mostly
+ *  examples, and they have to stay literal. */
+const inlineHtml = (text, links) =>
+  expandReferences(
+    esc(text)
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>"),
+    links,
+  );
+
 /**
- * Markdown, and the references an agent can write in it (#56).
+ * Markdown as blocks, and the references an agent can write in it (#56).
  *
- * `links` is optional and resolves a reference to where it lives
- * (core/markdownLinks.js). Without one — which is every caller today — a
- * reference renders as the words that were typed, so adding this took no
- * caller with it and a reference to something missing is never a broken link.
+ * `links` resolves a reference to where it lives (core/markdownLinks.js); a
+ * reference it cannot place renders as the words that were typed, so a
+ * reference to something missing is never a broken link.
  */
-// eslint-disable-next-line complexity -- ratchet: renderMarkdown is at 18, cap 10 — reduce it, then drop this line
-export function renderMarkdown(markdown, { links = null } = {}) {
+// eslint-disable-next-line complexity -- ratchet: blocksHtml (was renderMarkdown) is at 18, cap 10 — reduce it, then drop this line
+function blocksHtml(markdown, links) {
   const lines = (markdown || "").split("\n");
   let html = "";
   let inCode = false;
   let inList = false;
-  // References expand AFTER the code spans and never inside one: a message
-  // explaining this syntax is mostly examples, and they have to stay literal.
-  const inline = (s) =>
-    expandReferences(
-      esc(s)
-        .replace(/`([^`]+)`/g, "<code>$1</code>")
-        .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>"),
-      links,
-    );
+  const inline = (text) => inlineHtml(text, links);
   // Every block closes the paragraph before it, so each goes out through here.
   const paragraph = paragraphReader(inline);
   const emit = (block) => {
@@ -206,4 +220,32 @@ export function renderMarkdown(markdown, { links = null } = {}) {
   if (inList) html += "</ul>";
   if (inCode) html += "</code></pre>";
   return html;
+}
+
+/** The shapes a surface can ask for. `block` is a document: paragraphs,
+ *  headings, lists, tables, fences. `inline` is one line of the inline
+ *  vocabulary with its lines joined, for a row or a card that holds no blocks.
+ *  `plain` is text, not HTML: one line with the marks taken off and each
+ *  reference read as its words (core/previewText.js), cut at `limit`. */
+const MODES = {
+  block: (text, links) => blocksHtml(text, links),
+  inline: (text, links) => inlineHtml(text.trim().replace(/\s*\n\s*/g, " "), links),
+  plain: (text, links, limit) => plainPreview(plainReferences(text, links), limit),
+};
+
+/**
+ * Markdown for a surface to show — the one entry point (#229).
+ *
+ * `place` is where the reader stands (`{ deviceId, projectId }`): the project a
+ * bare `#42` is read in, and the one a name is looked for first. Without one,
+ * references that name something account-wide — a workspace, an agent, a
+ * project — still resolve. `identities` is what the surface knows about agents
+ * beyond the feed (a task carries every actor on it). `mode` is one of
+ * `MODES`; `limit` caps a plain preview.
+ *
+ * Answers HTML for `block` and `inline`, and plain text for `plain`.
+ */
+export function markdownHtml(text, { place = null, identities = null, mode = "block", limit = undefined } = {}) {
+  const links = referenceResolver({ place, identities: identities || {} });
+  return (MODES[mode] || MODES.block)(String(text || ""), links, limit);
 }

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { plainPreview } from "../src/core/previewText.js";
+import { markdownHtml } from "../src/core/markdown.js";
+
+/** The one renderer's plain mode (#229), which is what #186's preview became. */
+const plainPreview = (text, limit) => markdownHtml(text, { mode: "plain", ...(limit === undefined ? null : { limit }) });
 import { modelWord, overviewHtml, overviewRows, overviewState } from "../src/core/agentOverview.js";
 
 describe("plainPreview (#186)", () => {

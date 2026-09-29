@@ -7,7 +7,7 @@
 // Watching is a mark on the agent, not a section of its own.
 import { readCachedMany, subscribeCache } from "./localCache.js";
 import { threadCacheAddress } from "./conversationCache.js";
-import { AGENT_STARTING, isFailedReason, providerLabel, railEntity } from "./agentRailModel.js";
+import { AGENT_STARTING, agentIsRunning, isFailedReason, providerLabel, railEntity } from "./agentRailModel.js";
 import { agentDisplayName } from "./agentName.js";
 import { firstLine } from "./activityDigest.js";
 import { EVENT_META } from "./threadEvents.js";
@@ -36,9 +36,14 @@ function workingSnippet(thread, items) {
   return digest ? plainPreview(firstLine(digest.last_tool_call.summary)) : "Working";
 }
 
+/** What an agent whose own loop waits is running through (#216): the agents
+ *  in its activity panel. */
+const agentsRunningText = (agent) => `${agent.agents_running} agent${agent.agents_running === 1 ? "" : "s"} running`;
+
 export function overviewSnippet(agent, thread) {
   const items = thread?.items || [];
   if (agent.working) return workingSnippet(thread, items);
+  if (agentIsRunning(agent)) return agentsRunningText(agent);
   const unread = agent.unread_count && newest(items, (item) => isMessage(item) && item.data.role === "agent"
     && sequence(item) > (Number(agent.read_through_sequence) || 0));
   const latest = unread || newest(items, isMessage);
@@ -71,8 +76,8 @@ const failedRun = (agent) => (agent.unread_count && isFailedReason(agent.unread_
 const waitingOnReader = (agent) => (agent.unread_count
   ? { state: OVERVIEW_STATES.waiting, word: WAITING_WORD[agent.unread_reason] || "Unread",
     detail: unreadReasonText(agent.unread_reason, "agent") || `${agent.unread_count} unread` } : null);
-const workingNow = (agent) => (agent.working
-  ? { state: OVERVIEW_STATES.working, word: "Working", detail: "Working now" } : null);
+const workingNow = (agent) => (agentIsRunning(agent)
+  ? { state: OVERVIEW_STATES.working, word: "Working", detail: agent.working ? "Working now" : agentsRunningText(agent) } : null);
 const startingUp = (agent) => (agent.state === AGENT_STARTING
   ? { state: OVERVIEW_STATES.starting, word: "Starting", detail: "Starting a session" } : null);
 const IDLE = Object.freeze({ state: OVERVIEW_STATES.idle, word: "Idle", detail: "" });
@@ -136,7 +141,7 @@ export function overviewRows(entries, threads) {
       effort: String(state.effort || ""),
       snippet: overviewSnippet(state, threads[index]),
       lastAgentMessageAt: agentMessageTime(threads[index]),
-      working: !!state.working,
+      working: agentIsRunning(state),
       unread: !!state.unread_count,
       unreadCount: Number(state.unread_count) || 0,
       state: standing.state,
@@ -323,10 +328,10 @@ const cachedConversationId = (agent, execution) => execution
   ? execution.conversation_id || execution.agent_id || agent.id
   : agent.conversation_id || agent.id;
 
-function rosterEntry(agent, execution, source) {
+function rosterEntry(agent, execution, source, decorate) {
   return {
     agent,
-    state: execution?.agent ? { ...agent, ...execution.agent } : agent,
+    state: decorate(execution?.agent ? { ...agent, ...execution.agent } : agent),
     source: source.slot,
     workspaceId: source.workspaceId,
     section: source.section,
@@ -364,11 +369,13 @@ function workspaceSections(rosterSources, workspaces, projectId) {
   return named;
 }
 
-function rosterEntries(sources, records, feed) {
+const asRead = (agent) => agent;
+
+function rosterEntries(sources, records, feed, decorate = asRead) {
   return sources.flatMap((source, index) => {
     const fallback = (feed?.runs || []).find((run) => (run.entity_id || run.run_id) === source.entityId);
     const owner = railEntity(records[index]?.value || fallback || {}, source.kind);
-    return owner.agents.map((agent) => rosterEntry(agent, owner.executionContext, source));
+    return owner.agents.map((agent) => rosterEntry(agent, owner.executionContext, source, decorate));
   });
 }
 
@@ -393,7 +400,9 @@ async function readListed(addresses) {
 /** Sources are cache row addresses for this work item and, where present, its
  * project agent. A subscription is installed before each read so a write
  * racing the read gets another pass. Generations discard stale passes. */
-export function createAgentOverview({ sources, scope, onRows, projectId = null, includeProjectWorkspaces = false }) {
+/** `decorate` lays what the rail knows beyond one row onto each agent it
+ *  reads — the running rollup (#216, core/agentLineage.js). */
+export function createAgentOverview({ sources, scope, onRows, projectId = null, includeProjectWorkspaces = false, decorate = asRead }) {
   let active = false;
   let generation = 0;
   const watches = new Map();
@@ -437,7 +446,7 @@ export function createAgentOverview({ sources, scope, onRows, projectId = null, 
     watch([...rosterSources.map((source) => source.address), ...listAddresses]);
     const rosterRecords = await readCachedMany(rosterSources.map((source) => source.address));
     if (stale()) return;
-    const addressed = threadEntries(rosterEntries(rosterSources, rosterRecords, feedRecord?.value), scope);
+    const addressed = threadEntries(rosterEntries(rosterSources, rosterRecords, feedRecord?.value, decorate), scope);
     watch([...rosterSources.map((source) => source.address), ...addressed.map((entry) => entry.address), ...listAddresses]);
     const threadRecords = await readCachedMany(addressed.map((entry) => entry.address));
     if (stale()) return;

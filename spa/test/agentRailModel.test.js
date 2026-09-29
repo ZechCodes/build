@@ -5,6 +5,7 @@ import {
   AGENT_PATTERN_COUNT,
   AGENT_STARTING,
   agentCanInterrupt,
+  agentIsRunning,
   agentIsUp,
   agentSessionAnswered,
   agentSessionIsLive,
@@ -735,5 +736,33 @@ describe("what the rail's model is allowed to reach for", () => {
     expect(source).not.toContain("App.call");
     expect(source).not.toContain("fetch(");
     expect(source).not.toContain('from "./thread.js"');
+  });
+});
+
+// #216: an agent with a running agent in its panel counts as running, even
+// with its own loop waiting — on its dot, its tip and its clock. The composer's
+// interrupt still asks about the agent's own loop alone.
+describe("an agent running through the agents in its panel", () => {
+  const waiting = agent({ id: "boss", working: false, agents_running: 2, agents_since: ago(90) });
+
+  it("counts as running", () => {
+    expect(agentIsRunning(waiting)).toBe(true);
+    expect(agentIsRunning(agent({ working: true }))).toBe(true);
+    expect(agentIsRunning(agent({ working: false }))).toBe(false);
+    expect(agentIsRunning(null)).toBe(false);
+  });
+
+  it("wears the working dot on the strip and says so on its tip", () => {
+    const [bubble] = railBubbles({ agents: [waiting], selectedId: "boss", kind: "workspace" });
+    expect(bubble.working).toBe(true);
+    expect(bubbleTip(waiting)).toContain("working");
+  });
+
+  it("clocks from the earliest running agent in its panel", () => {
+    expect(railWorkStatus({}, NOW, [], "Agent", waiting).working).toBe("1:30");
+  });
+
+  it("offers no interrupt: its own loop has no turn to stop", () => {
+    expect(agentCanInterrupt({ ...waiting, can_interrupt: true })).toBe(false);
   });
 });

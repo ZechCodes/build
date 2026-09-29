@@ -140,8 +140,9 @@ import { digestCovering, runDigestToFetch } from "./activityDigest.js";
 import { timedPaint } from "./paintTiming.js";
 import { mountAgentSurfaces, openSurfaceOverlay } from "./agentSurfaces.js";
 import { mountAgentTasks } from "./trackerAgentTasksEntry.js";
+import { mountAgentLineage } from "./agentLineage.js";
 import { referenceLinks } from "./referenceTargets.js";
-import { TASKS_ENTRY_KIND } from "./agentSurfacesModel.js";
+import { BUILD_AGENTS_KEY, TASKS_ENTRY_KIND } from "./agentSurfacesModel.js";
 import { mountAgentObservation } from "./agentObservation.js";
 import { createTaskCompletionTracker } from "./taskCompletionModel.js";
 import { mountTaskCompletionToast } from "./taskCompletionToast.js";
@@ -832,6 +833,9 @@ export function mountAgentRail(host, context) {
 const pageWorkspaceId = (context, alongside) =>
   [context, alongside].find((side) => side?.kind === "workspace")?.workspaceId || null;
 
+/** The project a rail's agents belong to: the project agent's, else the page's. */
+const projectOfRail = (context, projectId) => projectId || context.projectId || null;
+
 function overviewPageOf(context, alongside, projectId) {
   const kind = context.overviewPageKind || context.kind;
   const workspaceId = pageWorkspaceId(context, alongside);
@@ -1220,6 +1224,17 @@ function mountRailOnContext(host, context, swap) {
   let surfacesBlock = null;
   let observationBlock = null;
   let tasksBlock = null;
+  // Who made whom among the project's agents (#216), off the cached rows: the
+  // Build agents in an agent's Agents panel, and the rollup that counts an
+  // agent running while one of them runs. Read for the rail's whole life,
+  // because the strip's dots wear the rollup whether the panel is out or not.
+  const lineageProjectId = projectOfRail(context, projectId);
+  const lineage = mountAgentLineage({
+    deviceId: context.deviceId,
+    projectId: lineageProjectId,
+    onChanged: () => lineageMoved(),
+  });
+  const withRollups = (agents) => agents.map(lineage.decorate);
   let surfaceOverlay = null; // the surface a menu option opened, over the panel
   let closeSurfaceMenu = null; // shuts the head's ⋯, and with it its outside-press watch
   let panelMotion = null;
@@ -1480,7 +1495,7 @@ function mountRailOnContext(host, context, swap) {
     const row = statusRow();
     if (!row) return;
     const openAgentLabel = providerLabel((agentOf(selectedId) || {}).provider);
-    const status = railWorkStatus(feedRow, Date.now(), loadedConversationItems(), openAgentLabel, agentInFocus());
+    const status = railWorkStatus(feedRow, Date.now(), loadedConversationItems(), openAgentLabel, lineage.decorate(agentInFocus()));
     paintStatusLead(row.querySelector(`#${RAIL_STATUS_LEAD_ID}`), status);
     paintStatusGit(row.querySelector(`#${RAIL_STATUS_GIT_ID}`), status).then(syncRailStatusRow);
     syncRailStatusRow();
@@ -1538,6 +1553,7 @@ function mountRailOnContext(host, context, swap) {
     scope: cacheScope,
     projectId,
     includeProjectWorkspaces: overviewReadsWorkspaces,
+    decorate: (agent) => lineage.decorate(agent),
     sources: () => [overviewSource("current", context, records.entityId() || entity.entityId),
       ...(alongside ? [overviewSource("alongside", alongside, watchedAlongsideId)] : [])],
     onRows: (rows, { workspaces, tasks }) => paintOverviewRows({ rows, workspaces, tasks }),
@@ -1766,7 +1782,7 @@ function mountRailOnContext(host, context, swap) {
     projectAgent && {
       name: projectName || projectAgent.projectId,
       entityId: projectOwner,
-      agents: onProjectAgentRail ? stripAgents() : alongsideEntity.agents,
+      agents: withRollups(onProjectAgentRail ? stripAgents() : alongsideEntity.agents),
       active: onProjectAgentRail && selectedKind === "agent",
       openAgentId: onProjectAgentRail ? selectedId : null,
     };
@@ -1973,7 +1989,7 @@ function mountRailOnContext(host, context, swap) {
     const bubbles = railBubbles({
       // Below the line are the work item's agents, whichever side of the swap
       // this rail is standing on.
-      agents: onProjectAgentRail ? alongsideEntity.agents : stripAgents(),
+      agents: withRollups(onProjectAgentRail ? alongsideEntity.agents : stripAgents()),
       selectedId, selectedKind, kind: below.kind, chatCapable: below.chatCapable !== false,
       canAdd: onProjectAgentRail ? below.canAdd : null,
       projectAgent: projectAgentEntry(),
@@ -3111,6 +3127,7 @@ function mountRailOnContext(host, context, swap) {
 
   const surfaceViewerCallbacks = () => ({
     modelLabel: surfaceModelLabel,
+    onOpenBuildAgent: (where) => openBuildAgent(where),
     onOpenThreadItem: async (sequence) => {
       const body = host.querySelector("#rail-body");
       drawDownTo(sequence);
@@ -3199,9 +3216,37 @@ function mountRailOnContext(host, context, swap) {
    *  and a different push: the project's cached task list. An agent holding
    *  and tracking nothing adds nothing, so no pill appears. */
   const surfacesWithTasks = (surfaces) => {
-    const entries = tasksBlock?.entriesFor(agentInFocus()?.id || null);
-    if (!entries) return surfaces;
-    return { ...(surfaces || {}), [TASKS_ENTRY_KIND]: entries };
+    const focusId = agentInFocus()?.id || null;
+    const merged = { ...(surfaces || {}) };
+    const tasks = tasksBlock?.entriesFor(focusId);
+    if (tasks) merged[TASKS_ENTRY_KIND] = tasks;
+    // The Build agents this agent made (#216): another source again, the
+    // project's cached rows, drawn in the Agents panel beside the sub-agents.
+    const made = lineage.buildAgentsFor(focusId);
+    if (made) merged[BUILD_AGENTS_KEY] = made;
+    return tasks || made ? merged : surfaces;
+  };
+
+  /** A read of who made whom landed: every place the rollup or the Build
+   *  agents are drawn. */
+  const lineageMoved = () => {
+    if (!standing()) return;
+    syncSurfaces();
+    paintSurfaceMenu();
+    paint();
+    overview.refresh();
+  };
+
+  /** A press on a Build agent in the Agents panel opens its chat: here, when
+   *  it is on this rail's own work item, else on its workspace's page. */
+  const openBuildAgent = ({ agentId, entityId, workspaceId }) => {
+    if (entityId && entityId === entity.entityId) {
+      openAgent(agentId);
+      paint();
+      return;
+    }
+    if (!workspaceId) return;
+    go({ name: "workspace", deviceId: context.deviceId, projectId: lineageProjectId, workspaceId, tab: "changes", agent: agentId });
   };
 
   const syncSurfaces = () => {
@@ -3980,6 +4025,7 @@ function mountRailOnContext(host, context, swap) {
       disposeTitleMotion();
       disposeTui();
       disposeSurfaces();
+      lineage.dispose();
       completionToast.dispose();
       completionTracker.reset();
       disposeComposerClearance?.();

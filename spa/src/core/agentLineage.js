@@ -12,7 +12,12 @@
 
 import { subscribeCache } from "./localCache.js";
 import { ROW_RECORD_KIND, cachedFeedView } from "./cachedRows.js";
+import { AGENT_LINEAGE_SUPPORT_KIND, readAgentLineageSupport } from "./agentLineageSupport.js";
 import { agentLineage, buildAgentEntries, lineageMembers, lineagePrint, withRollup } from "./agentLineageModel.js";
+
+/** The cache writes a read answers to: a row, or what a greeting said about
+ *  whether the bridge names makers. */
+const REREAD_KINDS = new Set([ROW_RECORD_KIND, AGENT_LINEAGE_SUPPORT_KIND]);
 
 /**
  * Mount the reader. `onChanged` is called when a read lands whose answers
@@ -40,14 +45,16 @@ export function mountAgentLineage({ deviceId, projectId, onChanged } = {}) {
     }
   }
 
+  /** The rows, and whether the bridge that wrote them names makers
+   *  (`agents.createdBy`, #221): both off the cache. */
   async function readOnce() {
-    const { items } = await cachedFeedView(deviceId);
+    const [{ items }, namesMakers] = await Promise.all([cachedFeedView(deviceId), readAgentLineageSupport(deviceId)]);
     if (state.disposed) return;
     const members = lineageMembers(items, { projectId });
-    const print = lineagePrint(members);
+    const print = `${namesMakers}${lineagePrint(members)}`;
     if (print === state.print) return;
     state.print = print;
-    state.lineage = agentLineage(members);
+    state.lineage = agentLineage(members, { namesMakers });
     onChanged?.();
   }
 
@@ -60,7 +67,7 @@ export function mountAgentLineage({ deviceId, projectId, onChanged } = {}) {
     start() {
       if (!named || unsubscribe || state.disposed) return;
       unsubscribe = subscribeCache({ deviceId }, (address) => {
-        if (address?.kind === ROW_RECORD_KIND) void reread();
+        if (REREAD_KINDS.has(address?.kind)) void reread();
       });
       void reread();
     },

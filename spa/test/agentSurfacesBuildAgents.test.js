@@ -12,7 +12,7 @@ globalThis.IDBKeyRange = IDBKeyRange;
 
 const subagent = (id, state) => ({ id, label: `Sub ${id}`, state });
 const buildAgent = (id, state, over = {}) => ({
-  id, name: `Worker ${id}`, state, entity_id: `run-${id}`, workspace_id: `ws-${id}`, workspace_name: `Space ${id}`, ...over,
+  id, name: `Worker ${id}`, state, kind: "workspace", entity_id: `run-${id}`, workspace_id: `ws-${id}`, workspace_name: `Space ${id}`, ...over,
 });
 
 let viewer = null;
@@ -83,7 +83,7 @@ describe("a press on a Build agent", () => {
     const onOpenBuildAgent = vi.fn();
     mount({ onOpenBuildAgent }).set({ [BUILD_AGENTS_KEY]: [buildAgent("b1", "idle")] });
     buildRows()[0].querySelector(".surface-row-label").click();
-    expect(onOpenBuildAgent).toHaveBeenCalledWith({ agentId: "b1", entityId: "run-b1", workspaceId: "ws-b1" });
+    expect(onOpenBuildAgent).toHaveBeenCalledWith({ agentId: "b1", entityId: "run-b1", workspaceId: "ws-b1", kind: "workspace" });
   });
 
   it("is a button, reachable from the keyboard and titled with where it goes", () => {
@@ -91,5 +91,28 @@ describe("a press on a Build agent", () => {
     const [row] = buildRows();
     expect(row.tagName).toBe("BUTTON");
     expect(row.getAttribute("title")).toBe("Open Worker b1's chat");
+  });
+
+  it("opens a project-level agent's chat on the project, having no workspace", () => {
+    const onOpenBuildAgent = vi.fn();
+    mount({ onOpenBuildAgent }).set({ [BUILD_AGENTS_KEY]: [buildAgent("p1", "idle", { kind: "project", workspace_id: null, workspace_name: "" })] });
+    buildRows()[0].click();
+    expect(onOpenBuildAgent).toHaveBeenCalledWith({ agentId: "p1", entityId: "run-p1", workspaceId: null, kind: "project" });
+  });
+
+  // #221: a Build agent with no page to open its chat on is drawn as what it
+  // is — not a button, no pointer, and a title that says why.
+  it("is not pressable when its chat has no page to open on, and says why", () => {
+    const onOpenBuildAgent = vi.fn();
+    mount({ onOpenBuildAgent }).set({ [BUILD_AGENTS_KEY]: [buildAgent("b1", "idle", { kind: "branch", workspace_id: null })] });
+    const [row] = buildRows();
+    expect(row.tagName).not.toBe("BUTTON");
+    expect(row.hasAttribute("role")).toBe(false);
+    expect(row.hasAttribute("tabindex")).toBe(false);
+    expect(row.hasAttribute("data-build-agent")).toBe(false);
+    expect(row.classList.contains("surface-build-agent-unreachable")).toBe(true);
+    expect(row.getAttribute("title")).toBe("Build cannot open Worker b1's chat from here: it is on neither a workspace nor the project.");
+    row.querySelector(".surface-row-label").click();
+    expect(onOpenBuildAgent).not.toHaveBeenCalled();
   });
 });

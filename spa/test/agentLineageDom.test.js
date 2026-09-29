@@ -6,7 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
-let localCache, mountAgentLineage, reader, changes;
+let localCache, mountAgentLineage, rememberAgentLineageSupport, reader, changes;
 
 const putRow = (entityId, row) =>
   localCache.writeCached({ deviceId: "dev-1", entityId, kind: "row" }, { run_id: entityId, project_id: "proj-1", ...row });
@@ -25,6 +25,9 @@ beforeEach(async () => {
   changes = 0;
   localCache = await import("../src/core/localCache.js");
   ({ mountAgentLineage } = await import("../src/core/agentLineage.js"));
+  ({ rememberAgentLineageSupport } = await import("../src/core/agentLineageSupport.js"));
+  // A bridge that announces `agents.createdBy` greeted this device once.
+  await rememberAgentLineageSupport("dev-1", { agents: { createdBy: true } });
 });
 
 afterEach(() => {
@@ -112,5 +115,32 @@ describe("the Build agents it supplies", () => {
     const agent = { id: "boss" };
     expect(unnamed.decorate(agent)).toBe(agent);
     unnamed.dispose();
+  });
+});
+
+// #221: whether a machine's agents name their makers is the bridge's
+// `agents.createdBy` capability, read from the cache the greeting wrote —
+// not guessed from whether some row happens to carry `created_by`.
+describe("gated on agents.createdBy", () => {
+  it("lists no Build agents for a machine whose bridge never announced it", async () => {
+    await rememberAgentLineageSupport("dev-1", { agents: { createdBy: false } });
+    await putRow("run-a", { kind: "workspace", workspace_id: "ws-a", agents: [
+      { id: "worker", created_by: "boss", working: true },
+      { id: "solo", surfaces: { subagents: [{ id: "s1", state: "running", started_at: 1000 }] } },
+    ] });
+    await mount();
+    expect(reader.buildAgentsFor("boss")).toBeNull();
+    expect(reader.decorate({ id: "boss" }).agents_running).toBeUndefined();
+    // The harness's own sub-agents are no Build agents: they still roll up.
+    expect(reader.decorate({ id: "solo" }).agents_running).toBe(1);
+  });
+
+  it("lists them once a greeting says the bridge names makers", async () => {
+    await rememberAgentLineageSupport("dev-1", { agents: { createdBy: false } });
+    await putRow("run-a", { kind: "workspace", workspace_id: "ws-a", agents: [{ id: "worker", created_by: "boss" }] });
+    await mount();
+    expect(reader.buildAgentsFor("boss")).toBeNull();
+    await rememberAgentLineageSupport("dev-1", { agents: { createdBy: true } });
+    await vi.waitFor(() => expect(reader.buildAgentsFor("boss")).toHaveLength(1));
   });
 });

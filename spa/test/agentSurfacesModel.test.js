@@ -805,7 +805,7 @@ describe("the model is pure", () => {
 // harness sub-agents. They ride the snapshot under their own key — not a kind
 // of their own, since they share the Agents pill and viewer.
 describe("the Build agents beside the sub-agents", () => {
-  const worker = (id, state, over = {}) => ({ id, name: id, state, entity_id: `run-${id}`, workspace_id: `ws-${id}`, ...over });
+  const worker = (id, state, over = {}) => ({ id, name: id, state, kind: "workspace", entity_id: `run-${id}`, workspace_id: `ws-${id}`, ...over });
 
   it("puts up the Agents pill for Build agents alone, counting the ones running", () => {
     const surfaces = { [BUILD_AGENTS_KEY]: [worker("a", "running"), worker("b", "idle")] };
@@ -851,6 +851,20 @@ describe("the Build agents beside the sub-agents", () => {
   it("marks a Build agent that never started as failed", () => {
     const [row] = buildAgentRows({ [BUILD_AGENTS_KEY]: [worker("broken", "failed")] });
     expect(row.stateMark).toEqual({ mark: "error", label: "Failed to start" });
+  });
+
+  // #221: a row says which page its chat opens on, or that none does, so a
+  // press is never a silent no-op.
+  it("names the page each Build agent's chat opens on", () => {
+    const rows = buildAgentRows({ [BUILD_AGENTS_KEY]: [
+      worker("in-space", "idle"),
+      worker("project-level", "idle", { kind: "project", workspace_id: null }),
+      worker("on-branch", "idle", { kind: "branch", workspace_id: null }),
+      worker("lost", "idle", { workspace_id: null }),
+    ] });
+    expect(rows.map((row) => [row.id, row.chatKind])).toEqual([
+      ["in-space", "workspace"], ["project-level", "project"], ["on-branch", null], ["lost", null],
+    ]);
   });
 
   it("gives no rows for a snapshot with no Build agents", () => {

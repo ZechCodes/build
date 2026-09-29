@@ -280,21 +280,31 @@ export function agentsViewerHtml() {
 }
 
 /** One Build agent this agent made: a press opens its chat. The whole row is
- *  the button, so nothing inside it is pressable on its own. */
+ *  the button, so nothing inside it is pressable on its own. A Build agent
+ *  whose chat has no page to open on (#221) is drawn as a plain row that says
+ *  why, never as a button that does nothing. */
 export function buildAgentRowHtml(row) {
-  const title = `Open ${row.subject}'s chat`;
   const where = row.workspaceName
     ? `<span class="surface-row-stat surface-build-agent-where">${esc(row.workspaceName)}</span>`
     : "";
-  return `<button type="button" class="surface-row surface-build-agent" data-key="${esc(row.key)}"
-    data-build-agent="${esc(row.id)}" data-entity-id="${esc(row.entityId || "")}"
-    data-workspace-id="${esc(row.workspaceId || "")}" title="${esc(title)}">
-    <span class="${ROW_HEAD_CLASS}">
+  const head = `<span class="${ROW_HEAD_CLASS}">
       ${stateMarkHtml(row.stateMark)}
       ${clippedTextHtml(row.subject, { className: ROW_LABEL_CLASS, pressable: false })}
       ${where}
       ${clockHtml(row.clock, row.runningSince)}
-    </span>
+    </span>`;
+  if (!row.chatKind) {
+    const why = `Build cannot open ${row.subject}'s chat from here: it is on neither a workspace nor the project.`;
+    return `<div class="surface-row surface-build-agent surface-build-agent-unreachable" data-key="${esc(row.key)}"
+    title="${esc(why)}">
+    ${head}
+  </div>`;
+  }
+  return `<button type="button" class="surface-row surface-build-agent" data-key="${esc(row.key)}"
+    data-build-agent="${esc(row.id)}" data-entity-id="${esc(row.entityId || "")}"
+    data-workspace-id="${esc(row.workspaceId || "")}" data-kind="${esc(row.chatKind)}"
+    title="${esc(`Open ${row.subject}'s chat`)}">
+    ${head}
   </button>`;
 }
 

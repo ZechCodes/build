@@ -1,4 +1,5 @@
 import { elapsedClock, runningClock } from "./agentRailModel.js";
+import { buildAgentChatKind } from "./agentLineageModel.js";
 
 export const WORKFLOW_ENTRY_KIND = "workflows";
 export const AGENT_ENTRY_KIND = "subagents";
@@ -316,7 +317,7 @@ const startedAtMs = (entry) => (Number.isFinite(entry.started_at) ? entry.starte
 
 /** The Build agents this agent made, as the Agents viewer's second group
  *  draws them: running first, and each carrying where its chat is, for the
- *  press that opens it. */
+ *  press that opens it — or no page at all, for a row nothing opens. */
 export function buildAgentRows(surfaces, { nowMs = 0 } = {}) {
   const entries = companionsOf(surfaces, AGENT_ENTRY_KIND);
   const rows = keyedBy("build-agent", entries, (entry) => {
@@ -330,6 +331,7 @@ export function buildAgentRows(surfaces, { nowMs = 0 } = {}) {
       workspaceName: entry.workspace_name || "",
       entityId: entry.entity_id || null,
       workspaceId: entry.workspace_id || null,
+      chatKind: buildAgentChatKind({ kind: entry.kind, workspaceId: entry.workspace_id }),
       ...entryClock(startedAtMs(entry), null, running, nowMs),
     };
   });

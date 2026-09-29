@@ -173,6 +173,7 @@ function openBuildAgentFrom(event, onOpenBuildAgent) {
     agentId: row.dataset.buildAgent,
     entityId: row.dataset.entityId || null,
     workspaceId: row.dataset.workspaceId || null,
+    kind: row.dataset.kind || null,
   });
   return true;
 }

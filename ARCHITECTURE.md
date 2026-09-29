@@ -249,7 +249,8 @@ runtime that starts them.
   Build MCP call (`add_workspace_agent`, or `assign_task` to a new agent or
   workspace) carries `created_by` on its digest. Only the bridge's own
   callers set it; `agent.add` refuses the param. The SPA reads it off the
-  cached rows (`spa/src/core/agentLineage.js`): the creator's Agents panel
+  cached rows (`spa/src/core/agentLineage.js`), on a machine whose greeting
+  named the capability (see Capability gating): the creator's Agents panel
   lists those Build agents apart from its harness sub-agents, and an agent
   counts as running while any agent in its panel runs, transitively
   (`spa/src/core/agentLineageModel.js`).
@@ -920,7 +921,11 @@ refuses when that device cannot answer.
   `spa/src/core/needsYouRule.js`, read by the Tasks tab and the inbox's
   watched tasks; `branches.finishDelete` becomes whether Done deletes the
   branch on that machine in `spa/src/core/branchDeleteSupport.js`, read by the
-  branch surface's Done and the inbox row's. What the cache says draws the
+  branch surface's Done and the inbox row's; `agents.createdBy` becomes
+  whether that machine's agents name their makers in
+  `spa/src/core/agentLineageSupport.js`, read by the lineage reader with the
+  rows, so the Agents panel lists Build agents only for a bridge that
+  announced them. What the cache says draws the
   confirmation; the deletion itself is sent through `whenGreeted`, on the
   adapter the current session's greeting installed.
 - A session is adopted before it is greeted, so `canAnswer` is true before the

@@ -154,6 +154,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
     threads: { postOperations: names.has("threads.postOperations"), attachmentChunks: names.has("thread.attachmentChunks") },
     branches: { finishDelete: names.has("branches.finishDelete") },
     push: { registerKey: names.has("push.registerKey"), revokeKey: names.has("push.revokeKey") },
+    agents: { createdBy: names.has("agents.createdBy") },
   };
 }
 

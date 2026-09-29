@@ -37,6 +37,9 @@ pub fn usable_remote_url(remote: &str) -> Result<String, String> {
             "Build does not use Git transport helpers (name::address) as remotes.".to_string(),
         );
     }
+    if encodes_an_ssh_authority(remote) {
+        return Err("A Git remote's ssh user, host or port cannot be percent-encoded.".to_string());
+    }
     if names_a_host_git_would_read_as_an_option(remote) {
         return Err("A Git remote's user, host or port cannot start with a dash.".to_string());
     }
@@ -57,6 +60,20 @@ fn names_a_transport_helper(remote: &str) -> bool {
             && transport
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    })
+}
+
+/// The ssh url schemes: git hands these to `ssh`.
+const SSH_SCHEMES: &[&str] = &["ssh", "git+ssh", "ssh+git"];
+
+/// Git percent-decodes an ssh url's user, host and port before it hands them
+/// to `ssh`, so `ssh://%2DoProxyCommand=sh/x` reaches ssh as an option once
+/// decoded. No real ssh remote needs a `%` there, so any is refused rather
+/// than decoded and checked again.
+fn encodes_an_ssh_authority(remote: &str) -> bool {
+    remote.split_once("://").is_some_and(|(scheme, rest)| {
+        SSH_SCHEMES.contains(&scheme.to_ascii_lowercase().as_str())
+            && rest.split('/').next().unwrap_or_default().contains('%')
     })
 }
 
@@ -154,6 +171,22 @@ mod tests {
         ] {
             assert!(usable_remote_url(remote).is_err(), "{remote}");
         }
+    }
+
+    #[test]
+    fn an_ssh_authority_git_would_percent_decode_is_refused() {
+        for remote in [
+            "ssh://%2DoProxyCommand=sh/x",
+            "ssh://%2doProxyCommand=sh@example.com/x",
+            "ssh://%2DoProxyCommand=sh@example.com/x",
+            "ssh://git@%2dhost/x",
+            "ssh://git@example.com:%2D1/x",
+            "git+ssh://git@%2Dhost/x",
+            "ssh+git://git@%2Dhost/x",
+        ] {
+            assert!(usable_remote_url(remote).is_err(), "{remote}");
+        }
+        assert!(usable_remote_url("ssh://git@example.com/org/a%20b.git").is_ok());
     }
 
     #[test]

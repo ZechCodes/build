@@ -393,7 +393,7 @@ project's home (orchestrator, registry identity) and cannot move.
 clients. Every remote a client names, on any verb, passes
 `usable_remote_url` (`bridge/src/remote_url.rs`): no leading `-`, no
 whitespace or control characters, no `transport::` helper, no ssh user,
-host or port starting with `-`, and only
+host or port starting with `-` or holding a `%` (git decodes it), and only
 https/http/ssh/git/file urls, `user@host:path` or an absolute path. Git is
 handed a `--` before it.
 

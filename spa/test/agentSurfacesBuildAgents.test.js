@@ -185,6 +185,7 @@ describe("the model on a Build agent's row", () => {
       buildAgent("b1", "idle", { model: "gpt-6-astra", provider: "codex_app_server" }),
     ] });
     expect(modelOf(buildRows()[0])).toBe("6 Astra");
+    expect(buildRows()[0].querySelector(".surface-row-model").classList.contains("surface-row-model-raw")).toBe(false);
     expect(buildRows()[0].querySelector(".surface-row-model").title).toBe("gpt-6-astra on codex_app_server");
   });
 
@@ -193,6 +194,8 @@ describe("the model on a Build agent's row", () => {
       buildAgent("b1", "idle", { model: "llama-3", provider: "pi" }),
     ] });
     expect(modelOf(buildRows()[0])).toBe("llama-3 on pi");
+    // #257: only a model with no short name may wrap; a short one stays on one line.
+    expect(buildRows()[0].querySelector(".surface-row-model").classList.contains("surface-row-model-raw")).toBe(true);
   });
 
   it("shows on a row nothing opens, too", () => {

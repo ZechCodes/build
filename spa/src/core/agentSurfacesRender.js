@@ -158,10 +158,11 @@ function agentDetailsHtml(row) {
 }
 
 /** The model on a row's head (#257): its short name, whole, never clipped;
- *  the full label in its title. */
+ *  the full label in its title. One with no short name wraps instead. */
 function headModelHtml(row) {
   if (!row.model) return "";
-  return `<span class="surface-row-model surface-row-head-model" title="${esc(row.modelName || row.model)}">${esc(row.model)}</span>`;
+  const raw = row.modelRaw ? " surface-row-model-raw" : "";
+  return `<span class="surface-row-model surface-row-head-model${raw}" title="${esc(row.modelName || row.model)}">${esc(row.model)}</span>`;
 }
 
 export function agentRowHtml(row, { openedAgentKeys = new Set() } = {}) {

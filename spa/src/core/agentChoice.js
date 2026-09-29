@@ -210,6 +210,10 @@ export function shortModelName(text) {
   return "";
 }
 
+/** Whether a rule knows a short name for this model, by its id or its label:
+ *  one that has none is shown whole, and may wrap (#257). */
+export const hasShortModelName = (modelId, fullLabel) => !!(shortModelName(modelId) || shortModelName(fullLabel));
+
 /** A model's short name, read from its id and else from its full label,
  *  falling back to that full label. */
 export const shortModelNameOr = (modelId, fullLabel) =>

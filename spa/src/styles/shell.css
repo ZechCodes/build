@@ -884,6 +884,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 /* The model's short name, whole (#257): the agent's name gives way. */
 .rail-overview-model { flex:none; white-space:nowrap;
   color:var(--dim); font-size:11px; font-weight:500; }
+.rail-overview-model-raw { flex:0 1 auto; min-width:0; white-space:normal; overflow-wrap:anywhere; }
 .rail-overview-state { grid-row:1; color:var(--dim); font-size:11px; font-weight:650; line-height:1.25; white-space:nowrap; }
 .rail-overview-row[data-state="working"] .rail-overview-state,
 .rail-overview-row[data-state="waiting"] .rail-overview-state { color:var(--accent); }
@@ -1377,6 +1378,8 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .surface-row-model, .surface-row-effort { flex:none; }
 /* A row's model is its short name, whole (#257): the label beside it gives way. */
 .surface-row-head-model { flex-shrink:0; white-space:nowrap; }
+/* A model no rule shortens is its whole raw id: it wraps, and the row grows. */
+.surface-row-head-model.surface-row-model-raw { flex-shrink:1; min-width:0; white-space:normal; overflow-wrap:anywhere; }
 .surface-row-detail { flex:1 1 auto; min-width:0; }
 .surface-row-stats { display:flex; flex-wrap:wrap; gap:8px; }
 .surface-row-error { color:var(--red); }

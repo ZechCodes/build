@@ -149,8 +149,8 @@ describe("agentRowHtml", () => {
 
     expect([...summary.children].slice(1).map((child) => child.className)).toEqual([
       "surface-clip surface-row-label",
-      // Never clipped (#257): the short name fits whole.
-      "surface-row-model surface-row-head-model",
+      // Never clipped (#257): "haiku" has no short name, so it may wrap.
+      "surface-row-model surface-row-head-model surface-row-model-raw",
       "surface-row-clock",
     ]);
     expect(summary.querySelector(".surface-row-head-model").title).toBe("haiku");

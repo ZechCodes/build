@@ -89,6 +89,14 @@ describe("modelWord", () => {
   });
 });
 
+describe("an overview row's model", () => {
+  const html = (model) => overviewHtml(overviewRows([{ agent: { id: "a1", active_model: model }, source: "project" }], [null]), { showProjectAgents: true });
+  it("may wrap only when it has no short name (#257)", () => {
+    expect(html("house-research-model")).toContain("rail-overview-model-raw");
+    expect(html("claude-opus-5-5")).not.toContain("rail-overview-model-raw");
+  });
+});
+
 describe("overviewState", () => {
   it("ranks a failed start over a failed run over working over unread over starting over idle", () => {
     expect(overviewState({ start_error: "boom", working: true, unread_count: 1 }).state).toBe("error");

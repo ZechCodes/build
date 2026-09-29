@@ -92,6 +92,7 @@ describe("the agents overview (#186)", () => {
     expect(shown("critical-review")).toEqual({ model: "6 Astra", state: "waiting", word: "Blocked" });
     // The row wears the short name (#257); its title names the model whole.
     expect(row("critical-review").querySelector(".rail-overview-model").title).toBe("gpt-6-astra · xhigh");
+    expect(row("critical-review").querySelector(".rail-overview-model").classList.contains("rail-overview-model-raw")).toBe(false);
     expect(shown("auditor")).toEqual({ model: "6 Sol", state: "idle", word: "Idle" });
 
     const summary = (name) => sectionNamed(name).querySelector(".rail-overview-sum");

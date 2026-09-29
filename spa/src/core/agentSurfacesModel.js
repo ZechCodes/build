@@ -1,6 +1,6 @@
 import { elapsedClock, runningClock } from "./agentRailModel.js";
 import { buildAgentChatKind } from "./agentLineageModel.js";
-import { shortModelNameOr } from "./agentChoice.js";
+import { hasShortModelName, shortModelNameOr } from "./agentChoice.js";
 
 export const WORKFLOW_ENTRY_KIND = "workflows";
 export const AGENT_ENTRY_KIND = "subagents";
@@ -294,9 +294,13 @@ function lastToolText(lastTool) {
  *  runs on — or, naming none, the agent in focus's: the short name a row
  *  wears, and the full label its title and details keep (#257). */
 function modelNamesOf(entry, modelLabel) {
-  if (!entry.model) return { model: "", modelName: "" };
+  if (!entry.model) return { model: "", modelName: "", modelRaw: false };
   const modelName = modelLabel(entry.model, entry.provider);
-  return { model: shortModelNameOr(entry.model, modelName), modelName };
+  return {
+    model: shortModelNameOr(entry.model, modelName),
+    modelName,
+    modelRaw: !hasShortModelName(entry.model, modelName),
+  };
 }
 
 function agentRow(entry, modelLabel) {

@@ -4,9 +4,11 @@
 # never rolls the relay, whose Recreate drops every WebSocket.
 #
 # The Rust sources are the relay bin and the bridge-crate modules it reaches.
-# bridge/tests/relay_sources.rs derives that set from the code and fails when
-# this list does not match it exactly, so a new `use crate::…` in the relay
-# path cannot slip past the deploy filter.
+# bridge/tests/relay_sources.rs derives that set from the code — crate paths
+# in code and in macro tokens, lib.rs re-exports, and modules that implement a
+# type the relay reaches — and fails when this list does not match it exactly,
+# or when a crate path resolves to no file. An edit to this list alone runs
+# that test (the `bridge` tier).
 #
 # Cargo.toml and Cargo.lock count whole: a dependency bump may be one the
 # relay links. vendor/ is not listed — the relay reaches no webrtc code.

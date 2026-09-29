@@ -348,9 +348,13 @@ fn init_repo(parent: &Path) -> PathBuf {
     let repo = parent.join("repo");
     std::fs::create_dir(&repo).expect("a repo dir");
     let git = |args: &[&str]| {
+        // Nothing from the machine's own git config: a `commit.gpgsign`
+        // there would sign this commit with a real key.
         let status = std::process::Command::new("git")
             .args(args)
             .current_dir(&repo)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()

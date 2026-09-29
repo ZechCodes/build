@@ -3,7 +3,7 @@ use super::*;
 /// Run git without asserting success — for setting up conflict/rebase
 /// states whose whole point is a non-zero exit.
 fn git_try(dir: &std::path::Path, args: &[&str]) {
-    let _ = Command::new("git").args(args).current_dir(dir).status();
+    let _ = crate::git_fixture::git_command(dir, args).status();
 }
 
 /// A working repo wired to a bare "origin" it already tracks (main →

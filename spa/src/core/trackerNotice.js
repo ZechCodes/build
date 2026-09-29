@@ -180,13 +180,24 @@ const noticeActorMarkHtml = (actor, projectName) => {
   return provider ? `<span class="thread-task-actor-mark" aria-hidden="true">${harnessIconHtml(provider)}</span>` : "";
 };
 
+/** An agent's name as the pieces a narrow line may break between (#212):
+ *  "airlock-queue · Queue hardener" is the workspace and the agent, and a
+ *  phone breaks at the " · " before it breaks either. A piece too long for a
+ *  line of its own breaks after a `-`, `/` or `.`, never mid-word; the mark
+ *  rides the first piece so it never sits alone at a line's end. */
+const NAME_SEPARATOR = " · ";
+const breakableAtBoundaries = (text) => esc(text).replace(/([-/.])/g, "$1<wbr>");
+const namePartsHtml = (name, mark = "") => String(name).split(NAME_SEPARATOR)
+  .map((part, index) => `<span class="thread-task-name-part">${index ? "· " : mark}${breakableAtBoundaries(part)}</span>`)
+  .join(" ");
+
 const noticeActionMarkup = (notice, did, reading, linkContext = null) => {
   if (notice.action !== "assigned" || !notice.assignee) return esc(did);
   const target = actorName(notice.assignee, noticeReading(notice, reading));
   const icon = noticeActorMarkHtml({ ...notice.assignee, identity: notice.assignee_identity }, reading.projectName);
   const href = linkContext && actorHref(notice.assignee, linkContext);
-  const named = `${icon}${esc(target)}`;
-  return `assigned to ${href ? `<a class="thread-task-agent-link" href="${esc(href)}">${named}</a>` : named}`;
+  const named = namePartsHtml(target, icon);
+  return `assigned to&nbsp;${href ? `<a class="thread-task-agent-link" href="${esc(href)}">${named}</a>` : named}`;
 };
 
 const noticeNumberHtml = (notice, taskHref) => {
@@ -206,9 +217,9 @@ const noticeSaidHtml = (notice, did, reading, taskHref, linkContext) => {
 
 const noticeByHtml = (notice, who, reading, linkContext) => {
   if (!who) return "";
-  const name = `${noticeActorMarkHtml(notice.actor, reading.projectName)}${esc(who)}`;
+  const name = namePartsHtml(who, noticeActorMarkHtml(notice.actor, reading.projectName));
   const href = linkContext && actorHref(notice.actor, linkContext);
-  return `<span class="thread-task-by">by ${href
+  return `<span class="thread-task-by">by&nbsp;${href
     ? `<a class="thread-task-agent-link" href="${esc(href)}">${name}</a>` : name}</span>`;
 };
 

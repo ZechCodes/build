@@ -66,7 +66,7 @@ function actionSpansHtml(action, reading) {
   }
   if (word === "assigned") {
     const who = actorName(action.assignee, reading);
-    const to = who ? ` <span class="thread-task-said">to</span> <span class="thread-task-who">${esc(who)}</span>` : "";
+    const to = who ? ` <span class="thread-task-said">to</span> <span class="thread-task-who" title="${esc(who)}">${esc(who)}</span>` : "";
     return `<span class="thread-task-said">Assigned</span> ${number}${to}`;
   }
   if (word === "unassigned") {

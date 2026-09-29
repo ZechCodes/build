@@ -64,6 +64,8 @@ it("the conversation fits a 390px phone: nothing scrolls it sideways", async () 
   await withLayoutPage(async ({ page, basePath }) => {
     await mountPhoneChat(page, basePath);
     await captureLayout(page, "chat-narrow-390.png");
+    await page.evaluate(() => { const scroller = document.querySelector(".rail-body"); scroller.scrollTop = scroller.scrollHeight; });
+    await captureLayout(page, "chat-narrow-390-end.png");
     const measured = await page.evaluate(() => {
       const scroller = document.querySelector(".rail-body");
       const right = scroller.getBoundingClientRect().right;
@@ -96,6 +98,7 @@ it("a notice too long for the line breaks between its parts, not inside a name",
           text: notice.textContent.replace(/\s+/g, " ").trim(),
           numberTop: top(number),
           byTop: top(by),
+          firstPartTop: top(slug[0]),
           // A part that broke inside itself has more than one line box.
           splitParts: slug.filter((part) => part.getClientRects().length > 1).map((part) => part.textContent),
           lineCount: new Set([...notice.querySelectorAll(".thread-task-number, .thread-task-said, .thread-task-by, .thread-task-name-part")]
@@ -108,6 +111,8 @@ it("a notice too long for the line breaks between its parts, not inside a name",
     expect(long.lineCount).toBeGreaterThan(1);
     // …and where it wraps is between parts: "by" starts a line of its own…
     expect(long.byTop).toBeGreaterThan(long.numberTop);
+    // …and "by" is never left at the end of a line without the name it introduces.
+    expect(long.firstPartTop).toBe(long.byTop);
     // …and neither the slug nor the agent's name is broken mid-word.
     expect(long.splitParts).toEqual([]);
   }, PHONE);

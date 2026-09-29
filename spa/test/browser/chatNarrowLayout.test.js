@@ -26,13 +26,16 @@ function paintConversation({ longSlug, longWorkspace }) {
     workspace_name: workspace, provider: "claude_adk", available: true,
   });
   // No identity is the reader themself.
-  const notice = (sequence, number, action, to, actor = null) => ({
+  const notice = (sequence, number, action, to, actor = null, assignee = null) => ({
     type: "message",
     data: {
       sequence, role: "user", from_build: true, body: `#${number} ${action}`,
       created_at: "2026-09-28T20:00:00Z",
       from_task: { task_id: `task-${number}`, number, title: "Fix email classification errors" },
-      task_notice: { action, to, actor: actor ? { kind: "agent", agent_id: actor.agent_id, identity: actor } : { kind: "user" } },
+      task_notice: {
+        action, to, actor: actor ? { kind: "agent", agent_id: actor.agent_id, identity: actor } : { kind: "user" },
+        ...(assignee ? { assignee: { kind: "agent", agent_id: assignee.agent_id }, assignee_identity: assignee } : {}),
+      },
     },
   });
   const hardener = identity("agent-hardener", longSlug, "Airlock queue hardener");
@@ -60,9 +63,13 @@ function paintConversation({ longSlug, longWorkspace }) {
         assignee: { kind: "agent", agent_id: hardener.agent_id, identity: hardener } } } },
     { type: "message", data: { sequence: 10, role: "agent", created_at: "2026-09-28T20:03:00Z",
       body: `The digest was sha256:${"9f".repeat(40)} and nothing else.` } },
+    notice(11, 219, "assigned", null, heartbeat, hardener),
   ];
   const place = { projectId: "proj-1", deviceId: "device-1", projectName: "Build" };
-  paintThreadEntries(scroller, timelineEntries(items, "Claude", "narrow-chat", [], { place }), { place });
+  // A poll that resolved the same conversation paints it again from scratch.
+  window.__repaintConversation = () =>
+    paintThreadEntries(scroller, timelineEntries(items, "Claude", "narrow-chat", [], { place }), { place });
+  window.__repaintConversation();
 }
 
 async function mountChat(page, basePath) {
@@ -92,7 +99,7 @@ it("the conversation fits a 390px phone: nothing scrolls it sideways", async () 
         notices: scroller.querySelectorAll("[data-task-notice]").length,
         chips: scroller.querySelectorAll(".viewing-context-chip").length };
     });
-    expect(measured.notices).toBe(5);
+    expect(measured.notices).toBe(6);
     expect(measured.chips).toBe(2);
     expect(measured.overflowing).toEqual([]);
     expect(measured.scrollWidth).toBeLessThanOrEqual(measured.clientWidth);
@@ -106,23 +113,30 @@ function measureNotices() {
   const one = (element, lineHeight) => element.getClientRects().length === 1 && box(element).height <= lineHeight + 1;
   return [...document.querySelectorAll("[data-task-notice]")].map((notice) => {
     const lineHeight = parseFloat(getComputedStyle(notice).lineHeight);
-    const said = notice.querySelector(".thread-task-said");
+    const head = notice.querySelector(".thread-task-first-line");
+    const said = head.querySelector(".thread-task-said");
+    const number = head.querySelector(".thread-task-number");
     const sections = [...notice.querySelectorAll(":scope > .thread-task-section")];
     const by = notice.querySelector(".thread-task-by");
+    const to = notice.querySelector(".thread-task-to");
     const agent = by?.querySelector(".thread-task-agent-name");
     const workspace = by?.querySelector(".thread-task-workspace");
     return {
       text: notice.textContent.replace(/\s+/g, " ").trim(),
-      stacked: notice.classList.contains("is-stacked"),
+      stacked: notice.dataset.fit === "stacked",
       lines: Math.round(box(notice).height / lineHeight),
-      leadsWithAction: notice.firstElementChild === said,
+      // The first line is the action with the task it happened to (#217, the
+      // maintainer: "keep the issue number on the same line as the action").
+      leadsWithAction: notice.firstElementChild === head && head.firstElementChild === said,
+      head: head.textContent.replace(/\s+/g, " ").trim(),
+      numberBesideAction: Math.abs(box(number).top - box(said).top) < 2,
       sections: sections.length,
       // Stacked, every section starts a line of its own below the action and
       // is indented under it; nothing inside a section wraps.
       ownLines: sections.every((section, index) =>
-        box(section).top >= box(index ? sections[index - 1] : said).bottom - 1),
-      indented: sections.every((section) => box(section).left > box(said).left),
-      unwrapped: [said, ...sections].every((section) => one(section, lineHeight * 2)),
+        box(section).top >= box(index ? sections[index - 1] : head).bottom - 1),
+      indented: sections.every((section) => box(section).left > box(head).left),
+      unwrapped: [head, ...sections].every((section) => one(section, lineHeight * 2)),
       agentLine: agent && { shown: agent.scrollWidth <= agent.clientWidth, withBy: Math.abs(box(agent).top - box(by).top) < 2 },
       workspace: workspace && {
         title: workspace.getAttribute("title"),
@@ -131,6 +145,9 @@ function measureNotices() {
       },
       // One link per name, drawing no underline at rest, as the chat's other
       // links do.
+      // Under "to" and under "by" a workspace starts at the same x.
+      workspaceLefts: [to, by].map((section) => section?.querySelector(".thread-task-workspace"))
+        .filter(Boolean).map((workspace) => Math.round(box(workspace).left)),
       nameLinks: by ? by.querySelectorAll("a").length : 0,
       underlined: [...notice.querySelectorAll("a")]
         .filter((link) => getComputedStyle(link).textDecorationLine !== "none").length,
@@ -144,6 +161,7 @@ it("on a phone a notice that does not fit stacks: the action, then each section 
     const notices = await page.evaluate(measureNotices);
     for (const notice of notices) {
       expect(notice.leadsWithAction, notice.text).toBe(true);
+      expect(notice.numberBesideAction, notice.text).toBe(true);
       expect(notice.underlined, notice.text).toBe(0);
       // All or nothing: one line, or the action and every section stacked.
       if (!notice.stacked) expect(notice.lines, notice.text).toBe(1);
@@ -156,7 +174,17 @@ it("on a phone a notice that does not fit stacks: the action, then each section 
     // it on one line of its own, ellipsised, its whole name as hover text.
     expect(long.agentLine).toEqual({ shown: true, withBy: true });
     expect(long.workspace).toEqual({ title: LONG_WORKSPACE, ellipsised: true, oneLine: true });
+    expect(long.head).toBe("Commented on #216");
     expect(long.lines).toBe(long.sections + 2);
+    // A move's column is part of what happened, so it rides the first line.
+    const moved = notices.find((notice) => notice.text.includes("#213"));
+    expect(moved).toMatchObject({ stacked: true, head: "Moved #213 to In progress" });
+    // An assignee is a name like the actor: its own section, and its
+    // workspace lines up with the actor's.
+    const assigned = notices.find((notice) => notice.text.includes("#219"));
+    expect(assigned).toMatchObject({ stacked: true, head: "Assigned #219", sections: 2, ownLines: true });
+    expect(assigned.workspaceLefts).toHaveLength(2);
+    expect(assigned.workspaceLefts[0]).toBe(assigned.workspaceLefts[1]);
     const short = notices.find((notice) => notice.text.includes("#218"));
     expect(short.text).toBe("Commented on #218 by You");
     expect(short).toMatchObject({ stacked: false, lines: 1 });
@@ -168,7 +196,7 @@ it("at desktop width every notice is one line", async () => {
     await mountChat(page, basePath);
     await captureLayout(page, "chat-desktop-1280.png");
     const notices = await page.evaluate(measureNotices);
-    expect(notices).toHaveLength(5);
+    expect(notices).toHaveLength(6);
     for (const notice of notices) {
       expect(notice.stacked, notice.text).toBe(false);
       expect(notice.lines, notice.text).toBe(1);
@@ -182,11 +210,45 @@ it("narrowing the chat restacks the notices that no longer fit, and widening it 
     const stackedAt = async (width) => {
       await page.setViewportSize({ width, height: DESKTOP.height });
       await page.evaluate(() => new Promise((settle) => requestAnimationFrame(() => requestAnimationFrame(settle))));
-      return page.evaluate(() => [...document.querySelectorAll("[data-task-notice].is-stacked")]
+      return page.evaluate(() => [...document.querySelectorAll('[data-task-notice][data-fit="stacked"]')]
         .map((notice) => notice.dataset.taskNotice));
     };
     expect(await stackedAt(DESKTOP.width)).toEqual([]);
     expect(await stackedAt(PHONE.width)).toContain("task-216");
     expect(await stackedAt(DESKTOP.width)).toEqual([]);
   }, DESKTOP);
+}, 30_000);
+
+it("a repaint of the same conversation changes no node, stacked notices included", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await mountChat(page, basePath);
+    const mutations = await page.evaluate(() => {
+      const scroller = document.querySelector(".rail-body");
+      const records = [];
+      const observer = new MutationObserver((batch) => records.push(...batch));
+      observer.observe(scroller, { subtree: true, childList: true, attributes: true, characterData: true });
+      window.__repaintConversation();
+      window.__repaintConversation();
+      records.push(...observer.takeRecords());
+      observer.disconnect();
+      return records.map((record) => `${record.type} ${record.attributeName || ""} ${record.target.className || record.target.nodeName}`);
+    });
+    expect(await page.locator('[data-task-notice][data-fit="stacked"]').count()).toBeGreaterThan(0);
+    expect(mutations).toEqual([]);
+  }, PHONE);
+}, 30_000);
+
+it("Build's own notices still wrap: only task notices are fitted to one line", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await mountChat(page, basePath);
+    const restart = await page.evaluate(() => {
+      const line = [...document.querySelectorAll(".thread-task-notice:not([data-task-notice])")]
+        .find((element) => element.textContent.includes("Build restarted"));
+      const lineHeight = parseFloat(getComputedStyle(line).lineHeight);
+      return { lines: Math.round(line.getBoundingClientRect().height / lineHeight),
+        clipped: line.scrollWidth > line.clientWidth };
+    });
+    expect(restart.lines).toBeGreaterThan(1);
+    expect(restart.clipped).toBe(false);
+  }, PHONE);
 }, 30_000);

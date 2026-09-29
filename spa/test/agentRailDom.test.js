@@ -3633,9 +3633,12 @@ describe("the first message", () => {
   it("leaves a task's first message to start its own planning agent", async () => {
     payload = { task_id: "plan-1", project_id: "p1", agents: [agent({ state: "idle" })], thread: { items: [] } };
     await mount({ kind: "task", projectId: "p1", taskId: "plan-1" });
+    // Send once the task's roster has put its agent on the strip, and wait
+    // for the post rather than a count of turns.
+    await vi.waitFor(() => expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1"]));
     panel().querySelector("#railinput").value = "plan this";
     panel().querySelector("#railsend").click();
-    await flush();
+    await vi.waitFor(() => expect(callsTo("thread.post")).toHaveLength(1));
     expect(callsTo("thread.post")[0].params).toMatchObject({ entity_id: "plan-1", agent_id: "ag-1" });
     expect(callsTo("agent.start")).toEqual([]);
   });

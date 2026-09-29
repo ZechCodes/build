@@ -59,32 +59,32 @@ describe("the line, from the structured field", () => {
   // #49. The maintainer: "Relevant info is getting pushed out of view … Move
   // what happened first and don't show the task title."
   it("reads number, action, then who did it — and no title", () => {
-    expect(text(stated())).toBe("#32 commented on by Agent 01M2");
+    expect(text(stated())).toBe("Commented on #32 by Agent 01M2");
   });
 
   // The maintainer, 21:15Z: "What does 'moved by' mean? Moved where?" A move's
   // destination is its own field on the notice, and the line must say it.
   it("says where a move went, from the notice's own field", () => {
-    expect(text(stated({ action: "moved", from: "in_progress", to: "in_review" }))).toBe("#32 moved to In review by Agent 01M2");
-    expect(text(stated({ action: "moved", to: "qa_hold" }))).toBe("#32 moved to qa hold by Agent 01M2");
-    expect(text(stated({ action: "moved to Done", to: "done" }))).toBe("#32 moved to Done by Agent 01M2");
+    expect(text(stated({ action: "moved", from: "in_progress", to: "in_review" }))).toBe("Moved #32 to In review by Agent 01M2");
+    expect(text(stated({ action: "moved", to: "qa_hold" }))).toBe("Moved #32 to qa hold by Agent 01M2");
+    expect(text(stated({ action: "moved to Done", to: "done" }))).toBe("Moved #32 to Done by Agent 01M2");
   });
 
   it("uses the bridge's own phrase for an action it has never heard of", () => {
-    expect(text(stated({ action: "moved to In review" }))).toBe("#32 moved to In review by Agent 01M2");
-    expect(text(stated({ action: "assigned to Agent 2" }))).toBe("#32 assigned to Agent 2 by Agent 01M2");
+    expect(text(stated({ action: "moved to In review" }))).toBe("Moved #32 to In review by Agent 01M2");
+    expect(text(stated({ action: "assigned to Agent 2" }))).toBe("Assigned #32 to Agent 2 by Agent 01M2");
   });
 
   // A bare token from a sender that sends one, turned into the words a reader
   // says. `comment` carries its own preposition because the sentence has none.
   it("puts a bare token into the words a reader says", () => {
-    for (const [token, said] of [["comment", "commented on"], ["close", "closed"], ["reopen", "reopened"], ["edit", "edited"], ["link", "linked"], ["update", "edited"]]) {
-      expect(text(stated({ action: token }))).toBe(`#32 ${said} by Agent 01M2`);
+    for (const [token, said] of [["comment", "Commented on"], ["close", "Closed"], ["reopen", "Reopened"], ["edit", "Edited"], ["link", "Linked"], ["update", "Edited"]]) {
+      expect(text(stated({ action: token }))).toBe(`${said} #32 by Agent 01M2`);
     }
   });
 
   it("says You for the user", () => {
-    expect(text(stated({ actor: { kind: "user" } }))).toBe("#32 commented on by You");
+    expect(text(stated({ actor: { kind: "user" } }))).toBe("Commented on #32 by You");
   });
 
   it("uses the name this client has for an agent when it has one", () => {
@@ -98,7 +98,7 @@ describe("the line, from the structured field", () => {
 
 describe("the line, parsed from the body", () => {
   it("reads the actor and the action out of the first line", () => {
-    expect(text(notice())).toBe("#32 commented on by Agent 01M2");
+    expect(text(notice())).toBe("Commented on #32 by Agent 01M2");
   });
 
   // The comment body is carried but never drawn: the press is what opens it.
@@ -118,7 +118,7 @@ describe("the line, parsed from the body", () => {
       from_task: { task_id: "task-9", number: 9, title: "Board — on a phone" },
       body: "#9 Board — on a phone — agent-01M2XXGQ closed: done.",
     });
-    expect(text(dashed)).toBe("#9 closed by Agent 01M2");
+    expect(text(dashed)).toBe("Closed #9 by Agent 01M2");
   });
 
   // The whole point of the fallback degrading rather than failing: the task
@@ -207,7 +207,7 @@ describe("the row, in the timeline", () => {
       { place: PLACE, agentLabels: { "agent-01M2XXGQ": "tasks-spa · Agent 1" } },
     );
     expect(document.querySelector(".thread-notice").textContent.replace(/\s+/g, " ").trim())
-      .toBe("#32 commented on by tasks-spa · Agent 1");
+      .toBe("Commented on #32 by tasks-spa · Agent 1");
   });
 
   // Not a blank where a name should be: an agent this client cannot name is
@@ -215,7 +215,7 @@ describe("the row, in the timeline", () => {
   it("falls back to the agent's short name when the feed has none for it", () => {
     expect(paint([item({ task_notice: { actor: "agent-01M2XXGQ", action: "commented" } })])
       .textContent.replace(/\s+/g, " ").trim())
-      .toBe("#32 commented on by Agent 01M2");
+      .toBe("Commented on #32 by Agent 01M2");
   });
 
   it("carries its sequence, so it reads in order and counts as unread", () => {
@@ -274,13 +274,15 @@ describe("the shape of the row", () => {
   // off, so it is not on the line at all any more — it is the heading of the
   // page the link opens, and it stays as hover text where length costs
   // nothing.
-  it("leads with the number and carries no title on the line", () => {
-    // A creation is the one exception: it reads "Created #39 A title" (the
-    // maintainer, 21:19Z), covered in trackerActionLine.test.js. Every other
-    // verb leads with the number.
-    for (const row of [said(notice_()), said(action_({ action: "commented" }))]) {
+  it("leads with what happened (notice) or the number (action line) and carries no title", () => {
+    // An action line leads with the number; a creation is the one exception:
+    // it reads "Created #39 A title" (the maintainer, 21:19Z), covered in
+    // trackerActionLine.test.js. A notice leads with its verb since #217,
+    // so a line too long for the width can stack under it.
+    const leads = [[said(notice_()), ".thread-task-first-line > .thread-task-said"], [said(action_({ action: "commented" })), ".thread-task-number"]];
+    for (const [row, first] of leads) {
       const line = row.querySelector("a, span");
-      expect(line.firstElementChild.classList.contains("thread-task-number")).toBe(true);
+      expect(line.querySelector(first)).toBe(line.firstElementChild.matches(first) ? line.firstElementChild : line.firstElementChild.firstElementChild);
       expect(line.querySelector(".thread-task-line-title")).toBeNull();
       expect(line.textContent).not.toContain("Kanban drag does not persist");
       expect(line.textContent).not.toContain("A title");
@@ -321,6 +323,6 @@ describe("the shape of the row", () => {
       { place: { ...PLACE, projectName: "Build" } },
     );
     expect(document.querySelector(".thread-notice").textContent.replace(/\s+/g, " ").trim())
-      .toBe("#32 commented on by Build");
+      .toBe("Commented on #32 by Build");
   });
 });

@@ -96,6 +96,6 @@ describe("the surfaces that print it", () => {
   // surfaces now read the same actor through the same function.
   it("says the same as the notice line in the conversation", () => {
     const notice = { number: 63, title: "A task", action: "commented", actor: PROJECT };
-    expect(noticeLineText(notice, reading)).toBe("#63 commented on by Build");
+    expect(noticeLineText(notice, reading)).toBe("Commented on #63 by Build");
   });
 });

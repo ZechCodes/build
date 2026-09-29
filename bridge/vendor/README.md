@@ -28,7 +28,7 @@ Upstreaming is deferred (Zech on #166): no fork and no upstream PR for now.
 
 ## What changed and why
 
-[#166](https://github.com/ZechCodes/build-web/issues/166): output a wake of the
+[#166](https://github.com/ZechCodes/build/issues/166): output a wake of the
 webrtc driver produced could stay queued when the driver went to wait. The
 next wake then sent it: an inbound packet, or, on an idle connection, ICE's
 200 ms check timer. Two cases were measured:
@@ -41,7 +41,7 @@ next wake then sent it: an inbound packet, or, on an idle connection, ICE's
   which queues the INIT. That happens after the write phase has run, and
   nothing woke the driver to send it for up to about 170 ms.
 
-[#179](https://github.com/ZechCodes/build-web/issues/179): the DTLS ClientHello
+[#179](https://github.com/ZechCodes/build/issues/179): the DTLS ClientHello
 waited for ICE's next 200 ms check tick. The bridge answers, so it is the DTLS
 client, and its core starts the handshake when ICE selects a pair: pumping the
 core's events (2.c) hands the selected pair to the DTLS handler, which calls

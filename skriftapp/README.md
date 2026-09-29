@@ -102,7 +102,7 @@ notification goes; empty disables it). `app.yaml` interpolates the three `SMTP_*
 variables and the app refuses to boot without them.
 
 Optional: `GITHUB_RELEASES_TOKEN` — a fine-grained GitHub PAT with `Contents:
-read` on `ZechCodes/build-web`, the one repository everything ships from
+read` on `ZechCodes/build`, the one repository everything ships from
 (`buildapp/releases.py` names it; no template, script or SPA file carries a
 download URL). Present, the api streams release assets out of the GitHub REST
 API, which is what a private repository needs; absent, the same routes `302` to

@@ -461,6 +461,30 @@ fn conversation_prompt_tells_the_agent_to_set_the_topic_first() {
     );
 }
 
+/// Every cold prompt teaches the reference shapes (#229): an agent started
+/// in a workspace never saw them, since only the phase and project-agent
+/// templates carried the note. The shapes are spa/src/core/markdownRefs.js's.
+#[test]
+fn conversation_prompt_teaches_every_reference_shape() {
+    let prompt = conversation_prompt("do the work");
+    let bullet = prompt
+        .lines()
+        .find(|line| line.starts_with("- Link to Build things by reference"))
+        .unwrap_or_else(|| panic!("no reference bullet: {prompt}"));
+    for shape in [
+        "`#42`",
+        "`#42/c/<comment-id>`",
+        "`@agent:<agent-id>`",
+        "`@workspace:<name or id>`",
+        "`@project:<name or id>`",
+        "`[[<workspace>:<path>#L10]]`",
+        "`[[<workspace>:commit:<sha>]]`",
+        "`[[<workspace>/<directory>:<path>]]`",
+    ] {
+        assert!(bullet.contains(shape), "{shape}: {bullet}");
+    }
+}
+
 #[test]
 fn conversation_prompt_instructs_clarifying_reply_for_ambiguous_comments() {
     let prompt = conversation_prompt("do the work");

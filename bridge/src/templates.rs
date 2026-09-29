@@ -1009,13 +1009,15 @@ mod tests {
     fn the_reference_note_names_every_shape_the_renderer_reads() {
         let text = collapse_whitespace(LINK_MARKUP_NOTE);
         for shape in [
-            "#42",
-            "#42/c/<comment-id>",
-            "@workspace:",
-            "@agent:",
-            "[[workspace:path/to/file.rs]]",
-            "#L10",
-            "[[workspace:commit:<sha>]]",
+            "`#42`",
+            "`#42/c/<comment-id>`",
+            "`@agent:<agent-id>`",
+            "`@workspace:<name or id>`",
+            "`@project:<name or id>`",
+            "`[[<workspace>:path/to/file.rs]]`",
+            "`#L10`",
+            "`[[<workspace>:commit:<sha>]]`",
+            "`[[<workspace>/<directory>:path/to/file.rs]]`",
         ] {
             assert!(text.contains(shape), "the note never shows {shape}: {text}");
         }

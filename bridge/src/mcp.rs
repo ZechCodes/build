@@ -16,6 +16,27 @@ use serde_json::{json, Value};
 
 use crate::renamed_ids::current_id;
 
+/// The one sentence every body a person reads ends with (#229): how to link a
+/// Build thing in it. The shapes are spa/src/core/markdownRefs.js's; the
+/// full note with an example of each is templates/notes/link_markup.md.
+macro_rules! reference_shapes_note {
+    () => {
+        " Link Build things by reference: `#42`, `#42/c/<comment-id>`, `@agent:<agent-id>`, `@workspace:<name or id>`, `@project:<name or id>`, `[[<workspace>:<path>#L10]]`, `[[<workspace>:commit:<sha>]]`."
+    };
+}
+#[cfg(test)]
+const REFERENCE_SHAPES_NOTE: &str = reference_shapes_note!();
+
+/// The tools whose `body` a person reads, and so carries the note above.
+#[cfg(test)]
+const READABLE_BODIES: &[&str] = &[
+    "post_thread_message",
+    "comment_task",
+    "create_task",
+    "message_agent",
+    "message_workspace_agent",
+];
+
 mod compaction;
 
 /// The protocol version this server advertises when a client omits one.
@@ -722,7 +743,7 @@ impl DoneServer {
             "type": "object",
             "properties": {
                 "agent_id": { "type": "string", "description": "The agent to write to. A message from an agent carries the id to answer it on; list_workspace_agents answers the ids on a workspace. An agent outside your project, an id that names nobody, and your own id are refused." },
-                "body": { "type": "string", "description": "What to say, in full. The other agent has none of your conversation, so say what it needs rather than pointing at what you were told." }
+                "body": { "type": "string", "description": concat!("What to say, in full. The other agent has none of your conversation, so say what it needs rather than pointing at what you were told.", reference_shapes_note!()) }
             },
             "required": ["agent_id", "body"]
         })
@@ -935,7 +956,7 @@ impl DoneServer {
                     "type": "object",
                     "properties": {
                         "title": { "type": "string", "description": "One line saying what is wanted, in the user's terms." },
-                        "body": { "type": "string", "description": "Markdown. What you know: what happens, where you saw it, what you think is behind it." },
+                        "body": { "type": "string", "description": concat!("Markdown. What you know: what happens, where you saw it, what you think is behind it.", reference_shapes_note!()) },
                         "status": status,
                         "labels": { "type": "array", "items": { "type": "string" }, "maxItems": 20 },
                         "priority": { "type": "string", "enum": ["none", "low", "medium", "high", "urgent"] },
@@ -963,7 +984,7 @@ impl DoneServer {
                     "type": "object",
                     "properties": {
                         "task_id": task_id,
-                        "body": { "type": "string", "description": "Markdown." },
+                        "body": { "type": "string", "description": concat!("Markdown.", reference_shapes_note!()) },
                         "track": track,
                         "attachments": attachments,
                         "notify_user": {
@@ -1295,7 +1316,7 @@ impl DoneServer {
             "type": "object",
             "properties": {
                 "status": { "type": "string", "enum": ["Complete", "Blocked", "Waiting", "Working"] },
-                "body": { "type": "string", "description": "What you have to say, in the user's terms. Complete for an outcome or an answer, Waiting when the next step is their call, Working only while a long read on their question is still going, never as a progress report." }
+                "body": { "type": "string", "description": concat!("What you have to say, in the user's terms. Complete for an outcome or an answer, Waiting when the next step is their call, Working only while a long read on their question is still going, never as a progress report.", reference_shapes_note!()) }
             },
             "required": ["status", "body"]
         })
@@ -1383,7 +1404,7 @@ impl DoneServer {
                     "properties": {
                         "workspace_id": { "type": "string", "description": "From list_workspaces. A workspace outside your project is refused." },
                         "agent_id": { "type": "string", "description": "From list_workspace_agents. Omit for the workspace's first agent." },
-                        "body": { "type": "string", "description": "What to say, in full. The agent has none of your conversation, so say what it needs rather than pointing at what you were told." }
+                        "body": { "type": "string", "description": concat!("What to say, in full. The agent has none of your conversation, so say what it needs rather than pointing at what you were told.", reference_shapes_note!()) }
                     },
                     "required": ["workspace_id", "body"]
                 }
@@ -2277,7 +2298,7 @@ fn project_message(id: Value, params: Option<&Value>) -> Handled {
     )
 }
 
-const SUMMARY_DESCRIPTION: &str = "The full report of this turn, in markdown, written for a reviewer who will not open the activity log. Lead with the outcome in one sentence, then say what changed and where (the files that carry it and why), how you verified it and what you could not, the decisions a reviewer would otherwise have to reverse-engineer, and what you deliberately left out or that remains at risk. Leave a heading out rather than pad it. If blocked or failed, lead with what is needed instead.";
+const SUMMARY_DESCRIPTION: &str = concat!("The full report of this turn, in markdown, written for a reviewer who will not open the activity log. Lead with the outcome in one sentence, then say what changed and where (the files that carry it and why), how you verified it and what you could not, the decisions a reviewer would otherwise have to reverse-engineer, and what you deliberately left out or that remains at risk. Leave a heading out rather than pad it. If blocked or failed, lead with what is needed instead.", reference_shapes_note!());
 
 /// What `set_topic` says about itself on every `tools/list`. The cold prompt
 /// asks for the call; this is what is still in context when the agent makes
@@ -2839,6 +2860,50 @@ mod tests {
         "track_task",
         "untrack_task",
     ];
+
+    /// Every body a person reads says how to link a Build thing in it (#229):
+    /// an agent writing a message, a comment or a task sees the shapes where
+    /// it is writing, whatever prompt it was started on.
+    #[test]
+    fn every_readable_body_teaches_the_reference_shapes() {
+        for owner in ["agent-01H", "project-01H"] {
+            let tools = DoneServer::for_owner(owner).tools();
+            let tools = tools.as_array().unwrap();
+            let mut taught = 0;
+            for tool in tools {
+                let name = tool["name"].as_str().unwrap();
+                if !READABLE_BODIES.contains(&name) {
+                    continue;
+                }
+                let body = tool["inputSchema"]["properties"]["body"]["description"]
+                    .as_str()
+                    .unwrap();
+                assert!(
+                    body.ends_with(REFERENCE_SHAPES_NOTE),
+                    "{owner} {name}: {body}"
+                );
+                taught += 1;
+            }
+            assert!(taught >= 4, "{owner} taught only {taught} bodies");
+        }
+    }
+
+    /// The shapes named once, so the sentence cannot drift from what
+    /// spa/src/core/markdownRefs.js parses.
+    #[test]
+    fn the_reference_shapes_note_names_every_shape() {
+        for shape in [
+            "`#42`",
+            "`#42/c/<comment-id>`",
+            "`@agent:<agent-id>`",
+            "`@workspace:<name or id>`",
+            "`@project:<name or id>`",
+            "`[[<workspace>:<path>#L10]]`",
+            "`[[<workspace>:commit:<sha>]]`",
+        ] {
+            assert!(REFERENCE_SHAPES_NOTE.contains(shape), "{shape}");
+        }
+    }
 
     /// `create_task` files a card on the board, not an entry in the harness's
     /// own task list (#190): the description says so first.

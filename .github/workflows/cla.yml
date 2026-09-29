@@ -1,5 +1,6 @@
 # CLA Assistant Lite: every pull request author signs CLA.md once, by comment.
-# Signatures are committed to signatures/cla.json on main.
+# Signatures are committed to signatures/cla.json on the cla-signatures branch,
+# which sits outside main's ruleset so the Actions token can push to it.
 name: CLA
 
 on:
@@ -29,6 +30,6 @@ jobs:
         with:
           path-to-signatures: signatures/cla.json
           path-to-document: https://github.com/${{ github.repository }}/blob/main/CLA.md
-          branch: main
+          branch: cla-signatures
           allowlist: ZechCodes,dependabot[bot]
           custom-pr-sign-comment: I have read the CLA Document and I hereby sign the CLA

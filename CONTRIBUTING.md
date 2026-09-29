@@ -12,6 +12,7 @@ Issues and pull requests are welcome.
 
 Pull requests need a signed [Contributor License Agreement](CLA.md). A bot
 asks on your first pull request; you sign once by replying with the comment it
-gives you, and the signature covers your later pull requests.
+gives you, and the signature covers your later pull requests. Signatures are
+recorded in `signatures/cla.json` on the `cla-signatures` branch.
 
 The project is published under the [license](LICENSE) (AGPL-3.0-only).

@@ -8,6 +8,15 @@ export const esc = (value) =>
     .toString()
     .replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
+/** Text that has been through `esc`, back as it was written. */
+export const unesc = (value) =>
+  value
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&");
+
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** What a refusal says on the surface that asked. A thrown Error carries the

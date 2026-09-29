@@ -212,7 +212,7 @@ describe("references an agent writes", () => {
     const html = markdownHtml("https://example.test/#42/c/tc-7 and https://example.test/?a=1&b=2#42. See #42/c/tc-7", { place });
     expect(html).toContain("https://example.test/#42/c/tc-7");
     expect(html).toContain("https://example.test/?a=1&amp;b=2#42");
-    expect(html.match(/<a /g)).toHaveLength(1);
+    expect(html.match(/<a class="md-ref"/g)).toHaveLength(1);
     expect(html).toContain(">#42 Rebuild · comment</a>");
   });
 

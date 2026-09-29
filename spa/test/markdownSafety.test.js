@@ -10,6 +10,11 @@
 // it, parses the result as a browser would, and checks every element and every
 // attribute against that rule — so a new block that forgot to escape fails
 // here whatever it forgot.
+//
+// Since #256 the renderer also writes web links (core/markdownWebLinks.js): an
+// `a.md-link` whose href is http:, https: or mailto:, opening in a new browsing
+// context with no opener or referrer. Nothing else may carry an href that is
+// not a route.
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -21,8 +26,16 @@ const ALLOWED = {
   P: [], BR: [], HR: ["class"], STRONG: [], CODE: ["class"], PRE: ["class"], UL: [], OL: ["start"], LI: [],
   H1: ["id"], H2: ["id"], H3: ["id"], H4: ["id"], H5: ["id"], H6: ["id"],
   BLOCKQUOTE: ["class"], DIV: ["class"], TABLE: [], THEAD: [], TBODY: [], TR: [],
-  TH: ["style"], TD: ["style"], A: ["class", "href", "title"], SPAN: ["class", "title"],
+  TH: ["style"], TD: ["style"], A: ["class", "href", "title", "target", "rel"], SPAN: ["class", "title"],
 };
+
+/** A route anywhere, or a web link that opens outside with no opener. */
+const WEB_HREF = /^(?:https?:\/\/[^/\\]|mailto:)/i;
+function hrefAllowed(element, value) {
+  if (value.startsWith("#/")) return !element.hasAttribute("target") && !element.hasAttribute("rel");
+  return element.className === "md-link" && WEB_HREF.test(value)
+    && element.getAttribute("target") === "_blank" && element.getAttribute("rel") === "noopener noreferrer nofollow";
+}
 
 /** Every way the rule can be broken, found in one rendering. */
 function violations(html) {
@@ -34,7 +47,7 @@ function violations(html) {
     if (!allowed) found.push(`<${element.tagName.toLowerCase()}>`);
     for (const { name, value } of element.attributes) {
       if (!allowed?.includes(name)) found.push(`${element.tagName.toLowerCase()}[${name}]`);
-      if (name === "href" && !value.startsWith("#/")) found.push(`href=${value}`);
+      if (name === "href" && !hrefAllowed(element, value)) found.push(`href=${value}`);
       if (name === "style" && !/^text-align:(left|right|center)$/.test(value)) found.push(`style=${value}`);
     }
   }
@@ -55,6 +68,13 @@ const PAYLOADS = [
   "`</code><script>alert(1)</script>`",
   "**<b onclick=alert(1)>bold</b>**",
   "&lt;script&gt; and &amp;lt;",
+  "[x](JaVa\tScRiPt:alert(1))",
+  "[x]( javascript:alert(1))",
+  "[x](vbscript:msgbox(1)) [y](file:///etc/passwd) [z](//evil.test)",
+  '[x](https://a.test/"onmouseover="alert(1)) https://b.test/"onmouseover="alert(1)',
+  '[x](https://a.test "\"><img src=x onerror=alert(1)>")',
+  "[<img src=x onerror=alert(1)>](https://a.test) https://a.test/<svg/onload=alert(1)>",
+  "[x](https://a.test/`code`) `[y](https://b.test)`",
 ];
 
 /** Each payload in every block that can hold it. */
@@ -93,11 +113,28 @@ describe("hostile input through the one renderer", () => {
     expect(host.textContent).toBe("<script>alert(1)</script>");
   });
 
-  it("writes no link for a javascript: or data: URL", () => {
-    for (const url of ["javascript:alert(1)", "data:text/html,<script>alert(1)</script>", "JaVaScRiPt:alert(1)"]) {
+  it("writes no link for a javascript:, data:, vbscript:, file: or protocol-relative URL", () => {
+    for (const url of ["javascript:alert(1)", "data:text/html,<script>alert(1)</script>", "JaVaScRiPt:alert(1)",
+      "vbscript:msgbox(1)", "file:///etc/passwd", "//evil.test/x", "java\tscript:alert(1)"]) {
       const html = markdownHtml(`[x](${url}) <${url}> ${url}`);
       expect(html).not.toContain("<a ");
     }
+  });
+
+  // The negative control for the refusals above and for violations(): the same
+  // shapes with an allowed address do link, and pass the rule.
+  it("writes a web link for http, https and mailto, and the rule accepts it", () => {
+    const html = markdownHtml("[x](https://a.test) [y](mailto:a@b.test) http://c.test");
+    expect(html.match(/<a class="md-link"/g)).toHaveLength(3);
+    expect(violations(html)).toEqual([]);
+  });
+
+  it("rejects a web link that could reach its opener (violations() has teeth)", () => {
+    expect(violations('<a class="md-link" href="https://a.test" target="_blank">x</a>')).toEqual(["href=https://a.test"]);
+    expect(violations('<a class="md-link" href="javascript:alert(1)" target="_blank" rel="noopener noreferrer nofollow">x</a>'))
+      .toEqual(["href=javascript:alert(1)"]);
+    expect(violations('<a class="md-ref" href="https://a.test" target="_blank" rel="noopener noreferrer nofollow">x</a>'))
+      .toEqual(["href=https://a.test"]);
   });
 
   it("answers plain text with no markup in plain mode", () => {
@@ -185,6 +222,25 @@ describe("nesting that tries to exhaust the reader", () => {
       const html = markdownHtml(source);
       expect(performance.now() - started).toBeLessThan(500);
       expect(html).toContain("<li>a</li><li>b</li>");
+    }
+  });
+
+  // #256: the web-link readers see brackets, parentheses and addresses, and
+  // none of them may go back over what it has read.
+  it("reads long runs of link punctuation in linear time", () => {
+    const n = 100000;
+    const sources = [
+      "[".repeat(n), "]".repeat(n), "(".repeat(n), ")".repeat(n), "](".repeat(n / 2), "[](".repeat(n / 3),
+      "[a](".repeat(n / 4), "[a](b".repeat(n / 5), "[a](b(".repeat(n / 6), `[a](b ${"&quot;".repeat(n / 6)}`,
+      '[a](b "'.repeat(n / 7), "https://".repeat(n / 8), `https://a.test/${")".repeat(n)}`, `https://a.test/${"(".repeat(n)}.`,
+      `https://a.test/${".".repeat(n)}x`, "`[a](".repeat(n / 5), `[${"`x`".repeat(n / 3)}](https://a.test)`,
+    ];
+    for (const source of sources) {
+      for (const mode of ["block", "inline"]) {
+        const started = performance.now();
+        markdownHtml(source, { mode });
+        expect([source.slice(0, 12), mode, performance.now() - started < 500]).toEqual([source.slice(0, 12), mode, true]);
+      }
     }
   });
 

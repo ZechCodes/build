@@ -359,6 +359,23 @@ fn the_shutdown_records_the_roster_before_tearing_anything_down() {
     assert!(!live_path(dir.path()).exists());
 }
 
+/// #213: the teardown stops the harnesses, and each death settles its turn as
+/// over. Those settles land after the seal, so the roster the next boot reads
+/// still names the agent that was working when the shutdown began.
+#[test]
+fn harnesses_dying_in_the_teardown_do_not_empty_the_recorded_roster() {
+    let dir = tempfile::tempdir().unwrap();
+    let live = LiveRoster::start(dir.path(), "0.2.2");
+    live.set_entity("run-1", vec![working("agent-1")]);
+    shut_down(&live, || {
+        live.set_entity("run-1", Vec::new());
+        live.forget_entity("run-1");
+    });
+
+    let roster = ResumeRoster::take(dir.path()).expect("the shutdown wrote a roster");
+    assert_eq!(roster.agents, vec![working("agent-1")]);
+}
+
 /// The files are addresses, not content: ids, a session id, a time and a
 /// version. Nothing an agent or a person said can ride along, because the
 /// record has nowhere to put it.

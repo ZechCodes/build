@@ -550,9 +550,17 @@ fn next_scope_name(kind: ChildKind) -> String {
 /// The `busctl` call that starts a scope named `name` holding `pid` in the
 /// kind's slice: the manager's `StartTransientUnit`, with the properties
 /// `systemd-run --scope --collect --slice=…` would set, and, when the daemon
-/// has a unit, `BindsTo=`/`After=` on it so the scope is stopped when the
+/// has a unit, `BindsTo=`/`Before=` on it so the scope is stopped when the
 /// daemon's unit is — the `KillMode=control-group` the children had while
 /// they lived inside it, kept now that they do not.
+///
+/// `Before=`, not `After=`: stop jobs run in the reverse of start order, so a
+/// scope ordered after the daemon is stopped, and waited for, before the
+/// daemon's SIGTERM. Its harness would die mid-turn while the daemon still
+/// runs and settle as a turn that ended, and the shutdown would record nobody
+/// to bring back (#213). Ordered before it, the daemon goes down first: it
+/// records who was working, stops the scopes itself, and `BindsTo=` then
+/// stops any it missed.
 pub fn start_transient_unit_arguments(
     name: &str,
     kind: ChildKind,
@@ -575,7 +583,7 @@ pub fn start_transient_unit_arguments(
     ];
     if let Some(unit) = bound_to {
         properties.push(vec!["BindsTo".into(), "as".into(), "1".into(), unit.into()]);
-        properties.push(vec!["After".into(), "as".into(), "1".into(), unit.into()]);
+        properties.push(vec!["Before".into(), "as".into(), "1".into(), unit.into()]);
     }
     let mut argv: Vec<String> = vec![
         "--user".into(),
@@ -901,7 +909,9 @@ mod tests {
             "{joined}"
         );
         assert!(
-            joined.ends_with("BindsTo as 1 build-bridge.service After as 1 build-bridge.service 0"),
+            joined.ends_with(
+                "BindsTo as 1 build-bridge.service Before as 1 build-bridge.service 0"
+            ),
             "{joined}"
         );
     }

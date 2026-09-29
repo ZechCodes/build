@@ -14,11 +14,11 @@ it.each(["list", "board"])("opens the mounted %s assignment picker before and af
     await page.evaluate(async ({ fixture, view }) => {
       const { cache, tasksPane } = window.__layoutModules;
       const task = structuredClone(fixture.result.task);
-      const workspace = { id: "ws-3f2a91c4", workspace_id: "ws-3f2a91c4", name: "spa-flaky-tests", projectKey: "dev-1|proj-1" };
-      const feed = { projects: [{ id: "proj-1", name: "Build", projectKey: "dev-1|proj-1" }], workspaces: [workspace], items: [] };
+      const workspace = { id: "ws-3f2a91c4", workspace_id: "ws-3f2a91c4", name: "spa-flaky-tests", projectKey: "dev-1/proj-1" };
+      const feed = { projects: [{ id: "proj-1", name: "Build", projectKey: "dev-1/proj-1" }], workspaces: [workspace], items: [] };
       await cache.writeTasksRecord("dev-1", "proj-1", { tasks: [task], columns: [] });
       const pane = tasksPane.mountTasksPane(document.querySelector("#tasks"), {
-        deviceId: "dev-1", projectId: "proj-1", projectKey: "dev-1|proj-1", view,
+        deviceId: "dev-1", projectId: "proj-1", projectKey: "dev-1/proj-1", view,
         feed: () => feed, callRpc: () => new Promise(() => {}),
         catalog: () => ({ providers: [] }), refreshCatalog: async () => ({ providers: [] }), navigate: () => {},
       });
@@ -79,13 +79,13 @@ it("opens each unwatched identity from mounted task, list, board and notice, the
         { type: "event", id: "te-mounted", kind: "assigned", actor: { kind: "user" }, payload: { assignee: actor }, at: "2026-09-23T19:01:00Z" },
         { type: "event", id: "te-dispatched", kind: "dispatched", actor: { kind: "user" }, payload: { agent_id: agentId }, at: "2026-09-23T19:02:00Z" },
       ];
-      const feed = { projects: [{ id: "proj-1", name: "Build", projectKey: "dev-1|proj-1" }],
+      const feed = { projects: [{ id: "proj-1", name: "Build", projectKey: "dev-1/proj-1" }],
         workspaces: [{ id: workspaceId, workspace_id: workspaceId, name: "spa-flaky-tests",
-          projectKey: "dev-1|proj-1", entity_id: "run-unwatched", deviceId: "dev-1", project_id: "proj-1" }], items: [] };
+          projectKey: "dev-1/proj-1", entity_id: "run-unwatched", deviceId: "dev-1", project_id: "proj-1" }], items: [] };
       // The app fills the reference index from this same feed
       // (core/referenceIndexFeed.js, #229); nothing here starts that feed.
       references.holdReferenceSources({ feed, tasks: {} });
-      const common = { deviceId: "dev-1", projectId: "proj-1", projectKey: "dev-1|proj-1",
+      const common = { deviceId: "dev-1", projectId: "proj-1", projectKey: "dev-1/proj-1",
         feed: () => feed, callRpc: async (method) => method === "tasks.get" ? { task, timeline }
           : method === "tasks.list" ? { tasks: [task], columns: [] } : {},
         catalog: () => ({ providers: [] }), refreshCatalog: async () => ({ providers: [] }), navigate: () => {} };

@@ -40,7 +40,7 @@ it("reconciles a real agent removal into mounted task, list and board identities
       const identity = task.identities[task.assignee.agent_id];
       const deviceId = "identity-removal-device";
       const projectId = task.project_id;
-      const projectKey = `${deviceId}|${projectId}`;
+      const projectKey = `${deviceId}/${projectId}`;
       const feed = {
         projects: [{ id: projectId, name: "Build", projectKey }],
         workspaces: [{ id: identity.workspace_id, workspace_id: identity.workspace_id, name: identity.workspace_name, projectKey,

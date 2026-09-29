@@ -174,6 +174,8 @@ struct FileScan {
     paths: Vec<Vec<String>>,
     impl_targets: Vec<Vec<String>>,
     errors: Vec<String>,
+    /// `#![macro_use]` at the top of the file.
+    inner_macro_use: bool,
 }
 
 struct References<'a> {
@@ -298,7 +300,7 @@ impl References<'_> {
 
 impl<'ast> Visit<'ast> for References<'_> {
     fn visit_file(&mut self, file: &'ast syn::File) {
-        self.refuse_macro_use(&file.attrs);
+        self.scan.inner_macro_use = file.attrs.iter().any(|a| a.path().is_ident("macro_use"));
         syn::visit::visit_file(self, file);
     }
 
@@ -524,6 +526,7 @@ impl<'a> Walk<'a> {
     /// Follow references to a fixed point, then pull in every module that
     /// implements a type already reached, and follow again.
     fn run(&mut self) {
+        self.refuse_inner_macro_use();
         loop {
             while let Some(file) = self.pending.pop() {
                 if self.files.insert(file.clone()) {
@@ -535,6 +538,23 @@ impl<'a> Walk<'a> {
                 return;
             }
             self.pending.extend(implementers);
+        }
+    }
+
+    /// `#![macro_use]` in any file of the crate, reached or not: it exports
+    /// that module's macros by bare name to every module declared after it,
+    /// so the relay can call them with no path leading there.
+    fn refuse_inner_macro_use(&mut self) {
+        let mut every_file = Vec::new();
+        collect_rust_files(&self.tree.src, &mut every_file);
+        every_file.sort();
+        for file in every_file {
+            if self.scan(&file).inner_macro_use {
+                let at = self.relative(&file);
+                self.errors.push(format!(
+                    "{at}: `#![macro_use]` makes macros callable by a bare name the walk cannot follow"
+                ));
+            }
         }
     }
 
@@ -826,4 +846,16 @@ fn an_alias_of_the_crate_root_in_the_library_is_refused() {
     assert_refused(fixture_closure("use crate as c;", &[]), "`crate`");
     assert_refused(fixture_closure("use crate::{self as c};", &[]), "`crate`");
     assert_refused(fixture_closure("use super as up;", &[]), "`super`");
+}
+
+#[test]
+fn an_inner_macro_use_outside_the_closure_is_refused() {
+    let priority = format!(
+        "#![macro_use]\n{FIXTURE_PRIORITY}macro_rules! relay_probe_value {{ () => {{ \"probe\" }} }}\n"
+    );
+    let result = fixture_closure(
+        "let _ = relay_probe_value!();",
+        &[("priority.rs", &priority)],
+    );
+    assert_refused(result, "priority.rs: `#![macro_use]`");
 }

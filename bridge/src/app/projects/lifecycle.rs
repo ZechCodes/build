@@ -54,7 +54,7 @@ impl AppState {
             }
             return Err(error);
         }
-        let reply = self.project_json(project.project(), opened.remote);
+        let reply = self.project_json(project.project());
         self.insert_project(project);
         Ok(reply)
     }
@@ -87,8 +87,7 @@ impl AppState {
             .projects
             .get(project_id)
             .expect("the project was just resolved");
-        let remote = crate::worktree::git_remote_origin(&project.repo_path);
-        Ok(self.project_json(project, remote))
+        Ok(self.project_json(project))
     }
 
     /// Register the repository opened by any project-creation door.
@@ -97,7 +96,7 @@ impl AppState {
         opened: crate::lifecycle::OpenedRepository,
     ) -> Result<Value, String> {
         if let Some(existing) = self.projects.find_by_canonical_path(&opened.path) {
-            return Ok(self.project_json(existing, opened.remote));
+            return Ok(self.project_json(existing));
         }
         let project = self.project_candidate(opened.path, opened.base, opened.is_git);
         let config = self.config_value_with_project(
@@ -112,21 +111,17 @@ impl AppState {
             }
             return Err(error);
         }
-        let reply = self.project_json(project.project(), opened.remote);
+        let reply = self.project_json(project.project());
         self.insert_project(project);
         Ok(reply)
     }
 
-    pub(in crate::app) fn settle_remote_change(
-        &self,
-        project_id: &str,
-        changed: crate::lifecycle::RemoteChanged,
-    ) -> Result<Value, String> {
+    pub(in crate::app) fn settle_remote_change(&self, project_id: &str) -> Result<Value, String> {
         let project = self
             .projects
             .iter()
             .find(|project| project.id == project_id)
             .ok_or_else(|| format!("unknown project: {project_id}"))?;
-        Ok(self.project_json(project, changed.remote))
+        Ok(self.project_json(project))
     }
 }

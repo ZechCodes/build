@@ -8,7 +8,6 @@ use crate::lifecycle::{
     SetRemote, WorktreeChange, WorktreeMutation,
 };
 use crate::remote_url::usable_remote_url;
-use crate::worktree::git_remote_origin;
 use serde_json::Value;
 
 struct SourceRequest {
@@ -40,10 +39,7 @@ impl TakenSourceNames {
     fn over(sources: &[ProjectSource]) -> Self {
         TakenSourceNames {
             paths: sources.iter().map(|source| source.path.clone()).collect(),
-            remotes: sources
-                .iter()
-                .filter_map(|source| source.remote.clone())
-                .collect(),
+            remotes: sources.iter().filter_map(ProjectSource::origin).collect(),
             mounts: sources.iter().map(|source| source.mount.clone()).collect(),
         }
     }
@@ -164,7 +160,6 @@ impl WorktreeMutation for OpenProjectSources {
                 path: opened.path.clone(),
                 is_git: opened.is_git,
                 base_branch: opened.base.clone(),
-                remote: opened.remote.clone().or(request.remote),
             });
             if primary.is_none() {
                 primary = Some(opened);
@@ -326,7 +321,8 @@ impl AppState {
                 .projects
                 .iter()
                 .flat_map(|project| &project.sources)
-                .any(|source| source.remote.as_deref() == Some(remote))
+                .filter_map(ProjectSource::origin)
+                .any(|origin| crate::worktree::remotes_match(&origin, remote))
             {
                 return Err(format!("source remote is already registered: {remote}"));
             }
@@ -499,8 +495,7 @@ impl AppState {
             .projects
             .get(&project_id)
             .expect("the project was just resolved");
-        let remote = git_remote_origin(&project.repo_path);
-        Ok(self.project_json(project, remote))
+        Ok(self.project_json(project))
     }
 
     /// Set (or clear, with an empty url) a project's `origin` remote.
@@ -560,7 +555,6 @@ impl AppState {
             .projects
             .get(&project_id)
             .expect("the project was just resolved");
-        let remote = git_remote_origin(&project.repo_path);
-        Ok(self.project_json(project, remote))
+        Ok(self.project_json(project))
     }
 }

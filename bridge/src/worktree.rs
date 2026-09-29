@@ -11,8 +11,8 @@ pub use crate::isolation::{
     ResolvedIsolation, WorktreeError,
 };
 pub(crate) use command::{
-    bounded_git_fetch, configured_remote_for_branch, git_default_branch, git_in, git_remote_origin,
-    git_stdout, remotes_match, unix_now,
+    bounded_git_fetch, configured_remote_for_branch, git_default_branch, git_in, git_origin_url,
+    git_remote_origin, git_stdout, remotes_match, unix_now,
 };
 pub(crate) use comparison::branch_comparison;
 pub use discovery::{

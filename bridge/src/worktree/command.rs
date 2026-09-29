@@ -43,6 +43,18 @@ pub(crate) fn git_remote_origin(dir: &Path) -> Option<String> {
     (!url.is_empty()).then_some(url)
 }
 
+/// The same answer as [`git_remote_origin`], read from the repository's config
+/// in process rather than by a git subprocess: cheap enough for a reply built
+/// under the app mutex.
+pub(crate) fn git_origin_url(dir: &Path) -> Option<String> {
+    let repository = git2::Repository::open(dir).ok()?;
+    let remote = repository.find_remote("origin").ok()?;
+    remote
+        .url()
+        .filter(|url| !url.is_empty())
+        .map(str::to_string)
+}
+
 /// Whether two clone URLs point at the same repo, ignoring a trailing `/` or
 /// `.git`. A loose check — enough to catch "already cloned" without surprises.
 pub(crate) fn remotes_match(a: &str, b: &str) -> bool {

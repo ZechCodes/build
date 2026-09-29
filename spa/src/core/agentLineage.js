@@ -15,9 +15,10 @@ import { ROW_RECORD_KIND, cachedFeedView } from "./cachedRows.js";
 import { AGENT_LINEAGE_SUPPORT_KIND, readAgentLineageSupport } from "./agentLineageSupport.js";
 import { agentLineage, buildAgentEntries, lineageMembers, lineagePrint, withRollup } from "./agentLineageModel.js";
 
-/** The cache writes a read answers to: a row, or what a greeting said about
- *  whether the bridge names makers. */
-const REREAD_KINDS = new Set([ROW_RECORD_KIND, AGENT_LINEAGE_SUPPORT_KIND]);
+/** The cache writes a read answers to: a row, the workspace and project lists
+ *  that say whose run a row is (#226), or what a greeting said about whether
+ *  the bridge names makers. */
+const REREAD_KINDS = new Set([ROW_RECORD_KIND, "workspaces", "projects", AGENT_LINEAGE_SUPPORT_KIND]);
 
 /**
  * Mount the reader. `onChanged` is called when a read lands whose answers
@@ -45,12 +46,12 @@ export function mountAgentLineage({ deviceId, projectId, onChanged } = {}) {
     }
   }
 
-  /** The rows, and whether the bridge that wrote them names makers
-   *  (`agents.createdBy`, #221): both off the cache. */
+  /** The rows, the lists that say where each lives, and whether the bridge
+   *  that wrote them names makers (`agents.createdBy`, #221): all off the cache. */
   async function readOnce() {
-    const [{ items }, namesMakers] = await Promise.all([cachedFeedView(deviceId), readAgentLineageSupport(deviceId)]);
+    const [{ items, workspaces, projects }, namesMakers] = await Promise.all([cachedFeedView(deviceId), readAgentLineageSupport(deviceId)]);
     if (state.disposed) return;
-    const members = lineageMembers(items, { projectId });
+    const members = lineageMembers(items, { projectId, workspaces, projects });
     const print = `${namesMakers}${lineagePrint(members)}`;
     if (print === state.print) return;
     state.print = print;

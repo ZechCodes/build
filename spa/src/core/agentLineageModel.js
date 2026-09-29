@@ -17,23 +17,43 @@
 import { agentDisplayName } from "./agentName.js";
 import { entityIdOf } from "./entityId.js";
 import { conversationRoute } from "./router.js";
+import { workspaceDisplayName } from "./workspaceModel.js";
 
 const NOTHING_RUNNING = Object.freeze({ running: false, agentsRunning: 0, since: null });
 
 const SUBAGENT_RUNNING_STATE = "running";
 
+/** The conversation a workspace or a project holds, as its list names it. */
+const ownedEntityOf = (owner) => owner?.entity_id || owner?.run_id || null;
+
+/** Where each owned conversation lives, by its entity (#226). The bridge files
+ *  every agent on its run's branch row, a workspace's and the project agent's
+ *  included; only the cached workspace and project lists say whose run it is. */
+function placesByEntity(workspaces, projects) {
+  const places = new Map();
+  const place = (owner, where) => ownedEntityOf(owner) && places.set(ownedEntityOf(owner), where);
+  for (const project of projects || []) place(project, { kind: "project", workspaceId: null, workspaceName: "" });
+  for (const workspace of workspaces || []) {
+    place(workspace, { kind: "workspace", workspaceId: workspace.id || null, workspaceName: workspaceDisplayName(workspace, "") });
+  }
+  return places;
+}
+
+/** Where a row's agents live when no workspace or project owns its run: what
+ *  the row says of itself. */
+const rowPlace = (row) => ({ kind: row.kind || "", workspaceId: row.workspace_id || null, workspaceName: row.title || row.name || "" });
+
 /** Every agent the project's rows carry, with where it lives: the entity its
  *  conversation is on and, for a workspace's agent, the workspace. */
-export function lineageMembers(rows, { projectId } = {}) {
+export function lineageMembers(rows, { projectId, workspaces = [], projects = [] } = {}) {
+  const places = placesByEntity(workspaces, projects);
   return (rows || [])
     .filter((row) => row && Array.isArray(row.agents) && (!projectId || row.project_id === projectId))
-    .flatMap((row) => row.agents.filter((agent) => agent && agent.id).map((agent) => ({
-      agent,
-      kind: row.kind || "",
-      entityId: entityIdOf(row),
-      workspaceId: row.workspace_id || null,
-      workspaceName: row.title || row.name || "",
-    })));
+    .flatMap((row) => {
+      const entityId = entityIdOf(row);
+      const where = places.get(entityId) || rowPlace(row);
+      return row.agents.filter((agent) => agent && agent.id).map((agent) => ({ agent, entityId, ...where }));
+    });
 }
 
 const runningSubagents = (agent) => (Array.isArray(agent?.surfaces?.subagents) ? agent.surfaces.subagents : [])
@@ -145,6 +165,9 @@ export function buildAgentEntries(lineage, agentId) {
       workspace_id: member.workspaceId,
       workspace_name: member.workspaceName,
       kind: member.kind,
+      // What the rail says it runs: the model now, else the one it starts on.
+      model: member.agent.active_model || member.agent.model || "",
+      provider: member.agent.provider || "",
     };
   });
 }
@@ -157,8 +180,10 @@ const CHAT_PAGES = {
 };
 
 /** Which page a Build agent's chat opens on, or null when it is on neither —
- *  its row is then not pressable at all, rather than pressable for nothing. */
-export const buildAgentChatKind = ({ kind, workspaceId }) => (CHAT_PAGES[kind]?.({ workspaceId }) ? kind : null);
+ *  its row is then not pressable at all, rather than pressable for nothing. A
+ *  row that names its workspace opens there, whatever kind it is (#226). */
+export const buildAgentChatKind = ({ kind, workspaceId }) =>
+  [kind, "workspace"].find((page) => CHAT_PAGES[page]?.({ workspaceId })) || null;
 
 /** The route a press on a Build agent's row goes to: the same conversation
  *  route every other link to an agent's chat is written from. */
@@ -172,8 +197,9 @@ export function buildAgentChatRoute({ agentId, kind, workspaceId }, { deviceId, 
  *  a row rewritten for anything else (a message, a read cursor) moves nothing
  *  drawn from here. */
 export function lineagePrint(members) {
-  return JSON.stringify(members.map(({ agent, entityId, workspaceId, workspaceName }) => [
+  return JSON.stringify(members.map(({ agent, kind, entityId, workspaceId, workspaceName }) => [
     agent.id, agent.created_by || null, agent.name || null, agent.ordinal || null, !!agent.working,
+    kind, agent.provider || null, agent.active_model || null, agent.model || null,
     agent.working_time?.since || null, agent.start_error || null,
     runningSubagents(agent).map((entry) => entry.started_at ?? null),
     entityId, workspaceId, workspaceName,

@@ -497,6 +497,7 @@ fn conversation_prompt_says_where_the_user_is_talked_to() {
         ASKED_IN_THREAD,
         RESULT_ON_TASK,
         BUILD_ON,
+        WHOLE_REPORT_UNLESS,
     ] {
         assert!(says(&prompt, rule), "{rule:?} missing: {prompt}");
     }

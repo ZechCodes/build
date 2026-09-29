@@ -320,6 +320,13 @@ mod tests {
                 template.contains("`body` is the whole report"),
                 "{template}"
             );
+            assert!(
+                crate::test_support::user_involvement::says(
+                    template,
+                    crate::test_support::user_involvement::RESULT_ON_TASK
+                ),
+                "the whole report's one exception (#232): {template}"
+            );
             for asked in ["what changed", "verified", "reverse-engineer", "left out"] {
                 assert!(template.contains(asked), "{asked} missing from {template}");
             }
@@ -956,7 +963,7 @@ mod tests {
             // And the rules that were there before these three arrived.
             for kept in [
                 "read it with `get_task` before you start",
-                "Comment your progress on it with `comment_task` as you go",
+                "Comment meaningful progress on it with `comment_task` as you go",
                 "Move it to In review with `move_task` when you report Complete.",
                 "Hand work off by ASSIGNING the task, not by messaging.",
                 "File a Build task for follow-up work you find and do not do.",
@@ -966,10 +973,6 @@ mod tests {
         }
     }
 
-    /// A Build task is a card on the project's board, and the harness has task
-    /// tools of its own (#190). The note says which is which before anything
-    /// else, so an agent never files steps on the board or thinks TaskCreate
-    /// put something there.
     /// Every template with the task tools says when the user is involved on a
     /// task (#232), in the one wording the tool descriptions use; the old
     /// advice to watch whatever the user asked for is gone.
@@ -986,6 +989,7 @@ mod tests {
                 ASKED_IN_THREAD,
                 RESULT_ON_TASK,
                 BUILD_ON,
+                COMMENT_NOTIFY,
             ] {
                 assert!(says(template, rule), "{name} does not say {rule:?}");
             }
@@ -1002,6 +1006,10 @@ mod tests {
         }
     }
 
+    /// A Build task is a card on the project's board, and the harness has task
+    /// tools of its own (#190). The note says which is which before anything
+    /// else, so an agent never files steps on the board or thinks TaskCreate
+    /// put something there.
     #[test]
     fn the_task_tools_say_a_build_task_is_not_the_harness_own_list() {
         let text = collapse_whitespace(TASK_TOOLS_NOTE);

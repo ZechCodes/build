@@ -2957,6 +2957,14 @@ mod tests {
                     &[ON_A_TASK, ASKED_IN_THREAD, RESULT_ON_TASK],
                 ),
                 (
+                    "post_thread_message.body",
+                    text(
+                        &tool("post_thread_message")["inputSchema"]["properties"]["body"]
+                            ["description"],
+                    ),
+                    &[RESULT_ON_TASK],
+                ),
+                (
                     "create_task",
                     text(&create["description"]),
                     &[FLAG_SPLIT, REPORTED],
@@ -2973,14 +2981,15 @@ mod tests {
                         ON_A_TASK,
                         REPLY_THERE,
                         ASKED_IN_THREAD,
+                        "The task is also where you ANSWER",
                         BUILD_ON,
-                        FLAG_SPLIT,
+                        COMMENT_NOTIFY,
                     ],
                 ),
                 (
                     "comment_task.notify_user",
                     text(&comment["inputSchema"]["properties"]["notify_user"]["description"]),
-                    &[WATCH_TASK],
+                    &[COMMENT_NOTIFY],
                 ),
                 (
                     "assign_task.notify_user",
@@ -3027,6 +3036,14 @@ mod tests {
             .as_str()
             .unwrap();
         assert!(says(flag, WATCH_AGENT), "{flag}");
+        let description = add["description"].as_str().unwrap();
+        assert!(
+            says(
+                description,
+                "The agent is unwatched unless you pass notify_user: true."
+            ),
+            "{description}"
+        );
     }
 
     #[test]

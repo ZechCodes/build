@@ -560,6 +560,10 @@ pub struct AgentDigest {
     /// that long.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// The agent whose Build MCP call made this one (since 3.1.0, announced
+    /// as `agents.createdBy`). Absent for an agent the user made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
     /// Tokens in context on the agent's last reported turn. Absent until a
     /// harness reports one, and again once a compaction has been asked for.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -406,6 +406,7 @@ impl AppState {
                     choice.args(),
                     agent_name.as_deref(),
                     notify_user.unwrap_or(matches!(actor, Actor::User)),
+                    actor.agent_id(),
                 )?;
                 return self
                     .hand_over(task, &added.1, &added.0, note, sender)
@@ -449,6 +450,7 @@ impl AppState {
         choice: AgentChoiceArgs<'_>,
         agent_name: Option<&str>,
         notify_user: bool,
+        created_by: Option<&str>,
     ) -> Result<(String, String), String> {
         let workspace = self
             .workspaces
@@ -478,6 +480,11 @@ impl AppState {
         // An explicit notify_user on the assignee overrides either default.
         params["made_by_agent"] = json!(true);
         params["notify_user"] = json!(notify_user);
+        // The agent that assigned it, when one did (#216): what puts the new
+        // agent in that agent's activity panel.
+        if let Some(created_by) = created_by {
+            params["created_by"] = json!(created_by);
+        }
         let added = self.agent_add(&params)?;
         let agent_id = added["agent"]["id"]
             .as_str()
@@ -737,6 +744,7 @@ impl AppState {
             plan.choice.args(),
             plan.agent_name.as_deref(),
             plan.notify_user,
+            plan.actor.agent_id(),
         )?;
         let sender = plan
             .sender

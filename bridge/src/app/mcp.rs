@@ -579,7 +579,10 @@ impl AppState {
                 role,
                 capability,
             } => self.project_agent_add_workspace_agent(
-                entity_id,
+                crate::app::AgentSender {
+                    entity_id,
+                    agent_id,
+                },
                 workspace_id,
                 crate::app::AgentChoiceArgs {
                     harness: harness.as_deref(),

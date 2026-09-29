@@ -1114,6 +1114,13 @@ impl AppState {
             // otherwise an agent spawning three puts three rows in front of
             // somebody who asked for one thing.
             agent.watched = watching_asked(params);
+            // Which agent's Build MCP call this is (#216). Only the bridge's
+            // own callers set it: `agent.add` over the wire declares no such
+            // param, so a client cannot claim a creator.
+            agent.created_by = params
+                .get("created_by")
+                .and_then(Value::as_str)
+                .map(str::to_string);
         }
         let added = active
             .agents
@@ -1528,6 +1535,9 @@ impl AppState {
             // field — or is looking at an agent that has no name yet — falls
             // back to the ordinal, which has not moved.
             "name": agent.name,
+            // The agent whose Build MCP call made this one (#216), for the
+            // creator's activity panel; null for one the user made.
+            "created_by": agent.created_by,
             // What the last turn left in context and what the session's cache
             // reads have come to, as the harness reported them; null until it
             // has. The threshold is the conversation's own when it set one,

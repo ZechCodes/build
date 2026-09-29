@@ -233,13 +233,13 @@ impl AppState {
     /// workspace that already owns one keeps it.
     pub(in crate::app) fn project_agent_add_workspace_agent(
         &mut self,
-        owner_id: &str,
+        caller: crate::app::AgentSender<'_>,
         workspace_id: &str,
         choice: AgentChoiceArgs<'_>,
         name: Option<&str>,
         notify_user: Option<bool>,
     ) -> Result<Value, String> {
-        self.project_agent_workspace(owner_id, workspace_id)?;
+        self.project_agent_workspace(caller.entity_id, workspace_id)?;
         let mut params = choice.params();
         params["workspace_id"] = json!(workspace_id);
         let conversation = self.workspace_ensure_conversation(&params)?;
@@ -256,6 +256,7 @@ impl AppState {
         // An agent asked for this one, so the user only sees it if the agent
         // said they should.
         params["made_by_agent"] = json!(true);
+        params["created_by"] = json!(caller.agent_id);
         if let Some(notify_user) = notify_user {
             params["notify_user"] = json!(notify_user);
         }

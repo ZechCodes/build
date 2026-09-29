@@ -55,10 +55,18 @@ fn an_agent_added_over_mcp_names_the_agent_that_added_it() {
 
     assert_eq!(added["agent"]["created_by"], caller, "{added:?}");
     assert_eq!(
-        state.runs[&entity_id].agents.by_id(&worker).unwrap().created_by.as_deref(),
+        state.runs[&entity_id]
+            .agents
+            .by_id(&worker)
+            .unwrap()
+            .created_by
+            .as_deref(),
         Some(caller.as_str())
     );
-    assert_eq!(digest_on_row(&mut state, &entity_id, &worker)["created_by"], caller);
+    assert_eq!(
+        digest_on_row(&mut state, &entity_id, &worker)["created_by"],
+        caller
+    );
 }
 
 #[test]
@@ -68,7 +76,10 @@ fn an_agent_the_user_added_names_no_creator() {
     let (_home, mut state, project_id) = tracked(&state_root);
     let (entity_id, agent_id) = coding_agent(&mut state, &project_id, "mine");
 
-    assert_eq!(digest_on_row(&mut state, &entity_id, &agent_id)["created_by"], Value::Null);
+    assert_eq!(
+        digest_on_row(&mut state, &entity_id, &agent_id)["created_by"],
+        Value::Null
+    );
 }
 
 /// The wire cannot claim a creator: only an MCP call made by an agent can.
@@ -112,10 +123,19 @@ fn a_task_assigned_to_a_new_agent_names_the_agent_that_assigned_it() {
             },
         )
         .expect("the MCP call assigns to a new agent");
-    let entity_id = assigned["dispatch"]["entity_id"].as_str().unwrap().to_string();
-    let agent_id = assigned["dispatch"]["agent_id"].as_str().unwrap().to_string();
+    let entity_id = assigned["dispatch"]["entity_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let agent_id = assigned["dispatch"]["agent_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
-    assert_eq!(digest_on_row(&mut state, &entity_id, &agent_id)["created_by"], caller.1);
+    assert_eq!(
+        digest_on_row(&mut state, &entity_id, &agent_id)["created_by"],
+        caller.1
+    );
 }
 
 #[test]
@@ -142,10 +162,19 @@ fn a_task_assigned_to_a_new_workspace_names_the_agent_that_assigned_it() {
             },
         )
         .expect("the MCP call cuts a workspace and assigns its agent");
-    let entity_id = assigned["dispatch"]["entity_id"].as_str().unwrap().to_string();
-    let agent_id = assigned["dispatch"]["agent_id"].as_str().unwrap().to_string();
+    let entity_id = assigned["dispatch"]["entity_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let agent_id = assigned["dispatch"]["agent_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
-    assert_eq!(digest_on_row(&mut state, &entity_id, &agent_id)["created_by"], caller.1);
+    assert_eq!(
+        digest_on_row(&mut state, &entity_id, &agent_id)["created_by"],
+        caller.1
+    );
 }
 
 /// A task the USER hands to a new agent was not made by any agent.
@@ -172,5 +201,8 @@ fn a_task_the_user_assigns_to_a_new_agent_names_no_creator() {
     let entity_id = dispatch["entity_id"].as_str().unwrap().to_string();
     let agent_id = dispatch["agent_id"].as_str().unwrap().to_string();
 
-    assert_eq!(digest_on_row(&mut state, &entity_id, &agent_id)["created_by"], Value::Null);
+    assert_eq!(
+        digest_on_row(&mut state, &entity_id, &agent_id)["created_by"],
+        Value::Null
+    );
 }

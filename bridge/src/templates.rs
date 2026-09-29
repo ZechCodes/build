@@ -993,7 +993,10 @@ mod tests {
                 !says(template, "Use it when the user asked for the task"),
                 "{name} still watches what the user asked for"
             );
-            for stale in ["is the only thing they see", "is the only thing the user sees"] {
+            for stale in [
+                "is the only thing they see",
+                "is the only thing the user sees",
+            ] {
                 assert!(!says(template, stale), "{name} still says {stale:?}");
             }
         }

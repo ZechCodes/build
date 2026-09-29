@@ -2969,7 +2969,13 @@ mod tests {
                 (
                     "comment_task",
                     text(&comment["description"]),
-                    &[ON_A_TASK, REPLY_THERE, ASKED_IN_THREAD, BUILD_ON, FLAG_SPLIT],
+                    &[
+                        ON_A_TASK,
+                        REPLY_THERE,
+                        ASKED_IN_THREAD,
+                        BUILD_ON,
+                        FLAG_SPLIT,
+                    ],
                 ),
                 (
                     "comment_task.notify_user",

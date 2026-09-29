@@ -29,5 +29,9 @@ pub const WATCH_AGENT: &str = "Off by default: pass true only when the user aske
 /// Whether `text` states `rule`, across line wrapping and code spans.
 pub fn says(text: &str, rule: &str) -> bool {
     let plain = text.replace('`', "");
-    plain.split_whitespace().collect::<Vec<_>>().join(" ").contains(rule)
+    plain
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .contains(rule)
 }

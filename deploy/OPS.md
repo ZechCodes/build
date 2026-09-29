@@ -196,10 +196,10 @@ stops the scopes it started on its own way down (`children: stopped N scopes`
 in `bridge.err.log`), which is what ends them on a stop or a restart; a bridge
 that dies without a shutdown takes them with it through `BindsTo=`, as
 `KillMode=control-group` did while the children shared the unit's cgroup. (The
-manager does not carry a `restart` across `BindsTo=`.) `Before=` makes the manager
-stop the bridge first: stop jobs run in reverse start order, and the `After=`
-the scopes used to carry killed every agent before the bridge's SIGTERM, so
-the shutdown recorded nobody to bring back (#213).
+manager does not carry a `restart` across `BindsTo=`.) `Before=` makes the
+manager stop the bridge first: stop jobs run in reverse start order, and the
+`After=` the scopes used to carry killed every agent before the bridge's
+SIGTERM, so the shutdown recorded nobody to bring back (#213).
 
 A scope that cannot be had (no `busctl`, a bus that does not answer, a pid that
 never arrives) costs the child nothing but the scope: it is released niced, the

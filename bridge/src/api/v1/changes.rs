@@ -1,7 +1,7 @@
-//! The changes family: `changes.subscribe`, `changes.unsubscribe`,
-//! `changes.list` (wire spec Part 1, step 1.1).
+//! The changes family: `changes.subscribe` and `changes.unsubscribe` (wire
+//! spec Part 1, step 1.1).
 //!
-//! Three verbs over [`crate::changes::ChangeBus`], and the only family whose
+//! Two verbs over [`crate::changes::ChangeBus`], and the only family whose
 //! subject is the session itself: a subscription is an address to push to, so
 //! every verb here needs the caller's own [`SessionSender`]. [`dispatch`]
 //! deliberately carries only `AppState`, so the frame handler names the
@@ -13,8 +13,7 @@
 //! [`dispatch`]: crate::api::v1::dispatch
 //!
 //! The params ARE the wire types: [`SubscriptionSpec`] is what
-//! `changes.subscribe` takes and what `changes.list` answers with, so the
-//! fixture holds one shape rather than two copies of it. Subscribe is an
+//! `changes.subscribe` takes. Subscribe is an
 //! upsert by `subscription_id`; re-sending an id with a new mode is how a
 //! client changes cadence, and the bus keeps what that subscription already
 //! held.

@@ -33,7 +33,7 @@ fn agent_on(state: &mut AppState, project_id: &str, workspace_name: &str) -> (St
     (entity_id, agent_id)
 }
 
-/// The agent as a client reads it off `agent.list`.
+/// The agent as its entity's roster lists it.
 fn listed(state: &mut AppState, entity_id: &str, agent_id: &str) -> Value {
     let listed = agent_roster(state, json!({ "entity_id": entity_id }));
     listed["result"]["agents"]

@@ -411,8 +411,7 @@ impl<'a> FromIterator<&'a str> for KindNames {
     }
 }
 
-/// One subscription, exactly as `changes.subscribe` states it and
-/// `changes.list` answers it. `K` is how its kinds are held: a [`KindSet`]
+/// One subscription, exactly as `changes.subscribe` states it. `K` is how its kinds are held: a [`KindSet`]
 /// once read, [`KindNames`] while the verb is still reading them.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct SubscriptionSpec<K = KindSet> {
@@ -2461,7 +2460,7 @@ mod subscriptions {
         );
     }
 
-    /// `changes.list` and `changes.unsubscribe`, per session.
+    /// What a session holds, and `changes.unsubscribe`, per session.
     #[test]
     fn a_session_lists_and_drops_its_own_subscriptions() {
         let bus = ChangeBus::new(DEFAULT_COALESCE_WINDOW);

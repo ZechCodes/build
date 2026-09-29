@@ -1046,7 +1046,7 @@ fn branch_with_two_conversations(
 }
 
 /// A detail poll answers with the conversation of the agent it named. The
-/// rail's bubble is the selector, so `run.get`/`branch.get` have to be able
+/// rail's bubble is the selector, so a run's detail read has to be able
 /// to say WHICH conversation — and an id that names no agent on this entity
 /// is an error, never a silent fall back to the first one's.
 #[test]

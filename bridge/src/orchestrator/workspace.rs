@@ -745,18 +745,6 @@ impl Orchestrator {
     ) -> Result<crate::worktree::NamedBranchCheckout, OrchestratorError> {
         Ok(self.worktrees.create(slug, base_branch, isolation)?)
     }
-    /// The same bare checkout, on a branch that already exists — here or on a
-    /// remote. A name no ref anywhere backs is refused, never cut.
-    pub fn create_worktree_on_existing_branch(
-        &self,
-        branch: &str,
-        base_branch: &str,
-        isolation: Isolation,
-    ) -> Result<crate::worktree::NamedBranchCheckout, OrchestratorError> {
-        Ok(self
-            .worktrees
-            .create_on_existing_branch(branch, base_branch, isolation)?)
-    }
     /// The same bare checkout, on a branch the caller named in full and means
     /// to start: an existing branch is checked out rather than cut a second
     /// time over the work it holds, and a name nothing backs is cut from the
@@ -831,21 +819,6 @@ impl Orchestrator {
                 Err(error)
             }
         }
-    }
-    /// The same preparation on a checkout that already exists — the branch's
-    /// own uncommitted work is not part of what the implementation does, and it
-    /// must not vanish under the baseline either, so it lands as its own commit
-    /// below the docs commit.
-    ///
-    /// Two commits and a store read: off the app mutex, always.
-    pub fn prepare_adopted_checkout(
-        &self,
-        task: &ImplementableTask,
-        checkout: &Path,
-        store: &Store,
-    ) -> Result<String, OrchestratorError> {
-        self.commit_all_with_message(checkout, "Checkpoint: before Build implements a Task here")?;
-        self.materialize_and_commit_plan_docs(&task.plan_id, checkout, &task.goal, store)
     }
     /// Bind a Task's implementation to a checkout that already exists,
     /// instead of cutting `build/<slug>` for it. The branch's run adopts the

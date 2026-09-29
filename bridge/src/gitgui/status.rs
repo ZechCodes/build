@@ -86,7 +86,7 @@ pub(super) fn file_status_json(path: &str, status: git2::Status) -> Option<Value
 }
 
 /// The full `git.status` payload for a checkout — also the response body of
-/// `git.stage`/`git.unstage` and the `status` field of `git.commit`, so the
+/// `git.stage`/`git.discard` and the `status` field of `git.commit`, so the
 /// UI repaints straight from the mutation's response.
 ///
 /// Shape and counts, never a patch: a file's body is fetched per path through

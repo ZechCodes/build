@@ -1,4 +1,4 @@
-//! The board family: the feed and the archive (`board.list`, `archive.list`,
+//! The board family: the feed and the archive (`board.list`,
 //! `archived.list`), the project surface (`project.*` less the diff reads the
 //! git family owns), the capture surface (`capture.*`), and what the Account
 //! page reads and writes (`settings.*`, `models.list`), and the user
@@ -11,12 +11,11 @@
 //! off-lock drain, so what those handlers return is the placeholder
 //! [`Answer`] documents; everything else here answers inline.
 //!
-//! Rows that belong to another family's entity — a task view, a run view, a
-//! feed item — are carried here as [`TaskRow`], [`RunRow`] and
-//! [`FeedItemRow`]: the keys the board itself is read by are named and typed,
-//! and the rest of the entity's shape rides in `rest` rather than being
-//! restated (and left to drift) in a second place. `task.get` and `run.get`
-//! are where those shapes are stated whole.
+//! Rows that belong to another family's entity — a run view, a feed item —
+//! are carried here as [`RunRow`] and [`FeedItemRow`]: the keys the board
+//! itself is read by are named and typed, and the rest of the entity's shape
+//! rides in `rest` rather than being restated (and left to drift) in a second
+//! place.
 
 use super::lifecycle::RunAgentChoiceParams;
 use super::{answer, Answer, Handler, NoParams, WireParams};
@@ -141,8 +140,7 @@ pub struct ProjectDeleteResult {
     pub deleted: bool,
 }
 
-/// A verb that names one project and nothing else: `archive.list`,
-/// `project.init_git`.
+/// A verb that names one project and nothing else: `project.init_git`.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ProjectParams {
     pub project_id: String,
@@ -547,8 +545,8 @@ pub struct BoardProjectRow {
     pub is_git: bool,
 }
 
-/// The keys of an entity view that the board is read by, over the rest of the
-/// shape `task.get` / `run.get` / `branch.get` state whole.
+/// The keys of an entity view that the board is read by, over the rest of its
+/// shape.
 pub type OtherKeys = BTreeMap<String, serde_json::Value>;
 
 /// One run on the board.

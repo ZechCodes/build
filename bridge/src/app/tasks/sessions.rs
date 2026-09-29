@@ -101,9 +101,8 @@ impl AppState {
     /// it holds is the one workspace every door writes into, so a second door
     /// waits rather than racing this one's `.build/` config.
     ///
-    /// The project comes from the caller: a Task being created is not in
-    /// `entity_project` until its epilogue runs, and `plan.create` reserves
-    /// through here like every other door.
+    /// The project comes from the caller rather than `entity_project`, like
+    /// every other door.
     pub(in crate::app) fn reserve_plan_workspace(
         &mut self,
         task_id: &str,

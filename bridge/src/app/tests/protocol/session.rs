@@ -1144,6 +1144,7 @@ async fn one_sweep_tick_writes_down_the_model_a_session_announced() {
         "one tick puts the model the child announced on the agent's record"
     );
 
+    let _browser = a_browser_watching_everything(&state.lock().unwrap());
     state.lock().unwrap().changes().flush();
     capture_conversation_names(&state);
     assert!(

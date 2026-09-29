@@ -504,8 +504,7 @@ impl AppState {
         // Adopting it (or sending it a first message, which adopts on the way)
         // is what brings it in; from there its row leaves the same way every
         // other row does — Done, deleted, or dismissed — never on its own.
-        // `branch.get` still resolves it directly (deep-linking); this filter
-        // is the feed list's alone.
+        // This filter is the feed list's alone.
         let mut items: Vec<Value> = self
             .work_items(&checkouts.rows)
             .into_iter()
@@ -552,10 +551,9 @@ impl AppState {
     /// own. Both rules live in [`crate::branch`].
     ///
     /// Every branch a worktree names resolves here, whether or not it belongs
-    /// on the INBOX list — `branch.get` (deep-linking) and `board_list`'s
-    /// `items` both read this, and only the latter additionally filters out a
-    /// worktree Build never adopted with no agent presently in it (see
-    /// `board_list`). This function stays the unfiltered source of truth for
+    /// on the INBOX list — `board_list`'s `items` read this, and additionally
+    /// filter out a worktree Build never adopted with no agent presently in
+    /// it (see `board_list`). This function stays the unfiltered source of truth for
     /// "what branch is this," not "what does the inbox show."
     ///
     /// The scans are passed in rather than taken again: `board_list` already

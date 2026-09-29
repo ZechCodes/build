@@ -10,8 +10,7 @@ impl AppState {
     /// Everything finished, across every project, newest first: archived
     /// tasks, archived runs, and the archived worktrees no run stands behind.
     ///
-    /// The archive is the user's, not a project's, which is why this cannot be
-    /// `archive.list` with the project left off — and it speaks the feed's two
+    /// The archive is the user's, not a project's — and it speaks the feed's two
     /// work items (Decisions §Entity model), so a finished run and the worktree
     /// record it left behind are ONE branch row. `(project, branch)` is the
     /// join: a deleted checkout's path no longer canonicalizes, so the worktree

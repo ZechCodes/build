@@ -198,7 +198,7 @@ pub struct GitDiffParams {
     pub range: Option<BodyRange>,
 }
 
-/// `git.stage`, `git.unstage`, `git.discard` — the same required path list.
+/// `git.stage`, `git.discard` — the same required path list.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GitPathsParams {
     #[serde(flatten)]
@@ -559,32 +559,6 @@ pub struct GitCommitResult {
     pub short: String,
     pub subject: String,
     pub status: StatusPayload,
-}
-
-/// The checkout holding a branch, when one does.
-#[derive(Debug, Deserialize, Serialize)]
-pub struct BranchHolder {
-    /// `run`, `project_repository`, or `external_worktree`.
-    pub kind: String,
-    pub id: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct BranchRow {
-    pub name: String,
-    pub is_current: bool,
-    /// The remote a remote-only branch came from; absent for a local branch.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub remote: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub upstream: Option<String>,
-    pub ahead: u64,
-    pub behind: u64,
-    pub head_subject: String,
-    pub head_time: i64,
-    pub stat: DiffStat,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub holder: Option<BranchHolder>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

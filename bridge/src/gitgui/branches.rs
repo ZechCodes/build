@@ -401,7 +401,7 @@ fn validate_checkout_ref(repo_path: &Path, full_ref: &str) -> Result<(RefKind, S
     Ok((kind, name.to_string()))
 }
 
-/// The reason `git.checkout` refuses to switch branches away from a non-clean
+/// The reason `git.checkout_ref` refuses to switch away from a non-clean
 /// state, naming the actual in-progress operation so the message matches what
 /// the user must finish or abort. A "conflicted" working tree has no operation
 /// to abort — the unmerged files themselves must be resolved.

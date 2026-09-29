@@ -1,16 +1,15 @@
-//! The lifecycle family: `task.*`, `plan.*`, `run.*`, `branch.*`,
-//! `worktree.create`, `worktree.finish`, `entity.*`.
-//! (The diff reads — `run.diff`, `run.stage_diff`, `task.diff`,
+//! The lifecycle family: the reads of the retired planning workflow
+//! (`task.get`, `task.stages`, `task.doc`, `task.stage_doc`), the run verbs
+//! that still act on a run (`run.request_changes`, `run.git_action`,
+//! `run.message`, `run.abandon`, `run.adopt`), `branch.dispatch`,
+//! `branch.finish` and `entity.*`. (The diff reads — `run.diff` and
 //! `task.stage_diff` — are the git family's.)
 //!
-//! Two halves, converted independently and kept apart on purpose: the
-//! `task.*` / `plan.*` half below, and the `run.*` / `branch.*` /
-//! `worktree.*` half under the section marker at the bottom. Append to your
-//! own section; never reorder the other's.
+//! Two halves, kept apart on purpose: the `task.*` / `entity.*` half below,
+//! and the `run.*` / `branch.*` half under the section marker at the bottom.
 //!
-//! `plan.*` is the deprecated alias of `task.*` (spec step 2.1: the kind of
-//! thing a major retires). An alias pair is ONE typed handler: [`TaskRef`]
-//! reads either spelling and writes both back out, so the plan-store
+//! A task is still named either way: [`TaskRef`] reads `task_id` or the
+//! pre-2.0 `plan_id` and writes both back out, so the plan-store
 //! implementation underneath — which still names the id `plan_id` — keeps
 //! reading exactly what it always read, and the canonical `task_id` is what
 //! the contract states.
@@ -99,14 +98,13 @@ pub type ThreadCursor = serde_json::Value;
 /// Carried verbatim until the thread family names the embedded form.
 pub type ThreadPayload = serde_json::Value;
 
-/// One agent's bubble, as `agent.list` renders it — the thread family's
-/// shape, named once, there.
+/// One agent's bubble — the thread family's shape, named once, there.
 pub type AgentDigest = crate::api::v1::thread::AgentDigest;
 
 /// The task a verb acts on.
 ///
-/// Reads either spelling — `task_id` (canonical) or `plan_id` (the `plan.*`
-/// alias) — and writes BOTH back to the implementation underneath, which is
+/// Reads either spelling — `task_id` (canonical) or `plan_id` (the pre-2.0
+/// name) — and writes BOTH back to the implementation underneath, which is
 /// what the legacy route's `alias_param` did by hand at each call site.
 #[derive(Debug, Deserialize)]
 pub struct TaskRef {
@@ -570,19 +568,16 @@ mod task_plan_tests {
 // ==== run/branch/worktree ==================================================
 
 //
-// The run lifecycle (`run.*`), the work item the feed and the URLs speak
-// (`branch.get` / `branch.dispatch` / `branch.finish`), and the bare checkout
-// verbs beside them (`worktree.create` / `worktree.finish`).
+// The run verbs that still act on a run (`run.*`), and the work item the
+// feed and the URLs speak (`branch.dispatch` / `branch.finish`).
 //
 // Every mutation here answers with the run view the pre-facade implementation
 // already built — [`RunView`] names its shape — except the ones that answer
 // about a checkout instead ([`WorkspaceFinishResult`],
-// [`CreatedWorktreeResult`], [`DispatchedAgentResult`])
-// and the two that only acknowledge ([`RunAck`]). `run.create`, `run.abandon`,
-// `run.delete`, `run.finish`, `branch.dispatch`, `branch.finish`,
-// `worktree.create` and `worktree.finish` hand their git to the off-lock
-// drain, so what the handler itself returns is the placeholder [`Answer`]
-// documents and the drain fills in.
+// [`DispatchedAgentResult`]). `run.abandon`, `run.adopt`, `branch.dispatch`
+// and `branch.finish` hand their git to the off-lock drain, so what the
+// handler itself returns is the placeholder [`Answer`] documents and the
+// drain fills in.
 //
 // The shared wire above is shared: [`ThreadWindowParams`],
 // [`ReviewerMessageParams`], [`AttentionView`] and [`FinishView`] are the
@@ -898,7 +893,7 @@ fn refine(error: ApiError) -> ApiError {
 const BUSY: [&str; 2] = ["wait for that to finish", "wait for that to complete"];
 
 /// The request was legible and the state said no.
-const CONFLICT: [&str; 12] = [
+const CONFLICT: [&str; 8] = [
     // Done, refused because the work is still only in the workspace, or
     // because the checkout is not Build's to remove, or because the branch it
     // was asked to delete is still in use or holds the only copy of work.
@@ -907,32 +902,21 @@ const CONFLICT: [&str; 12] = [
     "Build cannot remove an adopted checkout",
     "Cannot delete a workspace",
     "illegal run transition",
-    "only terminal runs",
-    "only adopted runs can be released",
-    "cannot set auto_advance on a terminal run",
     "cannot be merged",
     "cannot be finished or archived",
     "already started with action",
-    "there are no plan docs to revise",
 ];
 
 /// The thing named does not exist here, though the message does not start
 /// with the word the generic classifier looks for.
-const NOT_FOUND: [&str; 2] = [
-    "no checkout of this project is on branch",
-    // Done, given an id that resolves to no workspace.
+const NOT_FOUND: [&str; 1] = [
+    // Done, given a branch that resolves to no workspace.
     "no matching workspace",
 ];
 
 /// A word in the request is not one this bridge knows. `unknown <thing>`
 /// otherwise reads as a missing entity, which these are not.
-const INVALID: [&str; 5] = [
-    "unknown git action:",
-    "unknown agent provider:",
-    "is not a branch name",
-    "takes exactly one of",
-    "needs at least one letter or number",
-];
+const INVALID: [&str; 2] = ["unknown git action:", "unknown agent provider:"];
 
 /// The conversation a stale `conversation_id` should have named: what the
 /// agent is bound to now, so the retry has somewhere to go.
@@ -1055,17 +1039,5 @@ mod run_branch_worktree_tests {
         assert_eq!(missing.code(), "not_found");
         let unnamed = refine(ApiError::classify("unknown git action: rebase".to_string()));
         assert_eq!(unnamed.code(), "invalid_params");
-    }
-
-    /// A branch nobody has a checkout on is a missing thing, not a broken
-    /// bridge: the message says so and the code has to agree.
-    #[test]
-    fn a_branch_with_no_checkout_is_not_found() {
-        let refused = refine(ApiError::classify(
-            "branch.get: no checkout of this project is on branch build/gone (the scan has \
-             settled)"
-                .to_string(),
-        ));
-        assert_eq!(refused.code(), "not_found");
     }
 }

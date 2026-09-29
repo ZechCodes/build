@@ -719,6 +719,7 @@ fn a_create_before_the_first_scan_leaves_the_running_scan_alone() {
         .expect("it is a checkout");
     let scan = DiffCacheKey::ExternalScan(project_id.clone());
     let _claim = state.claim_diff_refresh_for_test(scan.clone());
+    let _browser = a_browser_watching_everything(&state);
     state.changes.flush();
 
     state.note_worktree_appeared(&project_id, described);
@@ -748,6 +749,7 @@ fn a_removal_of_a_checkout_the_scan_never_had_leaves_the_running_scan_alone() {
     state.scan_external_worktrees_now(&project_id).unwrap();
     let scan = DiffCacheKey::ExternalScan(project_id.clone());
     let _claim = state.claim_diff_refresh_for_test(scan.clone());
+    let _browser = a_browser_watching_everything(&state);
     state.changes.flush();
 
     state.note_worktree_gone(&project_id, &dir.path().join("never-in-the-list"));
@@ -778,6 +780,7 @@ fn re_noting_an_unchanged_checkout_leaves_the_running_scan_alone() {
     let known = state.scan_external_worktrees_now(&project_id).unwrap()[0].clone();
     let scan = DiffCacheKey::ExternalScan(project_id.clone());
     let _claim = state.claim_diff_refresh_for_test(scan.clone());
+    let _browser = a_browser_watching_everything(&state);
     state.changes.flush();
 
     state.note_worktree_appeared(&project_id, known);

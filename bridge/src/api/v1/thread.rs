@@ -1,5 +1,5 @@
 //! The thread family: `thread.*` and the roster verbs `agent.add`,
-//! `agent.choose`, `agent.remove`, `agent.list`. (`agent.attach` and
+//! `agent.choose`, `agent.remove`. (`agent.attach` and
 //! `agent.start` need the session or the shared handle and stay legacy.)
 //!
 //! Same shape as `git.rs`: typed params in, the existing implementation
@@ -636,8 +636,8 @@ pub struct AgentChoice {
     pub choice_revision: u64,
 }
 
-/// The entity's agents in rail order: what `agent.list` reads and what
-/// `agent.remove` answers with, naming the agent that went.
+/// The entity's agents in rail order: what `agent.remove` answers with,
+/// naming the agent that went.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AgentRoster {
     pub entity_id: String,

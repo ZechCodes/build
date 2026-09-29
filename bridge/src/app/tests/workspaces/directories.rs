@@ -222,6 +222,7 @@ fn a_directory_change_tells_the_browsers_standing_in_the_workspace() {
     let workspace = create_workspace(&mut state, &project_id, "work");
     let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
 
+    let _browser = a_browser_watching_everything(&state);
     state.changes().flush();
     let grown = state.handle(req(
         "workspace.add_directory",

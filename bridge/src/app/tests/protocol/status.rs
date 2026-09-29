@@ -666,6 +666,7 @@ fn choosing_a_model_stales_the_entity_for_every_browser() {
         "run-stale-choice",
         RunState::Building,
     );
+    let _browser = a_browser_watching_everything(&state);
     state.changes().flush();
     assert!(!state.changes().has_pending());
     let agent_id = primary_agent_id(&state, "run-stale-choice");

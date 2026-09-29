@@ -20,7 +20,7 @@ impl AppState {
     }
 
     /// `list_workspace_agents` — the agents on one of this project's
-    /// workspaces, answered by `agent.list` on that workspace's conversation
+    /// workspaces, answered by the roster of that workspace's conversation
     /// owner. A workspace of another project is refused; a workspace nobody has
     /// talked to yet has no owner and so no agents.
     pub(in crate::app) fn project_agent_workspace_agents(

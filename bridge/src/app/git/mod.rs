@@ -35,7 +35,7 @@ pub(in crate::app) struct GitScopeWorktree {
     pub(in crate::app) base_branch: String,
 }
 
-/// Parse the required `paths` param of `git.stage`/`git.unstage`: a non-empty
+/// Parse the required `paths` param of `git.stage`/`git.discard`: a non-empty
 /// array of repo-relative strings.
 pub(in crate::app) fn require_path_list(params: &Value) -> Result<Vec<String>, String> {
     let paths = params

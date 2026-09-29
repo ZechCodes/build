@@ -150,8 +150,9 @@ const QUOTE_CLASS = "md-quote";
 
 /// A thematic break (#253): three or more of one of `-`, `*` or `_`, spaces
 /// and tabs allowed between and around them, up to three spaces of indent.
-/// There are no setext headings here, so a `---` under a line of prose is a
-/// rule and not that line's underline. It is tested before a list item, since
+/// A `---` directly under a line of prose is that line's setext underline and
+/// the paragraph reader takes it first (SETEXT_UNDERLINE); after a blank line
+/// it is a rule. It is tested before a list item, since
 /// `- - -` and `* * *` read as both and CommonMark makes them breaks.
 const THEMATIC_BREAK = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
 

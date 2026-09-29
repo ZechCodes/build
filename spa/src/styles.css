@@ -671,8 +671,9 @@ main#root.surface { max-width:none;
    at their initial 0 — no shading, whatever surface it sits on. (It used to be
    drawn always and hidden under covers painted in --panel, which showed as
    dark bands on every host that is not --panel: a tinted comment, the reader's
-   bubble, a plan doc.) A browser without scroll-driven animations shows no
-   shading and leaves the cue to its scrollbar. */
+   bubble, a plan doc.) A browser without scroll-driven animations skips the
+   @supports block below, shows no shading and leaves the cue to its
+   scrollbar. */
 @property --mdtable-shade-left { syntax:"<length>"; inherits:false; initial-value:0px; }
 @property --mdtable-shade-right { syntax:"<length>"; inherits:false; initial-value:0px; }
 @keyframes mdtable-edges {
@@ -684,8 +685,13 @@ main#root.surface { max-width:none;
   --mdtable-shade:color-mix(in srgb, var(--line) 85%, transparent);
   background:
     linear-gradient(to right, var(--mdtable-shade), transparent) 0 0 / var(--mdtable-shade-left) 100% no-repeat,
-    linear-gradient(to left, var(--mdtable-shade), transparent) 100% 0 / var(--mdtable-shade-right) 100% no-repeat;
-  animation:mdtable-edges linear both; animation-timeline:scroll(self inline); }
+    linear-gradient(to left, var(--mdtable-shade), transparent) 100% 0 / var(--mdtable-shade-right) 100% no-repeat; }
+/* Gated: a browser that cannot read animation-timeline would play the
+   animation on the document timeline instead, 0s long and filled at its last
+   keyframe, and band the left edge of every table. */
+@supports (animation-timeline: scroll()) {
+  .mdtable { animation:mdtable-edges linear both; animation-timeline:scroll(self inline); }
+}
 .mdtable table { border-collapse:collapse; min-width:100%; font-variant-numeric:tabular-nums; }
 /* A cell breaks on spaces. Its host — a conversation card above all — wraps
    anywhere so a pasted path can never widen the column, but a cell inheriting

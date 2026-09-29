@@ -55,6 +55,24 @@ async function rowPixels(page, png) {
   }, png.toString("base64"));
 }
 
+/** Runs in the page: the sheets as a browser without scroll-driven
+ *  animations reads them (Firefox today, Safari before 26). It drops every
+ *  animation-timeline declaration and every @supports block that asks for
+ *  one, and keeps the rest — `animation` included. */
+function withoutScrollTimelines() {
+  const asksForTimelines = (rule) => rule instanceof CSSSupportsRule && rule.conditionText.includes("animation-timeline");
+  const strip = (container) => {
+    for (let index = container.cssRules.length - 1; index >= 0; index -= 1) {
+      const rule = container.cssRules[index];
+      if (asksForTimelines(rule)) container.deleteRule(index);
+      else if (rule instanceof CSSImportRule) strip(rule.styleSheet);
+      else if (rule instanceof CSSStyleRule) rule.style.removeProperty("animation-timeline");
+      else if (rule.cssRules) strip(rule);
+    }
+  };
+  for (const sheet of document.styleSheets) strip(sheet);
+}
+
 const HIDE_TEXT = ".mdtable th, .mdtable td { color:transparent !important; } body { padding:24px; width:560px; }";
 
 for (const theme of ["dark", "light"]) {
@@ -75,6 +93,20 @@ for (const theme of ["dark", "light"]) {
       });
     });
   }
+
+  it(`shades no edge of a table that fits where scroll timelines are unsupported, ${theme}`, async () => {
+    await withLayoutPage(async ({ page, basePath }) => {
+      await mountLayout(page, `<link rel="stylesheet" href="${basePath}src/styles/tasks.css">${HOSTS["tinted task comment"](markdownHtml(FITS))}`, { basePath, styles: HIDE_TEXT });
+      await page.evaluate((name) => { document.documentElement.dataset.theme = name; }, theme);
+      await page.evaluate(withoutScrollTimelines);
+      const found = await edges(page);
+      expect([found.left, found.right]).toEqual(["0px", "0px"]);
+      const pixels = await rowPixels(page, found.png);
+      const middle = pixels[Math.floor(pixels.length / 2)];
+      expect(pixels.slice(0, 24)).toEqual(Array(24).fill(middle));
+      expect(pixels.slice(-24)).toEqual(Array(24).fill(middle));
+    });
+  });
 
   it(`shades only the side there is more table to reach, ${theme}`, async () => {
     await withLayoutPage(async ({ page, basePath }) => {

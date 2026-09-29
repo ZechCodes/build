@@ -41,13 +41,14 @@ vi.mock("../src/core/surfaceTabs.js", () => ({ mountAgentTab: () => ({ dispose: 
 const { App } = await import("../src/app.js");
 const { adoptBridgeSelection, adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
 const { mountAgentRail, panelHeadHtml, resetAgentRailMemory } = await import("../src/core/agentRail.js");
+const { writeTasksRecord } = await import("../src/core/trackerCache.js");
+const { columns, task } = await import("./trackerWireFixture.js");
+const { TASKS_ENTRY_KIND } = await import("../src/core/agentSurfacesModel.js");
 const { openSurfaceOverlay } = await import("../src/core/agentSurfaces.js");
-const { AGENT_ENTRY_KIND, SHELL_ENTRY_KIND, TASKS_ENTRY_KIND, WORKFLOW_ENTRY_KIND } = await import("../src/core/agentSurfacesModel.js");
+const { AGENT_ENTRY_KIND, SHELL_ENTRY_KIND, WORKFLOW_ENTRY_KIND } = await import("../src/core/agentSurfacesModel.js");
 const { wipeCache } = await import("../src/core/localCache.js");
 const { writeRailWorkItem } = await import("./railCacheFixture.js");
 const { rememberAgentLineageSupport } = await import("../src/core/agentLineageSupport.js");
-const { writeTasksRecord } = await import("../src/core/trackerCache.js");
-const { columns, task } = await import("./trackerWireFixture.js");
 
 const surfaces = () => surfacesSnapshot({ subagents: [], checklist: [] });
 

@@ -696,7 +696,7 @@ main#root.surface { max-width:none;
    no outline at all; the tone is the whole boundary. */
 .plan { background:var(--panel2); border:0; border-radius:12px; padding:26px 30px; margin-bottom:14px; --mdtable-cover:var(--panel2); }
 .plan h1 { font-size:20px; margin:0 0 12px; } .plan h2 { font-size:15px; margin:18px 0 6px; }
-.plan h3 { font-size:13.5px; margin:14px 0 5px; } .plan p { margin:8px 0; color:var(--ink); }
+.plan h3 { font-size:13.5px; margin:14px 0 5px; } .plan :is(h4, h5, h6) { font-size:13px; margin:12px 0 4px; } .plan p { margin:8px 0; color:var(--ink); }
 .plan ul,.plan ol { margin:6px 0; padding-left:22px; } .plan li { margin:3px 0; }
 .plan code { font-family:var(--mono); font-size:12.5px; background:var(--line2); padding:1px 5px; border-radius:5px; }
 .plan pre { background:var(--code-bg); padding:12px 14px; border-radius:8px; overflow:auto; } .plan pre code { background:none; padding:0; }
@@ -1703,6 +1703,21 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
   white-space:pre;
   tab-size:2;
 }
+/* ---- quotes and references, wherever markdown is rendered (#229) ----------
+   Stamped by the renderer like .md-code, so every surface draws them alike.
+
+   A resolved reference is a link labelled with what it names, in the accent:
+   `a { color:inherit }` above left the one link a message carries reading as
+   its own prose. A reference that names nothing is still the words the agent
+   typed, in their own colour, only underlined with dots — enough to tell a
+   broken reference from a sentence, and the hover says why. */
+.md-quote { margin:6px 0; padding:0 0 0 12px; border-left:3px solid var(--line3); color:var(--ink2); }
+.md-quote > :first-child { margin-top:0; }
+.md-quote > :last-child { margin-bottom:0; }
+a.md-ref { color:var(--accent); text-decoration:none; }
+a.md-ref:hover { text-decoration:underline; }
+.md-ref-code { font-family:var(--mono); font-size:.92em; }
+.md-ref-missing { text-decoration:underline dotted var(--dim); text-underline-offset:3px; cursor:help; }
 /* Inline code in prose still wraps with the sentence around it: only a fenced
    block scrolls. */
 .md-code code { white-space:inherit; }

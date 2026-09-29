@@ -1406,6 +1406,18 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .surface-agent-unavailable { color:var(--dim); }
 .surface-agent-fact .surface-row-jump { padding:0; color:var(--accent); }
 .surface-running, .surface-completed-rows { display:flex; flex-direction:column; gap:2px; }
+/* The Agents viewer's two groups (#216): the harness's sub-agents, then the
+   Build agents this agent made, each a row that opens that agent's chat. */
+.surface-group { display:flex; flex-direction:column; gap:2px; }
+.surface-group + .surface-group { margin-top:8px; }
+.surface-group[hidden] { display:none; }
+.surface-group-head { margin:0; padding:2px 6px; color:var(--dim); font-size:10.5px; font-weight:600; }
+.surface-build-agents { display:flex; flex-direction:column; gap:2px; }
+.surface-build-agent { width:100%; border:0; background:none; color:inherit; font:inherit;
+  text-align:left; cursor:pointer; }
+.surface-build-agent .surface-clip { cursor:inherit; }
+.surface-build-agent:focus-visible { outline:1px solid var(--accent); outline-offset:-1px; }
+.surface-build-agent-where { flex:none; max-width:45%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .surface-completed[open] { margin-top:10px; padding-top:0; }
 .rail-surfaces-viewer .surface-completed-head { display:none; }
 .surface-completed-head { padding:2px 6px; cursor:pointer; color:var(--dim); font-size:10.5px;

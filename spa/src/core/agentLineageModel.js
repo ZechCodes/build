@@ -130,3 +130,16 @@ export function buildAgentEntries(lineage, agentId) {
     };
   });
 }
+
+/** What the lineage answers depend on, as one string: who made whom, where
+ *  each lives, and what runs. Two reads with the same print answer alike, so
+ *  a row rewritten for anything else (a message, a read cursor) moves nothing
+ *  drawn from here. */
+export function lineagePrint(members) {
+  return JSON.stringify(members.map(({ agent, entityId, workspaceId, workspaceName }) => [
+    agent.id, agent.created_by || null, agent.name || null, agent.ordinal || null, !!agent.working,
+    agent.working_time?.since || null, agent.start_error || null,
+    runningSubagents(agent).map((entry) => entry.started_at ?? null),
+    entityId, workspaceId, workspaceName,
+  ]));
+}

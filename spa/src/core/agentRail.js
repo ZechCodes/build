@@ -1595,6 +1595,7 @@ function mountRailOnContext(host, context, swap) {
     }
     agentlessOnce = false;
     entity = answered;
+    lineage.start();
     keepForSwap(context.kind, row);
     for (const agent of answered.agents) controllerForAgent(agent);
     reconcileOptimistic(pendingAgentsScope(), answered.agents, { keyOf: agentIdOf });

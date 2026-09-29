@@ -12,31 +12,58 @@
 
 import { subscribeCache } from "./localCache.js";
 import { ROW_RECORD_KIND, cachedFeedView } from "./cachedRows.js";
-import { agentLineage, buildAgentEntries, lineageMembers, withRollup } from "./agentLineageModel.js";
+import { agentLineage, buildAgentEntries, lineageMembers, lineagePrint, withRollup } from "./agentLineageModel.js";
 
 /**
- * Mount the reader. `onChanged` is called whenever a read lands, and the rail
- * repaints what it drew from the answers.
+ * Mount the reader. `onChanged` is called when a read lands whose answers
+ * differ from the last one's, and the rail repaints what it drew from them.
  */
 export function mountAgentLineage({ deviceId, projectId, onChanged } = {}) {
-  const state = { lineage: null, disposed: false, generation: 0 };
+  const state = { lineage: null, print: null, disposed: false, reading: false, again: false };
   const named = Boolean(deviceId) && Boolean(projectId);
 
+  /** One read at a time: writes that land during a read ask for one more
+   *  after it, however many there were — a pass writes many rows at once. */
   async function reread() {
-    const generation = ++state.generation;
+    if (state.reading) {
+      state.again = true;
+      return;
+    }
+    state.reading = true;
+    try {
+      do {
+        state.again = false;
+        await readOnce();
+      } while (state.again && !state.disposed);
+    } finally {
+      state.reading = false;
+    }
+  }
+
+  async function readOnce() {
     const { items } = await cachedFeedView(deviceId);
-    if (state.disposed || generation !== state.generation) return;
-    state.lineage = agentLineage(lineageMembers(items, { projectId }));
+    if (state.disposed) return;
+    const members = lineageMembers(items, { projectId });
+    const print = lineagePrint(members);
+    if (print === state.print) return;
+    state.print = print;
+    state.lineage = agentLineage(members);
     onChanged?.();
   }
 
-  const unsubscribe = named && subscribeCache({ deviceId }, (address) => {
-    if (address?.kind === ROW_RECORD_KIND) void reread();
-  });
-
-  if (named) void reread();
+  let unsubscribe = null;
 
   return {
+    /** Begin reading. Asked for by the rail once its own row has painted: the
+     *  lineage reads every row on the device, and a reader first opening a
+     *  chat is owed that chat before who made whom. Asking again does nothing. */
+    start() {
+      if (!named || unsubscribe || state.disposed) return;
+      unsubscribe = subscribeCache({ deviceId }, (address) => {
+        if (address?.kind === ROW_RECORD_KIND) void reread();
+      });
+      void reread();
+    },
     /** The Build agents this agent made, as Agents-surface entries, or none
      *  at all — which keeps the pill away from an agent that made nothing. */
     buildAgentsFor: (agentId) => buildAgentEntries(state.lineage, agentId),

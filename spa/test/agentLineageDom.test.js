@@ -13,6 +13,7 @@ const putRow = (entityId, row) =>
 
 const mount = async (over = {}) => {
   reader = mountAgentLineage({ deviceId: "dev-1", projectId: "proj-1", onChanged: () => changes++, ...over });
+  reader.start();
   await vi.waitFor(() => expect(changes).toBeGreaterThan(0));
   return reader;
 };
@@ -32,6 +33,16 @@ afterEach(() => {
 });
 
 describe("the Build agents it supplies", () => {
+  it("reads nothing until it is started", async () => {
+    await putRow("run-a", { kind: "workspace", workspace_id: "ws-a", agents: [{ id: "worker", created_by: "boss" }] });
+    reader = mountAgentLineage({ deviceId: "dev-1", projectId: "proj-1", onChanged: () => changes++ });
+    await new Promise((settled) => setTimeout(settled, 50));
+    expect(changes).toBe(0);
+    expect(reader.buildAgentsFor("boss")).toBeNull();
+    reader.start();
+    await vi.waitFor(() => expect(reader.buildAgentsFor("boss")).toHaveLength(1));
+  });
+
   it("reads the agents a cached row names as made by this one", async () => {
     await putRow("run-boss", { kind: "project", agents: [{ id: "boss" }] });
     await putRow("run-a", { kind: "workspace", workspace_id: "ws-a", title: "Fix login", agents: [{ id: "worker", name: "Login fixer", created_by: "boss" }] });
@@ -64,6 +75,22 @@ describe("the Build agents it supplies", () => {
     expect(reader.buildAgentsFor("boss")).toBeNull();
   });
 
+  // A row is rewritten on every pull and push, mostly for things that are no
+  // business of the lineage (a message, a read cursor). The rail repaints on
+  // `onChanged`, so it hears only of what moved who made whom or what runs.
+  it("says nothing when a rewritten row moved nothing it answers", async () => {
+    await putRow("run-a", { kind: "workspace", workspace_id: "ws-a", agents: [{ id: "worker", created_by: "boss" }] });
+    await mount();
+    const before = changes;
+    await putRow("run-a", { kind: "workspace", workspace_id: "ws-a", agents: [{ id: "worker", created_by: "boss", unread_count: 3 }] });
+    // Long enough for the read that write set off to land.
+    await new Promise((settled) => setTimeout(settled, 100));
+    expect(changes).toBe(before);
+    await putRow("run-b", { kind: "workspace", workspace_id: "ws-b", agents: [{ id: "worker-b", created_by: "boss", working: true }] });
+    await vi.waitFor(() => expect(reader.buildAgentsFor("boss")).toHaveLength(2));
+    expect(changes).toBe(before + 1);
+  });
+
   it("reads another project's rows for nothing", async () => {
     await putRow("run-x", { kind: "workspace", project_id: "proj-2", agents: [{ id: "stranger", created_by: "boss" }] });
     await mount();
@@ -80,6 +107,7 @@ describe("the Build agents it supplies", () => {
 
   it("supplies nothing, and reads nothing, without a device and a project", () => {
     const unnamed = mountAgentLineage({ deviceId: "", projectId: "proj-1", onChanged: () => changes++ });
+    unnamed.start();
     expect(unnamed.buildAgentsFor("boss")).toBeNull();
     const agent = { id: "boss" };
     expect(unnamed.decorate(agent)).toBe(agent);

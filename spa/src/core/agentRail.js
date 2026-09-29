@@ -3262,6 +3262,7 @@ function mountRailOnContext(host, context, swap) {
       generation: seen.generation,
       working: agentInFocus()?.working === true,
     });
+    syncSurfaceOverlay();
   };
 
   /** The menu is kept within the panel: on a phone the panel stops on the
@@ -3322,7 +3323,7 @@ function mountRailOnContext(host, context, swap) {
 
   const syncSurfaceOverlay = () => {
     if (!surfaceOverlay) return;
-    surfaceOverlay.set(surfacesSeen().surfaces);
+    surfaceOverlay.set(surfacesWithTasks(surfacesSeen().surfaces));
   };
 
   const closeSurfaceOverlay = () => {

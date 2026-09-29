@@ -577,8 +577,8 @@ describe("a menu option over what the digest does not carry", () => {
     menuItem(AGENT_ENTRY_KIND).click();
 
     await vi.waitFor(() =>
-      expect([...overlay().querySelectorAll(".surface-build-agents > .surface-build-agent")].map((one) => one.dataset.buildAgent))
-        .toEqual(["ag-2"]));
+      expect([...overlay().querySelectorAll(".surface-build-agents > .surface-build-agent")].map((one) => one.textContent))
+        .toEqual([expect.stringContaining("Login fixer")]));
   });
 
   it("opens Tasks on the tasks this agent carries", async () => {
@@ -593,6 +593,21 @@ describe("a menu option over what the digest does not carry", () => {
     menuItem(TASKS_ENTRY_KIND).click();
 
     await vi.waitFor(() => expect(overlay().textContent).toContain("#7 Fix login"));
+  });
+
+  it("takes a pushed task list while Tasks is open", async () => {
+    const mine = (number, title) =>
+      task({ number, id: `i${number}`, title, status: "in_progress", assignee: { kind: "agent", agent_id: "ag-1" } });
+    await writeTasksRecord("dev-1", "p1", { tasks: [mine(7, "Fix login")], columns: columns() });
+    await mount();
+    await vi.waitFor(() => expect(menuItem(TASKS_ENTRY_KIND)).not.toBe(null));
+    menuCaret().click();
+    menuItem(TASKS_ENTRY_KIND).click();
+    await vi.waitFor(() => expect(overlay().textContent).toContain("#7 Fix login"));
+
+    await writeTasksRecord("dev-1", "p1", { tasks: [mine(7, "Fix login"), mine(8, "Fix logout")], columns: columns() });
+
+    await vi.waitFor(() => expect(overlay().textContent).toContain("#8 Fix logout"));
   });
 });
 

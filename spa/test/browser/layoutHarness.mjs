@@ -7,6 +7,8 @@ import { chromium } from "playwright-core";
 import { createServer } from "vite";
 
 const spaRoot = fileURLToPath(new URL("../../", import.meta.url));
+// The fonts every check measures in, whatever the machine's defaults (fonts.conf).
+const pinnedFonts = fileURLToPath(new URL("./fonts.conf", import.meta.url));
 const chromiumNames = ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"];
 
 async function chromiumExecutable() {
@@ -58,7 +60,10 @@ export async function withLayoutPage(check, { width = 1180, height = 840, plugin
     await server.listen();
     const port = server.httpServer.address().port;
     const basePath = server.config.base;
-    browser = await chromium.launch({ executablePath: chromiumPath, headless: true, args: ["--no-sandbox"] });
+    browser = await chromium.launch({
+      executablePath: chromiumPath, headless: true, args: ["--no-sandbox"],
+      env: { ...process.env, FONTCONFIG_FILE: pinnedFonts },
+    });
     const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor });
     // Chromium can cancel loopback imports with ERR_NETWORK_CHANGED when the
     // host's network changes. Fetch this server's real responses through the

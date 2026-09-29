@@ -1,5 +1,5 @@
 // The block half of the one markdown renderer: paragraphs, headings, lists,
-// tables and fences, over lines. core/markdown.js `markdownHtml` is the only
+// quotes, tables and fences, over lines. core/markdown.js `markdownHtml` is the only
 // caller (spa/test/markdownEntry.test.js); the inline vocabulary — code spans,
 // strong, references — is handed in as `inline`, which escapes everything it is
 // given before adding its own fixed tags.
@@ -117,7 +117,7 @@ function readFence(lines, at) {
   return { html: `${html}</code></pre>`, next: next + 1 };
 }
 
-const HEADING = /^(#{1,3}) (.*)$/;
+const HEADING = /^(#{1,6}) (.*)$/;
 
 /** A heading, with an id taken from its raw text so the stages view can
  *  scroll a comment's breadcrumb to `#<slug>`. */
@@ -127,18 +127,98 @@ function readHeading(lines, at, context) {
   return { html: `<h${level}${context.idAttr(raw)}>${context.inline(raw)}</h${level}>`, next: at + 1 };
 }
 
-const LIST_ITEM = /^\s*(?:[-*]|\d+\.)\s+(.*)/;
+/// How deep quotes and lists may nest (#229). Past it a line is read as the
+/// words it is, so no input can make the reader recurse without bound.
+const MAX_DEPTH = 8;
 
-/** A list: every item line in a row, each one line of inline markdown. */
+const QUOTE = /^ {0,3}>/;
+const QUOTE_MARK = /^ {0,3}> ?/;
+
+/** A quote: every line in a row that carries the mark — `>` alone is a blank
+ *  line inside it — read again as a document of its own, so a quote holds
+ *  paragraphs, lists, tables and other quotes. */
+function readQuote(lines, at, context) {
+  const inner = [];
+  let next = at;
+  for (; next < lines.length && QUOTE.test(lines[next]); next += 1) inner.push(lines[next].replace(QUOTE_MARK, ""));
+  return { html: `<blockquote class="${QUOTE_CLASS}">${blocksOf(inner, deeper(context))}</blockquote>`, next };
+}
+
+/// The class a quote wears, stamped by the renderer for the reason
+/// CODE_BLOCK_CLASS is: every surface's quotes look alike.
+const QUOTE_CLASS = "md-quote";
+
+const LIST_ITEM = /^( *)([-*+]|\d+[.)])( +)(.*)$/;
+
+/** One item line, read: how far its marker is indented, whether it numbers,
+ *  where its content starts, and the content. */
+function itemAt(line) {
+  const match = LIST_ITEM.exec(line ?? "");
+  if (!match) return null;
+  const [, indent, marker, gap, content] = match;
+  return { indent: indent.length, ordered: /\d/.test(marker), contentAt: indent.length + marker.length + gap.length, content };
+}
+
+const indentOf = (line) => line.length - line.trimStart().length;
+
+/** Whether an item of this list starts at the line: the same indent, the same
+ *  kind of marker. */
+const sameList = (line, first) => {
+  const item = itemAt(line);
+  return Boolean(item && item.indent === first.indent && item.ordered === first.ordered);
+};
+
+/** The line where an item's own lines end: every line indented past its
+ *  marker, and blank lines followed by one. */
+function itemEnd(lines, from, first) {
+  let end = from;
+  for (let next = from; next < lines.length; next += 1) {
+    const line = lines[next];
+    if (line.trim() && indentOf(line) <= first.indent) break;
+    if (line.trim()) end = next + 1;
+  }
+  return end;
+}
+
+/** One item: its first line's content and the lines under it, taken back to
+ *  the item's own margin. A single line is inline; more is a document, whose
+ *  first paragraph sits on the item's line the way a tight list reads. */
+function itemHtml(item, body, context) {
+  if (!body.length) return `<li>${context.inline(item.content)}</li>`;
+  const lines = [item.content, ...body.map((line) => line.slice(Math.min(indentOf(line), item.contentAt)))];
+  return `<li>${blocksOf(lines, deeper(context)).replace(/^<p>([\s\S]*?)<\/p>/, "$1")}</li>`;
+}
+
+/** A list: its items in a row, a blank line between two of them keeping them
+ *  one list. It ends at a line that is neither an item of it nor indented
+ *  under one. */
 function readList(lines, at, context) {
+  const first = itemAt(lines[at]);
   let items = "";
   let next = at;
-  for (let item = LIST_ITEM.exec(lines[next] ?? ""); next < lines.length && item; item = LIST_ITEM.exec(lines[next] ?? "")) {
-    items += `<li>${context.inline(item[1])}</li>`;
-    next += 1;
+  while (next < lines.length && sameList(lines[next], first)) {
+    const item = itemAt(lines[next]);
+    const end = itemEnd(lines, next + 1, first);
+    items += itemHtml(item, lines.slice(next + 1, end), context);
+    next = end;
+    while (next < lines.length && !lines[next].trim() && sameList(lines[nextFilled(lines, next)], first)) next += 1;
   }
-  return { html: `<ul>${items}</ul>`, next };
+  const tag = first.ordered ? "ol" : "ul";
+  return { html: `<${tag}>${items}</${tag}>`, next };
 }
+
+/** The first line at or after `at` that is not blank. */
+function nextFilled(lines, at) {
+  let next = at;
+  while (next < lines.length && !lines[next].trim()) next += 1;
+  return next;
+}
+
+/** The same reading one level down, or null past the deepest level. */
+const deeper = (context) => ({ ...context, depth: context.depth + 1 });
+
+/** Whether a nesting block may open at this depth. */
+const nests = (context) => context.depth < MAX_DEPTH;
 
 // ─── Paragraphs ──────────────────────────────────────────────────────────────
 
@@ -156,7 +236,7 @@ function readParagraph(lines, at, context) {
     const text = context.inline(line.trim().replace(/\\$/, ""));
     parts.push(HARD_BREAK.test(line) ? `${text}<br>` : text);
     next += 1;
-  } while (next < lines.length && lines[next].trim() && !interrupts(lines, next));
+  } while (next < lines.length && lines[next].trim() && !interrupts(lines, next, context));
   return { html: `<p>${parts.join(" ").replace(/<br> /g, "<br>")}</p>`, next };
 }
 
@@ -171,15 +251,16 @@ const readBlank = (lines, at) => ({ html: "", next: at + 1 });
 const BLOCKS = [
   { starts: (lines, at) => !lines[at].trim(), read: readBlank },
   { starts: (lines, at) => FENCE.test(lines[at]), read: readFence },
-  { starts: (lines, at) => LIST_ITEM.test(lines[at]), read: readList },
+  { starts: (lines, at, context) => nests(context) && QUOTE.test(lines[at]), read: readQuote },
+  { starts: (lines, at, context) => nests(context) && LIST_ITEM.test(lines[at]), read: readList },
   { starts: tableStarts, read: readTable },
   { starts: (lines, at) => HEADING.test(lines[at]), read: readHeading },
 ];
 
 const PARAGRAPH = { read: readParagraph };
 
-function interrupts(lines, at) {
-  return BLOCKS.some((block) => block.starts(lines, at));
+function interrupts(lines, at, context) {
+  return BLOCKS.some((block) => block.starts(lines, at, context));
 }
 
 /** Heading ids, de-duplicated within one document in document order. An empty
@@ -200,7 +281,7 @@ function headingIds() {
 function blocksOf(lines, context) {
   let html = "";
   for (let at = 0; at < lines.length; ) {
-    const block = BLOCKS.find((candidate) => candidate.starts(lines, at)) || PARAGRAPH;
+    const block = BLOCKS.find((candidate) => candidate.starts(lines, at, context)) || PARAGRAPH;
     const read = block.read(lines, at, context);
     html += read.html;
     at = read.next;
@@ -213,5 +294,5 @@ function blocksOf(lines, context) {
  * escapes everything it is given.
  */
 export function blocksHtml(markdown, inline) {
-  return blocksOf(String(markdown || "").split("\n"), { inline, idAttr: headingIds() });
+  return blocksOf(String(markdown || "").split(/\r?\n/), { inline, idAttr: headingIds(), depth: 0 });
 }

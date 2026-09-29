@@ -266,6 +266,23 @@ describe("putting a file body in the cache", () => {
     expect(await bodyOf("src/a.js")).toEqual({ file: read(), openedAt: NOW });
   });
 
+  // #102: a view re-storing the copy it read must not land over a push that
+  // arrived since. `written` is checked in the put's own transaction.
+  it("stores a held copy again only while the record is still the write it was read at", async () => {
+    const readNow = async () => cache.cachedWriteOf(await cache.readCached(fileHead("src/a.js")));
+    const again = (written) =>
+      lifetime.cacheFileBody({ deviceId: "dev-1", entityId: "ws-1", path: "src/a.js", file: read(), openedAt: NOW, written });
+
+    await keep("src/a.js", read(), NOW - HOUR);
+    expect(await again(await readNow())).toBe(true);
+    expect(await bodyOf("src/a.js")).toEqual({ file: read(), openedAt: NOW });
+
+    const readBeforePush = await readNow();
+    await keep("src/a.js", read({ revision: "r-2", content_b64: "cHVzaGVk" }), NOW);
+    expect(await again(readBeforePush)).toBe(false);
+    expect((await bodyOf("src/a.js")).file.revision).toBe("r-2");
+  });
+
   const fileHead = (path) => address("ws-1", "file", path);
 
   /** A bridge that pages: `bytes` of `whole` from `offset`, cut after a line

@@ -53,12 +53,16 @@ describe("a markdown table in a narrow column", () => {
   });
 
   it("shows an edge shadow on the side there is still table to reach", () => {
-    // A cover in the host's background rides the content; the shadow under it is
-    // pinned to the box. Lose either attachment and the affordance is a smear.
-    const background = ruleOf(".mdtable")["background"];
-    expect(background).toContain("var(--mdtable-cover)");
-    expect(background.match(/local/g)).toHaveLength(2);
-    expect(background.match(/scroll/g)).toHaveLength(2);
+    // The shadows are sized by the table's own scroll timeline (#253), not
+    // hidden under covers in a guessed host colour: a cover that missed its host
+    // drew a band down each edge of a table that did not scroll at all. The
+    // pixels are checked in Chromium, on several hosts, by
+    // test/browser/markdownTableEdgesLayout.test.js.
+    const table = ruleOf(".mdtable");
+    expect(table["background"]).not.toMatch(/local|--mdtable-cover/);
+    expect(table["background"]).toContain("var(--mdtable-shade-left)");
+    expect(table["background"]).toContain("var(--mdtable-shade-right)");
+    expect(table["animation-timeline"]).toBe("scroll(self inline)");
   });
 
   it("gives a table the conversation card's full width, gutter to gutter", () => {

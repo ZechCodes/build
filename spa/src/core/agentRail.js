@@ -3130,6 +3130,7 @@ function mountRailOnContext(host, context, swap) {
   const surfaceViewerCallbacks = () => ({
     modelLabel: surfaceModelLabel,
     onOpenBuildAgent: (where) => openBuildAgent(where),
+    hereEntityId: () => entity.entityId || null,
     onOpenThreadItem: async (sequence) => {
       const body = host.querySelector("#rail-body");
       drawDownTo(sequence);
@@ -3241,7 +3242,8 @@ function mountRailOnContext(host, context, swap) {
 
   /** A press on a Build agent in the Agents panel opens its chat: here, when
    *  it is on this rail's own work item, else on the page it lives on — its
-   *  workspace's, or the project's. A row with neither is not pressable. */
+   *  workspace's, or the project's. A row with none of the three is not
+   *  pressable (#223: a branch's agent is pressable on that branch's rail). */
   const openBuildAgent = (where) => {
     if (where.entityId && where.entityId === entity.entityId) {
       openAgent(where.agentId);

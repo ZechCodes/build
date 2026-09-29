@@ -178,6 +178,10 @@ function openBuildAgentFrom(event, onOpenBuildAgent) {
   return true;
 }
 
+/** The entity the rail showing this viewer is on, read at each paint: a
+ *  Build agent there opens in place (#223). None for a viewer off any rail. */
+const railEntityOf = (hereEntityId) => (hereEntityId ? hereEntityId() : null);
+
 function paintGroups(host, plan, paintContext) {
   for (const group of plan.groups ? plan.groups(paintContext) : []) {
     const section = host.querySelector(group.selector);
@@ -186,7 +190,7 @@ function paintGroups(host, plan, paintContext) {
 }
 
 export function mountSurfaceViewer(host, kind, {
-  onOpenThreadItem, onOpenBuildAgent = null, compact = false, modelLabel, historyControl = null, cacheKey = null,
+  onOpenThreadItem, onOpenBuildAgent = null, hereEntityId, compact = false, modelLabel, historyControl = null, cacheKey = null,
 }) {
   const plan = VIEWER_PLANS[kind];
   if (!plan) throw new Error(`agentSurfaces: no viewer for kind "${kind}"`);
@@ -381,7 +385,7 @@ export function mountSurfaceViewer(host, kind, {
 
   const paint = () => {
     if (disposed || !foldKnown) return;
-    const reading = { nowMs: Date.now(), modelLabel };
+    const reading = { nowMs: Date.now(), modelLabel, hereEntityId: railEntityOf(hereEntityId) };
     const paintContext = { surfaces, reading, rowOptions, openedPhases };
     if (kind === WORKFLOW_ENTRY_KIND) {
       paintWorkflow(reading);
@@ -511,7 +515,9 @@ export function mountSurfaceViewer(host, kind, {
   };
 }
 
-export function openSurfaceOverlay(kind, { onOpenThreadItem, onOpenBuildAgent = null, modelLabel, cacheKey = null, onClose = null, host = document.body }) {
+export function openSurfaceOverlay(kind, {
+  onOpenThreadItem, onOpenBuildAgent = null, hereEntityId, modelLabel, cacheKey = null, onClose = null, host = document.body,
+}) {
   let viewer = null;
   const { body, close } = openModal({
     dialogHtml: surfaceOverlayHtml(surfaceKindLabel(kind)),
@@ -522,7 +528,7 @@ export function openSurfaceOverlay(kind, { onOpenThreadItem, onOpenBuildAgent = 
     },
   });
   viewer = mountSurfaceViewer(body.querySelector(SURFACE_OVERLAY_BODY_SELECTOR), kind, {
-    onOpenThreadItem, onOpenBuildAgent: onOpenBuildAgent && ((where) => { close(); onOpenBuildAgent(where); }), modelLabel, cacheKey,
+    onOpenThreadItem, onOpenBuildAgent: onOpenBuildAgent && ((where) => { close(); onOpenBuildAgent(where); }), hereEntityId, modelLabel, cacheKey,
   });
   return {
     kind,
@@ -533,7 +539,9 @@ export function openSurfaceOverlay(kind, { onOpenThreadItem, onOpenBuildAgent = 
   };
 }
 
-export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem, onOpenBuildAgent = null, modelLabel, onPillsChanged }) {
+export function mountAgentSurfaces({
+  pillHost, viewerHost, key, onOpenThreadItem, onOpenBuildAgent = null, hereEntityId, modelLabel, onPillsChanged,
+}) {
   let surfaces = null;
   let paintedSurfaces = null;
   let chosenKind = null;
@@ -611,6 +619,7 @@ export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem
     viewer = mountSurfaceViewer(canvas, kind, {
       onOpenThreadItem,
       onOpenBuildAgent,
+      hereEntityId,
       modelLabel,
       compact: true,
       cacheKey: key,

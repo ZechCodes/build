@@ -115,4 +115,49 @@ describe("a press on a Build agent", () => {
     row.querySelector(".surface-row-label").click();
     expect(onOpenBuildAgent).not.toHaveBeenCalled();
   });
+
+  // #223: a branch has no page, but its own rail is where its agents' chats
+  // are — there a branch agent's row opens in place, as before #221.
+  describe("on a branch's own rail", () => {
+    const onBranch = (id, entityId) => buildAgent(id, "idle", { kind: "branch", workspace_id: null, workspace_name: "", entity_id: entityId });
+
+    it("is a button that opens the agent here", () => {
+      const onOpenBuildAgent = vi.fn();
+      mount({ onOpenBuildAgent, hereEntityId: () => "branch-a" }).set({ [BUILD_AGENTS_KEY]: [onBranch("b1", "branch-a")] });
+      const [row] = buildRows();
+      expect(row.tagName).toBe("BUTTON");
+      expect(row.getAttribute("title")).toBe("Open Worker b1's chat");
+      row.querySelector(".surface-row-label").click();
+      expect(onOpenBuildAgent).toHaveBeenCalledWith({ agentId: "b1", entityId: "branch-a", workspaceId: null, kind: "here" });
+    });
+
+    it("leaves another branch's agent unpressable, saying why", () => {
+      const onOpenBuildAgent = vi.fn();
+      mount({ onOpenBuildAgent, hereEntityId: () => "branch-a" }).set({ [BUILD_AGENTS_KEY]: [onBranch("b2", "branch-b")] });
+      const [row] = buildRows();
+      expect(row.tagName).toBe("DIV");
+      expect(row.getAttribute("title")).toBe("Build cannot open Worker b2's chat from here: it is on neither a workspace nor the project.");
+      row.click();
+      expect(onOpenBuildAgent).not.toHaveBeenCalled();
+    });
+
+    it("leaves workspace and project agents opening on their own pages", () => {
+      const onOpenBuildAgent = vi.fn();
+      mount({ onOpenBuildAgent, hereEntityId: () => "branch-a" }).set({ [BUILD_AGENTS_KEY]: [
+        buildAgent("w1", "idle", { entity_id: "branch-a" }),
+        buildAgent("p1", "idle", { kind: "project", workspace_id: null, workspace_name: "", entity_id: "branch-a" }),
+      ] });
+      for (const row of buildRows()) row.click();
+      expect(onOpenBuildAgent.mock.calls.map(([where]) => [where.agentId, where.kind])).toEqual([["w1", "workspace"], ["p1", "project"]]);
+    });
+
+    it("reads the rail's entity at paint, so a rail that learns its entity later opens in place", () => {
+      let here = null;
+      mount({ onOpenBuildAgent: () => {}, hereEntityId: () => here }).set({ [BUILD_AGENTS_KEY]: [onBranch("b1", "branch-a")] });
+      expect(buildRows()[0].tagName).toBe("DIV");
+      here = "branch-a";
+      viewer.set({ [BUILD_AGENTS_KEY]: [onBranch("b1", "branch-a")] });
+      expect(buildRows()[0].tagName).toBe("BUTTON");
+    });
+  });
 });

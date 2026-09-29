@@ -867,6 +867,21 @@ describe("the Build agents beside the sub-agents", () => {
     ]);
   });
 
+  // #223: a Build agent on a branch has no page of its own, but on that
+  // branch's own rail its chat opens in place.
+  it("opens a branch agent's chat in place on its own branch's rail, and nowhere else", () => {
+    const surfaces = { [BUILD_AGENTS_KEY]: [
+      worker("here", "idle", { kind: "branch", workspace_id: null, entity_id: "branch-a" }),
+      worker("elsewhere", "idle", { kind: "branch", workspace_id: null, entity_id: "branch-b" }),
+      worker("in-space", "idle", { entity_id: "branch-a" }),
+      worker("project-level", "idle", { kind: "project", workspace_id: null, entity_id: "branch-a" }),
+    ] };
+    expect(buildAgentRows(surfaces, { hereEntityId: "branch-a" }).map((row) => [row.id, row.chatKind])).toEqual([
+      ["here", "here"], ["elsewhere", null], ["in-space", "workspace"], ["project-level", "project"],
+    ]);
+    expect(buildAgentRows(surfaces).map((row) => row.chatKind)).toEqual([null, null, "workspace", "project"]);
+  });
+
   it("gives no rows for a snapshot with no Build agents", () => {
     expect(buildAgentRows(null)).toEqual([]);
     expect(buildAgentRows({ subagents: [{ id: "s1", state: "running" }] })).toEqual([]);

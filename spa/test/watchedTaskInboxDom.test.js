@@ -108,7 +108,9 @@ describe("a watched task's inbox row", () => {
     await vi.waitFor(() => expect(rowFor(review.id)).not.toBe(null), WAIT);
     await unwatch();
     await vi.waitFor(() => expect(rowFor(review.id)).toBe(null), WAIT);
-    expect(call).toHaveBeenCalledWith("tasks.unwatch", { task_id: review.id });
+    // #286: the row goes on the cache write, and the unwatch is sent only after
+    // that write settles, so the call can come a few IndexedDB turns later.
+    await vi.waitFor(() => expect(call).toHaveBeenCalledWith("tasks.unwatch", { task_id: review.id }), WAIT);
     const held = await modules.tracker.readTasksRecord(DEVICE, PROJECT);
     expect(held.tasks[0].watched).toBe(false);
   });

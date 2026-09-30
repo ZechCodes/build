@@ -2768,4 +2768,157 @@ mod tests {
             }));
         }
     }
+
+    /// A negotiated channel's first message can arrive in the same read burst as the datagram
+    /// that completes the SCTP handshake. The far end is the SCTP server, so its association is
+    /// up on the COOKIE ECHO and it may send before the COOKIE ACK reaches this side; the driver
+    /// then reads the ACK and the DATA before it pumps the core's events, which is where the
+    /// negotiated channels were opened. The message must reach the channel all the same: SCTP
+    /// has acked it, so nothing will send it again (#298).
+    mod negotiated_channels {
+        use super::*;
+        use rtc::data_channel::RTCDataChannelInit;
+
+        const APP_STREAM: u16 = 0;
+
+        fn negotiated_app(peer: &mut rtc::peer_connection::RTCPeerConnection) -> RTCDataChannelId {
+            let init = RTCDataChannelInit {
+                ordered: true,
+                negotiated: Some(APP_STREAM),
+                ..Default::default()
+            };
+            peer.create_data_channel("app", Some(init)).unwrap().id()
+        }
+
+        fn deliver(
+            to: &mut rtc::peer_connection::RTCPeerConnection,
+            datagrams: Vec<BytesMut>,
+            local_addr: SocketAddr,
+            peer_addr: SocketAddr,
+        ) {
+            for message in datagrams {
+                // A datagram the core refuses is the test's answer, not its failure.
+                let _ = to.handle_read(TaggedBytesMut {
+                    now: Instant::now(),
+                    transport: TransportContext {
+                        local_addr,
+                        peer_addr,
+                        ecn: None,
+                        transport_protocol: TransportProtocol::UDP,
+                    },
+                    message,
+                });
+            }
+        }
+
+        fn written(peer: &mut rtc::peer_connection::RTCPeerConnection) -> Vec<BytesMut> {
+            std::iter::from_fn(|| peer.poll_write().map(|packet| packet.message)).collect()
+        }
+
+        fn opened(peer: &mut rtc::peer_connection::RTCPeerConnection) -> bool {
+            let mut open = false;
+            while let Some(event) = peer.poll_event() {
+                open |= matches!(
+                    event,
+                    RTCPeerConnectionEvent::OnDataChannel(RTCDataChannelEvent::OnOpen(_))
+                );
+            }
+            open
+        }
+
+        fn texts(peer: &mut rtc::peer_connection::RTCPeerConnection) -> Vec<String> {
+            let mut texts = Vec::new();
+            while let Some(message) = peer.poll_read() {
+                if let RTCMessage::DataChannelMessage(_, message) = message {
+                    texts.push(String::from_utf8_lossy(&message.data).into_owned());
+                }
+            }
+            texts
+        }
+
+        #[test]
+        fn the_first_message_in_the_burst_that_completes_the_handshake_is_delivered() {
+            let bridge_addr: SocketAddr = "127.0.0.1:40001".parse().unwrap();
+            let far_addr: SocketAddr = "127.0.0.1:40002".parse().unwrap();
+            // The bridge answers, as it does in production, so it is the DTLS client and the
+            // SCTP client; the far end offers, as the browser does.
+            let mut bridge = rtc::peer_connection::RTCPeerConnectionBuilder::new()
+                .build()
+                .unwrap();
+            let mut far = rtc::peer_connection::RTCPeerConnectionBuilder::new()
+                .build()
+                .unwrap();
+            let bridge_app = negotiated_app(&mut bridge);
+            let far_app = negotiated_app(&mut far);
+
+            far.add_local_candidate(candidate(far_addr, "host"))
+                .unwrap();
+            let offer = far.create_offer(None).unwrap();
+            far.set_local_description(offer.clone()).unwrap();
+            bridge.set_remote_description(offer).unwrap();
+            bridge
+                .add_local_candidate(candidate(bridge_addr, "host"))
+                .unwrap();
+            let answer = bridge.create_answer(None).unwrap();
+            bridge.set_local_description(answer.clone()).unwrap();
+            far.set_remote_description(answer).unwrap();
+            far.add_remote_candidate(candidate(bridge_addr, "host"))
+                .unwrap();
+            bridge
+                .add_remote_candidate(candidate(far_addr, "host"))
+                .unwrap();
+
+            let mut sent = false;
+            let mut answered = false;
+            let mut received = Vec::new();
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_secs(5) {
+                // Everything the far end wrote since the last turn, the ping included, is read
+                // by the bridge back to back before it pumps a single event.
+                let to_bridge = written(&mut far);
+                deliver(&mut bridge, to_bridge, bridge_addr, far_addr);
+                opened(&mut bridge);
+                if !answered && texts(&mut bridge).iter().any(|text| text == "ping") {
+                    // The answer rides the channel the ping opened, as a reply to a call does.
+                    bridge
+                        .data_channel(bridge_app)
+                        .unwrap()
+                        .send_text("pong".to_owned())
+                        .unwrap();
+                    answered = true;
+                }
+                let to_far = written(&mut bridge);
+                deliver(&mut far, to_far, far_addr, bridge_addr);
+                opened(&mut far);
+                received.extend(texts(&mut far));
+                if received.iter().any(|text| text == "pong") {
+                    return;
+                }
+                // The far end can send the moment its association is up, which is when it
+                // takes the COOKIE ECHO. The COOKIE ACK that brings the bridge's up is still in
+                // its queue, so the ping leaves right behind it.
+                if !sent {
+                    sent = far
+                        .data_channel(far_app)
+                        .unwrap()
+                        .send_text("ping".to_owned())
+                        .is_ok();
+                }
+
+                let now = Instant::now();
+                for peer in [&mut bridge, &mut far] {
+                    if peer.poll_timeout().is_some_and(|deadline| deadline <= now) {
+                        peer.handle_timeout(now).unwrap();
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert!(sent, "the far end's negotiated channel never opened");
+            assert!(
+                answered,
+                "the bridge never delivered the far end's first message"
+            );
+            panic!("the bridge's answer never reached the far end; it read {received:?}");
+        }
+    }
 }

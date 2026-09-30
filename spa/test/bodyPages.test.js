@@ -269,7 +269,7 @@ describe("paging's edges (#95 review)", () => {
     const body = pages.createPagedBody({
       head,
       of: "k1",
-      isCurrent: async () => false,
+      keepGuard: async () => false,
       readPage: async (offset) => ({ of: "k1", offset, end: offset + 5, total: 40, body: "abcd\n" }),
     });
     await body.hydrate();

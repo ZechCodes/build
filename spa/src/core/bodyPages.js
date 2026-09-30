@@ -28,7 +28,7 @@
 // 2026-09-26). If a limit is ever wanted, its shape is: once a body passes
 // 16 MB, drop the pages furthest from where the reader is.
 
-import { cachedSubKeys, deleteCached, readCachedMany, subscribeCache, writeCached } from "./localCache.js";
+import { cachedSubKeys, deleteCached, readCachedMany, subscribeCache, writeCached, writeCachedIfStill } from "./localCache.js";
 
 /** The most one page asks for: a quarter of a megabyte, the same as the
  *  largest commit patch a single record holds. */
@@ -132,6 +132,16 @@ export async function writeBodyPage(head, page) {
   const { address, value } = bodyPagePut(head, page);
   await writeCached(address, value);
 }
+
+/** Keep one page, only while the record is still the one started from
+ *  (`guard`, see `writeCachedIfStill`; null keeps it always). The first page
+ *  of a body is where a new version starts, so it lets go of every other
+ *  version's pages in the same transaction. Answers whether it was kept. */
+export const writeBodyPageIfStill = (head, page, guard) => writeCachedIfStill({
+  guard,
+  puts: [bodyPagePut(head, page)],
+  drop: page.offset === 0 ? bodyPagesDrop(head, { keep: page.of }) : null,
+});
 
 /** Keep every page of one body at once, in order: what a body read whole is
  *  split into. */
@@ -281,9 +291,10 @@ export const pageFollows = (page, offset, of) =>
  * from `offset` (see `pageFromAnswer`), or null where the bridge cannot page
  * — asked at the moment of reading, so a view mounted before its bridge
  * greeted reads on once it has; `onChange(state)` hears every change to what
- * the cache holds; `isCurrent()` says whether the body is still the one the
- * cache holds, checked before a page is kept, so a page that lands after its
- * head was dropped or replaced is never written without one.
+ * the cache holds; `keepGuard()` answers the guard a page is kept under (see
+ * `writeBodyPageIfStill`), or false once the body is not the one the cache
+ * holds, so a page that lands after its head was dropped or replaced — even
+ * between that read and the write (#284) — is never written without one.
  *
  * The view paints `state()` — never an answer — and calls `more()` as the
  * reader reaches the end of what is painted. A page of another version is
@@ -294,7 +305,7 @@ export function createPagedBody({
   head,
   of,
   readPage = null,
-  isCurrent = async () => true,
+  keepGuard = async () => null,
   onChange = () => {},
   onMoved = () => {},
 }) {
@@ -314,8 +325,9 @@ export function createPagedBody({
   const unwatch = subscribeBodyPages(head, () => void hydrate());
 
   const keep = async (page, from) => {
-    if (!pageFollows(page, from, of) || !(await isCurrent()) || disposed) return false;
-    await writeBodyPage(head, page);
+    if (!pageFollows(page, from, of)) return false;
+    const guard = await keepGuard();
+    if (guard === false || disposed || !(await writeBodyPageIfStill(head, page, guard))) return false;
     await hydrate();
     return state.end > from;
   };

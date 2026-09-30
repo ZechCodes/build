@@ -22,7 +22,7 @@
 
 import { bytesOfBase64, createPagedBody, joinedBase64 } from "./bodyPages.js";
 import { highlightCode } from "./highlight.js";
-import { readCached } from "./localCache.js";
+import { readCached, recordWriteOf } from "./localCache.js";
 import { humanBytes } from "./workspaceLifecycle.js";
 
 /** How far below the scroller's edge the sentinel starts the next read, so
@@ -187,10 +187,13 @@ export function mountPagedFile(scroller, { head, file, readPage = null, restart 
 
   // A page is only kept while the file's record still names the version it
   // is of: one landing after the recent-files rule or a newer store let go of
-  // the record would be an orphan nothing reads or drops.
-  const isCurrent = async () => {
-    const held = (await readCached(head))?.value?.file;
-    return held?.paged === true && held.of === file.of;
+  // the record would be an orphan nothing reads or drops, and one landing
+  // after a newer push would write over its page at the same offset. So the
+  // record's write is checked again in the page's own put (#284).
+  const keepGuard = async () => {
+    const record = await readCached(head);
+    const held = record?.value?.file;
+    return held?.paged === true && held.of === file.of && { address: head, written: recordWriteOf(record) };
   };
 
   // The sentinel in view reads the next page, or — none held any more —
@@ -240,7 +243,7 @@ export function mountPagedFile(scroller, { head, file, readPage = null, restart 
     onPaint();
   };
 
-  const body = createPagedBody({ head, of: file.of, readPage, isCurrent, onChange: paint, onMoved: () => restart() });
+  const body = createPagedBody({ head, of: file.of, readPage, keepGuard, onChange: paint, onMoved: () => restart() });
   void body.hydrate().then((state) => {
     if (!disposed && !state.complete && !state.pages.length) restart();
   });

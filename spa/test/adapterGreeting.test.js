@@ -22,6 +22,7 @@ const NONE = {
   push: { registerKey: false, revokeKey: false },
   agents: { createdBy: false },
   projects: { updateSource: false, syncBase: false },
+  workspaces: { measureSizes: false },
 };
 
 /** What a bridge that takes subscriptions, priorities and coded refusals
@@ -78,6 +79,7 @@ describe("the adapter a greeting selects", () => {
       push: { registerKey: false, revokeKey: false },
       agents: { createdBy: false },
       projects: { updateSource: false, syncBase: false },
+      workspaces: { measureSizes: false },
     });
   });
 

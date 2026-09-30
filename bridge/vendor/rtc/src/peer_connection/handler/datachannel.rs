@@ -1,3 +1,4 @@
+use crate::data_channel::RTCDataChannelId;
 use crate::data_channel::internal::RTCDataChannelInternal;
 use crate::data_channel::message::RTCDataChannelMessage;
 use crate::data_channel::registry::DataChannelRegistry;
@@ -10,6 +11,7 @@ use crate::peer_connection::message::internal::{
 use crate::peer_connection::transport::dtls::role::RTCDtlsRole;
 use crate::statistics::accumulator::RTCStatsAccumulator;
 use log::{debug, warn};
+use sansio::Protocol as _;
 use sctp::PayloadProtocolIdentifier;
 use shared::TransportContext;
 use shared::error::{Error, Result};
@@ -75,6 +77,24 @@ impl<'a> sansio::Protocol<TaggedRTCMessageInternal, TaggedRTCMessageInternal, RT
             );
 
             let stream_id = message.stream_id;
+
+            // A negotiated channel still waiting for `SCTPHandshakeComplete` opens on its first
+            // message instead. The peer's association can be up before this one is, so its first
+            // DATA can arrive in the same read burst as the datagram that completes this side's
+            // handshake, ahead of the event. SCTP has already acknowledged that DATA, so dropping
+            // it here would lose it for good.
+            if let Some(handle) = self.data_channels.handle_of_stream(&stream_id)
+                && let Some(waiting) = self.data_channels.get_mut(&handle)
+                && waiting.ready_state == RTCDataChannelState::Connecting
+            {
+                open_connecting(
+                    self.ctx,
+                    self.stats,
+                    handle,
+                    waiting,
+                    message.association_handle,
+                )?;
+            }
 
             // SCTP addresses channels by stream id; everything leaving this handler towards
             // the application is keyed by handle instead.
@@ -290,44 +310,13 @@ impl<'a> sansio::Protocol<TaggedRTCMessageInternal, TaggedRTCMessageInternal, RT
 
                 for (handle, data_channel_internal) in self.data_channels.iter_mut() {
                     if data_channel_internal.ready_state == RTCDataChannelState::Connecting {
-                        data_channel_internal.dial(association_handle)?;
-
-                        let data_channel = data_channel_internal
-                            .data_channel
-                            .as_mut()
-                            .ok_or(Error::ErrDataChannelNotExisted)?;
-
-                        self.ctx.read_outs.push_back(TaggedRTCMessageInternal {
-                            now: Instant::now(),
-                            transport: TransportContext::default(),
-                            message: RTCMessageInternal::Dtls(DTLSMessage::DataChannel(
-                                ApplicationMessage {
-                                    data_channel_id: handle,
-                                    data_channel_event: DataChannelEvent::Open,
-                                },
-                            )),
-                        });
-
-                        // Track data channel opened (initiator side)
-                        self.stats.peer_connection.on_data_channel_opened();
-                        self.stats
-                            .get_or_create_data_channel(
-                                handle,
-                                &data_channel_internal.label,
-                                &data_channel_internal.protocol,
-                            )
-                            .on_state_changed(RTCDataChannelState::Open);
-
-                        while let Some(data_channel_message) = data_channel.poll_write() {
-                            debug!("send data channel message from handle_event");
-                            self.ctx.write_outs.push_back(TaggedRTCMessageInternal {
-                                now: Instant::now(),
-                                transport: TransportContext::default(),
-                                message: RTCMessageInternal::Dtls(DTLSMessage::Sctp(
-                                    data_channel_message,
-                                )),
-                            });
-                        }
+                        open_connecting(
+                            self.ctx,
+                            self.stats,
+                            handle,
+                            data_channel_internal,
+                            association_handle,
+                        )?;
                     }
                 }
             }
@@ -407,4 +396,52 @@ impl<'a> sansio::Protocol<TaggedRTCMessageInternal, TaggedRTCMessageInternal, RT
     fn close(&mut self) -> Result<()> {
         Ok(())
     }
+}
+
+/// Dial a channel that was waiting for its association, announce it open and queue what the
+/// dial has to send. The W3C "RTCSctpTransport connected procedure" for one channel: run for
+/// every connecting channel when the handshake completes, and for a negotiated one when the
+/// peer's first message on its stream gets here before that.
+fn open_connecting(
+    ctx: &mut DataChannelHandlerContext,
+    stats: &mut RTCStatsAccumulator,
+    handle: RTCDataChannelId,
+    data_channel_internal: &mut RTCDataChannelInternal,
+    association_handle: usize,
+) -> Result<()> {
+    data_channel_internal.dial(association_handle)?;
+
+    let data_channel = data_channel_internal
+        .data_channel
+        .as_mut()
+        .ok_or(Error::ErrDataChannelNotExisted)?;
+
+    ctx.read_outs.push_back(TaggedRTCMessageInternal {
+        now: Instant::now(),
+        transport: TransportContext::default(),
+        message: RTCMessageInternal::Dtls(DTLSMessage::DataChannel(ApplicationMessage {
+            data_channel_id: handle,
+            data_channel_event: DataChannelEvent::Open,
+        })),
+    });
+
+    // Track data channel opened (initiator side)
+    stats.peer_connection.on_data_channel_opened();
+    stats
+        .get_or_create_data_channel(
+            handle,
+            &data_channel_internal.label,
+            &data_channel_internal.protocol,
+        )
+        .on_state_changed(RTCDataChannelState::Open);
+
+    while let Some(data_channel_message) = data_channel.poll_write() {
+        debug!("send data channel message from handle_event");
+        ctx.write_outs.push_back(TaggedRTCMessageInternal {
+            now: Instant::now(),
+            transport: TransportContext::default(),
+            message: RTCMessageInternal::Dtls(DTLSMessage::Sctp(data_channel_message)),
+        });
+    }
+    Ok(())
 }

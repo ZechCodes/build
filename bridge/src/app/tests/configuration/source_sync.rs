@@ -367,26 +367,25 @@ fn a_workspace_is_cut_from_the_base_its_remote_has_now() {
 
 /// Where the base is checked out in the source's own checkout, moving it
 /// moves its files, which a filter can make take minutes. The cut does not
-/// wait for that (review #268): it goes ahead from the base as it stands,
-/// says so, and the service fast-forwards the checkout straight after.
+/// wait for that (review #268): it branches from the commit the fetch
+/// brought, with nothing to warn about, and the service fast-forwards the
+/// checkout straight after (#271).
 #[test]
-fn a_cut_leaves_the_source_checkout_to_the_service_and_says_so() {
+fn a_cut_from_a_checked_out_base_branches_from_the_fetched_commit() {
     let mut fixture = fixture();
+    let before = head(&fixture.code, "main");
     advance(&fixture.code_upstream, "news.txt");
 
-    let created = cut(&mut fixture, "behind");
+    let created = cut(&mut fixture, "fresh");
 
-    let warnings = created["warnings"]
-        .as_array()
-        .unwrap_or_else(|| panic!("{created}"));
-    assert_eq!(warnings.len(), 1, "{warnings:?}");
-    assert!(
-        warnings[0].as_str().unwrap().contains(
-            "1 commit behind its remote. Build is fast-forwarding its checkout in the background."
-        ),
-        "{warnings:?}"
+    assert!(created.get("warnings").is_none(), "{created}");
+    let checkout = checkout_of(&created, "code");
+    assert!(checkout.join("news.txt").exists());
+    assert_eq!(
+        head(&checkout, "HEAD"),
+        head(&fixture.code_upstream, "main")
     );
-    assert!(!checkout_of(&created, "code").join("news.txt").exists());
+    assert_eq!(head(&fixture.code, "main"), before);
 
     let fixture = fixture.pass(SyncPass::Requested);
 
@@ -396,6 +395,31 @@ fn a_cut_leaves_the_source_checkout_to_the_service_and_says_so() {
         head(&fixture.code_upstream, "main")
     );
     assert_eq!(fixture.row_source("source-1")["sync"]["state"], "synced");
+}
+
+/// A checked-out base the service could not fast-forward either is cut from
+/// as it stands, and the cut says why.
+#[test]
+fn a_cut_from_a_checked_out_base_that_cannot_move_goes_ahead_from_it_and_says_why() {
+    let mut fixture = fixture();
+    advance(&fixture.code_upstream, "news.txt");
+    std::fs::write(fixture.code.join("README.md"), "my unsaved edit\n").unwrap();
+
+    let created = cut(&mut fixture, "behind");
+
+    let warnings = created["warnings"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{created}"));
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0]
+            .as_str()
+            .unwrap()
+            .contains("1 commit behind its remote. The base checkout has uncommitted changes."),
+        "{warnings:?}"
+    );
+    assert!(!checkout_of(&created, "code").join("news.txt").exists());
+    assert_eq!(fixture.row_source("source-1")["sync"]["state"], "skipped");
 }
 
 #[test]

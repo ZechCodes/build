@@ -434,14 +434,19 @@ alone. Three things sync (`bridge/src/app/projects/base_sync.rs`): a service,
 30 s after startup and then every five minutes, with the app lock released;
 every workspace cut, first, for each source with the setting on (10 s, the
 sources side by side, and the fetch skipped when one landed in the last
-minute), which goes ahead from the base as it stood and puts `warnings` on its
-answer, so an agent's `create_workspace` or `assign_task` hears them; and
-`project.sync_source` (Sync now). The cut's 10 s bound the whole sync: a cut
-fetches and moves a base checked out nowhere, but never starts the checkout's
-fast-forward (`sync_base_for_a_cut`). A base checked out in the source's own
-checkout and behind after the fetch is cut from as it stood, with a warning
-that Build is fast-forwarding it in the background, and handed to the
-service, which the cut asks to sync that source at once. A remote that said it wanted a person (git
+minute), which goes ahead and puts `warnings` on its answer for any base it
+could not bring up to date, so an agent's `create_workspace` or `assign_task`
+hears them; and `project.sync_source` (Sync now). The cut's 10 s bound the
+whole sync: a cut fetches and moves a base checked out nowhere, but never
+starts the checkout's fast-forward (`sync_base_for_a_cut`). A base checked out
+in the source's own checkout and behind after the fetch is handed to the
+service, which the cut asks to sync that source at once, and the workspace
+branch is cut from the fetched commit instead of the base (#271), with no
+warning. That needs the fast-forward to be one git would make: the cut reads
+first, without writing anything, whether the checkout has uncommitted changes
+or a file of the user's (untracked or ignored) where the remote now has one
+(`refuse_what_would_stop`). If it does, the cut is taken from the base as it
+stood, with a warning naming why. A remote that said it wanted a person (git
 said it needed a password, or ssh could not use a key without its passphrase)
 is left off the timer until one of the other two syncs it. A fetch that only
 timed out is retried on the next pass, then after 10, 20, 40 and at most 60

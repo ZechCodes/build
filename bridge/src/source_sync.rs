@@ -15,8 +15,8 @@
 //! happens while a rebase or bisect of the base, or a merge, cherry-pick or
 //! revert on it, is part-way through in any worktree ([`in_progress`]). The
 //! checkout, once started, is let finish ([`checkout`]); a workspace cut
-//! never starts one, and leaves it to the service
-//! ([`sync_base_for_a_cut`]).
+//! never starts one, and leaves it to the service, branching from the
+//! fetched commit when the checkout would go through ([`sync_base_for_a_cut`]).
 //!
 //! Every git it starts runs as nobody's command ([`git`]): no prompt of any
 //! kind, no hooks, no maintenance, killed at its deadline. The url the fetch
@@ -55,7 +55,8 @@ enum Checkout {
     Within(Duration),
     /// No: a workspace cut, which waits on nothing but its fetch. A base
     /// checked out in the source's checkout and behind is left for the
-    /// service ([`SyncOutcome::CheckoutLeft`]).
+    /// service ([`SyncOutcome::CheckoutLeft`]) when nothing would stop it,
+    /// and skipped with the reason when something would.
     Leave,
 }
 
@@ -96,9 +97,12 @@ pub enum SyncOutcome {
     Failed(Failure),
     NoRemote,
     /// A cut's sync found the base checked out in the source's checkout and
-    /// behind: fast-forwarding its files can take minutes, so the cut left
-    /// it for the service.
-    CheckoutLeft,
+    /// behind, with nothing in the way of fast-forwarding it. Moving its
+    /// files can take minutes, so the cut left that to the service and
+    /// branches from `cut_from`, the commit the base is moving to (#271).
+    CheckoutLeft {
+        cut_from: String,
+    },
 }
 
 /// One sync's outcome, and where the base stands against its remote after it.
@@ -126,7 +130,9 @@ pub fn sync_base(path: &Path, base_branch: &str, fetch: Fetch) -> SyncReport {
 
 /// [`sync_base`] for a workspace cut: the fetch and a move of the ref alone,
 /// never the source's own checkout, so the cut waits on nothing but the
-/// fetch's deadline.
+/// fetch's deadline. A base checked out there and behind answers
+/// [`SyncOutcome::CheckoutLeft`] with the commit to cut from, when the
+/// checkout's fast-forward would go through.
 pub fn sync_base_for_a_cut(path: &Path, base_branch: &str, fetch: Fetch) -> SyncReport {
     sync_base_with(path, base_branch, fetch, Checkout::Leave)
 }
@@ -309,7 +315,12 @@ impl<'a> BaseSync<'a> {
                 Checkout::Within(cap) => {
                     checkout::fast_forward_checkout(repo, self.path, &self.tracking_ref(), cap)
                 }
-                Checkout::Leave => Err(SyncOutcome::CheckoutLeft),
+                Checkout::Leave => {
+                    checkout::refuse_what_would_stop(repo, old, new)?;
+                    Err(SyncOutcome::CheckoutLeft {
+                        cut_from: new.to_string(),
+                    })
+                }
             },
             Placement::Elsewhere(path) => Err(SyncOutcome::Skipped(format!(
                 "{} is checked out in {}.",

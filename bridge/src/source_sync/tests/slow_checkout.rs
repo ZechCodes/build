@@ -119,9 +119,10 @@ fn a_lock_someone_else_holds_is_left_alone() {
 }
 
 /// A cut's sync never starts the checkout: the base checked out here and
-/// behind is left, however fast its checkout would have been, and says so.
+/// behind is left, however fast its checkout would have been, and the cut
+/// is handed the fetched commit to branch from instead (#271).
 #[test]
-fn a_cut_leaves_the_checkout_and_says_so() {
+fn a_cut_leaves_the_checkout_and_hands_back_the_fetched_commit() {
     let pair = pair();
     slow_filter_upstream(&pair, 40);
     let before = rev(&pair.base, "main");
@@ -130,7 +131,12 @@ fn a_cut_leaves_the_checkout_and_says_so() {
     let report = sync_base_for_a_cut(&pair.base, "main", NOW);
 
     assert!(started.elapsed() < Duration::from_secs(10));
-    assert_eq!(report.outcome, SyncOutcome::CheckoutLeft);
+    assert_eq!(
+        report.outcome,
+        SyncOutcome::CheckoutLeft {
+            cut_from: rev(&pair.upstream, "main")
+        }
+    );
     assert!(report.fetched);
     assert_eq!((report.ahead, report.behind), (0, 1));
     assert_eq!(rev(&pair.base, "main"), before);

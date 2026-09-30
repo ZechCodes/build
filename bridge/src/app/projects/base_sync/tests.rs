@@ -225,8 +225,8 @@ fn head_of(repo: &std::path::Path, name: &str) -> String {
 
 /// A cut waits on the network for ten seconds and no longer, and never on
 /// the base's own checkout: a slow one is left to the service, which the cut
-/// asks to run, and the cut goes ahead from the base as it stands with a
-/// warning saying so (review #268).
+/// asks to run (review #268), and the cut branches from the fetched commit
+/// with nothing to warn about (#271).
 #[test]
 fn a_cut_leaves_a_slow_checkout_to_the_service() {
     let (fixture, base) = slow_checkout_fixture(40);
@@ -241,9 +241,13 @@ fn a_cut_leaves_a_slow_checkout_to_the_service() {
 
     assert!(took < CUT_FETCH_DEADLINE, "the cut waited {took:?}");
     assert_eq!(head_of(&base, "main"), before);
-    let warnings = cut_warnings(&synced);
-    assert_eq!(warnings.len(), 1, "{warnings:?}");
-    assert!(warnings[0].contains("1 commit behind"), "{warnings:?}");
+    assert_eq!(cut_warnings(&synced), Vec::<String>::new());
+    assert_eq!(
+        synced[0].report.outcome,
+        SyncOutcome::CheckoutLeft {
+            cut_from: head_of(&base, "origin/main")
+        }
+    );
     state.lock().unwrap().settle_source_syncs(synced, START_MS);
 
     AppState::sync_sources(&state, SyncPass::Requested, START_MS + MINUTE_MS);

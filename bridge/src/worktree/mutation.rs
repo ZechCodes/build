@@ -166,6 +166,26 @@ impl WorktreeManager {
         destination: &Path,
         isolation: Isolation,
     ) -> Result<NamedBranchCheckout, WorktreeError> {
+        self.create_workspace_checkout_from(
+            workspace_slug,
+            base_branch,
+            None,
+            destination,
+            isolation,
+        )
+    }
+
+    /// [`Self::create_workspace_checkout`], its branch cut from `start` when
+    /// named rather than from `base_branch`, which it still records: the
+    /// commit a base checked out behind its remote is moving to (#271).
+    pub fn create_workspace_checkout_from(
+        &self,
+        workspace_slug: &str,
+        base_branch: &str,
+        start: Option<&str>,
+        destination: &Path,
+        isolation: Isolation,
+    ) -> Result<NamedBranchCheckout, WorktreeError> {
         let _creation = self.lock_creation()?;
         if destination.exists() {
             return Err(WorktreeError::Refused(format!(
@@ -175,7 +195,10 @@ impl WorktreeManager {
         }
         let backend = self.backend(isolation)?;
         let repo = git2::Repository::open(&self.repo_path)?;
-        let base_commit = repo.revparse_single(base_branch)?.peel_to_commit()?;
+        let base_commit = match start {
+            Some(start) => repo.find_commit(git2::Oid::from_str(start)?)?,
+            None => repo.revparse_single(base_branch)?.peel_to_commit()?,
+        };
         let name = self.unique_checkout_name(workspace_slug, |candidate| {
             self.branch_taken(&repo, candidate)
         })?;

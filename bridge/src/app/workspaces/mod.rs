@@ -1,5 +1,7 @@
 use crate::app::git::deferred::DeferredGitWork;
-use crate::app::projects::base_sync::{cut_warnings, sync_before_cut, SyncSubject, Synced};
+use crate::app::projects::base_sync::{
+    cut_start, cut_warnings, sync_before_cut, SyncSubject, Synced,
+};
 use crate::app::{model_choice_from, require_str, AppState, DeferredGit, DeferredWork};
 use crate::isolation::{remove_directory_with_rift_root, Isolation};
 use crate::workspace::{Workspace, WorkspaceDirectory, WorkspaceRegistry, WorkspaceSource};
@@ -137,8 +139,8 @@ impl DeferredGitWork for WorkspaceCreateWork {
 }
 
 /// Make one directory from one source: a checkout of the repository on a
-/// branch of the workspace's own, cut from the source's base branch, or a copy
-/// of the folder. The one piece of per-source work workspace creation does, so
+/// branch of the workspace's own, cut from the source's base branch (or from
+/// `start`, the commit that base is moving to), or a copy of the folder. The one piece of per-source work workspace creation does, so
 /// a directory added to a live workspace lands the way the ones cut with it
 /// did. The isolation answered is what the volume actually gave, which is not
 /// always what was asked for.
@@ -148,6 +150,7 @@ pub(super) fn materialize_source(
     workspace_name: &str,
     isolation: Isolation,
     rift_root: &Path,
+    start: Option<&str>,
 ) -> Result<(Option<String>, Isolation), String> {
     if source.is_git {
         let manager =
@@ -159,7 +162,13 @@ pub(super) fn materialize_source(
             isolation
         };
         let checkout = manager
-            .create_workspace_checkout(workspace_name, &source.base_branch, destination, effective)
+            .create_workspace_checkout_from(
+                workspace_name,
+                &source.base_branch,
+                start,
+                destination,
+                effective,
+            )
             .map_err(|error| error.to_string())?;
         Ok((Some(checkout.worktree.recorded_branch), effective))
     } else {
@@ -177,12 +186,20 @@ impl WorkspaceCreateWork {
         destination: &Path,
         isolation: Isolation,
     ) -> Result<(Option<String>, Isolation), String> {
+        let start = cut_start(
+            &self
+                .synced
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            source,
+        );
         materialize_source(
             source,
             destination,
             &self.workspace_name,
             isolation,
             &self.rift_root,
+            start.as_deref(),
         )
     }
 

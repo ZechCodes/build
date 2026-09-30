@@ -93,6 +93,7 @@ impl AddWorkspaceDirectory {
                     &self.workspace_name,
                     self.isolation,
                     &self.rift_root,
+                    None,
                 )?;
                 Ok(MaterializedDirectory {
                     branch,

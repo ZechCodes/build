@@ -275,6 +275,10 @@ const putFileRecord = async (head, value, { pages = [], drop = null }, guard) =>
   return put;
 };
 
+/** The guard `writeCachedIfStill` checks for `written`: none where nothing
+ *  was named, so a store that read no record first puts unconditionally. */
+const guardOf = (head, written) => (written === undefined ? null : { address: head, written });
+
 /** Put one file's body in the cache, under both of the owner's rules for it:
  *  a body over `FILE_MAX_BYTES` is kept as pages beside a record saying what
  *  the file is, and a write leaves at most `RECENT_FILES` bodies behind it.
@@ -305,7 +309,7 @@ const putFileRecord = async (head, value, { pages = [], drop = null }, guard) =>
 export async function cacheFileBody({ deviceId, entityId, path, file, openedAt = Date.now(), readPage = null, still = null, written }) {
   if (!deviceId || !entityId || !file) return false;
   const head = { deviceId, entityId, kind: FILE_RECORD_KIND, sub: path || "" };
-  const guard = written === undefined ? null : { address: head, written };
+  const guard = guardOf(head, written);
   const record = await fileRecordOf(head, file, readingWhileStill(readPage, still), guard);
   if (!record || !(await stillStands(still))) return false;
   return putFileRecord(head, { file: record.file, openedAt }, record, guard);

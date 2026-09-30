@@ -226,7 +226,7 @@ describe("the rail composer while an agent works", () => {
     // Both did move, beside the row rather than in it.
     expect(began).not.toBe("");
     expect(ran).not.toBe(began);
-    expect(gauge.textContent).toBe("14%");
+    expect(gauge.textContent).toBe("140k");
     expect(composer.contains(gauge)).toBe(false);
     expect(composer.contains(document.querySelector(".rail-status-text"))).toBe(false);
   });

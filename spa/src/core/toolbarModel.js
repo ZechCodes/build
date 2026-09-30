@@ -128,36 +128,18 @@ const STANDING = {
   project: {
     // A project is the block the rows sit in rather than a row of its own, and
     // the page is about the project and nothing inside it: the bar says its
-    // name through the project selector, then the project's two pages as tabs.
+    // name through the project selector. Its two pages are the faces of its
+    // rail (core/projectRail.js, #274).
     rowIs: () => () => false,
     label: () => "",
-    carries: (route, { tasksUnread }) => ({ projectTabs: projectTabsModel(route.tab, tasksUnread) }),
   },
   trackerTask: {
     // One task of the tracker is a page OF the project's Tasks tab: the bar
-    // says the project, and the tabs stand with Tasks open, so the list is
-    // one press away from the task — on a phone, the only press back.
+    // says the project, and the project's rail beside it has Tasks open.
     rowIs: () => () => false,
     label: () => "",
-    carries: (route, { tasksUnread }) => ({ projectTabs: projectTabsModel("tasks", tasksUnread) }),
   },
 };
-
-/** The two pages a project has, as tabs after its name in the bar: its task
- *  tracker and the workspaces cut from it, marked with the one the route is on.
- *  They live in the bar rather than over the page so they stay reachable with
- *  the chat open over the page on a phone.
- *
- *  Tasks first, and the one a route that names no tab is on (#46): "I think
- *  tasks should be the first and primary project tab." Tasks wears the
- *  unread of every watched task in the project (#104). */
-export function projectTabsModel(current, tasksUnread = 0) {
-  const onWorkspaces = current === "workspaces";
-  return [
-    { id: "tasks", label: "Tasks", current: !onWorkspaces, unread: tasksUnread },
-    { id: "workspaces", label: "Workspaces", current: onWorkspaces, unread: 0 },
-  ];
-}
 
 /** What the bar says when the route is no work item at all. */
 const NOWHERE = Object.freeze({ projectId: null, projectKey: null, project: "", kind: null, label: "", row: null });
@@ -166,12 +148,12 @@ const NOWHERE = Object.freeze({ projectId: null, projectKey: null, project: "", 
  *  branch or task inside it. The route is the authority on identity (it is what
  *  a deep link carries, machine included); the feed only supplies the names it
  *  knows, and the record it names is the one on the route's own machine. */
-export function toolbarIdentity(route = {}, { items = [], projects = [], workspaces = [], tasksUnread = 0 } = {}) {
+export function toolbarIdentity(route = {}, { items = [], projects = [], workspaces = [] } = {}) {
   const standing = STANDING[route.name];
   if (!standing) return NOWHERE;
   const key = routeProjectKey(route);
   const row = items.find(standing.rowIs(route)) || null;
-  const carried = standing.carries ? standing.carries(route, { items, projects, workspaces, tasksUnread }) : null;
+  const carried = standing.carries ? standing.carries(route, { items, projects, workspaces }) : null;
   return {
     projectId: route.projectId,
     projectKey: key,

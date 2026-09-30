@@ -86,7 +86,7 @@ const openCreateWork = vi.fn();
 vi.mock("../src/core/createWork.js", () => ({ openCreateWork: (...args) => openCreateWork(...args) }));
 
 const { App } = await import("../src/app.js");
-const { clearProjectTabHandler, clearToolbarVerb, initToolbar, setProjectTabHandler, setToolbarVerb, stopToolbar, toolbarRouteChanged } = await import("../src/core/toolbar.js");
+const { clearToolbarVerb, initToolbar, setToolbarVerb, stopToolbar, toolbarRouteChanged } = await import("../src/core/toolbar.js");
 const { splitDeviceKey } = await import("../src/core/deviceKey.js");
 const { routeFromHash } = await import("../src/core/router.js");
 const { adoptDeviceSession } = await import("../src/core/deviceContexts.js");
@@ -202,80 +202,21 @@ describe("the sentence the toolbar prints", () => {
   });
 });
 
-// The project's two pages ride the bar after its name, so they are reachable
-// from a task's page too, with the chat open over it on a phone.
-describe("the project's pages in the bar", () => {
-  const projectTabs = () =>
-    [...bar().querySelectorAll("[data-project-tab]")].map((tab) => [tab.textContent, tab.getAttribute("aria-selected")]);
+// #274: a project's two pages and its settings are the faces of its rail
+// (core/projectRail.js), as a workspace's are of its own. The bar names the
+// project and nothing after it.
+describe("the project's pages", () => {
   const standOn = (route) => {
     App.route = route;
     toolbarRouteChanged();
   };
 
-  // Tasks first, and the one a route that names no tab is standing on (#46).
-  it("follows the project's name with Tasks and Workspaces, marking the page you are on", async () => {
+  it("are not in the bar, on the project's page or on a task's", async () => {
     standOn({ name: "project", deviceId: "dev-1", projectId: "p1" });
     expect(names()).toEqual(["relaydb"]);
-    expect(projectTabs()).toEqual([["Tasks", "true"], ["Workspaces", "false"]]);
-    standOn({ name: "project", deviceId: "dev-1", projectId: "p1", tab: "workspaces" });
-    expect(projectTabs()).toEqual([["Tasks", "false"], ["Workspaces", "true"]]);
-  });
-
-  it("keeps them over a task's page with Tasks open, and goes back to the list from either", async () => {
+    expect(bar().querySelector("[data-project-tab], [role='tablist']")).toBeNull();
     standOn({ name: "trackerTask", deviceId: "dev-1", projectId: "p1", taskId: "task-1" });
-    expect(projectTabs()).toEqual([["Tasks", "true"], ["Workspaces", "false"]]);
-    bar().querySelector('[data-project-tab="tasks"]').click();
-    // The default tab's own URL: the bare project link (#46).
-    expect(location.hash).toBe("#/device/dev-1/project/p1");
-    standOn({ name: "trackerTask", deviceId: "dev-1", projectId: "p1", taskId: "task-1" });
-    bar().querySelector('[data-project-tab="workspaces"]').click();
-    expect(location.hash).toBe("#/device/dev-1/project/p1/workspaces");
-  });
-
-  // The page is the same page: a navigation would remount the rail beside it.
-  it("hands a press to the project page standing under it rather than navigating", async () => {
-    standOn({ name: "project", deviceId: "dev-1", projectId: "p1" });
-    const hash = location.hash;
-    const opened = vi.fn((tab) => {
-      App.route = { ...App.route, tab };
-    });
-    setProjectTabHandler(opened);
-    // Pressing the tab the page is NOT on, which is Workspaces now (#46).
-    bar().querySelector('[data-project-tab="workspaces"]').click();
-    clearProjectTabHandler(opened);
-    expect(opened).toHaveBeenCalledWith("workspaces");
-    expect(location.hash).toBe(hash);
-    expect(projectTabs()).toEqual([["Tasks", "false"], ["Workspaces", "true"]]);
-  });
-
-  it("draws none over a workspace", async () => {
-    await standOnWorkspace();
-    expect(projectTabs()).toEqual([]);
-  });
-
-  // #104: "For the project it is all unreads" — every watched task's, off the
-  // cached list, moving when the record does. A finished one's never counts
-  // (#183), though a 1.29 list carries it.
-  it("wears the unread of every watched task in the project on Tasks", async () => {
-    const { tasksAddress } = await import("../src/core/trackerCache.js");
-    const listed = (tasks) => writeCached(tasksAddress("dev-1", "p1"), { tasks, columns: [] });
-    const tasksBadge = () => bar().querySelector('[data-project-tab="tasks"] .task-unread')?.textContent || null;
-    await listed([
-      { id: "i1", number: 1, watched: true, unread_count: 2, assignee: { kind: "agent", agent_id: "a1" } },
-      { id: "i2", number: 2, watched: true, unread_count: 1, assignee: null },
-      { id: "i3", number: 3, unread_count: 9, assignee: null },
-      { id: "i4", number: 4, watched: true, status: "done", unread_count: 803, assignee: null },
-      { id: "i5", number: 5, watched: true, state: "closed", unread_count: 7, assignee: null },
-    ]);
-    standOn({ name: "project", deviceId: "dev-1", projectId: "p1" });
-    await vi.waitFor(() => expect(tasksBadge()).toBe("3"));
-    expect(bar().querySelector('[data-project-tab="workspaces"] .task-unread')).toBeNull();
-    standOn({ name: "trackerTask", deviceId: "dev-1", projectId: "p1", taskId: "i1" });
-    expect(tasksBadge()).toBe("3");
-    await listed([{ id: "i1", number: 1, watched: true, unread_count: 0 }]);
-    await vi.waitFor(() => expect(tasksBadge()).toBeNull());
-    standOn({ name: "project", deviceId: "dev-1", projectId: "p2" });
-    expect(tasksBadge()).toBeNull();
+    expect(bar().querySelector("[data-project-tab], [role='tablist']")).toBeNull();
   });
 });
 
@@ -334,7 +275,6 @@ describe("the workspace picker", () => {
     toolbarRouteChanged();
     await flush();
     expect(bar().querySelector('[data-select="project"]')).not.toBeNull();
-    expect(bar().querySelector("[data-project-tab]")).not.toBeNull();
   });
 });
 

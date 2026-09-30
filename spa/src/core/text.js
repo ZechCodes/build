@@ -161,6 +161,10 @@ export const tasksTabLabel = "Tasks";
 /** The cog at the foot of a workspace's rail: what the workspace is called,
  *  what its agents start on, and the one way to delete it. */
 export const workspaceSettingsLabel = "Workspace settings";
+/** A project's rail (#274): the workspaces cut from it, and the same cog for
+ *  the project's own settings. */
+export const workspacesTabLabel = "Workspaces";
+export const projectSettingsLabel = "Project settings";
 
 /** The control at the foot of the same rail, which folds the checkout's list
  *  column (the file tree, the commit rail) away and brings it back. Icon-only

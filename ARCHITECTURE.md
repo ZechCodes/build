@@ -571,6 +571,11 @@ service's own `size_within` and budget, then writes `size_bytes` and
 verdict if no sweep has run) and notes the workspace list changed. A walk
 out of budget writes nothing, and the last size stands. A sweep keeps
 whichever size was measured later (`LifecycleRecord::keep_newer_size`).
+In the SPA the tab asks through `spa/src/core/workspaceSizes.js` (at once
+on a greeted machine that names the verb, else at its next greeting), and
+paints from the cache: the greeting writes whether the machine measures
+(`spa/src/core/workspaceSizeSupport.js`), and a row with no size yet shows a
+dim dash there rather than a spinner.
 
 ### Harnesses and the agents' slice
 

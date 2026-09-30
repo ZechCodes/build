@@ -95,10 +95,10 @@ function pageRows(feed, block, measuresSizes) {
  * `measuresSizes` is the cached fact that the machine sends sizes when the
  * tab asks (core/workspaceSizeSupport.js).
  */
-export function projectPageModel(feed, route, { measuresSizes = false } = {}) {
+export function projectPageModel(feed, route, sizes) {
   const projectKey = routeProjectKey(route);
   const block = projectBlock(feed, projectKey);
-  const rows = pageRows(feed, block, measuresSizes === true);
+  const rows = pageRows(feed, block, sizes?.measuresSizes === true);
   return {
     projectKey,
     projectId: route?.projectId || null,

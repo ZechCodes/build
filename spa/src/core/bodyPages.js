@@ -107,17 +107,30 @@ export async function readBodyPages(head, of, held = null) {
   return chainOn(from, byOffset);
 }
 
+/** One page as `writeCachedIfStill` puts it. */
+export const bodyPagePut = (head, page) => ({
+  address: pageAddress(head, page.offset),
+  value: { of: page.of, offset: page.offset, end: page.end, total: page.total, body: page.body },
+});
+
+/** The pages held under `head` as `writeCachedIfStill` lets go of them: all
+ *  of them, or all but those of `keep`. For a store that must drop them in
+ *  the same transaction as the write that makes them stale (#270). */
+export const bodyPagesDrop = (head, { keep = undefined } = {}) => {
+  const prefix = pagePrefix(head);
+  return {
+    ...pageKinds(head),
+    subPrefix: prefix,
+    where: (sub, page) => Number.isFinite(Number(sub.slice(prefix.length))) && (keep === undefined || page?.of !== keep),
+  };
+};
+
 /** Keep one page. The first page of a body is where a new version starts, so
  *  writing it lets go of every page of any other version first. */
 export async function writeBodyPage(head, page) {
   if (page.offset === 0) await dropBodyPages(head, { keep: page.of });
-  await writeCached(pageAddress(head, page.offset), {
-    of: page.of,
-    offset: page.offset,
-    end: page.end,
-    total: page.total,
-    body: page.body,
-  });
+  const { address, value } = bodyPagePut(head, page);
+  await writeCached(address, value);
 }
 
 /** Keep every page of one body at once, in order: what a body read whole is

@@ -450,8 +450,8 @@ describe("push.registerKey and push.revokeKey", () => {
 
 describe("workspace.measure_sizes", () => {
   it("is on only when the greeting names the verb, never inferred from a minor (#273)", () => {
-    expect(v1.capabilitiesOf({ api_version: "3.4.0", capabilities: ["workspace.measure_sizes"] }).workspaces.measureSizes).toBe(true);
-    expect(v1.capabilitiesOf({ api_version: "3.4.0", capabilities: [] }).workspaces.measureSizes).toBe(false);
-    expect(v1.capabilitiesOf({ api_version: "3.4.0" }).workspaces.measureSizes).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "3.3.0", capabilities: ["workspace.measure_sizes"] }).workspaces.measureSizes).toBe(true);
+    expect(v1.capabilitiesOf({ api_version: "3.3.0", capabilities: [] }).workspaces.measureSizes).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "3.3.0" }).workspaces.measureSizes).toBe(false);
   });
 });

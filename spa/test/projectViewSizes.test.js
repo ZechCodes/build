@@ -87,7 +87,7 @@ beforeEach(() => {
   call = vi.fn(async (method) =>
     method === "project.ensure_conversation" ? { project_id: "proj-1", entity_id: "run-7", run_id: "run-7" } : { queued: [] },
   );
-  adoptBridgeSelection(adoptDeviceSession({ ...fakeSession("dev-1"), call }), { version: "3.4.0" }, null);
+  adoptBridgeSelection(adoptDeviceSession({ ...fakeSession("dev-1"), call }), { version: "3.3.0" }, null);
 });
 
 afterEach(() => {

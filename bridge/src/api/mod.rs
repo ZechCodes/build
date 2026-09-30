@@ -26,10 +26,10 @@ use std::collections::BTreeSet;
 /// and the legacy `board.changed`/`entity.changed` pushes.
 /// 3.1.0 adds `agents.createdBy`: an agent's digest names the agent whose
 /// Build MCP call made it (#216).
-/// 3.4.0 adds `workspace.measure_sizes` (#273): the Workspaces tab asks for
-/// each workspace's size on disk, which lands on its row with
+/// 3.3.0 also adds `workspace.measure_sizes` (#273): the Workspaces tab asks
+/// for each workspace's size on disk, which lands on its row with
 /// `size_measured_at_ms`.
-pub const API_VERSION: &str = "3.4.0";
+pub const API_VERSION: &str = "3.3.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.

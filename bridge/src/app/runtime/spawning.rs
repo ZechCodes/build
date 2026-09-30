@@ -280,7 +280,7 @@ pub(in crate::app) fn claim_agent_spawn(
 
 /// Take the spawn reservation and read everything the disk work will need.
 ///
-/// Every field of the plan is owned — the project's orchestrator is cloned, the
+/// Every field of the plan is owned — the project's agent launch is cloned, the
 /// probes are `Arc`s — so nothing it does afterwards can reach back into the
 /// registry this read it out of.
 ///
@@ -315,7 +315,7 @@ pub(in crate::app) fn reserve_agent_spawn(
         }
         Err(unknown) => return Err(unknown),
     };
-    let project = s.orch_for(&project_id)?.clone();
+    let launch = s.agent_launch_for(&project_id)?;
     let replaced = s
         .session_registry
         .agent_snapshot(key)
@@ -377,7 +377,7 @@ pub(in crate::app) fn reserve_agent_spawn(
     }
     Ok(ReservedSpawn {
         plan: AgentSpawnPlan {
-            project,
+            launch,
             root: key.root.clone(),
             cwd: s.agent_process_cwd(owner, &key.root),
             agent_id: agent_id.to_string(),

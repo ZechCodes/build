@@ -533,6 +533,16 @@ impl AppState {
         Ok(&project.orch)
     }
 
+    /// How a project's agents are launched. An agent needs a folder, not a
+    /// repository, so unlike [`Self::orch_for`] this serves a project that has
+    /// no git.
+    pub(in crate::app) fn agent_launch_for(
+        &self,
+        project_id: &str,
+    ) -> Result<crate::orchestrator::AgentLaunch, String> {
+        Ok(self.project_for(project_id)?.orch.agent_launch())
+    }
+
     /// The base branch configured for a project id.
     pub(in crate::app) fn base_for(&self, project_id: &str) -> Result<String, String> {
         Ok(self.project_for(project_id)?.base_branch.clone())

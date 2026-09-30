@@ -43,11 +43,17 @@ pub(super) fn open_repo(
             path.display()
         ));
     }
+    let unborn = unborn_head_branch(&repo);
     let base = requested_base
+        .or_else(|| unborn.clone())
         .or_else(|| git_default_branch(&path))
         .unwrap_or_else(|| "main".to_string());
-    repo.revparse_single(&base)
-        .map_err(|_| format!("base branch '{base}' not found in repo"))?;
+    // A repository nobody has committed to has no branch to resolve yet. It is
+    // still a project; what needs a commit says so when it is asked for one.
+    if unborn.is_none() {
+        repo.revparse_single(&base)
+            .map_err(|_| format!("base branch '{base}' not found in repo"))?;
+    }
     Ok(OpenedRepository {
         remote: git_remote_origin(&path),
         path,
@@ -55,6 +61,21 @@ pub(super) fn open_repo(
         created_checkout: None,
         is_git: true,
     })
+}
+
+/// The branch an unborn HEAD names (`git symbolic-ref HEAD`), for a repository
+/// with no commit on it yet; `None` once HEAD resolves.
+fn unborn_head_branch(repo: &git2::Repository) -> Option<String> {
+    match repo.head() {
+        Err(error) if error.code() == git2::ErrorCode::UnbornBranch => repo
+            .find_reference("HEAD")
+            .ok()?
+            .symbolic_target()?
+            .strip_prefix("refs/heads/")
+            .filter(|name| !name.is_empty())
+            .map(str::to_string),
+        _ => None,
+    }
 }
 
 /// Explicitly turn a registered folder into a repository without touching its files.

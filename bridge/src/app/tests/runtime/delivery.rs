@@ -473,6 +473,36 @@ async fn legacy_post_asks_an_unnamed_agent_once_when_its_turn_is_sent() {
     );
 }
 
+/// An agent needs a folder, not a repository (#297): a project on a folder
+/// with no git spawns its project agent and delivers to it, and nothing runs
+/// `git init` on the user's behalf.
+#[tokio::test]
+async fn a_project_agent_is_delivered_to_in_a_folder_with_no_git() {
+    let dir = tempfile::tempdir().unwrap();
+    let plain = std::fs::canonicalize(dir.path()).unwrap().join("draft");
+    std::fs::create_dir(&plain).unwrap();
+    std::fs::write(plain.join("notes.txt"), "keep me\n").unwrap();
+    let (state, _handler) = shared_state_and_handler(&plain, dir.path());
+    let capture = capture_turns(&state, &plain, dir.path());
+    let project_id = {
+        let s = state.lock().unwrap();
+        assert!(!s.project_at(0).is_git);
+        s.project_at(0).id.clone()
+    };
+    let (owner, agent_id) =
+        crate::app::tests::project_agent::project_agent(&mut state.lock().unwrap(), &project_id);
+
+    let posted = state.lock().unwrap().handle(req(
+        "thread.post",
+        json!({ "entity_id": owner, "agent_id": agent_id, "body": "hello from a plain folder" }),
+    ));
+    assert_eq!(posted["ok"], true, "{posted:?}");
+    deliver_pending_agent_turns(&state);
+
+    capture_containing(&capture, "hello from a plain folder").await;
+    assert!(!plain.join(".git").exists());
+}
+
 #[tokio::test]
 async fn direct_task_notice_asks_an_unnamed_agent_on_its_first_turn() {
     let (dir, repo) = init_repo();

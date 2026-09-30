@@ -20,7 +20,7 @@ use portable_pty::PtySize;
 use crate::harness::installed::{refuse_unrunnable, Readings};
 use crate::harness::SessionLocator;
 use crate::models::{AgentProvider, ModelChoice};
-use crate::orchestrator::{Orchestrator, ResumeIdProbe, SessionLocatorFactory};
+use crate::orchestrator::{AgentLaunch, ResumeIdProbe, SessionLocatorFactory};
 use crate::pty::HarnessSpec;
 
 /// What a spawn asks the provider's transcript tree, injectable so no test
@@ -103,7 +103,7 @@ pub struct SessionPickup {
 
 /// One agent spawn's disk work, holding nothing.
 ///
-/// Every field is owned: the orchestrator is cloned out of the project, the
+/// Every field is owned: the agent launch is cloned out of the project, the
 /// probes are `Arc`s, and the checkout is a path. There is no borrow of the
 /// registry here to keep the app mutex alive, which is the whole point.
 ///
@@ -113,7 +113,7 @@ pub struct SessionPickup {
 /// of same-shaped strings would take without complaint. There is no invariant
 /// here for a constructor to enforce: this module cannot name `AppState`.
 pub struct AgentSpawnPlan {
-    pub project: Orchestrator,
+    pub(crate) launch: AgentLaunch,
     /// Where Build keeps the agent: its `.build/` scaffold, its tab and its
     /// session lineage.
     pub root: PathBuf,
@@ -173,8 +173,7 @@ impl AgentSpawnPlan {
         let locator = self.probes.locator(&self.cwd, provider);
         let resume_session_id = pickup.resume_session_id.clone();
         let prepared = self
-            .project
-            .agent_launch()
+            .launch
             .prepare(
                 &self.agent_id,
                 crate::orchestrator::LaunchDirs {

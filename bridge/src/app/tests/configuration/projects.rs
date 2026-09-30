@@ -126,6 +126,51 @@ fn plain_folder_add_does_not_initialize_git_and_can_be_initialized_explicitly() 
     assert_eq!(String::from_utf8_lossy(&status.stdout), "?? notes.txt\n");
 }
 
+/// A repository nobody has committed to yet is a Git project (#297): its base
+/// is the branch its unborn HEAD names, or the one given, and nothing at
+/// creation asks for a commit.
+#[test]
+fn a_repository_with_no_commits_opens_as_a_git_project_on_its_unborn_branch() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state =
+        AppState::new_unrooted(dir.path().join("wt"), "main", true, "/tmp/test-mcp.sock");
+    let unborn = |name: &str| {
+        let path = dir.path().join(name);
+        let mut options = git2::RepositoryInitOptions::new();
+        options.initial_head("trunk").external_template(false);
+        git2::Repository::init_opts(&path, &options).unwrap();
+        path
+    };
+    let inferred = unborn("draft");
+    let given = unborn("named");
+
+    let from_head = state.handle(req(
+        "project.create",
+        open_folder(json!({"sources": [{"path": inferred}]})),
+    ));
+    let from_request = state.handle(req(
+        "project.create",
+        open_folder(json!({"sources": [{"path": given, "base_branch": "main"}]})),
+    ));
+
+    assert_eq!(from_head["ok"], true, "{from_head:?}");
+    assert_eq!(from_head["result"]["is_git"], true);
+    assert_eq!(from_head["result"]["base_branch"], "trunk");
+    assert_eq!(from_request["ok"], true, "{from_request:?}");
+    assert_eq!(from_request["result"]["is_git"], true);
+    assert_eq!(from_request["result"]["base_branch"], "main");
+    let listed = state.handle(req("project.list", json!({})));
+    assert_eq!(listed["ok"], true, "{listed:?}");
+    assert_eq!(listed["result"]["projects"].as_array().unwrap().len(), 2);
+    for path in [&inferred, &given] {
+        let repo = git2::Repository::open(path).unwrap();
+        assert!(
+            repo.head().is_err(),
+            "nothing was committed on the user's behalf"
+        );
+    }
+}
+
 #[test]
 fn plain_folder_persists_and_remains_browsable_after_reload() {
     let tmp = tempfile::tempdir().unwrap();

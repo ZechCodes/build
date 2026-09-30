@@ -384,6 +384,15 @@ checkout's `origin`, read from the checkout for every row
 it, and ignores the copy older bridges wrote. The project row's `path`,
 `base_branch` and `remote` are its first source's. That first source is the
 project's home (orchestrator, registry identity) and cannot move.
+A project whose home is not a Git repository is a valid project: its project
+agent spawns and is delivered to there (`agent_launch_for`, not `orch_for`),
+and only the verbs that use git (branches, diffs, git checkouts) refuse it with
+"project is not a git repository", which the SPA's compose box turns into the
+Initialize Git offer (`spa/src/core/gitInitializationOffer.js`, #297). Nothing
+runs `git init` without the user asking.
+A repository with no commits yet is a Git project too: `open_repo`
+(`bridge/src/lifecycle/projects.rs`) takes its base from the unborn HEAD, or
+the one given, and does not resolve it until something needs a commit.
 `project.update_source` (`bridge/src/app/projects/source_update.rs`, git in
 `bridge/src/lifecycle/source_update.rs`) edits a source in place:
 - A new base branch must be a branch the checkout has.

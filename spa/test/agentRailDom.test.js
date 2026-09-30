@@ -4049,7 +4049,11 @@ describe("the composer's model menu", () => {
     });
   });
 
-  it("keeps the pick through a branch.get that still names the old model", async () => {
+  // The rail reads its row off the cache, so the stale answer is a row landing
+  // there while agent.choose is still out. It moves the topic too, and the
+  // head showing that topic is what says the row was read before the menu is
+  // looked at: a tick that lands nothing proves nothing (#258).
+  it("keeps the pick through a row that still names the old model", async () => {
     payload = branchRow({ agents: [agent({ model: "claude-opus-5" })] });
     await mount();
     const answering = bridge.call;
@@ -4064,9 +4068,10 @@ describe("the composer's model menu", () => {
     modelMenuButton().click();
     menuItem("model:claude-haiku-4-5").click();
     await flush();
+    expect(callsTo("agent.choose")).toHaveLength(1);
 
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow(branchRow({ agents: [agent({ model: "claude-opus-5", topic: "Still on the old model" })] }));
+    await vi.waitFor(() => expect(headWho()).toBe("Still on the old model"));
 
     expect(modelMenuButton().textContent).toContain("Claude Haiku 4.5");
     modelMenuButton().click();
@@ -5773,13 +5778,11 @@ describe("an account with more than one device", () => {
       projects: [],
       devices: { "dev-2": { items: [theirs], projects: [] }, "dev-1": { items: [mine], projects: [] } },
     };
-    // The first read never answers, so what is painted is the seed alone.
-    bridge.call = vi.fn(async (method) => {
-      if (method === "models.list") return CATALOG;
-      if (method === "branch.get") return new Promise(() => {});
-      return {};
-    });
-    await mount();
+    // The seed is what the mount paints in its own frame, before the row
+    // record is read a turn later. So nothing goes on the cache, and the strip
+    // is read before any turn passes: a row read off disk would put ag-1 there
+    // whichever row seeded it (#258).
+    rail = mountAgentRail(railHost(), railAddress());
 
     const strip = bubbles().filter((bubble) => bubble.dataset.bubble === "agent");
     expect(strip.map((bubble) => bubble.dataset.agent)).toEqual(["ag-1"]);

@@ -98,6 +98,7 @@ const { App, go, render, unmountView } = await import("../src/app.js");
 const { adoptBridgeSelection, adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
 const { stopShell } = await import("../src/core/shell.js");
 const { wipeCache } = await import("../src/core/localCache.js");
+const { writeRailWorkItem } = await import("./railCacheFixture.js");
 
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
@@ -184,7 +185,6 @@ const PAGE_CONTENT = {
 const pageContent = (place) => document.querySelector(`#root ${PAGE_CONTENT[place]}`);
 const strip = () => document.querySelector("#agent-rail .rail-strip");
 const separators = () => document.querySelectorAll("#agent-rail .rail-sep");
-const bubbleIds = () => [...document.querySelectorAll("#agent-rail .rail-strip [data-agent]")].map((b) => b.dataset.agent);
 const regions = () => ["shell", "toolbar", "view-body", "root", "agent-rail", "console-region"].map((id) => document.getElementById(id));
 
 beforeEach(async () => {
@@ -436,6 +436,37 @@ describe("what the reader is looking at, while a modal is over the page", () => 
 });
 
 describe("the strip on a page standing on the project", () => {
+  // The project's agent as the cache holds it: the owner
+  // `project.ensure_conversation` answers with, and one agent on it with
+  // something unread — the maintainer's own case. The rail reads nothing else,
+  // so without this row the strip holds only a "New agent" ghost, and a strip
+  // that doubled the project's agent drew no second bubble to catch (#258).
+  const projectAgentRow = {
+    kind: "branch",
+    entity_id: "proj-conv-1",
+    run_id: "proj-conv-1",
+    project_id: "p-1",
+    agents: [{
+      id: "pa-1", ordinal: 1, conversation_id: "conversation-pa-1", provider: "claude_adk",
+      state: "live", topic: "Plan the release", unread_count: 2, working: false,
+    }],
+    thread: { items: [], sessions: [] },
+  };
+  /** Every bubble that opens the project's conversation: the one it wears as
+   *  its own agent, and the one it would wear above a line. */
+  const projectBubbles = () => document.querySelectorAll(
+    "#agent-rail .rail-strip .rail-bubble-project, #agent-rail .rail-strip [data-bubble=\"project\"]",
+  );
+  /** Stand on the route once the rail has read the agent: its unread count
+   *  is on the strip, whichever bubble wears it. */
+  const visitWithTheProjectAgent = async (route) => {
+    await writeRailWorkItem(projectAgentRow);
+    await visit(route);
+    await vi.waitFor(() => {
+      expect(document.querySelector('#agent-rail .rail-strip [title*="2 unread"]')).toBeTruthy();
+    }, { timeout: 30_000, interval: 5 });
+  };
+
   // The maintainer, on the project page after the shell roll: two bubbles for
   // the one project agent, one above the separator wearing the agent's unread
   // count in place of the project's initial, and the same agent again below the
@@ -446,19 +477,15 @@ describe("the strip on a page standing on the project", () => {
   // the project's conversation is what the page stands on — so asking for the
   // bubble above the line asked for the very same conversation twice.
   it("draws the project's conversation once, with no line", async () => {
-    await visit(PLACES.project);
-    expect(strip()).toBeTruthy();
+    await visitWithTheProjectAgent(PLACES.project);
+    expect(projectBubbles()).toHaveLength(1);
     expect(separators()).toHaveLength(0);
-    const ids = bubbleIds();
-    expect(new Set(ids).size).toBe(ids.length);
   });
 
   it("draws it once on a task of the project too, which stands on the same conversation", async () => {
-    await visit(PLACES["task (tracker)"]);
-    expect(strip()).toBeTruthy();
+    await visitWithTheProjectAgent(PLACES["task (tracker)"]);
+    expect(projectBubbles()).toHaveLength(1);
     expect(separators()).toHaveLength(0);
-    const ids = bubbleIds();
-    expect(new Set(ids).size).toBe(ids.length);
   });
 
   // …and a page standing on something else in the project still gets it: the

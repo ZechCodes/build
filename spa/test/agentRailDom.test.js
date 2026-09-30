@@ -5778,13 +5778,11 @@ describe("an account with more than one device", () => {
       projects: [],
       devices: { "dev-2": { items: [theirs], projects: [] }, "dev-1": { items: [mine], projects: [] } },
     };
-    // The first read never answers, so what is painted is the seed alone.
-    bridge.call = vi.fn(async (method) => {
-      if (method === "models.list") return CATALOG;
-      if (method === "branch.get") return new Promise(() => {});
-      return {};
-    });
-    await mount();
+    // The seed is what the mount paints in its own frame, before the row
+    // record is read a turn later. So nothing goes on the cache, and the strip
+    // is read before any turn passes: a row read off disk would put ag-1 there
+    // whichever row seeded it (#258).
+    rail = mountAgentRail(railHost(), railAddress());
 
     const strip = bubbles().filter((bubble) => bubble.dataset.bubble === "agent");
     expect(strip.map((bubble) => bubble.dataset.agent)).toEqual(["ag-1"]);

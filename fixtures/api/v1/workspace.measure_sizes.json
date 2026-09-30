@@ -1,6 +1,6 @@
 {
   "method": "workspace.measure_sizes",
-  "since": "3.3.0",
+  "since": "3.4.0",
   "params": {
     "project_id": "proj-1",
     "workspace_ids": ["ws-3f2a91c4", "ws-8c1d02e7"]

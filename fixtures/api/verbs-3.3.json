@@ -1,6 +1,6 @@
 {
-  "api_version": "3.2.0",
-  "commit": "18195c06",
+  "api_version": "3.3.0",
+  "commit": "772491c4",
   "generated_by": "scripts/api-verbs-manifest.mjs",
   "verbs": [
     "agent.add",
@@ -59,6 +59,7 @@
     "project.remove_source",
     "project.set_isolation",
     "project.set_remote",
+    "project.sync_source",
     "project.update_source",
     "push.registerKey",
     "push.revokeKey",
@@ -193,6 +194,7 @@
     "project.remove_source",
     "project.set_isolation",
     "project.set_remote",
+    "project.sync_source",
     "project.update_source",
     "push.registerKey",
     "push.revokeKey",
@@ -213,6 +215,7 @@
     "settings.roleModels",
     "settings.set",
     "settings.workspaceLifecycle",
+    "sources.syncBase",
     "task.doc",
     "task.get",
     "task.stage_diff",

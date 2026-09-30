@@ -3,7 +3,7 @@
   "since": "1.0.0",
   "params": {},
   "result": {
-    "api_version": "3.3.0",
+    "api_version": "3.4.0",
     "capabilities": [
       "agent.add",
       "agent.attach",

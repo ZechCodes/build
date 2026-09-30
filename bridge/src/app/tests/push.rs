@@ -189,8 +189,8 @@ async fn the_greeting_announces_push_events() {
     // installed agent CLIs run, and says when that changes (#203); 3.0.0
     // cuts what no client used (#207); 3.1.0 names who made an agent (#216);
     // 3.2.0 edits a project source in place (#228); 3.3.0 syncs a base
-    // (#267) and measures workspace sizes when asked (#273).
-    assert_eq!(hello["result"]["api_version"], "3.3.0", "{hello:?}");
+    // (#267); 3.4.0 measures workspace sizes when asked (#273).
+    assert_eq!(hello["result"]["api_version"], "3.4.0", "{hello:?}");
     assert!(
         hello["result"]["coalesce_window_ms"]
             .as_u64()

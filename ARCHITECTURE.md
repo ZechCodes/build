@@ -262,7 +262,7 @@ runtime that starts them.
   and `sync` (what the last sync of its base concluded),
   `project.update_source` takes `sync_base`, and `project.sync_source` asks
   for a sync now. See Projects and sources.
-  3.3.0 also adds `workspace.measure_sizes` (#273), which queues a size walk
+  3.4.0 adds `workspace.measure_sizes` (#273), which queues a size walk
   for the workspaces named (or all of them, or a project's) and answers at
   once; each size lands on the row as `lifecycle.size_bytes` with
   `lifecycle.size_measured_at_ms`. See Workspaces and worktrees.

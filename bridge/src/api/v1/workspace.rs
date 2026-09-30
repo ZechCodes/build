@@ -154,7 +154,7 @@ pub struct WorkspaceIdParams {
     pub workspace_id: String,
 }
 
-/// The workspaces whose size on disk the Workspaces tab wants (3.3.0, #273):
+/// The workspaces whose size on disk the Workspaces tab wants (3.4.0, #273):
 /// the ones named, or every one of the project named, or every one.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct WorkspaceMeasureSizesParams {
@@ -321,7 +321,7 @@ pub struct WorkspaceListRow {
     /// `workspaces.lifecycle`): whether it is idle, what holds it, how big it
     /// is. `null` before the first sweep measured it, and for an adopted
     /// checkout, which is never measured. A size walked because the
-    /// Workspaces tab asked (3.3.0, #273) comes on a record with no verdict
+    /// Workspaces tab asked (3.4.0, #273) comes on a record with no verdict
     /// yet: `measured_at_ms` 0, neither idle nor reclaimable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle: Option<crate::reclaim::LifecycleRecord>,

@@ -1,0 +1,74 @@
+name: Notarization status
+
+# Asks Apple what became of notarization submissions, from a macOS runner,
+# so a machine without Xcode can find out. It reads only: nothing here signs,
+# submits or publishes. `info` and `log` run for each id given; `history`
+# always runs. Everything lands in the job log and the step summary.
+
+on:
+  workflow_dispatch:
+    inputs:
+      submission_ids:
+        description: Submission ids, comma-separated (may be empty)
+        required: false
+        default: ""
+
+permissions: {}
+
+jobs:
+  status:
+    name: Ask Apple
+    runs-on: macos-latest
+    # The three credentials notarytool takes, named once for the job as in
+    # release.yml.
+    env:
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+      SUBMISSION_IDS: ${{ inputs.submission_ids }}
+    steps:
+      - name: Query notarytool
+        run: |
+          set -euo pipefail
+          # release.yml's "Are the Apple credentials configured?" check, over
+          # the credentials this job uses; here their absence is a failure.
+          configured=true
+          for value in "$APPLE_TEAM_ID" "$APPLE_ID" "$APPLE_APP_PASSWORD"; do
+            if [ -z "$value" ]; then configured=false; fi
+          done
+          if [ "$configured" != true ]; then
+            echo "::error::APPLE_ID, APPLE_TEAM_ID and APPLE_APP_PASSWORD must all be set"
+            exit 1
+          fi
+
+          auth=(--apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD")
+
+          # Runs a notarytool command, echoing its output to the log and a
+          # fenced block in the summary. Returns the command's status.
+          report() {
+            local title="$1" out status=0
+            shift
+            echo "::group::${title}"
+            out="$(xcrun notarytool "$@" "${auth[@]}" 2>&1)" || status=$?
+            printf '%s\n' "$out"
+            echo "::endgroup::"
+            {
+              printf '### %s\n\n~~~\n%s\n~~~\n\n' "$title" "$out"
+            } >> "$GITHUB_STEP_SUMMARY"
+            return "$status"
+          }
+
+          IFS=',' read -r -a ids <<< "$SUBMISSION_IDS"
+          # bash 3.2 (macOS /bin/bash) treats an empty array as unset under -u.
+          for id in ${ids[@]+"${ids[@]}"}; do
+            id="$(printf '%s' "$id" | tr -d '[:space:]')"
+            [ -n "$id" ] || continue
+            report "info ${id}" info "$id" || true
+            if ! report "log ${id}" log "$id"; then
+              msg="No log for ${id} yet (notarytool log failed; see above)."
+              echo "$msg"
+              printf '%s\n\n' "$msg" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+
+          report "history" history || true

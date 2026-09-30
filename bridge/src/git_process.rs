@@ -460,27 +460,33 @@ mod tests {
     /// reads as a wedged daemon. Measured against the same child run by the
     /// standard library, so the assertion is about this module's overhead
     /// rather than about how fast the host runs git.
+    ///
+    /// The two take turns, so load that comes and goes lands on both. It is
+    /// still two wall-clock totals compared, and a loaded machine skews them
+    /// (871 ms against 237 ms at load 60, #280): a performance check, run by
+    /// hand, not a claim the default run can hold on a shared 2-core runner.
     #[test]
+    #[ignore = "timing: run with --ignored on a quiet machine"]
     fn a_git_child_costs_what_the_child_costs() {
         let dir = tempfile::tempdir().unwrap();
         run_git(dir.path(), &["init", "-b", "main"]).unwrap();
         let args = ["symbolic-ref", "--short", "HEAD"];
 
-        let started = Instant::now();
-        for _ in 0..5 {
+        let mut library = Duration::ZERO;
+        let mut ours = Duration::ZERO;
+        for _ in 0..10 {
+            let started = Instant::now();
             Command::new("git")
                 .args(args)
                 .stdin(Stdio::null())
                 .current_dir(dir.path())
                 .output()
                 .unwrap();
-        }
-        let library = started.elapsed();
-        let started = Instant::now();
-        for _ in 0..5 {
+            library += started.elapsed();
+            let started = Instant::now();
             run_git(dir.path(), &args).unwrap();
+            ours += started.elapsed();
         }
-        let ours = started.elapsed();
 
         assert!(
             ours < library * 3,

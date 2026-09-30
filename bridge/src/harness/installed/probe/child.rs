@@ -10,7 +10,7 @@
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::PROBE_DEADLINE;
 use crate::harness::INHERITED_AGENT_MARKERS;
@@ -40,12 +40,22 @@ impl ProbeChild {
     /// directory it starts in for a project-local pin, and the answer wanted
     /// is the machine's. Stdin is a pipe only for a child that is talked to.
     pub(super) fn start(binary: &str, args: &[&str], talks: bool) -> std::io::Result<Self> {
+        ProbeChild::start_within(binary, args, talks, PROBE_DEADLINE)
+    }
+
+    /// The same, cut off at `deadline` instead of [`PROBE_DEADLINE`].
+    pub(super) fn start_within(
+        binary: &str,
+        args: &[&str],
+        talks: bool,
+        deadline: Duration,
+    ) -> std::io::Result<Self> {
         let mut child = command(binary, args, talks).spawn()?;
         let lines = read_lines(child.stdout.take());
         Ok(Self {
             child,
             lines,
-            expiry: Instant::now() + PROBE_DEADLINE,
+            expiry: Instant::now() + deadline,
         })
     }
 

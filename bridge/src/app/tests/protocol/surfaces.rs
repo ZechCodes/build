@@ -253,12 +253,8 @@ async fn a_subagents_call_sequence_names_the_row_of_the_call_that_spawned_it() {
     );
 }
 
-fn note_the_board_then_bump_each_revision_once(
-    state: &Arc<Mutex<AppState>>,
-    revisions: &[SurfaceRevision],
-) {
-    let state = state.lock().unwrap();
-    state.note_board_changed();
+fn bump_each_revision_once(state: &Arc<Mutex<AppState>>, revisions: &[SurfaceRevision]) {
+    let _state = state.lock().unwrap();
     for revision in revisions {
         revision.bump();
     }
@@ -280,7 +276,12 @@ fn spawning_call_sequence(view: &Value) -> u64 {
         .expect("a row carries its sequence")
 }
 
-#[tokio::test]
+/// One window is the flusher's `window` sleep after a cycle, on the paused
+/// clock: it cannot end while a pump is ready or its note is on the blocking
+/// pool, so all five notes land inside it however loaded the machine is. On
+/// the wall clock a board note flushed at once and raced the five pumps, so
+/// some notes rode that flush and the rest the next (#280).
+#[tokio::test(start_paused = true)]
 async fn a_revision_bump_that_mints_no_row_stales_the_owning_entity() {
     let (dir, repo) = init_repo();
     let (state, handler, sender, mut rx, session_key) = greeted_push_session(&repo, dir.path());
@@ -331,8 +332,12 @@ async fn a_revision_bump_that_mints_no_row_stales_the_owning_entity() {
         })
         .collect();
     settled_pushes(&mut rx, &session_key).await;
+    // A board flush, settled: the flusher is asleep in the window after it,
+    // and whatever is noted next is due the moment that window ends.
+    state.lock().unwrap().note_board_changed();
+    settled_pushes(&mut rx, &session_key).await;
 
-    note_the_board_then_bump_each_revision_once(&state, &revisions);
+    bump_each_revision_once(&state, &revisions);
 
     let moved = changed_entities(&settled_pushes(&mut rx, &session_key).await);
     assert_eq!(

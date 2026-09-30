@@ -178,6 +178,32 @@ pub(in crate::app::tests) fn spawns_parked_at(state: &Arc<Mutex<AppState>>) -> O
     handle
 }
 
+/// Call `method` and wait for its answer with the spawn it triggers parked
+/// at `spawning`. Nothing opens that gate until the answer is in, so an
+/// answer at all is one that did not wait for the spawn, however slow the
+/// machine. The timeout only turns a verb that does wait into a failure
+/// instead of a hung suite.
+///
+/// The call runs on a thread of the test's runtime: with no runtime under
+/// it a delivery runs on the caller's time by design
+/// (`DeliveryRunner::spawn`).
+async fn answered_with_the_spawn_parked(
+    handler: &FrameHandler,
+    spawning: &OffLockGateHandle,
+    method: &'static str,
+    params: Value,
+) -> Value {
+    let handler = handler.clone();
+    let answering = tokio::task::spawn_blocking(move || call(&handler, method, params));
+    match tokio::time::timeout(Duration::from_secs(30), answering).await {
+        Ok(answer) => answer.expect("the call did not panic"),
+        Err(_) => {
+            spawning.release();
+            panic!("{method} waited for the spawn it triggered")
+        }
+    }
+}
+
 /// The whole of spec step 2, in one frame: a message is answered when the
 /// message is durable, and never when the agent is up.
 ///
@@ -192,18 +218,14 @@ async fn a_message_is_answered_before_its_agent_has_spawned() {
     let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-answered");
     let spawning = spawns_parked_at(&state);
 
-    let asked_at = std::time::Instant::now();
-    let posted = call(
+    let posted = answered_with_the_spawn_parked(
         &handler,
+        &spawning,
         "thread.post",
         json!({ "entity_id": "run-answered", "body": "start on this" }),
-    );
-    let answered_in = asked_at.elapsed();
+    )
+    .await;
     assert_eq!(posted["ok"], true, "{posted:?}");
-    assert!(
-        answered_in < Duration::from_millis(100),
-        "the post waited for the spawn it triggered: {answered_in:?}"
-    );
 
     spawning.wait_for_arrival();
     let board = call(&handler, "board.list", json!({}));
@@ -226,14 +248,14 @@ async fn agent_start_answers_with_the_reserved_tab_before_the_harness_is_up() {
     let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-reserved");
     let spawning = spawns_parked_at(&state);
 
-    let asked_at = std::time::Instant::now();
-    let started = call(&handler, "agent.start", json!({ "id": "run-reserved" }));
-    let answered_in = asked_at.elapsed();
+    let started = answered_with_the_spawn_parked(
+        &handler,
+        &spawning,
+        "agent.start",
+        json!({ "id": "run-reserved" }),
+    )
+    .await;
     assert_eq!(started["ok"], true, "{started:?}");
-    assert!(
-        answered_in < Duration::from_millis(100),
-        "the start waited for its harness: {answered_in:?}"
-    );
     let key = derived_agent_key(&root, "run-reserved");
     assert_eq!(
         started["result"]["term_id"], key.tab_id,

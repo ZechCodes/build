@@ -2,7 +2,8 @@
 //! work in (`workspace.list` / `workspace.get` / `workspace.create` /
 //! `workspace.retry` / `workspace.finish`), the two verbs its settings sheet
 //! calls (`workspace.rename` / `workspace.delete`), the explicit removal of a
-//! workspace whose work is finished (`workspace.reclaim`), the conversation owner a
+//! workspace whose work is finished (`workspace.reclaim`), the size walks the
+//! Workspaces tab asks for (`workspace.measure_sizes`), the conversation owner a
 //! workspace mints on demand (`workspace.ensure_conversation`), and the Git
 //! initialization surface for a source that is not a repository yet
 //! (`workspace.git_init_options` / `workspace.init_git`).
@@ -127,6 +128,12 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             WorkspaceIdParams,
             WorkspaceDeleteResult
         ),
+        v1_method!(
+            "workspace.measure_sizes",
+            workspace_measure_sizes,
+            WorkspaceMeasureSizesParams,
+            WorkspaceMeasureSizesResult
+        ),
     ]
 }
 
@@ -145,6 +152,16 @@ pub struct WorkspaceListParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct WorkspaceIdParams {
     pub workspace_id: String,
+}
+
+/// The workspaces whose size on disk the Workspaces tab wants (3.4.0, #273):
+/// the ones named, or every one of the project named, or every one.
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct WorkspaceMeasureSizesParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_ids: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
 }
 
 /// One more directory in a workspace that is already standing: a project
@@ -303,7 +320,9 @@ pub struct WorkspaceListRow {
     /// What the reclaim service last concluded about this workspace (1.24.0,
     /// `workspaces.lifecycle`): whether it is idle, what holds it, how big it
     /// is. `null` before the first sweep measured it, and for an adopted
-    /// checkout, which is never measured.
+    /// checkout, which is never measured. A size walked because the
+    /// Workspaces tab asked (3.4.0, #273) comes on a record with no verdict
+    /// yet: `measured_at_ms` 0, neither idle nor reclaimable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle: Option<crate::reclaim::LifecycleRecord>,
 }
@@ -353,6 +372,15 @@ pub struct WorkspaceDeleteResult {
     /// repository. A branch already gone has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branches: Option<Vec<ReclaimedBranch>>,
+}
+
+/// What `workspace.measure_sizes` answers, at once: the workspaces it queued
+/// a size walk for. One already queued, or measured within the last few
+/// minutes, is not queued again. Each size arrives on the workspace's row
+/// (`lifecycle.size_bytes`, `lifecycle.size_measured_at_ms`) as it is walked.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct WorkspaceMeasureSizesResult {
+    pub queued: Vec<String>,
 }
 
 /// One branch a reclaim took, in one repository.
@@ -630,6 +658,18 @@ fn workspace_reclaim(
     answer(app.workspace_reclaim(&params.wire(), &crate::tracker::Actor::User)).map_err(refine)
 }
 
+/// Queue the size walks and answer at once; nothing is walked here.
+fn workspace_measure_sizes(
+    app: &mut AppState,
+    params: WorkspaceMeasureSizesParams,
+) -> Result<Answer<WorkspaceMeasureSizesResult>, ApiError> {
+    let queued = app.workspace_measure_sizes(
+        params.workspace_ids.as_deref(),
+        params.project_id.as_deref(),
+    );
+    answer(Ok(serde_json::json!({ "queued": queued })))
+}
+
 // ----------------------------------------------------------------- tests ---
 
 #[cfg(test)]
@@ -684,6 +724,11 @@ mod tests {
     #[test]
     fn the_workspace_reclaim_fixture_round_trips() {
         round_trips("workspace.reclaim");
+    }
+
+    #[test]
+    fn the_workspace_measure_sizes_fixture_round_trips() {
+        round_trips("workspace.measure_sizes");
     }
 
     #[test]

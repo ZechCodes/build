@@ -956,3 +956,35 @@ fn a_reclaim_wakes_nobody_watching_the_task() {
     let entries = timeline_kinds(&state, &task);
     assert_eq!(entries[0]["kind"], "workspace_reclaimed");
 }
+
+/// A size walk the Workspaces tab asked for, landing while a sweep prunes the
+/// workspace (#273): the sweep's older reading does not replace it.
+#[test]
+fn a_size_walk_landing_mid_sweep_keeps_its_newer_size() {
+    let (_tmp, state, _project, ws, _task, _checkout, _output) = ready_to_prune();
+    let now = now_ms();
+    let walked = std::cell::RefCell::new(Value::Null);
+
+    AppState::sweep_workspaces_racing(
+        &state,
+        &pruning(),
+        now,
+        &at(PrunePhase::Inspected, || {
+            let asked = call(
+                &state,
+                "workspace.measure_sizes",
+                json!({ "workspace_ids": [ws] }),
+            );
+            assert_eq!(asked["result"]["queued"], json!([ws]), "{asked:?}");
+            assert!(AppState::measure_next_workspace_size(&state, now + 1));
+            *walked.borrow_mut() = lifecycle(&state, &ws);
+        }),
+    );
+
+    let walked = walked.into_inner();
+    assert_eq!(walked["size_measured_at_ms"], now + 1, "{walked:?}");
+    let swept = lifecycle(&state, &ws);
+    assert_eq!(swept["pruned_at_ms"], now, "the sweep pruned: {swept:?}");
+    assert_eq!(swept["size_measured_at_ms"], now + 1, "{swept:?}");
+    assert_eq!(swept["size_bytes"], walked["size_bytes"]);
+}

@@ -471,6 +471,9 @@ pub struct AppState {
     /// Set when the daemon is going down: a sweep still walking stops at its
     /// next entry.
     reclaim_stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The size walks the Workspaces tab asked for (#273), which the size
+    /// walker (`app/workspaces/sizes.rs`) takes one at a time.
+    size_requests: std::sync::Arc<crate::reclaim::SizeRequests>,
     /// The harnesses out of usage on this device, and the agents whose turns
     /// stopped at a limit (task #58). In memory: a restart resumes every live
     /// agent anyway, and one still limited says so again on its first turn.
@@ -674,6 +677,7 @@ impl AppState {
             reclaim_policy: Default::default(),
             reclaim_settings: Default::default(),
             reclaim_stop: Default::default(),
+            size_requests: Default::default(),
             usage_limits: Default::default(),
             operation_ledger: Default::default(),
             self_handle: None,

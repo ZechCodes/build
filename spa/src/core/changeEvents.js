@@ -70,6 +70,7 @@ import { rememberNeedsYouRule } from "./needsYouRule.js";
 import { rememberBranchDelete } from "./branchDeleteSupport.js";
 import { rememberAgentLineageSupport } from "./agentLineageSupport.js";
 import { rememberSourceEditSupport } from "./sourceEditSupport.js";
+import { rememberWorkspaceSizeSupport } from "./workspaceSizeSupport.js";
 
 /** The wire API majors this build of the SPA speaks, declared in every
  *  greeting so `bridge.stats` can count who is still on which. */
@@ -95,6 +96,7 @@ const NO_CAPABILITIES = Object.freeze({
   push: Object.freeze({ registerKey: false, revokeKey: false }),
   agents: Object.freeze({ createdBy: false }),
   projects: Object.freeze({ updateSource: false, syncBase: false }),
+  workspaces: Object.freeze({ measureSizes: false }),
 });
 
 // Event mode is a fact about one bridge, so it is held per device: one machine
@@ -904,6 +906,8 @@ function publishGreeting(call, deviceId, greeting, adapter, onGreeting) {
   void rememberAgentLineageSupport(deviceId, state.adapter.capabilities);
   // And whether its sources can be edited in place (#228).
   void rememberSourceEditSupport(deviceId, state.adapter.capabilities);
+  // And whether it measures its workspaces' sizes when asked (#273).
+  void rememberWorkspaceSizeSupport(deviceId, state.adapter.capabilities);
   onGreeting(greeting);
   armChangeEvents(greeting, deviceId);
   adoptGreetedSession(state, call);

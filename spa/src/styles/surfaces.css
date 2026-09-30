@@ -256,6 +256,8 @@
 /* What a workspace weighs, as a column: right-aligned figures of one width, so
    a list sorted by it reads down one edge. Empty until the service measures. */
 .project-size { flex:none; align-self:center; min-width:5.5em; text-align:right; color:var(--dim); font-size:12px; font-variant-numeric:tabular-nums; }
+/* A size the machine is still to send (#273): there, but quieter than a number. */
+.project-size-pending { opacity:.5; }
 /* A row on a page is a link, not a rail entry: it carries no menu, so the
    right-hand gutter the rail keeps for one is the page's own inset. */
 .project-page .inbox-entry { cursor:pointer; }

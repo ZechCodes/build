@@ -600,3 +600,35 @@ fn bytes_read_the_way_a_person_says_them() {
     assert_eq!(human_bytes(17_200_000_000), "17.2 GB");
     assert_eq!(human_bytes(640_000_000), "640 MB");
 }
+
+/// A sweep's record keeps a size walked after its own reading (#273), and
+/// keeps its own when that is the newer.
+#[test]
+fn a_sweep_record_keeps_the_newer_size() {
+    let sized = |bytes, at| LifecycleRecord {
+        size_bytes: Some(bytes),
+        size_measured_at_ms: Some(at),
+        ..LifecycleRecord::default()
+    };
+    let mut swept = sized(10, 100);
+    swept.keep_newer_size(Some(&sized(20, 200)));
+    assert_eq!(
+        (swept.size_bytes, swept.size_measured_at_ms),
+        (Some(20), Some(200))
+    );
+
+    let mut swept = sized(10, 300);
+    swept.keep_newer_size(Some(&sized(20, 200)));
+    assert_eq!(
+        (swept.size_bytes, swept.size_measured_at_ms),
+        (Some(10), Some(300))
+    );
+
+    let mut unsized_sweep = LifecycleRecord::default();
+    unsized_sweep.keep_newer_size(Some(&sized(20, 200)));
+    assert_eq!(unsized_sweep.size_bytes, Some(20));
+
+    let mut swept = sized(10, 100);
+    swept.keep_newer_size(None);
+    assert_eq!(swept.size_bytes, Some(10));
+}

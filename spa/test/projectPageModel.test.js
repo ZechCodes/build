@@ -162,3 +162,50 @@ describe("the workspaces listing", () => {
     expect(workspaceListing(page(), "bogus").rows).toHaveLength(4);
   });
 });
+
+// #273: a machine that measures sizes when the tab asks shows a quiet
+// placeholder for a size still to come; the rows sort as the sizes arrive.
+describe("sizes arriving", () => {
+  const verdict = (size) => ({ idle: true, reclaimable: true, holds: [], size_bytes: size, pruned_bytes: 0 });
+  const sizeOnly = (size) => ({ measured_at_ms: 0, idle: false, reclaimable: false, holds: [], size_bytes: size, size_measured_at_ms: 1 });
+  const listed = (workspaces, options) => projectPageModel({ ...feed, workspaces }, route, options);
+
+  it("shows a placeholder for a size still to come on a machine that measures", () => {
+    const page = listed([workspace("pending"), workspace("sized", { lifecycle: sizeOnly(3_000_000) })], { measuresSizes: true });
+    const shown = page.rows.map((row) => [row.workspaceId, row.sizeText, row.sizePending]);
+    expect(shown).toEqual([["pending", "—", true], ["sized", "3.0 MB", false]]);
+  });
+
+  it("shows no placeholder for a workspace the machine never measures: adopted or finished", () => {
+    const page = listed([workspace("adopted", { managed: false }), workspace("done", { status: "finished" })], { measuresSizes: true });
+    expect(page.rows.length).toBeGreaterThan(0);
+    expect(page.rows.every((row) => row.sizeText === "" && row.sizePending === false)).toBe(true);
+  });
+
+  it("shows nothing for a missing size on a machine that does not measure", () => {
+    const page = listed([workspace("pending")]);
+    expect(page.rows.map((row) => [row.sizeText, row.sizePending])).toEqual([["", false]]);
+  });
+
+  it("shows a size that arrived without a verdict, and no lifecycle line for it", () => {
+    const [row] = listed([workspace("busy", { lifecycle: sizeOnly(12_000) })], { measuresSizes: true }).rows;
+    expect(row.sizeText).toBe("12.0 KB");
+    expect(row.lifecycle).toBeNull();
+  });
+
+  it("sorts the reclaimable ones largest first while sizes arrive, a pending one last", () => {
+    const before = listed([
+      workspace("a", { lifecycle: verdict(5) }),
+      workspace("b", { lifecycle: { ...verdict(null) } }),
+      workspace("c", { lifecycle: verdict(9) }),
+    ], { measuresSizes: true });
+    expect(workspaceListing(before, RECLAIMABLE_WORKSPACES).rows.map((row) => row.workspaceId)).toEqual(["c", "a", "b"]);
+
+    const after = listed([
+      workspace("a", { lifecycle: verdict(5) }),
+      workspace("b", { lifecycle: verdict(20) }),
+      workspace("c", { lifecycle: verdict(9) }),
+    ], { measuresSizes: true });
+    expect(workspaceListing(after, RECLAIMABLE_WORKSPACES).rows.map((row) => row.workspaceId)).toEqual(["b", "c", "a"]);
+  });
+});

@@ -225,8 +225,12 @@ impl AppState {
     /// Stop the service: a sweep still walking stops at its next entry, and
     /// no other starts.
     pub fn stop_workspace_reclaim(state: &Arc<Mutex<AppState>>) {
-        let stop = state.lock().unwrap().reclaim_stop.clone();
+        let (stop, sizes) = {
+            let app = state.lock().unwrap();
+            (app.reclaim_stop.clone(), Arc::clone(&app.size_requests))
+        };
         stop.store(true, Ordering::Relaxed);
+        sizes.wake();
     }
 
     /// One sweep: read every workspace, measure each with the mutex released,
@@ -362,7 +366,7 @@ impl AppState {
         }
         fresh.pruned_bytes += moved.iter().map(|artifact| artifact.bytes).sum::<u64>();
         fresh.pruned_at_ms = Some(now_ms);
-        if !subject.resize(&mut fresh, &policy.budget(stop)) {
+        if !subject.resize(&mut fresh, &policy.budget(stop), now_ms) {
             fresh.unmeasured();
         }
         fresh
@@ -458,7 +462,7 @@ impl AppState {
     }
 
     /// The last verdict on one workspace, as its row carries it. `null` before
-    /// the first sweep has measured it.
+    /// the first sweep has measured it or a size walk has sized it (#273).
     pub(in crate::app) fn workspace_lifecycle_json(&self, workspace_id: &str) -> Value {
         self.workspace_lifecycle
             .get(workspace_id)
@@ -554,15 +558,24 @@ impl AppState {
     /// Adopted checkouts are somebody else's and are not measured.
     fn reclaim_subjects(&self) -> Vec<Subject> {
         let linked = self.tasks_linking_workspaces();
-        self.workspaces
-            .list(None)
-            .into_iter()
-            .filter(|workspace| workspace.managed && workspace.status != WorkspaceStatus::Finished)
+        self.measured_workspaces(None)
             .map(|workspace| {
                 let tasks = tasks_of(&linked, &workspace.id);
                 self.reclaim_subject(workspace, tasks)
             })
             .collect()
+    }
+
+    /// The workspaces the service measures, of one project or of all:
+    /// Build's own, not yet finished.
+    pub(in crate::app) fn measured_workspaces(
+        &self,
+        project_id: Option<&str>,
+    ) -> impl Iterator<Item = &Workspace> {
+        self.workspaces
+            .list(project_id)
+            .into_iter()
+            .filter(|workspace| workspace.managed && workspace.status != WorkspaceStatus::Finished)
     }
 
     fn reclaim_subject(
@@ -575,15 +588,7 @@ impl AppState {
             project_id: workspace.project_id.clone(),
             name: workspace.name.clone(),
             root: workspace.root.clone(),
-            boundary: WorkspaceBoundary::new(
-                self.workspaces.storage_anchor(),
-                &workspace.root,
-                workspace
-                    .directories
-                    .iter()
-                    .map(|directory| directory.path.clone())
-                    .collect(),
-            ),
+            boundary: self.workspace_boundary(workspace),
             repositories: workspace
                 .directories
                 .iter()
@@ -595,6 +600,22 @@ impl AppState {
             previous: self.workspace_lifecycle.get(&workspace.id).cloned(),
             tasks: tasks.unwrap_or_default(),
         }
+    }
+
+    /// The managed-storage boundary a walk of this workspace holds to.
+    pub(in crate::app) fn workspace_boundary(
+        &self,
+        workspace: &Workspace,
+    ) -> Option<WorkspaceBoundary> {
+        WorkspaceBoundary::new(
+            self.workspaces.storage_anchor(),
+            &workspace.root,
+            workspace
+                .directories
+                .iter()
+                .map(|directory| directory.path.clone())
+                .collect(),
+        )
     }
 
     /// The newest message in the workspace's conversation.
@@ -709,11 +730,12 @@ impl AppState {
         self.workspace_lifecycle
             .retain(|workspace_id, _| workspaces.get(workspace_id).is_some());
         let mut quiet: BTreeMap<String, Vec<Quiet>> = BTreeMap::new();
-        for (subject, record) in measured {
+        for (subject, mut record) in measured {
             // Removed while it was being measured: nothing left to say.
             if self.workspaces.get(&subject.workspace_id).is_none() {
                 continue;
             }
+            record.keep_newer_size(self.workspace_lifecycle.get(&subject.workspace_id));
             if record.pruned_at_ms == Some(now_ms) {
                 self.note_on_linked_tasks(
                     &subject,
@@ -827,7 +849,7 @@ impl AppState {
         }
     }
 
-    fn persist_workspace_lifecycle(&self) {
+    pub(in crate::app) fn persist_workspace_lifecycle(&self) {
         if let Some(store) = self.store.as_ref() {
             if let Err(error) = store.save_workspace_lifecycle(&self.workspace_lifecycle) {
                 eprintln!("workspace reclaim: persist: {error}");

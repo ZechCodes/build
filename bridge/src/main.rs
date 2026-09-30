@@ -642,6 +642,9 @@ async fn run_daemon(
         AppState::spawn_source_sync(app.clone(), build_bridge::app::SourceSyncPolicy::default())
             .await;
 
+    // Walks a workspace's size on disk when the Workspaces tab asks (#273).
+    AppState::spawn_workspace_sizes(app.clone());
+
     // Bring back whoever the last shutdown was holding. It waits for an
     // authenticated relay socket rather than firing here, because a resumed
     // agent starts talking immediately and the human has to be able to SEE it:

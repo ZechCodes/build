@@ -12,6 +12,7 @@ mod deletion;
 mod directories;
 mod git_initialization;
 mod reclaim;
+mod sizes;
 
 #[cfg(test)]
 pub(in crate::app) use reclaim::probe_reclaim_stop_for_test;

@@ -32,7 +32,7 @@ node scripts/build-desktop.mjs
 Output is in `desktop/dist/`. Add `--dir` for an unpacked application.
 This local script ignores signing credentials and disables notarization;
 on macOS it uses an ad-hoc signature and disables hardened runtime.
-See the root [README](../README.md#build-locally) for prerequisites and the
+See the root [contributing guide](../CONTRIBUTING.md#build-locally) for prerequisites and the
 signed Mac release workflow.
 
 For credential-aware packaging directly from this directory, use `npm run dist`,

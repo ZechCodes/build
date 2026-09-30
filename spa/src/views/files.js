@@ -34,7 +34,7 @@
 
 import { esc, pickAFileText } from "../core/text.js";
 import { directoryCacheId, syncWalksCheckout } from "../core/directoryScope.js";
-import { cachedWriteOf, deleteCached, readCached, recordWriteOf, subscribeCache } from "../core/localCache.js";
+import { deleteCached, readCached, recordWriteOf, subscribeCache } from "../core/localCache.js";
 import { FILE_RECORD_KIND, cacheFileBody, filePageReader, filePagesReadable } from "../core/cacheLifetime.js";
 import {
   mountPagedFile,
@@ -432,7 +432,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     if (recordWriteOf(current) !== previousWrite) return { file: current?.value?.file };
     await cacheFileBody({
       deviceId: address.deviceId, entityId: address.entityId, path: address.sub, file,
-      readPage: storePageReader(path, file), still: recordStill(address, previousWrite),
+      readPage: storePageReader(path, file), still: recordStill(address, previousWrite), written: previousWrite,
     });
     if (!stillSelected(request, path)) return {};
     return { file: (await heldRecord(address))?.value?.file };
@@ -454,8 +454,10 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     const readPage = storePageReader(path, file);
     if (!address || !readPage || key === restartedFrom || key === restartedTo) return;
     restartedFrom = key;
-    const still = recordStill(address, recordWriteOf(await heldRecord(address)));
-    const stored = await cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path: address.sub, file, readPage, still });
+    const written = recordWriteOf(await heldRecord(address));
+    const stored = await cacheFileBody({
+      deviceId: address.deviceId, entityId: address.entityId, path: address.sub, file, readPage, still: recordStill(address, written), written,
+    });
     if (stored) restartedTo = `${path}\n${(await heldRecord(address))?.value?.file?.of}`;
   };
 
@@ -534,7 +536,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     if (address) {
       void cacheFileBody({
         deviceId: address.deviceId, entityId: address.entityId, path: address.sub, file: held,
-        still: recordStill(address, recordWriteOf(record)), written: cachedWriteOf(record),
+        still: recordStill(address, recordWriteOf(record)), written: recordWriteOf(record),
       });
     }
     return true;

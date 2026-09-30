@@ -7,24 +7,25 @@
 // rail is the project's agent, whose conversation the bridge keeps in a scratch
 // directory of its own (planning/v2/workspaces.md).
 //
-// The page's two verbs sit in the toolbar's verb slot beside the project's
-// name: the + that makes the first workspace, and the cog that settles the
-// project. Both say which project they are about, because the bar names one.
+// The page's verb sits in the toolbar's verb slot beside the project's name:
+// the + that makes the first workspace, named for the project the bar names.
 //
 // Two tabs, because a project holds two kinds of thing: the workspaces the work
-// happens in, and the tasks that say what the work IS. The Tasks tab is its
+// happens in, and the tasks that say what the work IS. They are the faces of
+// the project's rail (core/projectRail.js, #274), with the project's Settings at
+// its foot, the way a workspace's rail carries its own. The Tasks tab is its
 // own surface (core/trackerTasksPane.js) mounted into this page's body, and it
 // keeps its own URL — `#/project/<p>/tasks` — so a link to a board opens one.
 
 import { $ } from "../dom.js";
 import { App, go } from "../app.js";
 import { esc } from "../core/text.js";
-import { shellSelection } from "../core/shell.js";
+import { collapseChatOverPage, shellSelection } from "../core/shell.js";
 import { surfaceContext } from "../core/surfaceContext.js";
 import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
-import { clearProjectTabHandler, clearToolbarVerb, setProjectTabHandler, setToolbarVerb } from "../core/toolbar.js";
+import { clearToolbarVerb, setToolbarVerb } from "../core/toolbar.js";
 import { openCreateWork } from "../core/createWork.js";
-import { openProjectSettings } from "../sheets/projectSettings.js";
+import { mountProjectRail } from "../core/projectRail.js";
 import {
   ALL_WORKSPACES,
   RECLAIMABLE_WORKSPACES,
@@ -35,7 +36,7 @@ import { refreshFeed, subscribeFeed } from "../core/taskFeed.js";
 import { subscribeCache } from "../core/localCache.js";
 import { askForWorkspaceSizes } from "../core/workspaceSizes.js";
 import { readWorkspaceSizeSupport, WORKSPACE_SIZE_SUPPORT_KIND } from "../core/workspaceSizeSupport.js";
-import { ICON_PLUS, ICON_SETTINGS } from "../core/icons.js";
+import { ICON_PLUS } from "../core/icons.js";
 import { routeProjectKey } from "../core/deviceKey.js";
 import { mountTasksPane } from "../core/trackerTasksPane.js";
 import { hashFromRoute } from "../core/router.js";
@@ -161,15 +162,13 @@ function paintWorkspaces(pane, ui) {
   paintListing(pane.querySelector("[data-project-listing]"), listing, ui);
 }
 
-/** The two verbs this page owns, in the toolbar's slot. Called on every toolbar
+/** The verb this page owns, in the toolbar's slot. Called on every toolbar
  *  repaint, so it rebuilds only when the project it names has changed. */
 function paintProjectVerbs(host, state) {
   const name = state.page.name;
   if (host.dataset.project === name && host.querySelector("[data-project-create]")) return;
   host.dataset.project = name;
-  host.innerHTML = `<button class="iconbtn" type="button" data-project-settings aria-label="Settings for ${esc(name)}" title="Settings for ${esc(name)}">${ICON_SETTINGS}</button>
-    <button class="iconbtn" type="button" data-project-create aria-label="New workspace in ${esc(name)}" title="New workspace in ${esc(name)}">${ICON_PLUS}</button>`;
-  host.querySelector("[data-project-settings]").onclick = () => settleProject(state);
+  host.innerHTML = `<button class="iconbtn" type="button" data-project-create aria-label="New workspace in ${esc(name)}" title="New workspace in ${esc(name)}">${ICON_PLUS}</button>`;
   host.querySelector("[data-project-create]").onclick = () => createWorkspace(state);
 }
 
@@ -180,19 +179,6 @@ function createWorkspace(state) {
     deviceId: state.context.deviceId,
     projectName: state.page.name,
     navigate: go,
-  });
-}
-
-/** The cog. A deleted project has no page left to stand on, so the reader is
- *  put back on the inbox and the feed is told to catch up. */
-function settleProject(state) {
-  openProjectSettings(state.route.projectId, {
-    callRpc: state.context.rpc,
-    deviceId: state.context.deviceId,
-    onDeleted: async () => {
-      go({ name: "inbox" });
-      await refreshFeed(state.context.deviceId);
-    },
   });
 }
 
@@ -225,6 +211,7 @@ function openTab(state, tab) {
   state.tasks = null;
   state.tab = tab;
   askForSizesWhileOpen(state);
+  state.rail.paint(tab);
   const pane = $("#project-pane");
   pane.innerHTML = "";
   delete pane.dataset.rows;
@@ -353,17 +340,26 @@ export async function renderProject() {
   const state = {
     route, context, disposed: false, selection: shellSelection(),
     page: projectPageModel(null, route), verb: null,
-    tab: tabOf(route), view: route.view || "dashboard", feed: null, tasks: null, openTab: null,
+    tab: tabOf(route), view: route.view || "dashboard", feed: null, tasks: null, rail: null,
     reclaiming: new Set(), reclaimErrors: new Map(), filter: ALL_WORKSPACES,
     measuresSizes: false, sizeAsk: null,
   };
   state.verb = (host) => paintProjectVerbs(host, state);
   root.innerHTML = `<div id="tabbody" class="flush"><div id="project-pane" class="project-page"></div></div>`;
-  // The two tabs are the toolbar's (core/toolbar.js), so they stay reachable
-  // with the chat open over the page; a press is handed here to switch in
-  // place, because a navigation would remount the rail beside the page.
-  state.openTab = (tab) => openTab(state, tab === WORKSPACES_TAB ? WORKSPACES_TAB : TASKS_TAB);
-  setProjectTabHandler(state.openTab);
+  // The two tabs are the rail's faces. A press switches in place rather than
+  // navigating, because a navigation would remount the agent rail beside the
+  // page; the shell's route rule never sees it (#62), so where the chat lies
+  // over the page the press puts it away itself.
+  state.rail = mountProjectRail($("#dir-rail"), {
+    route,
+    context,
+    navigate: go,
+    onSelect: (tab) => {
+      collapseChatOverPage();
+      openTab(state, tab === WORKSPACES_TAB ? WORKSPACES_TAB : TASKS_TAB);
+    },
+  });
+  state.rail.paint(state.tab);
   $("#project-pane").onclick = (event) => pressList(state, event);
   const deviceStrip = mountDeviceStrip(root, context, { hasContent: () => !state.page.empty });
   const unsubscribe = subscribeFeed((feed) => {
@@ -384,6 +380,6 @@ export async function renderProject() {
     deviceStrip();
     state.tasks?.dispose();
     clearToolbarVerb(state.verb);
-    clearProjectTabHandler(state.openTab);
+    state.rail.dispose();
   };
 }

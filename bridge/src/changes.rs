@@ -3540,12 +3540,17 @@ mod subscriptions {
     /// only its size). That is CPU on whichever thread runs it, so the daemon
     /// runs the flusher on its push runtime. Observe the worker immediately
     /// after each frame is serialized and encrypted; the main runtime's only
-    /// worker must not do that work. On the main runtime the same flush held
-    /// that worker 2.3 s (#131).
+    /// worker must not do that work. On the main runtime a flush of 32 frames
+    /// of a 260 KB status held that worker 2.3 s (#131).
+    ///
+    /// The frames here are small on purpose. Which thread encrypts does not
+    /// depend on how big the frame is, and the check is the thread's name, not
+    /// a clock. A 260 KB frame per subscriber made this test take 2.6 s idle
+    /// and over 20 s on two loaded cores, so load failed it (#252).
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn a_heavy_flush_encrypts_off_the_main_runtime() {
         const SUBSCRIBERS: usize = 32;
-        let patch = "M src/lib.rs\n".repeat(20 * 1024);
+        let patch = "M src/lib.rs\n";
         let facts: FactsSource = Arc::new(move |requests: &[FactsRequest]| {
             requests
                 .iter()
@@ -3583,6 +3588,8 @@ mod subscriptions {
         ChangeBus::spawn_flusher_on(Arc::clone(&bus), Some(push.handle()));
 
         bus.note_kind("run-7", Kind::Git);
+        // A guard against a flusher that never runs, not a budget: the whole
+        // flush is milliseconds of work.
         let workers = tokio::time::timeout(Duration::from_secs(20), async {
             let mut workers = Vec::with_capacity(SUBSCRIBERS);
             for _ in 0..SUBSCRIBERS {

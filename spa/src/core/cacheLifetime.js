@@ -14,16 +14,16 @@
 // inbox until the feed stops naming it. Nothing here decides which workspaces
 // are active or recent — the caller knows that, and calls accordingly.
 
-import { cachedAddresses, cachedAddressesWrittenBefore, cachedRecords, deleteCached, mergeCachedIfUnwritten, writeCached } from "./localCache.js";
+import { cachedAddresses, cachedAddressesWrittenBefore, cachedRecords, deleteCached, writeCachedIfStill } from "./localCache.js";
 import {
   BODY_PAGE_BYTES,
+  bodyPagePut,
+  bodyPagesDrop,
   bytePagesOf,
   dropBodyPages,
   pageFollows,
   pageFromAnswer,
   readBodyPages,
-  writeBodyPage,
-  writeBodyPages,
 } from "./bodyPages.js";
 import { bridgeCapabilities } from "./changeEvents.js";
 import { fileBodyReading } from "./fileViewer.js";
@@ -179,10 +179,17 @@ const pagedHead = (file, over) => ({ ...fileFacts(file, false), paged: true, ...
 
 /** The record of a file the viewer shows as its size alone — a binary, or a
  *  film past the media cap — with no bytes beside it. */
-async function bodilessHead(head, file, truncated) {
-  await dropBodyPages(head);
-  return fileFacts(file, truncated);
-}
+const bodilessHead = (head, file, truncated) => ({ file: fileFacts(file, truncated), drop: bodyPagesDrop(head) });
+
+/** Keep one page, only while the record is still the one started from
+ *  (`guard`, see `writeCachedIfStill`). The first page of a body is where a
+ *  new version starts, so it lets go of every other version's pages in the
+ *  same transaction. Answers whether it was kept. */
+const keepPage = (head, page, guard) => writeCachedIfStill({
+  guard,
+  puts: [bodyPagePut(head, page)],
+  drop: page.offset === 0 ? bodyPagesDrop(head, { keep: page.of }) : null,
+});
 
 /** How much one page read asks for: a source file is painted a page at a
  *  time, so its pages are small; a body painted whole is read in the
@@ -194,12 +201,11 @@ const readWhole = (reading) => reading === "media" || reading === "rendered";
 /** Read the pages after those held of `of`, to the end: a body the viewer
  *  shows whole. A page of another version means the file changed under the
  *  read; the pages stop there, and the viewer's own reader starts it over. */
-async function readRemainingPages(head, first, readPage) {
+async function readRemainingPages(head, first, readPage, guard) {
   let { end, complete } = await readBodyPages(head, first.of);
   while (!complete) {
     const page = await readPage(end, FILE_MAX_BYTES);
-    if (!pageFollows(page, end, first.of)) return;
-    await writeBodyPage(head, page);
+    if (!pageFollows(page, end, first.of) || !(await keepPage(head, page, guard))) return;
     end = page.end;
     complete = end >= page.total;
   }
@@ -208,8 +214,9 @@ async function readRemainingPages(head, first, readPage) {
 /** A body over one record, from a bridge that pages: its first page read by
  *  range — never the whole answer, which names no version — and every page of
  *  one the viewer shows whole. Answers the record, or null when the reader
- *  had nothing to give (a read given up on). */
-async function readFilePages(head, file, readPage) {
+ *  had nothing to give (a read given up on) or the record is no longer the
+ *  one started from. */
+async function readFilePages(head, file, readPage, guard) {
   const reading = fileBodyReading(file.mime);
   if (reading === "none") return bodilessHead(head, file, false);
   const whole = readWhole(reading);
@@ -217,35 +224,36 @@ async function readFilePages(head, file, readPage) {
   const first = await readPage(0, pageBytesFor(reading));
   if (!first) return null;
   if (whole && first.total > FILE_MEDIA_MAX_BYTES) return bodilessHead(head, { ...file, size: first.total }, true);
-  await writeBodyPage(head, first);
-  if (whole) await readRemainingPages(head, first, readPage);
-  return pagedHead(file, { size: first.total, of: first.of });
+  if (!(await keepPage(head, first, guard))) return null;
+  if (whole) await readRemainingPages(head, first, readPage, guard);
+  return { file: pagedHead(file, { size: first.total, of: first.of }) };
 }
 
 /** A body over one record, from a bridge that cannot page: what the answer
  *  carried, split into pages that weigh the file's own size, so a cut answer
  *  shows as the piece it is. A cut film is worth nothing, and not kept. */
-async function splitWholeAnswer(head, file) {
+function splitWholeAnswer(head, file) {
   const reading = fileBodyReading(file.mime);
   if (reading === "none" || (reading === "media" && file.truncated)) return bodilessHead(head, file, Boolean(file.truncated));
   const pages = bytePagesOf(file.content_b64, { of: WHOLE_READ, total: file.truncated ? file.size : undefined });
   // Two whole reads name the same version, so the pages of the last one would
   // chain on past the end of a shorter body: they go first.
-  await dropBodyPages(head);
-  await writeBodyPages(head, pages);
-  return pagedHead(file, { size: pages[0].total, of: WHOLE_READ, truncated: Boolean(file.truncated) });
+  return {
+    file: pagedHead(file, { size: pages[0].total, of: WHOLE_READ, truncated: Boolean(file.truncated) }),
+    pages: pages.map((page) => bodyPagePut(head, page)),
+    drop: bodyPagesDrop(head),
+  };
 }
 
-/** What the file's own record holds, with whatever pages it needs put beside
- *  it first. A paged record handed back (a reopen) is kept as it is, or
- *  refreshed from its first page when there is a reader to read it with. */
-async function fileRecordOf(head, file, readPage) {
-  if (file.paged) return readPage ? readFilePages(head, file, readPage) : file;
-  if (fileBodyFits(file)) {
-    await dropBodyPages(head);
-    return file;
-  }
-  return readPage ? readFilePages(head, file, readPage) : splitWholeAnswer(head, file);
+/** What the file's own record holds — `{ file, pages, drop }`: the pages to
+ *  put beside it and those to let go of, both in the record's own write, so a
+ *  refused write lets go of nothing (#270). A paged record handed back (a
+ *  reopen) is kept as it is, or refreshed from its first page when there is a
+ *  reader to read it with. */
+async function fileRecordOf(head, file, readPage, guard) {
+  if (file.paged) return readPage ? readFilePages(head, file, readPage, guard) : { file };
+  if (fileBodyFits(file)) return { file, drop: bodyPagesDrop(head) };
+  return readPage ? readFilePages(head, file, readPage, guard) : splitWholeAnswer(head, file);
 }
 
 /** `readPage`, answering no page once the record it reads for is not the
@@ -258,14 +266,18 @@ const readingWhileStill = (readPage, still) => readPage && still ? async (...ran
 /** Whether nothing asks, or the record is still the one started from. */
 const stillStands = async (still) => !still || still();
 
-/** Put the record — with `written`, only while it is still that write — and
- *  then hold the recent-files rule. Answers whether it was put. */
-const putFileRecord = async (head, value, written) => {
-  if (written === undefined) await writeCached(head, value);
-  else if (!(await mergeCachedIfUnwritten(head, written, () => value))) return false;
-  await trimRecentFiles(head.deviceId, head.entityId);
-  return true;
+/** Put the record with its pages — with a `guard`, only while it is still
+ *  that write — and then hold the recent-files rule. Answers whether it was
+ *  put. */
+const putFileRecord = async (head, value, { pages = [], drop = null }, guard) => {
+  const put = await writeCachedIfStill({ guard, puts: [...pages, { address: head, value }], drop });
+  if (put) await trimRecentFiles(head.deviceId, head.entityId);
+  return put;
 };
+
+/** The guard `writeCachedIfStill` checks for `written`: none where nothing
+ *  was named, so a store that read no record first puts unconditionally. */
+const guardOf = (head, written) => (written === undefined ? null : { address: head, written });
 
 /** Put one file's body in the cache, under both of the owner's rules for it:
  *  a body over `FILE_MAX_BYTES` is kept as pages beside a record saying what
@@ -289,14 +301,16 @@ const putFileRecord = async (head, value, written) => {
  *  kept — the first would let go of the newer record's pages — and no record
  *  is written over it.
  *
- *  `written`, where given, names the write (`cachedWriteOf`) the caller read
- *  the record at, and the record is put only if it is still that write,
- *  checked in the same transaction as the put: a push landing between a
- *  `still()` check and the write would otherwise be written over. */
+ *  `written`, where given, names the write (`recordWriteOf`: null for no
+ *  record) the caller read the record at, and the record is put only if it
+ *  is still that write, checked in the same transaction as the put — and as
+ *  every page put or let go of: a push landing between a `still()` check and
+ *  the write would otherwise be written over, or lose its pages (#270). */
 export async function cacheFileBody({ deviceId, entityId, path, file, openedAt = Date.now(), readPage = null, still = null, written }) {
   if (!deviceId || !entityId || !file) return false;
   const head = { deviceId, entityId, kind: FILE_RECORD_KIND, sub: path || "" };
-  const record = await fileRecordOf(head, file, readingWhileStill(readPage, still));
+  const guard = guardOf(head, written);
+  const record = await fileRecordOf(head, file, readingWhileStill(readPage, still), guard);
   if (!record || !(await stillStands(still))) return false;
-  return putFileRecord(head, { file: record, openedAt }, written);
+  return putFileRecord(head, { file: record.file, openedAt }, record, guard);
 }

@@ -6,7 +6,6 @@
 // says what the bar looks like for one identity.
 
 import { esc } from "./text.js";
-import { unreadBubbleHtml } from "./taskUnread.js";
 
 /** One of the bar's popup triggers. The workspace picker and the project
  *  selector are the same control wearing a different name, so the button is
@@ -46,20 +45,6 @@ const IDENTITIES = {
 
 const identityHtml = (shown) => (IDENTITIES[shown.kind] || (() => projectSelectorHtml(shown.project)))(shown);
 
-/** The project's two pages as tabs after its name — never collapsed into a
- *  menu: two short words fit a phone, and on a phone they are the way back to
- *  the list from a task. Tasks wears its watched tasks' unread (#104). */
-function projectTabsHtml(projectTabs) {
-  if (!projectTabs.length) return "";
-  const tabs = projectTabs
-    .map(
-      (tab) =>
-        `<button class="tb-directory tb-project-tab${tab.current ? " current" : ""}" data-project-tab="${esc(tab.id)}" type="button" role="tab" aria-selected="${tab.current ? "true" : "false"}">${esc(tab.label)}${unreadBubbleHtml(tab.unread || 0)}</button>`,
-    )
-    .join("");
-  return `<div class="tb-project-tabs" role="tablist" aria-label="Project pages">${tabs}</div>`;
-}
-
 /** The verb slot a standing view writes into (core/toolbar.js setToolbarVerb)
  *  — Done on a branch. A workspace's bar is its picker and nothing else (#174):
  *  what a workspace can do is on its own surface. */
@@ -68,10 +53,9 @@ const verbSlotHtml = (kind) =>
 
 /** Pure: the toolbar's markup for one identity. Names come from repos, agents
  *  and the user, so every one of them is escaped. */
-export function toolbarHtml({ project, kind, label, projectTabs = [] }) {
+export function toolbarHtml({ project, kind, label }) {
   return `<div class="toolbar">
     ${identityHtml({ project, kind, label })}
-    ${projectTabsHtml(projectTabs)}
     ${verbSlotHtml(kind)}
   </div>`;
 }

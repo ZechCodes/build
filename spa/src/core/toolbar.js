@@ -29,7 +29,6 @@ import { $ } from "../dom.js";
 import { esc } from "./text.js";
 import { App, go } from "../app.js";
 import { subscribeFeed } from "./taskFeed.js";
-import { collapseChatOverPage } from "./shell.js";
 import { notifyError } from "./notify.js";
 import { openCreateWork } from "./createWork.js";
 import { projectMenuModel, toolbarIdentity, workspaceMenuModel } from "./toolbarModel.js";
@@ -40,7 +39,6 @@ import { deviceView } from "./feedMerge.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import { patchList } from "./patchList.js";
 import { toolbarHtml, unreadBadgeHtml } from "./toolbarRender.js";
-import { followProjectTasksUnread } from "./projectTasksUnread.js";
 import { projectRoute, workspaceRoute } from "./projectModel.js";
 import { standsOnProjectCheckout, workspaceStatusText } from "./workspaceModel.js";
 import "../styles/shell.css";
@@ -73,9 +71,6 @@ let cachedMenuValue = null;
 let unsubscribeFeed = null;
 let toolbarReady = Promise.resolve();
 let toolbarRun = 0;
-// The project Tasks tab's count (#104), off the cached list of the project
-// the bar stands in; a move in it repaints the bar.
-const projectTasks = followProjectTasksUnread(() => paint());
 
 /** Register the standing view's verb-slot content — called every repaint the
  *  toolbar does, poll-driven ticks included, so the caller's own function must
@@ -96,39 +91,6 @@ export function clearToolbarVerb(render) {
   if (verbRender !== render) return;
   verbRender = null;
   paintVerb();
-}
-
-// ---- the project's tabs ------------------------------------------------------
-
-/** The project page standing under the bar, where there is one: a press on
- *  Workspaces or Tasks is handed to it, so the page switches its tab in place
- *  rather than being torn down and built again around the same rail. From any
- *  other route — a task's page — a press is a navigation to that tab. */
-let projectTabHandler = null;
-
-export function setProjectTabHandler(handler) {
-  projectTabHandler = handler;
-}
-
-/** Only the page that set it can clear it (see clearToolbarVerb). */
-export function clearProjectTabHandler(handler) {
-  if (projectTabHandler === handler) projectTabHandler = null;
-}
-
-export function pressProjectTab(tab) {
-  if (App.route.name === "project" && projectTabHandler) {
-    // The one tab press that is deliberately NOT a navigation: the page swaps
-    // its own body and rewrites the hash in place, so the shell's route rule
-    // never sees it (#62, core/shell.js). It still covers the page on a phone,
-    // so it still has to get out of the way.
-    collapseChatOverPage();
-    projectTabHandler(tab);
-    paint();
-    return;
-  }
-  const { deviceId, projectId } = App.route;
-  // Tasks is the default, so it is Workspaces that has to be asked for (#46).
-  go({ ...projectRoute({ id: projectId, deviceId }), tab: tab === "workspaces" ? "workspaces" : "tasks" });
 }
 
 function paintVerb() {
@@ -207,23 +169,10 @@ const loadStandingWorkspaces = () => {
 // ---- the bar ----------------------------------------------------------------
 
 function identity() {
-  followStandingProjectTasks();
   return toolbarIdentity(App.route, {
     ...feed,
     workspaces: workspacesByProject.get(routeProjectKey(App.route)) || [],
-    tasksUnread: projectTasks.count(),
   });
-}
-
-/** The routes whose bar carries the project's Tasks tab, and so its count. */
-const TASKS_TAB_ROUTES = new Set(["project", "trackerTask"]);
-
-/** Follow the watched unread of the project the bar stands in, where the bar
- *  carries its Tasks tab (#104), and of none elsewhere. */
-function followStandingProjectTasks() {
-  const route = App.route;
-  if (TASKS_TAB_ROUTES.has(route.name)) projectTasks.follow(route.deviceId, route.projectId);
-  else projectTasks.follow(null, null);
 }
 
 /** Repaint the bar. `entering` says the paint follows a navigation (a route the
@@ -275,22 +224,17 @@ function paint({ entering = false } = {}) {
         if (menuRecord) void menuRecord.write({ open: true, select, list, query: "" });
       };
     });
-    host.querySelectorAll("[data-project-tab]").forEach((control) => {
-      control.onclick = () => pressProjectTab(control.dataset.projectTab);
-    });
   }
   paintVerb();
   if (open) paintMenu();
 }
 
 /** What the bar draws for where the route stands: the project (the scoped one
- *  where the route names none), the kind, the work item's label, and a
- *  project's two pages after it. */
+ *  where the route names none), the kind and the work item's label. */
 const shownIdentity = (standing) => ({
   project: standing.project || nameOf(scopedProject()),
   kind: standing.kind,
   label: standing.label,
-  projectTabs: standing.projectTabs || [],
 });
 
 /** Out of the workspaces to the scoped project's own page, on the machine that
@@ -658,7 +602,6 @@ export function stopToolbar() {
   unsubscribeFeed?.();
   unsubscribeFeed = null;
   workspacesByProject.clear();
-  projectTasks.dispose();
   closeMenu({ persist: false });
   return settled;
 }

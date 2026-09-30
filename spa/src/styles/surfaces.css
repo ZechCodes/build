@@ -209,8 +209,7 @@
 /* A workspace's Changes (views/workspaceChanges.js): a tab per directory, git
    or not, over the git surface of the selected one. The row is the pane's, so
    it stands above the surface at every width — where the commit rail is a
-   drawer too. The tabs are the bar's tab idiom (styles/shell.css
-   .tb-directory): the name, and the accent under the current one. */
+   drawer too. Each tab is its name, with the accent under the current one. */
 .workspace-changes { display:flex; flex-direction:column; height:100%; min-height:0; }
 .workspace-changes-body { flex:1 1 auto; min-height:0; }
 /* One surface per directory the row has shown, kept hidden while another

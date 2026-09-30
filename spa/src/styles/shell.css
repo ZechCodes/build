@@ -718,19 +718,6 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .tb-workspace .tb-name { white-space:pre; }
 .tb-caret { flex:none; color:var(--dim); }
 .tb-sep { color:var(--line); flex:none; }
-.tb-directory { flex:none; position:relative; max-width:170px; overflow:hidden;
-  text-overflow:ellipsis; white-space:nowrap; padding:0 10px; border:0;
-  background:none; color:var(--dim); font:inherit; font-size:12px; cursor:pointer; }
-.tb-directory:hover { color:var(--ink); background:var(--panel2); }
-.tb-directory.current { color:var(--ink); }
-.tb-directory.current::after { content:""; position:absolute; left:9px; right:9px;
-  bottom:0; height:2px; border-radius:2px 2px 0 0; background:var(--accent-fill, var(--accent)); }
-/* The project's two pages as tabs after its name (core/toolbarRender.js),
-   never collapsed — two short words fit a phone, where they are the way back
-   to the list from a task with the chat open over the page. */
-.tb-project-tabs { display:flex; flex:none; align-self:stretch; align-items:stretch; margin-left:10px; }
-/* Tasks wears its watched tasks' unread after the word (#104). */
-.tb-project-tab .task-unread { margin-left:5px; vertical-align:1px; }
 .tb-right { margin-left:auto; display:flex; align-items:center; gap:10px; flex:none; }
 /* The standing view's own verb (core/toolbar.js setToolbarVerb) — Done, on a
    branch. Empty and collapses to nothing when no view has claimed it. Sized

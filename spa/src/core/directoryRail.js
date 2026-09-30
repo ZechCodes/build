@@ -29,16 +29,29 @@
 // its own host (data-sidebar), and one rule in styles.css reads that to drop
 // the column — where the column is a drawer, that rule is not in force and the
 // toggle is not drawn.
+//
+// A project stands on the same rail (#274): Workspaces and Tasks, its Settings
+// at the foot, and no toggle, because a project's page has no list column to
+// fold away.
 
 import {
   ICON_FOLDER,
+  ICON_FOLDERS,
   ICON_GIT_GRAPH,
   ICON_PANEL_LEFT_CLOSE,
   ICON_PANEL_LEFT_OPEN,
   ICON_SETTINGS,
   ICON_SQUARE_CHECK,
 } from "./icons.js";
-import { changesTabLabel, esc, filesTabLabel, tasksTabLabel, sidebarToggleLabel, workspaceSettingsLabel } from "./text.js";
+import {
+  changesTabLabel,
+  esc,
+  filesTabLabel,
+  tasksTabLabel,
+  sidebarToggleLabel,
+  workspaceSettingsLabel,
+  workspacesTabLabel,
+} from "./text.js";
 
 /** A checkout's faces, in reading order: what moved, then what is there. */
 export const DIRECTORY_TABS = [
@@ -49,7 +62,13 @@ export const DIRECTORY_TABS = [
 /** A workspace's faces: the checkout's two, then the tasks its agents hold,
  *  which wears the count of the open ones (core/trackerWorkspaceTasksView.js
  *  fills it). */
-export const WORKSPACE_TABS = [...DIRECTORY_TABS, { id: "tasks", label: tasksTabLabel, icon: ICON_SQUARE_CHECK, badge: true }];
+const TASKS_TAB = { id: "tasks", label: tasksTabLabel, icon: ICON_SQUARE_CHECK, badge: true };
+export const WORKSPACE_TABS = [...DIRECTORY_TABS, TASKS_TAB];
+
+/** A project's faces (#274): its tracker, first because it is the page a
+ *  project opens on (#46), then the workspaces cut from it. The tracker wears
+ *  the project's watched unread (core/projectRail.js fills it). */
+export const PROJECT_TABS = [TASKS_TAB, { id: "workspaces", label: workspacesTabLabel, icon: ICON_FOLDERS }];
 
 /** Where an arrow takes the highlight, as steps along the rail. Home and End
  *  are the same question asked absolutely, so they answer from one table too. */
@@ -94,11 +113,15 @@ export function directoryRailHtml(tabs, active) {
     .join("");
 }
 
-/** The cog above the toggle, where the surface has settings to open. */
-const settingsHtml = (settings) =>
-  settings
-    ? `<button class="dirtab dirsettings" type="button" data-rail-settings="1" title="${esc(workspaceSettingsLabel)}" aria-label="${esc(workspaceSettingsLabel)}">${ICON_SETTINGS}</button>`
-    : "";
+/** The cog above the toggle, where the surface has settings to open. Its words
+ *  are the workspace's unless the surface names its own. */
+const settingsHtml = (settings) => {
+  if (!settings) return "";
+  const label = settings.label || workspaceSettingsLabel;
+  return `<button class="dirtab dirsettings" type="button" data-rail-settings="1" title="${esc(label)}" aria-label="${esc(label)}">${ICON_SETTINGS}</button>`;
+};
+
+const TOGGLE_HTML = `<button class="dirtab dirtoggle" type="button" data-sidebar-toggle="1"></button>`;
 
 /** The toggle's parts for a state: its words and its glyph, which show what a
  *  press does (fold the panel away, or bring it back). */
@@ -130,39 +153,46 @@ function keyboardCellIn(host) {
 }
 
 /**
- * paintDirectoryRail(host, { tabs, active, onSelect, settings, storage }) —
- * draw the rail into the shell's column and wire it. Idempotent: every paint
+ * paintDirectoryRail(host, { tabs, active, onSelect, settings, sidebar, storage })
+ * — draw the rail into the shell's column and wire it. Idempotent: every paint
  * rewrites the row and its handlers, so a surface repaints by calling it again
- * and there is nothing to dispose. `settings` ({ onOpen }) draws the cog above
- * the toggle; a surface with nothing to settle passes none. The sidebar toggle
- * is painted from `storage` (localStorage when absent) each time.
+ * and there is nothing to dispose. `settings` ({ onOpen, label }) draws the cog
+ * above the toggle; a surface with nothing to settle passes none. The sidebar
+ * toggle is painted from `storage` (localStorage when absent) each time, and
+ * not at all where `sidebar` is false: a surface with no list column.
  *
  * Automatic activation, the way a tablist of two behaves: an arrow both moves
  * the focus and opens what it lands on.
  */
-export function paintDirectoryRail(host, { tabs = DIRECTORY_TABS, active, onSelect, settings = null, storage }) {
+export function paintDirectoryRail(host, { tabs = DIRECTORY_TABS, active, onSelect, settings = null, sidebar = true, storage }) {
   // A paint answering a press rewrites the cell the keyboard stands on; the
   // keyboard is handed the cell that replaces it, or it lands on nothing.
   const keyboardCell = keyboardCellIn(host);
   // The column moves only on a press. A paint is arriving on a checkout or
   // switching its face, and the column is already where it stays.
   delete host.dataset.sidebarMotion;
+  delete host.dataset.sidebar;
   host.innerHTML =
     `<div class="dirtabs" role="tablist" aria-orientation="vertical">${directoryRailHtml(tabs, active)}</div>` +
     settingsHtml(settings) +
-    `<button class="dirtab dirtoggle" type="button" data-sidebar-toggle="1"></button>`;
+    (sidebar ? TOGGLE_HTML : "");
+  if (sidebar) wireSidebarToggle(host, storage);
+  if (keyboardCell) host.querySelector(keyboardCell)?.focus();
+  const cog = host.querySelector("[data-rail-settings]");
+  if (cog) cog.onclick = () => settings.onOpen();
+  wireFaces(host, onSelect);
+}
+
+/** The toggle at the foot, painted from the stored choice and flipping it. */
+function wireSidebarToggle(host, storage) {
   const toggle = host.querySelector("[data-sidebar-toggle]");
   paintSidebarState(host, toggle, readSidebarCollapsed(storage));
-  if (keyboardCell) host.querySelector(keyboardCell)?.focus();
   toggle.onclick = () => {
     const collapsed = host.dataset.sidebar !== "collapsed";
     writeSidebarCollapsed(collapsed, storage);
     host.dataset.sidebarMotion = "press";
     paintSidebarState(host, toggle, collapsed);
   };
-  const cog = host.querySelector("[data-rail-settings]");
-  if (cog) cog.onclick = () => settings.onOpen();
-  wireFaces(host, onSelect);
 }
 
 /** The faces' presses and the arrow ring. The ring is the drawn tab cells and

@@ -5,7 +5,7 @@
 // and the expanded directories and open tabs come back on the next mount.
 
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
@@ -685,5 +685,67 @@ describe("the next mount of the same checkout", () => {
     await vi.waitFor(() => expect(shownPath(second.host)).toBe("notes.txt"));
     expect(tabNames(second.host)).toEqual(["README.md", "notes.txt"]);
     expect(answer.mock.calls.filter(([method, params]) => method === "fs.read" && params.path === "README.md")).toHaveLength(1);
+  });
+});
+
+// #270: the pull and the held copy's re-store check the record and then put
+// it. A push landing between the last check and the put must stay.
+describe("a push landing between a store's last check and its put", () => {
+  const README = { deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "README.md" };
+  const pushed = { path: "README.md", mime: "text/plain", size: 7, truncated: false, editable: true, revision: "pushed", content_b64: b64("pushed\n") };
+
+  /** Land `push` on the `nth` read of README.md's record from now: in that
+   *  read's own success, so its write is asked for before the reader can ask
+   *  for any write of its own. */
+  const pushOnRead = (nth, push) => {
+    const get = IDBObjectStore.prototype.get;
+    let reads = 0;
+    const spy = vi.spyOn(IDBObjectStore.prototype, "get").mockImplementation(function read(key) {
+      const request = get.call(this, key);
+      if (String(key).endsWith("|file|README.md") && ++reads === nth) {
+        spy.mockRestore();
+        request.addEventListener("success", () => void push());
+      }
+      return request;
+    });
+    return spy;
+  };
+
+  /** A record as a build before writes were named stored it: no `write`. */
+  const putLegacy = (value) => new Promise((resolve, reject) => {
+    const opening = indexedDB.open("build-cache");
+    opening.onsuccess = () => {
+      const db = opening.result;
+      const tx = db.transaction("records", "readwrite");
+      tx.objectStore("records").put({ at: Date.now(), order: 1, value }, "dev-1|run-1|file|README.md");
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => reject(tx.error);
+    };
+    opening.onerror = () => reject(opening.error);
+  });
+
+  it("is kept over a first open's pull", async () => {
+    const { host } = mountFiles();
+    await vi.waitFor(() => expect(rowFor(host, "README.md")).toBeTruthy());
+    pushOnRead(3, () => cacheFileBody({ ...README, path: "README.md", file: pushed }));
+    click(rowFor(host, "README.md"));
+    await vi.waitFor(() => expect(shownPath(host)).toBe("README.md"));
+    await settle();
+    expect((await readCached(README))?.value?.file?.revision).toBe("pushed");
+  });
+
+  it("is kept over the re-store of a held copy stored before writes were named", async () => {
+    await writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "tree", sub: "" }, { path: "", entries: TREE[""] });
+    await putLegacy({ file: { ...pushed, revision: "README.md@1", content_b64: b64(BODIES["README.md"]), size: 8 }, openedAt: 1 });
+    const { host } = mountFiles();
+    await vi.waitFor(() => expect(rowFor(host, "README.md")).toBeTruthy());
+    pushOnRead(2, () => cacheFileBody({ ...README, path: "README.md", file: pushed }));
+    click(rowFor(host, "README.md"));
+    await vi.waitFor(() => expect(shownPath(host)).toBe("README.md"));
+    await settle();
+    expect((await readCached(README))?.value?.file?.revision).toBe("pushed");
   });
 });

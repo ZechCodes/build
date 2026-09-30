@@ -49,7 +49,7 @@ let elsewhere;
 beforeEach(() => {
   localStorage.clear();
   document.body.innerHTML =
-    '<div id="toolbar"><span id="tb-verb"></span></div><div id="root"></div><aside id="agent-rail"></aside>';
+    '<div id="toolbar"><span id="tb-verb"></span></div><nav id="dir-rail"></nav><div id="root"></div><aside id="agent-rail"></aside>';
   mountTaskPage.mockClear();
   mountAgentRail.mockClear();
   subscribers = [];
@@ -141,5 +141,21 @@ describe("the task route", () => {
     App.viewDispose = null;
     expect(page.dispose).toHaveBeenCalled();
     expect(subscribers).toHaveLength(0);
+  });
+
+  // #274: a task is a page OF the project's Tasks face, so the project's rail
+  // stands beside it with Tasks open, and is the way back to either list.
+  it("stands the project's rail with Tasks open, each face going to that tab", async () => {
+    await renderTrackerTask();
+    await flush();
+    const rail = document.querySelector("#dir-rail");
+    const faces = [...rail.querySelectorAll("[data-tab]")].map((cell) => [cell.dataset.tab, cell.getAttribute("aria-selected")]);
+    expect(faces).toEqual([["tasks", "true"], ["workspaces", "false"]]);
+    expect(rail.querySelector("[data-rail-settings]")).not.toBeNull();
+    rail.querySelector("[data-tab=workspaces]").click();
+    expect(location.hash).toBe("#/device/dev-1/project/proj-1/workspaces");
+    App.viewDispose();
+    App.viewDispose = null;
+    expect(rail.children).toHaveLength(0);
   });
 });

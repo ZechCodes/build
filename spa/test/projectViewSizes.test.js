@@ -38,7 +38,6 @@ vi.mock("../src/core/taskFeed.js", () => ({
 
 const { App } = await import("../src/app.js");
 const { renderProject } = await import("../src/views/projectView.js");
-const { pressProjectTab } = await import("../src/core/toolbar.js");
 const { adoptBridgeSelection, adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
 const { greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
 const { standShell, stopShell } = await import("../src/core/shell.js");
@@ -76,7 +75,7 @@ beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
   localStorage.clear();
   document.body.innerHTML =
-    '<div id="toolbar"><span id="tb-verb"></span></div><div id="root"></div><aside id="agent-rail"></aside><div id="console-region"></div>';
+    '<div id="toolbar"><span id="tb-verb"></span></div><nav id="dir-rail"></nav><div id="root"></div><aside id="agent-rail"></aside><div id="console-region"></div>';
   subscribers = [];
   snapshot = { items: [], projects: [project], workspaces: [workspace("ws-1"), workspace("ws-2")], pending: [], devices: {} };
   App.viewDispose = null;
@@ -104,10 +103,12 @@ const open = async () => {
   await renderProject();
   await flush();
 };
+// The project's tabs are cells on its rail (#274).
+const pressRailTab = (tab) => document.querySelector(`#dir-rail [data-tab="${tab}"]`).click();
 const sizeAsks = () => call.mock.calls.filter(([method]) => method === "workspace.measure_sizes");
 const sizes = () => [...document.querySelectorAll("[data-workspace] .project-size")].map((cell) => cell.textContent);
 
-it("asks the machine once for the project's sizes when the tab opens", async () => {
+it("asks the machine once for the project's sizes on a deep link to the tab", async () => {
   await greet(greeting);
   await open();
 
@@ -117,16 +118,32 @@ it("asks the machine once for the project's sizes when the tab opens", async () 
   expect(sizeAsks()).toEqual([["workspace.measure_sizes", { project_id: "proj-1" }]]);
 });
 
-it("does not ask while the Tasks tab is open, and asks on switching to Workspaces", async () => {
+it("does not ask while the Tasks tab is open, and asks when the rail's Workspaces cell opens the tab", async () => {
   await greet(greeting);
   App.route = { ...App.route, tab: "tasks" };
   await open();
   expect(sizeAsks()).toEqual([]);
 
-  pressProjectTab("workspaces");
+  pressRailTab("workspaces");
   await flush();
 
+  expect(sizeAsks()).toEqual([["workspace.measure_sizes", { project_id: "proj-1" }]]);
+  expect(document.querySelector('#dir-rail [data-tab="workspaces"]').getAttribute("aria-selected")).toBe("true");
+});
+
+it("asks again each time the rail opens the Workspaces tab, and not on pressing the open one", async () => {
+  await greet(greeting);
+  await open();
   expect(sizeAsks()).toHaveLength(1);
+
+  pressRailTab("workspaces");
+  await flush();
+  expect(sizeAsks()).toHaveLength(1);
+
+  pressRailTab("tasks");
+  pressRailTab("workspaces");
+  await flush();
+  expect(sizeAsks()).toHaveLength(2);
 });
 
 it("shows a quiet placeholder for a size still to come, and the size when it lands", async () => {

@@ -25,6 +25,20 @@ const held = async (address) => (await cache.readCached(address)) !== undefined;
 
 const address = (entityId, kind, sub = "") => ({ deviceId: "dev-1", entityId, kind, sub });
 
+/** A record as a build before writes were named stored it: a stamp and an
+ *  order, and no `write`. Put straight into the store, which must exist. */
+const putLegacy = (at, value, stamp, order) => new Promise((resolve, reject) => {
+  const opening = indexedDB.open("build-cache");
+  opening.onsuccess = () => {
+    const db = opening.result;
+    const tx = db.transaction("records", "readwrite");
+    tx.objectStore("records").put({ at: stamp, order, value }, [at.deviceId, at.entityId, at.kind, at.sub ?? ""].map(encodeURIComponent).join("|"));
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => reject(tx.error);
+  };
+  opening.onerror = () => reject(opening.error);
+});
+
 beforeEach(async () => {
   vi.resetModules();
   globalThis.indexedDB = new IDBFactory();
@@ -269,7 +283,7 @@ describe("putting a file body in the cache", () => {
   // #102: a view re-storing the copy it read must not land over a push that
   // arrived since. `written` is checked in the put's own transaction.
   it("stores a held copy again only while the record is still the write it was read at", async () => {
-    const readNow = async () => cache.cachedWriteOf(await cache.readCached(fileHead("src/a.js")));
+    const readNow = async () => cache.recordWriteOf(await cache.readCached(fileHead("src/a.js")));
     const again = (written) =>
       lifetime.cacheFileBody({ deviceId: "dev-1", entityId: "ws-1", path: "src/a.js", file: read(), openedAt: NOW, written });
 
@@ -438,6 +452,102 @@ describe("putting a file body in the cache", () => {
     expect((await bodyOf("big.js")).file.of).toBe("v2");
     expect((await pages.readBodyPages(fileHead("big.js"), "v1")).pages).toHaveLength(0);
     expect((await pages.readBodyPages(fileHead("big.js"), "v2")).pages).toHaveLength(1);
+  });
+
+  // #270: every guarded store — a held copy re-stored, a pull, a restart —
+  // lets go of pages only inside the put that checks the record is still the
+  // write it was read at. A refused one leaves a newer record's pages alone.
+  describe("a guarded store refused by a newer write", () => {
+    const writeOf = async (path) => cache.recordWriteOf(await cache.readCached(fileHead(path)));
+    const pageSubs = () => cache.cachedSubKeys("dev-1", "ws-1", pages.PAGE_RECORD_KIND);
+    const whole = bigText(20_000);
+    const pagedPush = (version) => lifetime.cacheFileBody({
+      deviceId: "dev-1", entityId: "ws-1", path: "big.js", openedAt: NOW, readPage: pager(whole, { version }),
+      file: read({ path: "big.js", size: Buffer.byteLength(whole), truncated: true }),
+    });
+
+    it("keeps a paged push's pages when a small held copy's re-store is refused", async () => {
+      await keep("big.js", read({ path: "big.js" }), NOW - HOUR);
+      const heldAt = await writeOf("big.js");
+      expect(await pagedPush("v2")).toBe(true);
+      const pushed = await pageSubs();
+      expect(pushed).toHaveLength(1);
+
+      const again = lifetime.cacheFileBody({
+        deviceId: "dev-1", entityId: "ws-1", path: "big.js", file: read({ path: "big.js" }), openedAt: NOW, written: heldAt,
+      });
+      expect(await again).toBe(false);
+      expect((await bodyOf("big.js")).file).toMatchObject({ paged: true, of: "v2" });
+      expect(await pageSubs()).toEqual(pushed);
+      expect((await pages.readBodyPages(fileHead("big.js"), "v2")).pages).toHaveLength(1);
+    });
+
+    it("keeps a paged push's pages when a bodiless re-store is refused", async () => {
+      await keep("big.js", read({ path: "big.js" }), NOW - HOUR);
+      const heldAt = await writeOf("big.js");
+      await pagedPush("v2");
+      const binary = read({ path: "big.js", mime: "application/octet-stream", size: 5 * lifetime.FILE_MAX_BYTES, truncated: true });
+      expect(await lifetime.cacheFileBody({
+        deviceId: "dev-1", entityId: "ws-1", path: "big.js", file: binary, openedAt: NOW, readPage: pager("x"), written: heldAt,
+      })).toBe(false);
+      expect((await pages.readBodyPages(fileHead("big.js"), "v2")).pages).toHaveLength(1);
+    });
+
+    it("keeps a paged push's pages when a split whole answer is refused", async () => {
+      await keep("big.js", read({ path: "big.js" }), NOW - HOUR);
+      const heldAt = await writeOf("big.js");
+      await pagedPush("v2");
+      const carried = Buffer.from("the first megabyte\n").toString("base64");
+      const cut = read({ path: "big.js", size: 2 * lifetime.FILE_MAX_BYTES, truncated: true, content_b64: carried });
+      expect(await lifetime.cacheFileBody({
+        deviceId: "dev-1", entityId: "ws-1", path: "big.js", file: cut, openedAt: NOW, written: heldAt,
+      })).toBe(false);
+      expect((await bodyOf("big.js")).file.of).toBe("v2");
+      expect((await pages.readBodyPages(fileHead("big.js"), "v2")).pages).toHaveLength(1);
+      expect((await pages.readBodyPages(fileHead("big.js"), lifetime.WHOLE_READ)).pages).toHaveLength(0);
+    });
+
+    it("keeps a paged push's pages when a restart of the version before it is refused", async () => {
+      await pagedPush("v1");
+      const heldAt = await writeOf("big.js");
+      const head = (await bodyOf("big.js")).file;
+      await pagedPush("v2");
+      expect(await lifetime.cacheFileBody({
+        deviceId: "dev-1", entityId: "ws-1", path: "big.js", file: head, openedAt: NOW, readPage: pager(whole, { version: "v3" }), written: heldAt,
+      })).toBe(false);
+      expect((await bodyOf("big.js")).file.of).toBe("v2");
+      expect((await pages.readBodyPages(fileHead("big.js"), "v2")).pages).toHaveLength(1);
+      expect((await pages.readBodyPages(fileHead("big.js"), "v3")).pages).toHaveLength(0);
+    });
+
+    it("stores a first read only while nothing has been stored since: null is no record", async () => {
+      expect(await lifetime.cacheFileBody({
+        deviceId: "dev-1", entityId: "ws-1", path: "src/a.js", file: read(), openedAt: NOW, written: null,
+      })).toBe(true);
+      expect(await lifetime.cacheFileBody({
+        deviceId: "dev-1", entityId: "ws-1", path: "src/a.js", file: read({ revision: "r-2" }), openedAt: NOW, written: null,
+      })).toBe(false);
+      expect((await bodyOf("src/a.js")).file.revision).toBe("r-1");
+    });
+
+    // A record stored before writes were named has no `write`; its stamp
+    // stands in for one, so it is still rewritten, and still guarded.
+    it("guards a record stored before writes were named by its stamp", async () => {
+      await keep("src/other.js", read({ path: "src/other.js" }));
+      await putLegacy(fileHead("src/a.js"), { file: read(), openedAt: NOW - HOUR }, NOW - HOUR, 1);
+      const legacyAt = await writeOf("src/a.js");
+      expect(legacyAt).toBe(`${NOW - HOUR}:1`);
+      await putLegacy(fileHead("src/a.js"), { file: read({ revision: "r-2" }), openedAt: NOW - HOUR }, NOW - HOUR, 2);
+      expect(await lifetime.cacheFileBody({
+        deviceId: "dev-1", entityId: "ws-1", path: "src/a.js", file: read(), openedAt: NOW, written: legacyAt,
+      })).toBe(false);
+      expect((await bodyOf("src/a.js")).file.revision).toBe("r-2");
+      expect(await lifetime.cacheFileBody({
+        deviceId: "dev-1", entityId: "ws-1", path: "src/a.js", file: read({ revision: "r-3" }), openedAt: NOW,
+        written: await writeOf("src/a.js"),
+      })).toBe(true);
+      expect((await bodyOf("src/a.js")).file.revision).toBe("r-3");
+    });
   });
 
   it("leaves at most five bodies behind it", async () => {

@@ -5,7 +5,7 @@
 # release both macOS legs sat in it until GitHub cancelled them at six hours,
 # and the submission ids Apple had issued were only in the log. So this
 # submits WITHOUT waiting, publishes the id at once (a job notice, the step
-# summary, and the `submission-id` step output), then polls `notarytool info`
+# summary, and a step output), then polls `notarytool info`
 # for at most NOTARIZE_BUDGET_SECONDS and fails cleanly, id in hand, when Apple
 # is slower than that.
 #
@@ -28,7 +28,9 @@
 #   and jq (all on GitHub's macOS runners).
 # Knobs: NOTARIZE_BUDGET_SECONDS (5400) NOTARIZE_POLL_SECONDS (30)
 #   NOTARIZE_LABEL (the binary's name; names the leg in the summary)
-#   RESUME_HINT (a line for the summary saying how to resume this submission)
+#   RESUME_HINT (a line for the summary saying how to resume; {id} is replaced
+#     with the submission id)
+#   NOTARIZE_OUTPUT (submission-id; the step output the id is written to)
 set -euo pipefail
 
 zip="${1:?usage: notarize.sh ZIP BINARY [SUBMISSION_ID]}"
@@ -71,7 +73,7 @@ else
   summary "**${label}**: notarization submission \`${id}\`."
 fi
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
-  echo "submission-id=${id}" >> "$GITHUB_OUTPUT"
+  echo "${NOTARIZE_OUTPUT:-submission-id}=${id}" >> "$GITHUB_OUTPUT"
 fi
 
 # `info` failing is a network blip or Apple having a moment, not a verdict:
@@ -91,9 +93,11 @@ while :; do
     Accepted | Invalid | Rejected) break ;;
   esac
   if [ "$SECONDS" -ge "$deadline" ]; then
+    hint="${RESUME_HINT:-}"
+    if [ -z "$hint" ]; then hint="Resume by passing \`{id}\` back to this script."; fi
     echo "::error::${label}: Apple has not finished notarization submission ${id} after ${budget}s (last status: ${status:-unknown})"
     summary "**${label}**: gave up waiting after ${budget}s with Apple at \`${status:-unknown}\`." \
-      "${RESUME_HINT:-Resume by passing \`${id}\` back to this script.}"
+      "${hint//\{id\}/$id}"
     exit 1
   fi
   sleep "$interval"

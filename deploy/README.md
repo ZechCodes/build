@@ -198,6 +198,22 @@ The tag is the trigger and the version check is the first job: if `X.Y.Z` is not
 what `bridge/Cargo.toml` declares, nothing is built. Each binary is then made to
 print its own `--version` and compared to the tag again before it is packaged.
 
+Each macOS signing leg waits for Apple's notarization for at most 90 minutes
+(`scripts/notarize.sh`). When Apple is slower, the leg fails with its
+submission id in the job summary, and nothing is published. Resume it
+without re-signing once Apple finishes, by dispatching the workflow on the
+same tag with the id or ids that leg printed:
+
+```bash
+gh workflow run release.yml --ref bridge-vX.Y.Z \
+  -f notarization-id-macos-arm64=<id> -f notarization-id-macos-x86_64=<id>
+```
+
+A leg given an id polls that submission and does not resubmit. It still fails
+when the ticket does not list the CDHash of the binary it just signed, which
+happens when the rebuilt binary differs from the one submitted. Leave that
+leg's input empty to submit afresh.
+
 ### What a release contains
 
 Asset names carry no version, so `releases/latest/download/<name>` is a stable

@@ -8,10 +8,27 @@ name: Release the bridge
 #
 # The pipeline neither creates that repo nor pushes a tag; see
 # deploy/README.md for the procedure and its prerequisites.
+#
+# Dispatching it by hand, on the same tag, is the way back in when Apple
+# finishes a notarization after a signing leg gave up waiting (#293): pass the
+# submission id the leg printed and that leg polls it instead of resubmitting.
+#
+#   gh workflow run release.yml --ref bridge-vX.Y.Z \
+#     -f notarization-id-macos-arm64=<id> -f notarization-id-macos-x86_64=<id>
 
 on:
   push:
     tags: ["bridge-v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      notarization-id-macos-arm64:
+        description: Notarization submission id to resume for macos-arm64 instead of resubmitting
+        required: false
+        default: ""
+      notarization-id-macos-x86_64:
+        description: Notarization submission id to resume for macos-x86_64 instead of resubmitting
+        required: false
+        default: ""
 
 # `id-token: write` is the whole reason cosign needs no key: the OIDC token
 # GitHub mints for this workflow IS the identity in the certificate, which is
@@ -54,6 +71,15 @@ jobs:
           RELEASES_REPO: ${{ vars.RELEASES_REPO || 'ZechCodes/build-releases' }}
         run: |
           set -euo pipefail
+          # A dispatch runs from whatever ref it is given; only a release tag
+          # has a version to build and the identity cosign signs with.
+          case "$GITHUB_REF" in
+            refs/tags/bridge-v*) ;;
+            *)
+              echo "::error::release.yml runs on a bridge-v* tag, not ${GITHUB_REF}"
+              exit 1
+              ;;
+          esac
           version="${TAG#bridge-v}"
           if ! grep -q "^version = \"${version}\"\$" bridge/Cargo.toml; then
             echo "::error::tag ${TAG} wants ${version}, which bridge/Cargo.toml does not declare"
@@ -71,6 +97,9 @@ jobs:
 
       - name: The install script does what it promises
         run: scripts/test-install.sh
+
+      - name: The notarization wait gives up, resumes and reports as it promises
+        run: scripts/test-notarize.sh
 
       - name: install.sh and this workflow demand the same signing identity
         run: |
@@ -199,15 +228,28 @@ jobs:
   # the matrix stays the only place a platform is named here too. Each leg
   # takes its own tarball, signs the one binary inside it and republishes the
   # artifact under the same name, which is what `checksums` then digests.
+  #
+  # Notarization waits at most NOTARIZE_BUDGET_SECONDS, inside a job timeout
+  # that covers it, so a slow Apple fails the leg with its submission id in the
+  # summary instead of GitHub cancelling it at six hours; a failed leg holds
+  # back `checksums` and `publish`. `resume` is the id a dispatch passed in.
   sign-macos:
     name: Sign and notarize ${{ matrix.key }}
     needs: [version, build, apple-creds]
     if: ${{ needs.apple-creds.outputs.configured == 'true' }}
     runs-on: macos-14
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        key: [macos-arm64, macos-x86_64]
+        include:
+          - key: macos-arm64
+            resume: ${{ inputs.notarization-id-macos-arm64 }}
+          - key: macos-x86_64
+            resume: ${{ inputs.notarization-id-macos-x86_64 }}
+    outputs:
+      notarization-id-macos-arm64: ${{ steps.sign.outputs.notarization-id-macos-arm64 }}
+      notarization-id-macos-x86_64: ${{ steps.sign.outputs.notarization-id-macos-x86_64 }}
     # A job-level `env:` is the widest scope that can read secrets — the
     # workflow-level one cannot — so the credentials are named once per job
     # that handles them, and in no step.
@@ -218,6 +260,8 @@ jobs:
       APPLE_ID: ${{ secrets.APPLE_ID }}
       APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
     steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
       - name: Collect the build
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -225,8 +269,13 @@ jobs:
           path: macos
 
       - name: Sign and notarize it
+        id: sign
         env:
           TARBALL: build-bridge-${{ matrix.key }}.tar.gz
+          KEY: ${{ matrix.key }}
+          RESUME_ID: ${{ matrix.resume }}
+          TAG: ${{ github.ref_name }}
+          NOTARIZE_BUDGET_SECONDS: "5400"
         run: |
           set -euo pipefail
           keychain="${RUNNER_TEMP}/build-release.keychain-db"
@@ -249,10 +298,14 @@ jobs:
           codesign --verify --strict --verbose=2 "$work/build-bridge"
           # Notarization takes a container, and a bare Mach-O binary cannot be
           # stapled — the ticket lives on Apple's side and Gatekeeper fetches
-          # it. So: zip, submit, wait, and re-tar the signed binary.
+          # it. So: zip, submit (or resume), wait within the budget, and re-tar
+          # the signed binary.
           ditto -c -k --keepParent "$work/build-bridge" "$work/build-bridge.zip"
-          xcrun notarytool submit "$work/build-bridge.zip" --wait \
-            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"
+          export NOTARIZE_LABEL="$KEY"
+          export RESUME_HINT="Resume it without resubmitting: \`gh workflow run release.yml --ref ${TAG} -f notarization-id-${KEY}={id}\`"
+          export NOTARIZE_OUTPUT="notarization-id-${KEY}"
+          "${GITHUB_WORKSPACE}/scripts/notarize.sh" \
+            "$work/build-bridge.zip" "$work/build-bridge" "$RESUME_ID"
           tar -czf "$TARBALL" -C "$work" build-bridge
           rm -rf "$work"
           security delete-keychain "$keychain"

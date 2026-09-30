@@ -15,6 +15,7 @@ NOTARIZE_SH="$SCRIPT_DIR/notarize.sh"
 SUBMITTED_ID="11111111-2222-3333-4444-555555555555"
 RESUMED_ID="48d83fe6-d384-499f-b72f-d4999bac2633"
 BINARY_CDHASH="0123456789abcdef0123456789abcdef01234567"
+TEST_HINT="RESUME-HINT -f id={id}"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT INT TERM
@@ -73,7 +74,7 @@ run() {
   PATH="$WORK/bin:$PATH" FAKE_SUBMIT_ID="$SUBMITTED_ID" FAKE_TICKET_CDHASH="$ticket" \
     APPLE_ID=a@example.com APPLE_TEAM_ID=TEAM APPLE_APP_PASSWORD=pw \
     NOTARIZE_POLL_SECONDS=0 NOTARIZE_BUDGET_SECONDS="${BUDGET:-60}" NOTARIZE_LABEL=macos-arm64 \
-    RESUME_HINT="RESUME-HINT" GITHUB_STEP_SUMMARY="$FAKE/summary" GITHUB_OUTPUT="$FAKE/output" \
+    RESUME_HINT="${RESUME_HINT-$TEST_HINT}" GITHUB_STEP_SUMMARY="$FAKE/summary" GITHUB_OUTPUT="$FAKE/output" \
     "$NOTARIZE_SH" "$WORK/build-bridge.zip" "$WORK/build-bridge" "$@" > "$FAKE/stdout" 2>&1
   STATUS=$?
   set -e
@@ -131,9 +132,18 @@ case_slow_apple_fails_with_the_id_and_the_resume_hint() {
   expect "$n" 1 &&
     has "$n" stdout "::error::macos-arm64: Apple has not finished notarization submission $SUBMITTED_ID" &&
     has "$n" summary "$SUBMITTED_ID" &&
-    has "$n" summary "RESUME-HINT" &&
+    has "$n" summary "RESUME-HINT -f id=$SUBMITTED_ID" &&
     has "$n" output "submission-id=$SUBMITTED_ID" &&
     lacks "$n" calls "log " || return
+  pass "$n"
+}
+
+case_the_default_resume_hint_names_the_id() {
+  local n=default-hint
+  RESUME_HINT="" BUDGET=0 run "$n" "In_Progress" "$BINARY_CDHASH"
+  expect "$n" 1 &&
+    has "$n" summary "Resume by passing \`$SUBMITTED_ID\` back to this script." &&
+    lacks "$n" summary "}" || return
   pass "$n"
 }
 
@@ -165,6 +175,13 @@ case_ticket_cdhash_case_does_not_matter() {
   local n=cdhash-case
   run "$n" "Accepted" "${BINARY_CDHASH^^}"
   expect "$n" 0 || return
+  pass "$n"
+}
+
+case_the_output_name_is_the_callers() {
+  local n=output-name
+  NOTARIZE_OUTPUT=notarization-id-macos-arm64 run "$n" "Accepted" "$BINARY_CDHASH"
+  expect "$n" 0 && has "$n" output "notarization-id-macos-arm64=$SUBMITTED_ID" || return
   pass "$n"
 }
 

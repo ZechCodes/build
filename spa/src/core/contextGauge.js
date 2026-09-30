@@ -9,6 +9,11 @@
 // carries one, the harness says it, and a harness with no known window shows no
 // figure rather than a guessed one.
 //
+// At rest the figure is the token total ("52k"); hover or focus expands it
+// leftward to "52k/200k 26%", the total against its measure and the share. The
+// node's text is only the total: the measure and the percent ride on `data-`
+// attributes the stylesheet appends after it, so the expansion writes nothing.
+//
 // The figure is written onto a node of its own, never through the composer's
 // markup: a push of the agent record lands while somebody is typing, and a
 // repaint of the box would take the caret with it.
@@ -44,7 +49,7 @@ export function contextWindowOf(agent, catalog) {
 const tokenWord = (tokens) =>
   tokens >= 1000000 ? `${Number((tokens / 1000000).toFixed(1))}M` : `${Math.round(tokens / 1000)}k`;
 
-/** What the tokens are measured against, and how the hover says it: the
+/** What the tokens are measured against, and how the title says it: the
  *  compaction threshold while the chat compacts, the window when it never
  *  does. Null when there is neither. */
 function measureOf(agent, catalog) {
@@ -71,11 +76,15 @@ export function contextGauge(agent, catalog) {
   const measure = measureOf(agent, catalog);
   if (!measure) return null;
   const percent = Math.round((tokens / measure.tokens) * 100);
+  const text = tokenWord(tokens);
+  const measureWord = tokenWord(measure.tokens);
   return {
     percent,
-    text: `${percent}%`,
+    text,
+    measure: measureWord,
+    expanded: `${text}/${measureWord} ${percent}%`,
     step: stepOf(percent),
-    title: `${tokenWord(tokens)} of ${measure.words}, as of its last turn`,
+    title: `${text} of ${measure.words}, ${percent}% used, as of its last turn`,
   };
 }
 
@@ -89,12 +98,14 @@ export function mountContextGauge(root, { ids }) {
   return {
     set(agent, catalog) {
       const gauge = contextGauge(agent, catalog);
-      const key = gauge ? `${gauge.text}|${gauge.step}|${gauge.title}` : "";
+      const key = gauge ? `${gauge.expanded}|${gauge.step}|${gauge.title}` : "";
       if (key === painted) return;
       painted = key;
       setHidden(node, !gauge);
       if (!gauge) return;
       if (node.textContent !== gauge.text) node.textContent = gauge.text;
+      setData(node, "measure", gauge.measure);
+      setData(node, "percent", `${gauge.percent}%`);
       setData(node, "step", gauge.step);
       setAttr(node, "title", gauge.title);
       setAttr(node, "aria-label", gauge.title);

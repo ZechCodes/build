@@ -1913,6 +1913,13 @@ a.md-link::after { content:"\2197" / ""; margin-left:.12em; font-size:.8em; opac
 .composer-gauge[hidden] { display:none; }
 .composer-gauge[data-step="accent"] { color:var(--accent); }
 .composer-gauge[data-step="warning"] { color:var(--amber); }
+/* At rest it says the token total; hover or focus adds the measure and the
+   percent after it ("52k" → "52k/200k 26%"). The rail's gauge is placed by its
+   right edge, so it grows leftward over its neighbours, on the panel's ground,
+   without moving them. */
+.composer-gauge:is(:hover, :focus-visible) { padding-left:6px; border-radius:6px; background:var(--panel); }
+.composer-gauge:is(:hover, :focus-visible)::after { content:"/" attr(data-measure) " " attr(data-percent); }
+.composer-gauge:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
 
 /* The tray sits ABOVE the text: what you are sending should be visible while
    you write the sentence about it, not below the fold of the box. */

@@ -274,9 +274,9 @@ export function composerHtml({
 /// rather than in the bar: a phone's keyboard lost swipes and taps while the
 /// rail rewrote things around the text, and the room the bar keeps for it
 /// (`.composer-gauge-room`) is never written. The stylesheet lays it over that
-/// room.
+/// room. It takes focus so the keyboard reaches its expanded figure too.
 export const composerGaugeHtml = (inputId) =>
-  `<span class="composer-gauge" id="${esc(composerPartIds(inputId).gauge)}" role="note" hidden></span>`;
+  `<span class="composer-gauge" id="${esc(composerPartIds(inputId).gauge)}" role="note" tabindex="0" hidden></span>`;
 
 // ---- the model menu -------------------------------------------------------
 

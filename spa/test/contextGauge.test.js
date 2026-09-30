@@ -45,23 +45,33 @@ describe("contextWindowOf", () => {
 describe("contextGauge", () => {
   it("measures against the compaction threshold when the chat compacts", () => {
     const gauge = contextGauge(claude(190000, { compact_at_tokens: 200000 }), CATALOG);
-    expect(gauge).toMatchObject({ text: "95%", percent: 95, step: "warning" });
-    expect(gauge.title).toBe("190k of 200k tokens (compacts at 200k), as of its last turn");
+    expect(gauge).toMatchObject({ text: "190k", expanded: "190k/200k 95%", percent: 95, step: "warning" });
+    expect(gauge.title).toBe("190k of 200k tokens (compacts at 200k), 95% used, as of its last turn");
   });
 
   it("measures against the model's window when the chat never compacts", () => {
     const gauge = contextGauge(claude(612000, { compact_at_tokens: 0 }), CATALOG);
-    expect(gauge).toMatchObject({ text: "61%", step: "accent" });
-    expect(gauge.title).toBe("612k of 1M window, as of its last turn");
+    expect(gauge).toMatchObject({ text: "612k", expanded: "612k/1M 61%", step: "accent" });
+    expect(gauge.title).toBe("612k of 1M window, 61% used, as of its last turn");
   });
 
   it("names a threshold the context has passed", () => {
-    expect(contextGauge(claude(1200000), CATALOG).title).toBe("1.2M of 1M window, as of its last turn");
-    expect(contextGauge(claude(210000, { compact_at_tokens: 200000 }), CATALOG).text).toBe("105%");
+    expect(contextGauge(claude(1200000), CATALOG).title).toBe("1.2M of 1M window, 120% used, as of its last turn");
+    expect(contextGauge(claude(210000, { compact_at_tokens: 200000 }), CATALOG)).toMatchObject({
+      text: "210k",
+      expanded: "210k/200k 105%",
+    });
   });
 
-  it("reads the percentage off the record", () => {
-    expect(contextGauge(claude(612000), CATALOG)).toMatchObject({ text: "61%", percent: 61 });
+  it("reads the token total off the record at rest, the way a person reads it", () => {
+    expect(contextGauge(claude(612000), CATALOG)).toMatchObject({ text: "612k", percent: 61 });
+    expect(contextGauge(claude(52400), CATALOG).text).toBe("52k");
+    expect(contextGauge(claude(1500000), CATALOG).text).toBe("1.5M");
+  });
+
+  it("expands to tokens, measure and percent", () => {
+    expect(contextGauge(claude(52000, { compact_at_tokens: 200000 }), CATALOG).expanded).toBe("52k/200k 26%");
+    expect(contextGauge(claude(52000), CATALOG).expanded).toBe("52k/1M 5%");
   });
 
   it("steps dim below 50%, accent from 50 to 80%, warning above", () => {
@@ -72,7 +82,7 @@ describe("contextGauge", () => {
   });
 
   it("falls back to the window for a digest from before compaction", () => {
-    expect(contextGauge(claude(612000), CATALOG).title).toBe("612k of 1M window, as of its last turn");
+    expect(contextGauge(claude(612000), CATALOG).title).toBe("612k of 1M window, 61% used, as of its last turn");
   });
 
   it("is absent without the field, before a turn, or without a window", () => {
@@ -105,12 +115,28 @@ describe("the gauge on the composer", () => {
     expect(gaugeNode().hidden).toBe(true);
   });
 
-  it("shows the figure, its step and its hover text", () => {
+  it("shows the token total, its step and its hover text", () => {
     gauge.set(claude(130000, { compact_at_tokens: 200000 }), CATALOG);
     expect(gaugeNode().hidden).toBe(false);
-    expect(gaugeNode().textContent).toBe("65%");
+    expect(gaugeNode().textContent).toBe("130k");
     expect(gaugeNode().dataset.step).toBe("accent");
-    expect(gaugeNode().title).toBe("130k of 200k tokens (compacts at 200k), as of its last turn");
+    expect(gaugeNode().title).toBe("130k of 200k tokens (compacts at 200k), 65% used, as of its last turn");
+    expect(gaugeNode().getAttribute("aria-label")).toBe(gaugeNode().title);
+  });
+
+  it("carries the rest of the expanded figure for the stylesheet to add after the total", () => {
+    // Hover and focus append "/<measure> <percent>" after the total, so the
+    // gauge reads "130k/200k 65%" and grows leftward from its right edge.
+    gauge.set(claude(130000, { compact_at_tokens: 200000 }), CATALOG);
+    expect(gaugeNode().dataset.measure).toBe("200k");
+    expect(gaugeNode().dataset.percent).toBe("65%");
+    expect(`${gaugeNode().textContent}/${gaugeNode().dataset.measure} ${gaugeNode().dataset.percent}`).toBe(
+      contextGauge(claude(130000, { compact_at_tokens: 200000 }), CATALOG).expanded,
+    );
+  });
+
+  it("is reachable from the keyboard, so the expanded figure is too", () => {
+    expect(gaugeNode().tabIndex).toBe(0);
   });
 
   it("hides again when the record stops carrying a figure", () => {
@@ -133,11 +159,20 @@ describe("the gauge on the composer", () => {
     expect(gaugeNode().dataset.step).toBe("warning");
   });
 
-  it("does not rewrite its own node for an unchanged figure", () => {
+  it("does not rewrite its own node for an unchanged figure", async () => {
     gauge.set(claude(612000), CATALOG);
     const text = gaugeNode().firstChild;
+    const writes = [];
+    new MutationObserver((records) => writes.push(...records)).observe(gaugeNode(), {
+      attributes: true,
+      characterData: true,
+      childList: true,
+      subtree: true,
+    });
     gauge.set(claude(612400), CATALOG);
+    await Promise.resolve();
     expect(gaugeNode().firstChild).toBe(text);
+    expect(writes).toEqual([]);
   });
 
   it("is a no-op on a composer without the slot", () => {

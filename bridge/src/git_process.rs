@@ -83,7 +83,36 @@ pub(crate) fn run_command_with_deadline(
     args: &[&OsStr],
     deadline: Duration,
 ) -> std::io::Result<Output> {
+    run_with_environment(executable, dir, args, deadline, &[])
+}
+
+/// What a git child needs so that nothing asks anyone anything: no askpass
+/// program for a username, password or passphrase, whether git's own
+/// (`GIT_ASKPASS` set but empty outranks `core.askPass` and `SSH_ASKPASS`) or
+/// ssh's (`SSH_ASKPASS_REQUIRE=never`, which a desktop session's `DISPLAY`
+/// would otherwise switch on). With the terminal prompt already off, a
+/// remote that wants a secret fails instead of waiting.
+const UNATTENDED: &[(&str, &str)] = &[("GIT_ASKPASS", ""), ("SSH_ASKPASS_REQUIRE", "never")];
+
+/// A git child nobody is at the keyboard for: a background fetch. Everything
+/// [`run_command_with_deadline`] promises, and no prompt of any kind.
+pub(crate) fn run_git_unattended(
+    dir: &Path,
+    args: &[&OsStr],
+    deadline: Duration,
+) -> std::io::Result<Output> {
+    run_with_environment(OsStr::new("git"), dir, args, deadline, UNATTENDED)
+}
+
+fn run_with_environment(
+    executable: &OsStr,
+    dir: &Path,
+    args: &[&OsStr],
+    deadline: Duration,
+    environment: &[(&str, &str)],
+) -> std::io::Result<Output> {
     let mut command = Command::new(executable);
+    command.envs(environment.iter().copied());
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -121,7 +150,9 @@ fn bounded(
         if let Err(unread) = pipe_closed.recv_timeout(left) {
             kill_and_reap(&mut child);
             return Err(match unread {
-                std::sync::mpsc::RecvTimeoutError::Timeout => timed_out(executable, args, deadline),
+                std::sync::mpsc::RecvTimeoutError::Timeout => {
+                    timed_out(executable, args, deadline, said_before_the_kill(stderr))
+                }
                 std::sync::mpsc::RecvTimeoutError::Disconnected => std::io::Error::other(format!(
                     "{executable:?} {args:?}: a pipe reader died before the child did"
                 )),
@@ -130,7 +161,12 @@ fn bounded(
     }
     let Some(status) = exit_before(&mut child, expiry)? else {
         kill_and_reap(&mut child);
-        return Err(timed_out(executable, args, deadline));
+        return Err(timed_out(
+            executable,
+            args,
+            deadline,
+            said_before_the_kill(stderr),
+        ));
     };
     Ok(Output {
         status,
@@ -152,15 +188,68 @@ fn kill_and_reap(child: &mut Child) {
     let _ = child.wait();
 }
 
+/// A child that outlived its deadline: what it was, and what it had said on
+/// stderr by the time it was killed. A caller that wants to know why it hung
+/// (a helper that says what it is waiting for, then waits) reads the latter with
+/// [`said_before_deadline`]; every other caller sees only the sentence.
+#[derive(Debug)]
+struct DeadlinePassed {
+    sentence: String,
+    stderr: Vec<u8>,
+}
+
+impl std::fmt::Display for DeadlinePassed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.sentence)
+    }
+}
+
+impl std::error::Error for DeadlinePassed {}
+
 /// How a child that outlived its deadline is answered.
-fn timed_out(executable: &OsStr, args: &[&OsStr], deadline: Duration) -> std::io::Error {
+fn timed_out(
+    executable: &OsStr,
+    args: &[&OsStr],
+    deadline: Duration,
+    stderr: Vec<u8>,
+) -> std::io::Error {
     std::io::Error::new(
         std::io::ErrorKind::TimedOut,
-        format!(
-            "{executable:?} {args:?} did not return within {}s",
-            deadline.as_secs()
-        ),
+        DeadlinePassed {
+            sentence: format!(
+                "{executable:?} {args:?} did not return within {}s",
+                deadline.as_secs()
+            ),
+            stderr,
+        },
     )
+}
+
+/// What a child that timed out had written to stderr, when `error` is such a
+/// timeout.
+pub(crate) fn said_before_deadline(error: &std::io::Error) -> Option<&[u8]> {
+    error
+        .get_ref()?
+        .downcast_ref::<DeadlinePassed>()
+        .map(|passed| passed.stderr.as_slice())
+}
+
+/// How long a killed child's stderr is waited for. Its whole process group
+/// is gone, so the pipe ends at once, unless something that left the group
+/// still holds it; that is not waited for.
+const STDERR_AFTER_KILL: Duration = Duration::from_millis(250);
+
+/// Everything a killed child wrote to stderr, if its pipe ends in time.
+fn said_before_the_kill(stderr: JoinHandle<std::io::Result<Vec<u8>>>) -> Vec<u8> {
+    let expiry = Instant::now() + STDERR_AFTER_KILL;
+    while !stderr.is_finished() && Instant::now() < expiry {
+        std::thread::sleep(EXIT_POLL);
+    }
+    if stderr.is_finished() {
+        collected(stderr).unwrap_or_default()
+    } else {
+        Vec::new()
+    }
 }
 
 /// What the child exited with, or `None` when it is still running at `expiry`.

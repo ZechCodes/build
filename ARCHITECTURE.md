@@ -258,6 +258,10 @@ runtime that starts them.
   base branch, remote and (past the first) folder. See Projects and sources.
   The SPA's settings sheet offers those edits only on a machine whose
   greeting names the verb.
+  3.3.0 adds `sources.syncBase` (#267): each source row carries `sync_base`
+  and `sync` (what the last sync of its base concluded),
+  `project.update_source` takes `sync_base`, and `project.sync_source` asks
+  for a sync now. See Projects and sources.
   The SPA's adapter claims `>=2.0.0 <4.0.0`: it calls nothing a 2.x bridge
   lacks (what 2.x added after 2.0.0 is capability-gated), so the app can
   roll before the bridge.
@@ -388,6 +392,67 @@ project's home (orchestrator, registry identity) and cannot move.
   is not rolled back or hidden: `checkouts_failed` names it
   (`workspace_id`, `path`, git's `reason`), still on the old remote, and the
   source's own change stands.
+
+**Keeping a base in step with its remote** (#267). A Git source whose
+`sync_base` is on (the default for new sources and, unset, for existing ones:
+`SYNC_BASE_FOR_NEW_SOURCES` and `SYNC_BASE_FOR_EXISTING_SOURCES` in
+`bridge/src/app/projects/mod.rs`) has its base branch fetched and
+fast-forwarded, never merged, rebased, reset or forced
+(`bridge/src/source_sync.rs`). The fetch takes the one branch the base
+follows (`branch.<base>.remote` and `branch.<base>.merge`, else `origin` and
+the base's own name; `source_sync/upstream.rs`) and nothing else, no tags and
+no submodules, from the url git resolves (rewrites applied) once it passes
+`usable_remote_url`. Every git a sync starts runs as nobody's command
+(`source_sync/git.rs`): unattended (`run_git_unattended` in
+`bridge/src/git_process.rs`: no prompt of any kind, stdin closed, the process
+group killed at its deadline), with no hooks (`core.hooksPath=/dev/null`: the
+user did not start this merge, so their `post-merge` or
+`reference-transaction` is not run for it) and no automatic maintenance
+(`gc.auto=0`, `maintenance.auto=false`: it could detach and outlive the kill).
+Filters stay on, since a checkout without git-lfs's smudge would write pointer
+files, and run unattended like the rest. Where the base is checked out in the
+source's own clean checkout, `merge --ff-only --no-overwrite-ignore` moves it
+with its files, refusing to overwrite an untracked or ignored file. Only the
+fetch is bound by the short deadlines: once started, the checkout is let
+finish, capped at 10 minutes (`source_sync/checkout.rs`), since git killed
+part-way through leaves `index.lock` and half the incoming files behind and a
+filter such as git-lfs's smudge can make an honest checkout slow; past the cap
+git is killed and the lock it took is removed. The files it had already
+written stay as untracked files, and every later sync is skipped naming them
+until the user removes them. Where the base is checked out
+nowhere, a compare-and-swap `update-ref` moves the ref alone. Neither happens
+while an operation on the base is part-way through in any worktree, read from
+each worktree's git directory (`source_sync/in_progress.rs`): a rebase whose
+`head-name` or a bisect whose `BISECT_START` names the base (a rebase detaches
+HEAD, so its branch otherwise reads as checked out nowhere), or a merge,
+cherry-pick or revert in the worktree whose HEAD is the base. An operation on
+another branch, such as a merge stopped in an agent's workspace, does not
+hold the base back. Local commits,
+uncommitted changes, an operation in progress, the branch checked out in
+another worktree, and a remote without the branch are reported and left
+alone. Three things sync (`bridge/src/app/projects/base_sync.rs`): a service,
+30 s after startup and then every five minutes, with the app lock released;
+every workspace cut, first, for each source with the setting on (10 s, the
+sources side by side, and the fetch skipped when one landed in the last
+minute), which goes ahead from the base as it stood and puts `warnings` on its
+answer, so an agent's `create_workspace` or `assign_task` hears them; and
+`project.sync_source` (Sync now). The cut's 10 s bound the whole sync: a cut
+fetches and moves a base checked out nowhere, but never starts the checkout's
+fast-forward (`sync_base_for_a_cut`). A base checked out in the source's own
+checkout and behind after the fetch is cut from as it stood, with a warning
+that Build is fast-forwarding it in the background, and handed to the
+service, which the cut asks to sync that source at once. A remote that said it wanted a person (git
+said it needed a password, or ssh could not use a key without its passphrase)
+is left off the timer until one of the other two syncs it. A fetch that only
+timed out is retried on the next pass, then after 10, 20, 40 and at most 60
+minutes while it keeps timing out; a cut that ran out of its 10 s leaves the
+source's status as it was. A security key waiting for a touch is one of
+these timeouts: OpenSSH shows its notice only on a terminal, so Build cannot
+tell it apart, and the key blinks for each attempt, about once an hour once
+the backoff is at its longest, plus up to 10 s at each workspace cut. One sync runs per checkout at a
+time. Each row's `sync` is kept in the store's `meta` table
+(`bridge/src/store/source_sync.rs`), and a sync that lands notes the project
+list changed.
 
 `project.set_remote` is the same edit on the first source, kept for older
 clients. Every remote a client names, on any verb, passes

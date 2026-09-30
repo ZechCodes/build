@@ -1,0 +1,16 @@
+{
+  "method": "project.sync_source",
+  "since": "3.3.0",
+  "params": {
+    "project_id": "proj-1",
+    "source_id": "source-2"
+  },
+  "result": {
+    "pending": true
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "internal"
+  ]
+}

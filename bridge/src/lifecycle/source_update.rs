@@ -99,7 +99,7 @@ impl UpdateSource {
     }
 }
 
-fn refuse_unusable_branch_name(base: &str) -> Result<(), String> {
+pub(crate) fn refuse_unusable_branch_name(base: &str) -> Result<(), String> {
     if base.starts_with('-') || !git2::Branch::name_is_valid(base).unwrap_or(false) {
         return Err(format!("{base} is not a branch name Git accepts."));
     }

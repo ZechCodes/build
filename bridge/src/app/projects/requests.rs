@@ -153,14 +153,14 @@ impl WorktreeMutation for OpenProjectSources {
             if let Some(path) = &opened.created_checkout {
                 created_checkouts.push(path.clone());
             }
-            sources.push(ProjectSource {
-                id: request.id,
-                name: request.name,
-                mount: request.mount,
-                path: opened.path.clone(),
-                is_git: opened.is_git,
-                base_branch: opened.base.clone(),
-            });
+            sources.push(ProjectSource::added(
+                request.id,
+                request.name,
+                request.mount,
+                opened.path.clone(),
+                opened.is_git,
+                opened.base.clone(),
+            ));
             if primary.is_none() {
                 primary = Some(opened);
             }

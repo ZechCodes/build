@@ -52,14 +52,22 @@ impl AppState {
                     // Past every source id this project has held, so a removed
                     // one is not reissued after a restart either.
                     "next_source": p.next_source,
-                    "sources": p.sources.iter().map(|source| json!({
-                        "id": source.id,
-                        "name": source.name,
-                        "mount": source.mount,
-                        "path": source.path.display().to_string(),
-                        "is_git": source.is_git,
-                        "base_branch": source.base_branch,
-                    })).collect::<Vec<_>>(),
+                    "sources": p.sources.iter().map(|source| {
+                        let mut entry = json!({
+                            "id": source.id,
+                            "name": source.name,
+                            "mount": source.mount,
+                            "path": source.path.display().to_string(),
+                            "is_git": source.is_git,
+                            "base_branch": source.base_branch,
+                        });
+                        // Only a choice is written: a source never told keeps
+                        // reading as the default for existing sources.
+                        if let Some(sync_base) = source.sync_base {
+                            entry["sync_base"] = json!(sync_base);
+                        }
+                        entry
+                    }).collect::<Vec<_>>(),
                 });
                 if let Some(isolation) = p.isolation {
                     entry["isolation"] = json!(isolation);

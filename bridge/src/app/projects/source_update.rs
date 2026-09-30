@@ -24,14 +24,18 @@ struct SourceEdit {
     path: Option<PathBuf>,
     base_branch: Option<String>,
     remote: Option<String>,
+    /// Whether the base is kept in step with its remote (#267). Needs no git,
+    /// so an edit naming only this is written at once.
+    sync_base: Option<bool>,
 }
 
 impl SourceEdit {
+    fn needs_git(&self) -> bool {
+        self.path.is_some() || self.base_branch.is_some() || self.remote.is_some()
+    }
+
     fn is_empty(&self) -> bool {
-        self.name.is_none()
-            && self.path.is_none()
-            && self.base_branch.is_none()
-            && self.remote.is_none()
+        self.name.is_none() && !self.needs_git() && self.sync_base.is_none()
     }
 }
 
@@ -41,6 +45,7 @@ struct SourceAddress {
     source_id: String,
     path: PathBuf,
     name: Option<String>,
+    sync_base: Option<bool>,
 }
 
 impl AppState {
@@ -57,6 +62,9 @@ impl AppState {
         let source = source.clone();
         let title = project.name.clone();
         let edit = self.checked_edit(params, &source, index)?;
+        if !edit.needs_git() && edit.name.is_none() {
+            return self.set_source_sync(&project_id, &source_id, edit.sync_base);
+        }
         let mutation = UpdateSource {
             path: source.path.clone(),
             is_git: source.is_git,
@@ -71,6 +79,7 @@ impl AppState {
             source_id,
             path: source.path.clone(),
             name: edit.name,
+            sync_base: edit.sync_base,
         };
         self.defer_project(
             source.path,
@@ -101,9 +110,18 @@ impl AppState {
             remote: optional_text(params, "remote")
                 .map(usable_remote_or_clear)
                 .transpose()?,
+            sync_base: params.get("sync_base").and_then(Value::as_bool),
         };
         if edit.is_empty() {
-            return Err("Name a label, path, base branch or remote to change.".to_string());
+            return Err(
+                "Name a label, path, base branch, remote or sync setting to change.".to_string(),
+            );
+        }
+        if edit.sync_base.is_some() && !source.is_git {
+            return Err(
+                "A folder that is not a Git repository has no base branch to keep up to date."
+                    .to_string(),
+            );
         }
         Ok(edit)
     }
@@ -194,9 +212,13 @@ impl AppState {
                 path: updated.path,
                 is_git: updated.is_git,
                 base_branch: updated.base_branch,
+                sync_base: address.sync_base,
             },
         )?;
         self.persist();
+        if address.sync_base == Some(true) {
+            self.request_source_sync(address.project_id.clone(), address.source_id.clone());
+        }
         let project = self
             .projects
             .get(&address.project_id)
@@ -204,6 +226,34 @@ impl AppState {
         let mut row = self.project_json(project);
         row["checkouts_updated"] = checkouts_updated.into();
         row["checkouts_failed"] = checkouts_failed.into();
+        Ok(row)
+    }
+}
+
+impl AppState {
+    /// Turn keeping a source's base in step on or off: no git, so written at
+    /// once. Turning it on syncs the source now; turning it off leaves it out
+    /// of every pass from the next one on.
+    fn set_source_sync(
+        &mut self,
+        project_id: &str,
+        source_id: &str,
+        sync_base: Option<bool>,
+    ) -> Result<Value, String> {
+        let source = self
+            .projects
+            .source_mut(project_id, source_id)
+            .ok_or_else(|| format!("unknown source_id {source_id} in project {project_id}"))?;
+        source.sync_base = sync_base;
+        self.persist();
+        if sync_base == Some(true) {
+            self.request_source_sync(project_id.to_string(), source_id.to_string());
+        }
+        self.note_board_lists_changed(crate::changes::BoardLists::PROJECTS);
+        let project = self.project_for(project_id)?;
+        let mut row = self.project_json(project);
+        row["checkouts_updated"] = 0.into();
+        row["checkouts_failed"] = json!([]);
         Ok(row)
     }
 }

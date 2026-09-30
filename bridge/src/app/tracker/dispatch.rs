@@ -646,11 +646,17 @@ impl DeferredGitWork for TaskDispatchWork {
     /// nowhere to live. Reloading twice is what `invalidate` already does to
     /// itself on every other path, and costs a directory read.
     fn settle(&self, app: &mut AppState, result: Value) -> Result<Value, String> {
-        self.inner.settle(app, result)?;
+        let cut = self.inner.settle(app, result)?;
         if let Err(error) = app.workspaces.reload() {
             return Err(format!("reload workspaces before dispatch: {error}"));
         }
-        app.finish_new_workspace_dispatch(&self.plan)
+        let mut dispatched = app.finish_new_workspace_dispatch(&self.plan)?;
+        // A base the cut could not bring up to date (#267) is the assigner's
+        // to know about, the same as the cut itself.
+        if let Some(warnings) = cut.get("warnings") {
+            dispatched["warnings"] = warnings.clone();
+        }
+        Ok(dispatched)
     }
 }
 

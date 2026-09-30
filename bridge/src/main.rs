@@ -636,6 +636,11 @@ async fn run_daemon(
         build_bridge::reclaim::ReclaimPolicy::from_env(),
     )
     .await;
+    // Keeps each source's base branch in step with its remote, fast-forward
+    // only, for the sources that have it on (#267).
+    let source_sync_stop =
+        AppState::spawn_source_sync(app.clone(), build_bridge::app::SourceSyncPolicy::default())
+            .await;
 
     // Bring back whoever the last shutdown was holding. It waits for an
     // authenticated relay socket rather than firing here, because a resumed
@@ -667,6 +672,7 @@ async fn run_daemon(
     // kills every session on the device at once, and nothing but this says so.
     // Cancellation is a held atomic handle: shutdown never waits on the app mutex.
     reclaim_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    source_sync_stop.store(true, std::sync::atomic::Ordering::Relaxed);
     // It writes from the live roster's newest lists and never waits on the app
     // mutex, so a handler holding that cannot keep it past `TimeoutStopSec`.
     shut_down(&live_roster, || {

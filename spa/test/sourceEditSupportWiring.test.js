@@ -56,3 +56,21 @@ it("keeps them read-only for a bridge whose greeting does not name it", async ()
   expect(await readSourceEditSupport("dev-1")).toBe(false);
   expect(docsLabel().readOnly).toBe(true);
 });
+
+it("offers keeping each source's base up to date once the real greeting names sources.syncBase (#267)", async () => {
+  const { readSourceSyncSupport } = await import("../src/core/sourceEditSupport.js");
+  expect(greeting.capabilities).toContain("sources.syncBase");
+  await greet(greeting);
+  await vi.waitFor(async () => expect(await readSourceSyncSupport("dev-1")).toBe(true));
+  openProjectSettings("proj-1", { callRpc: vi.fn(async () => ({ projects: [PROJECT] })), deviceId: "dev-1" });
+  await vi.waitFor(() => expect(document.querySelector('#sheet .ps-source[data-source-id="source-2"] [data-sync-base]')).toBeTruthy());
+});
+
+it("offers no sync controls to a bridge whose greeting does not name sources.syncBase", async () => {
+  const { readSourceSyncSupport } = await import("../src/core/sourceEditSupport.js");
+  await greet({ ...greeting, capabilities: greeting.capabilities.filter((name) => name !== "sources.syncBase") });
+  openProjectSettings("proj-1", { callRpc: vi.fn(async () => ({ projects: [PROJECT] })), deviceId: "dev-1" });
+  await vi.waitFor(() => expect(docsLabel()).toBeTruthy());
+  expect(await readSourceSyncSupport("dev-1")).toBe(false);
+  expect(document.querySelector("#sheet [data-sync-base]")).toBeNull();
+});

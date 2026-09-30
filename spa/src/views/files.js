@@ -34,7 +34,7 @@
 
 import { esc, pickAFileText } from "../core/text.js";
 import { directoryCacheId, syncWalksCheckout } from "../core/directoryScope.js";
-import { deleteCached, readCached, recordWriteOf, subscribeCache } from "../core/localCache.js";
+import { cachedWriteOf, deleteCached, readCached, recordWriteOf, subscribeCache } from "../core/localCache.js";
 import { FILE_RECORD_KIND, cacheFileBody, filePageReader, filePagesReadable } from "../core/cacheLifetime.js";
 import {
   mountPagedFile,
@@ -529,7 +529,14 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     if (!held) return false;
     takeSelectedFile(path, request, held);
     if (readsForItself(path)) return false;
-    if (address) void cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path: address.sub, file: held });
+    // Stored again only while the record is still the one shown: a push that
+    // landed since the read is newer, and this copy must not write over it.
+    if (address) {
+      void cacheFileBody({
+        deviceId: address.deviceId, entityId: address.entityId, path: address.sub, file: held,
+        still: recordStill(address, recordWriteOf(record)), written: cachedWriteOf(record),
+      });
+    }
     return true;
   };
 

@@ -9,9 +9,9 @@
 // the project in the URL is the project — there is no lookup to do here beyond
 // the device one the router already parked on.
 //
-// The project's two tabs, with Tasks open, are the toolbar's (core/toolbar.js
-// draws them for this route): a task is a page OF the tasks tab, and the
-// bar is where they stay reachable with the chat open over the page.
+// The project's rail stands beside it with Tasks open (core/projectRail.js,
+// #274): a task is a page OF the Tasks tab, and the rail is the way back to the
+// list, or on to the workspaces.
 //
 // The project's agent stays beside a task of the project, as it is beside the
 // project page — and it is the SHELL that keeps it there (core/shell.js), which
@@ -27,6 +27,8 @@ import { routeProjectKey } from "../core/deviceKey.js";
 import { surfaceContext } from "../core/surfaceContext.js";
 import { subscribeFeed } from "../core/taskFeed.js";
 import { mountTaskPage } from "../core/trackerTaskPage.js";
+import { mountProjectRail } from "../core/projectRail.js";
+import { projectRoute } from "../core/projectModel.js";
 import { taskContextItem } from "../core/trackerViewingContext.js";
 import "../styles/tasks.css";
 import "../styles/surfaces.css";
@@ -71,6 +73,14 @@ export async function renderTrackerTask() {
     feed: () => feed,
     navigate: go,
   });
+  const rail = mountProjectRail($("#dir-rail"), {
+    route,
+    context,
+    navigate: go,
+    // Tasks is the project's default tab, so it is Workspaces that is named (#46).
+    onSelect: (tab) => go({ ...projectRoute({ id: route.projectId, deviceId: route.deviceId }), tab }),
+  });
+  rail.paint("tasks");
   const deviceStrip = mountDeviceStrip(root, context, { hasContent: () => true });
   const unsubscribe = subscribeFeed((snapshot) => {
     feed = snapshot;
@@ -80,5 +90,6 @@ export async function renderTrackerTask() {
     unsubscribe();
     deviceStrip();
     page.dispose();
+    rail.dispose();
   };
 }

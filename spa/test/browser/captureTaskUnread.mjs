@@ -180,7 +180,7 @@ await withLayoutPage(async ({ page, basePath }) => {
 for (const [view, query] of [["dashboard", ""], ["list", "?view=list"], ["board", "?view=board"]]) {
   await withLayoutPage(async ({ page, basePath }) => {
     await open(page, basePath, { hash: `#/device/${DEVICE}/project/p-1${query}` });
-    await expectText(page.locator('#toolbar [data-project-tab="tasks"] .task-unread'), "6", "project Tasks tab");
+    await expectText(page.locator('#dir-rail [data-tab="tasks"] .dirtab-count'), "6", "project Tasks tab");
     if (view === "dashboard") {
       await expectText(page.locator('[data-task="task-7"] .task-unread'), "2", "dashboard bubble");
     } else {
@@ -191,7 +191,7 @@ for (const [view, query] of [["dashboard", ""], ["list", "?view=list"], ["board"
     await page.mouse.move(0, 0);
     await page.screenshot({ path: `${output}/project-tasks-${view}.png` });
     if (view === "dashboard") {
-      await page.locator("#toolbar .toolbar").screenshot({ path: `${output}/project-tasks-tab.png` });
+      await page.locator("#dir-rail").screenshot({ path: `${output}/project-tasks-tab.png` });
       await page.locator('[data-dashboard-tab="active"]').click();
       await expectText(page.locator('[data-task="task-12"] .task-unread'), "3", "dashboard active bubble");
       await page.waitForTimeout(200);

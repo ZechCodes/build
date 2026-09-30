@@ -11,6 +11,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   DIRECTORY_TABS,
+  PROJECT_TABS,
   SIDEBAR_COLLAPSED_KEY,
   WORKSPACE_TABS,
   directoryRailHtml,
@@ -364,5 +365,37 @@ describe("the workspace's rail", () => {
     expect(css).toMatch(/\.dirtab \{[^}]*display:flex/);
     expect(css).toMatch(/\.dirtab\[hidden\] \{[^}]*display:none/);
     expect(css).toMatch(/\.dirtab-count:empty \{[^}]*display:none/);
+  });
+});
+
+// #274: a project stands on the same rail — Tasks and Workspaces, its Settings
+// at the foot — and no sidebar toggle, having no list column to fold.
+describe("the project's rail", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    localStorage.clear();
+  });
+
+  const mountProject = () => {
+    const onOpen = vi.fn();
+    const mounted = mount({ tabs: PROJECT_TABS, active: "tasks", settings: { onOpen, label: "Project settings" }, sidebar: false });
+    return { ...mounted, onOpen, settings: () => mounted.host.querySelector("[data-rail-settings]") };
+  };
+
+  it("lists Tasks and Workspaces and nothing of a checkout's", () => {
+    expect(PROJECT_TABS.map((tab) => tab.id)).toEqual(["tasks", "workspaces"]);
+    const { tabs } = mountProject();
+    expect(tabs().map((tab) => tab.getAttribute("aria-label"))).toEqual(["Tasks", "Workspaces"]);
+    expect(tabs()[0].querySelector(".badge.dirtab-count")).not.toBeNull();
+    expect(tabs()[1].innerHTML).toContain("lucide-folders");
+  });
+
+  it("names its own settings at the foot, and draws no sidebar toggle", () => {
+    const { host, settings, toggle, onOpen } = mountProject();
+    expect(settings().getAttribute("aria-label")).toBe("Project settings");
+    expect(toggle()).toBeNull();
+    expect(host.dataset.sidebar).toBeUndefined();
+    settings().click();
+    expect(onOpen).toHaveBeenCalledTimes(1);
   });
 });

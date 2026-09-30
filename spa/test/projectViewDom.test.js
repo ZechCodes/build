@@ -44,7 +44,6 @@ vi.mock("../src/core/taskFeed.js", () => ({
 
 import { App } from "../src/app.js";
 import { renderProject } from "../src/views/projectView.js";
-import { pressProjectTab } from "../src/core/toolbar.js";
 import { adoptBridgeSelection, adoptDeviceSession, resetDeviceContexts } from "../src/core/deviceContexts.js";
 import { standShell, stopShell } from "../src/core/shell.js";
 import { fakeSession } from "./deviceSessionFixture.js";
@@ -96,7 +95,7 @@ let elsewhere;
 beforeEach(() => {
   localStorage.clear();
   document.body.innerHTML =
-    '<div id="toolbar"><span id="tb-verb"></span></div><div id="root"></div><aside id="agent-rail"></aside><div id="console-region"></div>';
+    '<div id="toolbar"><span id="tb-verb"></span></div><nav id="dir-rail"></nav><div id="root"></div><aside id="agent-rail"></aside><div id="console-region"></div>';
   mountAgentRail.mockClear();
   mountTasksPane.mockClear();
   openCreateWork.mockClear();
@@ -126,6 +125,8 @@ afterEach(() => {
 });
 
 const rows = () => [...document.querySelectorAll("[data-workspace]")];
+const rail = () => document.querySelector("#dir-rail");
+const pressProjectTab = (tab) => rail().querySelector(`[data-tab="${tab}"]`).click();
 
 describe("the project surface", () => {
   it("lists the project's workspaces, each opening its own surface", async () => {
@@ -211,23 +212,21 @@ describe("the project surface", () => {
     expect(ensured[0][1]).toEqual({ project_id: "proj-1" });
   });
 
-  // The verb slot is where this page's two verbs live, and both say which
-  // project they are about: the bar names one project, and so do they.
-  it("offers the project's own verbs on the toolbar, named for it", async () => {
+  // The verb slot is where this page's verb lives, and it says which project
+  // it is about: the bar names one project, and so does it. The settings are
+  // the rail's now (#274).
+  it("offers the project's + on the toolbar, named for it, and no cog", async () => {
     await openProject();
     await flush();
 
     const create = document.querySelector("[data-project-create]");
-    const settings = document.querySelector("[data-project-settings]");
     expect(create.getAttribute("aria-label")).toBe("New workspace in Build");
-    expect(settings.getAttribute("aria-label")).toBe("Settings for Build");
+    expect(document.querySelector("#tb-verb [data-project-settings]")).toBeNull();
 
     create.click();
     expect(openCreateWork).toHaveBeenCalledWith(
       expect.objectContaining({ projectId: "proj-1", deviceId: "dev-1", projectName: "Build" }),
     );
-    settings.click();
-    expect(openProjectSettings).toHaveBeenCalledWith("proj-1", expect.objectContaining({ callRpc: expect.any(Function) }));
   });
 
   it("hands the verb slot back when the surface goes", async () => {
@@ -257,9 +256,8 @@ describe("the project surface", () => {
 
 // A project holds two kinds of thing: the workspaces the work happens in, and
 // the tasks that say what the work IS.
-// The two tabs themselves are the toolbar's (core/toolbar.js draws them after
-// the project's name, so they stay reachable with the chat open over the
-// page); a press on them is handed to this page to switch in place.
+// The two tabs are the faces of the project's rail (#274); a press on one
+// switches the page in place.
 describe("the project's two tabs", () => {
   // #46: a bare project link opens the tracker now, and Workspaces is the tab
   // that names itself.
@@ -334,6 +332,68 @@ describe("the project's two tabs", () => {
     App.viewDispose();
     App.viewDispose = null;
     expect(pane.dispose).toHaveBeenCalled();
+  });
+});
+
+// #274: "The project view should use a left rail the way a workspace does,
+// with three entries only: Workspaces, Tasks and the project's Settings."
+describe("the project's rail", () => {
+  const faces = () => [...rail().querySelectorAll("[data-tab]")].map((cell) => [cell.dataset.tab, cell.getAttribute("aria-selected")]);
+
+  it("stands Tasks, Workspaces and Settings on the shell's rail, and nothing else", async () => {
+    await openProject();
+    await flush();
+    expect(faces()).toEqual([["tasks", "true"], ["workspaces", "false"]]);
+    expect(rail().querySelectorAll("button")).toHaveLength(3);
+    expect(rail().querySelector("[data-rail-settings]").getAttribute("aria-label")).toBe("Project settings");
+    expect(rail().querySelector("[data-tab=changes], [data-tab=files], [data-sidebar-toggle]")).toBeNull();
+  });
+
+  it("marks the face the route stands on, and follows a press", async () => {
+    App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "workspaces" };
+    await openProject();
+    await flush();
+    expect(faces()).toEqual([["tasks", "false"], ["workspaces", "true"]]);
+    pressProjectTab("tasks");
+    await flush();
+    expect(faces()).toEqual([["tasks", "true"], ["workspaces", "false"]]);
+    expect(location.hash).toBe("#/device/dev-1/project/proj-1");
+  });
+
+  it("switches the tab without remounting the page", async () => {
+    await openProject();
+    await flush();
+    const root = document.querySelector("#root");
+    const pane = document.querySelector("#project-pane");
+    pressProjectTab("workspaces");
+    await flush();
+    expect(document.querySelector("#project-pane")).toBe(pane);
+    expect(document.querySelector("#root")).toBe(root);
+    expect(document.querySelector(".project-rows")).not.toBeNull();
+  });
+
+  it("opens the project's settings sheet from the cog at its foot", async () => {
+    await openProject();
+    await flush();
+    rail().querySelector("[data-rail-settings]").click();
+    expect(openProjectSettings).toHaveBeenCalledWith(
+      "proj-1",
+      expect.objectContaining({ callRpc: expect.any(Function), deviceId: "dev-1" }),
+    );
+  });
+
+  it("draws no project tabs in the bar", async () => {
+    await openProject();
+    await flush();
+    expect(document.querySelector("#toolbar [data-project-tab]")).toBeNull();
+  });
+
+  it("hands the shell's column back empty when the page goes", async () => {
+    await openProject();
+    await flush();
+    App.viewDispose();
+    App.viewDispose = null;
+    expect(rail().children).toHaveLength(0);
   });
 });
 

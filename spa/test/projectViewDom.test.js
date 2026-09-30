@@ -8,7 +8,8 @@
 // mints in a scratch directory of its own.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mountAgentRail = vi.fn(() => ({ dispose: vi.fn() }));
+const collapseChat = vi.fn();
+const mountAgentRail = vi.fn(() => ({ collapse: collapseChat, dispose: vi.fn() }));
 vi.mock("../src/core/agentRail.js", () => ({ mountAgentRail: (...args) => mountAgentRail(...args) }));
 
 const openCreateWork = vi.fn();
@@ -91,12 +92,15 @@ const device = (deviceId, answer = async () => ({})) => {
 
 let here;
 let elsewhere;
+const widthIs = (px) => Object.defineProperty(window, "innerWidth", { configurable: true, value: px });
 
 beforeEach(() => {
   localStorage.clear();
+  widthIs(1024); // jsdom's own, which a case that sets a phone or a desktop must not leave behind
   document.body.innerHTML =
     '<div id="toolbar"><span id="tb-verb"></span></div><nav id="dir-rail"></nav><div id="root"></div><aside id="agent-rail"></aside><div id="console-region"></div>';
   mountAgentRail.mockClear();
+  collapseChat.mockClear();
   mountTasksPane.mockClear();
   openCreateWork.mockClear();
   openProjectSettings.mockClear();
@@ -370,6 +374,26 @@ describe("the project's rail", () => {
     expect(document.querySelector("#project-pane")).toBe(pane);
     expect(document.querySelector("#root")).toBe(root);
     expect(document.querySelector(".project-rows")).not.toBeNull();
+  });
+
+  // A press switches the tab in place, so the shell's route rule never sees a
+  // navigation (#62): where the chat lies over the page, the press puts it away
+  // itself, and beside the page it leaves it be.
+  it("puts the chat away on a press where it lies over the page", async () => {
+    widthIs(390);
+    await openProject();
+    await vi.waitFor(() => expect(mountAgentRail).toHaveBeenCalledTimes(1));
+    pressProjectTab("workspaces");
+    expect(collapseChat).toHaveBeenCalledTimes(1);
+    expect(document.querySelector(".project-rows")).not.toBeNull();
+  });
+
+  it("leaves the chat open on a press where it stands beside the page", async () => {
+    widthIs(1400);
+    await openProject();
+    await vi.waitFor(() => expect(mountAgentRail).toHaveBeenCalledTimes(1));
+    pressProjectTab("workspaces");
+    expect(collapseChat).not.toHaveBeenCalled();
   });
 
   it("opens the project's settings sheet from the cog at its foot", async () => {

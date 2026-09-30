@@ -183,6 +183,29 @@ export function paintDirectoryRail(host, { tabs = DIRECTORY_TABS, active, onSele
   wireFaces(host, onSelect);
 }
 
+/**
+ * releaseDirectoryRail(host) — hand the shell's column back empty, as a surface
+ * leaving does.
+ *
+ * Unless the keyboard is on it. A face that navigates (a task's page is a page
+ * OF the project's Tasks face) takes its surface down and stands the next one
+ * up on this same column in one pass (app.js renderPage), and emptying it
+ * between the two would drop the keyboard on nothing. So the cells are left
+ * holding it for that pass: the next surface's paint finds the keyboard here
+ * and hands it the face it opens, as a switch in place does. Where nothing
+ * paints the rail in that pass, the column is emptied after it.
+ */
+export function releaseDirectoryRail(host) {
+  if (!host.contains(document.activeElement)) {
+    host.innerHTML = "";
+    return;
+  }
+  const standing = host.firstElementChild;
+  queueMicrotask(() => {
+    if (host.contains(standing)) host.innerHTML = "";
+  });
+}
+
 /** The toggle at the foot, painted from the stored choice and flipping it. */
 function wireSidebarToggle(host, storage) {
   const toggle = host.querySelector("[data-sidebar-toggle]");

@@ -193,9 +193,20 @@ const callsTo = (method) => calls.filter((call) => call.method === method);
 const railStatus = () => railHost().querySelector("#rail-status");
 const railStatusLead = () => railHost().querySelector("#rail-status-lead");
 const railStatusPills = () => railHost().querySelector("#rail-status-pills");
+/** Open a kind's viewer from its pill. The pill is painted off the row's
+ *  cache record, so it is waited for rather than assumed after mount. */
 const openSurfacePill = async (kind) => {
-  railHost().querySelector(`[data-surface-kind="${kind}"]`).click();
+  const pill = () => railHost().querySelector(`[data-surface-kind="${kind}"]`);
+  await vi.waitFor(() => expect(pill()).toBeTruthy());
+  pill().click();
   await vi.waitFor(() => expect(railHost().querySelector(`.surface-${kind}`)).toBeTruthy());
+};
+/** Press the subagent row that points at a call. Its viewer paints rows only
+ *  once its fold record is read, so the row is waited for, not assumed. */
+const pressSubagentCall = async () => {
+  const row = () => railHost().querySelector(".surface-subagents [data-call-sequence]");
+  await vi.waitFor(() => expect(row()).toBeTruthy());
+  row().click();
 };
 const railStatusGit = () => railHost().querySelector("#rail-status-git");
 const workingWord = () => railHost().querySelector(".rail-status-working-word");
@@ -607,7 +618,10 @@ describe("one selection in one panel (#148)", () => {
   const atWidth = (width) => Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
   const control = (which) => railHost().querySelector(
     which === "overview" ? '[data-bubble="overview"]' : which === "add" ? '[data-bubble="add"]' : `[data-agent="${which}"]`);
+  // A bubble is painted off the row's cache record: wait for it, not a count
+  // of turns after mount.
   const press = async (which) => {
+    await vi.waitFor(() => expect(control(which)).toBeTruthy());
     control(which).click();
     await flush();
   };
@@ -862,11 +876,14 @@ describe("the rail over a machine that is asked nothing", () => {
   it("adds the bubble a row brings without asking anything", async () => {
     payload = branchRow({ agents: three() });
     await mount();
+    // The mount's own read of the open agent's cold conversation is not the
+    // push's: let it go out before the calls are cleared.
+    await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(1));
     calls.length = 0;
 
     await pushRow(branchRow({ agents: [...three(), agent({ id: "ag-4", ordinal: 4 })] }));
 
-    expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-1", "ag-2", "ag-3", "ag-4", ""]);
+    await vi.waitFor(() => expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-1", "ag-2", "ag-3", "ag-4", ""]));
     expect(calls).toEqual([]);
   });
 
@@ -896,11 +913,12 @@ describe("the rail over a machine that is asked nothing", () => {
     await writeRailThread("plan-1", "ag-1", { items: [said(1, "on the task")] });
     payload = { task_id: "plan-1", project_id: "p1", agents: [agent()], thread: { items: [said(1, "on the task")] } };
     rail = mountAgentRail(railHost(), railAddress({ kind: "task", projectId: "p1", taskId: "plan-1" }));
-    await flush();
+    // The roster comes back from task.get and the conversation off the cache:
+    // wait for what they paint, not a count of turns.
+    await vi.waitFor(() => expect(railHost().querySelector("#rail-body").textContent).toContain("on the task"));
 
     // One bubble and no `+`: a task carries exactly one agent.
-    expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-1"]);
-    expect(railHost().querySelector("#rail-body").textContent).toContain("on the task");
+    await vi.waitFor(() => expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-1"]));
     expect(callsTo("task.get")).toHaveLength(1);
     expect(calls.filter((call) => ["branch.get", "run.get", "workspace.get"].includes(call.method))).toEqual([]);
   });
@@ -979,10 +997,10 @@ describe("the rail over a machine that is asked nothing", () => {
     await writeRailThread("run-3", "ag-1", { items: [said(1, "A full cached conversation")] });
 
     rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", projectId: "p1", workspaceId: "ws-unwatched" }));
-    await flush();
-
-    expect(railHost().querySelector("#rail-body").textContent).toContain("A full cached conversation");
-    expect(headWho()).toBe(TOPICS["ag-1"]);
+    // Board, feed and conversation are each a cache read: wait for what they
+    // paint, not a count of turns.
+    await vi.waitFor(() => expect(railHost().querySelector("#rail-body").textContent).toContain("A full cached conversation"));
+    await vi.waitFor(() => expect(headWho()).toBe(TOPICS["ag-1"]));
     expect(railHost().querySelector("#railinput")).not.toBeNull();
     expect(callsTo("workspace.get")).toHaveLength(0);
   });
@@ -1782,7 +1800,8 @@ describe("the bubble strip", () => {
   it("offers no second agent on a task", async () => {
     payload = { task_id: "plan-1", project_id: "p1", agents: [agent()], thread: { items: [] } };
     await mount({ kind: "task", projectId: "p1", taskId: "plan-1" });
-    expect(bubbles().map((b) => b.dataset.bubble)).toEqual(["agent"]);
+    // The strip holds a ghost until the task's roster lands.
+    await vi.waitFor(() => expect(bubbles().map((b) => b.dataset.bubble)).toEqual(["agent"]));
   });
 
   // The reviewer's screenshot: pressing + created an agent silently on the
@@ -3617,9 +3636,12 @@ describe("the first message", () => {
   it("leaves a task's first message to start its own planning agent", async () => {
     payload = { task_id: "plan-1", project_id: "p1", agents: [agent({ state: "idle" })], thread: { items: [] } };
     await mount({ kind: "task", projectId: "p1", taskId: "plan-1" });
+    // Send once the task's roster has put its agent on the strip, and wait
+    // for the post rather than a count of turns.
+    await vi.waitFor(() => expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1"]));
     panel().querySelector("#railinput").value = "plan this";
     panel().querySelector("#railsend").click();
-    await flush();
+    await vi.waitFor(() => expect(callsTo("thread.post")).toHaveLength(1));
     expect(callsTo("thread.post")[0].params).toMatchObject({ entity_id: "plan-1", agent_id: "ag-1" });
     expect(callsTo("agent.start")).toEqual([]);
   });
@@ -4354,10 +4376,9 @@ describe("the agent's surfaces, carried by the status row", () => {
     await mount();
 
     await openSurfacePill("subagents");
-    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
-    await flush();
+    await pressSubagentCall();
 
-    expect(notifyError).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(notifyError).toHaveBeenCalledTimes(1));
     expect(notifyError.mock.calls[0][0]).toContain("not in the loaded conversation");
   });
 });
@@ -4427,18 +4448,21 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     });
     answerNothing();
     await mount();
-    expect(pillKinds()).toEqual(["checklist"]);
+    // The seed is a cache read, and the viewer paints its rows once its own
+    // fold record is read: wait on each, not on a count of turns.
+    await vi.waitFor(() => expect(pillKinds()).toEqual(["checklist"]));
     await openTasks();
-    expect(railHost().querySelector(".surface-checklist").textContent).toContain("wire the seed");
+    await vi.waitFor(() => expect(railHost().querySelector(".surface-checklist").textContent).toContain("wire the seed"));
+    expect(pillKinds()).toEqual(["checklist"]);
   });
 
   it("seeds the same snapshot whole while the grace still holds", async () => {
     await saveSurfaces("ag-1", { ...shellsRunning("cargo test"), ...aChecklist });
     answerNothing();
     await mount();
-    expect(pillKinds()).toEqual(["shells", "checklist"]);
+    await vi.waitFor(() => expect(pillKinds()).toEqual(["shells", "checklist"]));
     await openTasks();
-    expect(railHost().querySelector(".surface-checklist-context").textContent).toContain("Last known");
+    await vi.waitFor(() => expect(railHost().querySelector(".surface-checklist-context").textContent).toContain("Last known"));
   });
 
   it("offers the seeded kinds in the header menu before the first read answers", async () => {
@@ -4453,7 +4477,9 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     await saveSurfaces("ag-1", shellsRunning("cargo test"));
     answerNothing();
     await mount();
-    expect(railHost().querySelector("#rail-surfaces-viewer").textContent).toContain("cargo test");
+    // The remembered kind, the snapshot and the viewer's fold are three cache
+    // reads: wait for the rows they paint, not a count of turns.
+    await vi.waitFor(() => expect(railHost().querySelector("#rail-surfaces-viewer").textContent).toContain("cargo test"));
   });
 
   it("repaints an open surface when its local cache record changes externally", async () => {
@@ -4520,9 +4546,9 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     });
     answerNothing();
     await mount();
-    expect(pillKinds()).toEqual(["checklist"]);
+    await vi.waitFor(() => expect(pillKinds()).toEqual(["checklist"]));
     await openTasks();
-    expect(railHost().querySelector(".surface-checklist").textContent).toContain("old process step");
+    await vi.waitFor(() => expect(railHost().querySelector(".surface-checklist").textContent).toContain("old process step"));
 
     await pushRow(branchRow({
       agents: [agent({ surface_session_generation: "surface-session-2", surfaces: null })],
@@ -5586,7 +5612,7 @@ describe("a run of activity in the rail", () => {
     await mount();
 
     await openSurfacePill("subagents");
-    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
+    await pressSubagentCall();
     await flush();
 
     expect(notifyError).not.toHaveBeenCalled();
@@ -5634,7 +5660,7 @@ describe("a run of activity in the rail", () => {
     await mount();
 
     await openSurfacePill("subagents");
-    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
+    await pressSubagentCall();
     await vi.waitFor(() => expect(railHost().querySelector('[data-sequence="12"]')).not.toBe(null));
 
     expect(notifyError).not.toHaveBeenCalled();
@@ -5877,8 +5903,11 @@ describe("a new agent on a project's rail", () => {
     }));
     await mountProjectRail({ project_agent: { provider: "codex", model: "gpt-5.6-sol", effort: "medium" } });
 
-    expect(chosenCard().dataset.provider).toBe("codex");
+    // The row and the machine's settings.get both land after mount's turns
+    // under load: wait for the card the setting chose, and for the call.
+    await vi.waitFor(() => expect(chosenCard()?.dataset.provider).toBe("codex"));
     await send("what is in this project?");
+    await vi.waitFor(() => expect(callsTo("agent.add")).toHaveLength(1));
     expect(callsTo("agent.add")[0].params).toMatchObject({
       entity_id: "run-project", provider: "codex", model: "gpt-5.6-sol", effort: "medium",
     });
@@ -6156,7 +6185,7 @@ describe("a long conversation held in the cache", () => {
     scrollTo.mockClear();
 
     await openSurfacePill("subagents");
-    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
+    await pressSubagentCall();
     await flush();
 
     expect(notifyError).not.toHaveBeenCalled();
@@ -6218,7 +6247,7 @@ describe("a deep link to a call another run reaches across", () => {
   };
   const pressSurface = async () => {
     await openSurfacePill("subagents");
-    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
+    await pressSubagentCall();
     await flush();
   };
 
@@ -6279,7 +6308,7 @@ describe("a deep link past everything the cache holds", () => {
     const drawn = railHost().querySelectorAll(".thread-items > [data-sequence]").length;
 
     await openSurfacePill("subagents");
-    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
+    await pressSubagentCall();
     await flush();
 
     expect(railHost().querySelectorAll(".thread-items > [data-sequence]")).toHaveLength(drawn);
@@ -6303,7 +6332,7 @@ describe("a deep link past everything the cache holds", () => {
     expect(railHost().querySelector('.thread-items [data-sequence="1"]')).toBeNull();
 
     await openSurfacePill("subagents");
-    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
+    await pressSubagentCall();
     await flush();
 
     expect(notifyError).not.toHaveBeenCalled();
@@ -6350,7 +6379,7 @@ describe("review158 independent ownership cases", () => {
   };
   const press = async () => {
     await openSurfacePill("subagents");
-    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
+    await pressSubagentCall();
     await flush();
   };
 
@@ -6358,8 +6387,10 @@ describe("review158 independent ownership cases", () => {
     pointing(120, [call(1), call(2), ...range(3, 89), call(90), ...range(91, 99), call(100, 2), ...range(101, 109), call(110, 90), ...range(111, 119), call(120, 100), ...range(121, 160)]);
     await mount();
     await press();
+    // Reaching the owner reads the conversation's cache record: wait for the
+    // opened run to hold the call, not a count of turns.
+    await vi.waitFor(() => expect(railHost().querySelector('[data-key="1"][open] [data-sequence="120"]')).not.toBeNull());
     expect(notifyError).not.toHaveBeenCalled();
-    expect(railHost().querySelector('[data-key="1"][open] [data-sequence="120"]')).not.toBeNull();
   });
 
   it("resolves a top-level call within a hidden multievent run", async () => {

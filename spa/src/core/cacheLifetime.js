@@ -14,7 +14,7 @@
 // inbox until the feed stops naming it. Nothing here decides which workspaces
 // are active or recent — the caller knows that, and calls accordingly.
 
-import { cachedAddresses, cachedAddressesWrittenBefore, cachedRecords, deleteCached, writeCached } from "./localCache.js";
+import { cachedAddresses, cachedAddressesWrittenBefore, cachedRecords, deleteCached, mergeCachedIfUnwritten, writeCached } from "./localCache.js";
 import {
   BODY_PAGE_BYTES,
   bytePagesOf,
@@ -258,6 +258,15 @@ const readingWhileStill = (readPage, still) => readPage && still ? async (...ran
 /** Whether nothing asks, or the record is still the one started from. */
 const stillStands = async (still) => !still || still();
 
+/** Put the record — with `written`, only while it is still that write — and
+ *  then hold the recent-files rule. Answers whether it was put. */
+const putFileRecord = async (head, value, written) => {
+  if (written === undefined) await writeCached(head, value);
+  else if (!(await mergeCachedIfUnwritten(head, written, () => value))) return false;
+  await trimRecentFiles(head.deviceId, head.entityId);
+  return true;
+};
+
 /** Put one file's body in the cache, under both of the owner's rules for it:
  *  a body over `FILE_MAX_BYTES` is kept as pages beside a record saying what
  *  the file is, and a write leaves at most `RECENT_FILES` bodies behind it.
@@ -278,13 +287,16 @@ const stillStands = async (still) => !still || still();
  *  caller started from. A page is a wire call, and a record written or
  *  dropped while one was out is left as it is now: no page it brings is
  *  kept — the first would let go of the newer record's pages — and no record
- *  is written over it. */
-export async function cacheFileBody({ deviceId, entityId, path, file, openedAt = Date.now(), readPage = null, still = null }) {
+ *  is written over it.
+ *
+ *  `written`, where given, names the write (`cachedWriteOf`) the caller read
+ *  the record at, and the record is put only if it is still that write,
+ *  checked in the same transaction as the put: a push landing between a
+ *  `still()` check and the write would otherwise be written over. */
+export async function cacheFileBody({ deviceId, entityId, path, file, openedAt = Date.now(), readPage = null, still = null, written }) {
   if (!deviceId || !entityId || !file) return false;
   const head = { deviceId, entityId, kind: FILE_RECORD_KIND, sub: path || "" };
   const record = await fileRecordOf(head, file, readingWhileStill(readPage, still));
   if (!record || !(await stillStands(still))) return false;
-  await writeCached(head, { file: record, openedAt });
-  await trimRecentFiles(deviceId, entityId);
-  return true;
+  return putFileRecord(head, { file: record, openedAt }, written);
 }

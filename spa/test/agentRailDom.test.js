@@ -276,7 +276,6 @@ beforeEach(async () => {
   bridge.call = vi.fn(async (method, params) => {
     calls.push({ method, params });
     if (method === "models.list") return catalog;
-    if (method === "branch.get") return payload;
     if (method === "task.get") return payload;
     if (method === "run.adopt") return { run_id: "run-9" };
     if (method === "agent.start") return { agent_id: params.agent_id || "ag-new", term_id: `agent:${params.agent_id || "ag-new"}` };
@@ -2561,19 +2560,25 @@ describe("taking an agent back off the branch", () => {
     await flush();
     confirmModal().querySelector("[data-confirm-ok]").click();
     await flush();
+    // Standing the conversation back up reads its latest page off the wire;
+    // that read never answers here. The rail puts the agent back from what it
+    // already holds, not from the page.
     const answering = bridge.call;
     bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
-      if (method === "branch.get") throw new Error("the bridge is not answering");
+      if (method === "thread.page") return new Promise(() => {});
       return answering(method, params);
     });
+    const readsBefore = callsTo("thread.page").length;
 
     held.refuse(new Error("agent is mid-spawn"));
     await flush();
 
+    expect(callsTo("thread.page").slice(readsBefore).map((call) => call.params.agent_id)).toContain("ag-2");
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", "ag-2", ""]);
     expect(bubbles()[1].classList.contains("active")).toBe(true);
     expect(headWho(panel())).toBe("Polish the rail");
+    expect(removeButton()).toBeTruthy();
   });
 
   it("removes an agent the create record still names", async () => {
@@ -5437,7 +5442,6 @@ describe("a run of activity in the rail", () => {
     bridge.call.mockImplementation(async (method, params) => {
       calls.push({ method, params });
       if (method === "models.list") return CATALOG;
-      if (method === "branch.get") return payload;
       if (method === "thread.activity") return activityPage;
       return {};
     });
@@ -5635,7 +5639,6 @@ describe("a run of activity in the rail", () => {
     bridge.call.mockImplementation(async (method, params) => {
       calls.push({ method, params });
       if (method === "models.list") return CATALOG;
-      if (method === "branch.get") return payload;
       if (method === "thread.activity") throw new Error("entity is not loaded");
       return {};
     });

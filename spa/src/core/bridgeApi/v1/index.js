@@ -156,6 +156,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
     push: { registerKey: names.has("push.registerKey"), revokeKey: names.has("push.revokeKey") },
     agents: { createdBy: names.has("agents.createdBy") },
     projects: { updateSource: names.has("project.update_source"), syncBase: names.has("sources.syncBase") },
+    workspaces: { measureSizes: names.has("workspace.measure_sizes") },
   };
 }
 

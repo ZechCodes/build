@@ -103,6 +103,7 @@ describe("adapter selection", () => {
       push: { registerKey: false, revokeKey: false },
       agents: { createdBy: false },
       projects: { updateSource: false, syncBase: false },
+      workspaces: { measureSizes: false },
     });
   });
 
@@ -182,6 +183,7 @@ describe("adapter selection", () => {
         push: { registerKey: false, revokeKey: false },
         agents: { createdBy: false },
         projects: { updateSource: false, syncBase: false },
+        workspaces: { measureSizes: false },
       });
     }
   });
@@ -443,5 +445,13 @@ describe("push.registerKey and push.revokeKey", () => {
     expect(push(["push.revokeKey"])).toEqual({ registerKey: false, revokeKey: true });
     expect(push(["push"])).toEqual({ registerKey: false, revokeKey: false });
     expect(v1.capabilitiesOf({ api_version: "2.1.0" }).push).toEqual({ registerKey: false, revokeKey: false });
+  });
+});
+
+describe("workspace.measure_sizes", () => {
+  it("is on only when the greeting names the verb, never inferred from a minor (#273)", () => {
+    expect(v1.capabilitiesOf({ api_version: "3.4.0", capabilities: ["workspace.measure_sizes"] }).workspaces.measureSizes).toBe(true);
+    expect(v1.capabilitiesOf({ api_version: "3.4.0", capabilities: [] }).workspaces.measureSizes).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "3.4.0" }).workspaces.measureSizes).toBe(false);
   });
 });

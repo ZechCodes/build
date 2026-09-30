@@ -24,17 +24,28 @@ import { humanBytes, lifecycleView } from "./workspaceLifecycle.js";
 const branchOf = (workspace) =>
   (workspace?.directories || []).map((directory) => directory.branch).find(Boolean) || "";
 
-/** What the reclaim service last measured the workspace at, or null before it
- *  has (#167). */
+/** What the bridge last measured the workspace at, or null before it has
+ *  (#167): a sweep of a quiet workspace, or the Workspaces tab asking (#273). */
 const sizeOf = (workspace) => {
   const bytes = workspace?.lifecycle?.size_bytes;
   return Number.isFinite(bytes) ? bytes : null;
 };
 
+/** The quiet stand-in for a size the machine is still to send (#273). */
+export const SIZE_PLACEHOLDER = "—";
+
+/** What a row says it weighs. A machine that measures when the tab asks will
+ *  send the size, so a row still without one says so quietly; an older
+ *  machine's row says nothing, as it always has. */
+const sizeText = (bytes, measuresSizes) => {
+  if (bytes !== null) return humanBytes(bytes);
+  return measuresSizes ? SIZE_PLACEHOLDER : "";
+};
+
 /** One workspace as the page lists it: the rail's row, plus what that workspace
  *  is standing on, how its checkout is doing, whether it can be reclaimed, and
  *  what it weighs. */
-const pageRow = (entry, workspace) => ({
+const pageRow = (entry, workspace, measuresSizes) => ({
   key: entry.key,
   workspaceId: entry.workspaceId,
   workspaceKey: entry.workspaceKey,
@@ -50,7 +61,8 @@ const pageRow = (entry, workspace) => ({
   // The reclaim service's verdict (#135): null until it has one worth saying.
   lifecycle: lifecycleView(workspace?.lifecycle),
   sizeBytes: sizeOf(workspace),
-  sizeText: sizeOf(workspace) === null ? "" : humanBytes(sizeOf(workspace)),
+  sizeText: sizeText(sizeOf(workspace), measuresSizes),
+  sizePending: measuresSizes && sizeOf(workspace) === null,
 });
 
 /** The one project block the rail would paint for this project, or null when no
@@ -65,11 +77,11 @@ function projectBlock(feed, projectKey) {
 }
 
 /** The block's rows, each read beside the workspace record it came from. */
-function pageRows(feed, block) {
+function pageRows(feed, block, measuresSizes) {
   const byKey = new Map((feed?.workspaces || []).map((workspace) => [workspace.workspaceKey, workspace]));
   return [...(block?.entries || []), ...(block?.recent || [])]
     .sort((left, right) => (left.anchorMs ?? Infinity) - (right.anchorMs ?? Infinity))
-    .map((entry) => pageRow(entry, byKey.get(entry.workspaceKey)));
+    .map((entry) => pageRow(entry, byKey.get(entry.workspaceKey), measuresSizes));
 }
 
 /**
@@ -79,11 +91,14 @@ function pageRows(feed, block) {
  * project, and a project is named by the pair (device, project id) — both
  * machines mint a `proj-1`, so a route with no machine on it names no project
  * and the page stands empty until the resolve hop supplies one.
+ *
+ * `measuresSizes` is the cached fact that the machine sends sizes when the
+ * tab asks (core/workspaceSizeSupport.js).
  */
-export function projectPageModel(feed, route) {
+export function projectPageModel(feed, route, { measuresSizes = false } = {}) {
   const projectKey = routeProjectKey(route);
   const block = projectBlock(feed, projectKey);
-  const rows = pageRows(feed, block);
+  const rows = pageRows(feed, block, measuresSizes === true);
   return {
     projectKey,
     projectId: route?.projectId || null,

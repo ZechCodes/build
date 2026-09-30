@@ -32,6 +32,9 @@ import {
   workspaceListing,
 } from "../core/projectPageModel.js";
 import { refreshFeed, subscribeFeed } from "../core/taskFeed.js";
+import { subscribeCache } from "../core/localCache.js";
+import { askForWorkspaceSizes } from "../core/workspaceSizes.js";
+import { readWorkspaceSizeSupport, WORKSPACE_SIZE_SUPPORT_KIND } from "../core/workspaceSizeSupport.js";
 import { ICON_PLUS, ICON_SETTINGS } from "../core/icons.js";
 import { routeProjectKey } from "../core/deviceKey.js";
 import { mountTasksPane } from "../core/trackerTasksPane.js";
@@ -73,6 +76,13 @@ const reclaimHtml = (row, ui) => {
   return `<div class="inbox-actions"><button class="btn mini" type="button" data-workspace-reclaim="${esc(row.workspaceKey)}" aria-label="Reclaim workspace ${esc(row.name)}"${pending ? " disabled" : ""}>${pending ? "Reclaiming…" : "Reclaim"}</button></div>`;
 };
 
+/** What the workspace weighs, or the quiet placeholder for a size its machine
+ *  is still to send (#273). */
+const sizeHtml = (row) =>
+  row.sizePending
+    ? `<span class="project-size project-size-pending" title="Size not measured yet" aria-label="Size not measured yet">${esc(row.sizeText)}</span>`
+    : `<span class="project-size">${esc(row.sizeText)}</span>`;
+
 /** One workspace, in the rail's own row shape: a project page and the rail are
  *  two views of the same list, so they read as the same list. */
 const rowHtml = (row, ui) => `<div class="srow inbox-entry project-row${row.muted ? " inbox-muted" : ""}" data-workspace="${esc(row.workspaceKey)}">
@@ -82,7 +92,7 @@ const rowHtml = (row, ui) => `<div class="srow inbox-entry project-row${row.mute
       <div class="inbox-facts">${esc(factsLine(row))}</div>
       ${lifecycleHtml(row, ui)}
     </div>
-    <span class="project-size">${esc(row.sizeText)}</span>
+    ${sizeHtml(row)}
     ${reclaimHtml(row, ui)}
   </div>`;
 
@@ -214,6 +224,7 @@ function openTab(state, tab) {
   state.tasks?.dispose();
   state.tasks = null;
   state.tab = tab;
+  askForSizesWhileOpen(state);
   const pane = $("#project-pane");
   pane.innerHTML = "";
   delete pane.dataset.rows;
@@ -249,6 +260,37 @@ function mountTasks(state, pane) {
       state.view = view;
       writeTabHash(state);
     },
+  });
+}
+
+/** The Workspaces tab asks its machine for every workspace's size once each
+ *  time it opens (#273); the sizes arrive through the feed. Leaving the tab
+ *  ends an ask still waiting for the machine to greet. */
+function askForSizesWhileOpen(state) {
+  state.sizeAsk?.stop();
+  state.sizeAsk = state.tab === WORKSPACES_TAB
+    ? askForWorkspaceSizes(state.context.deviceId, state.context.rpc, state.route.projectId)
+    : null;
+}
+
+/** The page as the feed and the cached size support have it. */
+function rebuildPage(state) {
+  state.page = projectPageModel(state.feed, state.route, { measuresSizes: state.measuresSizes });
+}
+
+/** Whether a row with no size yet shows the placeholder is a fact a greeting
+ *  writes to the cache; the rows repaint when it lands. */
+function watchSizeSupport(state) {
+  const read = async () => {
+    const measuresSizes = await readWorkspaceSizeSupport(state.context.deviceId);
+    if (state.disposed || measuresSizes === state.measuresSizes) return;
+    state.measuresSizes = measuresSizes;
+    rebuildPage(state);
+    paint(state);
+  };
+  void read();
+  return subscribeCache({ deviceId: state.context.deviceId }, (address) => {
+    if (address?.kind === WORKSPACE_SIZE_SUPPORT_KIND) void read();
   });
 }
 
@@ -313,6 +355,7 @@ export async function renderProject() {
     page: projectPageModel(null, route), verb: null,
     tab: tabOf(route), view: route.view || "dashboard", feed: null, tasks: null, openTab: null,
     reclaiming: new Set(), reclaimErrors: new Map(), filter: ALL_WORKSPACES,
+    measuresSizes: false, sizeAsk: null,
   };
   state.verb = (host) => paintProjectVerbs(host, state);
   root.innerHTML = `<div id="tabbody" class="flush"><div id="project-pane" class="project-page"></div></div>`;
@@ -326,14 +369,18 @@ export async function renderProject() {
   const unsubscribe = subscribeFeed((feed) => {
     if (state.disposed) return;
     state.feed = feed;
-    state.page = projectPageModel(feed, state.route);
+    rebuildPage(state);
     paint(state);
   });
+  const unwatchSizeSupport = watchSizeSupport(state);
+  askForSizesWhileOpen(state);
   if (state.tab === TASKS_TAB) mountTasks(state, $("#project-pane"));
   paint(state);
   App.viewDispose = () => {
     state.disposed = true;
     unsubscribe();
+    unwatchSizeSupport();
+    state.sizeAsk?.stop();
     deviceStrip();
     state.tasks?.dispose();
     clearToolbarVerb(state.verb);

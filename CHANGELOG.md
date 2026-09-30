@@ -33,7 +33,7 @@ Wire 3.4.0.
   tasks they are on (#232).
 - Timer-driven loops start only once the app mutex is held and observed (#243).
 - `fs.list` names a missing folder `not_found` (#242).
-- Clone URLs point at `ZechCodes/build`.
+- Clone URLs point at `ZechCodes/Build`.
 
 ### Fixed
 

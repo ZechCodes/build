@@ -23,7 +23,8 @@ use std::path::Path;
 use std::process::Output;
 use std::time::Duration;
 
-/// How long a sync's local git (a status, a merge, a ref update) may run.
+/// How long a sync's quick local git (a read, a ref update) may run. The
+/// checkout's fast-forward has a cap of its own ([`super::checkout`]).
 const LOCAL_DEADLINE: Duration = Duration::from_secs(30);
 
 const NOBODYS_COMMAND: &[&str] = &[

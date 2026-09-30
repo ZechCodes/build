@@ -12,8 +12,9 @@
 //! `merge --ff-only --no-overwrite-ignore` moves it with its files. Anywhere
 //! else (another branch, a detached HEAD) only the ref moves, by a
 //! compare-and-swap `update-ref`, and no working tree is touched. Neither
-//! happens while an operation is part-way through in any worktree of the
-//! repository ([`in_progress`]).
+//! happens while a rebase or bisect of the base, or a merge, cherry-pick or
+//! revert on it, is part-way through in any worktree ([`in_progress`]). The
+//! checkout, once started, is let finish ([`checkout`]).
 //!
 //! Every git it starts runs as nobody's command ([`git`]): no prompt of any
 //! kind, no hooks, no maintenance, killed at its deadline. The url the fetch
@@ -21,6 +22,7 @@
 //! sees it, and the branch fetched is the one the base follows
 //! ([`upstream`]).
 
+mod checkout;
 mod git;
 mod in_progress;
 mod reason;
@@ -33,7 +35,7 @@ use crate::lifecycle::refuse_unusable_branch_name;
 use crate::remote_url::usable_remote_url;
 use git::{sync_git, sync_git_within};
 pub use reason::without_credentials;
-use reason::{fetch_failure, fetch_timeout, first_lines};
+use reason::{fetch_failure, fetch_timeout};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -58,9 +60,11 @@ pub enum Fetch {
 pub struct Failure {
     /// A sentence, with any credentials git echoed taken out.
     pub reason: String,
-    /// The remote wanted something only a person can give (a password, a
-    /// passphrase, a key touch). The service stops asking until someone
-    /// syncs the source by hand.
+    /// The remote wanted something only a person can give, and git or ssh
+    /// said so: a password, or a key whose passphrase nobody can type. The
+    /// service stops asking until someone syncs the source by hand. A
+    /// security key waiting for a touch says nothing Build can read (ssh
+    /// shows that notice only on a terminal), so it reads as a timeout.
     pub needs_you: bool,
     /// The fetch did not finish within its deadline. Not a person's problem
     /// by itself: the service tries again.
@@ -95,16 +99,27 @@ pub struct SyncReport {
 /// Sync the base branch `base_branch` of the checkout at `path` with its
 /// remote. Never fails: what went wrong is the outcome.
 pub fn sync_base(path: &Path, base_branch: &str, fetch: Fetch) -> SyncReport {
+    sync_base_capped(path, base_branch, fetch, checkout::CHECKOUT_CAP)
+}
+
+/// [`sync_base`], with the checkout's own cap named.
+fn sync_base_capped(
+    path: &Path,
+    base_branch: &str,
+    fetch: Fetch,
+    checkout_cap: Duration,
+) -> SyncReport {
     let mut report = SyncReport {
         outcome: SyncOutcome::UpToDate,
         ahead: 0,
         behind: 0,
         fetched: false,
     };
-    report.outcome =
-        match BaseSync::prepare(path, base_branch).and_then(|sync| sync.run(fetch, &mut report)) {
-            Ok(outcome) | Err(outcome) => outcome,
-        };
+    report.outcome = match BaseSync::prepare(path, base_branch, checkout_cap)
+        .and_then(|sync| sync.run(fetch, &mut report))
+    {
+        Ok(outcome) | Err(outcome) => outcome,
+    };
     report
 }
 
@@ -132,10 +147,12 @@ struct BaseSync<'a> {
     remote: String,
     /// The branch on `remote` the base follows.
     followed: String,
+    /// How long the source checkout's fast-forward may run.
+    checkout_cap: Duration,
 }
 
 impl<'a> BaseSync<'a> {
-    fn prepare(path: &'a Path, base: &'a str) -> Step<Self> {
+    fn prepare(path: &'a Path, base: &'a str, checkout_cap: Duration) -> Step<Self> {
         refuse_unusable_branch_name(base).map_err(failed)?;
         let repo = open(path)?;
         let upstream = upstream::upstream_of(&repo, base).ok_or(SyncOutcome::NoRemote)?;
@@ -151,6 +168,7 @@ impl<'a> BaseSync<'a> {
             base,
             remote,
             followed: upstream.branch,
+            checkout_cap,
         };
         sync.refuse_unusable_url()?;
         Ok(sync)
@@ -249,11 +267,16 @@ impl<'a> BaseSync<'a> {
     }
 
     fn fast_forward(&self, repo: &git2::Repository, old: git2::Oid, new: git2::Oid) -> Step<()> {
-        if let Some(unfinished) = in_progress::unfinished_anywhere(repo) {
+        if let Some(unfinished) = in_progress::unfinished_on(repo, self.base) {
             return Err(SyncOutcome::Skipped(unfinished));
         }
         match Placement::of(self.path, &self.local_ref())? {
-            Placement::Here => self.fast_forward_checkout(repo),
+            Placement::Here => checkout::fast_forward_checkout(
+                repo,
+                self.path,
+                &self.tracking_ref(),
+                self.checkout_cap,
+            ),
             Placement::Elsewhere(path) => Err(SyncOutcome::Skipped(format!(
                 "{} is checked out in {}.",
                 self.base,
@@ -265,53 +288,11 @@ impl<'a> BaseSync<'a> {
             }
         }
     }
-
-    /// Move the base the source's own checkout stands on, files and all, when
-    /// nothing in it could be lost. Untracked files do not hold it back, and
-    /// nor do ignored ones: git refuses to overwrite either (an ignored
-    /// `.env` upstream starts tracking is still the user's), and says which.
-    fn fast_forward_checkout(&self, repo: &git2::Repository) -> Step<()> {
-        refuse_uncommitted(repo)?;
-        let tracking = self.tracking_ref();
-        let merge = [
-            "merge",
-            "--ff-only",
-            "--no-overwrite-ignore",
-            "--quiet",
-            &tracking,
-        ];
-        sync_git(self.path, &merge).map(drop).map_err(|error| {
-            SyncOutcome::Skipped(format!(
-                "Git would not fast-forward the base checkout: {}",
-                first_lines(&without_credentials(&error))
-            ))
-        })
-    }
 }
 
 fn oid(repo: &git2::Repository, name: &str, missing: String) -> Step<git2::Oid> {
     repo.refname_to_id(name)
         .map_err(|_| SyncOutcome::Skipped(missing))
-}
-
-fn refuse_uncommitted(repo: &git2::Repository) -> Step<()> {
-    let mut options = git2::StatusOptions::new();
-    options
-        .include_untracked(false)
-        .include_ignored(false)
-        .exclude_submodules(true);
-    let statuses = repo.statuses(Some(&mut options)).map_err(|error| {
-        failed(format!(
-            "Build cannot read the base checkout's status: {error}"
-        ))
-    })?;
-    if statuses.is_empty() {
-        Ok(())
-    } else {
-        Err(SyncOutcome::Skipped(
-            "The base checkout has uncommitted changes.".to_string(),
-        ))
-    }
 }
 
 /// Move `refs/heads/<branch>` from `old` to `new` only if it still reads

@@ -1,40 +1,58 @@
-//! An operation part-way through in any worktree of the repository (#268).
+//! An operation part-way through on the base branch, in any worktree of the
+//! repository (#268).
 //!
 //! A rebase detaches HEAD, so a base being rebased reads as checked out
 //! nowhere; moving its ref then makes `rebase --continue` fail and strands
-//! the rebased commits. A merge, cherry-pick, revert or bisect likewise
-//! expects the branch it started from to hold still. So before a sync moves
-//! the base, every worktree's git directory is read for what git leaves
-//! there mid-operation, and one found anywhere leaves the base alone.
+//! the rebased commits. A bisect of the base likewise ends by checking the
+//! base out again. A merge, cherry-pick or revert keeps HEAD on its branch,
+//! so it is on the base only in the worktree whose HEAD is the base.
+//!
+//! Only these block: Build's agent workspaces are linked worktrees of the
+//! source, each on a branch of its own, and a merge stopped on a conflict in
+//! one of them has nothing to do with the base.
 
 use std::path::{Path, PathBuf};
 
 /// What a worktree's git directory holds while an operation is part-way
-/// through, and what the operation is called.
-const UNFINISHED: &[(&str, &str)] = &[
-    ("rebase-merge", "rebase"),
-    ("rebase-apply", "rebase"),
-    ("MERGE_HEAD", "merge"),
-    ("CHERRY_PICK_HEAD", "cherry-pick"),
-    ("REVERT_HEAD", "revert"),
-    ("sequencer", "cherry-pick or revert"),
-    ("BISECT_START", "bisect"),
+/// through, what the operation is called, and the file in the same git
+/// directory that names the branch it is on.
+const UNFINISHED: &[(&str, &str, &str)] = &[
+    ("rebase-merge", "rebase", "rebase-merge/head-name"),
+    ("rebase-apply", "rebase", "rebase-apply/head-name"),
+    ("rebase-apply", "git am", "HEAD"),
+    ("BISECT_START", "bisect", "BISECT_START"),
+    ("MERGE_HEAD", "merge", "HEAD"),
+    ("CHERRY_PICK_HEAD", "cherry-pick", "HEAD"),
+    ("REVERT_HEAD", "revert", "HEAD"),
+    ("sequencer", "cherry-pick or revert", "HEAD"),
 ];
 
-/// The first operation part-way through in any worktree of `repo`'s
-/// repository, as a sentence naming it and the worktree.
-pub(super) fn unfinished_anywhere(repo: &git2::Repository) -> Option<String> {
+/// The first operation part-way through on `base` in any worktree of
+/// `repo`'s repository, as a sentence naming it and the worktree.
+pub(super) fn unfinished_on(repo: &git2::Repository, base: &str) -> Option<String> {
     worktree_git_dirs(repo)
         .into_iter()
         .find_map(|(git_dir, worktree)| {
-            let (_, operation) = UNFINISHED
-                .iter()
-                .find(|(marker, _)| git_dir.join(marker).exists())?;
+            let (_, operation, _) = UNFINISHED.iter().find(|(marker, _, named_by)| {
+                git_dir.join(marker).exists() && names_branch(&git_dir.join(named_by), base)
+            })?;
             Some(format!(
-                "A {operation} is in progress in {}.",
+                "A {operation} of {base} is in progress in {}.",
                 worktree.display()
             ))
         })
+}
+
+/// Whether the file at `path` names `branch`: `ref: refs/heads/<branch>`
+/// (HEAD), `refs/heads/<branch>` (a rebase's head-name) or `<branch>` (the
+/// branch a bisect started from).
+fn names_branch(path: &Path, branch: &str) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let named = text.trim();
+    let named = named.strip_prefix("ref: ").unwrap_or(named);
+    named.strip_prefix("refs/heads/").unwrap_or(named) == branch
 }
 
 /// Each worktree's git directory, with the worktree it belongs to: the main

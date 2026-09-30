@@ -190,7 +190,7 @@ fn kill_and_reap(child: &mut Child) {
 
 /// A child that outlived its deadline: what it was, and what it had said on
 /// stderr by the time it was killed. A caller that wants to know why it hung
-/// (ssh asking for a key touch says so, then waits) reads the latter with
+/// (a helper that says what it is waiting for, then waits) reads the latter with
 /// [`said_before_deadline`]; every other caller sees only the sentence.
 #[derive(Debug)]
 struct DeadlinePassed {

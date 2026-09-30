@@ -1,5 +1,6 @@
 use super::*;
 
+mod slow_checkout;
 mod timeouts;
 mod unattended;
 mod upstream;

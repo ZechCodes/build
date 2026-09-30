@@ -88,12 +88,16 @@ fn a_rebase_in_another_worktree_of_the_repository_leaves_the_ref_alone() {
     assert_eq!(rev(&pair.base, "main"), before);
 }
 
+/// A bisect of the base ends by checking the base out again, so moving it
+/// meanwhile would land the user somewhere they did not start from.
 #[test]
-fn a_bisect_in_the_source_checkout_leaves_the_ref_alone() {
+fn a_bisect_of_the_base_leaves_the_ref_alone() {
     let pair = pair_with_history();
+    commit(&pair.upstream, "third.txt", "third\n");
+    commit(&pair.upstream, "fourth.txt", "fourth\n");
+    git_in(&pair.base, &["pull", "-q", "--ff-only"]);
     commit(&pair.upstream, "theirs.txt", "theirs\n");
-    git_in(&pair.base, &["switch", "-q", "-c", "feature"]);
-    git_in(&pair.base, &["bisect", "start"]);
+    git_in(&pair.base, &["bisect", "start", "HEAD", "HEAD~3"]);
     let before = rev(&pair.base, "main");
 
     let report = sync_base(&pair.base, "main", NOW);
@@ -102,37 +106,60 @@ fn a_bisect_in_the_source_checkout_leaves_the_ref_alone() {
     assert_eq!(rev(&pair.base, "main"), before);
 }
 
+/// An agent workspace is a linked worktree of the source on a branch of its
+/// own, and a merge stopped on a conflict there can sit for hours. It has
+/// nothing to do with the base, which still syncs (review #268, scenario 3).
 #[test]
-fn a_cherry_pick_stopped_in_another_worktree_leaves_the_ref_alone() {
+fn a_merge_stopped_in_an_unrelated_workspace_does_not_hold_the_base_back() {
     let pair = pair_with_history();
-    commit(&pair.upstream, "theirs.txt", "theirs\n");
-    git_in(&pair.base, &["switch", "-q", "-c", "feature"]);
-    commit(&pair.base, "README.md", "feature's readme\n");
-    let elsewhere = pair.base.parent().unwrap().join("elsewhere");
+    let workspace = pair.base.parent().unwrap().join("ws");
     git_in(
         &pair.base,
         &[
             "worktree",
             "add",
             "-q",
-            "--detach",
-            elsewhere.to_str().unwrap(),
-            "main",
+            "-b",
+            "agent",
+            workspace.to_str().unwrap(),
         ],
     );
-    std::fs::write(elsewhere.join("README.md"), "a clash\n").unwrap();
-    git_in(&elsewhere, &["commit", "-q", "-am", "clash"]);
-    let picked = git_command(&elsewhere, &["cherry-pick", "feature"])
+    commit(&workspace, "second.txt", "agent\n");
+    git_in(&pair.base, &["branch", "other", "main"]);
+    git_in(&pair.base, &["switch", "-q", "other"]);
+    commit(&pair.base, "second.txt", "other\n");
+    git_in(&pair.base, &["switch", "-q", "main"]);
+    let merge = git_command(&workspace, &["merge", "other"])
         .output()
         .unwrap();
-    assert!(
-        !picked.status.success(),
-        "the cherry-pick was meant to stop"
-    );
-    let before = rev(&pair.base, "main");
+    assert!(!merge.status.success(), "the merge was meant to stop");
+    commit(&pair.upstream, "up.txt", "up\n");
 
     let report = sync_base(&pair.base, "main", NOW);
 
-    assert!(skipped(&report).contains("cherry-pick"), "{report:?}");
-    assert_eq!(rev(&pair.base, "main"), before);
+    assert_eq!(report.outcome, SyncOutcome::FastForwarded { commits: 1 });
+    assert_eq!(rev(&pair.base, "main"), rev(&pair.upstream, "main"));
+}
+
+#[test]
+fn a_rebase_of_another_branch_in_another_worktree_does_not_hold_the_base_back() {
+    let pair = pair_with_history();
+    let workspace = pair.base.parent().unwrap().join("ws");
+    git_in(
+        &pair.base,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "agent",
+            workspace.to_str().unwrap(),
+        ],
+    );
+    stop_a_rebase_in(&workspace);
+    commit(&pair.upstream, "up.txt", "up\n");
+
+    let report = sync_base(&pair.base, "main", NOW);
+
+    assert_eq!(report.outcome, SyncOutcome::FastForwarded { commits: 1 });
 }

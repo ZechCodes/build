@@ -78,8 +78,11 @@ pub(super) fn fetch_failure(said: &str, remote: &str, no_branch: String) -> Sync
 }
 
 /// What a fetch killed at its deadline comes to. Running out of time alone
-/// is not a person's problem; a remote that said it was waiting on one (ssh
-/// asking for a security key touch, then waiting) is.
+/// is not a person's problem; a fetch whose git or ssh said before the kill
+/// that it was waiting on one is. OpenSSH shows its "Confirm user presence"
+/// notice only on a terminal, which a background fetch never has, so a
+/// security key waiting for a touch usually reads as a plain timeout; the
+/// notice is still read when an ssh does write it.
 pub(super) fn fetch_timeout(said: &str, remote: &str, deadline: Duration) -> SyncOutcome {
     let said = without_credentials(said);
     let mut reason = format!(

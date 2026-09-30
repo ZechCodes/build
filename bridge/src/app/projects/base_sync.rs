@@ -66,7 +66,7 @@ pub(in crate::app) struct SyncStatus {
     pub(in crate::app) behind: usize,
     /// How far the last sync moved the base forward.
     pub(in crate::app) commits: usize,
-    /// The remote wanted a person (a password, a passphrase, a key touch).
+    /// The remote wanted a person, and said so (a password, a passphrase).
     /// The service leaves the source alone until someone syncs it by hand
     /// or a workspace cut syncs it.
     pub(in crate::app) needs_you: bool,

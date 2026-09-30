@@ -1,5 +1,5 @@
 //! A fetch that runs out of time is not a fetch that needs a person (#268):
-//! only a remote that asked for one — a password, a passphrase, a key touch —
+//! only a remote that said it wanted one — a password, a passphrase —
 //! is marked as needing you.
 
 use super::*;
@@ -58,10 +58,12 @@ fn a_fetch_that_never_answers_times_out_without_needing_you() {
     assert_eq!(rev(&pair.base, "main"), before);
 }
 
-/// A security key blinking for a touch nobody is there to give: ssh says so
-/// and waits. That is a person being asked, so it needs you.
+/// An ssh that says before the kill that it is waiting for a person needs
+/// you. OpenSSH itself writes its "Confirm user presence" notice only to a
+/// terminal, so a real security key waiting for a touch reads as the
+/// timeout below; this covers an ssh that does say so.
 #[test]
-fn a_fetch_waiting_on_a_key_touch_needs_you() {
+fn an_ssh_that_says_it_waits_for_user_presence_needs_you() {
     let pair = pair();
     ssh_remote_that_says(
         &pair,

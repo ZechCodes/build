@@ -135,6 +135,8 @@ function restoreDirectoryDraft(host, draft, deviceId) {
  * defaults are stored under. `catalog` may be a promise; the defaults panel
  * fills in when that machine answers, and a sheet closed first takes its
  * question with it.
+ *
+ * Answers the sheet's close, which settles once its last draft is stored.
  */
 export function openWorkspaceSettings(workspace, { callRpc, catalog, deviceId = workspace.workspaceKey?.split("/")[0] || "", storage = localStorage, onRenamed, onDeleted }) {
   const sheet = $("#sheet");
@@ -157,13 +159,17 @@ export function openWorkspaceSettings(workspace, { callRpc, catalog, deviceId = 
     return draftRecord.write(snapshot);
   };
   let repoAsk = null;
+  let closed = null;
   const close = () => {
+    if (closed) return closed;
     repoAsk?.stop();
     disposeRepoPickers(sheet);
     disposeDirectories();
     disposeCatalog();
-    draftRecord.dispose();
+    closed = draftRecord.flush().catch(() => {});
+    draftRecord.dispose({ flushPending: false });
     $("#scrim").classList.remove("show");
+    return closed;
   };
   const opened = sheet.firstElementChild;
   /** Still the sheet this call opened: an answer that lands after the reader
@@ -208,6 +214,7 @@ export function openWorkspaceSettings(workspace, { callRpc, catalog, deviceId = 
       return undefined;
     })
     .catch(() => {});
+  return close;
 }
 
 

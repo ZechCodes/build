@@ -15,6 +15,7 @@ use crate::source_sync::{
     sync_base, sync_base_for_a_cut, Failure, Fetch, SyncLock, SyncOutcome, SyncReport,
     CUT_FETCH_DEADLINE, SERVICE_FETCH_DEADLINE,
 };
+use crate::workspace::WorkspaceSource;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -168,7 +169,7 @@ impl From<&SyncOutcome> for Concluded {
                 ..plain(SyncState::Failed, Some(&failure.reason))
             },
             SyncOutcome::NoRemote => plain(SyncState::NoRemote, None),
-            SyncOutcome::CheckoutLeft => plain(SyncState::Skipped, None),
+            SyncOutcome::CheckoutLeft { .. } => plain(SyncState::Skipped, None),
         }
     }
 }
@@ -216,8 +217,25 @@ impl Synced {
     }
 
     fn left_the_checkout(&self) -> bool {
-        self.report.outcome == SyncOutcome::CheckoutLeft
+        matches!(self.report.outcome, SyncOutcome::CheckoutLeft { .. })
     }
+}
+
+/// The commit a cut branches `source` from in place of its base branch: the
+/// one its base is moving to, when the sync left the source's checkout to
+/// the service with nothing in the way (#271). `None` cuts from the base as
+/// it stands.
+pub(in crate::app) fn cut_start(synced: &[Synced], source: &WorkspaceSource) -> Option<String> {
+    synced.iter().find_map(|synced| {
+        let subject = &synced.subject;
+        let same = subject.source_id == source.id
+            && subject.path == source.path
+            && subject.base_branch == source.base_branch;
+        match &synced.report.outcome {
+            SyncOutcome::CheckoutLeft { cut_from } if same => Some(cut_from.clone()),
+            _ => None,
+        }
+    })
 }
 
 /// Which sources a pass of the service syncs.
@@ -261,7 +279,8 @@ fn sync_for_the_service(subject: SyncSubject) -> Option<Synced> {
 /// the cut's deadline, and then what it fetched is used rather than fetching
 /// again; one that outlasts the deadline leaves the base as it stands. The
 /// cut never fast-forwards the source's own checkout, which can take
-/// minutes: that is left to the service ([`SyncOutcome::CheckoutLeft`]).
+/// minutes: that is left to the service, and the cut branches from the
+/// commit the checkout is moving to ([`SyncOutcome::CheckoutLeft`]).
 fn sync_for_a_cut(subject: SyncSubject) -> Synced {
     let report = match SyncLock::acquire(&subject.path, CUT_FETCH_DEADLINE) {
         Some((_held, waited)) => {
@@ -317,10 +336,6 @@ fn cut_warning(synced: &Synced) -> Option<String> {
         SyncOutcome::Skipped(reason) if behind > 0 => {
             format!("It is {} behind its remote. {reason}", commits(behind))
         }
-        SyncOutcome::CheckoutLeft => format!(
-            "It is {} behind its remote. Build is fast-forwarding its checkout in the background.",
-            commits(behind)
-        ),
         _ => return None,
     };
     Some(format!(

@@ -4049,7 +4049,11 @@ describe("the composer's model menu", () => {
     });
   });
 
-  it("keeps the pick through a branch.get that still names the old model", async () => {
+  // The rail reads its row off the cache, so the stale answer is a row landing
+  // there while agent.choose is still out. It moves the topic too, and the
+  // head showing that topic is what says the row was read before the menu is
+  // looked at: a tick that lands nothing proves nothing (#258).
+  it("keeps the pick through a row that still names the old model", async () => {
     payload = branchRow({ agents: [agent({ model: "claude-opus-5" })] });
     await mount();
     const answering = bridge.call;
@@ -4064,9 +4068,10 @@ describe("the composer's model menu", () => {
     modelMenuButton().click();
     menuItem("model:claude-haiku-4-5").click();
     await flush();
+    expect(callsTo("agent.choose")).toHaveLength(1);
 
-    vi.advanceTimersByTime(1600);
-    await flush();
+    await pushRow(branchRow({ agents: [agent({ model: "claude-opus-5", topic: "Still on the old model" })] }));
+    await vi.waitFor(() => expect(headWho()).toBe("Still on the old model"));
 
     expect(modelMenuButton().textContent).toContain("Claude Haiku 4.5");
     modelMenuButton().click();

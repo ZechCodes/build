@@ -226,6 +226,9 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .compose-note { font-size:11.5px; }
 .compose-error { font-size:11.5px; }
 .compose-error[hidden] { display:none; }
+.compose-git-offer { display:flex; flex-direction:column; align-items:flex-start; gap:5px; font-size:11.5px; }
+.compose-git-offer p { margin:0; }
+.compose-git-offer .error:empty { display:none; }
 .compose-advanced { margin-top:10px;
   display:flex; flex-direction:column; gap:5px; }
 .compose-advanced label, .agent-choice-fields label { font-size:11px; color:var(--dim); }

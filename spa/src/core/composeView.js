@@ -46,6 +46,7 @@ import { deleteCached, readCached, subscribeCache, writeCached } from "./localCa
 import { uiAddress, watchUiState } from "./localUiState.js";
 import "../styles/shell.css";
 import { fieldTraits } from "./fieldTraits.js";
+import { composeGitOfferHtml, refusedForNoGit } from "./gitInitializationOffer.js";
 
 const CHOICE_PREFIX = "compose-choice";
 
@@ -307,6 +308,7 @@ function paintBox({ focus = true } = {}) {
     busy: box.busy,
     advanced: box.advancedOpen ? advancedHtml() : "",
   });
+  if (box.gitOffer) host.querySelector(".compose-row").insertAdjacentHTML("afterend", composeGitOfferHtml(box.gitOffer));
   box.renderedAdvancedOpen = box.advancedOpen;
   box.renderedSnapshot = structuredClone(boxSnapshot());
   wireBox(host);
@@ -344,6 +346,8 @@ function wireBox(host) {
     box.advancedOpen = !box.advancedOpen;
     saveBox();
   };
+  const initGit = host.querySelector("[data-compose-init-git]");
+  if (initGit) initGit.onclick = () => initializeGitThenDispatch();
   if (box.advancedOpen) wireAdvanced(host);
 }
 
@@ -353,6 +357,7 @@ function wireAdvanced(host) {
     project.onchange = () => {
       box.projectId = project.value;
       box.branch = "";
+      box.gitOffer = null;
       saveBox();
     };
   }
@@ -496,6 +501,8 @@ export function openCompose() {
     kind: "branch",
     branch: "",
     projectId: (feed.projects[0] || {}).id || "",
+    // The Initialize Git offer a plain folder's refusal became, or null.
+    gitOffer: null,
   };
   const opened = box;
   box.state = watchUiState(
@@ -569,6 +576,7 @@ async function submitManual() {
   }
   box.busy = true;
   box.error = "";
+  box.gitOffer = null;
   paintBox({ focus: false });
   const { method, params } = manualRoute({
     kind: box.kind,
@@ -581,8 +589,35 @@ async function submitManual() {
     const created = await replyOrNothing(homeCall(method, params));
     settleManualRoute(manualRouteDestination(box.kind, created, box.projectId));
   } catch (error) {
-    fail(messageOf(error));
+    if (refusedForNoGit(error)) offerGitInitialization("");
+    else fail(messageOf(error));
   }
+}
+
+/** A branch needs git and this project has none: the box offers to initialize
+ *  it, keeping what was typed, instead of printing the refusal. */
+function offerGitInitialization(error) {
+  box.gitOffer = { error, pending: false };
+  box.busy = false;
+  paintBox({ focus: false });
+}
+
+/** Initialize Git where the user asked to, then dispatch what the box holds
+ *  again. The box it was asked in is the one it answers, if it is still open. */
+async function initializeGitThenDispatch() {
+  const asked = box;
+  if (!asked?.gitOffer || asked.gitOffer.pending) return;
+  asked.gitOffer = { error: "", pending: true };
+  paintBox({ focus: false });
+  try {
+    await homeCall("project.init_git", { project_id: asked.projectId });
+  } catch (error) {
+    if (box === asked) offerGitInitialization(messageOf(error));
+    return;
+  }
+  if (box !== asked) return;
+  asked.gitOffer = null;
+  await submitManual();
 }
 
 /** The box is done with: shut it, re-read the board, and open what was made

@@ -600,6 +600,54 @@ describe("the advanced panel", () => {
     });
   });
 
+  // A branch needs git, and a project on a plain folder has none: the refusal
+  // is the offer to initialize it, and the dispatch goes again once it has (#297).
+  const refusingUntilInitialized = (initialize = async () => ({ project_id: "p1", is_git: true })) => {
+    let initialized = false;
+    return vi.fn(async (method, params) => {
+      if (method === "project.init_git") {
+        const answer = await initialize(params);
+        initialized = true;
+        return answer;
+      }
+      if (method !== "branch.dispatch") return { ok: true };
+      if (!initialized) throw new Error("project is not a git repository; initialize Git first");
+      return { project_id: "p1", branch: "build/login", run_id: "run-1", agent_id: "agent-1" };
+    });
+  };
+
+  it("offers to initialize Git where the project has none, then dispatches again", async () => {
+    bridge.call = refusingUntilInitialized();
+    await openAdvanced({ catalog: false });
+    type("#compose-text", "add a /health endpoint");
+    $("#compose-manual-go").click();
+    await vi.waitFor(() => expect($("[data-compose-init-git]")).not.toBeNull());
+    expect($(".compose-box").textContent).not.toContain("project is not a git repository");
+    expect($("#compose-text").value).toBe("add a /health endpoint");
+
+    $("[data-compose-init-git]").click();
+
+    await vi.waitFor(() => expect(location.hash).toBe("#/device/dev-1/project/p1/branch/build%2Flogin/changes"));
+    expect(bridge.call).toHaveBeenCalledWith("project.init_git", { project_id: "p1" });
+    expect(bridge.call.mock.calls.filter(([method]) => method === "branch.dispatch")).toHaveLength(2);
+  });
+
+  it("says why Git was not initialized and keeps the offer", async () => {
+    bridge.call = refusingUntilInitialized(async () => {
+      throw new Error("disk is read-only");
+    });
+    await openAdvanced({ catalog: false });
+    type("#compose-text", "add a /health endpoint");
+    $("#compose-manual-go").click();
+    await vi.waitFor(() => expect($("[data-compose-init-git]")).not.toBeNull());
+
+    $("[data-compose-init-git]").click();
+
+    await vi.waitFor(() => expect($("[data-compose-init-git-status]").textContent).toBe("disk is read-only"));
+    expect($("[data-compose-init-git]").disabled).toBe(false);
+    expect($("#compose-text").value).toBe("add a /health endpoint");
+  });
+
   it("says what the daemon refused, and keeps what was typed", async () => {
     bridge.call = vi.fn(async () => {
       throw new Error("unknown project_id: p9");

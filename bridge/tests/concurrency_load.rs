@@ -22,6 +22,7 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -72,12 +73,42 @@ const READ_CEILING: Duration = Duration::from_millis(200);
 /// What the spec allows a write's reply to take.
 const WRITE_CEILING: Duration = Duration::from_millis(500);
 
+/// How long any one call may go unanswered before the daemon counts as
+/// wedged. Sixty times the write ceiling: a loaded machine is slow, not this
+/// slow.
+const CALL_DEADLINE: Duration = Duration::from_secs(30);
+
+/// How long the whole run may take, setup to teardown. The pacing above is
+/// about six seconds of calls on an idle machine; this is thirty times that.
+const RUN_DEADLINE: Duration = Duration::from_secs(180);
+
 /// Out of the default run: its ceilings are the spec's latencies on a machine
 /// with cores to spare. Four copies on two loaded cores take `workspace.create`
 /// to a p95 of 850–940 ms against 500 with nothing wrong in the daemon (#280).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+///
+/// The runtime is the test's own rather than `#[tokio::test]`'s, so a failure
+/// can shut it down with a timeout: a wedged daemon leaves blocking tasks that
+/// never finish, and dropping the runtime would wait for them forever (#290).
+#[test]
 #[ignore = "timing: run with --ignored on a quiet machine"]
-async fn the_daemon_answers_reads_and_writes_while_three_ptys_flood() {
+fn the_daemon_answers_reads_and_writes_while_three_ptys_flood() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .expect("a runtime");
+    let measured = std::panic::catch_unwind(|| {
+        let _in_runtime = runtime.enter();
+        flood_and_measure();
+    });
+    runtime.shutdown_timeout(Duration::from_secs(5));
+    if let Err(failure) = measured {
+        std::panic::resume_unwind(failure);
+    }
+}
+
+fn flood_and_measure() {
+    let deadlines = Deadlines::starting_now(CALL_DEADLINE, RUN_DEADLINE);
     let dir = tempfile::tempdir().expect("a temp dir");
     let repo = init_repo(dir.path());
     std::env::set_var("BRIDGE_TERM_SHELL", flooding_shell(dir.path()));
@@ -93,7 +124,7 @@ async fn the_daemon_answers_reads_and_writes_while_three_ptys_flood() {
             .expect("a task store")
             .shared();
     let handler = AppState::handler(Arc::clone(&state));
-    let client = Client::new(&handler, "s-setup");
+    let client = Client::new(&handler, "s-setup", deadlines);
 
     let project_id = client.ok("project.list", json!({}))["projects"][0]["project_id"]
         .as_str()
@@ -127,47 +158,51 @@ async fn the_daemon_answers_reads_and_writes_while_three_ptys_flood() {
         .map(|term_id| {
             let term_id = term_id.clone();
             Callers::spawn(
-                &handler,
                 "term.input",
                 FLOOD_INTERVAL,
                 Until::Set(Arc::clone(&measured)),
+                deadlines,
+                daemon(&handler, SessionSender::detached("s-term.input")),
                 move |_| json!({ "term_id": term_id, "data": base64_of(b"\n") }),
             )
         })
         .collect();
     let reading = Callers::spawn(
-        &handler,
         "board.list",
         READ_INTERVAL,
         Until::Called(READ_CALLS),
+        deadlines,
+        daemon(&handler, SessionSender::detached("s-board.list")),
         |_| json!({}),
     );
     let posting = {
         let run_id = run_id.clone();
         Callers::spawn(
-            &handler,
             "thread.post",
             POST_INTERVAL,
             Until::Called(POST_CALLS),
+            deadlines,
+            daemon(&handler, SessionSender::detached("s-thread.post")),
             move |n| json!({ "entity_id": run_id, "body": format!("load test message {n}") }),
         )
     };
     let creating = Callers::spawn(
-        &handler,
         "workspace.create",
         CREATE_INTERVAL,
         Until::Called(CREATE_CALLS),
+        deadlines,
+        daemon(&handler, SessionSender::detached("s-workspace.create")),
         move |n| json!({ "project_id": project_id, "name": format!("load {n}"), "isolation": "worktree" }),
     );
 
-    let reads = reading.join();
-    let posts = posting.join();
-    let creates = creating.join();
+    let reads = reading.join().unwrap_or_else(|wedged| panic!("{wedged}"));
+    let posts = posting.join().unwrap_or_else(|wedged| panic!("{wedged}"));
+    let creates = creating.join().unwrap_or_else(|wedged| panic!("{wedged}"));
     // The shells flood for as long as the measured calls take, however long
     // that is on this machine.
     measured.store(true, Ordering::SeqCst);
     for feeder in feeding {
-        feeder.join();
+        feeder.join().unwrap_or_else(|wedged| panic!("{wedged}"));
     }
 
     for term_id in &flooding {
@@ -197,29 +232,140 @@ async fn the_daemon_answers_reads_and_writes_while_three_ptys_flood() {
     client.ok("run.abandon", json!({ "run_id": run_id }));
 }
 
-/// One browser session, calling frames on the test's own thread.
+/// The per-call deadline, against a daemon that answers a few calls and then
+/// never again: the caller gives up with the count it reached instead of
+/// waiting forever (#290).
+#[test]
+fn a_caller_fails_with_its_count_when_a_call_outlives_its_deadline() {
+    assert_the_wedge_fails_fast(Deadlines::starting_now(
+        Duration::from_millis(200),
+        Duration::from_secs(60),
+    ));
+}
+
+/// The run's deadline on its own: a call that may wait a minute still fails
+/// once the run is out of time.
+#[test]
+fn a_caller_fails_with_its_count_when_the_run_outlives_its_deadline() {
+    assert_the_wedge_fails_fast(Deadlines::starting_now(
+        Duration::from_secs(60),
+        Duration::from_millis(200),
+    ));
+}
+
+/// One of `deadlines` is short and the other a minute: the short one, and
+/// only it, must end the wait, with how far the caller got.
+fn assert_the_wedge_fails_fast(deadlines: Deadlines) {
+    let caller = wedging_caller(deadlines);
+    let waiting = Instant::now();
+
+    let wedged = caller
+        .join()
+        .err()
+        .expect("a wedged daemon fails the caller");
+
+    assert!(
+        waiting.elapsed() < Duration::from_secs(10),
+        "the short deadline ended the wait, not the long one: {wedged}"
+    );
+    assert!(
+        wedged.starts_with("workspace.create: 3 of 12 calls answered"),
+        "the failure names the method and how far it got: {wedged}"
+    );
+}
+
+/// A `workspace.create` caller against a daemon stub that answers three calls
+/// and then never answers again.
+fn wedging_caller(deadlines: Deadlines) -> Callers {
+    let mut answered = 0;
+    let wedging = move |_frame: Frame| {
+        if answered == 3 {
+            loop {
+                std::thread::park();
+            }
+        }
+        answered += 1;
+        json!({ "ok": true })
+    };
+    Callers::spawn(
+        "workspace.create",
+        Duration::ZERO,
+        Until::Called(CREATE_CALLS),
+        deadlines,
+        wedging,
+        |_| json!({}),
+    )
+}
+
+/// One browser session, calling frames one at a time for the test's setup
+/// and teardown.
 struct Client {
     handler: FrameHandler,
     sender: SessionSender,
+    deadlines: Deadlines,
 }
 
 impl Client {
-    fn new(handler: &FrameHandler, session_id: &str) -> Client {
+    fn new(handler: &FrameHandler, session_id: &str, deadlines: Deadlines) -> Client {
         Client {
             handler: handler.clone(),
             sender: SessionSender::detached(session_id),
+            deadlines,
         }
     }
 
-    /// Call `method` and hand back its result, failing the test on a refusal —
-    /// nothing in the setup or the teardown has a failure the load numbers
-    /// would still mean something without.
+    /// Call `method` and hand back its result, failing the test on a refusal
+    /// or on no answer by the deadline — nothing in the setup or the teardown
+    /// has a failure the load numbers would still mean something without.
     fn ok(&self, method: &str, params: Value) -> Value {
-        let answered = self
-            .handler
-            .call(self.sender.clone(), request(method, params));
+        let mut answer = daemon(&self.handler, self.sender.clone());
+        let frame = request(method, params);
+        let (reply, answered) = mpsc::channel();
+        std::thread::spawn(move || reply.send(answer(frame)));
+        let answered = answered
+            .recv_timeout(self.deadlines.left_for_a_call_asked_at(Instant::now()))
+            .unwrap_or_else(|_| panic!("{method}: {}", self.deadlines.missed()));
         assert_eq!(answered["ok"], true, "{method}: {answered:?}");
         answered["result"].clone()
+    }
+}
+
+/// How long a call may wait for its answer, and when the whole run must be
+/// over. A wedged daemon then fails the test instead of hanging it (#290).
+#[derive(Clone, Copy)]
+struct Deadlines {
+    per_call: Duration,
+    run: Duration,
+    run_ends: Instant,
+}
+
+impl Deadlines {
+    fn starting_now(per_call: Duration, run: Duration) -> Deadlines {
+        Deadlines {
+            per_call,
+            run,
+            run_ends: Instant::now() + run,
+        }
+    }
+
+    /// How much longer a call asked at `asked_at` may wait: its own deadline
+    /// or the run's, whichever comes first.
+    fn left_for_a_call_asked_at(&self, asked_at: Instant) -> Duration {
+        (asked_at + self.per_call)
+            .min(self.run_ends)
+            .saturating_duration_since(Instant::now())
+    }
+
+    /// How much longer the run may wait for a caller between calls.
+    fn left_for_the_run(&self) -> Duration {
+        self.run_ends.saturating_duration_since(Instant::now())
+    }
+
+    fn missed(&self) -> String {
+        format!(
+            "no answer within the deadline ({:?} a call, {:?} the run)",
+            self.per_call, self.run
+        )
     }
 }
 
@@ -236,54 +382,121 @@ impl Until {
             Until::Set(flag) => flag.load(Ordering::SeqCst),
         }
     }
+
+    /// How far `calls` got, for a failure: "3 of 12", or just "3".
+    fn progress(&self, calls: usize) -> String {
+        match self {
+            Until::Called(count) => format!("{calls} of {count}"),
+            Until::Set(_) => calls.to_string(),
+        }
+    }
 }
 
 /// One caller repeating one method until it is done, and how long each of
-/// its replies took.
-///
-/// It runs on a thread of its own with the test's runtime entered, because
-/// that is what a relay dispatch worker is: a blocking thread inside the
-/// runtime, calling the handler and waiting for the answer.
+/// its replies took. It runs on a thread of its own, as a relay dispatch
+/// worker does, and tells the test each time it asks and each time it is
+/// answered, so the test can hold every call to the deadlines.
 struct Callers {
-    thread: std::thread::JoinHandle<Latencies>,
+    method: &'static str,
+    until: Arc<Until>,
+    deadlines: Deadlines,
+    progress: Receiver<Progress>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+/// What a caller thread reports as it goes.
+enum Progress {
+    Asked(Instant),
+    Answered(Duration),
 }
 
 impl Callers {
     fn spawn(
-        handler: &FrameHandler,
         method: &'static str,
         every: Duration,
         until: Until,
+        deadlines: Deadlines,
+        mut answer: impl FnMut(Frame) -> Value + Send + 'static,
         mut params: impl FnMut(u64) -> Value + Send + 'static,
     ) -> Callers {
-        let handler = handler.clone();
-        let runtime = tokio::runtime::Handle::current();
-        let session_id = format!("s-{method}");
+        let until = Arc::new(until);
+        let (report, progress) = mpsc::channel();
+        let calling = Arc::clone(&until);
+        let thread = std::thread::spawn(move || {
+            let mut n = 0;
+            while !calling.reached(n) {
+                let frame = request(method, params(n));
+                let asked_at = Instant::now();
+                let _ = report.send(Progress::Asked(asked_at));
+                let answered = answer(frame);
+                let _ = report.send(Progress::Answered(asked_at.elapsed()));
+                assert_eq!(answered["ok"], true, "{method}: {answered:?}");
+                n += 1;
+                std::thread::sleep(every);
+            }
+        });
         Callers {
-            thread: std::thread::spawn(move || {
-                let _in_runtime = runtime.enter();
-                let sender = SessionSender::detached(session_id);
-                let mut samples = Vec::new();
-                let mut n = 0;
-                while !until.reached(n) {
-                    let frame = request(method, params(n));
-                    let asked_at = Instant::now();
-                    let answered = handler.call(sender.clone(), frame);
-                    samples.push(asked_at.elapsed());
-                    assert_eq!(answered["ok"], true, "{method}: {answered:?}");
-                    n += 1;
-                    std::thread::sleep(every);
-                }
-                Latencies {
-                    method: method.to_string(),
-                    samples,
-                }
-            }),
+            method,
+            until,
+            deadlines,
+            progress,
+            thread,
         }
     }
 
-    fn join(self) -> Latencies {
-        self.thread.join().expect("a caller made all its calls")
+    /// Every reply's latency once the caller is done, or how far it got if a
+    /// call outlived its deadline or the run outlived its own. A wedged call
+    /// is left blocked on its thread; the test fails without it.
+    fn join(self) -> Result<Latencies, String> {
+        let mut samples = Vec::new();
+        let mut waiting_since = None;
+        loop {
+            let left = waiting_since.map_or_else(
+                || self.deadlines.left_for_the_run(),
+                |asked_at| self.deadlines.left_for_a_call_asked_at(asked_at),
+            );
+            match self.progress.recv_timeout(left) {
+                Ok(Progress::Asked(asked_at)) => waiting_since = Some(asked_at),
+                Ok(Progress::Answered(took)) if took <= self.deadlines.per_call => {
+                    waiting_since = None;
+                    samples.push(took);
+                }
+                Ok(Progress::Answered(_)) | Err(RecvTimeoutError::Timeout) => {
+                    return Err(self.wedged(samples.len()))
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        self.thread.join().expect("a caller made all its calls");
+        Ok(Latencies {
+            method: self.method.to_string(),
+            samples,
+        })
+    }
+
+    fn wedged(&self, answered: usize) -> String {
+        format!(
+            "{}: {} calls answered, then {}",
+            self.method,
+            self.until.progress(answered),
+            self.deadlines.missed()
+        )
+    }
+}
+
+/// The daemon as one session sees it: hand it a frame, get its reply. Called
+/// with the test's runtime entered, because that is what a relay dispatch
+/// worker is: a blocking thread inside the runtime, calling the handler and
+/// waiting for the answer.
+fn daemon(
+    handler: &FrameHandler,
+    sender: SessionSender,
+) -> impl FnMut(Frame) -> Value + Send + 'static {
+    let handler = handler.clone();
+    let runtime = tokio::runtime::Handle::current();
+    move |frame| {
+        let _in_runtime = runtime.enter();
+        handler.call(sender.clone(), frame)
     }
 }
 

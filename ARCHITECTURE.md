@@ -262,6 +262,10 @@ runtime that starts them.
   and `sync` (what the last sync of its base concluded),
   `project.update_source` takes `sync_base`, and `project.sync_source` asks
   for a sync now. See Projects and sources.
+  3.4.0 adds `workspace.measure_sizes` (#273), which queues a size walk
+  for the workspaces named (or all of them, or a project's) and answers at
+  once; each size lands on the row as `lifecycle.size_bytes` with
+  `lifecycle.size_measured_at_ms`. See Workspaces and worktrees.
   The SPA's adapter claims `>=2.0.0 <4.0.0`: it calls nothing a 2.x bridge
   lacks (what 2.x added after 2.0.0 is capability-gated), so the app can
   roll before the bridge.
@@ -553,6 +557,20 @@ The answer names each repository's outcome (`deleted`, `kept`,
 the branch records the same entry as `branch_deleted` or `branch_kept`, under
 whoever reclaimed and without waking its trackers. The verdicts persist in the store's `meta`
 table (`bridge/src/store/workspace_lifecycle.rs`).
+
+**Sizes** (#273). A sweep sizes only a quiet workspace, so the Workspaces tab
+asks for the rest: opening it calls `workspace.measure_sizes`, which queues a
+walk per workspace and answers at once (`bridge/src/reclaim/sizes.rs`). A
+workspace already queued or being walked is not queued again, and a size
+measured within five minutes (`SIZE_REUSE_WINDOW`) is reused. The walker is
+a thread of its own (`bridge-sizes`, `app/workspaces/sizes.rs`), niced like
+an agent on Linux, that takes one workspace at a time: it reads the boundary
+under the app lock, walks it with the lock released through the reclaim
+service's own `size_within` and budget, then writes `size_bytes` and
+`size_measured_at_ms` onto the lifecycle record (creating one with no
+verdict if no sweep has run) and notes the workspace list changed. A walk
+out of budget writes nothing, and the last size stands. A sweep keeps
+whichever size was measured later (`LifecycleRecord::keep_newer_size`).
 
 ### Harnesses and the agents' slice
 

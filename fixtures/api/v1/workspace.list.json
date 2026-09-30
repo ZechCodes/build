@@ -61,6 +61,7 @@
           "unpushed_commits": 2,
           "behind_commits": 0,
           "size_bytes": 17179869184,
+          "size_measured_at_ms": 1789916700000,
           "pruned_bytes": 0,
           "pruned_at_ms": null,
           "noticed_at_ms": 1789916700000

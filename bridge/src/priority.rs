@@ -764,6 +764,25 @@ fn lower_process(pid: u32, nice: i32) {
     }
 }
 
+/// Lower the calling thread alone, `step` below the daemon: a background
+/// walk (#273) that loses to everything else the bridge does. Linux ranks
+/// each thread by its own nice; elsewhere the call would lower the whole
+/// process, so it does nothing there.
+pub fn lower_this_thread(step: i32) {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    // SAFETY: gettid and setpriority read no memory and write none.
+    unsafe {
+        let thread = libc::gettid();
+        libc::setpriority(
+            libc::PRIO_PROCESS,
+            thread as libc::id_t,
+            child_nice_for(own_nice(), step),
+        );
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    let _ = step;
+}
+
 /// The `MemoryHigh` for the agents' slice on a machine with this much RAM:
 /// three quarters of it, rounded down to a whole mebibyte, which is the unit
 /// the property is written in.
@@ -889,6 +908,23 @@ fn find_on_path(program: &str, path: Option<&str>) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    /// Only the thread that asks is lowered: the one beside it keeps the
+    /// daemon's nice.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn lowering_a_thread_leaves_its_neighbours_alone() {
+        let daemon = own_nice();
+        let lowered = std::thread::spawn(|| {
+            lower_this_thread(CHILD_NICE);
+            own_nice()
+        })
+        .join()
+        .unwrap();
+        let neighbour = std::thread::spawn(own_nice).join().unwrap();
+        assert_eq!(lowered, child_nice_for(daemon, CHILD_NICE));
+        assert_eq!(neighbour, daemon);
+    }
 
     #[test]
     fn a_scope_is_asked_of_the_manager_with_the_child_s_pid_in_the_kind_s_slice() {

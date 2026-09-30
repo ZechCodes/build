@@ -19,6 +19,7 @@ mod budget;
 pub mod containment;
 mod git_probe;
 mod measure;
+mod sizes;
 
 pub use budget::{Budget, Unfinished};
 pub use git_probe::{reading_line as git_reading_line, GitProbe, IndexSnapshot};
@@ -27,6 +28,7 @@ pub use measure::{
 };
 #[cfg(unix)]
 pub use measure::{measure_repositories_pinned, measure_repositories_pinned_with_candidates};
+pub use sizes::{size_is_fresh, SizeRequests, SIZE_REUSE_WINDOW};
 
 use artifacts::Artifact;
 use containment::WorkspaceBoundary;
@@ -245,8 +247,13 @@ pub struct LifecycleRecord {
     pub unpushed_commits: u64,
     pub behind_commits: u64,
     /// Allocated bytes under the root. Measured when a quiet workspace is
-    /// first seen, announced or pruned.
+    /// first seen, announced or pruned, and when the Workspaces tab asks
+    /// (`workspace.measure_sizes`, #273).
     pub size_bytes: Option<u64>,
+    /// When `size_bytes` was measured. A sweep that did not size the
+    /// workspace keeps it, like the size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_measured_at_ms: Option<i64>,
     /// Build output dropped since the workspace last went idle.
     pub pruned_bytes: u64,
     pub pruned_at_ms: Option<i64>,
@@ -278,6 +285,18 @@ impl LifecycleRecord {
 }
 
 impl LifecycleRecord {
+    /// Take `current`'s size where it was measured after this record's: a
+    /// size walk the Workspaces tab asked for can land while a sweep is
+    /// measuring, and the sweep's older reading must not replace it.
+    pub fn keep_newer_size(&mut self, current: Option<&LifecycleRecord>) {
+        if let Some(current) = current.filter(|current| {
+            current.size_bytes.is_some() && current.size_measured_at_ms > self.size_measured_at_ms
+        }) {
+            self.size_bytes = current.size_bytes;
+            self.size_measured_at_ms = current.size_measured_at_ms;
+        }
+    }
+
     /// What the budget did not cover is not known: held as `unmeasured`,
     /// and neither idle nor reclaimable.
     pub fn unmeasured(&mut self) {
@@ -388,7 +407,7 @@ impl Subject {
         // the number is about to be read rather than every sweep.
         let wants_size = record.idle
             && (record.size_bytes.is_none() || record.notice_due(now_ms, policy) != NoticeDue::No);
-        let sized = !wants_size || self.resize(&mut record, budget);
+        let sized = !wants_size || self.resize(&mut record, budget, now_ms);
         if git.unfinished
             || changed.is_err()
             || created.is_err()
@@ -406,26 +425,17 @@ impl Subject {
 
     /// Measure the size on disk again. `false` when the budget ran out or the
     /// daemon stopped first; the last size is kept.
-    pub fn resize(&self, record: &mut LifecycleRecord, budget: &Budget) -> bool {
-        let guard = self
+    pub fn resize(&self, record: &mut LifecycleRecord, budget: &Budget, now_ms: i64) -> bool {
+        let Some(size) = self
             .boundary
             .as_ref()
-            .and_then(|boundary| boundary.validate().ok());
-        if guard.is_none() {
+            .and_then(|boundary| size_within(boundary, budget))
+        else {
             return false;
-        }
-        match guard.as_ref().unwrap().size_on_disk(budget) {
-            Ok(size)
-                if self
-                    .boundary
-                    .as_ref()
-                    .is_some_and(|boundary| boundary.validate().is_ok()) =>
-            {
-                record.size_bytes = Some(size);
-                true
-            }
-            _ => false,
-        }
+        };
+        record.size_bytes = Some(size);
+        record.size_measured_at_ms = Some(now_ms);
+        true
     }
 
     /// Read Git and all candidate indexes off the app mutex, in the killable
@@ -598,6 +608,7 @@ impl Subject {
             pruned_bytes: if pruned { previous.pruned_bytes } else { 0 },
             pruned_at_ms: if pruned { previous.pruned_at_ms } else { None },
             size_bytes: previous.size_bytes,
+            size_measured_at_ms: previous.size_measured_at_ms,
             ..LifecycleRecord::default()
         }
     }
@@ -612,6 +623,15 @@ impl Subject {
         holds.sort_by_key(|hold| hold_order(hold));
         holds.into_iter().map(str::to_string).collect()
     }
+}
+
+/// Allocated bytes under a workspace's root, walked only while its boundary
+/// holds before and after. `None` when it does not, or the budget ran out or
+/// the daemon stopped first.
+pub fn size_within(boundary: &WorkspaceBoundary, budget: &Budget) -> Option<u64> {
+    let size = boundary.validate().ok()?.size_on_disk(budget).ok()?;
+    boundary.validate().ok()?;
+    Some(size)
 }
 
 /// The trash a subject's build output is moved into, below its canonical root.

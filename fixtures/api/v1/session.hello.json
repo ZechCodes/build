@@ -3,7 +3,7 @@
   "since": "1.0.0",
   "params": {},
   "result": {
-    "api_version": "3.3.0",
+    "api_version": "3.4.0",
     "capabilities": [
       "agent.add",
       "agent.attach",
@@ -163,6 +163,7 @@
       "workspace.git_init_options",
       "workspace.init_git",
       "workspace.list",
+      "workspace.measure_sizes",
       "workspace.reclaim",
       "workspace.remove_directory",
       "workspace.rename",

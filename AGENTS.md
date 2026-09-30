@@ -123,6 +123,8 @@ cmd > /tmp/gate.log 2>&1; echo "exit=$?"
 | desktop | `desktop/` | `nice -n 10 npm test` |
 | shell | repo root | `git ls-files '*.sh' \| nice -n 10 xargs shellcheck` |
 
+The two `#[ignore]`d timing tests (git child cost, daemon under PTY flood) are out of `cargo test`; `.github/workflows/timing.yml` runs them nightly and by hand.
+
 The SPA needs a checkout of
 [`build-secure-transport`](https://github.com/ZechCodes/build-secure-transport)
 beside the repo root (`spa/package.json` resolves it as

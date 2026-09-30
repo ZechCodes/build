@@ -1,0 +1,58 @@
+name: Bridge timing tests
+
+# The two timing tests the default run ignores (#280, #289):
+# a_git_child_costs_what_the_child_costs (src/git_process.rs) and
+# the_daemon_answers_reads_and_writes_while_three_ptys_flood
+# (tests/concurrency_load.rs). They compare wall-clock times against fixed
+# ceilings, which a machine running other suites breaks with nothing wrong in
+# the bridge, so they are out of `cargo test` and run here instead, alone on a
+# fresh runner, so a regression in git child cost or daemon throughput still
+# turns something red.
+#
+# Nightly and by hand, never on a push or a PR: a red run here is a performance
+# regression to look at, not a gate on the merge.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  timing:
+    name: Ignored timing tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: bridge
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - name: Cache cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            bridge/target
+            bridge/vendor/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('bridge/Cargo.lock', 'bridge/vendor/Cargo.lock') }}
+
+      # Built first so the compile is not running beside the timed tests.
+      - name: Build the tests
+        run: cargo test --no-run
+
+      # Two filters, each matching one test; --no-fail-fast so a failure in
+      # the lib binary still runs the flood test in its own.
+      - name: Timing tests
+        run: >-
+          cargo test --no-fail-fast --
+          --ignored
+          a_git_child_costs_what_the_child_costs
+          the_daemon_answers_reads_and_writes_while_three_ptys_flood

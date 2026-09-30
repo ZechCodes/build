@@ -308,7 +308,7 @@ function paintBox({ focus = true } = {}) {
     busy: box.busy,
     advanced: box.advancedOpen ? advancedHtml() : "",
   });
-  if (box.gitOffer) host.querySelector(".compose-row").insertAdjacentHTML("afterend", composeGitOfferHtml(box.gitOffer));
+  paintGitOffer(host);
   box.renderedAdvancedOpen = box.advancedOpen;
   box.renderedSnapshot = structuredClone(boxSnapshot());
   wireBox(host);
@@ -319,6 +319,11 @@ function paintBox({ focus = true } = {}) {
   } else if (caret !== null) {
     text.setSelectionRange(caret, caret);
   }
+}
+
+/** The Initialize Git offer, under the box's buttons while it stands. */
+function paintGitOffer(host) {
+  if (box.gitOffer) host.querySelector(".compose-row").insertAdjacentHTML("afterend", composeGitOfferHtml(box.gitOffer));
 }
 
 const selectionOf = (host) => {

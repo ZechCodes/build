@@ -1,4 +1,9 @@
 use super::*;
+
+mod timeouts;
+mod unattended;
+mod upstream;
+mod work_in_progress;
 use crate::git_fixture::{git_command, git_in, init_repo_named};
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -366,29 +371,6 @@ fn stalling_remote() -> String {
         }
     });
     format!("git://127.0.0.1:{port}/never.git")
-}
-
-#[test]
-fn a_fetch_that_never_answers_is_killed_at_its_deadline_and_needs_you() {
-    let pair = pair();
-    git_in(
-        &pair.base,
-        &["remote", "set-url", "origin", &stalling_remote()],
-    );
-    let before = rev(&pair.base, "main");
-
-    let started = Instant::now();
-    let report = sync_base(
-        &pair.base,
-        "main",
-        Fetch::Within(Duration::from_millis(500)),
-    );
-
-    assert!(started.elapsed() < Duration::from_secs(5), "was not killed");
-    let failure = failed(&report);
-    assert!(failure.needs_you, "{failure:?}");
-    assert!(failure.reason.contains("did not answer"), "{failure:?}");
-    assert_eq!(rev(&pair.base, "main"), before);
 }
 
 /// An http remote that asks for a password on every request.

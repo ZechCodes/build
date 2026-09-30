@@ -23,9 +23,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+#[cfg(test)]
+mod tests;
+
 /// A cut that finds a fetch this recent moves the base to what it fetched
 /// rather than asking the remote again.
 const FRESH_FETCH: Duration = Duration::from_secs(60);
+
+/// How long the timer leaves a source whose fetches keep timing out. The
+/// first timeout is retried on the next pass; from the second the wait
+/// starts at ten minutes and doubles, up to an hour.
+const TIMEOUT_BACKOFF_FIRST: Duration = Duration::from_secs(10 * 60);
+const TIMEOUT_BACKOFF_MOST: Duration = Duration::from_secs(60 * 60);
+
+/// How early a pass may come and still count as on time: passes are
+/// `every` apart, give or take a few milliseconds.
+const PASS_SLACK: Duration = Duration::from_secs(60);
 
 /// Where a sync of a source left it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,15 +66,20 @@ pub(in crate::app) struct SyncStatus {
     pub(in crate::app) behind: usize,
     /// How far the last sync moved the base forward.
     pub(in crate::app) commits: usize,
-    /// The remote wanted a person (a password, a passphrase, a key touch) or
-    /// never answered. The service leaves the source alone until someone
-    /// syncs it by hand or a workspace cut syncs it.
+    /// The remote wanted a person (a password, a passphrase, a key touch).
+    /// The service leaves the source alone until someone syncs it by hand
+    /// or a workspace cut syncs it.
     pub(in crate::app) needs_you: bool,
     pub(in crate::app) last_attempt_ms: i64,
     /// The last sync that left the base level with its remote.
     pub(in crate::app) last_synced_ms: Option<i64>,
     /// The last time the remote answered a fetch.
     pub(in crate::app) last_fetched_ms: Option<i64>,
+    /// The service's fetches that timed out in a row, which the timer backs
+    /// off by. Bookkeeping, not news: neither on the wire nor stored, so a
+    /// restart tries again at once.
+    #[serde(skip)]
+    pub(in crate::app) timeouts: u32,
 }
 
 impl SyncStatus {
@@ -86,12 +104,37 @@ impl SyncStatus {
             } else {
                 kept(|status| status.last_fetched_ms)
             },
+            timeouts: if concluded.timed_out {
+                previous.map_or(0, |status| status.timeouts) + 1
+            } else {
+                0
+            },
         }
     }
 
     fn fetched_since(&self, since_ms: i64) -> bool {
         self.last_fetched_ms.is_some_and(|at| at >= since_ms)
     }
+
+    /// Whether the timer syncs a source left like this at `now_ms`: not one
+    /// that wanted a person, nor one still inside its timeout backoff.
+    fn due_for_the_timer(&self, now_ms: i64) -> bool {
+        let wait = i64::try_from(timeout_backoff(self.timeouts).as_millis()).unwrap_or(i64::MAX);
+        !self.needs_you && now_ms >= self.last_attempt_ms.saturating_add(wait)
+    }
+}
+
+/// How long after the last attempt the timer waits, given the timeouts in a
+/// row that attempt ended.
+fn timeout_backoff(timeouts: u32) -> Duration {
+    if timeouts < 2 {
+        return Duration::ZERO;
+    }
+    let doublings = (timeouts - 2).min(8);
+    TIMEOUT_BACKOFF_FIRST
+        .saturating_mul(1 << doublings)
+        .min(TIMEOUT_BACKOFF_MOST)
+        .saturating_sub(PASS_SLACK)
 }
 
 /// One outcome, as the parts a status is written from.
@@ -100,6 +143,7 @@ struct Concluded {
     reason: Option<String>,
     commits: usize,
     needs_you: bool,
+    timed_out: bool,
 }
 
 impl From<&SyncOutcome> for Concluded {
@@ -109,6 +153,7 @@ impl From<&SyncOutcome> for Concluded {
             reason: reason.cloned(),
             commits: 0,
             needs_you: false,
+            timed_out: false,
         };
         match outcome {
             SyncOutcome::UpToDate => plain(SyncState::Synced, None),
@@ -119,6 +164,7 @@ impl From<&SyncOutcome> for Concluded {
             SyncOutcome::Skipped(reason) => plain(SyncState::Skipped, Some(reason)),
             SyncOutcome::Failed(failure) => Self {
                 needs_you: failure.needs_you,
+                timed_out: failure.timed_out,
                 ..plain(SyncState::Failed, Some(&failure.reason))
             },
             SyncOutcome::NoRemote => plain(SyncState::NoRemote, None),
@@ -135,12 +181,37 @@ pub(in crate::app) struct SyncSubject {
     path: PathBuf,
     base_branch: String,
     fetch: Fetch,
+    origin: SyncOrigin,
+}
+
+/// Who ran a sync: the service (the timer or Sync now), or a workspace cut.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::app) enum SyncOrigin {
+    Service,
+    Cut,
 }
 
 /// One source's sync, to be written under the mutex.
 pub(in crate::app) struct Synced {
     subject: SyncSubject,
     report: SyncReport,
+}
+
+impl Synced {
+    /// Whether this sync says anything the source's status should keep. A
+    /// cut that ran out of its ten seconds (waiting on the remote, or on
+    /// another sync) says nothing the timer should act on, so the status is
+    /// left as the last real answer made it.
+    fn tells_the_timer(&self) -> bool {
+        let ran_out = matches!(
+            &self.report.outcome,
+            SyncOutcome::Failed(Failure {
+                timed_out: true,
+                ..
+            })
+        );
+        !(self.subject.origin == SyncOrigin::Cut && ran_out)
+    }
 }
 
 /// Which sources a pass of the service syncs.
@@ -193,6 +264,7 @@ fn sync_for_a_cut(subject: SyncSubject) -> Synced {
             outcome: SyncOutcome::Failed(Failure {
                 reason: "Another sync of this source was still running.".to_string(),
                 needs_you: false,
+                timed_out: true,
             }),
             ahead: 0,
             behind: 0,
@@ -295,7 +367,7 @@ impl AppState {
     /// One pass: read the sources under the mutex, sync each with it
     /// released, one after another, and write what was found.
     pub fn sync_sources(state: &Arc<Mutex<AppState>>, pass: SyncPass, now_ms: i64) {
-        let subjects = state.lock().unwrap().source_sync_subjects(pass);
+        let subjects = state.lock().unwrap().source_sync_subjects(pass, now_ms);
         let synced: Vec<Synced> = subjects
             .into_iter()
             .filter_map(sync_for_the_service)
@@ -303,7 +375,7 @@ impl AppState {
         state.lock().unwrap().settle_source_syncs(synced, now_ms);
     }
 
-    fn source_sync_subjects(&mut self, pass: SyncPass) -> Vec<SyncSubject> {
+    fn source_sync_subjects(&mut self, pass: SyncPass, now_ms: i64) -> Vec<SyncSubject> {
         let requested = std::mem::take(&mut self.source_sync_requested);
         let fetch = Fetch::Within(SERVICE_FETCH_DEADLINE);
         self.projects
@@ -311,9 +383,10 @@ impl AppState {
             .flat_map(|project| project.sources.iter().map(move |source| (project, source)))
             .filter(|(project, source)| {
                 let asked = requested.contains(&(project.id.clone(), source.id.clone()));
-                source.is_git && (asked || (pass == SyncPass::Due && waits_on_the_timer(source)))
+                source.is_git
+                    && (asked || (pass == SyncPass::Due && due_for_the_timer(source, now_ms)))
             })
-            .map(|(project, source)| subject(&project.id, source, fetch))
+            .map(|(project, source)| subject(&project.id, source, fetch, SyncOrigin::Service))
             .collect()
     }
 
@@ -335,7 +408,7 @@ impl AppState {
                 } else {
                     Fetch::Within(CUT_FETCH_DEADLINE)
                 };
-                subject(project_id, source, fetch)
+                subject(project_id, source, fetch, SyncOrigin::Cut)
             })
             .collect()
     }
@@ -345,7 +418,7 @@ impl AppState {
     /// meanwhile is not written.
     pub(in crate::app) fn settle_source_syncs(&mut self, synced: Vec<Synced>, now_ms: i64) {
         let mut wrote = false;
-        for Synced { subject, report } in synced {
+        for Synced { subject, report } in synced.into_iter().filter(Synced::tells_the_timer) {
             let Some(source) = self
                 .projects
                 .source_mut(&subject.project_id, &subject.source_id)
@@ -431,17 +504,22 @@ impl AppState {
     }
 }
 
-/// Whether the timer syncs this source: it is on, and the last sync did not
-/// need a person.
-fn waits_on_the_timer(source: &super::ProjectSource) -> bool {
+/// Whether the timer syncs this source at `now_ms`: it is on, the last sync
+/// did not need a person, and it is not backing off from timeouts.
+fn due_for_the_timer(source: &super::ProjectSource, now_ms: i64) -> bool {
     source.syncs_base()
-        && !source
+        && source
             .sync_status
             .as_ref()
-            .is_some_and(|status| status.needs_you)
+            .is_none_or(|status| status.due_for_the_timer(now_ms))
 }
 
-fn subject(project_id: &str, source: &super::ProjectSource, fetch: Fetch) -> SyncSubject {
+fn subject(
+    project_id: &str,
+    source: &super::ProjectSource,
+    fetch: Fetch,
+    origin: SyncOrigin,
+) -> SyncSubject {
     SyncSubject {
         project_id: project_id.to_string(),
         source_id: source.id.clone(),
@@ -449,6 +527,7 @@ fn subject(project_id: &str, source: &super::ProjectSource, fetch: Fetch) -> Syn
         path: source.path.clone(),
         base_branch: source.base_branch.clone(),
         fetch,
+        origin,
     }
 }
 

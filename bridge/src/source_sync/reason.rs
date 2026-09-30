@@ -2,6 +2,7 @@
 //! with nothing in them that was a secret.
 
 use super::{Failure, SyncOutcome};
+use std::time::Duration;
 
 /// How much of what git said a reason keeps. Enough to say why; not a log.
 const MAX_LINES: usize = 3;
@@ -16,6 +17,7 @@ const NEEDS_YOU: &[&str] = &[
     "Permission denied",
     "Host key verification failed",
     "passphrase",
+    "user presence",
     "401",
     "403",
 ];
@@ -61,15 +63,39 @@ pub(super) fn first_lines(text: &str) -> String {
 }
 
 /// What a fetch git ran and refused comes to: a remote that has no such
-/// branch is a skip, anything else a failure, marked as needing you when the
-/// remote wanted a secret.
-pub(super) fn fetch_failure(said: &str, remote: &str, base: &str) -> SyncOutcome {
+/// branch is a skip (`no_branch` says so), anything else a failure, marked
+/// as needing you when the remote wanted a secret.
+pub(super) fn fetch_failure(said: &str, remote: &str, no_branch: String) -> SyncOutcome {
     if said.contains("couldn't find remote ref") {
-        return SyncOutcome::Skipped(format!("{remote} has no branch {base}."));
+        return SyncOutcome::Skipped(no_branch);
     }
     let said = without_credentials(said);
     SyncOutcome::Failed(Failure {
-        needs_you: NEEDS_YOU.iter().any(|sign| said.contains(sign)),
+        needs_you: wants_a_person(&said),
         reason: format!("The fetch from {remote} failed: {}", first_lines(&said)),
+        timed_out: false,
     })
+}
+
+/// What a fetch killed at its deadline comes to. Running out of time alone
+/// is not a person's problem; a remote that said it was waiting on one (ssh
+/// asking for a security key touch, then waiting) is.
+pub(super) fn fetch_timeout(said: &str, remote: &str, deadline: Duration) -> SyncOutcome {
+    let said = without_credentials(said);
+    let mut reason = format!(
+        "{remote} did not answer within {} s.",
+        deadline.as_secs_f32().ceil()
+    );
+    if !said.trim().is_empty() {
+        reason = format!("{reason} {}", first_lines(&said));
+    }
+    SyncOutcome::Failed(Failure {
+        needs_you: wants_a_person(&said),
+        reason,
+        timed_out: true,
+    })
+}
+
+fn wants_a_person(said: &str) -> bool {
+    NEEDS_YOU.iter().any(|sign| said.contains(sign))
 }

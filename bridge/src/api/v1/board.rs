@@ -593,8 +593,9 @@ pub struct SourceSyncView {
     pub behind: u64,
     /// How far the last sync moved the base forward.
     pub commits: u64,
-    /// The remote wanted a person or never answered; the timer leaves the
-    /// source until it is synced by hand.
+    /// The remote wanted a person (a password, a passphrase, a key touch);
+    /// the timer leaves the source until it is synced by hand. A fetch that
+    /// only timed out is retried, backing off if it keeps timing out.
     pub needs_you: bool,
     pub last_attempt_ms: i64,
     pub last_synced_ms: Option<i64>,

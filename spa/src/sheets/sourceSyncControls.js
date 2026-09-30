@@ -17,7 +17,7 @@ export function syncControlsHtml(source, index, { syncsBase, syncing = new Map()
   const id = `ps-syncbase-${index}`;
   const waiting = awaitingSync(source, syncing);
   const status = waiting ? "Syncing…" : syncStatusLine(source, now);
-  return `<div class="field ps-sync" data-source-sync>
+  return `<div class="ps-sync" data-source-sync>
       <label class="toggle ps-sync-toggle" for="${id}"><input type="checkbox" id="${id}" data-sync-base${source.sync_base ? " checked" : ""}>
         Keep the base branch up to date with the remote</label>
       <div class="dim ps-hint" data-sync-status role="status">${esc(status)}</div>

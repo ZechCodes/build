@@ -127,6 +127,10 @@
 }
 
 /* #267: keeping a Git source's base branch up to date. */
+.ps-sync {
+  margin-top:10px;
+}
+
 .ps-sync [data-sync-status] {
   margin-top:4px;
 }

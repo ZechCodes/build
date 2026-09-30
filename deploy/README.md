@@ -186,13 +186,18 @@ System Settings → Privacy & Security → *Open Anyway*, once. Linux is unaffec
 ### The procedure
 
 ```bash
-# 1. bump the one home of the version
+# 1. bump the one home of the version, and date its CHANGELOG.md entry
 $EDITOR bridge/Cargo.toml         # version = "X.Y.Z"
 (cd bridge && cargo check)        # refreshes Cargo.lock
+$EDITOR CHANGELOG.md              # "## [X.Y.Z] - Unreleased" becomes today's date
 git commit -am 'chore(bridge): X.Y.Z'
 # 2. merge to main, then tag the commit that is going out
 git tag bridge-vX.Y.Z && git push origin bridge-vX.Y.Z
 ```
+
+Release notes come from [`CHANGELOG.md`](../CHANGELOG.md): the workflow's
+generated notes carry only the install and verification steps, so paste the
+version's entry above them in the release once it publishes.
 
 The tag is the trigger and the version check is the first job: if `X.Y.Z` is not
 what `bridge/Cargo.toml` declares, nothing is built. Each binary is then made to

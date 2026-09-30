@@ -1,12 +1,12 @@
-# Vendored crates: webrtc and rtc 0.20.4, patched (#166, #179)
+# Vendored crates: webrtc and rtc 0.20.4, patched (#166, #179, #298)
 
 The bridge builds `webrtc` and `rtc` from here instead of crates.io, through
 the `[patch.crates-io]` entries at the end of `bridge/Cargo.toml`:
 
 | crate | upstream | crates.io checksum | patch |
 | --- | --- | --- | --- |
-| `webrtc/` | [webrtc 0.20.4](https://crates.io/crates/webrtc/0.20.4) (github.com/webrtc-rs/webrtc) | `3daa8f2f6366331ae3275a6c02a855c6fb3faa1d16960498d7daaf61c96e76bd` | `webrtc-driver-drain.patch` |
-| `rtc/` | [rtc 0.20.4](https://crates.io/crates/rtc/0.20.4) (github.com/webrtc-rs/rtc) | `c9005c36795ad076abd36db3ea9ae0275a60395944647d58c1f2bc3e118dddba` | `rtc-dtls-client-hello.patch` |
+| `webrtc/` | [webrtc 0.20.4](https://crates.io/crates/webrtc/0.20.4) (github.com/webrtc-rs/webrtc) | `3daa8f2f6366331ae3275a6c02a855c6fb3faa1d16960498d7daaf61c96e76bd` | `webrtc-driver-drain.patch`, then `webrtc-negotiated-first-message-test.patch` |
+| `rtc/` | [rtc 0.20.4](https://crates.io/crates/rtc/0.20.4) (github.com/webrtc-rs/rtc) | `c9005c36795ad076abd36db3ea9ae0275a60395944647d58c1f2bc3e118dddba` | `rtc-dtls-client-hello.patch`, `rtc-negotiated-first-message.patch` |
 
 `webrtc` is the async driver. `rtc` is the sans-I/O peer connection it drives
 (ICE, DTLS, SCTP), which the bridge also uses directly. The other `rtc-*`
@@ -14,7 +14,7 @@ crates still come from crates.io.
 
 Each directory is the published crate as the registry unpacks it, with its
 upstream `Cargo.toml`, `Cargo.toml.orig`, `Cargo.lock` and license files, plus
-its patch. Nothing else is changed, apart from these omissions:
+its patches. Nothing else is changed, apart from these omissions:
 
 - `webrtc/codecov.yml` and `rtc/codecov.yml`: upstream's CI configuration,
   holding webrtc-rs's Codecov upload token, which is not ours to carry and
@@ -107,6 +107,43 @@ Each part of the changes has a test that fails without it:
 | the TURN drain after the core (1.d) | the relayed SCTP INIT |
 | rtc: queueing the ClientHello after `connect()` | the ClientHello |
 
+[#298](https://github.com/ZechCodes/build/issues/298): a negotiated channel's
+first inbound message could be lost for good. rtc dials the negotiated
+channels when it handles `SCTPHandshakeComplete`, and it only handles that
+event when the driver pumps events, after the reads. The far end is the SCTP
+server, so its association is up when it takes the bridge's COOKIE ECHO, and
+its channels can send before the COOKIE ACK reaches the bridge. When the ACK
+and that first DATA came in one read burst, the DATA found its channel
+registered but not dialed. `DataChannelHandler::handle_read` failed with
+`ErrDataChannelNotExisted`, and the message was dropped after SCTP had already
+acked it, so nothing would send it again. In CI the QA harness's first `ping`
+hung for 30 s. The bridge logged both channels opening with no
+`carrier_bound` after them (runs 36743782697 and 36747551226).
+
+`rtc-negotiated-first-message.patch` changes
+`peer_connection/handler/datachannel.rs` only:
+
+- A channel still `Connecting` when a message arrives on its stream is opened
+  right there, before the message is handled: dialed, announced open and its
+  dial output queued. The handshake event then finds it open and leaves it
+  alone. Both paths share one function, `open_connecting`.
+- One side effect is left as it is. The dial's internal DATA_CHANNEL_OPEN reaches
+  the SCTP handler after the peer's DATA has already created the stream, so
+  `open_stream` there answers `ErrStreamAlreadyExist`, which the pipeline logs,
+  and the stream keeps SCTP's defaults (ordered, reliable) instead of the
+  channel's reliability parameters. Both of the bridge's channels are ordered
+  and reliable, so nothing changes for them. An unordered or partially
+  reliable negotiated channel would need that handler to reuse the stream.
+
+`webrtc-negotiated-first-message-test.patch` applies after
+`webrtc-driver-drain.patch` and adds one driver-module test:
+`negotiated_channels::the_first_message_in_the_burst_that_completes_the_handshake_is_delivered`.
+It drives two `rtc` cores in memory. The far end offers and sends `ping` the
+moment its channel accepts a send. The bridge reads everything the far end
+wrote, COOKIE ACK and ping together, before it pumps an event, then answers
+`pong` on the same channel. Without the rtc change it fails with "the bridge
+never delivered the far end's first message".
+
 The measurement harness for #166 is `bridge/experiments/166/` at commit
 `1ca86df4`. The numbers for both changes are on their tasks.
 
@@ -127,8 +164,8 @@ media files the published crate does not ship.
 
 `rtc` is not a member of that workspace: its tests' dev-dependencies include
 webrtc 0.14 and a web server stack, which the bridge has no use for. Its
-change is covered by the ClientHello driver test above. Its own unit tests run
-from a copy outside this tree, on its upstream lockfile (this fetches the
+changes are covered by the ClientHello and negotiated-channel driver tests
+above. Its own unit tests run from a copy outside this tree, on its upstream lockfile (this fetches the
 dev-dependencies once):
 
     S=$(mktemp -d -p /var/tmp); cp -r bridge/vendor/rtc $S/rtc
@@ -148,22 +185,33 @@ From the repo root, with the crates in the local registry (a `cargo fetch` in
     }
     V=$(mktemp -d)
     pristine webrtc $V/webrtc; pristine rtc $V/rtc
-    (cd $V && patch -p1 < "$OLDPWD/bridge/vendor/webrtc-driver-drain.patch")
-    (cd $V && patch -p1 < "$OLDPWD/bridge/vendor/rtc-dtls-client-hello.patch")
+    for p in webrtc-driver-drain webrtc-negotiated-first-message-test \
+        rtc-dtls-client-hello rtc-negotiated-first-message; do
+      (cd $V && patch -p1 < "$OLDPWD/bridge/vendor/$p.patch")
+    done
     diff -r -x target $V/webrtc bridge/vendor/webrtc
     diff -r -x target $V/rtc bridge/vendor/rtc
 
 No output means each vendored tree is exactly the registry source plus its
-patch. To move to a new upstream version, copy the new crate over its
-directory, apply the patch (fix it where it no longer applies), and update the
+patches. To move to a new upstream version, copy the new crate over its
+directory, apply the patches in the order above (fix them where they no longer apply), and update the
 checksum above and `bridge/Cargo.lock`. The crates' own `.gitignore` files and
 the global gitignore drop a few upstream files (`Cargo.lock`,
 `webrtc/.vscode/`), so stage them with `git add -f`.
 
-After editing the vendored source, regenerate its patch against a fresh
-registry copy. For rtc (webrtc's is the same with its names):
+After editing the vendored source, regenerate the patch that carries the
+change. Each patch covers its own files, so diff only those. For rtc, whose two
+patches touch different files:
 
     P=$(mktemp -d); mkdir $P/a $P/b
     pristine rtc $P/a/rtc
     cp -r bridge/vendor/rtc $P/b/rtc
-    (cd $P && git -c diff.noprefix=true diff --no-index a/rtc b/rtc) > bridge/vendor/rtc-dtls-client-hello.patch
+    f=src/peer_connection/handler/dtls.rs
+    (cd $P && git -c diff.noprefix=true diff --no-index a/rtc/$f b/rtc/$f) > bridge/vendor/rtc-dtls-client-hello.patch
+    f=src/peer_connection/handler/datachannel.rs
+    (cd $P && git -c diff.noprefix=true diff --no-index a/rtc/$f b/rtc/$f) > bridge/vendor/rtc-negotiated-first-message.patch
+
+Both webrtc patches touch `src/peer_connection/driver.rs`. The test patch is
+the diff to the vendored file from the pristine crate with
+`webrtc-driver-drain.patch` applied; the drain patch is the diff from the
+pristine crate to that intermediate copy.

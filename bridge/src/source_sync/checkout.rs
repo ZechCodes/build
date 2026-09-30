@@ -121,9 +121,10 @@ const NAMED_AT_MOST: usize = 5;
 
 /// The paths in the working tree that `new` would write over and `old` does
 /// not track: a path `new` adds that is already there, and anything that is
-/// not a directory where `new` needs one. A tracked directory `new` turns
-/// into a file is the checkout's own to remove, as is a tracked file `new`
-/// turns into a directory.
+/// not a directory where `new` needs one. A tracked path whose type `new`
+/// changes (a file into a symlink, a file into a directory) is the
+/// checkout's own to replace; a tracked directory `new` turns into a file is
+/// too, unless it holds something `old` does not track, which git keeps.
 fn files_in_the_way(
     repo: &git2::Repository,
     old: git2::Oid,
@@ -144,28 +145,53 @@ fn files_in_the_way(
             _ => {}
         }
     }
-    let mut in_the_way = Vec::new();
-    for path in added {
-        let blocked = match std::fs::symlink_metadata(workdir.join(&path)) {
-            Ok(meta) if meta.is_dir() => !removed.iter().any(|gone| gone.starts_with(&path)),
-            Ok(_) => true,
-            Err(_) => false,
-        };
-        let parent_in_the_way = path.ancestors().skip(1).find(|ancestor| {
-            !ancestor.as_os_str().is_empty()
-                && !removed.contains(*ancestor)
-                && std::fs::symlink_metadata(workdir.join(ancestor))
-                    .is_ok_and(|meta| !meta.is_dir())
-        });
-        if let Some(ancestor) = parent_in_the_way {
-            in_the_way.push(ancestor.to_path_buf());
-        } else if blocked {
-            in_the_way.push(path);
-        }
-    }
+    let mut in_the_way: Vec<PathBuf> = added
+        .iter()
+        .filter_map(|path| in_the_way_of(workdir, path, &removed))
+        .collect();
     in_the_way.sort();
     in_the_way.dedup();
     Ok(in_the_way)
+}
+
+/// What in the working tree stops the checkout writing `path`, which `new`
+/// adds, given the tracked paths `new` removes: a file of the user's above
+/// it where it needs a directory, or at it.
+fn in_the_way_of(workdir: &Path, path: &Path, removed: &HashSet<PathBuf>) -> Option<PathBuf> {
+    let above = path.ancestors().skip(1).find(|ancestor| {
+        !ancestor.as_os_str().is_empty()
+            && !removed.contains(*ancestor)
+            && std::fs::symlink_metadata(workdir.join(ancestor)).is_ok_and(|meta| !meta.is_dir())
+    });
+    if let Some(ancestor) = above {
+        return Some(ancestor.to_path_buf());
+    }
+    let blocked = match std::fs::symlink_metadata(workdir.join(path)) {
+        Ok(meta) if meta.is_dir() => holds_untracked(workdir, path, removed),
+        Ok(_) => !removed.contains(path),
+        Err(_) => false,
+    };
+    blocked.then(|| path.to_path_buf())
+}
+
+/// Whether the directory `dir` holds anything but the tracked files `new`
+/// removes, however deep. One that cannot be read counts as holding
+/// something.
+fn holds_untracked(workdir: &Path, dir: &Path, removed: &HashSet<PathBuf>) -> bool {
+    let Ok(entries) = std::fs::read_dir(workdir.join(dir)) else {
+        return true;
+    };
+    entries.into_iter().any(|entry| {
+        let Ok(entry) = entry else {
+            return true;
+        };
+        let path = dir.join(entry.file_name());
+        match entry.file_type() {
+            Ok(kind) if kind.is_dir() => holds_untracked(workdir, &path, removed),
+            Ok(_) => !removed.contains(&path),
+            Err(_) => true,
+        }
+    })
 }
 
 /// Remove the index lock at `lock` if it was taken after `started`, by the

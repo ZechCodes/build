@@ -140,3 +140,51 @@ fn a_fetch_that_failed_gives_no_commit_to_cut_from() {
 
     failed(&report);
 }
+
+/// Review #277, finding 1: a tracked file upstream turns into a symlink is
+/// the checkout's own to replace, not a file of the user's.
+#[test]
+fn a_tracked_file_upstream_turns_into_a_symlink_is_not_in_the_way() {
+    let pair = pair();
+    git_in(&pair.upstream, &["rm", "-q", "README.md"]);
+    std::os::unix::fs::symlink("elsewhere.md", pair.upstream.join("README.md")).unwrap();
+    git_in(&pair.upstream, &["add", "README.md"]);
+    git_in(
+        &pair.upstream,
+        &["commit", "-q", "-m", "README becomes a link"],
+    );
+
+    let report = sync_base_for_a_cut(&pair.base, "main", NOW);
+
+    assert_eq!(cut_from(&report), rev(&pair.upstream, "main"));
+    let service = sync_base(&pair.base, "main", Fetch::Skip);
+    assert_eq!(service.outcome, SyncOutcome::FastForwarded { commits: 1 });
+}
+
+/// Review #277, finding 2: git will not turn a tracked directory into a
+/// file while it holds a file of the user's, so neither does the cut's
+/// reading, and it names the directory.
+#[test]
+fn an_untracked_file_in_a_directory_upstream_turns_into_a_file_keeps_the_cut_on_the_base() {
+    let pair = pair();
+    std::fs::create_dir(pair.upstream.join("notes")).unwrap();
+    commit(&pair.upstream, "notes/a.md", "a\n");
+    git_in(&pair.base, &["pull", "-q", "--ff-only"]);
+    git_in(&pair.upstream, &["rm", "-q", "-r", "notes"]);
+    commit(&pair.upstream, "notes", "now a file\n");
+    std::fs::create_dir(pair.base.join("notes/deeper")).unwrap();
+    std::fs::write(pair.base.join("notes/deeper/mine.txt"), "mine\n").unwrap();
+
+    let report = sync_base_for_a_cut(&pair.base, "main", NOW);
+
+    assert!(skipped(&report).contains("notes"), "{report:?}");
+    let service = sync_base(&pair.base, "main", Fetch::Skip);
+    assert!(
+        matches!(service.outcome, SyncOutcome::Skipped(_)),
+        "{service:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(pair.base.join("notes/deeper/mine.txt")).unwrap(),
+        "mine\n"
+    );
+}

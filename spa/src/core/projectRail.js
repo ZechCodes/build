@@ -14,7 +14,7 @@
 // The project page stands it up and so does a task's page, which is a page OF
 // the Tasks face: the rail is how the reader gets back to the list.
 
-import { PROJECT_TABS, paintDirectoryRail } from "./directoryRail.js";
+import { PROJECT_TABS, paintDirectoryRail, releaseDirectoryRail } from "./directoryRail.js";
 import { followProjectTasksUnread } from "./projectTasksUnread.js";
 import { projectSettingsLabel } from "./text.js";
 import { refreshFeed } from "./taskFeed.js";
@@ -58,10 +58,11 @@ export function mountProjectRail(host, { route, context, onSelect, navigate }) {
       sayCount();
     },
     // The rail is the shell's column, lent to whichever surface is standing on
-    // it: leaving hands it back empty.
+    // it: leaving hands it back empty, or to the next surface where the keyboard
+    // is on it.
     dispose() {
       tasks.dispose();
-      host.innerHTML = "";
+      releaseDirectoryRail(host);
     },
   };
 }

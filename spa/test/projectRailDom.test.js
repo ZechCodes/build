@@ -68,6 +68,41 @@ describe("the project rail, wired", () => {
     expect(selected).toEqual([]);
   });
 
+  // A task's page is a page OF the Tasks face, so an arrow there navigates to
+  // the project page, and the app takes the task page down before it stands the
+  // project page up on the same column (app.js renderPage). The keyboard was on
+  // the rail and stays on it, the way it does when a workspace's rail switches
+  // faces in place.
+  it("keeps the keyboard on the rail across a navigation to the face arrowed to", () => {
+    let next = null;
+    rail.dispose();
+    rail = mountProjectRail(host(), {
+      route,
+      context,
+      navigate: vi.fn(),
+      onSelect: (tab) => {
+        next = tab;
+      },
+    });
+    rail.paint("tasks");
+    host().querySelector("[data-tab=tasks]").focus();
+    document.activeElement.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    expect(next).toBe("workspaces");
+
+    rail.dispose();
+    rail = mountProjectRail(host(), { route, context, onSelect: (tab) => selected.push(tab), navigate: vi.fn() });
+    rail.paint(next);
+    expect(document.activeElement).toBe(host().querySelector("[data-tab=workspaces]"));
+  });
+
+  it("hands the column back empty when the keyboard was on it and nothing stands up after", async () => {
+    rail.paint("tasks");
+    host().querySelector("[data-tab=tasks]").focus();
+    rail.dispose();
+    await Promise.resolve();
+    expect(host().children).toHaveLength(0);
+  });
+
   it("hands the shell's column back empty when the surface leaves", () => {
     rail.paint("tasks");
     rail.dispose();

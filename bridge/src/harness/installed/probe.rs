@@ -52,7 +52,11 @@ impl CliProbe for VersionFlag {
 }
 
 fn run_version_flag(binary: &str) -> std::io::Result<String> {
-    let mut child = ProbeChild::start(binary, &["--version"], false)?;
+    run_version_flag_within(binary, PROBE_DEADLINE)
+}
+
+fn run_version_flag_within(binary: &str, deadline: std::time::Duration) -> std::io::Result<String> {
+    let mut child = ProbeChild::start_within(binary, &["--version"], false, deadline)?;
     let mut said = Vec::new();
     while let Some(line) = child.next_line()? {
         said.push(line);

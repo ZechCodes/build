@@ -211,28 +211,40 @@ fn a_missing_codex_reads_as_knowing_nothing() {
 
 /// A CLI's output is read into memory, so one that says too much is cut off
 /// and read as knowing nothing, however it says it.
+///
+/// Cut off by what it said, not by the clock: read under a deadline no
+/// machine reaches, the probe must still stop, and say it stopped for size.
+/// Timing it against [`PROBE_DEADLINE`] instead failed on a loaded machine
+/// that could not read 4 MiB of `yes` in 3 s (#280).
 #[test]
 fn a_cli_that_says_too_much_is_cut_off() {
     let dir = tempfile::tempdir().unwrap();
-    let endless_lines = fake_cli(dir.path(), "lines", "yes '2.1.280 (Claude Code)'");
-    let endless_line = fake_cli(
+    let many_lines = fake_cli(
+        dir.path(),
+        "lines",
+        "yes '2.1.280 (Claude Code)' | head -c 8000000",
+    );
+    let long_line = fake_cli(
         dir.path(),
         "line",
         "echo 2.1.280; head -c 2000000 /dev/zero | tr '\\0' a",
     );
 
-    for cli in [&endless_lines, &endless_line] {
-        let started = Instant::now();
-        assert_eq!(
-            VERSION_FLAG.read(cli.to_str().unwrap()),
-            CliReading::default(),
-            "{}",
-            cli.display()
+    for cli in [&many_lines, &long_line] {
+        let cli = cli.to_str().unwrap();
+        let Err(error) = run_version_flag_within(cli, Duration::from_secs(60)) else {
+            panic!("{cli}: a CLI that said too much was read whole");
+        };
+        assert_ne!(
+            error.kind(),
+            std::io::ErrorKind::TimedOut,
+            "{cli}: cut off by the clock, not by what it said"
         );
         assert!(
-            started.elapsed() < PROBE_DEADLINE,
-            "cut off by what it said, not by the clock"
+            error.to_string().starts_with("said more than"),
+            "{cli}: {error}"
         );
+        assert_eq!(VERSION_FLAG.read(cli), CliReading::default(), "{cli}");
     }
 }
 

@@ -3,7 +3,7 @@
 // name, the agent defaults scoped to this workspace, and the delete that takes
 // its checkouts with it.
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { wipeCache, writeCached } from "../src/core/localCache.js";
 import { wipeUiRecords, writeUiRecord, readUiRecord } from "../src/core/localUiStore.js";
 import { uiAddress } from "../src/core/localUiState.js";
@@ -77,9 +77,17 @@ beforeEach(async () => {
   document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
 });
 
+// Every sheet a test opened is closed after it, and its last draft lands
+// before the next test wipes the store. A sheet left open would flush its
+// debounced draft into whichever test runs 180 ms later (#299).
+const opened = [];
+afterEach(async () => {
+  await Promise.allSettled(opened.splice(0).map((close) => close()));
+});
+
 const open = (options = {}) => {
   const callRpc = options.callRpc || vi.fn().mockResolvedValue({});
-  openWorkspaceSettings(WORKSPACE, { catalog: CATALOG, ...options, callRpc });
+  opened.push(openWorkspaceSettings(WORKSPACE, { catalog: CATALOG, ...options, callRpc }));
   return callRpc;
 };
 

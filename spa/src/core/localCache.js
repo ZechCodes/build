@@ -378,6 +378,60 @@ export function mergeCachedIfUnwritten(address, written, merge) {
   return mergeRecordAtomically(address, (record) => (isCachedWrite(record, written) ? merge(record?.value) : null));
 }
 
+/** Put records and let go of others in one readwrite transaction, only while
+ * `guard.address` is still the write `guard.written` names (`recordWriteOf`,
+ * so null is no record) — or always, with no guard. `drop` names the records
+ * to let go of: those under `{ deviceId, entityId, kind }` whose sub starts
+ * `subPrefix` and that `where(sub, value)` picks; they go before the puts, so
+ * a put may name one of them. For a record and the records beside it that
+ * must change together or not at all (a file's head and its pages, #270).
+ * Answers whether it was written. */
+export function writeCachedIfStill({ guard = null, puts = [], drop = null }) {
+  const changed = [];
+  return wroteStore((store) => {
+    changed.length = 0;
+    const put = () => {
+      for (const { address, value } of puts) {
+        const key = recordKey(address);
+        if (!putOrAbort(store, withBridgeGeneration(address, { ...writeStamp(), value }), key)) return;
+        changed.push(key);
+      }
+    };
+    const dropThenPut = () => {
+      if (!drop) return put();
+      const kindPrefix = recordKey({ ...drop, sub: "" });
+      const walk = store.openCursor(prefixRange(`${kindPrefix}${encodeURIComponent(drop.subPrefix)}`));
+      walk.onsuccess = () => {
+        const cursor = walk.result;
+        if (!cursor) return put();
+        const key = String(cursor.primaryKey);
+        try {
+          if (drop.where(decodeURIComponent(key.slice(kindPrefix.length)), cursor.value?.value)) {
+            cursor.delete();
+            changed.push(key);
+          }
+          cursor.continue();
+        } catch (error) {
+          abortForError(store, error);
+        }
+      };
+    };
+    if (!guard) {
+      dropThenPut();
+      return null;
+    }
+    const request = store.get(recordKey(guard.address));
+    request.onsuccess = () => {
+      if (recordWriteOf(request.result) === guard.written) dropThenPut();
+    };
+    return null;
+  }).then((committed) => {
+    if (!committed || !changed.length) return false;
+    for (const key of new Set(changed)) announce(partsOfKey(key));
+    return true;
+  });
+}
+
 function mergeRecordAtomically(address, merge) {
   const key = recordKey(address);
   let changed = false;

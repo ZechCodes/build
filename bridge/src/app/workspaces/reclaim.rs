@@ -462,7 +462,7 @@ impl AppState {
     }
 
     /// The last verdict on one workspace, as its row carries it. `null` before
-    /// the first sweep has measured it.
+    /// the first sweep has measured it or a size walk has sized it (#273).
     pub(in crate::app) fn workspace_lifecycle_json(&self, workspace_id: &str) -> Value {
         self.workspace_lifecycle
             .get(workspace_id)

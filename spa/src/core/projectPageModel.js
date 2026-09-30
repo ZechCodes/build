@@ -34,13 +34,18 @@ const sizeOf = (workspace) => {
 /** The quiet stand-in for a size the machine is still to send (#273). */
 export const SIZE_PLACEHOLDER = "—";
 
-/** What a row says it weighs. A machine that measures when the tab asks will
- *  send the size, so a row still without one says so quietly; an older
- *  machine's row says nothing, as it always has. */
-const sizeText = (bytes, measuresSizes) => {
+/** What a row says it weighs. A size the machine will send is a quiet
+ *  placeholder until it arrives; a row whose size is not coming (an older
+ *  machine, a workspace it never measures) says nothing, as it always has. */
+const sizeText = (bytes, coming) => {
   if (bytes !== null) return humanBytes(bytes);
-  return measuresSizes ? SIZE_PLACEHOLDER : "";
+  return coming ? SIZE_PLACEHOLDER : "";
 };
+
+/** Whether the machine will send this workspace's size when asked: it
+ *  measures only the workspaces Build made that are not finished. */
+const sizeComing = (workspace, measuresSizes) =>
+  measuresSizes && sizeOf(workspace) === null && workspace?.managed !== false && workspace?.status !== "finished";
 
 /** One workspace as the page lists it: the rail's row, plus what that workspace
  *  is standing on, how its checkout is doing, whether it can be reclaimed, and
@@ -61,8 +66,8 @@ const pageRow = (entry, workspace, measuresSizes) => ({
   // The reclaim service's verdict (#135): null until it has one worth saying.
   lifecycle: lifecycleView(workspace?.lifecycle),
   sizeBytes: sizeOf(workspace),
-  sizeText: sizeText(sizeOf(workspace), measuresSizes),
-  sizePending: measuresSizes && sizeOf(workspace) === null,
+  sizeText: sizeText(sizeOf(workspace), sizeComing(workspace, measuresSizes)),
+  sizePending: sizeComing(workspace, measuresSizes),
 });
 
 /** The one project block the rail would paint for this project, or null when no

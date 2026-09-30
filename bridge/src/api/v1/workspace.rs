@@ -320,7 +320,9 @@ pub struct WorkspaceListRow {
     /// What the reclaim service last concluded about this workspace (1.24.0,
     /// `workspaces.lifecycle`): whether it is idle, what holds it, how big it
     /// is. `null` before the first sweep measured it, and for an adopted
-    /// checkout, which is never measured.
+    /// checkout, which is never measured. A size walked because the
+    /// Workspaces tab asked (3.4.0, #273) comes on a record with no verdict
+    /// yet: `measured_at_ms` 0, neither idle nor reclaimable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle: Option<crate::reclaim::LifecycleRecord>,
 }

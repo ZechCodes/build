@@ -176,6 +176,12 @@ describe("sizes arriving", () => {
     expect(shown).toEqual([["pending", "—", true], ["sized", "3.0 MB", false]]);
   });
 
+  it("shows no placeholder for a workspace the machine never measures: adopted or finished", () => {
+    const page = listed([workspace("adopted", { managed: false }), workspace("done", { status: "finished" })], { measuresSizes: true });
+    expect(page.rows.length).toBeGreaterThan(0);
+    expect(page.rows.every((row) => row.sizeText === "" && row.sizePending === false)).toBe(true);
+  });
+
   it("shows nothing for a missing size on a machine that does not measure", () => {
     const page = listed([workspace("pending")]);
     expect(page.rows.map((row) => [row.sizeText, row.sizePending])).toEqual([["", false]]);

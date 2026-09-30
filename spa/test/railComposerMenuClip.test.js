@@ -40,6 +40,8 @@ vi.mock("../src/core/surfaceTabs.js", () => ({ mountAgentTab: () => ({ dispose: 
 await import("../src/app.js");
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { mountComposerModelMenu } = await import("../src/core/composer.js");
+const { wipeCache } = await import("../src/core/localCache.js");
+const { writeRailWorkItem } = await import("./railCacheFixture.js");
 
 const CATALOG = {
   default_provider: "claude",
@@ -68,10 +70,14 @@ let rail = null;
 
 const panel = () => document.getElementById("rail-panel");
 
-/** The rail's own composer, with both menus painted on it. The rail asks its
- *  device for the catalog and this mount has no device, so the menus are hung
- *  here the way the rail hangs them once its answer lands. */
+/** The rail's own composer under ag-1's conversation, with both menus painted
+ *  on it. The rail reads its agents off the cache, so the row goes there, and
+ *  the agent's bubble says the conversation is up rather than the new-agent
+ *  panel (#258). The rail asks its device for the catalog and this mount has no
+ *  device, so the menus are hung here the way the rail hangs them once its
+ *  answer lands. */
 const mountRailWithMenus = async () => {
+  await writeRailWorkItem(branchRow());
   rail = mountAgentRail(document.getElementById("agent-rail"), {
     kind: "branch",
     deviceId: "dev-1",
@@ -79,7 +85,10 @@ const mountRailWithMenus = async () => {
     branch: "build/login",
     call: (method, params) => bridge.call(method, params),
   });
-  await vi.waitFor(() => expect(panel()?.querySelector("#railinputmodel")).toBeTruthy());
+  await vi.waitFor(() => {
+    expect(document.querySelector('#agent-rail [data-bubble="agent"][data-agent="ag-1"]')).toBeTruthy();
+    expect(panel()?.querySelector("#railinputmodel")).toBeTruthy();
+  });
   mountComposerModelMenu(panel(), {
     ids: { input: "railinput", send: "railsend", hint: "railhint" },
     onChoose: () => {},
@@ -96,11 +105,12 @@ const boxesAroundMenu = (menu) => {
 const classesAround = (selector) =>
   boxesAroundMenu(panel().querySelector(`${selector} .splitmenu`)).map((box) => box.className.trim());
 
-beforeEach(() => {
+beforeEach(async () => {
   document.body.innerHTML = bodyHtml;
   localStorage.clear();
   resetAgentRailMemory();
-  bridge.call = vi.fn(async (method) => (method === "branch.get" ? branchRow() : {}));
+  await wipeCache();
+  bridge.call = vi.fn(async () => ({}));
 });
 
 afterEach(() => {

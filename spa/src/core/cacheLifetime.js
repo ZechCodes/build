@@ -24,6 +24,7 @@ import {
   pageFollows,
   pageFromAnswer,
   readBodyPages,
+  writeBodyPageIfStill,
 } from "./bodyPages.js";
 import { bridgeCapabilities } from "./changeEvents.js";
 import { fileBodyReading } from "./fileViewer.js";
@@ -181,16 +182,6 @@ const pagedHead = (file, over) => ({ ...fileFacts(file, false), paged: true, ...
  *  film past the media cap — with no bytes beside it. */
 const bodilessHead = (head, file, truncated) => ({ file: fileFacts(file, truncated), drop: bodyPagesDrop(head) });
 
-/** Keep one page, only while the record is still the one started from
- *  (`guard`, see `writeCachedIfStill`). The first page of a body is where a
- *  new version starts, so it lets go of every other version's pages in the
- *  same transaction. Answers whether it was kept. */
-const keepPage = (head, page, guard) => writeCachedIfStill({
-  guard,
-  puts: [bodyPagePut(head, page)],
-  drop: page.offset === 0 ? bodyPagesDrop(head, { keep: page.of }) : null,
-});
-
 /** How much one page read asks for: a source file is painted a page at a
  *  time, so its pages are small; a body painted whole is read in the
  *  largest pages the bridge cuts, for the fewest round trips. */
@@ -205,7 +196,7 @@ async function readRemainingPages(head, first, readPage, guard) {
   let { end, complete } = await readBodyPages(head, first.of);
   while (!complete) {
     const page = await readPage(end, FILE_MAX_BYTES);
-    if (!pageFollows(page, end, first.of) || !(await keepPage(head, page, guard))) return;
+    if (!pageFollows(page, end, first.of) || !(await writeBodyPageIfStill(head, page, guard))) return;
     end = page.end;
     complete = end >= page.total;
   }
@@ -224,7 +215,7 @@ async function readFilePages(head, file, readPage, guard) {
   const first = await readPage(0, pageBytesFor(reading));
   if (!first) return null;
   if (whole && first.total > FILE_MEDIA_MAX_BYTES) return bodilessHead(head, { ...file, size: first.total }, true);
-  if (!(await keepPage(head, first, guard))) return null;
+  if (!(await writeBodyPageIfStill(head, first, guard))) return null;
   if (whole) await readRemainingPages(head, first, readPage, guard);
   return { file: pagedHead(file, { size: first.total, of: first.of }) };
 }

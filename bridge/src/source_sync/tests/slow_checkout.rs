@@ -117,3 +117,36 @@ fn a_lock_someone_else_holds_is_left_alone() {
     );
     assert!(lock.exists(), "someone else's lock was removed");
 }
+
+/// A cut's sync never starts the checkout: the base checked out here and
+/// behind is left, however fast its checkout would have been, and says so.
+#[test]
+fn a_cut_leaves_the_checkout_and_says_so() {
+    let pair = pair();
+    slow_filter_upstream(&pair, 40);
+    let before = rev(&pair.base, "main");
+
+    let started = Instant::now();
+    let report = sync_base_for_a_cut(&pair.base, "main", NOW);
+
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert_eq!(report.outcome, SyncOutcome::CheckoutLeft);
+    assert!(report.fetched);
+    assert_eq!((report.ahead, report.behind), (0, 1));
+    assert_eq!(rev(&pair.base, "main"), before);
+    assert_eq!(porcelain(&pair.base), "");
+}
+
+/// Moving a ref is instant, so a cut still does it: a base checked out
+/// nowhere is fast-forwarded.
+#[test]
+fn a_cut_still_moves_a_base_checked_out_nowhere() {
+    let pair = pair();
+    git_in(&pair.base, &["switch", "-q", "--detach"]);
+    slow_filter_upstream(&pair, 40);
+
+    let report = sync_base_for_a_cut(&pair.base, "main", NOW);
+
+    assert_eq!(report.outcome, SyncOutcome::FastForwarded { commits: 1 });
+    assert_eq!(rev(&pair.base, "main"), rev(&pair.upstream, "main"));
+}

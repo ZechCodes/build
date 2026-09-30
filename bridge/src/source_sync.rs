@@ -14,7 +14,9 @@
 //! compare-and-swap `update-ref`, and no working tree is touched. Neither
 //! happens while a rebase or bisect of the base, or a merge, cherry-pick or
 //! revert on it, is part-way through in any worktree ([`in_progress`]). The
-//! checkout, once started, is let finish ([`checkout`]).
+//! checkout, once started, is let finish ([`checkout`]); a workspace cut
+//! never starts one, and leaves it to the service
+//! ([`sync_base_for_a_cut`]).
 //!
 //! Every git it starts runs as nobody's command ([`git`]): no prompt of any
 //! kind, no hooks, no maintenance, killed at its deadline. The url the fetch
@@ -45,6 +47,17 @@ pub const CUT_FETCH_DEADLINE: Duration = Duration::from_secs(10);
 
 /// How long the service's and the Sync now button's fetch may run.
 pub const SERVICE_FETCH_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Whether a sync may fast-forward the source's own checkout, files and all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Checkout {
+    /// Yes, killed at this cap.
+    Within(Duration),
+    /// No: a workspace cut, which waits on nothing but its fetch. A base
+    /// checked out in the source's checkout and behind is left for the
+    /// service ([`SyncOutcome::CheckoutLeft`]).
+    Leave,
+}
 
 /// Whether a sync asks the remote first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,6 +95,10 @@ pub enum SyncOutcome {
     Skipped(String),
     Failed(Failure),
     NoRemote,
+    /// A cut's sync found the base checked out in the source's checkout and
+    /// behind: fast-forwarding its files can take minutes, so the cut left
+    /// it for the service.
+    CheckoutLeft,
 }
 
 /// One sync's outcome, and where the base stands against its remote after it.
@@ -99,23 +116,40 @@ pub struct SyncReport {
 /// Sync the base branch `base_branch` of the checkout at `path` with its
 /// remote. Never fails: what went wrong is the outcome.
 pub fn sync_base(path: &Path, base_branch: &str, fetch: Fetch) -> SyncReport {
-    sync_base_capped(path, base_branch, fetch, checkout::CHECKOUT_CAP)
+    sync_base_with(
+        path,
+        base_branch,
+        fetch,
+        Checkout::Within(checkout::CHECKOUT_CAP),
+    )
+}
+
+/// [`sync_base`] for a workspace cut: the fetch and a move of the ref alone,
+/// never the source's own checkout, so the cut waits on nothing but the
+/// fetch's deadline.
+pub fn sync_base_for_a_cut(path: &Path, base_branch: &str, fetch: Fetch) -> SyncReport {
+    sync_base_with(path, base_branch, fetch, Checkout::Leave)
 }
 
 /// [`sync_base`], with the checkout's own cap named.
+#[cfg(test)]
 fn sync_base_capped(
     path: &Path,
     base_branch: &str,
     fetch: Fetch,
     checkout_cap: Duration,
 ) -> SyncReport {
+    sync_base_with(path, base_branch, fetch, Checkout::Within(checkout_cap))
+}
+
+fn sync_base_with(path: &Path, base_branch: &str, fetch: Fetch, checkout: Checkout) -> SyncReport {
     let mut report = SyncReport {
         outcome: SyncOutcome::UpToDate,
         ahead: 0,
         behind: 0,
         fetched: false,
     };
-    report.outcome = match BaseSync::prepare(path, base_branch, checkout_cap)
+    report.outcome = match BaseSync::prepare(path, base_branch, checkout)
         .and_then(|sync| sync.run(fetch, &mut report))
     {
         Ok(outcome) | Err(outcome) => outcome,
@@ -147,12 +181,12 @@ struct BaseSync<'a> {
     remote: String,
     /// The branch on `remote` the base follows.
     followed: String,
-    /// How long the source checkout's fast-forward may run.
-    checkout_cap: Duration,
+    /// Whether, and for how long, the source checkout's fast-forward may run.
+    checkout: Checkout,
 }
 
 impl<'a> BaseSync<'a> {
-    fn prepare(path: &'a Path, base: &'a str, checkout_cap: Duration) -> Step<Self> {
+    fn prepare(path: &'a Path, base: &'a str, checkout: Checkout) -> Step<Self> {
         refuse_unusable_branch_name(base).map_err(failed)?;
         let repo = open(path)?;
         let upstream = upstream::upstream_of(&repo, base).ok_or(SyncOutcome::NoRemote)?;
@@ -168,7 +202,7 @@ impl<'a> BaseSync<'a> {
             base,
             remote,
             followed: upstream.branch,
-            checkout_cap,
+            checkout,
         };
         sync.refuse_unusable_url()?;
         Ok(sync)
@@ -271,12 +305,12 @@ impl<'a> BaseSync<'a> {
             return Err(SyncOutcome::Skipped(unfinished));
         }
         match Placement::of(self.path, &self.local_ref())? {
-            Placement::Here => checkout::fast_forward_checkout(
-                repo,
-                self.path,
-                &self.tracking_ref(),
-                self.checkout_cap,
-            ),
+            Placement::Here => match self.checkout {
+                Checkout::Within(cap) => {
+                    checkout::fast_forward_checkout(repo, self.path, &self.tracking_ref(), cap)
+                }
+                Checkout::Leave => Err(SyncOutcome::CheckoutLeft),
+            },
             Placement::Elsewhere(path) => Err(SyncOutcome::Skipped(format!(
                 "{} is checked out in {}.",
                 self.base,

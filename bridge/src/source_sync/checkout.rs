@@ -73,6 +73,11 @@ pub(super) fn fast_forward_checkout(
 /// Remove the index lock at `lock` if it was taken after `started`, by the
 /// git this checkout ran and has killed. One that was there before is
 /// someone else's and stays.
+///
+/// The one lock this could take that is not Build's: the user's own git
+/// taking it in the moment between the kill and the removal. Our git held it
+/// until the kill, and a lock names no process, so that window is accepted
+/// rather than closed.
 fn remove_lock_taken_since(lock: &Path, started: SystemTime) {
     let taken = std::fs::metadata(lock).and_then(|meta| meta.modified());
     let since = started.checked_sub(MTIME_SLACK).unwrap_or(started);

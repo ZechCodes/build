@@ -417,7 +417,9 @@ fetch is bound by the short deadlines: once started, the checkout is let
 finish, capped at 10 minutes (`source_sync/checkout.rs`), since git killed
 part-way through leaves `index.lock` and half the incoming files behind and a
 filter such as git-lfs's smudge can make an honest checkout slow; past the cap
-git is killed and the lock it took is removed. Where the base is checked out
+git is killed and the lock it took is removed. The files it had already
+written stay as untracked files, and every later sync is skipped naming them
+until the user removes them. Where the base is checked out
 nowhere, a compare-and-swap `update-ref` moves the ref alone. Neither happens
 while an operation on the base is part-way through in any worktree, read from
 each worktree's git directory (`source_sync/in_progress.rs`): a rebase whose
@@ -434,7 +436,12 @@ every workspace cut, first, for each source with the setting on (10 s, the
 sources side by side, and the fetch skipped when one landed in the last
 minute), which goes ahead from the base as it stood and puts `warnings` on its
 answer, so an agent's `create_workspace` or `assign_task` hears them; and
-`project.sync_source` (Sync now). A remote that said it wanted a person (git
+`project.sync_source` (Sync now). The cut's 10 s bound the whole sync: a cut
+fetches and moves a base checked out nowhere, but never starts the checkout's
+fast-forward (`sync_base_for_a_cut`). A base checked out in the source's own
+checkout and behind after the fetch is cut from as it stood, with a warning
+that Build is fast-forwarding it in the background, and handed to the
+service, which the cut asks to sync that source at once. A remote that said it wanted a person (git
 said it needed a password, or ssh could not use a key without its passphrase)
 is left off the timer until one of the other two syncs it. A fetch that only
 timed out is retried on the next pass, then after 10, 20, 40 and at most 60

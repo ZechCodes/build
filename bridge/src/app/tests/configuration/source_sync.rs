@@ -350,16 +350,51 @@ fn checkout_of(created: &Value, mount: &str) -> PathBuf {
 }
 
 /// The failure #267 exists to stop: a workspace cut from a base that has
-/// fallen behind its remote.
+/// fallen behind its remote. Where the base is checked out nowhere, the cut
+/// moves its ref, which is instant.
 #[test]
 fn a_workspace_is_cut_from_the_base_its_remote_has_now() {
     let mut fixture = fixture();
+    git_in(&fixture.code, &["switch", "-q", "--detach"]);
     advance(&fixture.code_upstream, "news.txt");
 
     let created = cut(&mut fixture, "fresh");
 
     assert!(created.get("warnings").is_none(), "{created}");
     assert!(checkout_of(&created, "code").join("news.txt").exists());
+    assert_eq!(fixture.row_source("source-1")["sync"]["state"], "synced");
+}
+
+/// Where the base is checked out in the source's own checkout, moving it
+/// moves its files, which a filter can make take minutes. The cut does not
+/// wait for that (review #268): it goes ahead from the base as it stands,
+/// says so, and the service fast-forwards the checkout straight after.
+#[test]
+fn a_cut_leaves_the_source_checkout_to_the_service_and_says_so() {
+    let mut fixture = fixture();
+    advance(&fixture.code_upstream, "news.txt");
+
+    let created = cut(&mut fixture, "behind");
+
+    let warnings = created["warnings"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{created}"));
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].as_str().unwrap().contains(
+            "1 commit behind its remote. Build is fast-forwarding its checkout in the background."
+        ),
+        "{warnings:?}"
+    );
+    assert!(!checkout_of(&created, "code").join("news.txt").exists());
+
+    let fixture = fixture.pass(SyncPass::Requested);
+
+    assert!(fixture.code.join("news.txt").exists());
+    assert_eq!(
+        head(&fixture.code, "main"),
+        head(&fixture.code_upstream, "main")
+    );
     assert_eq!(fixture.row_source("source-1")["sync"]["state"], "synced");
 }
 

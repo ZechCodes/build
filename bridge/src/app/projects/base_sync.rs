@@ -12,8 +12,8 @@
 use crate::app::{off_the_workers, AppState};
 use crate::changes::BoardLists;
 use crate::source_sync::{
-    sync_base, Failure, Fetch, SyncLock, SyncOutcome, SyncReport, CUT_FETCH_DEADLINE,
-    SERVICE_FETCH_DEADLINE,
+    sync_base, sync_base_for_a_cut, Failure, Fetch, SyncLock, SyncOutcome, SyncReport,
+    CUT_FETCH_DEADLINE, SERVICE_FETCH_DEADLINE,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -168,6 +168,7 @@ impl From<&SyncOutcome> for Concluded {
                 ..plain(SyncState::Failed, Some(&failure.reason))
             },
             SyncOutcome::NoRemote => plain(SyncState::NoRemote, None),
+            SyncOutcome::CheckoutLeft => plain(SyncState::Skipped, None),
         }
     }
 }
@@ -201,7 +202,8 @@ impl Synced {
     /// Whether this sync says anything the source's status should keep. A
     /// cut that ran out of its ten seconds (waiting on the remote, or on
     /// another sync) says nothing the timer should act on, so the status is
-    /// left as the last real answer made it.
+    /// left as the last real answer made it; nor does one that left the
+    /// checkout to the service, which is about to say how that went.
     fn tells_the_timer(&self) -> bool {
         let ran_out = matches!(
             &self.report.outcome,
@@ -210,7 +212,11 @@ impl Synced {
                 ..
             })
         );
-        !(self.subject.origin == SyncOrigin::Cut && ran_out)
+        !(self.subject.origin == SyncOrigin::Cut && ran_out) && !self.left_the_checkout()
+    }
+
+    fn left_the_checkout(&self) -> bool {
+        self.report.outcome == SyncOutcome::CheckoutLeft
     }
 }
 
@@ -253,12 +259,14 @@ fn sync_for_the_service(subject: SyncSubject) -> Option<Synced> {
 
 /// Sync one source before a cut. A sync already running is waited for up to
 /// the cut's deadline, and then what it fetched is used rather than fetching
-/// again; one that outlasts the deadline leaves the base as it stands.
+/// again; one that outlasts the deadline leaves the base as it stands. The
+/// cut never fast-forwards the source's own checkout, which can take
+/// minutes: that is left to the service ([`SyncOutcome::CheckoutLeft`]).
 fn sync_for_a_cut(subject: SyncSubject) -> Synced {
     let report = match SyncLock::acquire(&subject.path, CUT_FETCH_DEADLINE) {
         Some((_held, waited)) => {
             let fetch = if waited { Fetch::Skip } else { subject.fetch };
-            sync_base(&subject.path, &subject.base_branch, fetch)
+            sync_base_for_a_cut(&subject.path, &subject.base_branch, fetch)
         }
         None => SyncReport {
             outcome: SyncOutcome::Failed(Failure {
@@ -296,15 +304,23 @@ pub(in crate::app) fn cut_warnings(synced: &[Synced]) -> Vec<String> {
     synced.iter().filter_map(cut_warning).collect()
 }
 
+fn commits(count: usize) -> String {
+    let noun = if count == 1 { "commit" } else { "commits" };
+    format!("{count} {noun}")
+}
+
 fn cut_warning(synced: &Synced) -> Option<String> {
     let subject = &synced.subject;
     let behind = synced.report.behind;
     let why = match &synced.report.outcome {
         SyncOutcome::Failed(failure) => failure.reason.clone(),
         SyncOutcome::Skipped(reason) if behind > 0 => {
-            let commits = if behind == 1 { "commit" } else { "commits" };
-            format!("It is {behind} {commits} behind its remote. {reason}")
+            format!("It is {} behind its remote. {reason}", commits(behind))
         }
+        SyncOutcome::CheckoutLeft => format!(
+            "It is {} behind its remote. Build is fast-forwarding its checkout in the background.",
+            commits(behind)
+        ),
         _ => return None,
     };
     Some(format!(
@@ -415,8 +431,15 @@ impl AppState {
 
     /// Write what each sync concluded onto its source, when the source is
     /// still the one that was synced: a source removed, moved or rebased
-    /// meanwhile is not written.
+    /// meanwhile is not written. A checkout a cut left is handed to the
+    /// service.
     pub(in crate::app) fn settle_source_syncs(&mut self, synced: Vec<Synced>, now_ms: i64) {
+        for left in synced.iter().filter(|synced| synced.left_the_checkout()) {
+            self.request_source_sync(
+                left.subject.project_id.clone(),
+                left.subject.source_id.clone(),
+            );
+        }
         let mut wrote = false;
         for Synced { subject, report } in synced.into_iter().filter(Synced::tells_the_timer) {
             let Some(source) = self

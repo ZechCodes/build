@@ -3,7 +3,7 @@
 //! and a cut that ran out of time leaves the source's status as it was.
 
 use super::*;
-use crate::git_fixture::init_repo_named;
+use crate::git_fixture::{git_command, git_in, init_repo_named};
 
 const MINUTE_MS: i64 = 60_000;
 const START_MS: i64 = 1_000_000_000;
@@ -180,4 +180,84 @@ fn a_remote_that_wanted_a_person_holds_the_timer() {
 
     assert!(fixture.status().unwrap().needs_you);
     assert!(!fixture.timer_takes_it(START_MS + 24 * 60 * MINUTE_MS));
+}
+
+/// A source cloned from `upstream`, whose next upstream commit adds a file
+/// behind a smudge filter that sleeps `seconds`: the base's own checkout is
+/// slow to fast-forward (git-lfs downloading a large file).
+fn slow_checkout_fixture(seconds: u32) -> (Fixture, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let upstream = init_repo_named(dir.path(), "upstream");
+    let base = dir.path().join("base");
+    git_in(
+        dir.path(),
+        &["clone", "-q", upstream.to_str().unwrap(), "base"],
+    );
+    let smudge = format!("sleep {seconds}; cat");
+    git_in(&base, &["config", "filter.slow.smudge", &smudge]);
+    git_in(&base, &["config", "filter.slow.clean", "cat"]);
+    std::fs::write(upstream.join(".gitattributes"), "*.bin filter=slow\n").unwrap();
+    std::fs::write(upstream.join("a.bin"), "payload\n").unwrap();
+    git_in(&upstream, &["add", "."]);
+    git_in(&upstream, &["commit", "-q", "-m", "slow"]);
+    let mut state = AppState::new_unrooted(
+        dir.path().join("worktrees"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    );
+    let project_id = state.add_project(base.clone(), "main".into());
+    (
+        Fixture {
+            _dir: dir,
+            state,
+            project_id,
+        },
+        base,
+    )
+}
+
+fn head_of(repo: &std::path::Path, name: &str) -> String {
+    let output = git_command(repo, &["rev-parse", name]).output().unwrap();
+    assert!(output.status.success(), "rev-parse {name}");
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+/// A cut waits on the network for ten seconds and no longer, and never on
+/// the base's own checkout: a slow one is left to the service, which the cut
+/// asks to run, and the cut goes ahead from the base as it stands with a
+/// warning saying so (review #268).
+#[test]
+fn a_cut_leaves_a_slow_checkout_to_the_service() {
+    let (fixture, base) = slow_checkout_fixture(40);
+    let project_id = fixture.project_id.clone();
+    let before = head_of(&base, "main");
+    let state = Arc::new(Mutex::new(fixture.state));
+
+    let started = std::time::Instant::now();
+    let subjects = state.lock().unwrap().cut_sync_subjects(&project_id);
+    let synced = sync_before_cut(&subjects);
+    let took = started.elapsed();
+
+    assert!(took < CUT_FETCH_DEADLINE, "the cut waited {took:?}");
+    assert_eq!(head_of(&base, "main"), before);
+    let warnings = cut_warnings(&synced);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("1 commit behind"), "{warnings:?}");
+    state.lock().unwrap().settle_source_syncs(synced, START_MS);
+
+    AppState::sync_sources(&state, SyncPass::Requested, START_MS + MINUTE_MS);
+
+    assert_eq!(head_of(&base, "main"), head_of(&base, "origin/main"));
+    assert_ne!(head_of(&base, "main"), before);
+    assert_eq!(
+        std::fs::read_to_string(base.join("a.bin")).unwrap(),
+        "payload\n"
+    );
+    let app = state.lock().unwrap();
+    let status = app.projects.get(&project_id).unwrap().sources[0]
+        .sync_status
+        .clone()
+        .unwrap();
+    assert_eq!(status.state, SyncState::Synced, "{status:?}");
 }

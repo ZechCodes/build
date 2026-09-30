@@ -1,6 +1,6 @@
 // Capture the review images for #104 in a real Chromium against the production
 // app: a watched task's unread on the inbox's workspace and project badges
-// (both faces), the project's Tasks tab in the toolbar, the workspace's Tasks
+// (both faces), the project's Tasks face on its rail, the workspace's Tasks
 // face on its rail, and the per-task bubble on the dashboard, list and board.
 // One scripted machine answers the tracker; everything else is the app's own.
 // Run from spa/: node test/browser/captureTaskUnread.mjs [output directory]
@@ -134,6 +134,9 @@ async function open(page, basePath, { hash = "", inbox = false } = {}) {
   // The app first, the way main.js imports it: its module graph has cycles
   // that only settle in that order.
   await loadBrowserModules(page, { app: MODULES.app }, basePath);
+  // The harness waits for the set to appear; the app's own set is already
+  // there, so it is taken away or the wait ends before the rest have loaded.
+  await page.evaluate(() => delete window.__layoutModules);
   await loadBrowserModules(page, MODULES, basePath);
   await page.evaluate(seed, { device: DEVICE, hash, inbox });
 }

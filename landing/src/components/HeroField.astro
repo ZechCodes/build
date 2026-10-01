@@ -1,13 +1,16 @@
 ---
 // The hero's notification field, drawn at build time from the seeded data
 // in hero/field.js, so it is full on the first frame and the same on every
-// load. Each lane drifts right on CSS from the first paint (hero.css);
-// hero/entrance.js takes it over from there. Decorative: hidden from
+// load. Each lane drifts on CSS from the first paint (hero.css), and the
+// routine ones jostle inside it; hero/entrance.js takes the drift over from
+// there and leaves the jostle to the CSS. Decorative: hidden from
 // assistive technology, and it takes no pointer.
 //
 // The harness marks are the app's own (spa/src/assets/harnesses, sources in
-// SOURCES.md there), drawn in one colour: Codex and Pi already are; Claude
-// Code's spark is the official geometry with its orange fill taken out.
+// SOURCES.md there), drawn in one colour: each is a mask over the pill's
+// ::before (hero.css), so a pill is one element and no SVG of its own. The
+// field carries each mark as a data URL in a custom property, so the page
+// fetches nothing for them and they are there on the first frame.
 import claudeMark from "../../../spa/src/assets/harnesses/claude.svg?raw";
 import codexMark from "../../../spa/src/assets/harnesses/codex.svg?raw";
 import piMark from "../../../spa/src/assets/harnesses/pi.svg?raw";
@@ -15,36 +18,33 @@ import { createField } from "../hero/field.js";
 
 const MARKS: Record<string, string> = { claude: claudeMark, codex: codexMark, pi: piMark };
 
-// One <symbol> per mark, used by every pill: the geometry, its fills turned
-// to currentColor, without the file's own size.
-function symbol(id: string, svg: string) {
-  const viewBox = /viewBox="([^"]+)"/.exec(svg)?.[1];
-  const body = svg.slice(svg.indexOf(">") + 1, svg.lastIndexOf("</svg>"));
-  if (!viewBox || !body.trim()) throw new Error(`The ${id} mark is not an SVG this field can use.`);
-  const mono = body.replace(/fill="(?!none)[^"]*"/g, 'fill="currentColor"').replace(/\scolor="[^"]*"/g, "");
-  return `<symbol id="hero-mark-${id}" viewBox="${viewBox}">${mono}</symbol>`;
+// A mark as a CSS url(), unquoted, so it sits in a style attribute as is.
+function markUrl(id: string, svg: string) {
+  if (!/^<svg\b[^>]*viewBox="[^"]+"/.test(svg.trim())) throw new Error(`The ${id} mark is not an SVG this field can use.`);
+  const encoded = encodeURIComponent(svg.trim()).replace(/[()']/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `url(data:image/svg+xml,${encoded})`;
 }
 
 const field = createField();
 const harnesses = [...new Set(field.lanes.flatMap((lane) => [...lane.before, ...lane.after].map((pill) => pill.harness)))];
-const sprite = harnesses.map((id) => symbol(id, MARKS[id])).join("");
+const marks = harnesses.map((id) => `--mark-${id}:${markUrl(id, MARKS[id])}`).join(";");
 const laneStyle = (lane: (typeof field.lanes)[number]) =>
-  `--row:${lane.index};--narrow-row:${lane.narrowRow ?? 0};--anchor:${lane.anchor};--narrow-anchor:${lane.narrowAnchor};--drift:${lane.drift}vw;--nudge:${lane.nudge}px`;
+  `--size:${lane.size};--row:${lane.index};--narrow-row:${lane.narrowRow ?? 0};--anchor:${lane.anchor};--narrow-anchor:${lane.narrowAnchor};` +
+  `--drift:${lane.drift}vw;--nudge:${lane.nudge}px;--sway:${lane.sway};--sway-time:${lane.swaySeconds}s;--sway-delay:${lane.swayDelay}s`;
 ---
 
-<div class="hero-field" data-hero-field aria-hidden="true" style={`--lanes:${field.lanes.length};--narrow-lanes:${field.narrowLanes}`}>
-  <svg class="hero-sprite" width="0" height="0" focusable="false" set:html={sprite}></svg>
+<div class="hero-field" data-hero-field aria-hidden="true" style={`--lanes:${field.lanes.length};--narrow-lanes:${field.narrowLanes};${marks}`}>
   {field.lanes.map((lane) => (
-    <div class={`hero-lane hero-lane--${lane.tier}`} data-lane={lane.index} data-drift={lane.drift} data-narrow={lane.narrow ? "" : undefined} style={laneStyle(lane)}>
-      {[["before", lane.before], ["after", lane.after]].map(([side, pills]) => (
-        <div class={`hero-track hero-track--${side}`}>
-          {(pills as typeof lane.before).map((pill) => (
-            <span class="hero-pill" data-pill={pill.key} data-attention={pill.attention} style={`--gap:${pill.gap}`}>
-              <svg class="hero-pill__mark" focusable="false"><use href={`#hero-mark-${pill.harness}`}></use></svg>{pill.text}
-            </span>
-          ))}
-        </div>
-      ))}
+    <div class={`hero-lane hero-lane--${lane.tier}`} data-lane={lane.index} data-drift={lane.drift} data-narrow={lane.narrow ? "" : undefined} data-sway={lane.sway ? "" : undefined} data-request={lane.after[0]?.attention ? "" : undefined} style={laneStyle(lane)}>
+      <div class="hero-lane__body">
+        {[["before", lane.before], ["after", lane.after]].map(([side, pills]) => (
+          <div class={`hero-track hero-track--${side}`}>
+            {(pills as typeof lane.before).map((pill) => (
+              <span class="hero-pill" data-pill={pill.key} data-harness={pill.harness} data-attention={pill.attention} style={`--gap:${pill.gap}`}>{pill.text}</span>
+            ))}
+          </div>
+        ))}
+      </div>
     </div>
   ))}
 </div>

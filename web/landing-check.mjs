@@ -442,7 +442,8 @@ async function checkSlowModule(width, height, label) {
     hero: document.documentElement.dataset.hero,
     panels: [...document.querySelectorAll("[data-panel]")].filter((panel) => getComputedStyle(panel).visibility !== "hidden").map((panel) => panel.dataset.panel),
   }));
-  assert.ok(await lane() > first, `${label}: the field moves before any script but the boot's`);
+  // Either way: some lanes run left (#310).
+  assert.ok(Math.abs(await lane() - first) > 1, `${label}: the field moves before any script but the boot's`);
   assert.equal(pending.stage, "pending", `${label}: the module is still on its way`);
   assert.equal(pending.hero, "entrance", `${label}: the entrance is waiting for its module`);
   assert.deepEqual(pending.panels, [], `${label}: no close-up shows before the film places it`);
@@ -491,16 +492,25 @@ const watchHeroCopy = (page) => page.addInitScript(() => {
 
 // The modules later than the CSS that settles the hero without them: the
 // headline and the call stay shown once they are, and the hero stays at
-// rest instead of playing the entrance over them.
+// rest instead of playing the entrance over them. The modules are held
+// until the copy has been shown, not for a fixed time: the CSS shows it
+// about 5.6s after the first style, and a loaded machine let a timed module
+// in first (#310).
 async function checkLateModule(width, height, label) {
   const context = await browser.newContext({ viewport: { width, height } });
   const page = await context.newPage();
   const errors = watchErrors(page);
   await watchHeroCopy(page);
-  await delayModules(page, 6000);
+  let release;
+  const settled = new Promise((resolve) => { release = resolve; });
+  await page.route(/\/_astro\/.*\.js$/, async (route) => {
+    await settled;
+    await route.continue();
+  });
   await page.goto(`${base}/?film=${gpu ? "1" : "force"}`, { waitUntil: "commit" });
-  await page.waitForFunction(() => window.__heroCopy?.shown.length === 2, null, { timeout: 10_000 });
+  await page.waitForFunction(() => window.__heroCopy?.shown.length === 2, null, { timeout: 15_000 });
   assert.equal(await page.evaluate(() => window.BuildHero), undefined, `${label}: the copy settled before the module came`);
+  release();
   await page.waitForFunction(() => window.BuildHero !== undefined, null, { timeout: 30_000 });
   await page.waitForTimeout(1500);
   const late = await page.evaluate(() => ({
@@ -643,7 +653,8 @@ async function checkLanding(page, label, id, at) {
 // first frame, the ripple, the laptop, each request landing on its row, the
 // copy, stillness. The bar's call takes the pointer throughout.
 async function checkEntrancePhases(page, label, { narrow }) {
-  const [low, high] = narrow ? [24, 36] : [50, 80];
+  // A flood (#310): the window full of notifications, layered in depth.
+  const [low, high] = narrow ? [55, 110] : [170, 280];
   const count = await visiblePills(page);
   assert.ok(count >= low && count <= high, `${label}: ${count} pills in the first frame`);
   const timing = await page.evaluate(() => window.BuildHero.timing);

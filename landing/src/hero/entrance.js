@@ -14,7 +14,8 @@ import gsap from "gsap";
 import { ATTENTION, DRIFT_SECONDS } from "./field.js";
 import { HERO_ROW_REGIONS, LANDING_POINT } from "./anchors.js";
 import { createHeroLaptop } from "./laptop.js";
-import { HERO_TIMING, NARROW_TIMING, decelDistance, outward, revealEase, rippleHit, rippleReach } from "./timing.js";
+import { createFieldMotion } from "./flood.js";
+import { HERO_TIMING, NARROW_TIMING, revealEase, rippleReach } from "./timing.js";
 import { homographyFromQuad, matrix3d, projectPoint } from "../stage/overlay.js";
 
 export const PLAYED_KEY = "build.hero.played";
@@ -52,9 +53,14 @@ function pointOnRow(quad, [fx, fy]) {
 function measureField(hero, field) {
   const heroBox = hero.getBoundingClientRect();
   const lanes = [...field.querySelectorAll(".hero-lane")].map((element) => {
-    const x = new DOMMatrixReadOnly(getComputedStyle(element).transform).m41;
-    // The drift is in vw, and a vw is a hundredth of the window.
-    const speed = (Number(element.dataset.drift) / 100) * innerWidth / DRIFT_SECONDS;
+    // A lane a phone leaves out has nothing to measure.
+    if (!element.getClientRects().length) return { element, x: 0, speed: 0, pills: [], shown: false };
+    const style = getComputedStyle(element);
+    const x = new DOMMatrixReadOnly(style.transform).m41;
+    // The drift is in vw, and a vw is a hundredth of the window; a lane
+    // running left has a negative one, and a phone's run faster (hero.css).
+    const scale = Number(style.getPropertyValue("--drift-scale")) || 1;
+    const speed = (Number(element.dataset.drift) * scale / 100) * innerWidth / DRIFT_SECONDS;
     const pills = [...element.querySelectorAll(".hero-pill")].map((pill) => {
       const box = pill.getBoundingClientRect();
       return {
@@ -69,7 +75,7 @@ function measureField(hero, field) {
     });
     return { element, x, speed, pills, shown: pills.some((pill) => pill.shown) };
   });
-  const moving = lanes.find((lane) => lane.shown && lane.speed > 0);
+  const moving = lanes.find((lane) => lane.shown && lane.speed !== 0);
   return { width: heroBox.width, height: heroBox.height, lanes, elapsed: moving ? moving.x / moving.speed : 0 };
 }
 
@@ -77,62 +83,28 @@ function measureField(hero, field) {
 // shown, but never so late that the field phase is gone.
 const pickUpAt = (elapsed, timing) => Math.max(0, Math.min(elapsed, timing.field[1] - 0.4));
 
-function driftLanes(tl, lanes, start, timing) {
-  const until = timing.ripple[0];
-  for (const lane of lanes) {
-    const from = lane.x - lane.speed * start;
-    tl.fromTo(lane.element, { x: from }, { x: from + lane.speed * until, duration: until, ease: "none", immediateRender: false }, 0);
-  }
-}
-
-// One pill as the wave reaches it: it carries on at its lane's speed until
-// then, brakes to a stop pushed a little outward, and, unless it needs a
-// person, fades as it brakes. Returns where it stops.
-function ripplePill(tl, pill, lane, ripple) {
-  const { origin, reach, timing, start, nudge } = ripple;
-  const begin = timing.ripple[0];
-  const x = pill.x + lane.speed * (begin - start);
-  const hit = rippleHit([x, pill.y], origin, reach, timing);
-  const travelled = lane.speed * (hit - begin);
-  const [dx, dy] = outward([x, pill.y], origin, nudge);
-  const stopX = travelled + decelDistance(lane.speed, timing.decel) + dx;
-  if (hit > begin) tl.fromTo(pill.element, { x: 0 }, { x: travelled, duration: hit - begin, ease: "none", immediateRender: false }, begin);
-  tl.fromTo(pill.element, { x: travelled, y: 0 }, { x: stopX, y: dy, duration: timing.decel, ease: "power1.out", immediateRender: false }, hit);
-  if (!pill.attention) {
-    tl.fromTo(pill.element, { autoAlpha: pill.opacity }, { autoAlpha: 0, duration: timing.fade, ease: "power1.in", immediateRender: false }, hit);
-  }
-  return { offset: [stopX, dy], at: [x + stopX, pill.y + dy] };
-}
-
-// A pill nobody will see: past the right edge, or so far left that the wave
-// fades it before it could come in.
-function offField(pill, lane, field, timing) {
-  const reachIn = lane.speed * (timing.ripple[1] - timing.ripple[0]);
-  return !pill.shown || pill.x - pill.width / 2 > field.width || pill.x + pill.width / 2 < -reachIn;
-}
-
-function rippleField(tl, field, ripple) {
-  const stops = new Map();
-  for (const lane of field.lanes) {
-    for (const pill of lane.pills) {
-      if (offField(pill, lane, field, ripple.timing)) {
-        tl.set(pill.element, { autoAlpha: 0 }, ripple.timing.ripple[0]);
-        continue;
-      }
-      const stop = ripplePill(tl, pill, lane, ripple);
-      if (pill.attention) stops.set(pill.attention, { ...stop, element: pill.element });
-    }
-  }
-  return stops;
+// The field on the entrance's clock: flood.js moves it on the compositor,
+// seeked to this tween, which runs until the last request takes off.
+function moveField(tl, motion, { timing, flights }) {
+  const until = Math.max(timing.ripple[1], ...flights.values());
+  tl.to({}, {
+    duration: until,
+    ease: "none",
+    onUpdate() {
+      motion.update(this.time(), !tl.paused());
+    },
+  }, 0);
 }
 
 // A request flies from where it stopped to its row's landing point, read
 // from where the laptop is at that moment, shrinking and fading as it
 // arrives.
-function landRequest(tl, stop, row, { laptop, timing, landing }) {
+function landRequest(tl, pill, row, { laptop, timing, landing, motion }) {
   const progress = { p: 0 };
-  const [baseX, baseY] = stop.offset;
-  const [fromX, fromY] = stop.at;
+  const takeOff = landing - timing.flight;
+  const base = motion.offsetAt(pill, takeOff);
+  const { dx, dy } = motion.pathOf(pill).at(takeOff);
+  const from = [pill.x + dx, pill.y + dy];
   tl.fromTo(progress, { p: 0 }, {
     p: 1,
     duration: timing.flight,
@@ -142,14 +114,12 @@ function landRequest(tl, stop, row, { laptop, timing, landing }) {
       if (progress.p === 0) return;
       const [toX, toY] = pointOnRow(laptop.quads().rows[row], LANDING_POINT);
       const { p } = progress;
-      gsap.set(stop.element, {
-        x: baseX + (toX - fromX) * p,
-        y: baseY + (toY - fromY) * p,
-        scale: 1 + (LANDED_SCALE - 1) * p,
-        autoAlpha: p < 0.6 ? 1 : 1 - (p - 0.6) / 0.4,
-      });
+      const opacity = p < 0.6 ? 1 : Math.max(0, 1 - (p - 0.6) / 0.4);
+      pill.element.style.transform = `translate(${base[0] + (toX - from[0]) * p}px, ${base[1] + (toY - from[1]) * p}px) scale(${1 + (LANDED_SCALE - 1) * p})`;
+      pill.element.style.opacity = String(opacity);
+      pill.element.style.visibility = opacity === 0 ? "hidden" : "";
     },
-  }, landing - timing.flight);
+  }, takeOff);
 }
 
 // The rows light as their requests land and settle back with the hero.
@@ -201,18 +171,20 @@ function buildTimeline({ hero, field, laptop, glows, copy, narrow }) {
     nudge: narrow ? NUDGE.narrow : NUDGE.wide,
   };
   const tl = gsap.timeline({ paused: true });
-  driftLanes(tl, measured.lanes, start, timing);
-  const stops = rippleField(tl, measured, ripple);
+  const flights = new Map(ATTENTION.map((entry, index) => [entry.id, timing.landings[index] - timing.flight]));
+  const motion = createFieldMotion({ field: measured, ripple, flights });
+  moveField(tl, motion, { timing, flights });
   tl.fromTo(laptop.reveal, { t: 0 }, {
     t: 1, duration: timing.laptop[1] - timing.laptop[0], ease: revealEase, onUpdate: laptop.render, immediateRender: false,
   }, timing.laptop[0]);
+  const requests = measured.lanes.flatMap((lane) => lane.pills.filter((pill) => pill.attention && motion.pathOf(pill)));
   ATTENTION.forEach((entry, index) => {
-    const stop = stops.get(entry.id);
-    if (stop) landRequest(tl, stop, entry.row, { laptop, timing, landing: timing.landings[index] });
+    const pill = requests.find((candidate) => candidate.attention === entry.id);
+    if (pill) landRequest(tl, pill, entry.row, { laptop, timing, landing: timing.landings[index], motion });
   });
   glowRows(tl, glows, { laptop, timing });
   revealCopy(tl, copy.items, timing);
-  return { tl, timing, start, lanes: measured.lanes };
+  return { tl, timing, start, lanes: measured.lanes, motion };
 }
 
 // Hold the copy and the laptop out of sight before the CSS that has been
@@ -224,13 +196,19 @@ function takeOver(root, { copy, laptop }) {
   root.dataset.hero = "playing";
 }
 
-function listen(finish, timeline) {
+function listen(finish, timeline, motion) {
   const width = innerWidth;
   const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
   const onScroll = () => { if (scrollY > 8) finish("scroll"); };
   const onResize = () => { if (Math.abs(innerWidth - width) > 1) finish("resize"); };
   const onMotion = (event) => { if (event.matches) finish("reduced motion"); };
-  const onVisibility = () => { if (document.hidden) timeline.pause(); else timeline.play(); };
+  // The field's animations run on the compositor's time, not the timeline's:
+  // held with it, so a returning tab picks up where it left.
+  const onVisibility = () => {
+    if (!document.hidden) return timeline.play();
+    timeline.pause();
+    motion.update(timeline.time(), false);
+  };
   addEventListener("scroll", onScroll, { passive: true });
   addEventListener("resize", onResize);
   reducedMotion.addEventListener("change", onMotion);
@@ -306,7 +284,7 @@ export function startHeroEntrance({ root = document.documentElement } = {}) {
 
   tl.call(() => { if (!held) finish(); }, null, timing.settle[1]);
   takeOver(root, { copy, laptop });
-  unlisten = listen(finish, tl);
+  unlisten = listen(finish, tl, built.motion);
   tl.time(built.start).play();
 
   const entrance = {

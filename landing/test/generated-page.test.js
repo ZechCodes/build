@@ -111,6 +111,60 @@ describe("the generated landing document", () => {
     assert.ok(!/(OpenCode|Gemini|Cursor|opencode|gemini|cursor)/.test(field), "only supported harnesses");
   });
 
+  it("marks each pill with its harness from the stylesheet, one element a pill", () => {
+    const field = html.slice(html.indexOf("data-hero-field"), html.indexOf('class="content-container act__inner"', html.indexOf("data-hero-field")));
+    assert.ok(!/<svg\b|<use\b/.test(field), "no SVG per pill");
+    const pills = [...field.matchAll(/<span class="hero-pill"[^>]*>/g)].map(([tag]) => tag);
+    assert.ok(pills.length > 0);
+    for (const tag of pills) assert.match(tag, /data-harness="(claude|codex|pi)"/);
+    for (const id of ["claude", "codex", "pi"]) assert.ok(field.slice(0, field.indexOf(">")).includes(`--mark-${id}:url(data:image/svg+xml,`), id);
+  });
+
+  it("jostles every routine lane and holds still the three lanes that carry a request", () => {
+    const field = html.slice(html.indexOf("data-hero-field"), html.indexOf('class="content-container act__inner"', html.indexOf("data-hero-field")));
+    const lanes = field.split('<div class="hero-lane ').slice(1);
+    assert.ok(lanes.length >= 22, `${lanes.length} lanes`);
+    for (const lane of lanes) {
+      const swaying = /^[^>]*data-sway/.test(lane);
+      assert.equal(swaying, !lane.includes("data-attention="), lane.slice(0, 120));
+      assert.match(lane, /^[^>]*--size:[\d.]+;/);
+    }
+  });
+
+  it("animates the field's motion on transform alone, so the compositor can run it", () => {
+    const href = html.match(/href="\/landing\/generated\/(_astro\/[^"]+\.css)"/)[1];
+    const css = readFileSync(`${landingDir}generated/${href}`, "utf8");
+    for (const name of ["hero-drift", "hero-sway"]) {
+      const start = css.indexOf(`@keyframes ${name}`);
+      assert.ok(start >= 0, name);
+      let depth = 0;
+      let end = css.indexOf("{", start);
+      do {
+        if (css[end] === "{") depth += 1;
+        if (css[end] === "}") depth -= 1;
+        end += 1;
+      } while (depth > 0);
+      // A keyframe may set its own ease; nothing but transform moves.
+      const properties = [...css.slice(start, end).matchAll(/([\w-]+)\s*:/g)].map(([, property]) => property);
+      assert.deepEqual([...new Set(properties)].filter((property) => property !== "animation-timing-function"), ["transform"], name);
+    }
+  });
+
+  it("paints the harness marks through a mask older WebKit and Chromium read too", () => {
+    const href = html.match(/href="\/landing\/generated\/(_astro\/[^"]+\.css)"/)[1];
+    const css = readFileSync(`${landingDir}generated/${href}`, "utf8").replace(/\s+/g, "");
+    const masks = [...css.matchAll(/(?<![\w-])mask-([a-z]+):([^;}]+)/g)];
+    assert.ok(masks.length >= 6, `${masks.length} mask declarations`);
+    for (const [, property, value] of masks) assert.ok(css.includes(`-webkit-mask-${property}:${value}`), `-webkit-mask-${property}:${value}`);
+  });
+
+  it("runs a phone's lanes faster, where a pill is a larger share of the width", () => {
+    const href = html.match(/href="\/landing\/generated\/(_astro\/[^"]+\.css)"/)[1];
+    const css = readFileSync(`${landingDir}generated/${href}`, "utf8").replace(/\s+/g, "");
+    assert.match(css, /\.hero-lane\{--drift-scale:1;/);
+    assert.match(css, /@media\(width<=767px\)\{[^@]*\.hero-lane\{--drift-scale:2;/);
+  });
+
   it("decides the entrance in the head, before the page's script", () => {
     const boot = html.indexOf('src="/landing/generated/hero-boot.js"');
     const main = html.search(/<script type="module" src="\/landing\/generated\/_astro\//);

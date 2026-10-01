@@ -11,7 +11,7 @@ import yaml
 from litestar import Litestar
 from skrift.controllers.auth import AuthController
 
-from buildapp.auth_controller import BuildAuthController
+from buildapp.auth_controller import SIGNIN_VIEW, SIGNUP_VIEW, BuildAuthController, page_view
 from buildapp.skrift_app_test_support import SKRIFTAPP_DIR
 
 AUTH_PREFIX = "/auth"
@@ -94,3 +94,13 @@ def test_production_signs_in_with_passkeys_alone():
     uninvited signup."""
     methods = yaml.safe_load((SKRIFTAPP_DIR / "app.yaml").read_text())["auth"]["methods"]
     assert {key: method["type"] for key, method in methods.items()} == {"passkey": "passkey"}
+
+
+@pytest.mark.parametrize("requested", [None, "signup", "signin", "SIGNUP", "x"])
+def test_without_an_invite_every_requested_view_is_sign_in(requested):
+    assert page_view(None, requested) == SIGNIN_VIEW
+
+
+@pytest.mark.parametrize(("requested", "view"), [(None, SIGNUP_VIEW), ("signin", SIGNIN_VIEW), ("x", SIGNUP_VIEW)])
+def test_an_invite_visitor_gets_signup_unless_they_ask_for_sign_in(requested, view):
+    assert page_view(object(), requested) == view

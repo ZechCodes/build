@@ -173,3 +173,148 @@ async fn ensure_paired_short_circuits_when_already_approved() {
     assert_eq!(out, id);
     assert_eq!(server.received_requests().await.unwrap().len(), 0);
 }
+
+// --- a stored approval the api no longer honours (#317) -------------------------
+
+async fn api_answering_status(body: serde_json::Value) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/devices/.+/status$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(&server)
+        .await;
+    server
+}
+
+fn stored(
+    dir: &tempfile::TempDir,
+    approved: bool,
+) -> (std::path::PathBuf, identity::StoredIdentity) {
+    let path = dir.path().join("identity.json");
+    let mut id = identity::generate("my-box");
+    id.approved = approved;
+    identity::save(&path, &id).unwrap();
+    (path, id)
+}
+
+#[tokio::test]
+async fn fetch_status_reads_the_state_and_tolerates_an_api_without_one() {
+    let with_state = api_answering_status(serde_json::json!({
+        "approved": false, "owner_user_id": null, "state": "revoked"
+    }))
+    .await;
+    let without = api_answering_status(serde_json::json!({"approved": false})).await;
+    let client = reqwest::Client::new();
+    let revoked = fetch_status(&client, &with_state.uri(), "dev-1")
+        .await
+        .unwrap();
+    let old_api = fetch_status(&client, &without.uri(), "dev-1")
+        .await
+        .unwrap();
+    assert_eq!(revoked.lapse(), Some(pairing::Lapse::Revoked));
+    assert_eq!(old_api.lapse(), Some(pairing::Lapse::NotApproved));
+}
+
+#[tokio::test]
+async fn a_revoked_approval_is_retired_so_the_next_pairing_mints_a_new_identity() {
+    let server = api_answering_status(serde_json::json!({
+        "approved": false, "owner_user_id": null, "state": "revoked"
+    }))
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (path, id) = stored(&dir, true);
+
+    let retired = pairing::retire_lapsed_approval(&reqwest::Client::new(), &server.uri(), &path)
+        .await
+        .unwrap()
+        .expect("a revoked approval is retired");
+
+    assert_eq!(retired.lapse, pairing::Lapse::Revoked);
+    assert!(
+        identity::load(&path).unwrap().is_none(),
+        "nothing left to load"
+    );
+    assert_eq!(identity::load(&retired.kept_at).unwrap(), Some(id));
+    let said = retired.to_string();
+    assert!(said.contains("no longer valid"), "{said}");
+    assert!(said.contains("revoked in Settings → Devices"), "{said}");
+    assert!(
+        said.contains(&retired.kept_at.display().to_string()),
+        "{said}"
+    );
+    assert!(!said.contains("already paired"), "{said}");
+}
+
+#[tokio::test]
+async fn an_approval_the_api_never_heard_of_is_retired_too() {
+    let server = api_answering_status(serde_json::json!({
+        "approved": false, "owner_user_id": null, "state": "unknown"
+    }))
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (path, _) = stored(&dir, true);
+    let retired = pairing::retire_lapsed_approval(&reqwest::Client::new(), &server.uri(), &path)
+        .await
+        .unwrap()
+        .expect("an unknown device is retired");
+    assert_eq!(retired.lapse, pairing::Lapse::Unknown);
+}
+
+#[tokio::test]
+async fn an_approval_the_api_still_honours_is_left_alone() {
+    let server = api_answering_status(serde_json::json!({
+        "approved": true, "owner_user_id": "u1", "state": "approved"
+    }))
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (path, id) = stored(&dir, true);
+    let retired = pairing::retire_lapsed_approval(&reqwest::Client::new(), &server.uri(), &path)
+        .await
+        .unwrap();
+    assert!(retired.is_none());
+    assert_eq!(identity::load(&path).unwrap(), Some(id));
+}
+
+/// A pending identity re-registers with a fresh code on its own, and no
+/// identity has nothing to retire: neither asks the api anything.
+#[tokio::test]
+async fn only_a_stored_approval_is_checked() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("none.json");
+    let client = reqwest::Client::new();
+    assert!(
+        pairing::retire_lapsed_approval(&client, &server.uri(), &missing)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let (pending, id) = stored(&dir, false);
+    assert!(
+        pairing::retire_lapsed_approval(&client, &server.uri(), &pending)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(identity::load(&pending).unwrap(), Some(id));
+    assert_eq!(server.received_requests().await.unwrap().len(), 0);
+}
+
+/// An api that cannot answer is not an api that said no: the identity stays.
+#[tokio::test]
+async fn an_unreachable_api_retires_nothing() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/devices/.+/status$"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (path, id) = stored(&dir, true);
+    assert!(
+        pairing::retire_lapsed_approval(&reqwest::Client::new(), &server.uri(), &path)
+            .await
+            .is_err()
+    );
+    assert_eq!(identity::load(&path).unwrap(), Some(id));
+}

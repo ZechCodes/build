@@ -170,7 +170,8 @@ without_cosign() {
 # CASE_ONLY_SHIMS_ON_PATH=1 (nothing but the shims is installed on this host),
 # CASE_SKIP_SERVICE=0 (go on to pair and install the service),
 # CASE_PAIR_STATUS (how the fake bridge's pairing ends) or CASE_TERMINAL=1
-# (run under a pseudo-terminal; stdout and stderr then both land in stdout).
+# (run under a pseudo-terminal; stdout and stderr then both land in stdout)
+# with CASE_NO_COLOR as its NO_COLOR.
 run_install() {
     ri_root="$1"
     ri_path="$ri_root/shims"
@@ -193,6 +194,11 @@ run_install() {
         export PATH BUILD_TEST_MIRROR BUILD_TEST_UNAME_S BUILD_TEST_UNAME_M BUILD_TEST_PAIR_STATUS
         export BUILD_TEST_COSIGN_STATUS BUILD_BRIDGE_INSTALL_DIR BUILD_BRIDGE_SKIP_SERVICE HOME
         if [ "${CASE_TERMINAL:-0}" = "1" ]; then
+            # A terminal that can show colour, whatever the one running the
+            # suite is; NO_COLOR is the case's to set.
+            TERM=xterm
+            NO_COLOR="${CASE_NO_COLOR:-}"
+            export TERM NO_COLOR
             : > "$ri_root/stderr"
             script -qec "/bin/sh '$INSTALL_SH'" /dev/null > "$ri_root/stdout"
         else
@@ -302,7 +308,7 @@ success_reads_as_plain_steps() {
     status="$(run_install "$root")"
     assert_exit "$name" "$root" "$status" 0 || return 1
     assert_says "$name" "$root/stderr" \
-        "Downloading Build bridge for Linux (x86_64)" \
+        "Downloading the Build bridge for Linux (x86_64)" \
         "Verified the download" \
         "Installed to $root/dest/build-bridge" || return 1
     assert_never_says "$name" "$root/stderr" "https://" ".tar.gz" "SHA256SUMS" "rror" && pass "$name"
@@ -310,8 +316,8 @@ success_reads_as_plain_steps() {
 
 # No cosign is the normal case on most machines, so it is not news: the
 # checksum line still prints, and nothing mentions what was not run.
-a_missing_cosign_goes_unmentioned() {
-    name="a_missing_cosign_goes_unmentioned"
+an_absent_verifier_goes_unmentioned() {
+    name="an_absent_verifier_goes_unmentioned"
     root="$(new_sandbox "$name")"
     without_cosign "$root"
     status="$(run_install "$root")"
@@ -389,14 +395,15 @@ a_terminal_gets_styled_output() {
         fail "$name" "no styling on a terminal: $(cat "$root/stdout")"
         return 1
     fi
-    pass "$name"
+    # The path line is for a program reading stdout; a person has the steps.
+    assert_never_says "$name" "$root/stdout" "installed build-bridge" && pass "$name"
 }
 
 no_color_keeps_a_terminal_plain() {
     name="no_color_keeps_a_terminal_plain"
     has_pty_script || { printf 'skip %s: no util-linux script\n' "$name"; return 0; }
     root="$(new_sandbox "$name")"
-    status="$(NO_COLOR=1 CASE_TERMINAL=1 run_install "$root")"
+    status="$(CASE_NO_COLOR=1 CASE_TERMINAL=1 run_install "$root")"
     assert_exit "$name" "$root" "$status" 0 || return 1
     if grep -q "$(printf '\033')" "$root/stdout"; then
         fail "$name" "escape codes despite NO_COLOR"
@@ -476,7 +483,7 @@ for case_name in \
     unmapped_uname_exits_2 \
     an_unsupported_platform_is_named_before_any_tool_is_demanded \
     success_reads_as_plain_steps \
-    a_missing_cosign_goes_unmentioned \
+    an_absent_verifier_goes_unmentioned \
     a_present_cosign_is_one_line \
     a_rejected_signature_is_a_loud_error \
     a_failure_names_what_failed \

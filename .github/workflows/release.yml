@@ -322,6 +322,11 @@ jobs:
   # every binary is final. install.sh verifies the tarball against SHA256SUMS
   # and SHA256SUMS against this signature, so this job is the root of the whole
   # download's trust.
+  #
+  # The assets are staged under the runner's temp directory, never in the
+  # checkout: the repo has its own `assets/` (the brand artwork), and a
+  # directory shared with the checkout ships whatever the tree holds there
+  # (#305).
   checksums:
     name: Digest and sign the assets
     needs: [version, build, apple-creds, sign-macos]
@@ -337,14 +342,14 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: build-bridge-*
-          path: assets
+          path: ${{ runner.temp }}/release-assets
           merge-multiple: true
 
       - name: install.sh ships as an asset and is signed with the rest
-        run: cp scripts/install.sh assets/install.sh
+        run: cp scripts/install.sh "${RUNNER_TEMP}/release-assets/install.sh"
 
       - name: SHA256SUMS
-        working-directory: assets
+        working-directory: ${{ runner.temp }}/release-assets
         run: |
           set -euo pipefail
           sha256sum build-bridge-*.tar.gz install.sh > SHA256SUMS
@@ -353,14 +358,14 @@ jobs:
       - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
 
       - name: Sign SHA256SUMS with this workflow's own identity
-        working-directory: assets
+        working-directory: ${{ runner.temp }}/release-assets
         run: cosign sign-blob --yes --bundle SHA256SUMS.sigstore.json SHA256SUMS
 
       # The same command install.sh runs on a user's machine, with the identity
       # the `version` job proved install.sh pins — so a signature that would
       # fail there fails here.
       - name: Verify it the way install.sh will
-        working-directory: assets
+        working-directory: ${{ runner.temp }}/release-assets
         run: |
           cosign verify-blob \
             --bundle SHA256SUMS.sigstore.json \
@@ -371,7 +376,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-assets
-          path: assets
+          path: ${{ runner.temp }}/release-assets
           if-no-files-found: error
 
   # A bridge that drops a phone's session under load, or cannot restart ICE on
@@ -385,8 +390,11 @@ jobs:
     uses: ./.github/workflows/liveness.yml
 
   # The only job that writes anything outside this repo, and the only one that
-  # holds a token. Re-running it is safe: the release is created if missing and
-  # every asset is uploaded with --clobber.
+  # holds a token. The bridge's self-update follows the latest release, so a
+  # new release is created as a draft, filled, and only then published: a
+  # failed upload leaves a draft no installer can see. Re-running it is safe:
+  # the release is created if missing and every asset is uploaded with
+  # --clobber.
   publish:
     name: Publish to the releases repo
     needs: [version, apple-creds, checksums, liveness]
@@ -395,7 +403,21 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: release-assets
-          path: assets
+          path: ${{ runner.temp }}/release-assets
+
+      # Every asset is a file at the top of the staging directory. Anything
+      # else means the staging picked up something it should not have, and it
+      # fails here, before a release exists, rather than mid-upload.
+      - name: The release assets are files and nothing else
+        working-directory: ${{ runner.temp }}/release-assets
+        run: |
+          set -euo pipefail
+          strays="$(find . -mindepth 1 -maxdepth 1 ! -type f)"
+          if [ -n "$strays" ]; then
+            echo "::error::release-assets holds entries that are not files: ${strays//$'\n'/ }"
+            exit 1
+          fi
+          ls -l
 
       - name: Release notes
         env:
@@ -431,17 +453,38 @@ jobs:
           NOTES
           cat notes.md
 
-      - name: Create the release if this tag has none, then upload every asset
+      - name: Create the release as a draft if this tag has none, then upload every asset
         env:
           GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
           TAG: ${{ github.ref_name }}
           VERSION: ${{ needs.version.outputs.version }}
           REPO: ${{ needs.version.outputs.releases_repo }}
+          ASSETS: ${{ runner.temp }}/release-assets
         run: |
           set -euo pipefail
           if ! gh release view "$TAG" --repo "$REPO" > /dev/null 2>&1; then
-            gh release create "$TAG" --repo "$REPO" \
+            gh release create "$TAG" --repo "$REPO" --draft \
               --title "build-bridge ${VERSION}" --notes-file notes.md
           fi
-          gh release upload "$TAG" --repo "$REPO" --clobber assets/*
+          files=()
+          while IFS= read -r -d '' file; do
+            files+=("$file")
+          done < <(find "$ASSETS" -mindepth 1 -maxdepth 1 -type f -print0 | sort -z)
+          gh release upload "$TAG" --repo "$REPO" --clobber "${files[@]}"
+
+      # The tag is created on the releases repo here, when the draft publishes,
+      # and the release becomes the latest one the self-update follows. A
+      # re-run on a release that is already public leaves it, and which
+      # release is latest, as they were.
+      - name: Publish the release once every asset is up
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ needs.version.outputs.releases_repo }}
+        run: |
+          set -euo pipefail
+          draft="$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft)"
+          if [ "$draft" = "true" ]; then
+            gh release edit "$TAG" --repo "$REPO" --draft=false --latest
+          fi
           echo "published https://github.com/${REPO}/releases/tag/${TAG}"

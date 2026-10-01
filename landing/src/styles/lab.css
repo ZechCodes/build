@@ -1,6 +1,14 @@
 /* The notifications lab (pages/lab/): the hero's field alone, full screen,
    and a small control panel in a corner. Nothing here changes the field
-   itself; hero.css draws it as on the home page. */
+   itself; hero.css draws it as on the home page.
+
+   The page's one stylesheet: it pulls in the home page's sheets here, not
+   from the page's script, so the build bundles them into this sheet alone.
+   Imported from the page, they would be split into a chunk the home page
+   shares, ahead of film.css, and the home page's cascade would change. */
+@import "./fonts.css";
+@import "./landing.css";
+@import "./hero.css";
 
 html[data-lab] body {
   padding-top: 0;

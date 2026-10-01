@@ -2,7 +2,7 @@
 // elapsed seconds at the chosen speed.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { ENDLESS_WINDOW, advance } from "../../src/lab/clock.js";
+import { ENDLESS_WINDOW, advance, scrubbed, scrubberAt } from "../../src/lab/clock.js";
 
 const base = { time: 0, playing: true, speed: 1, loop: false, endless: false };
 
@@ -35,5 +35,24 @@ describe("the lab's clock", () => {
 
   it("restarts a finished beat when played again", () => {
     assert.equal(advance({ ...base, time: 4 }, 0.1, 4).time, 0.1);
+  });
+});
+
+describe("the lab's clock against its timestamps", () => {
+  it("never runs backwards on a frame stamped before the last one", () => {
+    assert.equal(advance({ ...base, time: 0 }, -0.004, 4).time, 0);
+    assert.equal(advance({ ...base, time: 0, endless: true }, -0.004, 4).time, 0);
+  });
+});
+
+describe("the scrubber", () => {
+  it("spans the beat, or one lap of the endless window", () => {
+    assert.equal(scrubberAt({ ...base, time: 2.5 }), 2.5);
+    assert.equal(scrubberAt({ ...base, endless: true, time: ENDLESS_WINDOW * 2 + 3 }), 3);
+  });
+
+  it("moves within the lap it is on in endless mode", () => {
+    assert.equal(scrubbed({ ...base, time: 1 }, 2.5), 2.5);
+    assert.equal(scrubbed({ ...base, endless: true, time: ENDLESS_WINDOW * 2 + 3 }, 7), ENDLESS_WINDOW * 2 + 7);
   });
 });

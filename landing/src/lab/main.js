@@ -2,7 +2,7 @@
 // the visitor controls. Bundled by Astro as an external module (the app's
 // CSP drops inline script). Its state is in the query, so a link sent back
 // opens on exactly what its sender was looking at.
-import { advance } from "./clock.js";
+import { advance, scrubbed } from "./clock.js";
 import { mountControls } from "./controls.js";
 import { createPlayer } from "./player.js";
 import { readState, writeState } from "./state.js";
@@ -55,8 +55,8 @@ const act = {
     state = { ...state, time: 0, playing: true };
     render(performance.now());
   },
-  scrub(time) {
-    state = { ...state, time, playing: false };
+  scrub(value) {
+    state = { ...state, time: scrubbed(state, value), playing: false };
     render(performance.now());
   },
   set(patch) {

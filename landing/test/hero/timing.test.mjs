@@ -9,7 +9,9 @@ import {
   laptopRevealPose,
   outward,
   phaseAt,
+  pillPath,
   posterReveal,
+  reachesField,
   rippleHit,
   rippleReach,
 } from "../../src/hero/timing.js";
@@ -72,6 +74,53 @@ describe("the ripple", () => {
     const [dx, dy] = outward([1000, 450], origin, 8);
     assert.ok(Math.abs(dx - 8) < 1e-9 && Math.abs(dy) < 1e-9);
     assert.deepEqual(outward(origin, origin, 8), [0, 0]);
+  });
+
+  it("keeps the pills that will cross the field, whichever way their lane runs", () => {
+    // A 100px pill, the field 1440px wide, half a second left to move.
+    const pill = (x) => ({ x, width: 100 });
+    assert.ok(reachesField(pill(700), 300, 1440, 0.5), "already in sight");
+    assert.ok(reachesField(pill(-150), 300, 1440, 0.5), "comes in from the left");
+    assert.ok(!reachesField(pill(-250), 300, 1440, 0.5), "too far left to arrive in time");
+    assert.ok(!reachesField(pill(1500), 300, 1440, 0.5), "gone past the right edge");
+    assert.ok(reachesField(pill(1580), -300, 1440, 0.5), "comes in from the right");
+    assert.ok(!reachesField(pill(1700), -300, 1440, 0.5), "too far right to arrive in time");
+    assert.ok(!reachesField(pill(-60), -300, 1440, 0.5), "gone past the left edge");
+  });
+
+  it("carries a pill with its lane until the wave reaches it, then brakes and fades it smoothly", () => {
+    const reach = rippleReach(origin, box);
+    const ripple = { origin, reach, timing: HERO_TIMING, start: 0.5, nudge: 10 };
+    const path = pillPath({ x: 300, y: 200 }, 240, ripple);
+    assert.ok(path.hit >= HERO_TIMING.ripple[0] && path.hit + HERO_TIMING.fade <= HERO_TIMING.ripple[1] + 1e-9);
+    assert.deepEqual(path.at(0.5), { dx: 0, dy: 0, faded: 0 });
+    assert.deepEqual(path.at(1), { dx: 120, dy: 0, faded: 0 });
+    // No jump where the brake begins, and no speed left where it ends.
+    const at = (time) => path.at(time).dx;
+    assert.ok(Math.abs(at(path.hit + 1e-6) - at(path.hit - 1e-6)) < 1e-3);
+    // From its lane's speed, give or take the push outward.
+    assert.ok(Math.abs((at(path.hit + 2e-4) - at(path.hit)) / 2e-4 - 240) <= (2 * 10) / HERO_TIMING.decel + 1, "brakes from its lane's speed");
+    const end = path.hit + HERO_TIMING.decel;
+    assert.ok(Math.abs(at(end) - at(end - 1e-4)) < 1e-3);
+    const stop = path.at(end + 1);
+    const [pushX, pushY] = outward([300 + 240 * (HERO_TIMING.ripple[0] - 0.5), 200], origin, 10);
+    assert.ok(Math.abs(stop.dx - (240 * (path.hit - 0.5) + decelDistance(240, HERO_TIMING.decel) + pushX)) < 1e-9);
+    assert.ok(Math.abs(stop.dy - pushY) < 1e-9);
+    assert.equal(path.at(path.hit + HERO_TIMING.fade).faded, 1);
+    assert.ok(path.at(path.hit + HERO_TIMING.fade / 2).faded < 0.5, "fades slowly first");
+  });
+
+  it("fades a pill coming in from beyond the wave's reach by the ripple's end", () => {
+    const reach = rippleReach(origin, box);
+    const path = pillPath({ x: -2400, y: 200 }, 900, { origin, reach, timing: HERO_TIMING, start: 0, nudge: 10 });
+    assert.ok(path.hit + HERO_TIMING.fade <= HERO_TIMING.ripple[1] + 1e-9);
+  });
+
+  it("brakes a pill running left the same way", () => {
+    const reach = rippleReach(origin, box);
+    const path = pillPath({ x: 1200, y: 600 }, -300, { origin, reach, timing: HERO_TIMING, start: 0, nudge: 10 });
+    assert.ok(path.at(path.hit).dx < 0);
+    assert.ok(path.at(path.hit + HERO_TIMING.decel).dx < path.at(path.hit).dx, "carries on left while it brakes");
   });
 
   it("brakes a pill to a stop without a jolt", () => {

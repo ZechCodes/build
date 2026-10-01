@@ -66,6 +66,14 @@ export function rippleHit([x, y], [ox, oy], reach, timing) {
   return start + (Math.hypot(x - ox, y - oy) / reach) * (end - start - timing.fade);
 }
 
+/** Whether a pill moving at `speed` px/s (negative runs left) is in the
+ *  field at some moment of the next `seconds`: in sight already, or near
+ *  enough the side its lane comes from to arrive. */
+export function reachesField({ x, width }, speed, fieldWidth, seconds) {
+  const [from, to] = [x, x + speed * seconds].sort((a, b) => a - b);
+  return to + width / 2 > 0 && from - width / 2 < fieldWidth;
+}
+
 /** A small push away from the origin, `amount` px long. */
 export function outward([x, y], [ox, oy], amount) {
   const distance = Math.hypot(x - ox, y - oy);
@@ -77,6 +85,32 @@ export function outward([x, y], [ox, oy], amount) {
  *  to a stop over `seconds`: that ease starts at twice its average speed. */
 export function decelDistance(speed, seconds) {
   return (speed * seconds) / 2;
+}
+
+// GSAP's power1 eases, so the field brakes and fades as its tweens did.
+const power1Out = (p) => 1 - (1 - p) ** 2;
+const power1In = (p) => p * p;
+
+/** A pill's way through the ripple, from where it was measured at `start`:
+ *  it moves with its lane at `speed` px/s until the wave reaches it, then
+ *  brakes to a stop pushed a little outward, fading as it does. `at(time)`
+ *  is its shift from the measured spot and how far it has faded (0 to 1). */
+export function pillPath({ x, y }, speed, { origin, reach, timing, start, nudge }) {
+  const begin = timing.ripple[0];
+  const atBegin = [x + speed * (begin - start), y];
+  // One coming in from beyond the wave's reach still fades in time.
+  const hit = Math.min(rippleHit(atBegin, origin, reach, timing), timing.ripple[1] - timing.fade);
+  const [pushX, pushY] = outward(atBegin, origin, nudge);
+  const braking = decelDistance(speed, timing.decel);
+  const carried = speed * (hit - start);
+  return {
+    hit,
+    at(time) {
+      if (time <= hit) return { dx: speed * (time - start), dy: 0, faded: 0 };
+      const eased = power1Out(clamp((time - hit) / timing.decel));
+      return { dx: carried + (braking + pushX) * eased, dy: pushY * eased, faded: power1In(clamp((time - hit) / timing.fade)) };
+    },
+  };
 }
 
 // The laptop's way in: a controlled quarter turn from the right, the lid

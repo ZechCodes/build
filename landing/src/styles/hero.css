@@ -142,13 +142,17 @@ html:not([data-mode="film"]) #act-1 {
   right: 0;
   height: var(--pill-height);
   top: calc((var(--row) + 0.5) / var(--lanes) * 100% - var(--pill-height) / 2 + var(--nudge));
-  will-change: transform;
 }
 
 /* Every lane is moving from the first paint; entrance.js takes the motion
-   over from wherever this has got to. */
+   over from wherever this has got to. The CSS drift is composited while it
+   runs; GSAP's needs the hint. */
 [data-hero="entrance"] .hero-lane {
   animation: hero-drift 6s linear both;
+}
+
+[data-hero="playing"] .hero-lane {
+  will-change: transform;
 }
 
 @keyframes hero-drift {
@@ -298,7 +302,9 @@ html:not([data-mode="film"]) #act-1 {
 
 /* The copy and the laptop wait for the entrance. If its script never
    arrives, this settles the hero on its own a little after the entrance
-   would have: the field goes, the laptop and the copy come in. */
+   would have: the field goes, out of rendering, and the laptop and the copy
+   come in. A script that arrives after the field has begun to go leaves the
+   hero at rest (entrance.js reads the delay from here). */
 [data-hero="entrance"] #act-1 .act__copy > *,
 [data-hero="entrance"] .hero-device {
   opacity: 0;
@@ -323,6 +329,7 @@ html:not([data-mode="film"]) #act-1 {
   to {
     opacity: 0;
     visibility: hidden;
+    display: none;
   }
 }
 

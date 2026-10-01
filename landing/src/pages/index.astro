@@ -23,8 +23,8 @@ const socialImage = "https://getbuild.ing/landing/assets/social-preview.png";
 const activitySectionSlot = "{{activity_section}}";
 const repositoryUrlSlot = "{{repository_url}}";
 const repositoryTitle = "Build’s source code on GitHub";
-// The public installers and how to run them (skriftapp landing_content.py).
-const downloadUrl = "/docs#setup";
+// Accounts are invite-only in the alpha: the calls to action lead to the waitlist.
+const waitlistUrl = "#act-8";
 const heroLaptop = HERO_POSTER;
 
 // One poster pair per act, rendered by Astra from the same poses the film
@@ -96,7 +96,7 @@ const reviewComment = "Match the label the sidebar uses.";
         <nav aria-label="Primary">
           <a href="/docs">Docs</a>
           <a href={repositoryUrlSlot} title={repositoryTitle}>GitHub</a>
-          <a class="cta cta--small" href={downloadUrl}>Download</a>
+          <a class="cta cta--small" href={waitlistUrl}>Join the waitlist</a>
         </nav>
       </div>
     </header>
@@ -123,7 +123,7 @@ const reviewComment = "Match the label the sidebar uses.";
               from any screen.
             </p>
             <div class="actions">
-              <a class="cta" href={downloadUrl}>Download Build</a>
+              <a class="cta" href={waitlistUrl}>Join the waitlist</a>
               <a class="link" href={repositoryUrlSlot} title={repositoryTitle}>GitHub</a>
             </div>
             <p class="meta">Free · Open source · Runs on your machines</p>

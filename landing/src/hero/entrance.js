@@ -8,7 +8,8 @@
 //
 // Scrolling, a change of width, reduced motion or a hidden-then-shown tab
 // never wait on it: the first three finish it on the spot, the last pauses
-// it. It never touches the scroll.
+// it. It never touches the scroll. A module later than the CSS that settles
+// the hero without it leaves the hero at rest.
 import gsap from "gsap";
 import { ATTENTION, DRIFT_SECONDS } from "./field.js";
 import { HERO_ROW_REGIONS, LANDING_POINT } from "./anchors.js";
@@ -242,6 +243,17 @@ function listen(finish, timeline) {
   };
 }
 
+// Whether the CSS that settles the hero without this module (hero.css,
+// hero-fallback-out) has begun to take the field away. Its clock is the time
+// since the first paint; played from there, the entrance would hide copy the
+// visitor may already be reading. A finished fallback has taken the field
+// out of rendering, and its animation with it.
+function fallbackBegun(field) {
+  const fallback = field.getAnimations?.().find((animation) => animation.animationName === "hero-fallback-out");
+  if (!fallback) return getComputedStyle(field).display === "none";
+  return fallback.currentTime >= fallback.effect.getTiming().delay;
+}
+
 // Not playing: the hero at rest, the field gone.
 function rest(root, field) {
   field?.remove();
@@ -263,7 +275,7 @@ export function startHeroEntrance({ root = document.documentElement } = {}) {
   if (root.dataset.hero !== "entrance") return rest(root, document.querySelector("[data-hero-field]"));
   const hero = query(document, "#act-1");
   const field = hero.querySelector("[data-hero-field]");
-  if (!field || scrollY > 8 || matchMedia("(prefers-reduced-motion: reduce)").matches) return rest(root, field);
+  if (!field || scrollY > 8 || matchMedia("(prefers-reduced-motion: reduce)").matches || fallbackBegun(field)) return rest(root, field);
   rememberPlayed();
   const narrow = matchMedia(NARROW_QUERY).matches;
   const device = query(hero, "[data-hero-device]");

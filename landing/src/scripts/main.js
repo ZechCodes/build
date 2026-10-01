@@ -20,9 +20,13 @@ try {
 }
 // For checks, as window.BuildFilm is: the entrance's timeline and state.
 window.BuildHero = hero;
-// Replay and a phase scrubber, in development only: the production build
-// drops this branch and the module with it.
-if (import.meta.env.DEV && hero) import("../hero/scrubber.js").then(({ mountScrubber }) => mountScrubber(hero));
+// Replay and a phase scrubber, for tuning only: under `astro dev`, or in a
+// build made with PUBLIC_HERO_SCRUBBER=1 for the preview server (the
+// entrance's assets are served there). A production build drops this
+// branch and the module with it.
+if ((import.meta.env.DEV || import.meta.env.PUBLIC_HERO_SCRUBBER === "1") && hero) {
+  import("../hero/scrubber.js").then(({ mountScrubber }) => mountScrubber(hero));
+}
 
 // The document's copy comes in as its act comes into view, once
 // (landing.css). Acts already in view are marked before the copy is hidden,

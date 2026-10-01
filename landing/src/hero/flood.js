@@ -26,8 +26,9 @@ const laneShift = (lane, time, { timing, start }) => lane.speed * (Math.min(time
 
 // Past its end an animation is held there, paused: play() on one at its end
 // would rewind it to the start. It runs at the clock's rate, so a clock
-// slowed for tuning (the lab page) is not caught up every frame.
-function seek(animation, ms, playing, duration, rate = 1) {
+// slowed for tuning (the lab page) is not caught up every frame. An endless
+// one (the lab's) has an Infinity duration.
+export function seek(animation, ms, playing, duration, rate = 1) {
   if (animation.playbackRate !== rate) animation.playbackRate = rate;
   if (!playing || ms >= duration) {
     animation.pause();

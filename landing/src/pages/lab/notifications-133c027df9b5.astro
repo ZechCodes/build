@@ -1,0 +1,59 @@
+---
+// The notifications lab (#311): the hero's notification field alone, full
+// screen, with controls, for tuning how it moves. Unlisted: linked from
+// nowhere, in no sitemap, noindex (and skriftapp's lab route says so in a
+// header too). The name is a random slug so it is not found by guessing;
+// the source is public, so it keeps out strangers, not the determined.
+//
+// The field is the home page's own (HeroField.astro, hero.css, hero/), so
+// what is tuned here is what ships. Variant A is the live flood.
+import "../../styles/fonts.css";
+import "../../styles/landing.css";
+import "../../styles/hero.css";
+import "../../styles/lab.css";
+import HeroField from "../../components/HeroField.astro";
+import { SPEEDS } from "../../lab/state.js";
+import { VARIANTS } from "../../lab/variants.js";
+
+const variants = Object.entries(VARIANTS);
+---
+
+<!doctype html>
+<html lang="en" data-hero="playing" data-lab>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Notifications lab</title>
+    <link rel="icon" href="/landing/favicon.svg" type="image/svg+xml" sizes="any" />
+    <script src="../../lab/main.js"></script>
+  </head>
+  <body>
+    <main class="lab-stage" data-lab-stage>
+      <HeroField />
+    </main>
+    <div class="lab-panel" data-lab-panel role="group" aria-label="Notifications lab controls">
+      <div class="lab-row">
+        <button type="button" data-lab="play">Pause</button>
+        <button type="button" data-lab="restart">Restart</button>
+        <input type="range" data-lab="scrub" min="0" max="4" step="0.01" value="0" aria-label="Timeline" />
+        <output data-lab="time">0.00s</output>
+        <button type="button" class="lab-hide" data-lab="hide" aria-expanded="true" aria-label="Show or hide the controls">Hide</button>
+      </div>
+      <div class="lab-row lab-row--choices">
+        <div class="lab-group" role="group" aria-label="Variant">
+          {variants.map(([id, variant]) => (
+            <button type="button" data-lab-variant={id} title={variant.title} aria-pressed="false">{variant.label}</button>
+          ))}
+        </div>
+        <div class="lab-group" role="group" aria-label="Speed">
+          {SPEEDS.map((speed) => (
+            <button type="button" data-lab-speed={speed} aria-pressed="false">{speed}×</button>
+          ))}
+        </div>
+        <button type="button" data-lab="loop" aria-pressed="true">Loop</button>
+        <button type="button" data-lab="endless" aria-pressed="false">Endless</button>
+      </div>
+    </div>
+  </body>
+</html>

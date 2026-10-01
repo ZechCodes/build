@@ -12,12 +12,45 @@ const projectDir = fileURLToPath(new URL("..", import.meta.url));
 const landingDir = fileURLToPath(new URL("../../skriftapp/buildapp/landing/", import.meta.url));
 const generatedPage = `${landingDir}generated/index.html`;
 
+// The notifications lab (#311): unlisted, so its path is written here once.
+const LAB_PATH = "/lab/notifications-133c027df9b5/";
+const labPage = `${landingDir}generated${LAB_PATH}index.html`;
+
 let html = "";
+let lab = "";
 
 before(() => {
   execFileSync("npm", ["run", "build"], { cwd: projectDir, stdio: "pipe" });
   html = readFileSync(generatedPage, "utf8");
+  lab = readFileSync(labPage, "utf8");
 }, { timeout: 300_000 });
+
+describe("the notifications lab", () => {
+  it("is a complete document that asks not to be indexed or followed", () => {
+    assert.match(lab, /^<!DOCTYPE html>/i);
+    assert.ok(lab.includes('<meta name="robots" content="noindex, nofollow">'));
+  });
+
+  it("is linked from nowhere on the home page", () => {
+    assert.ok(!html.includes("/lab/"));
+    assert.ok(!html.includes("notifications-133c027df9b5"));
+  });
+
+  it("carries the home page's own field and no inline script or style element", () => {
+    assert.ok(lab.includes("data-hero-field"));
+    assert.ok(lab.includes('data-hero="playing"'));
+    const scripts = lab.match(/<script[^>]*>/g) ?? [];
+    assert.equal(scripts.length, 1);
+    assert.match(scripts[0], /\ssrc="\/landing\/generated\/_astro\/[^"]+\.js"/);
+    assert.ok(!lab.includes("<style"));
+  });
+
+  it("has every control the brief asks for", () => {
+    for (const control of ["play", "restart", "scrub", "loop", "endless"]) assert.ok(lab.includes(`data-lab="${control}"`), control);
+    for (const speed of ["0.25", "0.5", "1"]) assert.ok(lab.includes(`data-lab-speed="${speed}"`), speed);
+    assert.ok(lab.includes('data-lab-variant="a"'));
+  });
+});
 
 describe("the generated landing document", () => {
   it("is a complete HTML document", () => {

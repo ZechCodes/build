@@ -1,0 +1,125 @@
+/* The notifications lab (pages/lab/): the hero's field alone, full screen,
+   and a small control panel in a corner. Nothing here changes the field
+   itself; hero.css draws it as on the home page. */
+
+html[data-lab] body {
+  padding-top: 0;
+  overflow: hidden;
+}
+
+.lab-stage {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: var(--page);
+}
+
+/* A tuning tool shows the motion it tunes, whatever the visitor's setting. */
+@media (prefers-reduced-motion: reduce) {
+  html[data-lab] .hero-field {
+    display: block !important;
+  }
+}
+
+.lab-panel {
+  position: fixed;
+  left: 12px;
+  bottom: 12px;
+  z-index: 10;
+  display: grid;
+  gap: 6px;
+  width: min(540px, calc(100vw - 24px));
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(10, 12, 11, 0.88);
+  color: var(--ink-dim);
+  font: 12px/1 var(--mono);
+}
+
+.lab-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.lab-group {
+  display: flex;
+}
+
+.lab-panel button {
+  min-width: 36px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink-dim);
+  font: inherit;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.lab-group button {
+  border-radius: 0;
+}
+
+.lab-group button:first-child {
+  border-radius: 6px 0 0 6px;
+}
+
+.lab-group button:last-child {
+  border-radius: 0 6px 6px 0;
+}
+
+.lab-group button + button {
+  margin-left: -1px;
+}
+
+.lab-panel button[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--ink);
+}
+
+.lab-panel button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.lab-panel input[type="range"] {
+  flex: 1 1 200px;
+  min-width: 120px;
+  height: 32px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.lab-panel output {
+  min-width: 11ch;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Collapsed: only the button that brings it back. */
+.lab-panel[data-collapsed] > :not(:first-child),
+.lab-panel[data-collapsed] .lab-row > :not(.lab-hide) {
+  display: none;
+}
+
+.lab-panel[data-collapsed] {
+  width: auto;
+}
+
+@media (max-width: 767px) {
+  .lab-panel {
+    left: 8px;
+    right: 8px;
+    bottom: max(8px, env(safe-area-inset-bottom));
+    width: auto;
+  }
+
+  .lab-panel[data-collapsed] {
+    left: auto;
+  }
+}

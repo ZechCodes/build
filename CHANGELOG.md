@@ -16,8 +16,9 @@ protocol versions; see
 - `build-bridge pair` on a machine whose stored pairing was revoked or is
   unknown to the api no longer dead-ends on "not approved yet": it sets the old
   identity aside, says which api answered and how to undo it, and pairs a new
-  device with a fresh code. `install-service` and `uninstall-service` say the
-  same, and the status check times out instead of hanging (#317).
+  device with a fresh code. `install-service` gives the same reason,
+  `uninstall-service` says it keeps the identity, and the status check times
+  out instead of hanging (#317).
 
 ## [0.2.4] - 2026-09-30
 

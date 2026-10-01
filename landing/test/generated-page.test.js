@@ -150,6 +150,13 @@ describe("the generated landing document", () => {
     }
   });
 
+  it("runs a phone's lanes faster, where a pill is a larger share of the width", () => {
+    const href = html.match(/href="\/landing\/generated\/(_astro\/[^"]+\.css)"/)[1];
+    const css = readFileSync(`${landingDir}generated/${href}`, "utf8").replace(/\s+/g, "");
+    assert.match(css, /\.hero-lane\{--drift-scale:1;/);
+    assert.match(css, /@media\(width<=767px\)\{[^@]*\.hero-lane\{--drift-scale:2;/);
+  });
+
   it("decides the entrance in the head, before the page's script", () => {
     const boot = html.indexOf('src="/landing/generated/hero-boot.js"');
     const main = html.search(/<script type="module" src="\/landing\/generated\/_astro\//);

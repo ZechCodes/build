@@ -59,7 +59,7 @@ export const DRIFT_REACH = 0.55;
 export const LANE_TIERS = Object.freeze({
   far: Object.freeze({ drift: [150, 200], gap: [6, 48], size: [0.7, 0.84] }),
   mid: Object.freeze({ drift: [84, 118], gap: [8, 56], size: [0.88, 1] }),
-  near: Object.freeze({ drift: [40, 58], gap: [12, 72], size: [1.04, 1.22] }),
+  near: Object.freeze({ drift: [40, 58], gap: [12, 72], size: [1.08, 1.34] }),
 });
 
 // The lanes top to bottom: their tier, whether a phone keeps them, and
@@ -171,7 +171,7 @@ function lane(index, [tier, narrow, direction], context) {
     narrowAnchor: attention ? attention.narrowAnchor : anchor,
     ...motion,
     // A lane's own small vertical offset, in px, so the rows are staggered.
-    nudge: Math.round((next() - 0.5) * 14),
+    nudge: Math.round((next() - 0.5) * 24),
     before,
     after: track({ ...shared, key: `lane-${index}-after`, length: drift > 0 ? right : right + incoming, lead: attentionLead(attention, harnesses), neighbour: before[0] }),
   };

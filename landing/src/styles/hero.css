@@ -130,6 +130,9 @@ html:not([data-mode="film"]) #act-1 {
 }
 
 .hero-lane {
+  /* A phone's pills are a larger share of its width, so its lanes run
+     faster to look as fast; entrance.js reads this to take them over. */
+  --drift-scale: 1;
   --lane-height: calc(var(--pill-height) * var(--size));
   position: absolute;
   left: 0;
@@ -186,12 +189,12 @@ html:not([data-mode="film"]) #act-1 {
    script never comes sees the brake, before its field fades. */
 @keyframes hero-drift {
   40% {
-    transform: translateX(calc(var(--drift) * 0.4));
+    transform: translateX(calc(var(--drift) * var(--drift-scale) * 0.4));
     animation-timing-function: cubic-bezier(0.1, 0.4, 0.4, 1);
   }
 
   to {
-    transform: translateX(calc(var(--drift) * 0.55));
+    transform: translateX(calc(var(--drift) * var(--drift-scale) * 0.55));
   }
 }
 
@@ -326,6 +329,7 @@ html:not([data-mode="film"]) #act-1 {
   /* Down the whole field below the bar: the lanes overlap as they do on a
      desktop, and settle to nothing before the copy comes in. */
   .hero-lane {
+    --drift-scale: 2;
     top: calc(3% + (var(--narrow-row) + 0.5) / var(--narrow-lanes) * 94% - var(--lane-height) / 2 + var(--nudge));
   }
 

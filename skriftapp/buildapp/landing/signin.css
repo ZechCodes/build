@@ -264,3 +264,16 @@ a {
     transition-duration: 0.01ms !important;
   }
 }
+
+.signin-methods {
+  display: grid;
+  gap: 0.75rem;
+}
+
+a.signin-button {
+  display: block;
+  margin-top: 0;
+  text-align: center;
+  text-decoration: none;
+  color: #000;
+}

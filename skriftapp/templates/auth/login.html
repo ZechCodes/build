@@ -1,0 +1,16 @@
+{#- /auth/login, where /app sends a signed-out visitor first. Overrides Skrift's provider
+    list. With a passkey method configured (production), it is the passkey page itself,
+    so nobody has to press "Continue with Passkey" to reach the form; otherwise (the dev
+    app's dummy login) it lists the configured methods in Build's frame. -#}
+{%- set passkey = namespace(key=none, descriptor=none) -%}
+{%- for key, provider in providers.items() if provider.method_type == "passkey" and passkey.key is none -%}
+    {%- set passkey.key = key -%}
+    {%- set passkey.descriptor = provider -%}
+{%- endfor -%}
+{%- if passkey.key -%}
+    {%- with method_key = passkey.key, descriptor = passkey.descriptor -%}
+        {%- include "auth/passkey_login.html" -%}
+    {%- endwith -%}
+{%- else -%}
+    {%- include "auth/_provider_list.html" -%}
+{%- endif -%}

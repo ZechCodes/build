@@ -3,24 +3,13 @@
     and draws in getbuild.ing's own type and colours. Everything is same-origin: the
     stylesheet, fonts, mark and script all come from /landing/. The ceremony ordering
     lives in buildapp/landing/passkey-signin.js. -#}
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark">
-<title>Sign in — Build</title>
-<link rel="icon" href="/landing/favicon.png" type="image/png" sizes="32x32">
-<link rel="icon" href="/landing/favicon.svg" type="image/svg+xml" sizes="any">
-<link rel="stylesheet" href="/landing/signin.css">
-<script type="module" src="/landing/passkey-signin.js" nonce="{{ csp_nonce() }}"></script>
-</head>
-<body>
-<header class="signin-bar">
-    <a class="signin-brand" href="/"><img src="/landing/brand-mark.svg" alt="" width="20" height="20">Build</a>
-</header>
+{% extends "auth/_build_page.html" %}
 
-<main class="signin" data-passkey-method="{{ method_key }}">
+{% block scripts %}<script type="module" src="/landing/passkey-signin.js" nonce="{{ csp_nonce() }}"></script>{% endblock %}
+
+{% block main_attributes %} data-passkey-method="{{ method_key }}"{% endblock %}
+
+{% block content %}
     <p class="signin-kicker">Passkey sign-in</p>
     <h1>Sign in to Build</h1>
     <p class="signin-lead">Build uses passkeys instead of passwords. Your device confirms it&rsquo;s you with Face&nbsp;ID, Touch&nbsp;ID, Windows Hello, or your phone.</p>
@@ -66,14 +55,4 @@
 
     <noscript><p class="signin-flash">Passkey sign-in needs JavaScript. Turn it on for this site and reload the page.</p></noscript>
     {% endif %}
-</main>
-
-<footer class="signin-footer">
-    <a href="/">Build</a>
-    <nav aria-label="Footer">
-        <a href="/docs">Docs</a>
-        <a href="/privacy">Privacy</a>
-    </nav>
-</footer>
-</body>
-</html>
+{% endblock %}

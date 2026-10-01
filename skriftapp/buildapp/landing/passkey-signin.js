@@ -74,7 +74,9 @@ function serializeRegistration(credential) {
 // --- what a person reads when something fails --------------------------------
 
 const SERVER_MESSAGES = {
-  invalid_csrf: "This page has been open too long. Reload it and try again.",
+  // The refusal carried a fresh token and the poster has already put it in the
+  // forms, so pressing the button again is enough.
+  invalid_csrf: "That attempt didn't go through. Try again.",
   email_required: "Enter your email address.",
   invalid_credential: "That passkey isn't registered with Build. Create an account below, or choose a different passkey.",
   credential_id_required: "That passkey isn't registered with Build. Create an account below, or choose a different passkey.",
@@ -154,6 +156,9 @@ export function createPasskeyFlow({ credentials, post, conditionalAvailable }) {
   async function runAutofill(signal) {
     if (!(await conditionalAvailable()) || signal.aborted) return null;
     const response = await post("options", {});
+    // A refusal here (a 429, say) leaves autofill off on purpose: retrying on a timer
+    // would spend the rate limit the buttons need, and the buttons work without it.
+    // The next failed or cancelled button attempt starts autofill again.
     if (!response.ok || signal.aborted) return null;
     const credential = await credentials.get({
       publicKey: authenticationOptions(response.payload.options),
@@ -282,11 +287,12 @@ function bindForm({ form, status, busyText, doneText, run, page }) {
 
 export function bindSigninPage(document, window) {
   const root = document.querySelector("[data-passkey-method]");
-  if (!root) return null;
   const signinForm = document.getElementById("signin-form");
   const signinStatus = document.getElementById("signin-status");
   const signupForm = document.getElementById("signup-form");
   const signupStatus = document.getElementById("signup-status");
+  // No forms when the server says passkeys are unavailable: nothing to bind.
+  if (!root || !signinForm || !signupForm) return null;
 
   if (!window.PublicKeyCredential || !window.navigator.credentials) {
     for (const [form, status] of [[signinForm, signinStatus], [signupForm, signupStatus]]) {

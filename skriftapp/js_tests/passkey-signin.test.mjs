@@ -6,8 +6,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  bindSigninPage,
   createPasskeyFlow,
   describeError,
+  describeRefusal,
 } from "../buildapp/landing/passkey-signin.js";
 
 const PENDING = "A request is already pending.";
@@ -209,4 +211,21 @@ test("a refusal reads as a sentence a person can act on", async () => {
 test("a passkey this device already holds for that email says to sign in", () => {
   assert.match(describeError("signup", { name: "InvalidStateError" }), /already has a passkey/);
   assert.match(describeError("signin", new TypeError("Failed to fetch")), /Couldn't reach Build/);
+});
+
+test("a page with no forms (passkeys unavailable) binds nothing and throws nothing", () => {
+  const root = { dataset: { passkeyMethod: "passkey" } };
+  const document = {
+    querySelector: (selector) => (selector === "[data-passkey-method]" ? root : null),
+    getElementById: () => null,
+  };
+  const window = { PublicKeyCredential: function PublicKeyCredential() {}, navigator: { credentials: {} } };
+
+  assert.equal(bindSigninPage(document, window), null);
+  assert.equal(bindSigninPage(document, { navigator: {} }), null);
+});
+
+test("a stale security token says to try again, which works: the fresh one is already in the form", () => {
+  assert.match(describeRefusal("signin", { status: 400, payload: { error: "invalid_csrf" } }), /Try again/);
+  assert.doesNotMatch(describeRefusal("signup", { status: 400, payload: { error: "invalid_csrf" } }), /[Rr]eload/);
 });

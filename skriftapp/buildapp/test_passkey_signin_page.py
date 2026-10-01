@@ -23,6 +23,8 @@ from buildapp.root_controller import LANDING_DIR, RootController
 SKRIFTAPP_DIR = Path(__file__).resolve().parents[1]
 TEMPLATES_DIR = SKRIFTAPP_DIR / "templates"
 TEMPLATE_NAME = "auth/passkey_login.html"
+#: /auth/login, where /app sends a signed-out visitor first.
+LOGIN_TEMPLATE_NAME = "auth/login.html"
 SCRIPT_PATH = "/landing/passkey-signin.js"
 STYLESHEET_PATH = "/landing/signin.css"
 JS_TESTS = SKRIFTAPP_DIR / "js_tests" / "passkey-signin.test.mjs"
@@ -30,12 +32,21 @@ NONCE = "test-nonce"
 
 
 class Descriptor:
-    def __init__(self, *, is_available: bool = True, availability_note: str | None = None):
+    def __init__(
+        self,
+        *,
+        is_available: bool = True,
+        availability_note: str | None = None,
+        method_type: str = "passkey",
+        name: str = "Passkey",
+    ):
         self.is_available = is_available
         self.availability_note = availability_note
+        self.method_type = method_type
+        self.name = name
 
 
-def render(**context) -> str:
+def render(template_name: str = TEMPLATE_NAME, **context) -> str:
     environment = Environment(  # nosemgrep: python.flask.security.xss.audit.direct-use-of-jinja2.direct-use-of-jinja2
         loader=FileSystemLoader(str(TEMPLATES_DIR)), autoescape=True
     )
@@ -48,13 +59,14 @@ def render(**context) -> str:
         csrf_field=lambda: Markup('<input type="hidden" name="_csrf" value="t">'),
     )
     defaults.update(context)
-    return environment.get_template(TEMPLATE_NAME).render(**defaults)
+    return environment.get_template(template_name).render(**defaults)
 
 
-def test_skrift_finds_our_template_before_its_own(monkeypatch):
+@pytest.mark.parametrize("template_name", [TEMPLATE_NAME, LOGIN_TEMPLATE_NAME])
+def test_skrift_finds_our_template_before_its_own(monkeypatch, template_name):
     monkeypatch.chdir(SKRIFTAPP_DIR)
     directories = get_template_directories_for_theme("")
-    owner = next(d for d in directories if (d / TEMPLATE_NAME).is_file())
+    owner = next(d for d in directories if (d / template_name).is_file())
     assert owner == TEMPLATES_DIR
 
 
@@ -138,3 +150,100 @@ def test_landing_assets_never_rewrite_the_session_cookie(asset):
         client.set_session_data({"_csrf": "before"})
         response = client.get(asset)
     assert "set-cookie" not in response.headers
+
+
+def test_the_login_page_is_the_passkey_page_when_passkeys_are_configured():
+    html = render(
+        LOGIN_TEMPLATE_NAME,
+        providers={"passkey": Descriptor()},
+        has_dummy=False,
+        method_key=None,
+        descriptor=None,
+    )
+    assert 'data-passkey-method="passkey"' in html
+    assert 'id="signup-form"' in html
+
+
+def test_without_passkeys_the_login_page_lists_providers_in_builds_style():
+    html = render(
+        LOGIN_TEMPLATE_NAME,
+        providers={},
+        has_dummy=True,
+        method_key=None,
+        descriptor=None,
+    )
+    assert f'href="{STYLESHEET_PATH}"' in html
+    assert 'href="/auth/dummy/login"' in html
+    assert "<script" not in html
+
+
+#: The dev app with production's sign-in method in place of the dummy login.
+DEV_CONFIG_EDITS = {
+    "    dummy:\n      type: dummy\n      label: Demo Login": "    passkey:\n      type: passkey\n      label: Passkey",
+    "  csp_nonce: false": "  csp_nonce: true",
+}
+PRODUCTION_CONFIG = (SKRIFTAPP_DIR / "app.yaml").read_text()
+#: Skrift marks the session cookie Secure outside debug, so the client must be on https
+#: for the cookie to come back.
+SECURE_ORIGIN = "https://testserver.local"
+
+
+@pytest.fixture()
+def skrift_app(tmp_path, monkeypatch):
+    """The whole app as Skrift builds it from app.dev.yaml (its session config,
+    middleware stack and template engine, with ./templates/ ours), passkeys as the
+    sign-in method, over a throwaway database."""
+    from skrift.asgi import create_app
+    from skrift.config import get_settings
+
+    dev_config = (SKRIFTAPP_DIR / "app.dev.yaml").read_text()
+    for stock, ours in DEV_CONFIG_EDITS.items():
+        assert stock in dev_config, stock
+        dev_config = dev_config.replace(stock, ours)
+    # Production's CSP, nonce and all, so the page is held to what getbuild.ing sends.
+    production_csp = re.search(r"  content_security_policy: .*", PRODUCTION_CONFIG).group(0)
+    dev_config = re.sub(r"  content_security_policy: .*", lambda _: production_csp, dev_config)
+    (tmp_path / "app.dev.yaml").write_text(
+        dev_config.replace("./app.db", str(tmp_path / "app.db"))
+    )
+    (tmp_path / "templates").symlink_to(TEMPLATES_DIR)
+    monkeypatch.setenv("SKRIFT_ENV", "dev")
+    monkeypatch.setenv("SECRET_KEY", "a-test-secret-that-is-long-enough-to-use")
+    monkeypatch.chdir(tmp_path)
+    get_settings.cache_clear()
+    try:
+        yield create_app()
+    finally:
+        get_settings.cache_clear()
+
+
+def test_through_the_real_app_landing_assets_set_no_session_cookie(skrift_app):
+    with TestClient(skrift_app, base_url=SECURE_ORIGIN) as client:
+        # /auth/login?next= puts the next URL in the session, so there is one to echo.
+        signed = client.get("/auth/login?next=/app/").headers.get("set-cookie", "")
+        session_cookie = signed.split(";", 1)[0]
+        assert session_cookie.startswith("session=")
+        headers = {"cookie": session_cookie}
+        asset = client.get(STYLESHEET_PATH, headers=headers)
+        page = client.get("/docs", headers=headers)
+    assert asset.status_code == 200
+    assert "set-cookie" not in asset.headers
+    # The control: a page through the same stack still writes the session back.
+    assert "session=" in page.headers.get("set-cookie", "")
+
+
+def test_through_the_real_app_login_is_our_passkey_page_with_a_working_nonce(skrift_app):
+    with TestClient(skrift_app, base_url=SECURE_ORIGIN) as client:
+        response = client.get("/auth/login")
+    assert response.status_code == 200
+    assert 'data-passkey-method="passkey"' in response.text
+    nonce = re.search(r'<script type="module" src="[^"]+" nonce="([^"]+)">', response.text)
+    assert nonce and f"'nonce-{nonce.group(1)}'" in response.headers["content-security-policy"]
+
+
+def test_through_the_real_app_a_flash_message_reaches_the_page(skrift_app):
+    with TestClient(skrift_app, base_url=SECURE_ORIGIN) as client:
+        # Skrift flashes this and redirects to /auth/login when nobody is signed in.
+        response = client.get("/auth/passkeys")
+    assert response.url.path == "/auth/login"
+    assert '<p class="signin-flash" role="status">Please log in to manage passkeys.</p>' in response.text

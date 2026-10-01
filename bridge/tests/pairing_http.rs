@@ -235,7 +235,7 @@ async fn a_revoked_approval_is_retired_so_the_next_pairing_mints_a_new_identity(
         "nothing left to load"
     );
     assert_eq!(identity::load(&retired.kept_at).unwrap(), Some(id));
-    let said = retired.notice(dir.path());
+    let said = words(&retired.notice(dir.path()));
     assert!(said.contains("no longer valid"), "{said}");
     assert!(said.contains("kept in ~."), "{said}");
     assert!(!said.contains("already paired"), "{said}");
@@ -405,7 +405,7 @@ async fn the_retire_message_names_the_api_and_where_the_old_identity_is() {
         .await
         .unwrap()
         .unwrap();
-    let said = retired.notice(std::path::Path::new("/nowhere"));
+    let said = words(&retired.notice(std::path::Path::new("/nowhere")));
     assert!(said.contains(&server.uri()), "{said}");
     assert!(
         said.contains(&format!("kept in {}.", dir.path().display())),
@@ -435,4 +435,10 @@ async fn the_identity_minted_after_a_retire_is_a_new_device() {
         Some(new),
         "the new identity is saved"
     );
+}
+
+/// `text` with its line breaks and indents read as single spaces, so an
+/// assertion holds however the notice wraps.
+fn words(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }

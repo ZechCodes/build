@@ -1,11 +1,11 @@
 // A pending device's fingerprint as the approve screens show it: the short
-// form `build-bridge pair` prints (its first sixteen hex digits, in fours) to
-// compare at a glance, and the whole of it beneath.
+// form `build-bridge pair` prints (its first 32 hex digits, 128 bits, in
+// fours) to compare, and the whole of it beneath.
 
 import { esc } from "./text.js";
 
 export function shortFingerprint(fingerprint) {
-  return (String(fingerprint).slice(0, 16).match(/.{1,4}/g) || []).join(" ");
+  return (String(fingerprint).slice(0, 32).match(/.{1,4}/g) || []).join(" ");
 }
 
 /** The device being approved and its fingerprint, ending on the approve button

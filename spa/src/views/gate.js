@@ -36,7 +36,7 @@ import { initInboxRail } from "../core/inboxShell.js";
 import { initToolbar } from "../core/toolbar.js";
 import { DEVICES_ADDRESS, readCached } from "../core/localCache.js";
 import { fieldTraits } from "../core/fieldTraits.js";
-import { pendingDeviceHtml, shortFingerprint } from "../core/deviceFingerprint.js";
+import { pendingDeviceHtml } from "../core/deviceFingerprint.js";
 
 /** Whether the cache's two readers are up. They are started once, before any
  *  session answers, and stood down when a gate screen takes the page (which is
@@ -447,7 +447,7 @@ function bindPairing() {
  *  screen holds boots again, as its own Add device does; an app already
  *  standing reads the account list again, as Settings does. */
 export function openPairingLink(code) {
-  openAddDevice(() => (App.gated ? boot() : refreshDevices()), { code });
+  openAddDevice(() => (App.gated ? boot() : refreshDevices()), { code, fromLink: true });
 }
 
 // The first run: no approved device on this account. Nobody can enter a pairing
@@ -486,7 +486,7 @@ function waitingRowHtml(device) {
   const word = blocked ? deviceAwayWord(context) : device.status;
   return `
     <div class="projrow"><span class="pname">${esc(device.name)}</span>
-      <span class="ppath mono" style="font-size:11px">${esc(shortFingerprint(device.fingerprint))}…</span>
+      <span class="ppath mono" style="font-size:11px">${esc(device.fingerprint.slice(0, 16))}…</span>
       <span class="dim" style="font-size:11.5px"><span class="dot" style="background:${device.status === "online" && !blocked ? "var(--green)" : "var(--dim)"}"></span> ${esc(word)}</span>
       ${blocked ? `<button class="btn mini" type="button" data-retry-device="${esc(device.id)}">Retry</button>` : ""}</div>`;
 }

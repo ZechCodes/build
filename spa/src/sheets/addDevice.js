@@ -9,13 +9,23 @@ import { settingsSheetHtml } from "./settingsSheet.js";
 import { fieldTraits } from "../core/fieldTraits.js";
 import { pendingDeviceHtml } from "../core/deviceFingerprint.js";
 
-export function openAddDevice(onDone, { code = "" } = {}) {
+/** A link opened the sheet: anyone can send one, so it says so and what
+ *  approving does before the device it names can be approved (#319). */
+const LINK_ARRIVAL = {
+  subtitleHtml: "A pairing link opened this.",
+  warningHtml: `<div class="adderr" data-link-warning style="margin:0 0 10px">Only approve if you just ran the installer or
+    <code>build-bridge pair</code> on a machine you own. Approving gives that machine access to your account.</div>`,
+};
+const TYPED = { subtitleHtml: "Enter the pairing code your bridge printed on startup.", warningHtml: "" };
+
+export function openAddDevice(onDone, { code = "", fromLink = false } = {}) {
   const sheet = $("#sheet");
   const scrim = $("#scrim");
+  const arrival = fromLink ? LINK_ARRIVAL : TYPED;
   sheet.innerHTML = settingsSheetHtml({
     title: "Add a device",
-    subtitleHtml: "Enter the pairing code your bridge printed on startup.",
-    bodyHtml: `
+    subtitleHtml: arrival.subtitleHtml,
+    bodyHtml: `${arrival.warningHtml}
     <input id="paircode" ${fieldTraits("code")} placeholder="e.g. WXYZ-4F2K" style="text-transform:uppercase" />
     <div class="row"><button class="btn" id="pcancel" style="margin-left:auto">Cancel</button>
       <button class="btn primary" id="plookup">Look up</button></div>

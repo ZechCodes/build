@@ -432,10 +432,10 @@ describe("the first-run screen", () => {
 // code, over whatever the page shows; approving then does what the screen
 // under it would have done with its own Add device.
 describe("the bridge's approve link", () => {
-  it("opens Add a device with the link's code", async () => {
+  it("opens Add a device with the link's code, marked as opened by a link", async () => {
     const { openPairingLink } = await import("../src/views/gate.js");
     openPairingLink("ZSAC-ABU6");
-    expect(openAddDevice).toHaveBeenCalledWith(expect.any(Function), { code: "ZSAC-ABU6" });
+    expect(openAddDevice).toHaveBeenCalledWith(expect.any(Function), { code: "ZSAC-ABU6", fromLink: true });
   });
 
   it("boots again once approved over a gate screen, so a first device enters the app", async () => {

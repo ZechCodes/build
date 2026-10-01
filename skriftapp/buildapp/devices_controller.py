@@ -102,6 +102,36 @@ def device_summary(device: Device, now: datetime) -> dict:
     }
 
 
+def registration_state(device: Device | None) -> str:
+    """Where a device stands in pairing, as its own bridge is told.
+
+    ``pending`` waits for a human to enter its code; ``revoked`` was approved
+    and then revoked in Settings → Devices (revoking leaves no code to enter);
+    ``unknown`` was never registered here, or was purged. A bridge that holds an
+    approval for a revoked or unknown device has to pair again."""
+    if device is None:
+        return "unknown"
+    if device.approved:
+        return "approved"
+    if device.pairing_code_hash is not None:
+        return "pending"
+    return "revoked"
+
+
+def device_status(device: Device | None) -> dict:
+    """The public status answer. The route is keyed by the bridge's own random
+    UUID, so a guessed id reads ``unknown`` like any other unregistered one; an
+    owner is named only while the device is approved, never after a revoke."""
+    approved = device is not None and device.approved
+    return {
+        "approved": approved,
+        "owner_user_id": str(device.owner_user_id)
+        if approved and device.owner_user_id
+        else None,
+        "state": registration_state(device),
+    }
+
+
 #: How many approved devices one account may hold. Enforced at approval — the
 #: one moment a device becomes an account's — so revoking frees a slot.
 MAX_DEVICES_PER_USER = 3
@@ -201,15 +231,7 @@ class DevicesController(Controller):
     @get("/api/devices/{device_id:uuid}/status")
     async def status(self, device_id: UUID, db_session: AsyncSession) -> Response:
         """Bridge polls this until approved. The device_id is an unguessable UUID."""
-        device = await db_session.get(Device, device_id)
-        if device is None:
-            return Response({"approved": False, "owner_user_id": None})
-        return Response(
-            {
-                "approved": device.approved,
-                "owner_user_id": str(device.owner_user_id) if device.owner_user_id else None,
-            }
-        )
+        return Response(device_status(await db_session.get(Device, device_id)))
 
     # ----- authenticated (browser/session) -----------------------------------
 

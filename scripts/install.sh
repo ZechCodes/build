@@ -165,6 +165,16 @@ shown() {
     esac
 }
 
+# A path as a command pasted into a shell must name it: the ~ form while
+# nothing in it needs quoting, else in double quotes, starting from $HOME
+# when it is under it.
+pasteable() {
+    case "$1" in
+        *[!A-Za-z0-9_./-]*) printf '"%s"\n' "$(in_home "$1")" ;;
+        *) shown "$1" ;;
+    esac
+}
+
 # uname's answers, mapped to the four platform keys the release pipeline, the
 # api and the web client all name a build by, and to the words a person reads.
 # One table; nothing else in this script branches on the platform.
@@ -299,23 +309,27 @@ web_app_url() {
 # What each command prints is its own, framed by the step it belongs to.
 enable_service() {
     es_bridge="$(shown "$1")"
+    es_run="$(pasteable "$1")"
     if [ "$SKIP_SERVICE" = "1" ]; then
         finish "The Build bridge is installed at $es_bridge." \
             "Pairing and the background service were skipped (BUILD_BRIDGE_SKIP_SERVICE=1)." \
             "When you are ready, run:" \
-            "  $es_bridge pair" \
-            "  $es_bridge install-service"
+            "  $es_run pair" \
+            "  $es_run install-service"
         return 0
     fi
     action_step "Pairing with your Build account"
     "$1" pair || fail "pairing did not finish. The bridge is installed." \
         "When you can approve it in Build, run:" \
-        "  $es_bridge pair" \
-        "  $es_bridge install-service"
+        "  $es_run pair" \
+        "  $es_run install-service"
     say ""
     step "Starting the background service"
     "$1" install-service || fail "the background service could not be installed." \
-        "Run '$es_bridge install-service' again; '$es_bridge serve' runs the bridge in this terminal meanwhile."
+        "Run it again:" \
+        "  $es_run install-service" \
+        "Meanwhile, this runs the bridge in this terminal:" \
+        "  $es_run serve"
     finish "The Build bridge is installed and running." \
         "Open $(web_app_url) to start using it."
 }

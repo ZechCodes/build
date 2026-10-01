@@ -24,11 +24,13 @@ BROKEN='Nothing was installed. Run the installer again later; if it fails the sa
 
 say() { printf '%s\n' "$*" >&2; }
 step() { say "${STEP}==>${RESET} $*"; }
-# stdin broken between words into lines of at most $1 columns; a line that
-# fits is left as it is, and a word longer than a line gets one to itself. Plain shell, because an error can come
-# before the tools are checked.
+# stdin broken between words into lines of at most $1 columns. A line that
+# fits, or starts with spaces (given as it is, like cosign's fields), is kept
+# whole; a word longer than a line gets one to itself. Plain shell, because an
+# error can come before the tools are checked.
 wrap() {
     while IFS= read -r text; do
+        case $text in " "*) printf '%s\n' "$text"; continue;; esac
         [ "${#text}" -gt "$1" ] || { printf '%s\n' "$text"; continue; }
         wrapped='' && set -f
         for word in $text; do

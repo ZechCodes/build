@@ -277,3 +277,23 @@ a.signin-button {
   text-decoration: none;
   color: #000;
 }
+
+/* A confirm step's two choices (templates/auth/logout_confirm.html): the action in
+   the accent, the way back as an outline beside it. */
+.signin-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.75rem;
+  margin-top: 2rem;
+}
+
+.signin-actions .signin-button {
+  margin-top: 0;
+}
+
+a.signin-button-secondary,
+.signin-button-secondary {
+  background: transparent;
+  color: var(--ink);
+  border: 1px solid var(--line-strong);
+}

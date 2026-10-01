@@ -1,0 +1,18 @@
+{#- /auth/logout: the confirm step before the CSRF-checked POST that ends the session.
+    Overrides Skrift's auth/logout_confirm.html with the same form in Build's frame. -#}
+{% extends "auth/_build_page.html" %}
+
+{% block title %}Log out — Build{% endblock %}
+
+{% block content %}
+    <h1>Log out of Build?</h1>
+    <p class="signin-lead">This ends your session in this browser.</p>
+    {% include "auth/_flash.html" %}
+    {#- csrf_field() below is Skrift's token; the rule looks for Django's. -#}
+    <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+    <form method="post" action="/auth/logout" class="signin-actions">
+        {{ csrf_field() }}
+        <button class="signin-button" type="submit">Log out</button>
+        <a class="signin-button signin-button-secondary" href="/">Cancel</a>
+    </form>
+{% endblock %}

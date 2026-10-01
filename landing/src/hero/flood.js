@@ -25,8 +25,10 @@ const translate = ([x, y]) => `translate(${px(x)}, ${px(y)})`;
 const laneShift = (lane, time, { timing, start }) => lane.speed * (Math.min(time, timing.ripple[1]) - start);
 
 // Past its end an animation is held there, paused: play() on one at its end
-// would rewind it to the start.
-function seek(animation, ms, playing, duration) {
+// would rewind it to the start. It runs at the clock's rate, so a clock
+// slowed for tuning (the lab page) is not caught up every frame.
+function seek(animation, ms, playing, duration, rate = 1) {
+  if (animation.playbackRate !== rate) animation.playbackRate = rate;
   if (!playing || ms >= duration) {
     animation.pause();
     animation.currentTime = Math.min(ms, duration);
@@ -50,7 +52,7 @@ function laneMotion(lane, ripple) {
     { offset: 0, transform: `translateX(${px(lane.x + laneShift(lane, 0, ripple))})` },
     { offset: 1, transform: `translateX(${px(lane.x + laneShift(lane, end, ripple))})` },
   ], { duration: end * 1000, fill: "both", easing: "linear" });
-  return (time, playing) => seek(animation, time * 1000, playing, end * 1000);
+  return (time, playing, rate) => seek(animation, time * 1000, playing, end * 1000, rate);
 }
 
 // One pill's part: still with its lane before `from`, animated until `to`,
@@ -62,11 +64,11 @@ function pillMotion(pill, { from, to, frame, final }) {
     const offset = step / STEPS;
     return { offset, ...frame(from + (to - from) * offset) };
   });
-  return (time, playing) => {
+  return (time, playing, rate) => {
     const now = time < from ? "before" : time < to ? "moving" : "after";
     if (now === "moving") {
       animation ??= pill.element.animate(keyframes(), { duration: (to - from) * 1000, fill: "both", easing: "linear" });
-      seek(animation, (time - from) * 1000, playing, (to - from) * 1000);
+      seek(animation, (time - from) * 1000, playing, (to - from) * 1000, rate);
     } else if (animation) {
       animation.cancel();
       animation = null;
@@ -108,8 +110,9 @@ export function createFieldMotion({ field, ripple, flights }) {
     }
   }
   return {
-    update(time, playing) {
-      for (const move of movers) move(time, playing);
+    /** `rate` is the clock's speed; the live hero's is always 1. */
+    update(time, playing, rate = 1) {
+      for (const move of movers) move(time, playing, rate);
     },
     pathOf: (pill) => placed.get(pill.element)?.path,
     offsetAt,

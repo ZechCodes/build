@@ -13,6 +13,7 @@ class FakeAnimation {
     this.keyframes = keyframes;
     this.options = options;
     this.currentTime = 0;
+    this.playbackRate = 1;
     this.state = "running";
   }
 
@@ -93,6 +94,18 @@ describe("the field's motion", () => {
     assert.equal(drift.currentTime, 830, "close enough: the compositor keeps its own time");
     motion.update(1.2, true);
     assert.equal(drift.currentTime, 1200, "a clock that has run away is caught up");
+  });
+
+  it("runs every animation at the clock's rate, so a slowed clock is never caught up frame by frame", () => {
+    const { field, lane, routine } = fieldOf();
+    const motion = createFieldMotion({ field, ripple, flights });
+    const { hit } = motion.pathOf(routine);
+    motion.update(hit + 0.05, true, 0.25);
+    const [drift] = lane.element.live();
+    const [fade] = routine.element.live();
+    assert.deepEqual([drift.playbackRate, fade.playbackRate], [0.25, 0.25]);
+    motion.update(hit + 0.06, true);
+    assert.deepEqual([drift.playbackRate, fade.playbackRate], [1, 1], "the live hero's clock runs at 1");
   });
 
   it("holds a lane at its end while the clock runs on to the last take-off", () => {

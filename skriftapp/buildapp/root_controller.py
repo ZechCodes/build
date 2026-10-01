@@ -47,6 +47,9 @@ LANDING_HEAD = '<link rel="stylesheet" href="/landing/cinematic.css">'
 #: how long an old copy can be shown. See design/email/README.md.
 EMAIL_ASSET_CACHE_CONTROL = "public, max-age=31536000"
 
+#: Litestar's session-middleware opt-out key (its configs' default ``exclude_opt_key``).
+SKIP_SESSION = "skip_session"
+
 LANDING_MEDIA_TYPES = {
     ".js": "text/javascript",
     ".css": "text/css",
@@ -139,7 +142,11 @@ class RootController(Controller):
             headers={"Cache-Control": "no-cache"},
         )
 
-    @get("/landing/{asset_path:path}", sync_to_thread=True)
+    # The session lives in the cookie, so a response that carries one writes back the
+    # session its request was sent with. An asset loading beside a CSRF-rotating POST
+    # (the sign-in page's fonts while a passkey ceremony runs) would overwrite the
+    # rotation and fail the ceremony's next step; assets never read the session.
+    @get("/landing/{asset_path:path}", sync_to_thread=True, opt={SKIP_SESSION: True})
     def landing_asset(self, asset_path: str) -> Response:
         resolved = (LANDING_DIR / asset_path.lstrip("/")).resolve()
         if not resolved.is_relative_to(LANDING_DIR.resolve()) or not resolved.is_file():

@@ -84,7 +84,7 @@ const SERVER_MESSAGES = {
 };
 
 const SIGNUP_REFUSED =
-  "We couldn't create an account with that email. If you already have one, sign in above instead.";
+  "We couldn't create an account with that email. If you already have one, sign in instead.";
 
 const FALLBACK = {
   signin: "Sign-in didn't work. Try again.",
@@ -108,7 +108,7 @@ export function describeError(kind, error) {
       return "The passkey prompt was closed or timed out. Try again when you're ready.";
     case "InvalidStateError":
       return kind === "signup"
-        ? "This device already has a passkey for that email. Sign in above instead."
+        ? "This device already has a passkey for that email. Sign in instead."
         : "Your browser is still finishing another passkey request. Wait a moment and try again.";
     case "SecurityError":
       return "Passkeys only work on getbuild.ing. Open the page there and try again.";
@@ -233,8 +233,8 @@ function bindForm({ form, status, busyText, doneText, run, page }) {
   });
 }
 
-/** The page's forms with their status lines: sign-in always, create-account only
- *  when the server found an invite in this session. */
+/** The page's form with its status line: the page shows one view at a time (#315),
+ *  sign-in or, for a visitor carrying an invite, create-account. */
 function pageForms(document) {
   return [
     ["signin", "signin-form", "signin-status"],

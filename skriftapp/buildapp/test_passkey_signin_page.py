@@ -53,6 +53,7 @@ def render(template_name: str = TEMPLATE_NAME, **context) -> str:
         flash=None,
         flash_messages=[],
         invite_email=None,
+        page_view="signin",
         csp_nonce=lambda: NONCE,
         csrf_field=lambda: Markup('<input type="hidden" name="_csrf" value="t">'),
     )
@@ -95,15 +96,29 @@ def test_it_keeps_skrifts_endpoints_by_naming_the_method():
 INVITED = "invitee@example.com"
 
 
+#: The three views (#315): no invite, an invite visitor's default, and their sign-in.
+VIEWS = {
+    "no-invite": dict(invite_email=None, page_view="signin"),
+    "invite-signup": dict(invite_email=INVITED, page_view="signup"),
+    "invite-signin": dict(invite_email=INVITED, page_view="signin"),
+}
+VIEW_FORMS = {"no-invite": "signin", "invite-signup": "signup", "invite-signin": "signin"}
+
+
 def test_the_invite_address_field_has_a_label():
-    html = render(invite_email=INVITED)
+    html = render(**VIEWS["invite-signup"])
     assert '<label for="signup-email">' in html
     assert 'id="signup-email"' in html
 
 
-def test_the_invite_address_is_escaped():
-    html = render(invite_email='a"><script>@example.com')
+@pytest.mark.parametrize("view", ["invite-signup", "invite-signin"])
+def test_the_invite_address_is_escaped(view):
+    html = render(**{**VIEWS[view], "invite_email": 'a"><script>@example.com'})
     assert "<script>@" not in html
+
+
+def test_a_signup_view_without_an_invite_address_is_sign_in():
+    assert 'id="signup-form"' not in render(page_view="signup", invite_email=None)
 
 
 def test_sign_in_offers_no_autofill_and_no_field():
@@ -112,20 +127,14 @@ def test_sign_in_offers_no_autofill_and_no_field():
     assert 'id="signin-email"' not in html
 
 
-@pytest.mark.parametrize(
-    ("invite_email", "status_ids"),
-    [(INVITED, ["signin-status", "signup-status"]), (None, ["signin-status"])],
-)
-def test_status_lines_are_announced(invite_email, status_ids):
-    html = render(invite_email=invite_email)
-    for status_id in status_ids:
-        match = re.search(rf'<p id="{status_id}"[^>]*>', html)
-        assert match and 'aria-live="polite"' in match.group(0) and 'role="status"' in match.group(0)
-
-
-@pytest.mark.parametrize(("invite_email", "forms"), [(INVITED, 2), (None, 1)])
-def test_every_form_carries_a_csrf_field(invite_email, forms):
-    assert render(invite_email=invite_email).count('name="_csrf"') == forms
+@pytest.mark.parametrize("view", VIEWS)
+def test_each_view_is_one_form_with_its_csrf_field_and_announced_status(view):
+    html = render(**VIEWS[view])
+    kind = VIEW_FORMS[view]
+    assert re.findall(r'<form id="([^"]+)"', html) == [f"{kind}-form"]
+    assert html.count('name="_csrf"') == 1
+    status = re.search(rf'<p id="{kind}-status"[^>]*>', html)
+    assert status and 'aria-live="polite"' in status.group(0) and 'role="status"' in status.group(0)
 
 
 def test_an_unavailable_method_says_so_and_offers_no_forms():

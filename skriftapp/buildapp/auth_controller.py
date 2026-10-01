@@ -3,9 +3,11 @@
 Build does not fork Skrift's sign-in: this subclass keeps every route and replaces four
 handlers by name, each doing Build's part and then calling Skrift's own handler.
 
-- ``/auth/login`` and ``/auth/{provider}/login`` hand the sign-in page the address of
-  the invite this session carries, so the page offers account creation for that address
-  only, and none at all without one.
+- ``/auth/login`` and ``/auth/{provider}/login`` show one view (#315): account creation
+  for the address of the invite this session carries, or sign-in. A visitor without an
+  open invite only ever gets sign-in; one with an invite gets account creation, or
+  sign-in with ``?view=signin``. ``view`` is allow-listed, never echoed, and Skrift's
+  ``next`` needs no carrying: Skrift keeps it in the session.
 - ``register/options`` refuses any address but the carried invite's, whatever the form
   posts. ``register/complete`` refuses when the address Skrift kept from the options
   step is no longer the carried invite's (another invite opened since, or this one
@@ -19,6 +21,12 @@ Skrift's handler, so an unknown provider is still its 404 and a token-less post 
 ``invalid_csrf``. Build's refusal answers ``invite_required`` with the CSRF token, like
 Skrift's own refusals. Skrift's generic ``invalid_request`` for an address that already
 has an account is untouched.
+
+Only passkey registration is behind the invite. Skrift's dummy and OAuth methods create
+accounts on their own routes, unguarded: production's ``app.yaml`` configures the passkey
+method alone (``test_auth_controller`` pins that), while ``app.dev.yaml`` and
+``app.mail.yaml`` configure the dummy method, so anyone reaching a dev or mail-test app
+can make an account without an invite.
 
 The handlers are replaced by name against a pinned Skrift; ``test_auth_controller``
 pins the route inventory so an upgrade that renames one, or adds a route that creates
@@ -51,6 +59,10 @@ from buildapp.signup_invite import admits, carried_invite
 INVITE_REQUIRED = "invite_required"
 #: The sign-in page's name for the address it offers an account for.
 INVITE_EMAIL_CONTEXT = "invite_email"
+#: The view the sign-in page draws: ``signup`` or ``signin``.
+PAGE_VIEW_CONTEXT = "page_view"
+SIGNUP_VIEW = "signup"
+SIGNIN_VIEW = "signin"
 
 
 def invite_required(request: Request) -> Response:
@@ -74,12 +86,22 @@ async def skrift_would_proceed(request: Request, provider: str) -> bool:
     return bool(stored) and hmac.compare_digest(submitted, stored)
 
 
-async def with_invite_email(
-    response: Redirect | TemplateResponse, request: Request, db_session: AsyncSession
+def page_view(invite: Invite | None, requested: str | None) -> str:
+    """Account creation for a visitor carrying an open invite, unless they asked for
+    sign-in; sign-in for everyone else, whatever they asked for."""
+    return SIGNUP_VIEW if invite and requested != SIGNIN_VIEW else SIGNIN_VIEW
+
+
+async def with_page_view(
+    response: Redirect | TemplateResponse,
+    request: Request,
+    db_session: AsyncSession,
+    requested: str | None,
 ) -> Redirect | TemplateResponse:
     if isinstance(response, TemplateResponse):
         invite = await carried_invite(request, db_session, utc_now())
         response.context[INVITE_EMAIL_CONTEXT] = invite.email if invite else None
+        response.context[PAGE_VIEW_CONTEXT] = page_view(invite, requested)
     return response
 
 
@@ -90,9 +112,10 @@ class BuildAuthController(AuthController):
         request: Request,
         db_session: AsyncSession,
         next_url: Annotated[str | None, Parameter(query="next")] = None,
+        view: str | None = None,
     ) -> TemplateResponse:
         response = await AuthController.login_page.fn(self, request, next_url)
-        return await with_invite_email(response, request, db_session)
+        return await with_page_view(response, request, db_session, view)
 
     @get("/{provider:str}/login")
     async def oauth_login(
@@ -101,9 +124,10 @@ class BuildAuthController(AuthController):
         db_session: AsyncSession,
         provider: str,
         next_url: Annotated[str | None, Parameter(query="next")] = None,
+        view: str | None = None,
     ) -> Redirect | TemplateResponse:
         response = await AuthController.oauth_login.fn(self, request, provider, next_url)
-        return await with_invite_email(response, request, db_session)
+        return await with_page_view(response, request, db_session, view)
 
     @post("/{provider:str}/register/options")
     async def begin_primary_method_registration(
@@ -122,15 +146,13 @@ class BuildAuthController(AuthController):
     async def complete_primary_method_registration(
         self, request: Request, db_session: AsyncSession, provider: str
     ) -> Response:
-        invite = await carried_invite(request, db_session, utc_now())
         signup = get_primary_passkey_registration_state(request)
+        invite = None
         # No registration under way is Skrift's refusal to give, in its own words.
-        if (
-            await skrift_would_proceed(request, provider)
-            and signup is not None
-            and not admits(invite, signup.email)
-        ):
-            return invite_required(request)
+        if await skrift_would_proceed(request, provider) and signup is not None:
+            invite = await carried_invite(request, db_session, utc_now())
+            if not admits(invite, signup.email):
+                return invite_required(request)
         response = await AuthController.complete_primary_method_registration.fn(
             self, request, db_session, provider
         )

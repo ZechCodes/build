@@ -10,9 +10,18 @@
 {% block main_attributes %} data-passkey-method="{{ method_key }}"{% endblock %}
 
 {% block content %}
+    {#- One view at a time (#315): page_view is "signup" only for a visitor carrying an
+        open invite who did not ask for sign-in (buildapp/auth_controller.py). -#}
+    {%- set signup = page_view == "signup" and invite_email %}
+    {% if signup %}
+    <p class="signin-kicker">Your invite</p>
+    <h1>Create your Build account</h1>
+    <p class="signin-lead">Build uses passkeys instead of passwords. Your device makes one for this address and confirms it&rsquo;s you with Face&nbsp;ID, Touch&nbsp;ID, Windows Hello, or your phone.</p>
+    {% else %}
     <p class="signin-kicker">Passkey sign-in</p>
     <h1>Sign in to Build</h1>
     <p class="signin-lead">Build uses passkeys instead of passwords. Your device confirms it&rsquo;s you with Face&nbsp;ID, Touch&nbsp;ID, Windows Hello, or your phone.</p>
+    {% endif %}
 
     {% for msg in flash_messages or [] %}
     <p class="signin-flash" role="status">{{ msg.message }}</p>
@@ -23,37 +32,30 @@
 
     {% if not descriptor.is_available %}
     <p class="signin-flash" role="status">{{ descriptor.availability_note or "Passkey sign-in isn't available right now. Try again in a few minutes." }}</p>
+    {% elif signup %}
+    <form id="signup-form" class="signin-form signin-form-first">
+        {{ csrf_field() }}
+        <label for="signup-email">Email</label>
+        <input id="signup-email" class="signin-input" type="email" name="email"
+               value="{{ invite_email }}" autocomplete="username" readonly>
+        <button class="signin-button" type="submit">Create account</button>
+        <p id="signup-status" class="signin-status" role="status" aria-live="polite"></p>
+    </form>
+    <p class="signin-hint signin-aside">Already have an account? <a href="/auth/login?view=signin">Sign in</a></p>
     {% else %}
-    <section class="signin-panel" aria-labelledby="signin-heading">
-        <h2 id="signin-heading">Sign in</h2>
-        <form id="signin-form" class="signin-form">
-            {{ csrf_field() }}
-            <button class="signin-button" type="submit">Sign in with a passkey</button>
-            <p id="signin-status" class="signin-status" role="status" aria-live="polite"></p>
-        </form>
-    </section>
-
+    <form id="signin-form" class="signin-form signin-form-first">
+        {{ csrf_field() }}
+        <button class="signin-button" type="submit">Sign in with a passkey</button>
+        <p id="signin-status" class="signin-status" role="status" aria-live="polite"></p>
+    </form>
     {% if invite_email %}
-    <section class="signin-panel" aria-labelledby="signup-heading">
-        <h2 id="signup-heading">Create your account</h2>
-        <p class="signin-hint">Your invite is for this address. Creating your account makes its passkey in the same step.</p>
-        <form id="signup-form" class="signin-form">
-            {{ csrf_field() }}
-            <label for="signup-email">Email</label>
-            <input id="signup-email" class="signin-input" type="email" name="email"
-                   value="{{ invite_email }}" autocomplete="username" readonly>
-            <button class="signin-button" type="submit">Create account</button>
-            <p id="signup-status" class="signin-status" role="status" aria-live="polite"></p>
-        </form>
-    </section>
+    <p class="signin-hint signin-aside">Have an invite for {{ invite_email }}? <a href="/auth/login">Create your account</a></p>
     {% else %}
-    <section class="signin-panel" aria-labelledby="signup-heading">
-        <h2 id="signup-heading">New to Build?</h2>
-        <p class="signin-hint">Build is invite-only right now. Join the waitlist and we&rsquo;ll send you an invite as seats open.</p>
-        <a class="signin-button" href="/#waitlist">Join the waitlist</a>
-    </section>
+    <p class="signin-hint signin-aside">Build is invite-only. <a href="/#waitlist">Join the waitlist</a></p>
+    {% endif %}
     {% endif %}
 
+    {% if descriptor.is_available %}
     <noscript><p class="signin-flash">Passkey sign-in needs JavaScript. Turn it on for this site and reload the page.</p></noscript>
     {% endif %}
 {% endblock %}

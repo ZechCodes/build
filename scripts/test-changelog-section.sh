@@ -77,7 +77,20 @@ else
   pass "the oldest entry stops at the link definitions"
 fi
 
-run unreleased "0.2.5" "$CHANGELOG"
+# A fixture, not the repository's own file: its Unreleased entry is dated at
+# every release, and this case must not fail the release that dates it.
+cat > "$WORK/unreleased.md" <<'MD'
+# Changelog
+
+## [1.2.0] - Unreleased
+
+- One.
+
+## [1.1.0] - 2026-02-01
+
+- Zero.
+MD
+run unreleased "1.2.0" "$WORK/unreleased.md"
 expect_refused "an Unreleased entry is refused" 1 "still says Unreleased"
 
 run missing "9.9.9" "$CHANGELOG"

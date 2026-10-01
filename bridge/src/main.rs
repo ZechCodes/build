@@ -370,19 +370,11 @@ impl PairingOutcome {
         }
     }
 
-    /// Whether there is an account for `pair` to name. A provisioned identity
-    /// was seeded into the environment and is approved by construction: no user
-    /// account owns it, the api has never heard of it, and the install gate —
-    /// which asks the api who owns this device — has nothing to say about it.
-    fn belongs_to_an_account(self) -> bool {
-        !matches!(self, Self::Provisioned)
-    }
-
-    /// What `pair` says about the pairing itself, before it names the account.
-    fn note(self) -> Option<&'static str> {
+    /// The line `pair` ends on once the gate names the owning account.
+    fn paired_to(self, owner: &str) -> String {
         match self {
-            Self::AlreadyApproved => Some("already paired"),
-            Self::Provisioned | Self::JustApproved => None,
+            Self::AlreadyApproved => format!("already paired to account {owner}"),
+            Self::Provisioned | Self::JustApproved => format!("paired to account {owner}"),
         }
     }
 }
@@ -407,60 +399,56 @@ struct LoadedIdentity {
 /// The transport keypair travels beside the identity, not inside it: its one
 /// owner is the intake that opens session keys with it (`carrier.rs`).
 async fn load_device_identity(config: &BridgeConfig) -> Result<LoadedIdentity, String> {
-    match (
-        std::env::var("BRIDGE_IDENTITY_PRIV"),
-        std::env::var("BRIDGE_TRANSPORT_PRIV"),
-        std::env::var("BRIDGE_TRANSPORT_PUB"),
-    ) {
-        (Ok(id_priv), Ok(tp_priv), Ok(tp_pub)) => Ok(LoadedIdentity {
-            identity: DeviceIdentity {
-                device_id: env("BRIDGE_DEVICE_ID", "bridge-dev"),
-                identity_private_key_b64: id_priv,
-            },
-            transport: transport::KeyPairB64 {
-                public_key_b64: tp_pub,
-                private_key_b64: tp_priv,
-            },
-            outcome: PairingOutcome::Provisioned,
-        }),
-        _ => {
-            let identity_path = config.identity_file.clone();
-            let stored = match identity::load(&identity_path) {
-                Ok(Some(stored)) => stored,
-                Ok(None) => {
-                    let fresh = identity::generate(&identity::default_device_name());
-                    identity::save(&identity_path, &fresh).map_err(|error| {
-                        format!("could not persist identity to {identity_path:?}: {error}")
-                    })?;
-                    fresh
-                }
-                Err(error) => {
-                    return Err(format!(
-                        "could not load identity from {identity_path:?}: {error}"
-                    ))
-                }
-            };
-            let outcome = PairingOutcome::for_stored(stored.approved);
-            let pairing_code_override = std::env::var("BRIDGE_PAIRING_CODE").ok();
-            let client = reqwest::Client::new();
-            let approved = pairing::ensure_paired(
-                &client,
-                &config.api_url,
-                &config.web_url,
-                &identity_path,
-                stored,
-                Duration::from_secs(2),
-                pairing_code_override.as_deref(),
-            )
-            .await
-            .map_err(|error| format!("pairing failed: {error}"))?;
-            Ok(LoadedIdentity {
-                identity: identity::to_device_identity(&approved),
-                transport: approved.transport.clone(),
-                outcome,
-            })
-        }
+    match provisioned_identity() {
+        Some(provisioned) => Ok(provisioned),
+        None => load_stored_identity(config).await,
     }
+}
+
+/// The file-backed identity, minted on first use, paired before it returns.
+async fn load_stored_identity(config: &BridgeConfig) -> Result<LoadedIdentity, String> {
+    let identity_path = &config.identity_file;
+    let stored = identity::load_or_generate(identity_path, &identity::default_device_name())
+        .map_err(|error| {
+            format!("could not load or create identity at {identity_path:?}: {error}")
+        })?;
+    let outcome = PairingOutcome::for_stored(stored.approved);
+    let pairing_code_override = std::env::var("BRIDGE_PAIRING_CODE").ok();
+    let client = reqwest::Client::new();
+    let approved = pairing::ensure_paired(
+        &client,
+        &config.api_url,
+        &config.web_url,
+        identity_path,
+        stored,
+        Duration::from_secs(2),
+        pairing_code_override.as_deref(),
+    )
+    .await
+    .map_err(|error| format!("pairing failed: {error}"))?;
+    Ok(LoadedIdentity {
+        identity: identity::to_device_identity(&approved),
+        transport: approved.transport.clone(),
+        outcome,
+    })
+}
+
+/// The identity seeded into the environment, if all three keys are there.
+fn provisioned_identity() -> Option<LoadedIdentity> {
+    let id_priv = std::env::var("BRIDGE_IDENTITY_PRIV").ok()?;
+    let tp_priv = std::env::var("BRIDGE_TRANSPORT_PRIV").ok()?;
+    let tp_pub = std::env::var("BRIDGE_TRANSPORT_PUB").ok()?;
+    Some(LoadedIdentity {
+        identity: DeviceIdentity {
+            device_id: env("BRIDGE_DEVICE_ID", "bridge-dev"),
+            identity_private_key_b64: id_priv,
+        },
+        transport: transport::KeyPairB64 {
+            public_key_b64: tp_pub,
+            private_key_b64: tp_priv,
+        },
+        outcome: PairingOutcome::Provisioned,
+    })
 }
 
 fn construct_app(runtime: &RuntimePaths, identity: &DeviceIdentity) -> Result<AppState, String> {
@@ -853,9 +841,13 @@ fn exit_startup(error: String) -> ! {
 
 /// Pair this device to an account and stop. Registers the identity, prints the
 /// pairing code + fingerprint + approve link, and waits for a human to approve
-/// it in the web app; an already-approved identity skips all of that and says
-/// `already paired`. This is the pairing half of a first install, on its own, so
-/// an installer can run it and then `install-service`.
+/// it in the web app; an identity the api still approves skips all of that.
+/// This is the pairing half of a first install, on its own, so an installer can
+/// run it and then `install-service`.
+///
+/// An identity stored as approved that the api no longer approves (revoked in
+/// Settings → Devices, or unknown to it) is retired first, so this run pairs a
+/// new identity instead of dead-ending on a code that does not exist (#317).
 ///
 /// It ends on the same gate `install-service` runs — one status GET, even for an
 /// identity that was already approved — so the account it names is the account
@@ -867,28 +859,42 @@ async fn pair() {
     // Pairing talks https before anything else does; the provider must be in
     // place first.
     relay::install_crypto_provider();
-    let cfg = bridge_config();
-    let loaded = match load_device_identity(&cfg).await {
-        Ok(loaded) => loaded,
-        Err(error) => exit_startup(error),
-    };
-    if !loaded.outcome.belongs_to_an_account() {
-        println!(
-            "provisioned device {} — nothing to pair",
-            loaded.identity.device_id
-        );
-        return;
-    }
-    if let Some(note) = loaded.outcome.note() {
-        println!("{note}");
-    }
-    match approved_owner(&cfg).await {
-        Ok(owner) => println!("paired to account {owner}"),
+    match pair_device(&bridge_config(), provisioned_identity()).await {
+        Ok(line) => println!("{line}"),
         Err(reason) => {
             eprintln!("not paired: {reason}");
             std::process::exit(1);
         }
     }
+}
+
+/// `pair`, in order, returning the line it ends on or why it refused: a
+/// provisioned identity returns before anything is asked; a stored approval
+/// the api dropped is retired before the identity is loaded, so the load
+/// mints a new device.
+async fn pair_device(
+    cfg: &BridgeConfig,
+    provisioned: Option<LoadedIdentity>,
+) -> Result<String, String> {
+    if let Some(provisioned) = provisioned {
+        return Ok(format!(
+            "provisioned device {} — nothing to pair",
+            provisioned.identity.device_id
+        ));
+    }
+    let retired = pairing::retire_lapsed_approval(
+        &pairing::status_client(),
+        &cfg.api_url,
+        &cfg.identity_file,
+    )
+    .await
+    .map_err(|error| service::InstallGateError::from(error).to_string())?;
+    if let Some(retired) = retired {
+        println!("{retired}");
+    }
+    let loaded = load_stored_identity(cfg).await?;
+    let owner = approved_owner(cfg).await?;
+    Ok(loaded.outcome.paired_to(&owner))
 }
 
 /// Install the platform's service unit — a launchd LaunchAgent on macOS, a
@@ -947,6 +953,24 @@ fn uninstall_service() {
             std::process::exit(1);
         }
     }
+    if let Some(note) = kept_identity_note(&bridge_config().identity_file) {
+        println!("{note}");
+    }
+}
+
+/// What uninstalling says about the device identity, which it keeps: the
+/// account still lists this device, so deleting the keys would strand that
+/// entry, and a later `pair` either finds it still approved or retires it and
+/// pairs anew. `None` when there is no identity to speak of.
+fn kept_identity_note(identity_file: &std::path::Path) -> Option<String> {
+    identity_file.exists().then(|| {
+        format!(
+            "kept this device's identity at {} — `build-bridge pair` reuses it while your \
+             account still lists this device, and pairs a new one if it was revoked; \
+             revoke it in Settings → Devices to retire it",
+            identity_file.display()
+        )
+    })
 }
 
 /// The install gate: a local identity AND a live api confirmation that this
@@ -961,17 +985,14 @@ async fn approved_owner(cfg: &BridgeConfig) -> Result<String, String> {
     let api_status = match &stored {
         None => Err("no identity".to_string()),
         Some(stored) => {
-            let client = reqwest::Client::new();
+            let client = pairing::status_client();
             pairing::fetch_status(&client, &cfg.api_url, &stored.device_id)
                 .await
                 .map_err(|error| error.to_string())
         }
     };
-    service::check_install_gate(
-        stored.is_some(),
-        api_status.as_ref().map_err(String::as_str),
-    )
-    .map_err(|gate| gate.to_string())
+    service::check_install_gate(stored.as_ref(), api_status.as_ref().map_err(String::as_str))
+        .map_err(|gate| gate.to_string())
 }
 
 /// The one platform decision in the crate, and the one place it is refused.
@@ -1185,7 +1206,13 @@ fn mcp_stdio() {
 
 #[cfg(test)]
 mod tests {
-    use super::{service_environment, valid_release_repo, PairingOutcome};
+    use super::{
+        kept_identity_note, pair_device, service_environment, valid_release_repo, LoadedIdentity,
+        PairingOutcome,
+    };
+    use build_bridge::{config, identity, relay::DeviceIdentity, transport};
+    use wiremock::matchers::{method, path, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn release_repo_override_is_one_safe_owner_and_repo() {
@@ -1297,33 +1324,118 @@ mod tests {
         );
     }
 
-    /// A seeded device has no account, so `pair` reports the device it found
-    /// and stops rather than asking the api who owns it — the gate would refuse
-    /// a device the api never registered, in install-flavoured words, from a
-    /// command that installs nothing.
+    /// `pair` ends on one line naming the account, and says "already" only
+    /// for a pairing it found rather than made; it never says "already
+    /// paired" before a gate that may still refuse (#317).
     #[test]
-    fn a_provisioned_identity_has_no_account_to_pair_to() {
-        assert!(!PairingOutcome::Provisioned.belongs_to_an_account());
-    }
-
-    /// A stored identity is the file-backed kind the api knows by device id, so
-    /// both of its outcomes end on the gate that names the owning account.
-    #[test]
-    fn a_stored_identity_belongs_to_the_account_that_approved_it() {
-        assert!(PairingOutcome::AlreadyApproved.belongs_to_an_account());
-        assert!(PairingOutcome::JustApproved.belongs_to_an_account());
-    }
-
-    /// Only the device that was already approved is told "already paired" —
-    /// pairing that happened just now, and a provisioned identity that never
-    /// pairs at all, say nothing extra before the account line.
-    #[test]
-    fn only_an_already_approved_identity_is_announced_as_already_paired() {
+    fn pair_ends_on_one_line_naming_the_account() {
         assert_eq!(
-            PairingOutcome::AlreadyApproved.note(),
-            Some("already paired")
+            PairingOutcome::AlreadyApproved.paired_to("user-1"),
+            "already paired to account user-1"
         );
-        assert_eq!(PairingOutcome::JustApproved.note(), None);
-        assert_eq!(PairingOutcome::Provisioned.note(), None);
+        assert_eq!(
+            PairingOutcome::JustApproved.paired_to("user-1"),
+            "paired to account user-1"
+        );
+    }
+
+    /// Uninstalling the service keeps the identity, and says where and what
+    /// pairing will do with it; with no identity there is nothing to say.
+    #[test]
+    fn uninstall_says_it_kept_the_identity_and_what_pairing_does_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.json");
+        assert_eq!(kept_identity_note(&path), None);
+        std::fs::write(&path, "{}").unwrap();
+        let note = kept_identity_note(&path).expect("an identity to speak of");
+        assert!(note.contains(&path.display().to_string()), "{note}");
+        assert!(note.contains("`build-bridge pair`"), "{note}");
+        assert!(note.contains("revoked"), "{note}");
+    }
+
+    fn config_for(api_url: &str, home: &std::path::Path) -> config::BridgeConfig {
+        let identity_file = home.join("identity.json");
+        config::resolve(
+            |key| match key {
+                "BRIDGE_API_URL" => Some(api_url.to_string()),
+                "BRIDGE_IDENTITY_FILE" => Some(identity_file.display().to_string()),
+                _ => None,
+            },
+            home,
+        )
+    }
+
+    fn stored_approved(path: &std::path::Path) -> identity::StoredIdentity {
+        let mut stored = identity::generate("my-box");
+        stored.approved = true;
+        identity::save(path, &stored).unwrap();
+        stored
+    }
+
+    /// The order `pair` depends on (#317): the revoked approval is retired
+    /// before the identity is loaded, so the load mints a new device, which
+    /// pairs and ends on the account line.
+    #[tokio::test]
+    async fn pair_retires_a_revoked_identity_before_loading_and_pairs_a_new_one() {
+        let server = MockServer::start().await;
+        let home = tempfile::tempdir().unwrap();
+        let cfg = config_for(&server.uri(), home.path());
+        let old = stored_approved(&cfg.identity_file);
+        Mock::given(method("GET"))
+            .and(path(format!("/api/devices/{}/status", old.device_id)))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"approved": false, "owner_user_id": null, "state": "revoked"}),
+            ))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/devices/register"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/api/devices/.+/status$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"approved": true, "owner_user_id": "u1", "state": "approved"}),
+            ))
+            .with_priority(2)
+            .mount(&server)
+            .await;
+
+        let line = pair_device(&cfg, None).await.expect("pairs a new device");
+
+        assert_eq!(line, "paired to account u1");
+        let new = identity::load(&cfg.identity_file).unwrap().unwrap();
+        assert_ne!(new.device_id, old.device_id);
+        assert!(new.approved);
+        let kept = home
+            .path()
+            .join(format!("identity.json.retired-{}", old.device_id));
+        assert_eq!(identity::load(&kept).unwrap(), Some(old));
+    }
+
+    /// A provisioned device returns before anything is asked or retired.
+    #[tokio::test]
+    async fn pair_with_a_provisioned_identity_asks_nothing_and_touches_no_file() {
+        let server = MockServer::start().await;
+        let home = tempfile::tempdir().unwrap();
+        let cfg = config_for(&server.uri(), home.path());
+        let stored = stored_approved(&cfg.identity_file);
+        let provisioned = LoadedIdentity {
+            identity: DeviceIdentity {
+                device_id: "bridge-dev".into(),
+                identity_private_key_b64: stored.identity_private_key_b64.clone(),
+            },
+            transport: transport::generate_transport_keypair(),
+            outcome: PairingOutcome::Provisioned,
+        };
+
+        let line = pair_device(&cfg, Some(provisioned)).await.unwrap();
+
+        assert_eq!(line, "provisioned device bridge-dev — nothing to pair");
+        assert_eq!(server.received_requests().await.unwrap().len(), 0);
+        assert_eq!(identity::load(&cfg.identity_file).unwrap(), Some(stored));
     }
 }

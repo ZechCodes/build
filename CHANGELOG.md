@@ -20,6 +20,12 @@ protocol versions; see
 - The release workflow stages its assets outside the checkout and publishes
   through a draft, so a failed upload leaves no public release (#305).
 - Release notes carry this file's entry for the tagged version (#303).
+- `build-bridge pair` on a machine whose stored pairing was revoked or is
+  unknown to the api no longer dead-ends on "not approved yet": it sets the old
+  identity aside, says which api answered and how to undo it, and pairs a new
+  device with a fresh code. `install-service` gives the same reason,
+  `uninstall-service` says it keeps the identity, and the status check times
+  out instead of hanging (#317).
 
 ## [0.2.4] - 2026-09-30
 

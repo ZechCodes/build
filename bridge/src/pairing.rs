@@ -67,6 +67,95 @@ pub struct StatusResponse {
     pub approved: bool,
     #[serde(default)]
     pub owner_user_id: Option<String>,
+    /// Where the device stands, said by an api new enough to say (#317). An
+    /// older api sends only `approved`, so this is optional.
+    #[serde(default)]
+    pub state: Option<RegistrationState>,
+}
+
+/// The api's `state`. Any state this bridge does not know reads as
+/// [`RegistrationState::Other`], never as a parse failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RegistrationState {
+    Approved,
+    Pending,
+    Revoked,
+    Unknown,
+    #[serde(other)]
+    Other,
+}
+
+/// Why an approval this machine stored is no longer one the api honours.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lapse {
+    /// Revoked in Settings → Devices.
+    Revoked,
+    /// The api has no such device: never registered there, or purged since.
+    Unknown,
+    /// Not approved, and the api did not say why (it predates `state`).
+    NotApproved,
+}
+
+impl std::fmt::Display for Lapse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Revoked => "it was revoked in Settings → Devices",
+            Self::Unknown => "your account no longer has this device",
+            Self::NotApproved => "the api says it is no longer approved",
+        })
+    }
+}
+
+impl StatusResponse {
+    /// How an approval stored for this device has lapsed, if the api no
+    /// longer approves it. Only meaningful for a device stored as approved: a
+    /// pending one has nothing to lapse.
+    pub fn lapse(&self) -> Option<Lapse> {
+        if self.approved {
+            return None;
+        }
+        Some(match self.state {
+            Some(RegistrationState::Revoked) => Lapse::Revoked,
+            Some(RegistrationState::Unknown) => Lapse::Unknown,
+            _ => Lapse::NotApproved,
+        })
+    }
+}
+
+/// A stored approval `pair` moved aside because the api no longer honours it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetiredApproval {
+    pub lapse: Lapse,
+    /// The api that said "not approved" — named, because a wrong
+    /// `BRIDGE_API_URL` is the one way a good identity gets retired.
+    pub api_url: String,
+    /// Where the identity lived, and where the next pairing writes a new one.
+    pub identity_path: std::path::PathBuf,
+    /// Where the old identity now lives.
+    pub kept_at: std::path::PathBuf,
+}
+
+impl std::fmt::Display for RetiredApproval {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "this machine's earlier pairing is no longer valid: {} (asked {}). Pairing it \
+             again as a new device; the old identity is kept at {}. If that is not the api \
+             this machine belongs to, stop here and put the old identity back with: mv {} {}",
+            self.lapse,
+            self.api_url,
+            self.kept_at.display(),
+            shell_quoted(&self.kept_at),
+            shell_quoted(&self.identity_path),
+        )
+    }
+}
+
+/// `path` in single quotes for a POSIX shell, so the printed command can be
+/// pasted whatever the path holds.
+fn shell_quoted(path: &Path) -> String {
+    format!("'{}'", path.display().to_string().replace('\'', r"'\''"))
 }
 
 // --- pure shaping -------------------------------------------------------------
@@ -156,6 +245,27 @@ pub async fn register(
     }
 }
 
+/// How long the status client waits to connect to the api.
+pub const STATUS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long one status call may take in all, connect included.
+pub const STATUS_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The client `pair` and the install gate ask `/status` with. Bounded, so a
+/// hung api ends in an error (which retires nothing) instead of hanging the
+/// installer.
+pub fn status_client() -> reqwest::Client {
+    status_client_with(STATUS_CONNECT_TIMEOUT, STATUS_TIMEOUT)
+}
+
+/// [`status_client`] with the bounds given — tests use short ones.
+pub fn status_client_with(connect: Duration, total: Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(connect)
+        .timeout(total)
+        .build()
+        .expect("a client with only timeouts set always builds")
+}
+
 /// GET `{api}/api/devices/{device_id}/status` once.
 pub async fn fetch_status(
     client: &reqwest::Client,
@@ -194,6 +304,43 @@ pub async fn poll_until_approved(
         }
         tokio::time::sleep(interval).await;
     }
+}
+
+/// Retire the stored identity if it says approved and the api disagrees, so
+/// the pairing that follows mints a new device id and new keys and a human has
+/// to approve a fresh code. An identity that is missing or still pending is
+/// left alone without asking (pairing re-registers a pending one with a new
+/// code), and an api that cannot answer retires nothing: only an answer of
+/// "not approved" does.
+///
+/// New keys rather than the old ones: a device is revoked because it was lost
+/// or its keys may have leaked, and a fresh approval of the old key would
+/// re-trust whoever else holds it.
+pub async fn retire_lapsed_approval(
+    client: &reqwest::Client,
+    api_url: &str,
+    identity_path: &Path,
+) -> Result<Option<RetiredApproval>> {
+    let file_error = |e: identity::IdentityError| {
+        PairingError::Identity(format!("{}: {e}", identity_path.display()))
+    };
+    let stored = match identity::load(identity_path).map_err(file_error)? {
+        Some(stored) if stored.approved => stored,
+        _ => return Ok(None),
+    };
+    let Some(lapse) = fetch_status(client, api_url, &stored.device_id)
+        .await?
+        .lapse()
+    else {
+        return Ok(None);
+    };
+    let kept_at = identity::retire(identity_path, &stored).map_err(file_error)?;
+    Ok(Some(RetiredApproval {
+        lapse,
+        api_url: api_url.to_string(),
+        identity_path: identity_path.to_path_buf(),
+        kept_at,
+    }))
 }
 
 /// Ensure the device is registered and approved. If `stored.approved`, returns it
@@ -255,6 +402,51 @@ fn hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::identity;
+
+    fn status(json: serde_json::Value) -> StatusResponse {
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn an_approved_device_has_not_lapsed() {
+        let approved = status(serde_json::json!({
+            "approved": true, "owner_user_id": "u1", "state": "approved"
+        }));
+        assert_eq!(approved.lapse(), None);
+    }
+
+    #[test]
+    fn the_api_says_which_way_an_approval_lapsed() {
+        let revoked = status(serde_json::json!({"approved": false, "state": "revoked"}));
+        let unknown = status(serde_json::json!({"approved": false, "state": "unknown"}));
+        assert_eq!(revoked.lapse(), Some(Lapse::Revoked));
+        assert_eq!(unknown.lapse(), Some(Lapse::Unknown));
+    }
+
+    /// An api from before `state` (and any state this bridge does not know)
+    /// says only "not approved": the approval lapsed, reason unknown.
+    #[test]
+    fn an_api_that_does_not_say_why_still_reads_as_lapsed() {
+        let old_api = status(serde_json::json!({"approved": false, "owner_user_id": null}));
+        let newer_state = status(serde_json::json!({"approved": false, "state": "suspended"}));
+        let pending = status(serde_json::json!({"approved": false, "state": "pending"}));
+        assert_eq!(old_api.lapse(), Some(Lapse::NotApproved));
+        assert_eq!(newer_state.lapse(), Some(Lapse::NotApproved));
+        assert_eq!(pending.lapse(), Some(Lapse::NotApproved));
+    }
+
+    #[test]
+    fn a_lapse_reads_as_a_reason_the_operator_can_act_on() {
+        assert!(Lapse::Revoked
+            .to_string()
+            .contains("revoked in Settings → Devices"));
+        assert!(Lapse::Unknown
+            .to_string()
+            .contains("no longer has this device"));
+        assert!(Lapse::NotApproved
+            .to_string()
+            .contains("no longer approved"));
+    }
 
     #[test]
     fn pairing_code_is_high_entropy_and_distinct() {

@@ -27,7 +27,8 @@ use std::path::{Path, PathBuf};
 pub use launchd::Launchd;
 pub use systemd::Systemd;
 
-use crate::pairing::StatusResponse;
+use crate::identity::StoredIdentity;
+use crate::pairing::{Lapse, PairingError, StatusResponse};
 
 pub const SERVICE_LABEL: &str = "ing.getbuild.bridge";
 
@@ -36,11 +37,15 @@ pub const SERVICE_LABEL: &str = "ing.getbuild.bridge";
 pub enum InstallGateError {
     /// No identity file — this machine has never started pairing.
     NotPaired,
-    /// Registered, but no human has approved the device in the web app yet.
+    /// Registered, but no human has entered its pairing code in the web app yet.
     PendingApproval,
-    /// The api does not know this device (stale local identity — e.g. the
-    /// backend's device registry was reset since this device last paired).
-    UnknownToApi { detail: String },
+    /// Stored as approved, but the api no longer approves it: revoked, or a
+    /// device the api does not know (#317). Pairing again is the only way on.
+    NoLongerPaired(Lapse),
+    /// The status call failed — the api could not say either way.
+    Unreachable { detail: String },
+    /// The identity file could not be read, or could not be moved aside.
+    IdentityFile { detail: String },
     /// The api confirmed the device but it is approved without an owner —
     /// never expected from the real pairing flow; refuse rather than guess.
     ApprovedWithoutOwner,
@@ -52,18 +57,28 @@ impl std::fmt::Display for InstallGateError {
             Self::NotPaired => write!(
                 f,
                 "this device is not paired to an account — run `build-bridge pair` and \
-                 approve the pairing code in the web app (Settings → Devices)"
+                 enter its pairing code in the web app (Settings → Devices → Add a device)"
             ),
             Self::PendingApproval => write!(
                 f,
-                "pairing is registered but not approved yet — approve this device in the \
-                 web app (Settings → Devices), then try again"
+                "this device's pairing is waiting for approval — enter the pairing code \
+                 `build-bridge pair` printed in the web app (Settings → Devices → Add a \
+                 device), or run `build-bridge pair` again for a new code"
             ),
-            Self::UnknownToApi { detail } => write!(
+            Self::NoLongerPaired(lapse) => write!(
                 f,
-                "the api does not recognize this device ({detail}) — its registry may have \
-                 been reset; re-pair by running `build-bridge pair` and approving the new \
-                 pairing code in the web app"
+                "this machine's earlier pairing is no longer valid: {lapse} — run \
+                 `build-bridge pair` to pair it again"
+            ),
+            Self::Unreachable { detail } => write!(
+                f,
+                "could not confirm this device's pairing with the api ({detail}) — check \
+                 the connection and try again"
+            ),
+            Self::IdentityFile { detail } => write!(
+                f,
+                "could not read or move this device's identity file ({detail}) — fix its \
+                 permissions or contents, then try again"
             ),
             Self::ApprovedWithoutOwner => write!(
                 f,
@@ -74,26 +89,41 @@ impl std::fmt::Display for InstallGateError {
     }
 }
 
-/// The install gate. `local_identity_exists` is whether an identity file was
-/// loaded; `api_status` is the live answer from `/api/devices/{id}/status`
-/// (`Err` carries the api's error, e.g. a 404 for an unknown device).
+/// A pairing call that failed, as the refusal it is: the identity file's own
+/// trouble, or an api that did not answer.
+impl From<PairingError> for InstallGateError {
+    fn from(error: PairingError) -> Self {
+        match error {
+            PairingError::Identity(detail) => Self::IdentityFile { detail },
+            other => Self::Unreachable {
+                detail: other.to_string(),
+            },
+        }
+    }
+}
+
+/// The install gate. `stored` is the identity file's contents, if there is
+/// one; `api_status` is the live answer from `/api/devices/{id}/status` (`Err`
+/// carries why the call failed). A stored approval the api no longer honours
+/// is a lapsed pairing, not one waiting for approval.
 pub fn check_install_gate(
-    local_identity_exists: bool,
+    stored: Option<&StoredIdentity>,
     api_status: Result<&StatusResponse, &str>,
 ) -> Result<String, InstallGateError> {
-    if !local_identity_exists {
-        return Err(InstallGateError::NotPaired);
+    let stored = stored.ok_or(InstallGateError::NotPaired)?;
+    let status = api_status.map_err(|detail| InstallGateError::Unreachable {
+        detail: detail.to_string(),
+    })?;
+    if status.approved {
+        return status
+            .owner_user_id
+            .clone()
+            .ok_or(InstallGateError::ApprovedWithoutOwner);
     }
-    match api_status {
-        Err(detail) => Err(InstallGateError::UnknownToApi {
-            detail: detail.to_string(),
-        }),
-        Ok(status) if !status.approved => Err(InstallGateError::PendingApproval),
-        Ok(status) => match &status.owner_user_id {
-            Some(owner) => Ok(owner.clone()),
-            None => Err(InstallGateError::ApprovedWithoutOwner),
-        },
-    }
+    Err(status.lapse().filter(|_| stored.approved).map_or(
+        InstallGateError::PendingApproval,
+        InstallGateError::NoLongerPaired,
+    ))
 }
 
 /// Everything the service unit needs baked into it, whatever its format.
@@ -390,26 +420,40 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     fn status(approved: bool, owner: Option<&str>) -> StatusResponse {
-        StatusResponse {
-            approved,
-            owner_user_id: owner.map(str::to_string),
-        }
+        status_in(approved, owner, None)
+    }
+
+    fn status_in(approved: bool, owner: Option<&str>, state: Option<&str>) -> StatusResponse {
+        serde_json::from_value(serde_json::json!({
+            "approved": approved,
+            "owner_user_id": owner,
+            "state": state,
+        }))
+        .unwrap()
+    }
+
+    fn identity(approved: bool) -> StoredIdentity {
+        let mut stored = crate::identity::generate("my-box");
+        stored.approved = approved;
+        stored
     }
 
     #[test]
     fn gate_refuses_when_no_local_identity() {
         let api = status(true, Some("user-1"));
-        let result = check_install_gate(false, Ok(&api));
+        let result = check_install_gate(None, Ok(&api));
         assert_eq!(result, Err(InstallGateError::NotPaired));
     }
 
+    /// A failed status call is not the api saying no; the operator is told to
+    /// try again rather than to throw a working pairing away.
     #[test]
-    fn gate_refuses_when_api_does_not_know_the_device() {
-        let result = check_install_gate(true, Err("status 404"));
+    fn gate_refuses_when_the_api_cannot_answer() {
+        let result = check_install_gate(Some(&identity(true)), Err("503 Service Unavailable"));
         assert_eq!(
             result,
-            Err(InstallGateError::UnknownToApi {
-                detail: "status 404".into()
+            Err(InstallGateError::Unreachable {
+                detail: "503 Service Unavailable".into()
             })
         );
     }
@@ -417,47 +461,124 @@ mod tests {
     #[test]
     fn gate_refuses_pending_approval() {
         let api = status(false, None);
-        let result = check_install_gate(true, Ok(&api));
+        let result = check_install_gate(Some(&identity(false)), Ok(&api));
         assert_eq!(result, Err(InstallGateError::PendingApproval));
+    }
+
+    /// The installer's dead end (#317): an identity stored as approved that the
+    /// api no longer honours is a lapsed pairing to redo, never "not approved
+    /// yet" — revoked and unknown devices have no code waiting to be approved.
+    #[test]
+    fn gate_reads_a_stored_approval_the_api_dropped_as_a_lapsed_pairing() {
+        for (state, lapse) in [
+            (Some("revoked"), Lapse::Revoked),
+            (Some("unknown"), Lapse::Unknown),
+            (None, Lapse::NotApproved),
+        ] {
+            let api = status_in(false, None, state);
+            let result = check_install_gate(Some(&identity(true)), Ok(&api));
+            assert_eq!(
+                result,
+                Err(InstallGateError::NoLongerPaired(lapse)),
+                "{state:?}"
+            );
+        }
     }
 
     #[test]
     fn gate_refuses_approved_but_ownerless() {
         let api = status(true, None);
-        let result = check_install_gate(true, Ok(&api));
+        let result = check_install_gate(Some(&identity(true)), Ok(&api));
         assert_eq!(result, Err(InstallGateError::ApprovedWithoutOwner));
     }
 
     #[test]
     fn gate_passes_only_for_an_approved_owned_device() {
         let api = status(true, Some("user-42"));
-        let result = check_install_gate(true, Ok(&api));
+        let result = check_install_gate(Some(&identity(true)), Ok(&api));
         assert_eq!(result, Ok("user-42".to_string()));
     }
 
-    /// Every refusal names a command the operator can actually run. `serve` is
+    /// Every refusal about pairing names a command the operator can actually run. `serve` is
     /// not one of them: it pairs only as a side effect of starting a daemon
-    /// that never returns, which is why `pair` exists.
+    /// that never returns, which is why `pair` exists. None sends the operator
+    /// to approve a device in Settings → Devices, which lists only devices
+    /// already approved: a pending one is approved by entering its code.
     #[test]
     fn gate_error_messages_tell_the_operator_what_to_do() {
         for error in [
             InstallGateError::NotPaired,
             InstallGateError::PendingApproval,
-            InstallGateError::UnknownToApi {
-                detail: "404".into(),
-            },
+            InstallGateError::NoLongerPaired(Lapse::Revoked),
             InstallGateError::ApprovedWithoutOwner,
         ] {
             let message = error.to_string();
-            assert!(
-                message.contains("`build-bridge pair`") || message.contains("approve this device"),
-                "{message}"
-            );
+            assert!(message.contains("`build-bridge pair`"), "{message}");
             assert!(
                 !message.contains("build-bridge serve"),
                 "pairing is `build-bridge pair`, not a daemon that never returns: {message}"
             );
+            assert!(!message.contains("approve this device"), "{message}");
         }
+    }
+
+    /// A status call that failed is a connection problem; an identity file
+    /// that could not be read or moved is a file problem, said as one.
+    #[test]
+    fn pairing_errors_map_to_the_refusal_that_names_their_cause() {
+        use crate::pairing::PairingError;
+        assert!(matches!(
+            InstallGateError::from(PairingError::Http("timed out".into())),
+            InstallGateError::Unreachable { .. }
+        ));
+        assert!(matches!(
+            InstallGateError::from(PairingError::Rejected("503".into())),
+            InstallGateError::Unreachable { .. }
+        ));
+        assert_eq!(
+            InstallGateError::from(PairingError::Identity("permission denied".into())),
+            InstallGateError::IdentityFile {
+                detail: "permission denied".into()
+            }
+        );
+    }
+
+    /// `pair` refuses with these too, so neither sends the operator back to
+    /// `pair`.
+    #[test]
+    fn connection_and_file_refusals_do_not_send_the_operator_round_in_a_circle() {
+        let unreachable = InstallGateError::Unreachable {
+            detail: "timed out".into(),
+        }
+        .to_string();
+        assert!(unreachable.contains("could not confirm"), "{unreachable}");
+        assert!(unreachable.contains("try again"), "{unreachable}");
+        assert!(!unreachable.contains("build-bridge pair"), "{unreachable}");
+        let file = InstallGateError::IdentityFile {
+            detail: "~/.build/identity.json: expected value".into(),
+        }
+        .to_string();
+        assert!(file.contains("identity file"), "{file}");
+        assert!(file.contains("~/.build/identity.json"), "{file}");
+        assert!(!file.contains("connection"), "{file}");
+        assert!(!file.contains("build-bridge pair"), "{file}");
+    }
+
+    #[test]
+    fn a_lapsed_pairing_says_it_is_no_longer_valid_and_why() {
+        let message = InstallGateError::NoLongerPaired(Lapse::Revoked).to_string();
+        assert!(message.contains("no longer valid"), "{message}");
+        assert!(
+            message.contains("revoked in Settings → Devices"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_pending_pairing_points_at_the_code_not_the_device_list() {
+        let message = InstallGateError::PendingApproval.to_string();
+        assert!(message.contains("pairing code"), "{message}");
+        assert!(message.contains("Add a device"), "{message}");
     }
 
     #[test]

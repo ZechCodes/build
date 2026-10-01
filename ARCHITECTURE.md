@@ -69,8 +69,8 @@ the relay binary `bridge/src/bin/relay.rs`.
 | --- | --- |
 | `serve` (default) | runs the daemon |
 | `mcp --task <owner>` | the stdio MCP server an agent's harness launches (`mcp_stdio`) |
-| `pair` | device-initiated pairing: prints a code and waits for approval in Build (`bridge/src/pairing.rs`) |
-| `install-service` / `uninstall-service` | systemd user unit or launchd agent (`bridge/src/service/`) |
+| `pair` | device-initiated pairing: prints a code and waits for approval in Build (`bridge/src/pairing.rs`); an identity stored as approved that the api's status answer reports `revoked` or `unknown` (or, from an older api, just not approved) is renamed to `identity.json.retired-<device id>` and a new identity is paired in its place |
+| `install-service` / `uninstall-service` | systemd user unit or launchd agent (`bridge/src/service/`); both gate on the same status answer as `pair`, and uninstalling keeps the identity file and says so |
 | `update-helper` | the detached self-update helper (`bridge/src/update/installer.rs`) |
 | `provision`, `backup` | print an identity bundle; online SQLite backup |
 | `--version` | prints the version |

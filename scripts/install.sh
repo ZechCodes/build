@@ -8,8 +8,10 @@
 # stdin is the curl pipe, so nothing here may prompt. Every message goes to
 # stderr, as a short header and one line per step; a failure is the only thing
 # that names URLs and files. Colour and bold are used only when stderr is a
-# terminal and NO_COLOR is unset. When stdout is not a terminal, its single
-# line is the path the binary landed at, for whatever is reading it.
+# terminal, NO_COLOR is unset and TERM is not dumb. stdout carries whatever
+# `build-bridge pair` and `install-service` print there and, when stdout is
+# not a terminal, ends on `installed build-bridge <path>` after a success; a
+# failure adds nothing to it.
 #
 # Environment:
 #   BUILD_BRIDGE_VERSION       `latest` (default) or `X.Y.Z`
@@ -227,7 +229,10 @@ install_binary() {
     esac
 }
 
-# The web app the bridge pairs with, found the way the bridge finds it.
+# The web app the bridge pairs with, found by the bridge's own rule
+# (bridge/src/config.rs): BRIDGE_WEB_URL, else the api url, which is the web
+# origin too unless BRIDGE_WEB_URL says otherwise. The bridge's pairing prompt
+# links to the same address.
 web_app_url() {
     wa_base="${BRIDGE_WEB_URL:-${BRIDGE_API_URL:-https://getbuild.ing}}"
     printf '%s/app\n' "${wa_base%/}"

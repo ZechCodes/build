@@ -8,6 +8,13 @@ protocol versions; see
 
 ## [0.2.5] - Unreleased
 
+### Changed
+
+- `install.sh` and `install-desktop.sh` print one plain line per step, say
+  nothing when cosign is absent (the checksum is still verified), and end
+  every error on what to do next; colour only on a terminal without
+  `NO_COLOR` (#318).
+
 ### Fixed
 
 - The release workflow stages its assets outside the checkout and publishes

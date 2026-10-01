@@ -171,7 +171,7 @@ without_cosign() {
 # CASE_SKIP_SERVICE=0 (go on to pair and install the service),
 # CASE_PAIR_STATUS (how the fake bridge's pairing ends) or CASE_TERMINAL=1
 # (run under a pseudo-terminal; stdout and stderr then both land in stdout)
-# with CASE_NO_COLOR as its NO_COLOR.
+# with CASE_NO_COLOR as its NO_COLOR and CASE_TERM (default xterm) as its TERM.
 run_install() {
     ri_root="$1"
     ri_path="$ri_root/shims"
@@ -196,7 +196,7 @@ run_install() {
         if [ "${CASE_TERMINAL:-0}" = "1" ]; then
             # A terminal that can show colour, whatever the one running the
             # suite is; NO_COLOR is the case's to set.
-            TERM=xterm
+            TERM="${CASE_TERM:-xterm}"
             NO_COLOR="${CASE_NO_COLOR:-}"
             export TERM NO_COLOR
             : > "$ri_root/stderr"
@@ -399,6 +399,34 @@ a_terminal_gets_styled_output() {
     assert_never_says "$name" "$root/stdout" "installed build-bridge" && pass "$name"
 }
 
+a_dumb_terminal_stays_plain() {
+    name="a_dumb_terminal_stays_plain"
+    has_pty_script || { printf 'skip %s: no util-linux script\n' "$name"; return 0; }
+    root="$(new_sandbox "$name")"
+    status="$(CASE_TERM=dumb CASE_TERMINAL=1 run_install "$root")"
+    assert_exit "$name" "$root" "$status" 0 || return 1
+    if grep -q "$(printf '\033')" "$root/stdout"; then
+        fail "$name" "escape codes on TERM=dumb"
+        return 1
+    fi
+    pass "$name"
+}
+
+# A failed install writes nothing to stdout: whatever reads it gets no path
+# for a binary that is not there.
+a_failure_leaves_stdout_empty() {
+    name="a_failure_leaves_stdout_empty"
+    root="$(new_sandbox "$name")"
+    printf 'tampered' >> "$root/mirror/$PINNED_TARBALL"
+    status="$(run_install "$root")"
+    assert_refused "$name" "$root" "$status" 1 || return 1
+    if [ -s "$root/stdout" ]; then
+        fail "$name" "stdout was '$(cat "$root/stdout")'"
+        return 1
+    fi
+    pass "$name"
+}
+
 no_color_keeps_a_terminal_plain() {
     name="no_color_keeps_a_terminal_plain"
     has_pty_script || { printf 'skip %s: no util-linux script\n' "$name"; return 0; }
@@ -490,6 +518,8 @@ for case_name in \
     piped_output_is_plain \
     a_terminal_gets_styled_output \
     no_color_keeps_a_terminal_plain \
+    a_dumb_terminal_stays_plain \
+    a_failure_leaves_stdout_empty \
     pairs_then_starts_the_service \
     where_to_go_follows_the_bridge_web_url \
     a_failed_pairing_says_how_to_resume \

@@ -21,6 +21,11 @@ UNAME
 cat > "$work/shims/cosign" <<'COSIGN'
 #!/bin/sh
 printf '%s\n' "$*" > "$TEST_ROOT/cosign-args"
+if [ "${TEST_SIGNATURE_STATUS:-0}" = 0 ]; then
+    echo 'Verified OK' >&2
+else
+    echo 'Error: none of the expected identities matched' >&2
+fi
 exit "${TEST_SIGNATURE_STATUS:-0}"
 COSIGN
 # Linux GNU tar does not read ZIP; emulate macOS's native bsdtar there.
@@ -42,6 +47,27 @@ else
     exit 1
 fi
 export TEST_TAR
+# A host without cosign: every shim but cosign, beside links to the tools the
+# installer runs, so a cosign on the machine running the suite cannot stand in.
+host_without_cosign() {
+    mkdir -p "$1"
+    for shim in "$work/shims/"*; do
+        [ "${shim##*/}" = cosign ] || ln -s "$shim" "$1/${shim##*/}"
+    done
+    for tool in sh awk find readlink sha256sum shasum mktemp cat cut cp rm mv mkdir chmod sed dirname wc tr gzip; do
+        found=$(command -v "$tool") || continue
+        [ -e "$1/$tool" ] || ln -s "$found" "$1/$tool"
+    done
+}
+says() {
+    for line do grep -qF -- "$line" "$TEST_ROOT/output" || return 1; done
+}
+never_says() {
+    for text do ! grep -qF -- "$text" "$TEST_ROOT/output" || return 1; done
+}
+escape=$(printf '\033')
+# The pseudo-terminal cases need util-linux's `script`.
+if script --version 2>/dev/null | grep -q util-linux; then has_pty=1; else has_pty=0; fi
 failures=0
 run_case() {
     name=$1; TEST_OS=$2; TEST_ARCH=$3; platform=$4; mode=$5
@@ -91,10 +117,37 @@ run_case() {
     esac
     status=0
     if [ "$mode" = pinned ]; then version=2.3.4; else version=latest; fi
-    HOME="$TEST_ROOT/home" PATH="$work/shims:$PATH" BUILD_DESKTOP_VERSION="$version" \
-        BUILD_RELEASES_REPO=example/releases /bin/sh "$script" > "$TEST_ROOT/output" 2>&1 || status=$?
+    run_path="$work/shims:$PATH"
+    if [ "$mode" = no-cosign ]; then
+        host_without_cosign "$TEST_ROOT/host"
+        run_path="$TEST_ROOT/host"
+    fi
     case "$mode" in
-        success|pinned)
+        terminal|terminal-no-color|terminal-dumb)
+            no_color=1 term=xterm
+            [ "$mode" != terminal ] || no_color=''
+            [ "$mode" != terminal-dumb ] || no_color='' term=dumb
+            HOME="$TEST_ROOT/home" PATH="$run_path" BUILD_DESKTOP_VERSION="$version" \
+                BUILD_RELEASES_REPO=example/releases TERM="$term" NO_COLOR="$no_color" \
+                script -qec "/bin/sh '$script'" /dev/null > "$TEST_ROOT/output" 2>&1 || status=$?
+            ;;
+        *)
+            HOME="$TEST_ROOT/home" PATH="$run_path" BUILD_DESKTOP_VERSION="$version" \
+                BUILD_RELEASES_REPO=example/releases /bin/sh "$script" > "$TEST_ROOT/output" 2>&1 || status=$?
+            ;;
+    esac
+    # Output that is not a terminal is plain, whatever happened.
+    case "$mode" in
+        terminal)
+            grep -q "$escape" "$TEST_ROOT/output" || return 1
+            # The words are checked below with the styling taken out.
+            sed "s/$escape\[[0-9;]*m//g" "$TEST_ROOT/output" > "$TEST_ROOT/words"
+            mv "$TEST_ROOT/words" "$TEST_ROOT/output"
+            ;;
+        *) ! grep -q "$escape" "$TEST_ROOT/output" || return 1 ;;
+    esac
+    case "$mode" in
+        success|pinned|no-cosign|terminal|terminal-no-color|terminal-dumb)
             if ! { [ "$status" = 0 ] && [ ! -e "$target/previous" ]; }; then return 1; fi
             if [ "$TEST_OS" = Linux ]; then
                 if ! { [ -x "$target/build-desktop" ] && [ -x "$TEST_ROOT/home/.local/bin/build-desktop" ]; }; then return 1; fi
@@ -108,9 +161,36 @@ run_case() {
             else
                 grep -q /desktop-v1.2.3/ "$TEST_ROOT/urls" || return 1
             fi
-            grep -q 'release-desktop' "$TEST_ROOT/cosign-args" || return 1
+            # Plain steps: no URLs or archive names unless something failed.
+            never_says https:// .tar.gz .zip SHA256SUMS rror || return 1
+            shipped=1.2.3
+            [ "$mode" != pinned ] || shipped=2.3.4
+            says "Verified the download" "Done. Build $shipped is installed." || return 1
+            if [ "$mode" = no-cosign ]; then
+                [ ! -e "$TEST_ROOT/cosign-args" ] || return 1
+                never_says cosign signature skipping || return 1
+            else
+                grep -q 'release-desktop' "$TEST_ROOT/cosign-args" || return 1
+                says "Verified the release signature" || return 1
+                never_says "Verified OK" || return 1
+            fi
+            if [ "$TEST_OS" = Linux ]; then
+                says "Downloading Build $shipped for Linux (" "Installed to ~/.local/share/build-desktop" || return 1
+            else
+                says "Downloading Build $shipped for macOS (" "Installed to ~/Applications/Build.app" \
+                    "Open ~/Applications/Build.app to start Build." || return 1
+            fi
             ;;
         *) if ! { [ "$status" != 0 ] && [ "$(cat "$target/previous")" = previous ]; }; then return 1; fi;;
+    esac
+    # A refusal reads as an error, names what failed, and says what to do next.
+    case "$mode" in
+        tampered) says "Error: build-desktop-linux-x86_64.tar.gz does not match its published checksum" \
+            "https://github.com/example/releases/releases/download/desktop-v1.2.3" "Run the installer again" ;;
+        bad-signature) says "Error: the release signature did not verify" "none of the expected identities matched" ;;
+        download-failure) says "Error: could not download" "run the installer again" ;;
+        unsupported) says "Error: unsupported platform Plan9/mips" ;;
+        *) true ;;
     esac
 }
 check() {
@@ -125,6 +205,14 @@ check linux-arm Linux aarch64 linux-aarch64 success
 check pinned Linux x86_64 linux-x86_64 pinned
 check mac-arm Darwin arm64 macos-arm64 success
 check mac-intel Darwin x86_64 macos-x86_64 success
+check no-cosign Linux x86_64 linux-x86_64 no-cosign
+if [ "$has_pty" = 1 ]; then
+    check terminal Linux x86_64 linux-x86_64 terminal
+    check terminal-no-color Linux x86_64 linux-x86_64 terminal-no-color
+    check terminal-dumb Linux x86_64 linux-x86_64 terminal-dumb
+else
+    printf 'skip terminal cases: no util-linux script\n'
+fi
 for mode in tampered download-failure missing-checksum bad-signature bad-version corrupt-archive absolute-path escaping-link absolute-link missing-binary; do
     check "$mode" Linux x86_64 linux-x86_64 "$mode"
 done

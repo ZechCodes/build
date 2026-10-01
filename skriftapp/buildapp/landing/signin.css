@@ -280,8 +280,9 @@ a.signin-button {
   color: #000;
 }
 
-.signin-hint + a.signin-button {
-  margin-top: 1rem;
+/* The sign-in page's one form, straight under the lead (templates/auth/passkey_login.html). */
+.signin-form-first {
+  margin-top: 2rem;
 }
 
 /* A confirm step's two choices (templates/auth/logout_confirm.html): the action in

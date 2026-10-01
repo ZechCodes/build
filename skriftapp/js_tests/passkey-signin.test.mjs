@@ -91,7 +91,7 @@ function page({ server = fakeServer(), credentials = new SafariCredentials() } =
 
 /** Just enough DOM for bindSigninPage: elements by id, forms that remember their
  *  submit listener, and a FormData that reads a form's fields. */
-function fakeDocument({ signup = true } = {}) {
+function fakeDocument({ signin = true, signup = true } = {}) {
   const element = (extra = {}) => ({
     dataset: {},
     textContent: "",
@@ -116,8 +116,7 @@ function fakeDocument({ signup = true } = {}) {
     });
   };
   const elements = {
-    "signin-form": form({}),
-    "signin-status": element(),
+    ...(signin ? { "signin-form": form({}), "signin-status": element() } : {}),
     ...(signup ? { "signup-form": form({ email: "invitee@example.com" }), "signup-status": element() } : {}),
   };
   const csrf = { value: "token" };
@@ -219,6 +218,28 @@ test("a page with no invite binds its sign-in button alone", async () => {
   for (let i = 0; i < 50 && !credentials.log.length; i += 1) await later();
 
   assert.deepEqual(credentials.log, ["get:modal"]);
+});
+
+test("an invite visitor's page binds its create-account button alone", async () => {
+  globalThis.FormData = FakeFormData;
+  const credentials = new SafariCredentials();
+  const posted = [];
+  const document = fakeDocument({ signin: false });
+  assert.ok(bindSigninPage(document, fakeWindow(credentials, posted)));
+
+  document.elements["signup-form"].submit();
+  for (let i = 0; i < 50 && !credentials.log.length; i += 1) await later();
+
+  assert.deepEqual(credentials.log, ["create:modal"]);
+  assert.equal(posted[0][0], "/auth/passkey/register/options");
+});
+
+test("no message points at a sign-in button the page no longer shows beside it", () => {
+  const sentences = [
+    describeRefusal("signup", { status: 400, payload: { error: "invalid_request" } }),
+    describeError("signup", { name: "InvalidStateError" }),
+  ];
+  for (const sentence of sentences) assert.doesNotMatch(sentence, /above|below/);
 });
 
 test("a second press while a ceremony runs is ignored", async () => {

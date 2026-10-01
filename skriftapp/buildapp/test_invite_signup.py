@@ -21,7 +21,7 @@ from sqlalchemy import func, select
 from buildapp import invites
 from buildapp.clock import utc_now
 from buildapp.db_test_support import add_account
-from buildapp.invite_pages import APP_PATH, INVITE_ONLY_HEADING, WAITLIST_PATH
+from buildapp.invite_pages import APP_PATH, INVITE_ONLY_HEADING, MISMATCH_HEADING, WAITLIST_PATH
 from buildapp.invites import InviteState, invite_path
 from buildapp.models import Invite
 from buildapp.skrift_app_test_support import DATABASE_FILE, SECURE_ORIGIN, on_database
@@ -30,6 +30,7 @@ INVITED = "invitee@example.com"
 OTHER_INVITED = "second@example.com"
 STRANGER = "stranger@example.com"
 LOGIN_PATH = "/auth/login"
+SIGNIN_VIEW_PATH = "/auth/login?view=signin"
 REGISTER_OPTIONS = "/auth/passkey/register/options"
 REGISTER_COMPLETE = "/auth/passkey/register/complete"
 INVITE_REQUIRED = "invite_required"
@@ -101,9 +102,9 @@ class Page:
     """The sign-in page as the browser holds it: its markup and the CSRF token its
     forms carry, which every passkey POST rotates."""
 
-    def __init__(self, client: TestClient):
+    def __init__(self, client: TestClient, path: str = LOGIN_PATH):
         self.client = client
-        self.html = client.get(LOGIN_PATH).text
+        self.html = client.get(path).text
         self.csrf = CSRF_INPUT.search(self.html).group(1)
 
     def post(self, path: str, **fields):
@@ -126,6 +127,10 @@ def signup_email_input(html: str) -> str | None:
 # --- the page ---------------------------------------------------------------------
 
 
+def forms(html: str) -> list[str]:
+    return re.findall(r'<form id="([^"]+)"', html)
+
+
 def test_sign_in_asks_for_nothing(client):
     html = Page(client).html
     signin = re.search(r'<form id="signin-form".*?</form>', html, re.S).group(0)
@@ -135,11 +140,51 @@ def test_sign_in_asks_for_nothing(client):
     assert "webauthn" not in html
 
 
-def test_without_an_invite_there_is_no_create_account_form(client):
+def test_without_an_invite_the_page_is_sign_in_alone(client):
     html = Page(client).html
-    assert 'id="signup-form"' not in html
-    assert "invite-only" in html
-    assert f'href="{WAITLIST_PATH}"' in html
+    assert forms(html) == ["signin-form"]
+    assert len(re.findall(r"<h[12][ >]", html)) == 1
+    assert "Create account" not in html and "Create your" not in html
+    aside = re.search(r'<p class="signin-hint signin-aside">(.*?)</p>', html, re.S).group(1)
+    assert "invite-only" in aside and f'<a href="{WAITLIST_PATH}">Join the waitlist</a>' in aside
+    assert "signin-button" not in aside
+
+
+@pytest.mark.parametrize("view", ["signup", "signin", "SIGNIN", "x"])
+def test_no_view_shows_an_account_form_without_an_invite(client, view):
+    html = client.get(f"{LOGIN_PATH}?view={view}").text
+    assert forms(html) == ["signin-form"]
+
+
+def test_an_invite_visitor_sees_the_signup_form_alone_with_a_way_to_sign_in(client):
+    open_invite(client, issue(client, INVITED))
+    html = Page(client).html
+    assert forms(html) == ["signup-form"]
+    assert "<h1>Create your Build account</h1>" in html
+    assert "Sign in with a passkey" not in html
+    assert f'Already have an account? <a href="{SIGNIN_VIEW_PATH}">Sign in</a>' in html
+
+
+def test_an_invite_visitor_can_switch_to_sign_in_and_back(client):
+    open_invite(client, issue(client, INVITED))
+    html = client.get(SIGNIN_VIEW_PATH).text
+    assert forms(html) == ["signin-form"]
+    assert "<h1>Sign in to Build</h1>" in html
+    assert f'Have an invite for {INVITED}? <a href="{LOGIN_PATH}">Create your account</a>' in html
+    assert forms(client.get(LOGIN_PATH).text) == ["signup-form"]
+
+
+def test_the_passkey_login_route_shows_the_same_views(client):
+    open_invite(client, issue(client, INVITED))
+    assert forms(client.get("/auth/passkey/login").text) == ["signup-form"]
+    assert forms(client.get("/auth/passkey/login?view=signin").text) == ["signin-form"]
+
+
+def test_an_unknown_view_is_the_default_and_never_reflected(client):
+    open_invite(client, issue(client, INVITED))
+    html = client.get(f"{LOGIN_PATH}?view=zz%3Cview%3Ezz").text
+    assert forms(html) == ["signup-form"]
+    assert "zz" not in html
 
 
 def test_opening_an_invite_shows_its_address_prefilled_and_locked(client):
@@ -267,6 +312,34 @@ def test_signing_in_drops_the_bound_invite(client, fake_authenticator):
     open_invite(client, issue(client, INVITED))
     assert Page(client).create_account(INVITED).status_code == 201
     assert 'id="signup-form"' not in Page(client).html
+
+
+def test_an_existing_account_signs_in_from_the_sign_in_view_and_meets_the_wrong_account_page(
+    client, fake_authenticator, monkeypatch
+):
+    """Switching views keeps Skrift's ``next`` (the invite link, held in the session), so
+    signing in to an account the invite is not for lands back on the link, which says so."""
+    import skrift.controllers.auth as skrift_auth
+
+    open_invite(client, issue(client, INVITED))
+    assert Page(client).create_account(INVITED).status_code == 201
+    client.cookies.clear()
+    monkeypatch.setattr(
+        skrift_auth,
+        "complete_primary_passkey_authentication",
+        lambda *args, **kwargs: SimpleNamespace(new_sign_count=1, verification_metadata={}),
+    )
+
+    raw = issue(client, OTHER_INVITED)
+    client.get(open_invite(client, raw).headers["location"])
+    page = Page(client, SIGNIN_VIEW_PATH)
+    assert page.post("/auth/passkey/options").is_success
+    signed_in = page.post("/auth/passkey/complete", credential=json.dumps({"id": "credential-1"}))
+
+    assert signed_in.json()["redirect"] == invite_path(raw)
+    landing = client.get(signed_in.json()["redirect"], follow_redirects=False)
+    assert landing.status_code == 403
+    assert MISMATCH_HEADING in landing.text
 
 
 # --- Skrift's own checks come first ----------------------------------------------

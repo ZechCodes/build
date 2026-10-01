@@ -163,11 +163,14 @@ live link exists. The send route is rate limited in `app.yaml`
 
 **Accounts exist only through an invite** (`buildapp/signup_invite.py`,
 `buildapp/auth_controller.py`). Opening an open invite link signed out binds the
-invite's id to the session and sends the visitor to `/auth/login`, which then offers
-"Create your account" for the invite's address, shown read-only; without a bound
-invite the page offers sign-in only and links to the waitlist. `BuildAuthController`
-is Skrift's `AuthController` with four handlers replaced by name: the two login pages
-add the bound address to the template, and passkey `register/options` and
+invite's id to the session and sends the visitor to `/auth/login`. The page shows one
+view: with a bound invite, account creation for the invite's address, shown read-only,
+with a link to `/auth/login?view=signin` (sign-in, with a link back); without one,
+sign-in only and a line linking to the waitlist. `view` is allow-listed and never
+echoed, and cannot show account creation without a bound invite; Skrift keeps `next`
+in the session, so switching views keeps it. `BuildAuthController` is Skrift's
+`AuthController` with four handlers replaced by name: the two login pages add the
+bound address and the view to the template, and passkey `register/options` and
 `register/complete` refuse any other address (`invite_required`, 403) whatever the
 form posts. A completed registration redeems the invite in the same request and
 answers with `/app/`. Skrift rotates the session at sign-in, which drops the binding;

@@ -10,7 +10,8 @@
 //   SIGNIN_URL=http://localhost:8391 INVITE_TOKEN=<raw token> node web/passkey-signin-check.mjs
 //
 // It checks that the page opens no WebAuthn request on its own, that without an invite
-// it offers no account, that the invite's address is the one prefilled and read-only,
+// it offers no account, that an invite visitor sees account creation alone and can switch
+// to sign-in and back (#315), that the invite's address is the one prefilled and read-only,
 // that creating the account lands in /app/ as a member, and that the new passkey signs
 // in. SCREENSHOT_DIR, when set, gets one PNG per state. Exit 0 when all of that holds
 // and the page asks nothing of another origin. Never point it at production: it creates
@@ -98,6 +99,7 @@ try {
   // No invite: sign-in only, and the way to the waitlist.
   await page.goto(`${base}/auth/login`);
   await page.waitForTimeout(500);
+  check((await page.locator("form").count()) === 1, "no invite: the page shows more than the sign-in form");
   check((await page.locator("#signup-form").count()) === 0, "no invite: a create-account form was offered");
   check((await page.locator('a[href="/#waitlist"]').count()) === 1, "no invite: no link to the waitlist");
   check((await page.locator("#signin-form input:not([type=hidden])").count()) === 0, "sign-in asks for something");
@@ -115,7 +117,17 @@ try {
   check(Boolean(email), "invite: no address prefilled");
   check(await field.evaluate((input) => input.readOnly), "invite: the address can be edited");
   check((await page.locator('#signup-form [name="name"]').count()) === 0, "invite: a name field is offered");
+  check((await page.locator("#signin-form").count()) === 0, "invite: the sign-in form is shown beside signup");
   await shoot("signup-invite");
+
+  // The invite visitor's sign-in view, and the way back to signup.
+  await page.locator('a[href="/auth/login?view=signin"]').click();
+  await page.waitForURL((url) => url.search === "?view=signin", { timeout: 10_000 });
+  check((await page.locator("#signup-form").count()) === 0, "invite sign-in view: a create-account form is shown");
+  check((await page.locator("#signin-form").count()) === 1, "invite sign-in view: no sign-in form");
+  await shoot("signin-invite");
+  await page.locator('a[href="/auth/login"]').click();
+  await page.waitForSelector("#signup-form", { timeout: 10_000 });
 
   await page.locator('#signup-form button[type="submit"]').click();
   if (await signedIn("create account", "#signup-status")) {

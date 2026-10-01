@@ -2,7 +2,11 @@
 import "../styles/fonts.css";
 import "../styles/landing.css";
 import "../styles/film.css";
+import "../styles/hero.css";
 import Film from "../components/Film.astro";
+import HeroField from "../components/HeroField.astro";
+import { ATTENTION } from "../hero/field.js";
+import { HERO_POSTER } from "../hero/poster-anchors.js";
 
 // The document skriftapp serves at "/". Astro emits the whole thing — head,
 // fonts, social meta — so the server never wraps it in a shell.
@@ -20,6 +24,9 @@ const socialImage = "https://getbuild.ing/landing/assets/social-preview.png";
 const activitySectionSlot = "{{activity_section}}";
 const repositoryUrlSlot = "{{repository_url}}";
 const repositoryTitle = "Build’s source code on GitHub";
+// The public installers and how to run them (skriftapp landing_content.py).
+const downloadUrl = "/docs#setup";
+const heroLaptop = HERO_POSTER;
 
 // One poster pair per act, rendered by Astra from the same poses the film
 // uses (DIRECTION.md §5).
@@ -30,20 +37,6 @@ const poster = (act: number) => ({
 
 // Code and shell text live here rather than in markup: braces in an .astro
 // template are expressions, and these lines are full of them.
-const testFileBefore = `import { archive, search } from "../search";
-
-describe("archive", () => {
-  const archived = archive("launch notes");
-});`;
-const testFileAfter = `import { archive, search } from "../search";
-
-describe("archive", () => {
-  const archived = archive("launch notes");
-
-  it("keeps archived items in search", () => {
-    expect(search("launch notes")).toContain(archived);
-  });
-});`;
 const machineLabel = "dev-mbp · ~/code/build · main";
 const workspacePath = "~/code/build/workspaces/archive-search";
 const branchLine = `build/archive-search · ${workspacePath}`;
@@ -89,6 +82,7 @@ const testStepLabel = "Test · runs archive.test.ts";
     <meta name="twitter:description" content={socialDescription} />
     <meta name="twitter:image" content={socialImage} />
     <script src="/landing/generated/film-boot.js" is:inline></script>
+    <script src="/landing/generated/hero-boot.js" is:inline></script>
     <script src="../scripts/main.js"></script>
     <script type="module" src="/landing/generated/waitlist-boot.js" is:inline></script>
   </head>
@@ -103,56 +97,46 @@ const testStepLabel = "Test · runs archive.test.ts";
         <nav aria-label="Primary">
           <a href="/docs">Docs</a>
           <a href={repositoryUrlSlot} title={repositoryTitle}>GitHub</a>
-          <a class="cta cta--small" href="#act-8">Join the waitlist</a>
+          <a class="cta cta--small" href={downloadUrl}>Download</a>
         </nav>
       </div>
     </header>
 
     <main class="story" data-story>
       <div class="film" data-film>
-      <!-- The device stage and the hero cutout it takes over from. Both are
-           display: none until film-boot.js decides the visitor gets the film;
-           the document reads without them. The cutout is a capture of the
-           live stage at the hero pose with the lid where the welcome starts
-           (web/capture-hero-entrance.mjs), placed by the same numbers. -->
+      <!-- The device stage. display: none until film-boot.js decides the
+           visitor gets the film; the document reads without it. -->
       <canvas class="stage" data-stage aria-hidden="true"></canvas>
-      <img class="hero-poster" data-hero-poster src="/landing/assets/devices/hero-entrance.webp" alt="" aria-hidden="true" decoding="sync" fetchpriority="high" />
       <Film />
-      <!-- Act 1 -->
-      <section class="act" id="act-1" data-act="1" aria-labelledby="act-1-title">
+      <!-- Act 1: the hero. Its entrance (src/hero/) runs once per tab: the
+           notification field resolves into the laptop's Needs you, then the
+           copy. The laptop picture is a capture of the live stage at the
+           hero's resting pose (web/capture-hero-laptop.mjs); the film hands
+           over from it to the stage, and the document keeps it. -->
+      <section class="act act--hero" id="act-1" data-act="1" aria-labelledby="act-1-title">
+        <HeroField />
         <div class="content-container act__inner">
           <div class="act__copy">
-            <p class="kicker">01 / Your machine</p>
-            <h1 id="act-1-title">Your agents. Your machine. Your call.</h1>
+            <h1 id="act-1-title"><span class="hero-line">Your agents are moving fast.</span> <span class="hero-line hero-line--quiet">Know what needs you.</span></h1>
             <p class="support">
-              Build is an IDE for working with coding agents. They run on your hardware, in
-              your checkouts. You decide what ships.
+              Build brings your coding agents into one workspace, with questions, progress,
+              and changes ready for your review. Run them on your machines. Stay in control
+              from any screen.
             </p>
             <div class="actions">
-              <a class="cta" href="#act-8">Join the waitlist</a>
-              <a class="link" href="#act-2">See how it works</a>
+              <a class="cta" href={downloadUrl}>Download Build</a>
+              <a class="link" href={repositoryUrlSlot} title={repositoryTitle}>GitHub</a>
             </div>
-            <p class="meta">Free and open source · Invite-only alpha</p>
+            <p class="meta">Free · Open source · Runs on your machines</p>
           </div>
-          <picture class="poster">
-            <source media="(max-width: 767px)" srcset={poster(1).mobile} width="720" height="960" />
-            <img src={poster(1).desktop} width="1440" height="900" alt="" decoding="async" />
-          </picture>
-          <div class="act__proof proof-pair">
-            <article class="card">
-              <p class="card__label">Before</p>
-              <p class="file-name">archive.test.ts</p>
-              <pre><code>{testFileBefore}</code></pre>
-            </article>
-            <article class="card">
-              <p class="card__label">After · you typed the test</p>
-              <p class="file-name">archive.test.ts</p>
-              <pre><code>{testFileAfter}</code></pre>
-              <p class="card__foot">
-                2 changes · you <span class="machine-label">{machineLabel}</span>
-              </p>
-            </article>
+          <div class="hero-device" data-hero-device data-hero-poster>
+            <div class="hero-device__frame" data-hero-frame>
+              <img src="/landing/assets/devices/hero-needs-you.webp" width={heroLaptop.width} height={heroLaptop.height} alt="Build’s Tasks dashboard on a laptop, with three tasks under Needs you" decoding="sync" fetchpriority="high" />
+            </div>
           </div>
+        </div>
+        <div class="hero-glows" data-hero-glows aria-hidden="true">
+          {ATTENTION.map((entry) => <i class="hero-glow" data-glow={entry.row}></i>)}
         </div>
       </section>
 

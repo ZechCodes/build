@@ -159,6 +159,15 @@ describe("poses", () => {
     assert.ok(POSES.laptop[1].y <= 54);
   });
 
+  it("rests the hero laptop large in the right of the stage, nearly frontal", () => {
+    const hero = POSES.laptop[1];
+    assert.ok(hero.w >= 54 && hero.w <= 62, `about 60% of the width (${hero.w})`);
+    assert.ok(hero.x - hero.w / 2 >= 38, "clear of the copy on the left");
+    assert.ok(hero.x + hero.w / 2 <= 98, "inside the right edge");
+    assert.ok(Math.abs(hero.yaw) > 0 && Math.abs(hero.yaw) <= 8, "slightly angled");
+    assert.equal(POSES.laptop["1-typing"], undefined, "the hero has no push-in");
+  });
+
   it("fills every field so a tween has a target for each", () => {
     const pose = fullPose({ x: 65, y: 57, w: 52, pitch: 4 });
     assert.deepEqual(pose, { x: 65, y: 57, w: 52, yaw: 0, pitch: 4, roll: 0, opacity: 1, lidOpen: 1, faceCamera: 1 });

@@ -1,7 +1,7 @@
 {
   "version": 1,
   "generatedBy": "design/landing-captures/capture.mjs",
-  "checkedAssets": 30,
+  "checkedAssets": 31,
   "results": [
     {
       "state": "ui01",
@@ -1058,6 +1058,75 @@
         ]
       },
       "issues": []
+    },
+    {
+      "state": "ui09-needs-you",
+      "profile": "macbook",
+      "logicalViewport": [
+        1512,
+        982
+      ],
+      "deviceScaleFactor": 2,
+      "nativeDimensions": [
+        3024,
+        1964
+      ],
+      "appBounds": [
+        48,
+        102,
+        1416,
+        804
+      ],
+      "systemExclusions": {
+        "menuBar": [
+          0,
+          0,
+          1512,
+          37
+        ],
+        "cameraHousing": [
+          661,
+          0,
+          190,
+          37
+        ],
+        "dock": [
+          527.5,
+          913,
+          457,
+          62
+        ]
+      },
+      "issues": [],
+      "taskRows": [
+        {
+          "task": "task-82",
+          "rect": [
+            375,
+            320.73,
+            1004,
+            59.64
+          ]
+        },
+        {
+          "task": "task-85",
+          "rect": [
+            375,
+            380.38,
+            1004,
+            60.64
+          ]
+        },
+        {
+          "task": "task-86",
+          "rect": [
+            375,
+            441.02,
+            1004,
+            60.64
+          ]
+        }
+      ]
     },
     {
       "state": "ui10-editor",

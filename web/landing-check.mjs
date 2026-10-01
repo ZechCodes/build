@@ -32,7 +32,7 @@ const browser = await chromium.launch({
 });
 
 const HEADLINES = [
-  "Your agents. Your machine. Your call.",
+  "Your agents are moving fast. Know what needs you.",
   "The work runs on your machine.",
   "Say what needs doing.",
   "One task. A whole team.",
@@ -77,6 +77,9 @@ async function inspectDocument(width, height, options, label) {
   const page = await context.newPage();
   const errors = watchErrors(page);
   await page.goto(base, { waitUntil: "networkidle" });
+  // A phone's first visit plays the hero's entrance; the document is read
+  // once it is still.
+  if (options.javaScriptEnabled !== false) await waitForEntrance(page, label);
   const state = await layout(page);
   assertStory(state, label);
   assert.equal(state.mode, "document", `${label} reads the document`);
@@ -84,7 +87,7 @@ async function inspectDocument(width, height, options, label) {
   for (const act of await page.locator("[data-act]").all()) {
     await act.scrollIntoViewIfNeeded();
     assert.ok(await act.isVisible(), `${label}: each act is readable`);
-    assert.ok(await act.locator(".poster img").first().isVisible(), `${label}: each act keeps its still`);
+    assert.ok(await act.locator(".poster img, .hero-device img").first().isVisible(), `${label}: each act keeps its still`);
   }
   assert.ok(await page.locator("#waitlist form").isVisible(), `${label}: the waitlist form is reachable`);
   assert.equal(await page.locator("#waitlist button").textContent().then((text) => text.trim()), "Join the waitlist");
@@ -142,7 +145,9 @@ async function checkAct(page, label, act, local, height) {
   await page.screenshot({ path: path.join(output, `${label}-act-${act}-${local}.png`) });
 }
 
-async function openFilm(width, height, label, query = "") {
+// The film's own checks open on the hero at rest (?hero=0); the entrance
+// has its own below, and inspectFilm plays it before the film is checked.
+async function openFilm(width, height, label, query = "&hero=0") {
   const context = await browser.newContext({ viewport: { width, height } });
   const page = await context.newPage();
   const errors = watchErrors(page);
@@ -156,40 +161,36 @@ async function openFilm(width, height, label, query = "") {
   return { context, page, errors, state };
 }
 
-// The primary call to action, hit-tested the way a visitor reaches it: the
-// element under the pointer at the button's centre, then a real click that
-// must move the film. An invisible copy container of a later act sitting over
-// the hero is what this catches; an element-exists check would not.
-async function checkHeroPointerPath(page, label) {
-  const cta = page.locator("#act-1 .actions .cta");
-  const box = await cta.boundingBox();
-  assert.ok(box, `${label}: the hero call to action has a box`);
-  const x = box.x + box.width / 2;
-  const y = box.y + box.height / 2;
-  const under = await page.evaluate(([px, py]) => {
-    const hit = document.elementFromPoint(px, py);
-    return { tag: hit?.tagName, text: hit?.textContent?.trim(), act: hit?.closest(".act")?.id, isCta: !!hit?.closest("#act-1 .actions .cta") };
-  }, [x, y]);
-  assert.ok(under.isCta, `${label}: the hero call to action is under the pointer (${JSON.stringify(under)})`);
-  await page.mouse.click(x, y);
-  await page.waitForFunction(() => document.querySelector("[data-film]").dataset.act === "8", null, { timeout: gpu ? 10_000 : 30_000 });
-  // Where the click lands, the form takes the pointer too.
-  await page.waitForFunction(() => {
-    const field = document.querySelector("#act-8 form input");
-    const rect = field?.getBoundingClientRect();
-    if (!rect || rect.width === 0) return false;
-    return document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2) === field;
-  }, null, { timeout: gpu ? 10_000 : 30_000 });
-  await page.screenshot({ path: path.join(output, `${label}-hero-cta-click.png`) });
-  await rest(page, 1);
-  await page.waitForTimeout(400);
+// The calls to action, hit-tested the way a visitor reaches them: the
+// element under the pointer at each one's centre must be that link. An
+// invisible copy container of a later act sitting over the hero, or a
+// decorative layer, is what this catches; an element-exists check would not.
+async function assertOnTop(page, selector, label) {
+  const under = await page.evaluate((query) => {
+    const element = document.querySelector(query);
+    const box = element?.getBoundingClientRect();
+    if (!box || box.width === 0) return { missing: true };
+    const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+    return { onTop: Boolean(hit?.closest(query)), tag: hit?.tagName, href: element.getAttribute("href") };
+  }, selector);
+  assert.ok(under.onTop, `${label}: ${selector} is under the pointer (${JSON.stringify(under)})`);
+  return under;
 }
 
+async function checkHeroPointerPath(page, label) {
+  const hero = await assertOnTop(page, "#act-1 .actions .cta", label);
+  assert.equal(hero.href, "/docs#setup", `${label}: the hero's download goes to the installers`);
+  const nav = await assertOnTop(page, ".site-nav .cta", label);
+  assert.equal(nav.href, "/docs#setup", `${label}: the bar's download goes to the installers`);
+  await assertOnTop(page, "#act-1 .actions a[title]", label);
+}
+
+// The desktop film, after the entrance has played: the stage drew the
+// laptop's turn when it was ready in time, and the hero rests on it.
 async function inspectFilm(width, height) {
   const label = `${width}x${height}-film`;
-  const { context, page, errors, state } = await openFilm(width, height, label);
-  // The lid entrance is a timed tween; under a loaded software renderer GSAP
-  // smooths long frames by slowing its clock, so wait for the lid, not a delay.
+  const { context, page, errors, state } = await openFilm(width, height, label, "");
+  await waitForEntrance(page, label);
   await page.waitForFunction(() => window.BuildFilm.pose.laptop.lidOpen > 0.99, null, { timeout: gpu ? 5000 : 30_000 })
     .catch(() => {});
   const opened = await page.evaluate(() => window.BuildFilm.pose.laptop.lidOpen);
@@ -375,9 +376,10 @@ async function checkClosingBeats(page, label) {
   await page.screenshot({ path: path.join(output, `${label}-act-8.png`) });
 }
 
-// The first paint is already the film's layout: the hero's copy and call to
-// action readable and on top, the cutout where the laptop will be, and no
-// document grid first. A film that never starts gives the page back.
+// The first paint is already the film's layout: on a visit that does not
+// play the entrance, the hero's copy and call to action readable and on top,
+// the picture where the laptop will be, and no document grid first. A film
+// that never starts gives the page back.
 async function inspectStartup(width, height) {
   const label = `${width}x${height}-startup`;
   await checkFirstPaint(width, height, label);
@@ -392,143 +394,314 @@ async function checkFirstPaint(width, height, label) {
   const page = await context.newPage();
   const errors = watchErrors(page);
   const started = Date.now();
-  await page.goto(`${base}/?film=${gpu ? "1" : "force"}`, { waitUntil: "commit" });
+  await page.goto(`${base}/?film=${gpu ? "1" : "force"}&hero=0`, { waitUntil: "commit" });
   await page.waitForSelector("#act-1-title", { state: "attached" });
   for (const at of [100, 400, 1000, 2000]) {
     await page.waitForTimeout(Math.max(0, at - (Date.now() - started)));
-    const frame = await page.evaluate(() => {
-      const title = document.querySelector("#act-1-title").getBoundingClientRect();
-      const cta = document.querySelector("#act-1 .actions .cta").getBoundingClientRect();
-      const hit = document.elementFromPoint(cta.x + cta.width / 2, cta.y + cta.height / 2);
-      return {
-        mode: document.documentElement.dataset.mode,
-        titleOpacity: getComputedStyle(document.querySelector("#act-1-title")).opacity,
-        titleLeft: title.left,
-        ctaOnTop: !!hit?.closest("#act-1 .actions .cta"),
-        grid: getComputedStyle(document.querySelector("#act-1 .act__inner")).display,
-      };
-    });
+    const frame = await page.evaluate(() => ({
+      mode: document.documentElement.dataset.mode,
+      titleOpacity: getComputedStyle(document.querySelector("#act-1-title")).opacity,
+      grid: getComputedStyle(document.querySelector("#act-1 .act__inner")).display,
+      picture: getComputedStyle(document.querySelector("[data-hero-device]")).position,
+    }));
     assert.equal(frame.mode, "film", `${label} ${at}ms: the film's layout from the first paint`);
     assert.equal(frame.titleOpacity, "1", `${label} ${at}ms: the hero headline is readable`);
-    assert.ok(frame.ctaOnTop, `${label} ${at}ms: the call to action takes the pointer`);
     assert.equal(frame.grid, "block", `${label} ${at}ms: no document grid`);
+    assert.equal(frame.picture, "absolute", `${label} ${at}ms: the laptop picture stands where the stage will draw`);
+    await assertOnTop(page, "#act-1 .actions .cta", `${label} ${at}ms`);
     await page.screenshot({ path: path.join(output, `${label}-${at}ms.png`) });
   }
   assert.deepEqual(errors, [], `${label}: browser errors`);
   await context.close();
 }
 
-// The film's module slow to arrive: nothing of the film's covers the hero
-// while it waits, and a link to an act pressed meanwhile (the hero's call
-// to action, the bar's, "See how it works") is honoured once the film
-// starts.
+const delayModules = (page, ms) => page.route(/\/_astro\/.*\.js$/, async (route) => {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+  await route.continue();
+});
+
+// The page's modules slow to arrive. The field is full and moving before
+// any of them (it drifts on CSS), the bar's download takes the pointer,
+// nothing of the film's covers the hero meanwhile, and the entrance still
+// plays once they come. A link to an act opened while the film is on its
+// way lands there once the film starts, and skips the entrance.
 async function checkSlowModule(width, height, label) {
-  for (const [name, selector, act] of [["hero-cta", "#act-1 .actions .cta", 8], ["nav-cta", ".site-nav .cta", 8], ["see-how", '#act-1 .actions a[href="#act-2"]', 2]]) {
-    const slow = await browser.newContext({ viewport: { width, height } });
-    const slowPage = await slow.newPage();
-    const slowErrors = watchErrors(slowPage);
-    await slowPage.route(/\/_astro\/.*\.js$/, async (route) => {
-      await new Promise((resolve) => setTimeout(resolve, 3500));
-      await route.continue();
-    });
-    await slowPage.goto(`${base}/?film=${gpu ? "1" : "force"}`, { waitUntil: "commit" });
-    await slowPage.waitForFunction(() => document.documentElement.dataset.mode === "film", null, { timeout: 10_000 });
-    await slowPage.waitForSelector(selector);
-    const pending = await slowPage.evaluate(() => ({
-      stage: document.documentElement.dataset.stage,
-      overlays: getComputedStyle(document.querySelector("[data-overlays]")).display,
-      panels: [...document.querySelectorAll("[data-panel]")].filter((panel) => getComputedStyle(panel).visibility !== "hidden").map((panel) => panel.dataset.panel),
-    }));
-    assert.equal(pending.stage, "pending", `${label} ${name}: the module is still on its way`);
-    assert.deepEqual(pending.panels, [], `${label} ${name}: no close-up shows before the film places it (overlays ${pending.overlays})`);
-    if (name === "hero-cta") await slowPage.screenshot({ path: path.join(output, `${label}-pending.png`) });
-    await slowPage.locator(selector).click();
-    await slowPage.waitForFunction(() => document.documentElement.dataset.stage === "ready", null, { timeout: 60_000 });
-    await slowPage.waitForFunction((n) => document.querySelector("[data-film]").dataset.act === String(n), act, { timeout: gpu ? 10_000 : 30_000 });
-    if (act === 8) {
-      await slowPage.waitForFunction(() => {
-        const field = document.querySelector("#act-8 form input");
-        const rect = field?.getBoundingClientRect();
-        if (!rect || rect.width === 0) return false;
-        return document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2) === field;
-      }, null, { timeout: gpu ? 10_000 : 30_000 });
-    } else {
-      await waitForOpacity(slowPage, `#act-${act}-title`, "1");
-    }
-    await slowPage.screenshot({ path: path.join(output, `${label}-early-${name}.png`) });
-    assert.deepEqual(slowErrors, [], `${label} ${name}: browser errors with a slow module`);
-    await slow.close();
-  }
+  const slow = await browser.newContext({ viewport: { width, height } });
+  const slowPage = await slow.newPage();
+  const slowErrors = watchErrors(slowPage);
+  await delayModules(slowPage, 3500);
+  await slowPage.goto(`${base}/?film=${gpu ? "1" : "force"}`, { waitUntil: "commit" });
+  await slowPage.waitForFunction(() => document.documentElement.dataset.mode === "film", null, { timeout: 10_000 });
+  await slowPage.waitForSelector(".hero-pill");
+  const lane = () => slowPage.evaluate(() => new DOMMatrixReadOnly(getComputedStyle(document.querySelector(".hero-lane--far")).transform).m41);
+  const first = await lane();
+  await slowPage.waitForTimeout(300);
+  const pending = await slowPage.evaluate(() => ({
+    stage: document.documentElement.dataset.stage,
+    hero: document.documentElement.dataset.hero,
+    panels: [...document.querySelectorAll("[data-panel]")].filter((panel) => getComputedStyle(panel).visibility !== "hidden").map((panel) => panel.dataset.panel),
+  }));
+  assert.ok(await lane() > first, `${label}: the field moves before any script but the boot's`);
+  assert.equal(pending.stage, "pending", `${label}: the module is still on its way`);
+  assert.equal(pending.hero, "entrance", `${label}: the entrance is waiting for its module`);
+  assert.deepEqual(pending.panels, [], `${label}: no close-up shows before the film places it`);
+  await assertOnTop(slowPage, ".site-nav .cta", `${label} pending`);
+  await slowPage.screenshot({ path: path.join(output, `${label}-pending.png`) });
+  await slowPage.waitForFunction(() => window.BuildHero !== undefined, null, { timeout: 30_000 });
+  await waitForEntrance(slowPage, `${label} slow`);
+  assert.deepEqual(slowErrors, [], `${label}: browser errors with a slow module`);
+  await slow.close();
+
+  const linked = await browser.newContext({ viewport: { width, height } });
+  const linkedPage = await linked.newPage();
+  await delayModules(linkedPage, 3500);
+  await linkedPage.goto(`${base}/?film=${gpu ? "1" : "force"}#act-8`, { waitUntil: "commit" });
+  await linkedPage.waitForFunction(() => document.documentElement.dataset.mode === "film", null, { timeout: 10_000 });
+  assert.equal(await linkedPage.evaluate(() => document.documentElement.dataset.hero), undefined, `${label}: a link to act 8 skips the entrance`);
+  await linkedPage.waitForFunction(() => document.documentElement.dataset.stage === "ready", null, { timeout: 60_000 });
+  await linkedPage.waitForFunction(() => document.querySelector("[data-film]").dataset.act === "8", null, { timeout: gpu ? 10_000 : 30_000 });
+  await linked.close();
 }
 
-// The film's module blocked: the boot's deadline hands the page back.
+// The page's modules blocked: the hero settles on its own CSS a little
+// after the entrance would have, and the boot's deadline hands the page
+// back to the document.
 async function checkBlockedModule(width, height, label) {
   const blocked = await browser.newContext({ viewport: { width, height } });
   const blockedPage = await blocked.newPage();
   await blockedPage.route(/\/_astro\/.*\.js$/, (route) => route.abort());
   await blockedPage.goto(`${base}/?film=${gpu ? "1" : "force"}`, { waitUntil: "commit" });
-  // First the boot chooses the film, then its deadline gives the page back.
   await blockedPage.waitForFunction(() => document.documentElement.dataset.mode === "film", null, { timeout: 10_000 });
-  await blockedPage.locator("#act-1 .actions .cta").click();
+  await assertOnTop(blockedPage, ".site-nav .cta", `${label} blocked`);
   await blockedPage.waitForFunction(() => !document.documentElement.dataset.mode, null, { timeout: 15_000 });
   await blockedPage.waitForTimeout(300);
-  const landed = await blockedPage.evaluate(() => {
-    const rect = document.querySelector("#act-8 form").getBoundingClientRect();
-    return rect.top < innerHeight && rect.bottom > 0;
-  });
-  assert.ok(landed, `${label}: the call to action pressed while pending lands on the form in the document`);
-  assert.ok(await blockedPage.locator("#act-8 form").isVisible() || await blockedPage.locator("#act-8").count(), `${label}: the document is back`);
+  const rested = await blockedPage.evaluate(() => ({
+    title: getComputedStyle(document.querySelector("#act-1-title")).opacity,
+    field: getComputedStyle(document.querySelector("[data-hero-field]")).visibility,
+    picture: getComputedStyle(document.querySelector("[data-hero-device]")).opacity,
+  }));
+  assert.deepEqual(rested, { title: "1", field: "hidden", picture: "1" }, `${label}: a hero without its script settles on its own`);
+  await assertOnTop(blockedPage, "#act-1 .actions .cta", `${label} blocked`);
+  await blockedPage.screenshot({ path: path.join(output, `${label}-blocked.png`) });
   await blockedPage.locator("#act-4-title").scrollIntoViewIfNeeded();
   assert.ok(await blockedPage.locator("#act-4-title").isVisible(), `${label}: a later act is readable after a blocked film`);
   await blocked.close();
 }
 
-// The module in and starting, the hardware still loading: a call to action
-// pressed now, then a failed load, still lands on the form in the document.
+// The 3D slow, then failing: the entrance never waits for it. The picture
+// turns the laptop in on schedule, the hero settles, and when the load
+// fails the film gives the page to the document with the hero at rest.
 async function checkFailedHardware(width, height, label) {
   const held = await browser.newContext({ viewport: { width, height } });
   const heldPage = await held.newPage();
+  const errors = watchErrors(heldPage);
   let release;
-  const clicked = new Promise((resolve) => { release = resolve; });
+  const released = new Promise((resolve) => { release = resolve; });
   await heldPage.route(/\/assets\/devices\/.*\.glb$/, async (route) => {
-    await clicked;
+    await released;
     await route.abort();
   });
   await heldPage.goto(`${base}/?film=${gpu ? "1" : "force"}`, { waitUntil: "commit" });
-  await heldPage.waitForFunction(() => document.documentElement.dataset.stage === "starting" && window.BuildFilm, null, { timeout: 15_000 });
-  await heldPage.locator("#act-1 .actions .cta").click();
+  await heldPage.waitForFunction(() => window.BuildHero, null, { timeout: 15_000 });
+  await waitForEntrance(heldPage, `${label} slow 3D`);
+  assert.equal(await heldPage.evaluate(() => window.BuildHero.laptop.driver), "poster", `${label}: the picture turned the laptop in`);
+  await heldPage.screenshot({ path: path.join(output, `${label}-slow-3d.png`) });
   release();
   await heldPage.waitForFunction(() => !document.documentElement.dataset.mode, null, { timeout: 15_000 });
   await heldPage.waitForTimeout(300);
-  const formInView = await heldPage.evaluate(() => {
-    const rect = document.querySelector("#act-8 form").getBoundingClientRect();
-    return rect.top < innerHeight && rect.bottom > 0;
-  });
-  assert.ok(formInView, `${label}: a call to action pressed while the hardware loads lands on the form after a failed load`);
+  const picture = await heldPage.evaluate(() => getComputedStyle(document.querySelector("[data-hero-device]")).opacity);
+  assert.equal(picture, "1", `${label}: the document keeps the hero's laptop after a failed load`);
+  await assertOnTop(heldPage, "#act-1 .actions .cta", `${label} failed 3D`);
+  assert.deepEqual(errors.filter((error) => !/glb|Failed to load resource/i.test(error)), [], `${label}: browser errors with failed 3D`);
   await held.close();
 }
 
-// The bar: on screen through the film, the story laid out below it, and its
-// call to action takes the film to the form.
-async function inspectNav(width, height) {
-  {
-    const label = `${width}x${height}-nav`;
-    const { context, page, errors, state } = await openFilm(width, height, label);
-    const nav = page.locator(".site-nav");
-    assert.ok(await nav.isVisible(), `${label}: the bar is there on the hero`);
-    const before = await page.locator("#act-4-title").evaluate(() => document.querySelector(".act[data-act='4'] .act__copy").getBoundingClientRect().top);
-    await rest(page, 4);
-    await page.waitForTimeout(500);
-    const after = await page.locator("#act-4-title").evaluate(() => document.querySelector(".act[data-act='4'] .act__copy").getBoundingClientRect().top);
-    assert.equal(before, after, `${label}: the story sits in the same place`);
-    assert.ok(await nav.isVisible(), `${label}: the bar stays in act 4`);
-    await page.screenshot({ path: path.join(output, `${label}-act-4.png`) });
-    await page.locator(".site-nav .cta").click();
-    await page.waitForFunction(() => document.querySelector("[data-film]").dataset.act === "8", null, { timeout: gpu ? 10_000 : 30_000 });
-    assert.deepEqual(errors, [], `${label}: browser errors`);
-    findings.push({ label, viewport: [width, height], mode: state.mode });
-    await context.close();
+// --- the hero's entrance ---------------------------------------------------
+
+// GSAP's clock slows on a loaded software renderer; wait for the entrance
+// to say it is done, not for four seconds. Then nothing of it is left: no
+// field, no attribute, no inline style on the copy, no running animation.
+async function waitForEntrance(page, label, { scrolled = false } = {}) {
+  await page.waitForFunction(() => window.BuildHero === null || window.BuildHero?.done, null, { timeout: gpu ? 15_000 : 120_000 });
+  const rested = await page.evaluate(() => ({
+    hero: document.documentElement.dataset.hero ?? null,
+    field: document.querySelectorAll("[data-hero-field]").length,
+    title: getComputedStyle(document.querySelector("#act-1-title")).opacity,
+    // Nothing the entrance hid stays hidden (the film may write its own
+    // visible styles on the copy as it re-measures).
+    styled: [...document.querySelectorAll("#act-1 .act__copy, #act-1 .act__copy *")].filter((element) => /opacity: 0[;\s]|visibility: hidden/.test(`${element.getAttribute("style") || ""} `)).length,
+    animations: document.getAnimations().filter((animation) => animation.playState === "running" && animation.effect?.target?.closest?.("#act-1")).length,
+    active: window.BuildHero ? window.BuildHero.timeline.isActive() : false,
+  }));
+  // Scrolled into the film, the film's own scroll has taken the hero's copy.
+  if (scrolled) Object.assign(rested, { title: "1", styled: 0 });
+  assert.deepEqual(rested, { hero: null, field: 0, title: "1", styled: 0, animations: 0, active: false }, `${label}: the hero is still and the entrance let go of everything`);
+}
+
+// Scroll and resize listeners on the window, by the browser's own count.
+async function windowListeners(page) {
+  const session = await page.context().newCDPSession(page);
+  const { result } = await session.send("Runtime.evaluate", { expression: "window" });
+  const { listeners } = await session.send("DOMDebugger.getEventListeners", { objectId: result.objectId });
+  await session.detach();
+  return listeners.filter((listener) => ["scroll", "resize"].includes(listener.type)).length;
+}
+
+// Hold the entrance at a moment, as the scrubber does.
+async function holdAt(page, time) {
+  await page.evaluate((at) => {
+    const hero = window.BuildHero;
+    hero.hold();
+    hero.timeline.pause();
+    hero.timeline.time(at, false);
+    window.BuildFilm?.sync?.();
+  }, time);
+  await page.waitForTimeout(150);
+}
+
+// How many pills are in the window below the bar, faint ones included.
+function visiblePills(page) {
+  return page.evaluate(() => {
+    const below = document.querySelector(".site-nav").getBoundingClientRect().bottom;
+    return [...document.querySelectorAll(".hero-pill")].filter((pill) => {
+      const box = pill.getBoundingClientRect();
+      return box.width > 0 && box.right > 0 && box.left < innerWidth && box.bottom > below && box.top < innerHeight;
+    }).length;
+  });
+}
+
+const ROWS = { review: "task-82", approval: "task-85", question: "task-86" };
+
+// Held a hair before it lands, a request sits on its row's glow.
+async function checkLanding(page, label, id, at) {
+  await holdAt(page, at);
+  const landed = await page.evaluate(({ attention, row }) => {
+    const pill = document.querySelector(`[data-attention="${attention}"]`).getBoundingClientRect();
+    const glow = document.querySelector(`[data-glow="${row}"]`).getBoundingClientRect();
+    const [x, y] = [pill.x + pill.width / 2, pill.y + pill.height / 2];
+    return { inside: x >= glow.left && x <= glow.right && y >= glow.top - 2 && y <= glow.bottom + 2, pill: [x, y], glow: [glow.left, glow.top, glow.right, glow.bottom] };
+  }, { attention: id, row: ROWS[id] });
+  assert.ok(landed.inside, `${label}: ${id} lands on its row (${JSON.stringify(landed)})`);
+}
+
+// The entrance phase by phase, held on its own clock: a full field on the
+// first frame, the ripple, the laptop, each request landing on its row, the
+// copy, stillness. The bar's download takes the pointer throughout.
+async function checkEntrancePhases(page, label, { narrow }) {
+  const [low, high] = narrow ? [24, 36] : [50, 80];
+  const count = await visiblePills(page);
+  assert.ok(count >= low && count <= high, `${label}: ${count} pills in the first frame`);
+  const timing = await page.evaluate(() => window.BuildHero.timing);
+  const shots = [
+    ["1-field", 0.6],
+    ["2-ripple", (timing.ripple[0] + timing.ripple[1]) / 2],
+    ["3-laptop", timing.converge[0] - 0.05],
+    ["4-landing", timing.landings[1]],
+    ["5-message", timing.message[1] - 0.15],
+    ["6-quiet", timing.settle[1] - 0.01],
+  ];
+  for (const [name, at] of shots) {
+    await holdAt(page, at);
+    await assertOnTop(page, ".site-nav .cta", `${label} ${name}`);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
+    assert.ok(overflow <= 1, `${label} ${name}: no horizontal overflow (${overflow})`);
+    await page.screenshot({ path: path.join(output, `${label}-${name}.png`) });
   }
+  for (const [index, id] of ["review", "approval", "question"].entries()) {
+    await checkLanding(page, label, id, timing.landings[index] - 0.02);
+  }
+}
+
+async function openEntrance(width, height) {
+  const context = await browser.newContext({ viewport: { width, height } });
+  const page = await context.newPage();
+  const errors = watchErrors(page);
+  await page.goto(`${base}/?film=${gpu ? "1" : "force"}`, { waitUntil: "load" });
+  await page.waitForFunction(() => window.BuildHero !== undefined, null, { timeout: 30_000 });
+  assert.ok(await page.evaluate(() => Boolean(window.BuildHero)), "the entrance plays on a first visit");
+  return { context, page, errors };
+}
+
+// The whole entrance at a size, then the same tab again.
+async function checkFullEntrance(width, height, label, narrow) {
+  const { context, page, errors } = await openEntrance(width, height);
+  const during = await windowListeners(page);
+  await checkEntrancePhases(page, label, { narrow });
+  await page.evaluate(() => window.BuildHero.finish());
+  await waitForEntrance(page, label);
+  assert.equal(await windowListeners(page), during - 2, `${label}: the entrance's scroll and resize listeners are gone`);
+  await checkHeroPointerPath(page, label);
+  await page.reload({ waitUntil: "commit" });
+  await page.waitForSelector("#act-1-title", { state: "attached" });
+  const repeat = await page.evaluate(() => ({ hero: document.documentElement.dataset.hero ?? null, title: getComputedStyle(document.querySelector("#act-1-title")).opacity }));
+  assert.deepEqual(repeat, { hero: null, title: "1" }, `${label}: a repeat visit shows the hero at rest`);
+  assert.deepEqual(errors, [], `${label}: browser errors`);
+  await context.close();
+}
+
+// Scrolling away mid-entrance finishes it on the spot and keeps the scroll.
+async function checkScrollAway(width, height, label) {
+  const { context, page, errors } = await openEntrance(width, height);
+  await page.waitForFunction(() => window.BuildHero.timeline.time() > 1.3, null, { timeout: 60_000 });
+  await page.mouse.move(width / 2, height / 2);
+  await page.mouse.wheel(0, 400);
+  await page.waitForFunction(() => window.BuildHero.done, null, { timeout: 10_000 });
+  assert.equal(await page.evaluate(() => window.BuildHero.reason), "scroll");
+  await page.waitForTimeout(300);
+  assert.ok(await page.evaluate(() => scrollY) > 0, `${label}: the scroll is the visitor's`);
+  await waitForEntrance(page, `${label} scrolled`, { scrolled: true });
+  assert.deepEqual(errors, [], `${label}: browser errors after scrolling away`);
+  await context.close();
+}
+
+// A hidden tab holds the entrance; a change of width (a turned phone, a
+// resized window) finishes it.
+async function checkPauseAndResize(width, height, label, narrow) {
+  const { context, page, errors } = await openEntrance(width, height);
+  const paused = await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    const held = window.BuildHero.timeline.paused();
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => false });
+    document.dispatchEvent(new Event("visibilitychange"));
+    return held && !window.BuildHero.timeline.paused();
+  });
+  assert.ok(paused, `${label}: a hidden tab pauses the entrance and a shown one resumes it`);
+  await page.setViewportSize(narrow ? { width: height, height: width } : { width: Math.round(width * 0.8), height });
+  await page.waitForFunction(() => window.BuildHero.done, null, { timeout: 10_000 });
+  assert.equal(await page.evaluate(() => window.BuildHero.reason), "resize");
+  await waitForEntrance(page, `${label} resized`);
+  assert.deepEqual(errors, [], `${label}: browser errors after a resize`);
+  await context.close();
+}
+
+async function inspectEntrance(width, height) {
+  const narrow = width < 768;
+  const label = `${width}x${height}-entrance`;
+  await checkFullEntrance(width, height, label, narrow);
+  await checkScrollAway(width, height, label);
+  await checkPauseAndResize(width, height, label, narrow);
+  findings.push({ label, viewport: [width, height] });
+}
+
+// The bar: on screen through the film, the story laid out below it, and its
+// download takes the pointer wherever the visitor is.
+async function inspectNav(width, height) {
+  const label = `${width}x${height}-nav`;
+  const { context, page, errors, state } = await openFilm(width, height, label);
+  const nav = page.locator(".site-nav");
+  assert.ok(await nav.isVisible(), `${label}: the bar is there on the hero`);
+  const before = await page.locator("#act-4-title").evaluate(() => document.querySelector(".act[data-act='4'] .act__copy").getBoundingClientRect().top);
+  await rest(page, 4);
+  await page.waitForTimeout(500);
+  const after = await page.locator("#act-4-title").evaluate(() => document.querySelector(".act[data-act='4'] .act__copy").getBoundingClientRect().top);
+  assert.equal(before, after, `${label}: the story sits in the same place`);
+  assert.ok(await nav.isVisible(), `${label}: the bar stays in act 4`);
+  await assertOnTop(page, ".site-nav .cta", `${label} act 4`);
+  await page.screenshot({ path: path.join(output, `${label}-act-4.png`) });
+  assert.deepEqual(errors, [], `${label}: browser errors`);
+  findings.push({ label, viewport: [width, height], mode: state.mode });
+  await context.close();
 }
 
 async function readLabel(page, selector) {
@@ -562,6 +735,7 @@ async function inspectResize([fromWidth, fromHeight], [toWidth, toHeight]) {
 
 try {
   for (const [width, height] of DOCUMENT_VIEWPORTS) await inspectDocument(width, height, {}, `${width}x${height}-phone`);
+  for (const [width, height] of [[1440, 900], [390, 844]]) await inspectEntrance(width, height);
   await inspectDocument(1440, 900, { reducedMotion: "reduce" }, "1440x900-reduced-motion");
   await inspectDocument(1440, 900, { javaScriptEnabled: false }, "1440x900-no-javascript");
   for (const [width, height] of FILM_VIEWPORTS) await inspectFilm(width, height);

@@ -1,0 +1,373 @@
+/* The hero: a split layout at rest (copy left, laptop right; stacked on a
+   phone), and the entrance that resolves into it. hero-boot.js sets
+   html[data-hero="entrance"] before the first paint when this tab has not
+   seen the entrance; entrance.js turns it to "playing" as it takes over and
+   removes it when the hero is still. Without either, the hero is simply at
+   rest: repeat visits, reduced motion, no JavaScript. */
+
+#act-1 {
+  overflow: hidden;
+}
+
+html:not([data-mode="film"]) #act-1 {
+  position: relative;
+  /* The document snaps to an act's start; the hero's start is the top of
+     the page, not 2rem under the bar, or the page would open scrolled. */
+  scroll-margin-top: var(--nav-height);
+}
+
+/* The document's copy arrival (landing.css) is a transition; the entrance
+   animates this copy itself, and a transition would trail behind it. */
+html[data-js="ready"]:not([data-mode]) #act-1 .act__copy > * {
+  transition: none;
+}
+
+/* The fixed footprint: the hero is a screen tall from the first paint, so
+   nothing below it moves while it plays. */
+html:not([data-mode="film"]) #act-1 {
+  min-height: calc(100svh - var(--nav-height));
+  display: flex;
+  align-items: center;
+  padding-block: clamp(2.5rem, 6vh, 5rem);
+}
+
+#act-1 .act__inner {
+  position: relative;
+  z-index: 1;
+}
+
+/* The headline's two sentences: the first off-white, the second a softer,
+   still readable grey (#9aa3a0 on black is 7.9:1). */
+.hero-line {
+  display: block;
+}
+
+.hero-line--quiet {
+  color: var(--ink-dim);
+}
+
+#act-1 h1 {
+  font-size: clamp(2.25rem, 1.2rem + 3.4vw, 4rem);
+}
+
+[data-mode="film"] #act-1 h1 {
+  font-size: clamp(2rem, 0.9rem + 2.6vw, 3.6rem);
+}
+
+/* --- the laptop -------------------------------------------------------- */
+
+.hero-device {
+  position: relative;
+  perspective: 1400px;
+}
+
+.hero-device__frame {
+  transform-origin: 50% 60%;
+}
+
+.hero-device img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* In the film the picture stands where the stage will draw the laptop: its
+   centre at the pose's x% of the width and y% of the height, its size a
+   share of the width. The numbers come from web/capture-hero-laptop.mjs
+   with the picture, and change with it. */
+[data-mode="film"] .hero-device {
+  --cut-left: 36.01vw;
+  --cut-top: calc(54vh - 18.92vw);
+  --cut-width: 62.15vw;
+  position: absolute;
+  left: var(--cut-left);
+  top: var(--cut-top);
+  width: var(--cut-width);
+  pointer-events: none;
+}
+
+/* The rows the requests land on light up while they do. entrance.js
+   places each over its row with a matrix3d. */
+.hero-glows {
+  display: none;
+}
+
+[data-hero="playing"] .hero-glows {
+  display: block;
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.hero-glow {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  border: 2px solid rgba(81, 255, 180, 0.8);
+  border-radius: 6px;
+  background: rgba(81, 255, 180, 0.12);
+  opacity: 0;
+}
+
+/* --- the notification field -------------------------------------------- */
+
+.hero-field {
+  display: none;
+}
+
+[data-hero="entrance"] .hero-field,
+[data-hero="playing"] .hero-field {
+  --pill-height: clamp(34px, 2.36vw, 42px);
+  display: block;
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  overflow: hidden;
+  pointer-events: none;
+  contain: strict;
+}
+
+.hero-sprite {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+.hero-lane {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: var(--pill-height);
+  top: calc((var(--row) + 0.5) / var(--lanes) * 100% - var(--pill-height) / 2 + var(--nudge));
+  will-change: transform;
+}
+
+/* Every lane is moving from the first paint; entrance.js takes the motion
+   over from wherever this has got to. */
+[data-hero="entrance"] .hero-lane {
+  animation: hero-drift 6s linear both;
+}
+
+@keyframes hero-drift {
+  to {
+    transform: translateX(var(--drift));
+  }
+}
+
+.hero-track {
+  position: absolute;
+  top: 0;
+  display: flex;
+  height: 100%;
+}
+
+.hero-track--before {
+  right: calc((1 - var(--anchor)) * 100%);
+  flex-direction: row-reverse;
+}
+
+.hero-track--after {
+  left: calc(var(--anchor) * 100%);
+}
+
+.hero-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5em;
+  flex: none;
+  height: 100%;
+  padding: 0 0.95em 0 0.8em;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 999px;
+  background: #0c100f;
+  color: var(--ink-dim);
+  font-family: var(--text);
+  font-size: clamp(13px, 0.9vw, 16px);
+  line-height: 1;
+  white-space: nowrap;
+  opacity: var(--tier-opacity, 1);
+}
+
+/* Gaps and type grow with a wide window, so the field holds about as many
+   pills at 1920 as at 1440. */
+.hero-track--before .hero-pill {
+  margin-right: calc(var(--gap) * 100vw / 1440);
+}
+
+.hero-track--after .hero-pill {
+  margin-left: calc(var(--gap) * 100vw / 1440);
+}
+
+.hero-pill__mark {
+  width: 1.1em;
+  height: 1.1em;
+  flex: none;
+  fill: currentColor;
+  color: var(--ink-faint);
+}
+
+/* Depth: the far lanes are small and faint, the near ones sharp. */
+.hero-lane--far {
+  --tier-opacity: 0.38;
+}
+
+.hero-lane--far .hero-pill {
+  font-size: clamp(12px, 0.84vw, 15px);
+  height: 84%;
+  margin-top: 3px;
+}
+
+.hero-lane--mid {
+  --tier-opacity: 0.6;
+}
+
+.hero-lane--near {
+  --tier-opacity: 0.85;
+}
+
+.hero-lane--near .hero-pill {
+  font-size: clamp(14px, 0.97vw, 17px);
+  color: var(--ink);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+/* The three requests that need a person: brighter, a restrained mint. */
+.hero-pill[data-attention] {
+  --tier-opacity: 1;
+  color: var(--ink);
+  border-color: rgba(81, 255, 180, 0.6);
+  background: #08150f;
+  font-weight: 500;
+}
+
+.hero-pill[data-attention] .hero-pill__mark {
+  color: var(--accent);
+}
+
+/* A phone keeps fewer, closer lanes and the same type sizes. */
+@media (max-width: 767px) {
+  [data-hero="entrance"] .hero-field,
+  [data-hero="playing"] .hero-field {
+    --pill-height: 30px;
+  }
+
+  .hero-lane:not([data-narrow]) {
+    display: none;
+  }
+
+  /* Closer together than a full share of the height each: the field reads
+     dense with fewer lanes. */
+  .hero-lane {
+    top: calc(5% + (var(--narrow-row) + 0.5) / var(--narrow-lanes) * 80% - var(--pill-height) / 2 + var(--nudge));
+  }
+
+  .hero-pill,
+  .hero-lane--far .hero-pill {
+    font-size: 12px;
+  }
+
+  .hero-lane--near .hero-pill {
+    font-size: 13px;
+  }
+
+  .hero-track--before {
+    right: calc((1 - var(--narrow-anchor)) * 100%);
+  }
+
+  .hero-track--after {
+    left: calc(var(--narrow-anchor) * 100%);
+  }
+
+  .hero-track--before .hero-pill {
+    margin-right: calc(var(--gap) * 0.25px);
+  }
+
+  .hero-track--after .hero-pill {
+    margin-left: calc(var(--gap) * 0.25px);
+  }
+
+  .hero-pill {
+    padding: 0 0.8em 0 0.65em;
+  }
+}
+
+/* --- before the entrance takes over -------------------------------------- */
+
+/* The copy and the laptop wait for the entrance. If its script never
+   arrives, this settles the hero on its own a little after the entrance
+   would have: the field goes, the laptop and the copy come in. */
+[data-hero="entrance"] #act-1 .act__copy > *,
+[data-hero="entrance"] .hero-device {
+  opacity: 0;
+  animation: hero-fallback-in 0.6s ease-out 5s both;
+}
+
+[data-hero="entrance"] .hero-field {
+  animation: hero-fallback-out 0.5s ease-in 4.8s both;
+}
+
+@keyframes hero-fallback-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes hero-fallback-out {
+  to {
+    opacity: 0;
+    visibility: hidden;
+  }
+}
+
+/* --- the phone's split ------------------------------------------------- */
+
+@media (max-width: 767px) {
+  html:not([data-mode="film"]) #act-1 {
+    padding-block: 1.75rem 1.25rem;
+  }
+
+  #act-1 .act__inner {
+    gap: 1.25rem;
+  }
+
+  #act-1 h1 {
+    font-size: clamp(2rem, 1.2rem + 3.6vw, 2.5rem);
+  }
+
+  #act-1 .support {
+    margin-top: 1rem;
+    font-size: 1rem;
+  }
+
+  #act-1 .actions {
+    margin-top: 1.5rem;
+  }
+
+  #act-1 .meta {
+    margin-top: 1rem;
+  }
+
+  .hero-device {
+    margin-inline: -0.5rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-field,
+  .hero-glows {
+    display: none !important;
+  }
+
+  [data-hero] #act-1 .act__copy > *,
+  [data-hero] .hero-device {
+    opacity: 1 !important;
+    animation: none !important;
+  }
+}

@@ -32,7 +32,6 @@ export const BEAT_EASE = "sine.out";
 // storyboard length. A `hold` ([local, seconds]) is reading time added after
 // that beat.
 export const SCENES = Object.freeze({
-  1: { arrive: 0.2, seconds: 6 },
   2: { arrive: 0.22, seconds: 3.5 },
   3: { arrive: 0.2, seconds: 7 },
   4: { arrive: 0.2, seconds: 9 },
@@ -133,15 +132,13 @@ export function actAt(time) {
 
 // The devices at rest in each act, desktop profile. A device absent from an
 // act is hidden. `opacity` defaults to 1, `lidOpen` to 1, `faceCamera` to 1.
-// The hero turns a little toward the copy on the left, not the visitor.
-const HERO = { x: 65, y: 53, w: 52, yaw: -10, pitch: 4 };
+// The hero is large in the right of the stage, nearly frontal, turned a
+// little toward the copy on the left; its entrance (src/hero/) brings it here.
+const HERO = { x: 68, y: 54, w: 56, yaw: -6, pitch: 4 };
 const HOST = { x: 17, y: 74, w: 24, yaw: 14, pitch: 3, opacity: 0.9 };
 export const POSES = Object.freeze({
   laptop: Object.freeze({
     1: HERO,
-    // The push-in while the visitor types: the editor's code pane fills the
-    // right of the stage and the copy keeps the left.
-    "1-typing": { x: 68, y: 57, w: 62, yaw: -8, pitch: 4 },
     2: { x: 61, y: 58, w: 40, yaw: -12, pitch: 3 },
     3: { x: 67, y: 58, w: 50, yaw: -12, pitch: 2 },
     // Act 4 is a pair: the host and, close to the middle, the phone that
@@ -209,7 +206,8 @@ export function fullPose(pose = {}) {
 // so it can be preloaded.
 export const SCREEN_CUES = Object.freeze({
   laptop: [
-    [at(1, 0), "ui10-editor-macbook"],
+    [at(1, 0), "ui09-needs-you-macbook"],
+    [at(2, 0), "ui10-editor-macbook"],
     [at(3, 0), "ui12-tasks-macbook"],
     [at(4, 0), "ui13-team-macbook"],
     [at(5, 0), "ui16-builder-macbook"],

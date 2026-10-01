@@ -39,5 +39,5 @@ Four CSS-pixel corners of that pose's display plane, in the exported order;
 drive the overlay's `matrix3d` from them. The laptop's plane is the lid at its
 open angle, 15° off vertical, not the base. `lidOpen` 0 → 1 maps to hinge
 rotation 90° → −15° (105° of travel) and `laptopLidAngleDegrees` reads it as an
-angle off the deck (0.7 is 73.5°, the hero entrance start); exported corners are
+angle off the deck (0.7 is 73.5°); exported corners are
 baked at full open and swing about `hinge_pivot_m` for any other value.

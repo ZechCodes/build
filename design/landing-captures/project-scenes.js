@@ -8,7 +8,9 @@ import {
   PROJECT_VERBS, agentRail, appShell, harnessMark, overviewPanel, overviewRow, overviewSection, projectToolbar,
 } from "./app-shell.js";
 import { INBOX_TEAM } from "./workspace-scenes.js";
-import { COLUMNS, TASKS, TEAM } from "./story.js";
+import { dashboardSections } from "../../spa/src/core/trackerDashboardModel.js";
+import { paintTaskDashboard } from "../../spa/src/core/trackerDashboardRender.js";
+import { COLUMNS, HERO_DETAILS, HERO_FEED, HERO_PROJECT_KEY, HERO_TASKS, TASKS, TEAM } from "./story.js";
 
 const INBOX_BEFORE_TEAM = ["search", "terminals", "pairing"];
 const PROJECT_TABS = ["Tasks", "Workspaces"];
@@ -57,6 +59,34 @@ export const boardScene = () => projectShell({
   root: projectPage(`${viewSwitch(["Dashboard", "List", "Board"], "Board", "New task")}
     <div class="task-filters" role="group">${filter("Open", true)}${filter("Any column")}${filter("Anyone")}${filter("Any label")}</div>
     <div class="task-body"><div class="task-board" role="group">${COLUMNS.map(boardColumn).join("")}</div></div>`),
+});
+
+// ---- the hero: Needs you on the Tasks dashboard --------------------------------
+
+/** The Dashboard as the Tasks pane paints it: the app's model sorts the
+ *  tasks into sections and gives each Needs you row its reasons, and the
+ *  app's renderer draws them. */
+function needsYouDashboard() {
+  const sections = dashboardSections(HERO_TASKS, {
+    feed: HERO_FEED, projectKey: HERO_PROJECT_KEY, detailById: HERO_DETAILS, askedOnly: false, columns: [],
+  });
+  const body = document.createElement("div");
+  paintTaskDashboard(body, sections, {
+    href: (task) => `#/tasks/${task.number}`,
+    unreadOf: (task) => task.unread_count || 0,
+    dashboardTab: "needsYou",
+    onDashboardTab: () => {},
+    doneSinceLeft: false,
+  });
+  return body.innerHTML;
+}
+
+export const needsYouScene = () => projectShell({
+  tab: "Tasks",
+  root: projectPage(`${viewSwitch(["Dashboard", "List", "Board"], "Dashboard", "New task")}
+    <div class="task-filters" role="group">${filter("Open", true)}${filter("Any column")}${filter("Anyone")}${filter("Any label")}</div>
+    <div class="task-body">${needsYouDashboard()}</div>`),
+  rail: agentRail({ strip: { agents: [1, 2, 3] } }),
 });
 
 // ---- the task and its team ------------------------------------------------------

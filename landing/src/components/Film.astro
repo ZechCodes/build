@@ -9,7 +9,6 @@
 const testLine1 = 'it("keeps archived items in search", () => {';
 const testLine2 = 'expect(search("launch notes")).toContain(archived);';
 const testClose = "});";
-const importLine = 'import { archive, search } from "../search";';
 const describeOpen = 'describe("archive", () => {';
 const archivedConst = 'const archived = archive("launch notes");';
 const branch = "build/archive-search";
@@ -35,24 +34,6 @@ const team = [
 ---
 
 <div class="overlays" data-overlays aria-hidden="true">
-  <!-- Act 1 and 2: the Files view's source pane, with the visitor's test typed
-       in, and the file's state in its head once it is. The code is set larger
-       than the app's so it reads on the hero. -->
-  <div class="panel panel--editor" data-panel="editor" data-panel-device="laptop" data-panel-region="696 150 702 702">
-    <div class="file-head"><span class="file-path">src/search/archive.test.ts</span><span class="file-size">122 bytes<span class="status-chip" data-status-chip>2 changes · you</span></span><span class="file-modes"><span class="on">Source</span><span>Edit</span></span></div>
-    <div class="ed-code">
-      <div><i>1</i><span>{importLine}</span></div>
-      <div><i>2</i><span></span></div>
-      <div><i>3</i><span>{describeOpen}</span></div>
-      <div><i>4</i><span>  {archivedConst}</span></div>
-      <div><i>5</i><span></span></div>
-      <div data-typed-line><i>6</i><span>  <b data-type={testLine1}></b><em class="caret" data-caret="1"></em></span></div>
-      <div data-typed-line><i>7</i><span>    <b data-type={testLine2}></b><em class="caret" data-caret="2"></em></span></div>
-      <div data-typed-line><i>8</i><span>  <b data-type={testClose}></b></span></div>
-      <div><i>9</i><span>{testClose}</span></div>
-    </div>
-  </div>
-
   <!-- Act 3: the task card, lifted out of the board's Ready column. The hole
        is the column behind the card, a little wider than the card, so nothing
        of it stays behind when it lifts. -->

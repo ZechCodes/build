@@ -61,3 +61,21 @@ it("looks the code up on Enter, the key the field labels Go", async () => {
   await vi.waitFor(() => expect(document.querySelector("#papprove")).not.toBeNull());
   expect(lookupDevice).toHaveBeenCalledWith("WXYZ-4F2K");
 });
+
+it("a code handed in by the approve link is filled in and looked up, never approved", async () => {
+  lookupDevice.mockResolvedValue({ name: "Mac", fingerprint: "28e679939bc32c446627fac8a8dd58a5353e66b744a9a2dae91254f1da1b9027" });
+  openAddDevice(vi.fn(), { code: "zsac-abu6" });
+  expect(document.querySelector("#paircode").value).toBe("ZSAC-ABU6");
+  await vi.waitFor(() => expect(document.querySelector("#papprove")).not.toBeNull());
+  expect(lookupDevice).toHaveBeenCalledWith("ZSAC-ABU6");
+  expect(approveDevice).not.toHaveBeenCalled();
+});
+
+it("shows the fingerprint in the short form the bridge printed, with the full one beneath", async () => {
+  const fingerprint = "28e679939bc32c446627fac8a8dd58a5353e66b744a9a2dae91254f1da1b9027";
+  lookupDevice.mockResolvedValue({ name: "Mac", fingerprint });
+  openAddDevice(vi.fn(), { code: "ZSAC-ABU6" });
+  await vi.waitFor(() => expect(document.querySelector("#papprove")).not.toBeNull());
+  expect(document.querySelector("[data-fingerprint-short]").textContent).toBe("28e6 7993 9bc3 2c44");
+  expect(document.querySelector("[data-fingerprint-full]").textContent).toBe(fingerprint);
+});

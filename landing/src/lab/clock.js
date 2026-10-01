@@ -5,6 +5,10 @@
 
 /** The scrubber's span in endless mode, in seconds. */
 export const ENDLESS_WINDOW = 30;
+/** The scrubber's step, in seconds (the range input's own step). */
+export const SCRUB_STEP = 0.01;
+/** The last point of an endless lap: its end is the next lap's start. */
+export const ENDLESS_LAST = ENDLESS_WINDOW - SCRUB_STEP;
 
 export function advance(clock, seconds, end) {
   if (!clock.playing) return clock;
@@ -25,5 +29,5 @@ export function scrubberAt(clock) {
 
 /** The time the scrubber at `value` names, in the lap the clock is on. */
 export function scrubbed(clock, value) {
-  return clock.endless ? Math.floor(clock.time / ENDLESS_WINDOW) * ENDLESS_WINDOW + value : value;
+  return clock.endless ? Math.floor(clock.time / ENDLESS_WINDOW) * ENDLESS_WINDOW + Math.min(value, ENDLESS_LAST) : value;
 }

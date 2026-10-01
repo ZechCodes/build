@@ -10,9 +10,11 @@ const LAB_COPY = "\0lab-copy:";
 // The notifications lab (src/pages/lab/, #311) runs the hero's own modules.
 // Shared with the home page, the build would split them into a chunk both
 // load, and the home page's script would wait on a second request before
-// the hero could start. So the lab bundles its own copy of every hero
-// module it reaches, from the same source files, and the home page's
-// script stays one file as it was.
+// the hero could start. So the lab bundles its own copy of every module
+// under src/hero/ it reaches, from the same source files, and the home
+// page's script stays one file as it was. Only src/hero/ is copied: a module
+// elsewhere that the lab came to share with the home page (gsap, src/stage/)
+// would split it again, which the generated-page tests catch.
 function labOwnCopy() {
   return {
     name: "build-lab-own-copy",

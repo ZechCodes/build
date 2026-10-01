@@ -2,7 +2,7 @@
 // markup is the page's (lab/notifications-*.astro); this binds it to the
 // lab and shows the state it is given.
 import { phaseAt } from "../hero/timing.js";
-import { ENDLESS_WINDOW, scrubberAt } from "./clock.js";
+import { ENDLESS_LAST, SCRUB_STEP, scrubberAt } from "./clock.js";
 
 function part(panel, name) {
   const element = panel.querySelector(`[data-lab="${name}"]`);
@@ -31,7 +31,8 @@ export function mountControls(panel, act) {
   }
 
   return function show(state, { end, timing }) {
-    const span = state.endless ? ENDLESS_WINDOW : end;
+    const span = state.endless ? ENDLESS_LAST : end;
+    scrub.step = String(SCRUB_STEP);
     scrub.max = String(span);
     scrub.value = String(scrubberAt(state));
     time.textContent = `${state.time.toFixed(2)}s · ${state.endless ? "endless" : phaseAt(state.time, timing)}`;

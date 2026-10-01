@@ -120,7 +120,7 @@ cmd > /tmp/gate.log 2>&1; echo "exit=$?"
 | skriftapp | `skriftapp/` | `nice -n 10 uv run --frozen ruff check buildapp` · `nice -n 10 uv run --frozen pytest buildapp -q` |
 | landing | `landing/` | `nice -n 10 npm ci` · `nice -n 10 npm test` (builds the Astro page, then reads it back) |
 | landing in a browser | repo root | `skriftapp/.venv/bin/python scripts/preview-landing.py`, then `CHROMIUM_PATH=/usr/bin/chromium nice -n 10 node web/landing-check.mjs` |
-| sign-in page in a browser (by hand, when `skriftapp/templates/auth/` or `passkey-signin.js` change) | repo root | serve a local dev app whose `auth.methods` is `passkey: {type: passkey}` and whose `redirect_base_url` is its own `http://localhost:<port>` (see `skriftapp/README.md`), then `SIGNIN_URL=http://localhost:<port> CHROMIUM_PATH=/usr/bin/chromium nice -n 10 node web/passkey-signin-check.mjs`; it creates throwaway accounts, so never point it at production |
+| sign-in page in a browser (by hand, when `skriftapp/templates/auth/` or `passkey-signin.js` change) | repo root | serve a local dev app whose `auth.methods` is `passkey: {type: passkey}` and whose `redirect_base_url` is its own `http://localhost:<port>` (see `skriftapp/README.md`), seed an open invite on it (`skriftapp/README.md`), then `SIGNIN_URL=http://localhost:<port> INVITE_TOKEN=<raw token> CHROMIUM_PATH=/usr/bin/chromium nice -n 10 node web/passkey-signin-check.mjs`; it creates a throwaway account and spends the invite, so never point it at production |
 | desktop | `desktop/` | `nice -n 10 npm test` |
 | shell | repo root | `git ls-files '*.sh' \| nice -n 10 xargs shellcheck` |
 

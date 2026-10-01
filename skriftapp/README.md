@@ -161,6 +161,20 @@ revokes the link the address still holds before mailing a fresh one, so only one
 live link exists. The send route is rate limited in `app.yaml`
 (`waitlist_invite_send`).
 
+**Accounts exist only through an invite** (`buildapp/signup_invite.py`,
+`buildapp/auth_controller.py`). Opening an open invite link signed out binds the
+invite's id to the session and sends the visitor to `/auth/login`, which then offers
+"Create your account" for the invite's address, shown read-only; without a bound
+invite the page offers sign-in only and links to the waitlist. `BuildAuthController`
+is Skrift's `AuthController` with four handlers replaced by name: the two login pages
+add the bound address to the template, and passkey `register/options` and
+`register/complete` refuse any other address (`invite_required`, 403) whatever the
+form posts. A completed registration redeems the invite in the same request and
+answers with `/app/`. Skrift rotates the session at sign-in, which drops the binding;
+an existing account signing in from an invite link still redeems at the link (or
+gets the wrong-account page). Sign-in itself asks for nothing: one passkey button,
+no autofill field.
+
 Alpha membership has one definition, in `buildapp/alpha_membership.py`: a
 redeemed invite that has not been revoked. There is no members table — revoking
 someone's redeemed invite from /admin/invites is how they lose access.

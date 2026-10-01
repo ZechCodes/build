@@ -1,21 +1,27 @@
-// Create an account and sign in on the real sign-in page (#312) in headless Chromium,
-// with a CDP virtual authenticator, while navigator.credentials behaves like Safari:
-// one request at a time, a second answered "A request is already pending.", and an
-// aborted request released only when its rejection lands. Chromium itself cancels the
-// pending autofill request for you, which is why the bug never showed there.
+// Follow an invite link to account creation, then sign in, on the real sign-in page
+// (#312, #314) in headless Chromium with a CDP virtual authenticator, while
+// navigator.credentials behaves like Safari: one request at a time, a second answered
+// "A request is already pending.".
 //
 // Start a local app whose passkey method's redirect_base_url matches SIGNIN_URL (see
-// skriftapp/README.md for the dev app; set `auth.methods.passkey.type: passkey`), then:
+// skriftapp/README.md for the dev app; set `auth.methods.passkey.type: passkey`), seed
+// an open invite there as the README shows, then:
 //
-//   SIGNIN_URL=http://localhost:8391 node web/passkey-signin-check.mjs
+//   SIGNIN_URL=http://localhost:8391 INVITE_TOKEN=<raw token> node web/passkey-signin-check.mjs
 //
-// Exit 0 when both ceremonies reach a signed-in redirect and the page asks nothing of
-// another origin. Never point it at production: it creates accounts.
+// It checks that the page opens no WebAuthn request on its own, that without an invite
+// it offers no account, that the invite's address is the one prefilled and read-only,
+// that creating the account lands in /app/ as a member, and that the new passkey signs
+// in. SCREENSHOT_DIR, when set, gets one PNG per state. Exit 0 when all of that holds
+// and the page asks nothing of another origin. Never point it at production: it creates
+// accounts and spends the invite.
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
 
 const base = process.env.SIGNIN_URL || "http://localhost:8391";
-const email = `signin-check-${Date.now()}@example.com`;
+const inviteToken = process.env.INVITE_TOKEN;
+const screenshots = process.env.SCREENSHOT_DIR;
+assert.ok(inviteToken, "set INVITE_TOKEN to the raw token of an open invite on this app");
 
 // Runs in the page before any of its scripts.
 function behaveLikeSafari() {
@@ -39,26 +45,16 @@ function behaveLikeSafari() {
       console.log(`webauthn ${entry}`);
       if (pending) return Promise.reject(new DOMException("A request is already pending.", "InvalidStateError"));
       pending = true;
-      const release = (settle) => setTimeout(() => ((pending = false), settle()), 50);
-      // Autofill stays open, as it does while nobody opens the email field's menu,
-      // until the page aborts it; then it is let go of a moment later.
-      if (options.mediation === "conditional") {
-        return new Promise((resolve, reject) => {
-          const aborted = () => release(() => reject(new DOMException("Aborted.", "AbortError")));
-          if (options.signal?.aborted) aborted();
-          else options.signal?.addEventListener("abort", aborted);
-        });
-      }
-      return native[kind](options).then(
-        (value) => ((pending = false), value),
-        (error) => new Promise((resolve, reject) => release(() => reject(error))),
-      );
+      return native[kind](options).finally(() => {
+        pending = false;
+      });
     };
   }
 }
 
 const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH });
 const failures = [];
+const check = (ok, failure) => ok || failures.push(failure);
 try {
   const context = await browser.newContext();
   await context.addInitScript(behaveLikeSafari);
@@ -83,34 +79,56 @@ try {
     },
   });
 
-  async function ceremony(name, act, statusSelector) {
-    await page.goto(`${base}/auth/passkey/login`);
-    await page.waitForFunction(() => window.__webauthnLog.includes("get:conditional"), null, { timeout: 10_000 });
-    await act();
+  async function shoot(name) {
+    if (screenshots) await page.screenshot({ path: `${screenshots}/${name}.png`, fullPage: true });
+  }
+
+  async function signedIn(name, statusSelector) {
     try {
       await page.waitForURL((url) => !url.pathname.startsWith("/auth/"), { timeout: 10_000 });
       console.log(`${name}: signed in → ${page.url()}`);
+      return true;
     } catch {
       const status = await page.locator(statusSelector).textContent().catch(() => "(no status line)");
       failures.push(`${name}: still on the sign-in page — "${status}"`);
+      return false;
     }
   }
 
-  await ceremony(
-    "create account",
-    async () => {
-      const form = page.locator("#signup-form, #passkey-signup-form").first();
-      await form.locator('input[name="email"]').fill(email);
-      await form.locator('button[type="submit"]').click();
-    },
-    "#signup-status, #passkey-signup-status",
+  // No invite: sign-in only, and the way to the waitlist.
+  await page.goto(`${base}/auth/login`);
+  await page.waitForTimeout(500);
+  check((await page.locator("#signup-form").count()) === 0, "no invite: a create-account form was offered");
+  check((await page.locator('a[href="/#waitlist"]').count()) === 1, "no invite: no link to the waitlist");
+  check((await page.locator("#signin-form input:not([type=hidden])").count()) === 0, "sign-in asks for something");
+  check(
+    (await page.evaluate(() => window.__webauthnLog.length)) === 0,
+    "the page opened a WebAuthn request before any button was pressed",
   );
+  await shoot("signin-no-invite");
+
+  // The invite link: its address, prefilled and read-only.
+  await page.goto(`${base}/invite/${encodeURIComponent(inviteToken)}`);
+  await page.waitForURL((url) => url.pathname === "/auth/login", { timeout: 10_000 });
+  const field = page.locator("#signup-email");
+  const email = await field.inputValue();
+  check(Boolean(email), "invite: no address prefilled");
+  check(await field.evaluate((input) => input.readOnly), "invite: the address can be edited");
+  check((await page.locator('#signup-form [name="name"]').count()) === 0, "invite: a name field is offered");
+  await shoot("signup-invite");
+
+  await page.locator('#signup-form button[type="submit"]').click();
+  if (await signedIn("create account", "#signup-status")) {
+    check(new URL(page.url()).pathname === "/app/", `create account landed on ${page.url()}, not /app/`);
+    const member = await page.evaluate(() => !document.title.startsWith("Invite only"));
+    check(member, "create account: /app/ says invite-only, so the invite was not redeemed");
+  }
+
   await context.clearCookies();
-  await ceremony(
-    "sign in",
-    () => page.locator("#signin-form, #passkey-login-form").first().locator('button[type="submit"]').click(),
-    "#signin-status, #passkey-login-status",
-  );
+  await page.goto(`${base}/auth/login`);
+  await shoot("signin");
+  await page.locator('#signin-form button[type="submit"]').click();
+  await signedIn("sign in", "#signin-status");
   if (external.length) failures.push(`requests to another origin: ${external.join(", ")}`);
 } finally {
   await browser.close();

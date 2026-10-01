@@ -26,32 +26,33 @@
     {% else %}
     <section class="signin-panel" aria-labelledby="signin-heading">
         <h2 id="signin-heading">Sign in</h2>
-        <form id="signin-form" class="signin-form" novalidate>
+        <form id="signin-form" class="signin-form">
             {{ csrf_field() }}
-            <label for="signin-email">Email <span class="signin-optional">(optional)</span></label>
-            <input id="signin-email" class="signin-input" type="email" name="email"
-                   autocomplete="username webauthn" placeholder="you@example.com"
-                   aria-describedby="signin-email-hint">
-            <p id="signin-email-hint" class="signin-hint">Your browser may suggest your saved passkey when you select this field.</p>
             <button class="signin-button" type="submit">Sign in with a passkey</button>
             <p id="signin-status" class="signin-status" role="status" aria-live="polite"></p>
         </form>
     </section>
 
+    {% if invite_email %}
     <section class="signin-panel" aria-labelledby="signup-heading">
-        <h2 id="signup-heading">New to Build?</h2>
-        <p class="signin-hint">Create your account and its passkey in one step. Use the email address your invite was sent to.</p>
+        <h2 id="signup-heading">Create your account</h2>
+        <p class="signin-hint">Your invite is for this address. Creating your account makes its passkey in the same step.</p>
         <form id="signup-form" class="signin-form">
             {{ csrf_field() }}
             <label for="signup-email">Email</label>
             <input id="signup-email" class="signin-input" type="email" name="email"
-                   autocomplete="email" placeholder="you@example.com" required>
-            <label for="signup-name">Name <span class="signin-optional">(optional)</span></label>
-            <input id="signup-name" class="signin-input" type="text" name="name" autocomplete="name">
+                   value="{{ invite_email }}" autocomplete="username" readonly>
             <button class="signin-button" type="submit">Create account</button>
             <p id="signup-status" class="signin-status" role="status" aria-live="polite"></p>
         </form>
     </section>
+    {% else %}
+    <section class="signin-panel" aria-labelledby="signup-heading">
+        <h2 id="signup-heading">New to Build?</h2>
+        <p class="signin-hint">Build is invite-only right now. Join the waitlist and we&rsquo;ll send you an invite as seats open.</p>
+        <a class="signin-button" href="/#waitlist">Join the waitlist</a>
+    </section>
+    {% endif %}
 
     <noscript><p class="signin-flash">Passkey sign-in needs JavaScript. Turn it on for this site and reload the page.</p></noscript>
     {% endif %}

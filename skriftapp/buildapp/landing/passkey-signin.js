@@ -1,11 +1,11 @@
 // Build's sign-in and create-account page (templates/auth/passkey_login.html).
-// Same endpoints and payloads as Skrift's stock passkey page; what differs is the
-// ordering. A browser runs one WebAuthn request at a time, and this page keeps one
-// open on load: the conditional get() that offers saved passkeys in the email
-// field's autofill. Safari answers any second request while it is open with
-// "A request is already pending." So every button-driven ceremony first aborts the
-// autofill request and waits for it to finish rejecting, and a failed or cancelled
-// attempt starts autofill again, so the page works without a reload.
+// Same endpoints and payloads as Skrift's stock passkey page. Sign-in is one button:
+// a modal get() with no allowCredentials, so the browser lists the passkeys it holds
+// for this site and nobody types anything. The page opens no WebAuthn request on its
+// own (no conditional autofill: it needs a visible text field to hang from, and a
+// browser runs one request at a time, so Safari answered a press while it was open
+// with "A request is already pending."). Account creation posts the invite's address,
+// which the page shows read-only; the server takes no other (#314).
 
 export function base64urlToBuffer(value) {
   const padding = "=".repeat((4 - (value.length % 4)) % 4);
@@ -77,9 +77,9 @@ const SERVER_MESSAGES = {
   // The refusal carried a fresh token and the poster has already put it in the
   // forms, so pressing the button again is enough.
   invalid_csrf: "That attempt didn't go through. Try again.",
-  email_required: "Enter your email address.",
-  invalid_credential: "That passkey isn't registered with Build. Create an account below, or choose a different passkey.",
-  credential_id_required: "That passkey isn't registered with Build. Create an account below, or choose a different passkey.",
+  invalid_credential: "That passkey isn't registered with Build. Choose a different passkey.",
+  credential_id_required: "That passkey isn't registered with Build. Choose a different passkey.",
+  invite_required: "This page no longer holds a usable invite. Open the link in your invite email again.",
   registration_state_missing: "That took too long. Try again.",
 };
 
@@ -131,77 +131,24 @@ class Refused extends Error {
 }
 
 /**
- * The page's WebAuthn state machine, free of the DOM so it can be tested with a
- * fake browser.
+ * The page's WebAuthn ceremonies, free of the DOM so they can be tested with a fake
+ * browser.
  *
  * - `credentials`: navigator.credentials.
  * - `post(path, fields)`: POSTs to /auth/<method>/<path> with the CSRF token,
  *   resolves `{ ok, status, payload }`; rejects only when the network does.
- * - `conditionalAvailable()`: resolves whether the browser offers passkey autofill.
  *
  * Every outcome is `{ redirect }`, `{ error }` (a sentence), or `{ ignored: true }`
  * for a press that arrived while another ceremony was running.
  */
-export function createPasskeyFlow({ credentials, post, conditionalAvailable }) {
-  let autofill = null; // { controller, settled } while the conditional request is open
+export function createPasskeyFlow({ credentials, post }) {
   let busy = false;
   let leaving = false;
-
-  async function signInWith(credential) {
-    const response = await post("complete", { credential: JSON.stringify(serializeAssertion(credential)) });
-    if (!response.ok) throw new Refused(response);
-    return { redirect: response.payload.redirect || "/" };
-  }
-
-  async function runAutofill(signal) {
-    if (!(await conditionalAvailable()) || signal.aborted) return null;
-    const response = await post("options", {});
-    // A refusal here (a 429, say) leaves autofill off on purpose: retrying on a timer
-    // would spend the rate limit the buttons need, and the buttons work without it.
-    // The next failed or cancelled button attempt starts autofill again.
-    if (!response.ok || signal.aborted) return null;
-    const credential = await credentials.get({
-      publicKey: authenticationOptions(response.payload.options),
-      mediation: "conditional",
-      signal,
-    });
-    if (!credential) return null;
-    // The person picked a passkey, so a refusal from here on is theirs to read.
-    return signInWith(credential).catch((error) => ({ error: failure("signin", error) }));
-  }
-
-  /** Start the background request behind passkey autofill. Resolves when it ends and
-   *  never rejects: `{ redirect }` if the person picked a passkey that signed in,
-   *  `{ error }` if they picked one the server refused, and null when it was aborted
-   *  or the browser declined (as on the stock page, the buttons still work). */
-  function startAutofill() {
-    if (autofill) return autofill.settled;
-    if (busy || leaving) return Promise.resolve(null);
-    const controller = new AbortController();
-    const settled = runAutofill(controller.signal)
-      .catch(() => null)
-      .then((outcome) => {
-        if (autofill && autofill.controller === controller) autofill = null;
-        if (outcome && outcome.redirect) leaving = true;
-        return outcome;
-      });
-    autofill = { controller, settled };
-    return settled;
-  }
-
-  /** Abort autofill and wait until the browser has let go of the request. */
-  async function stopAutofill() {
-    if (!autofill) return null;
-    autofill.controller.abort();
-    return autofill.settled;
-  }
 
   async function exclusive(kind, ceremony) {
     if (busy || leaving) return { ignored: true };
     busy = true;
     try {
-      const autofilled = await stopAutofill();
-      if (autofilled && autofilled.redirect) return autofilled;
       const outcome = await ceremony();
       leaving = true;
       return outcome;
@@ -217,7 +164,9 @@ export function createPasskeyFlow({ credentials, post, conditionalAvailable }) {
       const response = await post("options", {});
       if (!response.ok) throw new Refused(response);
       const credential = await credentials.get({ publicKey: authenticationOptions(response.payload.options) });
-      return signInWith(credential);
+      const completion = await post("complete", { credential: JSON.stringify(serializeAssertion(credential)) });
+      if (!completion.ok) throw new Refused(completion);
+      return { redirect: completion.payload.redirect || "/" };
     });
   }
 
@@ -234,7 +183,7 @@ export function createPasskeyFlow({ credentials, post, conditionalAvailable }) {
     });
   }
 
-  return { startAutofill, stopAutofill, signIn, signUp, isBusy: () => busy };
+  return { signIn, signUp, isBusy: () => busy };
 }
 
 function failure(kind, error) {
@@ -281,21 +230,45 @@ function bindForm({ form, status, busyText, doneText, run, page }) {
     }
     page.setBusy(form, false);
     page.say(status, outcome.error, "error");
-    page.restartAutofill();
   });
 }
 
+/** The page's forms with their status lines: sign-in always, create-account only
+ *  when the server found an invite in this session. */
+function pageForms(document) {
+  return [
+    ["signin", "signin-form", "signin-status"],
+    ["signup", "signup-form", "signup-status"],
+  ]
+    .map(([kind, formId, statusId]) => ({
+      kind,
+      form: document.getElementById(formId),
+      status: document.getElementById(statusId),
+    }))
+    .filter(({ form }) => form);
+}
+
+const CEREMONIES = {
+  signin: {
+    busyText: "Waiting for your passkey…",
+    doneText: "Signed in. Opening Build…",
+    run: (flow) => flow.signIn(),
+  },
+  signup: {
+    busyText: "Creating your passkey…",
+    doneText: "Account created. Opening Build…",
+    run: (flow, form) => flow.signUp({ email: String(new FormData(form).get("email") || "") }),
+  },
+};
+
 export function bindSigninPage(document, window) {
   const root = document.querySelector("[data-passkey-method]");
-  const signinForm = document.getElementById("signin-form");
-  const signinStatus = document.getElementById("signin-status");
-  const signupForm = document.getElementById("signup-form");
-  const signupStatus = document.getElementById("signup-status");
+  const forms = pageForms(document);
   // No forms when the server says passkeys are unavailable: nothing to bind.
-  if (!root || !signinForm || !signupForm) return null;
+  if (!root || !forms.length) return null;
 
   if (!window.PublicKeyCredential || !window.navigator.credentials) {
-    for (const [form, status] of [[signinForm, signinStatus], [signupForm, signupStatus]]) {
+    for (const { form, status } of forms) {
       form.querySelector('button[type="submit"]').disabled = true;
       status.textContent = "This browser can't use passkeys. Open Build in an up-to-date browser on your phone or computer.";
       status.dataset.tone = "error";
@@ -303,21 +276,12 @@ export function bindSigninPage(document, window) {
     return null;
   }
 
-  const PublicKeyCredential = window.PublicKeyCredential;
   const flow = createPasskeyFlow({
     credentials: window.navigator.credentials,
     post: csrfPoster(document, window.fetch.bind(window), root.dataset.passkeyMethod),
-    conditionalAvailable: async () => {
-      if (typeof PublicKeyCredential.isConditionalMediationAvailable !== "function") return false;
-      try {
-        return await PublicKeyCredential.isConditionalMediationAvailable();
-      } catch {
-        return false;
-      }
-    },
   });
 
-  const buttons = [signinForm, signupForm].map((form) => form.querySelector('button[type="submit"]'));
+  const buttons = forms.map(({ form }) => form.querySelector('button[type="submit"]'));
   const page = {
     busy: false,
     setBusy(form, busy) {
@@ -329,51 +293,19 @@ export function bindSigninPage(document, window) {
       else form.removeAttribute("aria-busy");
     },
     say(status, text, tone = "") {
-      for (const other of [signinStatus, signupStatus]) {
-        if (other !== status) other.textContent = "";
+      for (const other of forms) {
+        if (other.status !== status) other.status.textContent = "";
       }
       status.textContent = text;
       status.dataset.tone = tone;
     },
     go: (url) => window.location.assign(url),
-    restartAutofill: () => autofill(),
   };
 
-  function autofill() {
-    flow.startAutofill().then((outcome) => {
-      if (!outcome) return;
-      if (outcome.redirect) {
-        page.setBusy(signinForm, true);
-        page.say(signinStatus, "Signed in. Opening Build…");
-        page.go(outcome.redirect);
-      } else if (!page.busy) {
-        page.say(signinStatus, outcome.error, "error");
-        autofill();
-      }
-    });
+  for (const { kind, form, status } of forms) {
+    const { busyText, doneText, run } = CEREMONIES[kind];
+    bindForm({ form, status, busyText, doneText, run: () => run(flow, form), page });
   }
-
-  bindForm({
-    form: signinForm,
-    status: signinStatus,
-    busyText: "Waiting for your passkey…",
-    doneText: "Signed in. Opening Build…",
-    run: () => flow.signIn(),
-    page,
-  });
-  bindForm({
-    form: signupForm,
-    status: signupStatus,
-    busyText: "Creating your passkey…",
-    doneText: "Account created. Opening Build…",
-    run: () => {
-      const data = new FormData(signupForm);
-      return flow.signUp({ email: String(data.get("email") || ""), name: String(data.get("name") || "") });
-    },
-    page,
-  });
-
-  autofill();
   return flow;
 }
 

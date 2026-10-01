@@ -19,7 +19,7 @@ from skrift.auth.guards import Permission, auth_guard
 from skrift.lib.email_backends import EmailBackend
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from buildapp import invites
+from buildapp import invites, signup_invite
 from buildapp.accounts import account_email
 from buildapp.clock import utc_now
 from buildapp.email_message import provide_email_backend, provide_public_base_url
@@ -51,7 +51,8 @@ class InvitesController(Controller):
         self, request: Request, token: str, db_session: AsyncSession
     ) -> Response | Redirect:
         """Public. Every state but OPEN is a page from the outcome table; an OPEN link
-        needs an account before it can be spent."""
+        needs an account before it can be spent, so a signed-out visitor carries the
+        invite to the sign-in page, the one place an account can be made for it."""
         now = utc_now()
         invite = await invites.find_by_token(db_session, token)
         state = invites.invite_state(invite, now)
@@ -59,6 +60,7 @@ class InvitesController(Controller):
             return OUTCOMES[state].response()
         user_id = session_user_id(request)
         if user_id is None:
+            signup_invite.carry(request, invite)
             return login_redirect(invite_path(token))
         return await self._redeem(db_session, invite, user_id, now)
 

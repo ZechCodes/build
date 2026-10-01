@@ -164,9 +164,11 @@ a {
   margin-top: 0;
 }
 
-.signin-optional {
-  font-weight: 400;
-  color: var(--ink-faint);
+/* The invite's address: shown, selectable, not editable. */
+.signin-input[readonly] {
+  background: transparent;
+  border-style: dashed;
+  color: var(--ink-dim);
 }
 
 .signin-input {
@@ -276,4 +278,8 @@ a.signin-button {
   text-align: center;
   text-decoration: none;
   color: #000;
+}
+
+.signin-hint + a.signin-button {
+  margin-top: 1rem;
 }

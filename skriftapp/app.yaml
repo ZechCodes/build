@@ -28,7 +28,7 @@ controllers:
   - buildapp.invites_controller:InvitesController
   - buildapp.invites_admin:InvitesAdminController
   - buildapp.waitlist_admin:WaitlistAdminController
-  - skrift.controllers.auth:AuthController
+  - buildapp.auth_controller:BuildAuthController
   - skrift.admin.controller:AdminController
 models:
   - buildapp.models

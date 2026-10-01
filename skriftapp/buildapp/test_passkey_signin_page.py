@@ -8,7 +8,6 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
-from pathlib import Path
 
 import pytest
 from jinja2 import Environment, FileSystemLoader
@@ -19,9 +18,7 @@ from skrift.app_factory import get_template_directories_for_theme
 
 from buildapp.db_test_support import session_backend_config
 from buildapp.root_controller import LANDING_DIR, RootController
-
-SKRIFTAPP_DIR = Path(__file__).resolve().parents[1]
-TEMPLATES_DIR = SKRIFTAPP_DIR / "templates"
+from buildapp.skrift_app_test_support import SECURE_ORIGIN, SKRIFTAPP_DIR, TEMPLATES_DIR
 TEMPLATE_NAME = "auth/passkey_login.html"
 #: /auth/login, where /app sends a signed-out visitor first.
 LOGIN_TEMPLATE_NAME = "auth/login.html"
@@ -55,6 +52,7 @@ def render(template_name: str = TEMPLATE_NAME, **context) -> str:
         descriptor=Descriptor(),
         flash=None,
         flash_messages=[],
+        invite_email=None,
         csp_nonce=lambda: NONCE,
         csrf_field=lambda: Markup('<input type="hidden" name="_csrf" value="t">'),
     )
@@ -94,25 +92,40 @@ def test_it_keeps_skrifts_endpoints_by_naming_the_method():
     assert 'data-passkey-method="passkey"' in render()
 
 
-@pytest.mark.parametrize("field_id", ["signin-email", "signup-email", "signup-name"])
-def test_every_field_has_a_label(field_id):
+INVITED = "invitee@example.com"
+
+
+def test_the_invite_address_field_has_a_label():
+    html = render(invite_email=INVITED)
+    assert '<label for="signup-email">' in html
+    assert 'id="signup-email"' in html
+
+
+def test_the_invite_address_is_escaped():
+    html = render(invite_email='a"><script>@example.com')
+    assert "<script>@" not in html
+
+
+def test_sign_in_offers_no_autofill_and_no_field():
     html = render()
-    assert f'<label for="{field_id}">' in html
-    assert f'id="{field_id}"' in html
+    assert "webauthn" not in html
+    assert 'id="signin-email"' not in html
 
 
-def test_autofill_is_offered_on_the_sign_in_email():
-    assert 'autocomplete="username webauthn"' in render()
+@pytest.mark.parametrize(
+    ("invite_email", "status_ids"),
+    [(INVITED, ["signin-status", "signup-status"]), (None, ["signin-status"])],
+)
+def test_status_lines_are_announced(invite_email, status_ids):
+    html = render(invite_email=invite_email)
+    for status_id in status_ids:
+        match = re.search(rf'<p id="{status_id}"[^>]*>', html)
+        assert match and 'aria-live="polite"' in match.group(0) and 'role="status"' in match.group(0)
 
 
-@pytest.mark.parametrize("status_id", ["signin-status", "signup-status"])
-def test_status_lines_are_announced(status_id):
-    match = re.search(rf'<p id="{status_id}"[^>]*>', render())
-    assert match and 'aria-live="polite"' in match.group(0) and 'role="status"' in match.group(0)
-
-
-def test_both_forms_carry_a_csrf_field():
-    assert render().count('name="_csrf"') == 2
+@pytest.mark.parametrize(("invite_email", "forms"), [(INVITED, 2), (None, 1)])
+def test_every_form_carries_a_csrf_field(invite_email, forms):
+    assert render(invite_email=invite_email).count('name="_csrf"') == forms
 
 
 def test_an_unavailable_method_says_so_and_offers_no_forms():
@@ -161,7 +174,7 @@ def test_the_login_page_is_the_passkey_page_when_passkeys_are_configured():
         descriptor=None,
     )
     assert 'data-passkey-method="passkey"' in html
-    assert 'id="signup-form"' in html
+    assert 'id="signin-form"' in html
 
 
 def test_without_passkeys_the_login_page_lists_providers_in_builds_style():
@@ -175,46 +188,6 @@ def test_without_passkeys_the_login_page_lists_providers_in_builds_style():
     assert f'href="{STYLESHEET_PATH}"' in html
     assert 'href="/auth/dummy/login"' in html
     assert "<script" not in html
-
-
-#: The dev app with production's sign-in method in place of the dummy login.
-DEV_CONFIG_EDITS = {
-    "    dummy:\n      type: dummy\n      label: Demo Login": "    passkey:\n      type: passkey\n      label: Passkey",
-    "  csp_nonce: false": "  csp_nonce: true",
-}
-PRODUCTION_CONFIG = (SKRIFTAPP_DIR / "app.yaml").read_text()
-#: Skrift marks the session cookie Secure outside debug, so the client must be on https
-#: for the cookie to come back.
-SECURE_ORIGIN = "https://testserver.local"
-
-
-@pytest.fixture()
-def skrift_app(tmp_path, monkeypatch):
-    """The whole app as Skrift builds it from app.dev.yaml (its session config,
-    middleware stack and template engine, with ./templates/ ours), passkeys as the
-    sign-in method, over a throwaway database."""
-    from skrift.asgi import create_app
-    from skrift.config import get_settings
-
-    dev_config = (SKRIFTAPP_DIR / "app.dev.yaml").read_text()
-    for stock, ours in DEV_CONFIG_EDITS.items():
-        assert stock in dev_config, stock
-        dev_config = dev_config.replace(stock, ours)
-    # Production's CSP, nonce and all, so the page is held to what getbuild.ing sends.
-    production_csp = re.search(r"  content_security_policy: .*", PRODUCTION_CONFIG).group(0)
-    dev_config = re.sub(r"  content_security_policy: .*", lambda _: production_csp, dev_config)
-    (tmp_path / "app.dev.yaml").write_text(
-        dev_config.replace("./app.db", str(tmp_path / "app.db"))
-    )
-    (tmp_path / "templates").symlink_to(TEMPLATES_DIR)
-    monkeypatch.setenv("SKRIFT_ENV", "dev")
-    monkeypatch.setenv("SECRET_KEY", "a-test-secret-that-is-long-enough-to-use")
-    monkeypatch.chdir(tmp_path)
-    get_settings.cache_clear()
-    try:
-        yield create_app()
-    finally:
-        get_settings.cache_clear()
 
 
 def test_through_the_real_app_landing_assets_set_no_session_cookie(skrift_app):

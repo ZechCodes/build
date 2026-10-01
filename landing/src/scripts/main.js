@@ -7,6 +7,23 @@
 // visitors film-boot.js chose. Phones, reduced motion, save-data and
 // machines without WebGL keep the document.
 
+import { restHero, startHeroEntrance } from "../hero/entrance.js";
+
+// The hero's entrance first, from wherever its field's CSS drift has got
+// to. If it cannot play, the hero simply rests.
+let hero = null;
+try {
+  hero = startHeroEntrance();
+} catch (error) {
+  console.warn("The hero entrance could not play; the hero stands.", error);
+  restHero();
+}
+// For checks, as window.BuildFilm is: the entrance's timeline and state.
+window.BuildHero = hero;
+// Replay and a phase scrubber, in development only: the production build
+// drops this branch and the module with it.
+if (import.meta.env.DEV && hero) import("../hero/scrubber.js").then(({ mountScrubber }) => mountScrubber(hero));
+
 // The document's copy comes in as its act comes into view, once
 // (landing.css). Acts already in view are marked before the copy is hidden,
 // so nothing on screen blinks.
@@ -46,6 +63,8 @@ const requested = params.get("film");
 
 function backToDocument(error) {
   console.warn("The film could not start; the document stands.", error);
+  // The hero was laid out for the film; it rests in the document's layout.
+  hero?.finish("document");
   delete root.dataset.mode;
   delete root.dataset.stage;
   // A call to action pressed while the film was pending still goes where it
@@ -58,7 +77,7 @@ if (root.dataset.mode === "film") {
     .then(({ startFilm }) => {
       if (root.dataset.mode !== "film") return;
       root.dataset.stage = "starting";
-      startFilm({ ignoreFrameBudget: requested === "force" });
+      startFilm({ ignoreFrameBudget: requested === "force", hero });
     })
     .catch(backToDocument);
 }

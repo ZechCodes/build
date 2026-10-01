@@ -82,8 +82,8 @@ export function decelDistance(speed, seconds) {
 // The laptop's way in: a controlled quarter turn from the right, the lid
 // part way open, rising a little. Less of everything on a phone.
 const ENTRANCE = Object.freeze({
-  wide: Object.freeze({ yaw: 75, x: 9, y: 3, scale: 0.9, pitch: 4, lidOpen: 0.3 }),
-  narrow: Object.freeze({ yaw: 35, x: 4, y: 2, scale: 0.94, pitch: 2, lidOpen: 0.3 }),
+  wide: Object.freeze({ yaw: 75, x: 5, y: 3, scale: 0.9, pitch: 4, lidOpen: 0.3 }),
+  narrow: Object.freeze({ yaw: 35, x: 3, y: 2, scale: 0.94, pitch: 2, lidOpen: 0.3 }),
 });
 
 export function laptopEntrancePose(final, { narrow = false } = {}) {
@@ -120,4 +120,16 @@ export function posterReveal(t, { narrow = false } = {}) {
     scale: mix(0.93, 1, amount),
     opacity: smoothstep(amount / 0.3),
   };
+}
+
+// The laptop's ease: it gathers speed smoothly for the first quarter, then
+// decelerates with confidence (cubic) onto its rest, with no jump in speed
+// where the two meet.
+const EASE_SPLIT = 0.25;
+const EASE_OUT = 1 / ((1 - EASE_SPLIT) ** 2 * (1 + EASE_SPLIT / 2));
+const EASE_IN = (3 * EASE_OUT * (1 - EASE_SPLIT) ** 2) / (2 * EASE_SPLIT);
+
+export function revealEase(progress) {
+  const p = clamp(progress);
+  return p < EASE_SPLIT ? EASE_IN * p * p : 1 - EASE_OUT * (1 - p) ** 3;
 }

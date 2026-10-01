@@ -24,11 +24,12 @@ export const HARNESS_NAMES = Object.freeze({
 });
 
 // The three requests that need a person. `row` is the Needs you row each
-// lands on (anchors.js); `lane` and `anchor` place it in the field.
+// lands on (anchors.js); `lane` and `anchor` place it in the field, and
+// `narrowAnchor` on a phone, where a pill is a larger share of the width.
 export const ATTENTION = Object.freeze([
-  Object.freeze({ id: "review", text: "Review ready", harness: "codex", row: "task-82", lane: 5, anchor: 0.5 }),
-  Object.freeze({ id: "approval", text: "Needs your approval", harness: "claude", row: "task-85", lane: 7, anchor: 0.58 }),
-  Object.freeze({ id: "question", text: "Which approach?", harness: "pi", row: "task-86", lane: 9, anchor: 0.4 }),
+  Object.freeze({ id: "review", text: "Review ready", harness: "codex", row: "task-82", lane: 5, anchor: 0.5, narrowAnchor: 0.34 }),
+  Object.freeze({ id: "approval", text: "Needs your approval", harness: "claude", row: "task-85", lane: 7, anchor: 0.58, narrowAnchor: 0.2 }),
+  Object.freeze({ id: "question", text: "Which approach?", harness: "pi", row: "task-86", lane: 9, anchor: 0.4, narrowAnchor: 0.4 }),
 ]);
 
 export const ROUTINE_EVENTS = Object.freeze([
@@ -46,9 +47,9 @@ export const ROUTINE_EVENTS = Object.freeze([
 // DRIFT_SECONDS; `gap` is the px between pills.
 export const DRIFT_SECONDS = 6;
 export const LANE_TIERS = Object.freeze({
-  far: Object.freeze({ drift: [84, 120], gap: [18, 80] }),
-  mid: Object.freeze({ drift: [42, 60], gap: [26, 100] }),
-  near: Object.freeze({ drift: [18, 27], gap: [40, 140] }),
+  far: Object.freeze({ drift: [84, 120], gap: [10, 56] }),
+  mid: Object.freeze({ drift: [42, 60], gap: [16, 72] }),
+  near: Object.freeze({ drift: [18, 27], gap: [36, 120] }),
 });
 
 // The lanes top to bottom, and the ones a phone keeps.
@@ -118,6 +119,7 @@ function lane(index, [tier, narrow], context) {
     narrow,
     drift,
     anchor,
+    narrowAnchor: attention ? attention.narrowAnchor : anchor,
     // A lane's own small vertical offset, in px, so the rows are staggered.
     nudge: Math.round((next() - 0.5) * 14),
     before: track({ ...shared, key: `lane-${index}-before`, count: Math.ceil((anchor * 100 + drift) / NARROWEST_PILL_VW) }),

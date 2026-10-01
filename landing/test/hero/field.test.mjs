@@ -82,6 +82,8 @@ describe("the notification field", () => {
       assert.equal(lane.tier, "near");
       assert.ok(lane.narrow, `${entry.id} lane shows on a phone`);
       assert.ok(lane.anchor > 0.3 && lane.anchor < 0.7, `${entry.id} anchor ${lane.anchor}`);
+      // A 200px pill on a 390px phone still ends inside the window.
+      assert.ok(lane.narrowAnchor >= 0.1 && lane.narrowAnchor + 200 / 390 <= 0.95, `${entry.id} on a phone`);
     }
   });
 

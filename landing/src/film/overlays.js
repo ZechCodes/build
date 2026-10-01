@@ -126,16 +126,13 @@ function screenCue(tl, screens, actId, time, device, name) {
 // devices come to rest, matching the fixture under it, and goes on the way
 // to the next act, before that act's display swap at the middle of the move.
 // Every step is a fromTo, so scrolling back restores it whatever a beat did
-// in between. The editor's arrival belongs to act 1's beat, not the scroll.
+// in between.
 function visibilityBeats(tl, panels) {
   const during = (state, from, to, start, end) => {
     tl.fromTo(state, { visible: from }, { visible: to, duration: end - start, immediateRender: false }, start);
   };
   const show = (state, fromAct, start = 0.9, end = 0.97) => during(state, 0, 1, between(fromAct, start), between(fromAct, end));
   const hide = (state, fromAct, start, end) => during(state, 1, 0, between(fromAct, start), between(fromAct, end));
-  // The editor is the hero's from the start; its beat brings it in.
-  panels.editor.state.visible = 1;
-  hide(panels.editor.state, 2, 0.1, 0.4);
   show(panels.task.state, 2);
   show(panels.hole.state, 2);
   hide(panels.task.state, 3, 0.42, 0.5);
@@ -150,26 +147,6 @@ function visibilityBeats(tl, panels) {
   hide(panels.git.state, 6, 0.1, 0.2);
   show(panels.review.state, 6);
   hide(panels.review.state, 7, 0.05, 0.1);
-}
-
-// Act 1: the laptop has finished its push; a test types in, the gutter marks
-// both lines, the file's head ticks to "2 changes". The chip is the editor
-// panel's own, so it leaves with the panel however fast the visitor scrolls.
-function editorBeats(tl, panels, { at, span }) {
-  const editor = panels.editor;
-  const status = editor.element.querySelector("[data-status-chip]");
-  const lines = editor.element.querySelectorAll("[data-typed-line]");
-  const typed = editor.element.querySelectorAll("[data-type]");
-  gsap.set(lines, { "--mark": 0 });
-  gsap.set(status, { autoAlpha: 0 });
-  caret(tl, editor.element, "1", at(1, 0.21), at(1, 0.43));
-  typeInto(tl, typed[0], at(1, 0.22), at(1, 0.43));
-  tl.to(lines[0], { "--mark": 1, duration: span(1, 0, 0.02) }, at(1, 0.43));
-  caret(tl, editor.element, "2", at(1, 0.44), at(1, 0.65));
-  typeInto(tl, typed[1], at(1, 0.45), at(1, 0.63));
-  typeInto(tl, typed[2], at(1, 0.63), at(1, 0.65));
-  tl.to([lines[1], lines[2]], { "--mark": 1, duration: span(1, 0, 0.02) }, at(1, 0.65));
-  show(tl, status, at(1, 0.66), at(1, 0.7));
 }
 
 // Act 2: the three captions arrive one at a time, then hold.
@@ -415,7 +392,6 @@ function reviewBeats(tl, panels, { at, span }, screens) {
 }
 
 const SCENE_BEATS = {
-  1: (tl, panels, clock) => editorBeats(tl, panels, clock),
   2: (tl, panels, clock, screens, film) => captionBeats(tl, film, clock),
   3: (tl, panels, clock) => taskBeats(tl, panels, clock),
   4: (tl, panels, clock, screens) => teamBeats(tl, panels, clock, screens),

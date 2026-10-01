@@ -15,7 +15,7 @@ const panels = [...film.matchAll(/data-panel="([^"]+)" data-panel-device="([^"]+
 
 describe("the close-ups", () => {
   it("are all read", () => {
-    assert.deepEqual(panels.map((panel) => panel.name), ["editor", "hole", "task", "team", "builder", "git", "review"]);
+    assert.deepEqual(panels.map((panel) => panel.name), ["hole", "task", "team", "builder", "git", "review"]);
   });
 
   it("are authored in the textures the fixture writes", () => {

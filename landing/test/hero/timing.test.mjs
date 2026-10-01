@@ -113,3 +113,16 @@ describe("the laptop's entrance", () => {
     assert.ok(posterReveal(0, { narrow: true }).turn < start.turn);
   });
 });
+
+describe("the laptop's ease", () => {
+  it("runs 0 to 1, gathering speed and then braking, without a jump in speed", async () => {
+    const { revealEase } = await import("../../src/hero/timing.js");
+    assert.equal(revealEase(0), 0);
+    assert.equal(revealEase(1), 1);
+    const speed = (p) => (revealEase(p + 1e-6) - revealEase(p - 1e-6)) / 2e-6;
+    assert.ok(speed(0.1) < speed(0.24), "accelerates");
+    assert.ok(speed(0.6) > speed(0.9), "decelerates");
+    assert.ok(Math.abs(speed(0.25 - 1e-4) - speed(0.25 + 1e-4)) < 0.01, "no jump in speed");
+    for (let p = 0; p < 1; p += 0.01) assert.ok(revealEase(p + 0.01) >= revealEase(p));
+  });
+});

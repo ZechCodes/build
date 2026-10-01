@@ -36,8 +36,6 @@ gsap.registerPlugin(ScrollTrigger);
 
 const SCRUB_SECONDS = 0.7;
 const PRELOAD_LOOKAHEAD = 130;
-const LID_ENTRANCE_START = 0.7;
-const LID_ENTRANCE_SECONDS = 0.9;
 const HANDOVER_SECONDS = 0.25;
 
 function departPose(deviceName, settled) {
@@ -90,30 +88,16 @@ function copyTimeline(tl, acts) {
   }
 }
 
-const placement = (rest) => {
-  const { x, y, w, yaw, pitch, roll } = fullPose(rest);
-  return { x, y, w, yaw, pitch, roll };
-};
-
 // Each act's beat: one paused timeline, played by a single eased tween over
 // BEAT_SECONDS whatever its storyboard length, so every act slows into its
-// conclusion the same way. Acts 2-7 are their scenes. The hero's beat is
-// the push-in, the editor close-up and its scene; act 8's is its two copy
-// beats, the second bringing the form. `offsets` is where a scene starts
-// inside its beat, for sceneSeek. A beat never writes what the scroll
-// writes: the push-in is `heroPush`, which the frame applies only while the
-// scroll is still in the hero, so a beat finished during a fast jump cannot
-// put the laptop back where the jump took it from.
-function createBeats({ scenes, heroPush, panels, act8 }) {
+// conclusion the same way. Acts 2-7 are their scenes; act 8's is its two
+// copy beats, the second bringing the form. The hero has its own entrance
+// (src/hero/), once per tab and on its own clock, so its beat here is
+// empty. `offsets` is where a scene starts inside its beat, for sceneSeek.
+function createBeats({ scenes, act8 }) {
   const beats = { ...scenes };
   const offsets = {};
-  const hero = gsap.timeline({ paused: true });
-  hero.fromTo(heroPush, { t: 0 }, { t: 1, duration: 1.2, ease: "power2.inOut", immediateRender: false }, 0);
-  panels.editor.state.shown = 0;
-  hero.fromTo(panels.editor.state, { shown: 0 }, { shown: 1, duration: 0.3, immediateRender: false }, 1.1);
-  offsets[1] = 1.4;
-  hero.add(scenes[1].paused(false), offsets[1]);
-  beats[1] = hero;
+  beats[1] = gsap.timeline({ paused: true });
 
   const a = query(act8, '[data-beat="a"]');
   const b = query(act8, '[data-beat="b"]');
@@ -199,7 +183,7 @@ function deviceTimeline(tl, pose) {
     tl.fromTo(pose[device], fullPose(from), { ...fullPose(to), duration: end - start, ease, immediateRender: false }, start);
   };
   const laptop = POSES.laptop;
-  const laptopRests = [laptop["1-typing"], laptop[2], laptop[3], laptop[4], laptop[5], laptop[6], laptop[7], laptop[8]];
+  const laptopRests = [laptop[1], laptop[2], laptop[3], laptop[4], laptop[5], laptop[6], laptop[7], laptop[8]];
   laptopRests.slice(1).forEach((rest, index) => {
     move("laptop", laptopRests[index], rest, between(index + 1, 0.2), between(index + 1, 0.85));
   });
@@ -239,7 +223,19 @@ function screenPreloader(stage) {
   };
 }
 
-export function startFilm({ ignoreFrameBudget = false } = {}) {
+// The hero's laptop, while its entrance plays: the stage draws the turn in if
+// it is ready before the turn begins, otherwise the picture does and the
+// stage takes over once the hero is still. Returns how the stage comes in.
+function handHeroLaptop(hero, stage, pose) {
+  if (!hero) return "handover";
+  return hero.attachStage({
+    pose: pose.laptop,
+    final: fullPose(POSES.laptop[1]),
+    corners: (laptopPose) => stage.screenCorners("laptop", laptopPose),
+  });
+}
+
+export function startFilm({ ignoreFrameBudget = false, hero = null } = {}) {
   const root = document.documentElement;
   const film = query(document, "[data-film]");
   const canvas = query(film, "[data-stage]");
@@ -307,8 +303,7 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
   overlays.addTo(tl);
   const scenes = overlays.scenes(sceneScreens);
   const departures = overlays.departures();
-  const heroPush = { t: 0 };
-  const { beats, offsets } = createBeats({ scenes, heroPush, panels: overlays.panels, act8: acts[ACTS.length - 1] });
+  const { beats, offsets } = createBeats({ scenes, act8: acts[ACTS.length - 1] });
   const player = createBeatPlayer(beats);
   copyTimeline(tl, acts);
   beatGates(gates, player, departures);
@@ -320,15 +315,10 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
   let firstFrameShown = false;
   // One rendered frame: the displays, the poses and the close-ups all read
   // the same clock, the timeline's, so a fast scroll cannot swap a screen
-  // before the overlay that matches it arrives.
-  const heroFrom = placement(POSES.laptop[1]);
-  const heroTo = placement(POSES.laptop["1-typing"]);
+  // before the overlay that matches it arrives. Before the first move the
+  // laptop is the hero entrance's to place, when it is playing.
   const draw = () => {
     gates.update(tl.time());
-    // Before the first move the laptop is the hero's beat's to place.
-    if (tl.time() < between(1, 0.2)) {
-      for (const key of Object.keys(heroTo)) pose.laptop[key] = heroFrom[key] + (heroTo[key] - heroFrom[key]) * heroPush.t;
-    }
     resolveScreens(tl.time());
     for (const [device, current] of Object.entries(pose)) stage.setPose(device, current);
     stage.render();
@@ -371,6 +361,10 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
     if (stopped) return;
     stopped = true;
     console.info(`The film stops (${reason}); the document stands.`);
+    // The hero was laid out for the film: it rests in the document's layout,
+    // with its picture, whatever the stage was drawing.
+    hero?.finish("film stopped");
+    gsap.set(heroPoster, { clearProps: "opacity,visibility" });
     // Before its first frame the film has put nobody anywhere; a destination
     // asked for meanwhile still stands in the document.
     const act = (!firstFrameShown && hashedAct()) || actAt(tl.scrollTrigger.progress * TOTAL_TRAVEL).act;
@@ -392,11 +386,12 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
     acts[act - 1].scrollIntoView({ block: "start", behavior: "instant" });
   }
 
-  // The lid does the last quarter as a welcome: it plays once, on the first
-  // real frame, only when the page opens at the top. Until that frame exists
-  // the hero cutout holds its place: a capture of this stage at this pose,
-  // lid where the welcome starts, so the hand-over is a crossfade between two
-  // pictures of the same thing. A restored scroll position skips the welcome.
+  // Until the stage's first frame the hero's picture holds its place: a
+  // capture of this stage at the hero's resting pose. If the hero's
+  // entrance is still to turn the laptop in, the stage draws the turn;
+  // otherwise the stage takes over from the picture once the hero is still,
+  // a crossfade between two pictures of the same thing. A page that opens
+  // mid-film has its copy and beats where the gates put them.
   function showFirstFrame() {
     if (firstFrameShown) return;
     firstFrameShown = true;
@@ -406,26 +401,20 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
       return;
     }
     stage.setQualityScale(renderQualityScale(cost));
-    // A page that opens mid-film has its copy and beats where the gates put
-    // them on the first frame, the hero's scene finished and the scroll
-    // placing its laptop; only the top gets the welcome and the hero's beat.
-    // The copy is already on the page and stays put.
-    const opening = tl.scrollTrigger.progress * TOTAL_TRAVEL < leaveAt(1);
-    if (opening) {
-      pose.laptop.lidOpen = LID_ENTRANCE_START;
-      draw();
-      player.play(1);
-    } else {
-      player.started.add(1);
-      scenes[1].progress(1);
-      heroPush.t = 1;
-      overlays.panels.editor.state.shown = 1;
-    }
+    player.started.add(1);
     root.dataset.stage = "ready";
-    const handover = gsap.timeline();
-    handover.fromTo(canvas, { autoAlpha: 0 }, { autoAlpha: 1, duration: HANDOVER_SECONDS, ease: "none" }, 0);
-    handover.to(heroPoster, { autoAlpha: 0, duration: HANDOVER_SECONDS, ease: "none" }, 0);
-    if (opening) handover.to(pose.laptop, { lidOpen: 1, duration: LID_ENTRANCE_SECONDS, ease: "power3.out" }, HANDOVER_SECONDS);
+    if (handHeroLaptop(hero, stage, pose) === "drive") {
+      gsap.set(canvas, { autoAlpha: 1 });
+      return;
+    }
+    const handover = () => {
+      if (stopped) return;
+      const crossfade = gsap.timeline();
+      crossfade.fromTo(canvas, { autoAlpha: 0 }, { autoAlpha: 1, duration: HANDOVER_SECONDS, ease: "none" }, 0);
+      crossfade.to(heroPoster, { autoAlpha: 0, duration: HANDOVER_SECONDS, ease: "none" }, 0);
+    };
+    if (hero) hero.whenSettled(handover);
+    else handover();
   }
 
   // "See how it works" and "Join the waitlist" point at acts, in the film and

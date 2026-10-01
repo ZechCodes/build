@@ -14,6 +14,19 @@ html[data-lab] body {
   background: var(--page);
 }
 
+/* Burst and crescendo pile newcomers on top of what is there, across
+   lanes: the lanes give up their own layers (and their sway, which their
+   pills' poses replace), so each pill's z-index (lab/posed.js) orders the
+   whole field. */
+html[data-lab] .hero-field:is([data-lab-variant="b"], [data-lab-variant="d"]) .hero-lane {
+  z-index: auto;
+  will-change: auto;
+}
+
+html[data-lab] .hero-field:is([data-lab-variant="b"], [data-lab-variant="d"]) .hero-lane__body {
+  animation: none;
+}
+
 /* A tuning tool shows the motion it tunes, whatever the visitor's setting. */
 @media (prefers-reduced-motion: reduce) {
   html[data-lab] .hero-field {

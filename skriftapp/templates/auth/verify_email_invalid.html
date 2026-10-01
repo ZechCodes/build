@@ -1,0 +1,11 @@
+{#- /auth/verify-email/claim/<token> when the link can't be used: overrides Skrift's
+    page in Build's frame. -#}
+{% extends "auth/_build_page.html" %}
+
+{% block title %}Link can&rsquo;t be used — Build{% endblock %}
+
+{% block content %}
+    <h1>This link can&rsquo;t be used</h1>
+    <p class="signin-lead">It has expired, was already used, or was opened in a different browser from the one you signed in with.</p>
+    <p class="signin-panel"><a class="signin-button" href="/auth/login">Sign in again</a></p>
+{% endblock %}

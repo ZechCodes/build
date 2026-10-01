@@ -1,0 +1,21 @@
+{#- /auth/verify/<key>: the passkey second factor before a sign-in completes. Overrides
+    Skrift's auth/verify_passkey.html with the same context and endpoints in Build's
+    frame; the ceremony runs in buildapp/landing/passkey-ceremony.js. -#}
+{% extends "auth/_build_page.html" %}
+
+{% block title %}Verify with a passkey — Build{% endblock %}
+
+{% block scripts %}<script type="module" src="/landing/passkey-ceremony.js" nonce="{{ csp_nonce() }}"></script>{% endblock %}
+
+{% block content %}
+    <p class="signin-kicker">One more step</p>
+    <h1>{{ descriptor.name }}</h1>
+    <p class="signin-lead">Use your passkey to finish signing in{% if pending_auth.email %} as <strong>{{ pending_auth.email }}</strong>{% endif %}.</p>
+    {% include "auth/_flash.html" %}
+    <form id="passkey-verify-form" class="signin-form" data-factor-key="{{ factor_key }}">
+        {{ csrf_field() }}
+        <button class="signin-button" type="submit">Verify with a passkey</button>
+        <p id="verify-status" class="signin-status" role="status" aria-live="polite"></p>
+    </form>
+    <noscript><p class="signin-flash">Passkey verification needs JavaScript. Turn it on for this site and reload the page.</p></noscript>
+{% endblock %}

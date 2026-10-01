@@ -150,6 +150,14 @@ describe("the generated landing document", () => {
     }
   });
 
+  it("paints the harness marks through a mask older WebKit and Chromium read too", () => {
+    const href = html.match(/href="\/landing\/generated\/(_astro\/[^"]+\.css)"/)[1];
+    const css = readFileSync(`${landingDir}generated/${href}`, "utf8").replace(/\s+/g, "");
+    const masks = [...css.matchAll(/(?<![\w-])mask-([a-z]+):([^;}]+)/g)];
+    assert.ok(masks.length >= 6, `${masks.length} mask declarations`);
+    for (const [, property, value] of masks) assert.ok(css.includes(`-webkit-mask-${property}:${value}`), `-webkit-mask-${property}:${value}`);
+  });
+
   it("runs a phone's lanes faster, where a pill is a larger share of the width", () => {
     const href = html.match(/href="\/landing\/generated\/(_astro\/[^"]+\.css)"/)[1];
     const css = readFileSync(`${landingDir}generated/${href}`, "utf8").replace(/\s+/g, "");

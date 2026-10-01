@@ -6,19 +6,33 @@ import { describe, it } from "node:test";
 import { createFieldMotion } from "../../src/hero/flood.js";
 import { HERO_TIMING, rippleReach } from "../../src/hero/timing.js";
 
+// As a browser's Animation: a running one past its end is finished, and
+// play() on one at its end rewinds it to the start.
 class FakeAnimation {
   constructor(keyframes, options) {
     this.keyframes = keyframes;
     this.options = options;
     this.currentTime = 0;
-    this.playState = "running";
+    this.state = "running";
   }
 
-  pause() { this.playState = "paused"; }
+  get playState() {
+    return this.state === "running" && this.currentTime >= this.options.duration ? "finished" : this.state;
+  }
 
-  play() { this.playState = "running"; }
+  pause() { this.state = "paused"; }
 
-  cancel() { this.playState = "idle"; }
+  play() {
+    if (this.currentTime >= this.options.duration) this.currentTime = 0;
+    this.state = "running";
+  }
+
+  cancel() { this.state = "idle"; }
+
+  // A frame of the compositor's own time.
+  run(ms) {
+    if (this.state === "running") this.currentTime = Math.min(this.currentTime + ms, this.options.duration);
+  }
 }
 
 function element() {
@@ -79,6 +93,33 @@ describe("the field's motion", () => {
     assert.equal(drift.currentTime, 830, "close enough: the compositor keeps its own time");
     motion.update(1.2, true);
     assert.equal(drift.currentTime, 1200, "a clock that has run away is caught up");
+  });
+
+  it("holds a lane at its end while the clock runs on to the last take-off", () => {
+    const { field, lane } = fieldOf();
+    const motion = createFieldMotion({ field, ripple, flights });
+    motion.update(1.9, true);
+    const [drift] = lane.element.live();
+    const end = drift.options.duration;
+    for (let time = 1.9; time < 2.45; time += 1 / 60) {
+      drift.run(1000 / 60);
+      motion.update(time, true);
+      if (time * 1000 >= end) assert.equal(drift.currentTime, end, `at ${time.toFixed(3)}s`);
+    }
+    // Scrubbed back into the ripple and played: it runs from there.
+    motion.update(1.2, false);
+    motion.update(1.21, true);
+    assert.equal(drift.playState, "running");
+    assert.equal(drift.currentTime, 1210);
+  });
+
+  it("stops every animation where it is when the clock is held, as for a hidden tab", () => {
+    const { field, lane, routine } = fieldOf();
+    const motion = createFieldMotion({ field, ripple, flights });
+    const { hit } = motion.pathOf(routine);
+    motion.update(hit + 0.1, true);
+    motion.update(hit + 0.1, false);
+    for (const animation of [...lane.element.live(), ...routine.element.live()]) assert.equal(animation.playState, "paused");
   });
 
   it("leaves a routine pill to its lane until the wave reaches it, fades it on the compositor, then hides it", () => {

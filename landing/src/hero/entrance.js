@@ -184,7 +184,7 @@ function buildTimeline({ hero, field, laptop, glows, copy, narrow }) {
   });
   glowRows(tl, glows, { laptop, timing });
   revealCopy(tl, copy.items, timing);
-  return { tl, timing, start, lanes: measured.lanes };
+  return { tl, timing, start, lanes: measured.lanes, motion };
 }
 
 // Hold the copy and the laptop out of sight before the CSS that has been
@@ -196,13 +196,19 @@ function takeOver(root, { copy, laptop }) {
   root.dataset.hero = "playing";
 }
 
-function listen(finish, timeline) {
+function listen(finish, timeline, motion) {
   const width = innerWidth;
   const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
   const onScroll = () => { if (scrollY > 8) finish("scroll"); };
   const onResize = () => { if (Math.abs(innerWidth - width) > 1) finish("resize"); };
   const onMotion = (event) => { if (event.matches) finish("reduced motion"); };
-  const onVisibility = () => { if (document.hidden) timeline.pause(); else timeline.play(); };
+  // The field's animations run on the compositor's time, not the timeline's:
+  // held with it, so a returning tab picks up where it left.
+  const onVisibility = () => {
+    if (!document.hidden) return timeline.play();
+    timeline.pause();
+    motion.update(timeline.time(), false);
+  };
   addEventListener("scroll", onScroll, { passive: true });
   addEventListener("resize", onResize);
   reducedMotion.addEventListener("change", onMotion);
@@ -278,7 +284,7 @@ export function startHeroEntrance({ root = document.documentElement } = {}) {
 
   tl.call(() => { if (!held) finish(); }, null, timing.settle[1]);
   takeOver(root, { copy, laptop });
-  unlisten = listen(finish, tl);
+  unlisten = listen(finish, tl, built.motion);
   tl.time(built.start).play();
 
   const entrance = {

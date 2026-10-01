@@ -260,20 +260,26 @@ html:not([data-mode="film"]) #act-1 {
   height: 1.1em;
   flex: none;
   background: var(--ink-faint);
+  -webkit-mask-position: center;
   mask-position: center;
+  -webkit-mask-size: contain;
   mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
   mask-repeat: no-repeat;
 }
 
 .hero-pill[data-harness="claude"]::before {
+  -webkit-mask-image: var(--mark-claude);
   mask-image: var(--mark-claude);
 }
 
 .hero-pill[data-harness="codex"]::before {
+  -webkit-mask-image: var(--mark-codex);
   mask-image: var(--mark-codex);
 }
 
 .hero-pill[data-harness="pi"]::before {
+  -webkit-mask-image: var(--mark-pi);
   mask-image: var(--mark-pi);
 }
 

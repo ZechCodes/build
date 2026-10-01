@@ -1,6 +1,7 @@
 // The notification field is data: seeded, so every build draws the same
 // field, and limited to the harnesses Build supports.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import {
   ATTENTION,
@@ -98,7 +99,14 @@ describe("the notification field", () => {
     assert.ok(total <= 480, `${total} pills`);
   });
 
-  it("brings its drift to rest after the entrance has taken it over, so its lanes need not run on", () => {
+  it("brings its drift to rest where hero.css does, after the entrance has taken it over", () => {
+    const css = readFileSync(new URL("../../src/styles/hero.css", import.meta.url), "utf8");
+    const keyframes = css.slice(css.indexOf("@keyframes hero-drift"), css.indexOf("@keyframes hero-sway"));
+    const [last] = [...keyframes.matchAll(/to\s*\{\s*transform:\s*translateX\(calc\(var\(--drift\) \* var\(--drift-scale\) \* ([\d.]+)\)\)/g)].map((match) => Number(match[1]));
+    assert.equal(last, DRIFT_REACH, "the lanes come to rest at DRIFT_REACH of their drift");
+    // Steady until the entrance would have taken over, then braking.
+    const [, at, share] = keyframes.match(/(\d+)%\s*\{\s*transform:\s*translateX\(calc\(var\(--drift\) \* var\(--drift-scale\) \* ([\d.]+)\)\)/);
+    assert.equal(Number(share), Number(at) / 100, "linear up to the brake");
     assert.ok(DRIFT_REACH >= 0.5 && DRIFT_REACH < 0.7, `${DRIFT_REACH}`);
   });
 

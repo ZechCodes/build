@@ -24,10 +24,12 @@ const translate = ([x, y]) => `translate(${px(x)}, ${px(y)})`;
 // carries has faded or stopped by then.
 const laneShift = (lane, time, { timing, start }) => lane.speed * (Math.min(time, timing.ripple[1]) - start);
 
-function seek(animation, ms, playing) {
-  if (!playing) {
+// Past its end an animation is held there, paused: play() on one at its end
+// would rewind it to the start.
+function seek(animation, ms, playing, duration) {
+  if (!playing || ms >= duration) {
     animation.pause();
-    animation.currentTime = ms;
+    animation.currentTime = Math.min(ms, duration);
   } else if (animation.playState !== "running") {
     animation.currentTime = ms;
     animation.play();
@@ -48,7 +50,7 @@ function laneMotion(lane, ripple) {
     { offset: 0, transform: `translateX(${px(lane.x + laneShift(lane, 0, ripple))})` },
     { offset: 1, transform: `translateX(${px(lane.x + laneShift(lane, end, ripple))})` },
   ], { duration: end * 1000, fill: "both", easing: "linear" });
-  return (time, playing) => seek(animation, time * 1000, playing);
+  return (time, playing) => seek(animation, time * 1000, playing, end * 1000);
 }
 
 // One pill's part: still with its lane before `from`, animated until `to`,
@@ -64,7 +66,7 @@ function pillMotion(pill, { from, to, frame, final }) {
     const now = time < from ? "before" : time < to ? "moving" : "after";
     if (now === "moving") {
       animation ??= pill.element.animate(keyframes(), { duration: (to - from) * 1000, fill: "both", easing: "linear" });
-      seek(animation, (time - from) * 1000, playing);
+      seek(animation, (time - from) * 1000, playing, (to - from) * 1000);
     } else if (animation) {
       animation.cancel();
       animation = null;

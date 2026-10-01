@@ -117,7 +117,7 @@ describe("the generated landing document", () => {
     const pills = [...field.matchAll(/<span class="hero-pill"[^>]*>/g)].map(([tag]) => tag);
     assert.ok(pills.length > 0);
     for (const tag of pills) assert.match(tag, /data-harness="(claude|codex|pi)"/);
-    for (const id of ["claude", "codex", "pi"]) assert.ok(field.slice(0, field.indexOf(">")).includes(`--mark-${id}:url(`), id);
+    for (const id of ["claude", "codex", "pi"]) assert.ok(field.slice(0, field.indexOf(">")).includes(`--mark-${id}:url(data:image/svg+xml,`), id);
   });
 
   it("jostles every routine lane and holds still the three lanes that carry a request", () => {

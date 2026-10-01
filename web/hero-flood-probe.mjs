@@ -8,7 +8,8 @@
 //   CPU_THROTTLE      Chromium's CPU slowdown for the timing run (default 4)
 //
 // For each size it writes the field's DOM and compositor layer counts and
-// the frame intervals of one throttled entrance without the film, phase by phase, to
+// the frame intervals (main thread and compositor) of one throttled
+// entrance without the film, phase by phase, to
 // <label>-probe.json; a recording of an unthrottled entrance; and a strip of
 // frames held on the entrance's own clock. It asserts nothing: the numbers
 // are for a person to compare.
@@ -38,9 +39,15 @@ const browser = await chromium.launch({
 // Every animation frame from the first, with the entrance's clock beside it.
 function recordFrames() {
   const frames = (window.__heroFrames = []);
+  let phase = null;
   const tick = (now) => {
     const hero = window.BuildHero;
-    frames.push([now, hero && !hero.done ? hero.timeline.time() : null]);
+    const clock = hero && !hero.done ? hero.timeline.time() : null;
+    frames.push([now, clock]);
+    // Marks for the trace: where each phase begins, by the entrance's clock.
+    const next = clock === null ? (phase && "done") : clock < hero.timing.ripple[0] ? "field" : clock < hero.timing.ripple[1] ? "ripple" : "after";
+    if (next && next !== phase) performance.mark(`hero-phase-${next}`);
+    phase = next || phase;
     if (!hero?.done) requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);
@@ -76,16 +83,34 @@ function summarise(intervals) {
   };
 }
 
+const PHASES = ["field", "ripple", "after"];
+
+// The compositor's frames, from the trace: what reaches the screen, which
+// for an animation the compositor runs is not the main thread's rAF.
+function compositorFrames(traceEvents) {
+  const marks = Object.fromEntries(traceEvents.filter((event) => event.name.startsWith("hero-phase-")).map((event) => [event.name.slice(11), event.ts]));
+  const draws = traceEvents.filter((event) => event.name === "Display::DrawAndSwap" && event.ph === "X").map((event) => event.ts).sort((a, b) => a - b);
+  const bounds = [...PHASES, "done"].map((phase) => marks[phase]);
+  return Object.fromEntries(PHASES.map((phase, index) => {
+    const [from, to] = [bounds[index], bounds[index + 1]];
+    const inside = draws.filter((ts) => ts >= from && ts < to);
+    return [phase, summarise(inside.slice(1).map((ts, at) => (ts - inside[at]) / 1000))];
+  }));
+}
+
 // Frame intervals while the entrance plays, split at the ripple and at the
-// moment the ripple has passed.
+// moment the ripple has passed: the main thread's (rAF) and the
+// compositor's.
 async function frameTiming(size) {
   const { context, page } = await open(size);
   const session = await context.newCDPSession(page);
   await session.send("Emulation.setCPUThrottlingRate", { rate: throttle });
   await page.addInitScript(recordFrames);
+  await browser.startTracing(page, { categories: ["blink.user_timing", "viz", "devtools.timeline"] });
   await page.goto(timingUrl(), { waitUntil: "commit" });
   await waitDone(page);
   const { frames, timing } = await page.evaluate(() => ({ frames: window.__heroFrames, timing: window.BuildHero?.timing }));
+  const { traceEvents } = JSON.parse((await browser.stopTracing()).toString());
   await context.close();
   if (!timing) return { played: false };
   const phases = { field: [], ripple: [], after: [] };
@@ -95,7 +120,10 @@ async function frameTiming(size) {
     const phase = clock < timing.ripple[0] ? "field" : clock < timing.ripple[1] ? "ripple" : "after";
     phases[phase].push(now - frames[index - 1][0]);
   }
-  return Object.fromEntries(Object.entries(phases).map(([phase, intervals]) => [phase, summarise(intervals)]));
+  return {
+    main: Object.fromEntries(Object.entries(phases).map(([phase, intervals]) => [phase, summarise(intervals)])),
+    compositor: compositorFrames(traceEvents),
+  };
 }
 
 async function holdAt(page, at) {

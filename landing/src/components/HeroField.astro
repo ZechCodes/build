@@ -7,8 +7,10 @@
 // assistive technology, and it takes no pointer.
 //
 // The harness marks are the app's own (spa/src/assets/harnesses, sources in
-// SOURCES.md there), drawn in one colour: each is a mask the stylesheet
-// paints (hero.css), so a pill is one element and no SVG of its own.
+// SOURCES.md there), drawn in one colour: each is a mask over the pill's
+// ::before (hero.css), so a pill is one element and no SVG of its own. The
+// field carries each mark as a data URL in a custom property, so the page
+// fetches nothing for them and they are there on the first frame.
 import claudeMark from "../../../spa/src/assets/harnesses/claude.svg?raw";
 import codexMark from "../../../spa/src/assets/harnesses/codex.svg?raw";
 import piMark from "../../../spa/src/assets/harnesses/pi.svg?raw";

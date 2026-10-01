@@ -257,20 +257,21 @@ html:not([data-mode="film"]) #act-1 {
   height: 1.1em;
   flex: none;
   background: var(--ink-faint);
-  -webkit-mask: var(--mark) center / contain no-repeat;
-  mask: var(--mark) center / contain no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  mask-repeat: no-repeat;
 }
 
-.hero-pill[data-harness="claude"] {
-  --mark: var(--mark-claude);
+.hero-pill[data-harness="claude"]::before {
+  mask-image: var(--mark-claude);
 }
 
-.hero-pill[data-harness="codex"] {
-  --mark: var(--mark-codex);
+.hero-pill[data-harness="codex"]::before {
+  mask-image: var(--mark-codex);
 }
 
-.hero-pill[data-harness="pi"] {
-  --mark: var(--mark-pi);
+.hero-pill[data-harness="pi"]::before {
+  mask-image: var(--mark-pi);
 }
 
 /* Depth: the far lanes are small and faint, the near ones sharp. */

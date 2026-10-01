@@ -179,9 +179,9 @@ async function assertOnTop(page, selector, label) {
 
 async function checkHeroPointerPath(page, label) {
   const hero = await assertOnTop(page, "#act-1 .actions .cta", label);
-  assert.equal(hero.href, "/docs#setup", `${label}: the hero's download goes to the installers`);
+  assert.equal(hero.href, "#act-8", `${label}: the hero's call goes to the waitlist`);
   const nav = await assertOnTop(page, ".site-nav .cta", label);
-  assert.equal(nav.href, "/docs#setup", `${label}: the bar's download goes to the installers`);
+  assert.equal(nav.href, "#act-8", `${label}: the bar's call goes to the waitlist`);
   await assertOnTop(page, "#act-1 .actions a[title]", label);
 }
 
@@ -384,6 +384,7 @@ async function inspectStartup(width, height) {
   const label = `${width}x${height}-startup`;
   await checkFirstPaint(width, height, label);
   await checkSlowModule(width, height, label);
+  await checkLateModule(width, height, label);
   await checkBlockedModule(width, height, label);
   await checkFailedHardware(width, height, label);
   findings.push({ label, viewport: [width, height], mode: "film" });
@@ -421,7 +422,7 @@ const delayModules = (page, ms) => page.route(/\/_astro\/.*\.js$/, async (route)
 });
 
 // The page's modules slow to arrive. The field is full and moving before
-// any of them (it drifts on CSS), the bar's download takes the pointer,
+// any of them (it drifts on CSS), the bar's call takes the pointer,
 // nothing of the film's covers the hero meanwhile, and the entrance still
 // plays once they come. A link to an act opened while the film is on its
 // way lands there once the film starts, and skips the entrance.
@@ -463,9 +464,61 @@ async function checkSlowModule(width, height, label) {
   await linked.close();
 }
 
+// Watches the hero's headline and its call from the first frame: once one
+// has been fully shown, the first later frame where it is not is a lapse.
+const watchHeroCopy = (page) => page.addInitScript(() => {
+  const watched = ["#act-1-title", "#act-1 .actions .cta"];
+  const watch = (window.__heroCopy = { shown: [], lapses: [] });
+  const seen = (element) => {
+    let opacity = 1;
+    for (let node = element; node && node !== document.body; node = node.parentElement) opacity *= Number(getComputedStyle(node).opacity);
+    return opacity > 0.99 && getComputedStyle(element).visibility !== "hidden";
+  };
+  const tick = () => {
+    for (const selector of watched) {
+      const element = document.querySelector(selector);
+      if (!element) continue;
+      if (seen(element)) {
+        if (!watch.shown.includes(selector)) watch.shown.push(selector);
+      } else if (watch.shown.includes(selector) && !watch.lapses.some((lapse) => lapse.startsWith(selector))) {
+        watch.lapses.push(`${selector} at ${Math.round(performance.now())}ms`);
+      }
+    }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+});
+
+// The modules later than the CSS that settles the hero without them: the
+// headline and the call stay shown once they are, and the hero stays at
+// rest instead of playing the entrance over them.
+async function checkLateModule(width, height, label) {
+  const context = await browser.newContext({ viewport: { width, height } });
+  const page = await context.newPage();
+  const errors = watchErrors(page);
+  await watchHeroCopy(page);
+  await delayModules(page, 6000);
+  await page.goto(`${base}/?film=${gpu ? "1" : "force"}`, { waitUntil: "commit" });
+  await page.waitForFunction(() => window.__heroCopy?.shown.length === 2, null, { timeout: 10_000 });
+  assert.equal(await page.evaluate(() => window.BuildHero), undefined, `${label}: the copy settled before the module came`);
+  await page.waitForFunction(() => window.BuildHero !== undefined, null, { timeout: 30_000 });
+  await page.waitForTimeout(1500);
+  const late = await page.evaluate(() => ({
+    hero: window.BuildHero && "played",
+    state: document.documentElement.dataset.hero ?? null,
+    field: document.querySelectorAll("[data-hero-field]").length,
+    lapses: window.__heroCopy.lapses,
+  }));
+  assert.deepEqual(late, { hero: null, state: null, field: 0, lapses: [] }, `${label}: a late module leaves the settled hero alone`);
+  await assertOnTop(page, "#act-1 .actions .cta", `${label} late`);
+  await page.screenshot({ path: path.join(output, `${label}-late.png`) });
+  assert.deepEqual(errors, [], `${label}: browser errors with a late module`);
+  await context.close();
+}
+
 // The page's modules blocked: the hero settles on its own CSS a little
-// after the entrance would have, and the boot's deadline hands the page
-// back to the document.
+// after the entrance would have, with the field out of the page, and the
+// boot's deadline hands the page back to the document.
 async function checkBlockedModule(width, height, label) {
   const blocked = await browser.newContext({ viewport: { width, height } });
   const blockedPage = await blocked.newPage();
@@ -477,10 +530,12 @@ async function checkBlockedModule(width, height, label) {
   await blockedPage.waitForTimeout(300);
   const rested = await blockedPage.evaluate(() => ({
     title: getComputedStyle(document.querySelector("#act-1-title")).opacity,
-    field: getComputedStyle(document.querySelector("[data-hero-field]")).visibility,
+    // Out of rendering, not just out of sight: no boxes, no layers.
+    field: getComputedStyle(document.querySelector("[data-hero-field]")).display,
+    boxes: document.querySelector("[data-hero-field]").getClientRects().length,
     picture: getComputedStyle(document.querySelector("[data-hero-device]")).opacity,
   }));
-  assert.deepEqual(rested, { title: "1", field: "hidden", picture: "1" }, `${label}: a hero without its script settles on its own`);
+  assert.deepEqual(rested, { title: "1", field: "none", boxes: 0, picture: "1" }, `${label}: a hero without its script settles on its own`);
   await assertOnTop(blockedPage, "#act-1 .actions .cta", `${label} blocked`);
   await blockedPage.screenshot({ path: path.join(output, `${label}-blocked.png`) });
   await blockedPage.locator("#act-4-title").scrollIntoViewIfNeeded();
@@ -586,7 +641,7 @@ async function checkLanding(page, label, id, at) {
 
 // The entrance phase by phase, held on its own clock: a full field on the
 // first frame, the ripple, the laptop, each request landing on its row, the
-// copy, stillness. The bar's download takes the pointer throughout.
+// copy, stillness. The bar's call takes the pointer throughout.
 async function checkEntrancePhases(page, label, { narrow }) {
   const [low, high] = narrow ? [24, 36] : [50, 80];
   const count = await visiblePills(page);
@@ -685,7 +740,7 @@ async function inspectEntrance(width, height) {
 }
 
 // The bar: on screen through the film, the story laid out below it, and its
-// download takes the pointer wherever the visitor is.
+// call takes the pointer wherever the visitor is.
 async function inspectNav(width, height) {
   const label = `${width}x${height}-nav`;
   const { context, page, errors, state } = await openFilm(width, height, label);

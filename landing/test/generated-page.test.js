@@ -97,9 +97,10 @@ describe("the generated landing document", () => {
     assert.ok(html.includes("+4 −1"), "the document proof counts four after it");
   });
 
-  it("offers the download where the public installers are, in the bar and the hero", () => {
-    const downloads = [...html.matchAll(/<a class="cta[^"]*" href="([^"]+)">([^<]+)<\/a>/g)].map(([, href, text]) => [href, text]);
-    assert.deepEqual(downloads, [["/docs#setup", "Download"], ["/docs#setup", "Download Build"]]);
+  it("offers no download, only the waitlist, in the bar and the hero", () => {
+    const calls = [...html.matchAll(/<a class="cta[^"]*" href="([^"]+)">([^<]+)<\/a>/g)].map(([, href, text]) => [href, text]);
+    assert.deepEqual(calls, [["#act-8", "Join the waitlist"], ["#act-8", "Join the waitlist"]]);
+    assert.ok(!/download/i.test(html));
   });
 
   it("draws the hero's notification field for no one but the eye", () => {

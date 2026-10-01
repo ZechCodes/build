@@ -85,8 +85,9 @@ export function pillWidthVw(text, size) {
 // How much of a track's length a pill fills, gap included, in vw.
 const spanVw = (pill, size) => pillWidthVw(pill.text, size) + Math.max(0, pill.gap) / 14.4;
 
-// mulberry32: small, fast and the same everywhere.
-function random(seed) {
+// mulberry32: small, fast and the same everywhere. The lab's variants draw
+// from it too.
+export function random(seed) {
   let state = seed >>> 0;
   return () => {
     state = (state + 0x6d2b79f5) >>> 0;

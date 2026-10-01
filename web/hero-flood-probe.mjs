@@ -6,6 +6,8 @@
 //   HERO_PROBE_LABEL  a prefix for every file, e.g. "before" or "after"
 //   CHROMIUM_PATH     a system Chromium instead of Playwright's download
 //   CPU_THROTTLE      Chromium's CPU slowdown for the timing run (default 4)
+//   HERO_PROBE_VARIANT a variant of the notifications lab (a, b, c, d; #311)
+//                     to probe instead of the home page's entrance
 //
 // For each size it writes the field's DOM and compositor layer counts and
 // the frame intervals (main thread and compositor) of one throttled
@@ -22,6 +24,9 @@ const base = process.env.LANDING_URL || "http://127.0.0.1:4173";
 const output = process.env.HERO_PROBE_DIR || "/tmp/build-hero-probe";
 const label = process.env.HERO_PROBE_LABEL || "probe";
 const throttle = Number(process.env.CPU_THROTTLE || 4);
+const variant = process.env.HERO_PROBE_VARIANT;
+// The lab is unlisted; its path is landing/src/pages/lab/'s one page.
+const LAB_PATH = "/lab/notifications-133c027df9b5/";
 await fs.mkdir(output, { recursive: true });
 
 const SIZES = [
@@ -36,21 +41,45 @@ const browser = await chromium.launch({
   args: ["--headless=new", "--use-gl=angle", "--use-angle=gl", "--ignore-gpu-blocklist"],
 });
 
-// Every animation frame from the first, with the entrance's clock beside it.
+// The same questions of the home page's entrance (window.BuildHero) or the
+// lab's clock (window.BuildLab), so one probe measures either.
+function installProbe() {
+  window.__probe = {
+    ready: () => (window.BuildLab ? window.BuildLab.settled : window.BuildHero !== undefined),
+    done: () => (window.BuildLab ? !window.BuildLab.state.playing : window.BuildHero === null || Boolean(window.BuildHero?.done)),
+    clock: () => (window.__probe.done() ? null : window.BuildLab?.state.time ?? window.BuildHero.timeline.time()),
+    timing: () => (window.BuildLab ?? window.BuildHero)?.timing,
+    hold(time) {
+      if (window.BuildLab) return window.BuildLab.scrub(time);
+      const hero = window.BuildHero;
+      hero.hold();
+      hero.timeline.pause();
+      hero.timeline.time(time, false);
+    },
+  };
+}
+
+// Every animation frame from the first (on the lab, every 16 ms), with the
+// entrance's clock beside it.
 function recordFrames() {
   const frames = (window.__heroFrames = []);
   let phase = null;
   const tick = (now) => {
-    const hero = window.BuildHero;
-    const clock = hero && !hero.done ? hero.timeline.time() : null;
+    const probe = window.__probe;
+    const clock = probe.ready() ? probe.clock() : null;
     frames.push([now, clock]);
     // Marks for the trace: where each phase begins, by the entrance's clock.
-    const next = clock === null ? (phase && "done") : clock < hero.timing.ripple[0] ? "field" : clock < hero.timing.ripple[1] ? "ripple" : "after";
+    const timing = probe.timing();
+    const next = clock === null ? (phase && "done") : clock < timing.ripple[0] ? "field" : clock < timing.ripple[1] ? "ripple" : "after";
     if (next && next !== phase) performance.mark(`hero-phase-${next}`);
     phase = next || phase;
-    if (!hero?.done) requestAnimationFrame(tick);
+    if (!probe.ready() || !probe.done()) later(tick);
   };
-  requestAnimationFrame(tick);
+  // The lab seeks its compositor-only variants on a timer, so a probe asking
+  // for every frame would make it restyle them every frame; it polls on a
+  // timer of its own instead, which a busy main thread delays just the same.
+  const later = location.pathname.startsWith("/lab/") ? (callback) => setTimeout(() => callback(performance.now()), 16) : requestAnimationFrame;
+  later(tick);
 }
 
 const contextOptions = ({ viewport, deviceScaleFactor, isMobile = false, hasTouch = false }) => ({ viewport, deviceScaleFactor, isMobile, hasTouch });
@@ -58,14 +87,18 @@ const contextOptions = ({ viewport, deviceScaleFactor, isMobile = false, hasTouc
 async function open(size, extra = {}) {
   const context = await browser.newContext({ ...contextOptions(size), ...extra });
   const page = await context.newPage();
+  await page.addInitScript(installProbe);
   return { context, page };
 }
 
-const entranceUrl = (size) => `${base}/?hero=play${size.name === "desktop" ? "&film=1" : ""}`;
+// The lab plays its beat once, from the top.
+const labUrl = () => `${base}${LAB_PATH}?v=${variant}&speed=1&loop=0&endless=0`;
+const entranceUrl = (size) => (variant ? labUrl() : `${base}/?hero=play${size.name === "desktop" ? "&film=1" : ""}`);
 // The timing run leaves the film out: its stage loading on a throttled CPU
 // would swamp the field's own cost.
-const timingUrl = () => `${base}/?hero=play&film=0`;
-const waitDone = (page) => page.waitForFunction(() => window.BuildHero === null || window.BuildHero?.done, null, { timeout: 120_000 });
+const timingUrl = () => (variant ? labUrl() : `${base}/?hero=play&film=0`);
+const waitDone = (page) => page.waitForFunction(() => window.__probe.ready() && window.__probe.done(), null, { timeout: 120_000 });
+const waitReady = (page) => page.waitForFunction(() => window.__probe.ready(), null, { timeout: 60_000 });
 
 function percentile(sorted, share) {
   return sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * share))] : null;
@@ -109,7 +142,7 @@ async function frameTiming(size) {
   await browser.startTracing(page, { categories: ["blink.user_timing", "viz", "devtools.timeline"] });
   await page.goto(timingUrl(), { waitUntil: "commit" });
   await waitDone(page);
-  const { frames, timing } = await page.evaluate(() => ({ frames: window.__heroFrames, timing: window.BuildHero?.timing }));
+  const { frames, timing } = await page.evaluate(() => ({ frames: window.__heroFrames, timing: window.__probe.timing() }));
   const { traceEvents } = JSON.parse((await browser.stopTracing()).toString());
   await context.close();
   if (!timing) return { played: false };
@@ -117,6 +150,9 @@ async function frameTiming(size) {
   for (let index = 1; index < frames.length; index += 1) {
     const [now, clock] = frames[index];
     if (clock === null) continue;
+    // The lab builds its variant before its first frame; that is setup, not
+    // the field's motion.
+    if (variant && frames[index - 1][1] === null) continue;
     const phase = clock < timing.ripple[0] ? "field" : clock < timing.ripple[1] ? "ripple" : "after";
     phases[phase].push(now - frames[index - 1][0]);
   }
@@ -127,12 +163,7 @@ async function frameTiming(size) {
 }
 
 async function holdAt(page, at) {
-  await page.evaluate((time) => {
-    const hero = window.BuildHero;
-    hero.hold();
-    hero.timeline.pause();
-    hero.timeline.time(time, false);
-  }, at);
+  await page.evaluate((time) => window.__probe.hold(time), at);
   await page.waitForTimeout(200);
 }
 
@@ -140,7 +171,7 @@ async function holdAt(page, at) {
 async function counts(size) {
   const { context, page } = await open(size);
   await page.goto(entranceUrl(size), { waitUntil: "load" });
-  await page.waitForFunction(() => window.BuildHero !== undefined, null, { timeout: 60_000 });
+  await waitReady(page);
   await holdAt(page, 0.6);
   const session = await context.newCDPSession(page);
   const layers = new Promise((resolve) => session.on("LayerTree.layerTreeDidChange", ({ layers: tree }) => tree && resolve(tree)));
@@ -149,7 +180,7 @@ async function counts(size) {
   const tree = await Promise.race([layers, new Promise((resolve) => setTimeout(() => resolve([]), 3000))]);
   const field = await page.evaluate(() => {
     const element = document.querySelector("[data-hero-field]");
-    const below = document.querySelector(".site-nav").getBoundingClientRect().bottom;
+    const below = document.querySelector(".site-nav")?.getBoundingClientRect().bottom ?? 0;
     const pills = [...element.querySelectorAll(".hero-pill")];
     const visible = pills.filter((pill) => {
       const box = pill.getBoundingClientRect();
@@ -178,7 +209,7 @@ async function record(size) {
 async function strip(size) {
   const { context, page } = await open(size);
   await page.goto(entranceUrl(size), { waitUntil: "load" });
-  await page.waitForFunction(() => window.BuildHero !== undefined, null, { timeout: 60_000 });
+  await waitReady(page);
   const shots = [];
   for (const at of HELD) {
     await holdAt(page, at);

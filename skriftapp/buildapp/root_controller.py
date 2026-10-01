@@ -7,6 +7,7 @@ module serves that document and fills the only two values that cannot be static.
 """
 
 import asyncio
+import re
 from pathlib import Path
 
 from litestar import Controller, get
@@ -35,6 +36,13 @@ from buildapp.landing_content import (
 #: The Astro build output. Gitignored, like the SPA's bundle: built by the node stage
 #: in skriftapp/Containerfile, or by `cd landing && npm run build` in a checkout.
 GENERATED_PAGE = LANDING_DIR / "generated" / "index.html"
+#: The build's unlisted lab pages (landing/src/pages/lab/): tuning previews sent to a
+#: person as a link, each emitted as ``lab/<name>/index.html``. Linked from nowhere.
+GENERATED_LAB_DIR = LANDING_DIR / "generated" / "lab"
+#: The names Astro gives them, so a request can never name another file.
+LAB_PAGE_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+#: Every lab answer keeps crawlers out, as each page's own meta tag does.
+LAB_HEADERS = {"X-Robots-Tag": "noindex, nofollow", "Cache-Control": "no-cache"}
 #: What `/` says when the build never ran. One sentence, no verb prefix — it is read
 #: by a person in a browser, not by a log.
 UNBUILT_LANDING_MESSAGE = "The landing page has not been built yet."
@@ -124,6 +132,13 @@ class RootController(Controller):
     async def privacy(self) -> Response:
         html = await asyncio.to_thread(render_privacy_page)
         return Response(html, media_type=MediaType.HTML)
+
+    @get("/lab/{name:str}", sync_to_thread=True)
+    def lab_page(self, name: str) -> Response:
+        page = GENERATED_LAB_DIR / name / "index.html"
+        if not LAB_PAGE_NAME.fullmatch(name) or not page.is_file():
+            raise NotFoundException()
+        return Response(page.read_text(), media_type=MediaType.HTML, headers=LAB_HEADERS)
 
     @get(releases.INSTALL_SCRIPT_PATH)
     async def install_script(self) -> Response:

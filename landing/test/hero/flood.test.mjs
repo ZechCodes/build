@@ -4,49 +4,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { createFieldMotion } from "../../src/hero/flood.js";
+import { element } from "./fake-animation.mjs";
 import { HERO_TIMING, rippleReach } from "../../src/hero/timing.js";
-
-// As a browser's Animation: a running one past its end is finished, and
-// play() on one at its end rewinds it to the start.
-class FakeAnimation {
-  constructor(keyframes, options) {
-    this.keyframes = keyframes;
-    this.options = options;
-    this.currentTime = 0;
-    this.state = "running";
-  }
-
-  get playState() {
-    return this.state === "running" && this.currentTime >= this.options.duration ? "finished" : this.state;
-  }
-
-  pause() { this.state = "paused"; }
-
-  play() {
-    if (this.currentTime >= this.options.duration) this.currentTime = 0;
-    this.state = "running";
-  }
-
-  cancel() { this.state = "idle"; }
-
-  // A frame of the compositor's own time.
-  run(ms) {
-    if (this.state === "running") this.currentTime = Math.min(this.currentTime + ms, this.options.duration);
-  }
-}
-
-function element() {
-  return {
-    style: {},
-    animations: [],
-    animate(keyframes, options) {
-      const animation = new FakeAnimation(keyframes, options);
-      this.animations.push(animation);
-      return animation;
-    },
-    live() { return this.animations.filter((animation) => animation.playState !== "idle"); },
-  };
-}
 
 const box = { width: 1440, height: 900 };
 const origin = [900, 450];
@@ -93,6 +52,18 @@ describe("the field's motion", () => {
     assert.equal(drift.currentTime, 830, "close enough: the compositor keeps its own time");
     motion.update(1.2, true);
     assert.equal(drift.currentTime, 1200, "a clock that has run away is caught up");
+  });
+
+  it("runs every animation at the clock's rate, so a slowed clock is never caught up frame by frame", () => {
+    const { field, lane, routine } = fieldOf();
+    const motion = createFieldMotion({ field, ripple, flights });
+    const { hit } = motion.pathOf(routine);
+    motion.update(hit + 0.05, true, 0.25);
+    const [drift] = lane.element.live();
+    const [fade] = routine.element.live();
+    assert.deepEqual([drift.playbackRate, fade.playbackRate], [0.25, 0.25]);
+    motion.update(hit + 0.06, true);
+    assert.deepEqual([drift.playbackRate, fade.playbackRate], [1, 1], "the live hero's clock runs at 1");
   });
 
   it("holds a lane at its end while the clock runs on to the last take-off", () => {

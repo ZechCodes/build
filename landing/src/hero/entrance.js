@@ -11,19 +11,18 @@
 // it. It never touches the scroll. A module later than the CSS that settles
 // the hero without it leaves the hero at rest.
 import gsap from "gsap";
-import { ATTENTION, DRIFT_SECONDS } from "./field.js";
+import { ATTENTION } from "./field.js";
 import { HERO_ROW_REGIONS, LANDING_POINT } from "./anchors.js";
 import { createHeroLaptop } from "./laptop.js";
 import { createFieldMotion } from "./flood.js";
-import { HERO_TIMING, NARROW_TIMING, revealEase, rippleReach } from "./timing.js";
+import { measureField } from "./measure.js";
+import { HERO_TIMING, NARROW_TIMING, requestFlight, revealEase, rippleReach } from "./timing.js";
 import { homographyFromQuad, matrix3d, projectPoint } from "../stage/overlay.js";
 
 export const PLAYED_KEY = "build.hero.played";
 const NARROW_QUERY = "(max-width: 767px)";
 // How far the wave pushes a pill out of its way, in px.
 const NUDGE = { wide: 10, narrow: 6 };
-// A landing request ends at this share of its size, as a row's height.
-const LANDED_SCALE = 0.6;
 
 function rememberPlayed() {
   try {
@@ -45,38 +44,6 @@ const centreOf = (quad) => [quad.reduce((sum, [x]) => sum + x, 0) / quad.length,
 function pointOnRow(quad, [fx, fy]) {
   const homography = homographyFromQuad(1, 1, quad);
   return projectPoint(homography, fx, fy);
-}
-
-// The field where the CSS drift has got it: each lane's offset, how long it
-// has been moving, and every pill's centre in the hero's pixels. The one
-// read of layout the entrance makes; nothing reads it per frame.
-function measureField(hero, field) {
-  const heroBox = hero.getBoundingClientRect();
-  const lanes = [...field.querySelectorAll(".hero-lane")].map((element) => {
-    // A lane a phone leaves out has nothing to measure.
-    if (!element.getClientRects().length) return { element, x: 0, speed: 0, pills: [], shown: false };
-    const style = getComputedStyle(element);
-    const x = new DOMMatrixReadOnly(style.transform).m41;
-    // The drift is in vw, and a vw is a hundredth of the window; a lane
-    // running left has a negative one, and a phone's run faster (hero.css).
-    const scale = Number(style.getPropertyValue("--drift-scale")) || 1;
-    const speed = (Number(element.dataset.drift) * scale / 100) * innerWidth / DRIFT_SECONDS;
-    const pills = [...element.querySelectorAll(".hero-pill")].map((pill) => {
-      const box = pill.getBoundingClientRect();
-      return {
-        element: pill,
-        attention: pill.dataset.attention || null,
-        x: box.left - heroBox.left + box.width / 2,
-        y: box.top - heroBox.top + box.height / 2,
-        width: box.width,
-        shown: box.width > 0,
-        opacity: Number(getComputedStyle(pill).opacity),
-      };
-    });
-    return { element, x, speed, pills, shown: pills.some((pill) => pill.shown) };
-  });
-  const moving = lanes.find((lane) => lane.shown && lane.speed !== 0);
-  return { width: heroBox.width, height: heroBox.height, lanes, elapsed: moving ? moving.x / moving.speed : 0 };
 }
 
 // Where the timeline picks the field up: the time the CSS has already
@@ -112,10 +79,9 @@ function landRequest(tl, pill, row, { laptop, timing, landing, motion }) {
     immediateRender: false,
     onUpdate() {
       if (progress.p === 0) return;
-      const [toX, toY] = pointOnRow(laptop.quads().rows[row], LANDING_POINT);
-      const { p } = progress;
-      const opacity = p < 0.6 ? 1 : Math.max(0, 1 - (p - 0.6) / 0.4);
-      pill.element.style.transform = `translate(${base[0] + (toX - from[0]) * p}px, ${base[1] + (toY - from[1]) * p}px) scale(${1 + (LANDED_SCALE - 1) * p})`;
+      const to = pointOnRow(laptop.quads().rows[row], LANDING_POINT);
+      const { transform, opacity } = requestFlight(progress.p, { base, from, to });
+      pill.element.style.transform = transform;
       pill.element.style.opacity = String(opacity);
       pill.element.style.visibility = opacity === 0 ? "hidden" : "";
     },

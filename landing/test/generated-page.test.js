@@ -12,12 +12,80 @@ const projectDir = fileURLToPath(new URL("..", import.meta.url));
 const landingDir = fileURLToPath(new URL("../../skriftapp/buildapp/landing/", import.meta.url));
 const generatedPage = `${landingDir}generated/index.html`;
 
+// The notifications lab (#311): unlisted, so its path is written here once.
+const LAB_PATH = "/lab/notifications-133c027df9b5/";
+const labPage = `${landingDir}generated${LAB_PATH}index.html`;
+
 let html = "";
+let lab = "";
+
+// Every stylesheet a page links, in the order it links them, as one.
+function linkedCss(page) {
+  return [...page.matchAll(/href="\/landing\/generated\/(_astro\/[^"]+\.css)"/g)]
+    .map(([, href]) => readFileSync(`${landingDir}generated/${href}`, "utf8"))
+    .join("\n");
+}
 
 before(() => {
   execFileSync("npm", ["run", "build"], { cwd: projectDir, stdio: "pipe" });
   html = readFileSync(generatedPage, "utf8");
+  lab = readFileSync(labPage, "utf8");
 }, { timeout: 300_000 });
+
+describe("the home page's stylesheet", () => {
+  it("is one sheet, the lab's styles kept out of it", () => {
+    assert.equal(html.match(/<link rel="stylesheet"[^>]*>/g).length, 1);
+    assert.ok(!linkedCss(html).includes(".lab-panel"));
+  });
+
+  it("lets the entrance hide the hero's copy over the film's first paint, by coming later", () => {
+    // Equal specificity: whichever comes later wins (#311 review).
+    const css = linkedCss(html);
+    const film = css.indexOf("[data-mode=film] #act-1 .act__copy>*");
+    const hero = css.indexOf("[data-hero=entrance] #act-1 .act__copy>*");
+    assert.ok(film >= 0 && hero >= 0);
+    assert.ok(hero > film, "hero.css after film.css");
+  });
+});
+
+describe("the home page's script", () => {
+  it("is one module that imports no other at load, shared with no other page", () => {
+    const entries = [...html.matchAll(/<script type="module" src="\/landing\/generated\/(_astro\/[^"]+\.js)"/g)].map(([, src]) => src);
+    assert.equal(entries.length, 1);
+    const source = readFileSync(`${landingDir}generated/${entries[0]}`, "utf8");
+    // A static import is one more round trip before the hero can start,
+    // after its boot has already chosen the film (#311 review).
+    assert.doesNotMatch(source, /^import[^;]*from\s*["']\.\//m);
+    assert.doesNotMatch(source, /(?:^|[;}])\s*import\s*\{[^}]*\}\s*from/);
+  });
+});
+
+describe("the notifications lab", () => {
+  it("is a complete document that asks not to be indexed or followed", () => {
+    assert.match(lab, /^<!DOCTYPE html>/i);
+    assert.ok(lab.includes('<meta name="robots" content="noindex, nofollow">'));
+  });
+
+  it("is linked from nowhere on the home page", () => {
+    assert.ok(!html.includes("/lab/"));
+    assert.ok(!html.includes("notifications-133c027df9b5"));
+  });
+
+  it("carries the home page's own field and no inline script or style element", () => {
+    assert.ok(lab.includes("data-hero-field"));
+    assert.ok(lab.includes('data-hero="playing"'));
+    const scripts = lab.match(/<script[^>]*>/g) ?? [];
+    assert.equal(scripts.length, 1);
+    assert.match(scripts[0], /\ssrc="\/landing\/generated\/_astro\/[^"]+\.js"/);
+    assert.ok(!lab.includes("<style"));
+  });
+
+  it("has every control the brief asks for", () => {
+    for (const control of ["play", "restart", "scrub", "loop", "endless"]) assert.ok(lab.includes(`data-lab="${control}"`), control);
+    for (const speed of ["0.25", "0.5", "1"]) assert.ok(lab.includes(`data-lab-speed="${speed}"`), speed);
+    assert.ok(lab.includes('data-lab-variant="a"'));
+  });
+});
 
 describe("the generated landing document", () => {
   it("is a complete HTML document", () => {
@@ -132,8 +200,7 @@ describe("the generated landing document", () => {
   });
 
   it("animates the field's motion on transform alone, so the compositor can run it", () => {
-    const href = html.match(/href="\/landing\/generated\/(_astro\/[^"]+\.css)"/)[1];
-    const css = readFileSync(`${landingDir}generated/${href}`, "utf8");
+    const css = linkedCss(html);
     for (const name of ["hero-drift", "hero-sway"]) {
       const start = css.indexOf(`@keyframes ${name}`);
       assert.ok(start >= 0, name);
@@ -151,16 +218,14 @@ describe("the generated landing document", () => {
   });
 
   it("paints the harness marks through a mask older WebKit and Chromium read too", () => {
-    const href = html.match(/href="\/landing\/generated\/(_astro\/[^"]+\.css)"/)[1];
-    const css = readFileSync(`${landingDir}generated/${href}`, "utf8").replace(/\s+/g, "");
+    const css = linkedCss(html).replace(/\s+/g, "");
     const masks = [...css.matchAll(/(?<![\w-])mask-([a-z]+):([^;}]+)/g)];
     assert.ok(masks.length >= 6, `${masks.length} mask declarations`);
     for (const [, property, value] of masks) assert.ok(css.includes(`-webkit-mask-${property}:${value}`), `-webkit-mask-${property}:${value}`);
   });
 
   it("runs a phone's lanes faster, where a pill is a larger share of the width", () => {
-    const href = html.match(/href="\/landing\/generated\/(_astro\/[^"]+\.css)"/)[1];
-    const css = readFileSync(`${landingDir}generated/${href}`, "utf8").replace(/\s+/g, "");
+    const css = linkedCss(html).replace(/\s+/g, "");
     assert.match(css, /\.hero-lane\{--drift-scale:1;/);
     assert.match(css, /@media\(width<=767px\)\{[^@]*\.hero-lane\{--drift-scale:2;/);
   });
@@ -185,8 +250,7 @@ describe("the generated landing document", () => {
   });
 
   it("ships a stylesheet that respects reduced motion", () => {
-    const href = html.match(/href="\/landing\/generated\/(_astro\/[^"]+\.css)"/)[1];
-    const css = readFileSync(`${landingDir}generated/${href}`, "utf8");
+    const css = linkedCss(html);
     assert.match(css, /prefers-reduced-motion:\s*reduce/);
   });
 

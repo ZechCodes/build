@@ -11,6 +11,8 @@ import {
   phaseAt,
   pillPath,
   posterReveal,
+  power2InOut,
+  requestFlight,
   reachesField,
   rippleHit,
   rippleReach,
@@ -173,5 +175,29 @@ describe("the laptop's ease", () => {
     assert.ok(speed(0.6) > speed(0.9), "decelerates");
     assert.ok(Math.abs(speed(0.25 - 1e-4) - speed(0.25 + 1e-4)) < 0.01, "no jump in speed");
     for (let p = 0; p < 1; p += 0.01) assert.ok(revealEase(p + 0.01) >= revealEase(p));
+  });
+});
+
+describe("a request's flight to its row", () => {
+  const flight = { base: [10, -4], from: [400, 300], to: [900, 200] };
+
+  it("leaves from where it stopped, whole", () => {
+    assert.deepEqual(requestFlight(0, flight), { transform: "translate(10px, -4px) scale(1)", opacity: 1 });
+  });
+
+  it("arrives on the row at a row's size, gone", () => {
+    assert.deepEqual(requestFlight(1, flight), { transform: "translate(510px, -104px) scale(0.6)", opacity: 0 });
+  });
+
+  it("fades only over the last stretch", () => {
+    assert.equal(requestFlight(0.6, flight).opacity, 1);
+    assert.ok(Math.abs(requestFlight(0.8, flight).opacity - 0.5) < 1e-9);
+  });
+
+  it("eases as GSAP's power2.inOut does", () => {
+    assert.equal(power2InOut(0), 0);
+    assert.equal(power2InOut(0.5), 0.5);
+    assert.equal(power2InOut(1), 1);
+    assert.ok(Math.abs(power2InOut(0.25) - 0.0625) < 1e-9);
   });
 });

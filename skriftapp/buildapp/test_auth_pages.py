@@ -16,10 +16,9 @@ from jinja2 import Environment, FileSystemLoader
 from litestar.testing import TestClient
 from markupsafe import Markup
 from skrift.app_factory import get_template_directories_for_theme
-from sqlalchemy.ext.asyncio import create_async_engine
 
 from buildapp import test_passkey_signin_page as signin_page
-from buildapp.db_test_support import create_skrift_tables
+from buildapp.db_test_support import create_skrift_schema_in
 
 SKRIFTAPP_DIR = signin_page.SKRIFTAPP_DIR
 TEMPLATES_DIR = signin_page.TEMPLATES_DIR
@@ -355,12 +354,7 @@ def second_factor_app(tmp_path, monkeypatch):
     (tmp_path / "app.dev.yaml").write_text(config.replace("./app.db", str(database)))
     (tmp_path / "templates").symlink_to(TEMPLATES_DIR)
 
-    async def create_schema() -> None:
-        engine = create_async_engine(f"sqlite+aiosqlite:///{database}")
-        await create_skrift_tables(engine)
-        await engine.dispose()
-
-    asyncio.run(create_schema())
+    asyncio.run(create_skrift_schema_in(database))
     monkeypatch.setenv("SKRIFT_ENV", "dev")
     monkeypatch.setenv("SECRET_KEY", "a-test-secret-that-is-long-enough-to-use")
     monkeypatch.chdir(tmp_path)

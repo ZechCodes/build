@@ -1,0 +1,24 @@
+{#- /auth/login without a passkey method: one link per configured method. -#}
+{% extends "auth/_build_page.html" %}
+
+{% block content %}
+    <h1>Sign in to Build</h1>
+    {% for msg in flash_messages or [] %}
+    <p class="signin-flash" role="status">{{ msg.message }}</p>
+    {% endfor %}
+    {% if flash %}
+    <p class="signin-flash" role="status">{{ flash }}</p>
+    {% endif %}
+    <section class="signin-panel signin-methods">
+        {% for key, provider in providers.items() %}
+        <a class="signin-button" href="/auth/{{ key }}/login">Continue with {{ provider.name }}</a>
+        {% else %}
+        {% if not has_dummy %}
+        <p class="signin-hint">No sign-in method is configured. Contact whoever runs this Build server.</p>
+        {% endif %}
+        {% endfor %}
+        {% if has_dummy %}
+        <a class="signin-button" href="/auth/dummy/login">Dummy login (development only)</a>
+        {% endif %}
+    </section>
+{% endblock %}

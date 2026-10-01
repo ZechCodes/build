@@ -23,6 +23,8 @@ from buildapp.root_controller import LANDING_DIR, RootController
 SKRIFTAPP_DIR = Path(__file__).resolve().parents[1]
 TEMPLATES_DIR = SKRIFTAPP_DIR / "templates"
 TEMPLATE_NAME = "auth/passkey_login.html"
+#: /auth/login, where /app sends a signed-out visitor first.
+LOGIN_TEMPLATE_NAME = "auth/login.html"
 SCRIPT_PATH = "/landing/passkey-signin.js"
 STYLESHEET_PATH = "/landing/signin.css"
 JS_TESTS = SKRIFTAPP_DIR / "js_tests" / "passkey-signin.test.mjs"
@@ -30,12 +32,21 @@ NONCE = "test-nonce"
 
 
 class Descriptor:
-    def __init__(self, *, is_available: bool = True, availability_note: str | None = None):
+    def __init__(
+        self,
+        *,
+        is_available: bool = True,
+        availability_note: str | None = None,
+        method_type: str = "passkey",
+        name: str = "Passkey",
+    ):
         self.is_available = is_available
         self.availability_note = availability_note
+        self.method_type = method_type
+        self.name = name
 
 
-def render(**context) -> str:
+def render(template_name: str = TEMPLATE_NAME, **context) -> str:
     environment = Environment(  # nosemgrep: python.flask.security.xss.audit.direct-use-of-jinja2.direct-use-of-jinja2
         loader=FileSystemLoader(str(TEMPLATES_DIR)), autoescape=True
     )
@@ -48,13 +59,14 @@ def render(**context) -> str:
         csrf_field=lambda: Markup('<input type="hidden" name="_csrf" value="t">'),
     )
     defaults.update(context)
-    return environment.get_template(TEMPLATE_NAME).render(**defaults)
+    return environment.get_template(template_name).render(**defaults)
 
 
-def test_skrift_finds_our_template_before_its_own(monkeypatch):
+@pytest.mark.parametrize("template_name", [TEMPLATE_NAME, LOGIN_TEMPLATE_NAME])
+def test_skrift_finds_our_template_before_its_own(monkeypatch, template_name):
     monkeypatch.chdir(SKRIFTAPP_DIR)
     directories = get_template_directories_for_theme("")
-    owner = next(d for d in directories if (d / TEMPLATE_NAME).is_file())
+    owner = next(d for d in directories if (d / template_name).is_file())
     assert owner == TEMPLATES_DIR
 
 
@@ -138,3 +150,28 @@ def test_landing_assets_never_rewrite_the_session_cookie(asset):
         client.set_session_data({"_csrf": "before"})
         response = client.get(asset)
     assert "set-cookie" not in response.headers
+
+
+def test_the_login_page_is_the_passkey_page_when_passkeys_are_configured():
+    html = render(
+        LOGIN_TEMPLATE_NAME,
+        providers={"passkey": Descriptor()},
+        has_dummy=False,
+        method_key=None,
+        descriptor=None,
+    )
+    assert 'data-passkey-method="passkey"' in html
+    assert 'id="signup-form"' in html
+
+
+def test_without_passkeys_the_login_page_lists_providers_in_builds_style():
+    html = render(
+        LOGIN_TEMPLATE_NAME,
+        providers={},
+        has_dummy=True,
+        method_key=None,
+        descriptor=None,
+    )
+    assert f'href="{STYLESHEET_PATH}"' in html
+    assert 'href="/auth/dummy/login"' in html
+    assert "<script" not in html

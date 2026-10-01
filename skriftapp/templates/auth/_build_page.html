@@ -1,0 +1,32 @@
+{#- The frame every Build sign-in page shares: getbuild.ing's bar, stylesheet and
+    footer, all same-origin. Pages fill `title`, `scripts` and `content`. -#}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>{% block title %}Sign in — Build{% endblock %}</title>
+<link rel="icon" href="/landing/favicon.png" type="image/png" sizes="32x32">
+<link rel="icon" href="/landing/favicon.svg" type="image/svg+xml" sizes="any">
+<link rel="stylesheet" href="/landing/signin.css">
+{% block scripts %}{% endblock %}
+</head>
+<body>
+<header class="signin-bar">
+    <a class="signin-brand" href="/"><img src="/landing/brand-mark.svg" alt="" width="20" height="20">Build</a>
+</header>
+
+<main class="signin"{% block main_attributes %}{% endblock %}>
+    {% block content %}{% endblock %}
+</main>
+
+<footer class="signin-footer">
+    <a href="/">Build</a>
+    <nav aria-label="Footer">
+        <a href="/docs">Docs</a>
+        <a href="/privacy">Privacy</a>
+    </nav>
+</footer>
+</body>
+</html>

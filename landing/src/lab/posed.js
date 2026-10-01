@@ -43,19 +43,40 @@ export function posedMotion({ pills, hidden = [], end, period }) {
   // Each animation and how long it runs before it holds.
   const timed = [];
   for (const element of hidden) element.style.visibility = "hidden";
+  // Created held, so none runs ahead of the clock while the rest are built.
+  const hold = (animation) => {
+    animation.pause();
+    return animation;
+  };
   for (const pill of pills) {
     const span = endless ? period : pill.until;
     const runs = endless ? Infinity : span * 1000;
     if (pill.z !== undefined) pill.element.style.zIndex = String(pill.z);
-    timed.push([pill.element.animate(sample(pill.pose, span), endless
+    timed.push([hold(pill.element.animate(sample(pill.pose, span), endless
       ? { duration: span * 1000, iterations: Infinity, easing: "linear" }
-      : { duration: span * 1000, fill: "both", easing: "linear" }), runs]);
-    if (pill.drift) timed.push([driftAnimation(pill.element, pill.drift, span, endless), runs]);
+      : { duration: span * 1000, fill: "both", easing: "linear" })), runs]);
+    if (pill.drift) timed.push([hold(driftAnimation(pill.element, pill.drift, span, endless)), runs]);
   }
+  // An animation held at its end is left alone until the clock goes back:
+  // seeking hundreds of finished ones every frame would restyle them all.
+  const held = new Set();
   return {
     end,
     update(time, playing, rate) {
-      for (const [animation, runs] of timed) seek(animation, time * 1000, playing, runs, rate);
+      const ms = time * 1000;
+      for (const [animation, runs] of timed) {
+        if (ms >= runs && (held.has(animation) || animation.playState === "finished")) {
+          // Run out on its own, it already holds its end.
+          held.add(animation);
+          continue;
+        }
+        // One the compositor has not started yet holds its time; seeking it
+        // again would only put its start off further.
+        if (playing && animation.pending) continue;
+        seek(animation, ms, playing, runs, rate);
+        if (ms >= runs) held.add(animation);
+        else held.delete(animation);
+      }
     },
   };
 }

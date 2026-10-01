@@ -20,6 +20,9 @@ import { posedMotion } from "./posed.js";
 const between = (next, low, high) => low + (high - low) * next();
 const pick = (next, list) => list[Math.floor(next() * list.length)];
 const REST = Object.freeze({ x: 0, y: 0, rotate: 0, scale: 1, opacity: 1 });
+// A pill not yet arrived: all but invisible and at a fair size, so the
+// browser has drawn it before it is needed, not on the frame it appears.
+const WAITING = Object.freeze({ opacity: 0.002, scale: 0.6 });
 
 // Shuffled, then the first `count`.
 function sampleOf(next, list, count) {
@@ -141,11 +144,11 @@ function burstPose(arrival, knocks, context, { endless, blast }) {
   return (time) => {
     const t = endless ? (((time - arrival.arrive) % BURST_PERIOD) + BURST_PERIOD) % BURST_PERIOD + arrival.arrive : time;
     const since = t - arrival.arrive;
-    if (arrival.arrive >= 0 && since < 0) return { ...REST, x: startAt[0], y: startAt[1], opacity: 0, scale: 0.001 };
+    if (arrival.arrive >= 0 && since < 0) return { ...REST, ...WAITING, x: startAt[0], y: startAt[1] };
     const p = arrival.arrive < 0 ? 1 : since / flight;
     if (p < 1) {
       const eased = easeOutBack(p, 1.4);
-      return { x: startAt[0] + (settled[0] - startAt[0]) * eased, y: startAt[1] + (settled[1] - startAt[1]) * eased, rotate: turn * (1 - p), scale: 0.6 + 0.4 * p, opacity: pill.opacity * clamp01(p * 3) };
+      return { x: startAt[0] + (settled[0] - startAt[0]) * eased, y: startAt[1] + (settled[1] - startAt[1]) * eased, rotate: turn * (1 - p), scale: WAITING.scale + (1 - WAITING.scale) * p, opacity: Math.max(WAITING.opacity, pill.opacity * clamp01(p * 3)) };
     }
     const sinceLanding = since - flight;
     const knocked = knocks.map(({ landed, away: [ux, uy], force }) => {
@@ -234,8 +237,10 @@ function crescendoPose(pill, { context, peak, strikes, popAt, blast, endless, se
     const amount = (1.5 + 9 * rise) * unit;
     const shake = { x: 0.6 * amount * Math.sin(shaking * wobble + phase), y: amount * Math.sin(shaking + phase), twist: lean * (0.5 + 6 * rise) * Math.sin(shaking * 0.7 + phase) };
     const since = endless ? (((t - popAt) % CRESCENDO_PERIOD) + CRESCENDO_PERIOD) % CRESCENDO_PERIOD : t - popAt;
-    if (!endless && since < 0) return { ...REST, x: travel, opacity: 0, scale: 0.001 };
-    const pop = endless ? { swell: 0.35 * jolt(since).swell, flash: 0.6 * jolt(since).flash } : { swell: easeOutBack(since / 0.22, 2.6) - 1, keep: clamp01(since / 0.06) };
+    if (!endless && since < 0) return { ...REST, ...WAITING, x: travel };
+    const pop = endless
+      ? { swell: 0.35 * jolt(since).swell, flash: 0.6 * jolt(since).flash }
+      : { swell: (WAITING.scale + (1 - WAITING.scale) * easeOutBack(since / 0.22, 2.6)) - 1, keep: Math.max(WAITING.opacity, clamp01(since / 0.06)) };
     return compose(pill.opacity, [{ x: travel }, shake, pop, ...waveParts(t, strikes, context, endless ? CRESCENDO_PERIOD : 0), blast?.at(t)]);
   };
 }

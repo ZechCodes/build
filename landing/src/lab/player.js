@@ -21,8 +21,8 @@ export function createPlayer({ container, field }) {
   let flood = null;
   let last = null;
   return {
-    /** The field on `variant`, endless or not. Answers the beat's end and
-     *  the clock its phases are named on. */
+    /** The field on `variant`, endless or not. Answers the beat's end, the
+     *  clock its phases are named on, and whether it needs every frame. */
     build({ variant, endless }) {
       reset(field);
       field.dataset.labVariant = variant;
@@ -31,7 +31,7 @@ export function createPlayer({ container, field }) {
       const chosen = VARIANTS[variant];
       flood = (endless ? chosen.endless : chosen.flood)({ field: measured, stage });
       last = null;
-      return { end: flood.end, timing: stage.timing };
+      return { end: flood.end, timing: stage.timing, everyFrame: Boolean(flood.everyFrame) };
     },
     // Only when something moved: a held field is not seeked every frame.
     update(time, playing, rate) {

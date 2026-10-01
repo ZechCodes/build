@@ -48,6 +48,9 @@ export function liveFlood({ field, stage }) {
   });
   return {
     end: timing.settle[1],
+    // flood.js starts a pill's brake when the clock reaches it, and the
+    // flights are styled frame by frame.
+    everyFrame: true,
     // The flood styles a pill when its part changes, the flight every frame
     // after take-off: a request handed back first, flown last.
     update(time, playing, rate) {

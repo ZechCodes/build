@@ -45,7 +45,7 @@ const browser = await chromium.launch({
 // lab's clock (window.BuildLab), so one probe measures either.
 function installProbe() {
   window.__probe = {
-    ready: () => window.BuildLab !== undefined || window.BuildHero !== undefined,
+    ready: () => (window.BuildLab ? window.BuildLab.settled : window.BuildHero !== undefined),
     done: () => (window.BuildLab ? !window.BuildLab.state.playing : window.BuildHero === null || Boolean(window.BuildHero?.done)),
     clock: () => (window.__probe.done() ? null : window.BuildLab?.state.time ?? window.BuildHero.timeline.time()),
     timing: () => (window.BuildLab ?? window.BuildHero)?.timing,
@@ -59,7 +59,8 @@ function installProbe() {
   };
 }
 
-// Every animation frame from the first, with the entrance's clock beside it.
+// Every animation frame from the first (on the lab, every 16 ms), with the
+// entrance's clock beside it.
 function recordFrames() {
   const frames = (window.__heroFrames = []);
   let phase = null;
@@ -72,9 +73,13 @@ function recordFrames() {
     const next = clock === null ? (phase && "done") : clock < timing.ripple[0] ? "field" : clock < timing.ripple[1] ? "ripple" : "after";
     if (next && next !== phase) performance.mark(`hero-phase-${next}`);
     phase = next || phase;
-    if (!probe.ready() || !probe.done()) requestAnimationFrame(tick);
+    if (!probe.ready() || !probe.done()) later(tick);
   };
-  requestAnimationFrame(tick);
+  // The lab seeks its compositor-only variants on a timer, so a probe asking
+  // for every frame would make it restyle them every frame; it polls on a
+  // timer of its own instead, which a busy main thread delays just the same.
+  const later = location.pathname.startsWith("/lab/") ? (callback) => setTimeout(() => callback(performance.now()), 16) : requestAnimationFrame;
+  later(tick);
 }
 
 const contextOptions = ({ viewport, deviceScaleFactor, isMobile = false, hasTouch = false }) => ({ viewport, deviceScaleFactor, isMobile, hasTouch });
@@ -145,6 +150,9 @@ async function frameTiming(size) {
   for (let index = 1; index < frames.length; index += 1) {
     const [now, clock] = frames[index];
     if (clock === null) continue;
+    // The lab builds its variant before its first frame; that is setup, not
+    // the field's motion.
+    if (variant && frames[index - 1][1] === null) continue;
     const phase = clock < timing.ripple[0] ? "field" : clock < timing.ripple[1] ? "ripple" : "after";
     phases[phase].push(now - frames[index - 1][0]);
   }

@@ -22,7 +22,9 @@ const takeOff = HERO_TIMING.landings[0] - HERO_TIMING.flight;
 
 describe("variant A, the live flood", () => {
   it("runs the live hero's beat, to its settle", () => {
-    assert.equal(liveFlood({ field: fieldOf().field, stage }).end, HERO_TIMING.settle[1]);
+    const flood = liveFlood({ field: fieldOf().field, stage });
+    assert.equal(flood.end, HERO_TIMING.settle[1]);
+    assert.equal(flood.everyFrame, true, "its brakes and flights start on the clock's frames");
   });
 
   it("flies a request from where it stopped to its row, shrinking and fading", () => {

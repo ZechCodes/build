@@ -69,3 +69,48 @@ describe("a posed variant", () => {
     assert.equal(motion.end, 1);
   });
 });
+
+describe("a posed variant's held pills", () => {
+  it("leaves an animation held at its end alone until the clock goes back", () => {
+    const pill = { element: element(), pose: still, until: 0.5 };
+    const motion = posedMotion({ pills: [pill], end: 2 });
+    const [animation] = pill.element.animations;
+    motion.update(1, true, 1);
+    assert.equal(animation.currentTime, 500);
+    animation.currentTime = 123;
+    motion.update(1.1, true, 1);
+    assert.equal(animation.currentTime, 123, "not seeked again");
+    motion.update(0.2, false, 1);
+    assert.equal(animation.currentTime, 200);
+  });
+});
+
+describe("a posed variant on the compositor", () => {
+  it("builds every animation held, and leaves one alone while the compositor starts it", () => {
+    const pill = { element: element(), pose: still, until: 1 };
+    const motion = posedMotion({ pills: [pill], end: 1 });
+    const [animation] = pill.element.animations;
+    assert.equal(animation.playState, "paused");
+    motion.update(0.1, true, 1);
+    assert.equal(animation.playState, "running");
+    animation.pending = true;
+    motion.update(0.5, true, 1);
+    assert.equal(animation.currentTime, 100, "not seeked while pending");
+    animation.pending = false;
+    motion.update(0.5, true, 1);
+    assert.equal(animation.currentTime, 500);
+  });
+});
+
+describe("a posed variant's finished pills", () => {
+  it("leaves one that ran out on its own as it is", () => {
+    const pill = { element: element(), pose: still, until: 0.5 };
+    const motion = posedMotion({ pills: [pill], end: 2 });
+    const [animation] = pill.element.animations;
+    motion.update(0.1, true, 1);
+    animation.run(400);
+    assert.equal(animation.playState, "finished");
+    motion.update(0.6, true, 1);
+    assert.equal(animation.state, "running", "not paused by hand");
+  });
+});

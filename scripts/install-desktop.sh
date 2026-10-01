@@ -3,28 +3,62 @@
 # reads ZIP files). Never prompts, starts the app, or uses administrator access.
 # BUILD_DESKTOP_VERSION: latest (default) or X.Y.Z
 # BUILD_RELEASES_REPO: GitHub owner/repo (default ZechCodes/build-releases)
+# Messages go to stderr as a header and one line per step, styled only when
+# stderr is a terminal and NO_COLOR is unset; URLs and file names appear only
+# in an error, which ends on the one thing to do next. scripts/install.sh
+# writes the same way.
 set -eu
 
 DEFAULT_REPO="ZechCodes/build-releases"
 COSIGN_IDENTITY_REGEXP='^https://github\.com/ZechCodes/(build-web|build)/\.github/workflows/release-desktop\.yml@refs/tags/desktop-v'
 COSIGN_ISSUER='https://token.actions.githubusercontent.com'
 
-say() { printf '%s\n' "$*" >&2; }
-fail() { say "$1"; exit "${2:-1}"; }
-has() { command -v "$1" >/dev/null 2>&1; }
-fetch() { curl -fsSL --retry 3 -o "$2" "$1" || fail "could not download $1"; }
+if [ -t 2 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != dumb ]; then
+    BOLD=$(printf '\033[1m') STEP=$(printf '\033[1;34m') GOOD=$(printf '\033[1;32m')
+    BAD=$(printf '\033[1;31m') RESET=$(printf '\033[0m')
+else
+    BOLD='' STEP='' GOOD='' BAD='' RESET=''
+fi
+AGAIN='Run the installer again.'
+BROKEN='Nothing was installed. Run the installer again later; if it fails the same way, this release is broken.'
 
+say() { printf '%s\n' "$*" >&2; }
+step() { say "${STEP}==>${RESET} $*"; }
+# Lines under a step or a verdict; each argument may itself span lines.
+detail() {
+    for text do
+        printf '%s\n' "$text" | while IFS= read -r line; do say "    $line"; done
+    done
+}
+finish() { say ""; say "${GOOD}Done.${RESET} $1"; shift; detail "$@"; }
+# An error says what went wrong, then the one thing to do next.
+fail_with() { status=$1; shift; say ""; say "${BAD}Error:${RESET} $1"; shift; detail "$@"; exit "$status"; }
+fail() { fail_with 1 "$@"; }
+has() { command -v "$1" >/dev/null 2>&1; }
+fetch() {
+    curl -fsSL --retry 3 -o "$2" "$1" || fail "could not download $1" \
+        "Check your internet connection, then run the installer again."
+}
+# A path under $HOME as a person would type it.
+# shellcheck disable=SC2088 # the ~ is shown, not expanded
+shown() { case "$1" in "$HOME"/*) printf '~/%s\n' "${1#"$HOME"/}" ;; *) printf '%s\n' "$1" ;; esac; }
+
+say "${BOLD}Build installer${RESET}"
+say ""
 case "$(uname -s)/$(uname -m)" in
-    Darwin/arm64) platform=macos-arm64 ;;
-    Darwin/x86_64) platform=macos-x86_64 ;;
-    Linux/x86_64|Linux/amd64) platform=linux-x86_64 ;;
-    Linux/aarch64|Linux/arm64) platform=linux-aarch64 ;;
-    *) fail "unsupported platform $(uname -s)/$(uname -m)" 2 ;;
+    Darwin/arm64) platform=macos-arm64 platform_name='macOS (arm64)' ;;
+    Darwin/x86_64) platform=macos-x86_64 platform_name='macOS (x86_64)' ;;
+    Linux/x86_64|Linux/amd64) platform=linux-x86_64 platform_name='Linux (x86_64)' ;;
+    Linux/aarch64|Linux/arm64) platform=linux-aarch64 platform_name='Linux (arm64)' ;;
+    *) fail_with 2 "unsupported platform $(uname -s)/$(uname -m)" \
+        "The Build app is built for macOS and Linux, on arm64 and x86_64." ;;
 esac
 for tool in curl tar awk find readlink; do
-    has "$tool" || fail "$tool is required to install Build"
+    has "$tool" || fail "$tool is required to install Build and is not on PATH." \
+        "Install $tool, then run the installer again."
 done
-has sha256sum || has shasum || fail 'sha256sum or shasum is required to verify Build'
+has sha256sum || has shasum || fail 'sha256sum or shasum is required to verify Build.' \
+    "Install either one, then run the installer again."
 repo=${BUILD_RELEASES_REPO:-$DEFAULT_REPO}
 version=${BUILD_DESKTOP_VERSION:-latest}
 work=$(mktemp -d)
@@ -46,41 +80,49 @@ if [ "$version" = latest ]; then
     version=$(cat "$work/version.txt")
 fi
 printf '%s\n' "$version" | awk '/^[0-9]+\.[0-9]+\.[0-9]+$/ {ok=1} END {exit !ok || NR != 1}' \
-    || fail 'BUILD_DESKTOP_VERSION (or published version.txt) must be X.Y.Z'
+    || fail "the version to install, '$version', is not a release number like 1.2.3." \
+        "Set BUILD_DESKTOP_VERSION to a release number, or unset it to install the latest."
 base="https://github.com/$repo/releases/download/desktop-v$version"
 case "$platform" in
     macos-*) asset="build-desktop-$platform.zip"; destination="$HOME/Applications/Build.app" ;;
     linux-*) asset="build-desktop-$platform.tar.gz"; destination="$HOME/.local/share/build-desktop" ;;
 esac
-say "Downloading Build $version for $platform"
+step "Downloading Build $version for $platform_name"
 fetch "$base/$asset" "$work/$asset"
 fetch "$base/SHA256SUMS" "$work/SHA256SUMS"
 expected=$(awk -v name="$asset" '$2 == name {print $1; count++} END {exit count != 1}' "$work/SHA256SUMS") \
-    || fail "SHA256SUMS must contain exactly one digest for $asset"
+    || fail "SHA256SUMS from $base must contain exactly one digest for $asset." "$BROKEN"
 if has sha256sum; then
     actual=$(sha256sum "$work/$asset" | cut -d ' ' -f 1)
 else
     actual=$(shasum -a 256 "$work/$asset" | cut -d ' ' -f 1)
 fi
-[ "$actual" = "$expected" ] || fail "checksum mismatch for $asset"
+[ "$actual" = "$expected" ] || fail "$asset does not match its published checksum, so nothing was installed." \
+    "Downloaded from $base" "expected $expected" "got      $actual" \
+    "Run the installer again; a download that keeps failing this check must not be installed by hand."
+step "Verified the download"
+# Mandatory when cosign is installed and silent when it is not: the checksum
+# above is always checked, and a missing optional tool is not news.
 if has cosign; then
     fetch "$base/SHA256SUMS.sigstore.json" "$work/SHA256SUMS.sigstore.json"
-    cosign verify-blob --bundle "$work/SHA256SUMS.sigstore.json" \
+    cosign_said=$(cosign verify-blob --bundle "$work/SHA256SUMS.sigstore.json" \
         --certificate-identity-regexp "$COSIGN_IDENTITY_REGEXP" \
         --certificate-oidc-issuer "$COSIGN_ISSUER" \
-        "$work/SHA256SUMS" >&2 || fail 'signature verification failed; refusing to install'
-else
-    say 'cosign not found; skipping signature verification (checksum verified)'
+        "$work/SHA256SUMS" 2>&1) || fail "the release signature did not verify, so nothing was installed." \
+        "cosign checked SHA256SUMS from $base and said:" "$cosign_said" \
+        "Do not install this download by hand. Run the installer again later."
+    step "Verified the release signature"
 fi
 
 # Native tar additionally protects against extraction through symlinks. Inspect
 # paths and entry types first, and check every extracted link before installation.
-tar -tf "$work/$asset" > "$work/paths" || fail "could not list $asset"
-awk '/^\// || /(^|\/)\.\.(\/|$)/ {exit 1}' "$work/paths" || fail 'unsafe archive path'
-tar -tvf "$work/$asset" > "$work/types" || fail "could not inspect $asset"
-awk 'substr($0,1,1) !~ /^[-dl]$/ {exit 1}' "$work/types" || fail 'unsupported archive entry type'
+tar -tf "$work/$asset" > "$work/paths" || fail "could not list $asset from $base." "$BROKEN"
+awk '/^\// || /(^|\/)\.\.(\/|$)/ {exit 1}' "$work/paths" || fail "$asset from $base has an unsafe path." "$BROKEN"
+tar -tvf "$work/$asset" > "$work/types" || fail "could not inspect $asset from $base." "$BROKEN"
+awk 'substr($0,1,1) !~ /^[-dl]$/ {exit 1}' "$work/types" \
+    || fail "$asset from $base has an unsupported entry type." "$BROKEN"
 mkdir "$work/payload"
-tar -xf "$work/$asset" -C "$work/payload" || fail "could not unpack $asset"
+tar -xf "$work/$asset" -C "$work/payload" || fail "could not unpack $asset from $base." "$BROKEN"
 payload=$(CDPATH='' cd -- "$work/payload" && pwd -P)
 find "$payload" -type l -exec sh -c '
     root=$1; shift
@@ -104,19 +146,19 @@ find "$payload" -type l -exec sh -c '
                  else if(parts[i]!="." && parts[i]!="") depth++
              }}'\'' || exit 1
     done
-' sh "$payload" {} + || fail 'archive contains an escaping symlink'
+' sh "$payload" {} + || fail "$asset from $base contains a symlink that points outside it." "$BROKEN"
 case "$platform" in
     macos-*)
         if ! { [ -d "$work/payload/Build.app/Contents" ] && [ ! -L "$work/payload/Build.app" ]; }; then
-            fail 'archive does not contain Build.app'
+            fail "$asset from $base does not contain Build.app." "$BROKEN"
         fi
         [ "$(find "$work/payload" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" = 1 ] \
-            || fail 'unexpected files outside Build.app'
+            || fail "$asset from $base has files outside Build.app." "$BROKEN"
         source="$work/payload/Build.app"
         ;;
     linux-*)
         if ! { [ -f "$work/payload/build-desktop" ] && [ ! -L "$work/payload/build-desktop" ]; }; then
-            fail 'archive does not contain build-desktop'
+            fail "$asset from $base does not contain build-desktop." "$BROKEN"
         fi
         chmod 0755 "$work/payload/build-desktop"
         source="$work/payload"
@@ -124,12 +166,14 @@ case "$platform" in
 esac
 parent=$(dirname "$destination")
 mkdir -p "$parent"
-[ ! -L "$destination" ] || fail "refusing to replace symlink $destination"
+[ ! -L "$destination" ] || fail "$(shown "$destination") is a symlink, and the installer will not replace one." \
+    "Move or remove it, then run the installer again."
 stage=$(mktemp -d "$parent/.build-install.XXXXXX")
 mv "$source" "$stage/next"
 backup=$(mktemp -d "$parent/.build-backup.XXXXXX")
 [ ! -e "$destination" ] || mv "$destination" "$backup/previous"
-mv "$stage/next" "$destination" || fail 'could not install Build; restoring previous version'
+mv "$stage/next" "$destination" || fail "could not install Build at $(shown "$destination"); the previous version is kept." "$AGAIN"
+step "Installed to $(shown "$destination")"
 
 if [ "${platform#linux-}" != "$platform" ]; then
     mkdir -p "$HOME/.local/bin" "$HOME/.local/share/applications"
@@ -157,13 +201,18 @@ DESKTOP
     fi
     mv "$work/build-desktop.desktop" "$HOME/.local/share/applications/build-desktop.desktop"
     if has update-desktop-database; then
-        update-desktop-database "$HOME/.local/share/applications" >&2 || say 'Could not refresh the desktop application database.'
+        update-desktop-database "$HOME/.local/share/applications" > /dev/null 2>&1 \
+            || detail 'The applications menu could not be refreshed; Build appears there after you log in again.'
     fi
     if has xdg-mime; then
-        xdg-mime default build-desktop.desktop x-scheme-handler/getbuilding >&2 || say 'Could not register the getbuilding URL handler.'
+        xdg-mime default build-desktop.desktop x-scheme-handler/getbuilding > /dev/null 2>&1 \
+            || detail 'getbuilding:// links could not be registered; sign-in links may open in the browser instead.'
     fi
-    say 'Use build-desktop to open Build (add ~/.local/bin to PATH if needed).'
+    case ":$PATH:" in
+        *":$HOME/.local/bin:"*) open_hint='Open Build from your applications menu, or run build-desktop.' ;;
+        *) open_hint='Open Build from your applications menu, or run ~/.local/bin/build-desktop.' ;;
+    esac
+    finish "Build $version is installed." "$open_hint"
 else
-    say 'Open ~/Applications/Build.app to start Build.'
+    finish "Build $version is installed." 'Open ~/Applications/Build.app to start Build.'
 fi
-say "Installed Build $version at $destination"

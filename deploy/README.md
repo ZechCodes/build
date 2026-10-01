@@ -278,12 +278,21 @@ pair` — which prints a code and blocks until the human approves that device in
 Build — and `build-bridge install-service`, a launchd LaunchAgent on macOS or a
 `systemd --user` unit on Linux.
 
+It prints a short header and one line per step on stderr, styled only when
+stderr is a terminal and `NO_COLOR` is unset. URLs and file names appear only
+in an error, and every error ends on the one thing to do next. A machine
+without `cosign` gets no mention of it; the checksum line still prints. stdout
+carries what `build-bridge pair` and `install-service` print there; when it is
+not a terminal, a success ends it on `installed build-bridge <path>`, and a
+failure adds nothing.
+
 | Env | Default | Effect |
 |---|---|---|
 | `BUILD_BRIDGE_VERSION` | `latest` | `X.Y.Z` installs that release instead |
 | `BUILD_BRIDGE_INSTALL_DIR` | `$HOME/.local/bin` | where the binary lands |
 | `BUILD_RELEASES_REPO` | `ZechCodes/build-releases` | where to download from |
 | `BUILD_BRIDGE_SKIP_SERVICE` | unset | `1` stops after the binary — no pairing, no service |
+| `BRIDGE_WEB_URL`, `BRIDGE_API_URL` | `https://getbuild.ing` | read as the bridge reads them (the web URL, else the api URL); the last line sends the person to `<that>/app` |
 
 Verifying by hand is the same two commands the script runs:
 

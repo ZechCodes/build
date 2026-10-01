@@ -190,6 +190,22 @@ function failure(kind, error) {
   return error instanceof Refused ? describeRefusal(kind, error.response) : describeError(kind, error);
 }
 
+/**
+ * Where a signed-in visitor goes: where the server said, with the fragment they
+ * arrived with. /app/ sends a signed-out visitor here with a redirect the
+ * browser carries the fragment across, but no server ever sees a fragment, so
+ * the page puts it back. It goes only onto a same-origin redirect that has none
+ * of its own, so it can change which page of this site opens and nothing else.
+ * This is how the bridge's approve link (#319) opens the approve screen after
+ * sign-in.
+ */
+export function withArrivalFragment(redirect, location) {
+  if (!location.hash) return redirect;
+  const target = new URL(redirect, location.href);
+  if (target.origin !== location.origin || target.hash) return redirect;
+  return `${target.pathname}${target.search}${location.hash}`;
+}
+
 // --- the page -------------------------------------------------------------------
 
 function csrfPoster(document, fetchImpl, methodKey) {
@@ -299,7 +315,7 @@ export function bindSigninPage(document, window) {
       status.textContent = text;
       status.dataset.tone = tone;
     },
-    go: (url) => window.location.assign(url),
+    go: (url) => window.location.assign(withArrivalFragment(url, window.location)),
   };
 
   for (const { kind, form, status } of forms) {

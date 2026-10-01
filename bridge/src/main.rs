@@ -860,9 +860,9 @@ async fn pair() {
     // place first.
     relay::install_crypto_provider();
     match pair_device(&bridge_config(), provisioned_identity()).await {
-        Ok(line) => println!("{line}"),
+        Ok(line) => println!("    {line}"),
         Err(reason) => {
-            eprintln!("not paired: {reason}");
+            eprintln!("{}", pairing::wrapped(&format!("not paired: {reason}"), "    "));
             std::process::exit(1);
         }
     }
@@ -890,7 +890,7 @@ async fn pair_device(
     .await
     .map_err(|error| service::InstallGateError::from(error).to_string())?;
     if let Some(retired) = retired {
-        println!("{retired}");
+        eprintln!("{}", retired.notice(&cfg.home));
     }
     let loaded = load_stored_identity(cfg).await?;
     let owner = approved_owner(cfg).await?;

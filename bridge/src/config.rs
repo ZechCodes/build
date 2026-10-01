@@ -23,6 +23,9 @@ pub struct BridgeConfig {
     pub base_branch: String,
     pub identity_file: PathBuf,
     pub mcp_socket: PathBuf,
+    /// The home directory the paths above were resolved against; what the
+    /// bridge prints names paths under it with `~`.
+    pub home: PathBuf,
 }
 
 /// Resolve config from an environment lookup and the user's home directory.
@@ -54,6 +57,7 @@ pub fn resolve(lookup: impl Fn(&str) -> Option<String>, home: &Path) -> BridgeCo
             .map(&expand)
             .unwrap_or_else(|| home.join(".build/identity.json")),
         mcp_socket,
+        home: home.to_path_buf(),
     }
 }
 

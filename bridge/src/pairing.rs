@@ -7,8 +7,10 @@
 //!    an Ed25519 signature over a challenge binding all of them (proof it holds the
 //!    identity private key). The raw code is **never** sent — only its hash.
 //! 2. The bridge prints the code + its key fingerprint and polls for approval.
-//! 3. The user enters the code in the web app, compares the fingerprint out-of-band,
-//!    and approves — which binds the device to their account.
+//! 3. The user opens the printed approve link (or enters the code in the web
+//!    app), compares the fingerprint out-of-band, and approves — which binds the
+//!    device to their account. The link carries the code in its fragment and
+//!    only fills it in: approving is still the user's press.
 //! 4. The bridge sees `approved`, persists it, and connects to the relay.
 //!
 //! Pure request/response *shaping* lives in free functions (unit-tested without a
@@ -136,26 +138,84 @@ pub struct RetiredApproval {
     pub kept_at: std::path::PathBuf,
 }
 
-impl std::fmt::Display for RetiredApproval {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "this machine's earlier pairing is no longer valid: {} (asked {}). Pairing it \
-             again as a new device; the old identity is kept at {}. If that is not the api \
-             this machine belongs to, stop here and put the old identity back with: mv {} {}",
-            self.lapse,
-            self.api_url,
-            self.kept_at.display(),
-            shell_quoted(&self.kept_at),
-            shell_quoted(&self.identity_path),
-        )
+impl RetiredApproval {
+    /// What `pair` says before it pairs again, indented under the installer's
+    /// step and short enough for an 80-column terminal (#319). Where the old
+    /// identity went is named by its directory, `~`-shortened against `home`;
+    /// the file name and the way back are the README's to give. An api other
+    /// than the default is named, because a wrong `BRIDGE_API_URL` is the one
+    /// way a good identity gets retired.
+    pub fn notice(&self, home: &Path) -> String {
+        let kept_in = self.kept_at.parent().unwrap_or(Path::new("/"));
+        let mut notice = format!(
+            "    This machine's earlier pairing is no longer valid.\n    \
+             Pairing it as a new device; the old identity is kept in {}.",
+            home_shortened(kept_in, home)
+        );
+        if self.api_url.trim_end_matches('/') != crate::config::DEFAULT_API_URL {
+            notice.push_str(&format!("\n    Asked {}.", self.api_url));
+        }
+        notice
     }
 }
 
-/// `path` in single quotes for a POSIX shell, so the printed command can be
-/// pasted whatever the path holds.
-fn shell_quoted(path: &Path) -> String {
-    format!("'{}'", path.display().to_string().replace('\'', r"'\''"))
+/// `text` broken between words into lines of at most 80 columns, each
+/// starting with `indent`. A word too long for a line gets one to itself.
+pub fn wrapped(text: &str, indent: &str) -> String {
+    const COLUMNS: usize = 80;
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::from(indent);
+    for word in text.split_whitespace() {
+        let fits = line.chars().count() + 1 + word.chars().count() <= COLUMNS;
+        if line.len() > indent.len() && !fits {
+            lines.push(std::mem::replace(&mut line, String::from(indent)));
+        }
+        if line.len() > indent.len() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    lines.push(line);
+    lines.join("\n")
+}
+
+/// `path` as a person would type it: under `home` it starts with `~`.
+fn home_shortened(path: &Path, home: &Path) -> String {
+    match path.strip_prefix(home) {
+        Ok(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => path.display().to_string(),
+    }
+}
+
+/// The page that approves the device whose code is `code`: the SPA reads the
+/// code from the fragment, which a browser never sends to a server, and opens
+/// the approve screen with it filled in. The person still confirms there.
+pub fn approve_url(web_url: &str, code: &str) -> String {
+    format!("{}/app/#/pair/{code}", web_url.trim_end_matches('/'))
+}
+
+/// The fingerprint as the approve screen shows it beside the device: its first
+/// sixteen hex digits, in fours.
+pub fn short_fingerprint(fingerprint: &str) -> String {
+    let digits: Vec<char> = fingerprint.chars().take(16).collect();
+    digits
+        .chunks(4)
+        .map(|group| group.iter().collect::<String>())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The block `pair` prints while it waits, indented under the installer's
+/// step: one link that opens the approve screen with this device pulled up,
+/// and the code and fingerprint to compare there.
+pub fn pairing_prompt(code: &str, fingerprint: &str, web_url: &str) -> String {
+    format!(
+        "\n    pairing code:  {code}\n    fingerprint:   {}\n    approve at:    {}\n\n    \
+         Waiting for you to approve it in Build…",
+        short_fingerprint(fingerprint),
+        approve_url(web_url, code)
+    )
 }
 
 // --- pure shaping -------------------------------------------------------------
@@ -373,20 +433,14 @@ pub async fn ensure_paired(
 
     let fingerprint = transport::fingerprint_identity_key(&stored.identity_public_key_b64)
         .map_err(|e| PairingError::Identity(e.to_string()))?;
-    eprintln!("\n  Pair this device to your account:");
-    eprintln!("    pairing code: {pairing_code}");
-    eprintln!("    fingerprint:  {fingerprint}");
-    eprintln!(
-        "    approve at:   {}/app/  →  Settings → Devices → Add a device\n",
-        web_url.trim_end_matches('/')
-    );
+    eprintln!("{}", pairing_prompt(&pairing_code, &fingerprint, web_url));
 
-    let owner = poll_until_approved(client, api_url, &stored.device_id, poll_interval).await?;
+    poll_until_approved(client, api_url, &stored.device_id, poll_interval).await?;
     stored.approved = true;
     identity::save(identity_path, &stored).map_err(|e| PairingError::Identity(e.to_string()))?;
     // What happens next is the caller's business — `serve` connects to the
     // relay, `pair` exits — so pairing reports only the pairing it did.
-    eprintln!("  Device approved (owner {owner})");
+    eprintln!("    Device approved.");
     Ok(stored)
 }
 
@@ -446,6 +500,120 @@ mod tests {
         assert!(Lapse::NotApproved
             .to_string()
             .contains("no longer approved"));
+    }
+
+    /// The installer's terminal is assumed 80 columns wide; nothing the
+    /// pairing flow prints may rely on the terminal wrapping it (#319).
+    const TERMINAL_COLUMNS: usize = 80;
+
+    fn assert_fits(text: &str) {
+        for line in text.lines() {
+            assert!(
+                line.chars().count() <= TERMINAL_COLUMNS,
+                "{} columns: {line:?}",
+                line.chars().count()
+            );
+        }
+    }
+
+    const FINGERPRINT: &str = "28e679939bc32c446627fac8a8dd58a5353e66b744a9a2dae91254f1da1b9027";
+
+    #[test]
+    fn the_approve_link_opens_the_pairing_screen_with_the_code_in_the_fragment() {
+        assert_eq!(
+            approve_url("https://getbuild.ing/", "ZSAC-ABU6"),
+            "https://getbuild.ing/app/#/pair/ZSAC-ABU6"
+        );
+        assert_eq!(
+            approve_url("http://localhost:8090", "ZSAC-ABU6"),
+            "http://localhost:8090/app/#/pair/ZSAC-ABU6"
+        );
+    }
+
+    /// The short form is the one the approve screen shows beside the device.
+    #[test]
+    fn the_short_fingerprint_is_its_first_sixteen_hex_digits_in_fours() {
+        assert_eq!(short_fingerprint(FINGERPRINT), "28e6 7993 9bc3 2c44");
+    }
+
+    #[test]
+    fn the_pairing_prompt_is_one_link_a_code_and_a_short_fingerprint() {
+        let prompt = pairing_prompt("ZSAC-ABU6", FINGERPRINT, "https://getbuild.ing");
+        assert_fits(&prompt);
+        assert!(prompt.contains("ZSAC-ABU6"), "{prompt}");
+        assert!(prompt.contains("28e6 7993 9bc3 2c44"), "{prompt}");
+        assert!(!prompt.contains(FINGERPRINT), "{prompt}");
+        assert!(
+            prompt.contains("approve at:    https://getbuild.ing/app/#/pair/ZSAC-ABU6"),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("Settings"), "{prompt}");
+        assert!(prompt.contains("Waiting for you to approve it"), "{prompt}");
+    }
+
+    fn retired_at(api_url: &str, home: &Path) -> RetiredApproval {
+        let identity_path = home.join(".build/identity.json");
+        RetiredApproval {
+            lapse: Lapse::Unknown,
+            api_url: api_url.into(),
+            kept_at: identity_path
+                .with_file_name("identity.json.retired-b02b5ba1-2483-41c8-99a8-08963e40991a"),
+            identity_path,
+        }
+    }
+
+    /// The notice from the photo in #319, at the installer's width: what is
+    /// happening and where the old identity went, nothing more.
+    #[test]
+    fn a_retired_approval_says_so_in_two_short_lines() {
+        let home = Path::new("/Users/zechariahzimmerman");
+        let notice = retired_at(crate::config::DEFAULT_API_URL, home).notice(home);
+        assert_fits(&notice);
+        assert_eq!(
+            notice,
+            "    This machine's earlier pairing is no longer valid.\n    \
+             Pairing it as a new device; the old identity is kept in ~/.build."
+        );
+    }
+
+    /// A wrong `BRIDGE_API_URL` is the one way a good identity gets retired,
+    /// so an api other than the default is named.
+    #[test]
+    fn a_retired_approval_names_an_api_that_is_not_the_default() {
+        let home = Path::new("/home/dev");
+        let notice = retired_at("http://localhost:8090", home).notice(home);
+        assert_fits(&notice);
+        assert!(notice.contains("Asked http://localhost:8090"), "{notice}");
+    }
+
+    /// An identity outside the home directory is named by its directory.
+    #[test]
+    fn a_retired_approval_outside_home_names_the_full_directory() {
+        let home = Path::new("/home/dev");
+        let notice = retired_at(crate::config::DEFAULT_API_URL, Path::new("/srv/bridge")).notice(home);
+        assert!(notice.contains("kept in /srv/bridge/.build."), "{notice}");
+    }
+
+    /// A refusal is one sentence of any length; printed, it breaks between
+    /// words into indented lines, and a word longer than a line stands alone.
+    #[test]
+    fn wrapped_breaks_between_words_under_an_indent() {
+        let reason = "not paired: could not confirm this device's pairing with the api \
+                      (error sending request for url (https://getbuild.ing/api/devices/\
+                      b02b5ba1-2483-41c8-99a8-08963e40991a/status)) — check the connection";
+        let text = wrapped(reason, "    ");
+        let long_word = text
+            .lines()
+            .find(|line| line.trim().starts_with("(https://"))
+            .expect("the url is a line of its own");
+        assert!(!long_word.trim().contains(' '), "{text}");
+        assert_fits(&text.replace(long_word, ""));
+        assert!(text.lines().all(|line| line.starts_with("    ")), "{text}");
+        assert_eq!(
+            text.split_whitespace().collect::<Vec<_>>(),
+            reason.split_whitespace().collect::<Vec<_>>()
+        );
+        assert_eq!(wrapped("short", "  "), "  short");
     }
 
     #[test]

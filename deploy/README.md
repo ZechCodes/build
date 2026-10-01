@@ -195,9 +195,10 @@ git commit -am 'chore(bridge): X.Y.Z'
 git tag bridge-vX.Y.Z && git push origin bridge-vX.Y.Z
 ```
 
-Release notes come from [`CHANGELOG.md`](../CHANGELOG.md): the workflow's
-generated notes carry only the install and verification steps, so paste the
-version's entry above them in the release once it publishes.
+Release notes come from [`CHANGELOG.md`](../CHANGELOG.md): the workflow puts
+the version's entry (`scripts/changelog-section.sh`) above the install and
+verification steps. The version check refuses a tag whose entry is missing,
+empty, undated or still `Unreleased`, so date it in step 1.
 
 The tag is the trigger and the version check is the first job: if `X.Y.Z` is not
 what `bridge/Cargo.toml` declares, nothing is built. Each binary is then made to

@@ -55,7 +55,10 @@ jobs:
   # no release. install.sh's own gates are here for the same reason — it ships
   # as an asset, so a broken one is a broken release, not a lint failure after
   # the fact: it is linted, run against a mirror on disk, and checked for the
-  # signing identity this workflow will sign with.
+  # signing identity this workflow will sign with. The release notes open with
+  # the version's CHANGELOG.md entry, so that entry is taken here too: an entry
+  # that is missing, empty or still Unreleased stops the release before a
+  # single build.
   version:
     name: The tag names a version this tree can build
     runs-on: ubuntu-22.04
@@ -100,6 +103,23 @@ jobs:
 
       - name: The notarization wait gives up, resumes and reports as it promises
         run: scripts/test-notarize.sh
+
+      - name: The changelog extraction takes one dated entry and refuses the rest
+        run: scripts/test-changelog-section.sh
+
+      - name: CHANGELOG.md has a dated entry for this version
+        env:
+          VERSION: ${{ steps.derive.outputs.version }}
+        run: |
+          set -euo pipefail
+          scripts/changelog-section.sh "$VERSION" CHANGELOG.md > "${RUNNER_TEMP}/changelog-entry.md"
+          cat "${RUNNER_TEMP}/changelog-entry.md"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: changelog-entry
+          path: ${{ runner.temp }}/changelog-entry.md
+          if-no-files-found: error
 
       - name: install.sh and this workflow demand the same signing identity
         run: |
@@ -405,6 +425,13 @@ jobs:
           name: release-assets
           path: ${{ runner.temp }}/release-assets
 
+      # The entry the `version` job checked, beside the assets rather than
+      # among them: it is the head of the notes, not a download.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: changelog-entry
+          path: ${{ runner.temp }}/changelog-entry
+
       # Every asset is a file at the top of the staging directory. Anything
       # else means the staging picked up something it should not have, and it
       # fails here, before a release exists, rather than mid-upload.
@@ -425,14 +452,17 @@ jobs:
           SIGNED: ${{ needs.apple-creds.outputs.configured }}
           COMMIT: ${{ github.sha }}
           SOURCE_REPO: ${{ github.repository }}
+          CHANGELOG_ENTRY: ${{ runner.temp }}/changelog-entry/changelog-entry.md
         run: |
           set -euo pipefail
+          # What changed first, then how to install and verify it.
+          { cat "$CHANGELOG_ENTRY"; echo; } > notes.md
           if [ "$SIGNED" = "true" ]; then
             macos_line="macOS binaries are signed with a Developer ID certificate and notarized by Apple."
           else
             macos_line="macOS binaries are **unsigned and not notarized**. macOS will warn on first run; open System Settings → Privacy & Security and allow it."
           fi
-          cat > notes.md <<NOTES
+          cat >> notes.md <<NOTES
           build-bridge ${VERSION}, built from ${SOURCE_REPO}@${COMMIT}.
 
           Install:

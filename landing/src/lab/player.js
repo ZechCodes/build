@@ -21,15 +21,17 @@ export function createPlayer({ container, field }) {
   let flood = null;
   let last = null;
   return {
-    /** The field on `variant`, endless or not. Answers the beat's end, the
-     *  clock its phases are named on, and whether it needs every frame. */
-    build({ variant, endless }) {
+    /** The field on `variant`, endless or not, in the wall's `shape` with
+     *  its `blur`. Answers the beat's end, the clock its phases are named
+     *  on, and whether it needs every frame. */
+    build({ variant, endless, shape, blur }) {
+      flood?.dispose?.();
       reset(field);
       field.dataset.labVariant = variant;
       const measured = measureField(container, field);
       const stage = stageFor(matchMedia(NARROW_QUERY).matches, measured);
       const chosen = VARIANTS[variant];
-      flood = (endless ? chosen.endless : chosen.flood)({ field: measured, stage });
+      flood = (endless ? chosen.endless : chosen.flood)({ field: measured, stage, root: field, options: { shape, blur } });
       last = null;
       return { end: flood.end, timing: stage.timing, everyFrame: Boolean(flood.everyFrame) };
     },

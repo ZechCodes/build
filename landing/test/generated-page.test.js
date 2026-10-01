@@ -97,8 +97,15 @@ describe("the notifications lab", () => {
 
   it("has every control the brief asks for", () => {
     for (const control of ["play", "restart", "scrub", "loop", "endless"]) assert.ok(lab.includes(`data-lab="${control}"`), control);
-    for (const speed of ["0.25", "0.5", "1"]) assert.ok(lab.includes(`data-lab-speed="${speed}"`), speed);
-    assert.ok(lab.includes('data-lab-variant="a"'));
+    const choices = { speed: ["0.25", "0.5", "1"], variant: ["a", "b", "c", "d", "e"], shape: ["dome", "full"], blur: ["copy", "filter"] };
+    for (const [key, values] of Object.entries(choices)) {
+      for (const value of values) assert.ok(lab.includes(`data-lab-key="${key}" data-lab-value="${value}"`), `${key} ${value}`);
+    }
+  });
+
+  it("keeps the wall's styles to the lab", () => {
+    assert.ok(linkedCss(lab).includes(".hero-wall"));
+    assert.ok(!linkedCss(html).includes(".hero-wall"));
   });
 });
 

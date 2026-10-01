@@ -9,6 +9,7 @@
 @import "./fonts.css";
 @import "./landing.css";
 @import "./hero.css";
+@import "./wall.css";
 
 html[data-lab] body {
   padding-top: 0;
@@ -33,6 +34,25 @@ html[data-lab] .hero-field:is([data-lab-variant="b"], [data-lab-variant="d"]) .h
 
 html[data-lab] .hero-field:is([data-lab-variant="b"], [data-lab-variant="d"]) .hero-lane__body {
   animation: none;
+}
+
+/* The wall draws its own pills; the lanes give it the field. */
+html[data-lab] .hero-field[data-lab-variant="e"] .hero-lane {
+  display: none;
+}
+
+/* Where the home page's headline and laptop screen stand, for judging the
+   wall's dome and the requests' flight. */
+.lab-standin {
+  position: absolute;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px dashed rgba(255, 255, 255, 0.22);
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.35);
+  font: 11px/1 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 /* A tuning tool shows the motion it tunes, whatever the visitor's setting. */

@@ -5,7 +5,7 @@
 // seeks it. A drift, along the pill's lane, runs on its own `translate`, a
 // straight line or an endless loop (loop.js), so a pose never has to carry
 // a lane's travel or its wrap.
-import { seek } from "../hero/flood.js";
+import { seekAll } from "../hero/seeker.js";
 
 // Samples a second: enough for a jolt of a tenth of a second to keep its shape.
 const SAMPLES_PER_SECOND = 60;
@@ -57,26 +57,5 @@ export function posedMotion({ pills, hidden = [], end, period }) {
       : { duration: span * 1000, fill: "both", easing: "linear" })), runs]);
     if (pill.drift) timed.push([hold(driftAnimation(pill.element, pill.drift, span, endless)), runs]);
   }
-  // An animation held at its end is left alone until the clock goes back:
-  // seeking hundreds of finished ones every frame would restyle them all.
-  const held = new Set();
-  return {
-    end,
-    update(time, playing, rate) {
-      const ms = time * 1000;
-      for (const [animation, runs] of timed) {
-        if (ms >= runs && (held.has(animation) || animation.playState === "finished")) {
-          // Run out on its own, it already holds its end.
-          held.add(animation);
-          continue;
-        }
-        // One the compositor has not started yet holds its time; seeking it
-        // again would only put its start off further.
-        if (playing && animation.pending) continue;
-        seek(animation, ms, playing, runs, rate);
-        if (ms >= runs) held.add(animation);
-        else held.delete(animation);
-      }
-    },
-  };
+  return { end, update: seekAll(timed) };
 }

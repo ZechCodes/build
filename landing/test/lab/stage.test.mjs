@@ -24,4 +24,14 @@ describe("the lab's stage", () => {
     const ys = stage.rows.map(([, y]) => y);
     assert.deepEqual(ys, [...ys].sort((a, b) => a - b));
   });
+
+  it("knows where the headline and the laptop begin, so the wall's dome stays above them", () => {
+    for (const narrow of [false, true]) {
+      const stage = stageFor(narrow, { width: 1000, height: 800 });
+      assert.ok(stage.clear > 50 && stage.clear < 300);
+      assert.ok(stage.headline[1] >= stage.clear && stage.screen[1] >= stage.clear);
+      assert.ok(stage.origin[0] > stage.screen[0] && stage.origin[0] < stage.screen[2]);
+      for (const [x, y] of stage.rows) assert.ok(x > stage.screen[0] && x < stage.screen[2] && y > stage.screen[1] && y < stage.screen[3]);
+    }
+  });
 });

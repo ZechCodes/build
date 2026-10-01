@@ -302,6 +302,8 @@ a.signin-button-secondary,
   background: transparent;
   color: var(--ink);
   border: 1px solid var(--line-strong);
+  /* The border sits inside the primary button's height, so the pair line up. */
+  padding-block: calc(0.85rem - 1px);
 }
 
 /* A multi-line note shown as written, such as error.html's start-up hint. */
@@ -343,4 +345,13 @@ a.signin-button-secondary,
   margin-top: 0;
   padding: 0.45rem 0.9rem;
   font-size: 0.875rem;
+}
+
+/* A quiet line under a page's actions: who is signed in, who to ask. */
+.signin-aside {
+  margin-top: 1.25rem;
+}
+
+.signin-aside a {
+  color: var(--ink);
 }

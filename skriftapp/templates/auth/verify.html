@@ -5,6 +5,10 @@
 {% block title %}Verify your sign-in — Build{% endblock %}
 
 {% block content %}
+    {#- What each kind of factor asks of the person, in place of Skrift's bare type name. -#}
+    {% set factor_descriptions = {
+        "passkey": "Your device confirms it&rsquo;s you with Face&nbsp;ID, Touch&nbsp;ID, Windows Hello, or your phone."|safe,
+    } %}
     <p class="signin-kicker">One more step</p>
     <h1>Verify your sign-in</h1>
     <p class="signin-lead">
@@ -15,6 +19,7 @@
     <section class="signin-panel signin-methods">
         {% for method in methods %}
         <a class="signin-button" href="{{ method.verify_path }}">Continue with {{ method.name }}</a>
+        <p class="signin-hint">{{ factor_descriptions.get(method.factor_type) or method.factor_type|replace('_', ' ')|capitalize }}</p>
         {% endfor %}
     </section>
 {% endblock %}

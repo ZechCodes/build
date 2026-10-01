@@ -187,3 +187,35 @@ test("a browser without passkeys says so and disables the button", () => {
   assert.match(status.textContent, /can't use passkeys/);
   assert.equal(status.dataset.tone, "error");
 });
+
+test("a successful answer without a token leaves the page alone: no hidden GET", async () => {
+  // On verify, Skrift has already cleared the pending sign-in; a GET of the page now
+  // would queue "Your verification session is no longer available" for the next page.
+  const document = fakeDocument("old");
+  const { calls, fetchImpl } = fakeFetch({
+    "POST /auth/verify/passkey/complete": { status: 200, json: { ok: true, redirect: "/app/" } },
+  });
+  const post = csrfPoster({ document, fetchImpl, base: "/auth/verify/passkey/", pageUrl: "/auth/verify/passkey" });
+  const response = await post("complete", {});
+  assert.equal(response.ok, true);
+  assert.deepEqual(calls.map((call) => `${call.method} ${call.url}`), ["POST /auth/verify/passkey/complete"]);
+});
+
+test("a network failure says Build couldn't be reached", async () => {
+  const document = fakeDocument("t");
+  const fetchImpl = async () => {
+    throw new TypeError("Failed to fetch");
+  };
+  const post = csrfPoster({ document, fetchImpl, base: "/auth/passkeys/", pageUrl: "/auth/passkeys" });
+  const outcome = await createCeremonies({ credentials: new OneAtATimeCredentials(), post }).register("");
+  assert.equal(outcome.error, "Couldn't reach Build. Check your connection and try again.");
+});
+
+test("a malformed answer is not mistaken for a network failure", async () => {
+  const server = fakeServer({ options: () => ({ ok: true, status: 200, payload: {} }) });
+  const credentials = new OneAtATimeCredentials();
+  const ceremonies = createCeremonies({ credentials, post: server.post });
+  assert.equal((await ceremonies.register("")).error, "Adding your passkey didn't work. Try again.");
+  assert.equal((await ceremonies.verify()).error, "Checking your passkey didn't work. Try again.");
+  assert.deepEqual(credentials.log, []);
+});

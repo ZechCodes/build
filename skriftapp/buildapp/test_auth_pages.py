@@ -164,6 +164,28 @@ def test_the_generic_error_page_has_a_fallback_message_and_shows_a_hint():
     assert "Set SECRET_KEY." in html
 
 
+@pytest.mark.parametrize("template_name", ERROR_TEMPLATES)
+def test_signed_in_error_pages_offer_the_app_and_log_out(template_name):
+    user = SimpleNamespace(id="u", name="A", email="a@example.com")
+    html = render_error(template_name, status_code=500, message="", user=user)
+    assert re.search(r'<a class="signin-button" href="/app/">Open Build</a>', html)
+    assert 'href="/auth/logout"' in html
+    assert 'href="/"' in html
+
+
+@pytest.mark.parametrize("template_name", ERROR_TEMPLATES)
+def test_signed_out_error_pages_offer_only_the_home_page(template_name):
+    html = render_error(template_name, status_code=500, message="", user=None)
+    assert "/app/" not in html and "/auth/logout" not in html
+
+
+def test_the_start_up_failure_page_renders_with_only_what_asgi_passes():
+    # Skrift's AppDispatcher._error_response: status_code, message and hint, nothing else.
+    html = render_error("error.html", status_code=500, message="Application failed to start.", hint="Set X.")
+    assert "Application failed to start." in html and "Set X." in html
+    assert "/app/" not in html
+
+
 @pytest.mark.parametrize(
     ("template_name", "title"),
     [("error-404.html", "Page not found — Build"), ("error-500.html", "Something went wrong — Build")],
@@ -302,7 +324,7 @@ def test_verify_passkey_names_the_factor_for_the_module():
 
 
 def test_verify_lists_skrifts_methods():
-    methods = [SimpleNamespace(name="Passkey", factor_type="passkey_auth", verify_path="/auth/verify/passkey")]
+    methods = [SimpleNamespace(name="Passkey", factor_type="passkey", verify_path="/auth/verify/passkey")]
     html = render(
         VERIFY_TEMPLATE,
         methods=methods,
@@ -313,7 +335,14 @@ def test_verify_lists_skrifts_methods():
     assert "<script" not in html
     assert 'href="/auth/verify/passkey"' in html
     assert "Continue with Passkey" in html
+    assert "Face&nbsp;ID" in html
     assert "&lt;b&gt;A&lt;/b&gt;" in html
+
+
+def test_verify_describes_a_factor_type_it_has_no_words_for():
+    methods = [SimpleNamespace(name="Code", factor_type="one_time_code", verify_path="/auth/verify/code")]
+    html = render(VERIFY_TEMPLATE, methods=methods, pending_auth=SimpleNamespace(email=None, name=None), flash_messages=[])
+    assert "One time code" in html
 
 
 @pytest.mark.parametrize("template_name", VERIFY_EMAIL_TEMPLATES)
@@ -321,6 +350,10 @@ def test_verify_email_pages_are_in_builds_frame_with_no_script(template_name):
     html = render(template_name, masked_email="a***@example.com")
     assert_in_builds_frame(html)
     assert "<script" not in html
+
+
+def test_verify_email_invalid_says_who_to_ask():
+    assert "whoever runs this Build server" in render(VERIFY_EMAIL_TEMPLATES[1])
 
 
 def test_verify_email_pending_shows_the_masked_address():
@@ -420,3 +453,12 @@ def test_through_the_real_app_an_invalid_email_link_is_ours(skrift_app):
     assert response.status_code == 200
     assert "This link can" in response.text
     assert_in_builds_frame(response.text)
+
+
+def test_through_the_real_app_a_signed_in_error_page_leads_back_to_build(second_factor_app):
+    with TestClient(second_factor_app, base_url=SECURE_ORIGIN) as client:
+        sign_in_with_the_dummy(client)
+        response = client.get("/auth/nothing/here", headers={"accept": "text/html"})
+    assert response.status_code == 404
+    assert '<a class="signin-button" href="/app/">Open Build</a>' in response.text
+    assert 'href="/auth/logout"' in response.text

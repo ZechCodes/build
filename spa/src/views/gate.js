@@ -36,6 +36,7 @@ import { initInboxRail } from "../core/inboxShell.js";
 import { initToolbar } from "../core/toolbar.js";
 import { DEVICES_ADDRESS, readCached } from "../core/localCache.js";
 import { fieldTraits } from "../core/fieldTraits.js";
+import { pendingDeviceHtml } from "../core/deviceFingerprint.js";
 
 /** Whether the cache's two readers are up. They are started once, before any
  *  session answers, and stood down when a gate screen takes the page (which is
@@ -421,12 +422,7 @@ function bindPairing() {
       $("#oerr").textContent = e.message;
       return;
     }
-    $("#opairbox").innerHTML = `
-      <div class="panel" style="margin-top:14px">
-        <div class="row"><span class="k">Device</span><span class="v">${esc(device.name)}</span></div>
-        <div class="row"><span class="k">Fingerprint</span><span class="v mono" style="font-size:11px;word-break:break-all">${esc(device.fingerprint)}</span></div>
-        <div class="dim" style="font-size:12px;margin:8px 0">Confirm this matches what the bridge printed, then approve.</div>
-        <button class="btn primary" id="oapprove">Approve &amp; pair</button></div>`;
+    $("#opairbox").innerHTML = pendingDeviceHtml(device, "oapprove");
     $("#oapprove").onclick = async () => {
       $("#oapprove").disabled = true;
       $("#oerr").textContent = "";
@@ -444,6 +440,14 @@ function bindPairing() {
   $("#ocode")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") lookup();
   });
+}
+
+/** The approve screen for a code the bridge's approve link handed in (#319),
+ *  over whatever the page shows. Once the device is approved, a page a gate
+ *  screen holds boots again, as its own Add device does; an app already
+ *  standing reads the account list again, as Settings does. */
+export function openPairingLink(code) {
+  openAddDevice(() => (App.gated ? boot() : refreshDevices()), { code, fromLink: true });
 }
 
 // The first run: no approved device on this account. Nobody can enter a pairing

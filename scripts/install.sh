@@ -7,7 +7,8 @@
 #
 # stdin is the curl pipe, so nothing here may prompt. Every message goes to
 # stderr, as a short header and one line per step; a failure is the only thing
-# that names URLs and files. Colour and bold are used only when stderr is a
+# that names URLs and files. Lines under a step break between words to fit an
+# 80-column terminal. Colour and bold are used only when stderr is a
 # terminal, NO_COLOR is unset and TERM is not dumb. stdout carries whatever
 # `build-bridge pair` and `install-service` print there and, when stdout is
 # not a terminal, ends on `installed build-bridge <path>` after a success; a
@@ -62,42 +63,97 @@ step() {
     say "${STEP}==>${RESET} $*"
 }
 
-# The step a person has to act on, set apart from the rest.
+# The step a person has to act on, set apart from the rest. What happens in
+# it is the command's own to say.
 action_step() {
     say ""
     say "${ACT}==> $1${RESET}"
-    say "    $2"
+}
+
+# stdin broken between words into lines of at most $1 columns. A line that
+# fits, or starts with spaces (a command to paste), is kept as it is; a word
+# longer than a line gets one to itself. Plain shell, because an error can come
+# before the tools are checked.
+wrap() {
+    while IFS= read -r w_text; do
+        case "$w_text" in
+            " "* | "")
+                printf '%s\n' "$w_text"
+                continue
+                ;;
+        esac
+        if [ "${#w_text}" -le "$1" ]; then
+            printf '%s\n' "$w_text"
+            continue
+        fi
+        w_line=""
+        set -f
+        for w_word in $w_text; do
+            if [ -z "$w_line" ]; then
+                w_line="$w_word"
+            elif [ $((${#w_line} + 1 + ${#w_word})) -gt "$1" ]; then
+                printf '%s\n' "$w_line"
+                w_line="$w_word"
+            else
+                w_line="$w_line $w_word"
+            fi
+        done
+        set +f
+        printf '%s\n' "$w_line"
+    done
 }
 
 # Lines under a step or a verdict; each argument may itself span lines.
 detail() {
     for d_text in "$@"; do
-        printf '%s\n' "$d_text" | while IFS= read -r d_line; do
+        printf '%s\n' "$d_text" | wrap 76 | while IFS= read -r d_line; do
             say "    $d_line"
         done
     done
 }
 
-finish() {
+# A verdict: its label, then the sentence after it, the overflow indented
+# under it, all of it within 80 columns.
+verdict() {
+    v_label="$1"
+    v_plain="$2"
+    shift 2
     say ""
-    say "${GOOD}Done.${RESET} $1"
+    printf '%s %s\n' "$v_plain" "$1" | wrap 76 | {
+        IFS= read -r v_first
+        say "${v_label}${v_first#"$v_plain"}"
+        while IFS= read -r v_line; do
+            say "    $v_line"
+        done
+    }
     shift
     detail "$@"
+}
+
+finish() {
+    verdict "${GOOD}Done.${RESET}" "Done." "$@"
 }
 
 # An error says what went wrong, then the one thing to do next.
 fail_with() {
     fw_status="$1"
     shift
-    say ""
-    say "${BAD}Error:${RESET} $1"
-    shift
-    detail "$@"
+    verdict "${BAD}Error:${RESET}" "Error:" "$@"
     exit "$fw_status"
 }
 
 fail() {
     fail_with 1 "$@"
+}
+
+# A path under $HOME as a person would type it, and as a shell line pasted
+# into a profile would name it.
+# shellcheck disable=SC2016 # the $HOME is shown, not expanded
+in_home() {
+    case "$1" in
+        "$HOME"/*) printf '$HOME/%s\n' "${1#"$HOME"/}" ;;
+        *) printf '%s\n' "$1" ;;
+    esac
 }
 
 # A path under $HOME as a person would type it.
@@ -106,6 +162,16 @@ shown() {
     case "$1" in
         "$HOME"/*) printf '~/%s\n' "${1#"$HOME"/}" ;;
         *) printf '%s\n' "$1" ;;
+    esac
+}
+
+# A path as a command pasted into a shell must name it: the ~ form while
+# nothing in it needs quoting, else in double quotes, starting from $HOME
+# when it is under it.
+pasteable() {
+    case "$1" in
+        *[!A-Za-z0-9_./-]*) printf '"%s"\n' "$(in_home "$1")" ;;
+        *) shown "$1" ;;
     esac
 }
 
@@ -225,7 +291,7 @@ install_binary() {
     case ":$PATH:" in
         *":$INSTALL_DIR:"*) ;;
         *) detail "$(shown "$INSTALL_DIR") is not on your PATH. To run build-bridge by name, add it with:" \
-            "  export PATH=\"$INSTALL_DIR:\$PATH\"" ;;
+            "  export PATH=\"$(in_home "$INSTALL_DIR"):\$PATH\"" ;;
     esac
 }
 
@@ -243,20 +309,27 @@ web_app_url() {
 # What each command prints is its own, framed by the step it belongs to.
 enable_service() {
     es_bridge="$(shown "$1")"
+    es_run="$(pasteable "$1")"
     if [ "$SKIP_SERVICE" = "1" ]; then
         finish "The Build bridge is installed at $es_bridge." \
             "Pairing and the background service were skipped (BUILD_BRIDGE_SKIP_SERVICE=1)." \
-            "When you are ready, run: $es_bridge pair && $es_bridge install-service"
+            "When you are ready, run:" \
+            "  $es_run pair" \
+            "  $es_run install-service"
         return 0
     fi
-    action_step "Pairing with your Build account" \
-        "If a pairing code appears, approve it in Build. The installer waits until you do."
-    "$1" pair || fail "pairing did not finish. The bridge is installed at $es_bridge." \
-        "Run '$es_bridge pair' when you can approve it in Build, then '$es_bridge install-service'."
+    action_step "Pairing with your Build account"
+    "$1" pair || fail "pairing did not finish. The bridge is installed." \
+        "When you can approve it in Build, run:" \
+        "  $es_run pair" \
+        "  $es_run install-service"
     say ""
     step "Starting the background service"
     "$1" install-service || fail "the background service could not be installed." \
-        "Run '$es_bridge install-service' again; '$es_bridge serve' runs the bridge in this terminal meanwhile."
+        "Run it again:" \
+        "  $es_run install-service" \
+        "Meanwhile, this runs the bridge in this terminal:" \
+        "  $es_run serve"
     finish "The Build bridge is installed and running." \
         "Open $(web_app_url) to start using it."
 }

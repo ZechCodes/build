@@ -25,6 +25,8 @@ if [ "${TEST_SIGNATURE_STATUS:-0}" = 0 ]; then
     echo 'Verified OK' >&2
 else
     echo 'Error: none of the expected identities matched' >&2
+    # An indented line, as cosign prints a certificate's fields: kept whole.
+    echo '  certificate identity: https://github.com/example/build/.github/workflows/release-desktop.yml@refs/tags/desktop-v1.2.3' >&2
 fi
 exit "${TEST_SIGNATURE_STATUS:-0}"
 COSIGN
@@ -146,6 +148,12 @@ run_case() {
             ;;
         *) ! grep -q "$escape" "$TEST_ROOT/output" || return 1 ;;
     esac
+    # Nothing leans on the terminal to break a sentence (#319): a line over 80
+    # columns is a single word, a URL or a path, that no break could help, or
+    # a line indented under a detail, which is kept whole as it was given. The
+    # curl shim's own `cp:` complaint is the shim's, not the installer's.
+    ! tr -d '\r' < "$TEST_ROOT/output" | awk 'length($0) > 80 && /[^ ] +[^ ]/ && !/^cp: / && !/^     /' \
+        | grep -q . || return 1
     case "$mode" in
         success|pinned|no-cosign|terminal|terminal-no-color|terminal-dumb)
             if ! { [ "$status" = 0 ] && [ ! -e "$target/previous" ]; }; then return 1; fi
@@ -185,9 +193,10 @@ run_case() {
     esac
     # A refusal reads as an error, names what failed, and says what to do next.
     case "$mode" in
-        tampered) says "Error: build-desktop-linux-x86_64.tar.gz does not match its published checksum" \
+        tampered) says "Error: build-desktop-linux-x86_64.tar.gz does not match its published" \
             "https://github.com/example/releases/releases/download/desktop-v1.2.3" "Run the installer again" ;;
-        bad-signature) says "Error: the release signature did not verify" "none of the expected identities matched" ;;
+        bad-signature) says "Error: the release signature did not verify" "none of the expected identities matched" \
+            "      certificate identity: https://github.com/example/build/.github/workflows/release-desktop.yml@refs/tags/desktop-v1.2.3" ;;
         download-failure) says "Error: could not download" "run the installer again" ;;
         unsupported) says "Error: unsupported platform Plan9/mips" ;;
         *) true ;;

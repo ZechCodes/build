@@ -130,9 +130,16 @@ new_sandbox() {
 case "${1:-}" in
     pair)
         printf 'pair\n' >> "$HOME/bridge-calls"
-        printf '\n  Pair this device to your account:\n    pairing code: TEST-CODE\n\n' >&2
-        [ "${BUILD_TEST_PAIR_STATUS:-0}" = "0" ] || { printf 'not paired: refused\n' >&2; exit 1; }
-        printf 'paired to account test-owner\n'
+        if [ "${BUILD_TEST_RETIRED:-0}" = "1" ]; then
+            printf "    This machine's earlier pairing is no longer valid.\n" >&2
+            printf '    Pairing it as a new device; the old identity is kept in ~/.build.\n' >&2
+        fi
+        printf '\n    pairing code:  TEST-CODE\n    fingerprint:   28e6 7993 9bc3 2c44\n' >&2
+        printf '    approve at:    https://getbuild.ing/app/#/pair/TEST-CODE\n\n' >&2
+        printf '    Waiting for you to approve it in Build…\n' >&2
+        [ "${BUILD_TEST_PAIR_STATUS:-0}" = "0" ] || { printf '    not paired: refused\n' >&2; exit 1; }
+        printf '    Device approved.\n' >&2
+        printf '    paired to account test-owner\n'
         ;;
     install-service)
         printf 'install-service\n' >> "$HOME/bridge-calls"
@@ -169,7 +176,10 @@ without_cosign() {
 # local: CASE_COSIGN_STATUS (the verdict the cosign shim returns),
 # CASE_ONLY_SHIMS_ON_PATH=1 (nothing but the shims is installed on this host),
 # CASE_SKIP_SERVICE=0 (go on to pair and install the service),
-# CASE_PAIR_STATUS (how the fake bridge's pairing ends) or CASE_TERMINAL=1
+# CASE_PAIR_STATUS (how the fake bridge's pairing ends), CASE_RETIRED=1 (it
+# first sets an old identity aside), CASE_INSTALL_DIR (where the binary lands
+# instead of the sandbox's dest), CASE_HOME (HOME instead of the sandbox's
+# home) or CASE_TERMINAL=1
 # (run under a pseudo-terminal; stdout and stderr then both land in stdout)
 # with CASE_NO_COLOR as its NO_COLOR and CASE_TERM (default xterm) as its TERM.
 run_install() {
@@ -187,11 +197,12 @@ run_install() {
         BUILD_TEST_UNAME_S="${2:-$PINNED_UNAME_S}"
         BUILD_TEST_UNAME_M="${3:-$PINNED_UNAME_M}"
         BUILD_TEST_COSIGN_STATUS="${CASE_COSIGN_STATUS:-0}"
-        BUILD_BRIDGE_INSTALL_DIR="$ri_root/dest"
+        BUILD_BRIDGE_INSTALL_DIR="${CASE_INSTALL_DIR:-$ri_root/dest}"
         BUILD_BRIDGE_SKIP_SERVICE="${CASE_SKIP_SERVICE:-1}"
         BUILD_TEST_PAIR_STATUS="${CASE_PAIR_STATUS:-0}"
-        HOME="$ri_root/home"
-        export PATH BUILD_TEST_MIRROR BUILD_TEST_UNAME_S BUILD_TEST_UNAME_M BUILD_TEST_PAIR_STATUS
+        BUILD_TEST_RETIRED="${CASE_RETIRED:-0}"
+        HOME="${CASE_HOME:-$ri_root/home}"
+        export PATH BUILD_TEST_MIRROR BUILD_TEST_UNAME_S BUILD_TEST_UNAME_M BUILD_TEST_PAIR_STATUS BUILD_TEST_RETIRED
         export BUILD_TEST_COSIGN_STATUS BUILD_BRIDGE_INSTALL_DIR BUILD_BRIDGE_SKIP_SERVICE HOME
         if [ "${CASE_TERMINAL:-0}" = "1" ]; then
             # A terminal that can show colour, whatever the one running the
@@ -361,7 +372,7 @@ a_failure_names_what_failed() {
     status="$(run_install "$root")"
     assert_refused "$name" "$root" "$status" 1 || return 1
     assert_says "$name" "$root/stderr" \
-        "Error: $PINNED_TARBALL does not match its published checksum" \
+        "Error: $PINNED_TARBALL does not match its published" \
         "https://github.com/ZechCodes/build-releases/releases/latest/download" && pass "$name"
 }
 
@@ -452,7 +463,7 @@ pairs_then_starts_the_service() {
     fi
     assert_says "$name" "$root/stderr" \
         "Pairing with your Build account" \
-        "pairing code: TEST-CODE" \
+        "pairing code:  TEST-CODE" \
         "Starting the background service" \
         "Done. The Build bridge is installed and running." \
         "Open https://getbuild.ing/app" || return 1
@@ -501,6 +512,94 @@ skipping_the_service_says_what_to_run_later() {
         "$root/dest/build-bridge install-service" && pass "$name"
 }
 
+# The installer says what is happening, not what might (#319): the pairing
+# step is a heading over what the bridge prints, with no hedge of its own.
+pairing_says_what_is_happening() {
+    name="pairing_says_what_is_happening"
+    root="$(new_sandbox "$name")"
+    status="$(CASE_SKIP_SERVICE=0 run_install "$root")"
+    assert_exit "$name" "$root" "$status" 0 || return 1
+    assert_says "$name" "$root/stderr" "approve at:    https://getbuild.ing/app/#/pair/TEST-CODE" || return 1
+    assert_never_says "$name" "$root/stderr" "If a pairing code appears" && pass "$name"
+}
+
+# Every line a run prints fits an 80-column terminal, so nothing leans on the
+# terminal breaking it mid-word (#319). The binary lands under HOME, where a
+# person's would, and both ends of pairing are read: approved and refused.
+# stdout's closing `installed build-bridge <path>` is for a script, not a
+# person, and is left out.
+assert_fits_80() {
+    af_name="$1"
+    af_file="$2"
+    af_long="$(awk 'length($0) > 80' "$af_file")"
+    [ -z "$af_long" ] && return 0
+    fail "$af_name" "lines over 80 columns: $af_long"
+    return 1
+}
+
+every_line_fits_80_columns() {
+    name="every_line_fits_80_columns"
+    for ef_pair_status in 0 1; do
+        root="$(new_sandbox "$name-$ef_pair_status")"
+        CASE_INSTALL_DIR="$root/home/.local/bin" CASE_SKIP_SERVICE=0 CASE_PAIR_STATUS="$ef_pair_status" \
+            CASE_RETIRED=1 run_install "$root" > /dev/null
+        assert_says "$name" "$root/stderr" "earlier pairing is no longer valid" || return 1
+        assert_fits_80 "$name" "$root/stderr" || return 1
+        grep -v '^installed build-bridge ' "$root/stdout" > "$root/said" || true
+        assert_fits_80 "$name" "$root/said" || return 1
+    done
+    root="$(new_sandbox "$name-skip")"
+    CASE_INSTALL_DIR="$root/home/.local/bin" run_install "$root" > /dev/null
+    assert_fits_80 "$name" "$root/stderr" || return 1
+    # The refusals, which name URLs and digests: a line over 80 columns is
+    # one word that no break could help.
+    root="$(new_sandbox "$name-tampered")"
+    printf 'tampered' >> "$root/mirror/$PINNED_TARBALL"
+    CASE_INSTALL_DIR="$root/home/.local/bin" run_install "$root" > /dev/null
+    assert_breaks_sentences "$name" "$root/stderr" || return 1
+    root="$(new_sandbox "$name-undigested")"
+    printf '%s  %s\n' "$(digest_of "$root/mirror/$PINNED_TARBALL")" install.sh > "$root/mirror/SHA256SUMS"
+    CASE_INSTALL_DIR="$root/home/.local/bin" run_install "$root" > /dev/null
+    assert_breaks_sentences "$name" "$root/stderr" || return 1
+    root="$(new_sandbox "$name-unsigned")"
+    CASE_INSTALL_DIR="$root/home/.local/bin" CASE_COSIGN_STATUS=1 run_install "$root" > /dev/null
+    assert_breaks_sentences "$name" "$root/stderr" && pass "$name"
+}
+
+assert_breaks_sentences() {
+    abs_name="$1"
+    abs_long="$(awk 'length($0) > 80 && /[^ ] +[^ ]/' "$2")"
+    [ -z "$abs_long" ] && return 0
+    fail "$abs_name" "sentences over 80 columns: $abs_long"
+    return 1
+}
+
+# A command the installer says to run works pasted as printed, when the home
+# or the install directory has a space in it, inside home or out.
+pasted_commands_survive_a_space() {
+    name="pasted_commands_survive_a_space"
+    root="$(new_sandbox "$name")"
+    ps_home="$root/my home"
+    for ps_dir in "$ps_home/my tools" "$root/opt dir/bin"; do
+        mkdir -p "$ps_home"
+        rm -f "$root/stderr"
+        CASE_HOME="$ps_home" CASE_INSTALL_DIR="$ps_dir" CASE_SKIP_SERVICE=0 CASE_PAIR_STATUS=1 \
+            run_install "$root" > /dev/null
+        ps_line="$(grep -E '^      .* pair$' "$root/stderr" | head -1)"
+        [ -n "$ps_line" ] || { fail "$name" "no pair command in: $(cat "$root/stderr")"; return 1; }
+        : > "$ps_home/bridge-calls"
+        HOME="$ps_home" BUILD_TEST_PAIR_STATUS=0 sh -c "$ps_line" > /dev/null 2>&1 || {
+            fail "$name" "pasted '$ps_line' did not run"
+            return 1
+        }
+        [ "$(cat "$ps_home/bridge-calls")" = "pair" ] || {
+            fail "$name" "pasted '$ps_line' ran: $(cat "$ps_home/bridge-calls")"
+            return 1
+        }
+    done
+    pass "$name"
+}
+
 # Every case reports its own failure through `fail`, so a non-zero return only
 # says the case is over; the suite's verdict is FAILURES, not $?.
 for case_name in \
@@ -523,7 +622,10 @@ for case_name in \
     pairs_then_starts_the_service \
     where_to_go_follows_the_bridge_web_url \
     a_failed_pairing_says_how_to_resume \
-    skipping_the_service_says_what_to_run_later; do
+    skipping_the_service_says_what_to_run_later \
+    pairing_says_what_is_happening \
+    every_line_fits_80_columns \
+    pasted_commands_survive_a_space; do
     "$case_name" || true
 done
 

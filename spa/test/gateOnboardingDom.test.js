@@ -114,7 +114,8 @@ vi.mock("../src/core/taskFeed.js", () => ({ startFeed: () => {}, stopFeed: () =>
 vi.mock("../src/core/cacheSync.js", () => ({ startCacheSync: () => {}, stopCacheSync: () => {}, routeChanged: () => {} }));
 vi.mock("../src/core/inboxShell.js", () => ({ initInboxRail: () => {} }));
 vi.mock("../src/core/toolbar.js", () => ({ initToolbar: () => {} }));
-vi.mock("../src/sheets/addDevice.js", () => ({ openAddDevice: () => {} }));
+const openAddDevice = vi.fn();
+vi.mock("../src/sheets/addDevice.js", () => ({ openAddDevice: (...args) => openAddDevice(...args) }));
 
 const flush = () => new Promise((done) => setTimeout(done, 0));
 
@@ -424,5 +425,35 @@ describe("the first-run screen", () => {
     document.getElementById("olookup").click();
     await flush();
     expect(lookupDevice).toHaveBeenCalledWith("G6ZP-KD2U");
+  });
+});
+
+// The approve link `build-bridge pair` prints (#319) opens Add a device with its
+// code, over whatever the page shows; approving then does what the screen
+// under it would have done with its own Add device.
+describe("the bridge's approve link", () => {
+  it("opens Add a device with the link's code, marked as opened by a link", async () => {
+    const { openPairingLink } = await import("../src/views/gate.js");
+    openPairingLink("ZSAC-ABU6");
+    expect(openAddDevice).toHaveBeenCalledWith(expect.any(Function), { code: "ZSAC-ABU6", fromLink: true });
+  });
+
+  it("boots again once approved over a gate screen, so a first device enters the app", async () => {
+    const { openPairingLink } = await import("../src/views/gate.js");
+    openPairingLink("ZSAC-ABU6");
+    const [onDone] = openAddDevice.mock.calls[0];
+    await onDone();
+    expect(document.getElementById("root").textContent).toContain("Welcome to Build");
+  });
+
+  it("reads the account list again once approved over the standing app, and paints no gate", async () => {
+    const { App } = await import("../src/app.js");
+    App.gated = false;
+    const { openPairingLink } = await import("../src/views/gate.js");
+    openPairingLink("ZSAC-ABU6");
+    const [onDone] = openAddDevice.mock.calls[0];
+    await onDone();
+    expect(refreshDevices).toHaveBeenCalledTimes(1);
+    expect(document.getElementById("root").textContent).not.toContain("Welcome to Build");
   });
 });

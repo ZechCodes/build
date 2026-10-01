@@ -6,6 +6,24 @@ Notable changes to the bridge (`build-bridge`). The format follows
 protocol versions; see
 [Wire versioning and capabilities](ARCHITECTURE.md#wire-versioning-and-capabilities).
 
+## [0.2.6] - Unreleased
+
+### Changed
+
+- `build-bridge pair` prints a short block that fits 80 columns: the pairing
+  code, the fingerprint's first 32 hex digits (128 bits), and one
+  `approve at:` link to `/app/#/pair/<code>`. The link opens Add a device
+  with this device looked up, after sign-in if needed. The sheet says a link
+  opened it and warns that approving gives the machine access to your
+  account; approving is still your press. The approve screen shows the same
+  32 digits, with the full fingerprint beneath (#319).
+- When `pair` sets aside a revoked or unknown pairing, it now says so in two
+  lines naming `~/.build`. The README says how to put the old identity back
+  (#319).
+- `install.sh` drops its "If a pairing code appears" hint. Both installers
+  break their lines between words to fit 80 columns, and give commands to
+  paste lines of their own (#319).
+
 ## [0.2.5] - 2026-10-01
 
 ### Changed

@@ -69,7 +69,7 @@ the relay binary `bridge/src/bin/relay.rs`.
 | --- | --- |
 | `serve` (default) | runs the daemon |
 | `mcp --task <owner>` | the stdio MCP server an agent's harness launches (`mcp_stdio`) |
-| `pair` | device-initiated pairing: prints a code and waits for approval in Build (`bridge/src/pairing.rs`); an identity stored as approved that the api's status answer reports `revoked` or `unknown` (or, from an older api, just not approved) is renamed to `identity.json.retired-<device id>` and a new identity is paired in its place |
+| `pair` | device-initiated pairing: prints a code, the short fingerprint and an approve link (`<web>/app/#/pair/<code>`), all within 80 columns, and waits for approval in Build (`bridge/src/pairing.rs`); an identity stored as approved that the api's status answer reports `revoked` or `unknown` (or, from an older api, just not approved) is renamed to `identity.json.retired-<device id>` and a new identity is paired in its place |
 | `install-service` / `uninstall-service` | systemd user unit or launchd agent (`bridge/src/service/`); both gate on the same status answer as `pair`, and uninstalling keeps the identity file and says so |
 | `update-helper` | the detached self-update helper (`bridge/src/update/installer.rs`) |
 | `provision`, `backup` | print an identity bundle; online SQLite backup |
@@ -761,7 +761,7 @@ a sibling `build-secure-transport` checkout (`spa/package.json`).
 
 | Path | What it holds |
 | --- | --- |
-| `spa/src/main.js` | entry: fonts, CSS, theme, router, device picker, then `boot()` from `spa/src/views/gate.js` |
+| `spa/src/main.js` | entry: fonts, CSS, theme, the bridge's approve link (`spa/src/core/pairLink.js`, before the router), router, device picker, then `boot()` from `spa/src/views/gate.js` |
 | `spa/src/app.js` | the `App` object, route handling (`go`, `initRouter`), the `VIEWS` table, `render` |
 | `spa/src/connection.js` | per-device session lifecycle |
 | `spa/src/api.js` | the product API calls to skriftapp (`/api/devices`, `/api/gateway-token`, `/api/rtc/ice-servers`, push); the served-version check in `spa/src/core/version.js` is the other plain-HTTP read |
@@ -1157,5 +1157,6 @@ whose ratchet count is pinned by `spa/test/complexityRatchet.test.js`.
 | Add a harness | a `Harness` impl in `bridge/src/harness/`, an `AgentProvider` variant in `bridge/src/models.rs`, and its arm in `harness_for()` |
 | Change what an agent runs under | `bridge/src/priority.rs`, `bridge/src/service/systemd.rs` |
 | Render markdown, or add a reference shape | always `markdownHtml(text, { place, mode })` from `spa/src/core/markdown.js`, the one entry point (`spa/test/markdownEntry.test.js` fails anything else); blocks in `spa/src/core/markdownBlocks.js`; reference syntax in `spa/src/core/markdownRefs.js`, links and labels in `spa/src/core/markdownLinks.js`, web links (`[text](url)`, bare http(s) URLs; http/https/mailto only, new tab) in `spa/src/core/markdownWebLinks.js`, resolution against the account-wide index in `spa/src/core/referenceTargets.js`/`referenceIndex.js` (filled by `referenceIndexFeed.js`); teach agents a new shape in `bridge/templates/notes/link_markup.md`, the protocol bullet in `bridge/src/orchestrator/workspace.rs` and `reference_shapes_note!` in `bridge/src/mcp.rs`; the XSS rules are `planning/v2/Markdown Rendering Security Checklist.md` |
+| Change how a device is paired | the bridge's printed block and approve link in `bridge/src/pairing.rs`; the installers' framing in `scripts/install.sh`; `#/pair/<code>` in `spa/src/core/pairLink.js` opens `spa/src/sheets/addDevice.js` (`openPairingLink` in `spa/src/views/gate.js`); the fragment survives sign-in through `withArrivalFragment` in `skriftapp/buildapp/landing/passkey-signin.js`; the rules are `planning/v2/Device Pairing Security Checklist.md` |
 | Change a colour | tokens in `spa/src/styles.css` (both themes) |
 | Change transport or ICE | `bridge/src/rtc.rs`, `bridge/src/rtc/policy.rs`, `spa/src/core/peerLink.js`, `spa/src/connection.js` |

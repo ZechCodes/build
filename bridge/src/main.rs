@@ -859,13 +859,25 @@ async fn pair() {
     // Pairing talks https before anything else does; the provider must be in
     // place first.
     relay::install_crypto_provider();
-    match pair_device(&bridge_config(), provisioned_identity()).await {
-        Ok(line) => println!("{line}"),
-        Err(reason) => {
-            eprintln!("not paired: {reason}");
+    let outcome = pair_device(&bridge_config(), provisioned_identity()).await;
+    let said = pair_said(&outcome);
+    match outcome {
+        Ok(_) => println!("{said}"),
+        Err(_) => {
+            eprintln!("{said}");
             std::process::exit(1);
         }
     }
+}
+
+/// What `pair` prints last, either way it ended: under the installer's step,
+/// broken between words to fit 80 columns.
+fn pair_said(outcome: &Result<String, String>) -> String {
+    let text = match outcome {
+        Ok(line) => line.clone(),
+        Err(reason) => format!("not paired: {reason}"),
+    };
+    pairing::wrapped(&text, pairing::INDENT)
 }
 
 /// `pair`, in order, returning the line it ends on or why it refused: a
@@ -890,7 +902,7 @@ async fn pair_device(
     .await
     .map_err(|error| service::InstallGateError::from(error).to_string())?;
     if let Some(retired) = retired {
-        println!("{retired}");
+        eprintln!("{}", retired.notice(&cfg.home));
     }
     let loaded = load_stored_identity(cfg).await?;
     let owner = approved_owner(cfg).await?;
@@ -1207,8 +1219,8 @@ fn mcp_stdio() {
 #[cfg(test)]
 mod tests {
     use super::{
-        kept_identity_note, pair_device, service_environment, valid_release_repo, LoadedIdentity,
-        PairingOutcome,
+        kept_identity_note, pair_device, pair_said, service_environment, valid_release_repo,
+        LoadedIdentity, PairingOutcome,
     };
     use build_bridge::{config, identity, relay::DeviceIdentity, transport};
     use wiremock::matchers::{method, path, path_regex};
@@ -1337,6 +1349,27 @@ mod tests {
             PairingOutcome::JustApproved.paired_to("user-1"),
             "paired to account user-1"
         );
+    }
+
+    /// Both ends of `pair` print through the same wrapping (#319).
+    #[test]
+    fn pair_says_its_last_line_within_80_columns_either_way() {
+        let long = "x".repeat(10);
+        let ok: Result<String, String> = Ok(format!(
+            "provisioned device {} — nothing to pair, and a long tail of words to wrap {long}",
+            "a".repeat(30)
+        ));
+        let err: Result<String, String> = Err(format!("could not confirm this device's pairing with the api ({}) — check the connection and try again", "b".repeat(30)));
+        for outcome in [&ok, &err] {
+            let said = pair_said(outcome);
+            assert!(said.lines().count() > 1, "{said}");
+            assert!(
+                said.lines()
+                    .all(|line| line.starts_with("    ") && line.chars().count() <= 80),
+                "{said}"
+            );
+        }
+        assert!(pair_said(&err).trim_start().starts_with("not paired:"));
     }
 
     /// Uninstalling the service keeps the identity, and says where and what

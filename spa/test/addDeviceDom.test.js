@@ -61,3 +61,44 @@ it("looks the code up on Enter, the key the field labels Go", async () => {
   await vi.waitFor(() => expect(document.querySelector("#papprove")).not.toBeNull());
   expect(lookupDevice).toHaveBeenCalledWith("WXYZ-4F2K");
 });
+
+it("a code handed in by the approve link is filled in and looked up, never approved", async () => {
+  lookupDevice.mockResolvedValue({ name: "Mac", fingerprint: "28e679939bc32c446627fac8a8dd58a5353e66b744a9a2dae91254f1da1b9027" });
+  openAddDevice(vi.fn(), { code: "zsac-abu6" });
+  expect(document.querySelector("#paircode").value).toBe("ZSAC-ABU6");
+  await vi.waitFor(() => expect(document.querySelector("#papprove")).not.toBeNull());
+  expect(lookupDevice).toHaveBeenCalledWith("ZSAC-ABU6");
+  expect(approveDevice).not.toHaveBeenCalled();
+});
+
+it("shows the fingerprint in the short form the bridge printed, with the full one beneath", async () => {
+  const fingerprint = "28e679939bc32c446627fac8a8dd58a5353e66b744a9a2dae91254f1da1b9027";
+  lookupDevice.mockResolvedValue({ name: "Mac", fingerprint });
+  openAddDevice(vi.fn(), { code: "ZSAC-ABU6" });
+  await vi.waitFor(() => expect(document.querySelector("#papprove")).not.toBeNull());
+  expect(document.querySelector("[data-fingerprint-short]").textContent).toBe("28e6 7993 9bc3 2c44 6627 fac8 a8dd 58a5");
+  expect(document.querySelector("[data-fingerprint-full]").textContent).toBe(fingerprint);
+});
+
+// Anyone can send a pairing link: an attacker runs `build-bridge pair` on their
+// own machine and sends the link to a signed-in victim (#319 review). A sheet
+// a link opened says so, and says plainly what approving does.
+const LINK_SUBTITLE = "A pairing link opened this.";
+const LINK_WARNING =
+  "Only approve if you just ran the installer or build-bridge pair on a machine you own. Approving gives that machine access to your account.";
+
+it("a sheet a link opened says so and warns before anything can be approved", () => {
+  lookupDevice.mockReturnValue(new Promise(() => {}));
+  openAddDevice(vi.fn(), { code: "ZSAC-ABU6", fromLink: true });
+  const sheet = document.querySelector("#sheet");
+  expect(sheet.querySelector(".sub").textContent).toBe(LINK_SUBTITLE);
+  expect(sheet.textContent).not.toContain("Enter the pairing code your bridge printed");
+  expect(sheet.querySelector("[data-link-warning]").textContent.replace(/\s+/g, " ").trim()).toBe(LINK_WARNING);
+});
+
+it("a sheet opened by hand keeps its own subtitle and carries no link warning", () => {
+  openAddDevice(vi.fn());
+  const sheet = document.querySelector("#sheet");
+  expect(sheet.textContent).toContain("Enter the pairing code your bridge printed");
+  expect(sheet.querySelector("[data-link-warning]")).toBeNull();
+});

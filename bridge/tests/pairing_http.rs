@@ -235,13 +235,9 @@ async fn a_revoked_approval_is_retired_so_the_next_pairing_mints_a_new_identity(
         "nothing left to load"
     );
     assert_eq!(identity::load(&retired.kept_at).unwrap(), Some(id));
-    let said = retired.to_string();
+    let said = words(&retired.notice(dir.path()));
     assert!(said.contains("no longer valid"), "{said}");
-    assert!(said.contains("revoked in Settings → Devices"), "{said}");
-    assert!(
-        said.contains(&retired.kept_at.display().to_string()),
-        "{said}"
-    );
+    assert!(said.contains("kept in ~."), "{said}");
     assert!(!said.contains("already paired"), "{said}");
 }
 
@@ -397,9 +393,10 @@ async fn a_body_without_approved_retires_nothing() {
 }
 
 /// Pairing against the wrong `BRIDGE_API_URL` retires a good identity, so the
-/// message says which api answered and how to put the old identity back.
+/// message names an api that is not the default and where the old identity is
+/// kept; putting it back is the README's to say (#319).
 #[tokio::test]
-async fn the_retire_message_names_the_api_and_the_command_that_undoes_it() {
+async fn the_retire_message_names_the_api_and_where_the_old_identity_is() {
     let server =
         api_answering_status(serde_json::json!({"approved": false, "state": "unknown"})).await;
     let dir = tempfile::tempdir().unwrap();
@@ -408,10 +405,13 @@ async fn the_retire_message_names_the_api_and_the_command_that_undoes_it() {
         .await
         .unwrap()
         .unwrap();
-    let said = retired.to_string();
+    let said = words(&retired.notice(std::path::Path::new("/nowhere")));
     assert!(said.contains(&server.uri()), "{said}");
-    let undo = format!("mv '{}' '{}'", retired.kept_at.display(), path.display());
-    assert!(said.contains(&undo), "{said}");
+    assert!(
+        said.contains(&format!("kept in {}.", dir.path().display())),
+        "{said}"
+    );
+    assert!(!said.contains("mv "), "{said}");
 }
 
 /// What `pair` pairs after a retire is a new device: new id, new keys.
@@ -435,4 +435,10 @@ async fn the_identity_minted_after_a_retire_is_a_new_device() {
         Some(new),
         "the new identity is saved"
     );
+}
+
+/// `text` with its line breaks and indents read as single spaces, so an
+/// assertion holds however the notice wraps.
+fn words(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }

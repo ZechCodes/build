@@ -16,7 +16,8 @@ import { createVersionWatcher, fetchServedVersion } from "./core/version.js";
 import { requestSheetDismiss } from "./core/sheetDismiss.js";
 import { installTheme } from "./core/theme.js";
 import { initCompose } from "./core/composeView.js";
-import { boot } from "./views/gate.js";
+import { boot, openPairingLink } from "./views/gate.js";
+import { watchPairLinks } from "./core/pairLink.js";
 import { mountConnectionStatus } from "./connectionStatus.js";
 import { startUserPresence } from "./core/userPresence.js";
 
@@ -50,6 +51,9 @@ if (location.pathname.startsWith("/app")) {
   $("#verbar-reload").onclick = () => location.reload();
 }
 
+// Before the router: an approve link's code leaves the address before any
+// route reads it, and its approve screen opens over whatever the page shows.
+watchPairLinks(window, openPairingLink);
 initRouter();
 initDevicePicker();
 // Load captures saved by earlier builds so they can flush after connection.

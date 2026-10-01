@@ -1,19 +1,31 @@
 // Add a device: enter the pairing code the bridge printed, verify the fingerprint
-// out-of-band, then approve — binding the device to your account.
+// out-of-band, then approve — binding the device to your account. Opened from
+// the bridge's approve link, the code arrives filled in and is looked up at
+// once; approving is still the reader's press.
 
 import { $ } from "../dom.js";
-import { esc } from "../core/text.js";
 import { lookupDevice, approveDevice } from "../api.js";
 import { settingsSheetHtml } from "./settingsSheet.js";
 import { fieldTraits } from "../core/fieldTraits.js";
+import { pendingDeviceHtml } from "../core/deviceFingerprint.js";
 
-export function openAddDevice(onDone) {
+/** A link opened the sheet: anyone can send one, so it says so and what
+ *  approving does before the device it names can be approved (#319). */
+const LINK_ARRIVAL = {
+  subtitleHtml: "A pairing link opened this.",
+  warningHtml: `<div class="adderr" data-link-warning style="margin:0 0 10px">Only approve if you just ran the installer or
+    <code>build-bridge pair</code> on a machine you own. Approving gives that machine access to your account.</div>`,
+};
+const TYPED = { subtitleHtml: "Enter the pairing code your bridge printed on startup.", warningHtml: "" };
+
+export function openAddDevice(onDone, { code = "", fromLink = false } = {}) {
   const sheet = $("#sheet");
   const scrim = $("#scrim");
+  const arrival = fromLink ? LINK_ARRIVAL : TYPED;
   sheet.innerHTML = settingsSheetHtml({
     title: "Add a device",
-    subtitleHtml: "Enter the pairing code your bridge printed on startup.",
-    bodyHtml: `
+    subtitleHtml: arrival.subtitleHtml,
+    bodyHtml: `${arrival.warningHtml}
     <input id="paircode" ${fieldTraits("code")} placeholder="e.g. WXYZ-4F2K" style="text-transform:uppercase" />
     <div class="row"><button class="btn" id="pcancel" style="margin-left:auto">Cancel</button>
       <button class="btn primary" id="plookup">Look up</button></div>
@@ -50,12 +62,7 @@ export function openAddDevice(onDone) {
       return;
     }
     if (!current() || version !== lookupVersion) return;
-    pairbox.innerHTML = `
-      <div class="panel" style="margin-top:12px">
-        <div class="row"><span class="k">Device</span><span class="v">${esc(device.name)}</span></div>
-        <div class="row"><span class="k">Fingerprint</span><span class="v mono" style="font-size:11px;word-break:break-all">${esc(device.fingerprint)}</span></div>
-        <div class="dim" style="font-size:12px;margin:8px 0">Confirm this matches the fingerprint the bridge printed, then approve.</div>
-        <button class="btn primary" id="papprove">Approve &amp; pair</button></div>`;
+    pairbox.innerHTML = pendingDeviceHtml(device, "papprove");
     const approve = pairbox.querySelector("#papprove");
     approve.onclick = async () => {
       if (!current() || version !== lookupVersion || approve.disabled) return;
@@ -79,5 +86,9 @@ export function openAddDevice(onDone) {
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.isComposing) lookup();
   });
+  if (code) {
+    input.value = code.toUpperCase();
+    void lookup();
+  }
   return dispose;
 }

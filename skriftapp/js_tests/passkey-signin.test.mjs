@@ -10,6 +10,7 @@ import {
   createPasskeyFlow,
   describeError,
   describeRefusal,
+  withArrivalFragment,
 } from "../buildapp/landing/passkey-signin.js";
 
 const PENDING = "A request is already pending.";
@@ -308,4 +309,46 @@ test("a page with no forms (passkeys unavailable) binds nothing and throws nothi
 test("a stale security token says to try again, which works: the fresh one is already in the form", () => {
   assert.match(describeRefusal("signin", { status: 400, payload: { error: "invalid_csrf" } }), /Try again/);
   assert.doesNotMatch(describeRefusal("signup", { status: 400, payload: { error: "invalid_csrf" } }), /[Rr]eload/);
+});
+
+// /app/ sends a signed-out visitor here with a 302, and the browser keeps the
+// fragment across it; the server never sees one, so the page puts it back on
+// where it goes next. That is how the bridge's approve link (#319) still opens
+// the approve screen once the visitor has signed in.
+const ARRIVED = { origin: "https://getbuild.ing", href: "https://getbuild.ing/auth/login?next=/app/#/pair/ZSAC-ABU6", hash: "#/pair/ZSAC-ABU6" };
+
+test("a signed-in visitor goes on with the fragment they arrived with", () => {
+  assert.equal(withArrivalFragment("/app/", ARRIVED), "https://getbuild.ing/app/#/pair/ZSAC-ABU6");
+  assert.equal(withArrivalFragment("https://getbuild.ing/app/?x=1", ARRIVED), "https://getbuild.ing/app/?x=1#/pair/ZSAC-ABU6");
+});
+
+test("a redirect with its own fragment, or to another origin, is left as the server said", () => {
+  assert.equal(withArrivalFragment("/app/#/inbox", ARRIVED), "/app/#/inbox");
+  assert.equal(withArrivalFragment("https://elsewhere.example/app/", ARRIVED), "https://elsewhere.example/app/");
+  assert.equal(withArrivalFragment("//elsewhere.example/app/", ARRIVED), "//elsewhere.example/app/");
+});
+
+// A same-origin redirect whose path starts with `//` must not come back as a
+// protocol-relative address that leaves the site (#319 review).
+test("a same-origin path that starts with // stays on this site", () => {
+  const out = withArrivalFragment("https://getbuild.ing//evil.example", ARRIVED);
+  assert.equal(new URL(out, ARRIVED.href).origin, "https://getbuild.ing");
+  assert.equal(out, "https://getbuild.ing//evil.example#/pair/ZSAC-ABU6");
+});
+
+test("a visitor who arrived with no fragment goes exactly where the server said", () => {
+  assert.equal(withArrivalFragment("/app/", { ...ARRIVED, hash: "" }), "/app/");
+});
+
+test("the page goes on with the fragment once the passkey is accepted", async () => {
+  globalThis.FormData = FakeFormData;
+  const document = fakeDocument({ signup: false });
+  const went = [];
+  const window = fakeWindow(new SafariCredentials(), []);
+  window.location = { ...ARRIVED, assign: (url) => went.push(url) };
+  bindSigninPage(document, window);
+  document.elements["signin-form"].submit();
+  await later(20);
+  assert.equal(went.length, 1);
+  assert.match(went[0], /#\/pair\/ZSAC-ABU6$/);
 });

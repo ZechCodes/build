@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from datetime import timedelta
 from types import SimpleNamespace
 
@@ -20,10 +21,10 @@ from sqlalchemy import func, select
 from buildapp import invites
 from buildapp.clock import utc_now
 from buildapp.db_test_support import add_account
-from buildapp.invite_pages import APP_PATH, WAITLIST_PATH
+from buildapp.invite_pages import APP_PATH, INVITE_ONLY_HEADING, WAITLIST_PATH
 from buildapp.invites import InviteState, invite_path
 from buildapp.models import Invite
-from buildapp.skrift_app_test_support import SECURE_ORIGIN, on_database
+from buildapp.skrift_app_test_support import DATABASE_FILE, SECURE_ORIGIN, on_database
 
 INVITED = "invitee@example.com"
 OTHER_INVITED = "second@example.com"
@@ -266,3 +267,83 @@ def test_signing_in_drops_the_bound_invite(client, fake_authenticator):
     open_invite(client, issue(client, INVITED))
     assert Page(client).create_account(INVITED).status_code == 201
     assert 'id="signup-form"' not in Page(client).html
+
+
+# --- Skrift's own checks come first ----------------------------------------------
+
+
+def registration_without_an_invite(client: TestClient) -> Page:
+    """A registration Skrift has under way whose invite is gone, so Build's check would
+    refuse anything that reached it."""
+    open_invite(client, issue(client, INVITED))
+    page = Page(client)
+    assert page.post(REGISTER_OPTIONS, email=INVITED).is_success
+    revoke(client, INVITED)
+    return page
+
+
+@pytest.mark.parametrize("path", [REGISTER_OPTIONS, REGISTER_COMPLETE])
+def test_a_post_without_a_csrf_token_gets_skrifts_refusal(client, path):
+    registration_without_an_invite(client)
+    response = client.post(path, data={"email": INVITED, "credential": "{}"})
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_csrf"
+
+
+@pytest.mark.parametrize("step", ["register/options", "register/complete"])
+def test_an_unknown_provider_is_skrifts_404(client, step):
+    page = registration_without_an_invite(client)
+    response = client.post(f"/auth/nope/{step}", data={"_csrf": page.csrf, "email": INVITED, "credential": "{}"})
+    assert response.status_code == 404
+
+
+# --- an account the invite could not be spent on is not a member --------------------
+
+
+def test_an_invite_revoked_mid_registration_leaves_an_account_outside_the_app(client, monkeypatch):
+    """Creating the account and redeeming the invite are separate commits. Revoke the
+    invite between them (inside the authenticator's step, after Build's check) and the
+    account exists unredeemed: /app/ must still refuse it."""
+    import skrift.controllers.auth as skrift_auth
+
+    def revoke_then_verify(request, settings, *, method_key, credential):
+        with sqlite3.connect(DATABASE_FILE) as connection:
+            connection.execute("UPDATE invites SET revoked_at = CURRENT_TIMESTAMP")
+        return SimpleNamespace(
+            credential_id=credential["id"],
+            public_key=b"public-key",
+            sign_count=0,
+            transports=["internal"],
+            enrollment_metadata={},
+        )
+
+    monkeypatch.setattr(skrift_auth, "complete_primary_passkey_registration", revoke_then_verify)
+    open_invite(client, issue(client, INVITED))
+
+    response = Page(client).create_account(INVITED)
+
+    assert response.status_code == 201
+    assert response.json()["redirect"] != APP_PATH
+    assert stored_invite(client, INVITED).redeemed_at is None
+    app = client.get(APP_PATH, follow_redirects=False)
+    assert app.status_code == 403
+    assert INVITE_ONLY_HEADING in app.text
+
+
+# --- no other route under the passkey-only config makes an account ------------------
+
+
+def test_the_passkey_callback_creates_no_account(client):
+    open_invite(client, issue(client, INVITED))
+    client.get("/auth/passkey/callback?code=anything&state=anything", follow_redirects=False)
+    assert account_count(client) == 0
+
+
+def test_the_dummy_login_creates_no_account(client):
+    open_invite(client, issue(client, INVITED))
+    page = Page(client)
+    response = client.post(
+        "/auth/dummy-login", data={"_csrf": page.csrf, "email": INVITED, "name": "x"}, follow_redirects=False
+    )
+    assert response.status_code == 404
+    assert account_count(client) == 0

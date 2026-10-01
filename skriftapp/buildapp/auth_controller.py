@@ -13,13 +13,21 @@ handlers by name, each doing Build's part and then calling Skrift's own handler.
 - A completed registration redeems the invite in the same request and sends the new
   member to /app/.
 
-A refusal answers ``invite_required`` with the CSRF token, like Skrift's own refusals.
-Skrift's generic ``invalid_request`` for an address that already has an account is
-untouched.
+Skrift's own checks come first: Build's applies only to a request Skrift would act on
+(a configured passkey method and a valid CSRF token). Anything else goes straight to
+Skrift's handler, so an unknown provider is still its 404 and a token-less post its
+``invalid_csrf``. Build's refusal answers ``invite_required`` with the CSRF token, like
+Skrift's own refusals. Skrift's generic ``invalid_request`` for an address that already
+has an account is untouched.
+
+The handlers are replaced by name against a pinned Skrift; ``test_auth_controller``
+pins the route inventory so an upgrade that renames one, or adds a route that creates
+accounts, fails loudly.
 """
 
 from __future__ import annotations
 
+import hmac
 from typing import Annotated
 
 from litestar import Request, get, post
@@ -28,8 +36,9 @@ from litestar.response import Redirect, Response
 from litestar.response import Template as TemplateResponse
 from litestar.status_codes import HTTP_201_CREATED, HTTP_403_FORBIDDEN
 from skrift.auth.second_factors.passkey_service import get_primary_passkey_registration_state
+from skrift.config import get_settings
 from skrift.controllers.auth import AuthController
-from skrift.forms.core import CSRF_SESSION_KEY
+from skrift.forms.core import CSRF_FIELD_NAME, CSRF_SESSION_KEY
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from buildapp import invites
@@ -49,6 +58,20 @@ def invite_required(request: Request) -> Response:
         {"error": INVITE_REQUIRED, "csrf_token": request.session.get(CSRF_SESSION_KEY, "")},
         status_code=HTTP_403_FORBIDDEN,
     )
+
+
+async def skrift_would_proceed(request: Request, provider: str) -> bool:
+    """Whether Skrift's handler would get past its own checks: the provider is a
+    configured passkey method and the form's CSRF token matches. Compared, not spent:
+    Skrift's handler verifies and rotates it when Build lets the request through."""
+    settings = get_settings()
+    if provider not in settings.auth.get_method_keys():
+        return False
+    if settings.auth.get_primary_auth_method_type(provider) != "passkey":
+        return False
+    submitted = str((await request.form()).get(CSRF_FIELD_NAME, ""))
+    stored = str(request.session.get(CSRF_SESSION_KEY, ""))
+    return bool(stored) and hmac.compare_digest(submitted, stored)
 
 
 async def with_invite_email(
@@ -87,7 +110,9 @@ class BuildAuthController(AuthController):
         self, request: Request, db_session: AsyncSession, provider: str
     ) -> Response:
         email = str((await request.form()).get("email", ""))
-        if not admits(await carried_invite(request, db_session, utc_now()), email):
+        if await skrift_would_proceed(request, provider) and not admits(
+            await carried_invite(request, db_session, utc_now()), email
+        ):
             return invite_required(request)
         return await AuthController.begin_primary_method_registration.fn(
             self, request, db_session, provider
@@ -100,7 +125,11 @@ class BuildAuthController(AuthController):
         invite = await carried_invite(request, db_session, utc_now())
         signup = get_primary_passkey_registration_state(request)
         # No registration under way is Skrift's refusal to give, in its own words.
-        if signup is not None and not admits(invite, signup.email):
+        if (
+            await skrift_would_proceed(request, provider)
+            and signup is not None
+            and not admits(invite, signup.email)
+        ):
             return invite_required(request)
         response = await AuthController.complete_primary_method_registration.fn(
             self, request, db_session, provider

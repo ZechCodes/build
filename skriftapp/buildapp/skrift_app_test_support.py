@@ -14,7 +14,7 @@ from typing import TypeVar
 from litestar.testing import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from buildapp.db_test_support import create_skrift_tables
+from buildapp.db_test_support import create_skrift_schema_in
 
 SKRIFTAPP_DIR = Path(__file__).resolve().parents[1]
 TEMPLATES_DIR = SKRIFTAPP_DIR / "templates"
@@ -53,18 +53,12 @@ def build_skrift_app(tmp_path: Path, monkeypatch) -> Iterator:
     monkeypatch.setenv("SKRIFT_ENV", "dev")
     monkeypatch.setenv("SECRET_KEY", "a-test-secret-that-is-long-enough-to-use")
     monkeypatch.chdir(tmp_path)
-    asyncio.run(_create_schema(database))
+    asyncio.run(create_skrift_schema_in(database))
     get_settings.cache_clear()
     try:
         yield create_app()
     finally:
         get_settings.cache_clear()
-
-
-async def _create_schema(database: Path) -> None:
-    engine = create_async_engine(_database_url(database))
-    await create_skrift_tables(engine)
-    await engine.dispose()
 
 
 def _database_url(database: Path) -> str:

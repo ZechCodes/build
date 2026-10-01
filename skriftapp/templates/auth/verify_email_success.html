@@ -1,0 +1,11 @@
+{#- The account-linked confirmation: overrides Skrift's auth/verify_email_success.html
+    in Build's frame. -#}
+{% extends "auth/_build_page.html" %}
+
+{% block title %}Sign-in confirmed — Build{% endblock %}
+
+{% block content %}
+    <h1>Signed in</h1>
+    <p class="signin-lead">Your account is linked. You can close this tab.</p>
+    <p class="signin-panel"><a class="signin-button" href="/">Go to the home page</a></p>
+{% endblock %}

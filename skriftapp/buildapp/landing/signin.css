@@ -283,3 +283,64 @@ a.signin-button {
 .signin-hint + a.signin-button {
   margin-top: 1rem;
 }
+
+/* A confirm step's two choices (templates/auth/logout_confirm.html): the action in
+   the accent, the way back as an outline beside it. */
+.signin-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.75rem;
+  margin-top: 2rem;
+}
+
+.signin-actions .signin-button {
+  margin-top: 0;
+}
+
+a.signin-button-secondary,
+.signin-button-secondary {
+  background: transparent;
+  color: var(--ink);
+  border: 1px solid var(--line-strong);
+}
+
+/* A multi-line note shown as written, such as error.html's start-up hint. */
+.signin-preformatted {
+  white-space: pre-line;
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+}
+
+/* /auth/passkeys: one row per passkey, its Remove button at the end. */
+.signin-list {
+  display: grid;
+  gap: 0;
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.signin-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-block: 0.85rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.signin-list-item:first-child {
+  border-top: 1px solid var(--line);
+}
+
+.signin-list-item form {
+  margin: 0;
+}
+
+.signin-button.signin-button-small {
+  width: auto;
+  min-height: 0;
+  margin-top: 0;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.875rem;
+}

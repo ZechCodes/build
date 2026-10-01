@@ -50,6 +50,25 @@ the shell receiving the script, for example:
 curl -fsSL https://getbuild.ing/install-desktop.sh | BUILD_DESKTOP_VERSION=0.1.0 sh
 ```
 
+### Pairing
+
+The bridge installer runs `build-bridge pair`, which prints a pairing code, the
+short form of the device's key fingerprint, and an `approve at:` link. The link
+opens Build's **Add a device** screen with this device already looked up, after
+sign-in if you are signed out. Check that the fingerprint matches, then press
+**Approve & pair**. You can also type the code into **Settings → Devices → Add
+a device**.
+
+If this machine's stored pairing was revoked, or the api no longer knows it,
+`pair` sets the old identity aside in `~/.build` as
+`identity.json.retired-<device id>` and pairs it as a new device. When that
+was a mistake, such as a wrong `BRIDGE_API_URL`, stop the run and move the
+file back:
+
+```sh
+mv ~/.build/identity.json.retired-<device id> ~/.build/identity.json
+```
+
 To build either one from source, see
 [Build locally](CONTRIBUTING.md#build-locally).
 

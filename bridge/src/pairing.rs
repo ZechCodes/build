@@ -590,7 +590,8 @@ mod tests {
     #[test]
     fn a_retired_approval_outside_home_names_the_full_directory() {
         let home = Path::new("/home/dev");
-        let notice = retired_at(crate::config::DEFAULT_API_URL, Path::new("/srv/bridge")).notice(home);
+        let notice =
+            retired_at(crate::config::DEFAULT_API_URL, Path::new("/srv/bridge")).notice(home);
         assert!(notice.contains("kept in /srv/bridge/.build."), "{notice}");
     }
 

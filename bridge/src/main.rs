@@ -862,7 +862,10 @@ async fn pair() {
     match pair_device(&bridge_config(), provisioned_identity()).await {
         Ok(line) => println!("    {line}"),
         Err(reason) => {
-            eprintln!("{}", pairing::wrapped(&format!("not paired: {reason}"), "    "));
+            eprintln!(
+                "{}",
+                pairing::wrapped(&format!("not paired: {reason}"), "    ")
+            );
             std::process::exit(1);
         }
     }

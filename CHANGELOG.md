@@ -6,7 +6,7 @@ Notable changes to the bridge (`build-bridge`). The format follows
 protocol versions; see
 [Wire versioning and capabilities](ARCHITECTURE.md#wire-versioning-and-capabilities).
 
-## [0.2.5] - Unreleased
+## [0.2.5] - 2026-10-01
 
 ### Changed
 
@@ -133,6 +133,6 @@ Wire 3.1.0.
   run.
 - Done refuses a run in a linked worktree or an adopted checkout (#172).
 
-[0.2.5]: https://github.com/ZechCodes/Build/compare/bridge-v0.2.4...main
+[0.2.5]: https://github.com/ZechCodes/build-releases/releases/tag/bridge-v0.2.5
 [0.2.4]: https://github.com/ZechCodes/build-releases/releases/tag/bridge-v0.2.4
 [0.2.3]: https://github.com/ZechCodes/build-releases/releases/tag/bridge-v0.2.3

@@ -63,12 +63,11 @@ describe("the generated landing document", () => {
   it("opens on the headline and closes on the waitlist", () => {
     assert.ok(html.includes('<span class="hero-line">Your agents are moving fast.</span> <span class="hero-line hero-line--quiet">Know what needs you.</span>'));
     assert.ok(html.includes("Free · Open source · Runs on your machines"));
-    assert.ok(html.includes("Say what needs doing."));
-    assert.ok(html.includes("Every change lands in Git."));
+    assert.ok(html.includes("Write the task. Hand it off."));
+    assert.ok(html.includes("Make the last edit yourself."));
     assert.ok(html.includes("data-waitlist"));
     assert.ok(html.includes("Join the waitlist"));
-    assert.ok(html.includes("Invite-only alpha."));
-    assert.ok(!html.includes("Invite-only alpha. Free and open source."), "the closing line says free once");
+    assert.ok(html.includes("Accounts are invite-only while Build is in alpha."));
   });
 
   it("shows the readable proof beside each act", () => {
@@ -76,7 +75,7 @@ describe("the generated landing document", () => {
       "it(&quot;keeps archived items in search&quot;, () =&gt; {",
       "Make archived items searchable",
       "Keep archived items in search?",
-      "Test · runs archive.test.ts",
+      "Match the label the sidebar uses.",
       "archive: keep archived results searchable",
       "Archived results remain visible and now carry a clear label.",
       "Ready for review",
@@ -136,12 +135,20 @@ describe("the generated landing document", () => {
     assert.match(css, /prefers-reduced-motion:\s*reduce/);
   });
 
+  it("says which of the film's screens are concepts, not the shipped app", () => {
+    const act = (number) => html.slice(html.indexOf(`data-act="${number}"`), html.indexOf(`data-act="${number + 1}"`));
+    assert.ok(act(5).includes("Workflow editor concept. This feature is not available in Build."));
+    assert.ok(act(7).includes("Review screen concept. In Build today, review changes in the Changes view."));
+    assert.ok(!act(5).includes("Saved as"), "the document proof claims no saved workflow");
+    assert.ok(!act(7).includes("Triage"), "the document proof claims no triage");
+  });
+
   it("says workspaces, never worktrees", () => {
     assert.ok(!/worktree/i.test(html));
   });
 
   it("keeps the practical section without the download chooser", () => {
-    assert.ok(html.includes("Your host does the work."));
+    assert.ok(html.includes("Install Build where your agents run."));
     assert.ok(html.includes("Which agents can I use?"));
     assert.ok(!html.includes("download-chooser"));
     assert.ok(!html.includes("curl "));

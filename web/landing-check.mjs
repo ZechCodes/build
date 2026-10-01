@@ -33,13 +33,13 @@ const browser = await chromium.launch({
 
 const HEADLINES = [
   "Your agents are moving fast. Know what needs you.",
-  "The work runs on your machine.",
-  "Say what needs doing.",
-  "One task. A whole team.",
-  "Build the workflow. Then run it again.",
-  "Every change lands in Git.",
-  "See what needs you. Decide what ships.",
-  "Your work stays put. You don't have to.",
+  "See your agents in one place.",
+  "Write the task. Hand it off.",
+  "See which agent needs an answer.",
+  "Ask another agent to review it.",
+  "Make the last edit yourself.",
+  "Read the diff. Make the call.",
+  "Answer from your phone.",
 ];
 const FILM_VIEWPORTS = [[1440, 900], [1920, 1080], [1024, 768]];
 const DOCUMENT_VIEWPORTS = [[390, 844], [360, 740]];

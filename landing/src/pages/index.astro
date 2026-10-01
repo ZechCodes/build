@@ -10,12 +10,11 @@ import { HERO_POSTER } from "../hero/poster-anchors.js";
 
 // The document skriftapp serves at "/". Astro emits the whole thing — head,
 // fonts, social meta — so the server never wraps it in a shell.
-const title = "Build — Your agents. Your machine. Your call.";
+const title = "Build: know what your coding agents need from you";
 const description =
-  "Build is an IDE for working with coding agents. They run on your hardware, in your checkouts. You decide what ships. Free and open source.";
-const socialTitle = "Build — Your agents. Your machine. Your call.";
-const socialDescription =
-  "Build is an IDE for working with coding agents. They run on your hardware, in your checkouts. You decide what ships.";
+  "Build brings your coding agents into one place, with their questions and changes ready for your review. They run on your machines. Free and open source.";
+const socialTitle = title;
+const socialDescription = description;
 const socialImage = "https://getbuild.ing/landing/assets/social-preview.png";
 
 // Filled by the server at request time (root_controller.render_landing_page),
@@ -45,7 +44,7 @@ const diffAdded = ["+ search.update(id, {", "+   archived: true,"];
 const diffAddedByYou = '+   label: "Archived",';
 const diffAddedClose = "+ });";
 const commitMessage = "archive: keep archived results searchable";
-const testStepLabel = "Test · runs archive.test.ts";
+const reviewComment = "Match the label the sidebar uses.";
 ---
 
 <!doctype html>
@@ -144,18 +143,18 @@ const testStepLabel = "Test · runs archive.test.ts";
       <section class="act" id="act-2" data-act="2" aria-labelledby="act-2-title">
         <div class="content-container act__inner">
           <div class="act__copy">
-            <p class="kicker">02 / Where it runs</p>
-            <h2 id="act-2-title">The work runs on your machine.</h2>
+            <p class="kicker">02 / One place</p>
+            <h2 id="act-2-title">See your agents in one place.</h2>
             <p class="support">
-              Connect from another screen to the same work. Your agents keep running on the
-              machine you chose.
+              See what your agents are doing, what they changed, and which ones need an
+              answer. Run Claude Code, Codex and Pi together in Build.
             </p>
             <ul class="captions">
-              <li>Agents execute here.</li>
-              <li>Checkouts change here.</li>
-              <li>Build's service handles sign-in and pairing. It never holds your code.</li>
+              <li>Your agents run on your computer.</li>
+              <li>Your files stay there.</li>
+              <li>Build's servers cannot read your code or prompts.</li>
             </ul>
-            <p class="scope">Model requests go to the providers you configure.</p>
+            <p class="scope">Model requests still go to the providers you configure.</p>
           </div>
           <picture class="poster">
             <source media="(max-width: 767px)" srcset={poster(2).mobile} width="720" height="960" />
@@ -169,10 +168,10 @@ const testStepLabel = "Test · runs archive.test.ts";
         <div class="content-container act__inner">
           <div class="act__copy">
             <p class="kicker">03 / Tasks</p>
-            <h2 id="act-3-title">Say what needs doing.</h2>
+            <h2 id="act-3-title">Write the task. Hand it off.</h2>
             <p class="support">
-              Write a task and assign it to an agent. It creates a branch on your machine
-              and gets to work.
+              Write a task and assign an agent. Start it in a separate workspace on your
+              machine. Follow its progress on the board, from Backlog to Done.
             </p>
           </div>
           <picture class="poster">
@@ -198,12 +197,11 @@ const testStepLabel = "Test · runs archive.test.ts";
       <section class="act" id="act-4" data-act="4" aria-labelledby="act-4-title">
         <div class="content-container act__inner">
           <div class="act__copy">
-            <p class="kicker">04 / Agents</p>
-            <h2 id="act-4-title">One task. A whole team.</h2>
+            <p class="kicker">04 / Questions</p>
+            <h2 id="act-4-title">See which agent needs an answer.</h2>
             <p class="support">
-              One agent implements, another reviews, and a third checks the edge cases.
-              Each works in its own workspace on your machine. When an agent needs you,
-              answer from your phone.
+              Agent questions appear in your inbox. Open one on your phone, reply, and the
+              agent can continue. Turn on notifications to hear when an agent needs you.
             </p>
           </div>
           <picture class="poster">
@@ -232,20 +230,21 @@ const testStepLabel = "Test · runs archive.test.ts";
       <section class="act" id="act-5" data-act="5" aria-labelledby="act-5-title">
         <div class="content-container act__inner">
           <div class="act__copy">
-            <p class="kicker">05 / Workflows</p>
-            <h2 id="act-5-title">Build the workflow. Then run it again.</h2>
+            <p class="kicker">05 / A second reviewer</p>
+            <h2 id="act-5-title">Ask another agent to review it.</h2>
             <p class="support">
-              Add a test step, choose who reviews, and decide where the workflow waits for
-              you. Save it for the next task.
+              Ask a second agent to review the change or run the tests. They can exchange
+              feedback in Build. Read their findings alongside the diff.
             </p>
+            <p class="concept-note">Workflow editor concept. This feature is not available in Build.</p>
           </div>
           <picture class="poster">
             <source media="(max-width: 767px)" srcset={poster(5).mobile} width="720" height="960" />
             <img src={poster(5).desktop} width="1440" height="900" alt="" decoding="async" loading="lazy" />
           </picture>
-          <div class="act__proof proof-pair">
+          <div class="act__proof">
             <article class="card">
-              <p class="card__label">Before</p>
+              <p class="card__label">One way a change can move</p>
               <ul class="flow">
                 <li data-node="agent">Implement</li>
                 <li class="edge" aria-hidden="true">→</li>
@@ -255,21 +254,6 @@ const testStepLabel = "Test · runs archive.test.ts";
                 <li class="edge" aria-hidden="true">→</li>
                 <li data-node="merge">Merge</li>
               </ul>
-            </article>
-            <article class="card">
-              <p class="card__label">After · test step added</p>
-              <ul class="flow">
-                <li data-node="agent">Implement</li>
-                <li class="edge" aria-hidden="true">→</li>
-                <li data-node="test">{testStepLabel}</li>
-                <li class="edge" aria-hidden="true">→</li>
-                <li data-node="agent">Review</li>
-                <li class="edge" aria-hidden="true">→</li>
-                <li data-node="gate">You decide</li>
-                <li class="edge" aria-hidden="true">→</li>
-                <li data-node="merge">Merge</li>
-              </ul>
-              <p class="card__foot">Saved as <em>Fix with tests</em>. Runs on the next task.</p>
             </article>
           </div>
         </div>
@@ -279,11 +263,10 @@ const testStepLabel = "Test · runs archive.test.ts";
       <section class="act" id="act-6" data-act="6" aria-labelledby="act-6-title">
         <div class="content-container act__inner">
           <div class="act__copy">
-            <p class="kicker">06 / Git</p>
-            <h2 id="act-6-title">Every change lands in Git.</h2>
+            <p class="kicker">06 / Your edit</p>
+            <h2 id="act-6-title">Make the last edit yourself.</h2>
             <p class="support">
-              Your changes and the agents' changes meet on one branch. Edit the diff, stage
-              it, and commit without leaving Build.
+              Read the diff, edit a file, stage it and commit. All in your browser.
             </p>
           </div>
           <picture class="poster">
@@ -314,33 +297,25 @@ const testStepLabel = "Test · runs archive.test.ts";
         <div class="content-container act__inner">
           <div class="act__copy">
             <p class="kicker">07 / Review</p>
-            <h2 id="act-7-title">See what needs you. Decide what ships.</h2>
+            <h2 id="act-7-title">Read the diff. Make the call.</h2>
             <p class="support">
-              Agents review the changes and flag what needs your judgment. Read the diff and
-              test results, then approve the merge. The other findings are there when you
-              need them.
+              When the agent finishes, the task moves to In review. Leave comments on the
+              diff and send them to the agent together. Merge it yourself when it's right.
+            </p>
+            <p class="concept-note">
+              Review screen concept. In Build today, review changes in the Changes view.
             </p>
           </div>
           <picture class="poster">
             <source media="(max-width: 767px)" srcset={poster(7).mobile} width="720" height="960" />
             <img src={poster(7).desktop} width="1440" height="900" alt="" decoding="async" loading="lazy" />
           </picture>
-          <div class="act__proof proof-pair">
+          <div class="act__proof">
             <article class="card">
-              <p class="card__label">Triage</p>
-              <ul class="triage">
-                <li>Needs you · 1: Search index behaviour changed</li>
-                <li>Verified <span class="count">3</span></li>
-                <li>Failed <span class="count">0</span></li>
-              </ul>
-            </article>
-            <article class="card finding">
-              <p class="card__label">The finding</p>
-              <h3>Archived results remain visible and now carry a clear label.</h3>
+              <p class="card__label">Diff · archive.ts</p>
               <pre><code><span class="line-removed">{diffRemoved}</span><span class="line-new">{diffAdded[0]}</span><span class="line-new">{diffAdded[1]}</span><span class="line-new line-you">{diffAddedByYou}</span><span class="line-new">{diffAddedClose}</span></code></pre>
-              <ul class="evidence">
-                <li>archive.test.ts passed</li>
-                <li>keeps archived items in search ✓</li>
+              <ul class="conversation">
+                <li data-from="you"><span class="who">Your comment</span>{reviewComment}</li>
               </ul>
             </article>
           </div>
@@ -353,16 +328,17 @@ const testStepLabel = "Test · runs archive.test.ts";
           <div class="act__copy">
             <p class="kicker">08 / Any screen</p>
             <div class="beat" data-beat="a">
-            <h2 id="act-8-title">Your work stays put. You don't have to.</h2>
+            <h2 id="act-8-title">Answer from your phone.</h2>
             <p class="support">
-              Check in, answer a question, review what's ready from your phone or tablet.
-              The agents keep working on the machine you chose.
+              Answer a question or review a change from your phone or tablet. Your agents
+              keep running on the computer you left them on.
             </p>
             </div>
             <div class="beat" data-beat="b">
-            <h2 class="beat-b">Your machine. Your call.</h2>
+            <h2 class="beat-b">Free and open source.</h2>
             <p class="support">
-              Free and open source. Run it on the hardware you choose.
+              Anyone can install Build and read the code. Accounts are invite-only while
+              Build is in alpha. Join the waitlist for access.
             </p>
             <div class="waitlist" id="waitlist" data-waitlist>
               <form class="waitlist-form" novalidate>
@@ -392,7 +368,6 @@ const testStepLabel = "Test · runs archive.test.ts";
             <div class="actions">
               <a class="link" href={repositoryUrlSlot} title={repositoryTitle}>GitHub</a>
             </div>
-            <p class="meta">Invite-only alpha.</p>
             </div>
           </div>
           <picture class="poster">
@@ -408,11 +383,10 @@ const testStepLabel = "Test · runs archive.test.ts";
       <section class="practical-section hosts-section" id="details" aria-labelledby="hosts-title">
         <div class="content-container practical-container">
           <header class="practical-heading">
-            <p class="section-kicker">Your host</p>
-            <h2 id="hosts-title">Your host does the work.</h2>
+            <p class="section-kicker">Setup</p>
+            <h2 id="hosts-title">Install Build where your agents run.</h2>
             <p>
-              Run your agents on the hardware you choose. Keep that computer online to
-              connect from another screen.
+              That computer does the work. Keep it online to connect from another device.
             </p>
           </header>
 
@@ -420,34 +394,45 @@ const testStepLabel = "Test · runs archive.test.ts";
             <details open>
               <summary>What do I install?</summary>
               <p>
-                Install Build on the computer that runs your agents. Connect to it from
-                your phone, tablet, or another computer.
+                Install the Build bridge on a Mac or Linux computer with your coding tools
+                installed. Connect from a browser, or use the desktop app on macOS or Linux.
               </p>
               <a href="/docs#architecture">Read the setup and connection guide</a>
             </details>
             <details>
-              <summary>What is a workspace?</summary>
-              <p>
-                A workspace is a copy-on-write copy of your checkout. Each agent works in
-                its own, so nothing it does touches your files or another agent's.
-              </p>
-            </details>
-            <details>
               <summary>Which agents can I use?</summary>
               <p>
-                Use coding tools already installed and signed in on your host. Build
-                supports Claude Code, Codex, and Pi today; OpenCode is planned.
+                Claude Code, Codex and Pi. Build runs the CLIs already installed and signed
+                in on your computer.
               </p>
               <a href="/docs#harnesses">See the maintained integration list</a>
             </details>
-            <details id="privacy-summary">
-              <summary>What does Build store?</summary>
+            <details>
+              <summary>What does it cost?</summary>
               <p>
-                Build stores your account, registered devices, connection diagnostics, and
-                optional browser push subscription. Those diagnostics exclude code and
-                prompts.
+                Build is free and open source under AGPL-3.0. You pay your model providers
+                as you do now.
+              </p>
+            </details>
+            <details id="privacy-summary">
+              <summary>What can Build's servers see?</summary>
+              <p>
+                Your account, your registered devices, connection diagnostics, and a push
+                subscription if you turn notifications on. Not your code or prompts. The
+                connection between your devices is end-to-end encrypted.
               </p>
               <a href="/privacy">Read the architecture and privacy details</a>
+            </details>
+            <details>
+              <summary>What is a workspace?</summary>
+              <p>
+                A separate copy of your project for a piece of work. Agents in the same
+                workspace share its files.
+              </p>
+            </details>
+            <details>
+              <summary>What isn't there yet?</summary>
+              <p>A native Windows bridge and OpenCode support are not available yet.</p>
             </details>
           </div>
         </div>

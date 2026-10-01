@@ -26,6 +26,13 @@ function linkedCss(page) {
     .join("\n");
 }
 
+// The static imports in a built module: `import` as a statement, followed by
+// a specifier, a binding list, a namespace or a default binding; never
+// `import(` (dynamic) or `import.meta`.
+function staticImports(source) {
+  return source.match(/(?:^|[;})\s])import(?:\s*["'{*]|\s+[\w$])/g) ?? [];
+}
+
 before(() => {
   execFileSync("npm", ["run", "build"], { cwd: projectDir, stdio: "pipe" });
   html = readFileSync(generatedPage, "utf8");
@@ -55,8 +62,16 @@ describe("the home page's script", () => {
     const source = readFileSync(`${landingDir}generated/${entries[0]}`, "utf8");
     // A static import is one more round trip before the hero can start,
     // after its boot has already chosen the film (#311 review).
-    assert.doesNotMatch(source, /^import[^;]*from\s*["']\.\//m);
-    assert.doesNotMatch(source, /(?:^|[;}])\s*import\s*\{[^}]*\}\s*from/);
+    assert.deepEqual(staticImports(source), []);
+  });
+
+  it("is read for every form of static import, and only those", () => {
+    for (const form of ['import"./a.js";', 'x();import{a as b}from"./a.js"', "import * as a from './a.js'", 'import a,{b}from"./a.js"', '}\nimport "./a.js"']) {
+      assert.equal(staticImports(form).length, 1, form);
+    }
+    for (const form of ['import("./a.js")', "import ('./a.js')", "import.meta.url", "reimport(a)", 'a.import"x"']) {
+      assert.deepEqual(staticImports(form), [], form);
+    }
   });
 });
 
@@ -82,8 +97,15 @@ describe("the notifications lab", () => {
 
   it("has every control the brief asks for", () => {
     for (const control of ["play", "restart", "scrub", "loop", "endless"]) assert.ok(lab.includes(`data-lab="${control}"`), control);
-    for (const speed of ["0.25", "0.5", "1"]) assert.ok(lab.includes(`data-lab-speed="${speed}"`), speed);
-    assert.ok(lab.includes('data-lab-variant="a"'));
+    const choices = { speed: ["0.25", "0.5", "1"], variant: ["a", "b", "c", "d", "e"], shape: ["dome", "full"], blur: ["copy", "filter"] };
+    for (const [key, values] of Object.entries(choices)) {
+      for (const value of values) assert.ok(lab.includes(`data-lab-key="${key}" data-lab-value="${value}"`), `${key} ${value}`);
+    }
+  });
+
+  it("keeps the wall's styles to the lab", () => {
+    assert.ok(linkedCss(lab).includes(".hero-wall"));
+    assert.ok(!linkedCss(html).includes(".hero-wall"));
   });
 });
 

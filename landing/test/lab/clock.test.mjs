@@ -2,7 +2,7 @@
 // elapsed seconds at the chosen speed.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { ENDLESS_WINDOW, advance, scrubbed, scrubberAt } from "../../src/lab/clock.js";
+import { ENDLESS_WINDOW, SCRUB_STEP, advance, scrubbed, scrubberAt } from "../../src/lab/clock.js";
 
 const base = { time: 0, playing: true, speed: 1, loop: false, endless: false };
 
@@ -54,5 +54,12 @@ describe("the scrubber", () => {
   it("moves within the lap it is on in endless mode", () => {
     assert.equal(scrubbed({ ...base, time: 1 }, 2.5), 2.5);
     assert.equal(scrubbed({ ...base, endless: true, time: ENDLESS_WINDOW * 2 + 3 }, 7), ENDLESS_WINDOW * 2 + 7);
+  });
+
+  it("stays on its lap when dragged to the end of the endless window", () => {
+    const clock = { ...base, endless: true, time: ENDLESS_WINDOW * 2 + 3 };
+    const time = scrubbed(clock, ENDLESS_WINDOW);
+    assert.equal(Math.floor(time / ENDLESS_WINDOW), 2);
+    assert.ok(Math.abs(scrubberAt({ ...clock, time }) - (ENDLESS_WINDOW - SCRUB_STEP)) < 1e-9);
   });
 });

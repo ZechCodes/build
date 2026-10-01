@@ -43,7 +43,7 @@ function remember() {
   if (query !== location.search) history.replaceState(null, "", query);
 }
 
-const rebuilds = (patch) => ["variant", "endless"].some((key) => key in patch && patch[key] !== state[key]);
+const rebuilds = (patch) => ["variant", "endless", "shape", "blur"].some((key) => key in patch && patch[key] !== state[key]);
 
 // What the controls do, each shown at once.
 const act = {

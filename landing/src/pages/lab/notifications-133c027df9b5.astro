@@ -6,11 +6,13 @@
 // the source is public, so it keeps out strangers, not the determined.
 //
 // The field is the home page's own (HeroField.astro, hero.css, hero/), so
-// what is tuned here is what ships. Variant A is the live flood.
+// what is tuned here is what ships. Variant A is the live flood; E, the
+// wall (#316), draws its own pills over the field (hero/wall.js), in the
+// shape and with the blur the last two switches choose.
 // lab.css brings the home page's sheets with it (see there).
 import "../../styles/lab.css";
 import HeroField from "../../components/HeroField.astro";
-import { SPEEDS } from "../../lab/state.js";
+import { BLURS, SHAPES, SPEEDS } from "../../lab/state.js";
 import { VARIANTS } from "../../lab/variants.js";
 
 const variants = Object.entries(VARIANTS);
@@ -41,12 +43,22 @@ const variants = Object.entries(VARIANTS);
       <div class="lab-row lab-row--choices">
         <div class="lab-group" role="group" aria-label="Variant">
           {variants.map(([id, variant]) => (
-            <button type="button" data-lab-variant={id} title={variant.title} aria-pressed="false">{variant.label}</button>
+            <button type="button" data-lab-key="variant" data-lab-value={id} title={variant.title} aria-pressed="false">{variant.label}</button>
           ))}
         </div>
         <div class="lab-group" role="group" aria-label="Speed">
           {SPEEDS.map((speed) => (
-            <button type="button" data-lab-speed={speed} aria-pressed="false">{speed}×</button>
+            <button type="button" data-lab-key="speed" data-lab-value={speed} aria-pressed="false">{speed}×</button>
+          ))}
+        </div>
+        <div class="lab-group" role="group" aria-label="Wall shape">
+          {SHAPES.map((shape) => (
+            <button type="button" data-lab-key="shape" data-lab-value={shape} aria-pressed="false">{shape}</button>
+          ))}
+        </div>
+        <div class="lab-group" role="group" aria-label="Wall blur">
+          {BLURS.map((blur) => (
+            <button type="button" data-lab-key="blur" data-lab-value={blur} title={`Blur out with ${blur === "copy" ? "a blurred copy" : "a filter"}`} aria-pressed="false">{blur}</button>
           ))}
         </div>
         <button type="button" data-lab="loop" aria-pressed="true">Loop</button>

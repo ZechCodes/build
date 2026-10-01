@@ -1,0 +1,78 @@
+/* The notification wall (#316, hero/wall-motion.js): pills in fixed slots
+   over the field, each placed by its centre and moved only by its own
+   animations. Only the lab imports this until the wall moves to the home
+   hero, when the home page's sheet takes it as it is. */
+.hero-wall {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* The dome: solid to --inner of its radii, gone by --fade, so it
+   dissolves rather than ends at a line. wall.js puts no slot where the
+   mask would hide it entirely. */
+.hero-wall[data-shape="dome"] {
+  -webkit-mask-image: radial-gradient(ellipse var(--rx) var(--ry) at 50% 0, #000 calc(var(--inner) * 100%), transparent calc(var(--fade) * 100%));
+  mask-image: radial-gradient(ellipse var(--rx) var(--ry) at 50% 0, #000 calc(var(--inner) * 100%), transparent calc(var(--fade) * 100%));
+}
+
+.hero-wall__pill,
+.hero-wall__request {
+  position: absolute;
+  translate: -50% -50%;
+}
+
+/* A slot's pill is unseen until its animation shows it. */
+.hero-wall__pill {
+  height: 2em;
+  opacity: 0;
+}
+
+/* The blurred copy, drawn blurred once by shadows (no filter), so fading
+   it costs the compositor no more than fading the pill. */
+.hero-wall__blur {
+  border-color: transparent;
+  background: rgba(12, 16, 15, 0.55);
+  box-shadow: 0 0 10px 4px rgba(12, 16, 15, 0.55);
+  color: transparent;
+  text-shadow: 0 0 6px var(--ink-dim);
+}
+
+.hero-wall__blur::before {
+  -webkit-mask-image: none;
+  mask-image: none;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: 0 0 5px 2px var(--ink-faint);
+}
+
+/* A request: its notification and, over it, the same one turned green. */
+.hero-wall__request {
+  display: inline-grid;
+  z-index: 2;
+  font-size: 1rem;
+  opacity: 0;
+}
+
+.hero-wall__request > .hero-pill {
+  grid-area: 1 / 1;
+  height: 2.1em;
+  --tier-opacity: 1;
+  --size: 1.08;
+  color: var(--ink);
+}
+
+.hero-wall__green {
+  border-color: var(--accent);
+  background: #0f2a1f;
+  box-shadow: 0 0 18px rgba(81, 255, 180, 0.45);
+  opacity: 0;
+}
+
+.hero-wall__green.hero-pill {
+  color: var(--accent);
+}
+
+.hero-wall__green::before {
+  background: var(--accent);
+}

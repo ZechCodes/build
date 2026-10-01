@@ -6,8 +6,11 @@
 //   HERO_PROBE_LABEL  a prefix for every file, e.g. "before" or "after"
 //   CHROMIUM_PATH     a system Chromium instead of Playwright's download
 //   CPU_THROTTLE      Chromium's CPU slowdown for the timing run (default 4)
-//   HERO_PROBE_VARIANT a variant of the notifications lab (a, b, c, d; #311)
+//   HERO_PROBE_VARIANT a variant of the notifications lab (a to e; #311)
 //                     to probe instead of the home page's entrance
+//   HERO_PROBE_QUERY  more of the lab's query, e.g. "shape=full&blur=filter"
+//                     for the wall (#316)
+//   HERO_PROBE_MEDIA  0 to leave out the recording and the strip of frames
 //
 // For each size it writes the field's DOM and compositor layer counts and
 // the frame intervals (main thread and compositor) of one throttled
@@ -25,6 +28,8 @@ const output = process.env.HERO_PROBE_DIR || "/tmp/build-hero-probe";
 const label = process.env.HERO_PROBE_LABEL || "probe";
 const throttle = Number(process.env.CPU_THROTTLE || 4);
 const variant = process.env.HERO_PROBE_VARIANT;
+const extraQuery = process.env.HERO_PROBE_QUERY ? `&${process.env.HERO_PROBE_QUERY}` : "";
+const media = process.env.HERO_PROBE_MEDIA !== "0";
 // The lab is unlisted; its path is landing/src/pages/lab/'s one page.
 const LAB_PATH = "/lab/notifications-133c027df9b5/";
 await fs.mkdir(output, { recursive: true });
@@ -92,7 +97,7 @@ async function open(size, extra = {}) {
 }
 
 // The lab plays its beat once, from the top.
-const labUrl = () => `${base}${LAB_PATH}?v=${variant}&speed=1&loop=0&endless=0`;
+const labUrl = () => `${base}${LAB_PATH}?v=${variant}&speed=1&loop=0&endless=0${extraQuery}`;
 const entranceUrl = (size) => (variant ? labUrl() : `${base}/?hero=play${size.name === "desktop" ? "&film=1" : ""}`);
 // The timing run leaves the film out: its stage loading on a throttled CPU
 // would swamp the field's own cost.
@@ -186,7 +191,9 @@ async function counts(size) {
       const box = pill.getBoundingClientRect();
       return box.width > 0 && box.right > 0 && box.left < innerWidth && box.bottom > below && box.top < innerHeight;
     });
-    return { nodes: element.querySelectorAll("*").length, pills: pills.length, visiblePills: visible.length, page: document.querySelectorAll("*").length };
+    // The wall's pills (#316), its blurred copies apart.
+    const wall = { wallPills: element.querySelectorAll(".hero-wall__pill:not(.hero-wall__blur)").length, wallCopies: element.querySelectorAll(".hero-wall__blur").length };
+    return { nodes: element.querySelectorAll("*").length, pills: pills.length, visiblePills: visible.length, ...wall, page: document.querySelectorAll("*").length };
   });
   await context.close();
   return { ...field, layers: tree.length, drawingLayers: tree.filter((layer) => layer.drawsContent).length };
@@ -231,8 +238,8 @@ try {
     results[size.name] = {
       counts: await counts(size),
       timing: await frameTiming(size),
-      video: await record(size),
-      frames: await strip(size),
+      video: media ? await record(size) : null,
+      frames: media ? await strip(size) : null,
     };
     console.log(size.name, JSON.stringify(results[size.name], null, 1));
   }

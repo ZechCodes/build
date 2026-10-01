@@ -11,10 +11,12 @@ protocol versions; see
 ### Changed
 
 - `build-bridge pair` prints a short block that fits 80 columns: the pairing
-  code, the fingerprint's short form, and one `approve at:` link to
-  `/app/#/pair/<code>`. The link opens Add a device with this device looked
-  up, after sign-in if needed; approving is still your press. The approve
-  screen shows the same short fingerprint, with the full one beneath (#319).
+  code, the fingerprint's first 32 hex digits (128 bits), and one
+  `approve at:` link to `/app/#/pair/<code>`. The link opens Add a device
+  with this device looked up, after sign-in if needed. The sheet says a link
+  opened it and warns that approving gives the machine access to your
+  account; approving is still your press. The approve screen shows the same
+  32 digits, with the full fingerprint beneath (#319).
 - When `pair` sets aside a revoked or unknown pairing, it now says so in two
   lines naming `~/.build`. The README says how to put the old identity back
   (#319).

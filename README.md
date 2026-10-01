@@ -53,10 +53,12 @@ curl -fsSL https://getbuild.ing/install-desktop.sh | BUILD_DESKTOP_VERSION=0.1.0
 ### Pairing
 
 The bridge installer runs `build-bridge pair`, which prints a pairing code, the
-short form of the device's key fingerprint, and an `approve at:` link. The link
-opens Build's **Add a device** screen with this device already looked up, after
-sign-in if you are signed out. Check that the fingerprint matches, then press
-**Approve & pair**. You can also type the code into **Settings → Devices → Add
+first 32 hex digits of the device's key fingerprint, and an `approve at:` link.
+The link opens Build's **Add a device** screen with this device already looked
+up, after sign-in if you are signed out. Check that the fingerprint matches,
+then press **Approve & pair**. Approve only a device you just ran the installer
+or `build-bridge pair` on: approving gives that machine access to your account,
+and anyone can send you a pairing link. You can also type the code into **Settings → Devices → Add
 a device**.
 
 If this machine's stored pairing was revoked, or the api no longer knows it,

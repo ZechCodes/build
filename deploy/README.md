@@ -219,6 +219,17 @@ when the ticket does not list the CDHash of the binary it just signed, which
 happens when the rebuilt binary differs from the one submitted. Leave that
 leg's input empty to submit afresh.
 
+### How it publishes
+
+The assets are staged in the runner's temp directory, never in the checkout
+(the repo's own `assets/` holds the brand artwork, and 0.2.4's publish tried to
+upload `assets/brand`). Before anything is created, `publish` fails if that
+staging directory holds anything but files. A new release is created as a
+**draft**, every asset is uploaded to it, and only then is it published and
+marked latest — so a publish that dies mid-upload leaves a draft no installer
+or self-update can see. Re-run `publish` to finish it; a release that is
+already public keeps its state and its latest flag on a re-run.
+
 ### What a release contains
 
 Asset names carry no version, so `releases/latest/download/<name>` is a stable
@@ -293,7 +304,8 @@ BUILD_BRIDGE_SKIP_SERVICE=1 sh <(curl -fsSL https://getbuild.ing/install.sh)
 
 Then pair and install the service for real on one macOS and one Linux machine —
 the workflow cannot prove either, and a re-run of `publish` is safe (the release
-is created only if missing and every asset uploads with `--clobber`).
+is created as a draft only if missing, every asset uploads with `--clobber`, and
+only a draft is published).
 
 ## Releasing and installing the desktop app
 

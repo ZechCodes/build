@@ -230,6 +230,27 @@ pub async fn register(
     }
 }
 
+/// How long the status client waits to connect to the api.
+pub const STATUS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long one status call may take in all, connect included.
+pub const STATUS_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The client `pair` and the install gate ask `/status` with. Bounded, so a
+/// hung api ends in an error (which retires nothing) instead of hanging the
+/// installer.
+pub fn status_client() -> reqwest::Client {
+    status_client_with(STATUS_CONNECT_TIMEOUT, STATUS_TIMEOUT)
+}
+
+/// [`status_client`] with the bounds given — tests use short ones.
+pub fn status_client_with(connect: Duration, total: Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(connect)
+        .timeout(total)
+        .build()
+        .expect("a client with only timeouts set always builds")
+}
+
 /// GET `{api}/api/devices/{device_id}/status` once.
 pub async fn fetch_status(
     client: &reqwest::Client,

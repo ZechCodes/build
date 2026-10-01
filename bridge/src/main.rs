@@ -893,7 +893,7 @@ async fn pair() {
 /// pairing after it starts fresh. An api that cannot answer stops `pair` here:
 /// nothing is retired on a guess.
 async fn retire_lapsed_approval(cfg: &BridgeConfig) {
-    let client = reqwest::Client::new();
+    let client = pairing::status_client();
     match pairing::retire_lapsed_approval(&client, &cfg.api_url, &cfg.identity_file).await {
         Ok(Some(retired)) => println!("{retired}"),
         Ok(None) => {}
@@ -997,7 +997,7 @@ async fn approved_owner(cfg: &BridgeConfig) -> Result<String, String> {
     let api_status = match &stored {
         None => Err("no identity".to_string()),
         Some(stored) => {
-            let client = reqwest::Client::new();
+            let client = pairing::status_client();
             pairing::fetch_status(&client, &cfg.api_url, &stored.device_id)
                 .await
                 .map_err(|error| error.to_string())

@@ -318,3 +318,43 @@ async fn an_unreachable_api_retires_nothing() {
     );
     assert_eq!(identity::load(&path).unwrap(), Some(id));
 }
+
+/// A hung api ends in an error inside the status client's bound, never a hang,
+/// and a stored approval it could not confirm stays where it is.
+#[tokio::test]
+async fn a_hung_api_times_out_and_retires_nothing() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/devices/.+/status$"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"approved": false, "state": "revoked"}))
+                .set_delay(Duration::from_secs(30)),
+        )
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (path, id) = stored(&dir, true);
+    let client =
+        pairing::status_client_with(Duration::from_millis(200), Duration::from_millis(300));
+
+    let started = std::time::Instant::now();
+    let outcome = pairing::retire_lapsed_approval(&client, &server.uri(), &path).await;
+
+    assert!(outcome.is_err(), "a timeout is not an answer");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(identity::load(&path).unwrap(), Some(id));
+}
+
+/// The installer's status client is bounded on both connect and the whole call.
+#[test]
+fn the_status_client_bounds_are_bounded() {
+    assert!(pairing::STATUS_CONNECT_TIMEOUT <= Duration::from_secs(15));
+    assert!(pairing::STATUS_TIMEOUT <= Duration::from_secs(60));
+    assert!(pairing::STATUS_CONNECT_TIMEOUT <= pairing::STATUS_TIMEOUT);
+    let _client = pairing::status_client();
+}

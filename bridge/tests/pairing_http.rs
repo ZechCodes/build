@@ -358,3 +358,81 @@ fn the_status_client_bounds_are_bounded() {
     assert!(pairing::STATUS_CONNECT_TIMEOUT <= pairing::STATUS_TIMEOUT);
     let _client = pairing::status_client();
 }
+
+/// Every way the api can fail to say "not approved" leaves the identity alone.
+async fn assert_retires_nothing(api_url: &str) {
+    let dir = tempfile::tempdir().unwrap();
+    let (path, id) = stored(&dir, true);
+    let outcome = pairing::retire_lapsed_approval(&pairing::status_client(), api_url, &path).await;
+    assert!(outcome.is_err(), "{api_url}: {outcome:?}");
+    assert_eq!(identity::load(&path).unwrap(), Some(id), "{api_url}");
+}
+
+#[tokio::test]
+async fn a_refused_connection_retires_nothing() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    assert_retires_nothing(&format!("http://127.0.0.1:{port}")).await;
+}
+
+#[tokio::test]
+async fn a_body_that_is_not_json_retires_nothing() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/devices/.+/status$"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("<html>not approved</html>"))
+        .mount(&server)
+        .await;
+    assert_retires_nothing(&server.uri()).await;
+}
+
+/// `approved` is required: if it ever gained a serde default, a body without
+/// it would read as "not approved" and retire a good identity.
+#[tokio::test]
+async fn a_body_without_approved_retires_nothing() {
+    let server =
+        api_answering_status(serde_json::json!({"owner_user_id": null, "state": "revoked"})).await;
+    assert_retires_nothing(&server.uri()).await;
+}
+
+/// Pairing against the wrong `BRIDGE_API_URL` retires a good identity, so the
+/// message says which api answered and how to put the old identity back.
+#[tokio::test]
+async fn the_retire_message_names_the_api_and_the_command_that_undoes_it() {
+    let server =
+        api_answering_status(serde_json::json!({"approved": false, "state": "unknown"})).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (path, _) = stored(&dir, true);
+    let retired = pairing::retire_lapsed_approval(&pairing::status_client(), &server.uri(), &path)
+        .await
+        .unwrap()
+        .unwrap();
+    let said = retired.to_string();
+    assert!(said.contains(&server.uri()), "{said}");
+    let undo = format!("mv '{}' '{}'", retired.kept_at.display(), path.display());
+    assert!(said.contains(&undo), "{said}");
+}
+
+/// What `pair` pairs after a retire is a new device: new id, new keys.
+#[tokio::test]
+async fn the_identity_minted_after_a_retire_is_a_new_device() {
+    let server =
+        api_answering_status(serde_json::json!({"approved": false, "state": "revoked"})).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (path, old) = stored(&dir, true);
+    pairing::retire_lapsed_approval(&pairing::status_client(), &server.uri(), &path)
+        .await
+        .unwrap()
+        .unwrap();
+    let new = identity::load_or_generate(&path, "my-box").unwrap();
+    assert_ne!(new.device_id, old.device_id);
+    assert_ne!(new.identity_public_key_b64, old.identity_public_key_b64);
+    assert_ne!(new.transport.public_key_b64, old.transport.public_key_b64);
+    assert!(!new.approved);
+    assert_eq!(
+        identity::load(&path).unwrap(),
+        Some(new),
+        "the new identity is saved"
+    );
+}

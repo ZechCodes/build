@@ -28,7 +28,7 @@ pub use launchd::Launchd;
 pub use systemd::Systemd;
 
 use crate::identity::StoredIdentity;
-use crate::pairing::{Lapse, StatusResponse};
+use crate::pairing::{Lapse, PairingError, StatusResponse};
 
 pub const SERVICE_LABEL: &str = "ing.getbuild.bridge";
 
@@ -44,6 +44,8 @@ pub enum InstallGateError {
     NoLongerPaired(Lapse),
     /// The status call failed — the api could not say either way.
     Unreachable { detail: String },
+    /// The identity file could not be read, or could not be moved aside.
+    IdentityFile { detail: String },
     /// The api confirmed the device but it is approved without an owner —
     /// never expected from the real pairing flow; refuse rather than guess.
     ApprovedWithoutOwner,
@@ -71,13 +73,31 @@ impl std::fmt::Display for InstallGateError {
             Self::Unreachable { detail } => write!(
                 f,
                 "could not confirm this device's pairing with the api ({detail}) — check \
-                 the connection and try again, or run `build-bridge pair`"
+                 the connection and try again"
+            ),
+            Self::IdentityFile { detail } => write!(
+                f,
+                "could not read or move this device's identity file ({detail}) — fix its \
+                 permissions or contents, then try again"
             ),
             Self::ApprovedWithoutOwner => write!(
                 f,
                 "the api reports this device approved but owned by no account — re-pair \
                  with `build-bridge pair`"
             ),
+        }
+    }
+}
+
+/// A pairing call that failed, as the refusal it is: the identity file's own
+/// trouble, or an api that did not answer.
+impl From<PairingError> for InstallGateError {
+    fn from(error: PairingError) -> Self {
+        match error {
+            PairingError::Identity(detail) => Self::IdentityFile { detail },
+            other => Self::Unreachable {
+                detail: other.to_string(),
+            },
         }
     }
 }
@@ -479,7 +499,7 @@ mod tests {
         assert_eq!(result, Ok("user-42".to_string()));
     }
 
-    /// Every refusal names a command the operator can actually run. `serve` is
+    /// Every refusal about pairing names a command the operator can actually run. `serve` is
     /// not one of them: it pairs only as a side effect of starting a daemon
     /// that never returns, which is why `pair` exists. None sends the operator
     /// to approve a device in Settings → Devices, which lists only devices
@@ -490,9 +510,6 @@ mod tests {
             InstallGateError::NotPaired,
             InstallGateError::PendingApproval,
             InstallGateError::NoLongerPaired(Lapse::Revoked),
-            InstallGateError::Unreachable {
-                detail: "503".into(),
-            },
             InstallGateError::ApprovedWithoutOwner,
         ] {
             let message = error.to_string();
@@ -503,6 +520,48 @@ mod tests {
             );
             assert!(!message.contains("approve this device"), "{message}");
         }
+    }
+
+    /// A status call that failed is a connection problem; an identity file
+    /// that could not be read or moved is a file problem, said as one.
+    #[test]
+    fn pairing_errors_map_to_the_refusal_that_names_their_cause() {
+        use crate::pairing::PairingError;
+        assert!(matches!(
+            InstallGateError::from(PairingError::Http("timed out".into())),
+            InstallGateError::Unreachable { .. }
+        ));
+        assert!(matches!(
+            InstallGateError::from(PairingError::Rejected("503".into())),
+            InstallGateError::Unreachable { .. }
+        ));
+        assert_eq!(
+            InstallGateError::from(PairingError::Identity("permission denied".into())),
+            InstallGateError::IdentityFile {
+                detail: "permission denied".into()
+            }
+        );
+    }
+
+    /// `pair` refuses with these too, so neither sends the operator back to
+    /// `pair`.
+    #[test]
+    fn connection_and_file_refusals_do_not_send_the_operator_round_in_a_circle() {
+        let unreachable = InstallGateError::Unreachable {
+            detail: "timed out".into(),
+        }
+        .to_string();
+        assert!(unreachable.contains("could not confirm"), "{unreachable}");
+        assert!(unreachable.contains("try again"), "{unreachable}");
+        assert!(!unreachable.contains("build-bridge pair"), "{unreachable}");
+        let file = InstallGateError::IdentityFile {
+            detail: "~/.build/identity.json: expected value".into(),
+        }
+        .to_string();
+        assert!(file.contains("identity file"), "{file}");
+        assert!(file.contains("~/.build/identity.json"), "{file}");
+        assert!(!file.contains("connection"), "{file}");
+        assert!(!file.contains("build-bridge pair"), "{file}");
     }
 
     #[test]

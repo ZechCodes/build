@@ -401,44 +401,36 @@ struct LoadedIdentity {
 async fn load_device_identity(config: &BridgeConfig) -> Result<LoadedIdentity, String> {
     match provisioned_identity() {
         Some(provisioned) => Ok(provisioned),
-        None => {
-            let identity_path = config.identity_file.clone();
-            let stored = match identity::load(&identity_path) {
-                Ok(Some(stored)) => stored,
-                Ok(None) => {
-                    let fresh = identity::generate(&identity::default_device_name());
-                    identity::save(&identity_path, &fresh).map_err(|error| {
-                        format!("could not persist identity to {identity_path:?}: {error}")
-                    })?;
-                    fresh
-                }
-                Err(error) => {
-                    return Err(format!(
-                        "could not load identity from {identity_path:?}: {error}"
-                    ))
-                }
-            };
-            let outcome = PairingOutcome::for_stored(stored.approved);
-            let pairing_code_override = std::env::var("BRIDGE_PAIRING_CODE").ok();
-            let client = reqwest::Client::new();
-            let approved = pairing::ensure_paired(
-                &client,
-                &config.api_url,
-                &config.web_url,
-                &identity_path,
-                stored,
-                Duration::from_secs(2),
-                pairing_code_override.as_deref(),
-            )
-            .await
-            .map_err(|error| format!("pairing failed: {error}"))?;
-            Ok(LoadedIdentity {
-                identity: identity::to_device_identity(&approved),
-                transport: approved.transport.clone(),
-                outcome,
-            })
-        }
+        None => load_stored_identity(config).await,
     }
+}
+
+/// The file-backed identity, minted on first use, paired before it returns.
+async fn load_stored_identity(config: &BridgeConfig) -> Result<LoadedIdentity, String> {
+    let identity_path = &config.identity_file;
+    let stored = identity::load_or_generate(identity_path, &identity::default_device_name())
+        .map_err(|error| {
+            format!("could not load or create identity at {identity_path:?}: {error}")
+        })?;
+    let outcome = PairingOutcome::for_stored(stored.approved);
+    let pairing_code_override = std::env::var("BRIDGE_PAIRING_CODE").ok();
+    let client = reqwest::Client::new();
+    let approved = pairing::ensure_paired(
+        &client,
+        &config.api_url,
+        &config.web_url,
+        identity_path,
+        stored,
+        Duration::from_secs(2),
+        pairing_code_override.as_deref(),
+    )
+    .await
+    .map_err(|error| format!("pairing failed: {error}"))?;
+    Ok(LoadedIdentity {
+        identity: identity::to_device_identity(&approved),
+        transport: approved.transport.clone(),
+        outcome,
+    })
 }
 
 /// The identity seeded into the environment, if all three keys are there.
@@ -867,21 +859,8 @@ async fn pair() {
     // Pairing talks https before anything else does; the provider must be in
     // place first.
     relay::install_crypto_provider();
-    let cfg = bridge_config();
-    if let Some(provisioned) = provisioned_identity() {
-        println!(
-            "provisioned device {} — nothing to pair",
-            provisioned.identity.device_id
-        );
-        return;
-    }
-    retire_lapsed_approval(&cfg).await;
-    let loaded = match load_device_identity(&cfg).await {
-        Ok(loaded) => loaded,
-        Err(error) => exit_startup(error),
-    };
-    match approved_owner(&cfg).await {
-        Ok(owner) => println!("{}", loaded.outcome.paired_to(&owner)),
+    match pair_device(&bridge_config(), provisioned_identity()).await {
+        Ok(line) => println!("{line}"),
         Err(reason) => {
             eprintln!("not paired: {reason}");
             std::process::exit(1);
@@ -889,24 +868,33 @@ async fn pair() {
     }
 }
 
-/// Retire a stored approval the api no longer honours, saying so, so the
-/// pairing after it starts fresh. An api that cannot answer stops `pair` here:
-/// nothing is retired on a guess.
-async fn retire_lapsed_approval(cfg: &BridgeConfig) {
-    let client = pairing::status_client();
-    match pairing::retire_lapsed_approval(&client, &cfg.api_url, &cfg.identity_file).await {
-        Ok(Some(retired)) => println!("{retired}"),
-        Ok(None) => {}
-        Err(error) => {
-            eprintln!(
-                "not paired: {}",
-                service::InstallGateError::Unreachable {
-                    detail: error.to_string()
-                }
-            );
-            std::process::exit(1);
-        }
+/// `pair`, in order, returning the line it ends on or why it refused: a
+/// provisioned identity returns before anything is asked; a stored approval
+/// the api dropped is retired before the identity is loaded, so the load
+/// mints a new device.
+async fn pair_device(
+    cfg: &BridgeConfig,
+    provisioned: Option<LoadedIdentity>,
+) -> Result<String, String> {
+    if let Some(provisioned) = provisioned {
+        return Ok(format!(
+            "provisioned device {} — nothing to pair",
+            provisioned.identity.device_id
+        ));
     }
+    let retired = pairing::retire_lapsed_approval(
+        &pairing::status_client(),
+        &cfg.api_url,
+        &cfg.identity_file,
+    )
+    .await
+    .map_err(|error| service::InstallGateError::from(error).to_string())?;
+    if let Some(retired) = retired {
+        println!("{retired}");
+    }
+    let loaded = load_stored_identity(cfg).await?;
+    let owner = approved_owner(cfg).await?;
+    Ok(loaded.outcome.paired_to(&owner))
 }
 
 /// Install the platform's service unit — a launchd LaunchAgent on macOS, a
@@ -1218,7 +1206,13 @@ fn mcp_stdio() {
 
 #[cfg(test)]
 mod tests {
-    use super::{kept_identity_note, service_environment, valid_release_repo, PairingOutcome};
+    use super::{
+        kept_identity_note, pair_device, service_environment, valid_release_repo, LoadedIdentity,
+        PairingOutcome,
+    };
+    use build_bridge::{config, identity, relay::DeviceIdentity, transport};
+    use wiremock::matchers::{method, path, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn release_repo_override_is_one_safe_owner_and_repo() {
@@ -1357,5 +1351,91 @@ mod tests {
         assert!(note.contains(&path.display().to_string()), "{note}");
         assert!(note.contains("`build-bridge pair`"), "{note}");
         assert!(note.contains("revoked"), "{note}");
+    }
+
+    fn config_for(api_url: &str, home: &std::path::Path) -> config::BridgeConfig {
+        let identity_file = home.join("identity.json");
+        config::resolve(
+            |key| match key {
+                "BRIDGE_API_URL" => Some(api_url.to_string()),
+                "BRIDGE_IDENTITY_FILE" => Some(identity_file.display().to_string()),
+                _ => None,
+            },
+            home,
+        )
+    }
+
+    fn stored_approved(path: &std::path::Path) -> identity::StoredIdentity {
+        let mut stored = identity::generate("my-box");
+        stored.approved = true;
+        identity::save(path, &stored).unwrap();
+        stored
+    }
+
+    /// The order `pair` depends on (#317): the revoked approval is retired
+    /// before the identity is loaded, so the load mints a new device, which
+    /// pairs and ends on the account line.
+    #[tokio::test]
+    async fn pair_retires_a_revoked_identity_before_loading_and_pairs_a_new_one() {
+        let server = MockServer::start().await;
+        let home = tempfile::tempdir().unwrap();
+        let cfg = config_for(&server.uri(), home.path());
+        let old = stored_approved(&cfg.identity_file);
+        Mock::given(method("GET"))
+            .and(path(format!("/api/devices/{}/status", old.device_id)))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"approved": false, "owner_user_id": null, "state": "revoked"}),
+            ))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/devices/register"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/api/devices/.+/status$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"approved": true, "owner_user_id": "u1", "state": "approved"}),
+            ))
+            .with_priority(2)
+            .mount(&server)
+            .await;
+
+        let line = pair_device(&cfg, None).await.expect("pairs a new device");
+
+        assert_eq!(line, "paired to account u1");
+        let new = identity::load(&cfg.identity_file).unwrap().unwrap();
+        assert_ne!(new.device_id, old.device_id);
+        assert!(new.approved);
+        let kept = home
+            .path()
+            .join(format!("identity.json.retired-{}", old.device_id));
+        assert_eq!(identity::load(&kept).unwrap(), Some(old));
+    }
+
+    /// A provisioned device returns before anything is asked or retired.
+    #[tokio::test]
+    async fn pair_with_a_provisioned_identity_asks_nothing_and_touches_no_file() {
+        let server = MockServer::start().await;
+        let home = tempfile::tempdir().unwrap();
+        let cfg = config_for(&server.uri(), home.path());
+        let stored = stored_approved(&cfg.identity_file);
+        let provisioned = LoadedIdentity {
+            identity: DeviceIdentity {
+                device_id: "bridge-dev".into(),
+                identity_private_key_b64: stored.identity_private_key_b64.clone(),
+            },
+            transport: transport::generate_transport_keypair(),
+            outcome: PairingOutcome::Provisioned,
+        };
+
+        let line = pair_device(&cfg, Some(provisioned)).await.unwrap();
+
+        assert_eq!(line, "provisioned device bridge-dev — nothing to pair");
+        assert_eq!(server.received_requests().await.unwrap().len(), 0);
+        assert_eq!(identity::load(&cfg.identity_file).unwrap(), Some(stored));
     }
 }

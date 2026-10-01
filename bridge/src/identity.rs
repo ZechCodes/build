@@ -23,6 +23,8 @@ pub enum IdentityError {
     Io(#[from] std::io::Error),
     #[error("serde error: {0}")]
     Serde(#[from] serde_json::Error),
+    #[error("device id {0:?} is not a plain UUID")]
+    NotADeviceId(String),
 }
 
 type Result<T> = std::result::Result<T, IdentityError>;
@@ -131,12 +133,34 @@ fn write_owner_only(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// Move `identity`'s file aside, beside itself and named for its device, so the
 /// next load finds none and mints a new identity. A rename, so the kept copy is
 /// the same owner-only file. Returns where it went.
+///
+/// The name is built from the device id read out of the file, so anything but
+/// a plain hyphenated UUID is refused: no id can steer the rename elsewhere.
 pub fn retire(path: &Path, identity: &StoredIdentity) -> Result<PathBuf> {
+    if !is_plain_uuid(&identity.device_id) {
+        return Err(IdentityError::NotADeviceId(identity.device_id.clone()));
+    }
     let mut kept_name = path.file_name().unwrap_or_default().to_os_string();
     kept_name.push(format!(".retired-{}", identity.device_id));
     let kept_at = path.with_file_name(kept_name);
     std::fs::rename(path, &kept_at)?;
     Ok(kept_at)
+}
+
+/// Whether `id` is a UUID in the lowercase hyphenated form `generate` writes.
+fn is_plain_uuid(id: &str) -> bool {
+    uuid::Uuid::parse_str(id).is_ok_and(|parsed| parsed.hyphenated().to_string() == id)
+}
+
+/// The stored identity at `path`, or a new unpaired one named `name`, saved
+/// there first so a pairing that is interrupted resumes on the same keys.
+pub fn load_or_generate(path: &Path, name: &str) -> Result<StoredIdentity> {
+    if let Some(stored) = load(path)? {
+        return Ok(stored);
+    }
+    let fresh = generate(name);
+    save(path, &fresh)?;
+    Ok(fresh)
 }
 
 /// Build the runtime [`DeviceIdentity`] the relay client needs from a stored identity.
@@ -250,6 +274,26 @@ mod tests {
         assert_eq!(load(&kept).unwrap(), Some(id));
         let mode = std::fs::metadata(&kept).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "a retired identity still holds private keys");
+    }
+
+    /// The kept file's name is built from the device id read out of the file,
+    /// so anything but a plain UUID is refused before a path is made from it.
+    #[test]
+    fn retire_refuses_a_device_id_that_is_not_a_plain_uuid() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.json");
+        for bad in [
+            "../../escape",
+            "a/b",
+            "{67e55044-10b1-426f-9247-bb680e5fe0c8}",
+            "",
+        ] {
+            let mut id = generate("my-box");
+            id.device_id = bad.to_string();
+            save(&path, &id).unwrap();
+            assert!(retire(&path, &id).is_err(), "{bad:?}");
+            assert_eq!(load(&path).unwrap(), Some(id), "{bad:?} left in place");
+        }
     }
 
     /// The relay identity is who the device is and the seed that signs its

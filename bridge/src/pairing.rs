@@ -127,6 +127,11 @@ impl StatusResponse {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RetiredApproval {
     pub lapse: Lapse,
+    /// The api that said "not approved" — named, because a wrong
+    /// `BRIDGE_API_URL` is the one way a good identity gets retired.
+    pub api_url: String,
+    /// Where the identity lived, and where the next pairing writes a new one.
+    pub identity_path: std::path::PathBuf,
     /// Where the old identity now lives.
     pub kept_at: std::path::PathBuf,
 }
@@ -135,12 +140,22 @@ impl std::fmt::Display for RetiredApproval {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "this machine's earlier pairing is no longer valid: {}. Pairing it again as a \
-             new device (the old identity is kept at {}).",
+            "this machine's earlier pairing is no longer valid: {} (asked {}). Pairing it \
+             again as a new device; the old identity is kept at {}. If that is not the api \
+             this machine belongs to, stop here and put the old identity back with: mv {} {}",
             self.lapse,
-            self.kept_at.display()
+            self.api_url,
+            self.kept_at.display(),
+            shell_quoted(&self.kept_at),
+            shell_quoted(&self.identity_path),
         )
     }
+}
+
+/// `path` in single quotes for a POSIX shell, so the printed command can be
+/// pasted whatever the path holds.
+fn shell_quoted(path: &Path) -> String {
+    format!("'{}'", path.display().to_string().replace('\'', r"'\''"))
 }
 
 // --- pure shaping -------------------------------------------------------------
@@ -306,10 +321,12 @@ pub async fn retire_lapsed_approval(
     api_url: &str,
     identity_path: &Path,
 ) -> Result<Option<RetiredApproval>> {
-    let stored = match identity::load(identity_path) {
-        Ok(Some(stored)) if stored.approved => stored,
-        Ok(_) => return Ok(None),
-        Err(e) => return Err(PairingError::Identity(e.to_string())),
+    let file_error = |e: identity::IdentityError| {
+        PairingError::Identity(format!("{}: {e}", identity_path.display()))
+    };
+    let stored = match identity::load(identity_path).map_err(file_error)? {
+        Some(stored) if stored.approved => stored,
+        _ => return Ok(None),
     };
     let Some(lapse) = fetch_status(client, api_url, &stored.device_id)
         .await?
@@ -317,9 +334,13 @@ pub async fn retire_lapsed_approval(
     else {
         return Ok(None);
     };
-    let kept_at = identity::retire(identity_path, &stored)
-        .map_err(|e| PairingError::Identity(e.to_string()))?;
-    Ok(Some(RetiredApproval { lapse, kept_at }))
+    let kept_at = identity::retire(identity_path, &stored).map_err(file_error)?;
+    Ok(Some(RetiredApproval {
+        lapse,
+        api_url: api_url.to_string(),
+        identity_path: identity_path.to_path_buf(),
+        kept_at,
+    }))
 }
 
 /// Ensure the device is registered and approved. If `stored.approved`, returns it

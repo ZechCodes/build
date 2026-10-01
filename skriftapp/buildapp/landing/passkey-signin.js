@@ -203,7 +203,10 @@ export function withArrivalFragment(redirect, location) {
   if (!location.hash) return redirect;
   const target = new URL(redirect, location.href);
   if (target.origin !== location.origin || target.hash) return redirect;
-  return `${target.pathname}${target.search}${location.hash}`;
+  // Absolute, from the parsed address: a path that starts with `//` is never
+  // read back as a protocol-relative address on another host.
+  target.hash = location.hash;
+  return target.href;
 }
 
 // --- the page -------------------------------------------------------------------

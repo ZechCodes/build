@@ -318,14 +318,22 @@ test("a stale security token says to try again, which works: the fresh one is al
 const ARRIVED = { origin: "https://getbuild.ing", href: "https://getbuild.ing/auth/login?next=/app/#/pair/ZSAC-ABU6", hash: "#/pair/ZSAC-ABU6" };
 
 test("a signed-in visitor goes on with the fragment they arrived with", () => {
-  assert.equal(withArrivalFragment("/app/", ARRIVED), "/app/#/pair/ZSAC-ABU6");
-  assert.equal(withArrivalFragment("https://getbuild.ing/app/?x=1", ARRIVED), "/app/?x=1#/pair/ZSAC-ABU6");
+  assert.equal(withArrivalFragment("/app/", ARRIVED), "https://getbuild.ing/app/#/pair/ZSAC-ABU6");
+  assert.equal(withArrivalFragment("https://getbuild.ing/app/?x=1", ARRIVED), "https://getbuild.ing/app/?x=1#/pair/ZSAC-ABU6");
 });
 
 test("a redirect with its own fragment, or to another origin, is left as the server said", () => {
   assert.equal(withArrivalFragment("/app/#/inbox", ARRIVED), "/app/#/inbox");
   assert.equal(withArrivalFragment("https://elsewhere.example/app/", ARRIVED), "https://elsewhere.example/app/");
   assert.equal(withArrivalFragment("//elsewhere.example/app/", ARRIVED), "//elsewhere.example/app/");
+});
+
+// A same-origin redirect whose path starts with `//` must not come back as a
+// protocol-relative address that leaves the site (#319 review).
+test("a same-origin path that starts with // stays on this site", () => {
+  const out = withArrivalFragment("https://getbuild.ing//evil.example", ARRIVED);
+  assert.equal(new URL(out, ARRIVED.href).origin, "https://getbuild.ing");
+  assert.equal(out, "https://getbuild.ing//evil.example#/pair/ZSAC-ABU6");
 });
 
 test("a visitor who arrived with no fragment goes exactly where the server said", () => {

@@ -1,0 +1,7 @@
+{#- Skrift's flash messages in Build's frame, for pages whose context may carry them. -#}
+{% for msg in flash_messages or [] %}
+<p class="signin-flash" role="status">{{ msg.message }}</p>
+{% endfor %}
+{% if flash %}
+<p class="signin-flash" role="status">{{ flash }}</p>
+{% endif %}

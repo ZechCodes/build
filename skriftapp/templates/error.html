@@ -1,0 +1,17 @@
+{#- Every HTML error page Skrift renders (/auth/* failures among them) in Build's
+    frame. Skrift's handlers pass only status_code, message, user, site_name and
+    csrf_field, and hint when the app fails to start, so this page uses none of the
+    request-bound globals and carries no script. -#}
+{% extends "auth/_build_page.html" %}
+
+{% block title %}Error {{ status_code }} — Build{% endblock %}
+
+{% block content %}
+    <p class="signin-kicker">Error {{ status_code }}</p>
+    <h1>{% block heading %}That didn&rsquo;t work{% endblock %}</h1>
+    <p class="signin-lead">{% block lead %}{{ message or "An unexpected error occurred." }}{% endblock %}</p>
+    {% if hint %}
+    <p class="signin-flash signin-preformatted">{{ hint }}</p>
+    {% endif %}
+    <p class="signin-panel"><a class="signin-button" href="/">Go to the home page</a></p>
+{% endblock %}

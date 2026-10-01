@@ -1,0 +1,60 @@
+{#- /auth/passkeys: add and remove the signed-in account's passkeys. Overrides Skrift's
+    auth/passkeys.html with the same context, endpoints and forms in Build's frame;
+    the ceremony runs in buildapp/landing/passkey-ceremony.js. -#}
+{% extends "auth/_build_page.html" %}
+
+{% block title %}Passkeys — Build{% endblock %}
+
+{% block scripts %}{% if descriptor.is_available %}<script type="module" src="/landing/passkey-ceremony.js" nonce="{{ csp_nonce() }}"></script>{% endif %}{% endblock %}
+
+{% block content %}
+    <p class="signin-kicker">Account</p>
+    <h1>Passkeys</h1>
+    <p class="signin-lead">The passkeys for {{ user.email or user.name or "your account" }}.</p>
+    {% include "auth/_flash.html" %}
+
+    <section class="signin-panel" aria-labelledby="passkey-add-heading">
+        <h2 id="passkey-add-heading">Add a passkey</h2>
+        {% if descriptor.is_available %}
+        <form id="passkey-registration-form" class="signin-form">
+            {{ csrf_field() }}
+            <label for="passkey-name">Name <span class="signin-optional">(optional)</span></label>
+            <input id="passkey-name" class="signin-input" type="text" name="display_name"
+                   placeholder="MacBook Pro, YubiKey, iPhone">
+            <button class="signin-button" type="submit">Add a passkey</button>
+            <p id="passkey-status" class="signin-status" role="status" aria-live="polite"></p>
+        </form>
+        <noscript><p class="signin-flash">Adding a passkey needs JavaScript. Turn it on for this site and reload the page.</p></noscript>
+        {% else %}
+        <p class="signin-flash" role="status">{{ descriptor.availability_note or "Passkeys aren't available right now. Try again in a few minutes." }}</p>
+        {% endif %}
+    </section>
+
+    <section class="signin-panel" aria-labelledby="passkey-list-heading">
+        <h2 id="passkey-list-heading">Your passkeys</h2>
+        {% if enrollments|length == 1 %}
+        <p class="signin-flash">This is your only passkey. If it is also how you sign in, removing it locks you out, so add another first.</p>
+        {% endif %}
+        <ul class="signin-list">
+            {% for enrollment in enrollments %}
+            <li class="signin-list-item">
+                <div>
+                    <strong>{{ enrollment.display_name or "Unnamed passkey" }}</strong>
+                    <p class="signin-hint">
+                        Added {{ enrollment.enrolled_at.strftime('%Y-%m-%d %H:%M') if enrollment.enrolled_at else "recently" }}
+                        {%- if enrollment.last_used_at %} · last used {{ enrollment.last_used_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}
+                    </p>
+                </div>
+                {#- csrf_field() below is Skrift's token; the rule looks for Django's. -#}
+                <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+                <form method="post" action="/auth/passkeys/{{ enrollment.id }}/delete">
+                    {{ csrf_field() }}
+                    <button class="signin-button signin-button-secondary signin-button-small" type="submit">Remove</button>
+                </form>
+            </li>
+            {% else %}
+            <li class="signin-hint">No passkeys yet.</li>
+            {% endfor %}
+        </ul>
+    </section>
+{% endblock %}

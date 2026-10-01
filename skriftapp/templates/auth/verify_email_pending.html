@@ -1,0 +1,14 @@
+{#- /auth/verify-email/pending: overrides Skrift's page with the same context
+    (masked_email) in Build's frame. -#}
+{% extends "auth/_build_page.html" %}
+
+{% block title %}Check your email — Build{% endblock %}
+
+{% block content %}
+    <h1>Check your email</h1>
+    <p class="signin-lead">
+        {% if masked_email %}We sent a confirmation link to <strong>{{ masked_email }}</strong>.{% else %}We sent you a confirmation link.{% endif %}
+        Open it in this browser to finish linking your sign-in method. The link expires in 15 minutes.
+    </p>
+    <p class="signin-panel signin-hint">If you didn&rsquo;t start this sign-in, close this tab and ignore the email.</p>
+{% endblock %}

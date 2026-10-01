@@ -297,3 +297,44 @@ a.signin-button-secondary,
   color: var(--ink);
   border: 1px solid var(--line-strong);
 }
+
+/* A multi-line note shown as written, such as error.html's start-up hint. */
+.signin-preformatted {
+  white-space: pre-line;
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+}
+
+/* /auth/passkeys: one row per passkey, its Remove button at the end. */
+.signin-list {
+  display: grid;
+  gap: 0;
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.signin-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-block: 0.85rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.signin-list-item:first-child {
+  border-top: 1px solid var(--line);
+}
+
+.signin-list-item form {
+  margin: 0;
+}
+
+.signin-button.signin-button-small {
+  width: auto;
+  min-height: 0;
+  margin-top: 0;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.875rem;
+}

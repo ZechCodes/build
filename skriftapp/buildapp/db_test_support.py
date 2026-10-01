@@ -48,8 +48,13 @@ TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 
 def in_memory_session_maker() -> async_sessionmaker[AsyncSession]:
     """A session maker over a fresh in-memory database."""
-    engine = create_async_engine(IN_MEMORY_DATABASE_URL, poolclass=StaticPool)
+    engine = _new_engine(IN_MEMORY_DATABASE_URL, poolclass=StaticPool)
     return async_sessionmaker(engine, expire_on_commit=False)
+
+
+def _new_engine(url: str, **options) -> AsyncEngine:
+    """The one place a test database engine is built."""
+    return create_async_engine(url, **options)
 
 
 def engine_for(session_maker: async_sessionmaker[AsyncSession]) -> AsyncEngine:
@@ -63,6 +68,14 @@ async def create_skrift_tables(engine: AsyncEngine) -> None:
     user's roles the way it does in production."""
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
+
+
+async def create_skrift_schema_in(database: Path) -> None:
+    """Skrift's whole schema in a SQLite file, for a test that runs the real app
+    (``skrift.asgi.create_app``) over that file instead of its migrations."""
+    engine = _new_engine(f"sqlite+aiosqlite:///{database}")
+    await create_skrift_tables(engine)
+    await engine.dispose()
 
 
 async def add_account(session: AsyncSession, email: str, *, administrator: bool = False) -> UUID:

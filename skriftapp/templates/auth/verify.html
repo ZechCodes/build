@@ -1,0 +1,20 @@
+{#- /auth/verify: the second-factor methods a pending sign-in can finish with.
+    Overrides Skrift's auth/verify.html with the same context in Build's frame. -#}
+{% extends "auth/_build_page.html" %}
+
+{% block title %}Verify your sign-in — Build{% endblock %}
+
+{% block content %}
+    <p class="signin-kicker">One more step</p>
+    <h1>Verify your sign-in</h1>
+    <p class="signin-lead">
+        {% if pending_auth.email %}Signed in as <strong>{{ pending_auth.email }}</strong>. {% elif pending_auth.name %}Signed in as <strong>{{ pending_auth.name }}</strong>. {% endif -%}
+        Choose how to confirm it&rsquo;s you.
+    </p>
+    {% include "auth/_flash.html" %}
+    <section class="signin-panel signin-methods">
+        {% for method in methods %}
+        <a class="signin-button" href="{{ method.verify_path }}">Continue with {{ method.name }}</a>
+        {% endfor %}
+    </section>
+{% endblock %}

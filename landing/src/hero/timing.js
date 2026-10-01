@@ -113,6 +113,25 @@ export function pillPath({ x, y }, speed, { origin, reach, timing, start, nudge 
   };
 }
 
+// A landing request ends at this share of its size, as a row's height.
+export const LANDED_SCALE = 0.6;
+
+/** GSAP's power2.inOut, for a flight run off GSAP's clock (the lab page). */
+export function power2InOut(p) {
+  return p < 0.5 ? 4 * p ** 3 : 1 - (-2 * p + 2) ** 3 / 2;
+}
+
+/** A request `p` of the way (already eased) from where it stopped to its
+ *  row: `base` is its offset at take-off, `from` its centre then and `to`
+ *  the landing point. It shrinks to a row's size and fades over the last
+ *  stretch. */
+export function requestFlight(p, { base, from, to }) {
+  return {
+    transform: `translate(${base[0] + (to[0] - from[0]) * p}px, ${base[1] + (to[1] - from[1]) * p}px) scale(${1 + (LANDED_SCALE - 1) * p})`,
+    opacity: p < 0.6 ? 1 : Math.max(0, 1 - (p - 0.6) / 0.4),
+  };
+}
+
 // The laptop's way in: a controlled quarter turn from the right, the lid
 // part way open, rising a little. Less of everything on a phone.
 const ENTRANCE = Object.freeze({

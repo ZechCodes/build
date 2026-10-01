@@ -2,9 +2,9 @@
 
 **Your agents. Your machine. Your call.**
 
-You set a goal from any device. An agent on *your* hardware writes a plan; you
-review it, leave notes and approve. The agent builds, you review the diff,
-comment and approve, and Build merges.
+You set a goal from any device. An agent on *your* hardware builds it on its
+own branch; you review the diff, comment and send it back, and when it is right
+you merge.
 
 ![The Build task board: tasks in Backlog, Ready, In progress, In review and Done, with the agents working on them](docs/images/task-board.png)
 
@@ -66,8 +66,8 @@ machine via the bridge. Build's job is **orchestration**: starting work,
 watching it through git, and gating the transitions where human judgment
 matters. Think of it as tmux for coding agents, in your browser and end-to-end
 encrypted. You talk to agents in their threads from the compose box, review
-their plans and diffs with batched comments, and can drop into an agent's
-terminal at any point, though you never have to.
+their diffs with batched comments, merge from the same screen, and can drop
+into an agent's terminal at any point, though you never have to.
 
 ```
                     getbuild.ing                relay.getbuild.ing
@@ -95,7 +95,7 @@ to.
 | `bridge/` | user machines | Rust device daemon: worktree-per-task, full-PTY harnesses, Build's MCP tools for agents, git-diff watcher, durable task store, E2EE transport, device pairing |
 | `bridge/src/bin/relay.rs` | relay.getbuild.ing | Rust ciphertext-only broker: `/ws/device` (Ed25519 auth) + `/ws/client` (gateway-token auth). Carries session setup and `rtc.*` signaling and refuses everything else; presence and transport keys are the api's |
 | `skriftapp/` | getbuild.ing | Python app server (Skrift): passkey auth, device registry/approval, gateway tokens, web push, the admin transport page (how sessions reach bridges: direct / TURN / relay), serves the SPA |
-| `spa/` | built into skriftapp | Vite vanilla-ES-module web client: task board, agent threads, plan/diff review, terminal drawer; all deps self-hosted, zero CDN |
+| `spa/` | built into skriftapp | Vite vanilla-ES-module web client: task board, agent threads, diff review, terminal drawer; all deps self-hosted, zero CDN |
 | `desktop/` | user desktops | Sandboxed Electron client for the hosted SPA; connects to a separately installed bridge the same way the browser does |
 | `web/` | dev only | Node E2EE test/QA harnesses |
 | `deploy/` | | podman compose stack + k8s manifests and the cutover runbook |

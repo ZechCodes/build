@@ -51,6 +51,11 @@ WORKDIR /build/repo/landing
 COPY landing/package.json landing/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY landing/ ./
+# The hero's notification field draws the harness marks from the SPA's own
+# files (HeroField.astro imports them ?raw), one source for both. Every
+# import outside landing/ needs its COPY here; landing/test/image-context.test.mjs
+# fails when one is missing.
+COPY spa/src/assets/harnesses/ /build/repo/spa/src/assets/harnesses/
 RUN npm run build
 # → emits /build/repo/skriftapp/buildapp/landing/generated/ (astro outDir).
 # landing/node_modules is excluded from the build context (.containerignore),

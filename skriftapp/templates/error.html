@@ -11,7 +11,16 @@
     <h1>{% block heading %}That didn&rsquo;t work{% endblock %}</h1>
     <p class="signin-lead">{% block lead %}{{ message or "An unexpected error occurred." }}{% endblock %}</p>
     {% if hint %}
-    <p class="signin-flash signin-preformatted">{{ hint }}</p>
+    <pre class="signin-flash signin-preformatted">{{ hint }}</pre>
     {% endif %}
+    {#- Skrift passes `user` when the session cookie holds a signed-in account. -#}
+    {% if user %}
+    <div class="signin-actions">
+        <a class="signin-button" href="/app/">Open Build</a>
+        <a class="signin-button signin-button-secondary" href="/">Go to the home page</a>
+    </div>
+    <p class="signin-hint signin-aside">Signed in{% if user.email %} as {{ user.email }}{% endif %}. <a href="/auth/logout">Log out</a></p>
+    {% else %}
     <p class="signin-panel"><a class="signin-button" href="/">Go to the home page</a></p>
+    {% endif %}
 {% endblock %}

@@ -87,7 +87,9 @@ export function describeRefusal(kind, { status, payload }) {
   return SERVER_MESSAGES[code] || FALLBACK[kind];
 }
 
-/** The sentence for an error the browser threw: WebAuthn's DOMExceptions and fetch's TypeError. */
+/** The sentence for an error thrown along the way: WebAuthn's DOMExceptions, and
+ *  Unreachable when a POST never got an answer. Anything else (a malformed answer
+ *  the codecs could not read, say) is the plain fallback. */
 export function describeError(kind, error) {
   switch (error && error.name) {
     case "NotAllowedError":
@@ -101,7 +103,7 @@ export function describeError(kind, error) {
       return "Passkeys only work on getbuild.ing. Open the page there and try again.";
     case "NotSupportedError":
       return "This device can't use a passkey here. Try another browser or device.";
-    case "TypeError":
+    case "Unreachable":
       return "Couldn't reach Build. Check your connection and try again.";
     default:
       return FALLBACK[kind];
@@ -109,6 +111,14 @@ export function describeError(kind, error) {
 }
 
 // --- the ceremonies -----------------------------------------------------------
+
+/** A POST that got no answer at all: fetch rejected. */
+export class Unreachable extends Error {
+  constructor(cause) {
+    super("unreachable", { cause });
+    this.name = "Unreachable";
+  }
+}
 
 class Refused extends Error {
   constructor(response) {
@@ -124,7 +134,7 @@ class Refused extends Error {
  * - `credentials`: navigator.credentials.
  * - `post(path, fields)`: POSTs to the page's endpoint base (/auth/passkeys/ or
  *   /auth/verify/<key>/) with the CSRF token, resolves `{ ok, status, payload }`;
- *   rejects only when the network does.
+ *   rejects with Unreachable only when the network does.
  *
  * Every outcome is `{ added: true }`, `{ redirect }`, `{ error }` (a sentence), or
  * `{ ignored: true }` for a press that arrived while another ceremony was running.
@@ -180,10 +190,13 @@ export function createCeremonies({ credentials, post }) {
 
 /**
  * POSTs to `${base}${path}` with the page's CSRF token. Skrift rotates the token on
- * every check it passes; its success answers carry the new one, but a refusal after
- * the check may not, which would leave every form on the page stale. So after any
- * answer without a token, the poster reads the current one from a fresh GET of this
- * page, which renders the session's token into its forms.
+ * every check it passes. Its options answers carry the new one, but a refusal after
+ * the check may not, which would leave every form on the page stale. So after a
+ * refusal without a token, the poster reads the current one from a fresh GET of this
+ * page, which renders the session's token into its forms. A success needs no fresh
+ * token: the page reloads or leaves next, and on verify a GET would land after
+ * Skrift has cleared the pending sign-in and queue a "session is no longer
+ * available" message for the next page.
  */
 export function csrfPoster({ document, fetchImpl, base, pageUrl }) {
   const inputs = () => document.querySelectorAll('input[name="_csrf"]');
@@ -206,10 +219,14 @@ export function csrfPoster({ document, fetchImpl, base, pageUrl }) {
     const body = new FormData();
     body.append("_csrf", inputs()[0]?.value || "");
     for (const [name, value] of Object.entries(fields)) body.append(name, value);
-    const response = await fetchImpl(`${base}${path}`, { method: "POST", body, credentials: "same-origin" });
+    const response = await fetchImpl(`${base}${path}`, { method: "POST", body, credentials: "same-origin" }).catch(
+      (error) => {
+        throw new Unreachable(error);
+      },
+    );
     const payload = await response.json().catch(() => ({}));
     if (typeof payload.csrf_token === "string" && payload.csrf_token) store(payload.csrf_token);
-    else await refreshToken();
+    else if (!response.ok) await refreshToken();
     return { ok: response.ok, status: response.status, payload };
   };
 }

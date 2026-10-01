@@ -108,3 +108,42 @@ export const TEST_DIFF = [
   { t: "add", n: 7, text: '    expect(search("launch notes")).toContain(archived);' },
   { t: "add", n: 8, text: "  });" },
 ];
+
+// The hero's screen: the project's Tasks dashboard on Needs you, holding the
+// three requests the landing's notification field converges on. The rows'
+// reasons are the app's own (core/trackerAttentionModel.js, the earlier
+// rule): a task In review, one assigned to you, and one with an unread agent
+// comment from a watched task's inbox row.
+const heroTask = (number, title, status, assignee, extra = {}) => ({
+  id: `task-${number}`, number, title, status, state: "open", priority: "medium", assignee,
+  identities: {}, labels: [], links: { commits: [] }, ...extra,
+});
+const heroAgent = (id) => ({ kind: "agent", agent_id: id });
+export const HERO_TASKS = [
+  heroTask(82, "Show branch divergence in the toolbar", "in_review", heroAgent("agent-review"), { unread_count: 1 }),
+  heroTask(85, "Move session tokens to the new store", "in_progress", { kind: "user" }, { unread_count: 1 }),
+  heroTask(86, "Rank search results by recency or relevance", "in_progress", null, { watched: true, unread_count: 2, read_through: "tc-01M3TA00000000000000000000" }),
+  heroTask(83, "Remember expanded folders in the file tree", "in_progress", heroAgent("agent-tree")),
+  heroTask(84, "Retry dropped uploads", "in_progress", heroAgent("agent-upload")),
+  heroTask(87, "Keyboard moves between board columns", "ready", null),
+  heroTask(88, "Offline banner for the files pane", "backlog", null),
+  heroTask(89, "Explain local host pairing", "backlog", null),
+];
+// Which hero row each of the landing's attention pills lands on.
+export const HERO_ROWS = { review: "task-82", approval: "task-85", question: "task-86" };
+export const HERO_PROJECT_KEY = "workshop|project-build";
+export const HERO_FEED = {
+  projects: [{ projectKey: HERO_PROJECT_KEY, name: PROJECT.name }],
+  items: [
+    { projectKey: HERO_PROJECT_KEY, entity_id: "run-archive-search", agents: [
+      { id: "agent-review", name: "Review", working: false },
+      { id: "agent-tree", name: "Implement", working: true },
+      { id: "agent-upload", name: "Upload fixer", working: true },
+    ] },
+    { projectKey: HERO_PROJECT_KEY, kind: "tracker_task", task_id: "task-86", unread: 2 },
+  ],
+};
+export const HERO_DETAILS = new Map([["task-86", {
+  task: { id: "task-86", read_through: "tc-01M3TA00000000000000000000" },
+  timeline: [{ id: "tc-01M3TB00000000000000000000", type: "comment", author: { kind: "agent", agent_id: "agent-pi" }, body: "Which approach do you want?" }],
+}]]);

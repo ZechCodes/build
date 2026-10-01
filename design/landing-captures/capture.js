@@ -8,7 +8,7 @@ import "../../spa/src/styles/fileEditor.css";
 import { renderSystemShell } from "./system-ui.js";
 import { paintBubbles } from "./app-shell.js";
 import { conversationScene, editorScene, gitScene, mergedScene, triageScene } from "./workspace-scenes.js";
-import { boardScene, builderScene, teamScene } from "./project-scenes.js";
+import { boardScene, builderScene, needsYouScene, teamScene } from "./project-scenes.js";
 
 const query = new URLSearchParams(location.search);
 const scene = query.get("scene") || "ui10-editor";
@@ -22,6 +22,7 @@ const reviewScene = () => (profile === "ipad" ? triageScene(state) : mergedScene
 const scenes = {
   ui03: () => conversationScene(state),
   ui05: reviewScene,
+  "ui09-needs-you": needsYouScene,
   "ui10-editor": editorScene,
   "ui12-tasks": boardScene,
   "ui13-team": teamScene,

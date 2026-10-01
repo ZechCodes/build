@@ -17,7 +17,7 @@ await mkdir(derivatives, { recursive: true });
 const launchOptions = { headless: true };
 if (process.env.CHROMIUM_PATH) launchOptions.executablePath = process.env.CHROMIUM_PATH;
 const browser = await chromium.launch(launchOptions);
-const allScenes = ["ui03", "ui05", "ui10-editor", "ui12-tasks", "ui13-team", "ui14-git", "ui15-triage", "ui16-builder"];
+const allScenes = ["ui03", "ui05", "ui09-needs-you", "ui10-editor", "ui12-tasks", "ui13-team", "ui14-git", "ui15-triage", "ui16-builder"];
 const allProfiles = [
   { name: "macbook", width: 1512, height: 982, scale: 2, native: [3024, 1964] },
   { name: "ipad", width: 1210, height: 834, scale: 2, native: [2420, 1668] },
@@ -126,6 +126,12 @@ for (const profile of profiles) {
       }
       const validation = await assertSystemSafeAreas(page, profile);
       const stem = `${scene}${suffix}-${profile.name}`;
+      // Where each Tasks dashboard row sits on the texture: the landing hero
+      // lands its notifications on these (landing/src/hero/anchors.js).
+      const taskRows = await page.evaluate(() => [...document.querySelectorAll(".task-dashboard-row[data-task]")].map((row) => {
+        const { left, top, width, height } = row.getBoundingClientRect();
+        return { task: row.dataset.task, rect: [left, top, width, height].map((value) => Math.round(value * 100) / 100) };
+      }));
       captureResults.push({
         state: `${scene}${suffix}`,
         profile: profile.name,
@@ -135,6 +141,7 @@ for (const profile of profiles) {
         appBounds: reportRectangle(validation.host),
         systemExclusions: Object.fromEntries(Object.entries(validation.exclusions).map(([name, rectangle]) => [name, reportRectangle(rectangle)])),
         issues: validation.issues,
+        ...(taskRows.length ? { taskRows } : {}),
       });
       const masterPath = resolve(output, `${stem}.png`);
       await page.screenshot({ path: masterPath });

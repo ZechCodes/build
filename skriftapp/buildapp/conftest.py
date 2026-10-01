@@ -12,6 +12,7 @@ from buildapp.db_test_support import (
     in_memory_session_maker,
 )
 from buildapp.email_test_support import RecordingEmailBackend
+from buildapp.skrift_app_test_support import build_skrift_app
 
 
 @pytest_asyncio.fixture()
@@ -28,3 +29,10 @@ async def db():
 @pytest.fixture()
 def email_backend() -> RecordingEmailBackend:
     return RecordingEmailBackend()
+
+
+@pytest.fixture()
+def skrift_app(tmp_path, monkeypatch):
+    """The whole app as Skrift builds it, passkeys as the sign-in method, over a
+    throwaway database with the schema in it."""
+    yield from build_skrift_app(tmp_path, monkeypatch)

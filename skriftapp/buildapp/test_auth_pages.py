@@ -19,15 +19,16 @@ from skrift.app_factory import get_template_directories_for_theme
 
 from buildapp import test_passkey_signin_page as signin_page
 from buildapp.db_test_support import create_skrift_schema_in
+from buildapp.skrift_app_test_support import (
+    PRODUCTION_CONFIG,
+    SECURE_ORIGIN,
+    SKRIFTAPP_DIR,
+    TEMPLATES_DIR,
+)
 
-SKRIFTAPP_DIR = signin_page.SKRIFTAPP_DIR
-TEMPLATES_DIR = signin_page.TEMPLATES_DIR
 STYLESHEET_PATH = signin_page.STYLESHEET_PATH
-SECURE_ORIGIN = signin_page.SECURE_ORIGIN
 NONCE = signin_page.NONCE
 CSRF_INPUT = '<input type="hidden" name="_csrf" value="t">'
-#: The whole app as Skrift builds it, passkeys on and production's CSP.
-skrift_app = signin_page.skrift_app
 
 LOGOUT_TEMPLATE = "auth/logout_confirm.html"
 ERROR_TEMPLATES = ["error.html", "error-404.html", "error-500.html"]
@@ -348,7 +349,7 @@ def second_factor_app(tmp_path, monkeypatch):
 
     config = (SKRIFTAPP_DIR / "app.dev.yaml").read_text()
     config = config.replace("  csp_nonce: false", "  csp_nonce: true").replace("auth:\n", SECOND_FACTOR_CONFIG, 1)
-    production_csp = re.search(r"  content_security_policy: .*", signin_page.PRODUCTION_CONFIG).group(0)
+    production_csp = re.search(r"  content_security_policy: .*", PRODUCTION_CONFIG).group(0)
     config = re.sub(r"  content_security_policy: .*", lambda _: production_csp, config)
     database = tmp_path / "app.db"
     (tmp_path / "app.dev.yaml").write_text(config.replace("./app.db", str(database)))

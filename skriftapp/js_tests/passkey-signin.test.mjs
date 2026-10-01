@@ -1,6 +1,6 @@
-// The sign-in page's WebAuthn ordering, against a browser that behaves like Safari:
-// one request at a time, a second one refused with "A request is already pending.",
-// and an aborted request let go of only when its rejection arrives, a task later.
+// The sign-in page's WebAuthn ceremonies, against a browser that behaves like Safari:
+// one request at a time, a second one refused with "A request is already pending.".
+// The page opens no request of its own, so a press never meets one already open.
 // Run by buildapp/test_passkey_signin_page.py, so the Python gate covers it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -38,14 +38,6 @@ class SafariCredentials {
     return this.#request("create", options);
   }
 
-  // The person picks a saved passkey from the email field's autofill.
-  pickAutofill() {
-    const entry = this.pending;
-    assert.equal(entry?.mediation, "conditional", "no autofill request is open");
-    this.pending = null;
-    entry.resolve(fakeCredential("get"));
-  }
-
   #request(kind, options) {
     const mediation = options.mediation || "modal";
     this.log.push(`${kind}:${mediation}`);
@@ -55,12 +47,6 @@ class SafariCredentials {
     return new Promise((resolve, reject) => {
       const entry = { mediation, resolve };
       this.pending = entry;
-      options.signal?.addEventListener("abort", () =>
-        setTimeout(() => {
-          if (this.pending === entry) this.pending = null;
-          reject(new DOMException("The operation was aborted.", "AbortError"));
-        }, 5),
-      );
       if (mediation === "modal") {
         setTimeout(() => {
           if (this.pending !== entry) return;
@@ -99,69 +85,146 @@ function fakeServer(overrides = {}) {
 }
 
 function page({ server = fakeServer(), credentials = new SafariCredentials() } = {}) {
-  const flow = createPasskeyFlow({
-    credentials,
-    post: server.post,
-    conditionalAvailable: async () => true,
-  });
+  const flow = createPasskeyFlow({ credentials, post: server.post });
   return { flow, server, credentials };
 }
 
-async function autofillOpen(credentials) {
-  for (let i = 0; i < 50 && credentials.pending?.mediation !== "conditional"; i += 1) await later();
-  assert.equal(credentials.pending?.mediation, "conditional", "autofill never opened");
+/** Just enough DOM for bindSigninPage: elements by id, forms that remember their
+ *  submit listener, and a FormData that reads a form's fields. */
+function fakeDocument({ signup = true } = {}) {
+  const element = (extra = {}) => ({
+    dataset: {},
+    textContent: "",
+    attributes: {},
+    setAttribute(name, value) {
+      this.attributes[name] = value;
+    },
+    removeAttribute(name) {
+      delete this.attributes[name];
+    },
+    ...extra,
+  });
+  const form = (fields) => {
+    const button = element({ disabled: false });
+    return element({
+      fields,
+      button,
+      querySelector: () => button,
+      addEventListener(type, listener) {
+        this.submit = () => listener({ preventDefault() {} });
+      },
+    });
+  };
+  const elements = {
+    "signin-form": form({}),
+    "signin-status": element(),
+    ...(signup ? { "signup-form": form({ email: "invitee@example.com" }), "signup-status": element() } : {}),
+  };
+  const csrf = { value: "token" };
+  return {
+    elements,
+    querySelector: (selector) => (selector === "[data-passkey-method]" ? { dataset: { passkeyMethod: "passkey" } } : null),
+    querySelectorAll: () => [csrf],
+    getElementById: (id) => elements[id] || null,
+  };
 }
 
-test("the stock page's ordering is the bug: create() while autofill is open is refused", async () => {
-  const credentials = new SafariCredentials();
-  credentials.get({ publicKey: {}, mediation: "conditional", signal: new AbortController().signal });
-  await assert.rejects(credentials.create({ publicKey: {} }), { name: "InvalidStateError", message: PENDING });
-});
+function fakeWindow(credentials, posted) {
+  return {
+    PublicKeyCredential: function PublicKeyCredential() {},
+    navigator: { credentials },
+    location: { assign() {} },
+    fetch: async (url, { body }) => {
+      posted.push([url, Object.fromEntries(body.entries())]);
+      const path = url.replace("/auth/passkey/", "");
+      const payload = fakeServer().post(path).then((answer) => answer.payload);
+      return { ok: true, status: 200, json: () => payload };
+    },
+  };
+}
 
-test("creating an account while autofill is open aborts it first and succeeds", async () => {
+class FakeFormData {
+  constructor(form) {
+    this.form = form;
+    this.values = [];
+  }
+
+  append(name, value) {
+    this.values.push([name, value]);
+  }
+
+  entries() {
+    return this.values[Symbol.iterator]();
+  }
+
+  get(name) {
+    return this.form?.fields?.[name] ?? null;
+  }
+}
+
+test("signing in is one modal request that lists the passkeys the browser holds", async () => {
   const { flow, server, credentials } = page();
-  flow.startAutofill();
-  await autofillOpen(credentials);
-
-  const outcome = await flow.signUp({ email: "a@example.com", name: "A" });
-
-  assert.deepEqual(outcome, { redirect: "/app/" });
-  assert.deepEqual(credentials.log, ["get:conditional", "create:modal"]);
-  assert.deepEqual(server.calls, ["options", "register/options", "register/complete"]);
-});
-
-test("creating an account while autofill is still fetching its options never opens autofill", async () => {
-  let releaseOptions;
-  const server = fakeServer({
-    options: () =>
-      new Promise((resolve) => {
-        releaseOptions = () => resolve({ ok: true, status: 200, payload: { options: AUTH_OPTIONS } });
-      }),
-  });
-  const { flow, credentials } = page({ server });
-  flow.startAutofill();
-  await later();
-
-  const signUp = flow.signUp({ email: "a@example.com", name: "" });
-  releaseOptions();
-
-  assert.deepEqual(await signUp, { redirect: "/app/" });
-  assert.deepEqual(credentials.log, ["create:modal"]);
-});
-
-test("signing in with the button while autofill is open aborts it first and succeeds", async () => {
-  const { flow, credentials } = page();
-  flow.startAutofill();
-  await autofillOpen(credentials);
 
   assert.deepEqual(await flow.signIn(), { redirect: "/app/" });
-  assert.deepEqual(credentials.log, ["get:conditional", "get:modal"]);
+  assert.deepEqual(credentials.log, ["get:modal"]);
+  assert.deepEqual(server.calls, ["options", "complete"]);
+});
+
+test("creating an account is one modal create() for the address it was given", async () => {
+  const sent = [];
+  const server = fakeServer();
+  const { flow, credentials } = page({
+    server: { calls: server.calls, post: (path, fields) => (sent.push([path, fields]), server.post(path, fields)) },
+  });
+
+  assert.deepEqual(await flow.signUp({ email: "invitee@example.com" }), { redirect: "/app/" });
+  assert.deepEqual(credentials.log, ["create:modal"]);
+  assert.deepEqual(sent[0], ["register/options", { email: "invitee@example.com" }]);
+});
+
+test("the page opens no WebAuthn request until a button is pressed", async () => {
+  globalThis.FormData = FakeFormData;
+  const credentials = new SafariCredentials();
+  const posted = [];
+  const document = fakeDocument();
+
+  assert.ok(bindSigninPage(document, fakeWindow(credentials, posted)));
+  await later(10);
+
+  assert.deepEqual(credentials.log, []);
+  assert.deepEqual(posted, []);
+});
+
+test("the create-account button posts the invite's address and nothing else", async () => {
+  globalThis.FormData = FakeFormData;
+  const posted = [];
+  const document = fakeDocument();
+  bindSigninPage(document, fakeWindow(new SafariCredentials(), posted));
+
+  document.elements["signup-form"].submit();
+  for (let i = 0; i < 50 && posted.length < 2; i += 1) await later();
+
+  const [url, fields] = posted[0];
+  assert.equal(url, "/auth/passkey/register/options");
+  assert.deepEqual(fields, { _csrf: "token", email: "invitee@example.com" });
+});
+
+test("a page with no invite binds its sign-in button alone", async () => {
+  globalThis.FormData = FakeFormData;
+  const credentials = new SafariCredentials();
+  const document = fakeDocument({ signup: false });
+  assert.ok(bindSigninPage(document, fakeWindow(credentials, [])));
+
+  document.elements["signin-form"].submit();
+  for (let i = 0; i < 50 && !credentials.log.length; i += 1) await later();
+
+  assert.deepEqual(credentials.log, ["get:modal"]);
 });
 
 test("a second press while a ceremony runs is ignored", async () => {
   const { flow, server } = page();
-  const first = flow.signUp({ email: "a@example.com", name: "" });
-  const second = flow.signUp({ email: "a@example.com", name: "" });
+  const first = flow.signUp({ email: "a@example.com" });
+  const second = flow.signUp({ email: "a@example.com" });
   const third = flow.signIn();
 
   assert.deepEqual(await second, { ignored: true });
@@ -170,31 +233,23 @@ test("a second press while a ceremony runs is ignored", async () => {
   assert.equal(server.calls.filter((path) => path === "register/options").length, 1);
 });
 
-test("after a cancelled attempt autofill comes back and the next attempt works", async () => {
+test("after a cancelled attempt the next attempt works", async () => {
   const { flow, credentials } = page();
-  flow.startAutofill();
-  await autofillOpen(credentials);
   credentials.modal = "NotAllowedError";
 
-  const cancelled = await flow.signUp({ email: "a@example.com", name: "" });
-  assert.equal(cancelled.error, describeError("signup", { name: "NotAllowedError" }));
+  const cancelled = await flow.signIn();
+  assert.equal(cancelled.error, describeError("signin", { name: "NotAllowedError" }));
 
-  flow.startAutofill();
-  await autofillOpen(credentials);
   credentials.modal = "accept";
-  assert.deepEqual(await flow.signUp({ email: "a@example.com", name: "" }), { redirect: "/app/" });
-  assert.deepEqual(credentials.log, ["get:conditional", "create:modal", "get:conditional", "create:modal"]);
+  assert.deepEqual(await flow.signIn(), { redirect: "/app/" });
+  assert.deepEqual(credentials.log, ["get:modal", "get:modal"]);
 });
 
-test("picking a passkey from autofill signs in, and a press after that is ignored", async () => {
-  const { flow, credentials } = page();
-  const autofill = flow.startAutofill();
-  await autofillOpen(credentials);
+test("a passkey Build does not know says so", async () => {
+  const server = fakeServer({ complete: () => ({ ok: false, status: 400, payload: { error: "invalid_credential" } }) });
+  const { error } = await page({ server }).flow.signIn();
 
-  credentials.pickAutofill();
-
-  assert.deepEqual(await autofill, { redirect: "/app/" });
-  assert.deepEqual(await flow.signUp({ email: "a@example.com", name: "" }), { ignored: true });
+  assert.match(error, /isn't registered with Build/);
 });
 
 test("a refusal reads as a sentence a person can act on", async () => {
@@ -203,9 +258,13 @@ test("a refusal reads as a sentence a person can act on", async () => {
   });
   const { flow } = page({ server });
 
-  const { error } = await flow.signUp({ email: "taken@example.com", name: "" });
+  const { error } = await flow.signUp({ email: "taken@example.com" });
 
   assert.match(error, /If you already have one, sign in/);
+});
+
+test("an invite the server no longer accepts says to open the link again", () => {
+  assert.match(describeRefusal("signup", { status: 403, payload: { error: "invite_required" } }), /invite email again/);
 });
 
 test("a passkey this device already holds for that email says to sign in", () => {

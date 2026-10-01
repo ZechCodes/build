@@ -20,6 +20,12 @@ Skrift's handler, so an unknown provider is still its 404 and a token-less post 
 Skrift's own refusals. Skrift's generic ``invalid_request`` for an address that already
 has an account is untouched.
 
+Only passkey registration is behind the invite. Skrift's dummy and OAuth methods create
+accounts on their own routes, unguarded: production's ``app.yaml`` configures the passkey
+method alone (``test_auth_controller`` pins that), while ``app.dev.yaml`` and
+``app.mail.yaml`` configure the dummy method, so anyone reaching a dev or mail-test app
+can make an account without an invite.
+
 The handlers are replaced by name against a pinned Skrift; ``test_auth_controller``
 pins the route inventory so an upgrade that renames one, or adds a route that creates
 accounts, fails loudly.
@@ -122,15 +128,13 @@ class BuildAuthController(AuthController):
     async def complete_primary_method_registration(
         self, request: Request, db_session: AsyncSession, provider: str
     ) -> Response:
-        invite = await carried_invite(request, db_session, utc_now())
         signup = get_primary_passkey_registration_state(request)
+        invite = None
         # No registration under way is Skrift's refusal to give, in its own words.
-        if (
-            await skrift_would_proceed(request, provider)
-            and signup is not None
-            and not admits(invite, signup.email)
-        ):
-            return invite_required(request)
+        if await skrift_would_proceed(request, provider) and signup is not None:
+            invite = await carried_invite(request, db_session, utc_now())
+            if not admits(invite, signup.email):
+                return invite_required(request)
         response = await AuthController.complete_primary_method_registration.fn(
             self, request, db_session, provider
         )

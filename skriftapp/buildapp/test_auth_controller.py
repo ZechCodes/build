@@ -7,6 +7,7 @@ here before it ships."""
 from __future__ import annotations
 
 import pytest
+import yaml
 from litestar import Litestar
 from skrift.controllers.auth import AuthController
 
@@ -85,3 +86,11 @@ def test_every_config_loads_builds_auth_controller_and_not_skrifts(config):
     controllers = (SKRIFTAPP_DIR / config).read_text()
     assert f"  - {OURS}\n" in controllers
     assert SKRIFTS not in controllers
+
+
+def test_production_signs_in_with_passkeys_alone():
+    """The invite check guards passkey registration only. Skrift's dummy and OAuth methods
+    create accounts on their own routes, so adding either to production would open
+    uninvited signup."""
+    methods = yaml.safe_load((SKRIFTAPP_DIR / "app.yaml").read_text())["auth"]["methods"]
+    assert {key: method["type"] for key, method in methods.items()} == {"passkey": "passkey"}

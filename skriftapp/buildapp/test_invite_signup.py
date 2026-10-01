@@ -290,6 +290,39 @@ def test_a_post_without_a_csrf_token_gets_skrifts_refusal(client, path):
     assert response.json()["error"] == "invalid_csrf"
 
 
+@pytest.mark.parametrize("path", [REGISTER_OPTIONS, REGISTER_COMPLETE])
+def test_a_post_with_the_wrong_csrf_token_gets_skrifts_refusal(client, path):
+    registration_without_an_invite(client)
+    response = client.post(path, data={"_csrf": "not-the-token", "email": INVITED, "credential": "{}"})
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_csrf"
+
+
+@pytest.mark.parametrize("path", [REGISTER_OPTIONS, REGISTER_COMPLETE])
+def test_a_post_skrift_refuses_reads_no_invite(client, monkeypatch, path):
+    import buildapp.auth_controller as auth_controller
+
+    registration_without_an_invite(client)
+
+    async def unread(*args):
+        raise AssertionError("looked up the carried invite for a request Skrift refuses")
+
+    monkeypatch.setattr(auth_controller, "carried_invite", unread)
+    response = client.post(path, data={"email": INVITED, "credential": "{}"})
+    assert response.json()["error"] == "invalid_csrf"
+
+
+def test_the_token_returned_with_a_refusal_is_the_one_still_in_force(client):
+    page = Page(client)
+    issued = page.csrf
+    refused = page.post(REGISTER_OPTIONS, email=STRANGER)
+    assert refused.json()["error"] == INVITE_REQUIRED
+    assert refused.json()["csrf_token"] == issued
+
+    open_invite(client, issue(client, INVITED))
+    assert page.post(REGISTER_OPTIONS, email=INVITED).is_success
+
+
 @pytest.mark.parametrize("step", ["register/options", "register/complete"])
 def test_an_unknown_provider_is_skrifts_404(client, step):
     page = registration_without_an_invite(client)

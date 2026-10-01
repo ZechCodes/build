@@ -146,6 +146,10 @@ run_case() {
             ;;
         *) ! grep -q "$escape" "$TEST_ROOT/output" || return 1 ;;
     esac
+    # Nothing leans on the terminal to break a sentence (#319): a line over 80
+    # columns is a single word, a URL or a path, that no break could help. The
+    # curl shim's own `cp:` complaint is the shim's, not the installer's.
+    ! tr -d '\r' < "$TEST_ROOT/output" | awk 'length($0) > 80 && /[^ ] +[^ ]/ && !/^cp: /' | grep -q . || return 1
     case "$mode" in
         success|pinned|no-cosign|terminal|terminal-no-color|terminal-dumb)
             if ! { [ "$status" = 0 ] && [ ! -e "$target/previous" ]; }; then return 1; fi
@@ -185,7 +189,7 @@ run_case() {
     esac
     # A refusal reads as an error, names what failed, and says what to do next.
     case "$mode" in
-        tampered) says "Error: build-desktop-linux-x86_64.tar.gz does not match its published checksum" \
+        tampered) says "Error: build-desktop-linux-x86_64.tar.gz does not match its published" \
             "https://github.com/example/releases/releases/download/desktop-v1.2.3" "Run the installer again" ;;
         bad-signature) says "Error: the release signature did not verify" "none of the expected identities matched" ;;
         download-failure) says "Error: could not download" "run the installer again" ;;

@@ -24,15 +24,44 @@ BROKEN='Nothing was installed. Run the installer again later; if it fails the sa
 
 say() { printf '%s\n' "$*" >&2; }
 step() { say "${STEP}==>${RESET} $*"; }
-# Lines under a step or a verdict; each argument may itself span lines.
-detail() {
-    for text do
-        printf '%s\n' "$text" | while IFS= read -r line; do say "    $line"; done
+# stdin broken between words into lines of at most $1 columns; a line that
+# fits is left as it is, and a word longer than a line gets one to itself. Plain shell, because an error can come
+# before the tools are checked.
+wrap() {
+    while IFS= read -r text; do
+        [ "${#text}" -gt "$1" ] || { printf '%s\n' "$text"; continue; }
+        wrapped='' && set -f
+        for word in $text; do
+            if [ -z "$wrapped" ]; then wrapped=$word
+            elif [ $((${#wrapped} + 1 + ${#word})) -gt "$1" ]; then printf '%s\n' "$wrapped"; wrapped=$word
+            else wrapped="$wrapped $word"; fi
+        done
+        set +f && printf '%s\n' "$wrapped"
     done
 }
-finish() { say ""; say "${GOOD}Done.${RESET} $1"; shift; detail "$@"; }
+# Lines under a step or a verdict; each argument may itself span lines, and
+# each is broken to fit an 80-column terminal.
+detail() {
+    for text do
+        printf '%s\n' "$text" | wrap 76 | while IFS= read -r line; do say "    $line"; done
+    done
+}
+# A verdict: its label, then the sentence after it, the overflow indented
+# under it, all of it within 80 columns.
+verdict() {
+    styled=$1 plain=$2
+    shift 2
+    say ""
+    printf '%s %s\n' "$plain" "$1" | wrap 76 | {
+        IFS= read -r first && say "$styled${first#"$plain"}"
+        while IFS= read -r line; do say "    $line"; done
+    }
+    shift
+    detail "$@"
+}
+finish() { verdict "${GOOD}Done.${RESET}" Done. "$@"; }
 # An error says what went wrong, then the one thing to do next.
-fail_with() { status=$1; shift; say ""; say "${BAD}Error:${RESET} $1"; shift; detail "$@"; exit "$status"; }
+fail_with() { status=$1; shift; verdict "${BAD}Error:${RESET}" Error: "$@"; exit "$status"; }
 fail() { fail_with 1 "$@"; }
 has() { command -v "$1" >/dev/null 2>&1; }
 fetch() {

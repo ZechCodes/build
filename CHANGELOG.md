@@ -6,7 +6,15 @@ Notable changes to the bridge (`build-bridge`). The format follows
 protocol versions; see
 [Wire versioning and capabilities](ARCHITECTURE.md#wire-versioning-and-capabilities).
 
-## [0.2.4] - Unreleased
+## [0.2.5] - Unreleased
+
+### Fixed
+
+- The release workflow stages its assets outside the checkout and publishes
+  through a draft, so a failed upload leaves no public release (#305).
+- Release notes carry this file's entry for the tagged version (#303).
+
+## [0.2.4] - 2026-09-30
 
 Wire 3.4.0.
 
@@ -41,6 +49,11 @@ Wire 3.4.0.
   cut (#271).
 - A size walk landing mid-sweep keeps its newer size (#273).
 - The workspace checkouts a remote change could not reach are named (#228).
+- A negotiated data channel opens on its first message, not only on the SCTP
+  handshake event, so a peer's first message in the same read burst is not
+  dropped; the vendored `rtc` carries the patch (#298).
+- Closing a workspace settings sheet settles once its last draft is stored, so
+  no draft write lands after the sheet is gone (#299).
 
 ### Security
 
@@ -107,5 +120,6 @@ Wire 3.1.0.
   run.
 - Done refuses a run in a linked worktree or an adopted checkout (#172).
 
-[0.2.4]: https://github.com/ZechCodes/Build/compare/bridge-v0.2.3...main
+[0.2.5]: https://github.com/ZechCodes/Build/compare/bridge-v0.2.4...main
+[0.2.4]: https://github.com/ZechCodes/build-releases/releases/tag/bridge-v0.2.4
 [0.2.3]: https://github.com/ZechCodes/build-releases/releases/tag/bridge-v0.2.3

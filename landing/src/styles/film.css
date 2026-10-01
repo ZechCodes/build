@@ -122,6 +122,20 @@
   max-width: 30rem;
 }
 
+/* The note that a film screen is a concept sits under the device like a
+   picture's caption, on its own ground so it reads over whatever is behind. */
+[data-mode="film"] .act[data-layout="top"] .concept-note {
+  position: fixed;
+  left: 6vw;
+  bottom: 2.5vh;
+  margin: 0;
+  max-width: none;
+  padding: 0.5rem 0.875rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: var(--surface);
+}
+
 [data-mode="film"] .act[data-act="8"] .act__copy {
   display: grid;
   grid-template-rows: auto auto;

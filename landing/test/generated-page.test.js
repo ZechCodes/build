@@ -48,6 +48,18 @@ describe("the home page's stylesheet", () => {
   });
 });
 
+describe("the home page's script", () => {
+  it("is one module that imports no other at load, shared with no other page", () => {
+    const entries = [...html.matchAll(/<script type="module" src="\/landing\/generated\/(_astro\/[^"]+\.js)"/g)].map(([, src]) => src);
+    assert.equal(entries.length, 1);
+    const source = readFileSync(`${landingDir}generated/${entries[0]}`, "utf8");
+    // A static import is one more round trip before the hero can start,
+    // after its boot has already chosen the film (#311 review).
+    assert.doesNotMatch(source, /^import[^;]*from\s*["']\.\//m);
+    assert.doesNotMatch(source, /(?:^|[;}])\s*import\s*\{[^}]*\}\s*from/);
+  });
+});
+
 describe("the notifications lab", () => {
   it("is a complete document that asks not to be indexed or followed", () => {
     assert.match(lab, /^<!DOCTYPE html>/i);

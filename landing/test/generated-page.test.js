@@ -5,7 +5,7 @@
 import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const projectDir = fileURLToPath(new URL("..", import.meta.url));
@@ -48,7 +48,7 @@ describe("the generated landing document", () => {
     const titles = [...html.matchAll(/href="\{\{repository_url\}\}" title="([^"]*)"/g)].map(
       (match) => match[1],
     );
-    assert.deepEqual(titles, ["Build’s source code on GitHub", "Build’s source code on GitHub"]);
+    assert.deepEqual(titles, ["Build’s source code on GitHub", "Build’s source code on GitHub", "Build’s source code on GitHub"]);
     assert.ok(!/invitation/i.test(titles.join(" ")));
   });
 
@@ -61,7 +61,8 @@ describe("the generated landing document", () => {
   });
 
   it("opens on the headline and closes on the waitlist", () => {
-    assert.ok(html.includes("Your agents. Your machine. Your call."));
+    assert.ok(html.includes('<span class="hero-line">Your agents are moving fast.</span> <span class="hero-line hero-line--quiet">Know what needs you.</span>'));
+    assert.ok(html.includes("Free · Open source · Runs on your machines"));
     assert.ok(html.includes("Say what needs doing."));
     assert.ok(html.includes("Every change lands in Git."));
     assert.ok(html.includes("data-waitlist"));
@@ -97,8 +98,32 @@ describe("the generated landing document", () => {
     assert.ok(html.includes("+4 −1"), "the document proof counts four after it");
   });
 
-  it("offers no download, only the waitlist", () => {
-    assert.ok(!/download/i.test(html));
+  it("offers the download where the public installers are, in the bar and the hero", () => {
+    const downloads = [...html.matchAll(/<a class="cta[^"]*" href="([^"]+)">([^<]+)<\/a>/g)].map(([, href, text]) => [href, text]);
+    assert.deepEqual(downloads, [["/docs#setup", "Download"], ["/docs#setup", "Download Build"]]);
+  });
+
+  it("draws the hero's notification field for no one but the eye", () => {
+    const field = html.slice(html.indexOf("data-hero-field"), html.indexOf('class="content-container act__inner"', html.indexOf("data-hero-field")));
+    assert.match(html, /<div class="hero-field" data-hero-field aria-hidden="true"/);
+    assert.equal([...field.matchAll(/data-attention="(\w+)"/g)].length, 3);
+    assert.ok(!/<(a|button|input)\b/.test(field), "nothing in the field takes focus");
+    assert.ok(!/(OpenCode|Gemini|Cursor|opencode|gemini|cursor)/.test(field), "only supported harnesses");
+  });
+
+  it("decides the entrance in the head, before the page's script", () => {
+    const boot = html.indexOf('src="/landing/generated/hero-boot.js"');
+    const main = html.search(/<script type="module" src="\/landing\/generated\/_astro\//);
+    assert.ok(boot > 0 && boot < main && boot < html.indexOf("<body"));
+  });
+
+  it("ships no development scrubber", () => {
+    const bundles = readdirSync(`${landingDir}generated/_astro`).filter((name) => name.endsWith(".js"));
+    assert.ok(bundles.length > 0);
+    for (const bundle of bundles) {
+      const source = readFileSync(`${landingDir}generated/_astro/${bundle}`, "utf8");
+      assert.ok(!source.includes("Hero entrance scrubber"), bundle);
+    }
   });
 
   it("offers the anchor the invite pages link to", () => {

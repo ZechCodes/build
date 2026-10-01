@@ -260,7 +260,7 @@ export function restHero(root = document.documentElement) {
 /** Start the entrance if hero-boot.js chose it. Returns its handle, or null
  *  when the hero is simply at rest. */
 export function startHeroEntrance({ root = document.documentElement } = {}) {
-  if (root.dataset.hero !== "entrance") return null;
+  if (root.dataset.hero !== "entrance") return rest(root, document.querySelector("[data-hero-field]"));
   const hero = query(document, "#act-1");
   const field = hero.querySelector("[data-hero-field]");
   if (!field || scrollY > 8 || matchMedia("(prefers-reduced-motion: reduce)").matches) return rest(root, field);

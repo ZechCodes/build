@@ -44,12 +44,13 @@ export const ROUTINE_EVENTS = Object.freeze([
 ]);
 
 // Fast faint lanes behind, slower sharper ones in front. `drift` is vw over
-// DRIFT_SECONDS; `gap` is the px between pills.
+// DRIFT_SECONDS; `gap` is the px between pills on a 1440px window, and
+// scales with the window like the pills do (hero.css).
 export const DRIFT_SECONDS = 6;
 export const LANE_TIERS = Object.freeze({
-  far: Object.freeze({ drift: [84, 120], gap: [10, 56] }),
-  mid: Object.freeze({ drift: [42, 60], gap: [16, 72] }),
-  near: Object.freeze({ drift: [18, 27], gap: [36, 120] }),
+  far: Object.freeze({ drift: [84, 120], gap: [64, 170] }),
+  mid: Object.freeze({ drift: [42, 60], gap: [42, 132] }),
+  near: Object.freeze({ drift: [18, 27], gap: [56, 170] }),
 });
 
 // The lanes top to bottom, and the ones a phone keeps.

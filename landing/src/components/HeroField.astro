@@ -39,7 +39,7 @@ const laneStyle = (lane: (typeof field.lanes)[number]) =>
       {[["before", lane.before], ["after", lane.after]].map(([side, pills]) => (
         <div class={`hero-track hero-track--${side}`}>
           {(pills as typeof lane.before).map((pill) => (
-            <span class="hero-pill" data-pill={pill.key} data-attention={pill.attention} style={`--gap:${pill.gap}px`}>
+            <span class="hero-pill" data-pill={pill.key} data-attention={pill.attention} style={`--gap:${pill.gap}`}>
               <svg class="hero-pill__mark" focusable="false"><use href={`#hero-mark-${pill.harness}`}></use></svg>{pill.text}
             </span>
           ))}

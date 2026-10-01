@@ -52,8 +52,10 @@ untouched while updating those four metadata records.
 
 The cutout group includes `hero-laptop` and the tablet/phone `mobile-hero` composition as well
 as the three individual devices. The complete document set has 25 render records, including
-the two closing aliases and the PNG social preview. `hero-entrance.webp` is separate: it is
-captured from the live stage by `web/capture-hero-entrance.mjs` and is never overwritten here.
+the two closing aliases and the PNG social preview. `hero-needs-you.webp` is separate: it is
+captured from the live stage by `web/capture-hero-laptop.mjs` (with the placement numbers in
+`landing/src/styles/hero.css` and the landing anchors in `landing/src/hero/poster-anchors.js`)
+and is never overwritten here.
 
 The build overwrites generated output in `skriftapp/buildapp/landing/assets/devices/`, packs the Launch fixtures into `build-devices.blend`, and removes Blender's incremental `.blend1` backup.
 

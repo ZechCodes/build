@@ -36,6 +36,9 @@ const commentRow = (entry, base) => ({
   mentionsUser: entry.mentions_user === true,
   refs: entry.refs || [],
   attachments: entry.attachments || [],
+  anchor: entry.anchor || null,
+  replyTo: entry.reply_to || null,
+  opinion: entry.opinion || null,
 });
 
 const eventRow = (entry, base) => ({

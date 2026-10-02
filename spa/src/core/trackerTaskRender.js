@@ -75,14 +75,33 @@ export const taskAttachmentsHtml = (attachments) =>
 
 const whenHtml = (row) => (row.at ? `<span class="task-when" title="${esc(row.at)}">${esc(ageText(row.at))}</span>` : "");
 
+const reviewVerdictHtml = (opinion) => ({
+  approve: "<span>Approved</span>",
+  request_changes: "<span>Requested changes</span>",
+})[opinion?.verdict] || "";
+const reviewAnchorHtml = (anchor) => anchor
+  ? `<button class="btn" type="button" data-review-anchor="${esc(JSON.stringify(anchor))}">` +
+    `${esc(anchor.path)} · ${esc(anchor.side)} line ${esc(anchor.line)}</button>` : "";
+const reviewMetadataHtml = (row) => {
+  const snapshotId = row.opinion?.snapshot_id || row.anchor?.snapshot_id;
+  const verdict = reviewVerdictHtml(row.opinion);
+  const snapshot = snapshotId ? `<span>Snapshot ${esc(snapshotId)}</span>` : "";
+  const place = reviewAnchorHtml(row.anchor);
+  const reply = row.replyTo ? `<span>Reply to ${esc(row.replyTo)}</span>` : "";
+  if (!snapshot && !verdict && !place && !reply) return "";
+  return `<div class="task-review-comment-meta">${snapshot}${verdict}${place}${reply}</div>`;
+};
+
 /// The id an action line in a conversation lands on: a comment is linked as
 /// `#comment-<id>` (core/trackerActionLine.js), so the row has to answer to it.
 const commentHtml = (row, context) => `<li class="task-entry task-comment${row.mentionsUser ? " task-comment-mentioned" : ""}" id="comment-${esc(row.key)}">
     ${taskAvatarHtml(row.actor, context)}
     <div class="task-comment-card">
       <div class="task-entry-head"><strong>${actorIdentityHtml(row.actor, context)}</strong>${whenHtml(row)}</div>
+      ${reviewMetadataHtml(row)}
       <div class="task-comment-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ taskMarkdownHtml(row.body, context)}</div>
       ${attachmentListHtml(row.attachments, { className: "task-comment-attachments" })}
+      ${row.anchor || row.opinion || row.replyTo ? `<button class="btn" type="button" data-review-reply="${esc(row.key)}">Reply</button>` : ""}
     </div>
   </li>`;
 

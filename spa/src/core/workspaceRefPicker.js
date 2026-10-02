@@ -60,6 +60,7 @@ export function mountWorkspaceRefPicker(host, { scope, callRpc, cacheScope, onCh
   let disposed = false;
   let visible = true;
   let pending = false;
+  let loadWhenShown = false;
   let loadRequest = 0;
   let readRequest = 0;
   let cacheWrites = 0;
@@ -134,6 +135,11 @@ export function mountWorkspaceRefPicker(host, { scope, callRpc, cacheScope, onCh
   }) : null;
   const mayWrite = (before) => !pending && Boolean(address) && cacheScope.active?.() !== false && cacheWrites === before;
   const load = async () => {
+    if (!visible) {
+      loadWhenShown = true;
+      return;
+    }
+    loadWhenShown = false;
     const request = ++loadRequest;
     const before = cacheWrites;
     try {
@@ -215,7 +221,10 @@ export function mountWorkspaceRefPicker(host, { scope, callRpc, cacheScope, onCh
       close();
       if (picker.contains(document.activeElement)) document.activeElement.blur();
       document.removeEventListener("pointerdown", outside);
-    } else document.addEventListener("pointerdown", outside);
+    } else {
+      document.addEventListener("pointerdown", outside);
+      if (loadWhenShown) void load();
+    }
   }, dispose() {
     disposed = true;
     unwatch?.();

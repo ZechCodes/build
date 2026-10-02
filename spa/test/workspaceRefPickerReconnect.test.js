@@ -107,6 +107,29 @@ describe("workspace ref picker across a reconnect", () => {
     expect(picker.status()).toBe("");
   });
 
+  it("defers a failed read's new-session retry until the picker is visible", async () => {
+    const context = contexts.knownDeviceContext("dev-a");
+    const refusing = vi.fn(async (method) => {
+      if (method === "git.refs") throw new Error("repository is locked");
+      return { ok: true };
+    });
+    greet(context, refusing);
+    const picker = await mountOver(context);
+    expect(refsCalls(refusing)).toHaveLength(1);
+    expect(picker.status()).toBe("repository is locked");
+    mounted.setVisible(false);
+
+    const fresh = vi.fn(async (method) => method === "git.refs" ? listing("fresh") : { ok: true });
+    contexts.adoptDeviceSession({ deviceId: "dev-a", call: fresh });
+    contexts.adoptBridgeSelection(context, { version: "2.0.0" }, null);
+    await flush();
+    expect(refsCalls(fresh)).toHaveLength(0);
+
+    mounted.setVisible(true);
+    await vi.waitFor(() => expect(picker.label()).toBe("fresh"));
+    expect(refsCalls(fresh)).toHaveLength(1);
+  });
+
   it("a session adopted after a read that landed asks nothing", async () => {
     const context = contexts.knownDeviceContext("dev-a");
     const first = vi.fn(async (method) => (method === "git.refs" ? listing("main") : { ok: true }));

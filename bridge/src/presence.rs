@@ -28,6 +28,8 @@
 //! beat was not, and the handle `main.rs` held was never looked at again. A
 //! beat that ends, panics, or simply goes quiet is now replaced.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -115,9 +117,11 @@ impl PresenceReporter {
         interval: Duration,
     ) -> JoinHandle<()> {
         let beat = Beat {
-            url: format!("{}{HEARTBEAT_PATH}", api_url.trim_end_matches('/')),
             identity: identity.clone(),
-            client: beating_client(interval),
+            post: post_to_api(
+                format!("{}{HEARTBEAT_PATH}", api_url.trim_end_matches('/')),
+                beating_client(interval),
+            ),
             reachable: reachable.clone(),
             due: Arc::new(Mutex::new(Instant::now() + interval)),
         };
@@ -199,14 +203,18 @@ fn beating_client(interval: Duration) -> reqwest::Client {
         .unwrap_or_else(|_| reqwest::Client::new())
 }
 
+/// Where a signed beat goes: the api, in the daemon; a recorder, in the tests
+/// that hold the clock still.
+type Post = Arc<dyn Fn(HeartbeatRequest) -> Posting + Send + Sync>;
+type Posting = Pin<Box<dyn Future<Output = Result<(), Dropped>> + Send>>;
+
 #[derive(Clone)]
 struct Beat {
-    url: String,
     identity: DeviceIdentity,
-    client: reqwest::Client,
+    post: Post,
     /// The relay socket this device is findable on. Not a condition on the
-    /// loop: an unreachable device keeps ticking and starts beating again the
-    /// moment its socket is back.
+    /// loop: an unreachable device keeps ticking, and beats the moment its
+    /// socket is authenticated rather than at its next tick.
     reachable: Reachability,
     /// When this beat said it would next come round, beaten or skipped: an
     /// interval after it last did, or the end of the wait it chose after a
@@ -238,10 +246,34 @@ impl Beat {
         // refuse them as replays and learn nothing new.
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let mut retries = Retries::every(interval);
+        let mut reaches = self.reachable.watch();
+        let mut last_sent: Option<tokio::time::Instant> = None;
         loop {
-            // The first tick is immediate, so the api knows within a second of
-            // the relay authenticating this device that it is here.
-            ticker.tick().await;
+            tokio::select! {
+                // The first tick is immediate: a device the relay has already
+                // authenticated says so at once.
+                _ = ticker.tick() => {}
+                // And one it authenticates later says so then, not at the next
+                // tick. On a cold start the beat is started before the relay is
+                // dialled, so its first tick always found the device
+                // unreachable, and the api heard nothing for a whole interval
+                // after the socket was up: a just-approved device sat on "no
+                // devices online" for 30 s (#321).
+                changed = reaches.changed() => {
+                    // This beat holds the sender, so the channel cannot close.
+                    let reachable = changed.is_ok() && *reaches.borrow_and_update();
+                    // A beat waiting out a refusal keeps waiting: the api asked
+                    // for that, and a socket coming back does not answer it. A
+                    // beat sent less than a second ago is already this
+                    // second's, and the api would refuse its twin as a replay.
+                    let sent_this_second = last_sent
+                        .is_some_and(|sent| sent.elapsed() < Duration::from_secs(1));
+                    if !reachable || retries.waiting() || sent_this_second {
+                        continue;
+                    }
+                    ticker.reset();
+                }
+            }
             self.came_round(interval);
             // Silence is the whole report for a device nothing can reach: the
             // api needs no "offline" post, and one it could not act on from a
@@ -249,6 +281,7 @@ impl Beat {
             if !self.reachable.is_reachable() {
                 continue;
             }
+            last_sent = Some(tokio::time::Instant::now());
             match self.send().await {
                 Ok(()) => retries.landed(),
                 Err(dropped) => {
@@ -285,34 +318,49 @@ impl Beat {
             .map_err(|e| Dropped::for_good(e.to_string()))?
             .as_secs() as i64;
         let beat = build_heartbeat(&self.identity, timestamp).map_err(Dropped::for_good)?;
-        let response = self
-            .client
-            .post(&self.url)
-            .json(&beat)
-            .send()
-            .await
-            .map_err(|e| Dropped::in_passing(e.to_string()))?;
-        let status = response.status();
-        if status.is_success() {
-            return Ok(());
-        }
-        let reason = format!("api refused the heartbeat: {status}");
-        // The ingress's 404 while the api's one pod is replaced (a deploy, every
-        // time), a rate limit, a server error: nothing about this device.
-        let passes = status == reqwest::StatusCode::NOT_FOUND
-            || status == reqwest::StatusCode::TOO_MANY_REQUESTS
-            || status.is_server_error();
-        let retry_after = response
-            .headers()
-            .get(reqwest::header::RETRY_AFTER)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| retry_after(value, SystemTime::now()));
-        Err(Dropped {
-            reason,
-            passes,
-            retry_after,
-        })
+        (self.post)(beat).await
     }
+}
+
+/// Post each beat to `url` with `client`.
+fn post_to_api(url: String, client: reqwest::Client) -> Post {
+    Arc::new(move |beat| {
+        let (url, client) = (url.clone(), client.clone());
+        Box::pin(async move { post_beat(&client, &url, &beat).await })
+    })
+}
+
+async fn post_beat(
+    client: &reqwest::Client,
+    url: &str,
+    beat: &HeartbeatRequest,
+) -> Result<(), Dropped> {
+    let response = client
+        .post(url)
+        .json(beat)
+        .send()
+        .await
+        .map_err(|e| Dropped::in_passing(e.to_string()))?;
+    let status = response.status();
+    if status.is_success() {
+        return Ok(());
+    }
+    let reason = format!("api refused the heartbeat: {status}");
+    // The ingress's 404 while the api's one pod is replaced (a deploy, every
+    // time), a rate limit, a server error: nothing about this device.
+    let passes = status == reqwest::StatusCode::NOT_FOUND
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error();
+    let retry_after = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| retry_after(value, SystemTime::now()));
+    Err(Dropped {
+        reason,
+        passes,
+        retry_after,
+    })
 }
 
 /// The first retry of a beat that failed in passing comes a sixth of an
@@ -352,6 +400,11 @@ impl Retries {
     /// passing starts from the soonest retry again.
     fn landed(&mut self) {
         self.failed = 0;
+    }
+
+    /// Whether a beat refused in passing is waiting to be tried again.
+    fn waiting(&self) -> bool {
+        self.failed > 0
     }
 
     /// How long to wait after one more failure in passing. `jitter` is
@@ -577,13 +630,8 @@ mod tests {
     /// stopped coming round is still caught.
     #[test]
     fn a_beat_is_overdue_past_its_own_deadline() {
-        let beat = Beat {
-            url: "http://127.0.0.1:9/unused".to_string(),
-            identity: identity().0,
-            client: reqwest::Client::new(),
-            reachable: Reachability::unreachable(),
-            due: Arc::new(Mutex::new(Instant::now())),
-        };
+        let beat = recording(&Reachability::unreachable(), |_| Ok(())).0;
+        *beat.due.lock().unwrap() = Instant::now();
         let slack = Duration::from_millis(20);
 
         beat.came_round(Duration::from_millis(10));
@@ -594,6 +642,110 @@ mod tests {
         beat.came_round(Duration::from_secs(600));
         std::thread::sleep(Duration::from_millis(60));
         assert!(!beat.overdue_by(slack), "waiting out what it was asked to");
+    }
+
+    /// A beat that hands each post to `answer` and records it, posting nothing.
+    fn recording(
+        reachable: &Reachability,
+        answer: fn(&HeartbeatRequest) -> Result<(), Dropped>,
+    ) -> (Beat, tokio::sync::mpsc::UnboundedReceiver<HeartbeatRequest>) {
+        let (posted, beats) = tokio::sync::mpsc::unbounded_channel();
+        let beat = Beat {
+            identity: identity().0,
+            post: Arc::new(move |beat: HeartbeatRequest| -> Posting {
+                let answered = answer(&beat);
+                let _ = posted.send(beat);
+                Box::pin(std::future::ready(answered))
+            }),
+            reachable: reachable.clone(),
+            due: Arc::new(Mutex::new(Instant::now() + HEARTBEAT_INTERVAL)),
+        };
+        (beat, beats)
+    }
+
+    /// How long, on the paused clock, until the next beat is posted.
+    async fn next_beat_after(
+        beats: &mut tokio::sync::mpsc::UnboundedReceiver<HeartbeatRequest>,
+    ) -> Duration {
+        let asked = tokio::time::Instant::now();
+        beats.recv().await.expect("the beat runs");
+        asked.elapsed()
+    }
+
+    /// The cold start: the beat is started before the relay is dialled, so its
+    /// first tick finds the device unreachable. The relay authenticating it is
+    /// what sends the first beat, at once, not an interval later (#321). And
+    /// so does every later return of the socket, after which the beats keep
+    /// their interval.
+    #[tokio::test(start_paused = true)]
+    async fn a_beat_goes_out_the_moment_the_relay_authenticates() {
+        let reachable = Reachability::unreachable();
+        let (beat, mut beats) = recording(&reachable, |_| Ok(()));
+        let beating = tokio::spawn(beat.run(HEARTBEAT_INTERVAL));
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert!(beats.try_recv().is_err(), "nothing reaches it yet");
+        reachable.reached();
+        assert_eq!(next_beat_after(&mut beats).await, Duration::ZERO);
+        assert_eq!(next_beat_after(&mut beats).await, HEARTBEAT_INTERVAL);
+
+        for away in [Duration::from_secs(7), Duration::from_secs(45)] {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            reachable.lost();
+            tokio::time::sleep(away).await;
+            while beats.try_recv().is_ok() {}
+            reachable.reached();
+            assert_eq!(
+                next_beat_after(&mut beats).await,
+                Duration::ZERO,
+                "back after {away:?}"
+            );
+            assert_eq!(next_beat_after(&mut beats).await, HEARTBEAT_INTERVAL);
+        }
+        beating.abort();
+    }
+
+    /// A socket that drops and is back within the second of a beat sends no
+    /// second one: the api has this second's, and refuses its twin as a replay.
+    #[tokio::test(start_paused = true)]
+    async fn a_socket_back_within_the_second_of_a_beat_is_not_beaten_twice() {
+        let reachable = Reachability::unreachable();
+        reachable.reached();
+        let (beat, mut beats) = recording(&reachable, |_| Ok(()));
+        let beating = tokio::spawn(beat.run(HEARTBEAT_INTERVAL));
+
+        assert_eq!(next_beat_after(&mut beats).await, Duration::ZERO);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        reachable.lost();
+        reachable.reached();
+        let waited = next_beat_after(&mut beats).await;
+        assert_eq!(waited + Duration::from_millis(300), HEARTBEAT_INTERVAL);
+        beating.abort();
+    }
+
+    /// A beat refused in passing waits out its retry even when the socket
+    /// comes back meanwhile: the api asked for the wait.
+    #[tokio::test(start_paused = true)]
+    async fn a_socket_coming_back_does_not_cut_a_retry_short() {
+        let reachable = Reachability::unreachable();
+        reachable.reached();
+        let (beat, mut beats) = recording(&reachable, |_| {
+            Err(Dropped {
+                reason: "busy".to_string(),
+                passes: true,
+                retry_after: Some(Duration::from_secs(20)),
+            })
+        });
+        let beating = tokio::spawn(beat.run(HEARTBEAT_INTERVAL));
+
+        assert_eq!(next_beat_after(&mut beats).await, Duration::ZERO);
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        reachable.lost();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        reachable.reached();
+        let waited = next_beat_after(&mut beats).await;
+        assert_eq!(waited + Duration::from_secs(4), Duration::from_secs(20));
+        beating.abort();
     }
 
     #[test]

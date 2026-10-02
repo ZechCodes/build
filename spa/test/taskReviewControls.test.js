@@ -71,6 +71,18 @@ it("does not send old directory overrides when replacing the review workspace", 
   await vi.waitFor(() => expect(repository.mutate).toHaveBeenCalledWith("snapshot", { workspace_id: "workspace-2", base_overrides: {}, expected_version: 1 }));
 });
 
+it("disables ignored base fields for another workspace and restores them when switching back", () => {
+  mount({ mutate: vi.fn() }, { workspaces: [{ id: "workspace-2", name: "Other source" }] });
+  const field = document.querySelector('[data-review-base="dir-api"]');
+  field.value = "release/candidate"; field.dispatchEvent(new Event("input"));
+  const workspace = document.querySelector('[data-review-workspace]');
+  workspace.value = "workspace-2"; workspace.dispatchEvent(new Event("change"));
+  expect([...document.querySelectorAll('[data-review-base]')].every((input) => input.disabled)).toBe(true);
+  workspace.value = "workspace-1"; workspace.dispatchEvent(new Event("change"));
+  expect(field.disabled).toBe(false);
+  expect(field.value).toBe("release/candidate");
+});
+
 it("completes with the user's description only and leaves completed review history readable", async () => {
   const repository = { mutate: vi.fn(async () => {}) };
   mount(repository);

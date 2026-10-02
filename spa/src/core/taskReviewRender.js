@@ -17,7 +17,7 @@ export function reviewDirectoryHtml(snapshot, directory, view) {
   if (!directory) return '<p class="sub">No directories in this snapshot.</p>';
   const tabs = directoryTabsHtml(snapshot.directories.map((row) => ({ sourceId: row.id, label: row.name, current: row.id === directory.id })));
   const viewTabs = ["changes", "files"].map((name) => `<button type="button" class="btn${view === name ? " primary" : ""}" data-review-view="${name}" aria-pressed="${view === name}">${name === "changes" ? "Changes" : "Files"}</button>`).join("");
-  return `${tabs}<div class="task-review-facts">${directoryFacts(directory)}</div><div class="task-review-views" aria-label="Directory view">${viewTabs}</div>`;
+  return `${tabs}<div class="task-review-facts">${directoryFacts(directory)}</div><div class="task-review-views" role="group" aria-label="Directory view">${viewTabs}</div>`;
 }
 
 function directoryFacts(directory) {

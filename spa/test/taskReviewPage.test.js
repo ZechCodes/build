@@ -38,6 +38,9 @@ async function mount(saved = review) {
 
 it("renders every saved directory and switches Changes to embedded Files in the same directory", async () => {
   await mount();
+  const viewGroup = document.querySelector('[role="group"][aria-label="Directory view"]');
+  expect(viewGroup).not.toBeNull();
+  expect([...viewGroup.querySelectorAll('button')].map((button) => button.textContent)).toEqual(["Changes", "Files"]);
   expect([...document.querySelectorAll('[data-directory]')].map((node) => node.textContent)).toEqual(["API", "Notes", "Removed source"]);
   expect(document.querySelector("#review").textContent).toContain("2 uncommitted files not in this review");
   panes.changes.mock.calls[0][0].onOpenFile("unchanged.txt");

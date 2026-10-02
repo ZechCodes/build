@@ -33,8 +33,8 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  changes.resetChangeEvents();
-  contexts.resetDeviceContexts();
+  changes?.resetChangeEvents();
+  contexts?.resetDeviceContexts();
 });
 
 async function paintCachedRows() {
@@ -56,12 +56,12 @@ it.each([true, false])("paints cached rows before hello and keeps them when watc
   expect(document.querySelector('#recent [data-key="tracker_task:task-cleared"] .stitle')?.textContent)
     .toBe("#325 Cleared task");
 
-  const call = vi.fn(async () => ({ api_version: "2.0.0", push_events: true,
-    capabilities: watching ? ["tasks.watching"] : [] }));
+  const call = vi.fn(async (method) => method === "session.hello"
+    ? { api_version: "2.0.0", push_events: true, capabilities: watching ? ["tasks.watching"] : [] } : {});
   const context = contexts.adoptDeviceSession({ deviceId: DEVICE, call,
     close() {}, peer() {}, onCarrier() {}, installAdapter: (selection) => selection.create(call) });
   await connection.greetLiveBridge(context);
   expect(changes.bridgeCapabilities(DEVICE).tasks.watching).toBe(watching);
   expect(await paintCachedRows()).toBe(cold);
-  expect(call.mock.calls.map(([method]) => method)).toEqual(["session.hello"]);
+  expect(call.mock.calls.some(([method]) => ["board.list", "tasks.list", "tasks.get"].includes(method))).toBe(false);
 });

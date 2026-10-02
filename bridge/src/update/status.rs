@@ -19,6 +19,16 @@ pub enum UpdateState {
     Failed,
 }
 
+/// What `last_error` came from. A check error lasts until the next check
+/// succeeds; an install error lasts until an install succeeds, and only it
+/// makes the state `Failed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorKind {
+    Check,
+    Install,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InstallWhen {
@@ -39,6 +49,10 @@ pub struct UpdateStatus {
     pub last_error: Option<String>,
     pub update_available: bool,
     pub can_install: bool,
+    /// Saved beside the status (`PersistedUpdate`), not sent: on the wire a
+    /// `Failed` state is what marks `last_error` as an install's.
+    #[serde(skip)]
+    pub(super) last_error_kind: Option<ErrorKind>,
 }
 
 impl UpdateStatus {
@@ -53,7 +67,31 @@ impl UpdateStatus {
             last_error: None,
             update_available: false,
             can_install: false,
+            last_error_kind: None,
         }
+    }
+
+    /// Record a failed check unless an install error is already showing.
+    pub(super) fn set_check_error(&mut self, error: String) {
+        if self.last_error_kind != Some(ErrorKind::Install) || self.last_error.is_none() {
+            self.last_error = Some(error);
+            self.last_error_kind = Some(ErrorKind::Check);
+        }
+    }
+
+    /// Record a failed install; it replaces whatever error was showing.
+    pub(super) fn set_install_error(&mut self, error: String) {
+        self.last_error = Some(error);
+        self.last_error_kind = Some(ErrorKind::Install);
+    }
+
+    pub(super) fn clear_error(&mut self) {
+        self.last_error = None;
+        self.last_error_kind = None;
+    }
+
+    pub(super) fn has_install_error(&self) -> bool {
+        self.last_error.is_some() && self.last_error_kind == Some(ErrorKind::Install)
     }
 
     pub(super) fn refresh_computed(&mut self) {

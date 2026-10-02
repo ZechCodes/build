@@ -446,6 +446,7 @@ async fn helper_result_completes_install_and_clears_sticky_failure() {
     );
     service.check_at(at(2)).await.unwrap();
     assert!(service.status().last_error.is_some());
+    assert_eq!(service.status().state, UpdateState::Failed);
     service.install(InstallWhen::Now, false).await.unwrap();
     let second_attempt = attempt_id(dir.path());
     std::fs::write(
@@ -584,7 +585,7 @@ async fn abandoned_install_recovers_after_stabilization_window() {
 }
 
 #[tokio::test]
-async fn invalid_release_is_throttled_and_keeps_previous_error() {
+async fn invalid_release_is_throttled_and_cleared_by_the_next_check() {
     let dir = TempDir::new().unwrap();
     let backend = Arc::new(FakeBackend {
         latest: Mutex::new(Ok(release("not-a-version"))),
@@ -592,20 +593,124 @@ async fn invalid_release_is_throttled_and_keeps_previous_error() {
     });
     let service = fixture(dir.path(), backend.clone(), false);
     assert!(service.tick_at(at(1), false).await.is_err());
-    assert_eq!(service.status().state, UpdateState::Failed);
+    // A failed check is not a failed update.
+    assert_eq!(service.status().state, UpdateState::Idle);
+    assert!(service.status().last_error.is_some());
     *backend.latest.lock().unwrap() = Ok(release("1.1.0"));
+    let throttled = service
+        .tick_at(at(1) + time::Duration::hours(23), false)
+        .await
+        .unwrap();
+    assert_eq!(throttled.state, UpdateState::Idle);
+    assert!(throttled.last_error.is_some());
+    let checked = service.tick_at(at(2), false).await.unwrap();
+    assert_eq!(checked.state, UpdateState::Available);
+    assert!(checked.update_available);
+    assert_eq!(checked.last_error, None);
+}
+
+#[tokio::test]
+async fn check_error_clears_on_the_next_successful_check_across_restart() {
+    let dir = TempDir::new().unwrap();
+    let backend = Arc::new(FakeBackend {
+        latest: Mutex::new(Err("HTTP status client error (404 Not Found)".into())),
+        ..Default::default()
+    });
+    let service = fixture(dir.path(), backend.clone(), false);
+    assert!(service.check_at(at(1)).await.is_err());
+    let failed = service.status();
+    assert_eq!(failed.state, UpdateState::Idle);
     assert_eq!(
-        service
-            .tick_at(at(1) + time::Duration::hours(23), false)
-            .await
-            .unwrap()
-            .state,
+        failed.last_error.as_deref(),
+        Some("HTTP status client error (404 Not Found)")
+    );
+    drop(service);
+
+    *backend.latest.lock().unwrap() = Ok(release("1.1.0"));
+    let restarted = fixture(dir.path(), backend, false);
+    let checked = restarted.check_at(at(2)).await.unwrap();
+    assert_eq!(checked.state, UpdateState::Available);
+    assert_eq!(checked.last_error, None);
+    assert!(checked.can_install);
+}
+
+#[tokio::test]
+async fn helper_failure_outlives_checks_until_an_install_succeeds() {
+    let dir = TempDir::new().unwrap();
+    let backend = Arc::new(FakeBackend {
+        latest: Mutex::new(Ok(release("1.1.0"))),
+        ..Default::default()
+    });
+    let service = fixture(dir.path(), backend.clone(), false);
+    service.check_at(at(1)).await.unwrap();
+    service.install(InstallWhen::Now, false).await.unwrap();
+    failed_result(dir.path(), attempt_id(dir.path()));
+    assert_eq!(
+        service.tick_at(at(1), false).await.unwrap().state,
         UpdateState::Failed
     );
-    let checked = service.tick_at(at(2), false).await.unwrap();
+
+    // A failed check does not replace the install's cause.
+    *backend.latest.lock().unwrap() = Err("network down".into());
+    assert!(service.check_at(at(2)).await.is_err());
+    assert_eq!(service.status().state, UpdateState::Failed);
+    assert_eq!(
+        service.status().last_error.as_deref(),
+        Some("helper reported failure")
+    );
+
+    // Nor does a successful one erase it, before or after a restart.
+    *backend.latest.lock().unwrap() = Ok(release("1.1.0"));
+    let checked = service.check_at(at(3)).await.unwrap();
     assert_eq!(checked.state, UpdateState::Failed);
-    assert!(checked.update_available);
-    assert!(service.status().last_error.is_some());
+    assert_eq!(
+        checked.last_error.as_deref(),
+        Some("helper reported failure")
+    );
+    drop(service);
+    let restarted = fixture(dir.path(), backend, false);
+    let checked = restarted.check_at(at(4)).await.unwrap();
+    assert_eq!(checked.state, UpdateState::Failed);
+    assert_eq!(
+        checked.last_error.as_deref(),
+        Some("helper reported failure")
+    );
+}
+
+#[tokio::test]
+async fn development_build_drops_a_stale_check_error_saved_before_error_kinds() {
+    let dir = TempDir::new().unwrap();
+    let status_path = dir.path().join("tasks/bridge-update.json");
+    std::fs::create_dir_all(status_path.parent().unwrap()).unwrap();
+    // The shape an older bridge saved: a check error marked the state failed
+    // and nothing said what kind of error it was.
+    std::fs::write(
+        &status_path,
+        serde_json::to_vec(&serde_json::json!({
+            "running_version": "1.0.0",
+            "platform": "linux-x86_64",
+            "development_build": true,
+            "latest_release": {"version": "1.1.0", "tag": "v1.1.0", "published_at": null},
+            "last_checked_at": "1970-01-02T00:00:00Z",
+            "state": "failed",
+            "last_error": "HTTP status client error (404 Not Found)",
+            "update_available": true,
+            "can_install": false
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let backend = Arc::new(FakeBackend {
+        latest: Mutex::new(Ok(release("1.1.0"))),
+        ..Default::default()
+    });
+    let service = fixture(dir.path(), backend, true);
+    // A development build never installs, so the saved error was a check's.
+    assert_eq!(service.status().state, UpdateState::Available);
+    let checked = service.check_at(at(2)).await.unwrap();
+    assert_eq!(checked.state, UpdateState::Available);
+    assert_eq!(checked.last_error, None);
+    assert!(!checked.can_install);
 }
 
 #[tokio::test]

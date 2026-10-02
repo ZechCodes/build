@@ -1,3 +1,4 @@
+use super::status::ErrorKind;
 use super::{AdmissionGate, HelperResult, InstallWhen, Release, UpdateState, UpdateStatus};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -63,6 +64,9 @@ struct PersistedUpdate {
     status: UpdateStatus,
     #[serde(flatten)]
     attempt: AttemptMetadata,
+    /// Absent in files saved before check and install errors were told apart.
+    #[serde(default)]
+    last_error_kind: Option<ErrorKind>,
 }
 
 #[derive(Debug, Clone)]
@@ -127,7 +131,11 @@ impl UpdateService {
                     path: config.status_path.clone(),
                     source,
                 })
-                .map(|persisted| (persisted.status, persisted.attempt))?,
+                .map(|persisted| {
+                    let mut status = persisted.status;
+                    status.last_error_kind = persisted.last_error_kind;
+                    (status, persisted.attempt)
+                })?,
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => (
                 UpdateStatus::new(
                     config.running_version.clone(),
@@ -147,6 +155,9 @@ impl UpdateService {
         status.running_version = config.running_version.clone();
         status.platform = config.platform.clone();
         status.development_build = config.development_build;
+        if status.last_error.is_some() && status.last_error_kind.is_none() {
+            adopt_unkinded_error(&mut status);
+        }
         status.refresh_computed();
         let no_active_attempt = matches!(backend.active_attempt(), Ok(None));
         let helper_may_own_bridge = status.state == UpdateState::Installing
@@ -260,12 +271,7 @@ impl UpdateService {
         match self.backend.latest().await {
             Ok(release) => {
                 if let Err(error) = validate_release(&release) {
-                    if status.last_error.is_none() {
-                        status.last_error = Some(error.to_string());
-                    }
-                    if status.state != UpdateState::ScheduledWhenIdle {
-                        status.state = UpdateState::Failed;
-                    }
+                    status.set_check_error(error.to_string());
                     self.publish(status, attempt)?;
                     return Err(error);
                 }
@@ -281,8 +287,11 @@ impl UpdateService {
                     *attempt = AttemptMetadata::default();
                 }
                 status.latest_release = Some(release);
+                if !status.has_install_error() {
+                    status.clear_error();
+                }
                 if status.state != UpdateState::ScheduledWhenIdle {
-                    status.state = if status.last_error.is_some() {
+                    status.state = if status.has_install_error() {
                         UpdateState::Failed
                     } else if release_available(&status) {
                         UpdateState::Available
@@ -294,18 +303,14 @@ impl UpdateService {
                     *attempt = AttemptMetadata::default();
                 }
                 // A prior helper failure is sticky until a successful helper
-                // result; a successful metadata check does not erase it.
+                // result; a successful metadata check clears only a check's.
                 self.publish(status, attempt)
             }
             Err(error) => {
                 // Preserve a prior helper rollback cause; a transient network
-                // failure must not replace the actionable install error.
-                if status.last_error.is_none() {
-                    status.last_error = Some(error.clone());
-                }
-                if status.state != UpdateState::ScheduledWhenIdle {
-                    status.state = UpdateState::Failed;
-                }
+                // failure must not replace the actionable install error. A
+                // failed check leaves the state alone: nothing was installed.
+                status.set_check_error(error.clone());
                 self.publish(status, attempt)?;
                 Err(UpdateError::Backend(error))
             }
@@ -440,7 +445,7 @@ impl UpdateService {
             status.state = UpdateState::Failed;
             *attempt = AttemptMetadata::default();
         }
-        status.last_error = Some(error);
+        status.set_install_error(error);
         self.publish(status, attempt)?;
         Ok(())
     }
@@ -532,7 +537,7 @@ impl UpdateService {
             self.staging.store(false, Ordering::Release);
             if let Err(error) = result {
                 status.state = UpdateState::Failed;
-                status.last_error = Some(error.clone());
+                status.set_install_error(error.clone());
                 *attempt = AttemptMetadata::default();
                 self.publish(status, attempt)?;
                 return Err(UpdateError::Backend(error));
@@ -698,7 +703,7 @@ impl UpdateService {
         }
         if result.rollback_pending {
             status.state = UpdateState::Failed;
-            status.last_error = Some(
+            status.set_install_error(
                 result
                     .error
                     .unwrap_or_else(|| "rollback failed; recovery pending".into()),
@@ -711,14 +716,14 @@ impl UpdateService {
             return Ok(());
         }
         if result.success && self.config.running_version == result.version {
-            status.last_error = None;
+            status.clear_error();
             status.state = UpdateState::Idle;
         } else if result.success {
             // The result claims success, but this executable is still the old
             // version. Keep waiting for the new bridge to start and consume it.
             return self.recover_missing_helper(now, status, attempt);
         } else {
-            status.last_error = Some(
+            status.set_install_error(
                 result
                     .error
                     .unwrap_or_else(|| "update failed; previous bridge restored".into()),
@@ -767,7 +772,7 @@ impl UpdateService {
             return Ok(());
         }
         status.state = UpdateState::Failed;
-        status.last_error = Some("update helper stopped before reporting a result".into());
+        status.set_install_error("update helper stopped before reporting a result".into());
         *attempt = AttemptMetadata::default();
         self.publish(status, attempt)?;
         Ok(())
@@ -788,6 +793,25 @@ impl UpdateService {
         save_status(&self.config.status_path, &status, attempt)?;
         self.status_tx.send_replace(status.clone());
         Ok(status)
+    }
+}
+
+/// Name the kind of an error saved before kinds were kept. A development
+/// build never installs, so its error was a check's, and a check error does
+/// not leave the state `Failed`. On a release build it may have been an
+/// install's, which stays until an install succeeds.
+fn adopt_unkinded_error(status: &mut UpdateStatus) {
+    if !status.development_build {
+        status.last_error_kind = Some(ErrorKind::Install);
+        return;
+    }
+    status.last_error_kind = Some(ErrorKind::Check);
+    if status.state == UpdateState::Failed {
+        status.state = if release_available(status) {
+            UpdateState::Available
+        } else {
+            UpdateState::Idle
+        };
     }
 }
 
@@ -843,6 +867,7 @@ fn save_status(
     let json = serde_json::to_vec_pretty(&PersistedUpdate {
         status: status.clone(),
         attempt: attempt.clone(),
+        last_error_kind: status.last_error_kind,
     })
     .map_err(|source| UpdateError::Json {
         path: path.to_path_buf(),

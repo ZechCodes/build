@@ -166,24 +166,38 @@ shown() {
 }
 
 # A path as a command pasted into a shell must name it: the ~ form while
-# nothing in it needs quoting. Else under $HOME it starts from "$HOME", the
-# rest in double quotes while nothing in it is special there; anything else
-# goes in single quotes, where nothing is.
-# shellcheck disable=SC2016 # the $HOME is shown, not expanded
+# nothing in it needs quoting, else as shell_word gives it.
 pasteable() {
     case "$1" in
-        *[!A-Za-z0-9_./-]*) ;;
-        *) shown "$1"; return 0 ;;
+        *[!A-Za-z0-9_./-]*) shell_word "$1" ;;
+        *) shown "$1" ;;
     esac
+}
+
+# A path as one shell word that names it pasted into any shell. Under $HOME
+# it starts from "$HOME", the rest in double quotes while nothing in it is
+# special there ($, `, ", \, and ! to an interactive bash or zsh); anything
+# else goes in single quotes, where nothing is.
+# shellcheck disable=SC2016 # the $HOME is shown, not expanded
+shell_word() {
     case "$1" in
         "$HOME"/*)
-            pa_rest="${1#"$HOME"/}"
-            case "$pa_rest" in
-                *[\$\`\"\\]*) printf '"$HOME"/%s\n' "$(single_quoted "$pa_rest")" ;;
-                *) printf '"$HOME/%s"\n' "$pa_rest" ;;
+            sw_rest="${1#"$HOME"/}"
+            case "$sw_rest" in
+                *[\$\`\"\\!]*) printf '"$HOME"/%s\n' "$(single_quoted "$sw_rest")" ;;
+                *) printf '"$HOME/%s"\n' "$sw_rest" ;;
             esac
             ;;
         *) single_quoted "$1" ;;
+    esac
+}
+
+# The line that puts $1 on PATH, pasted into a profile or a shell.
+# shellcheck disable=SC2016 # the $PATH is shown, not expanded
+path_export() {
+    case "$1" in
+        *[!A-Za-z0-9_./-]*) printf 'export PATH=%s:"$PATH"\n' "$(shell_word "$1")" ;;
+        *) printf 'export PATH="%s:$PATH"\n' "$(in_home "$1")" ;;
     esac
 }
 
@@ -308,7 +322,7 @@ install_binary() {
     case ":$PATH:" in
         *":$INSTALL_DIR:"*) ;;
         *) detail "$(shown "$INSTALL_DIR") is not on your PATH. To run build-bridge by name, add it with:" \
-            "  export PATH=\"$(in_home "$INSTALL_DIR"):\$PATH\"" ;;
+            "  $(path_export "$INSTALL_DIR")" ;;
     esac
 }
 
@@ -320,6 +334,15 @@ web_app_url() {
     wa_base="${BRIDGE_WEB_URL:-${BRIDGE_API_URL:-https://getbuild.ing}}"
     printf '%s/app\n' "${wa_base%/}"
 }
+
+# The api the bridge asks, by the same rule: BRIDGE_API_URL, else the default.
+api_url() {
+    printf '%s\n' "${BRIDGE_API_URL:-https://getbuild.ing}"
+}
+
+# `build-bridge pair`'s exit status when it kept this machine's identity
+# because the api it asked is not known to have approved it (#320).
+PAIR_STATUS_APPROVED_ELSEWHERE=3
 
 # Pairing blocks until the human approves the printed code in Build, and being
 # paired is what the service install is gated on, so the two run in this order.
@@ -336,10 +359,21 @@ enable_service() {
         return 0
     fi
     action_step "Pairing with your Build account"
-    "$1" pair || fail "pairing did not finish. The bridge is installed." \
-        "When you can approve it in Build, run:" \
-        "  $es_run pair" \
-        "  $es_run install-service"
+    es_status=0
+    "$1" pair || es_status=$?
+    case "$es_status" in
+        0) ;;
+        "$PAIR_STATUS_APPROVED_ELSEWHERE")
+            fail "pairing stopped: $(api_url) did not approve this machine's identity, so it was kept." \
+                "To set it aside and pair this machine with $(api_url), run:" \
+                "  $es_run pair --retire" \
+                "  $es_run install-service" ;;
+        *)
+            fail "pairing did not finish. The bridge is installed." \
+                "When you can approve it in Build, run:" \
+                "  $es_run pair" \
+                "  $es_run install-service" ;;
+    esac
     say ""
     step "Starting the background service"
     "$1" install-service || fail "the background service could not be installed." \

@@ -6,7 +6,9 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
-use crate::harness::{Harness, HarnessContext, HarnessError, INHERITED_AGENT_MARKERS};
+use crate::harness::{
+    Harness, HarnessContext, HarnessError, DAEMON_IDENTITY_VARS, INHERITED_AGENT_MARKERS,
+};
 use crate::models::{AgentProvider, ModelChoice, ModelOption};
 use crate::orchestrator::SpawnOptions;
 use crate::pty::HarnessSpec;
@@ -66,6 +68,7 @@ impl Harness for PiHarness {
             .settle(PI_TUI_SETTLE)
             .submit_delay(PI_TUI_SUBMIT_DELAY)
             .unset_all(INHERITED_AGENT_MARKERS)
+            .unset_all(DAEMON_IDENTITY_VARS)
             .arg("--approve")
             .arg("--no-extensions")
             .arg("--extension")

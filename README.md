@@ -65,8 +65,8 @@ If this machine's stored pairing was revoked, or the api no longer knows it,
 `pair` sets the old identity aside in `~/.build` as
 `identity.json.retired-<device id>` and pairs it as a new device. It takes
 that answer only from the api that approved the device; when another api
-(a different `BRIDGE_API_URL`) gives it, `pair` stops and changes nothing,
-and `build-bridge pair --retire` takes that api's word. When a retire was a
+(a different `BRIDGE_API_URL`) gives it, `pair` stops, changes nothing and
+exits with status 3, and `build-bridge pair --retire` takes that api's word. When a retire was a
 mistake, stop the run and move the file back:
 
 ```sh

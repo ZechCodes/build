@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use crate::harness::{
-    installed, Harness, HarnessContext, SessionLocator, INHERITED_AGENT_MARKERS, REAL_TUI_SETTLE,
-    REAL_TUI_SUBMIT_DELAY,
+    installed, Harness, HarnessContext, SessionLocator, DAEMON_IDENTITY_VARS,
+    INHERITED_AGENT_MARKERS, REAL_TUI_SETTLE, REAL_TUI_SUBMIT_DELAY,
 };
 use crate::models::{AgentProvider, ModelChoice, ModelOption};
 use crate::orchestrator::SpawnOptions;
@@ -180,6 +180,7 @@ impl Harness for CodexHarness {
             .settle(REAL_TUI_SETTLE)
             .submit_delay(REAL_TUI_SUBMIT_DELAY)
             .unset_all(INHERITED_AGENT_MARKERS)
+            .unset_all(DAEMON_IDENTITY_VARS)
             .arg("--dangerously-bypass-approvals-and-sandbox");
         for arg in self.model_args(choice) {
             spec = spec.arg(arg);

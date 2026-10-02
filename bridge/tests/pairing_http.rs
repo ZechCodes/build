@@ -501,10 +501,13 @@ async fn another_apis_answer_retires_nothing() {
     )
     .await;
 
-    assert!(
-        matches!(outcome, Err(pairing::PairingError::ApprovedElsewhere)),
-        "{outcome:?}"
-    );
+    match outcome {
+        Err(pairing::PairingError::ApprovedElsewhere { asked, approver }) => {
+            assert_eq!(asked, server.uri());
+            assert_eq!(approver.as_deref(), Some("https://getbuild.ing"));
+        }
+        other => panic!("{other:?}"),
+    }
     assert_eq!(identity::load(&path).unwrap(), Some(id));
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
 }
@@ -530,7 +533,10 @@ async fn an_approval_from_before_the_approver_was_recorded_belongs_to_the_defaul
     .await;
 
     assert!(
-        matches!(outcome, Err(pairing::PairingError::ApprovedElsewhere)),
+        matches!(
+            outcome,
+            Err(pairing::PairingError::ApprovedElsewhere { approver: None, .. })
+        ),
         "{outcome:?}"
     );
     assert_eq!(identity::load(&path).unwrap(), Some(id));
@@ -632,6 +638,77 @@ async fn a_new_approval_records_the_api_that_gave_it() {
 
     assert_eq!(out.approved_by.as_deref(), Some(server.uri().as_str()));
     assert_eq!(identity::load(&path).unwrap(), Some(out));
+}
+
+/// An identity approved before the approver was recorded, by an api that is
+/// not the default, learns its approver the first time that api says it is
+/// approved, so the same api's later revoke retires it (#320).
+#[tokio::test]
+async fn an_approval_without_a_recorded_approver_records_the_api_that_confirms_it() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (path, mut id) = stored(&dir, Some("unused"));
+    id.approved_by = None;
+    identity::save(&path, &id).unwrap();
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/devices/.+/status$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "approved": true, "owner_user_id": "u1", "state": "approved"
+        })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/devices/.+/status$"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"approved": false, "state": "revoked"})),
+        )
+        .with_priority(2)
+        .mount(&server)
+        .await;
+    let client = pairing::status_client();
+    let api = server.uri();
+    let ask = || pairing::retire_lapsed_approval(&client, &api, &path, RetireWhen::ApproverSays);
+
+    assert!(ask().await.unwrap().is_none());
+    let recorded = identity::load(&path).unwrap().unwrap();
+    assert_eq!(recorded.approved_by.as_deref(), Some(server.uri().as_str()));
+    assert_eq!(
+        identity::StoredIdentity {
+            approved_by: None,
+            ..recorded
+        },
+        id
+    );
+
+    let retired = ask()
+        .await
+        .unwrap()
+        .expect("its own approver's revoke retires it");
+    assert_eq!(retired.lapse, pairing::Lapse::Revoked);
+}
+
+/// A recorded approver is never replaced by another api that also says
+/// approved.
+#[tokio::test]
+async fn a_recorded_approver_stays_whoever_else_approves() {
+    let server = api_answering_status(serde_json::json!({
+        "approved": true, "owner_user_id": "u1", "state": "approved"
+    }))
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (path, id) = stored(&dir, Some("https://getbuild.ing"));
+    pairing::retire_lapsed_approval(
+        &pairing::status_client(),
+        &server.uri(),
+        &path,
+        RetireWhen::ApproverSays,
+    )
+    .await
+    .unwrap();
+    assert_eq!(identity::load(&path).unwrap(), Some(id));
 }
 
 /// `text` with its line breaks and indents read as single spaces, so an

@@ -129,7 +129,14 @@ new_sandbox() {
 # chose for pairing.
 case "${1:-}" in
     pair)
-        printf 'pair\n' >> "$HOME/bridge-calls"
+        printf '%s\n' "$*" >> "$HOME/bridge-calls"
+        # Kept for another api: refused before any code is printed (#320).
+        if [ "${BUILD_TEST_PAIR_STATUS:-0}" = "3" ]; then
+            printf '    not paired: asked %s, but\n' "${BRIDGE_API_URL:-https://getbuild.ing}" >&2
+            printf '    https://getbuild.ing approved this device; pair --retire sets it\n' >&2
+            printf '    aside anyway\n' >&2
+            exit 3
+        fi
         if [ "${BUILD_TEST_RETIRED:-0}" = "1" ]; then
             printf "    This machine's earlier pairing is no longer valid.\n" >&2
             printf '    Pairing it as a new device; the old identity is kept in ~/.build.\n' >&2
@@ -137,7 +144,10 @@ case "${1:-}" in
         printf '\n    pairing code:  TEST-CODE\n    fingerprint:   28e6 7993 9bc3 2c44\n' >&2
         printf '    approve at:    https://getbuild.ing/app/#/pair/TEST-CODE\n\n' >&2
         printf '    Waiting for you to approve it in Build…\n' >&2
-        [ "${BUILD_TEST_PAIR_STATUS:-0}" = "0" ] || { printf '    not paired: refused\n' >&2; exit 1; }
+        case "${BUILD_TEST_PAIR_STATUS:-0}" in
+            0) ;;
+            *) printf '    not paired: refused\n' >&2; exit "$BUILD_TEST_PAIR_STATUS" ;;
+        esac
         printf '    Device approved.\n' >&2
         printf '    paired to account test-owner\n'
         ;;
@@ -502,6 +512,36 @@ a_failed_pairing_says_how_to_resume() {
     assert_never_says "$name" "$root/stderr" "Starting the background service" && pass "$name"
 }
 
+# A pairing the bridge kept because the api it asked did not approve it
+# (exit 3, #320) is not one to retry as it was: the installer names the api
+# and gives `pair --retire`, which works pasted, all within 80 columns.
+a_pairing_kept_for_another_api_offers_pair_retire() {
+    name="a_pairing_kept_for_another_api_offers_pair_retire"
+    root="$(new_sandbox "$name")"
+    status="$(BRIDGE_API_URL=http://localhost:8090 CASE_INSTALL_DIR="$root/home/.local/bin" \
+        CASE_SKIP_SERVICE=0 CASE_PAIR_STATUS=3 run_install "$root")"
+    assert_exit "$name" "$root" "$status" 1 || return 1
+    assert_says "$name" "$root/stderr" \
+        "Error: pairing stopped: http://localhost:8090 did not approve this machine's" \
+        "pair this machine with http://localhost:8090, run:" \
+        "  ~/.local/bin/build-bridge pair --retire" \
+        "  ~/.local/bin/build-bridge install-service" || return 1
+    assert_never_says "$name" "$root/stderr" "When you can approve it in Build" || return 1
+    assert_never_says "$name" "$root/stderr" "Starting the background service" || return 1
+    assert_fits_80 "$name" "$root/stderr" || return 1
+    pk_line="$(grep -E '^      .* pair --retire$' "$root/stderr")"
+    : > "$root/home/bridge-calls"
+    HOME="$root/home" sh -c "$pk_line" > /dev/null 2>&1 || {
+        fail "$name" "pasted '$pk_line' did not run"
+        return 1
+    }
+    [ "$(cat "$root/home/bridge-calls")" = "pair --retire" ] || {
+        fail "$name" "pasted '$pk_line' ran: $(cat "$root/home/bridge-calls")"
+        return 1
+    }
+    pass "$name"
+}
+
 # A service install that fails after pairing says so, gives the command that
 # retries it and the one that runs the bridge meanwhile, and fits 80 columns.
 a_failed_service_install_says_how_to_resume() {
@@ -603,15 +643,17 @@ assert_breaks_sentences() {
 
 # A command the installer says to run works pasted as printed, when the home
 # or the install directory has a space in it, inside home or out, or any
-# character a shell treats specially in or out of quotes.
+# character a shell treats specially in or out of quotes; so does the line
+# that puts the directory on PATH. No `!` is left where an interactive bash or
+# zsh would expand it: outside single quotes.
 pasted_commands_survive_any_path() {
     name="pasted_commands_survive_any_path"
     root="$(new_sandbox "$name")"
     ps_home="$root/my home"
     # shellcheck disable=SC2016 # every character is taken literally; that is the point
-    ps_odd='$x `y` "q" \b '"'a'"
+    ps_odd='$x `y` "q" \b '"'a'"' !1'
     for ps_dir in "$ps_home/my tools" "$root/opt dir/bin" "$root/$ps_odd/bin" \
-        "$ps_home/$ps_odd/bin" "$ps_home/it's/bin"; do
+        "$ps_home/$ps_odd/bin" "$ps_home/it's/bin" "$ps_home/wow!/bin" "$root/wow!/bin"; do
         mkdir -p "$ps_home"
         rm -f "$root/stderr"
         CASE_HOME="$ps_home" CASE_INSTALL_DIR="$ps_dir" CASE_SKIP_SERVICE=0 CASE_PAIR_STATUS=1 \
@@ -627,6 +669,20 @@ pasted_commands_survive_any_path() {
             fail "$name" "pasted '$ps_line' ran: $(cat "$ps_home/bridge-calls")"
             return 1
         }
+        ps_export="$(grep -E '^ +export PATH=' "$root/stderr" | head -1)"
+        [ -n "$ps_export" ] || { fail "$name" "no PATH line in: $(cat "$root/stderr")"; return 1; }
+        # shellcheck disable=SC2016 # expanded by the pasted shell, not this one
+        ps_first="$(HOME="$ps_home" PATH=/usr/bin:/bin sh -c "$ps_export"'
+printf %s "${PATH%%:*}"' 2>/dev/null)" || true
+        [ "$ps_first" = "$ps_dir" ] || {
+            fail "$name" "pasted '$ps_export' put '$ps_first' on PATH, not '$ps_dir'"
+            return 1
+        }
+        for ps_said in "$ps_line" "$ps_export"; do
+            case "$(printf '%s' "$ps_said" | sed "s/'[^']*'//g")" in
+                *!*) fail "$name" "'$ps_said' leaves a ! outside single quotes"; return 1 ;;
+            esac
+        done
     done
     pass "$name"
 }
@@ -654,6 +710,7 @@ for case_name in \
     where_to_go_follows_the_bridge_web_url \
     a_failed_pairing_says_how_to_resume \
     a_failed_service_install_says_how_to_resume \
+    a_pairing_kept_for_another_api_offers_pair_retire \
     skipping_the_service_says_what_to_run_later \
     pairing_says_what_is_happening \
     every_line_fits_80_columns \

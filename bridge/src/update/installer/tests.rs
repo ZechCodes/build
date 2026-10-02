@@ -914,3 +914,30 @@ int openat(int dirfd, const char *path, int flags, ...) {
     assert!(!result.success);
     assert!(!result.rollback_pending);
 }
+
+#[test]
+fn a_replacement_refuses_a_development_build_rebuilt_since_it_started() {
+    let dir = tempfile::tempdir().unwrap();
+    let job = development_fixture(dir.path(), None);
+    // The running image is an older build than the file the service would
+    // start: replacing the file would not replace what is running.
+    let running_image = dir.path().join("running-image");
+    fs::write(&running_image, b"#!/bin/sh\nprintf 'older build\\n'\n").unwrap();
+    let original = fs::read(&job.installed_binary).unwrap();
+    let mut actions = Vec::new();
+    let error = install_with(
+        &job,
+        dir.path(),
+        &running_image,
+        &mut |action| {
+            actions.push(action.to_string());
+            Ok(())
+        },
+        &mut healthy,
+    )
+    .unwrap_err();
+    assert!(!error.pending());
+    assert!(actions.is_empty());
+    assert_eq!(fs::read(&job.installed_binary).unwrap(), original);
+    assert!(!super::super::provenance::marker_path(&job.home).exists());
+}

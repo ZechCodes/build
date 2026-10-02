@@ -678,7 +678,9 @@ target checkout or an owned temporary checkout on the target branch. Separate
 repositories import only the saved OID under a private ref. Push is non-forced
 to a configured remote and explicit branch, using the saved head or a recorded
 merge tip. A Push retry can name the successful merge action; it never reruns
-Merge. Results survive completion and workspace replacement; an old result
+Merge. Destination reads cover only the latest snapshot's directories, so
+retained history adds no Git reads to `tasks.review.get`. Results survive
+completion and workspace replacement; an old result
 still names its original snapshot. None of these operations finishes or removes
 a workspace, stages source files, or requires a review opinion.
 

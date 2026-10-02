@@ -367,6 +367,7 @@ describe("the aggregate over a checkout nothing walks", () => {
 
   async function mountWorkspaceReview({ held = null } = {}) {
     if (held) await writeCached({ deviceId: "dev-1", entityId: ENTITY, kind: "diff" }, held);
+    if (held?.diff_key) await writeCached({ deviceId: "dev-1", entityId: ENTITY, kind: "unpushed" }, { diff_key: held.diff_key, base: { kind: "empty" } });
     const container = document.createElement("div");
     document.body.appendChild(container);
     const calls = [];

@@ -615,6 +615,7 @@ describe("a pane over a checkout nothing walks", () => {
   const fill = async () => {
     await cache.writeCached({ deviceId: "dev-1", entityId: ENTITY, kind: "status" }, status());
     await cache.writeCached({ deviceId: "dev-1", entityId: ENTITY, kind: "log" }, log());
+    await cache.writeCached({ deviceId: "dev-1", entityId: ENTITY, kind: "unpushed" }, { base: { kind: "empty" } });
   };
 
   it("paints held status and history before its keyed status check answers", async () => {
@@ -680,10 +681,11 @@ describe("a pane over a checkout nothing walks", () => {
     }
   });
 
-  it("refreshes review data and log when the published base moved without a status change", async () => {
+  it.each([true, false])("refreshes review data and log when the published base moved without a status change (held unpushed: %s)", async (heldUnpushed) => {
     await fill();
     const address = { deviceId: "dev-1", entityId: ENTITY };
-    await cache.writeCached({ ...address, kind: "unpushed" }, { diff_key: "old", base: { kind: "push_target", label: "origin/main" } });
+    if (heldUnpushed) await cache.writeCached({ ...address, kind: "unpushed" }, { diff_key: "old", base: { kind: "push_target", label: "origin/main" } });
+    else await cache.deleteCached([{ ...address, kind: "unpushed" }]);
     await cache.writeCached({ ...address, kind: "diff" }, { diff_key: "old", patch: tree.wholePatch(), commentable: true });
     const callRpc = vi.fn(async (method, params) => {
       if (method === "git.status") return { unchanged: true, status_key: status().status_key };
@@ -696,7 +698,7 @@ describe("a pane over a checkout nothing walks", () => {
       await vi.waitFor(() => expect(container.querySelector('.rrow[data-sel="review"] .rsub')?.textContent).toBe("since published history"));
       await vi.waitFor(() => expect(container.textContent).toContain("landed since"));
       expect(callRpc.mock.calls.filter(([method]) => method === "git.unpushed")).toEqual([
-        ["git.unpushed", { ...SOURCE, if_diff_key: "old" }],
+        ["git.unpushed", { ...SOURCE, ...(heldUnpushed ? { if_diff_key: "old" } : {}) }],
       ]);
       expect((await cache.readCached({ ...address, kind: "diff" }))?.value.patch).toBe("");
     } finally {

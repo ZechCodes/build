@@ -97,7 +97,7 @@ async function keepUnpushed(cacheScope, scope, payload, before, active) {
   const address = entityId ? cacheScope?.address({ entityId, kind: "unpushed" }) || null : null;
   if (!address) return false;
   const { patch, ...record } = payload;
-  const changed = before?.value && before.value.diff_key !== record.diff_key;
+  const changed = !before?.value || before.value.diff_key !== record.diff_key;
   await writeDirectoryGit(address, record, { before, active, staleKinds: changed ? ["log"] : [] });
   return true;
 }
@@ -135,7 +135,7 @@ export function createWorkspaceReview({ scope, callRpc, cacheScope = null, navig
         // it on arrival is what a phone's first seconds went on. A bridge
         // that cannot is asked for the whole thing, exactly as before.
         ...(perFileDiffs() ? { patch: false } : {}),
-        ...(ifDiffKey ? { if_diff_key: ifDiffKey } : {}),
+        ...(ifDiffKey && before?.value ? { if_diff_key: ifDiffKey } : {}),
       });
       if (readLifetime !== lifetime) return null;
       if (!payload.unchanged) await keepUnpushed(cacheScope, scope, payload, before, () => readLifetime === lifetime);

@@ -667,6 +667,36 @@ describe("a pane over a checkout nothing walks", () => {
     pane.dispose();
   });
 
+  it.each([
+    [{ kind: "push_target", label: "origin/feature" }, "vs origin/feature"],
+    [{ kind: "published_ancestor", label: null }, "since published history"],
+  ])("updates the cached review base after a stale diff is refreshed: %s", async (base, subtitle) => {
+    await fill();
+    const address = { deviceId: "dev-1", entityId: ENTITY };
+    await cache.writeCached({ ...address, kind: "unpushed" }, {
+      base: { kind: "push_target", label: "origin/main" }, diff_key: "old", stale: true,
+    });
+    await cache.writeCached({ ...address, kind: "diff" }, {
+      patch: tree.wholePatch(), diff_key: "old", commentable: true, stale: true,
+    });
+    let finish;
+    const callRpc = vi.fn((method, params) => method === "git.unpushed"
+      ? new Promise((resolve) => { finish = resolve; })
+      : sourceRpc()(method, params));
+    const { container, pane } = mountPaneNow(callRpc, { scope: SOURCE });
+    try {
+      await vi.waitFor(() => {
+        expect(container.querySelector('.rrow[data-sel="review"] .rsub')?.textContent).toBe("vs origin/main");
+        expect(finish).toBeTypeOf("function");
+      });
+      finish({ patch: tree.wholePatch(), diff_key: "fresh", base });
+      await vi.waitFor(async () => expect((await cache.readCached({ ...address, kind: "unpushed" }))?.value.base).toEqual(base));
+      await vi.waitFor(() => expect(container.querySelector('.rrow[data-sel="review"] .rsub')?.textContent).toBe(subtitle));
+    } finally {
+      pane.dispose();
+    }
+  });
+
   // ...and the record it reads is the one this pane wrote: nothing else ever
   // writes an unpushed record under a source. The sync pass files its own under
   // the board's entities, which a workspace source is not one of.

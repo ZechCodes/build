@@ -30,8 +30,7 @@ fn pair() -> Pair {
         dir.path(),
         &["clone", "-q", upstream.to_str().unwrap(), "base"],
     );
-    git_in(&base, &["config", "user.email", "test@build.ing"]);
-    git_in(&base, &["config", "user.name", "Test"]);
+    crate::git_fixture::configure_repo(&base);
     Pair {
         _dir: dir,
         upstream,

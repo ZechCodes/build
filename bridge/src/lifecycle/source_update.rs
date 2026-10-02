@@ -216,6 +216,7 @@ mod tests {
                 into.to_str().unwrap(),
             ],
         );
+        crate::git_fixture::configure_repo(into);
         into.to_path_buf()
     }
 

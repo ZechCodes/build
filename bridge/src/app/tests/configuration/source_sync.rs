@@ -31,6 +31,7 @@ fn clone_of_upstream(root: &Path, name: &str) -> (PathBuf, PathBuf) {
             base.to_str().unwrap(),
         ],
     );
+    crate::git_fixture::configure_repo(&base);
     (upstream, base)
 }
 

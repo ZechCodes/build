@@ -218,6 +218,7 @@ fn workspace_with_its_own_docs_copy(f: &mut Fixture, name: &str) -> (String, Pat
             checkout.to_str().unwrap(),
         ],
     );
+    crate::git_fixture::configure_repo(&checkout);
     git_in(
         &checkout,
         &[

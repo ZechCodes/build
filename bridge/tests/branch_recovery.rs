@@ -70,6 +70,8 @@ impl RecoveryCase {
         git(&repo, &["init", "-b", "main"]);
         git(&repo, &["config", "user.name", "Test"]);
         git(&repo, &["config", "user.email", "test@build.ing"]);
+        // Product commits share this repository's config after setup ends.
+        git(&repo, &["config", "--local", "commit.gpgsign", "false"]);
         git(&repo, &["commit", "--allow-empty", "-m", "initial"]);
         let origin = root.path().join("origin.git");
         git(

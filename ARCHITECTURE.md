@@ -789,6 +789,18 @@ interop (`interop_python.rs`, which needs a `build-secure-transport` checkout),
 store migration and the complexity ratchet (`complexity_ratchet.rs`). The
 complexity threshold is in `bridge/clippy.toml`.
 
+Git fixtures set a local test identity and `commit.gpgsign=false` through
+`git_fixture::configure_repo`, so product commits in the repository and its
+linked worktrees cannot use the developer's signing key. Configure clones and
+unborn fixtures too. Tests that call product code which creates and commits a
+repository in one step use `git_fixture::environment::isolated_git_test!`: it
+re-runs that exact test in a child with a cleared environment, temporary HOME
+and identity file, and private Git config. Success requires the child's
+execution marker as well as its exit status, so selecting zero tests fails.
+The fake-signer regression checks
+that fixture commits stay unsigned and that the product still honors explicit
+signing config. None of this changes Git configuration for `cargo run`.
+
 ---
 
 ## The SPA

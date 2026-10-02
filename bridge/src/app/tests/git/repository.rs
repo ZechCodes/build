@@ -35,8 +35,7 @@ fn clone_working(origin: &std::path::Path, dest: &std::path::Path) {
         dest.parent().unwrap(),
         &["clone", origin.to_str().unwrap(), dest.to_str().unwrap()],
     );
-    git_in(dest, &["config", "user.email", "o@build.ing"]);
-    git_in(dest, &["config", "user.name", "O"]);
+    crate::git_fixture::configure_repo(dest);
 }
 
 #[test]

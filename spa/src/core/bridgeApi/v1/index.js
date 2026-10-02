@@ -144,6 +144,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
     reviews: {
       get: names.has("tasks.review.get"), snapshot: names.has("tasks.review.snapshot"),
       diff: names.has("tasks.review.diff"), complete: names.has("tasks.review.complete"),
+      act: names.has("tasks.review.act"),
       comments: names.has("tasks.reviewComments"),
     },
     tasks: {

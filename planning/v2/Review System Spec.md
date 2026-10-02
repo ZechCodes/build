@@ -200,6 +200,11 @@ pushes preserve Git's usual non-fast-forward refusal.
 Default to a merge commit. Conflicts return a per-source failure; abort only the
 merge this action started and report an abort failure honestly. Private imported
 refs and temporary worktrees are internal Git plumbing, not new review entities.
+Merge disables commit signing and, like Push, has a longer deadline than Git
+reads. After a merge timeout, restore the previously clean checkout only when
+its branch, files and lock ownership can be verified; otherwise report the path
+and recovery reason. A timed-out Push has an unknown outcome: check the remote
+before retrying. Record that result as interrupted.
 Use existing isolation/worktree ownership helpers (`bridge/src/isolation/worktree.rs`)
 for temporary checkout creation
 and removal, without invoking the workspace Done flow.
@@ -353,6 +358,24 @@ of the owner's correction. Any agent/model may review or finish.
 Merge defaults to a merge commit, Push is non-forced, completion retains
 branches/workspaces, and source-repository deletion can lose historical diff access.
 There are no outstanding owner choices blocking this draft.
+
+### Increment C implementation (#330)
+
+Wire 3.8.0 announces `tasks.review.act` independently. Its source selections
+contain optional `merge: {branch}` and `push: {remote, branch}`; both run in that
+order. Each source creates one action row whose steps keep input/result OIDs,
+errors and cleanup warnings. A push-only retry may name `merge_action_id` to
+reuse a recorded successful merge tip from the same snapshot and directory.
+No request replay identifier or lookup API is added. Leaving all sources
+unchanged does not advance the review version.
+
+Schema 13 keeps action rows separately from snapshot history. A workspace
+replacement retains already accepted Git facts with their original snapshot
+identity, including results that finish after replacement or completion. Boot
+recovery marks unfinished actions interrupted; ordinary store readers do not.
+The UI's saved submission intent permits completion from recorded success after
+reconnect, but never replays a Git action. Existing explicit completion remains
+available regardless of the Git result history.
 
 ## Workshop log: Opus read of 3143e6c4
 

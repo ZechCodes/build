@@ -63,7 +63,9 @@
           ]
         }
       ],
-      "completion": null
+      "completion": null,
+      "actions": [],
+      "destinations": []
     }
   },
   "errors": [

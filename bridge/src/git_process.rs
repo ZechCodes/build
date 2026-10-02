@@ -104,6 +104,26 @@ pub(crate) fn run_git_unattended(
     run_with_environment(OsStr::new("git"), dir, args, deadline, UNATTENDED)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GitProcessEvent {
+    Started(u32),
+    BeforeTimeoutKill(u32),
+}
+
+/// Record the child identity and inspect action-owned files before a timeout
+/// kills its process group. A timeout returns only after killing and reaping.
+pub(crate) fn run_git_unattended_observed(
+    dir: &Path,
+    args: &[&OsStr],
+    deadline: Duration,
+    observer: &mut dyn FnMut(GitProcessEvent),
+) -> std::io::Result<Output> {
+    let executable = OsStr::new("git");
+    let child = spawn_with_environment(executable, dir, args, UNATTENDED)?;
+    observer(GitProcessEvent::Started(child.id()));
+    bounded_observed(child, executable, args, deadline, observer)
+}
+
 fn run_with_environment(
     executable: &OsStr,
     dir: &Path,
@@ -111,6 +131,16 @@ fn run_with_environment(
     deadline: Duration,
     environment: &[(&str, &str)],
 ) -> std::io::Result<Output> {
+    let child = spawn_with_environment(executable, dir, args, environment)?;
+    bounded(child, executable, args, deadline)
+}
+
+fn spawn_with_environment(
+    executable: &OsStr,
+    dir: &Path,
+    args: &[&OsStr],
+    environment: &[(&str, &str)],
+) -> std::io::Result<Child> {
     let mut command = Command::new(executable);
     command.envs(environment.iter().copied());
     #[cfg(unix)]
@@ -118,7 +148,7 @@ fn run_with_environment(
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    let child = command
+    command
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GCM_INTERACTIVE", "Never")
@@ -126,8 +156,7 @@ fn run_with_environment(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .current_dir(dir)
-        .spawn()?;
-    bounded(child, executable, args, deadline)
+        .spawn()
 }
 
 /// Everything `child` said, or the deadline it did not answer within. Both
@@ -136,10 +165,20 @@ fn run_with_environment(
 /// reaching its exit, which are two events and not one: a child that has let go
 /// of both pipes and not yet exited is killed like any other.
 fn bounded(
+    child: Child,
+    executable: &OsStr,
+    args: &[&OsStr],
+    deadline: Duration,
+) -> std::io::Result<Output> {
+    bounded_observed(child, executable, args, deadline, &mut |_| {})
+}
+
+fn bounded_observed(
     mut child: Child,
     executable: &OsStr,
     args: &[&OsStr],
     deadline: Duration,
+    observer: &mut dyn FnMut(GitProcessEvent),
 ) -> std::io::Result<Output> {
     let (closed, pipe_closed) = std::sync::mpsc::channel();
     let stdout = drain(child.stdout.take(), closed.clone());
@@ -148,6 +187,9 @@ fn bounded(
     for _ in 0..2 {
         let left = expiry.saturating_duration_since(Instant::now());
         if let Err(unread) = pipe_closed.recv_timeout(left) {
+            if matches!(unread, std::sync::mpsc::RecvTimeoutError::Timeout) {
+                observer(GitProcessEvent::BeforeTimeoutKill(child.id()));
+            }
             kill_and_reap(&mut child);
             return Err(match unread {
                 std::sync::mpsc::RecvTimeoutError::Timeout => {
@@ -160,6 +202,7 @@ fn bounded(
         }
     }
     let Some(status) = exit_before(&mut child, expiry)? else {
+        observer(GitProcessEvent::BeforeTimeoutKill(child.id()));
         kill_and_reap(&mut child);
         return Err(timed_out(
             executable,
@@ -386,6 +429,34 @@ mod tests {
 
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut, "{error}");
         assert!(started.elapsed() < Duration::from_secs(5), "was not killed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timeout_observer_runs_once_while_child_is_alive_before_reaping() {
+        let dir = tempfile::tempdir().unwrap();
+        run_git(dir.path(), &["init"]).unwrap();
+        let url = stalling_git_url();
+        let mut observed = Vec::new();
+        let error = run_git_unattended_observed(
+            dir.path(),
+            &[OsStr::new("fetch"), OsStr::new(url.as_str())],
+            Duration::from_millis(500),
+            &mut |event| {
+                let (GitProcessEvent::Started(pid) | GitProcessEvent::BeforeTimeoutKill(pid)) =
+                    event;
+                assert_eq!(unsafe { libc::kill(pid as i32, 0) }, 0);
+                observed.push(event);
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(observed.len(), 2);
+        let GitProcessEvent::Started(pid) = observed[0] else {
+            panic!("missing start event")
+        };
+        assert_eq!(observed[1], GitProcessEvent::BeforeTimeoutKill(pid));
+        assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
     }
 
     /// Pipe EOF and a process exit are different events. A child that has let

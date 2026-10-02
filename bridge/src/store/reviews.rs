@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::PathBuf;
 
+mod actions;
+
 #[derive(Clone, Serialize, Deserialize)]
 struct ReviewHeader {
     task_id: String,
@@ -292,6 +294,8 @@ fn load_review(conn: &Connection, task_id: &str) -> Result<Option<Review>, Store
         state: header.state,
         snapshots,
         completion: header.completion,
+        actions: actions::load_actions(conn, task_id)?,
+        destinations: Vec::new(),
     }))
 }
 

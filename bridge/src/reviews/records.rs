@@ -1,5 +1,6 @@
 //! Durable task review metadata. Git content stays in each source repository.
 
+use super::actions::{ReviewAction, ReviewDestination};
 use super::model::ReviewSnapshot;
 use crate::tracker::Actor;
 use serde::{Deserialize, Serialize};
@@ -36,4 +37,8 @@ pub struct Review {
     pub state: ReviewState,
     pub snapshots: Vec<ReviewSnapshot>,
     pub completion: Option<ReviewCompletion>,
+    #[serde(default)]
+    pub actions: Vec<ReviewAction>,
+    #[serde(default)]
+    pub destinations: Vec<ReviewDestination>,
 }

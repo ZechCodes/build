@@ -75,3 +75,19 @@ it("does not call review verbs or draw actions without cached support", async ()
   expect(callRpc).not.toHaveBeenCalled();
   expect(document.querySelector('[data-review-update]')).toBeNull();
 });
+
+it("refreshes destinations after saving a snapshot whose mutation omits them", async () => {
+  await rememberReviewSupport(scope.deviceId, { reviews: { ...support, act: true } });
+  await writeReviewRecord(scope, review, 1);
+  const next = { ...review, version: 2, snapshots: [...review.snapshots, { ...review.snapshots[0], id: "new-snapshot", number: 2 }] };
+  const callRpc = vi.fn(async (method) => ({ review: method === "tasks.review.snapshot" ? { ...next, destinations: [] } : {
+    ...next, destinations: [{ snapshot_id: "new-snapshot", directory_id: "dir-api", source_path: "/sources/api",
+      branches: ["main"], remotes: [{ name: "origin", branches: ["main"] }], live_head: review.snapshots[0].directories[0].head }],
+  } }));
+  page = mountTaskReviewPage(document.querySelector("#review"), { ...scope, callRpc, workspaces: () => [], task: () => ({ id: scope.taskId }) });
+  await vi.waitFor(() => expect(document.querySelector('[data-review-save]')).not.toBeNull());
+  document.querySelector('[data-review-save]').dispatchEvent(new Event("submit", { cancelable: true }));
+  await vi.waitFor(() => expect(document.querySelector('[data-review-source="dir-api"]')).not.toBeNull());
+  const methods = callRpc.mock.calls.map(([method]) => method);
+  expect(methods.lastIndexOf("tasks.review.get")).toBeGreaterThan(methods.indexOf("tasks.review.snapshot"));
+});

@@ -7,13 +7,13 @@ import { createTaskReviewRepository, reviewAddress, writeReviewRecord } from "..
 import fixture from "../../fixtures/api/v1/tasks.review.get.json";
 
 const scope = { deviceId: "reviews-cache", projectId: "proj-1", taskId: "task-1" };
-const support = { get: true, snapshot: true, diff: true, complete: true, comments: true };
+const support = { get: true, snapshot: true, diff: true, complete: true, act: true, comments: true };
 const review = fixture.result.review;
 beforeEach(async () => { await wipeCache(); });
 
 it("gates each verb and comments independently and remembers the greeting", async () => {
   const caps = capabilitiesOf({ api_version: "3.6.0", capabilities: ["tasks.review.get", "tasks.review.diff"] });
-  expect(caps.reviews).toEqual({ ...support, snapshot: false, complete: false, comments: false });
+  expect(caps.reviews).toEqual({ ...support, snapshot: false, complete: false, act: false, comments: false });
   await rememberReviewSupport(scope.deviceId, caps);
   expect(await readReviewSupport(scope.deviceId)).toEqual(caps.reviews);
   expect(await readReviewSupport("unknown")).toEqual(Object.fromEntries(Object.keys(support).map((key) => [key, false])));

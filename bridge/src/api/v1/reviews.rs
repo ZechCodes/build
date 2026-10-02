@@ -3,6 +3,7 @@
 use super::{answer, Answer};
 use crate::api::ApiError;
 use crate::app::AppState;
+use crate::reviews::actions::ReviewActParams;
 use crate::reviews::read::{ReviewReadRequest, ReviewReadResult};
 use crate::reviews::records::Review;
 use crate::tracker::Actor;
@@ -19,6 +20,7 @@ pub fn methods() -> &'static [(&'static str, super::Handler)] {
             ReviewResult
         ),
         v1_method!("tasks.review.get", get, ReviewGetParams, ReviewResult),
+        v1_method!("tasks.review.act", act, ReviewActParams, ReviewResult),
         v1_method!(
             "tasks.review.diff",
             diff,
@@ -93,4 +95,8 @@ fn complete(
     params: ReviewCompleteParams,
 ) -> Result<Answer<ReviewResult>, ApiError> {
     answer(app.review_complete(params, Actor::User))
+}
+
+fn act(app: &mut AppState, params: ReviewActParams) -> Result<Answer<ReviewResult>, ApiError> {
+    answer(app.review_act(params, Actor::User))
 }

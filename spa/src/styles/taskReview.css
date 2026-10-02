@@ -11,6 +11,23 @@
 .task-review-actions label, .task-review-base { display: grid; gap: 6px; }
 .task-review-actions input, .task-review-actions select, .task-review-actions textarea { width: 100%; min-width: 0; box-sizing: border-box; }
 .task-review-actions [data-review-bases] { display: grid; gap: 10px; }
+.task-review [data-review-git-actions] { margin-bottom: 16px; }
+.task-review [data-review-act-sheet] summary { cursor: pointer; color: var(--accent); padding: 8px 0; }
+.task-review [data-review-act] { display: grid; gap: 12px; padding: 12px 0; }
+.task-review-source { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
+.task-review-source legend { padding: 0 5px; font-weight: 600; }
+.task-review-source p { margin: 0; overflow-wrap: anywhere; }
+.task-review-source label { display: grid; gap: 4px; }
+.task-review-source label:has(input[type="checkbox"]) { display: flex; align-items: center; }
+.task-review-source select { width: 100%; max-width: 450px; min-width: 0; }
+.task-review-results ul { padding-left: 20px; }
+.task-review-result { margin-bottom: 10px; padding-left: 8px; border-left: 3px solid var(--line); overflow-wrap: anywhere; }
+.task-review-result[data-review-result-status="succeeded"] { border-color: var(--green); }
+.task-review-result[data-review-result-status="succeeded"] strong { color: var(--green); }
+.task-review-result[data-review-result-status="failed"] { border-color: var(--red); }
+.task-review-result[data-review-result-status="failed"] strong { color: var(--red); }
+.task-review-result[data-review-result-status="interrupted"] { border-color: var(--amber); }
+.task-review-result[data-review-result-status="interrupted"] strong { color: var(--amber); }
 .task-review-facts { overflow-wrap: anywhere; font-size: 12px; color: var(--muted); }
 .task-review-facts code { font-size: 11px; }
 .task-review-facts p { margin: 10px 0; }

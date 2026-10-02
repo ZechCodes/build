@@ -252,6 +252,14 @@ CREATE TABLE IF NOT EXISTS review_snapshots (
 CREATE INDEX IF NOT EXISTS review_snapshots_by_task
     ON review_snapshots(task_id, number);
 
+CREATE TABLE IF NOT EXISTS review_actions (
+    id       TEXT PRIMARY KEY,
+    task_id  TEXT NOT NULL,
+    status   TEXT NOT NULL,
+    record   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS review_actions_by_task ON review_actions(task_id);
+
 -- One bounded copy of each pre-v6 agent skeleton. The migration materializes
 -- formerly inherited settings and implicit conversation aliases; retaining the
 -- source makes that one-way interpretation auditable without copying any

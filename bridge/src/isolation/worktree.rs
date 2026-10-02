@@ -1,19 +1,78 @@
 //! The git linked-worktree backend: `git worktree add`, and the only place in
 //! the bridge that speaks to git's worktree registry.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use super::{
     checkout_name, local_branch_ref, teardown_in_git_dir, BranchTeardown, Isolation,
     IsolationBackend, WorktreeError,
 };
-use crate::git_process::run_git;
+use crate::git_process::{git_failure, run_git, run_git_with_deadline};
 
 /// Materializes a checkout as a git linked worktree of the project repository.
 /// The project repo already holds every ref, so publishing and base-syncing are
 /// nothing at all.
 #[derive(Clone, Debug)]
 pub struct WorktreeBackend;
+
+const REVIEW_TARGET_MARKER: &str = "build-review-temporary-target";
+const REVIEW_PROCESS_MARKER: &str = "build-review-process";
+
+pub fn mark_review_target_launch(path: &Path) -> Result<(), String> {
+    let git_dir = super::checkout_git_dir(path).map_err(|error| error.to_string())?;
+    std::fs::write(git_dir.join(REVIEW_PROCESS_MARKER), "launch-unverified\n")
+        .map_err(|error| error.to_string())
+}
+
+pub fn record_review_target_process(path: &Path, pid: u32) -> Result<(), String> {
+    let git_dir = super::checkout_git_dir(path).map_err(|error| error.to_string())?;
+    let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .map_err(|error| error.to_string())?;
+    let started = process_start_time(pid).ok_or("cannot read merge child start time")?;
+    std::fs::write(
+        git_dir.join(REVIEW_PROCESS_MARKER),
+        format!("{}\n{pid}\n{started}\n", boot.trim()),
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn process_start_time(pid: u32) -> Option<String> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    stat.rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .nth(19)
+        .map(str::to_owned)
+}
+
+fn recorded_process_dead(git_dir: &Path) -> bool {
+    let Ok(marker) = std::fs::read_to_string(git_dir.join(REVIEW_PROCESS_MARKER)) else {
+        return false;
+    };
+    let mut lines = marker.lines();
+    let (Some(boot), Some(pid), Some(started), None) =
+        (lines.next(), lines.next(), lines.next(), lines.next())
+    else {
+        return false;
+    };
+    let Ok(pid) = pid.parse::<u32>() else {
+        return false;
+    };
+    let Ok(current_boot) = std::fs::read_to_string("/proc/sys/kernel/random/boot_id") else {
+        return false;
+    };
+    if boot != current_boot.trim() {
+        return true;
+    }
+    if process_start_time(pid).as_deref() == Some(started) {
+        return false;
+    }
+    unsafe {
+        libc::kill(-(pid as i32), 0) == -1
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    }
+}
 
 impl IsolationBackend for WorktreeBackend {
     fn kind(&self) -> Isolation {
@@ -130,6 +189,230 @@ impl IsolationBackend for WorktreeBackend {
             Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(None),
             Err(error) => Err(error.into()),
         }
+    }
+}
+
+/// Create a short-lived review checkout on an existing branch. Its ownership
+/// record keeps removal from deleting the branch that the user selected.
+pub fn materialize_review_target(project: &Path, branch: &str, path: &Path) -> Result<(), String> {
+    review_worktree_git(
+        project,
+        &[
+            OsStr::new("worktree"),
+            OsStr::new("add"),
+            OsStr::new("--"),
+            path.as_os_str(),
+            OsStr::new(branch),
+        ],
+    )?;
+    if let Err(error) = super::record_branch_teardown(path, BranchTeardown::KeepsBranch) {
+        let cleanup = review_worktree_git(
+            project,
+            &[
+                OsStr::new("worktree"),
+                OsStr::new("remove"),
+                OsStr::new("--"),
+                path.as_os_str(),
+            ],
+        );
+        return Err(match cleanup {
+            Ok(()) => error.to_string(),
+            Err(cleanup) => format!(
+                "{error}; review checkout {} could not be removed: {cleanup}",
+                path.display()
+            ),
+        });
+    }
+    let marker = super::checkout_git_dir(path)
+        .map_err(|error| error.to_string())?
+        .join(REVIEW_TARGET_MARKER);
+    if let Err(error) = std::fs::write(marker, format!("review-target-v1\n{branch}\n")) {
+        let cleanup = review_worktree_git(
+            project,
+            &[
+                OsStr::new("worktree"),
+                OsStr::new("remove"),
+                OsStr::new("--"),
+                path.as_os_str(),
+            ],
+        );
+        return Err(match cleanup {
+            Ok(()) => format!("review checkout {} marker failed: {error}", path.display()),
+            Err(cleanup) => format!(
+                "review checkout {} marker failed: {error}; cleanup failed: {cleanup}",
+                path.display()
+            ),
+        });
+    }
+    Ok(())
+}
+
+pub fn is_owned_review_target(project: &Path, path: &Path) -> bool {
+    review_target_branch(project, path).is_ok()
+}
+
+fn review_target_branch(project: &Path, path: &Path) -> Result<String, String> {
+    let repo = git2::Repository::open(project).map_err(|error| error.to_string())?;
+    let name = registered_name(path).map_err(|error| error.to_string())?;
+    let registered = repo
+        .find_worktree(&name)
+        .map_err(|error| error.to_string())?;
+    if registered.path() != path {
+        return Err("review checkout registry path changed".into());
+    }
+    if path.exists() {
+        WorktreeBackend
+            .verify(project, path, "")
+            .map_err(|error| error.to_string())?;
+    }
+    let git_dir = repo.commondir().join("worktrees").join(name);
+    let marker = std::fs::read_to_string(git_dir.join(REVIEW_TARGET_MARKER))
+        .map_err(|error| error.to_string())?;
+    let branch = marker
+        .strip_prefix("review-target-v1\n")
+        .and_then(|text| text.strip_suffix('\n'))
+        .filter(|branch| !branch.is_empty() && !branch.contains('\n'))
+        .ok_or("invalid review checkout marker")?;
+    if teardown_in_git_dir(&git_dir).map_err(|error| error.to_string())?
+        != BranchTeardown::KeepsBranch
+    {
+        return Err("review checkout does not keep its branch".into());
+    }
+    Ok(branch.into())
+}
+
+/// Boot-only cleanup for a registered temporary review checkout. The caller
+/// first proves the path is under Build's temporary review root and belongs to
+/// an interrupted source; this helper proves its Git ownership record.
+pub fn recover_review_target(project: &Path, path: &Path) -> Result<(), String> {
+    let branch = review_target_branch(project, path)?;
+    let repo = git2::Repository::open(project).map_err(|error| error.to_string())?;
+    let name = registered_name(path).map_err(|error| error.to_string())?;
+    let git_dir = repo.commondir().join("worktrees").join(&name);
+    if git_dir.join(REVIEW_PROCESS_MARKER).exists() && !recorded_process_dead(&git_dir) {
+        return Err(format!(
+            "review checkout {} still has a live merge child",
+            path.display()
+        ));
+    }
+    if path.exists() {
+        let checkout = git2::Repository::open(path).map_err(|error| error.to_string())?;
+        if checkout
+            .head()
+            .ok()
+            .and_then(|head| head.name().map(str::to_owned))
+            != Some(local_branch_ref(&branch))
+        {
+            return Err(format!(
+                "review checkout {} changed branches",
+                path.display()
+            ));
+        }
+    }
+    let lock = git_dir.join("index.lock");
+    if lock.exists() {
+        if !recorded_process_dead(&git_dir) {
+            return Err(format!(
+                "review checkout {} still has an index lock or live merge child",
+                path.display()
+            ));
+        }
+        std::fs::remove_file(&lock).map_err(|error| {
+            format!(
+                "stale review lock {} could not be removed: {error}",
+                lock.display()
+            )
+        })?;
+    }
+    if !path.exists() {
+        let worktree = repo
+            .find_worktree(&name)
+            .map_err(|error| error.to_string())?;
+        let mut options = git2::WorktreePruneOptions::new();
+        options.valid(true).working_tree(true);
+        return worktree
+            .prune(Some(&mut options))
+            .map_err(|error| error.to_string());
+    }
+    review_worktree_git(
+        project,
+        &[
+            OsStr::new("worktree"),
+            OsStr::new("remove"),
+            OsStr::new("--force"),
+            OsStr::new("--"),
+            path.as_os_str(),
+        ],
+    )
+}
+
+/// Remove only the temporary checkout recorded as Build-owned. Never remove
+/// an existing user checkout or the target branch itself.
+pub fn remove_review_target(project: &Path, branch: &str, path: &Path) -> Result<(), String> {
+    WorktreeBackend
+        .verify(project, path, branch)
+        .map_err(|error| error.to_string())?;
+    if super::branch_teardown(path).map_err(|error| error.to_string())?
+        != BranchTeardown::KeepsBranch
+    {
+        return Err(format!(
+            "review checkout {} lacks its keep-branch record",
+            path.display()
+        ));
+    }
+    let repo = git2::Repository::open(path).map_err(|error| error.to_string())?;
+    if repo.state() != git2::RepositoryState::Clean {
+        return Err(format!(
+            "review checkout {} has a Git operation in progress",
+            path.display()
+        ));
+    }
+    let expected = local_branch_ref(branch);
+    if repo
+        .head()
+        .ok()
+        .and_then(|head| head.name().map(str::to_owned))
+        != Some(expected)
+    {
+        return Err(format!(
+            "review checkout {} switched branches",
+            path.display()
+        ));
+    }
+    if !run_git(
+        path,
+        &[
+            "status",
+            "--porcelain",
+            "--ignored",
+            "--untracked-files=all",
+        ],
+    )
+    .map_err(|error| error.to_string())?
+    .is_empty()
+    {
+        return Err(format!(
+            "review checkout {} has local changes",
+            path.display()
+        ));
+    }
+    review_worktree_git(
+        project,
+        &[
+            OsStr::new("worktree"),
+            OsStr::new("remove"),
+            OsStr::new("--"),
+            path.as_os_str(),
+        ],
+    )
+}
+
+fn review_worktree_git(project: &Path, args: &[&OsStr]) -> Result<(), String> {
+    let output = run_git_with_deadline(project, args).map_err(|error| error.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(git_failure(args, &output).to_string())
     }
 }
 

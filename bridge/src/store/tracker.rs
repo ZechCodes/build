@@ -344,6 +344,7 @@ impl Store {
                 "tracker_comments",
                 "tracker_events",
                 "review_snapshots",
+                "review_actions",
                 "reviews",
             ] {
                 tx.execute(

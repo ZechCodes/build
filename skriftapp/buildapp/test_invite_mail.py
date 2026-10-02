@@ -6,6 +6,7 @@ watching the admin page, deferred for the JSON route's script."""
 from __future__ import annotations
 
 import asyncio
+import re
 from html import escape
 
 from litestar.background_tasks import BackgroundTask
@@ -21,6 +22,7 @@ from buildapp.email_test_support import (
     RecordingEmailBackend,
 )
 from buildapp.invite_mail import (
+    DOCS_URL,
     GETTING_STARTED,
     INVITE_ACTION_LABEL,
     INVITE_CLOSING,
@@ -69,7 +71,7 @@ def test_the_subject_and_copy_are_verbatim():
     assert GETTING_STARTED.title == "Getting started"
     assert tuple(step.text for step in GETTING_STARTED.steps) == STEP_TEXTS
     assert GETTING_STARTED.steps[0].command == INSTALL_COMMAND
-    assert GETTING_STARTED.steps[0].detail == DESKTOP_DETAIL
+    assert GETTING_STARTED.steps[0].detail.text() == DESKTOP_DETAIL
     assert INVITE_CLOSING == (
         "That’s it. Your agents run on your machine from there.",
         "Stuck, or something broke? Reply to this email. It comes straight to me.",
@@ -102,7 +104,7 @@ def test_the_text_part_reads_top_to_bottom_as_the_copy_on_the_task():
 def test_the_html_part_carries_the_button_then_the_steps_in_order():
     html = invite_email().html_body
     assert f'href="{INVITE_URL}"' in html
-    assert f">{INVITE_ACTION_LABEL}</a>" in html
+    assert f">{INVITE_ACTION_LABEL}</span></a>" in html
     escaped_command = INSTALL_COMMAND.replace('"', "&quot;")
     positions = [
         html.index(INVITE_HEADING),
@@ -111,7 +113,7 @@ def test_the_html_part_carries_the_button_then_the_steps_in_order():
         html.index(GETTING_STARTED.title),
         html.index(escape(STEP_TEXTS[0])),
         html.index(f"<code>{escaped_command}</code>"),
-        html.index(escape(DESKTOP_DETAIL)),
+        html.index(f'href="{DOCS_URL}"'),
         html.index(escape(STEP_TEXTS[1])),
         html.index(escape(STEP_TEXTS[2])),
         html.index(escape(INVITE_CLOSING[1])),
@@ -119,6 +121,32 @@ def test_the_html_part_carries_the_button_then_the_steps_in_order():
     assert positions == sorted(positions)
     for number in (1, 2, 3):
         assert f">{number}.</td>" in html
+
+
+def test_invite_button_and_docs_link_use_the_brand_mint_with_readable_text():
+    html = invite_email().html_body
+    assert "#00ff88" not in html
+    links = re.findall(
+        r'<a href="([^"]+)" style="([^"]+)"><span style="([^"]+)">([^<]+)</span></a>',
+        html,
+    )
+    assert len(links) == html.count("<a ") == 2
+    by_url = {
+        url: (anchor_style, span_style, label)
+        for url, anchor_style, span_style, label in links
+    }
+    assert set(by_url) == {INVITE_URL, DOCS_URL}
+
+    button_style, button_text_style, button_label = by_url[INVITE_URL]
+    assert button_label == INVITE_ACTION_LABEL
+    assert "background:#51ffb4" in button_style
+    assert "color:#030604" in button_style
+    assert "color:#030604" in button_text_style
+
+    docs_style, docs_text_style, docs_label = by_url[DOCS_URL]
+    assert docs_label == DOCS_URL
+    assert "color:#51ffb4" in docs_style
+    assert "color:#51ffb4" in docs_text_style
 
 
 def test_the_laptop_sits_between_the_intro_and_the_button():

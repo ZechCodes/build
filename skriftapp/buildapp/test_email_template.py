@@ -1,7 +1,6 @@
 """Tests pinning the one email layout: a single table capped at 560px in every client
-including Outlook, the Build mark as the header, the accent used once (the mark's alt
-text), every slot escaped, nothing loaded from anywhere but this deployment's own
-email images, and no footer at all on a message that carries no unsubscribe."""
+including Outlook, the Build mark as the header, escaped content, hosted email images,
+and no footer at all on a message that carries no unsubscribe."""
 
 from __future__ import annotations
 
@@ -10,7 +9,6 @@ import re
 import pytest
 
 from buildapp.email_template import (
-    EMAIL_ACCENT,
     EMAIL_ACTION_PADDING,
     EMAIL_ACTION_PADDING_BOTTOM_PX,
     EMAIL_COMMAND_FONT_SIZE_PX,
@@ -42,6 +40,7 @@ from buildapp.email_template import (
     TEXT_STEP_INDENT,
     EmailAction,
     EmailImage,
+    EmailLinkedText,
     EmailStep,
     EmailSteps,
     render_email_text,
@@ -123,11 +122,20 @@ def test_every_size_in_the_layout_comes_from_a_named_constant():
     assert f"letter-spacing:{EMAIL_BRAND_LETTER_SPACING}" in html
 
 
-def test_html_uses_the_accent_exactly_once_for_the_marks_alt_text():
+def test_html_uses_brand_mint_for_the_marks_alt_text():
     html = render_html_body()
-    assert html.count(EMAIL_ACCENT) == 1
     mark_tag = re.search(r"<img[^>]*>", html).group(0)
-    assert f"color:{EMAIL_ACCENT}" in mark_tag
+    assert "color:#51ffb4" in mark_tag
+
+
+def test_shared_footer_link_has_mint_text_on_anchor_and_inner_span():
+    html = render_html_body()
+    assert "#00ff88" not in html
+    assert re.search(
+        r'<a href="[^"]+" style="[^"]*color:#51ffb4[^"]*">'
+        r'<span style="color:#51ffb4">Unsubscribe</span></a>',
+        html,
+    )
 
 
 def test_the_header_is_the_build_mark_hosted_by_this_deployment():
@@ -432,6 +440,36 @@ def test_steps_escape_every_slot():
     )
     assert "<script" not in html
     assert html.count("&lt;script&gt;") == 5
+
+
+def test_an_explicit_link_in_step_detail_escapes_its_url_label_and_surrounding_text():
+    html = render_email_html(
+        heading=HEADING,
+        paragraphs=PARAGRAPHS,
+        unsubscribe_url=None,
+        after_action=(
+            EmailSteps(
+                title="A step",
+                steps=(
+                    EmailStep(
+                        text="Read this",
+                        detail=EmailLinkedText(
+                            before="<before>",
+                            link=EmailAction(
+                                url='https://getbuild.ing/docs?x="onmouseover="alert(1)',
+                                label="<docs>",
+                            ),
+                            after="<after>",
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    assert "<before>" not in html and "<docs>" not in html and "<after>" not in html
+    assert "&lt;before&gt;" in html and "&lt;docs&gt;" in html and "&lt;after&gt;" in html
+    assert '"onmouseover="' not in html
+    assert "&quot;onmouseover=&quot;" in html
 
 
 def test_nothing_after_the_action_renders_exactly_as_before():

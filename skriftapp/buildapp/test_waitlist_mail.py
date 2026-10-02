@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
 import pytest
 from litestar.background_tasks import BackgroundTask
@@ -79,6 +80,18 @@ def test_confirmation_carries_list_unsubscribe_and_one_click():
     ).headers
     assert headers[LIST_UNSUBSCRIBE_HEADER] == f"<{UNSUBSCRIBE_URL}>"
     assert headers[LIST_UNSUBSCRIBE_POST_HEADER] == ONE_CLICK_HEADER_VALUE
+
+
+def test_confirmation_unsubscribe_text_is_mint_in_rendered_html():
+    html = build_confirmation_email(
+        to=SIGNER, unsubscribe_url=UNSUBSCRIBE_URL, public_base_url=PUBLIC_BASE_URL
+    ).html_body
+    assert html.count("<a ") == 1
+    assert re.search(
+        rf'<a href="{re.escape(UNSUBSCRIBE_URL)}" style="[^"]*color:#51ffb4[^"]*">'
+        r'<span style="color:#51ffb4">Unsubscribe</span></a>',
+        html,
+    )
 
 
 def test_owner_notification_subject_and_copy_are_verbatim():

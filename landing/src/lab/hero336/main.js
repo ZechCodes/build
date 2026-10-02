@@ -1,4 +1,4 @@
-// The page's entry point. Bundled by Astro into /landing/generated/_astro/ as
+// The preview entry point. Bundled separately into /landing/generated/hero336/ as
 // an external module, because the app's CSP (script-src 'self'
 // 'wasm-unsafe-eval') drops inline script.
 //
@@ -9,8 +9,7 @@
 
 import { restHero, startHeroEntrance } from "./entrance.js";
 
-// The hero's entrance first, from wherever its field's CSS drift has got
-// to. If it cannot play, the hero simply rests.
+// Start the wall before the film. If it cannot play, the hero simply rests.
 let hero = null;
 try {
   hero = startHeroEntrance();

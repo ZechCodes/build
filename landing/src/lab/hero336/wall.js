@@ -25,11 +25,11 @@ function clearance(slot, requests, { width, height }) {
   return 2.55 + Math.min(.65, distance * .9);
 }
 
-function turnsFor(slot, index, next, clearAt) {
+function turnsFor(index, next, clearAt) {
   const enter = .32;
-  const hold = 1.24 + next() * .36;
-  const fade = .46;
-  const period = enter + hold + fade + .10;
+  const hold = 1.85 + next() * .20;
+  const fade = .40;
+  const period = enter + hold + fade + .04;
   // An irrational phase step scatters ages without row-sized waves.
   const phase = ((index * .61803398875 + .17) % 1) * period;
   const turns = [];
@@ -46,8 +46,8 @@ export function createWall({ width, height }) {
   const next = random(336);
   const narrow = width < 768;
   const scale = Math.min(1.18, Math.max(1, width / 1920));
-  const pitchX = narrow ? 184 : 224 * scale;
-  const pitchY = narrow ? 68 : 78 * scale;
+  const pitchX = narrow ? 176 : 224 * scale;
+  const pitchY = narrow ? 64 : 78 * scale;
   const rows = Math.ceil(height / pitchY) + 1;
   const columns = Math.ceil(width / pitchX) + 1;
   const requests = requestPositions({ width, height });
@@ -57,11 +57,11 @@ export function createWall({ width, height }) {
       const slot = {
         x: (column + .12 + (row % 2) * .48) * pitchX,
         y: (row + .12) * pitchY + (next() - .5) * 5,
-        width: (narrow ? 170 : 208) * scale,
+        width: (narrow ? 164 : 208) * scale,
         height: (narrow ? 54 : 62) * scale,
         depth: ['quiet', 'normal', 'normal', 'near'][(row * 3 + column) % 4],
       };
-      slot.turns = turnsFor(slot, slots.length, next, clearance(slot, requests, { width, height }));
+      slot.turns = turnsFor(slots.length, next, clearance(slot, requests, { width, height }));
       slots.push(slot);
     }
   }

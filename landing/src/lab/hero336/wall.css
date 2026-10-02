@@ -24,16 +24,16 @@
   justify-content: center;
   gap: 7px;
   padding: 10px 13px;
-  border: 1px solid #26312c;
+  border: 1px solid #34453b;
   border-radius: 11px;
-  background: linear-gradient(115deg, #151c19, #101512);
-  color: #b7c2bc;
+  background: linear-gradient(115deg, #1b2720, #121c16);
+  color: #c6d3ca;
   font: 13px/1.1 var(--text);
   overflow: hidden;
 }
 .wall-note__header { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.wall-note__agent { font-size: 10px; letter-spacing: .01em; color: #7e8b84; }
-.wall-note__time { margin-left: auto; color: #536057; font-size: 9px; white-space: nowrap; }
+.wall-note__agent { font-size: 10px; letter-spacing: .01em; color: #94a79b; }
+.wall-note__time { margin-left: auto; color: #6f8175; font-size: 9px; white-space: nowrap; }
 .wall-note__text { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 450; }
 .wall-note__mark {
   width: 12px;
@@ -46,9 +46,9 @@
 [data-harness="claude"] { --wall-mark: var(--mark-claude); }
 [data-harness="codex"] { --wall-mark: var(--mark-codex); }
 [data-harness="pi"] { --wall-mark: var(--mark-pi); }
-.wall-slot[data-depth="quiet"] { opacity: .56; }
-.wall-slot[data-depth="normal"] { opacity: .80; }
-.wall-slot[data-depth="near"] .wall-note { color: #d4ded7; border-color: #35463b; }
+.wall-slot[data-depth="quiet"] { opacity: .72; }
+.wall-slot[data-depth="normal"] { opacity: .94; }
+.wall-slot[data-depth="near"] .wall-note { color: #d4ded7; border-color: #496452; }
 .wall-request {
   inset: auto;
   z-index: 2;

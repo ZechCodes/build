@@ -40,6 +40,8 @@ export function createWallMotion(field) {
   const document = field.ownerDocument;
   const layout = createWall({ width, height });
   const routine = field.querySelector('[data-wall-routine]');
+  // Swap the static first paint for the measured, independently timed wall.
+  routine.replaceChildren();
   const timed = [];
   layout.slots.forEach((slot, index) => {
     const position = element(document, 'div', 'wall-slot');

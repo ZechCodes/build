@@ -29,28 +29,30 @@ function moveField(tl, motion, timing) {
   } }, 0);
 }
 
-// A request flies from where it stopped to its row's landing point, read
-// from where the laptop is at that moment, shrinking and fading as it
-// arrives.
-function landRequest(tl, pill, row, { laptop, timing, landing }) {
-  const progress = { p: 0 };
-  const takeOff = landing - timing.flight;
-  const base = [0, 0];
-  const from = [pill.x, pill.y];
-  tl.fromTo(progress, { p: 0 }, {
-    p: 1,
-    duration: timing.flight,
-    ease: "power2.inOut",
-    immediateRender: false,
-    onUpdate() {
-      if (progress.p === 0) return;
+// A single writer owns the card from its arrival through landing. Sampling
+// the same clock also makes backward seeks restore visibility and position.
+function requestRenderer(pill, row, { laptop, timing, index }) {
+  const appear = REQUEST_APPEAR[index];
+  const takeOff = timing.landings[index] - timing.flight;
+  const easeFlight = gsap.parseEase("power2.inOut");
+  const clamp = value => Math.max(0, Math.min(1, value));
+  const draw = time => {
+    const entered = 1 - (1 - clamp((time - appear) / .32)) ** 4;
+    let transform = `translateY(${16 * (1 - entered)}px) scale(${.96 + .04 * entered})`;
+    let opacity = entered;
+    if (time >= takeOff) {
       const to = pointOnRow(laptop.quads().rows[row], LANDING_POINT);
-      const { transform, opacity } = requestFlight(progress.p, { base, from, to });
-      pill.element.style.transform = transform;
-      pill.element.style.opacity = String(opacity);
-      pill.element.style.visibility = opacity === 0 ? "hidden" : "";
-    },
-  }, takeOff);
+      const flight = requestFlight(easeFlight(clamp((time - takeOff) / timing.flight)), { base: [0, 0], from: [pill.x, pill.y], to });
+      transform = flight.transform;
+      opacity = flight.opacity;
+    }
+    pill.element.style.transform = transform;
+    pill.element.style.opacity = String(opacity);
+    pill.element.style.visibility = opacity === 0 ? "hidden" : "";
+    const mint = clamp((time - appear - .22) / .25);
+    pill.green.style.opacity = String(1 - (1 - mint) ** 3);
+  };
+  return draw;
 }
 
 // The rows light as their requests land and settle back with the hero.
@@ -99,17 +101,16 @@ function buildTimeline({ hero, field, laptop, glows, copy }) {
   tl.fromTo(laptop.reveal, { t: 0 }, {
     t: 1, duration: timing.laptop[1] - timing.laptop[0], ease: revealEase, onUpdate: laptop.render, immediateRender: false,
   }, timing.laptop[0]);
-  ATTENTION.forEach((entry, index) => {
+  const requests = ATTENTION.map((entry, index) => {
     const pill = motion.requests[index];
-    tl.fromTo(pill.element, { opacity: 0, y: 16, scale: .96 }, {
-      opacity: 1, y: 0, scale: 1, duration: .32, ease: "power3.out", immediateRender: false,
-    }, REQUEST_APPEAR[index]);
-    tl.to(pill.green, { opacity: 1, duration: .25, ease: "power2.out" }, REQUEST_APPEAR[index] + .22);
     const source = { ...pill, x: pill.x + fieldBox.left - heroBox.left, y: pill.y + fieldBox.top - heroBox.top };
-    landRequest(tl, source, entry.row, { laptop, timing, landing: timing.landings[index] });
+    return requestRenderer(source, entry.row, { laptop, timing, index });
   });
   glowRows(tl, glows, { laptop, timing });
   revealCopy(tl, copy.items, timing);
+  // Render after every child has updated, including the laptop reveal.
+  // Otherwise a large seek would aim at the previous laptop pose.
+  tl.eventCallback("onUpdate", () => requests.forEach(draw => draw(tl.time())));
   return { tl, timing, start: 0, motion };
 }
 
@@ -122,11 +123,12 @@ function takeOver(root, { copy, laptop }) {
   root.dataset.hero = "playing";
 }
 
-function listen(finish, timeline, motion) {
+function listen(finish, timeline, motion, field) {
   const width = innerWidth;
+  const height = field.getBoundingClientRect().height;
   const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
   const onScroll = () => { if (scrollY > 8) finish("scroll"); };
-  const onResize = () => { if (Math.abs(innerWidth - width) > 1) finish("resize"); };
+  const onResize = () => { if (Math.abs(innerWidth - width) > 1 || Math.abs(field.getBoundingClientRect().height - height) > 1) finish("resize"); };
   const onMotion = (event) => { if (event.matches) finish("reduced motion"); };
   // The field's animations run on the compositor's time, not the timeline's:
   // held with it, so a returning tab picks up where it left.
@@ -210,7 +212,7 @@ export function startHeroEntrance({ root = document.documentElement } = {}) {
 
   tl.call(() => { if (!held) finish(); }, null, timing.settle[1]);
   takeOver(root, { copy, laptop });
-  unlisten = listen(finish, tl, built.motion);
+  unlisten = listen(finish, tl, built.motion, field);
   tl.time(built.start).play();
 
   const entrance = {

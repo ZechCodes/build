@@ -136,6 +136,10 @@ describe("the generated preview", () => {
       assert.ok(preview.includes(`id="act-${act}"`), `the full landing story keeps act ${act}`);
     }
     assert.ok(preview.includes("data-hero-field"), "the wall is present before the preview script runs");
+    const firstFrame = preview.match(/data-wall-first-note/g) ?? [];
+    assert.ok(firstFrame.length >= 240, `the first paint has a full wall of cards, not an empty shell (${firstFrame.length})`);
+    assert.ok(preview.includes('class="wall-note__text">Reading auth.ts</span>'), "the static cards contain actual notification text");
+    assert.ok(preview.includes('class="wall-note__agent">Claude Code</span>'), "the static cards identify a running agent");
     assert.ok(!html.includes(PREVIEW_PATH));
     assert.ok(!lab.includes(PREVIEW_PATH));
   });

@@ -17,3 +17,15 @@ lab, and their assets to the bytes emitted by main.
 home page's played marker. Reduced motion, `?hero=0`, and links to later acts
 keep their usual behavior. This is Step 1 only; acceptance would require a
 separate decision to replace the default hero.
+
+The field starts at staggered ages so it is full immediately. A notification
+slides 24px into its own place in 0.32s, holds for about two seconds, and
+fades in 0.4s. Positions never scroll. Alternating row offsets pack the
+cards across the visible hero; two intersecting masks soften all four edges.
+Three final requests arrive at 2.18 / 2.36 / 2.54s, become mint, then fly
+into their existing laptop rows. The full entrance settles at 5.05s.
+
+`web/landing-notifications-check.mjs` checks this page at 390×667,
+390×844, 768×1024, 1280×900, 1920×1080 and 2560×1440, including both
+film and document layouts where available. It measures rendered edge alpha,
+occupancy, local entry, still holds, replacement, and the mint row landings.

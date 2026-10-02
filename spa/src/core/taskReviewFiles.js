@@ -6,7 +6,7 @@ import { pageFromAnswer } from "./bodyPages.js";
 import { mountFileTree } from "./fileTree.js";
 import { mountFileTabs } from "./fileTabs.js";
 import { fileBodyReading, isMediaPath } from "./fileViewer.js";
-import { mountPagedFile, sourceLinesPainter, wholeBytesPainter, wholeTextPainter } from "./pagedFileView.js";
+import { mountPagedFile, sourceLinesPainter, wholeBytesPainter } from "./pagedFileView.js";
 import { langForPath } from "./highlight.js";
 import { markdownHtml } from "./markdown.js";
 import { attachMediaSource, createMediaBody, releaseMediaSource } from "./mediaBlob.js";
@@ -58,7 +58,9 @@ const previewHtml = (path, file) => {
 
 const pagedPainter = (path, file) => {
   const mode = previewModeFor(file.mime, file.truncated);
-  if (isDotenvPath(path)) return wholeTextPainter((host, text) => { host.innerHTML = renderDotenvSourceHtml(text).html; });
+  if (isDotenvPath(path)) return wholeBytesPainter((host, body) => {
+    host.innerHTML = renderDotenvSourceHtml(decodeBase64Text(body)).html;
+  });
   if (imageModes.has(mode) || avModes.has(mode)) {
     return wholeBytesPainter((host, pages) => {
       host.innerHTML = imageModes.has(mode) ? '<img class="trf-media" alt="">' : mediaPreviewHtml(mode);

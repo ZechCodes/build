@@ -99,17 +99,18 @@ fn run_source(
         save(store, task, &source.action, notify)?;
         let outcome = execute(source, index);
         record_outcome(source, index, outcome);
-        let failed = source.action.steps[index].status == StepStatus::Failed;
-        if failed || index + 1 == source.action.steps.len() {
-            source.action.status = if failed {
-                ActionStatus::Failed
-            } else {
-                ActionStatus::Succeeded
+        let status = source.action.steps[index].status;
+        let stopped = matches!(status, StepStatus::Failed | StepStatus::Interrupted);
+        if stopped || index + 1 == source.action.steps.len() {
+            source.action.status = match status {
+                StepStatus::Failed => ActionStatus::Failed,
+                StepStatus::Interrupted => ActionStatus::Interrupted,
+                _ => ActionStatus::Succeeded,
             };
             source.action.finished_at = Some(now_rfc3339());
         }
         save(store, task, &source.action, notify)?;
-        if failed {
+        if stopped {
             break;
         }
     }
@@ -117,22 +118,27 @@ fn run_source(
     Ok(())
 }
 
-fn execute(source: &PreparedSource, index: usize) -> Result<git_actions::GitStepOutcome, String> {
+fn execute(
+    source: &PreparedSource,
+    index: usize,
+) -> Result<git_actions::GitStepOutcome, git_actions::GitActionError> {
     if let Some(error) = &source.source.error {
-        return Err(error.clone());
+        return Err(git_actions::GitActionError::Failed(error.clone()));
     }
     let directory = &source.source.directory;
     let path = &source.source.source_path;
     let step = &source.action.steps[index];
     match step.kind {
-        StepKind::Merge => git_actions::merge(directory, path, &step.branch),
-        StepKind::Push => git_actions::push(
+        StepKind::Merge => git_actions::merge(directory, path, &step.branch)
+            .map_err(git_actions::GitActionError::Failed),
+        StepKind::Push => git_actions::push_typed(
             directory,
             path,
-            source
-                .head
-                .as_deref()
-                .ok_or("The review source has no saved Git head.")?,
+            source.head.as_deref().ok_or_else(|| {
+                git_actions::GitActionError::Failed(
+                    "The review source has no saved Git head.".into(),
+                )
+            })?,
             source.merged,
             step.remote.as_deref().unwrap_or_default(),
             &step.branch,
@@ -143,7 +149,7 @@ fn execute(source: &PreparedSource, index: usize) -> Result<git_actions::GitStep
 fn record_outcome(
     source: &mut PreparedSource,
     index: usize,
-    outcome: Result<git_actions::GitStepOutcome, String>,
+    outcome: Result<git_actions::GitStepOutcome, git_actions::GitActionError>,
 ) {
     let step = &mut source.action.steps[index];
     match outcome {
@@ -155,8 +161,12 @@ fn record_outcome(
             step.status = StepStatus::Succeeded;
         }
         Err(error) => {
-            step.error = Some(crate::source_sync::without_credentials(&error));
-            step.status = StepStatus::Failed;
+            step.error = Some(crate::source_sync::without_credentials(&error.to_string()));
+            step.status = if matches!(error, git_actions::GitActionError::OutcomeUnknown(_)) {
+                StepStatus::Interrupted
+            } else {
+                StepStatus::Failed
+            };
         }
     }
 }

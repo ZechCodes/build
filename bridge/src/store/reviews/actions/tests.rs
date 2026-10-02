@@ -111,6 +111,11 @@ fn restart_interrupts_only_unfinished_steps_and_does_not_replay() {
         ActionStatus::Running
     );
     assert_eq!(store.interrupt_review_actions().unwrap(), 1);
+    assert_eq!(
+        store.recoverable_review_actions().unwrap().len(),
+        1,
+        "a later boot must retry cleanup after an interrupted action"
+    );
     let review = store.load_review(&task).unwrap().unwrap();
     let row = &review.actions[0];
     assert_eq!(review.version, 4);

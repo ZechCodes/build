@@ -7,6 +7,15 @@ use crate::store::{now_rfc3339, Store, StoreError};
 use rusqlite::{params, Connection, Transaction};
 
 impl Store {
+    /// Running and previously interrupted review rows whose Build-owned
+    /// temporary checkouts may still need cleanup after a later restart.
+    pub fn recoverable_review_actions(&self) -> Result<Vec<ReviewAction>, StoreError> {
+        Ok(recoverable_actions(&self.connection())?
+            .into_iter()
+            .map(|(_, action)| action)
+            .collect())
+    }
+
     /// Admit all selected sources in one versioned write. A running row holds
     /// its source across the gap between recording Merge and starting Push.
     pub fn start_review_actions(
@@ -90,6 +99,24 @@ pub(super) fn load_actions(
 fn running_actions(conn: &Connection) -> Result<Vec<(String, ReviewAction)>, StoreError> {
     let mut statement = conn.prepare(
         "SELECT task_id, id, record FROM review_actions WHERE status = 'running' ORDER BY rowid",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    rows.map(|row| {
+        let (task_id, id, raw) = row?;
+        Ok((task_id, decode(&raw, "review_actions", &id)?))
+    })
+    .collect()
+}
+
+fn recoverable_actions(conn: &Connection) -> Result<Vec<(String, ReviewAction)>, StoreError> {
+    let mut statement = conn.prepare(
+        "SELECT task_id, id, record FROM review_actions WHERE status IN ('running', 'interrupted') ORDER BY rowid",
     )?;
     let rows = statement.query_map([], |row| {
         Ok((

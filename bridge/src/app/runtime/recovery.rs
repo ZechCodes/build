@@ -152,6 +152,22 @@ pub(in crate::app) fn load_stored_tasks(dir: std::path::PathBuf) -> Result<Store
         Ok(imported) => eprintln!("store: imported {imported} records from the JSON store"),
         Err(error) => return Err(format!("store import failed: {error}")),
     }
+    for source in store
+        .recoverable_review_actions()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|action| action.source_path)
+        .collect::<std::collections::HashSet<_>>()
+    {
+        match crate::reviews::git_actions::recover_temporary_worktrees(&source) {
+            Ok(count) if count > 0 => eprintln!(
+                "review recovery: removed {count} temporary checkouts for {}",
+                source.display()
+            ),
+            Ok(_) => {}
+            Err(error) => eprintln!("review recovery: {}: {error}", source.display()),
+        }
+    }
     let interrupted = store
         .interrupt_review_actions()
         .map_err(|error| error.to_string())?;
@@ -178,6 +194,106 @@ pub(in crate::app) fn load_stored_tasks(dir: std::path::PathBuf) -> Result<Store
         operations,
         store,
     })
+}
+
+#[cfg(test)]
+mod review_boot_tests {
+    use super::*;
+    use crate::git_fixture::{git_command, git_in, init_repo};
+    use crate::isolation::worktree::materialize_review_target;
+    use crate::reviews::actions::{ActionStatus, ActionStep, ReviewAction, StepKind, StepStatus};
+    use crate::reviews::model::ReviewSnapshot;
+    use crate::tracker::{Actor, Task};
+
+    #[test]
+    fn boot_reclaims_owned_checkout_before_interrupting_review_row() {
+        let (temp, repo) = init_repo();
+        git_in(&repo, &["branch", "target"]);
+        let owner = tempfile::Builder::new()
+            .prefix("build-review-merge-")
+            .tempdir()
+            .unwrap();
+        let checkout = owner
+            .path()
+            .join(format!("review-{}", uuid::Uuid::new_v4()));
+        materialize_review_target(&repo, "target", &checkout).unwrap();
+        let state = temp.path().join("state");
+        let task_id = {
+            let store = Store::new(&state).unwrap();
+            let task = store
+                .create_tracker_task(
+                    Task::drafted(
+                        repo.to_str().unwrap(),
+                        "review",
+                        Actor::User,
+                        "2026-10-02T19:00:00Z",
+                    ),
+                    &[],
+                )
+                .unwrap();
+            store
+                .save_review_snapshot(
+                    &task.id,
+                    "workspace",
+                    0,
+                    ReviewSnapshot {
+                        id: "snapshot".into(),
+                        number: 0,
+                        created_at: "2026-10-02T19:00:00Z".into(),
+                        author: Actor::User,
+                        directories: vec![],
+                    },
+                )
+                .unwrap();
+            store
+                .start_review_actions(
+                    &task.id,
+                    1,
+                    &[ReviewAction {
+                        id: "action".into(),
+                        snapshot_id: "snapshot".into(),
+                        directory_id: "dir".into(),
+                        source_name: "source".into(),
+                        source_path: repo.clone(),
+                        actor: Actor::User,
+                        started_at: "2026-10-02T19:00:00Z".into(),
+                        finished_at: None,
+                        status: ActionStatus::Running,
+                        steps: vec![ActionStep {
+                            kind: StepKind::Merge,
+                            branch: "target".into(),
+                            remote: None,
+                            merge_action_id: None,
+                            status: StepStatus::Running,
+                            input_head: None,
+                            result_head: None,
+                            error: None,
+                            warning: None,
+                        }],
+                    }],
+                )
+                .unwrap();
+            task.id
+        };
+        let recovered = load_stored_tasks(state).unwrap();
+        assert!(!checkout.exists());
+        assert!(
+            git_command(&repo, &["show-ref", "--verify", "refs/heads/target"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert_eq!(
+            recovered
+                .store
+                .load_review(&task_id)
+                .unwrap()
+                .unwrap()
+                .actions[0]
+                .status,
+            ActionStatus::Interrupted
+        );
+    }
 }
 
 /// What a run can prove about its own checkout when git's registration for it

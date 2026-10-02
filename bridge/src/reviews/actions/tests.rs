@@ -6,6 +6,25 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
+#[test]
+fn unknown_push_outcome_is_interrupted_for_explicit_retry() {
+    let fixture = Fixture::new();
+    let mut sources = prepare(&fixture.review(), &fixture.request).unwrap();
+    record_outcome(
+        &mut sources[0],
+        0,
+        Err(git_actions::GitActionError::OutcomeUnknown(
+            "check remote before retrying".into(),
+        )),
+    );
+    assert_eq!(sources[0].action.steps[0].status, StepStatus::Interrupted);
+    assert!(sources[0].action.steps[0]
+        .error
+        .as_deref()
+        .unwrap()
+        .contains("check remote"));
+}
+
 struct Fixture {
     _temp: tempfile::TempDir,
     repo: PathBuf,
@@ -153,7 +172,11 @@ fn destinations_cover_only_the_latest_snapshot_directories() {
 
     let result = with_destinations(review, &sources);
 
-    assert_eq!(result.snapshots.len(), 2, "snapshot history stays available");
+    assert_eq!(
+        result.snapshots.len(),
+        2,
+        "snapshot history stays available"
+    );
     assert_eq!(result.destinations.len(), 1);
     let destination = &result.destinations[0];
     assert_eq!(destination.snapshot_id, "latest");

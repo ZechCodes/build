@@ -1316,7 +1316,16 @@ async function applyItem(context, item) {
  *  `removed`, and everything it had goes at once — its data and its row. */
 async function applyBoard(context, state) {
   notePushedLists(context, state);
-  await prunePushedDrafts(context, state);
+  const draftPreparation = state.workspaces || state.projects
+    ? prepareDraftPrune(context.deviceId).catch(() => null) : null;
+  try {
+    await writePushedBoard(context, state);
+  } finally {
+    if (draftPreparation) void prunePushedDrafts(context, draftPreparation).catch(() => {});
+  }
+}
+
+async function writePushedBoard(context, state) {
   // The harnesses out of usage there (#58): the pushed reading replaces the
   // device's record, and mounted surfaces repaint from its cache announcement.
   await writeUsageLimits(context.deviceId, state.usage_limits);
@@ -1351,12 +1360,13 @@ function notePushedLists(context, state) {
  * that capture, so confirm with fresh reads: a newly created owner's draft
  * may already be here when an older push arrives. No drafts, no extra reads;
  * `removed` alone is only a board departure and never starts cleanup. */
-async function prunePushedDrafts(context, state) {
-  if (!state.workspaces && !state.projects) return;
-  const fence = pushFence();
-  const drafts = await prepareDraftPrune(context.deviceId);
+async function prunePushedDrafts(context, draftPreparation) {
+  const drafts = await draftPreparation;
+  if (!drafts) return;
   try {
     if (!drafts.hasCandidates || !context.active()) return;
+    drafts.resetOwnershipChanges();
+    const fence = pushFence();
     const [board, projects, workspaces] = await askOwnershipLists(context);
     if (!board || !projects || !workspaces) return;
     await drafts.prune({ ...board, projects: projects.projects, workspaces: workspaces.workspaces },

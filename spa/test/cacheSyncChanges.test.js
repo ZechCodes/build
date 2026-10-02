@@ -927,6 +927,45 @@ describe("a push and a pass landing on the same record", () => {
 });
 
 describe("the board item", () => {
+  it("keeps newer lists and a row when an older push's draft confirmation is delayed", async () => {
+    const ui = await import("../src/core/localUiStore.js");
+    script["workspace.list"] = () => ({ workspaces: [{ id: "ws-1", project_id: "p1", entity_id: "run-1", conversations: [] }] });
+    await boot();
+    await ui.writeUiRecord({ deviceId: "dev-1", entityId: "ws-1", kind: "ui-draft", sub: "workspace-settings:" },
+      { name: "unfinished" });
+
+    let releaseOlderRead;
+    const olderRead = new Promise((resolve) => { releaseOlderRead = resolve; });
+    let boardReads = 0;
+    script["board.list"] = () => (++boardReads === 1 ? olderRead : { items: [branchItem()] });
+    script["project.list"] = () => ({ projects: [{ project_id: "p2", conversations: [] }] });
+    script["workspace.list"] = () => ({ workspaces: [{ id: "ws-2", project_id: "p2", conversations: [] }] });
+    bridge.call.mockClear();
+
+    const watcher = subscription("s-inbox");
+    watcher.onChanges([{ entity_id: "board", state: { removed: ["run-1"], projects: [], workspaces: [] } }]);
+    await vi.waitFor(() => expect(calls("board.list")).toHaveLength(1));
+
+    watcher.onChanges([
+      { entity_id: "board", state: {
+        projects: [{ project_id: "p2", name: "newer project" }],
+        workspaces: [{ id: "ws-2", project_id: "p2", name: "newer workspace" }],
+      } },
+      { entity_id: "run-1", state: branchItem({ project_id: "p2", worktree_id: "wt-2" }) },
+    ]);
+    await vi.waitFor(async () => {
+      expect((await read("", "projects"))?.value?.[0]?.id).toBe("p2");
+      expect((await read("", "workspaces"))?.value?.[0]?.id).toBe("ws-2");
+      expect((await read("run-1", "row"))?.value?.project_id).toBe("p2");
+    });
+
+    releaseOlderRead({ items: [] });
+    await settle();
+    expect((await read("", "projects")).value[0].id).toBe("p2");
+    expect((await read("", "workspaces")).value[0].id).toBe("ws-2");
+    expect((await read("run-1", "row")).value.project_id).toBe("p2");
+  });
+
   it("prunes a deleted workspace's drafts when its authoritative list is pushed", async () => {
     const ui = await import("../src/core/localUiStore.js");
     const workspace = { id: "ws-1", project_id: "p1", entity_id: "run-1", conversations: [{ conversation_id: "conv-1" }] };

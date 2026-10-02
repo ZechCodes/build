@@ -120,9 +120,9 @@ const recognizedDraft = ({ address }) => Boolean(address.entityId && (
   workspaceOf(address) || /^chat:agent:([^:]+):(.+)$/.test(address.sub) || isWorkspaceDraft(address)
 ));
 
-/** Capture before the list requests; reconcile before those lists are
- * written. Any intervening ownership write, including a cross-tab cache
- * announcement, makes this pass inconclusive. The next pass can try again. */
+/** Capture before the list requests. Ownership writes, including cross-tab
+ * announcements, make the pass inconclusive. A pushed list resets this
+ * observation just before its fresh confirmation requests, after its own writes. */
 export async function prepareDraftPrune(deviceId) {
   let changed = false;
   const dispose = subscribeCache({ deviceId }, (address) => {
@@ -139,6 +139,8 @@ export async function prepareDraftPrune(deviceId) {
     return {
       dispose,
       hasCandidates: candidates.length > 0,
+      // The push's own writes precede fresh confirmation reads.
+      resetOwnershipChanges: () => { changed = false; },
       prune: (after, active) => deleteUiDraftsIfUnwritten(
         obsoleteDrafts(candidates, before, after), () => !changed && active(),
       ),

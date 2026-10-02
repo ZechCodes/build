@@ -425,7 +425,6 @@ pub async fn retire_lapsed_approval(
     };
     let status = fetch_status(client, api_url, &stored.device_id).await?;
     let Some(lapse) = status.lapse() else {
-        record_approver(identity_path, stored, api_url).map_err(file_error)?;
         return Ok(None);
     };
     if when == RetireWhen::ApproverSays && !may_retire(&stored, api_url) {
@@ -455,27 +454,15 @@ pub enum RetireWhen {
 /// Whether `api_url`'s "not approved" may retire `stored` without `--retire`:
 /// it is the api `stored` records as its approver, or, for an identity that
 /// records none, the default api, the only one the installer pairs with.
+/// Only a pairing an api completes records it as approver: an api that merely
+/// says an approved identity is approved never does, or a mock's "approved"
+/// then "not approved" would retire a good identity (#320).
 fn may_retire(stored: &StoredIdentity, api_url: &str) -> bool {
     let approver = stored
         .approved_by
         .as_deref()
         .unwrap_or(crate::config::DEFAULT_API_URL);
     same_api(approver, api_url)
-}
-
-/// Record `api_url` as the approver of `stored`, an identity it has just
-/// answered approved for, if the identity records none yet: one approved
-/// before the approver was recorded (#320).
-pub fn record_approver(
-    identity_path: &Path,
-    mut stored: StoredIdentity,
-    api_url: &str,
-) -> std::result::Result<(), identity::IdentityError> {
-    if !stored.approved || stored.approved_by.is_some() {
-        return Ok(());
-    }
-    stored.approved_by = Some(api_key(api_url).to_string());
-    identity::save(identity_path, &stored)
 }
 
 /// An api url with any trailing slash dropped, as it is recorded.

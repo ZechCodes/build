@@ -44,8 +44,8 @@ pub struct StoredIdentity {
     /// Set once the user approves this device; until then the bridge stays unpaired.
     pub approved: bool,
     /// The api that approved it, so only that api's "not approved" retires it
-    /// (#320). Absent in files written before it was recorded, which were
-    /// approved by the default api.
+    /// (#320). Recorded only by a pairing that api completes; absent in files
+    /// written before it was recorded, which count as the default api's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved_by: Option<String>,
 }

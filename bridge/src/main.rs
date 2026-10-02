@@ -1056,15 +1056,6 @@ async fn approved_owner(cfg: &BridgeConfig) -> Result<String, String> {
                 .map_err(|error| error.to_string())
         }
     };
-    // An approval the api confirms names its approver, if the identity
-    // predates recording one (#320).
-    if let (Some(stored), Ok(status)) = (&stored, &api_status) {
-        if status.approved {
-            pairing::record_approver(identity_path, stored.clone(), &cfg.api_url).map_err(
-                |error| format!("could not record the approving api in {identity_path:?}: {error}"),
-            )?;
-        }
-    }
     service::check_install_gate(stored.as_ref(), api_status.as_ref().map_err(String::as_str))
         .map_err(|gate| gate.to_string())
 }
@@ -1666,6 +1657,51 @@ mod tests {
         assert!(
             said.lines().all(|line| line.chars().count() <= 80),
             "{said}"
+        );
+        assert_eq!(identity::load(&cfg.identity_file).unwrap(), Some(stored));
+    }
+
+    /// A `pair` that another api answers approved for an identity without a
+    /// recorded approver does not make that api its approver: its next
+    /// "not approved" is refused like the first would have been (#320).
+    #[tokio::test]
+    async fn pair_lets_no_other_api_adopt_an_identity_without_a_recorded_approver() {
+        let server = MockServer::start().await;
+        // The first `pair` asks twice: before retiring and at the gate.
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/api/devices/.+/status$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"approved": true, "owner_user_id": "u1", "state": "approved"}),
+            ))
+            .up_to_n_times(2)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/api/devices/.+/status$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"approved": false, "owner_user_id": null, "state": "revoked"}),
+            ))
+            .with_priority(2)
+            .mount(&server)
+            .await;
+        let home = tempfile::tempdir().unwrap();
+        let cfg = config_for(&server.uri(), home.path());
+        let mut stored = stored_approved(&cfg.identity_file, "unused");
+        stored.approved_by = None;
+        identity::save(&cfg.identity_file, &stored).unwrap();
+
+        let first = pair_device(&cfg, None, pairing::RetireWhen::ApproverSays).await;
+        assert_eq!(first.ok().as_deref(), Some("already paired to account u1"));
+        assert_eq!(
+            identity::load(&cfg.identity_file).unwrap().as_ref(),
+            Some(&stored)
+        );
+
+        let second = pair_device(&cfg, None, pairing::RetireWhen::ApproverSays).await;
+        assert_eq!(
+            second.err().map(|not_paired| not_paired.status),
+            Some(PAIR_STATUS_APPROVED_ELSEWHERE)
         );
         assert_eq!(identity::load(&cfg.identity_file).unwrap(), Some(stored));
     }

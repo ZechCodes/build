@@ -11,10 +11,12 @@ protocol versions; see
 ### Fixed
 
 - `build-bridge pair` retires a stored approval only on the word of the api
-  that approved it. The identity file now records that api; one from before
-  it did learns it the next time the configured api says it is approved, and
-  until then counts as approved by `https://getbuild.ing`. Urls name the same
-  api when scheme, host (any case) and port (written or implied) agree.
+  that approved it. The identity file now records that api when a pairing
+  through it completes; one paired before that counts as approved by
+  `https://getbuild.ing`, whatever another api later says about it, so one
+  paired with a self-hosted api needs `pair --retire` after a revoke. Urls
+  name the same api when scheme, host (any case) and port (written or
+  implied) agree.
   Another api's "not approved" leaves the identity untouched: `pair` names
   the api it asked and exits with status 3, and the installer then offers
   `pair --retire`, which takes that api's word. `pair` refuses any other

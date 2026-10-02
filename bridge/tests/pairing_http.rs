@@ -640,11 +640,12 @@ async fn a_new_approval_records_the_api_that_gave_it() {
     assert_eq!(identity::load(&path).unwrap(), Some(out));
 }
 
-/// An identity approved before the approver was recorded, by an api that is
-/// not the default, learns its approver the first time that api says it is
-/// approved, so the same api's later revoke retires it (#320).
+/// An identity approved before the approver was recorded stays the default
+/// api's whatever another api says: that api's "approved" does not make it
+/// the approver, so its next "not approved" retires nothing. Two answers
+/// from a mock must not do what one could not (#320).
 #[tokio::test]
-async fn an_approval_without_a_recorded_approver_records_the_api_that_confirms_it() {
+async fn another_apis_approved_then_revoked_retires_nothing() {
     let server = MockServer::start().await;
     let dir = tempfile::tempdir().unwrap();
     let (path, mut id) = stored(&dir, Some("unused"));
@@ -673,21 +674,19 @@ async fn an_approval_without_a_recorded_approver_records_the_api_that_confirms_i
     let ask = || pairing::retire_lapsed_approval(&client, &api, &path, RetireWhen::ApproverSays);
 
     assert!(ask().await.unwrap().is_none());
-    let recorded = identity::load(&path).unwrap().unwrap();
-    assert_eq!(recorded.approved_by.as_deref(), Some(server.uri().as_str()));
-    assert_eq!(
-        identity::StoredIdentity {
-            approved_by: None,
-            ..recorded
-        },
-        id
-    );
+    assert_eq!(identity::load(&path).unwrap().as_ref(), Some(&id));
 
-    let retired = ask()
-        .await
-        .unwrap()
-        .expect("its own approver's revoke retires it");
-    assert_eq!(retired.lapse, pairing::Lapse::Revoked);
+    let outcome = ask().await;
+    assert!(
+        matches!(
+            outcome,
+            Err(pairing::PairingError::ApprovedElsewhere { approver: None, .. })
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(identity::load(&path).unwrap(), Some(id));
+    let files = std::fs::read_dir(dir.path()).unwrap().count();
+    assert_eq!(files, 1, "nothing set aside beside identity.json");
 }
 
 /// A recorded approver is never replaced by another api that also says

@@ -178,6 +178,8 @@ pub enum StoreError {
     ReviewDescriptionInvalid,
     #[error("release review pins: {0}")]
     ReviewPinCleanup(String),
+    #[error("{0}")]
+    ReviewAction(String),
 }
 
 /// The schema this build writes. A stored value ahead of this one means the
@@ -195,7 +197,8 @@ pub enum StoreError {
 /// is touched.
 ///
 /// 12 adds task review metadata and append-only snapshot rows (#328).
-pub const SCHEMA_VERSION: i64 = 12;
+/// 13 adds persisted per-source review Git actions (#330).
+pub const SCHEMA_VERSION: i64 = 13;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.

@@ -221,7 +221,7 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.7.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.8.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
@@ -293,6 +293,10 @@ runtime that starts them.
   line), `reply_to` and `opinion` (snapshot and approve/request_changes verdict).
   These are ordinary task comments, with their metadata in the existing JSON
   comment record; old anchors keep their original snapshot identity.
+  3.8.0 adds `tasks.review.act` (#330): per-source Merge and Push steps against
+  saved commits. `tasks.review.get` also returns available destinations and
+  persisted action results. The action capability is independent of review
+  reads, comments and explicit completion.
   The SPA's adapter claims `>=2.0.0 <4.0.0`: it calls nothing a 2.x bridge
   lacks (what 2.x added after 2.0.0 is capability-gated), so the app can
   roll before the bridge.
@@ -636,8 +640,14 @@ snapshot history; its old pins are released after the metadata commits. Git
 work runs through the deferred drain off the app
 lock (`app/tracker/reviews.rs`).
 
-Schema 12 stores review headers and snapshot metadata in `reviews` and
+Schema 13 stores review headers and snapshot metadata in `reviews` and
 `review_snapshots` (`store/reviews.rs`), without patches or file bodies.
+It adds `review_actions`, one row per selected source with its ordered step
+results. Admission checks the review version and records running sources in
+one transaction. Each step records its input and result before the next starts;
+running rows prevent another action on that source until the operation ends.
+Daemon recovery marks unfinished rows interrupted, preserving successful steps
+without replaying Git. Ordinary database opens do not perform this recovery.
 `read.rs` uses the recorded common Git directory and saved OIDs for commit
 diffs, full tree listings and read-only, paged blobs, including unchanged files.
 Diff listings cap file rows at 1,000 with `files_truncated`; patch reads retain
@@ -656,8 +666,21 @@ workspace Finish skip their old task-movement/closure hooks for review tasks.
 Closing/completing and removing workspaces or projects retain review history
 and refs; replacing its workspace or explicitly deleting task history releases
 the previous pins. MCP exposes
-`snapshot_review`, `get_review`, `read_review`, `complete_review` to coding and
+`snapshot_review`, `get_review`, `read_review`, `act_review`, `complete_review` to coding and
 project agents, authenticated and restricted to their own project.
+
+`reviews/actions.rs` executes selected source steps off the app mutex and
+publishes task invalidations after each persisted result. Targets resolve from
+the source ID to the configured source repository. The service holds the same
+configured-path `source_sync::SyncLock` as base sync while Git re-reads target
+placement. `reviews/git_actions.rs` merges the saved head into a clean existing
+target checkout or an owned temporary checkout on the target branch. Separate
+repositories import only the saved OID under a private ref. Push is non-forced
+to a configured remote and explicit branch, using the saved head or a recorded
+merge tip. A Push retry can name the successful merge action; it never reruns
+Merge. Results survive completion and workspace replacement; an old result
+still names its original snapshot. None of these operations finishes or removes
+a workspace, stages source files, or requires a review opinion.
 
 The task page embeds the saved review (`spa/src/core/taskReviewPage.js`), with
 every saved directory and Changes/Files views. Workspace Changes can save a
@@ -665,7 +688,12 @@ review on a task (`workspaceReviewEntry.js`). Snapshot/base changes and explicit
 completion live in `taskReviewControls.js`; assigning a reviewer uses the
 ordinary assignee picker and a note naming the snapshot. Opinions and line
 comments use `taskReviewFeedback.js` and stay in the task timeline, with no
-reviewer or model restrictions. Git action buttons remain a later increment.
+reviewer or model restrictions. `taskReviewActions.js` offers separate Merge
+and Push selections for each source, displays destinations and saved/live heads,
+and keeps per-source results visible. Choices and submitted intent live in
+`build-ui`; Git is sent only on an explicit action. Recorded success can finish
+the selected steps' review after reconnect, while a failure or interruption
+requires an explicit retry or an ordinary completion description.
 
 `taskReviewSupport.js` holds the individually announced review verbs and the
 comment feature in the device cache. `taskReviewCache.js` stores metadata under

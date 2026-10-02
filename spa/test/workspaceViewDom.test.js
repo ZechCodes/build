@@ -328,9 +328,7 @@ describe("workspace surface", () => {
     document.querySelector("[data-ref-kind=tag]").click();
     await vi.waitFor(() => expect(document.querySelector('[data-ref="refs/tags/v1"]')).not.toBeNull());
     document.querySelector('[data-ref="refs/tags/v1"]').click();
-    await flush();
-    await flush();
-    expect(mountGitPane).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(mountGitPane).toHaveBeenCalledTimes(2), { timeout: 3_000 });
     const selection = mountAgentRail.mock.calls[0][1].selection;
     selection.set("second-agent");
     for (const [, options] of mountGitPane.mock.calls) {

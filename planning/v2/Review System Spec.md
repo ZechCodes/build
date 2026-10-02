@@ -354,6 +354,24 @@ Merge defaults to a merge commit, Push is non-forced, completion retains
 branches/workspaces, and source-repository deletion can lose historical diff access.
 There are no outstanding owner choices blocking this draft.
 
+### Increment C implementation (#330)
+
+Wire 3.8.0 announces `tasks.review.act` independently. Its source selections
+contain optional `merge: {branch}` and `push: {remote, branch}`; both run in that
+order. Each source creates one action row whose steps keep input/result OIDs,
+errors and cleanup warnings. A push-only retry may name `merge_action_id` to
+reuse a recorded successful merge tip from the same snapshot and directory.
+No request replay identifier or lookup API is added. Leaving all sources
+unchanged does not advance the review version.
+
+Schema 13 keeps action rows separately from snapshot history. A workspace
+replacement retains already accepted Git facts with their original snapshot
+identity, including results that finish after replacement or completion. Boot
+recovery marks unfinished actions interrupted; ordinary store readers do not.
+The UI's saved submission intent permits completion from recorded success after
+reconnect, but never replays a Git action. Existing explicit completion remains
+available regardless of the Git result history.
+
 ## Workshop log: Opus read of 3143e6c4
 
 The simplification is accepted. One Git detail in #4 is changed for the reason

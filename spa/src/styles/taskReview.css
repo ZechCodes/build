@@ -16,6 +16,7 @@
 .task-review-facts p { margin: 10px 0; }
 .task-review .workspace-dirtabs { overflow-x: auto; }
 .task-review [data-review-content] { min-width: 0; overflow: hidden; }
+.task-review [data-review-content] .trf-labels { display: none; }
 .task-review-feedback { margin-top: 20px; }
 .task-review-feedback textarea { width: 100%; box-sizing: border-box; }
 .workspace-review-entry { padding: 8px 16px; border-bottom: 1px solid var(--line); }

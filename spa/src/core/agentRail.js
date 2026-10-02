@@ -43,6 +43,7 @@ import {
   agentCanInterrupt,
   agentHasTerminal,
   agentIsUp,
+  agentIsWatched,
   agentSessionAnswered,
   agentStartFailure,
   agentHeading,
@@ -943,7 +944,7 @@ const WATCH_VERB = "conversation.watch";
  */
 function watchStateFor(agent) {
   if (!agent) return null;
-  return { watching: agent.watched !== false, watchers: agent.watchers || 0, pending: false };
+  return { watching: agentIsWatched(agent), watchers: agent.watchers || 0, pending: false };
 }
 
 /** The rail standing on ONE of its contexts. `swap` is how it moves to the

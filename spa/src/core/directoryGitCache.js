@@ -1,18 +1,11 @@
-// Workspace sources and project directories have no board entity of their
-// own. A board push is their invalidation, including while Changes is unmounted.
-import { cachedEntityIds, mergeCachedTogether } from "./localCache.js";
+// A directory read can invalidate records measured from the same Git state.
+// Keep the update and those invalidations together, guarded against late reads.
+import { mergeCachedRecordsTogether, recordWriteOf } from "./localCache.js";
 
-const GIT_KINDS = ["refs", "status", "log", "unpushed", "diff"];
-const isDirectory = (id) => id.startsWith("workspace:") || id.startsWith("project:");
-
-/** Keep the last paintable values, but require a read next time they are used.
- *  The board names no source, so every cached directory on this device is
- *  conservatively stale. No pane or additional wire subscription is kept. */
-export async function invalidateDirectoryGit(context) {
-  const entities = await cachedEntityIds(context.deviceId);
-  const addresses = entities.filter(isDirectory).flatMap((entityId) =>
-    GIT_KINDS.map((kind) => ({ deviceId: context.deviceId, entityId, kind })));
-  if (!addresses.length || !context.active()) return;
-  await mergeCachedTogether(addresses, (values) => values.map((value) =>
-    context.active() && value ? { ...value, stale: true } : null));
+export async function writeDirectoryGit(address, value, { before, active, staleKinds = [], guarded = true }) {
+  const addresses = [address, ...staleKinds.map((kind) => ({ ...address, kind }))];
+  await mergeCachedRecordsTogether(addresses, (records) => {
+    if (!active() || (guarded && recordWriteOf(records[0]) !== recordWriteOf(before))) return records.map(() => null);
+    return [value, ...records.slice(1).map((record) => record?.value ? { ...record.value, stale: true } : null)];
+  });
 }

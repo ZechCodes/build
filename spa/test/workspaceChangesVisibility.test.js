@@ -233,6 +233,33 @@ describe("a Changes directory that is mounted but hidden", () => {
     await vi.waitFor(() => expect(repo.querySelector(".file[data-key$='new-file.js']")).not.toBeNull());
   });
 
+  it("checks only the visible directory on an unrelated board push", async () => {
+    rpcOverride = (method, params) => {
+      if (method === "git.status" && params.if_status_key === trees[params.source_id].status().status_key)
+        return { unchanged: true, status_key: params.if_status_key };
+      if (method === "git.unpushed") return params.if_diff_key === "review"
+        ? { unchanged: true, diff_key: "review" } : { patch: "", diff_key: "review" };
+      return undefined;
+    };
+    await open();
+    switchTo("assets");
+    const address = (kind) => ({ deviceId: "dev-1", entityId: directoryCacheId({ workspace_id: "ws-1", source_id: "assets" }), kind });
+    await vi.waitFor(async () => {
+      expect((await readCached(address("diff")))?.value.diff_key).toBe("review");
+      expect((await readCached(address("refs")))?.value.current.name).toBe("main");
+    });
+    for (let turn = 0; turn < 20; turn += 1) await flush();
+    asked.length = 0;
+    armChangeEvents({ push_events: true }, "dev-1");
+    dispatchChangeEvent({ type: "changes", items: [{ entity_id: "board", state: { revision: 123 } }] }, "dev-1");
+    await vi.waitFor(() => expect(asked.filter(({ method }) => method.startsWith("git."))).toHaveLength(2));
+    for (let turn = 0; turn < 20; turn += 1) await flush();
+    expect(asked.filter(({ method }) => method.startsWith("git.")).sort((a, b) => a.method.localeCompare(b.method))).toEqual([
+      { method: "git.status", params: { workspace_id: "ws-1", source_id: "assets", if_status_key: trees.assets.status().status_key } },
+      { method: "git.unpushed", params: { workspace_id: "ws-1", source_id: "assets", if_diff_key: "review" } },
+    ]);
+  });
+
   it("defers a bridge board invalidation and refreshes the hidden checkout when it returns", async () => {
     await open();
     switchTo("assets");

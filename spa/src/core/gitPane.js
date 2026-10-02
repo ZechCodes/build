@@ -56,6 +56,7 @@ import { mountChangesComposer } from "./changesComposer.js";
 import { commitPaths, createReviewMarks } from "./reviewMarks.js";
 import { toggleSecretSpoiler } from "./secrets.js";
 import { watchChanges } from "./changeEvents.js";
+import { writeDirectoryGit } from "./directoryGitCache.js";
 import { cachedSubKeys, mergeCached, mergeCachedRecordsTogether, readCached, readCachedMany, recordWriteOf, subscribeCache, writeCached } from "./localCache.js";
 import { COMMIT_PATCH_MAX_BYTES, PATCH_RECORD_KIND } from "./cacheThresholds.js";
 import { withinBytes } from "./cacheLifetime.js";
@@ -91,12 +92,13 @@ import { watchUiState } from "./localUiState.js";
  *  source is not one of them. The shape is the pass's own — the base, the
  *  commit list and the diff key — with the body left out, which the diff
  *  record holds under its own cap. */
-async function keepUnpushed(cacheScope, scope, payload) {
+async function keepUnpushed(cacheScope, scope, payload, before, active) {
   const entityId = directoryCacheId(scope);
   const address = entityId ? cacheScope?.address({ entityId, kind: "unpushed" }) || null : null;
   if (!address) return false;
   const { patch, ...record } = payload;
-  await writeCached(address, record);
+  const changed = before?.value && before.value.diff_key !== record.diff_key;
+  await writeDirectoryGit(address, record, { before, active, staleKinds: changed ? ["log"] : [] });
   return true;
 }
 
@@ -120,8 +122,11 @@ export function createWorkspaceReview({ scope, callRpc, cacheScope = null, navig
     // diff is the one it reads for itself, kept where the next mount of this
     // source will find it. Checkout invalidations refresh it explicitly.
     cacheEntity: directoryCacheId(scope),
+    checkOnMount: true,
     fetchDiff: async (ifDiffKey) => {
       const readLifetime = lifetime;
+      const address = cacheScope?.address({ entityId: directoryCacheId(scope), kind: "unpushed" });
+      const before = address ? await readCached(address) : undefined;
       const payload = await callRpc("git.unpushed", {
         ...scope,
         // The commit list, the base and the key, and — of a bridge that can
@@ -133,7 +138,7 @@ export function createWorkspaceReview({ scope, callRpc, cacheScope = null, navig
         ...(ifDiffKey ? { if_diff_key: ifDiffKey } : {}),
       });
       if (readLifetime !== lifetime) return null;
-      if (!payload.unchanged) await keepUnpushed(cacheScope, scope, payload);
+      if (!payload.unchanged) await keepUnpushed(cacheScope, scope, payload, before, () => readLifetime === lifetime);
       return { ...payload, commentable: Boolean(submit) };
     },
     /** The hunks of the files the reader has open, out of the same
@@ -355,15 +360,24 @@ export function gitPollKey(status, log, nowSeconds = Date.now() / 1000) {
  *  moved answers `{ unchanged: true }` and the bridge never serializes a shape
  *  nobody needed. A pane holding no status asks for the whole thing. */
 export function ifStatusKey(status) {
-  return status && !status.stale && status.status_key ? { if_status_key: status.status_key } : {};
+  return status && status.status_key ? { if_status_key: status.status_key } : {};
 }
 
 /** The status the pane holds after such a read: the shape it was handed, or
  *  the one it already had when the bridge says the key it was sent still
  *  stands. */
 export function statusAfterRead(answer, held) {
+  if (answer?.unchanged && held?.stale) {
+    const { stale, ...confirmed } = held;
+    return confirmed;
+  }
   return answer && answer.unchanged ? held : answer;
 }
+
+const statusInvalidations = (answer, before) => {
+  if (!answer || answer.unchanged || !before?.value) return [];
+  return answer.status_key && answer.status_key === before.value.status_key ? [] : ["log", "refs"];
+};
 
 /** The commit record after a page of older history: the page's commits behind
  *  the ones already held, and what that page said about there being more.
@@ -1249,13 +1263,11 @@ export function mountGitPane(
   const recordStill = async (address, before) =>
     recordWriteOf(await readCached(address)) === recordWriteOf(before);
 
-  const storeStatus = async (status, before, guarded) => {
+  const storeStatus = async (status, before, guarded, staleKinds) => {
     if (!status) return true;
     const address = cacheAddress("status");
     if (!address) return false;
-    await mergeCachedRecordsTogether([address], ([current]) => [
-      disposed || (guarded && recordWriteOf(current) !== recordWriteOf(before)) ? null : status,
-    ]);
+    await writeDirectoryGit(address, status, { before, guarded, staleKinds, active: () => !disposed });
     return true;
   };
 
@@ -1284,9 +1296,9 @@ export function mountGitPane(
 
   /** Put wire answers into records. The record subscription owns production
    *  state and paint; no pulled object is assigned to the renderer here. */
-  const storeFrom = async (status, log, { statusBefore, logBefore, guarded = false } = {}) => {
+  const storeFrom = async (status, log, { statusBefore, logBefore, guarded = false, staleKinds = [] } = {}) => {
     const [statusStored, logStored] = await Promise.all([
-      storeStatus(status, statusBefore, guarded),
+      storeStatus(status, statusBefore, guarded, staleKinds),
       storeLog(log, logBefore, guarded),
     ]);
     clearConfirm();
@@ -1300,9 +1312,16 @@ export function mountGitPane(
   const readCheckoutRecord = (kind) =>
     callRpc(`git.${kind}`, { ...scope, ...(kind === "status" ? ifStatusKey(lastStatus) : {}) });
 
+  const showReadError = (error) => {
+    if (disposed) return;
+    const message = error?.message || "error";
+    if (isPermanentGitScopeError(message)) renderScopeError(message);
+    else actionError(error);
+  };
+
   /** Read the missing records on mount, or both after an invalidation/action.
    *  Every answer goes through the cache before it can paint. */
-  const forceRefresh = async (kinds = ["status", "log"]) => {
+  const forceRefresh = async (kinds = ["status", "log"], checkOnly = false) => {
     // Capture the records before the pull without holding the pull behind an
     // IndexedDB turn. Besides keeping a cold mount quick, this matters for a
     // route on another device: its own caller must be reached as soon as the
@@ -1317,15 +1336,14 @@ export function mountGitPane(
         Promise.all(["status", "log"].map((kind) => kinds.includes(kind) ? readCheckoutRecord(kind) : null)),
       ]);
     } catch (e) {
-      if (disposed) return;
-      if (isPermanentGitScopeError(e && e.message)) renderScopeError((e && e.message) || "error");
-      else actionError(e);
+      showReadError(e);
       return;
     }
     const status = statusAfterRead(answer, lastStatus);
     if (disposed) return;
     scopeErrorShown = null;
-    await storeFrom(status, log, { statusBefore, logBefore, guarded: true });
+    const staleKinds = checkOnly ? statusInvalidations(answer, statusBefore) : [];
+    await storeFrom(status, log, { statusBefore, logBefore, guarded: true, staleKinds });
     return true;
   };
 
@@ -2077,9 +2095,9 @@ export function mountGitPane(
 
   const paintRecords = (held) => {
     takeUpBesides(held);
+    if (held.status) lastStatus = held.status;
+    if (held.log) lastLog = held.log;
     if (!held.status || !held.log) return false;
-    lastStatus = held.status;
-    lastLog = held.log;
     lastHighlightKey = held.log.highlight_key ?? null;
     selected = recordSelection();
     if (!visible) {
@@ -2106,7 +2124,7 @@ export function mountGitPane(
     return painted;
   };
 
-  // A board invalidation can reach the cache after this pane's own watcher
+  // A status or review read can invalidate history after this pane's watcher
   // already started a read. Repair that stale record after the older read
   // settles. A failed read waits for another invalidation rather than spinning.
   let staleRefresh = null;
@@ -2155,22 +2173,25 @@ export function mountGitPane(
    * anything. Two checkouts are not on that list — a workspace SOURCE, whose
    * records are filed under the source and only this side names one, and a
    * project's own directory, which is no entity at all. For those, and for a
-   * pane mounted with no cache to hear from, this IS the reader: it fills
-   * missing records on mount and refreshes when the bridge says the checkout
-   * moved. No timer either way.
+   * pane mounted with no cache to hear from, this IS the reader: it paints
+   * held records, then validates status on mount and board notifications.
+   * The review plug checks its own key, which can move independently.
    */
   const readsForItself = !cacheScope || !syncWalksCheckout(scope);
 
   /** The first paint. Whatever the records say goes on screen at once, so the
    *  reader gets the surface on the first frame. A checkout the cache holds
-   *  nothing for is then read off the machine and written down. A remount
-   *  reuses each held record; pushes and explicit actions own refreshes. */
+   *  nothing for is then read off the machine and written down. Uncovered
+   *  directories check their status key even if no board push reached them. */
   const standUp = async () => {
     const held = await readRecords();
     if (disposed) return;
     if (held) paintRecords(held);
     const missing = ["status", "log"].filter((kind) => !held?.[kind] || held[kind].stale);
-    if (missing.length) await forceRefresh(missing);
+    if (readsForItself && held?.status) {
+      await forceRefresh(["status"], true);
+      if (!held.log) await forceRefresh(["log"]);
+    } else if (missing.length) await forceRefresh(missing);
     if (visible) await openRequestedCommit();
   };
 
@@ -2187,13 +2208,13 @@ export function mountGitPane(
    */
   const watchedEntity = scope.entity_id || (scope.workspace_id ? null : scope.run_id || scope.worktree_id || null);
 
-  const refreshCheckout = () => {
+  const refreshCheckout = (checkOnly = false) => {
     if (!visible) {
-      checkoutRefreshPending = true;
+      checkoutRefreshPending = checkoutRefreshPending === "full" || !checkOnly ? "full" : "check";
       return;
     }
     checkoutRefreshPending = false;
-    void forceRefresh();
+    void forceRefresh(checkOnly ? ["status"] : ["status", "log"], checkOnly);
     // The plug over a workspace source reads the same uncovered checkout.
     if (scope.workspace_id && reviewMounted) review?.refreshDiff?.();
   };
@@ -2217,6 +2238,7 @@ export function mountGitPane(
   const checkoutWatcher = readsForItself
     ? watchChanges({
         refresh: refreshCheckout,
+        onChanges: () => refreshCheckout(true),
         entity: watchedEntity,
         // Focus tier. A checkout the bridge names no entity for watches the
         // board — where `state` is all there is, and the manager trims the ask
@@ -2264,7 +2286,7 @@ export function mountGitPane(
     if (actionSettleReenables(inFlightActions)) reenableAllControls();
     scheduleViewingContext(true);
     if (requestedCommit) void openRequestedCommit();
-    if (checkoutRefreshPending) refreshCheckout();
+    if (checkoutRefreshPending) refreshCheckout(checkoutRefreshPending === "check");
   };
 
   return {

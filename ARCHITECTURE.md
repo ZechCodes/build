@@ -1067,16 +1067,19 @@ them into new code; each is a candidate to bring under the rule.
   - the Files tab lists a directory the reader expands with `fs.tree`
     (`spa/src/core/fileTree.js`);
   - the archive reads `archived.list` (`spa/src/views/archive.js`);
-  - the agent rail reads `settings.get` (`spa/src/core/agentRail.js`).
+  - the agent rail reads `settings.get` (`spa/src/core/agentRail.js`);
+  - workspace sources and project directories paint their held Git records,
+    then check `git.status` with `if_status_key` on mount. Workspace review
+    also checks `git.unpushed` with `if_diff_key`: a published base can change
+    without moving the status key. An unchanged warm workspace remount makes
+    at most these two requests, without reading refs, history or diff bodies.
+    Changed answers invalidate only that directory's dependent records.
+    Board notifications trigger the same checks for visible panes; hidden
+    panes defer them, and hidden ref pickers defer reads until shown. Explicit
+    refresh still reads through. Ref checkout drops mutable Git records before
+    remounting; immutable commit patches stay cached.
 - **Invalidation pushes.** Some push fields only say what moved, and the
   applier reads again:
-  - a board item marks cached Git records for workspace sources and project
-    directories stale (`directoryGitCache.js`), even while Changes is unmounted.
-    These directories have no board entity of their own, so the invalidation
-    covers the device's cached directories. Their next mount reads only missing
-    or stale records; a quiet Files/Tasks rail round trip reads nothing again.
-    A ref checkout drops that directory's mutable Git records before remounting;
-    immutable commit patches stay cached.
   - `tasks` carries only ids, so the project's task list is re-read;
   - changed `files` paths re-list the directories the reader opened and
     re-read open file bodies with `fs.read` (a paged body from its first

@@ -394,12 +394,14 @@ describe("the aggregate over a checkout nothing walks", () => {
     return { container, pane, calls, answer };
   }
 
-  it("paints the record it holds without reading the source again", async () => {
+  it("paints the record it holds before its conditional source check answers", async () => {
     const { container, pane, calls } = await mountWorkspaceReview({
-      held: { patch: PATCH.replace("+new", "+from the record"), commentable: true },
+      held: { patch: PATCH.replace("+new", "+from the record"), commentable: true, diff_key: "held" },
     });
     expect(container.textContent).toContain("from the record");
-    expect(calls.filter(({ method }) => method === "git.unpushed")).toHaveLength(0);
+    expect(calls.filter(({ method }) => method === "git.unpushed")).toEqual([
+      { method: "git.unpushed", params: { workspace_id: "w", source_id: "s", if_diff_key: "held" } },
+    ]);
     pane.dispose();
   });
 

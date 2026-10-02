@@ -651,7 +651,6 @@ describe("a pane over a checkout nothing walks", () => {
     pane.dispose();
   });
 
-  // The fourth record a mount reads. Its one consumer is the review over a
   it.each([SOURCE, { project_id: "p-1" }])("finds an outside commit after remount without a board push: %s", async (scope) => {
     let committed = false;
     let releaseStatus;
@@ -661,7 +660,7 @@ describe("a pane over a checkout nothing walks", () => {
         if (committed) return new Promise((resolve) => { releaseStatus = () => resolve(next); });
         return next;
       }
-      if (method === "git.log") return { ...log(), commits: [{ ...log().commits[0], subject: committed ? "outside commit" : "earlier work" }] };
+      if (method === "git.log") return { ...log(), commits: [{ ...log().commits[0], hash: committed ? "b".repeat(40) : "a".repeat(40), subject: committed ? "outside commit" : "earlier work" }] };
       return sourceRpc()(method, params);
     });
     const first = mountPaneNow(callRpc, { scope });
@@ -689,6 +688,7 @@ describe("a pane over a checkout nothing walks", () => {
     const callRpc = vi.fn(async (method, params) => {
       if (method === "git.status") return { unchanged: true, status_key: status().status_key };
       if (method === "git.unpushed") return { diff_key: "published", patch: "", base: { kind: "published_ancestor" } };
+      if (method === "git.log") return { ...log(), highlight_key: "published", commits: [{ ...log().commits[0], subject: "landed since" }] };
       return sourceRpc()(method, params);
     });
     const { container, pane } = mountPaneNow(callRpc, { scope: SOURCE });
@@ -792,6 +792,7 @@ describe("a pane over a checkout nothing walks", () => {
     });
     const { container, pane } = await mountPane(callRpc, { scope: SOURCE });
     const { refetchEverything } = await import("../src/core/changeEvents.js");
+    callRpc.mockClear();
     refetchEverything();
     await settle();
 

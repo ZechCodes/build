@@ -10,9 +10,9 @@
 // where comments go, and what finishing the work means here.
 //
 // The plug owns its host's DOM, and what it draws is the `diff` record: the
-// working tree as the last push left it. The wire is reached for only where
-// the cache holds no diff at all, or holds one a push has said it could not
-// carry — and that read writes the record, so the next mount is instant.
+// working tree as the last read or push left it. Missing or stale diffs are
+// fetched; source directories without Git push coverage also validate a held
+// diff with its key. Answers write the cache, so the next mount is instant.
 //
 // Its repaints keep the same freeze discipline as the pane around it: a
 // rebuild mid-comment would drop anchors, the open popover, and typed text,
@@ -120,6 +120,9 @@ export function createReviewPlug({
   // A surface that names none is drawn from whatever patch `fetchDiff`
   // carried, exactly as before.
   fetchFiles = null,
+  // Source directories have no Git push entity. Validate their held changeset
+  // on mount with its own key; a status key does not cover published bases.
+  checkOnMount = false,
   navigate = null,
   viewingContext = null,
 }) {
@@ -519,7 +522,8 @@ export function createReviewPlug({
 
   /** What the plug draws on mount: the record, and one read of the wire only
    *  where there is no record to draw, where the push that wrote it said it
-   *  could not carry the body, or where the record carries the body alone. */
+   *  could not carry the body, where the record carries the body alone, or to
+   *  validate a source directory with no Git push coverage using its own key. */
   const standUp = async () => {
     const mounted = host;
     const record = await heldDiff();
@@ -528,7 +532,7 @@ export function createReviewPlug({
       applyCachedDiff(record);
       render();
     }
-    if (!record || record.stale || bodyOnly(record)) paint();
+    if (!record || record.stale || checkOnMount || bodyOnly(record)) paint();
   };
 
   /** The record moved — a `git` push carried a new working tree, or a reader

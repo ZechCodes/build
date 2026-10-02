@@ -85,3 +85,20 @@ fn test_command(home: &Path, name: &str) -> Command {
         .env(CHILD_TEST, name);
     command
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_child_with_no_matching_test_is_rejected() {
+        let result = std::thread::Builder::new()
+            .name("no such isolated git fixture test".into())
+            .spawn(|| GitEnvironment::unsigned().run_test())
+            .unwrap()
+            .join();
+        let panic = result.expect_err("a child running zero tests must not pass");
+        let message = panic.downcast_ref::<String>().unwrap();
+        assert!(message.contains("did not enter"), "{message}");
+    }
+}

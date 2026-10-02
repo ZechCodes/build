@@ -3,6 +3,7 @@
 // Seventeen checks over the tracker's surfaces, run against the compose stack.
 // Every check prints PASS or FAIL with a detail line and none of them aborts
 // the run, so one broken surface still reports on the other sixteen.
+// The completed run exits 1 if any check failed, and 0 if all passed.
 //
 //   TASKS_REPO=<a build-web checkout> APP_URL=http://localhost:8090 \
 //     node web/tracker-check.mjs
@@ -29,6 +30,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { chromium } from "playwright";
+import { summarizeChecks } from "./checkResults.mjs";
 
 const APP = process.env.APP_URL || "http://localhost:8090";
 
@@ -404,7 +406,9 @@ await browser.close();
 
 console.log("\n──────── summary ────────");
 for (const { name, ok, detail } of results) console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`);
-console.log(`\n${results.filter((one) => one.ok).length}/${results.length} passed`);
+const { passed, total, exitCode } = summarizeChecks(results);
+console.log(`\n${passed}/${total} passed`);
 if (dispatch) {
   console.log(`\nnew_workspace round trip: ${dispatch.ms} ms · isolation as answered: ${dispatch.isolation} · ${dispatch.sources} source(s)`);
 }
+process.exitCode = exitCode;

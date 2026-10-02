@@ -86,7 +86,19 @@ fn task_action(write: &TaskWrite) -> Option<TaskAction> {
         assignee: (action == "assigned")
             .then(|| write.task.assignee.clone())
             .flatten(),
+        to: (action == "moved").then(|| moved_to(write)).flatten(),
     })
+}
+
+/// The column a move went to, off the event that recorded it.
+fn moved_to(write: &TaskWrite) -> Option<String> {
+    write
+        .events
+        .iter()
+        .find(|event| event.kind == TaskEventKind::Moved)
+        .and_then(|event| event.payload.get("to"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
 }
 
 fn action_slug(write: &TaskWrite) -> Option<&'static str> {
@@ -204,6 +216,19 @@ mod tests {
         let action = task_action(&write_with(Vec::new(), true)).unwrap();
         assert_eq!(action.action, "commented_on");
         assert_eq!(action.comment_id.as_deref(), Some("tc-9"));
+    }
+
+    /// A move names the column it went to, so the agent's own line can say
+    /// "Moved #13 to “In review”" (#323). Nothing else carries one.
+    #[test]
+    fn a_move_carries_the_column_it_went_to() {
+        let mut write = write_with(vec![TaskEventKind::Moved], false);
+        write.events[0].payload = json!({ "from": "ready", "to": "in_review" });
+        let action = task_action(&write).unwrap();
+        assert_eq!(action.action, "moved");
+        assert_eq!(action.to.as_deref(), Some("in_review"));
+        let closed = task_action(&write_with(vec![TaskEventKind::Closed], false)).unwrap();
+        assert_eq!(closed.to, None);
     }
 
     /// Tracking is about what the agent will READ, not what it did, so it says

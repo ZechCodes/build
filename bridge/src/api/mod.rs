@@ -33,7 +33,8 @@ use std::collections::BTreeSet;
 /// carries `can_replace_development_build` and `running_from_cargo_target`,
 /// and `bridge.install_update` takes `replace_development_build`, the
 /// confirmation a development build the service runs needs before a release
-/// replaces it.
+/// replaces it. It also carries `to` on a `moved` task action, the column an
+/// agent's own line names (#323).
 pub const API_VERSION: &str = "3.5.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the

@@ -4,22 +4,23 @@
 
 A review records the committed work in every source directory of a workspace.
 It lives on the task, with one saved branch, base and head per Git source.
-Git keeps those commits; Build reads their diff when you open the review.
+Each directory has Changes and Files views inside the review.
+Git Files shows the whole saved commit tree, including unchanged files.
 Uncommitted files are counted and clearly excluded.
-Plain folders appear as “No Git diff”, with a link to live Files.
+Non-Git directories say “Not a Git repository” and open on Files, labelled Live.
 Pick a reviewer using the existing user/agent picker.
 Any agent or model can review and finish the work.
 Choose Merge, Push, or both for each source, with the destination you want.
-You can select both steps, or leave a source unchanged.
 An agent can instead use its own tools and mark the review complete.
 Completion shows a short description, such as “merged API to dev; pushed web”.
 Chosen steps succeeding, or an explicit completion report, finishes the review.
-Deleting a source repository can make its old review diffs unavailable.
-Estimate: **5–7 focused engineer days**, in three increments.
+Deleting a source can make its review content unavailable.
+Estimate: **6–8 focused engineer days**, in three increments.
 Agents can use the first increment alone; the UI and Git buttons follow.
 
 Plan only, based on main `ee49f20b93477a7959196d5853e3f0e5ba79bcd7` and the owner's
-#89/c/tc-01M3Y803PF9GMSYA3RNNR6YRET decisions. Code references describe current
+#89/c/tc-01M3Y803PF9GMSYA3RNNR6YRET decisions, with the Files-view correction in
+#89/c/tc-01M3YADSQ09N48T9YB7QQF6524. Code references describe current
 reuse points; the records and verbs below are proposed. No model allowlist,
 reviewer/merger restriction, required-check machinery, candidate proof or
 deployment gate is part of this feature.
@@ -38,7 +39,8 @@ adds independent directories after workspace creation.
 
 Store only metadata in `build.db`: review state (open/completed) and version,
 snapshot ID/number/time/author,
-per-directory identity and repository location, branch, resolved base OID and head
+per-directory identity and repository location (including a linked worktree's
+common Git directory), branch, resolved base OID and head
 OID, plus action results. Include the base's name/kind and the uncommitted-file
 count for display. Non-Git or unavailable entries carry their reason, not invented
 Git values. There are no saved patch/body tables or content digests.
@@ -76,10 +78,36 @@ handling for an empty-tree base; do not call the live dirty-workdir diff. Curren
 workspace `git.changeset_diff` uses an unpublished-work baseline
 (`bridge/src/app/git/mod.rs`, `changeset_subject`), so it is not this immutable read.
 
+### Full Files view
+
+The review includes a read-only Files browser for every saved directory, not
+just files that changed. For Git sources, list the entire tree at the saved head
+OID and read blobs from that tree. Opening an unchanged file requires no checkout
+or navigation to the originating workspace. A source with no commits has an empty
+committed Files view and retains the uncommitted-file note. Symlinks and submodule
+entries are labelled without opening a live target.
+
+For a non-Git directory, default to Files inside the review and show “Not a Git
+repository” and “Live files — not saved with this review”. This uses the live-folder
+default stated in #89/c/tc-01M3YAF5Z38PZ9XHA0SPTR5508; it is not an archived copy.
+Keep the saved directory identity and resolve that specific source, without
+falling back to another directory if it was removed. Missing sources show
+“Source unavailable”. Changes displays the non-repository note and offers the
+same embedded Files view.
+
+Current `fs.tree`/`fs.read` in `bridge/src/app/fs.rs` read the filesystem;
+`FsTreeParams` and `FsReadParams` in `bridge/src/api/v1/git.rs` have no commit
+selector. Reuse these scoped reads only for the live non-Git view. Extend the
+proposed review `diff` read with full-tree listing and blob-content modes for
+Git sources, reusing listing/body/page shapes with read-only blob answers and
+pages tied to that blob OID. Tree traversal at a saved OID is
+new work, not a claim that current filesystem reads can serve historical files.
+
 Refs survive branch movement and Git GC while their repository exists. They do
 not archive a deleted repository. A deleted Rift/standalone source can leave the
 old diff unreadable; retain its metadata/comments and show “Source unavailable”.
-A removed linked worktree can remain readable through its surviving common repo.
+A removed linked worktree can remain readable by opening its recorded common
+Git directory, rather than its deleted checkout path.
 Release refs when their review history is explicitly deleted; closing or completing
 keeps them. Existing store backup covers metadata, not the Git repositories.
 
@@ -97,7 +125,7 @@ snapshot seen; the picker routes the task and grants no exclusive rights.
 | --- | --- |
 | `tasks.review.snapshot` | Synchronously save the workspace's per-source commit metadata and refs; return the review. Base overrides work from increment A. |
 | `tasks.review.get` | Read review state, snapshots and per-source action results, plus available destinations. |
-| `tasks.review.diff` | Read a snapshot's file list, patch or old/new file content from Git; reuse existing body/page shapes. |
+| `tasks.review.diff` | Read changed files/patches, the full tree at the saved head, or file content from Git, including unchanged files; reuse listing/body/page shapes. |
 | `tasks.review.act` | Run the selected Merge/Push steps for named sources and record their results on the review. |
 | `tasks.review.complete` | Record the actor and a brief action-taken description, and mark the review/task Done; no preceding Build action is required. |
 
@@ -195,6 +223,15 @@ unchanged/non-Git/unavailable rows from the saved manifest. Do not reconstruct o
 tabs from the live workspace. Each Git tab shows its resolved base/head and the
 uncommitted-file note. Increment B adds the per-directory base picker.
 
+Each directory offers **Changes** and **Files** without leaving the review. Git
+directories default to Changes; their Files view browses the full saved head tree.
+Non-Git directories default to Files with the non-repository and Live labels above.
+Adapt `spa/src/core/fileRoots.js`, `fileTree.js`, `fileTabs.js`, `fileViewer.js`
+and `pagedFileView.js` from `spa/src/views/files.js` through read-only review
+adapters. The current Files view calls live `fs.tree`/`fs.read`; do not mount it
+unchanged for Git snapshots or expose its editor. Keep the selected directory
+when switching views, and let a diff's file link open that file in review Files.
+
 Use `spa/src/core/changesReview.js`, `changesetBodies.js` and `diffRender.js` through
 a snapshot adapter. Anchored feedback writes task comments, not the legacy run
 conversation notes. Personal viewed-file marks stay personal. Reuse
@@ -202,12 +239,19 @@ conversation notes. Personal viewed-file marks stay personal. Reuse
 The action sheet shows Merge/Push selections and per-source results; Mark complete
 asks only for a brief action description. Add no separate PR surface.
 
-Every view paints from cache. Review metadata/results and Git reads write to the
-entity/body cache first; comments stay in the existing task/timeline cache. Key
-snapshot bodies by device/task/snapshot/directory/path/side so identical paths in
-different repositories cannot collide. Reuse `localCache.js`, `bodyPages.js`,
+Every view paints from cache. Review metadata/results, tree listings and file
+reads write to the entity/body cache first; comments stay in the task/timeline
+cache. Put review records under the named project entity with separate kinds and
+task/snapshot/directory/path/side subkeys. `cacheSync.js` evicts unnamed entities;
+do not invent an unregistered task entity or reuse live file addresses. Adapt
+`cacheLifetime.js`'s file-head writer to the review kind. Reuse `localCache.js`, `bodyPages.js`,
 `taskReadOrder.js`, `pushFence.js` and task invalidations in `cacheSync.js`. Cached
 Git bodies are disposable; a missing repository is not repaired from live files.
+Keep non-Git live file cache keys separate from immutable Git snapshot keys and
+use existing live-file invalidation/refetch behavior. A late read for another
+snapshot or directory may populate only its own cache entry, never the new view.
+If a live refresh fails after cached content painted, show that failure or
+“Source unavailable”; held bytes must not appear silently current.
 
 Keep drafts and action selections in the separate `build-ui` store
 (`localUiStore.js`), scoped to task/snapshot. Reconnect and tab changes preserve
@@ -218,8 +262,9 @@ records and executes requested Git; product choices and view state live in the S
 ## 5. Agents
 
 Expose snapshot/get/diff/act/complete through MCP to project and workspace agents
-in the same project. They can read all source diffs without first checking out the
-branches, leave opinions/comments and finish with a short description. Existing
+in the same project. They can read all source diffs and complete Git trees without
+first checking out the branches, use existing scoped filesystem reads for live
+non-Git files, leave opinions/comments and finish with a short description. Existing
 actor authentication supplies attribution, not a model qualification test.
 
 Reuse `assign_task` and the existing picker; a task note names the snapshot to
@@ -255,14 +300,16 @@ may no longer be available.
 
 ## 7. Rollout
 
-**5–7 focused engineer days**, including tests/review. Re-estimate after A.
+**6–8 focused engineer days**, including tests/review. Re-estimate after A.
 Metadata-only snapshots remove most of the earlier capture/recovery work; target
-checkout handling is the remaining uncertainty, covered in C's estimate.
+checkout handling is the remaining uncertainty, covered in C's estimate. Full-tree
+Git browsing and its file-read adapter add one day to A; B includes embedding the
+existing Files components. There is no new archive or snapshot-body store.
 
 | Increment | Deliverable and code areas | Verification / rollout | Size |
 | --- | --- | --- | --- |
-| A: useful agent reviews | Proposed `bridge/src/reviews/`, store/schema and typed API/MCP adapters. Four verbs: snapshot/get/diff/complete (`act` lands in C). All-source metadata/refs, base overrides/fallbacks, action description and the exact legacy-hook guards above. | Shared-repo directories have distinct refs; concurrent snapshots cannot overwrite/remove winning pins; detached/unborn/missing bases; base override/empty tree; dirty files excluded; pin survives branch deletion/GC; deleted repo reads unavailable; version checks and review/ordinary task hooks. Bridge roll. Agents can read diffs and complete using their own tools. | 1–2 days |
-| B: review UI | Task/Changes adapter, saved directory tabs, base picker, anchored task comments/opinions in RPC and MCP, reviewer picker, cache/drafts in `spa/src/core/` and `spa/src/views/`. | Same paths in two repos, old snapshot anchors, unavailable source, two tabs/stale version, reconnect/cache paint, mobile; comment RPC/MCP schemas/fixtures/capability. Bridge+app roll. | 2 days |
+| A: useful agent reviews | Proposed `bridge/src/reviews/`, store/schema and typed API/MCP adapters. Four verbs: snapshot/get/diff/complete (`act` lands in C). All-source metadata/refs, base overrides/fallbacks, full Git tree/blob reads, action description and the exact legacy-hook guards above. | Shared-repo directories have distinct refs; concurrent snapshots cannot overwrite/remove winning pins; detached/unborn/missing bases; base override/empty tree; dirty files excluded; unchanged files/tree remain at saved head after live edits; paged blob reads; pin survives branch deletion/GC; deleted repo reads unavailable; version checks and review/ordinary task hooks. Bridge roll. Agents can read diffs/full files and complete using their own tools. | 2–3 days |
+| B: review UI | Task/Changes and read-only Files adapters, saved directory tabs, base picker, anchored task comments/opinions in RPC and MCP, reviewer picker, cache/drafts in `spa/src/core/` and `spa/src/views/`. | Same paths in two repos, whole-tree browsing, Changes-to-Files navigation, non-Git defaults/Live label, old snapshot anchors, source removed after cache paint, two tabs/stale version, late reads after snapshot switch, review listings/pages survive reconnect and sync, mobile; comment RPC/MCP schemas/fixtures/capability. Bridge+app roll. | 2 days |
 | C: selectable steps | `act`, review result rows, targeted Git helpers, temporary worktree handling and action sheet. | Checked-out clean/dirty targets; unchecked-out target/ref race; source sync contention on both paths; Rift import; Merge success/Push failure; interrupted row after restart; no automatic retry or workspace deletion. Temporary repos only. Bridge+app roll. | 2–3 days |
 
 Implementation follows AGENTS.md TDD and affected-tier gates: Rust tests/fmt/clippy,
@@ -272,10 +319,12 @@ plan document changes in #89.
 
 ## 8. Defaults
 
-Reviews cover commits only. Plain folders are listed as “No Git diff”, with a
-clearly labelled live Files link; general file archiving is outside this release.
-This is the plan's default, not a blocking question. Any agent/model may review
-or finish. Merge defaults to a merge commit, Push is non-forced, completion retains
+Git reviews cover commits only, with Changes and the entire committed Files tree.
+Plain folders open their embedded Files view with “Not a Git repository” and
+“Live files — not saved with this review”; general file archiving is outside this
+release. This live-folder default follows the project agent's stated interpretation
+of the owner's correction. Any agent/model may review or finish.
+Merge defaults to a merge commit, Push is non-forced, completion retains
 branches/workspaces, and source-repository deletion can lose historical diff access.
 There are no outstanding owner choices blocking this draft.
 
@@ -307,3 +356,14 @@ Opus signed off on `fd106344` on 2026-10-02, including the temporary checkout
 on the target branch. Its three final text edits are applied: increment A names
 the later arrival of `act` in C; `complete` explicitly records the actor; and the
 owner summary offers Merge, Push, or both. No further review round is requested.
+
+### Owner correction: full workspace browsing
+
+The owner requested Changes and Files inside the review for every directory in
+#89/c/tc-01M3YADSQ09N48T9YB7QQF6524. Add complete tree/blob reads at each saved Git
+head, including unchanged files, and embed Files rather than sending the reader
+elsewhere. Non-Git sources default to Files with the non-repository and Live
+labels, following #89/c/tc-01M3YAF5Z38PZ9XHA0SPTR5508; no frozen folder copy is
+introduced. This supersedes the earlier “No Git diff” plus external Files-link
+default. The estimate becomes 6–8 days. Opus's recorded signoff above covers
+`fd106344`; this later owner correction is recorded separately.

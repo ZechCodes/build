@@ -285,8 +285,11 @@ Bind a full direct `refs/heads/...` ref and the registered repository. For remot
 mode, resolve and validate the selected remote's effective fetch/push endpoint,
 including pushurl and URL rewrites. Require a single matching endpoint initially;
 refuse multiple push URLs, mirror configuration, configured push options or a
-changed endpoint rather than silently pushing elsewhere. Use the captured endpoint for read, fetch and push,
-and revalidate the binding before admission. Persist remote name, full ref and a
+changed endpoint rather than silently pushing elsewhere. Use the verified remote name for read, fetch and push under the operation
+reservation, re-resolving and checking the same endpoint identity before each
+command. Do not pass an already expanded URL back through Git rewrites: chained
+insteadOf rules can otherwise select a second destination. Validate effective
+fetch and push URLs, not remote.pushDefault or the project row's display URL. Persist remote name, full ref and a
 safe endpoint identity/digest, not a credential-bearing URL. Re-resolve the URL
 only if its identity still matches; a changed endpoint leaves recovery uncertain
 until restored; selecting a different destination follows the user-only new-task
@@ -363,7 +366,7 @@ From the canonical repository, push **only** C to the selected remote's full
 ref with the explicit old-OID lease. In Build, the core command is:
 
 ```text
-git -c core.hooksPath=/dev/null -c gc.auto=0 -c maintenance.auto=false push --porcelain --no-follow-tags --no-mirror --recurse-submodules=no --force-with-lease=refs/heads/main:<T> -- <selected-endpoint> <C>:refs/heads/main
+git -c core.hooksPath=/dev/null -c gc.auto=0 -c maintenance.auto=false push --porcelain --no-follow-tags --no-mirror --recurse-submodules=no --force-with-lease=refs/heads/main:<T> -- <selected-remote> <C>:refs/heads/main
 ```
 
 Use structured argv and the existing unattended process/deadline machinery.
@@ -687,7 +690,7 @@ budget, re-estimate openly; do not silently drop durability or widen scope.
 | --- | --- | --- | --- |
 | A: assignment fix | `bridge/src/app/tracker/dispatch.rs`, tracker/store transaction seams, delivery receipt/runner integration. Prepare destination, commit assignment + queued intent, deliver after commit for every caller. | Commit/claim/restart faults, superseding assignment, wire/MCP and new-workspace paths. Bridge roll; ships alone and benefits existing tasks. | 2–3 days |
 | B: usable review | Proposed `bridge/src/task_reviews/`, `store/task_reviews.rs`, `api/v1/task_reviews.rs` and thin app adapter; extend tracker/schema/MCP/fixtures. One attachment, pin/publish, anchors, designation/provenance and decisions; activity/deletion attachment opt-in guards. Task Changes adapter in `spa/src/core/`, extend tracker page/render/timeline/cache/router and `spa/src/views/trackerTaskView.js`. | Migration/pins/restart/GC, actor/scope/CAS, configured-only toggle, non-designated/self approval, moved/outdated anchors, two-tab cache, mobile and legacy hook both paths. Coordinated bridge+app roll with review capability. Users can review and hand off before merge ships. | 5–7 days |
-| C: prepare and merge | Candidate/local-ref and guarded remote-push recovery in task-review Git service; structured check comments; reuse `project.sync_source`/source status with durable nudge acknowledgment and unattended Git; narrow reservations, MCP/templates and merge UI. | Temporary worktree/Rift/bare-remote tests: exact C/lease, moved origin needs new checks, single endpoint/ref, lost push reply, offline recovery, crash before sync pass/ack, sync dirty/in-progress refusal, separate push/sync/deploy state, local-ref checked-out refusal and self-merge refusal. No live project push needed. Bridge+app merge capability; amend architecture/specs. | 4–7 days |
+| C: prepare and merge | Candidate/local-ref and guarded remote-push recovery in task-review Git service; structured check comments; reuse `project.sync_source`/source status with durable nudge acknowledgment and unattended Git; narrow reservations, MCP/templates and merge UI. | Temporary worktree/Rift/bare-remote tests: exact C/lease, moved origin needs new checks, single endpoint/ref including URL rewrites, lost push reply, offline recovery, crash before sync pass/ack, sync dirty/in-progress refusal, separate push/sync/deploy state, local-ref checked-out refusal and self-merge refusal. No live project push needed. Bridge+app merge capability; amend architecture/specs. | 4–7 days |
 
 Do not hold increment A for the final capability. Do not announce merge before
 its tests pass. Increment B supports the existing manual roll workflow while C

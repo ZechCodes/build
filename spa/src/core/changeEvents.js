@@ -877,8 +877,8 @@ export async function greetBridge(
 // capability write, so an upgraded bridge fills reviews even if the first
 // sync ran before this write. Superseded greetings cannot change the record.
 function rememberGreetedReviews(deviceId, adapter, isCurrent) {
-  void rememberReviewSupport(deviceId, adapter?.capabilities, isCurrent).then(() => {
-    if (isCurrent()) refetchEverything(deviceId);
+  void rememberReviewSupport(deviceId, adapter?.capabilities, isCurrent).then((written) => {
+    if (written && adapter?.capabilities.reviews?.get && isCurrent()) refetchEverything(deviceId);
   });
 }
 

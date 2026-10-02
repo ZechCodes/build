@@ -35,4 +35,3 @@ export function wireDirectoryTabs(row, onSelect) {
     onSelect(to.dataset.directory);
   };
 }
-

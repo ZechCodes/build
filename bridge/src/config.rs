@@ -40,10 +40,10 @@ pub fn resolve(lookup: impl Fn(&str) -> Option<String>, home: &Path) -> BridgeCo
     };
     let api_url = lookup("BRIDGE_API_URL").unwrap_or_else(|| DEFAULT_API_URL.to_string());
     let worktrees = lookup("BRIDGE_WORKTREES")
-        .map(&expand)
+        .map(expand)
         .unwrap_or_else(|| home.join(".build/worktrees"));
     let mcp_socket = lookup("BRIDGE_MCP_SOCKET")
-        .map(&expand)
+        .map(expand)
         .unwrap_or_else(|| worktrees.join("build-bridge-mcp.sock"));
     BridgeConfig {
         relay_url: lookup("BRIDGE_RELAY_URL").unwrap_or_else(|| DEFAULT_RELAY_URL.to_string()),
@@ -54,7 +54,7 @@ pub fn resolve(lookup: impl Fn(&str) -> Option<String>, home: &Path) -> BridgeCo
         base_branch: lookup("BRIDGE_BASE_BRANCH")
             .unwrap_or_else(|| DEFAULT_BASE_BRANCH.to_string()),
         identity_file: lookup("BRIDGE_IDENTITY_FILE")
-            .map(&expand)
+            .map(expand)
             .unwrap_or_else(|| home.join(".build/identity.json")),
         mcp_socket,
         home: home.to_path_buf(),

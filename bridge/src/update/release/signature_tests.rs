@@ -411,6 +411,7 @@ async fn local_release_metadata_makes_a_newer_version_available() {
             platform: platform_key().unwrap().into(),
             development_build: false,
             replaceable_development_build: false,
+            running_from_cargo_target: false,
             check_interval: Duration::from_secs(86_400),
         },
         backend,

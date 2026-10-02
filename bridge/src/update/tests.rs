@@ -78,6 +78,7 @@ fn config(root: &Path, development_build: bool, version: &str) -> UpdateConfig {
         platform: "linux-x86_64".into(),
         development_build,
         replaceable_development_build: false,
+        running_from_cargo_target: false,
         check_interval: Duration::from_secs(24 * 60 * 60),
     }
 }
@@ -220,6 +221,7 @@ async fn uncertain_idle_launcher_keeps_attempt_and_admission_until_recovery() {
             platform: "linux-x86_64".into(),
             development_build: false,
             replaceable_development_build: false,
+            running_from_cargo_target: false,
             check_interval: Duration::from_secs(24 * 60 * 60),
         },
         backend.clone(),
@@ -722,8 +724,12 @@ async fn development_build_drops_a_stale_check_error_saved_before_error_kinds() 
         ..Default::default()
     });
     let service = fixture(dir.path(), backend, true);
-    // A development build never installs, so the saved error was a check's.
-    assert_eq!(service.status().state, UpdateState::Available);
+    // A development build never installed, so the saved error was a check's,
+    // and it never checks on its own, so the old result goes at startup.
+    let loaded = service.status();
+    assert_eq!(loaded.state, UpdateState::Idle);
+    assert_eq!(loaded.last_error, None);
+    assert!(!loaded.update_available);
     let checked = service.check_at(at(2)).await.unwrap();
     assert_eq!(checked.state, UpdateState::Available);
     assert_eq!(checked.last_error, None);
@@ -857,4 +863,232 @@ async fn development_build_status_never_offers_a_release_install() {
             .unwrap()
             .can_replace_development_build
     );
+}
+
+/// Save the status shape a bridge from before error kinds wrote, with an
+/// error and whatever attempt fields `extra` adds.
+fn write_legacy_status(root: &Path, development_build: bool, extra: serde_json::Value) {
+    let status_path = root.join("tasks/bridge-update.json");
+    std::fs::create_dir_all(status_path.parent().unwrap()).unwrap();
+    let mut saved = serde_json::json!({
+        "running_version": "1.0.0",
+        "platform": "linux-x86_64",
+        "development_build": development_build,
+        "latest_release": {"version": "1.1.0", "tag": "v1.1.0", "published_at": null},
+        "last_checked_at": "1970-01-02T00:00:00Z",
+        "state": "failed",
+        "last_error": "HTTP status client error (404 Not Found)",
+        "update_available": true,
+        "can_install": !development_build
+    });
+    saved
+        .as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    std::fs::write(&status_path, serde_json::to_vec(&saved).unwrap()).unwrap();
+}
+
+fn saved_status(root: &Path) -> serde_json::Value {
+    serde_json::from_slice(&std::fs::read(root.join("tasks/bridge-update.json")).unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn release_build_reads_a_legacy_error_with_no_install_evidence_as_a_check_error() {
+    let dir = TempDir::new().unwrap();
+    write_legacy_status(dir.path(), false, serde_json::json!({}));
+    let backend = Arc::new(FakeBackend {
+        latest: Mutex::new(Ok(release("1.1.0"))),
+        ..Default::default()
+    });
+    let service = fixture(dir.path(), backend, false);
+    let loaded = service.status();
+    assert_eq!(loaded.state, UpdateState::Available);
+    assert!(loaded.can_install);
+    let checked = service.check_at(at(2)).await.unwrap();
+    assert_eq!(checked.state, UpdateState::Available);
+    assert_eq!(checked.last_error, None);
+}
+
+#[tokio::test]
+async fn release_build_keeps_a_legacy_error_with_a_saved_attempt_as_an_install_error() {
+    let dir = TempDir::new().unwrap();
+    write_legacy_status(
+        dir.path(),
+        false,
+        serde_json::json!({"rollback_pending": true, "attempt_id": "attempt-1"}),
+    );
+    let backend = Arc::new(FakeBackend {
+        latest: Mutex::new(Ok(release("1.1.0"))),
+        ..Default::default()
+    });
+    let service = fixture(dir.path(), backend, false);
+    assert_eq!(service.status().state, UpdateState::Failed);
+    assert_eq!(
+        service.status().last_error.as_deref(),
+        Some("HTTP status client error (404 Not Found)")
+    );
+}
+
+#[tokio::test]
+async fn release_build_keeps_a_legacy_error_with_a_helper_result_as_an_install_error() {
+    let dir = TempDir::new().unwrap();
+    write_legacy_status(dir.path(), false, serde_json::json!({}));
+    failed_result(dir.path(), "attempt-1".into());
+    let backend = Arc::new(FakeBackend {
+        latest: Mutex::new(Ok(release("1.1.0"))),
+        ..Default::default()
+    });
+    let service = fixture(dir.path(), backend, false);
+    assert_eq!(service.status().state, UpdateState::Failed);
+    let checked = service.check_at(at(2)).await.unwrap();
+    assert_eq!(checked.state, UpdateState::Failed);
+    assert_eq!(
+        checked.last_error.as_deref(),
+        Some("HTTP status client error (404 Not Found)")
+    );
+}
+
+#[tokio::test]
+async fn development_build_forgets_an_earlier_run_s_check_at_startup() {
+    let dir = TempDir::new().unwrap();
+    let backend = Arc::new(FakeBackend {
+        latest: Mutex::new(Ok(release("1.1.0"))),
+        ..Default::default()
+    });
+    let service = replaceable_fixture(dir.path(), backend.clone());
+    let checked = service.check_at(at(1)).await.unwrap();
+    assert!(checked.update_available);
+    assert!(checked.can_replace_development_build);
+    drop(service);
+
+    // Nothing checks again on its own, so the old result is not shown as
+    // news and an older app has nothing to badge.
+    let restarted = replaceable_fixture(dir.path(), backend.clone());
+    let status = restarted.status();
+    assert_eq!(status.latest_release, None);
+    assert_eq!(status.last_checked_at, None);
+    assert!(!status.update_available);
+    assert!(!status.can_replace_development_build);
+    assert_eq!(status.state, UpdateState::Idle);
+
+    *backend.latest.lock().unwrap() = Err("network down".into());
+    assert!(restarted.check_at(at(2)).await.is_err());
+    assert!(restarted.status().last_error.is_some());
+    drop(restarted);
+    let restarted = replaceable_fixture(dir.path(), backend);
+    assert_eq!(restarted.status().last_error, None);
+}
+
+#[tokio::test]
+async fn a_release_build_s_schedule_does_not_replace_a_development_build_after_restart() {
+    let dir = TempDir::new().unwrap();
+    let backend = Arc::new(FakeBackend {
+        latest: Mutex::new(Ok(release("1.1.0"))),
+        ..Default::default()
+    });
+    let service = fixture(dir.path(), backend.clone(), false);
+    service.check_at(at(1)).await.unwrap();
+    let queued = service.install(InstallWhen::Idle, true).await.unwrap();
+    assert_eq!(queued.state, UpdateState::ScheduledWhenIdle);
+    drop(service);
+
+    // A source build copied over the binary: the service runs a development
+    // build nobody agreed to replace.
+    let restarted = replaceable_fixture(dir.path(), backend.clone());
+    assert_ne!(restarted.status().state, UpdateState::ScheduledWhenIdle);
+    let ticked = restarted.tick_at(at(1), false).await.unwrap();
+    assert_ne!(ticked.state, UpdateState::Installing);
+    assert_eq!(ticked.last_error, None);
+    assert!(backend.stages.lock().unwrap().is_empty());
+    assert!(backend.installs.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_development_build_that_cannot_be_replaced_drops_a_saved_schedule() {
+    let dir = TempDir::new().unwrap();
+    let backend = Arc::new(FakeBackend {
+        latest: Mutex::new(Ok(release("1.1.0"))),
+        ..Default::default()
+    });
+    let service = fixture(dir.path(), backend.clone(), false);
+    service.check_at(at(1)).await.unwrap();
+    service.install(InstallWhen::Idle, true).await.unwrap();
+    drop(service);
+
+    let restarted = fixture(dir.path(), backend.clone(), true);
+    assert_eq!(restarted.status().state, UpdateState::Idle);
+    let ticked = restarted.tick_at(at(1), false).await.unwrap();
+    assert_eq!(ticked.state, UpdateState::Idle);
+    assert_eq!(ticked.last_error, None);
+    assert!(backend.stages.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_confirmed_replacement_schedule_is_saved_and_survives_restart() {
+    let dir = TempDir::new().unwrap();
+    let backend = Arc::new(FakeBackend {
+        latest: Mutex::new(Ok(release("1.1.0"))),
+        ..Default::default()
+    });
+    let service = replaceable_fixture(dir.path(), backend.clone());
+    service.check_at(at(1)).await.unwrap();
+    service
+        .install_confirmed(InstallWhen::Idle, true, true)
+        .await
+        .unwrap();
+    assert_eq!(saved_status(dir.path())["replaces_development_build"], true);
+    drop(service);
+
+    let restarted = replaceable_fixture(dir.path(), backend.clone());
+    assert_eq!(restarted.status().state, UpdateState::ScheduledWhenIdle);
+    let launched = restarted.tick_at(at(2), false).await.unwrap();
+    assert_eq!(launched.state, UpdateState::Installing);
+    assert_eq!(*backend.stages.lock().unwrap(), ["1.1.0"]);
+}
+
+#[tokio::test]
+async fn a_newer_release_needs_its_own_confirmation_to_replace_a_development_build() {
+    let dir = TempDir::new().unwrap();
+    let backend = Arc::new(FakeBackend {
+        latest: Mutex::new(Ok(release("1.1.0"))),
+        ..Default::default()
+    });
+    let service = replaceable_fixture(dir.path(), backend.clone());
+    service.check_at(at(1)).await.unwrap();
+    service
+        .install_confirmed(InstallWhen::Idle, true, true)
+        .await
+        .unwrap();
+    // The confirmation named 1.1.0.
+    *backend.latest.lock().unwrap() = Ok(release("1.2.0"));
+    let checked = service.check_at(at(2)).await.unwrap();
+    assert_eq!(checked.state, UpdateState::Available);
+    let ticked = service.tick_at(at(3), false).await.unwrap();
+    assert_eq!(ticked.state, UpdateState::Available);
+    assert!(backend.stages.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn status_says_when_a_development_build_runs_from_a_cargo_target_directory() {
+    let dir = TempDir::new().unwrap();
+    let backend = Arc::new(FakeBackend::default());
+    let development = UpdateService::new(
+        UpdateConfig {
+            running_from_cargo_target: true,
+            ..config(dir.path(), true, "1.0.0")
+        },
+        backend.clone(),
+    )
+    .unwrap();
+    assert!(development.status().running_from_cargo_target);
+    let other = TempDir::new().unwrap();
+    let release_build = UpdateService::new(
+        UpdateConfig {
+            running_from_cargo_target: true,
+            ..config(other.path(), false, "1.0.0")
+        },
+        backend,
+    )
+    .unwrap();
+    assert!(!release_build.status().running_from_cargo_target);
 }

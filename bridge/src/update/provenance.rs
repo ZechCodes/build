@@ -83,6 +83,18 @@ pub fn installable_binary(
     }
 }
 
+/// Whether `binary` sits in a cargo target directory, which cargo tags with
+/// a `CACHEDIR.TAG` it wrote. The next `cargo build` there overwrites
+/// whatever replaced the binary.
+pub fn in_cargo_target_dir(binary: &Path) -> bool {
+    binary.ancestors().skip(1).any(|dir| {
+        fs::read_to_string(dir.join("CACHEDIR.TAG")).is_ok_and(|tag| {
+            tag.starts_with("Signature: 8a477f597d28d172789f06886806bc55")
+                && tag.contains("created by cargo")
+        })
+    })
+}
+
 fn service_unit(home: &Path) -> Result<PathBuf, String> {
     match std::env::consts::OS {
         "linux" => Ok(home.join(".config/systemd/user/build-bridge.service")),
@@ -191,6 +203,33 @@ fn unit_runs_binary_for(text: &str, binary: &Path, os: &str) -> bool {
 mod tests {
     use super::*;
     use crate::service::{Launchd, ServiceConfig, ServiceManager, Systemd};
+
+    #[test]
+    fn a_binary_under_a_cargo_target_directory_is_one_cargo_rebuilds() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("custom-target");
+        let binary = target.join("release/build-bridge");
+        fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        fs::write(&binary, b"binary").unwrap();
+        assert!(!in_cargo_target_dir(&binary));
+        fs::write(
+            target.join("CACHEDIR.TAG"),
+            "Signature: 8a477f597d28d172789f06886806bc55\n\
+             # This file is a cache directory tag created by cargo.\n",
+        )
+        .unwrap();
+        assert!(in_cargo_target_dir(&binary));
+
+        let other = dir.path().join("elsewhere/build-bridge");
+        fs::create_dir_all(other.parent().unwrap()).unwrap();
+        fs::write(&other, b"binary").unwrap();
+        fs::write(
+            dir.path().join("elsewhere/CACHEDIR.TAG"),
+            "Signature: 8a477f597d28d172789f06886806bc55\n# created by another tool\n",
+        )
+        .unwrap();
+        assert!(!in_cargo_target_dir(&other));
+    }
 
     #[test]
     fn unmarked_development_binary_is_read_only() {

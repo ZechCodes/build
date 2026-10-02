@@ -54,6 +54,11 @@ pub struct UpdateStatus {
     /// would be accepted. Absent from bridges before wire 3.5.0.
     #[serde(default)]
     pub can_replace_development_build: bool,
+    /// A development build running from a cargo target directory, where the
+    /// next `cargo build` overwrites a release put in its place. Absent from
+    /// bridges before wire 3.5.0.
+    #[serde(default)]
+    pub running_from_cargo_target: bool,
     /// From the bridge's configuration on every start; not saved or sent.
     #[serde(skip)]
     pub(super) development_build_replaceable: bool,
@@ -76,6 +81,7 @@ impl UpdateStatus {
             update_available: false,
             can_install: false,
             can_replace_development_build: false,
+            running_from_cargo_target: false,
             development_build_replaceable: false,
             last_error_kind: None,
         }

@@ -69,6 +69,20 @@ pub fn replaceable_development_binary(
     Ok(running)
 }
 
+/// The check an install is made under: the managed install's marker, or, for
+/// a confirmed replacement, a development binary the service runs.
+pub fn installable_binary(
+    home: &Path,
+    binary: &Path,
+    replaces_development_build: bool,
+) -> Result<PathBuf, String> {
+    if replaces_development_build {
+        replaceable_development_binary(home, binary)
+    } else {
+        managed_binary(home, binary)
+    }
+}
+
 fn service_unit(home: &Path) -> Result<PathBuf, String> {
     match std::env::consts::OS {
         "linux" => Ok(home.join(".config/systemd/user/build-bridge.service")),

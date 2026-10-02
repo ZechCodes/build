@@ -33,7 +33,179 @@ fn fixture(dir: &Path) -> Job {
         tasks_dir,
         home,
         uid: "1".into(),
+        replaces_development_build: false,
     }
+}
+
+/// A development build the service runs: the same job, confirmed as a
+/// replacement, with whatever marker the machine had (`None` for none).
+fn development_fixture(dir: &Path, marker: Option<&str>) -> Job {
+    let job = Job {
+        replaces_development_build: true,
+        ..fixture(dir)
+    };
+    let path = super::super::provenance::marker_path(&job.home);
+    match marker {
+        Some(content) => fs::write(&path, content).unwrap(),
+        None => fs::remove_file(&path).unwrap(),
+    }
+    job
+}
+
+fn healthy(job: &Job, _: &Path) -> Result<(), String> {
+    assert!(fs::read_to_string(&job.installed_binary)
+        .unwrap()
+        .contains("9.9.9"));
+    Ok(())
+}
+
+#[test]
+fn replacing_an_unmarked_development_build_marks_the_release() {
+    let dir = tempfile::tempdir().unwrap();
+    let job = development_fixture(dir.path(), None);
+    install_with(
+        &job,
+        dir.path(),
+        &job.installed_binary,
+        &mut |_| Ok(()),
+        &mut healthy,
+    )
+    .unwrap();
+    let marker = fs::read_to_string(super::super::provenance::marker_path(&job.home)).unwrap();
+    assert!(
+        marker.contains(&super::super::provenance::binary_digest(&job.installed_binary).unwrap())
+    );
+    // The installed release now passes as a managed install's binary.
+    assert!(super::super::provenance::validate_saved_marker(
+        &super::super::provenance::marker_path(&job.home),
+        &job.installed_binary,
+        &job.installed_binary
+    )
+    .is_ok());
+}
+
+#[test]
+fn a_failed_replacement_restores_the_development_build_and_no_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    let job = development_fixture(dir.path(), None);
+    let original = fs::read(&job.installed_binary).unwrap();
+    let mut actions = Vec::new();
+    let error = install_with(
+        &job,
+        dir.path(),
+        &job.installed_binary,
+        &mut |action| {
+            actions.push(action.to_string());
+            Ok(())
+        },
+        &mut |_, _| Err("unhealthy".into()),
+    )
+    .unwrap_err();
+    assert_eq!(error.message(), "unhealthy");
+    assert_eq!(actions, ["stop", "start", "stop", "start"]);
+    assert_eq!(fs::read(&job.installed_binary).unwrap(), original);
+    assert!(!super::super::provenance::marker_path(&job.home).exists());
+}
+
+#[test]
+fn a_failed_replacement_restores_a_stale_marker_byte_for_byte() {
+    let dir = tempfile::tempdir().unwrap();
+    let stale = "/home/someone/.local/bin/build-bridge\nabc\n";
+    let job = development_fixture(dir.path(), Some(stale));
+    install_with(
+        &job,
+        dir.path(),
+        &job.installed_binary,
+        &mut |_| Ok(()),
+        &mut |_, _| Err("unhealthy".into()),
+    )
+    .unwrap_err();
+    assert_eq!(
+        fs::read_to_string(super::super::provenance::marker_path(&job.home)).unwrap(),
+        stale
+    );
+}
+
+#[test]
+fn a_release_install_without_a_marker_is_refused_before_the_service_stops() {
+    let dir = tempfile::tempdir().unwrap();
+    let job = fixture(dir.path());
+    fs::remove_file(super::super::provenance::marker_path(&job.home)).unwrap();
+    let original = fs::read(&job.installed_binary).unwrap();
+    let mut actions = Vec::new();
+    assert!(install_with(
+        &job,
+        dir.path(),
+        &job.installed_binary,
+        &mut |action| {
+            actions.push(action.to_string());
+            Ok(())
+        },
+        &mut healthy,
+    )
+    .is_err());
+    assert!(actions.is_empty());
+    assert_eq!(fs::read(&job.installed_binary).unwrap(), original);
+}
+
+#[test]
+fn a_release_install_keeps_rejecting_a_stale_saved_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    let job = fixture(dir.path());
+    fs::write(
+        super::super::provenance::marker_path(&job.home),
+        "/home/someone/.local/bin/build-bridge\nabc\n",
+    )
+    .unwrap();
+    let mut actions = Vec::new();
+    assert!(install_with(
+        &job,
+        dir.path(),
+        &job.installed_binary,
+        &mut |action| {
+            actions.push(action.to_string());
+            Ok(())
+        },
+        &mut healthy,
+    )
+    .is_err());
+    assert!(actions.is_empty());
+}
+
+#[test]
+fn launch_checks_the_provenance_the_job_was_confirmed_for() {
+    let dir = tempfile::tempdir().unwrap();
+    let release = fixture(dir.path());
+    // No service unit in this home: neither kind may launch.
+    assert!(installable_binary(&release).is_err());
+    let replacement = Job {
+        replaces_development_build: true,
+        ..release.clone()
+    };
+    assert!(installable_binary(&replacement).is_err());
+
+    // The service runs this binary: both may launch while the marker holds.
+    let unit = match std::env::consts::OS {
+        "macos" => dir
+            .path()
+            .join("Library/LaunchAgents/ing.getbuild.bridge.plist"),
+        _ => dir.path().join(".config/systemd/user/build-bridge.service"),
+    };
+    fs::create_dir_all(unit.parent().unwrap()).unwrap();
+    let config = crate::service::ServiceConfig {
+        binary_path: fs::canonicalize(&release.installed_binary).unwrap(),
+        log_dir: dir.path().join(".build/log"),
+        env: vec![],
+    };
+    let manager = crate::service::manager_for(std::env::consts::OS).unwrap();
+    fs::write(&unit, manager.render_unit(&config)).unwrap();
+    assert!(installable_binary(&release).is_ok());
+    assert!(installable_binary(&replacement).is_ok());
+
+    // A source build over the marked binary: only the confirmed job launches.
+    fs::write(&release.installed_binary, b"#!/bin/sh\nprintf 'dev\\n'\n").unwrap();
+    assert!(installable_binary(&release).is_err());
+    assert!(installable_binary(&replacement).is_ok());
 }
 
 #[test]
@@ -141,6 +313,7 @@ fn stale_or_wrong_version_heartbeat_cannot_pass() {
         tasks_dir: dir.path().join("tasks"),
         home: dir.path().into(),
         uid: "1".into(),
+        replaces_development_build: false,
     };
     let mut beat = Health {
         nonce: "wrong".into(),

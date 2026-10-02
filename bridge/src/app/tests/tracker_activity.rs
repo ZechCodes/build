@@ -394,6 +394,66 @@ fn merged_branch_finish_closes_the_tasks_that_link_its_workspace() {
     assert_eq!(why["payload"]["workspace_id"], ws.as_str());
 }
 
+/// When no live run owns an adopted workspace, its merged history must agree
+/// with the branch row and with whether Done closes the linked task.
+#[test]
+fn merged_then_abandoned_runs_show_merged_and_close_linked_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (mut state, project_id) = tracked_with_origin(&state_root);
+    let ws = workspace(&mut state, &project_id, "two finished runs");
+    let branch = state.handle(req("workspace.get", json!({ "workspace_id": ws })))["result"]
+        ["directories"][0]["branch"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let merged_id = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": ws }),
+    ))["result"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    state.runs.get_mut(&merged_id).unwrap().run.state = crate::run::RunState::Merged;
+    let abandoned_id = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": ws }),
+    ))["result"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(merged_id, abandoned_id);
+    state.runs.get_mut(&abandoned_id).unwrap().run.state = crate::run::RunState::Abandoned;
+    let workspace = state.workspaces.get(&ws).unwrap();
+    assert_eq!(state.workspace_conversation_owner(workspace), None);
+
+    let linked = task_id(&filed(&mut state, &project_id, "implemented here"));
+    let answer = link_task(&mut state, json!({ "task_id": linked, "workspace_id": ws }));
+    assert_eq!(answer["ok"], true, "{answer:?}");
+
+    let board = state.handle(req("board.list", json!({})));
+    assert_eq!(board["ok"], true, "{board:?}");
+    let rows = board["result"]["items"].as_array().unwrap();
+    let matching: Vec<&Value> = rows
+        .iter()
+        .filter(|row| row["project_id"] == project_id && row["branch"] == branch)
+        .collect();
+    assert_eq!(matching.len(), 1, "{board:?}");
+    assert_eq!(matching[0]["state"], "merged", "{board:?}");
+    assert_eq!(matching[0]["run_id"], merged_id, "{board:?}");
+
+    let finished = state.handle(req(
+        "branch.finish",
+        json!({ "project_id": project_id, "branch": branch, "action": "delete" }),
+    ));
+    assert_eq!(finished["ok"], true, "{finished:?}");
+    let read = state.handle(req("tasks.get", json!({ "task_id": linked })));
+    assert_eq!(read["result"]["task"]["state"], "closed", "{read:?}");
+    assert!(read["result"]["task"]["closed_at"].is_string());
+    assert!(event_kinds(&mut state, &linked).contains(&"closed".to_string()));
+}
+
 /// Finishing before merge removes the branch but keeps its linked tasks live.
 #[test]
 fn unmerged_branch_finish_leaves_linked_tasks_open() {

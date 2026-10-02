@@ -428,6 +428,26 @@ mod tests {
         }
     }
 
+    /// Two finished runs can describe the same branch. The merged outcome
+    /// must win regardless of the order the run map yields them.
+    #[test]
+    fn a_merged_run_wins_the_branch_it_shares_with_an_abandoned_run() {
+        let mut merged = branch_candidate("p1", "build/thing", BranchSource::Run, "merged");
+        merged.row["state"] = json!("merged");
+        let mut abandoned =
+            branch_candidate("p1", "build/thing", BranchSource::Run, "abandoned");
+        abandoned.row["state"] = json!("abandoned");
+
+        for candidates in [
+            vec![abandoned.clone(), merged.clone()],
+            vec![merged.clone(), abandoned.clone()],
+        ] {
+            let folded = fold_work_items(candidates);
+            assert_eq!(labels(&folded), vec!["merged"]);
+            assert_eq!(folded[0]["state"], "merged");
+        }
+    }
+
     /// Every distinct key keeps its own row — including two projects on the
     /// same branch name and a detached checkout with no name to fold on.
     #[test]

@@ -132,6 +132,14 @@ test("API navigation and missing tokens cannot attach a Bearer", () => {
     { Accept: "application/json" });
 });
 
+test("the desktop path receives a Bearer only as the main-frame document", () => {
+  const headers = { Accept: "*/*", authorization: "Bearer old-token" };
+  for (const resourceType of ["subFrame", "image", "script", "stylesheet", "xhr", "other", undefined]) {
+    assert.deepEqual(authorizeRequestHeaders(APP_URL, headers, "access-token", resourceType),
+      { Accept: "*/*" }, resourceType);
+  }
+});
+
 function navigationHarness() {
   const webContents = new EventEmitter();
   webContents.setWindowOpenHandler = (handler) => { webContents.openWindow = handler; };

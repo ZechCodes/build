@@ -49,7 +49,7 @@ export function createPermissionPolicy() {
 function isAuthenticatedRequest(value, resourceType) {
   const url = parseUrl(value);
   if (url?.origin !== APP_ORIGIN) return false;
-  if (url.pathname === APP_PATH) return true;
+  if (url.pathname === APP_PATH) return resourceType === "mainFrame";
   // API fetches need credentials, but navigating to an API URL does not.
   return resourceType === "xhr" && url.pathname.startsWith("/api/");
 }

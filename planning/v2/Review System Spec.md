@@ -200,6 +200,11 @@ pushes preserve Git's usual non-fast-forward refusal.
 Default to a merge commit. Conflicts return a per-source failure; abort only the
 merge this action started and report an abort failure honestly. Private imported
 refs and temporary worktrees are internal Git plumbing, not new review entities.
+Merge disables commit signing and, like Push, has a longer deadline than Git
+reads. After a merge timeout, restore the previously clean checkout only when
+its branch, files and lock ownership can be verified; otherwise report the path
+and recovery reason. A timed-out Push has an unknown outcome: check the remote
+before retrying. Record that result as interrupted.
 Use existing isolation/worktree ownership helpers (`bridge/src/isolation/worktree.rs`)
 for temporary checkout creation
 and removal, without invoking the workspace Done flow.

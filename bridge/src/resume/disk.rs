@@ -140,11 +140,14 @@ pub mod testing {
         }
 
         fn take_one(counter: &AtomicUsize) -> bool {
-            counter
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
-                    left.checked_sub(1)
-                })
-                .is_ok()
+            let mut left = counter.load(Ordering::SeqCst);
+            while let Some(next) = left.checked_sub(1) {
+                match counter.compare_exchange(left, next, Ordering::SeqCst, Ordering::SeqCst) {
+                    Ok(_) => return true,
+                    Err(now) => left = now,
+                }
+            }
+            false
         }
     }
 

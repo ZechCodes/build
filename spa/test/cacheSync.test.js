@@ -694,6 +694,27 @@ describe("draft ownership reconciliation", () => {
   const settings = { deviceId: "dev-1", entityId: "ws-1", kind: "ui-draft", sub: "workspace-settings:" };
   const chat = { deviceId: "dev-1", entityId: "conv-1", kind: "ui-draft", sub: "chat:agent:run-1:ag-1" };
 
+  it("writes ownership lists while the UI draft read is still pending", async () => {
+    const ui = await import("../src/core/localUiStore.js");
+    let release;
+    vi.spyOn(ui, "uiDraftRecords").mockImplementation(() => new Promise((resolve) => {
+      release = () => resolve([]);
+    }));
+    sync.startCacheSync();
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    await vi.waitFor(async () => expect((await read("", "projects"))?.value).toHaveLength(1));
+    expect((await read("", "workspaces"))?.value).toEqual([]);
+    release();
+  });
+
+  it("writes ownership lists when draft preparation rejects", async () => {
+    const ui = await import("../src/core/localUiStore.js");
+    vi.spyOn(ui, "uiDraftRecords").mockRejectedValue(new Error("UI store unavailable"));
+    await boot([]);
+    expect((await read("", "projects"))?.value).toHaveLength(1);
+    expect((await read("", "workspaces"))?.value).toEqual([]);
+  });
+
   it("prunes deleted owners during sync even when no replica entity records remain", async () => {
     const ui = await import("../src/core/localUiStore.js");
     await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "workspaces" }, [workspace]);

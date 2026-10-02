@@ -31,6 +31,20 @@ protocol versions; see
   backslash or `!`. Run with `BRIDGE_API_URL`, it starts each command it
   prints with that variable, so a pasted `pair` or `install-service` asks
   the same api (#320).
+- A device you just approved is usable in seconds rather than 30 s or more.
+  The bridge sends its first heartbeat the moment the relay authenticates
+  its socket, and again each time the socket comes back, a failed beat's
+  retry included, instead of at the next 30 s tick. It dials the relay before
+  starting its background services and redials about half a second after a
+  socket ends (spread either way, doubling to 30 s). While showing a pairing
+  code it asks for its approval every second for two minutes, then every
+  2 s; an api answering 429 or 5xx is asked less often, after its
+  `Retry-After` when it gives one, and an api out of reach (no connection, or
+  a 404 while it is redeployed) is waited for up to two minutes instead of
+  ending the pairing. A code the api says is gone (revoked, or no such
+  device) ends the pairing after three such answers, saying to run
+  `build-bridge pair` again. After an approve, the app reads the device list every
+  second until it lists the device online, for up to 90 s (#321).
 
 ### Changed
 

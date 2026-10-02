@@ -210,6 +210,9 @@ runtime that starts them.
 - **Presence** (`bridge/src/presence.rs`): a device-signed heartbeat to
   skriftapp's `/api/devices/heartbeat` every 30 s (`HEARTBEAT_INTERVAL`), sent
   only while the relay socket is authenticated (`bridge/src/reachability.rs`).
+  `Reachability` is a watch channel, and the beat also goes out the moment the
+  socket becomes authenticated, so a just-started or reconnected bridge is
+  online within a second rather than an interval (#321).
 - **Signaling**: the `rtc_offer`, `rtc_ice` and `rtc_close` handlers in
   `bridge/src/app/rtc.rs`. The ICE policy is `bridge/src/rtc/policy.rs`, set by
   `BRIDGE_ICE_POLICY`, `BRIDGE_ICE_RELAY_MIN_WAIT_MS` and `BRIDGE_ICE_INTERFACES`.
@@ -968,7 +971,10 @@ In practice:
   read, keeps its place. An older bridge is read whole, as before.
 
 No timer polls the bridge for data. The data timers are the device presence
-poll against skriftapp and the served-version check. The transport has its own:
+poll against skriftapp and the served-version check. The presence poll runs
+every 15 s in the app and every 3 s on the waiting screen, and every second
+after this page approves a device, until the cached list calls it online or
+90 s pass (`spa/src/core/pendingPairing.js`, #321). The transport has its own:
 the reconnect backoff (`spa/src/core/deviceRecovery.js`) and the peer's open
 timeout and TURN-to-direct upgrade (`spa/src/core/peerLink.js`). Two more
 touch data without polling for it: the persistence debounce in

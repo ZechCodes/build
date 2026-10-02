@@ -335,6 +335,37 @@ describe("Settings → what the account keeps", () => {
     expect(links[0].textContent).toContain("Settings");
   });
 
+  // #321: a device just approved here reads "connecting…" beside a grey dot
+  // while the account does not call it online, each of two on its own, and
+  // goes back to the account's word when its wait runs out.
+  it("names each just-approved device as connecting until its wait runs out", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { PAIRING_WINDOW_MS, notePairingApproved, resetPendingPairing } = await import("../src/core/pendingPairing.js");
+    try {
+      devices = devices.map((device) => ({ ...device, status: "offline" }));
+      cachedDevices = devices;
+      await renderSettings();
+      await vi.advanceTimersByTimeAsync(0);
+      const rowStatus = (index) => [...document.querySelectorAll("#devlist .projrow")][index].querySelector(".dim");
+
+      notePairingApproved({ device_id: "dev-1", name: "Laptop" });
+      await vi.advanceTimersByTimeAsync(30_000);
+      notePairingApproved({ device_id: "dev-2", name: "Studio" });
+      expect(rowStatus(0).textContent.trim()).toBe("connecting…");
+      expect(rowStatus(1).textContent.trim()).toBe("connecting…");
+      expect(rowStatus(0).querySelector(".dot").style.background).toBe("var(--dim)");
+
+      await vi.advanceTimersByTimeAsync(PAIRING_WINDOW_MS - 30_000);
+      expect(rowStatus(0).textContent.trim()).toBe("offline");
+      expect(rowStatus(1).textContent.trim()).toBe("connecting…");
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(rowStatus(1).textContent.trim()).toBe("offline");
+    } finally {
+      resetPendingPairing();
+      vi.useRealTimers();
+    }
+  });
+
   // Unpairing is the account's word and the app's: the api is told, and the
   // machine is let go of through the one function that lets a device go —
   // which drops the connection it was riding and tells every surface over it

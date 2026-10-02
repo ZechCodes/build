@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { beforeEach, expect, it, vi } from "vitest";
 import { openAddDevice } from "../src/sheets/addDevice.js";
 import { lookupDevice, approveDevice } from "../src/api.js";
+import { pairingsConnecting, resetPendingPairing } from "../src/core/pendingPairing.js";
 
 vi.mock("../src/api.js", () => ({ lookupDevice: vi.fn(), approveDevice: vi.fn() }));
 
@@ -51,6 +52,24 @@ it("completed pairing still notifies its caller without closing a replacement sh
   expect(onDone).toHaveBeenCalledOnce();
   expect(document.querySelector("#scrim").classList.contains("show")).toBe(true);
   expect(document.querySelector("#perr").textContent).toBe("");
+});
+
+// #321: the page remembers which device it approved, so it can read the
+// account for it every second and name it while it comes up.
+it("remembers the approved device as connecting, and nothing on a refusal", async () => {
+  resetPendingPairing();
+  lookupDevice.mockResolvedValue({ device_id: "d1", name: "Machine", fingerprint: "key" });
+  approveDevice.mockRejectedValueOnce(new Error("approve failed"));
+  openAddDevice(vi.fn());
+  document.querySelector("#paircode").value = "code";
+  await document.querySelector("#plookup").onclick();
+  await document.querySelector("#papprove").onclick();
+  expect(pairingsConnecting()).toEqual([]);
+
+  approveDevice.mockResolvedValue(undefined);
+  await document.querySelector("#papprove").onclick();
+  expect(pairingsConnecting()).toMatchObject([{ deviceId: "d1", name: "Machine" }]);
+  resetPendingPairing();
 });
 
 it("looks the code up on Enter, the key the field labels Go", async () => {

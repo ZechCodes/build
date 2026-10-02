@@ -14,6 +14,9 @@ import {
   devicesBlockedText,
   devicesNotReachedYetText,
   esc,
+  pairingConnectingText,
+  pairingConnectingTitle,
+  pairingLateText,
   waitingForDeviceText,
 } from "../core/text.js";
 import { App, render, renderUnlessStanding, unmountView } from "../app.js";
@@ -37,6 +40,7 @@ import { initToolbar } from "../core/toolbar.js";
 import { DEVICES_ADDRESS, readCached } from "../core/localCache.js";
 import { fieldTraits } from "../core/fieldTraits.js";
 import { pendingDeviceHtml } from "../core/deviceFingerprint.js";
+import { accountReadCadence, isPairingConnecting, notePairingApproved, onPairingChanged } from "../core/pendingPairing.js";
 
 /** Whether the cache's two readers are up. They are started once, before any
  *  session answers, and stood down when a gate screen takes the page (which is
@@ -308,6 +312,7 @@ function leaveHold() {
 function stopWatchingForOnline() {
   clearInterval(App._watch);
   App._watch = null;
+  gateTick = null;
 }
 
 /** How often the gate asks the account again while it is holding the page.
@@ -329,8 +334,25 @@ const GATE_CADENCE_MS = 3000;
  */
 function watchOnGateCadence(tick) {
   stopWatchingForOnline();
-  App._watch = setInterval(tick, GATE_CADENCE_MS);
+  gateTick = tick;
+  const cadence = accountReadCadence(GATE_CADENCE_MS);
+  App._watch = setInterval(() => {
+    // A pairing's second-by-second wait ending puts the clock back on its own.
+    if (accountReadCadence(GATE_CADENCE_MS) !== cadence) watchOnGateCadence(tick);
+    tick();
+  }, cadence);
 }
+
+/** The tick the gate's clock is running, so an approve can re-pace it. */
+let gateTick = null;
+
+// A device the reader just approved is asked for every second while it comes
+// up, and the screen waiting on it says so; when it lands or its wait runs out,
+// the clock slows and the screen says what it says of any device.
+onPairingChanged(() => {
+  if (gateTick) watchOnGateCadence(gateTick);
+  paintWaiting(App.devices);
+});
 
 /** One boot at a time: a second call while the first is still opening devices
  *  waits on the same promise rather than starting a second handshake. */
@@ -428,6 +450,7 @@ function bindPairing() {
       $("#oerr").textContent = "";
       try {
         await approveDevice(code);
+        notePairingApproved(device);
         $("#opairbox").innerHTML = "";
         await boot();
       } catch (e) {
@@ -468,6 +491,10 @@ async function renderOnboarding() {
 function paintWaiting(devices) {
   const list = $("#waitlist");
   if (!list) return;
+  const title = $("#waittitle");
+  if (title) title.textContent = waitingTitle(devices);
+  const watching = $("#watchmsg");
+  if (watching) watching.textContent = watchingText(devices);
   const intro = $("#waitintro");
   if (intro) intro.textContent = waitingText(devices);
   const html = devices.map(waitingRowHtml).join("");
@@ -483,7 +510,7 @@ function paintWaiting(devices) {
 function waitingRowHtml(device) {
   const context = contextFor(device.id);
   const blocked = Boolean(context?.blocked);
-  const word = blocked ? deviceAwayWord(context) : device.status;
+  const word = blocked ? deviceAwayWord(context) : isPairingConnecting(device) ? "connecting…" : device.status;
   return `
     <div class="projrow"><span class="pname">${esc(device.name)}</span>
       <span class="ppath mono" style="font-size:11px">${esc(device.fingerprint.slice(0, 16))}…</span>
@@ -513,6 +540,7 @@ const WAITING_TEXT = {
   blocked: devicesBlockedText,
   unreached: devicesNotReachedYetText,
   lone: (devices) => deviceUnreachableText(devices[0].name, contextFor(devices[0].id)?.offlineSince || Date.now()),
+  neverSeen: (devices) => pairingLateText(devices[0].name),
   all: allDevicesOfflineText,
 };
 
@@ -523,20 +551,39 @@ const waitingSituation = (devices) => {
   if (devices.some((device) => device.status === "online" && contextFor(device.id)?.blocked)) return "blocked";
   const unreached = devices.some((device) => device.status === "online" && !contextFor(device.id));
   if (unreached) return "unreached";
-  return devices.length === 1 ? "lone" : "all";
+  // An empty list too: the account's last machine revoked in another tab.
+  if (devices.length !== 1) return "all";
+  // A lone machine the account has never heard from was approved and has not
+  // come up since: what to check is its bridge (#321).
+  return devices[0].last_seen_at === null ? "neverSeen" : "lone";
 };
 
-const waitingText = (devices) => WAITING_TEXT[waitingSituation(devices)](devices);
+/** The first device a pairing on this page is waiting for that the account
+ *  lists and does not call online yet. */
+const pairingOnScreen = (devices) => devices.find(isPairingConnecting) || null;
+
+const waitingText = (devices) => {
+  const pairing = pairingOnScreen(devices);
+  return pairing ? pairingConnectingText(pairing.name) : WAITING_TEXT[waitingSituation(devices)](devices);
+};
+
+const waitingTitle = (devices) => {
+  const pairing = pairingOnScreen(devices);
+  return pairing ? pairingConnectingTitle(pairing.name) : waitingForDeviceText(devices.length);
+};
+
+const watchingText = (devices) =>
+  pairingOnScreen(devices) ? "⟳ checking every second…" : "⟳ watching for a device to come online…";
 
 function renderWaiting(devices) {
   if (keepPaintedShell()) return;
   setGate(true);
   $("#root").innerHTML = `
     <div style="max-width:680px;margin:44px auto 0;padding:0 16px">
-      <h1 style="margin:0 0 6px">${esc(waitingForDeviceText(devices.length))}</h1>
+      <h1 style="margin:0 0 6px" id="waittitle">${esc(waitingTitle(devices))}</h1>
       <p class="settings-intro" id="waitintro" style="margin:0 0 18px">${esc(waitingText(devices))}</p>
       <div class="panel"><div id="waitlist"></div></div>
-      <div class="wait-row"><span class="dim" id="watchmsg">⟳ watching for a device to come online…</span>
+      <div class="wait-row"><span class="dim" id="watchmsg">${esc(watchingText(devices))}</span>
         <button class="btn" id="retrybtn">Retry now</button>
         <button class="btn" id="addmore">Add another device…</button></div>
       <div class="adderr" id="oerr"></div>

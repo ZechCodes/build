@@ -81,8 +81,12 @@ rate_limit:
     # The SPA's API calls. 50 idle tabs polling devices is 50 x 4 = 200; all 50
     # loading in that minute adds 50 x 3 = 150; 5 people on the offline gate
     # add 5 x 20 = 100 and 5 devices in recovery 5 x 12 = 60: 510. 600 also
-    # absorbs a pairing bridge polling its status every 2 s (30 a minute). The
-    # waitlist join and the bridge's signed posts keep rules of their own.
+    # absorbs a device being paired (#321): its bridge asks for its approval
+    # every second until it is approved, and from then the tab that approved
+    # it reads the devices every second while it comes up. The two take turns,
+    # so any one minute holds about 60 of them, 62 with the second they
+    # overlap: 572. The waitlist join and the bridge's signed posts keep rules
+    # of their own.
     - name: spa_api
       match:
         path: /api/

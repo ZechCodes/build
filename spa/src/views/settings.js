@@ -30,6 +30,7 @@ import { connectionDiagnosticsPanelHtml, mountConnectionDiagnostics } from "../c
 import { buildVersionLineHtml, mountBuildVersionLine } from "../core/buildVersionLine.js";
 import { cacheHealthLineHtml, mountCacheHealthLine } from "../core/cacheHealthLine.js";
 import { uiAddress, watchUiState } from "../core/localUiState.js";
+import { isPairingConnecting, onPairingChanged } from "../core/pendingPairing.js";
 
 /** The sha this bundle was built at, as core/version.js and core/changeEvents.js
  *  read it. `dev` for a bundle CI never stamped, which is what a dev server
@@ -42,7 +43,7 @@ const BUNDLE_VERSION = import.meta.env.VITE_BUILD_VERSION || "dev";
 const deviceRowHtml = (device) => `
         <div class="projrow"><span class="pname">${esc(device.name)}</span>
           <span class="ppath mono" style="font-size:11px" title="${esc(device.fingerprint)}">${esc(device.fingerprint.slice(0, 16))}…</span>
-          <span class="dim" style="font-size:11.5px"><span class="dot" style="background:${device.status === "online" ? "var(--green)" : "var(--dim)"}"></span> ${esc(device.status)}</span>
+          <span class="dim" style="font-size:11.5px"><span class="dot" style="background:${device.status === "online" ? "var(--green)" : "var(--dim)"}"></span> ${esc(isPairingConnecting(device) ? "connecting…" : device.status)}</span>
           <a class="btn mini devsettings" href="${esc(hashFromRoute({ name: "device", id: device.id }))}">Settings…</a>
           <button class="btn mini revoke" data-id="${esc(device.id)}">Revoke</button></div>`;
 
@@ -218,11 +219,18 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
     }
   };
 
-  disposeDevices = onDeviceListChanged(() => {
+  const stopWatchingDeviceList = onDeviceListChanged(() => {
     paintDeviceList();
     mountAgentDefaults();
     onDevicesChanged();
   });
+  // A device just approved here is "connecting…" until it lands or its wait
+  // runs out, and its row says which.
+  const stopWatchingPairing = onPairingChanged(() => paintDeviceList());
+  disposeDevices = () => {
+    stopWatchingDeviceList();
+    stopWatchingPairing();
+  };
   paintDeviceList();
   void readCachedDevices();
   void refreshDeviceList();

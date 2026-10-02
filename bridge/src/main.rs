@@ -55,7 +55,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use build_bridge::app::AppState;
-use build_bridge::backoff::Backoff;
 use build_bridge::carrier::FrameIntake;
 use build_bridge::config::BridgeConfig;
 use build_bridge::harness::HarnessContext;
@@ -421,7 +420,7 @@ async fn load_stored_identity(config: &BridgeConfig) -> Result<LoadedIdentity, S
         &config.web_url,
         identity_path,
         stored,
-        Duration::from_secs(2),
+        pairing::ApprovalPolls::AFTER_SHOWING_A_CODE,
         pairing_code_override.as_deref(),
     )
     .await
@@ -604,6 +603,20 @@ async fn run_daemon(
     // agent can create work in state that might be discarded. The local health
     // beat still proves the daemon initialized and its app lock is responsive.
     wait_for_update_probation(&home_dir()).await;
+    // The relay socket, redialled for as long as the daemon runs, on the
+    // liveness runtime. The main thread waits for the signal that ends the
+    // daemon; the socket task is aborted then, which is the socket generation
+    // ending the way every other end does (`relay::RelayConnection`'s drop).
+    // Dialled before the services below are started, so the socket does not
+    // wait on their start-up (reclaim and source sync each await theirs): a
+    // device the human just approved should be reachable as soon as it can be
+    // (#321). They start in the moments after, alongside it.
+    let mut relay_socket = liveness.spawn(relay_forever(
+        runtime.device_url.clone(),
+        identity.clone(),
+        intake.clone(),
+        reachable.clone(),
+    ));
     AppState::spawn_done_socket(app.clone(), runtime.mcp_socket.clone());
     let idle_threshold = std::env::var("BRIDGE_IDLE_SECONDS")
         .ok()
@@ -639,16 +652,6 @@ async fn run_daemon(
     // a bridge no browser can reach is one whose agents work in the dark.
     spawn_resume_after_restart(app.clone(), runtime.tasks_dir.clone(), reachable.clone());
 
-    // The relay socket, redialled for as long as the daemon runs, on the
-    // liveness runtime. The main thread waits for the signal that ends the
-    // daemon; the socket task is aborted then, which is the socket generation
-    // ending the way every other end does (`relay::RelayConnection`'s drop).
-    let mut relay_socket = liveness.spawn(relay_forever(
-        runtime.device_url.clone(),
-        identity.clone(),
-        intake.clone(),
-        reachable.clone(),
-    ));
     let mut going_down = shutdown_signals();
     tokio::select! {
         // Biased so a SIGTERM that lands while the relay task is also ready
@@ -685,8 +688,9 @@ async fn run_daemon(
 
 /// Hold a relay socket open, and redial whenever it ends.
 ///
-/// Reconnect with exponential backoff (2s → 30s cap) so a relay outage doesn't
-/// become a tight reconnect loop hammering the server. A connection that lasted
+/// Reconnect on `relay::redial_backoff` (0.5 s → 30 s cap, each wait spread
+/// half of itself either way by `relay::redial_wait`) so a relay outage
+/// doesn't become a tight reconnect loop hammering the server. A connection that lasted
 /// long enough to be "clean" resets the delay, so a brief blip still recovers
 /// fast. The policy lives in `Backoff` so it is unit-tested, not inline-and-hoped.
 async fn relay_forever(
@@ -695,7 +699,7 @@ async fn relay_forever(
     intake: Arc<FrameIntake>,
     reachable: Reachability,
 ) {
-    let mut backoff = Backoff::new(Duration::from_secs(2), Duration::from_secs(30));
+    let mut backoff = relay::redial_backoff();
     loop {
         let connected_at = std::time::Instant::now();
         let outcome = relay::run(&device_url, &identity, intake.clone(), &reachable).await;

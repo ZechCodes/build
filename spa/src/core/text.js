@@ -124,6 +124,18 @@ export const bridgeBehindWord = "update";
 export const waitingForDeviceText = (deviceCount) =>
   deviceCount > 1 ? "Waiting for a device" : "Waiting for your device";
 
+/** The waiting screen's heading while a device the reader just approved comes
+ *  up (#321). */
+export const pairingConnectingTitle = (name) => `Connecting to ${name || "your device"}…`;
+
+/** What is happening with that device: its bridge has still to say it is up. */
+export const pairingConnectingText = (name) =>
+  `Approved. Waiting for ${name || "your device"} to come online — this usually takes a few seconds.`;
+
+/** A device approved and never heard from since: what to check. */
+export const pairingLateText = (name) =>
+  `${name || "Your device"} was approved but has not come online. Check that its bridge is running on that machine: the installer starts it, and after a manual build-bridge pair, run build-bridge install-service.`;
+
 /** What it says where nothing is reachable: no device to name, and no time that
  *  would mean anything, so it says what is true and what happens. */
 export const allDevicesOfflineText = () =>

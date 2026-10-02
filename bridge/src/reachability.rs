@@ -15,14 +15,25 @@
 //! stays the api's (`planning/v2/Strict P2P Transport Spec.md` rule 6) — the
 //! relay still reports nothing about any device — but what the device reports
 //! about itself is now reachability rather than mere liveness.
+//!
+//! The flag is also something to wait on ([`Reachability::watch`]): the beat
+//! goes out the moment the relay authenticates the socket rather than at its
+//! next tick, which on a cold start was a whole interval away (#321).
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
+use tokio::sync::watch;
 
 /// A shared "this device is findable" flag. Cloning shares the flag, so the
 /// relay client and the presence reporter hold the same one.
-#[derive(Clone, Debug, Default)]
-pub struct Reachability(Arc<AtomicBool>);
+#[derive(Clone, Debug)]
+pub struct Reachability(Arc<watch::Sender<bool>>);
+
+impl Default for Reachability {
+    fn default() -> Self {
+        Self(Arc::new(watch::channel(false).0))
+    }
+}
 
 impl Reachability {
     /// A device nobody has reached yet. The default is the under-reporting one
@@ -35,19 +46,28 @@ impl Reachability {
 
     /// The relay authenticated this device's socket: it can be dialled.
     pub fn reached(&self) {
-        self.0.store(true, Ordering::Release);
+        self.0
+            .send_if_modified(|reachable| !std::mem::replace(reachable, true));
     }
 
     /// That socket has ended, however it ended — closed, severed, timed out, or
     /// the future running it dropped. Nothing is posted to say so: the beats
     /// stop, and every reader past the api's window sees the device go.
     pub fn lost(&self) {
-        self.0.store(false, Ordering::Release);
+        self.0
+            .send_if_modified(|reachable| std::mem::replace(reachable, false));
     }
 
     /// Whether a browser could reach this device right now.
     pub fn is_reachable(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        *self.0.borrow()
+    }
+
+    /// A receiver that wakes on every change of the answer — unreachable to
+    /// reachable or back, never for a repeat of the same one. It starts having
+    /// seen the answer as it stands.
+    pub fn watch(&self) -> watch::Receiver<bool> {
+        self.0.subscribe()
     }
 }
 
@@ -79,6 +99,29 @@ mod tests {
         assert!(held_by_the_beat.is_reachable());
         held_by_the_relay_client.lost();
         assert!(!held_by_the_beat.is_reachable());
+    }
+
+    #[tokio::test]
+    async fn a_watcher_wakes_on_each_change_and_not_on_a_repeat() {
+        let reachability = Reachability::unreachable();
+        let mut watching = reachability.watch();
+        assert!(!watching.has_changed().unwrap());
+        reachability.lost();
+        assert!(
+            !watching.has_changed().unwrap(),
+            "lost while lost is no change"
+        );
+        reachability.reached();
+        watching.changed().await.unwrap();
+        assert!(*watching.borrow_and_update());
+        reachability.reached();
+        assert!(
+            !watching.has_changed().unwrap(),
+            "reached while reached is no change"
+        );
+        reachability.lost();
+        watching.changed().await.unwrap();
+        assert!(!*watching.borrow_and_update());
     }
 
     #[test]

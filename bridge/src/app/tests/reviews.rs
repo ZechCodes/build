@@ -130,12 +130,42 @@ fn review_comment_metadata_round_trips_and_rejects_foreign_context() {
         }),
     ));
     assert_eq!(foreign_reply["ok"], false, "{foreign_reply}");
+    assert_eq!(
+        foreign_reply["error_code"], "invalid_params",
+        "{foreign_reply}"
+    );
+    let empty_reply = state.handle(req(
+        "tasks.comment",
+        json!({
+            "task_id": task_id, "body": "Wrong reply", "reply_to": "",
+        }),
+    ));
+    assert_eq!(empty_reply["error_code"], "invalid_params", "{empty_reply}");
+    let second_snapshot = review_call(
+        &mut state,
+        "tasks.review.snapshot",
+        json!({
+            "task_id": task_id, "workspace_id": workspace_id, "expected_version": 1,
+        }),
+    );
+    let new_snapshot_id = &second_snapshot["review"]["snapshots"][1]["id"];
+    let mismatched_opinion = state.handle(req(
+        "tasks.comment",
+        json!({
+            "task_id": task_id, "body": "Wrong opinion", "anchor": anchor,
+            "opinion": {"snapshot_id": new_snapshot_id, "verdict": "approve"},
+        }),
+    ));
+    assert_eq!(
+        mismatched_opinion["error_code"], "invalid_params",
+        "{mismatched_opinion}"
+    );
     let replacement_workspace = workspace(&mut state, &project, "replacement");
     review_call(
         &mut state,
         "tasks.review.snapshot",
         json!({
-            "task_id": task_id, "workspace_id": replacement_workspace, "expected_version": 1,
+            "task_id": task_id, "workspace_id": replacement_workspace, "expected_version": 2,
         }),
     );
     let timeline = review_call(&mut state, "tasks.get", json!({"task_id": task_id}));

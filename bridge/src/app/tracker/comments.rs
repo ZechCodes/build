@@ -19,7 +19,7 @@ impl CommentMetadata {
         let opinion: Option<ReviewOpinion> = parse_optional(params, "opinion")?;
         if let Some(comment_id) = reply_to.as_deref() {
             if comment_id.trim().is_empty() {
-                return Err("invalid reply_to: comment id is empty".into());
+                return Err("invalid review reply_to: comment id is empty".into());
             }
             let reply = app
                 .tracker_store()?
@@ -27,7 +27,9 @@ impl CommentMetadata {
                 .map_err(|error| error.to_string())?
                 .ok_or_else(|| format!("unknown reply_to: {comment_id}"))?;
             if reply.task_id != task_id {
-                return Err(format!("reply_to belongs to another task: {comment_id}"));
+                return Err(format!(
+                    "invalid review reply_to: comment belongs to another task: {comment_id}"
+                ));
             }
         }
         if anchor.is_some() || opinion.is_some() {
@@ -65,7 +67,10 @@ impl CommentMetadata {
                     .as_ref()
                     .is_some_and(|anchor| anchor.snapshot_id != opinion.snapshot_id)
                 {
-                    return Err("review anchor and opinion name different snapshots".into());
+                    return Err(
+                        "invalid review comment: anchor and opinion name different snapshots"
+                            .into(),
+                    );
                 }
             }
         }

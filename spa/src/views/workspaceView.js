@@ -14,6 +14,7 @@ import { renderFilesTab } from "./files.js";
 import { directoryId, selectedDirectory, workspaceDirectoryModel, workspaceScope } from "../core/workspaceModel.js";
 import { workspaceLayoutCacheId } from "../core/directoryScope.js";
 import { mountWorkspaceChanges } from "./workspaceChanges.js";
+import { mountWorkspaceReviewEntry } from "../core/workspaceReviewEntry.js";
 import { mountWorkspaceGitInitialization } from "../core/workspaceGitInitialization.js";
 import { routeContext } from "../core/deviceContexts.js";
 import { surfaceContext } from "../core/surfaceContext.js";
@@ -284,7 +285,16 @@ function mountChangesPane(body, { canonical, workspace, callRpc, cacheScope, age
       },
     }),
   });
-  return { ...changes, workspaceMoved: (next) => changes.workspaceMoved(workspaceDirectoryModel(next)) };
+  const reviewHost = document.createElement("div");
+  body.querySelector('.workspace-changes').prepend(reviewHost);
+  const reviewEntry = mountWorkspaceReviewEntry(reviewHost, {
+    deviceId: canonical.deviceId, projectId: canonical.projectId, workspaceId: canonical.workspaceId,
+    callRpc, navigate: go,
+  });
+  return { ...changes,
+    workspaceMoved: (next) => changes.workspaceMoved(workspaceDirectoryModel(next)),
+    dispose() { reviewEntry.dispose(); changes.dispose(); },
+  };
 }
 
 function mountCheckoutPane(body, options) {

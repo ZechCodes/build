@@ -1210,6 +1210,26 @@ describe("a tasks item", () => {
     { entity_id: projectId, tasks: { task_ids: ["task-1"], truncated: false, ...over } },
   ];
 
+  it("retains snapshot trees and pages through sync, and refreshes review metadata on task invalidation", async () => {
+    const review = { task_id: "task-1", version: 1, snapshots: [] };
+    const held = { deviceId: "dev-1", entityId: "p1", kind: "task-review", sub: "task-1" };
+    const head = { deviceId: "dev-1", entityId: "p1", kind: "task-review-file", sub: '["task-1","snapshot-1","dir-1","same.txt","head"]' };
+    await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "task-review-support" }, { get: true });
+    await cache.writeCached(held, { review, read_order: 1 });
+    await cache.writeCached({ ...head, kind: "task-review-tree" }, { entries: [{ name: "same.txt", kind: "file" }] });
+    await cache.writeCached(head, { file: { paged: true, of: "saved-blob" } });
+    await pages.writeBodyPage(head, { of: "saved-blob", offset: 0, end: 5, total: 5, body: "aGVsbG8=" });
+    script["tasks.review.get"] = () => ({ review: { ...review, version: 2 } });
+    await boot();
+    expect((await cache.readCached(held)).value.review.version).toBe(2);
+    expect((await cache.readCached({ ...head, kind: "task-review-tree" })).value.entries[0].name).toBe("same.txt");
+    expect((await pages.readBodyPages(head, "saved-blob")).complete).toBe(true);
+    script["tasks.review.get"] = () => { throw new Error("Review unavailable"); };
+    await deliver(moved("p1"), ["tasks"]);
+    expect((await cache.readCached(held)).value.error).toBe("Review unavailable");
+    expect((await pages.readBodyPages(head, "saved-blob")).complete).toBe(true);
+  });
+
   it("re-reads the list of the project it names", async () => {
     await boot();
     bridge.call.mockClear();

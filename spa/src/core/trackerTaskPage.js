@@ -25,6 +25,7 @@ import {
   writeTaskRecord,
 } from "./trackerCache.js";
 import { subscribeCache } from "./localCache.js";
+import { mountTaskReviewPage } from "./taskReviewPage.js";
 import { createReadRetry } from "./transientRead.js";
 import { deviceSession, deviceWatch } from "./deviceReconnect.js";
 import { trailingRead } from "./trailingRead.js";
@@ -74,6 +75,7 @@ export function focusTaskComment(host, commentId, { scroll = true } = {}) {
 }
 
 export function mountTaskPage(host, options) {
+  let reviewPage = null;
   const state = {
     ...options,
     task: null,
@@ -607,7 +609,29 @@ export function mountTaskPage(host, options) {
     if (painted.has("head")) wireWatch();
     if (painted.has("rail")) wireRail();
     if (painted.has("composer")) wireComposer();
+    if (painted.has("review")) wireReview();
+    if (painted.has("timeline")) wireReviewComments();
     if (["body", "attachments", "timeline"].some((part) => painted.has(part))) wireAttachments();
+  }
+
+  function wireReview() {
+    reviewPage?.dispose();
+    reviewPage = mountTaskReviewPage(host.querySelector('[data-task-review]'), {
+      ...options, task: () => state.task, workspaces: projectWorkspaces, onTaskChanged: refresh,
+      generationOf: () => deviceSession(state.deviceId),
+    });
+  }
+
+  function wireReviewComments() {
+    host.querySelectorAll('[data-review-anchor]').forEach((button) => {
+      button.onclick = () => void reviewPage?.openAnchor(JSON.parse(button.dataset.reviewAnchor));
+    });
+    host.querySelectorAll('[data-review-reply]').forEach((button) => {
+      button.onclick = () => {
+        const row = state.rows.find((item) => item.key === button.dataset.reviewReply);
+        if (row) void reviewPage?.reply({ ...row, id: row.key });
+      };
+    });
   }
 
   function wireWatch() {
@@ -629,7 +653,7 @@ export function mountTaskPage(host, options) {
   // is what re-reads it, and the pass behind that (core/cacheSync.js) is the
   // whole of the safety net.
   const watcher = watchChanges({
-    refresh: () => void refresh(),
+    refresh: () => { void refresh(); reviewPage?.refresh(); },
     entity: state.projectId,
     deviceId: state.deviceId,
   // Named only where the bridge carries them (core/trackerPush.js): every
@@ -638,16 +662,17 @@ export function mountTaskPage(host, options) {
     kinds: tasksPushKinds(state.deviceId),
     mode: "realtime",
     onChanges: (items) => {
-      if (namesTask(items, state.taskId)) void refresh();
+      if (namesTask(items, state.taskId)) { void refresh(); reviewPage?.refresh(); }
     },
   });
 
   return {
     /** The feed moved: the workspaces a link points at and the agents an
      *  assignee is named by may have. Nothing is re-read from the bridge. */
-    feedMoved: paint,
+    feedMoved() { paint(); reviewPage?.feedMoved(); },
     dispose() {
       state.disposed = true;
+      reviewPage?.dispose();
       commentDraft.dispose();
       host.removeEventListener("scroll", onScroll);
       stopWaitingForReader();

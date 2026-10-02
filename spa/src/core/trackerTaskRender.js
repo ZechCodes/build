@@ -295,6 +295,7 @@ export function taskPageParts(task, context) {
       { name: "head", html: taskHeadHtml(task, context) },
       { name: "body", html: taskBodyHtml(task, context) },
       { name: "attachments", html: taskAttachmentsHtml(task.attachments) },
+      { name: "review", html: '<section data-task-review hidden></section>', key: "review" },
       { name: "timeline", html: timeline.frame },
       {
         name: "composer",
@@ -314,6 +315,7 @@ export function taskPageHtml(task, context) {
       ${taskHeadHtml(task, context)}
       ${taskBodyHtml(task, context)}
       ${taskAttachmentsHtml(task.attachments)}
+      <section data-task-review hidden></section>
       ${timelineHtml(context.rows, context)}
       ${composerHtml(context.draft, context.sending, context.hasFiles)}
     </div>

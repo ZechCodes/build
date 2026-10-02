@@ -1,30 +1,14 @@
-// The hero's entrance: about four seconds, once per tab. The notification
-// field (HeroField.astro) has been drifting on CSS since the first paint;
-// this takes it over where it has got to and plays one GSAP timeline in the
-// phases timing.js names: the field, a ripple from the laptop's screen that
-// brakes and fades the routine pills, the laptop turning in, the three
-// requests landing on their Needs you rows, the copy, and stillness. Then
-// it takes the field out of the page and lets go of everything it touched.
-//
-// Scrolling, a change of width, reduced motion or a hidden-then-shown tab
-// never wait on it: the first three finish it on the spot, the last pauses
-// it. It never touches the scroll. A module later than the CSS that settles
-// the hero without it leaves the hero at rest.
+// Preview-only entrance: the notification wall resolves into the existing
+// laptop and copy. Home retains its independent runtime and memory.
 import gsap from "gsap";
-import { ATTENTION } from "./field.js";
-import { HERO_ROW_REGIONS, LANDING_POINT } from "./anchors.js";
-import { createHeroLaptop } from "./laptop.js";
-import { createFieldMotion } from "./flood.js";
-import { measureField } from "./measure.js";
-import { HERO_TIMING, NARROW_TIMING, SHORT_NARROW_TIMING, requestFlight, revealEase, rippleReach } from "./timing.js";
+import { ATTENTION, WALL_TIMING, REQUEST_APPEAR } from "./wall.js";
+import { HERO_ROW_REGIONS, LANDING_POINT } from "../../hero/anchors.js";
+import { createHeroLaptop } from "../../hero/laptop.js";
+import { createWallMotion } from "./wall-motion.js";
+import { requestFlight, revealEase } from "../../hero/timing.js";
 import { homographyFromQuad, matrix3d, projectPoint } from "../../stage/overlay.js";
 
-export const PLAYED_KEY = "build.hero.played";
 const NARROW_QUERY = "(max-width: 767px)";
-
-function rememberPlayed() {
-  // The preview never changes the home page's per-tab entrance memory.
-}
 
 function query(root, selector) {
   const element = root.querySelector(selector);
@@ -32,40 +16,27 @@ function query(root, selector) {
   return element;
 }
 
-const centreOf = (quad) => [quad.reduce((sum, [x]) => sum + x, 0) / quad.length, quad.reduce((sum, [, y]) => sum + y, 0) / quad.length];
-
 // A point inside a row's quad, by its fractions across and down the row.
 function pointOnRow(quad, [fx, fy]) {
   const homography = homographyFromQuad(1, 1, quad);
   return projectPoint(homography, fx, fy);
 }
 
-// Where the timeline picks the field up: the time the CSS has already
-// shown, but never so late that the field phase is gone.
-const pickUpAt = (elapsed, timing) => Math.max(0, Math.min(elapsed, timing.field[1] - 0.4));
-
-// The field on the entrance's clock: flood.js moves it on the compositor,
-// seeked to this tween, which runs until the last request takes off.
-function moveField(tl, motion, { timing, flights }) {
-  const until = Math.max(timing.ripple[1], ...flights.values());
-  tl.to({}, {
-    duration: until,
-    ease: "none",
-    onUpdate() {
-      motion.update(this.time(), !tl.paused());
-    },
-  }, 0);
+// The wall's compositor animations follow the same clock as the hand-off.
+function moveField(tl, motion, timing) {
+  tl.to({}, { duration: timing.ripple[1], ease: "none", onUpdate() {
+    motion.update(this.time(), !tl.paused());
+  } }, 0);
 }
 
 // A request flies from where it stopped to its row's landing point, read
 // from where the laptop is at that moment, shrinking and fading as it
 // arrives.
-function landRequest(tl, pill, row, { laptop, timing, landing, motion }) {
+function landRequest(tl, pill, row, { laptop, timing, landing }) {
   const progress = { p: 0 };
   const takeOff = landing - timing.flight;
-  const base = motion.offsetAt(pill, takeOff);
-  const { dx, dy } = motion.pathOf(pill).at(takeOff);
-  const from = [pill.x + dx, pill.y + dy];
+  const base = [0, 0];
+  const from = [pill.x, pill.y];
   tl.fromTo(progress, { p: 0 }, {
     p: 1,
     duration: timing.flight,
@@ -118,32 +89,28 @@ function copyOf(hero) {
   return { headline, items: [...lines, ...rest], all: [headline, ...lines, ...rest] };
 }
 
-function buildTimeline({ hero, field, laptop, glows, copy, narrow }) {
-  const timing = narrow ? (matchMedia("(max-height: 760px)").matches ? SHORT_NARROW_TIMING : NARROW_TIMING) : HERO_TIMING;
-  const measured = measureField(hero, field);
-  const start = pickUpAt(measured.elapsed, timing);
-  const origin = centreOf(laptop.quads({ resting: true }).screen);
-  const ripple = {
-    origin,
-    reach: rippleReach(origin, measured),
-    timing,
-    start,
-  };
+function buildTimeline({ hero, field, laptop, glows, copy }) {
+  const timing = WALL_TIMING;
   const tl = gsap.timeline({ paused: true });
-  const flights = new Map(ATTENTION.map((entry, index) => [entry.id, timing.landings[index] - timing.flight]));
-  const motion = createFieldMotion({ field: measured, ripple, flights });
-  moveField(tl, motion, { timing, flights });
+  const motion = createWallMotion(field);
+  const fieldBox = field.getBoundingClientRect();
+  const heroBox = hero.getBoundingClientRect();
+  moveField(tl, motion, timing);
   tl.fromTo(laptop.reveal, { t: 0 }, {
     t: 1, duration: timing.laptop[1] - timing.laptop[0], ease: revealEase, onUpdate: laptop.render, immediateRender: false,
   }, timing.laptop[0]);
-  const requests = measured.lanes.flatMap((lane) => lane.pills.filter((pill) => pill.attention && motion.pathOf(pill)));
   ATTENTION.forEach((entry, index) => {
-    const pill = requests.find((candidate) => candidate.attention === entry.id);
-    if (pill) landRequest(tl, pill, entry.row, { laptop, timing, landing: timing.landings[index], motion });
+    const pill = motion.requests[index];
+    tl.fromTo(pill.element, { opacity: 0, y: 16, scale: .96 }, {
+      opacity: 1, y: 0, scale: 1, duration: .32, ease: "power3.out", immediateRender: false,
+    }, REQUEST_APPEAR[index]);
+    tl.to(pill.green, { opacity: 1, duration: .25, ease: "power2.out" }, REQUEST_APPEAR[index] + .22);
+    const source = { ...pill, x: pill.x + fieldBox.left - heroBox.left, y: pill.y + fieldBox.top - heroBox.top };
+    landRequest(tl, source, entry.row, { laptop, timing, landing: timing.landings[index] });
   });
   glowRows(tl, glows, { laptop, timing });
   revealCopy(tl, copy.items, timing);
-  return { tl, timing, start, lanes: measured.lanes, motion };
+  return { tl, timing, start: 0, motion };
 }
 
 // Hold the copy and the laptop out of sight before the CSS that has been
@@ -213,7 +180,6 @@ export function startHeroEntrance({ root = document.documentElement } = {}) {
   const hero = query(document, "#act-1");
   const field = hero.querySelector("[data-hero-field]");
   if (!field || scrollY > 8 || matchMedia("(prefers-reduced-motion: reduce)").matches || fallbackBegun(field)) return rest(root, field);
-  rememberPlayed();
   const narrow = matchMedia(NARROW_QUERY).matches;
   const device = query(hero, "[data-hero-device]");
   const laptop = createHeroLaptop({ hero, device, frame: query(device, "[data-hero-frame]"), narrow });
@@ -233,6 +199,7 @@ export function startHeroEntrance({ root = document.documentElement } = {}) {
     tl.progress(1);
     tl.kill();
     laptop.settle();
+    built.motion.dispose();
     field.remove();
     gsap.set(glows, { clearProps: "all" });
     gsap.set(copy.all, { clearProps: "opacity,visibility,transform" });

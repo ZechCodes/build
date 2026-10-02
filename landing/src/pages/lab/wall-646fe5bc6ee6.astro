@@ -1,11 +1,11 @@
 ---
-import "../../lab/hero333/preview.css";
+import "../../lab/hero336/preview.css";
 import Film from "../../components/Film.astro";
-import HeroField from "../../lab/hero333/HeroField.astro";
-import { ATTENTION } from "../../lab/hero333/field.js";
-import { HERO_POSTER } from "../../lab/hero333/poster-anchors.js";
+import HeroField from "../../lab/hero336/HeroField.astro";
+import { ATTENTION } from "../../lab/hero336/wall.js";
+import { HERO_POSTER } from "../../lab/hero336/poster-anchors.js";
 
-// Unlisted snapshot of #333 at 149bf3c3; see lab/hero333/README.md.
+// Unlisted #336 hero preview; see lab/hero336/README.md.
 const title = "Build: know what your coding agents need from you";
 const description =
   "Build brings your coding agents into one place, with their questions and changes ready for your review. They run on your machines. Free and open source.";
@@ -76,8 +76,8 @@ const reviewComment = "Match the label the sidebar uses.";
     <meta name="twitter:description" content={socialDescription} />
     <meta name="twitter:image" content={socialImage} />
     <script src="/landing/generated/film-boot.js" is:inline></script>
-    <script src="/landing/generated/hero333-boot.js" is:inline></script>
-    <script type="module" src="/landing/generated/hero333/preview.js" is:inline></script>
+    <script src="/landing/generated/hero336-boot.js" is:inline></script>
+    <script type="module" src="/landing/generated/hero336/preview.js" is:inline></script>
     <script type="module" src="/landing/generated/waitlist-boot.js" is:inline></script>
   </head>
   <body>
@@ -102,7 +102,7 @@ const reviewComment = "Match the label the sidebar uses.";
            visitor gets the film; the document reads without it. -->
       <canvas class="stage" data-stage aria-hidden="true"></canvas>
       <Film />
-      <!-- Act 1: the hero. Its entrance (src/hero/) runs once per tab: the
+      <!-- Act 1: the hero. Its entrance runs on every preview load: the
            notification field resolves into the laptop's Needs you, then the
            copy. The laptop picture is a capture of the live stage at the
            hero's resting pose (web/capture-hero-laptop.mjs); the film hands

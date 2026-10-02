@@ -1,0 +1,9 @@
+---
+import claudeMark from '../../../../spa/src/assets/harnesses/claude.svg?raw';
+import codexMark from '../../../../spa/src/assets/harnesses/codex.svg?raw';
+import piMark from '../../../../spa/src/assets/harnesses/pi.svg?raw';
+const marks = Object.entries({ claude: claudeMark, codex: codexMark, pi: piMark }).map(([name, svg]) => `--mark-${name}:url(data:image/svg+xml,${encodeURIComponent(svg.trim()).replace(/[()']/g, character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)})`).join(';');
+---
+<div class="hero-field notification-wall" data-hero-field aria-hidden="true" style={marks}>
+  <div class="wall-routine" data-wall-routine></div>
+</div>

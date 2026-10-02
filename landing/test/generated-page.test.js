@@ -16,7 +16,7 @@ const generatedPage = `${landingDir}generated/index.html`;
 // The notifications lab (#311): unlisted, so its path is written here once.
 const LAB_PATH = "/lab/notifications-133c027df9b5/";
 const labPage = `${landingDir}generated${LAB_PATH}index.html`;
-const PREVIEW_PATH = "/lab/hero-7c92e4b1a630/";
+const PREVIEW_PATH = "/lab/wall-646fe5bc6ee6/";
 const previewPage = `${landingDir}generated${PREVIEW_PATH}index.html`;
 const baselineManifest = fileURLToPath(new URL("./fixtures/generated-main.sha256", import.meta.url));
 
@@ -132,6 +132,10 @@ describe("the generated preview", () => {
     assert.match(preview, /^<!DOCTYPE html>/i);
     assert.match(preview, /<html[^>]*data-field="full"/);
     assert.ok(preview.includes('<meta name="robots" content="noindex, nofollow">'));
+    for (let act = 1; act <= 8; act += 1) {
+      assert.ok(preview.includes(`id="act-${act}"`), `the full landing story keeps act ${act}`);
+    }
+    assert.ok(preview.includes("data-hero-field"), "the wall is present before the preview script runs");
     assert.ok(!html.includes(PREVIEW_PATH));
     assert.ok(!lab.includes(PREVIEW_PATH));
   });
@@ -147,8 +151,10 @@ describe("the generated preview", () => {
       assert.ok(!tag.replace(/<script\b[^>]*>/, "").replace(/<\/script>$/, "").trim(), "inline script body");
     }
     assert.ok(!preview.includes("<style"));
-    assert.ok(preview.includes('src="/landing/generated/hero333-boot.js"'));
-    assert.ok(preview.includes('src="/landing/generated/hero333/preview.js"'));
+    assert.ok(preview.includes('src="/landing/generated/hero336-boot.js"'));
+    assert.ok(preview.includes('src="/landing/generated/hero336/preview.js"'));
+    assert.ok(!preview.includes("hero333"));
+    assert.ok(!preview.includes("hero-7c92e4b1a630"));
   });
 
 });

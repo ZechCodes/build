@@ -1,0 +1,81 @@
+/* The routine wall fills the visible hero, including a short phone. The
+   request flights sit outside its mask so their laptop destinations stay lit. */
+[data-hero] .notification-wall {
+  bottom: auto;
+  height: min(100%, calc(100svh - var(--nav-height)));
+}
+[data-mode="film"][data-hero] .notification-wall { top: var(--nav-height); }
+.wall-routine {
+  position: absolute;
+  inset: 0;
+  --wall-fade-x: linear-gradient(90deg, transparent, #000 18%, #000 82%, transparent);
+  --wall-fade-y: linear-gradient(0deg, transparent, #000 18%, #000 82%, transparent);
+  -webkit-mask-image: var(--wall-fade-x), var(--wall-fade-y);
+  mask-image: var(--wall-fade-x), var(--wall-fade-y);
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
+}
+.wall-slot { position: absolute; }
+.wall-note, .wall-request {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 7px;
+  padding: 10px 13px;
+  border: 1px solid #26312c;
+  border-radius: 11px;
+  background: linear-gradient(115deg, #151c19, #101512);
+  color: #b7c2bc;
+  font: 13px/1.1 var(--text);
+  overflow: hidden;
+}
+.wall-note__header { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.wall-note__agent { font-size: 10px; letter-spacing: .01em; color: #7e8b84; }
+.wall-note__time { margin-left: auto; color: #536057; font-size: 9px; white-space: nowrap; }
+.wall-note__text { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 450; }
+.wall-note__mark {
+  width: 12px;
+  height: 12px;
+  background: #899b90;
+  flex: none;
+  -webkit-mask: var(--wall-mark) center / contain no-repeat;
+  mask: var(--wall-mark) center / contain no-repeat;
+}
+[data-harness="claude"] { --wall-mark: var(--mark-claude); }
+[data-harness="codex"] { --wall-mark: var(--mark-codex); }
+[data-harness="pi"] { --wall-mark: var(--mark-pi); }
+.wall-slot[data-depth="quiet"] { opacity: .56; }
+.wall-slot[data-depth="normal"] { opacity: .80; }
+.wall-slot[data-depth="near"] .wall-note { color: #d4ded7; border-color: #35463b; }
+.wall-request {
+  inset: auto;
+  z-index: 2;
+  opacity: 0;
+  font-size: 15px;
+  transform-origin: center;
+  box-shadow: 0 8px 28px #0005;
+}
+.wall-note--mint {
+  opacity: 0;
+  border: 0;
+  border-radius: 10px;
+  background: #142b20;
+  color: #c4ffdf;
+  font-size: inherit;
+  box-shadow: inset 0 0 0 1px #65d99c;
+}
+.wall-note--mint .wall-note__agent { color: #95c7ab; }
+.wall-note--mint .wall-note__time { color: #6de9a6; }
+.wall-note--mint .wall-note__mark { background: #81f4b7; }
+/* Same failsafe as home, with enough time for this longer wall beat. */
+[data-hero="entrance"] #act-1 .act__copy > *,
+[data-hero="entrance"] .hero-device { animation-delay: 6s; }
+[data-hero="entrance"] .notification-wall { animation-delay: 5.8s; }
+@media (max-width: 767px) {
+  .wall-note { padding: 8px 10px; gap: 6px; font-size: 12px; border-radius: 9px; }
+  .wall-request { font-size: 14px; }
+  .wall-note--mint { padding: 10px 13px; font-size: inherit; border-radius: 10px; }
+  .wall-note__agent { font-size: 9px; }
+}

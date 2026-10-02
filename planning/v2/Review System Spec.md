@@ -2,420 +2,301 @@
 
 ## Owner summary
 
-A review is a saved snapshot of a workspace, attached to its task.
-It lists every source directory and freezes each Git directory's changes.
-Git sources keep their own repository, branch, base and head.
-Updating the review takes another snapshot; older comments still have their context.
-Pick a reviewer using the existing agent/user picker.
-Anyone can comment or approve, with any model.
-For each source, choose Push to a branch, Merge into a branch, or Leave unchanged.
-Merge and push can be chosen together; the destination is yours to choose.
-The action sheet shows exactly which repositories and branches it will change.
-You or an agent can instead do the work separately and mark the review complete.
-Completion shows a short description, such as “pushed API to main; merged UI to dev”.
-The review is done when the chosen actions succeed or you or an agent mark it done.
-There is no model allowlist, required-check setup or deployment gate.
-Estimate: **6–9 focused engineer days**, in three usable increments.
-Snapshots and agent completion ship first, then the review UI, then UI Git actions.
+A review records the committed work in every source directory of a workspace.
+It lives on the task, with one saved branch, base and head per Git source.
+Git keeps those commits; Build reads their diff when you open the review.
+Uncommitted files are counted and clearly excluded.
+Plain folders appear as “No Git diff”, with a link to live Files.
+Pick a reviewer using the existing user/agent picker.
+Any agent or model can review and finish the work.
+Choose Merge or Push for each source, with the destination you want.
+You can select both steps, or leave a source unchanged.
+An agent can instead use its own tools and mark the review complete.
+Completion shows a short description, such as “merged API to dev; pushed web”.
+Chosen steps succeeding, or an explicit completion report, finishes the review.
+Deleting a source repository can make its old review diffs unavailable.
+Estimate: **5–7 focused engineer days**, in three increments.
+Agents can use the first increment alone; the UI and Git buttons follow.
 
-This redesign follows the owner's October 2 feedback on
-#89/c/tc-01M3Y803PF9GMSYA3RNNR6YRET. It replaces the implementation design at
-`bcdb1ba6`; that draft's Opus signoff does not apply to this revision. This is a
-plan only. Current-code references below are checked against main
-`ee49f20b93477a7959196d5853e3f0e5ba79bcd7`; bracketed references point to the evidence
-index. Proposed tables, verbs and behavior are identified as proposals.
+Plan only, based on main `ee49f20b93477a7959196d5853e3f0e5ba79bcd7` and the owner's
+#89/c/tc-01M3Y803PF9GMSYA3RNNR6YRET decisions. Code references describe current
+reuse points; the records and verbs below are proposed. No model allowlist,
+reviewer/merger restriction, required-check machinery, candidate proof or
+deployment gate is part of this feature.
 
-## 1. Model: the workspace is the snapshot boundary
+## 1. Model: metadata for every workspace directory
 
-Keep #145's task identity, title, description, assignee and comment stream.
-Add review data to the task, not a separately numbered PR. One task review names
-one workspace and has successive snapshots of that entire workspace. The workspace
-can contain any number of source directories from the first release.
+Keep the task's identity, title, description, assignee and comment stream, as
+#145 specifies. A task review names one workspace and has numbered snapshots.
+Each snapshot includes every directory from that workspace's manifest, in order,
+including later-added directories and directories that are unchanged or unavailable.
+Do not enumerate only the project's current sources or use its first-source fields
+as the entire review. `Workspace.directories` and `WorkspaceDirectory` in
+`bridge/src/workspace.rs` already supply directory/source IDs, repo/source paths,
+branch, base branch and provisioning status; `bridge/src/app/workspaces/directories.rs`
+adds independent directories after workspace creation.
 
-The old one-branch attachment could not represent this. `Workspace.directories`
-contains independently identified directories; each carries `source_id`, `path`,
-`source_path`, `base_branch`, `branch`, `is_git` and provisioning status.
-`add_workspace_directory` can also add a directory that is not a project source.
-A project row's top-level branch/path/remote describes only its first source.
-Neither that row nor a single workspace branch name is a review manifest. [E1]
+Store only metadata in `build.db`: review state (open/completed) and version,
+snapshot ID/number/time/author,
+per-directory identity and repository location, branch, resolved base OID and head
+OID, plus action results. Include the base's name/kind and the uncommitted-file
+count for display. Non-Git or unavailable entries carry their reason, not invented
+Git values. There are no saved patch/body tables or content digests.
 
-Proposed records in the existing `build.db`:
+### Snapshot and base selection
 
-| Record | Contents |
+`snapshot` takes the task, workspace, expected review version and optional
+per-directory base overrides. For each Git directory:
+
+1. Read its committed HEAD and actual branch identity. A detached head has an OID
+   without a branch; an unborn repository has no committed head.
+2. Resolve the explicit base override if supplied; an invalid override is an error.
+   Otherwise resolve the directory's `base_branch`, then its upstream if no base
+   resolves, then the empty tree. Record and show the exact base used. Do not hide
+   a base equal to HEAD behind an inferred alternative; the caller can override it.
+3. Retain the head with `refs/build/reviews/<task>/<snapshot-id>/<directory-id>/head`.
+   Retain a non-empty base under the sibling `/base` ref too: it need not be an
+   ancestor of HEAD. Directory IDs keep two sources sharing one repo distinct.
+   Allocate a unique snapshot ID before pinning, independent of its display number,
+   so concurrent calls cannot overwrite or clean up each other's refs.
+4. Store the metadata and show “N uncommitted files not in this review”. An unborn
+   source shows “No commits yet”; its working files are not a committed diff.
+
+Snapshot creation is a synchronous RPC, with Git work off the app lock. It reads
+one manifest and the per-source commit references, creates the refs, then commits
+the metadata. This is a saved set of commit identities, not an atomic filesystem
+snapshot. No body capture, capture budget or mid-capture retry is needed. A source
+that cannot be read/pinned stays visible with its error; it is not silently omitted.
+The final metadata write checks the review version; a losing call cleans up only
+its own newly created refs, with their expected OIDs.
+
+`diff` reads the saved base..head from Git, including requested file content when
+needed. Reuse `bridge/src/diff.rs`'s commit diff machinery, extending its input
+handling for an empty-tree base; do not call the live dirty-workdir diff. Current
+workspace `git.changeset_diff` uses an unpublished-work baseline
+(`bridge/src/app/git/mod.rs`, `changeset_subject`), so it is not this immutable read.
+
+Refs survive branch movement and Git GC while their repository exists. They do
+not archive a deleted repository. A deleted Rift/standalone source can leave the
+old diff unreadable; retain its metadata/comments and show “Source unavailable”.
+A removed linked worktree can remain readable through its surviving common repo.
+Release refs when their review history is explicitly deleted; closing or completing
+keeps them. Existing store backup covers metadata, not the Git repositories.
+
+### Comments and opinions
+
+Task comments may carry a snapshot/directory/path/side/line anchor, a reply-to
+comment, or an approve/request-changes opinion. Older anchors keep their original
+snapshot. Display their original Git context when available, otherwise the comment
+and an unavailable-context label. No stored line migration. Opinions describe the
+snapshot seen; the picker routes the task and grants no exclusive rights.
+
+## 2. Wire: five verbs
+
+| Proposed verb | Purpose |
 | --- | --- |
-| Task review | Task ID, workspace ID, current snapshot ID, open/completed state, version and completion description. No second title, assignee or reviewer authority list. |
-| Snapshot | ID, workspace name at capture, author, time and ordered directory entries. Published snapshots are immutable. |
-| Directory entry | Directory/source IDs, label, original path and repository identity, capture result; for Git, actual branch or detached HEAD, base ref, resolved base/head OIDs and diff-base OID. Every manifest directory gets an entry, including unchanged or unavailable ones. |
-| Snapshot content | Immutable changed-file list, captured patches and bounded old/new file bodies, with content digests and explicit binary/omitted/unavailable markers. |
-| Task comment | Existing body/actor/time, optionally a snapshot/directory/file/side/line anchor, reply-to comment, or approve/request-changes opinion. |
-| Action result | Operation ID, snapshot, actor, selected per-directory action/destination and each result; brief action-taken description. Distinguish a bridge-run action from an agent's completion report. |
+| `tasks.review.snapshot` | Synchronously save the workspace's per-source commit metadata and refs; return the review. Base overrides work from increment A. |
+| `tasks.review.get` | Read review state, snapshots and per-source action results, plus available destinations. |
+| `tasks.review.diff` | Read a snapshot's file list, patch or old/new file content from Git; reuse existing body/page shapes. |
+| `tasks.review.act` | Run the selected Merge/Push steps for named sources and record their results on the review. |
+| `tasks.review.complete` | Record a brief action-taken description and mark the review/task Done; no preceding Build action is required. |
 
-Snapshot the workspace manifest, not today's project template. A directory added,
-removed or renamed later affects the next snapshot only. Two directories containing
-`README.md` remain distinct. Reassigning the task never changes the saved workspace
-or its content; #145's future workspace transfer can explicitly select another
-workspace for the next snapshot.
+Use existing task CRUD, assignment and comment verbs. Add optional anchor/opinion/
+reply metadata to both `tasks.comment` and MCP `comment_task`, including their
+schemas/adapters and shared persistence (`bridge/src/app/tracker/tools.rs`).
+`bridge/src/tracker.rs` and
+`bridge/src/store/tracker.rs::save_tracker_task_activity` are the metadata/timeline
+seams; add the review tables through `bridge/src/store/schema.rs`.
 
-### What is captured
+Keep one review `version` check for stale mutations. An accepted write advances
+it; `stale_version` makes the client refetch while keeping the user's draft.
+Do not add request IDs, replay receipts or a separate operation lookup API.
+Before each source's Git step, save a `running` action row; afterward save its
+result. `get` and existing task invalidations expose those rows. Refuse a second
+Git action on a source while its row is running. On restart, a still-running row
+becomes “Interrupted: check and retry, or mark complete”. Nothing is replayed.
 
-For a Git directory, show its changes from its own fork point with its selected
-base, including committed, staged, unstaged and non-ignored untracked work.
-Record the resolved base and HEAD separately from the merge base. The existing
-`diff_against_merge_base` supports this combined view, whereas today's workspace
-Changes chooses an unpublished-work baseline; reuse the rendering and diff
-helpers, not that moving baseline as the saved review's identity. [E2]
+Thin RPC/MCP adapters call the storage/Git service. Accepted Git work runs without
+a browser; action results are facts stored by that service. The SPA chooses the
+steps and calls `complete` after they succeed, using recorded results after a
+reconnect. `complete` is the single writer of review completion and task Done.
 
-Resolve this per source, not from the project's first repository. A separately
-added clone can have the same branch as its recorded base; an adopted directory
-can lack a recorded base. In those cases use its upstream/publication baseline
-and persist that baseline's kind and exact OID, or let the user select a base.
-Never silently use HEAD as its own comparison base and hide committed work. [E2]
+Add typed contracts in `bridge/src/api/v1/`, fixtures in `fixtures/api/v1/`, and
+both `bridge/tests/api_contract.rs` and `spa/test/apiContract.test.js`. Main's wire
+is **3.5.0** (`bridge/src/api/mod.rs`, `fixtures/api/versions.json`); allocate the next
+minor during implementation. Gate snapshots, anchored comments and Git actions
+separately so each increment works with older connected devices.
 
-An unborn Git repository has no head yet: use an empty-tree baseline and show
-its files as additions. A detached HEAD is a commit, not an invented branch.
-A missing base or unrelated history gets an explicit entry explaining what could
-not be compared; the user can select a different base and take another snapshot.
-Plain directories have no Git base/head: keep an explicit “No Git diff” entry
-with its recorded directory metadata and a link to live Files, labelled live.
-Do not pretend a live folder read is saved review content. They have no push/merge
-action. This release snapshots Git changes and records every directory; a general
-non-Git file archive is outside it. Unavailable and non-Git sources must not
-disappear because the first source happens to be a Git repository.
+## 3. Selected Git steps
 
-Use the existing diff exclusions and large-file behavior for Git sources; do not
-follow symlinks outside a directory or capture ignored build output as review
-content. List omitted/binary files and why their bodies are absent. Apply bounded
-per-file and total capture budgets; an incomplete source is visibly incomplete,
-never an empty successful diff. This is a review artifact, not a workspace backup.
+Each source row offers **Merge**, **Push**, or **Leave unchanged**. Merge and Push
+are independently selectable ordered steps, not a third combined operation.
+Merge selects a repository-local target branch; Push selects a configured remote
+and full destination branch. Show the selected repositories and branches before
+running. Resolve repository and checkout identities on the server, not from an
+arbitrary caller path. A new remote branch is an explicit destination choice.
 
-Copy the captured text into snapshot storage. A later read must never reopen the
-live file and present it as old snapshot content. Patches and displayed bodies
-must come from the same captured content. Capture off the app lock; check
-manifest membership and each directory's head/content version before publishing.
-Retry a source that changes during capture or report it as unavailable. Publish
-the manifest and collected content together in one store transaction. This is one
-saved set of per-source observations, not an atomic filesystem snapshot across
-several repositories. Each entry keeps its capture time/result.
+The action starts from the snapshot's head OID, and a differing live head is shown.
+Merge uses that OID; a following Push uses the resulting merge tip. Push alone
+uses the snapshot head. Uncommitted source files are neither staged nor changed.
+For separate clones, import the selected OID into a temporary private ref in the
+target repo; do not force-publish a same-named shared branch. Normal non-forced
+pushes preserve Git's usual non-fast-forward refusal.
 
-Keeping content in the store makes old reviews readable after a rebase, branch
-deletion or workspace removal. Git objects are not a substitute for captured
-uncommitted text. Reuse normal store migration/backup and paged-body patterns;
-no separate canonical Git archive is required. [E3, E6]
+### Merge target rule
 
-### Opinions and completion
+- If the target branch is checked out somewhere, merge in that checkout when it
+  is clean and has no Git operation in progress. Otherwise refuse with the reason;
+  do not switch branches, stash or reset the user's files.
+- If checked out nowhere, create a temporary worktree **on the target branch**,
+  merge there and remove that worktree while retaining the branch. Use normal
+  branch-in-use checks, never a forced duplicate checkout. If another checkout
+  acquired the branch, re-read placement and use the checked-out rule above.
 
-The picker routes the task to a person or agent; it does not give that recipient
-exclusive approval rights. Every agent in the project can comment, approve, perform an
-action or report completion. Models, implementer identity and who approved do
-not affect permission. Existing authenticated project scoping still identifies
-who wrote the record; callers cannot supply a different author.
+Default to a merge commit. Conflicts return a per-source failure; abort only the
+merge this action started and report an abort failure honestly. Private imported
+refs and temporary worktrees are internal Git plumbing, not new review entities.
+Use existing isolation/worktree ownership helpers (`bridge/src/isolation/worktree.rs`)
+for temporary checkout creation
+and removal, without invoking the workspace Done flow.
+Never remove a user's target checkout. If cleanup fails, show the leftover path.
 
-An opinion refers to the snapshot the reviewer saw. Updating a snapshot leaves
-old opinions visible on that version. Approval and request-changes are useful
-feedback, not prerequisites for a Git action or completion.
+`bridge/src/source_sync.rs` already uses `SyncLock` per source checkout and can
+move its base. Coordinate the selected source with that same lock and re-read the
+target after acquiring it. Use the same configured source path as base sync, not
+the temporary-worktree path. Test source sync against **both** merge paths, including
+a target moving or becoming checked out. This lock coordinates participating Build
+operations, not external shells; keep normal Git ref/index locks and branch-in-use
+checks. Respect existing reclaim reservations.
 
-An anchored comment retains its original snapshot, directory, path, side and
-line range. Replies use the same task timeline. A newer snapshot may display an
-identical-content anchor in place; otherwise show “On snapshot N” with its
-original context. No stored line migration or separate discussion service.
+Current helpers are reuse points, not ready-made review actions:
+`bridge/src/gitgui/network.rs::push` chooses the live branch/upstream;
+`bridge/src/worktree/mutation.rs::merge_into_base` is tied to a primary checkout
+and publishes before checking it; `bridge/src/app/runs/review.rs::run_git_action`
+can commit outstanding work and prune. Adapt lower Git helpers with explicit
+source/target OIDs and structured arguments/deadlines (`bridge/src/git_process.rs`),
+without inheriting those side effects. `bridge/src/isolation/rift.rs`'s shared-ref
+force fetch is not the private import. The internal temporary merge path is new work.
 
-Completion records the current snapshot and a brief description. Successful UI
-actions produce the description from their results. An agent supplies its own,
-for example “merged server to dev; pushed web to release”. Do not demand SHAs,
-command logs, approvals or proof of deployment before accepting it. The timeline
-shows who reported it. Completion sets the review Completed and the task Done
-in the same metadata transaction; it does not delete a workspace or branch.
+Persist each step's result, including a merge's resulting tip, before starting
+the next. If Merge succeeds and Push
+fails, keep the merge result and retry only Push. If one source succeeds and
+another fails, show both; do not roll back the successful repository. Interrupted
+steps are inspected before an explicit retry. Any user or agent can instead use
+other tools and call `complete` with a brief description. The result rows remain
+visible alongside that report. No separate recovery state machine is needed.
 
-## 2. Wire and persistence
+## 4. SPA: the task's review across directory tabs
 
-Propose seven typed verbs under `tasks.review.*`:
+Add Create/Update review to workspace Changes and show the saved review on the
+task page. Keep the task list, identity and timeline. Reuse the directory tabs in
+`spa/src/views/workspaceChanges.js` and `spa/src/core/workspaceModel.js`, including
+unchanged/non-Git/unavailable rows from the saved manifest. Do not reconstruct old
+tabs from the live workspace. Each Git tab shows its resolved base/head and the
+uncommitted-file note. Increment B adds the per-directory base picker.
 
-| Verb | Purpose |
-| --- | --- |
-| `snapshot` | Create or update the task's review by capturing every directory in the selected workspace; optional per-directory base selections. Return capture operation/snapshot status. |
-| `get` | Read review state, snapshot history/manifest and action results. Task identity and timeline remain existing task reads. |
-| `diff` | Read a saved directory/file patch, using the existing changeset body/page shape. |
-| `file` | Read a captured old/new file body; return its explicit omission marker when no body was saved. |
-| `act` | Run the explicitly selected per-source Git actions against a named snapshot. Return an operation ID. |
-| `operation` | Read capture/action progress and per-source results after reconnect or restart. |
-| `complete` | Mark the review complete with the caller's brief action description. This works without a preceding Build-run Git action. |
+Use `spa/src/core/changesReview.js`, `changesetBodies.js` and `diffRender.js` through
+a snapshot adapter. Anchored feedback writes task comments, not the legacy run
+conversation notes. Personal viewed-file marks stay personal. Reuse
+`trackerAssigneePicker.js` and `trackerAssigneeControl.js` for reviewer selection.
+The action sheet shows Merge/Push selections and per-source results; Mark complete
+asks only for a brief action description. Add no separate PR surface.
 
-Extend `tasks.comment` with optional snapshot opinion, immutable anchor and
-reply-to metadata. Use existing task create/update/assign/move/close/reopen
-operations for everything else. Do not add project policy configuration,
-required checks, model evidence, candidate preparation or deployment verbs.
+Every view paints from cache. Review metadata/results and Git reads write to the
+entity/body cache first; comments stay in the existing task/timeline cache. Key
+snapshot bodies by device/task/snapshot/directory/path/side so identical paths in
+different repositories cannot collide. Reuse `localCache.js`, `bodyPages.js`,
+`taskReadOrder.js`, `pushFence.js` and task invalidations in `cacheSync.js`. Cached
+Git bodies are disposable; a missing repository is not repaired from live files.
 
-`get` also supplies available actions and server-resolved destination identifiers
-for each live source; the action service revalidates them when called. Do not
-accept arbitrary checkout paths or fall back to a first-source destination.
+Keep drafts and action selections in the separate `build-ui` store
+(`localUiStore.js`), scoped to task/snapshot. Reconnect and tab changes preserve
+them; stale writes refetch and repaint without automatically retrying Git actions.
+Use current capability/refusal handling (`commandRefusal.js`). The bridge serves
+records and executes requested Git; product choices and view state live in the SPA.
 
-Snapshot replacement, action submission and completion carry the review version
-and stable request ID. A stale version returns `stale_version`; the client
-refetches and preserves the user's draft for an explicit retry. Repeating the
-same request returns its previous result; it does not repeat a push. Ordinary
-comments remain append-only and need no global review lock.
+## 5. Agents
 
-Extend the task's existing transaction to save review metadata and its timeline
-entry together. Persist capture intent before off-lock work; publish its snapshot
-and settle the operation atomically afterward. Interrupted capture returns an
-interrupted result on that request ID; a retry is a new explicit request, not a
-different snapshot silently assigned to the old one. Git side effects cannot
-share a store transaction: save the selected action before starting it and save
-the result afterward. The bridge service owns
-only capture, storage and the requested Git operation; it never chooses a
-reviewer, destination or next workflow step. Accepted work can finish headless.
-Thin RPC/MCP adapters share those services. [E3, E7]
+Expose snapshot/get/diff/act/complete through MCP to project and workspace agents
+in the same project. They can read all source diffs without first checking out the
+branches, leave opinions/comments and finish with a short description. Existing
+actor authentication supplies attribution, not a model qualification test.
 
-Use existing task change invalidations. `get` returns a coherent review version;
-pulls write that version into the cache, then repaint. Add fixtures in
-`fixtures/api/v1/`, update both contract suites and allocate the next wire minor
-at implementation time; main currently uses **3.5.0**. Announce snapshot-review,
-anchored-review-comments and Git-action capabilities separately so each increment
-can roll independently, including B clients connected to A-only bridges.
-[E6, E8]
+Reuse `assign_task` and the existing picker; a task note names the snapshot to
+review. The picker may choose the user, an existing agent or the existing
+create-agent options. Assignment is routing and retains current column behavior.
+Update `bridge/templates/notes/task_tools.md` and relevant project/workspace notes
+with this flow and the no-acknowledgments convention. MCP seams are
+`bridge/src/mcp.rs` and `bridge/src/app/mcp.rs`. Automated handoff sequences and
+workspace transfer remain #145's later work, not prerequisites for these tools.
 
-## 3. Git actions: choose what happens to each source
+## 6. Task integration
 
-The snapshot is reviewable without running Git actions. The action sheet lists
-every source, its branch and the selected destination. Nothing defaults silently
-to the project's first source or to origin/main.
+A task having a review record opts it into the new behavior. `complete` stores the
+review's completed state, brief description, actor, timeline entry and task Done
+in one metadata transaction. Task closure remains separate. Snapshot updates change
+only the review; the SPA or agent explicitly moves/reopens the task when appropriate.
+Neither taking a snapshot nor choosing a reviewer implicitly moves the task.
 
-| Choice | Behavior |
-| --- | --- |
-| Push to… | Choose a configured remote and destination branch for this source. Push the source commit with a normal non-forced push. A new branch is an explicit choice. |
-| Merge into… | Choose an existing local target branch and its destination checkout. Merge this source into that branch; default to a merge commit to preserve history. No implicit push. |
-| Merge and push… | The same merge, followed by push to the selected remote/branch. Show both destinations before running it. |
-| Leave unchanged | Perform no Git operation for this source; include that choice in the result. |
-| Mark complete | Record a brief description of work performed outside these buttons. Available to the user and every agent in the project. |
+Increment A bypasses these existing automatic hooks **for review tasks only**:
 
-Push/merge acts on commits. When a snapshot contains uncommitted edits, say that
-the action publishes committed work only and offer Open Changes to commit and
-Update snapshot, or an explicit Continue with commits only. Never silently stage
-or commit all the files just because the user chose Push. Before running, compare
-the source HEAD with the displayed snapshot; if it changed, show the new state
-and let the user refresh. This prevents a stale button from including unseen
-commits; it is not an approval or check gate.
-The action uses that exact commit, not a mutable branch name. With the explicit
-commits-only choice, source dirt is left untouched and does not block the action.
+- `bridge/src/app/tracker/activity.rs::move_held_task_on_complete` consumes its
+  dispatched-task marker normally but skips `hand_held_task_on`'s automatic move
+  to In review for a task with a review record.
+- `bridge/src/app/workspaces/deletion.rs::remove_workspace` calls
+  `activity.rs::close_tasks_of_finished_workspace` for merged Finish. That function
+  must skip review tasks in its per-task loop, while ordinary linked tasks keep
+  their existing closure behavior. Do not skip removal of the workspace itself.
 
-Use workspace/directory identity to resolve each repository. Worktree and Rift
-sources must both work, including a separately cloned directory added later.
-When a target repository needs objects from a separate clone, fetch into a
-private temporary ref instead of overwriting a shared branch of the same name.
-Current Rift `publish` force-fetches shared refs, so it is not the new import
-primitive. [E4]
-Resolve a merge target ID to a server-discovered checkout of this directory's
-recorded repository, distinct from the source checkout. Import the reviewed HEAD
-into an operation-private ref, verify its OID, merge that OID and retire the
-temporary ref afterward. A standalone clone with no separate target checkout can
-still Push or be handled by an agent; do not invent a primary checkout for it.
+Test both paths with review and ordinary tasks linked to the same workspace.
+Review completion never invokes Finish/deletion. Existing lifecycle/reclaim is
+separate; if it deletes a repository, old review metadata survives but its diffs
+may no longer be available.
 
-The existing `git.push` uses the current branch/upstream, and
-`merge_into_base` is tied to the primary checkout. `run.git_action` also commits
-outstanding work and can prune a workspace. None is a drop-in implementation of
-this action sheet. Add explicit source/target arguments to lower Git helpers;
-reuse their process, ref validation and error handling without their run cleanup
-or first-source assumptions. [E4]
+## 7. Rollout
 
-Keep ordinary Git safety: validate refs/paths and selected remote, use structured
-arguments and deadlines, and return dirty-destination/conflict/non-fast-forward
-errors. Do not reset, stash or force-push automatically. Merge must confirm that
-the selected destination checkout is clean, has the chosen branch checked out
-and has no operation in progress; never switch or merge some other branch as a
-side effect. Offer an existing suitable checkout or hand the operation to an
-agent when the target has none. Serialize this service's operations on the same
-target and honor existing busy/reclaim refusals. Other agents, terminals and base
-sync can still write; use immediate target rechecks and Git's index/ref locks,
-and report a competing write rather than claiming a repository-wide lock exists.
-A merge conflict is a failed action with its directory named; preserve or abort
-only the merge this action started and report whether cleanup succeeded. [E4]
+**5–7 focused engineer days**, including tests/review. Re-estimate after A.
+Metadata-only snapshots remove most of the earlier capture/recovery work; target
+checkout handling is the remaining uncertainty, covered in C's estimate.
 
-For a push, use the explicitly chosen full destination ref and normal Git
-fast-forward checks, not forced leases or a separately prepared merge candidate.
-For merge-and-push, the merge result is merely the output of the chosen command;
-there is no candidate entity, proof workflow or check admission. Remote hooks,
-Git errors and existing CI still behave normally. A successful push completes
-the selected action; waiting for CI, source-base sync or deployment is not part
-of review completion.
-
-Run a selected batch as separate per-source actions, with results persisted as
-they settle. “API pushed; web merge conflicted” is a partial result, not an
-all-repository transaction. Keep the review open if a chosen action failed;
-retry only failed items after an explicit choice. When all chosen actions succeed
-(including explicit Leave unchanged choices), record the summary and complete.
-The user or an agent may instead resolve it separately and call `complete`.
-For merge-and-push, retain the successful merge if the push fails; retry its push,
-not the merge. Never roll back one repository because another action failed.
-
-If the bridge stops after invoking Git but before saving its result, show that
-action as Outcome unknown. Do not replay it automatically or claim success from
-an unrelated local ref. The user or agent can inspect the result and mark complete,
-or explicitly retry. Persist enough selected-source/destination detail to make
-that choice intelligible. Block duplicate execution of a running operation ID;
-a lost reply must not cause a second merge. An agent report is still accepted
-without demanding recovery proof. Do not remove an already recorded uncertain
-result when the agent completes the review. If a running operation settles after
-manual completion or after a newer snapshot was created, update its own result
-only; never reopen or complete a different snapshot. Manual completion does not
-cancel an already running Git process.
-
-## 4. SPA: one review across directory tabs
-
-Add the saved Review to the existing task page and a Create/Update review action
-to the workspace Changes surface. Use the task list with a review status/filter;
-no separate PR list or numbering. The header shows workspace, snapshot time,
-reviewer/assignee picker, opinions and the latest action description.
-
-Reuse the workspace's per-directory tab pattern. Each tab belongs to the saved
-manifest and shows its own branch/base/head, file list and capture status.
-Removing a live directory does not remove its old review tab. A mobile layout
-uses the same directory selector and existing diff renderer. Reuse
-`changesReview.js` through an immutable snapshot adapter, replacing its legacy
-conversation-note submission with anchored task comments. Existing viewed-file
-marks remain personal UI state, not approval. [E5]
-
-The review controls are Update snapshot, Choose reviewer, Approve, Request
-changes, Actions and Mark complete. The Actions sheet presents one row per
-source, an action picker and the destination fields that action needs. It shows
-success/failure beside each source while work runs and the resulting short
-summary afterward. It does not ask for model policy, check commands, rollout
-coverage or deployment evidence.
-
-Every view renders from the cache. Task comments stay in the existing task/timeline
-cache; the review cache holds snapshot manifests, results and paged bodies, written
-before display. Key saved
-bodies by device/task/snapshot/directory/path/side; never share the live Changes
-body key. Reuse task read ordering and push fencing so an older response cannot
-replace a newer snapshot. A second tab seeing `stale_version` refetches and
-repaints; it never silently resubmits a destructive action. [E6]
-
-Keep unsent comments and action selections in the separate `build-ui` store,
-scoped to task and snapshot, following current draft lifetime rules. Existing
-task drafts are retained; extend/test `uiDraftLifetime.js` explicitly if the new
-address shape needs pruning, rather than assuming it already supports it. Reconnecting
-or changing directory preserves them. A new snapshot leaves the old draft
-explicitly on its original snapshot rather than attaching it to different lines.
-Capability/error handling follows current cache-backed controls and
-`commandRefusal.js`; no connection-dependent replacement of the review view.
-
-## 5. Agents and reviewer choice
-
-Reuse the task assignee picker and `assign_task`: user, project agent, existing
-workspace agent, or the existing create-agent choices. The chosen agent receives
-the task and snapshot reference and can read all source diffs without checking
-out the branches first. The note names the snapshot; it grants no special
-approval or merge authority. [E5, E7]
-
-Expose MCP equivalents of snapshot/read/opinion/action/complete to project and
-workspace agents in the same project. No model allowlist, configured-versus-
-reported model question, implementer exclusion or “project agent only” merger.
-An agent the user asked can do the work, use its ordinary Git/deployment tools
-as needed, then report the brief action taken. Do not make it reconstruct Build
-operation receipts to be believed.
-
-Update `bridge/templates/notes/task_tools.md` and relevant workspace/project
-notes: take/update a workspace snapshot, post feedback on the task, pass the task
-through the picker/assignment tools when useful, and complete with a short action
-description. Post on meaningful changes, not acknowledgments. Automatic handoff
-sequences and moving checkouts between workspaces remain #145's later work;
-this release adds neither a workflow engine nor a prerequisite assignment-system
-rewrite. Existing assignment reliability work can proceed independently. [E7]
-
-## 6. Task integration and completion
-
-The task is still the unit of work. Review creation links the workspace and
-persists its snapshot; it does not force every task into a review. A saved review
-record is the opt-in for the new behavior.
-
-On explicit review completion, save review state, description and task Done
-together. Do not wait for an additional user approval, checks or deployment.
-Task closure remains an existing explicit action, separate from the board column.
-Updating a completed review explicitly opens a new snapshot cycle and moves the
-task back to In progress; its old completion stays in history. Merely commenting
-or choosing a reviewer does not reopen completed work.
-
-For review tasks, generic conversation Complete must not move a completed review
-back to In review, and merged workspace Finish must not complete/close unrelated
-reviews without an action description. Bypass those legacy automatic task hooks
-when the task has a saved review record. Ordinary tasks keep their current
-behavior; test both paths. Assignment retains its existing task-column behavior
-and does not change review state; moving a task In review remains explicit. [E7]
-
-Do not run workspace Finish/deletion as part of review completion. Existing
-workspace lifecycle/reclaim remains separate; a task becoming Done may trigger
-its normal sweep. Saved review content must remain readable afterward. [E1, E7]
-
-## 7. Rollout and estimate
-
-**6–9 focused engineer days**, including implementation tests and review. This is
-a fresh estimate for workspace snapshots and selected actions, not the earlier
-11–17-day gated-merge design. Re-estimate after the first usable increment;
-bounded content capture and adapting target selection are the main uncertainties.
-
-| Increment | Deliverable and main files | Verification and roll | Size |
+| Increment | Deliverable and code areas | Verification / rollout | Size |
 | --- | --- | --- | --- |
-| A: saved workspace reviews | Proposed `bridge/src/reviews/` service, `store/reviews.rs`, `api/v1/reviews.rs`; extend tracker/store schema, MCP and fixtures. Capture all directories, immutable content, get/diff/file/operation, direct completion and task hooks. | Worktree/Rift/plain/unborn/detached/removed-directory fixtures; standalone-clone base selection; capture races/limits and interruption, store restart/backup, duplicate completion, task Done/legacy paths. Bridge roll. Agents can read/review and complete work using their own tools. | 2–3 days |
-| B: review surface | Task page/Changes adapter, directory tabs, anchored task comments and opinions, existing picker, cache/draft integration in `spa/src/core/` and `spa/src/views/`. | Two different repositories with the same file names, snapshot updates after rebase, old anchors after deletion, two tabs, reconnect/cache-only paint, mobile picker/diff. Bridge+app roll for comment fields. Usable review with manual/agent actions. | 2–3 days |
-| C: selectable Git actions | Explicit source/target Git helpers, `act` and extended operation results, per-source action sheet and completion summary. | Two remotes; selected target checkout; Rift private-ref import/cleanup; standalone clone; dirty-source commits-only leaves edits untouched; wrong target/dirty destination/conflicts; merge success then push failure/retry; lost reply/restart and source movement. Temporary repositories only. Bridge+app roll. | 2–3 days |
+| A: useful agent reviews | Proposed `bridge/src/reviews/`, store/schema and typed API/MCP adapters. Four verbs: snapshot/get/diff/complete. All-source metadata/refs, base overrides/fallbacks, action description and the exact legacy-hook guards above. | Shared-repo directories have distinct refs; concurrent snapshots cannot overwrite/remove winning pins; detached/unborn/missing bases; base override/empty tree; dirty files excluded; pin survives branch deletion/GC; deleted repo reads unavailable; version checks and review/ordinary task hooks. Bridge roll. Agents can read diffs and complete using their own tools. | 1–2 days |
+| B: review UI | Task/Changes adapter, saved directory tabs, base picker, anchored task comments/opinions in RPC and MCP, reviewer picker, cache/drafts in `spa/src/core/` and `spa/src/views/`. | Same paths in two repos, old snapshot anchors, unavailable source, two tabs/stale version, reconnect/cache paint, mobile; comment RPC/MCP schemas/fixtures/capability. Bridge+app roll. | 2 days |
+| C: selectable steps | `act`, review result rows, targeted Git helpers, temporary worktree handling and action sheet. | Checked-out clean/dirty targets; unchecked-out target/ref race; source sync contention on both paths; Rift import; Merge success/Push failure; interrupted row after restart; no automatic retry or workspace deletion. Temporary repos only. Bridge+app roll. | 2–3 days |
 
-No first-release work on model policy, required checks, candidate proofs,
-deployment coverage, range approvals, automatic checkout transfer or cleanup.
-Multiple sources are included in A, not deferred behind a single-source release.
+Implementation follows AGENTS.md TDD and affected-tier gates: Rust tests/fmt/clippy,
+SPA lint/tests/build, wire fixtures, semgrep, gitleaks and diff-check. Those checks
+validate this implementation; they are not a review-completion feature. Only this
+plan document changes in #89.
 
-Implementation follows AGENTS.md TDD and affected-tier gates: Rust tests,
-fmt/clippy; SPA lint/tests/build; wire fixtures; semgrep, gitleaks and diff-check.
-Those are development checks for shipping this feature, not user-configured
-requirements to complete a review. This planning change runs documentation scans,
-not product tests. The security review covers input/path scoping, captured content,
-Git command arguments and duplicate operations without creating user approval policy.
+## 8. Defaults
 
-## 8. Decisions and remaining questions
+Reviews cover commits only. Plain folders are listed as “No Git diff”, with a
+clearly labelled live Files link; general file archiving is outside this release.
+This is the plan's default, not a blocking question. Any agent/model may review
+or finish. Merge defaults to a merge commit, Push is non-forced, completion retains
+branches/workspaces, and source-repository deletion can lose historical diff access.
+There are no outstanding owner choices blocking this draft.
 
-The owner's decisions are settled: a workspace snapshot across all sources;
-selectable actions; any agent/model; reviewer picker; completion on chosen-action
-success or explicit agent report. The configured-model question disappears with
-the allowlist. No approval is being sought again for those choices.
+## Workshop log: Opus read of 3143e6c4
 
-Working defaults for the draft: include uncommitted changes in the saved view;
-keep ignored files and MCP configuration out; retain old snapshots/comments; use normal
-non-forced pushes and merge commits in the UI; leave workspace cleanup separate.
-These follow the existing Changes behavior and keep actions explicit.
+The simplification is accepted. One Git detail in #4 is changed for the reason
+below; the other seven requests are accepted as written.
 
-One question is posted on #89: should plain, non-Git folders also have saved file
-contents in release 1? Recommendation: keep their explicit “No Git diff” entries
-and labelled live Files links; save Git changes now and treat a general folder
-snapshot as separate scope. That recommendation is the basis of this estimate,
-not an owner decision already received. The Opus read should check this boundary,
-action clarity and the smaller estimate.
-
-## Revision history
-
-- `2942c209` preserved the September Astra/Opus work. It established durable
-  review context and discussed Git operations but predated tasks and today's
-  workspace/source handling.
-- The October 1 rounds at `700e642e`, `49aa3469`, `52edfe58` and `bcdb1ba6`
-  narrowed a policy-heavy design and reached Opus signoff. Their one-branch
-  model, mandated main push, reviewer restrictions, model policy, candidate/check
-  admission and deployment gate are superseded, not implementation requirements.
-  Detailed historical decisions remain in those commits and #89's timeline.
-- **October 2 owner redesign:** accepted every choice in
-  #89/c/tc-01M3Y803PF9GMSYA3RNNR6YRET. The code confirms that a workspace is a
-  directory collection, so snapshot identity moves to that collection. Completion
-  becomes an action result or attributed report. Remove the policy machinery
-  rather than retaining it behind defaults. A new Opus read is pending.
-
-## Current code evidence
-
-All paths below exist on main `ee49f20b93477a7959196d5853e3f0e5ba79bcd7`.
-They identify reuse points and limitations, not already implemented review features.
-
-| Ref | Current code and its implication |
+| # | Decision and reason |
 | --- | --- |
-| E1 | `bridge/src/workspace.rs` (`Workspace`, `WorkspaceDirectory`); `bridge/src/app/projects/mod.rs` (`ProjectSource`); `bridge/src/app/workspaces/directories.rs`; `bridge/src/mcp.rs` (`add_workspace_directory`); `ARCHITECTURE.md`, Projects and sources / Workspaces and worktrees. Workspaces contain separate Git/plain directories, including ones added after creation; a project's first-source convenience fields are insufficient. |
-| E2 | `bridge/src/diff.rs` (`diff_against_merge_base`, `diff_between_commits`, dirty-workdir options, MCP exclusions and `LARGE_FILE_BYTES`); `bridge/src/app/git/mod.rs` (`changeset_subject`, `resolve_workspace_git_scope`); `bridge/src/gitgui/unpushed.rs`. Existing diff rendering includes dirty/untracked work; workspace Changes uses unpublished-work scope. Durable whole-workspace capture is new. |
-| E3 | `bridge/src/tracker.rs` (`Task`, `TaskComment`); `bridge/src/store/tracker.rs` (`save_tracker_task_activity`); `bridge/src/store/schema.rs`; `bridge/src/store/operations.rs` (`backup_to`). Existing task/timeline/store transactions and backup; review content tables and atomic completion are proposed. |
-| E4 | `bridge/src/gitgui/network.rs` (`push`); `bridge/src/gitgui/branches.rs` (`ref_list`); `bridge/src/worktree/mutation.rs` (`merge_into_base`); `bridge/src/isolation/rift.rs` (`publish`); `bridge/src/app/runs/review.rs` (`run_git_action`); `bridge/src/git_process.rs`; `bridge/src/remote_url.rs`; `bridge/src/source_sync.rs`; `bridge/src/app/workspaces/reclaim.rs`. Present Git actions are checkout/run oriented, not snapshot/per-source action batches. Source sync and reclaim already coordinate their own writers. |
-| E5 | `spa/src/views/workspaceChanges.js`; `spa/src/core/changesReview.js`, `changesetBodies.js`, `diffRender.js`; `spa/src/views/trackerTaskView.js`; `spa/src/core/trackerTaskPage.js`, `trackerTaskRender.js`, `trackerTimeline.js`; `spa/src/core/trackerAssigneePicker.js`, `trackerAssigneeControl.js`, `trackerAssignee.js`. Existing per-directory tabs, diff UI, task timeline and actor picker are the UI seams. |
-| E6 | `spa/src/core/localCache.js`, `localUiStore.js`, `uiDraftLifetime.js`, `cacheSync.js`, `taskReadOrder.js`, `pushFence.js`, `bodyPages.js`, `commandRefusal.js`; `bridge/src/body_page.rs`; `bridge/src/changes.rs`. Cached bodies, separate build-ui drafts, read ordering and invalidations exist; review snapshot cache keys are new. |
-| E7 | `bridge/src/mcp.rs`; `bridge/src/app/mcp.rs`; `bridge/src/app/tracker/dispatch.rs`, `activity.rs`, `notices.rs`; `bridge/src/app/workspaces/deletion.rs`; `bridge/templates/notes/task_tools.md`; `bridge/templates/project_agent.md`. Existing assignment/delivery, Complete→In review and merged-Finish close behavior need deliberate integration; none defines the new review's authority or completion policy. |
-| E8 | `bridge/src/api/mod.rs` (`API_VERSION = 3.5.0`); `bridge/src/api/v1/mod.rs`, `tasks.rs`, `git.rs`; `fixtures/api/versions.json`; `bridge/tests/api_contract.rs`; `spa/test/apiContract.test.js`; `AGENTS.md`; `ARCHITECTURE.md`. Typed additive wire changes, cached rendering and the bridge-service boundary remain required. |
+| 1 | Accept metadata-only Git snapshots and committed work only. Per-directory head refs retain commits; also pin a non-empty base because it may not be reachable from the head. Deleting the repository may lose the diff. |
+| 2 | Accept five verbs and synchronous snapshot creation. Git file content is a diff read; results live on the review. |
+| 3 | Accept version-only stale-click handling and running/interrupted rows. No request replay or recovery ledger. |
+| 4 | Accept the target-placement rule; reject the detached-worktree plus raw ref-update detail. A checkout can acquire that branch after the placement check but before update-ref, leaving its files/index behind the moved ref. Use a temporary checkout on the target branch and normal Git branch-in-use checks instead; merge itself advances the branch. This also removes the separate ref swap. Test both paths with source sync; its path lock is not a lock on external Git. |
+| 5 | Accept base_branch, then upstream, then empty tree; overrides ship in A, picker in B. Show the actual resolved base. |
+| 6 | Accept exact per-task legacy-hook guards in A. Task movement on a new snapshot belongs to the SPA/agent. |
+| 7 | Accept Merge and Push as separate selected steps, snapshot-head actions and a displayed differing live head. Remove the dirty-source dialog. |
+| 8 | Accept the shorter plan, standalone A and stated non-Git default. Fresh estimate is 5–7 days; prior revision history remains in Git and the task timeline. |
+
+The #4 race was reproduced in disposable repositories: a detached merge plus
+update-ref left a newly checked-out target's files behind its HEAD. A temporary
+checkout on the target branch refused a second ordinary checkout and kept its
+index/files aligned when merged. This is normal Git protection, not a guarantee
+against forced/manual ref writes by an external process.

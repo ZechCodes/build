@@ -869,21 +869,30 @@ In practice:
   connection handling in `spa/src/core/idbDatabase.js` and the key, stamp and
   announcement helpers in `spa/src/core/idbRecords.js`.
 - **Draft ownership cleanup** (#209). `spa/src/core/uiDraftLifetime.js`
-  captures draft writes before a sync's list requests. Successful workspace
-  and project lists, their complete conversation rosters, and the board's
-  positive ownership evidence retire drafts for deleted owners. Workspace
-  settings and directory addresses identify their workspace directly; other
+  runs after an ordinary sync pass or push delivery finishes writing,
+  detached from the path that paints the cache. Each list's write transaction
+  captures the ownership it replaces; cleanup then captures draft writes.
+  A possible deletion triggers fresh workspace, project and board reads
+  before any draft can go. Their complete
+  conversation rosters and positive ownership evidence retire drafts for
+  deleted owners. Workspace settings and directory addresses identify their
+  workspace directly; other
   workspace drafts use previously cached ownership. A present conversation
   anywhere wins, including on unwatched runs. Unknown, provisional and legacy
   owners remain when the lists cannot establish deletion; no age cap touches
   a live owner's draft. Cleanup does not prune project-keyed task composers
   (`task-composer:`), provisional chats (`chat:draft:*`), project settings
-  (`project-settings:`), task comments (`tracker-task:*`), or global
-  `compose:` and `new-project:` drafts. Those need their own ownership rules.
-  Pushed owner lists trigger a fresh three-list read
-  only when recognized draft candidates exist, since the push may predate a
-  newly created owner. Confirmation follows ordinary push writes without
-  delaying later pushed items. Failed/incomplete reads, intervening ownership writes
+  (`project-settings:`), task comments (`tracker-task:*`), bare-project Git
+  and changes drafts, or global `compose:` and `new-project:` drafts. Those
+  need their own ownership rules.
+  Pushed owner lists start cleanup only when they remove a previously cached
+  owner ID; unchanged membership, including git-flush lists, adds no reads.
+  Ordinary sync confirms only when its lists suggest a captured draft is
+  obsolete; a push confirms only when recognized drafts exist. A list may
+  predate a newly created owner, so its own response cannot authorize cleanup
+  of drafts captured afterwards. Neither UI-store recovery nor a
+  cleanup rejection delays ordinary list writes or later pushed items.
+  Failed/incomplete reads, intervening ownership writes
   and stopped sync leave drafts alone. Conditional deletion checks each
   captured write inside the UI-store transaction, so another tab's newer
   edit survives even at the same timestamp. Replica eviction still never

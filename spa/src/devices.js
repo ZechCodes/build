@@ -24,7 +24,7 @@ import { mountDeviceFilterCache, rememberDeviceFilter } from "./core/deviceFilte
 import { deviceWentAway, openDeviceSessions, retireDevice, syncDeviceRecoveryPresence, syncHome } from "./connection.js";
 import { DEVICES_ADDRESS, readCached, subscribeCache, writeCached } from "./core/localCache.js";
 import { uiAddress, watchUiState } from "./core/localUiState.js";
-import { bridgeUpdateAvailable, bridgeUpdateStatus, onBridgeUpdatesChanged, trackBridgeUpdateDevices } from "./core/bridgeUpdates.js";
+import { bridgeUpdateNotifies, bridgeUpdateStatus, onBridgeUpdatesChanged, trackBridgeUpdateDevices } from "./core/bridgeUpdates.js";
 import { accountReadCadence, isPairingConnecting, onPairingChanged, pairingsLandedIn } from "./core/pendingPairing.js";
 
 let presenceGeneration = 0;
@@ -392,7 +392,7 @@ function allDevicesRowHtml(filter) {
 
 function deviceRowHtml(device, filter) {
   const offline = deviceIsOffline(device);
-  const update = !offline && bridgeUpdateAvailable(bridgeUpdateStatus(device.id));
+  const update = !offline && bridgeUpdateNotifies(bridgeUpdateStatus(device.id));
   return `<div class="device-picker-row">
     ${choiceHtml(device.id, deviceLabel(device), filter === device.id)}
     ${offline

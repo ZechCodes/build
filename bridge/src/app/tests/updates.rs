@@ -44,6 +44,8 @@ async fn idle_handoff_blocks_real_rpc_until_failed_launch_reopens_admission() {
                 running_version: "0.2.0".into(),
                 platform: "linux-x86_64".into(),
                 development_build: false,
+                replaceable_development_build: false,
+                running_from_cargo_target: false,
                 check_interval: Duration::from_secs(24 * 60 * 60),
             },
             backend.clone(),
@@ -96,6 +98,14 @@ impl UpdateBackend for ReleaseBackend {
 }
 
 fn update_fixture(root: &Path, development_build: bool) -> Arc<UpdateService> {
+    update_fixture_replaceable(root, development_build, false)
+}
+
+fn update_fixture_replaceable(
+    root: &Path,
+    development_build: bool,
+    replaceable_development_build: bool,
+) -> Arc<UpdateService> {
     Arc::new(
         UpdateService::new(
             UpdateConfig {
@@ -104,6 +114,8 @@ fn update_fixture(root: &Path, development_build: bool) -> Arc<UpdateService> {
                 running_version: "0.2.0".into(),
                 platform: "linux-x86_64".into(),
                 development_build,
+                replaceable_development_build,
+                running_from_cargo_target: false,
                 check_interval: Duration::from_secs(24 * 60 * 60),
             },
             Arc::new(ReleaseBackend),
@@ -241,6 +253,55 @@ async fn development_build_can_check_but_cannot_install() {
     assert_eq!(check["ok"], true, "{check}");
     let install = call(&handler, "bridge.install_update", json!({"when":"now"}));
     assert_eq!(install["error_code"], "unavailable", "{install}");
+    // Confirming does not help a build the service does not run.
+    let confirmed = call(
+        &handler,
+        "bridge.install_update",
+        json!({"when":"now","replace_development_build":true}),
+    );
+    assert_eq!(confirmed["error_code"], "unavailable", "{confirmed}");
     let invalid = call(&handler, "bridge.install_update", json!({"when":"later"}));
     assert_eq!(invalid["error_code"], "invalid_params", "{invalid}");
+}
+
+async fn wait_for_release(service: &UpdateService) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while service.status().latest_release.is_none() {
+        assert!(tokio::time::Instant::now() < deadline, "check finishes");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test]
+async fn replacing_a_development_build_needs_the_confirmation_on_the_request() {
+    let (dir, repo) = init_repo();
+    let service = update_fixture_replaceable(dir.path(), true, true);
+    let state = qa_state(&repo, dir.path())
+        .with_update_service(service.clone())
+        .shared();
+    let handler = AppState::handler(state);
+    let check = call(&handler, "bridge.check_update", json!({}));
+    assert_eq!(check["ok"], true, "{check}");
+    wait_for_release(&service).await;
+    let status = call(&handler, "bridge.update_status", json!({}));
+    assert_eq!(status["result"]["can_install"], false, "{status}");
+    assert_eq!(
+        status["result"]["can_replace_development_build"], true,
+        "{status}"
+    );
+    let unconfirmed = call(&handler, "bridge.install_update", json!({"when":"now"}));
+    assert_eq!(unconfirmed["error_code"], "conflict", "{unconfirmed}");
+    let declined = call(
+        &handler,
+        "bridge.install_update",
+        json!({"when":"now","replace_development_build":false}),
+    );
+    assert_eq!(declined["error_code"], "conflict", "{declined}");
+    let confirmed = call(
+        &handler,
+        "bridge.install_update",
+        json!({"when":"now","replace_development_build":true}),
+    );
+    assert_eq!(confirmed["ok"], true, "{confirmed}");
+    assert_eq!(confirmed["result"]["state"], "installing", "{confirmed}");
 }

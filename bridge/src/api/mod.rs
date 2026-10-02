@@ -29,7 +29,12 @@ use std::collections::BTreeSet;
 /// 3.4.0 adds `workspace.measure_sizes` (#273): the Workspaces tab asks
 /// for each workspace's size on disk, which lands on its row with
 /// `size_measured_at_ms`.
-pub const API_VERSION: &str = "3.4.0";
+/// 3.5.0 adds `updates.replaceDevelopmentBuild` (#322): the update status
+/// carries `can_replace_development_build` and `running_from_cargo_target`,
+/// and `bridge.install_update` takes `replace_development_build`, the
+/// confirmation a development build the service runs needs before a release
+/// replaces it.
+pub const API_VERSION: &str = "3.5.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -96,6 +101,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "thread.attachmentChunks", // Since 1.30.0: offset/length on thread.attachment.
     "threads.newestDeltaPagination",
     "threads.postOperations",
+    "updates.replaceDevelopmentBuild", // Since 3.5.0: can_replace_development_build, replace_development_build (#322).
     "workspaces.lifecycle",
     "workspaces.reclaimBranches",
 ];

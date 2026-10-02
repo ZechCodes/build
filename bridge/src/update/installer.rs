@@ -32,6 +32,11 @@ pub struct Job {
     pub tasks_dir: PathBuf,
     pub home: PathBuf,
     pub uid: String,
+    /// The person confirmed replacing a development build the service runs.
+    /// Such a job checks that provenance instead of the install marker, and
+    /// saves and restores the marker as it was, including none.
+    #[serde(default)]
+    pub replaces_development_build: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -113,6 +118,7 @@ pub fn create_job(
     installed_binary: &Path,
     version: &str,
     attempt_id: &str,
+    replaces_development_build: bool,
 ) -> Result<(PathBuf, Job), String> {
     uuid::Uuid::parse_str(attempt_id).map_err(|_| "invalid update attempt id")?;
     let nonce = attempt_id.to_string();
@@ -159,6 +165,7 @@ pub fn create_job(
         tasks_dir: tasks,
         home: home.to_path_buf(),
         uid: String::from_utf8_lossy(&uid.stdout).trim().to_string(),
+        replaces_development_build,
     };
     write_json(&job_file(&dir), &job)?;
     Ok((dir, job))
@@ -260,7 +267,7 @@ pub fn heartbeat(home: &Path, running_version: &str) -> Result<(), String> {
 pub fn launch(dir: &Path) -> Result<(), String> {
     let mut job = load_job(dir)?;
     verify_staged_digest(&job)?;
-    super::provenance::managed_binary(&job.home, &job.installed_binary)?;
+    installable_binary(&job)?;
     job.running_pid = std::process::id();
     write_json(&job_file(dir), &job)?;
     let helper = dir.join("update-helper");
@@ -282,6 +289,16 @@ pub fn launch(dir: &Path) -> Result<(), String> {
     // helper. Keep ownership and probation until its terminal result clears
     // the active marker.
     started
+}
+
+/// The provenance check the job was created under: a managed install's
+/// marker, or a confirmed development build the service runs.
+fn installable_binary(job: &Job) -> Result<PathBuf, String> {
+    super::provenance::installable_binary(
+        &job.home,
+        &job.installed_binary,
+        job.replaces_development_build,
+    )
 }
 
 fn launch_systemd(helper: &Path, dir: &Path, _job: &Job) -> Result<(), String> {
@@ -570,8 +587,7 @@ fn install_with(
             "running bridge differs from the managed install".into(),
         ));
     }
-    publish_backup(&super::provenance::marker_path(&job.home), &old_marker)
-        .map_err(TransactionFailure::Recovered)?;
+    publish_marker_backup(job, &old_marker).map_err(TransactionFailure::Recovered)?;
     let checkpoint = backup_checkpoint(job, &old_binary, &running_binary, &old_marker)
         .map_err(TransactionFailure::Recovered)?;
     validate_backups(job, &old_binary, &running_binary, &old_marker, &checkpoint)
@@ -626,6 +642,21 @@ fn publish_backup(source: &Path, destination: &Path) -> Result<(), String> {
     sync_parent(destination)
 }
 
+/// Save the marker for rollback. A replaced development build may have none,
+/// saved as an empty file that `restore_marker` turns back into none; a
+/// managed install without its marker fails here, before the service stops.
+fn publish_marker_backup(job: &Job, destination: &Path) -> Result<(), String> {
+    let marker = super::provenance::marker_path(&job.home);
+    if job.replaces_development_build && !marker.exists() {
+        let temporary = destination.with_extension("tmp");
+        fs::write(&temporary, b"").map_err(|e| e.to_string())?;
+        sync_file(&temporary)?;
+        fs::rename(&temporary, destination).map_err(|e| e.to_string())?;
+        return sync_parent(destination);
+    }
+    publish_backup(&marker, destination)
+}
+
 fn backup_checkpoint(
     job: &Job,
     binary: &Path,
@@ -658,6 +689,11 @@ fn validate_backups(
         || actual.running_digest != actual.binary_digest
     {
         return Err("rollback backup changed after checkpoint".into());
+    }
+    // A development build's marker claims nothing about it; rollback puts
+    // back the bytes the checkpoint hashed.
+    if job.replaces_development_build {
+        return Ok(());
     }
     super::provenance::validate_saved_marker(marker, binary, &job.installed_binary)
 }

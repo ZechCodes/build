@@ -221,7 +221,7 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.2.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.5.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
@@ -277,6 +277,11 @@ runtime that starts them.
   for the workspaces named (or all of them, or a project's) and answers at
   once; each size lands on the row as `lifecycle.size_bytes` with
   `lifecycle.size_measured_at_ms`. See Workspaces and worktrees.
+  3.5.0 adds `updates.replaceDevelopmentBuild` (#322): the update status
+  carries `can_replace_development_build` and `running_from_cargo_target`,
+  and `bridge.install_update` takes `replace_development_build`. See Update
+  and install. The SPA reads the status field off the cached status, so an older bridge (no field) gets the
+  install script command instead of an Install it would refuse.
   The SPA's adapter claims `>=2.0.0 <4.0.0`: it calls nothing a 2.x bridge
   lacks (what 2.x added after 2.0.0 is capability-gated), so the app can
   roll before the bridge.
@@ -740,9 +745,33 @@ nothing else
 - `bridge/src/update/`: `UpdateService` (`service.rs`) checks the public releases
   repo (`release.rs`) and verifies the signed `SHA256SUMS`. `installer.rs` runs a
   detached helper (via `systemd-run` on Linux) that swaps the binary, watches the
-  new one on probation, and rolls back if it fails. Dev builds only report and
-  never install (`provenance.rs`). The SPA reads the status through the
-  `bridge.update_status` push and the verbs in `bridge/src/api/v1/updates.rs`.
+  new one on probation, and rolls back if it fails. The SPA reads the status
+  through the `bridge.update_status` push and the verbs in
+  `bridge/src/api/v1/updates.rs`.
+- A release build checks once a day. A development build (`provenance.rs`:
+  no marker matching the running binary and the service) never checks on its
+  own; it checks when asked and nothing in the SPA marks it as having an
+  update. If the bridge service runs that exact binary
+  (`replaceable_development_binary`), an install with
+  `replace_development_build: true` replaces it in place through the same
+  verified download and helper, which saves the marker as it was (none is an
+  empty backup) and restores it on rollback; the release then carries the
+  marker and updates as a release build. A bridge started by hand, or a
+  service that runs another executable, is never replaced; the panel shows
+  the install script command. The SPA sends the flag only from the warning
+  that names the release and the restart. A queued install saves the flag
+  with its attempt (`replaces_development_build`); a development build
+  stages nothing without it, and at startup drops a schedule it may not run
+  and forgets an earlier run's check result and check error, so an older
+  SPA has nothing stale to badge. `running_from_cargo_target` (a cargo
+  `CACHEDIR.TAG` above the running binary) adds to the warning that the next
+  `cargo build` overwrites the release. Controls:
+  `planning/v2/Bridge Update Security Checklist.md`.
+- `last_error` is a check's or an install's (`last_error_kind`, saved beside
+  the status, not sent). A successful check clears a check's; an install's
+  lasts until an install succeeds, and only it makes the state `failed`. An
+  error saved before kinds were kept counts as an install's only on a
+  release build with a saved attempt or a helper result on disk.
 - `bridge/src/service/`: `install-service` writes the `build-bridge.service`
   systemd user unit (`systemd.rs`) or a LaunchAgent (`launchd.rs`).
 - `scripts/install.sh` is the public installer. It verifies and installs the

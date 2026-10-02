@@ -27,8 +27,20 @@ export function bridgeCanInstall(status) {
     (typeof status.can_install === "boolean" ? status.can_install : bridgeUpdateAvailable(status)));
 }
 
-export function anyBridgeUpdateAvailable(devices = []) {
-  return devices.some((device) => device.status === "online" && bridgeUpdateAvailable(bridgeUpdateStatus(device.id)));
+/** A development build the service runs, which the app may replace with a
+ *  release once the person confirms it (wire 3.5.0). */
+export function bridgeCanReplaceDevelopmentBuild(status) {
+  return Boolean(status?.development_build && status.can_replace_development_build === true);
+}
+
+/** Whether to mark a machine as having an update. A development build never
+ *  is: it checks only when asked, and replacing it is not an update. */
+export function bridgeUpdateNotifies(status) {
+  return Boolean(status && !status.development_build && bridgeUpdateAvailable(status));
+}
+
+export function anyBridgeUpdateNotifies(devices = []) {
+  return devices.some((device) => device.status === "online" && bridgeUpdateNotifies(bridgeUpdateStatus(device.id)));
 }
 
 export function onBridgeUpdatesChanged(listener) {

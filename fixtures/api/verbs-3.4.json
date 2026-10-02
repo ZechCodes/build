@@ -1,6 +1,6 @@
 {
-  "api_version": "3.3.0",
-  "commit": "772491c4",
+  "api_version": "3.4.0",
+  "commit": "1ebff704",
   "generated_by": "scripts/api-verbs-manifest.mjs",
   "verbs": [
     "agent.add",
@@ -108,6 +108,7 @@
     "workspace.git_init_options",
     "workspace.init_git",
     "workspace.list",
+    "workspace.measure_sizes",
     "workspace.reclaim",
     "workspace.remove_directory",
     "workspace.rename",
@@ -273,6 +274,7 @@
     "workspace.git_init_options",
     "workspace.init_git",
     "workspace.list",
+    "workspace.measure_sizes",
     "workspace.reclaim",
     "workspace.remove_directory",
     "workspace.rename",

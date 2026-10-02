@@ -66,7 +66,7 @@ import { paintDevicePicker, readCachedDevices } from "../src/devices.js";
 import { paintBridgeUpdateMark } from "../src/core/inboxShell.js";
 import { DEVICES_ADDRESS, readCached, wipeCache, writeCached } from "../src/core/localCache.js";
 import { deviceProjectsAddress, deviceSettingsAddress } from "../src/core/settingsRecords.js";
-import { bridgeUpdateAddress } from "../src/core/bridgeUpdates.js";
+import { bridgeUpdateAddress, bridgeUpdateStatus } from "../src/core/bridgeUpdates.js";
 import { dispatchChangeEvent } from "../src/core/changeEvents.js";
 
 const CATALOG = {
@@ -145,15 +145,82 @@ describe("the machine's own panels", () => {
     await vi.waitFor(() => expect(session.call).toHaveBeenCalledWith("bridge.install_update", { when: "idle" }));
   });
 
-  it("keeps development builds visible while refusing replacement", async () => {
-    session.call.mockImplementation(async (method) => method === "bridge.update_status"
-      ? { ...UPDATE, development_build: true, can_install: false }
-      : method === "project.list" ? { projects: PROJECTS } : method === "models.list" ? CATALOG : SETTINGS);
+  const answerUpdate = (status) => session.call.mockImplementation(async (method) => {
+    if (["bridge.update_status", "bridge.check_update", "bridge.install_update"].includes(method)) return status;
+    return method === "project.list" ? { projects: PROJECTS } : method === "models.list" ? CATALOG : SETTINGS;
+  });
+
+  it("gives a development build it cannot replace the install command, not an update", async () => {
+    // A bridge from before 3.5.0 sends no can_replace_development_build.
+    answerUpdate({ ...UPDATE, development_build: true, can_install: false });
     await renderDeviceSettings();
     await vi.waitFor(() => expect(document.querySelector(".bridge-update-body")?.textContent).toContain("development build"));
+    const body = document.querySelector(".bridge-update-body").textContent;
+    expect(document.querySelector(".bridge-update-state").textContent).toBe("Version 0.3.0 is available.");
+    expect(body).toContain("cannot update from the app");
+    expect(document.querySelector(".bridge-update-command").textContent).toBe("curl -fsSL https://getbuild.ing/install.sh | sh");
     expect(document.querySelector("[data-bridge-check]").disabled).toBe(false);
     expect(document.querySelector("[data-bridge-install-now]").disabled).toBe(true);
     expect(document.querySelector("[data-bridge-install-idle]").disabled).toBe(true);
+  });
+
+  it("never calls an old development build's stale check error a failed update", async () => {
+    answerUpdate({ ...UPDATE, development_build: true, can_install: false, state: "failed", last_error: "HTTP status client error (404 Not Found)" });
+    await renderDeviceSettings();
+    await vi.waitFor(() => expect(document.querySelector(".bridge-update-error")?.textContent).toContain("404"));
+    expect(document.querySelector(".bridge-update-state").textContent).toBe("Version 0.3.0 is available. Could not check for updates.");
+    expect(document.querySelector(".bridge-update-body").textContent).not.toContain("The update failed");
+  });
+
+  it("says a failed check plainly", async () => {
+    answerUpdate({ ...UPDATE, latest_release: { ...UPDATE.latest_release, version: "0.2.0" }, update_available: false, can_install: false, state: "idle", last_error: "network down" });
+    await renderDeviceSettings();
+    await vi.waitFor(() => expect(document.querySelector(".bridge-update-state")?.textContent).toBe("Could not check for updates."));
+    expect(document.querySelector(".bridge-update-error").textContent).toBe("network down");
+  });
+
+  it("keeps an available update in view beside a failed check", async () => {
+    answerUpdate({ ...UPDATE, last_error: "network down" });
+    await renderDeviceSettings();
+    await vi.waitFor(() => expect(document.querySelector(".bridge-update-state")?.textContent).toBe("Version 0.3.0 is available. Could not check for updates."));
+    expect(document.querySelector(".bridge-update-error").textContent).toBe("network down");
+    expect(document.querySelector("[data-bridge-install-now]").disabled).toBe(false);
+  });
+
+  it("warns that cargo rebuilds a development build replaced in its target directory", async () => {
+    const replaceable = { ...UPDATE, development_build: true, can_install: false, can_replace_development_build: true };
+    answerUpdate({ ...replaceable, running_from_cargo_target: true });
+    await renderDeviceSettings();
+    await vi.waitFor(() => expect(document.querySelector("[data-bridge-install-now]").disabled).toBe(false));
+    document.querySelector("[data-bridge-install-now]").click();
+    expect(document.querySelector(".bridge-update-confirm").textContent)
+      .toContain("The next cargo build in this checkout overwrites the release with a development build again.");
+  });
+
+  it("leaves the cargo note out for a development build outside a target directory", async () => {
+    answerUpdate({ ...UPDATE, development_build: true, can_install: false, can_replace_development_build: true });
+    await renderDeviceSettings();
+    await vi.waitFor(() => expect(document.querySelector("[data-bridge-install-now]").disabled).toBe(false));
+    document.querySelector("[data-bridge-install-now]").click();
+    expect(document.querySelector(".bridge-update-confirm").textContent).not.toContain("cargo");
+  });
+
+  it("replaces a development build only after its warning is confirmed", async () => {
+    answerUpdate({ ...UPDATE, development_build: true, can_install: false, can_replace_development_build: true });
+    await renderDeviceSettings();
+    await vi.waitFor(() => expect(document.querySelector("[data-bridge-install-now]").disabled).toBe(false));
+    expect(document.querySelector(".bridge-update-command")).toBeNull();
+    document.querySelector("[data-bridge-install-now]").click();
+    const warning = document.querySelector(".bridge-update-confirm");
+    expect(warning.textContent).toContain("replaces this development build with release 0.3.0");
+    expect(warning.textContent).toContain("restarts");
+    expect(session.call).not.toHaveBeenCalledWith("bridge.install_update", expect.anything());
+    warning.querySelector("[data-bridge-confirm-cancel]").click();
+    expect(document.querySelector(".bridge-update-confirm")).toBeNull();
+    document.querySelector("[data-bridge-install-idle]").click();
+    document.querySelector("[data-bridge-confirm-replace]").click();
+    await vi.waitFor(() => expect(session.call).toHaveBeenCalledWith("bridge.install_update", { when: "idle", replace_development_build: true }));
+    expect(session.call.mock.calls.filter(([method]) => method === "bridge.install_update")).toHaveLength(1);
   });
 
   it("shows an older bridge's compatibility message", async () => {
@@ -188,6 +255,19 @@ describe("the machine's own panels", () => {
     App.devices[0].status = "offline";
     paintBridgeUpdateMark();
     expect(document.querySelector("#nav-account .bridge-update-dot")).toBeNull();
+  });
+
+  it("marks nothing for a development build, whatever its cached status says", async () => {
+    document.body.insertAdjacentHTML("beforeend", '<div id="devpick"></div><button id="nav-account" aria-label="Settings"></button>');
+    paintDevicePicker();
+    paintBridgeUpdateMark();
+    const development = { type: "bridge.update_status", ...UPDATE, development_build: true, can_install: false, can_replace_development_build: true };
+    expect(dispatchChangeEvent(development, "other")).toBe(true);
+    // The status the marks are painted from has arrived.
+    await vi.waitFor(() => expect(bridgeUpdateStatus("other")?.development_build).toBe(true));
+    expect(document.querySelector("#nav-account .bridge-update-dot")).toBeNull();
+    expect(document.querySelector("#nav-account").getAttribute("aria-label")).toBe("Settings");
+    expect(document.querySelector('[data-settings-device="other"] .bridge-update-dot')).toBeNull();
   });
 
   it("paints a cached projects folder while settings.get is absent", async () => {

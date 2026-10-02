@@ -15,7 +15,9 @@
     "state": "available",
     "last_error": null,
     "update_available": true,
-    "can_install": true
+    "can_install": true,
+    "can_replace_development_build": false,
+    "running_from_cargo_target": false
   },
   "errors": ["unavailable"]
 }

@@ -343,10 +343,19 @@ pub struct ProductionBackend {
     home: PathBuf,
     tasks_dir: PathBuf,
     installed_binary: PathBuf,
+    replaces_development_build: bool,
 }
 
 impl ProductionBackend {
-    pub fn new(home: PathBuf, tasks_dir: PathBuf, installed_binary: PathBuf) -> Self {
+    /// `replaces_development_build` is set only for a development build the
+    /// service runs; the update service still refuses its installs unless
+    /// each request confirms the replacement.
+    pub fn new(
+        home: PathBuf,
+        tasks_dir: PathBuf,
+        installed_binary: PathBuf,
+        replaces_development_build: bool,
+    ) -> Self {
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(120))
@@ -357,6 +366,7 @@ impl ProductionBackend {
             home,
             tasks_dir,
             installed_binary,
+            replaces_development_build,
         }
     }
 }
@@ -376,13 +386,18 @@ impl UpdateBackend for ProductionBackend {
         if super::installer::probation_active(&self.home) {
             return Err("another update is active or recovering".into());
         }
-        let installed = super::provenance::managed_binary(&self.home, &self.installed_binary)?;
+        let installed = super::provenance::installable_binary(
+            &self.home,
+            &self.installed_binary,
+            self.replaces_development_build,
+        )?;
         let (dir, job) = super::installer::create_job(
             &self.home,
             &self.tasks_dir,
             &installed,
             &release.version,
             attempt_id,
+            self.replaces_development_build,
         )?;
         let work = job
             .staged_binary

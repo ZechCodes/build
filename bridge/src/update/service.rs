@@ -1,3 +1,4 @@
+use super::status::ErrorKind;
 use super::{AdmissionGate, HelperResult, InstallWhen, Release, UpdateState, UpdateStatus};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -43,7 +44,7 @@ pub trait UpdateBackend: Send + Sync {
 const HELPER_STABILIZATION: Duration = Duration::from_secs(10 * 60);
 pub type BusyProbe = Arc<dyn Fn() -> bool + Send + Sync>;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct AttemptMetadata {
     #[serde(default)]
     attempt_id: Option<String>,
@@ -55,6 +56,10 @@ struct AttemptMetadata {
     target_version: Option<String>,
     #[serde(default)]
     rollback_pending: bool,
+    /// The person confirmed this attempt replaces a development build. A
+    /// development build stages or launches nothing without it.
+    #[serde(default)]
+    replaces_development_build: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -63,6 +68,9 @@ struct PersistedUpdate {
     status: UpdateStatus,
     #[serde(flatten)]
     attempt: AttemptMetadata,
+    /// Absent in files saved before check and install errors were told apart.
+    #[serde(default)]
+    last_error_kind: Option<ErrorKind>,
 }
 
 #[derive(Debug, Clone)]
@@ -72,13 +80,20 @@ pub struct UpdateConfig {
     pub running_version: String,
     pub platform: String,
     pub development_build: bool,
+    /// A development build the bridge service runs (`provenance`), which a
+    /// confirmed install may replace with a release.
+    pub replaceable_development_build: bool,
+    /// A development build whose executable is in a cargo target directory.
+    pub running_from_cargo_target: bool,
     pub check_interval: Duration,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum UpdateError {
-    #[error("updates are unavailable in a development build")]
+    #[error("this development build cannot be replaced from the app; install a release build with the install script")]
     DevelopmentBuild,
+    #[error("replacing a development build needs replace_development_build")]
+    ReplacementNotConfirmed,
     #[error("no newer release is available")]
     NoUpdateAvailable,
     #[error("an update is already installing")]
@@ -121,13 +136,17 @@ pub struct UpdateService {
 
 impl UpdateService {
     pub fn new(config: UpdateConfig, backend: Arc<dyn UpdateBackend>) -> Result<Self, UpdateError> {
-        let (mut status, attempt) = match std::fs::read(&config.status_path) {
+        let (mut status, mut attempt) = match std::fs::read(&config.status_path) {
             Ok(bytes) => serde_json::from_slice::<PersistedUpdate>(&bytes)
                 .map_err(|source| UpdateError::Json {
                     path: config.status_path.clone(),
                     source,
                 })
-                .map(|persisted| (persisted.status, persisted.attempt))?,
+                .map(|persisted| {
+                    let mut status = persisted.status;
+                    status.last_error_kind = persisted.last_error_kind;
+                    (status, persisted.attempt)
+                })?,
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => (
                 UpdateStatus::new(
                     config.running_version.clone(),
@@ -147,12 +166,23 @@ impl UpdateService {
         status.running_version = config.running_version.clone();
         status.platform = config.platform.clone();
         status.development_build = config.development_build;
+        status.development_build_replaceable = config.replaceable_development_build;
+        status.running_from_cargo_target =
+            config.development_build && config.running_from_cargo_target;
+        if status.last_error.is_some() && status.last_error_kind.is_none() {
+            let install_evidence =
+                attempt != AttemptMetadata::default() || config.result_path.exists();
+            adopt_unkinded_error(&mut status, install_evidence);
+        }
+        if config.development_build {
+            forget_unconfirmed_development_state(&config, &mut status, &mut attempt);
+        }
         status.refresh_computed();
         let no_active_attempt = matches!(backend.active_attempt(), Ok(None));
         let helper_may_own_bridge = status.state == UpdateState::Installing
             || attempt.rollback_pending
             || !no_active_attempt;
-        status.can_install &= !attempt.rollback_pending && no_active_attempt;
+        status.hold_installs_unless(!attempt.rollback_pending && no_active_attempt);
         let (status_tx, _) = watch::channel(status);
         let admission = AdmissionGate::new(helper_may_own_bridge);
         Ok(Self {
@@ -260,12 +290,7 @@ impl UpdateService {
         match self.backend.latest().await {
             Ok(release) => {
                 if let Err(error) = validate_release(&release) {
-                    if status.last_error.is_none() {
-                        status.last_error = Some(error.to_string());
-                    }
-                    if status.state != UpdateState::ScheduledWhenIdle {
-                        status.state = UpdateState::Failed;
-                    }
+                    status.set_check_error(error.to_string());
                     self.publish(status, attempt)?;
                     return Err(error);
                 }
@@ -277,35 +302,33 @@ impl UpdateService {
                         != Some(release.version.as_str())
                 {
                     // A staged binary belongs to one release. A newer result
-                    // invalidates the old queued attempt before handoff.
+                    // invalidates the old queued attempt before handoff, and
+                    // with it a confirmation that named the older release.
                     *attempt = AttemptMetadata::default();
                 }
+                // A development build's queue lasts only while its
+                // confirmation does; a release build's always may.
+                let scheduled = status.state == UpdateState::ScheduledWhenIdle
+                    && schedule_confirmed(&self.config, attempt);
                 status.latest_release = Some(release);
-                if status.state != UpdateState::ScheduledWhenIdle {
-                    status.state = if status.last_error.is_some() {
-                        UpdateState::Failed
-                    } else if release_available(&status) {
-                        UpdateState::Available
-                    } else {
-                        UpdateState::Idle
-                    };
+                if !status.has_install_error() {
+                    status.clear_error();
+                }
+                if !scheduled {
+                    status.state = settled_state(&status);
                 } else if !release_available(&status) {
                     status.state = UpdateState::Idle;
                     *attempt = AttemptMetadata::default();
                 }
                 // A prior helper failure is sticky until a successful helper
-                // result; a successful metadata check does not erase it.
+                // result; a successful metadata check clears only a check's.
                 self.publish(status, attempt)
             }
             Err(error) => {
                 // Preserve a prior helper rollback cause; a transient network
-                // failure must not replace the actionable install error.
-                if status.last_error.is_none() {
-                    status.last_error = Some(error.clone());
-                }
-                if status.state != UpdateState::ScheduledWhenIdle {
-                    status.state = UpdateState::Failed;
-                }
+                // failure must not replace the actionable install error. A
+                // failed check leaves the state alone: nothing was installed.
+                status.set_check_error(error.clone());
                 self.publish(status, attempt)?;
                 Err(UpdateError::Backend(error))
             }
@@ -317,10 +340,19 @@ impl UpdateService {
         when: InstallWhen,
         working_agents: bool,
     ) -> Result<UpdateStatus, UpdateError> {
+        self.install_confirmed(when, working_agents, false).await
+    }
+
+    /// `install`, where `replace_development_build` is the person's
+    /// confirmation that a development build may be replaced by the release.
+    pub async fn install_confirmed(
+        &self,
+        when: InstallWhen,
+        working_agents: bool,
+        replace_development_build: bool,
+    ) -> Result<UpdateStatus, UpdateError> {
         let mut guard = self.transition.lock().await;
-        if self.config.development_build {
-            return Err(UpdateError::DevelopmentBuild);
-        }
+        self.admit_build(replace_development_build)?;
         if self.check_in_flight.load(Ordering::Acquire) {
             return Err(UpdateError::Busy);
         }
@@ -342,6 +374,7 @@ impl UpdateService {
         }
         if when == InstallWhen::Idle {
             status.state = UpdateState::ScheduledWhenIdle;
+            guard.replaces_development_build = self.config.development_build;
             let status = self.publish(status, &guard)?;
             if working_agents {
                 return Ok(status);
@@ -359,11 +392,10 @@ impl UpdateService {
         self: &Arc<Self>,
         when: InstallWhen,
         working_agents: bool,
+        replace_development_build: bool,
     ) -> Result<UpdateStatus, UpdateError> {
         let mut guard = self.transition.try_lock().map_err(|_| UpdateError::Busy)?;
-        if self.config.development_build {
-            return Err(UpdateError::DevelopmentBuild);
-        }
+        self.admit_build(replace_development_build)?;
         if self.check_in_flight.load(Ordering::Acquire) {
             return Err(UpdateError::Busy);
         }
@@ -388,6 +420,7 @@ impl UpdateService {
                 return Ok(status);
             }
             status.state = UpdateState::ScheduledWhenIdle;
+            guard.replaces_development_build = self.config.development_build;
             let status = self.publish(status, &guard)?;
             drop(guard);
             let service = Arc::clone(self);
@@ -412,6 +445,21 @@ impl UpdateService {
             service.staging.store(false, Ordering::Release);
         });
         Ok(status)
+    }
+
+    /// A release build installs; a development build only when the service
+    /// runs it and this request confirms replacing it.
+    fn admit_build(&self, replace_development_build: bool) -> Result<(), UpdateError> {
+        if !self.config.development_build {
+            return Ok(());
+        }
+        if !self.config.replaceable_development_build {
+            return Err(UpdateError::DevelopmentBuild);
+        }
+        if !replace_development_build {
+            return Err(UpdateError::ReplacementNotConfirmed);
+        }
+        Ok(())
     }
 
     async fn launch_locked(
@@ -440,7 +488,7 @@ impl UpdateService {
             status.state = UpdateState::Failed;
             *attempt = AttemptMetadata::default();
         }
-        status.last_error = Some(error);
+        status.set_install_error(error);
         self.publish(status, attempt)?;
         Ok(())
     }
@@ -495,6 +543,7 @@ impl UpdateService {
             staged: false,
             target_version: Some(release.version.clone()),
             rollback_pending: false,
+            replaces_development_build: self.config.development_build,
         };
         status.state = UpdateState::Installing;
         self.publish(status.clone(), attempt)?;
@@ -516,6 +565,9 @@ impl UpdateService {
         {
             *attempt = AttemptMetadata::default();
         }
+        if !schedule_confirmed(&self.config, attempt) {
+            return self.drop_schedule(status, attempt);
+        }
         let attempt_id = match &attempt.attempt_id {
             Some(id) => id.clone(),
             None => {
@@ -532,7 +584,7 @@ impl UpdateService {
             self.staging.store(false, Ordering::Release);
             if let Err(error) = result {
                 status.state = UpdateState::Failed;
-                status.last_error = Some(error.clone());
+                status.set_install_error(error.clone());
                 *attempt = AttemptMetadata::default();
                 self.publish(status, attempt)?;
                 return Err(UpdateError::Backend(error));
@@ -612,13 +664,10 @@ impl UpdateService {
         self.reopen_admission_if_settled(&status, &guard)?;
         let mut computed = status.clone();
         computed.refresh_computed();
-        computed.can_install &= !guard.rollback_pending
-            && self
-                .backend
-                .active_attempt()
-                .map(|active| active.is_none())
-                .unwrap_or(false);
-        if computed.can_install != status.can_install {
+        computed.hold_installs_unless(self.helper_free(&guard));
+        if computed.can_install != status.can_install
+            || computed.can_replace_development_build != status.can_replace_development_build
+        {
             status = self.publish(status, &guard)?;
         }
         if (prior.state == UpdateState::Installing && status.state != UpdateState::Installing)
@@ -636,7 +685,7 @@ impl UpdateService {
             if self.check_in_flight.load(Ordering::Acquire) {
                 return Ok(status);
             }
-            if check_due(&status, now, self.config.check_interval) {
+            if self.check_due(&status, now) {
                 self.check_locked(now, &mut guard).await?;
                 let status = self.status();
                 if status.state != UpdateState::ScheduledWhenIdle {
@@ -656,10 +705,16 @@ impl UpdateService {
         if self.check_in_flight.load(Ordering::Acquire) {
             return Ok(status);
         }
-        if check_due(&status, now, self.config.check_interval) {
+        if self.check_due(&status, now) {
             return self.check_locked(now, &mut guard).await;
         }
         Ok(status)
+    }
+
+    /// A release build checks once per interval. A development build checks
+    /// only when asked: it has nothing to offer unless the person wants it.
+    fn check_due(&self, status: &UpdateStatus, now: OffsetDateTime) -> bool {
+        !self.config.development_build && check_due(status, now, self.config.check_interval)
     }
 
     fn reconcile_helper_locked(
@@ -698,7 +753,7 @@ impl UpdateService {
         }
         if result.rollback_pending {
             status.state = UpdateState::Failed;
-            status.last_error = Some(
+            status.set_install_error(
                 result
                     .error
                     .unwrap_or_else(|| "rollback failed; recovery pending".into()),
@@ -711,14 +766,14 @@ impl UpdateService {
             return Ok(());
         }
         if result.success && self.config.running_version == result.version {
-            status.last_error = None;
+            status.clear_error();
             status.state = UpdateState::Idle;
         } else if result.success {
             // The result claims success, but this executable is still the old
             // version. Keep waiting for the new bridge to start and consume it.
             return self.recover_missing_helper(now, status, attempt);
         } else {
-            status.last_error = Some(
+            status.set_install_error(
                 result
                     .error
                     .unwrap_or_else(|| "update failed; previous bridge restored".into()),
@@ -767,10 +822,30 @@ impl UpdateService {
             return Ok(());
         }
         status.state = UpdateState::Failed;
-        status.last_error = Some("update helper stopped before reporting a result".into());
+        status.set_install_error("update helper stopped before reporting a result".into());
         *attempt = AttemptMetadata::default();
         self.publish(status, attempt)?;
         Ok(())
+    }
+
+    /// Withdraw a queued install nobody confirmed for this build.
+    fn drop_schedule(
+        &self,
+        mut status: UpdateStatus,
+        attempt: &mut AttemptMetadata,
+    ) -> Result<UpdateStatus, UpdateError> {
+        status.state = settled_state(&status);
+        *attempt = AttemptMetadata::default();
+        self.publish(status, attempt)
+    }
+
+    fn helper_free(&self, attempt: &AttemptMetadata) -> bool {
+        !attempt.rollback_pending
+            && self
+                .backend
+                .active_attempt()
+                .map(|active| active.is_none())
+                .unwrap_or(false)
     }
 
     fn publish(
@@ -779,15 +854,72 @@ impl UpdateService {
         attempt: &AttemptMetadata,
     ) -> Result<UpdateStatus, UpdateError> {
         status.refresh_computed();
-        status.can_install &= !attempt.rollback_pending
-            && self
-                .backend
-                .active_attempt()
-                .map(|active| active.is_none())
-                .unwrap_or(false);
+        status.hold_installs_unless(self.helper_free(attempt));
         save_status(&self.config.status_path, &status, attempt)?;
         self.status_tx.send_replace(status.clone());
         Ok(status)
+    }
+}
+
+/// Name the kind of an error saved before kinds were kept. It was an
+/// install's only on a release build with a saved attempt or a helper result
+/// on disk; otherwise no install ran, so it was a check's, and a check error
+/// does not leave the state `Failed`.
+fn adopt_unkinded_error(status: &mut UpdateStatus, install_evidence: bool) {
+    if install_evidence && !status.development_build {
+        status.last_error_kind = Some(ErrorKind::Install);
+        return;
+    }
+    status.last_error_kind = Some(ErrorKind::Check);
+    if status.state == UpdateState::Failed {
+        status.state = settled_state(status);
+    }
+}
+
+/// Whether a queued install may run on this build: a release build's always
+/// may; a development build's only when the service runs it and the person
+/// confirmed the replacement for this attempt.
+fn schedule_confirmed(config: &UpdateConfig, attempt: &AttemptMetadata) -> bool {
+    !config.development_build
+        || (config.replaceable_development_build && attempt.replaces_development_build)
+}
+
+/// At a development build's startup: drop a queued install it may not run,
+/// and forget an earlier run's check. Nothing checks again on its own, so an
+/// old result or error would only linger. An attempt in flight, and an
+/// install's error, stay.
+fn forget_unconfirmed_development_state(
+    config: &UpdateConfig,
+    status: &mut UpdateStatus,
+    attempt: &mut AttemptMetadata,
+) {
+    if status.state == UpdateState::ScheduledWhenIdle && !schedule_confirmed(config, attempt) {
+        status.state = UpdateState::Idle;
+        *attempt = AttemptMetadata::default();
+    }
+    let settled = matches!(
+        status.state,
+        UpdateState::Idle | UpdateState::Available | UpdateState::Failed
+    );
+    if !settled || *attempt != AttemptMetadata::default() {
+        return;
+    }
+    if !status.has_install_error() {
+        status.clear_error();
+    }
+    status.latest_release = None;
+    status.last_checked_at = None;
+    status.state = settled_state(status);
+}
+
+/// The state with nothing queued or installing.
+fn settled_state(status: &UpdateStatus) -> UpdateState {
+    if status.has_install_error() {
+        UpdateState::Failed
+    } else if release_available(status) {
+        UpdateState::Available
+    } else {
+        UpdateState::Idle
     }
 }
 
@@ -843,6 +975,7 @@ fn save_status(
     let json = serde_json::to_vec_pretty(&PersistedUpdate {
         status: status.clone(),
         attempt: attempt.clone(),
+        last_error_kind: status.last_error_kind,
     })
     .map_err(|source| UpdateError::Json {
         path: path.to_path_buf(),

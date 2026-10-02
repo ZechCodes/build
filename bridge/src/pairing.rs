@@ -54,6 +54,10 @@ pub enum PairingError {
         /// The api the identity records as its approver, if it records one.
         approver: Option<String>,
     },
+    /// While its code was shown, the api said this registration is gone, a
+    /// few times in a row (#321 review).
+    #[error("the api {0}, so this code can no longer be approved; run build-bridge pair again for a new one")]
+    PairingEnded(&'static str),
 }
 
 type Result<T> = std::result::Result<T, PairingError>;
@@ -402,8 +406,10 @@ enum Unanswered {
     /// and may say when to ask again.
     Refused { retry_after: Option<Duration> },
     /// No api to ask: no connection, or the ingress's 404 while the api's one
-    /// pod is replaced (every deploy, for half a minute or so). Only a 404
-    /// that goes on is the api not knowing the device.
+    /// pod is replaced (every deploy, for half a minute or so). The status
+    /// route answers every device id, an unknown one included, so a 404 that
+    /// goes on is routing — a wrong api url, or a proxy in the way — never the
+    /// api not knowing the device; that is a 200 saying `unknown`.
     Unreachable,
     /// A refusal about this device.
     Final,
@@ -471,6 +477,28 @@ impl From<Duration> for ApprovalPolls {
     }
 }
 
+/// The longest `Retry-After` a refused ask waits out. Far shorter than the
+/// beat's: a human may be typing the code in now, and one 429 should not leave
+/// it unasked about for minutes.
+const LONGEST_RETRY_AFTER: Duration = Duration::from_secs(60);
+
+/// How many answers in a row saying the registration is gone end the wait.
+/// More than one, so an answer racing the registration's own write is not
+/// taken as the api's last word.
+pub const GONE_ANSWERS_BEFORE_ENDING: u32 = 3;
+
+/// What the api said happened to a registration it calls gone, or None while
+/// it may yet be approved. Only a pending identity is polled — an approved one
+/// is never asked here, and #320's retiring of a lapsed approval runs before
+/// any of this — so `revoked` and `unknown` here are about this code.
+fn registration_gone(status: &StatusResponse) -> Option<&'static str> {
+    match status.state {
+        Some(RegistrationState::Unknown) => Some("has no record of this device"),
+        Some(RegistrationState::Revoked) => Some("says this device was revoked"),
+        _ => None,
+    }
+}
+
 /// The longest wait between asks while the api keeps refusing or stays out of
 /// reach.
 const LONGEST_SETBACK_WAIT: Duration = Duration::from_secs(30);
@@ -524,7 +552,7 @@ impl ApprovalPacing {
             Unanswered::Refused { retry_after } => {
                 self.unreachable_since = None;
                 let asked = retry_after.unwrap_or_default();
-                Some(grown.max(asked.min(crate::presence::LONGEST_RETRY_AFTER)))
+                Some(grown.max(asked.min(LONGEST_RETRY_AFTER)))
             }
             Unanswered::Unreachable => {
                 let since = *self.unreachable_since.get_or_insert(elapsed);
@@ -536,7 +564,8 @@ impl ApprovalPacing {
 }
 
 /// Poll the device's status on `polls` until it is approved; returns the
-/// owner user id once it is. A human may be approving the code right now, so
+/// owner user id once it is, or ends once the api has said a few times in a
+/// row that the registration is gone ([`registration_gone`]). A human may be approving the code right now, so
 /// a busy or failing api is asked again, less often while it goes on, and an
 /// api out of reach is waited for a while ([`ApprovalPacing`]).
 pub async fn poll_until_approved(
@@ -547,16 +576,33 @@ pub async fn poll_until_approved(
 ) -> Result<String> {
     let mut pacing = ApprovalPacing::new(polls.into());
     let shown = tokio::time::Instant::now();
+    let mut gone_answers = 0;
     loop {
         let wait = match ask_status(client, api_url, device_id).await {
             Ok(status) if status.approved => return Ok(status.owner_user_id.unwrap_or_default()),
-            Ok(_) => pacing.after_answer(shown.elapsed()),
+            Ok(status) => {
+                gone_answers = gone_answers_after(gone_answers, &status)?;
+                pacing.after_answer(shown.elapsed())
+            }
             Err((error, setback)) => pacing
                 .after_setback(&setback, shown.elapsed())
                 .ok_or(error)?,
         };
         tokio::time::sleep(wait).await;
     }
+}
+
+/// The count of answers in a row calling the registration gone, after one
+/// more answer `status`; the pairing's end once there are enough.
+fn gone_answers_after(before: u32, status: &StatusResponse) -> Result<u32> {
+    let Some(why) = registration_gone(status) else {
+        return Ok(0);
+    };
+    let now = before + 1;
+    if now >= GONE_ANSWERS_BEFORE_ENDING {
+        return Err(PairingError::PairingEnded(why));
+    }
+    Ok(now)
 }
 
 /// Retire the stored identity if it says approved and the api disagrees, so
@@ -760,7 +806,8 @@ mod tests {
         let mut pacing = ApprovalPacing::new(ApprovalPolls::AFTER_SHOWING_A_CODE);
         assert_eq!(waits(&mut pacing, &refused(Some(7)), 1), [7]);
         assert_eq!(waits(&mut pacing, &refused(Some(0)), 1), [4]);
-        assert_eq!(waits(&mut pacing, &refused(Some(86_400)), 1), [600]);
+        // One refusal cannot leave a fresh code unasked about for long.
+        assert_eq!(waits(&mut pacing, &refused(Some(86_400)), 1), [60]);
     }
 
     /// An api out of reach — no connection, or the ingress's 404 while its pod
@@ -803,6 +850,19 @@ mod tests {
 
     fn status(json: serde_json::Value) -> StatusResponse {
         serde_json::from_value(json).unwrap()
+    }
+
+    /// While a code is shown, only an api that says the registration is gone
+    /// — revoked, or no such device — ends the wait; pending, an older api
+    /// that says nothing, and a state this bridge does not know keep it.
+    #[test]
+    fn only_a_registration_the_api_calls_gone_ends_the_wait() {
+        let gone = |json| registration_gone(&status(json));
+        assert!(gone(serde_json::json!({"approved": false, "state": "unknown"})).is_some());
+        assert!(gone(serde_json::json!({"approved": false, "state": "revoked"})).is_some());
+        assert!(gone(serde_json::json!({"approved": false, "state": "pending"})).is_none());
+        assert!(gone(serde_json::json!({"approved": false})).is_none());
+        assert!(gone(serde_json::json!({"approved": false, "state": "suspended"})).is_none());
     }
 
     #[test]

@@ -176,8 +176,11 @@ impl RelayError {
 /// the relay. Short first, because the common end is a blip, and every second
 /// the socket is down is a second no browser can reach the device (#321).
 pub fn redial_backoff() -> crate::backoff::Backoff {
-    crate::backoff::Backoff::new(Duration::from_millis(500), Duration::from_secs(30))
+    crate::backoff::Backoff::new(Duration::from_millis(500), REDIAL_CAP)
 }
+
+/// The longest wait between two dials, spread included.
+const REDIAL_CAP: Duration = Duration::from_secs(30);
 
 /// How soon a relay whose name did not resolve is dialed again.
 pub const NAME_RESOLUTION_RETRY: Duration = Duration::from_secs(2);
@@ -186,8 +189,8 @@ pub const NAME_RESOLUTION_RETRY: Duration = Duration::from_secs(2);
 ///
 /// A name that did not resolve is tried again on a short, fixed timer, and
 /// neither waits out the backoff nor grows it (#131); anything else waits the
-/// backoff's current delay, spread half of itself either way, and doubles it
-/// for the next time. The spread is for a relay restart, which ends every
+/// backoff's current delay, spread half of itself either way (never past the
+/// 30 s cap), and doubles it for the next time. The spread is for a relay restart, which ends every
 /// bridge's socket in the same instant: unspread, they would all redial in the
 /// same instant too, and again at each doubling (#321 review).
 pub fn redial_wait(
@@ -206,7 +209,7 @@ pub fn redial_wait_with(
     if outcome.as_ref().is_err_and(RelayError::is_name_resolution) {
         return NAME_RESOLUTION_RETRY;
     }
-    let wait = backoff.current().mul_f64(0.5 + jitter);
+    let wait = backoff.current().mul_f64(0.5 + jitter).min(REDIAL_CAP);
     backoff.increase();
     wait
 }
@@ -807,6 +810,16 @@ mod redial_tests {
             |jitter| redial_wait_with(&refused(), &mut redial_backoff(), jitter).as_millis();
         assert_eq!(first(0.0), 250);
         assert_eq!(first(0.999), 749);
+        // Spread or not, no wait is longer than the 30 s cap.
+        let mut capped = redial_backoff();
+        let waits: Vec<Duration> = (0..10)
+            .map(|_| redial_wait_with(&refused(), &mut capped, 0.999))
+            .collect();
+        assert_eq!(waits.last(), Some(&Duration::from_secs(30)));
+        assert!(
+            waits.iter().all(|wait| *wait <= Duration::from_secs(30)),
+            "{waits:?}"
+        );
         let mut backoff = redial_backoff();
         let waits: Vec<Duration> = (0..2)
             .map(|_| redial_wait(&refused(), &mut backoff))

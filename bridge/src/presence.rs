@@ -380,7 +380,7 @@ const FIRST_RETRY_PER_INTERVAL: u32 = 6;
 
 /// The longest a `Retry-After` is waited out. Longer than this and the device
 /// would go offline for the api's own say-so; past it the beat asks anyway.
-pub(crate) const LONGEST_RETRY_AFTER: Duration = Duration::from_secs(600);
+const LONGEST_RETRY_AFTER: Duration = Duration::from_secs(600);
 
 /// When a beat that failed in passing is tried again.
 ///

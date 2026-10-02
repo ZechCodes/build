@@ -45,7 +45,7 @@ describe("the notification field", () => {
     const speeds = lanes.map((lane) => lane.drift);
     assert.ok(new Set(speeds).size === speeds.length, "no two lanes at one speed");
     const anchors = lanes.map((lane) => lane.anchor);
-    assert.ok(new Set(anchors).size >= anchors.length - 1, "no synchronized procession");
+    assert.equal(new Set(anchors).size, anchors.length, "no synchronized procession");
   });
 
   it("moves fast: the far lanes cross the window more than twice while it plays", () => {

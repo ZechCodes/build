@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import {
   HERO_TIMING,
   NARROW_TIMING,
+  SHORT_NARROW_TIMING,
   decelDistance,
   laptopEntrancePose,
   laptopRevealPose,
@@ -40,6 +41,15 @@ describe("the entrance clock", () => {
     for (const timing of [HERO_TIMING, NARROW_TIMING]) {
       order.slice(1).forEach((phase, index) => assert.ok(timing[phase][0] >= timing[order[index]][0], phase));
     }
+  });
+
+  it("gives a short phone separate bottom-up flights so waiting requests stay clear", () => {
+    const short = SHORT_NARROW_TIMING;
+    const arrivals = [...short.landings].reverse();
+    assert.ok(arrivals.every((at, index) => index === 0 || at - arrivals[index - 1] > short.flight));
+    assert.ok(short.landings[0] <= short.converge[1]);
+    assert.ok(short.message[0] > short.landings[0]);
+    assert.ok(short.settle[1] <= HERO_TIMING.settle[1]);
   });
 
   it("names the phase at any moment, for the scrubber", () => {
@@ -92,7 +102,7 @@ describe("the ripple", () => {
 
   it("carries a pill with its lane until the wave reaches it, then brakes and fades it smoothly", () => {
     const reach = rippleReach(origin, box);
-    const ripple = { origin, reach, timing: HERO_TIMING, start: 0.5, nudge: 10 };
+    const ripple = { origin, reach, timing: HERO_TIMING, start: 0.5, push: 10 };
     const path = pillPath({ x: 300, y: 200 }, 240, ripple);
     assert.ok(path.hit >= HERO_TIMING.ripple[0] && path.hit + HERO_TIMING.fade <= HERO_TIMING.ripple[1] + 1e-9);
     assert.deepEqual(path.at(0.5), { dx: 0, dy: 0, faded: 0 });
@@ -112,15 +122,23 @@ describe("the ripple", () => {
     assert.ok(path.at(path.hit + HERO_TIMING.fade / 2).faded < 0.5, "fades slowly first");
   });
 
+  it("brakes without a sideways or vertical push when the ripple has no push", () => {
+    const reach = rippleReach(origin, box);
+    const path = pillPath({ x: 300, y: 200 }, 240, { origin, reach, timing: HERO_TIMING, start: 0.5 });
+    const stopped = path.at(path.hit + HERO_TIMING.decel);
+    assert.equal(stopped.dy, 0);
+    assert.equal(stopped.dx, 240 * (path.hit - 0.5) + decelDistance(240, HERO_TIMING.decel));
+  });
+
   it("fades a pill coming in from beyond the wave's reach by the ripple's end", () => {
     const reach = rippleReach(origin, box);
-    const path = pillPath({ x: -2400, y: 200 }, 900, { origin, reach, timing: HERO_TIMING, start: 0, nudge: 10 });
+    const path = pillPath({ x: -2400, y: 200 }, 900, { origin, reach, timing: HERO_TIMING, start: 0, push: 10 });
     assert.ok(path.hit + HERO_TIMING.fade <= HERO_TIMING.ripple[1] + 1e-9);
   });
 
   it("brakes a pill running left the same way", () => {
     const reach = rippleReach(origin, box);
-    const path = pillPath({ x: 1200, y: 600 }, -300, { origin, reach, timing: HERO_TIMING, start: 0, nudge: 10 });
+    const path = pillPath({ x: 1200, y: 600 }, -300, { origin, reach, timing: HERO_TIMING, start: 0, push: 10 });
     assert.ok(path.at(path.hit).dx < 0);
     assert.ok(path.at(path.hit + HERO_TIMING.decel).dx < path.at(path.hit).dx, "carries on left while it brakes");
   });

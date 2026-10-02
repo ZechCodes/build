@@ -9,7 +9,7 @@ import { HERO_TIMING, rippleReach } from "../../src/hero/timing.js";
 
 const box = { width: 1440, height: 900 };
 const origin = [900, 450];
-const ripple = { origin, reach: rippleReach(origin, box), timing: HERO_TIMING, start: 0.5, nudge: 10 };
+const ripple = { origin, reach: rippleReach(origin, box), timing: HERO_TIMING, start: 0.5, push: 10 };
 
 function fieldOf() {
   const routine = { element: element(), attention: null, x: 300, y: 200, width: 120, shown: true, opacity: 0.6 };

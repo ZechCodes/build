@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { chromium } from "playwright";
 
-const sizes = [[390, 844], [768, 1024], [1280, 900], [1920, 1080], [2560, 1440]];
+const sizes = [[390, 667], [390, 844], [768, 1024], [1280, 900], [1920, 1080], [2560, 1440]];
 const base = process.env.LANDING_URL || "http://127.0.0.1:4173";
 const output = process.env.LANDING_NOTIFICATION_DIR || "/tmp/build-landing-notifications";
 assert.ok(["127.0.0.1", "localhost", "[::1]"].includes(new URL(base).hostname), "Use a local landing preview");
@@ -55,12 +55,6 @@ async function holdAt(page, time) {
     window.BuildHero.hold();
     window.BuildHero.timeline.pause();
     window.BuildHero.timeline.time(at, false);
-    for (const animation of document.getAnimations()) {
-      if (animation.effect?.target?.matches(".hero-lane__body")) {
-        animation.pause();
-        animation.currentTime = at * 1000;
-      }
-    }
   }, time);
 }
 
@@ -74,7 +68,7 @@ async function sampleMask(page, label) {
       left: box.left, right: box.right - 1,
       top: Math.max(box.top, document.querySelector(".site-nav").getBoundingClientRect().bottom),
       bottom: Math.min(box.bottom, innerHeight) - 1,
-      bottomVisible: box.bottom <= innerHeight + 1,
+      sampleBottom: innerWidth < 768 || box.bottom <= innerHeight + 1,
     };
   });
   const paint = await page.addStyleTag({ content: `
@@ -99,7 +93,7 @@ async function sampleMask(page, label) {
     const context = canvas.getContext("2d");
     context.drawImage(image, 0, 0);
     const alpha = (x, y) => context.getImageData(Math.round(x), Math.round(y), 1, 1).data[0] / 255;
-    const { left, right, top, bottom, bottomVisible } = region;
+    const { left, right, top, bottom, sampleBottom } = region;
     const [width, height] = [right - left, bottom - top];
     const depths = [0, 0.01, 0.03, 0.06, 0.1, 0.18];
     const edges = {
@@ -107,10 +101,9 @@ async function sampleMask(page, label) {
       right: depths.map(depth => alpha(right - width * depth, top + height / 2)),
       top: depths.map(depth => alpha(left + width / 2, top + height * depth)),
     };
-    // A stacked document hero can continue below this viewport; that is not
-    // its boundary. The film profiles check the viewport bottom at every
-    // desktop width, and the phone's field ends at the viewport bottom too.
-    if (bottomVisible) edges.bottom = depths.map(depth => alpha(left + width / 2, bottom - height * depth));
+    // A stacked desktop document hero can continue below the viewport.
+    // Film profiles and every phone must fade at the viewport bottom.
+    if (sampleBottom) edges.bottom = depths.map(depth => alpha(left + width / 2, bottom - height * depth));
     return { depths, edges, center: alpha(left + width / 2, top + height / 2) };
   }, { png: shot.toString("base64"), region });
 }
@@ -181,8 +174,19 @@ async function checkField(browser, width, height, mode) {
   console.log(`Notifications: ${label} passed (rendered mask alpha, spacing, coverage, overflow, cleanup)`);
 }
 
+async function checkLabField(browser) {
+  const context = await browser.newContext({ viewport: { width: 390, height: 667 }, javaScriptEnabled: false });
+  const page = await context.newPage();
+  await page.goto(`${base}/lab/notifications-133c027df9b5`, { waitUntil: "load" });
+  const stage = await page.locator("[data-lab-stage]").boundingBox();
+  assert.deepEqual(await page.locator("[data-hero-field]").boundingBox(), stage, "short-phone cap leaves the lab field full height");
+  await context.close();
+  console.log("Notifications: short-phone lab retains its full field");
+}
+
 const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH, args: ["--enable-unsafe-swiftshader"] });
 try {
+  await checkLabField(browser);
   for (const [width, height] of sizes) {
     await checkField(browser, width, height, width < 768 ? "document" : "film");
     if (width >= 768) await checkField(browser, width, height, "document");

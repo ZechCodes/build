@@ -161,7 +161,7 @@ function lane(index, [tier, narrow, direction], context) {
   const { next, harnesses } = context;
   const attention = ATTENTION.find((entry) => entry.lane === index);
   const drift = round(direction * between(next, LANE_TIERS[tier].drift), 2);
-  const anchor = attention ? attention.anchor : round(0.05 + next() * 0.9);
+  const anchor = attention ? attention.anchor : round(0.05 + next() * 0.9, 4);
   const size = laneSize(next, tier, attention);
   const incoming = Math.abs(drift) * DRIFT_REACH;
   const [left, right] = [anchor * 100, (1 - anchor) * 100];

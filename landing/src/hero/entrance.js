@@ -16,13 +16,11 @@ import { HERO_ROW_REGIONS, LANDING_POINT } from "./anchors.js";
 import { createHeroLaptop } from "./laptop.js";
 import { createFieldMotion } from "./flood.js";
 import { measureField } from "./measure.js";
-import { HERO_TIMING, NARROW_TIMING, requestFlight, revealEase, rippleReach } from "./timing.js";
+import { HERO_TIMING, NARROW_TIMING, SHORT_NARROW_TIMING, requestFlight, revealEase, rippleReach } from "./timing.js";
 import { homographyFromQuad, matrix3d, projectPoint } from "../stage/overlay.js";
 
 export const PLAYED_KEY = "build.hero.played";
 const NARROW_QUERY = "(max-width: 767px)";
-// Rows keep their separation while the ripple brakes and fades their pills.
-const NUDGE = { wide: 0, narrow: 0 };
 
 function rememberPlayed() {
   try {
@@ -125,7 +123,7 @@ function copyOf(hero) {
 }
 
 function buildTimeline({ hero, field, laptop, glows, copy, narrow }) {
-  const timing = narrow ? NARROW_TIMING : HERO_TIMING;
+  const timing = narrow ? (matchMedia("(max-height: 760px)").matches ? SHORT_NARROW_TIMING : NARROW_TIMING) : HERO_TIMING;
   const measured = measureField(hero, field);
   const start = pickUpAt(measured.elapsed, timing);
   const origin = centreOf(laptop.quads({ resting: true }).screen);
@@ -134,7 +132,6 @@ function buildTimeline({ hero, field, laptop, glows, copy, narrow }) {
     reach: rippleReach(origin, measured),
     timing,
     start,
-    nudge: narrow ? NUDGE.narrow : NUDGE.wide,
   };
   const tl = gsap.timeline({ paused: true });
   const flights = new Map(ATTENTION.map((entry, index) => [entry.id, timing.landings[index] - timing.flight]));

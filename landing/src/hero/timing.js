@@ -33,6 +33,19 @@ export const NARROW_TIMING = Object.freeze({
   landings: [2.4, 2.52, 2.65],
 });
 
+// On a short phone the three requests start closer together vertically.
+// Sending the bottom one first keeps each flight clear of the requests still
+// waiting in the field. The laptop arrives on the same narrow-phone clock.
+// The landings array remains indexed by [review, approval, question].
+export const SHORT_NARROW_TIMING = Object.freeze({
+  ...NARROW_TIMING,
+  converge: [1.9, 3.01],
+  message: [3.05, 3.5],
+  settle: [3.5, 4],
+  flight: 0.3,
+  landings: [3.01, 2.68, 2.35],
+});
+
 const PHASES = ["field", "ripple", "converge", "message", "settle"];
 
 /** The phase a moment belongs to, latest first where phases overlap. */
@@ -93,14 +106,14 @@ const power1In = (p) => p * p;
 
 /** A pill's way through the ripple, from where it was measured at `start`:
  *  it moves with its lane at `speed` px/s until the wave reaches it, then
- *  brakes to a stop pushed a little outward, fading as it does. `at(time)`
+ *  brakes to a stop, optionally pushed outward in the lab. `at(time)`
  *  is its shift from the measured spot and how far it has faded (0 to 1). */
-export function pillPath({ x, y }, speed, { origin, reach, timing, start, nudge }) {
+export function pillPath({ x, y }, speed, { origin, reach, timing, start, push = 0 }) {
   const begin = timing.ripple[0];
   const atBegin = [x + speed * (begin - start), y];
   // One coming in from beyond the wave's reach still fades in time.
   const hit = Math.min(rippleHit(atBegin, origin, reach, timing), timing.ripple[1] - timing.fade);
-  const [pushX, pushY] = outward(atBegin, origin, nudge);
+  const [pushX, pushY] = push === 0 ? [0, 0] : outward(atBegin, origin, push);
   const braking = decelDistance(speed, timing.decel);
   const carried = speed * (hit - start);
   return {

@@ -38,7 +38,7 @@ function requestFlightMotion(pill, row, { motion, timing, takeOff }) {
 
 export function liveFlood({ field, stage }) {
   const { timing, origin } = stage;
-  const ripple = { origin, reach: rippleReach(origin, field), timing, start: 0, nudge: stage.nudge };
+  const ripple = { origin, reach: rippleReach(origin, field), timing, start: 0, push: stage.nudge };
   const takeOffs = ATTENTION.map((entry, index) => timing.landings[index] - timing.flight);
   const motion = createFieldMotion({ field, ripple, flights: new Map(ATTENTION.map((entry, index) => [entry.id, takeOffs[index]])) });
   const pills = field.lanes.flatMap((lane) => lane.pills);

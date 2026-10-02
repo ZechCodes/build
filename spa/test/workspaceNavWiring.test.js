@@ -68,10 +68,13 @@ const machine = async (method, params = {}) => {
     const text = `${params.source_id}/${params.path}`;
     return { path: params.path, mime: "text/plain", size: text.length, truncated: false, editable: false, encoding: "utf-8", revision: "r1", content_b64: b64(text) };
   }
-  if (method === "git.status") return { branch: "main", head: "c0ffee1", repo_state: "clean", files: [], stat: { files_changed: 0, insertions: 0, deletions: 0 } };
+  if (method === "git.status") return params.if_status_key === "status-1"
+    ? { unchanged: true, status_key: "status-1" }
+    : { status_key: "status-1", branch: "main", head: "c0ffee1", repo_state: "clean", files: [], stat: { files_changed: 0, insertions: 0, deletions: 0 } };
   if (method === "git.log") return { branch: "main", commits: [{ hash: "c0ffee1234567", short: "c0ffee1", subject: "Seed the repository", author: "Zech", time: 1_790_000_000 }], more: false };
   if (method === "git.refs") return { current: { kind: "branch", name: "main", full_ref: "refs/heads/main" }, refs: [] };
-  if (method === "git.unpushed") return { commits: [], files: [] };
+  if (method === "git.unpushed") return params.if_diff_key === "review-1"
+    ? { unchanged: true, diff_key: "review-1" } : { diff_key: "review-1", commits: [], files: [] };
   if (method === "workspace.git_init_options") return {
     workspace_id: "ws-1", source_id: params.source_id,
     workspace: { path: "/w/ws-1/assets", is_git: false, available: true },
@@ -215,7 +218,7 @@ describe("a workspace with two directories, one not git", () => {
     expect(asked.filter(({ method }) => method.startsWith("git."))).toEqual([]);
   });
 
-  it.each(["files", "tasks"])("returns from the %s rail to cached Changes without Git reads", async (tab) => {
+  it.each(["files", "tasks"])("returns from the %s rail with only two keyed Git checks", async (tab) => {
     await open({ name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes" });
     const address = (kind) => ({ deviceId: "dev-1", entityId: 'workspace:["ws-1","repo"]', kind });
     await vi.waitFor(async () => {
@@ -235,7 +238,10 @@ describe("a workspace with two directories, one not git", () => {
     await vi.waitFor(() => expect(document.querySelector(".workspace-reftrigger-name")?.textContent).toBe("main"));
     await new Promise((resolve) => setTimeout(resolve, 60));
     expect(App.route.tab).toBe("changes");
-    expect(asked.filter(({ method }) => method.startsWith("git."))).toEqual([]);
+    expect(asked.filter(({ method }) => method.startsWith("git.")).sort((a, b) => a.method.localeCompare(b.method))).toEqual([
+      { method: "git.status", params: { workspace_id: "ws-1", source_id: "repo", if_status_key: "status-1" } },
+      { method: "git.unpushed", params: { workspace_id: "ws-1", source_id: "repo", if_diff_key: "review-1" } },
+    ]);
   });
 
   // A comment being written floats over the page, outside the surface it was

@@ -1025,7 +1025,7 @@ describe("the board item", () => {
     expect(calls("project.list")).toHaveLength(0);
   });
 
-  it.each(["push", "catch-up"])("invalidates cached directory Git on %s even with no pane mounted", async (event) => {
+  it.each(["push", "catch-up"])("keeps directory Git independent of board pushes, with eviction on catch-up: %s", async (event) => {
     await boot([]);
     const entityId = 'workspace:["ws-1","repo"]';
     const kinds = ["refs", "status", "log", "unpushed", "diff"];
@@ -1038,7 +1038,7 @@ describe("the board item", () => {
     if (event === "push") await deliver([{ entity_id: "board", state: { revision: 20 } }]);
     else await sync.syncDevice("dev-1");
     for (const kind of kinds) {
-      expect((await read(entityId, kind))?.value).toEqual(event === "push" ? { from: kind, stale: true } : undefined);
+      expect((await read(entityId, kind))?.value).toEqual(event === "push" ? { from: kind } : undefined);
       expect((await cache.readCached({ deviceId: "dev-2", entityId, kind }))?.value).toEqual({ from: kind });
     }
     expect((await read(entityId, "patch", "sha"))?.value).toEqual(event === "push" ? { patch: "immutable" } : undefined);

@@ -617,11 +617,13 @@ describe("a pane over a checkout nothing walks", () => {
     await cache.writeCached({ deviceId: "dev-1", entityId: ENTITY, kind: "log" }, log());
   };
 
-  it("paints held status and history without reading either again", async () => {
+  it("paints held status and history before its keyed status check answers", async () => {
     await fill();
-    const callRpc = sourceRpc();
+    const callRpc = vi.fn((method, params) => method === "git.status" ? new Promise(() => {}) : sourceRpc()(method, params));
     const { container, pane } = await mountPane(callRpc, { scope: SOURCE });
-    expect(callRpc.mock.calls.filter(([method]) => ["git.status", "git.log"].includes(method))).toHaveLength(0);
+    expect(callRpc.mock.calls.filter(([method]) => ["git.status", "git.log"].includes(method))).toEqual([
+      ["git.status", { ...SOURCE, if_status_key: status().status_key }],
+    ]);
     expect(container.textContent).toContain("earlier work");
     pane.dispose();
   });
@@ -631,7 +633,8 @@ describe("a pane over a checkout nothing walks", () => {
     await cache.deleteCached([{ deviceId: "dev-1", entityId: ENTITY, kind }]);
     const callRpc = sourceRpc();
     const { container, pane } = await mountPane(callRpc, { scope: SOURCE });
-    expect(callRpc.mock.calls.filter(([method]) => ["git.status", "git.log"].includes(method)).map(([method]) => method)).toEqual([`git.${kind}`]);
+    expect(callRpc.mock.calls.filter(([method]) => ["git.status", "git.log"].includes(method)).map(([method]) => method).sort())
+      .toEqual(kind === "status" ? ["git.status"] : ["git.log", "git.status"]);
     expect(container.querySelector(".crail-host")).not.toBeNull();
     pane.dispose();
   });
@@ -644,8 +647,61 @@ describe("a pane over a checkout nothing walks", () => {
     await cache.writeCached({ deviceId: "dev-1", entityId: ENTITY, kind: "log" }, { ...log(), stale: true });
     await vi.waitFor(() => expect(container.textContent).toContain("landed since"));
     await vi.waitFor(async () => expect((await cache.readCached({ deviceId: "dev-1", entityId: ENTITY, kind: "status" }))?.value.stale).toBeUndefined());
-    expect(callRpc.mock.calls.find(([method]) => method === "git.status")[1]).not.toHaveProperty("if_status_key");
+    expect(callRpc.mock.calls.find(([method]) => method === "git.status")[1]).toHaveProperty("if_status_key", status().status_key);
     pane.dispose();
+  });
+
+  // The fourth record a mount reads. Its one consumer is the review over a
+  it.each([SOURCE, { project_id: "p-1" }])("finds an outside commit after remount without a board push: %s", async (scope) => {
+    let committed = false;
+    let releaseStatus;
+    const callRpc = vi.fn(async (method, params) => {
+      if (method === "git.status") {
+        const next = status({ head: committed ? "b".repeat(40) : "a".repeat(40) });
+        if (committed) return new Promise((resolve) => { releaseStatus = () => resolve(next); });
+        return next;
+      }
+      if (method === "git.log") return { ...log(), commits: [{ ...log().commits[0], subject: committed ? "outside commit" : "earlier work" }] };
+      return sourceRpc()(method, params);
+    });
+    const first = mountPaneNow(callRpc, { scope });
+    await vi.waitFor(() => expect(first.container.textContent).toContain("earlier work"));
+    first.pane.dispose();
+    committed = true;
+    callRpc.mockClear();
+    const second = mountPaneNow(callRpc, { scope });
+    try {
+      await vi.waitFor(() => expect(second.container.textContent).toContain("earlier work"));
+      await vi.waitFor(() => expect(releaseStatus).toBeTypeOf("function"));
+      expect(callRpc.mock.calls.find(([method]) => method === "git.status")[1]).toHaveProperty("if_status_key", status({ head: "a".repeat(40) }).status_key);
+      releaseStatus();
+      await vi.waitFor(() => expect(second.container.textContent).toContain("outside commit"));
+    } finally {
+      second.pane.dispose();
+    }
+  });
+
+  it("refreshes review data and log when the published base moved without a status change", async () => {
+    await fill();
+    const address = { deviceId: "dev-1", entityId: ENTITY };
+    await cache.writeCached({ ...address, kind: "unpushed" }, { diff_key: "old", base: { kind: "push_target", label: "origin/main" } });
+    await cache.writeCached({ ...address, kind: "diff" }, { diff_key: "old", patch: tree.wholePatch(), commentable: true });
+    const callRpc = vi.fn(async (method, params) => {
+      if (method === "git.status") return { unchanged: true, status_key: status().status_key };
+      if (method === "git.unpushed") return { diff_key: "published", patch: "", base: { kind: "published_ancestor" } };
+      return sourceRpc()(method, params);
+    });
+    const { container, pane } = mountPaneNow(callRpc, { scope: SOURCE });
+    try {
+      await vi.waitFor(() => expect(container.querySelector('.rrow[data-sel="review"] .rsub')?.textContent).toBe("since published history"));
+      await vi.waitFor(() => expect(container.textContent).toContain("landed since"));
+      expect(callRpc.mock.calls.filter(([method]) => method === "git.unpushed")).toEqual([
+        ["git.unpushed", { ...SOURCE, if_diff_key: "old" }],
+      ]);
+      expect((await cache.readCached({ ...address, kind: "diff" }))?.value.patch).toBe("");
+    } finally {
+      pane.dispose();
+    }
   });
 
   // The fourth record a mount reads. Its one consumer is the review over a

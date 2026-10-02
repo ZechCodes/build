@@ -1,4 +1,4 @@
-// The page's entry point. Bundled by Astro into /landing/generated/_astro/ as
+// The preview entry point. Bundled separately into /landing/generated/hero336/ as
 // an external module, because the app's CSP (script-src 'self'
 // 'wasm-unsafe-eval') drops inline script.
 //
@@ -9,8 +9,7 @@
 
 import { restHero, startHeroEntrance } from "./entrance.js";
 
-// The hero's entrance first, from wherever its field's CSS drift has got
-// to. If it cannot play, the hero simply rests.
+// Start the wall before the film. If it cannot play, the hero simply rests.
 let hero = null;
 try {
   hero = startHeroEntrance();
@@ -20,14 +19,6 @@ try {
 }
 // For checks, as window.BuildFilm is: the entrance's timeline and state.
 window.BuildHero = hero;
-// Replay and a phase scrubber, for tuning only: under `astro dev`, or in a
-// build made with PUBLIC_HERO_SCRUBBER=1 for the preview server (the
-// entrance's assets are served there). A production build drops this
-// branch and the module with it.
-if ((import.meta.env.DEV || import.meta.env.PUBLIC_HERO_SCRUBBER === "1") && hero) {
-  import("./scrubber.js").then(({ mountScrubber }) => mountScrubber(hero));
-}
-
 // The document's copy comes in as its act comes into view, once
 // (landing.css). Acts already in view are marked before the copy is hidden,
 // so nothing on screen blinks.

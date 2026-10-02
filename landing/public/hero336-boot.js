@@ -1,4 +1,4 @@
-// Unlisted #333 preview: replay on every load, ignoring per-tab memory.
+// Unlisted #336 preview: replay on every load, ignoring per-tab memory.
 (function () {
   var root = document.documentElement;
   var requested = new URLSearchParams(location.search).get("hero");

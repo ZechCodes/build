@@ -2,7 +2,7 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "astro/config";
-import { heroPreviewBuild } from "./src/lab/hero333/build.mjs";
+import { heroPreviewBuild } from "./src/lab/hero336/build.mjs";
 
 const LAB_DIR = fileURLToPath(new URL("./src/lab/", import.meta.url));
 const HERO_DIR = fileURLToPath(new URL("./src/hero/", import.meta.url));

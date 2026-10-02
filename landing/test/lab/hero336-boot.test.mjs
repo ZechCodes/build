@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
-const source = readFileSync(new URL("../../public/hero333-boot.js", import.meta.url), "utf8");
+const source = readFileSync(new URL("../../public/hero336-boot.js", import.meta.url), "utf8");
 
 function boot({ reducedMotion = false, search = "", hash = "" } = {}) {
   const dataset = {};
@@ -33,4 +33,9 @@ test("reduced motion and hero=0 keep the preview at rest", () => {
   assert.deepEqual(boot({ reducedMotion: true }), { hero: undefined, played: "1", writes: 0 });
   assert.deepEqual(boot({ reducedMotion: true, search: "?hero=play" }), { hero: undefined, played: "1", writes: 0 });
   assert.deepEqual(boot({ search: "?hero=0" }), { hero: undefined, played: "1", writes: 0 });
+});
+
+test("a deep link to a later act skips the preview entrance unless play is explicit", () => {
+  assert.deepEqual(boot({ hash: "#act-3" }), { hero: undefined, played: "1", writes: 0 });
+  assert.deepEqual(boot({ hash: "#act-3", search: "?hero=play" }), { hero: "entrance", played: "1", writes: 0 });
 });

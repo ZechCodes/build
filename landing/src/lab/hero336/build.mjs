@@ -5,14 +5,14 @@ import { build } from "vite";
 // preload helper would rewrite the home page's existing script and hashes.
 export function heroPreviewBuild() {
   return {
-    name: "hero333-preview",
+    name: "hero336-preview",
     hooks: {
       "astro:build:done": async ({ dir }) => {
         await build({
           configFile: false,
-          base: "/landing/generated/hero333/",
+          base: "/landing/generated/hero336/",
           build: {
-            outDir: fileURLToPath(new URL("hero333/", dir)),
+            outDir: fileURLToPath(new URL("hero336/", dir)),
             emptyOutDir: true,
             assetsInlineLimit: 0,
             rollupOptions: {

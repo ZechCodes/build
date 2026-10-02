@@ -1,4 +1,6 @@
 @import "../../styles/fonts.css";
 @import "../../styles/landing.css";
 @import "../../styles/film.css";
-@import "./hero.css";
+@import "../../styles/hero.css";
+@import "./wall.css";
+@import "./first-frame.css";

@@ -3,6 +3,7 @@
 import { messageOf } from "./text.js";
 import { fieldTraits } from "./fieldTraits.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
+import { readUiRecord, writeUiRecordIfUnwritten } from "./localUiStore.js";
 import { notifyError } from "./notify.js";
 import { assigneeOptions, selectedOptionId, workspaceAgents } from "./trackerAssignee.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
@@ -32,6 +33,7 @@ export function mountTaskReviewFeedback(host, {
   let draft = emptyDraft();
   let sending = false;
   let disposed = false;
+  let draftRevision = 0;
   host.innerHTML = `<form class="task-review-feedback" data-review-feedback>
     <label class="create-label" for="task-review-feedback-body">Review feedback</label>
     <p class="sub" data-review-target hidden></p>
@@ -64,6 +66,7 @@ export function mountTaskReviewFeedback(host, {
   const address = uiAddress({ deviceId, entityId: projectId, kind: "draft", view: "task-review-feedback", sub: `${taskId}:${snapshotId}` });
   const saved = watchUiState(address, paint, { debounceMs: 100 });
   const edit = (changes) => {
+    draftRevision += 1;
     draft = { ...draft, ...changes };
     saved.schedule(draft);
     paint(draft);
@@ -71,17 +74,23 @@ export function mountTaskReviewFeedback(host, {
   field.oninput = () => edit({ body: field.value });
   opinion.onchange = () => edit({ verdict: opinion.value });
   const canSubmit = () => !disposed && !sending && hasBody(draft);
+  const clearSentDraft = async (sent, sentRevision, captured) => {
+    if (draftRevision !== sentRevision || !sameDraft(draft, sent)) return;
+    if (sameDraft(captured?.value, sent)) await writeUiRecordIfUnwritten(address, captured, emptyDraft());
+    else if (!captured) paint(emptyDraft());
+  };
   form.onsubmit = async (event) => {
     event.preventDefault();
     if (!canSubmit()) return;
-    await saved.flush();
-    if (!canSubmit()) return;
     const sent = { ...draft };
+    const sentRevision = draftRevision;
     sending = true;
     paint(draft);
     try {
+      await saved.flush();
+      const captured = await readUiRecord(address).catch(() => null);
       await callRpc("tasks.comment", commentParams(taskId, snapshotId, sent));
-      if (sameDraft(draft, sent)) await saved.write(emptyDraft());
+      await clearSentDraft(sent, sentRevision, captured);
       if (!disposed) await onSent?.();
     } catch (error) {
       if (!disposed) notifyError("Could not add review feedback", messageOf(error));

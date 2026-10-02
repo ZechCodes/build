@@ -40,6 +40,7 @@ describe("task review feedback", () => {
       task_id: "task", body: "Please adjust this", anchor, reply_to: "tc-1",
       opinion: { snapshot_id: "snap-1", verdict: "request_changes" },
     });
+    await until(() => host.querySelector("textarea").value === "");
     feedback.dispose();
   });
 
@@ -98,5 +99,33 @@ describe("task review feedback", () => {
     field.dispatchEvent(new Event("input"));
     expect(field.selectionStart).toBe(1);
     feedback.dispose();
+  });
+
+  it("does not clear another mount's draft when the first comment succeeds", async () => {
+    const firstHost = document.createElement("div");
+    const secondHost = document.createElement("div");
+    document.body.append(firstHost, secondHost);
+    let finish;
+    const callRpc = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+    const options = { taskId: "two-mounts" };
+    const first = mount(firstHost, callRpc, options);
+    const second = mount(secondHost, vi.fn(), options);
+    await flush();
+    const firstField = firstHost.querySelector("textarea");
+    firstField.value = "sent";
+    firstField.dispatchEvent(new Event("input"));
+    firstHost.querySelector("form").dispatchEvent(new Event("submit", { cancelable: true }));
+    await until(() => callRpc.mock.calls.length === 1);
+    const secondField = secondHost.querySelector("textarea");
+    secondField.value = "another tab's draft";
+    secondField.dispatchEvent(new Event("input"));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    finish({});
+    await flush();
+    first.dispose();
+    second.dispose();
+    const remount = mount(secondHost, vi.fn(), options);
+    await until(() => secondHost.querySelector("textarea").value === "another tab's draft");
+    remount.dispose();
   });
 });

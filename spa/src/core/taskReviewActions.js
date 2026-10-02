@@ -13,8 +13,11 @@ const branchChoices = (destination, remoteName, selected) => options(destination
 const oid = (head) => head ? `<code>${esc(head)}</code>` : "unknown";
 const running = (rows, directoryId) => rows.some((row) => row.directory_id === directoryId && row.status === "running");
 const checked = (value) => value ? " checked" : "";
-const selectedRemote = (destination, choice) => choice.remote || destination.remotes?.[0]?.name || "";
-const selectedPushBranch = (destination, choice, remote) => choice.pushBranch ||
+const selectedMergeBranch = (destination, choice) => destination.branches?.includes(choice.mergeBranch)
+  ? choice.mergeBranch : destination.branches?.[0] || "";
+const selectedRemote = (destination, choice) => destination.remotes?.some((remote) => remote.name === choice.remote)
+  ? choice.remote : destination.remotes?.[0]?.name || "";
+const selectedPushBranch = (destination, directory, choice, remote) => choice.pushBranch || directory?.branch ||
   destination.remotes?.find((row) => row.name === remote)?.branches?.[0] || "";
 
 function sourceFacts(destination, directory) {
@@ -26,9 +29,9 @@ function sourceFacts(destination, directory) {
 
 function sourceFields(destination, directory, choice) {
   const remote = selectedRemote(destination, choice);
-  const branch = selectedPushBranch(destination, choice, remote);
+  const branch = selectedPushBranch(destination, directory, choice, remote);
   return `<label><input type="checkbox" data-review-merge="${esc(directory.id)}"${checked(choice.merge)}> Merge</label>
-    <label>Into branch<select data-review-merge-branch="${esc(directory.id)}">${options(destination.branches || [], choice.mergeBranch)}</select></label>
+    <label>Into branch<select data-review-merge-branch="${esc(directory.id)}">${options(destination.branches || [], selectedMergeBranch(destination, choice))}</select></label>
     <label><input type="checkbox" data-review-push="${esc(directory.id)}"${checked(choice.push)}> Push</label>
     <label>Remote<select data-review-remote="${esc(directory.id)}">${remoteChoices(destination, remote)}</select></label>
     <label>Branch<input data-review-push-branch="${esc(directory.id)}" ${fieldTraits("identifier")} value="${esc(branch)}" list="review-push-branches-${esc(directory.id)}" placeholder="Existing or new branch">
@@ -47,11 +50,27 @@ function retryable(row) {
   return push?.remote && push?.branch ? push : null;
 }
 
-function resultHtml(row, canAct) {
+const mergeActionId = (row, push) => push.merge_action_id ||
+  (row.steps.some((step) => step.kind === "merge" && step.status === "succeeded") ? row.id : null);
+const samePush = (step, push, mergeId) => step.kind === "push" && step.status === "succeeded" &&
+  step.remote === push.remote && step.branch === push.branch && (step.merge_action_id || null) === mergeId;
+const resolvedRetry = (rows, index) => {
+  const row = rows[index];
+  const push = retryable(row);
+  if (!push) return false;
+  const mergeId = mergeActionId(row, push);
+  return rows.slice(index + 1).some((newer) => newer.directory_id === row.directory_id && newer.status === "succeeded" &&
+    newer.steps?.some((step) => samePush(step, push, mergeId)));
+};
+const INTERRUPTED_GUIDANCE = "Interrupted: check and retry, or mark complete";
+const resultGuidance = (row) => row.status === "interrupted" &&
+  !row.steps?.some((step) => step.error === INTERRUPTED_GUIDANCE) ? `<p>${INTERRUPTED_GUIDANCE}</p>` : "";
+
+function resultHtml(row, canRetry) {
   const steps = (row.steps || []).map((step) => `<li>${esc(step.kind)} ${esc(step.remote ? `${step.remote}/` : "")}${esc(step.branch)}: ${esc(step.status)}${step.error ? ` · ${esc(step.error)}` : ""}${step.warning ? ` · ${esc(step.warning)}` : ""}${step.input_head ? ` · from ${oid(step.input_head)}` : ""}${step.result_head ? ` · result ${oid(step.result_head)}` : ""}</li>`).join("");
-  return `<li class="task-review-result"><strong>${esc(row.source_name || row.directory_id)}: ${esc(row.status)}</strong>
+  return `<li class="task-review-result" data-review-result-status="${esc(row.status)}"><strong>${esc(row.source_name || row.directory_id)}: ${esc(row.status)}</strong>
     <p>${esc(row.source_path || "")} · ${esc(row.started_at || "")}${row.finished_at ? ` → ${esc(row.finished_at)}` : ""}</p>
-    <ul>${steps}</ul>${canAct && retryable(row) ? `<button type="button" class="btn" data-review-retry-push="${esc(row.id)}">Retry Push</button>` : ""}</li>`;
+    ${resultGuidance(row)}<ul>${steps}</ul>${canRetry && retryable(row) ? `<button type="button" class="btn" data-review-retry-push="${esc(row.id)}">Retry Push</button>` : ""}</li>`;
 }
 
 function choicesFor(review, snapshot, selected) {
@@ -62,12 +81,12 @@ function choicesFor(review, snapshot, selected) {
   }).join("");
 }
 
-function selectedSource(destination, choice) {
+function selectedSource(destination, directory, choice) {
   const source = { directory_id: destination.directory_id };
-  if (choice.merge) source.merge = { branch: choice.mergeBranch || destination.branches?.[0] };
+  if (choice.merge) source.merge = { branch: selectedMergeBranch(destination, choice) };
   if (choice.push) {
     const remote = selectedRemote(destination, choice);
-    source.push = { remote, branch: selectedPushBranch(destination, choice, remote) };
+    source.push = { remote, branch: selectedPushBranch(destination, directory, choice, remote) };
   }
   return source.merge || source.push ? [source] : [];
 }
@@ -75,7 +94,8 @@ function selectedSource(destination, choice) {
 function requestFor(review, snapshot, selected) {
   const rows = actionRows(review, snapshot);
   return destinations(review, snapshot).filter((destination) => !destination.error && !running(rows, destination.directory_id))
-    .flatMap((destination) => selectedSource(destination, selected[destination.directory_id] || {}));
+    .flatMap((destination) => selectedSource(destination, snapshot.directories.find((row) => row.id === destination.directory_id),
+      selected[destination.directory_id] || {}));
 }
 
 function requestError(sources) {
@@ -207,7 +227,7 @@ export function mountTaskReviewActions(host, options) {
     const focused = focusedControl(host);
     const form = support.act ? `<details data-review-act-sheet${wasOpen ? " open" : ""}><summary>Merge and Push</summary>
       <form data-review-act>${choicesFor(review, snapshot, draft.selected)}<button class="btn primary" type="submit"${busy ? " disabled" : ""}>Run selected steps</button></form></details>` : "";
-    host.innerHTML = `${form}${rows.length ? `<div class="task-review-results"><h3>Results</h3><ul>${rows.map((row) => resultHtml(row, support.act)).join("")}</ul></div>` : ""}
+    host.innerHTML = `${form}${rows.length ? `<div class="task-review-results"><h3>Results</h3><ul>${rows.map((row, index) => resultHtml(row, support.act && !resolvedRetry(rows, index))).join("")}</ul></div>` : ""}
       <p class="warn" data-review-act-error role="alert"${error ? "" : " hidden"}>${esc(error)}</p>`;
     restoreFocus(host, focused);
   }
@@ -230,7 +250,8 @@ export function mountTaskReviewActions(host, options) {
       node.querySelector('[data-review-remote]')?.addEventListener("change", (event) => {
         const remote = event.target.value;
         const destination = destinations(review, snapshot).find((item) => item.directory_id === id);
-        editChoice(id, { remote, pushBranch: destination?.remotes.find((item) => item.name === remote)?.branches?.[0] || "" });
+        const directory = snapshot.directories.find((item) => item.id === id);
+        editChoice(id, { remote, pushBranch: directory?.branch || destination?.remotes.find((item) => item.name === remote)?.branches?.[0] || "" });
         paint();
       });
     });
@@ -238,10 +259,9 @@ export function mountTaskReviewActions(host, options) {
       const row = rows.find((item) => item.id === button.dataset.reviewRetryPush);
       const push = row && retryable(row);
       if (push && !running(rows, row.directory_id)) {
-        const merged = row.steps.some((step) => step.kind === "merge" && step.status === "succeeded");
-        const mergeActionId = push.merge_action_id || (merged ? row.id : null);
+        const mergeId = mergeActionId(row, push);
         void act([{ directory_id: row.directory_id,
-          push: { remote: push.remote, branch: push.branch, ...(mergeActionId ? { merge_action_id: mergeActionId } : {}) } }], true);
+          push: { remote: push.remote, branch: push.branch, ...(mergeId ? { merge_action_id: mergeId } : {}) } }], true);
       }
     }; });
   }

@@ -1,8 +1,7 @@
 // @vitest-environment jsdom
 import "fake-indexeddb/auto";
 import { beforeEach, expect, it, vi } from "vitest";
-import { wipeUiRecords } from "../src/core/localUiStore.js";
-import { readUiRecord } from "../src/core/localUiStore.js";
+import { wipeUiRecords, readUiRecord, writeUiRecord } from "../src/core/localUiStore.js";
 import { uiAddress } from "../src/core/localUiState.js";
 import { mountTaskReviewActions } from "../src/core/taskReviewActions.js";
 import fixture from "../../fixtures/api/v1/tasks.review.get.json";
@@ -40,9 +39,9 @@ it("sends independent Merge and Push selections and completes from recorded succ
   choose("dir-api", "merge"); choose("dir-api", "push"); choose("dir-missing", "push");
   submit();
   await vi.waitFor(() => expect(repository.mutate).toHaveBeenCalledWith("act", { expected_version: 1, snapshot_id: snapshot.id,
-    sources: [{ directory_id: "dir-api", merge: { branch: "main" }, push: { remote: "origin", branch: "main" } },
+    sources: [{ directory_id: "dir-api", merge: { branch: "main" }, push: { remote: "origin", branch: "build/review" } },
       { directory_id: "dir-missing", push: { remote: "origin", branch: "main" } }] }));
-  sheet.update({ ...base, version: 5, actions: [row("a", "dir-api", [{ ...step("merge"), branch: "main" }, step("push")]), row("b", "dir-missing", [step("push")])] });
+  sheet.update({ ...base, version: 5, actions: [row("a", "dir-api", [{ ...step("merge"), branch: "main" }, { ...step("push"), branch: "build/review" }]), row("b", "dir-missing", [step("push")])] });
   await vi.waitFor(() => expect(repository.mutate).toHaveBeenCalledWith("complete", { expected_version: 5,
     description: expect.stringContaining("merged") }));
   expect(repository.mutate.mock.calls.filter(([verb]) => verb === "act")).toHaveLength(1);
@@ -139,12 +138,12 @@ it("does not count a Push of the wrong head as completing Merge and Push", async
   mount(base, repository); choose("dir-api", "merge"); choose("dir-api", "push"); submit();
   await vi.waitFor(() => expect(repository.mutate).toHaveBeenCalledWith("act", expect.anything()));
   const failed = row("merge-row", "dir-api", [{ ...step("merge"), branch: "main", result_head: "4".repeat(40) },
-    { ...step("push", "failed"), merge_action_id: "merge-row" }], "failed");
+    { ...step("push", "failed"), branch: "build/review", merge_action_id: "merge-row" }], "failed");
   sheet.update({ ...base, version: 3, actions: [failed] });
   await new Promise((resolve) => setTimeout(resolve, 25));
   document.querySelector('[data-review-retry-push="merge-row"]').click();
   await vi.waitFor(() => expect(repository.mutate.mock.calls.filter(([verb]) => verb === "act")).toHaveLength(2));
-  const wrong = row("wrong", "dir-api", [{ ...step("push"), input_head: "2".repeat(40), merge_action_id: "merge-row" }]);
+  const wrong = row("wrong", "dir-api", [{ ...step("push"), branch: "build/review", input_head: "2".repeat(40), merge_action_id: "merge-row" }]);
   sheet.update({ ...base, version: 5, actions: [failed, wrong] });
   await new Promise((resolve) => setTimeout(resolve, 30));
   expect(repository.mutate.mock.calls.filter(([verb]) => verb === "complete")).toHaveLength(0);
@@ -157,12 +156,12 @@ it("keeps a disconnected Retry Push pending while its recorded row runs", async 
   mount(base, repository); choose("dir-api", "merge"); choose("dir-api", "push"); submit();
   await vi.waitFor(() => expect(repository.mutate).toHaveBeenCalledWith("act", expect.anything()));
   const failed = row("merge-row", "dir-api", [{ ...step("merge"), branch: "main", result_head: "4".repeat(40) },
-    { ...step("push", "failed"), merge_action_id: "merge-row" }], "failed");
+    { ...step("push", "failed"), branch: "build/review", merge_action_id: "merge-row" }], "failed");
   sheet.update({ ...base, version: 3, actions: [failed] });
   await new Promise((resolve) => setTimeout(resolve, 30));
   document.querySelector('[data-review-retry-push="merge-row"]').click();
   await vi.waitFor(() => expect(document.querySelector('[data-review-act-error]').textContent).toContain("offline"));
-  const retry = row("retry-row", "dir-api", [{ ...step("push", "running"), input_head: "4".repeat(40),
+  const retry = row("retry-row", "dir-api", [{ ...step("push", "running"), branch: "build/review", input_head: "4".repeat(40),
     merge_action_id: "merge-row" }], "running");
   sheet.update({ ...base, version: 4, actions: [failed, retry] });
   await new Promise((resolve) => setTimeout(resolve, 220));
@@ -230,4 +229,47 @@ it("keeps an automatic completion summary within 2,000 UTF-8 bytes", async () =>
   await vi.waitFor(() => expect(repository.mutate.mock.calls.some(([verb]) => verb === "complete")).toBe(true));
   const description = repository.mutate.mock.calls.find(([verb]) => verb === "complete")[1].description;
   expect(new TextEncoder().encode(description).length).toBeLessThanOrEqual(2000);
+});
+
+it("submits the visible Merge branch and remote when saved options disappeared", async () => {
+  const address = uiAddress({ deviceId: "actions-device", entityId: "proj-1", view: "task-review-actions", kind: "git-draft",
+    sub: JSON.stringify(["task-1", snapshot.id]) });
+  await writeUiRecord(address, { selected: { "dir-api": { merge: true, push: true, mergeBranch: "removed",
+    remote: "removed", pushBranch: "feature/release" } }, intent: null });
+  const repository = { mutate: vi.fn(async () => {}) };
+  mount(base, repository);
+  await vi.waitFor(() => expect(document.querySelector('[data-review-merge="dir-api"]').checked).toBe(true));
+  expect(document.querySelector('[data-review-merge-branch="dir-api"]').value).toBe("main");
+  expect(document.querySelector('[data-review-remote="dir-api"]').value).toBe("origin");
+  expect(document.querySelector('[data-review-push-branch="dir-api"]').value).toBe("feature/release");
+  submit();
+  await vi.waitFor(() => expect(repository.mutate).toHaveBeenCalledWith("act", { expected_version: 1, snapshot_id: snapshot.id,
+    sources: [{ directory_id: "dir-api", merge: { branch: "main" }, push: { remote: "origin", branch: "feature/release" } }] }));
+});
+
+it("hides a failed Push retry after a newer success for the same Merge and destination", () => {
+  const failed = row("merge-row", "dir-api", [{ ...step("merge"), result_head: "4".repeat(40) },
+    { ...step("push", "failed"), merge_action_id: "merge-row" }], "failed");
+  const success = row("push-row", "dir-api", [{ ...step("push"), input_head: "4".repeat(40), merge_action_id: "merge-row" }]);
+  mount({ ...base, actions: [failed, success] }, { mutate: vi.fn() });
+  expect(document.querySelector('[data-review-retry-push="merge-row"]')).toBeNull();
+  expect(document.querySelector('[data-review-result-status="succeeded"]')).not.toBeNull();
+});
+
+it("labels interrupted work with guidance and distinct result states", () => {
+  mount({ ...base, actions: [row("failed", "dir-api", [step("push", "failed")], "failed"),
+    row("interrupted", "dir-api", [step("merge", "interrupted")], "interrupted"),
+    row("succeeded", "dir-api", [step("merge")])] }, { mutate: vi.fn() });
+  expect(document.body.textContent).toContain("Interrupted: check and retry, or mark complete");
+  expect([...document.querySelectorAll('[data-review-result-status]')].map((node) => node.dataset.reviewResultStatus))
+    .toEqual(["failed", "interrupted", "succeeded"]);
+});
+
+it("defaults Push branch to the snapshot source branch", async () => {
+  const repository = { mutate: vi.fn(async () => {}) };
+  mount(base, repository);
+  expect(document.querySelector('[data-review-push-branch="dir-api"]').value).toBe("build/review");
+  choose("dir-api", "push"); submit();
+  await vi.waitFor(() => expect(repository.mutate).toHaveBeenCalledWith("act", { expected_version: 1, snapshot_id: snapshot.id,
+    sources: [{ directory_id: "dir-api", push: { remote: "origin", branch: "build/review" } }] }));
 });

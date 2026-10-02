@@ -61,6 +61,125 @@ fn review_snapshot_rpc_keeps_task_position_and_completion_is_explicit() {
 }
 
 #[test]
+fn review_comment_metadata_round_trips_and_rejects_foreign_context() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_repo, mut state, project) = tracked(tmp.path());
+    let workspace_id = workspace(&mut state, &project, "comments");
+    let task = filed(&mut state, &project, "Comment on review");
+    let task_id = task["id"].as_str().unwrap();
+    let saved = review_call(
+        &mut state,
+        "tasks.review.snapshot",
+        json!({
+            "task_id": task_id, "workspace_id": workspace_id, "expected_version": 0,
+        }),
+    );
+    let snapshot = &saved["review"]["snapshots"][0];
+    let anchor = json!({
+        "snapshot_id": snapshot["id"], "directory_id": snapshot["directories"][0]["id"],
+        "path": "README.md", "side": "new", "line": 1,
+    });
+    let first = review_call(
+        &mut state,
+        "tasks.comment",
+        json!({
+            "task_id": task_id, "body": "Check this line", "anchor": anchor,
+            "opinion": {"snapshot_id": snapshot["id"], "verdict": "request_changes"},
+        }),
+    );
+    assert_eq!(first["comment"]["anchor"], anchor);
+    let persisted = state
+        .tracker_store()
+        .unwrap()
+        .load_tracker_comment(first["comment"]["id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted.anchor.unwrap().path, "README.md");
+    let second = review_call(
+        &mut state,
+        "tasks.comment",
+        json!({
+            "task_id": task_id, "body": "Agreed", "reply_to": first["comment"]["id"],
+        }),
+    );
+    assert_eq!(second["comment"]["reply_to"], first["comment"]["id"]);
+    let invalid = state.handle(req(
+        "tasks.comment",
+        json!({
+            "task_id": task_id, "body": "Wrong", "anchor": {"snapshot_id": snapshot["id"],
+            "directory_id": "other", "path": "README.md", "side": "new", "line": 1},
+        }),
+    ));
+    assert_eq!(invalid["ok"], false, "{invalid}");
+    let invalid_path = state.handle(req(
+        "tasks.comment",
+        json!({
+            "task_id": task_id, "body": "Wrong path", "anchor": {
+                "snapshot_id": snapshot["id"], "directory_id": snapshot["directories"][0]["id"],
+                "path": "../README.md", "side": "new", "line": 1,
+            },
+        }),
+    ));
+    assert_eq!(invalid_path["ok"], false, "{invalid_path}");
+    let foreign_task = filed(&mut state, &project, "Another task");
+    let foreign_reply = state.handle(req(
+        "tasks.comment",
+        json!({
+            "task_id": foreign_task["id"], "body": "Wrong task",
+            "reply_to": first["comment"]["id"],
+        }),
+    ));
+    assert_eq!(foreign_reply["ok"], false, "{foreign_reply}");
+    let replacement_workspace = workspace(&mut state, &project, "replacement");
+    review_call(
+        &mut state,
+        "tasks.review.snapshot",
+        json!({
+            "task_id": task_id, "workspace_id": replacement_workspace, "expected_version": 1,
+        }),
+    );
+    let timeline = review_call(&mut state, "tasks.get", json!({"task_id": task_id}));
+    assert!(timeline["timeline"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| {
+            entry["id"] == first["comment"]["id"]
+                && entry["opinion"]["verdict"] == "request_changes"
+                && entry["anchor"] == anchor
+        }));
+}
+
+#[test]
+fn mcp_review_comment_uses_the_same_metadata_writer() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_repo, mut state, project) = tracked(tmp.path());
+    let workspace_id = workspace(&mut state, &project, "agent comments");
+    let task = filed(&mut state, &project, "Ask for review");
+    let (owner, agent) = project_agent(&mut state, &project);
+    let saved = review_call(
+        &mut state,
+        "tasks.review.snapshot",
+        json!({
+            "task_id": task["id"], "workspace_id": workspace_id, "expected_version": 0,
+        }),
+    );
+    let snapshot = &saved["review"]["snapshots"][0];
+    let frame = json!({"jsonrpc":"2.0", "id": 1, "method":"tools/call",
+    "params": {"name":"comment_task", "arguments": {
+        "task_id": task["id"], "body": "Approved",
+        "opinion": {"snapshot_id": snapshot["id"], "verdict":"approve"}
+    }}});
+    let action = crate::mcp::DoneServer::new(&agent)
+        .handle_message(&frame.to_string())
+        .action
+        .unwrap();
+    let result = state.agent_action(&owner, &agent, action).unwrap();
+    assert_eq!(result["comment"]["opinion"]["verdict"], "approve");
+    assert_eq!(result["comment"]["author"]["agent_id"], agent);
+}
+
+#[test]
 fn review_rpc_reads_whole_saved_files_and_refuses_caller_supplied_locations() {
     let tmp = tempfile::tempdir().unwrap();
     let (_repo, mut state, project) = tracked(tmp.path());

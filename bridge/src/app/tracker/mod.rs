@@ -14,6 +14,7 @@
 mod activity;
 mod agent_files;
 mod attachments;
+mod comments;
 mod dispatch;
 mod edits;
 mod identities;
@@ -319,12 +320,16 @@ impl AppState {
         let body = edits::required_text(params, "body", MAX_BODY_BYTES)?;
         let refs = refs::fenced_refs(params, &task, &self.task_checkout_ids(&task))?;
         let attachments = self.parse_task_attachments(params)?;
+        let metadata = comments::CommentMetadata::from_params(self, &task.id, params)?;
         let now = crate::store::now_rfc3339();
         let comment = TaskComment {
             id: crate::tracker::new_comment_id(),
             task_id: task.id.clone(),
             author: Actor::User,
             body,
+            anchor: metadata.anchor.map(Box::new),
+            reply_to: metadata.reply_to,
+            opinion: metadata.opinion.map(Box::new),
             mentions_user: false,
             notifies_user: false,
             refs,

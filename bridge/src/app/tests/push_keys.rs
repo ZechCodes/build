@@ -106,5 +106,5 @@ fn both_verbs_are_announced_by_name() {
     let announced = crate::api::capabilities(false);
     assert!(announced.contains(&"push.registerKey"));
     assert!(announced.contains(&"push.revokeKey"));
-    assert_eq!(crate::api::API_VERSION, "3.6.0");
+    assert_eq!(crate::api::API_VERSION, "3.7.0");
 }

@@ -479,6 +479,12 @@ pub struct TaskComment {
     pub task_id: String,
     pub author: Actor,
     pub body: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<Box<ReviewCommentAnchor>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opinion: Option<Box<ReviewOpinion>>,
     /// A durable request for the user to read or answer this comment.
     #[serde(default, skip_serializing_if = "is_false")]
     pub mentions_user: bool,
@@ -503,6 +509,37 @@ pub struct TaskComment {
     /// written before it had a reading, and on every comment before #68.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author_context: Option<crate::thread::ContextReading>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewCommentAnchor {
+    pub snapshot_id: String,
+    pub directory_id: String,
+    pub path: String,
+    pub side: ReviewCommentSide,
+    pub line: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewCommentSide {
+    Old,
+    New,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewOpinion {
+    pub snapshot_id: String,
+    pub verdict: ReviewVerdict,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewVerdict {
+    Approve,
+    RequestChanges,
 }
 
 fn is_false(value: &bool) -> bool {

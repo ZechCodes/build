@@ -345,6 +345,20 @@ pub enum BridgeAction {
         notify_user: Option<bool>,
         mention_user: Option<bool>,
     },
+    /// A comment carrying saved review context; kept separate so existing
+    /// callers of the plain comment action retain their simple shape.
+    TrackerReviewCommentTask {
+        task_id: String,
+        body: String,
+        attachments: Vec<Value>,
+        refs: Vec<crate::thread::ThreadLink>,
+        track: Option<bool>,
+        notify_user: Option<bool>,
+        mention_user: Option<bool>,
+        anchor: Option<crate::tracker::ReviewCommentAnchor>,
+        reply_to: Option<String>,
+        opinion: Option<crate::tracker::ReviewOpinion>,
+    },
     /// Hand one over, which starts whoever gets it.
     ///
     /// The assignee is carried whole rather than as five sets of fields: the
@@ -481,6 +495,7 @@ impl BridgeAction {
             BridgeAction::TrackerReadComment { .. } => "read_comment",
             BridgeAction::TrackerCreateTask { .. } => "create_task",
             BridgeAction::TrackerCommentTask { .. } => "comment_task",
+            BridgeAction::TrackerReviewCommentTask { .. } => "comment_task",
             BridgeAction::TrackerAssignTask { .. } => "assign_task",
             BridgeAction::TrackerMoveTask { .. } => "move_task",
             BridgeAction::TrackerLabelTask { .. } => "label_task",
@@ -546,6 +561,7 @@ impl BridgeAction {
             | BridgeAction::TrackerReadComment { .. }
             | BridgeAction::TrackerCreateTask { .. }
             | BridgeAction::TrackerCommentTask { .. }
+            | BridgeAction::TrackerReviewCommentTask { .. }
             | BridgeAction::TrackerAssignTask { .. }
             | BridgeAction::TrackerMoveTask { .. }
             | BridgeAction::TrackerLabelTask { .. }
@@ -1024,6 +1040,15 @@ impl DoneServer {
                     "properties": {
                         "task_id": task_id,
                         "body": { "type": "string", "description": concat!("Markdown.", reference_shapes_note!()) },
+                        "anchor": {"type": "object", "description": "Line in a saved task review, including unchanged Files content.", "properties": {
+                            "snapshot_id": {"type": "string"}, "directory_id": {"type": "string"},
+                            "path": {"type": "string"}, "side": {"type": "string", "enum": ["old", "new"]},
+                            "line": {"type": "integer", "minimum": 1}
+                        }, "required": ["snapshot_id", "directory_id", "path", "side", "line"]},
+                        "reply_to": {"type": "string", "description": "Comment ID on this task to reply to."},
+                        "opinion": {"type": "object", "description": "Opinion on one saved snapshot; any reviewer may give one.", "properties": {
+                            "snapshot_id": {"type": "string"}, "verdict": {"type": "string", "enum": ["approve", "request_changes"]}
+                        }, "required": ["snapshot_id", "verdict"]},
                         "track": track,
                         "attachments": attachments,
                         "notify_user": {
@@ -1206,26 +1231,10 @@ impl DoneServer {
                 ),
                 Err(message) => refused(id.clone(), message),
             },
-            "comment_task" => {
-                match task().and_then(|task_id| Ok((task_id, required_argument(params, "body")?))) {
-                    Ok((task_id, body)) => match task_refs(params) {
-                        Ok(refs) => acted(
-                            id.clone(),
-                            BridgeAction::TrackerCommentTask {
-                                task_id,
-                                body,
-                                refs,
-                                attachments: value_list_argument(params, "attachments"),
-                                track: optional_flag(params, "track"),
-                                notify_user: optional_flag(params, "notify_user"),
-                                mention_user: optional_flag(params, "mention_user"),
-                            },
-                        ),
-                        Err(message) => refused(id.clone(), message),
-                    },
-                    Err(message) => refused(id.clone(), message),
-                }
-            }
+            "comment_task" => match comment_task_action(params) {
+                Ok(action) => acted(id.clone(), action),
+                Err(message) => refused(id.clone(), message),
+            },
             "assign_task" => match task().and_then(|task_id| {
                 let assignee = argument(params, "assignee").unwrap_or(Value::Null);
                 require_created_agent_name(&assignee)?;
@@ -2037,6 +2046,43 @@ fn refused(id: Value, message: impl Into<String>) -> Handled {
     }
 }
 
+fn comment_task_action(params: Option<&Value>) -> Result<BridgeAction, String> {
+    let task_id = current_id(&required_argument(params, "task_id")?);
+    let body = required_argument(params, "body")?;
+    let refs = task_refs(params)?;
+    let attachments = value_list_argument(params, "attachments");
+    let track = optional_flag(params, "track");
+    let notify_user = optional_flag(params, "notify_user");
+    let mention_user = optional_flag(params, "mention_user");
+    let anchor = optional_json_argument(params, "anchor")?;
+    let reply_to = optional_json_argument(params, "reply_to")?;
+    let opinion = optional_json_argument(params, "opinion")?;
+    if anchor.is_some() || reply_to.is_some() || opinion.is_some() {
+        Ok(BridgeAction::TrackerReviewCommentTask {
+            task_id,
+            body,
+            refs,
+            attachments,
+            track,
+            notify_user,
+            mention_user,
+            anchor,
+            reply_to,
+            opinion,
+        })
+    } else {
+        Ok(BridgeAction::TrackerCommentTask {
+            task_id,
+            body,
+            refs,
+            attachments,
+            track,
+            notify_user,
+            mention_user,
+        })
+    }
+}
+
 /// One optional string argument, trimmed. Blank reads as absent, because a
 /// harness filling a schema in reaches for "" long before it omits a key.
 fn optional_argument(params: Option<&Value>, field: &str) -> Option<String> {
@@ -2047,6 +2093,21 @@ fn optional_argument(params: Option<&Value>, field: &str) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+fn optional_json_argument<T: serde::de::DeserializeOwned>(
+    params: Option<&Value>,
+    field: &str,
+) -> Result<Option<T>, String> {
+    params
+        .and_then(|params| params.get("arguments"))
+        .and_then(|arguments| arguments.get(field))
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            serde_json::from_value(value.clone())
+                .map_err(|error| format!("invalid {field}: {error}"))
+        })
+        .transpose()
 }
 
 /// One required string argument, trimmed, or why the call cannot be made.

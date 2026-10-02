@@ -248,6 +248,11 @@ impl Beat {
         let mut retries = Retries::every(interval);
         let mut reaches = self.reachable.watch();
         let mut last_sent: Option<tokio::time::Instant> = None;
+        // When the retry a failure chose comes round. Until then a socket
+        // coming back waits with it; after it, the retry has been and gone
+        // (skipped, most often, because the same blip took the socket down)
+        // and the socket coming back is beaten at once (#321 review).
+        let mut retry_due: Option<tokio::time::Instant> = None;
         loop {
             tokio::select! {
                 // The first tick is immediate: a device the relay has already
@@ -268,7 +273,9 @@ impl Beat {
                     // second's, and the api would refuse its twin as a replay.
                     let sent_this_second = last_sent
                         .is_some_and(|sent| sent.elapsed() < Duration::from_secs(1));
-                    if !reachable || retries.waiting() || sent_this_second {
+                    let retry_pending =
+                        retry_due.is_some_and(|due| tokio::time::Instant::now() < due);
+                    if !reachable || retry_pending || sent_this_second {
                         continue;
                     }
                     ticker.reset();
@@ -283,7 +290,10 @@ impl Beat {
             }
             last_sent = Some(tokio::time::Instant::now());
             match self.send().await {
-                Ok(()) => retries.landed(),
+                Ok(()) => {
+                    retries.landed();
+                    retry_due = None;
+                }
                 Err(dropped) => {
                     // A refusal that passes — the api between two pods, a
                     // busy one, none at all — is asked again soon rather than
@@ -295,6 +305,7 @@ impl Beat {
                     if !dropped.passes {
                         retries.landed();
                     }
+                    retry_due = again.map(|again| tokio::time::Instant::now() + again);
                     if let Some(again) = again {
                         ticker.reset_after(again);
                         self.came_round(again);
@@ -400,11 +411,6 @@ impl Retries {
     /// passing starts from the soonest retry again.
     fn landed(&mut self) {
         self.failed = 0;
-    }
-
-    /// Whether a beat refused in passing is waiting to be tried again.
-    fn waiting(&self) -> bool {
-        self.failed > 0
     }
 
     /// How long to wait after one more failure in passing. `jitter` is
@@ -745,6 +751,35 @@ mod tests {
         reachable.reached();
         let waited = next_beat_after(&mut beats).await;
         assert_eq!(waited + Duration::from_secs(4), Duration::from_secs(20));
+        beating.abort();
+    }
+
+    /// The common reconnect: a beat fails in the blip that takes the socket
+    /// down, its retry comes round while the device is still unreachable and
+    /// is skipped, and then the relay authenticates it again. That return is
+    /// beaten at once, not left for the next tick up to an interval away
+    /// (#321 review): the wait the failure chose is over.
+    #[tokio::test(start_paused = true)]
+    async fn a_socket_back_after_a_skipped_retry_beats_at_once() {
+        static POSTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let reachable = Reachability::unreachable();
+        reachable.reached();
+        let (beat, mut beats) = recording(&reachable, |_| {
+            if POSTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                Err(Dropped::in_passing("connection reset".to_string()))
+            } else {
+                Ok(())
+            }
+        });
+        let beating = tokio::spawn(beat.run(HEARTBEAT_INTERVAL));
+
+        assert_eq!(next_beat_after(&mut beats).await, Duration::ZERO);
+        reachable.lost();
+        // The retry is due within 6.25 s (5 s, jittered a quarter either way).
+        tokio::time::sleep(Duration::from_secs(8)).await;
+        assert!(beats.try_recv().is_err(), "the retry found it unreachable");
+        reachable.reached();
+        assert_eq!(next_beat_after(&mut beats).await, Duration::ZERO);
         beating.abort();
     }
 

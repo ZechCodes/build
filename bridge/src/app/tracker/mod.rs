@@ -403,6 +403,17 @@ impl AppState {
         mut write: TaskWrite,
         now: &str,
     ) -> Result<Value, String> {
+        let moves_to_done = write.events.iter().any(|event| {
+            event.kind == TaskEventKind::Moved
+                && event.payload.get("to").and_then(Value::as_str)
+                    == Some(crate::tracker::DONE_STATUS)
+        });
+        let completes_review = moves_to_done
+            && self
+                .tracker_store()?
+                .load_review(&write.task.id)
+                .stored()?
+                .is_some_and(|review| review.state == crate::reviews::records::ReviewState::Open);
         write.task.updated_at = now.to_string();
         let mut timeline = self
             .tracker_store()?
@@ -424,9 +435,24 @@ impl AppState {
                 .collect::<Vec<_>>(),
         );
         self.capture_task_identities(&mut write.task, &timeline);
-        self.tracker_store()?
-            .save_tracker_task_activity(&write.task, &write.comments, &write.events)
-            .stored()?;
+        if completes_review {
+            let (_, completed) = self
+                .tracker_store()?
+                .complete_review_with_task_activity(
+                    &write.task,
+                    &write.comments,
+                    &write.events,
+                    &write.actor,
+                    now,
+                )
+                .stored()?;
+            timeline.push(crate::tracker::TimelineEntry::Event(completed.clone()));
+            write.events.push(completed);
+        } else {
+            self.tracker_store()?
+                .save_tracker_task_activity(&write.task, &write.comments, &write.events)
+                .stored()?;
+        }
         self.note_tasks_changed(project_id, &write.task.id);
         if write.finishes_a_workspace_task() {
             self.nudge_workspace_reclaim();

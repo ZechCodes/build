@@ -169,9 +169,9 @@ pub enum StoreError {
         existing: String,
         requested: String,
     },
-    #[error("task {task_id} has no review")]
+    #[error("unknown review for task_id: {task_id}")]
     ReviewNotFound { task_id: String },
-    #[error("task {task_id} does not exist")]
+    #[error("unknown task_id: {task_id}")]
     ReviewTaskNotFound { task_id: String },
     #[error("review {task_id} is already completed")]
     ReviewCompleted { task_id: String },

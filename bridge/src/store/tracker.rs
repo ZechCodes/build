@@ -370,7 +370,7 @@ fn next_task_number(tx: &Transaction, project_path: &str) -> Result<u64, StoreEr
     Ok(highest as u64 + 1)
 }
 
-fn write_tracker_task(tx: &Transaction, task: &Task) -> Result<(), StoreError> {
+pub(super) fn write_tracker_task(tx: &Transaction, task: &Task) -> Result<(), StoreError> {
     tx.execute(
         "INSERT INTO tracker_tasks
              (id, project_key, number, state, status, created_at, updated_at, record)
@@ -395,7 +395,7 @@ fn write_tracker_task(tx: &Transaction, task: &Task) -> Result<(), StoreError> {
 /// Append what was said and what happened. Both are inserts that ignore a
 /// repeat of the same id: an append is idempotent, so a retry of a write whose
 /// answer was lost adds nothing a second time.
-fn append_activity(
+pub(super) fn append_activity(
     tx: &Transaction,
     comments: &[TaskComment],
     events: &[TaskEvent],

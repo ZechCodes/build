@@ -1,10 +1,11 @@
 //! Review metadata and task completion in SQLite. Git refs are pinned by the
 //! review service before `save_review_snapshot` commits their identities here.
 
+use super::tracker::{append_activity, write_tracker_task};
 use super::{now_rfc3339, Store, StoreError};
 use crate::reviews::model::ReviewSnapshot;
 use crate::reviews::records::{Review, ReviewCompletion, ReviewState};
-use crate::tracker::{Actor, Task, TaskEvent, TaskEventKind, DONE_STATUS};
+use crate::tracker::{Actor, Task, TaskComment, TaskEvent, TaskEventKind, DONE_STATUS};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -17,6 +18,16 @@ struct ReviewHeader {
     version: u64,
     state: ReviewState,
     completion: Option<ReviewCompletion>,
+}
+
+struct CompletionWrite<'a> {
+    task: &'a Task,
+    comments: &'a [TaskComment],
+    events: &'a [TaskEvent],
+    actor: &'a Actor,
+    expected_version: Option<u64>,
+    description: &'a str,
+    now: &'a str,
 }
 
 impl Store {
@@ -92,65 +103,51 @@ impl Store {
         actor: &Actor,
         description: &str,
     ) -> Result<Review, StoreError> {
-        let description = description.trim();
-        if description.is_empty() || description.len() > 2000 {
-            return Err(StoreError::ReviewDescriptionInvalid);
-        }
+        let description = validate_description(description)?;
         self.in_transaction(|tx| {
-            let mut header =
-                load_header(tx, task_id)?.ok_or_else(|| StoreError::ReviewNotFound {
-                    task_id: task_id.into(),
-                })?;
-            check_version(&header, expected_version)?;
-            if header.state == ReviewState::Completed {
-                return Err(StoreError::ReviewCompleted {
-                    task_id: task_id.into(),
-                });
-            }
-            let mut task = require_task(tx, task_id)?;
+            let task = require_task(tx, task_id)?;
             let now = now_rfc3339();
-            let latest = latest_snapshot_id(tx, task_id)?;
-            header.version += 1;
-            header.state = ReviewState::Completed;
-            header.completion = Some(ReviewCompletion {
-                actor: actor.clone(),
-                description: description.into(),
-                completed_at: now.clone(),
-            });
-            task.status = DONE_STATUS.into();
-            task.done_at = Some(now.clone());
-            task.updated_at = now.clone();
-            let event = TaskEvent::new(
-                task_id,
-                actor.clone(),
-                TaskEventKind::ReviewCompleted,
-                json!({
-                    "workspace_id": header.workspace_id,
-                    "snapshot_id": latest,
-                    "description": description,
-                }),
-                &now,
-            );
-            write_header(tx, &header)?;
-            tx.execute(
-                "UPDATE tracker_tasks SET status = ?2, updated_at = ?3, record = ?4 WHERE id = ?1",
-                params![
-                    task_id,
-                    task.status,
+            complete_review_in_tx(
+                tx,
+                CompletionWrite {
+                    task: &task,
+                    comments: &[],
+                    events: &[],
+                    actor,
+                    expected_version: Some(expected_version),
+                    description,
+                    now: &now,
+                },
+            )
+            .map(|(review, _)| review)
+        })
+    }
+
+    /// A task move to Done also completes an open review. The task edits and
+    /// timeline activity made by that move land with the review completion.
+    /// There is no client version in ordinary task writes: this transaction
+    /// reads and advances the current review version under SQLite's write lock.
+    pub fn complete_review_with_task_activity(
+        &self,
+        task: &Task,
+        comments: &[TaskComment],
+        events: &[TaskEvent],
+        actor: &Actor,
+        now: &str,
+    ) -> Result<(Review, TaskEvent), StoreError> {
+        self.in_transaction(|tx| {
+            complete_review_in_tx(
+                tx,
+                CompletionWrite {
+                    task,
+                    comments,
+                    events,
+                    actor,
+                    expected_version: None,
+                    description: "Marked done",
                     now,
-                    serde_json::to_string(&task).expect("task serializes")
-                ],
-            )?;
-            tx.execute(
-                "INSERT INTO tracker_events (id, task_id, at, record) VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    event.id,
-                    task_id,
-                    now,
-                    serde_json::to_string(&event).expect("event serializes")
-                ],
-            )?;
-            Ok(load_review(tx, task_id)?.expect("review was written"))
+                },
+            )
         })
     }
 
@@ -173,6 +170,64 @@ impl Store {
             })
             .collect()
     }
+}
+
+fn complete_review_in_tx(
+    tx: &Transaction,
+    write: CompletionWrite<'_>,
+) -> Result<(Review, TaskEvent), StoreError> {
+    let task_id = &write.task.id;
+    require_task(tx, task_id)?;
+    let mut header = load_header(tx, task_id)?.ok_or_else(|| StoreError::ReviewNotFound {
+        task_id: task_id.clone(),
+    })?;
+    if let Some(expected) = write.expected_version {
+        check_version(&header, expected)?;
+    }
+    if header.state == ReviewState::Completed {
+        return Err(StoreError::ReviewCompleted {
+            task_id: task_id.clone(),
+        });
+    }
+    let latest = latest_snapshot_id(tx, task_id)?;
+    header.version += 1;
+    header.state = ReviewState::Completed;
+    header.completion = Some(ReviewCompletion {
+        actor: write.actor.clone(),
+        description: write.description.into(),
+        completed_at: write.now.into(),
+    });
+    let mut task = write.task.clone();
+    task.status = DONE_STATUS.into();
+    task.done_at = Some(write.now.into());
+    task.updated_at = write.now.into();
+    let event = TaskEvent::new(
+        task_id,
+        write.actor.clone(),
+        TaskEventKind::ReviewCompleted,
+        json!({
+            "workspace_id": header.workspace_id,
+            "snapshot_id": latest,
+            "description": write.description,
+        }),
+        write.now,
+    );
+    write_header(tx, &header)?;
+    write_tracker_task(tx, &task)?;
+    append_activity(tx, write.comments, write.events)?;
+    append_activity(tx, &[], &[event.clone()])?;
+    Ok((
+        load_review(tx, task_id)?.expect("review was written"),
+        event,
+    ))
+}
+
+fn validate_description(description: &str) -> Result<&str, StoreError> {
+    let description = description.trim();
+    if description.is_empty() || description.len() > 2000 {
+        return Err(StoreError::ReviewDescriptionInvalid);
+    }
+    Ok(description)
 }
 
 fn load_review(conn: &Connection, task_id: &str) -> Result<Option<Review>, StoreError> {

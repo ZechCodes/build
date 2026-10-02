@@ -50,6 +50,7 @@ const { refreshDevices, watchPresence, stopWatchingPresence } = await import("..
 const { adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
 const { fakeSession } = await import("./deviceSessionFixture.js");
 const { clearMemoryCacheRecords } = await import("./memoryCache.js");
+const { notePairingApproved, pairingState, resetPendingPairing } = await import("../src/core/pendingPairing.js");
 
 const online = (id) => ({ id, name: id, status: "online", fingerprint: `${id}-fp` });
 const away = (id) => ({ ...online(id), status: "offline" });
@@ -74,6 +75,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resetPendingPairing();
   stopWatchingPresence();
   resetDeviceContexts();
   vi.clearAllTimers();
@@ -90,6 +92,47 @@ describe("the presence poll", () => {
     await vi.advanceTimersByTimeAsync(30000);
     expect(account.fetchDevices).toHaveBeenCalledTimes(3);
     expect(App.devices.map((device) => device.id)).toEqual(["dev-a", "dev-b"]);
+  });
+
+  // #321: a device the reader just approved is read for every second, so the
+  // app dials it the moment its bridge says it is up, then the poll goes back
+  // to its own cadence.
+  it("reads the account every second while a just-approved device comes up", async () => {
+    listed = [online("dev-a"), away("dev-new")];
+    watchPresence();
+    notePairingApproved({ device_id: "dev-new", name: "Studio" });
+
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(account.fetchDevices).toHaveBeenCalledTimes(5);
+
+    await vi.advanceTimersByTimeAsync(90000);
+    const atWindowEnd = account.fetchDevices.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(account.fetchDevices.mock.calls.length - atWindowEnd).toBe(1);
+  });
+
+  it("ends the wait when that device answers", async () => {
+    listed = [online("dev-a"), online("dev-new")];
+    watchPresence();
+    notePairingApproved({ device_id: "dev-new", name: "Studio" });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(connection.openDeviceSessions).toHaveBeenCalled();
+
+    adoptDeviceSession(fakeSession("dev-new"));
+    expect(pairingState()).toBe(null);
+    account.fetchDevices.mockClear();
+    await vi.advanceTimersByTimeAsync(14000);
+    expect(account.fetchDevices).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(account.fetchDevices).toHaveBeenCalledTimes(1);
+  });
+
+  it("names a just-approved device as connecting in the picker", async () => {
+    const { paintDevicePicker } = await import("../src/devices.js");
+    App.devices = [away("dev-new")];
+    notePairingApproved({ device_id: "dev-new", name: "Studio" });
+    paintDevicePicker();
+    expect(document.getElementById("devpick").textContent).toContain("dev-new (connecting…)");
   });
 
   it("reads it at once when the tab comes back to the front", async () => {

@@ -457,3 +457,78 @@ describe("the bridge's approve link", () => {
     expect(document.getElementById("root").textContent).not.toContain("Welcome to Build");
   });
 });
+
+// #321: approving a device lands on a screen about that device, which asks the
+// account every second and enters the app the moment the device is online;
+// one that does not come up within the window gets the waiting screen back,
+// with what to check.
+describe("a device just approved", () => {
+  const studio = (status) => ({ id: "d1", name: "studio", fingerprint: "AAAA", status });
+  let reads = 0;
+
+  async function approveStudio() {
+    const { App } = await import("../src/app.js");
+    const { resetPendingPairing } = await import("../src/core/pendingPairing.js");
+    resetPendingPairing();
+    reads = 0;
+    refresh = async () => {
+      App.devices = devices;
+      return devices;
+    };
+    presence = async () => {
+      reads += 1;
+      App.devices = devices;
+      return devices;
+    };
+    lookupDevice.mockResolvedValueOnce({ device_id: "d1", name: "studio", fingerprint: "AAAA BBBB CCCC DDDD" });
+    await boot();
+    await flush();
+    document.getElementById("ocode").value = "G6ZP-KD2U";
+    document.getElementById("olookup").click();
+    await flush();
+    devices = [studio("offline")];
+    openSession = async () => { throw new Error("offline"); };
+    document.getElementById("oapprove").click();
+    await vi.waitFor(() => expect(document.getElementById("waittitle")).toBeTruthy());
+    return App;
+  }
+
+  afterEach(async () => {
+    const { App } = await import("../src/app.js");
+    clearInterval(App._watch);
+    App._watch = null;
+    const { resetPendingPairing } = await import("../src/core/pendingPairing.js");
+    resetPendingPairing();
+  });
+
+  it("names it, asks every second, and enters the app once it is online", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    await approveStudio();
+
+    expect(document.getElementById("waittitle").textContent).toBe("Connecting to studio…");
+    expect(document.getElementById("waitintro").textContent).toContain("Approved. Waiting for studio to come online");
+    expect(document.getElementById("waitlist").textContent).toContain("connecting…");
+
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(reads).toBe(3);
+
+    devices = [studio("online")];
+    openSession = async () => ({ deviceId: "d1" });
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(() => expect(document.body.classList.contains("gated")).toBe(false));
+  });
+
+  it("says what to check when it has not come online in its window, and slows down", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    await approveStudio();
+
+    await vi.advanceTimersByTimeAsync(91000);
+    expect(document.getElementById("waittitle").textContent).toBe("Waiting for your device");
+    expect(document.getElementById("waitintro").textContent).toContain("studio was approved but has not come online");
+    expect(document.getElementById("waitintro").textContent).toContain("build-bridge install-service");
+
+    const before = reads;
+    await vi.advanceTimersByTimeAsync(9000);
+    expect(reads - before).toBe(3);
+  });
+});

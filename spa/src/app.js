@@ -25,6 +25,7 @@ import { forgetHomeFollow, forgetRendezvousSockets, forgetSecurityStops } from "
 import { followTerminalDevice, resetTerminalManager, terminalDeviceId } from "./terminal/manager.js";
 import { mountFocusMemory } from "./core/focusMemory.js";
 import { resetDeviceFilterCache } from "./core/deviceFilter.js";
+import { resetPendingPairing } from "./core/pendingPairing.js";
 import { trackBridgeUpdateDevices } from "./core/bridgeUpdates.js";
 
 const SELECTED_DEVICE_KEY = "build.selectedDeviceId";
@@ -107,6 +108,8 @@ export function resetApplication() {
   forgetSecurityStops();
   resetDeviceFilterCache();
   App.deviceFilter = null;
+  // A device the last account approved is nothing this one waits for.
+  resetPendingPairing();
   clearCacheScope();
   // The cache is what the app paints from, so the previous account's board,
   // conversations and diffs go with its devices. Not awaited: the reset is

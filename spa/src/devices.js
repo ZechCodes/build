@@ -12,7 +12,7 @@
 
 import { $ } from "./dom.js";
 import { esc, nothingAnswersMark } from "./core/text.js";
-import { canAnswer, knownContexts, noteAccountPresence, onDeviceStateChanged, openedContext } from "./core/deviceContexts.js";
+import { canAnswer, knownContexts, liveContexts, noteAccountPresence, onDeviceStateChanged, openedContext } from "./core/deviceContexts.js";
 import { deviceAwayWord } from "./core/deviceAway.js";
 import { ICON_CHEVRON_DOWN, ICON_HOURGLASS, ICON_SETTINGS, ICON_WIFI_OFF } from "./core/icons.js";
 import { onUsageLimitsChanged, readCachedUsageLimits, untilAnyTextChanges, usageLimitText, usageLimitsOf } from "./core/usageLimits.js";
@@ -25,6 +25,7 @@ import { deviceWentAway, openDeviceSessions, retireDevice, syncDeviceRecoveryPre
 import { DEVICES_ADDRESS, readCached, subscribeCache, writeCached } from "./core/localCache.js";
 import { uiAddress, watchUiState } from "./core/localUiState.js";
 import { bridgeUpdateAvailable, bridgeUpdateStatus, onBridgeUpdatesChanged, trackBridgeUpdateDevices } from "./core/bridgeUpdates.js";
+import { accountReadCadence, isPairingConnecting, onPairingChanged, pairingLanded, pairingState } from "./core/pendingPairing.js";
 
 let presenceGeneration = 0;
 const deviceListListeners = new Set();
@@ -145,11 +146,39 @@ export async function pinnedDeviceTransportKey(deviceId) {
 
 /** How often the account's list is re-read while the app is open. The gate has
  *  a quicker one of its own (3 s) for the screen that is waiting on a machine;
- *  this is the cadence for an app that is already standing on one. */
+ *  this is the cadence for an app that is already standing on one. A device the
+ *  reader just approved is read for every second (core/pendingPairing.js). */
 const PRESENCE_INTERVAL_MS = 15000;
 
 let presenceTimer = null;
+let presenceIntervalMs = PRESENCE_INTERVAL_MS;
 let onVisibilityChange = null;
+
+/** Arm the poll at the cadence this moment calls for. */
+function armPresencePoll() {
+  clearInterval(presenceTimer);
+  const cadence = accountReadCadence(presenceIntervalMs);
+  presenceTimer = setInterval(() => {
+    // A pairing's second-by-second wait ending puts the poll back on its own.
+    if (accountReadCadence(presenceIntervalMs) !== cadence) armPresencePoll();
+    readPresence();
+  }, cadence);
+}
+
+// An approve speeds a running poll up at once, and a pairing that landed slows
+// it back down. Only a poll that is running: the gate stops this one while it
+// holds the page and paces its own.
+onPairingChanged(() => {
+  if (presenceTimer !== null) armPresencePoll();
+});
+
+// The device a pairing is waiting for answered: the wait is over.
+onDeviceStateChanged(() => {
+  const pairing = pairingState();
+  if (pairing && liveContexts().some((context) => context.deviceId === pairing.deviceId)) {
+    pairingLanded(pairing.deviceId);
+  }
+});
 
 /**
  * Follow the account's presence while the app is open.
@@ -160,7 +189,8 @@ let onVisibilityChange = null;
  */
 export function watchPresence({ intervalMs = PRESENCE_INTERVAL_MS } = {}) {
   stopWatchingPresence();
-  presenceTimer = setInterval(() => readPresence(), intervalMs);
+  presenceIntervalMs = intervalMs;
+  armPresencePoll();
   // A tab that was in the background missed every tick: what it shows is as old
   // as the last one, so the first thing it does on the way back is read.
   onVisibilityChange = () => {
@@ -377,6 +407,7 @@ function deviceRowHtml(device, filter) {
 }
 
 onBridgeUpdatesChanged(() => paintDevicePicker());
+onPairingChanged(() => paintDevicePicker());
 
 /** What every row is picked by: the device the rail is to show, with the
  *  account's own row naming no device at all. */
@@ -392,6 +423,7 @@ function choiceHtml(deviceId, label, pressed) {
  *  opened yet has nothing of its own to say, so the account list speaks for it. */
 function deviceLabel(device) {
   const context = openedContext(device.id);
+  if (isPairingConnecting(device.id)) return `${device.name} (connecting…)`;
   if (deviceIsOffline(device)) return device.name;
   return context && !canAnswer(context) ? `${device.name} (${deviceAwayWord(context)})` : device.name;
 }

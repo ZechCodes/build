@@ -8,6 +8,7 @@ import { lookupDevice, approveDevice } from "../api.js";
 import { settingsSheetHtml } from "./settingsSheet.js";
 import { fieldTraits } from "../core/fieldTraits.js";
 import { pendingDeviceHtml } from "../core/deviceFingerprint.js";
+import { notePairingApproved } from "../core/pendingPairing.js";
 
 /** A link opened the sheet: anyone can send one, so it says so and what
  *  approving does before the device it names can be approved (#319). */
@@ -70,6 +71,7 @@ export function openAddDevice(onDone, { code = "", fromLink = false } = {}) {
       error.textContent = "";
       try {
         await approveDevice(code);
+        notePairingApproved(device);
         // Pairing already succeeded even if navigation replaced this sheet.
         // Notify its caller, but never close a newer sheet on its behalf.
         dispose();

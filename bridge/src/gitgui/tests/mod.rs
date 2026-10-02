@@ -49,6 +49,7 @@ fn write(dir: &Path, name: &str, contents: &str) {
 /// A repo with one commit of `f.txt` == "base\n" on branch `main`.
 fn init_repo(dir: &Path) {
     git_ok(dir, &["init", "-q"]);
+    crate::git_fixture::configure_repo(dir);
     write(dir, "f.txt", "base\n");
     git_ok(dir, &["add", "."]);
     git_ok(dir, &["commit", "-q", "-m", "base"]);
@@ -110,6 +111,7 @@ fn clone_of_an_origin_carrying_feature_x(dir: &Path) -> PathBuf {
             clone.to_str().unwrap(),
         ],
     );
+    crate::git_fixture::configure_repo(&clone);
     clone
 }
 

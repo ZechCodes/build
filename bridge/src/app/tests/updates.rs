@@ -31,6 +31,9 @@ impl UpdateBackend for PausedLaunchBackend {
 
 #[tokio::test]
 async fn idle_handoff_blocks_real_rpc_until_failed_launch_reopens_admission() {
+    if !crate::git_fixture::environment::GitEnvironment::unsigned().run_test() {
+        return;
+    }
     let (dir, repo) = init_repo();
     let backend = Arc::new(PausedLaunchBackend {
         entered: Arc::new(Notify::new()),

@@ -33,12 +33,21 @@ pub fn init_repo_with_readme(parent: &Path, name: &str, readme: &str) -> PathBuf
     let repo = parent.join(name);
     std::fs::create_dir(&repo).unwrap();
     git_in(&repo, &["init", "-b", "main"]);
-    git_in(&repo, &["config", "user.email", "test@build.ing"]);
-    git_in(&repo, &["config", "user.name", "Test"]);
+    configure_repo(&repo);
     std::fs::write(repo.join("README.md"), readme).unwrap();
     git_in(&repo, &["add", "."]);
     git_in(&repo, &["commit", "-m", "initial"]);
     repo
+}
+
+/// Keep product commits in this temporary repository unsigned too. The
+/// environment on `git_command` only protects fixture setup; product commands
+/// deliberately honor the repository's config. Linked worktrees share this
+/// policy, while a clone must be configured separately.
+pub fn configure_repo(repo: &Path) {
+    git_in(repo, &["config", "--local", "user.email", "test@build.ing"]);
+    git_in(repo, &["config", "--local", "user.name", "Test"]);
+    git_in(repo, &["config", "--local", "commit.gpgsign", "false"]);
 }
 
 /// Run one git command in `dir`, failing the test the moment git does.
@@ -101,14 +110,12 @@ mod tests {
             return;
         }
         let (_dir, repo) = init_repo();
-        // Discard the fixture's local signing policy, if present: this test
+        // Discard the fixture's local signing policy: this test
         // stands for a user's repository, not an unsigned fixture.
-        let _ = git_command(
+        git_in(
             &repo,
             &["config", "--local", "--unset-all", "commit.gpgsign"],
-        )
-        .status()
-        .unwrap();
+        );
         std::fs::write(repo.join("change.txt"), "change\n").unwrap();
         crate::gitgui::stage_paths(&repo, &["change.txt".into()]).unwrap();
         let error = crate::gitgui::commit_staged(&repo, "signed product commit").unwrap_err();
@@ -122,6 +129,12 @@ mod tests {
     #[test]
     fn a_fixture_commit_reads_none_of_the_machines_git_config() {
         let (dir, repo) = init_repo();
+        // This assertion is about the command's environment, independently
+        // of the local policy that protects product commits.
+        git_in(
+            &repo,
+            &["config", "--local", "--unset-all", "commit.gpgsign"],
+        );
         let home = dir.path().join("home");
         std::fs::create_dir(&home).unwrap();
         std::fs::write(

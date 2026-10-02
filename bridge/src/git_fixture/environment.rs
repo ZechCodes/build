@@ -33,15 +33,15 @@ impl GitEnvironment {
         )
         .unwrap();
         std::fs::set_permissions(&signer, std::fs::Permissions::from_mode(0o700)).unwrap();
-        std::fs::write(
-            environment.home.path().join(".gitconfig"),
-            format!(
-                "[user]\nname = Test\nemail = test@build.ing\nsigningkey = unused-test-key\n\
-                 [commit]\ngpgsign = true\n[gpg]\nformat = openpgp\nprogram = {}\n",
-                signer.display()
-            ),
-        )
-        .unwrap();
+        let mut config = git2::Config::open(&environment.home.path().join(".gitconfig")).unwrap();
+        config.set_bool("commit.gpgsign", true).unwrap();
+        config
+            .set_str("user.signingkey", "unused-test-key")
+            .unwrap();
+        config.set_str("gpg.format", "openpgp").unwrap();
+        config
+            .set_str("gpg.program", signer.to_str().unwrap())
+            .unwrap();
         environment
     }
 

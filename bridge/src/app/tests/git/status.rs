@@ -6,8 +6,7 @@ fn init_unborn_repo() -> (tempfile::TempDir, PathBuf) {
     let repo = dir.path().join("repo");
     std::fs::create_dir(&repo).unwrap();
     git_in(&repo, &["init", "-b", "main"]);
-    git_in(&repo, &["config", "user.email", "t@build.ing"]);
-    git_in(&repo, &["config", "user.name", "T"]);
+    crate::git_fixture::configure_repo(&repo);
     (dir, repo)
 }
 

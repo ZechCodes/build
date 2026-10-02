@@ -603,6 +603,8 @@ fn init_repo(parent: &Path) -> PathBuf {
     git(&["init", "-b", "main"]);
     git(&["config", "user.email", "t@build.ing"]);
     git(&["config", "user.name", "T"]);
+    // The product checkpoints in the linked worktree inherit this policy.
+    git(&["config", "--local", "commit.gpgsign", "false"]);
     let mut readme = std::fs::File::create(repo.join("README.md")).expect("a readme");
     readme
         .write_all(b"# load\n")

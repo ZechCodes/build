@@ -25,7 +25,7 @@ import { deviceWentAway, openDeviceSessions, retireDevice, syncDeviceRecoveryPre
 import { DEVICES_ADDRESS, readCached, subscribeCache, writeCached } from "./core/localCache.js";
 import { uiAddress, watchUiState } from "./core/localUiState.js";
 import { bridgeUpdateAvailable, bridgeUpdateStatus, onBridgeUpdatesChanged, trackBridgeUpdateDevices } from "./core/bridgeUpdates.js";
-import { accountReadCadence, isPairingConnecting, onPairingChanged, pairingLanded, pairingState } from "./core/pendingPairing.js";
+import { accountReadCadence, isPairingConnecting, onPairingChanged, pairingLandedAmong } from "./core/pendingPairing.js";
 
 let presenceGeneration = 0;
 const deviceListListeners = new Set();
@@ -172,14 +172,6 @@ onPairingChanged(() => {
   if (presenceTimer !== null) armPresencePoll();
 });
 
-// The device a pairing is waiting for answered: the wait is over.
-onDeviceStateChanged(() => {
-  const pairing = pairingState();
-  if (pairing && liveContexts().some((context) => context.deviceId === pairing.deviceId)) {
-    pairingLanded(pairing.deviceId);
-  }
-});
-
 /**
  * Follow the account's presence while the app is open.
  *
@@ -227,6 +219,8 @@ export async function readPresence() {
   const retired = retireWhatTheAccountNoLongerHas(listed, heldWhenAsked);
   markWhatTheAccountNoLongerLists(retired);
   openDeviceSessions(); // a late device, a machine that came back, one paired elsewhere
+  // A device just approved that answers now has landed: the poll slows down.
+  pairingLandedAmong(liveContexts().map((context) => context.deviceId));
   // Which device is home is what these statuses say: the picked device dropping
   // hands home to the first that is still online, and its coming back takes it
   // straight back.

@@ -119,6 +119,7 @@ describe("the presence poll", () => {
     expect(connection.openDeviceSessions).toHaveBeenCalled();
 
     adoptDeviceSession(fakeSession("dev-new"));
+    await vi.advanceTimersByTimeAsync(1000);
     expect(pairingState()).toBe(null);
     account.fetchDevices.mockClear();
     await vi.advanceTimersByTimeAsync(14000);

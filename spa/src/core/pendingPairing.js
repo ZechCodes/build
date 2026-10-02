@@ -55,6 +55,12 @@ export function pairingLanded(deviceId) {
   announce();
 }
 
+/** End the wait if one of `deviceIds` — the machines answering now — is the
+ *  device it is for. */
+export function pairingLandedAmong(deviceIds) {
+  if (held && deviceIds.includes(held.deviceId)) pairingLanded(held.deviceId);
+}
+
 /** Hear the pending device change: approved, or landed. */
 export function onPairingChanged(listener) {
   listeners.add(listener);

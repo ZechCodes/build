@@ -10,6 +10,7 @@ import {
   notePairingApproved,
   onPairingChanged,
   pairingLanded,
+  pairingLandedAmong,
   pairingState,
   resetPendingPairing,
 } from "../src/core/pendingPairing.js";
@@ -53,6 +54,14 @@ describe("a pending pairing", () => {
     expect(pairingState()).toBe(null);
     expect(heard.mock.calls.map(([state]) => state?.deviceId ?? null)).toEqual(["dev-1", null]);
     stop();
+  });
+
+  it("ends when that device is among the machines answering", () => {
+    notePairingApproved({ device_id: "dev-1", name: "Studio" });
+    pairingLandedAmong(["dev-2"]);
+    expect(pairingState()).not.toBe(null);
+    pairingLandedAmong(["dev-2", "dev-1"]);
+    expect(pairingState()).toBe(null);
   });
 
   it("ignores an approve that names no device", () => {

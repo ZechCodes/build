@@ -516,6 +516,8 @@ describe("a device just approved", () => {
     openSession = async () => ({ deviceId: "d1" });
     await vi.advanceTimersByTimeAsync(1000);
     await vi.waitFor(() => expect(document.body.classList.contains("gated")).toBe(false));
+    const { pairingState } = await import("../src/core/pendingPairing.js");
+    expect(pairingState()).toBe(null);
   });
 
   it("says what to check when it has not come online in its window, and slows down", async () => {

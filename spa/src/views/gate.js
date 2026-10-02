@@ -40,7 +40,7 @@ import { initToolbar } from "../core/toolbar.js";
 import { DEVICES_ADDRESS, readCached } from "../core/localCache.js";
 import { fieldTraits } from "../core/fieldTraits.js";
 import { pendingDeviceHtml } from "../core/deviceFingerprint.js";
-import { accountReadCadence, notePairingApproved, onPairingChanged, pairingState } from "../core/pendingPairing.js";
+import { accountReadCadence, notePairingApproved, onPairingChanged, pairingLandedAmong, pairingState } from "../core/pendingPairing.js";
 
 /** Whether the cache's two readers are up. They are started once, before any
  *  session answers, and stood down when a gate screen takes the page (which is
@@ -166,7 +166,11 @@ async function connectToApp(asked) {
   // answers first rather than waiting out the slowest one. The gate names no
   // home: which device that is, the account list and the user's pick already
   // say, and each device takes it in hand as it lands.
-  await openDeviceSessions(asked).first;
+  const first = await openDeviceSessions(asked).first;
+  // The device a pairing on this page was waiting for may be the one that
+  // answered: the wait is over, and the poll the app starts goes at its own
+  // cadence.
+  if (first?.deviceId) pairingLandedAmong([first.deviceId]);
   gateGeneration += 1;
   stopWatchingForOnline();
   handBackToReader();

@@ -123,10 +123,9 @@ impl Store {
         })
     }
 
-    /// A task move to Done also completes an open review. The task edits and
-    /// timeline activity made by that move land with the review completion.
-    /// There is no client version in ordinary task writes: this transaction
-    /// reads and advances the current review version under SQLite's write lock.
+    /// A task move to Done completes a review if it is open at the moment of
+    /// the write. The check and all task activity share one transaction, so a
+    /// snapshot reopening the review cannot slip between them.
     pub fn complete_review_with_task_activity(
         &self,
         task: &Task,
@@ -134,20 +133,26 @@ impl Store {
         events: &[TaskEvent],
         actor: &Actor,
         now: &str,
-    ) -> Result<(Review, TaskEvent), StoreError> {
+    ) -> Result<Option<TaskEvent>, StoreError> {
         self.in_transaction(|tx| {
-            complete_review_in_tx(
-                tx,
-                CompletionWrite {
-                    task,
-                    comments,
-                    events,
-                    actor,
-                    expected_version: None,
-                    description: "Marked done",
-                    now,
-                },
-            )
+            if load_header(tx, &task.id)?.is_some_and(|review| review.state == ReviewState::Open) {
+                return complete_review_in_tx(
+                    tx,
+                    CompletionWrite {
+                        task,
+                        comments,
+                        events,
+                        actor,
+                        expected_version: None,
+                        description: "Marked done",
+                        now,
+                    },
+                )
+                .map(|(_, event)| Some(event));
+            }
+            write_tracker_task(tx, task)?;
+            append_activity(tx, comments, events)?;
+            Ok(None)
         })
     }
 

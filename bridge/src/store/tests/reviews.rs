@@ -136,6 +136,73 @@ fn fresh_snapshot_reopens_review_without_moving_or_reopening_task() {
 }
 
 #[test]
+fn done_move_uses_review_state_inside_the_write_transaction() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let task = task(&store);
+    store
+        .save_review_snapshot(&task.id, "ws-1", 0, snapshot("rs-first"))
+        .unwrap();
+    store
+        .complete_review(&task.id, 1, &Actor::User, "first completion")
+        .unwrap();
+
+    let mut candidate = store.load_tracker_task(&task.id).unwrap().unwrap();
+    candidate.status = "in_review".into();
+    candidate.done_at = None;
+    store
+        .save_tracker_task_activity(&candidate, &[], &[])
+        .unwrap();
+    candidate.status = DONE_STATUS.into();
+    candidate.body = "kept as an ordinary edit".into();
+    let moved = TaskEvent::new(
+        &task.id,
+        Actor::User,
+        TaskEventKind::Moved,
+        serde_json::json!({"from": "in_review", "to": "done"}),
+        NOW,
+    );
+    let completion = store
+        .complete_review_with_task_activity(&candidate, &[], &[moved], &Actor::User, NOW)
+        .unwrap();
+    assert!(
+        completion.is_none(),
+        "an already completed review stays completed"
+    );
+    assert_eq!(store.load_review(&task.id).unwrap().unwrap().version, 2);
+    assert_eq!(
+        store.load_tracker_task(&task.id).unwrap().unwrap().body,
+        "kept as an ordinary edit"
+    );
+
+    // A snapshot can reopen the review after an earlier app read. The same
+    // Done writer now sees Open and finishes the newest snapshot.
+    store
+        .save_review_snapshot(&task.id, "ws-1", 2, snapshot("rs-second"))
+        .unwrap();
+    candidate.status = "in_review".into();
+    candidate.done_at = None;
+    store
+        .save_tracker_task_activity(&candidate, &[], &[])
+        .unwrap();
+    candidate.status = DONE_STATUS.into();
+    let moved = TaskEvent::new(
+        &task.id,
+        Actor::User,
+        TaskEventKind::Moved,
+        serde_json::json!({"from": "in_review", "to": "done"}),
+        NOW,
+    );
+    let completion = store
+        .complete_review_with_task_activity(&candidate, &[], &[moved], &Actor::User, NOW)
+        .unwrap();
+    assert_eq!(completion.unwrap().payload["snapshot_id"], "rs-second");
+    let review = store.load_review(&task.id).unwrap().unwrap();
+    assert_eq!(review.version, 4);
+    assert_eq!(review.state, ReviewState::Completed);
+}
+
+#[test]
 fn completion_requires_a_brief_action_description() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();

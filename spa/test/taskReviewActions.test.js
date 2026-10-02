@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "fake-indexeddb/auto";
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { wipeUiRecords, readUiRecord, writeUiRecord } from "../src/core/localUiStore.js";
 import { uiAddress } from "../src/core/localUiState.js";
 import { mountTaskReviewActions } from "../src/core/taskReviewActions.js";
@@ -26,6 +26,7 @@ const row = (id, directory_id, steps, status = "succeeded") => ({ id, snapshot_i
   status, steps });
 const step = (kind, status = "succeeded") => ({ kind, branch: kind === "merge" ? "dev" : "main", remote: kind === "push" ? "origin" : undefined, status });
 beforeEach(async () => { sheet?.dispose(); await wipeUiRecords(); });
+afterEach(() => sheet?.dispose());
 
 it("gates the form on act support while showing cached results", () => {
   mount({ ...base, actions: [row("a", "dir-api", [step("merge")])] }, { mutate: vi.fn() }, { act: false, complete: true });
@@ -216,6 +217,45 @@ it("retries completion on a later same-version refresh after a disconnected atte
   await vi.waitFor(() => expect(document.querySelector('[data-review-act-error]').textContent).toContain("offline"));
   sheet.update(success);
   await vi.waitFor(() => expect(repository.mutate.mock.calls.filter(([verb]) => verb === "complete")).toHaveLength(2));
+  const address = uiAddress({ deviceId: "actions-device", entityId: "proj-1", view: "task-review-actions", kind: "git-draft",
+    sub: JSON.stringify(["task-1", snapshot.id]) });
+  await vi.waitFor(async () => expect((await readUiRecord(address))?.value?.intent).toBeNull());
+});
+
+it("does not write a late completion after the sheet is disposed", async () => {
+  let resolveCompletion;
+  const completion = new Promise((resolve) => { resolveCompletion = resolve; });
+  const onTaskChanged = vi.fn();
+  const repository = { mutate: vi.fn(async (verb) => verb === "complete" ? completion : undefined) };
+  document.body.innerHTML = '<div id="actions"></div>';
+  sheet = mountTaskReviewActions(document.querySelector("#actions"), { deviceId: "actions-device", projectId: "proj-1",
+    taskId: "task-1", snapshot, review: base, support: { act: true, complete: true }, repository, onTaskChanged });
+  choose("dir-api", "merge"); submit();
+  await vi.waitFor(() => expect(repository.mutate).toHaveBeenCalledWith("act", expect.anything()));
+  sheet.update({ ...base, version: 3, actions: [row("done", "dir-api", [{ ...step("merge"), branch: "main" }])] });
+  await vi.waitFor(() => expect(repository.mutate).toHaveBeenCalledWith("complete", expect.anything()));
+  const address = uiAddress({ deviceId: "actions-device", entityId: "proj-1", view: "task-review-actions", kind: "git-draft",
+    sub: JSON.stringify(["task-1", snapshot.id]) });
+  sheet.dispose();
+  resolveCompletion();
+  await new Promise((resolve) => setTimeout(resolve, 230));
+  expect((await readUiRecord(address)).value.intent).not.toBeNull();
+  expect(onTaskChanged).not.toHaveBeenCalled();
+});
+
+it("settles a late completion refusal without touching a disposed sheet", async () => {
+  let rejectCompletion;
+  const completion = new Promise((_, reject) => { rejectCompletion = reject; });
+  const repository = { mutate: vi.fn(async (verb) => verb === "complete" ? completion : undefined) };
+  mount(base, repository); choose("dir-api", "merge"); submit();
+  await vi.waitFor(() => expect(repository.mutate).toHaveBeenCalledWith("act", expect.anything()));
+  sheet.update({ ...base, version: 3, actions: [row("done", "dir-api", [{ ...step("merge"), branch: "main" }])] });
+  await vi.waitFor(() => expect(repository.mutate).toHaveBeenCalledWith("complete", expect.anything()));
+  const heldHtml = document.querySelector("#actions").innerHTML;
+  sheet.dispose();
+  rejectCompletion(new Error("late refusal"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(document.querySelector("#actions").innerHTML).toBe(heldHtml);
 });
 
 it("keeps an automatic completion summary within 2,000 UTF-8 bytes", async () => {

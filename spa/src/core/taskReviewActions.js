@@ -180,12 +180,13 @@ export function mountTaskReviewActions(host, options) {
   let completingVersion = null;
   const state = watchUiState(uiAddress({ deviceId, entityId: projectId, view: "task-review-actions", kind: "git-draft",
     sub: JSON.stringify([taskId, snapshot.id]) }), (saved) => {
+    if (disposed) return;
     draft = saved || { selected: {}, intent: null };
     paint(); checkCompletion();
   }, { debounceMs: 180 });
-  const save = (changes) => { draft = { ...draft, ...changes }; state.schedule(draft); };
+  const save = (changes) => { if (disposed) return; draft = { ...draft, ...changes }; state.schedule(draft); };
   const editChoice = (id, changes) => save({ selected: { ...draft.selected, [id]: { ...draft.selected[id], ...changes } } });
-  const setError = (message) => { error = message; paint(); };
+  const setError = (message) => { if (disposed) return; error = message; paint(); };
 
   async function act(sources, retry = false) {
     if (busy || !sources.length) return;
@@ -195,11 +196,13 @@ export function mountTaskReviewActions(host, options) {
     save({ intent });
     try {
       await state.flush();
+      if (disposed) return;
       await repository.mutate("act", { expected_version: review.version, snapshot_id: snapshot.id, sources });
     } catch (failure) {
+      if (disposed) return;
       if ((failure.code || failure.error_code) === "stale_version") save({ intent: null });
       setError(reviewFailure(failure));
-    } finally { busy = false; paint(); checkCompletion(); }
+    } finally { busy = false; if (!disposed) { paint(); checkCompletion(); } }
   }
 
   async function complete(rows) {
@@ -207,14 +210,20 @@ export function mountTaskReviewActions(host, options) {
     completingVersion = review.version;
     try {
       await repository.mutate("complete", { expected_version: review.version, description: completedDescription(rows) });
+      if (disposed) return;
       save({ intent: null });
       await state.flush();
+      if (disposed) return;
       await onTaskChanged?.();
-    } catch (failure) { completingVersion = null; setError(reviewFailure(failure)); }
+    } catch (failure) {
+      completingVersion = null;
+      if (!disposed) setError(reviewFailure(failure));
+    }
   }
 
+  const mayComplete = () => !disposed && !busy && draft.intent && !draft.intent.paused && review?.state === "open";
   function checkCompletion() {
-    if (busy || !draft.intent || draft.intent.paused || !review || review.state !== "open") return;
+    if (!mayComplete()) return;
     if (!retryHasResult(review, snapshot, draft.intent.pendingRetry)) return;
     const rows = matchingRows(review, draft.intent);
     if (rows.some((row) => !row)) return;
@@ -266,5 +275,6 @@ export function mountTaskReviewActions(host, options) {
     }; });
   }
   paint();
-  return { update(nextReview) { review = nextReview; paint(); checkCompletion(); }, dispose() { disposed = true; state.dispose(); } };
+  return { update(nextReview) { if (disposed) return; review = nextReview; paint(); checkCompletion(); },
+    dispose() { disposed = true; state.dispose(); } };
 }

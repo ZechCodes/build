@@ -114,6 +114,7 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
   const state = { list: null, error: "", viewed: new Set(), open: new Set(), loading: new Set(), anchor: null, anchorScrolled: false };
   let alive = true;
   let generation = 0;
+  const pendingPatches = new Map();
   const contentKeyOf = (path) => state.list?.files?.find((file) => file.path === path)?.content_key ?? `unlisted:${path}`;
   const bodies = createChangesetBodies({
     addressOf: patchAddress,
@@ -143,6 +144,26 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
     state.error = record?.value?.read_error || "";
     paint();
   };
+  const clearPatchError = async (address) => {
+    const latest = (await readCached(address))?.value;
+    if (!latest?.read_error) return;
+    const { read_error: _recoveredError, ...recovered } = latest;
+    await writeCached(address, recovered);
+  };
+  const currentRead = (readGeneration) => alive && readGeneration === generation;
+  const validatePatchError = async (path, readGeneration) => {
+    const address = patchAddress(path);
+    const cached = (await readCached(address))?.value;
+    if (!cached?.read_error || !currentRead(readGeneration)) return;
+    try {
+      const answer = await callRpc("tasks.review.diff", { ...baseParams(taskId, snapshot, directory), paths: [path], patch: false });
+      if (!currentRead(readGeneration) || !answer.files?.some((file) => file.path === path)) return;
+      await clearPatchError(address);
+    } catch { /* The cached patch error remains visible until validation succeeds. */ }
+  };
+  const validateOpenPatchErrors = async (readGeneration) => {
+    for (const path of state.open) await validatePatchError(path, readGeneration);
+  };
   const refresh = async () => {
     const readGeneration = ++generation;
     try {
@@ -150,6 +171,7 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
       if (!alive || readGeneration !== generation) return;
       await writeCached(listAddress, answer);
       await readList();
+      await validateOpenPatchErrors(readGeneration);
     } catch (error) {
       if (alive && readGeneration === generation) {
         const cached = (await readCached(listAddress))?.value || {};
@@ -159,21 +181,26 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
     }
   };
 
-  const fetchPatch = async (path) => {
-    if (state.loading.has(path)) return;
+  const fetchPatch = (path) => {
+    if (pendingPatches.has(path)) return pendingPatches.get(path);
     state.loading.add(path);
     paint();
-    try {
-      await bodies.sync([{ path, contentKey: contentKeyOf(path) }], new Set([path]), { budget: 1 });
-    } catch (error) {
-      if (alive) {
-        const cached = (await readCached(patchAddress(path)))?.value || {};
-        await writeCached(patchAddress(path), { ...cached, read_error: displayError(error) });
+    const pending = (async () => {
+      try {
+        await bodies.sync([{ path, contentKey: contentKeyOf(path) }], new Set([path]), { budget: 1 });
+      } catch (error) {
+        if (alive) {
+          const cached = (await readCached(patchAddress(path)))?.value || {};
+          await writeCached(patchAddress(path), { ...cached, read_error: displayError(error) });
+        }
+      } finally {
+        state.loading.delete(path);
+        pendingPatches.delete(path);
+        paint();
       }
-    } finally {
-      state.loading.delete(path);
-      paint();
-    }
+    })();
+    pendingPatches.set(path, pending);
+    return pending;
   };
 
   const uiState = watchUiState(ui, (saved) => {

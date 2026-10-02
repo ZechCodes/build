@@ -127,4 +127,44 @@ describe("snapshot Changes", () => {
     expect(await complete.reveal({ path: "README.md", side: "new", line: 1 })).toBe(false);
     complete.dispose();
   });
+
+  it("waits for an initial anchor read when reveal is called again", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    let answerPatch;
+    const pending = new Promise((resolve) => { answerPatch = resolve; });
+    const callRpc = vi.fn(async (_method, params) => params.paths ? pending : list);
+    const anchor = { path: "src/a.js", side: "new", line: 1 };
+    const pane = mountTaskReviewChanges(host, { deviceId: "dev", projectId: "project", taskId: "task", snapshot, directory, callRpc, anchor });
+    await settle();
+    const resolved = vi.fn();
+    const again = pane.reveal(anchor).then(resolved);
+    await settle();
+    expect(resolved).not.toHaveBeenCalled();
+    answerPatch({ ...list, patch });
+    await again;
+    expect(resolved).toHaveBeenCalledWith(true);
+    expect(callRpc.mock.calls.filter(([, params]) => params.paths)).toHaveLength(1);
+    pane.dispose();
+  });
+
+  it("rechecks an open cached patch error after the source recovers", async () => {
+    const listAddress = { deviceId: "dev", entityId: "project", kind: "task-review-changes", sub: JSON.stringify(["task", "snap-1", "repo-a"]) };
+    const patchAddress = { ...listAddress, kind: "task-review-patch", sub: JSON.stringify(["task", "snap-1", "repo-a", "src/a.js", "old..new"]) };
+    await writeCached(listAddress, { ...list, read_error: "Source unavailable" });
+    await writeCached(patchAddress, { patch, content_key: "v1", read_error: "Source unavailable" });
+    const host = document.createElement("div");
+    document.body.append(host);
+    const callRpc = vi.fn(async (_method, params) => params.paths ? { ...list, patch: "" } : list);
+    const pane = mountTaskReviewChanges(host, { deviceId: "dev", projectId: "project", taskId: "task", snapshot, directory, callRpc });
+    await settle();
+    host.querySelector("[data-review-expand]").click();
+    await settle();
+    await pane.refresh();
+    await settle();
+    expect(callRpc).toHaveBeenCalledWith("tasks.review.diff", expect.objectContaining({ paths: ["src/a.js"], patch: false }));
+    expect((await readCached(patchAddress)).value.read_error).toBeUndefined();
+    expect(host.textContent).not.toContain("Source unavailable");
+    pane.dispose();
+  });
 });

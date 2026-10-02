@@ -42,6 +42,9 @@ pub enum InstallGateError {
     /// Stored as approved, but the api no longer approves it: revoked, or a
     /// device the api does not know (#317). Pairing again is the only way on.
     NoLongerPaired(Lapse),
+    /// An api other than the one that approved this device said it is not
+    /// approved; `pair` keeps the identity unless told `--retire` (#320).
+    ApprovedElsewhere,
     /// The status call failed — the api could not say either way.
     Unreachable { detail: String },
     /// The identity file could not be read, or could not be moved aside.
@@ -70,6 +73,10 @@ impl std::fmt::Display for InstallGateError {
                 "this machine's earlier pairing is no longer valid: {lapse} — run \
                  `build-bridge pair` to pair it again"
             ),
+            Self::ApprovedElsewhere => write!(
+                f,
+                "this device was paired with another api; pair --retire overrides"
+            ),
             Self::Unreachable { detail } => write!(
                 f,
                 "could not confirm this device's pairing with the api ({detail}) — check \
@@ -95,6 +102,7 @@ impl From<PairingError> for InstallGateError {
     fn from(error: PairingError) -> Self {
         match error {
             PairingError::Identity(detail) => Self::IdentityFile { detail },
+            PairingError::ApprovedElsewhere => Self::ApprovedElsewhere,
             other => Self::Unreachable {
                 detail: other.to_string(),
             },

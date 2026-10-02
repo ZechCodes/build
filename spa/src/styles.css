@@ -1216,6 +1216,8 @@ textarea { width:100%; min-height:96px; background:var(--bg); color:var(--ink); 
 .addproj input { font:inherit; padding:8px 11px; border:1px solid var(--line); border-radius:9px; background:var(--bg); color:var(--ink); }
 .addproj input.path { flex:1; }
 .adderr { color:var(--red); font-size:12px; margin-top:8px; min-height:14px; }
+/* A caution before acting, not a failure: amber, on its own tint (#320). */
+.addwarn { color:var(--amber); background:var(--amber-bg); font-size:12px; border-radius:9px; padding:8px 11px; margin:0 0 10px; }
 /* The waiting screen's foot: one line saying what the app is doing, then the
    two things a reader can do about it. A bare `.row` is styled by nothing, so
    the ⟳ leading the sentence sat against the frame and the buttons crowded the

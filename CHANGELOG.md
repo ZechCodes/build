@@ -6,6 +6,28 @@ Notable changes to the bridge (`build-bridge`). The format follows
 protocol versions; see
 [Wire versioning and capabilities](ARCHITECTURE.md#wire-versioning-and-capabilities).
 
+## [0.2.7] - Unreleased
+
+### Fixed
+
+- `build-bridge pair` retires a stored approval only on the word of the api
+  that approved it, now recorded in the identity file (an older file counts
+  as approved by `https://getbuild.ing`). Another api's "not approved" ends
+  `pair` in one line with the identity untouched; `pair --retire` takes that
+  api's word (#320).
+- Agents and terminals the bridge starts no longer inherit
+  `BRIDGE_IDENTITY_FILE` or identity keys from its environment, so a tool an
+  agent runs under a temporary `HOME` cannot reach this machine's identity
+  (#320).
+- `install.sh` quotes the commands it prints to paste so any install path
+  works pasted, including one with `$`, a backtick, a quote or a backslash
+  (#320).
+
+### Changed
+
+- Add a device's pairing-link warning reads as a warning, in amber, not as an
+  error (#320).
+
 ## [0.2.6] - 2026-10-01
 
 ### Changed

@@ -190,15 +190,29 @@ pub struct HarnessSpec {
     pub kind: ChildKind,
 }
 
+/// The daemon's own identity: where its identity file is, and keys given in
+/// the environment. No agent or shell the daemon starts needs them, and a
+/// child that inherits `BRIDGE_IDENTITY_FILE` reaches the user's real identity
+/// even under a temporary `HOME` — how an agent's test `pair` retired this
+/// machine's pairing (#320). Every spec removes them.
+pub const DAEMON_IDENTITY_VARS: [&str; 5] = [
+    "BRIDGE_IDENTITY_FILE",
+    "BRIDGE_DEVICE_ID",
+    "BRIDGE_IDENTITY_PRIV",
+    "BRIDGE_TRANSPORT_PRIV",
+    "BRIDGE_TRANSPORT_PUB",
+];
+
 impl HarnessSpec {
-    /// A bare spec for `binary` with Enter-to-submit and no extra args/env.
+    /// A bare spec for `binary` with Enter-to-submit and no extra args/env,
+    /// and without the daemon's identity ([`DAEMON_IDENTITY_VARS`]).
     pub fn new(binary: impl Into<String>) -> Self {
         HarnessSpec {
             binary: binary.into(),
             args: Vec::new(),
             env: Vec::new(),
             submit: SubmitKey::Enter,
-            unset: Vec::new(),
+            unset: DAEMON_IDENTITY_VARS.map(String::from).to_vec(),
             settle: DEFAULT_SETTLE,
             submit_delay: Duration::ZERO,
             known_session_id: None,
@@ -1077,6 +1091,50 @@ mod tests {
                 String::from_utf8_lossy(&output.stderr),
             );
         }
+    }
+
+    /// The daemon's identity file and keys stay with the daemon (#320). Run in
+    /// a child process so the variables never touch this runner's environment.
+    #[tokio::test]
+    async fn child_inherits_no_daemon_identity() {
+        const CHILD: &str = "BUILD_DAEMON_IDENTITY_TEST_CHILD";
+        if std::env::var(CHILD).is_ok() {
+            let names = DAEMON_IDENTITY_VARS
+                .iter()
+                .map(|name| format!("${{{name}-unset}}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let spec = HarnessSpec::new("sh")
+                .arg("-c")
+                .arg(format!("read _; printf 'IDENTITY[%s]' \"{names}\""));
+            let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
+            let mut rx = session.subscribe();
+            session.write_input(b"go\r").unwrap();
+            let out = read_until(&mut rx, "]").await;
+            session.end();
+            let unset = vec!["unset"; DAEMON_IDENTITY_VARS.len()].join(",");
+            assert!(out.contains(&format!("IDENTITY[{unset}]")), "got: {out:?}");
+            return;
+        }
+
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "pty::tests::child_inherits_no_daemon_identity",
+                "--nocapture",
+            ])
+            .env(CHILD, "1");
+        for name in DAEMON_IDENTITY_VARS {
+            command.env(name, "/nonexistent/daemon-identity");
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
     }
 
     #[tokio::test]

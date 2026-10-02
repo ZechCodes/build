@@ -92,7 +92,7 @@ async fn main() {
         }
         Some(other) => {
             eprintln!(
-                "unknown command: {other}\nusage: build-bridge [serve|pair|backup <path>|provision|install-service|uninstall-service|update-helper <job-path>|--version]"
+                "unknown command: {other}\nusage: build-bridge [serve|pair [--retire]|backup <path>|provision|install-service|uninstall-service|update-helper <job-path>|--version]"
             );
             std::process::exit(2);
         }
@@ -848,6 +848,8 @@ fn exit_startup(error: String) -> ! {
 /// An identity stored as approved that the api no longer approves (revoked in
 /// Settings → Devices, or unknown to it) is retired first, so this run pairs a
 /// new identity instead of dead-ending on a code that does not exist (#317).
+/// Only the api that approved it is believed; `--retire` takes any api's word
+/// (#320).
 ///
 /// It ends on the same gate `install-service` runs — one status GET, even for an
 /// identity that was already approved — so the account it names is the account
@@ -859,7 +861,12 @@ async fn pair() {
     // Pairing talks https before anything else does; the provider must be in
     // place first.
     relay::install_crypto_provider();
-    let outcome = pair_device(&bridge_config(), provisioned_identity()).await;
+    let when = if std::env::args().skip(2).any(|arg| arg == "--retire") {
+        pairing::RetireWhen::AnyApiSays
+    } else {
+        pairing::RetireWhen::ApproverSays
+    };
+    let outcome = pair_device(&bridge_config(), provisioned_identity(), when).await;
     let said = pair_said(&outcome);
     match outcome {
         Ok(_) => println!("{said}"),
@@ -887,6 +894,7 @@ fn pair_said(outcome: &Result<String, String>) -> String {
 async fn pair_device(
     cfg: &BridgeConfig,
     provisioned: Option<LoadedIdentity>,
+    when: pairing::RetireWhen,
 ) -> Result<String, String> {
     if let Some(provisioned) = provisioned {
         return Ok(format!(
@@ -898,6 +906,7 @@ async fn pair_device(
         &pairing::status_client(),
         &cfg.api_url,
         &cfg.identity_file,
+        when,
     )
     .await
     .map_err(|error| service::InstallGateError::from(error).to_string())?;
@@ -1222,7 +1231,7 @@ mod tests {
         kept_identity_note, pair_device, pair_said, service_environment, valid_release_repo,
         LoadedIdentity, PairingOutcome,
     };
-    use build_bridge::{config, identity, relay::DeviceIdentity, transport};
+    use build_bridge::{config, identity, pairing, relay::DeviceIdentity, transport};
     use wiremock::matchers::{method, path, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1398,9 +1407,10 @@ mod tests {
         )
     }
 
-    fn stored_approved(path: &std::path::Path) -> identity::StoredIdentity {
+    fn stored_approved(path: &std::path::Path, by: &str) -> identity::StoredIdentity {
         let mut stored = identity::generate("my-box");
         stored.approved = true;
+        stored.approved_by = Some(by.to_string());
         identity::save(path, &stored).unwrap();
         stored
     }
@@ -1413,7 +1423,7 @@ mod tests {
         let server = MockServer::start().await;
         let home = tempfile::tempdir().unwrap();
         let cfg = config_for(&server.uri(), home.path());
-        let old = stored_approved(&cfg.identity_file);
+        let old = stored_approved(&cfg.identity_file, &server.uri());
         Mock::given(method("GET"))
             .and(path(format!("/api/devices/{}/status", old.device_id)))
             .respond_with(ResponseTemplate::new(200).set_body_json(
@@ -1437,7 +1447,9 @@ mod tests {
             .mount(&server)
             .await;
 
-        let line = pair_device(&cfg, None).await.expect("pairs a new device");
+        let line = pair_device(&cfg, None, pairing::RetireWhen::ApproverSays)
+            .await
+            .expect("pairs a new device");
 
         assert_eq!(line, "paired to account u1");
         let new = identity::load(&cfg.identity_file).unwrap().unwrap();
@@ -1455,7 +1467,7 @@ mod tests {
         let server = MockServer::start().await;
         let home = tempfile::tempdir().unwrap();
         let cfg = config_for(&server.uri(), home.path());
-        let stored = stored_approved(&cfg.identity_file);
+        let stored = stored_approved(&cfg.identity_file, &server.uri());
         let provisioned = LoadedIdentity {
             identity: DeviceIdentity {
                 device_id: "bridge-dev".into(),
@@ -1465,10 +1477,87 @@ mod tests {
             outcome: PairingOutcome::Provisioned,
         };
 
-        let line = pair_device(&cfg, Some(provisioned)).await.unwrap();
+        let line = pair_device(&cfg, Some(provisioned), pairing::RetireWhen::ApproverSays)
+            .await
+            .unwrap();
 
         assert_eq!(line, "provisioned device bridge-dev — nothing to pair");
         assert_eq!(server.received_requests().await.unwrap().len(), 0);
         assert_eq!(identity::load(&cfg.identity_file).unwrap(), Some(stored));
+    }
+
+    /// A machine paired with production, asked by another api (#320): `pair`
+    /// keeps its identity, registers nothing, and says why in one line that
+    /// fits the installer's 80 columns.
+    #[tokio::test]
+    async fn pair_keeps_an_identity_another_api_calls_unknown_and_says_so_in_one_line() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/api/devices/.+/status$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"approved": false, "owner_user_id": null, "state": "unknown"}),
+            ))
+            .mount(&server)
+            .await;
+        let home = tempfile::tempdir().unwrap();
+        let cfg = config_for(&server.uri(), home.path());
+        let stored = stored_approved(&cfg.identity_file, config::DEFAULT_API_URL);
+
+        let outcome = pair_device(&cfg, None, pairing::RetireWhen::ApproverSays).await;
+
+        let said = pair_said(&outcome);
+        assert!(outcome.is_err(), "{said}");
+        assert_eq!(
+            said,
+            "    not paired: this device was paired with another api; pair --retire overrides"
+        );
+        assert!(said.chars().count() <= 80, "{said}");
+        assert_eq!(identity::load(&cfg.identity_file).unwrap(), Some(stored));
+        assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 1);
+        let requests = server.received_requests().await.unwrap();
+        assert!(
+            requests.iter().all(|r| r.method.as_str() == "GET"),
+            "registered nothing"
+        );
+    }
+
+    /// `pair --retire` takes the other api's word and pairs a new device there.
+    #[tokio::test]
+    async fn pair_retire_takes_another_apis_word() {
+        let server = MockServer::start().await;
+        let home = tempfile::tempdir().unwrap();
+        let cfg = config_for(&server.uri(), home.path());
+        let old = stored_approved(&cfg.identity_file, config::DEFAULT_API_URL);
+        Mock::given(method("GET"))
+            .and(path(format!("/api/devices/{}/status", old.device_id)))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"approved": false, "owner_user_id": null, "state": "unknown"}),
+            ))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/devices/register"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/api/devices/.+/status$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"approved": true, "owner_user_id": "u1", "state": "approved"}),
+            ))
+            .with_priority(2)
+            .mount(&server)
+            .await;
+
+        let line = pair_device(&cfg, None, pairing::RetireWhen::AnyApiSays)
+            .await
+            .expect("pairs a new device");
+
+        assert_eq!(line, "paired to account u1");
+        let new = identity::load(&cfg.identity_file).unwrap().unwrap();
+        assert_ne!(new.device_id, old.device_id);
+        assert_eq!(new.approved_by.as_deref(), Some(server.uri().as_str()));
     }
 }

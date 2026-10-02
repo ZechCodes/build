@@ -143,6 +143,7 @@ case "${1:-}" in
         ;;
     install-service)
         printf 'install-service\n' >> "$HOME/bridge-calls"
+        [ "${BUILD_TEST_SERVICE_STATUS:-0}" = "0" ] || { printf 'install failed: refused\n' >&2; exit 1; }
         printf 'installed test-manager for account owner test-owner\n'
         ;;
     *) printf 'build-bridge 0.0.0-test\n' ;;
@@ -177,7 +178,8 @@ without_cosign() {
 # CASE_ONLY_SHIMS_ON_PATH=1 (nothing but the shims is installed on this host),
 # CASE_SKIP_SERVICE=0 (go on to pair and install the service),
 # CASE_PAIR_STATUS (how the fake bridge's pairing ends), CASE_RETIRED=1 (it
-# first sets an old identity aside), CASE_INSTALL_DIR (where the binary lands
+# first sets an old identity aside), CASE_SERVICE_STATUS (how its
+# install-service ends), CASE_INSTALL_DIR (where the binary lands
 # instead of the sandbox's dest), CASE_HOME (HOME instead of the sandbox's
 # home) or CASE_TERMINAL=1
 # (run under a pseudo-terminal; stdout and stderr then both land in stdout)
@@ -201,8 +203,10 @@ run_install() {
         BUILD_BRIDGE_SKIP_SERVICE="${CASE_SKIP_SERVICE:-1}"
         BUILD_TEST_PAIR_STATUS="${CASE_PAIR_STATUS:-0}"
         BUILD_TEST_RETIRED="${CASE_RETIRED:-0}"
+        BUILD_TEST_SERVICE_STATUS="${CASE_SERVICE_STATUS:-0}"
         HOME="${CASE_HOME:-$ri_root/home}"
         export PATH BUILD_TEST_MIRROR BUILD_TEST_UNAME_S BUILD_TEST_UNAME_M BUILD_TEST_PAIR_STATUS BUILD_TEST_RETIRED
+        export BUILD_TEST_SERVICE_STATUS
         export BUILD_TEST_COSIGN_STATUS BUILD_BRIDGE_INSTALL_DIR BUILD_BRIDGE_SKIP_SERVICE HOME
         if [ "${CASE_TERMINAL:-0}" = "1" ]; then
             # A terminal that can show colour, whatever the one running the
@@ -498,6 +502,29 @@ a_failed_pairing_says_how_to_resume() {
     assert_never_says "$name" "$root/stderr" "Starting the background service" && pass "$name"
 }
 
+# A service install that fails after pairing says so, gives the command that
+# retries it and the one that runs the bridge meanwhile, and fits 80 columns.
+a_failed_service_install_says_how_to_resume() {
+    name="a_failed_service_install_says_how_to_resume"
+    root="$(new_sandbox "$name")"
+    fs_dir="$root/home/.local/bin"
+    status="$(CASE_INSTALL_DIR="$fs_dir" CASE_SKIP_SERVICE=0 CASE_SERVICE_STATUS=1 \
+        run_install "$root")"
+    assert_exit "$name" "$root" "$status" 1 || return 1
+    [ "$(cat "$root/home/bridge-calls")" = "$(printf 'pair\ninstall-service')" ] || {
+        fail "$name" "bridge calls: $(cat "$root/home/bridge-calls")"
+        return 1
+    }
+    assert_says "$name" "$root/stderr" \
+        "Error: the background service could not be installed." \
+        "Run it again:" \
+        "  ~/.local/bin/build-bridge install-service" \
+        "Meanwhile, this runs the bridge in this terminal:" \
+        "  ~/.local/bin/build-bridge serve" || return 1
+    assert_never_says "$name" "$root/stderr" "installed and running" || return 1
+    assert_fits_80 "$name" "$root/stderr" && pass "$name"
+}
+
 # Skipping the service is a choice, so it ends on what to run later, not on
 # a warning.
 skipping_the_service_says_what_to_run_later() {
@@ -575,12 +602,16 @@ assert_breaks_sentences() {
 }
 
 # A command the installer says to run works pasted as printed, when the home
-# or the install directory has a space in it, inside home or out.
-pasted_commands_survive_a_space() {
-    name="pasted_commands_survive_a_space"
+# or the install directory has a space in it, inside home or out, or any
+# character a shell treats specially in or out of quotes.
+pasted_commands_survive_any_path() {
+    name="pasted_commands_survive_any_path"
     root="$(new_sandbox "$name")"
     ps_home="$root/my home"
-    for ps_dir in "$ps_home/my tools" "$root/opt dir/bin"; do
+    # shellcheck disable=SC2016 # every character is taken literally; that is the point
+    ps_odd='$x `y` "q" \b '"'a'"
+    for ps_dir in "$ps_home/my tools" "$root/opt dir/bin" "$root/$ps_odd/bin" \
+        "$ps_home/$ps_odd/bin" "$ps_home/it's/bin"; do
         mkdir -p "$ps_home"
         rm -f "$root/stderr"
         CASE_HOME="$ps_home" CASE_INSTALL_DIR="$ps_dir" CASE_SKIP_SERVICE=0 CASE_PAIR_STATUS=1 \
@@ -622,10 +653,11 @@ for case_name in \
     pairs_then_starts_the_service \
     where_to_go_follows_the_bridge_web_url \
     a_failed_pairing_says_how_to_resume \
+    a_failed_service_install_says_how_to_resume \
     skipping_the_service_says_what_to_run_later \
     pairing_says_what_is_happening \
     every_line_fits_80_columns \
-    pasted_commands_survive_a_space; do
+    pasted_commands_survive_any_path; do
     "$case_name" || true
 done
 

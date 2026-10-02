@@ -166,13 +166,30 @@ shown() {
 }
 
 # A path as a command pasted into a shell must name it: the ~ form while
-# nothing in it needs quoting, else in double quotes, starting from $HOME
-# when it is under it.
+# nothing in it needs quoting. Else under $HOME it starts from "$HOME", the
+# rest in double quotes while nothing in it is special there; anything else
+# goes in single quotes, where nothing is.
+# shellcheck disable=SC2016 # the $HOME is shown, not expanded
 pasteable() {
     case "$1" in
-        *[!A-Za-z0-9_./-]*) printf '"%s"\n' "$(in_home "$1")" ;;
-        *) shown "$1" ;;
+        *[!A-Za-z0-9_./-]*) ;;
+        *) shown "$1"; return 0 ;;
     esac
+    case "$1" in
+        "$HOME"/*)
+            pa_rest="${1#"$HOME"/}"
+            case "$pa_rest" in
+                *[\$\`\"\\]*) printf '"$HOME"/%s\n' "$(single_quoted "$pa_rest")" ;;
+                *) printf '"$HOME/%s"\n' "$pa_rest" ;;
+            esac
+            ;;
+        *) single_quoted "$1" ;;
+    esac
+}
+
+# $1 in single quotes, each ' in it closed, escaped and reopened as '\''.
+single_quoted() {
+    printf "'%s'\n" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }
 
 # uname's answers, mapped to the four platform keys the release pipeline, the

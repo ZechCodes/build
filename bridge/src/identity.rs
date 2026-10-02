@@ -43,6 +43,11 @@ pub struct StoredIdentity {
     pub transport: KeyPairB64,
     /// Set once the user approves this device; until then the bridge stays unpaired.
     pub approved: bool,
+    /// The api that approved it, so only that api's "not approved" retires it
+    /// (#320). Absent in files written before it was recorded, which were
+    /// approved by the default api.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_by: Option<String>,
 }
 
 /// The name a new identity is given: `BRIDGE_DEVICE_NAME`, else the host
@@ -75,6 +80,7 @@ pub fn generate(name: &str) -> StoredIdentity {
         identity_public_key_b64: identity.public_key_b64,
         transport: transport::generate_transport_keypair(),
         approved: false,
+        approved_by: None,
     }
 }
 
@@ -192,6 +198,20 @@ mod tests {
         save(&path, &id).unwrap();
         let loaded = load(&path).unwrap().expect("file exists after save");
         assert_eq!(loaded, id);
+    }
+
+    /// A file written before the approver was recorded still loads, and an
+    /// identity with none recorded writes no such key (#320).
+    #[test]
+    fn the_approver_is_optional_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity.json");
+        let id = generate("my-box");
+        save(&path, &id).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(json.get("approved_by").is_none(), "{json}");
+        assert_eq!(load(&path).unwrap(), Some(id));
     }
 
     #[test]

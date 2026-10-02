@@ -45,6 +45,10 @@ pub enum PairingError {
     Rejected(String),
     #[error("identity error: {0}")]
     Identity(String),
+    /// The api said "not approved", but it is not the api that approved this
+    /// identity, so its word is not enough to retire it (#320).
+    #[error("this device was paired with another api")]
+    ApprovedElsewhere,
 }
 
 type Result<T> = std::result::Result<T, PairingError>;
@@ -157,7 +161,7 @@ impl RetiredApproval {
                 INDENT,
             ),
         ];
-        if self.api_url.trim_end_matches('/') != crate::config::DEFAULT_API_URL {
+        if !same_api(&self.api_url, crate::config::DEFAULT_API_URL) {
             lines.push(wrapped(&format!("Asked {}", self.api_url), INDENT));
         }
         lines.join("\n")
@@ -396,10 +400,16 @@ pub async fn poll_until_approved(
 /// New keys rather than the old ones: a device is revoked because it was lost
 /// or its keys may have leaked, and a fresh approval of the old key would
 /// re-trust whoever else holds it.
+///
+/// Only the api that approved the identity is believed (#320): an agent's mock
+/// behind `BRIDGE_API_URL` once retired a machine's production pairing on one
+/// answer. Another api's "not approved" is [`PairingError::ApprovedElsewhere`],
+/// unless `when` is [`RetireWhen::AnyApiSays`] (`pair --retire`).
 pub async fn retire_lapsed_approval(
     client: &reqwest::Client,
     api_url: &str,
     identity_path: &Path,
+    when: RetireWhen,
 ) -> Result<Option<RetiredApproval>> {
     let file_error = |e: identity::IdentityError| {
         PairingError::Identity(format!("{}: {e}", identity_path.display()))
@@ -414,6 +424,9 @@ pub async fn retire_lapsed_approval(
     else {
         return Ok(None);
     };
+    if when == RetireWhen::ApproverSays && !same_api(approver(&stored), api_url) {
+        return Err(PairingError::ApprovedElsewhere);
+    }
     let kept_at = identity::retire(identity_path, &stored).map_err(file_error)?;
     Ok(Some(RetiredApproval {
         lapse,
@@ -421,6 +434,33 @@ pub async fn retire_lapsed_approval(
         identity_path: identity_path.to_path_buf(),
         kept_at,
     }))
+}
+
+/// Whose "not approved" retires a stored approval.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetireWhen {
+    /// Only the api that approved it: the default.
+    ApproverSays,
+    /// Whichever api is configured: `pair --retire`.
+    AnyApiSays,
+}
+
+/// The api that approved `stored`: the one it recorded, else the default, the
+/// only api pairing used before the approver was recorded.
+fn approver(stored: &StoredIdentity) -> &str {
+    stored
+        .approved_by
+        .as_deref()
+        .unwrap_or(crate::config::DEFAULT_API_URL)
+}
+
+/// An api url with any trailing slash dropped, as it is recorded and compared.
+fn api_key(api_url: &str) -> &str {
+    api_url.trim_end_matches('/')
+}
+
+fn same_api(a: &str, b: &str) -> bool {
+    api_key(a) == api_key(b)
 }
 
 /// Ensure the device is registered and approved. If `stored.approved`, returns it
@@ -457,6 +497,7 @@ pub async fn ensure_paired(
 
     poll_until_approved(client, api_url, &stored.device_id, poll_interval).await?;
     stored.approved = true;
+    stored.approved_by = Some(api_key(api_url).to_string());
     identity::save(identity_path, &stored).map_err(|e| PairingError::Identity(e.to_string()))?;
     // What happens next is the caller's business — `serve` connects to the
     // relay, `pair` exits — so pairing reports only the pairing it did.
@@ -591,7 +632,7 @@ mod tests {
     /// The notice from the photo in #319, at the installer's width: what is
     /// happening and where the old identity went, nothing more.
     #[test]
-    fn a_retired_approval_says_so_in_two_short_lines() {
+    fn a_retired_approval_at_the_default_api_says_what_happened_and_where_it_went() {
         let home = Path::new("/Users/zechariahzimmerman");
         let notice = retired_at(crate::config::DEFAULT_API_URL, home).notice(home);
         assert_fits(&notice);

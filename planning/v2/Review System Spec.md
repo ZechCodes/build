@@ -13,8 +13,10 @@ Recommended choices:
 - Choose the reviewer yourself and keep a list of allowed models.
 - Allow approval when the reviewer's configured model is on your list,
   even when the agent cannot report the model it actually ran.
-- Run checks on the exact merge commit. If origin moves, rebuild and check again.
-- Mark Done only after deployment is verified. Keep the workspace and branch.
+- Choose the check commands that must pass on the exact merge commit.
+  Use the existing gates for the affected code; rebuild and rerun if origin moves.
+- Decide what “deployment verified” means. Require the deployed commit and
+  passed release checks before Done. Keep the workspace and branch.
 
 Estimate: **11–17 engineer days**. Assignment reliability ships first, then review,
 then merge. Multiple branches, automatic handoffs and cleanup come later.
@@ -309,6 +311,8 @@ replaced bindings and source equal to a direct local target. Attaching a review
 never creates a target branch. Build's base-sync source must follow the selected
 remote/ref under its existing upstream rules; refuse a mismatched configuration
 before push instead of asking sync to follow a different destination [E6].
+This upstream check is a pre-push admission condition and is repeated after the
+push before requesting base sync, as described below.
 
 Prepare C from exact T/H with `merge-tree --write-tree` and `commit-tree` with
 parents `[T, H]`, including task/revision trailers. Even a fast-forwardable source
@@ -361,7 +365,9 @@ requires explicit publication, never silent inclusion of new commits.
 ### Land on origin/main with a guarded push
 
 For remote mode, persist the admitted operation before contacting the remote.
-Validate that retained C has exactly the admitted parents `[T, H]` and tree.
+Immediately before each push, under the repository/target reservation, verify
+that retained C has exactly the admitted parents `[T, H]` and tree. A failed
+check aborts the push before the Git process starts.
 From the canonical repository, push **only** C to the selected remote's full
 ref with the explicit old-OID lease. In Build, the core command is:
 
@@ -371,9 +377,10 @@ git -c core.hooksPath=/dev/null -c gc.auto=0 -c maintenance.auto=false push --po
 
 Use structured argv and the existing unattended process/deadline machinery.
 Disable client hooks; remote server hooks and branch protection still apply.
-C is a child of T, so the proposed change is a fast-forward despite the explicit
-lease flag. Never retry with plain force, omit the expected OID, push all refs,
-or create another merge commit after checks. No tags, submodules, mirror push
+The lease alone permits a non-fast-forward when its expected OID matches. The
+immediate parent check makes this a fast-forward-only swap from T to C; the lease
+requires the remote still to be at T. Never retry with plain force, omit the
+expected OID, push all refs, or create another merge commit after checks. No tags, submodules, mirror push
 or second endpoint may ride along. Build's own competing operations retain a
 short repository/target reservation; remote Git arbitrates other ref writers.
 Do not reuse the generic `gitgui::network::push`: it pushes the current branch
@@ -685,6 +692,8 @@ explicit handoffs, guarded remote push and local-ref fallback. The remote path
 adds 1–2 days to increment C; this is not an estimate for all of #145 or for
 production deployment coverage. If a prerequisite exceeds its
 budget, re-estimate openly; do not silently drop durability or widen scope.
+The total is likelier near the upper end. After increment B ships, re-estimate
+increment C and the total before starting merge implementation.
 
 | Increment | Files and deliverable | Tests and rollout | Estimate |
 | --- | --- | --- | --- |
@@ -752,14 +761,14 @@ added. Opus agreed after clarifying local publication, existing gate checkouts,
 range review and withdrawals. This is preserved history, not approval of the
 current revision.
 
-**Refresh draft (2026-10-02, `700e642e`):** reapplied the original plan before
+**Refresh draft (2026-10-01, `700e642e`):** reapplied the original plan before
 updating it against `adf08b06`, preserving its history. Read #89/#145 timelines
 and #86's later always-on-service correction. Corrected task/wire/cache/lifecycle
 claims, then proposed a 30–48-day slice with rounds, workflow, coverage and
 cleanup. Opus 5.5 confirmed the cited current-code claims but challenged scope
 and placement of logic. That large first-release scope is now superseded below.
 
-**October challenge round 1 (2026-10-02, Opus 5.5 via project agent, on 700e642e):** decisions by
+**October challenge round 1 (2026-10-01, Opus 5.5 via project agent, on 700e642e):** decisions by
 the Astra lead on the 15 numbered challenges. “Accept” accepts the stated core
 change; any narrower alternative or retained boundary is explicit. These are the
 lead's decisions at 49aa3469; landing and summary are superseded by round 2 below.
@@ -795,10 +804,10 @@ review, assignment, Git and cache contracts cited here are otherwise unchanged.
 The document branch was rebased and current-version references updated. The
 Opus challenge still refers to its original 700e642e/adf08b06 baseline.
 
-**October challenge round 2 (2026-10-02, Opus 5.5, on 49aa3469):** Opus said
+**October challenge round 2 (2026-10-01, Opus 5.5, on 49aa3469):** Opus said
 “signoff: no” pending four changes. It accepted the earlier #11 configuration
 verb and #14 other-OID recovery qualifications. The lead accepts all four new
-challenges. Final signoff is pending the arranged read of this pushed revision.
+challenges. The final read of 52edfe58 signed off, as recorded below.
 
 | # | Lead decision and reason | Result |
 | --- | --- | --- |
@@ -806,6 +815,14 @@ challenges. Final signoff is pending the arranged read of this pushed revision.
 | 2 | **Accept.** Done-after-deployment only fits this project when reviewed C actually reaches its main. | The receipt names origin/main; the deploy agent verifies the actual release containing C before Done/closure. Push, base sync and deployment are separate outcomes. Main push triggers current CI. |
 | 3 | **Accept.** Changed T makes a different merge commit, so checks of the old C cannot cover it. | A moved origin returns target_moved, then requires new T/C and every required check again on the new C. Source approval may remain for unchanged H. |
 | 4 | **Accept.** The owner summary should present the usable path and choices in plain words. | About 15 lines, main push/sync recommendation, explicit project-agent/user merge authority and no agent self-merge; plain configured-model choice. Audit detail is below the summary. |
+
+**Final signoff (2026-10-01, Opus 5.5, on 52edfe58):** all four round-2 points
+resolved; no further rounds. The lead accepts the four final text edits: require
+the immediate reserved parent/tree check because a matching lease alone allows
+rewrites; expose the check-command and deployment-evidence choices to the owner;
+re-estimate after increment B with the total likely near its upper end; and link
+the before/after-push upstream checks so sync failure cannot obscure admission.
+Workshop dates now use the owner's America/New_York date.
 
 Validation of the new Git path used disposable repositories only: pushing C with
 an explicit lease left checked-out local main at T; fetch plus guarded ff-only
@@ -816,7 +833,7 @@ only queues work; its source row carries the eventual result [E6].
 
 The evidence index records current code, not proposed module existence. All
 paths are repository-relative at current `origin/main` baseline
-`caadc027fb2f4529c15b748782d5afb3852037c1`, verified 2026-10-02 UTC.
+`caadc027fb2f4529c15b748782d5afb3852037c1`, verified 2026-10-01 America/New_York.
 Main advanced from 2938697c during round 2 only by a desktop-installer test change;
 that diff was inspected and the review-code evidence is unchanged.
 Sections 1–8 are proposed implementation, except their identified current behavior.

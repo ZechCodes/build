@@ -6,7 +6,9 @@ fn capture_reroute_refuses_a_task_destination_without_mutating_the_capture_or_ro
     let mut state = qa_state(&repo, dir.path());
     let project_id = state.project_at(0).id.clone();
     let (capture_id, agent_id) = captured(&mut state, "keep this capture intact");
-    let scratch = state.router_sessions[&capture_id].scratch_dir().to_path_buf();
+    let scratch = state.router_sessions[&capture_id]
+        .scratch_dir()
+        .to_path_buf();
     let notes = scratch.join("routing-notes.txt");
     std::fs::write(&notes, "still deciding").unwrap();
     let before = capture_record(&mut state, &capture_id);

@@ -176,6 +176,11 @@ impl AppState {
             .and_then(Value::as_str)
             .unwrap_or(crate::capture::CaptureTarget::Branch.as_str())
             .to_string();
+        if kind != crate::capture::CaptureTarget::Branch.as_str() {
+            return Err(format!(
+                "capture.reroute: {kind:?} is not a destination — branch is the supported work"
+            ));
+        }
         // A router still deciding this capture would route it a second time on
         // top of the user's own choice.
         self.abandon_router_session(&capture_id);
@@ -188,28 +193,23 @@ impl AppState {
             .filter(|branch| !branch.is_empty());
         let text = self.captures[&capture_id].text.clone();
         let rationale = Some("rerouted by the user".to_string());
-        match kind.as_str() {
-            // The dispatch's git runs through the drain, so the row this answers
-            // with is read once the branch is real — in the apply phase, which
-            // is where the route is written down.
-            // The human chose this destination themselves, so the instruction
-            // it carries is theirs and names no sender.
-            "branch" => self.route_to_branch(
-                crate::app::RoutedCapture {
-                    capture_id: capture_id.clone(),
-                    rationale,
-                    agent_name: None,
-                    answer: capture_after_routing,
-                    from_agent: None,
-                },
-                &project_id,
-                branch,
-                &text,
-            ),
-            other => Err(format!(
-                "capture.reroute: {other:?} is not a destination — branch is the supported work"
-            )),
-        }
+        // The dispatch's git runs through the drain, so the row this answers
+        // with is read once the branch is real — in the apply phase, which
+        // is where the route is written down.
+        // The human chose this destination themselves, so the instruction
+        // it carries is theirs and names no sender.
+        self.route_to_branch(
+            crate::app::RoutedCapture {
+                capture_id: capture_id.clone(),
+                rationale,
+                agent_name: None,
+                answer: capture_after_routing,
+                from_agent: None,
+            },
+            &project_id,
+            branch,
+            &text,
+        )
     }
 
     pub(crate) fn capture_get(&self, params: &Value) -> Result<Value, String> {

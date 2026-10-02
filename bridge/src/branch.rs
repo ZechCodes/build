@@ -8,7 +8,8 @@
 //!
 //! 1. **Folding.** Rows that share a key are the same work item seen twice; the
 //!    source that knows the most about it wins (a run over a bare external
-//!    worktree, and a live run over a terminal one).
+//!    worktree, a live run over a terminal one, and a merged run over another
+//!    terminal run).
 //! 2. **Dedup.** A task whose implementation is still in flight speaks as
 //!    that branch row alone — the branch row carries the `task_id` and the
 //!    task's own row is suppressed.
@@ -107,6 +108,9 @@ pub struct WorkItemCandidate {
     /// Only a live implementation suppresses its task's row: once it is
     /// merged or abandoned, the task speaks for itself again.
     pub implementation_active: bool,
+    /// Whether a terminal run finished by merging, for ties with another
+    /// terminal run that describes the same branch.
+    pub implementation_merged: bool,
     pub row: Value,
 }
 
@@ -119,11 +123,16 @@ pub fn fold_work_items(candidates: Vec<WorkItemCandidate>) -> Vec<Value> {
     for (index, candidate) in candidates.iter().enumerate() {
         match winner_of.get(&candidate.key) {
             Some(&held) => {
-                if candidate.source < candidates[held].source
-                    || (candidate.source == candidates[held].source
-                        && candidate.implementation_active
-                        && !candidates[held].implementation_active)
-                {
+                // Lower keys win: source first, then live work, then merge.
+                if (
+                    candidate.source,
+                    !candidate.implementation_active,
+                    !candidate.implementation_merged,
+                ) < (
+                    candidates[held].source,
+                    !candidates[held].implementation_active,
+                    !candidates[held].implementation_merged,
+                ) {
                     winner_of.insert(candidate.key.clone(), index);
                 }
             }
@@ -360,6 +369,7 @@ mod tests {
             source: Some(source),
             task_id: None,
             implementation_active: false,
+            implementation_merged: false,
             row: json!({ "branch": branch, "from": label }),
         }
     }
@@ -373,6 +383,7 @@ mod tests {
             source: None,
             task_id: Some(task_id.to_string()),
             implementation_active: false,
+            implementation_merged: false,
             row: json!({ "task_id": task_id }),
         }
     }
@@ -414,6 +425,7 @@ mod tests {
     fn a_live_run_wins_the_branch_it_shares_with_a_terminal_run() {
         let mut merged = branch_candidate("p1", "build/thing", BranchSource::Run, "merged");
         merged.row["state"] = json!("merged");
+        merged.implementation_merged = true;
         let mut review = branch_candidate("p1", "build/thing", BranchSource::Run, "review");
         review.row["state"] = json!("review");
         review.implementation_active = true;
@@ -434,8 +446,8 @@ mod tests {
     fn a_merged_run_wins_the_branch_it_shares_with_an_abandoned_run() {
         let mut merged = branch_candidate("p1", "build/thing", BranchSource::Run, "merged");
         merged.row["state"] = json!("merged");
-        let mut abandoned =
-            branch_candidate("p1", "build/thing", BranchSource::Run, "abandoned");
+        merged.implementation_merged = true;
+        let mut abandoned = branch_candidate("p1", "build/thing", BranchSource::Run, "abandoned");
         abandoned.row["state"] = json!("abandoned");
 
         for candidates in [
@@ -460,6 +472,7 @@ mod tests {
             source: Some(BranchSource::ExternalWorktree),
             task_id: None,
             implementation_active: false,
+            implementation_merged: false,
             row: json!({ "from": "detached" }),
         };
         let folded = fold_work_items(vec![
@@ -539,6 +552,7 @@ mod tests {
             source: None,
             task_id: None,
             implementation_active: false,
+            implementation_merged: false,
             row: json!({ "from": "capture" }),
         };
         let mut implementation =

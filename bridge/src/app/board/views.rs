@@ -727,6 +727,7 @@ impl AppState {
             source: Some(crate::branch::BranchSource::Run),
             task_id: active.run.plan_id.as_ref().map(|id| id.0.clone()),
             implementation_active: !active.run.state.is_terminal(),
+            implementation_merged: active.run.state == crate::run::RunState::Merged,
             row,
         }
     }
@@ -812,6 +813,7 @@ impl AppState {
             source: Some(crate::branch::BranchSource::ExternalWorktree),
             task_id: None,
             implementation_active: false,
+            implementation_merged: false,
             row,
         }
     }

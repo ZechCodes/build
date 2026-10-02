@@ -437,7 +437,7 @@ fn merged_then_abandoned_runs_show_merged_and_close_linked_task() {
     let rows = board["result"]["items"].as_array().unwrap();
     let matching: Vec<&Value> = rows
         .iter()
-        .filter(|row| row["project_id"] == project_id && row["branch"] == branch)
+        .filter(|row| row["run_id"] == merged_id || row["run_id"] == abandoned_id)
         .collect();
     assert_eq!(matching.len(), 1, "{board:?}");
     assert_eq!(matching[0]["state"], "merged", "{board:?}");

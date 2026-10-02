@@ -212,4 +212,33 @@ describe("snapshot Changes", () => {
     expect(document.activeElement).toBe(host.querySelector("[data-review-expand]"));
     pane.dispose();
   });
+
+  it("keeps a viewed mark across snapshots only for the same file content", async () => {
+    const mountSnapshot = async (id, contentKey, source = directory) => {
+      const host = document.createElement("div");
+      document.body.append(host);
+      const answer = { ...list, files: [{ ...files[0], content_key: contentKey }] };
+      const pane = mountTaskReviewChanges(host, { deviceId: "dev", projectId: "project", taskId: "task", snapshot: { id }, directory: source,
+        callRpc: async () => answer });
+      await settle();
+      return { host, pane };
+    };
+    const first = await mountSnapshot("snap-1", "content-a");
+    first.host.querySelector("[data-review-viewed]").click();
+    await settle();
+    expect(first.host.querySelector("[data-review-viewed]").getAttribute("aria-pressed")).toBe("true");
+    first.pane.dispose();
+
+    const unchanged = await mountSnapshot("snap-2", "content-a");
+    expect(unchanged.host.querySelector("[data-review-viewed]").getAttribute("aria-pressed")).toBe("true");
+    unchanged.pane.dispose();
+
+    const edited = await mountSnapshot("snap-3", "content-b");
+    expect(edited.host.querySelector("[data-review-viewed]").getAttribute("aria-pressed")).toBe("false");
+    edited.pane.dispose();
+
+    const otherDirectory = await mountSnapshot("snap-4", "content-a", { id: "repo-b" });
+    expect(otherDirectory.host.querySelector("[data-review-viewed]").getAttribute("aria-pressed")).toBe("false");
+    otherDirectory.pane.dispose();
+  });
 });

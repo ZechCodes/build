@@ -41,7 +41,7 @@ function fileHeaderHtml(file, body, viewed) {
   const status = esc(file.status || "Modified");
   const count = `<span class="task-review-count">+${Number(file.additions ?? 0)} −${Number(file.deletions ?? 0)}</span>`;
   const markLabel = viewed ? "Viewed" : "Mark viewed";
-  const mark = `<button type="button" data-review-viewed aria-pressed="${viewed}" aria-label="${viewed ? "Mark unread" : markLabel}">${markLabel}</button>`;
+  const mark = `<button type="button" data-review-viewed aria-pressed="${viewed}" aria-label="${viewed ? "Mark unread" : markLabel}"${file.content_key ? "" : " disabled"}>${markLabel}</button>`;
   return `<div class="task-review-file-head"><button type="button" data-review-expand aria-expanded="${Boolean(body?.open)}">${path}</button><span>${status}</span>${count}${mark}<button type="button" data-open-file="${path}" aria-label="Open ${path} in Files">Open in Files</button></div>`;
 }
 
@@ -71,8 +71,15 @@ function changesHtml(state, commentable, bodyOf) {
   const limit = clipped ? `<p class="task-review-limit" role="status">Showing the first 1,000 changed files. This review has more files than the listing can show.</p>` : "";
   const error = state.error ? `<p class="task-review-error" role="alert">${esc(state.error)}</p>` : "";
   const empty = emptyMessage(state.list, files);
-  const rows = files.map((file) => fileHtml(file, { ...bodyOf(file.path), open: state.open.has(file.path) }, state.viewed.has(file.path), commentable)).join("");
+  const rows = files.map((file) => fileWithMarkHtml(file, state, commentable, bodyOf)).join("");
   return `<div class="task-review-changes">${error}${limit}${empty}${rows}</div>`;
+}
+
+function fileWithMarkHtml(file, state, commentable, bodyOf) {
+  const body = bodyOf(file.path);
+  const contentKey = file.content_key ?? body?.content_key;
+  const viewed = Boolean(contentKey) && state.viewed.get(file.path) === contentKey;
+  return fileHtml({ ...file, content_key: contentKey }, { ...body, open: state.open.has(file.path) }, viewed, commentable);
 }
 
 function emptyMessage(list, files) {
@@ -129,8 +136,8 @@ async function seekAnchorPages(host, target, bodies) {
 export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snapshot, directory, callRpc, onOpenFile, onComment, anchor = null }) {
   const listAddress = addressOf(deviceId, projectId, "task-review-changes", listSub(taskId, snapshot, directory));
   const patchAddress = (path) => addressOf(deviceId, projectId, "task-review-patch", patchSub(taskId, snapshot, directory, path));
-  const ui = uiAddress({ deviceId, entityId: projectId, view: "task-review-changes", kind: "review", sub: JSON.stringify(listSub(taskId, snapshot, directory)) });
-  const state = { list: null, error: "", viewed: new Set(), open: new Set(), loading: new Set(), anchor: null, anchorScrolled: false };
+  const ui = uiAddress({ deviceId, entityId: projectId, view: "task-review-changes", kind: "review", sub: JSON.stringify([taskId, directory.id]) });
+  const state = { list: null, error: "", viewed: new Map(), open: new Set(), loading: new Set(), anchor: null, anchorScrolled: false };
   let alive = true;
   let generation = 0;
   const pendingPatches = new Map();
@@ -226,13 +233,16 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
 
   const uiState = watchUiState(ui, (saved) => {
     if (!alive) return;
-    state.viewed = new Set(saved?.viewed || []);
+    state.viewed = new Map(Object.entries(saved?.viewed || {}));
     paint();
   });
-  const persistViewed = () => void uiState.write({ viewed: [...state.viewed] });
+  const persistViewed = () => void uiState.write({ viewed: Object.fromEntries(state.viewed) });
+  const viewedContentKey = (path) => state.list?.files?.find((file) => file.path === path)?.content_key ?? bodies.bodyOf(path)?.content_key;
   const toggleViewed = (path) => {
-    if (state.viewed.has(path)) state.viewed.delete(path);
-    else state.viewed.add(path);
+    const contentKey = viewedContentKey(path);
+    if (!contentKey) return;
+    if (state.viewed.get(path) === contentKey) state.viewed.delete(path);
+    else state.viewed.set(path, contentKey);
     persistViewed();
     paint();
   };

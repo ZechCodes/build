@@ -1018,6 +1018,9 @@ Others include the boot retry and cosmetic clocks.
 **Current exceptions.** These describe today's code, not the rule. Don't copy
 them into new code; each is a candidate to bring under the rule.
 
+- **Greeting-gated inbox rows.** `isListed` in `spa/src/core/inbox.js`
+  still hides tracker-task feed rows until the device's greeting announces
+  watching. This pre-existing gate remains outside #182's control fixes.
 - **Surface-owned reads.** A few surfaces read on demand, for data the sync
   pass does not hold:
   - the Files tab lists a directory the reader expands with `fs.tree`

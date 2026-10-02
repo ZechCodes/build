@@ -168,7 +168,7 @@ import {
   compactionMenuGroup,
   createCompactionChoice,
 } from "./conversationCompaction.js";
-import { commandRefusalMessage } from "./commandRefusal.js";
+import { notifyCommandFailure } from "./commandRefusal.js";
 import { providerInSameFamily } from "./providerCatalog.js";
 import { mountComposerClearance } from "./composerClearance.js";
 import { createChatPanelMotion } from "./chatPanelMotion.js";
@@ -219,12 +219,6 @@ const AGENT_NOT_YET_BORN = "ghost";
 const COMPACTION_REFUSED = "Build could not change when this chat compacts.";
 const WATCH_UNSUPPORTED = "This device does not support changing who watches this chat.";
 const COMPACTION_UNSUPPORTED = "This device does not support changing when this chat compacts.";
-
-function notifyCommandFailure(error, summary, unsupported) {
-  const reason = commandRefusalMessage(error, unsupported);
-  if (reason === unsupported) notifyError(reason);
-  else notifyError(summary, reason);
-}
 
 // What makes this page's faces this page's own. An agent's pattern is drawn
 // from its id, so without a salt every agent would move exactly the same way on

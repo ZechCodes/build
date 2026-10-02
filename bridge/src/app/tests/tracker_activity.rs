@@ -445,9 +445,9 @@ fn merged_branch_finish_closes_the_tasks_that_link_its_workspace() {
         "another workspace's"
     );
     assert_eq!(read(&mut state, &reviewed)["state"], "open");
-    assert_eq!(
-        event_kinds(&mut state, &reviewed),
-        vec!["created", "linked"]
+    assert!(
+        !event_kinds(&mut state, &reviewed).contains(&"closed".into()),
+        "branch deletion may still be recorded, but the review task stays open"
     );
     assert_eq!(
         read(&mut state, &unlinked)["state"],

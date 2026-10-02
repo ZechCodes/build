@@ -8,6 +8,19 @@ protocol versions; see
 
 ## [0.2.7] - Unreleased
 
+Wire 3.5.0.
+
+### Added
+
+- A development build the bridge service runs can be replaced by a release
+  from Settings: Install shows a warning naming the release and the restart,
+  then sends `bridge.install_update` with `replace_development_build` (wire
+  3.5.0, `updates.replaceDevelopmentBuild`). It goes through the same
+  verified download and helper, and rollback restores the development build
+  and its marker as they were. A bridge started by hand, or a service running
+  another executable, is still refused; the panel shows the install script
+  command (#322).
+
 ### Fixed
 
 - `build-bridge pair` retires a stored approval only on the word of the api
@@ -45,11 +58,19 @@ protocol versions; see
   device) ends the pairing after three such answers, saying to run
   `build-bridge pair` again. After an approve, the app reads the device list every
   second until it lists the device online, for up to 90 s (#321).
+- A failed update check no longer sticks: the next successful check clears
+  it, and it reads "Could not check for updates." Only a failed install reads
+  "The update failed." and lasts until an install succeeds. A development
+  build's old check error is no longer shown as a failed update (#322).
+- A disabled Install button in the update panel no longer looks pressable
+  (#322).
 
 ### Changed
 
 - Add a device's pairing-link warning reads as a warning, in amber, not as an
   error (#320).
+- A development build no longer checks for releases on its own, at startup
+  or daily; it checks when asked. Nothing marks it as having an update (#322).
 
 ## [0.2.6] - 2026-10-01
 

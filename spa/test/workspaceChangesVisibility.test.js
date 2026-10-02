@@ -28,9 +28,9 @@ import { renderWorkspace } from "../src/views/workspaceView.js";
 import { adoptDeviceSession, resetDeviceContexts } from "../src/core/deviceContexts.js";
 import { standShell, stopShell } from "../src/core/shell.js";
 import { fakeSession } from "./deviceSessionFixture.js";
-import { wipeCache, writeCached } from "../src/core/localCache.js";
+import { readCached, wipeCache, writeCached } from "../src/core/localCache.js";
 import { directoryCacheId } from "../src/core/directoryScope.js";
-import { armChangeEvents, disarmChangeEvents, dispatchChangeEvent } from "../src/core/changeEvents.js";
+import { armChangeEvents, disarmChangeEvents, dispatchChangeEvent, refetchEverything } from "../src/core/changeEvents.js";
 import { createViewingContext } from "../src/core/viewingContext.js";
 
 const workspace = {
@@ -233,6 +233,33 @@ describe("a Changes directory that is mounted but hidden", () => {
     await vi.waitFor(() => expect(repo.querySelector(".file[data-key$='new-file.js']")).not.toBeNull());
   });
 
+  it("checks only the visible directory on an unrelated board push", async () => {
+    rpcOverride = (method, params) => {
+      if (method === "git.status" && params.if_status_key === trees[params.source_id].status().status_key)
+        return { unchanged: true, status_key: params.if_status_key };
+      if (method === "git.unpushed") return params.if_diff_key === "review"
+        ? { unchanged: true, diff_key: "review" } : { patch: "", diff_key: "review" };
+      return undefined;
+    };
+    await open();
+    switchTo("assets");
+    const address = (kind) => ({ deviceId: "dev-1", entityId: directoryCacheId({ workspace_id: "ws-1", source_id: "assets" }), kind });
+    await vi.waitFor(async () => {
+      expect((await readCached(address("diff")))?.value.diff_key).toBe("review");
+      expect((await readCached(address("refs")))?.value.current.name).toBe("main");
+    });
+    for (let turn = 0; turn < 20; turn += 1) await flush();
+    asked.length = 0;
+    armChangeEvents({ push_events: true }, "dev-1");
+    dispatchChangeEvent({ type: "changes", items: [{ entity_id: "board", state: { revision: 123 } }] }, "dev-1");
+    await vi.waitFor(() => expect(asked.filter(({ method }) => method.startsWith("git."))).toHaveLength(2));
+    for (let turn = 0; turn < 20; turn += 1) await flush();
+    expect(asked.filter(({ method }) => method.startsWith("git.")).sort((a, b) => a.method.localeCompare(b.method))).toEqual([
+      { method: "git.status", params: { workspace_id: "ws-1", source_id: "assets", if_status_key: trees.assets.status().status_key } },
+      { method: "git.unpushed", params: { workspace_id: "ws-1", source_id: "assets", if_diff_key: "review" } },
+    ]);
+  });
+
   it("defers a bridge board invalidation and refreshes the hidden checkout when it returns", async () => {
     await open();
     switchTo("assets");
@@ -248,6 +275,57 @@ describe("a Changes directory that is mounted but hidden", () => {
     switchTo("repo");
     await vi.waitFor(() => expect(asked.filter(({ method, params }) => method === "git.status" && params.source_id === "repo")).toHaveLength(priorReads + 1));
     await vi.waitFor(() => expect(surface("repo").querySelector(".file[data-key$='pushed-file.js']")).toBeTruthy());
+  });
+
+  it.each([false, true])("refreshes cached Git records after checkout (old reads pending: %s)", async (pending) => {
+    let branch = "main";
+    let holdOld = false;
+    const heldReads = new Map();
+    const answer = (method, value) => {
+      if (!holdOld || branch !== "main") return value;
+      return new Promise((resolve) => heldReads.set(method, () => resolve(value)));
+    };
+    rpcOverride = (method, params) => {
+      if (params.source_id !== "repo") return undefined;
+      if (method === "git.checkout_ref") {
+        branch = "feature";
+        trees.repo.write("checkout-only.js", "checked out branch");
+        return {};
+      }
+      if (method === "git.refs") return { ...listing, current: { kind: "branch", name: branch } };
+      if (method === "git.status") return answer(method, trees.repo.status({ branch }));
+      if (method === "git.log") return answer(method, { branch, commits: [{ hash: branch, short: branch, subject: `${branch} history` }], more: false });
+      if (method === "git.unpushed") return answer(method, { patch: trees.repo.wholePatch(), diff_key: branch, base: { kind: "push_target", label: `origin/${branch}` } });
+      return undefined;
+    };
+    await open();
+    const repo = surface("repo");
+    repo.querySelector('.rrow[data-sel="review"]').click();
+    await vi.waitFor(async () => {
+      for (const kind of ["refs", "status", "log", "unpushed", "diff"]) {
+        expect((await readCached({ deviceId: "dev-1", entityId: directoryCacheId({ workspace_id: "ws-1", source_id: "repo" }), kind }))?.value).toBeTruthy();
+      }
+    });
+    if (pending) {
+      await vi.waitFor(() => expect(repo.textContent).toContain("changed in the repository"));
+      holdOld = true;
+      refetchEverything("dev-1");
+      await vi.waitFor(() => expect([...heldReads.keys()].sort()).toEqual(["git.log", "git.status", "git.unpushed"]));
+    }
+    await vi.waitFor(() => expect(repo.querySelector(".workspace-reftrigger").disabled).toBe(false));
+    repo.querySelector(".workspace-reftrigger").click();
+    repo.querySelector('[data-ref="refs/heads/feature"]').click();
+    await vi.waitFor(() => expect(repo.textContent).toContain("feature history"));
+    await vi.waitFor(() => expect(repo.textContent).toContain("checked out branch"));
+    await vi.waitFor(() => expect(repo.querySelector(".workspace-reftrigger-name").textContent).toBe("feature"));
+    await vi.waitFor(() => expect(repo.querySelector('.rrow[data-sel="review"] .rsub').textContent).toBe("vs origin/feature"));
+    for (const finish of heldReads.values()) finish();
+    for (let turn = 0; turn < 20; turn += 1) await flush();
+    const cached = async (kind) => (await readCached({ deviceId: "dev-1", entityId: directoryCacheId({ workspace_id: "ws-1", source_id: "repo" }), kind }))?.value;
+    expect((await cached("status")).branch).toBe("feature");
+    expect((await cached("log")).branch).toBe("feature");
+    expect((await cached("unpushed")).base.label).toBe("origin/feature");
+    expect((await cached("diff")).diff_key).toBe("feature");
   });
 
   it("keeps a pending checkout completion on its own directory", async () => {

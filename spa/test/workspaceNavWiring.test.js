@@ -7,7 +7,7 @@
 // stood in for; workspaceViewDom holds the cases that need the panes stood in
 // for.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 globalThis.indexedDB = new IDBFactory();
@@ -33,12 +33,13 @@ vi.mock("../src/core/taskFeed.js", () => ({
   joinFeed: () => {},
 }));
 
-import { App } from "../src/app.js";
+import { App, initRouter } from "../src/app.js";
 import { renderWorkspace } from "../src/views/workspaceView.js";
 import { adoptDeviceSession, resetDeviceContexts } from "../src/core/deviceContexts.js";
 import { standShell, stopShell } from "../src/core/shell.js";
 import { fakeSession } from "./deviceSessionFixture.js";
 import { readCached, wipeCache } from "../src/core/localCache.js";
+import { wipeUiRecords } from "../src/core/localUiStore.js";
 import { createViewingContext } from "../src/core/viewingContext.js";
 import { worktreeOf } from "./gitWireFixture.js";
 
@@ -67,10 +68,13 @@ const machine = async (method, params = {}) => {
     const text = `${params.source_id}/${params.path}`;
     return { path: params.path, mime: "text/plain", size: text.length, truncated: false, editable: false, encoding: "utf-8", revision: "r1", content_b64: b64(text) };
   }
-  if (method === "git.status") return { branch: "main", head: "c0ffee1", repo_state: "clean", files: [], stat: { files_changed: 0, insertions: 0, deletions: 0 } };
+  if (method === "git.status") return params.if_status_key === "status-1"
+    ? { unchanged: true, status_key: "status-1" }
+    : { status_key: "status-1", branch: "main", head: "c0ffee1", repo_state: "clean", files: [], stat: { files_changed: 0, insertions: 0, deletions: 0 } };
   if (method === "git.log") return { branch: "main", commits: [{ hash: "c0ffee1234567", short: "c0ffee1", subject: "Seed the repository", author: "Zech", time: 1_790_000_000 }], more: false };
   if (method === "git.refs") return { current: { kind: "branch", name: "main", full_ref: "refs/heads/main" }, refs: [] };
-  if (method === "git.unpushed") return { commits: [], files: [] };
+  if (method === "git.unpushed") return params.if_diff_key === "review-1"
+    ? { unchanged: true, diff_key: "review-1" } : { diff_key: "review-1", commits: [], files: [] };
   if (method === "workspace.git_init_options") return {
     workspace_id: "ws-1", source_id: params.source_id,
     workspace: { path: "/w/ws-1/assets", is_git: false, available: true },
@@ -95,10 +99,14 @@ const open = async (route) => {
   await flush();
 };
 
+beforeAll(() => initRouter());
+
 beforeEach(async () => {
   await wipeCache();
+  await wipeUiRecords();
   document.body.innerHTML = '<div id="toolbar"><span id="tb-verb"></span></div><nav id="dir-rail"></nav><div id="root"></div><aside id="agent-rail"></aside><div id="console-region"></div>';
   App.viewDispose = null;
+  App.gated = false;
   App.viewingContext = createViewingContext({ enabled: false });
   App.devices = [{ id: "dev-1", name: "this machine", status: "online" }];
   asked.length = 0;
@@ -109,6 +117,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  App.gated = true;
   App.viewDispose?.();
   App.viewDispose = null;
   stopShell();
@@ -207,6 +216,32 @@ describe("a workspace with two directories, one not git", () => {
     expect(document.querySelector(".workspace-dirtab.current").textContent).toBe("Repository");
     expect(reads("repo")).toEqual([]);
     expect(asked.filter(({ method }) => method.startsWith("git."))).toEqual([]);
+  });
+
+  it.each(["files", "tasks"])("returns from the %s rail with only two keyed Git checks", async (tab) => {
+    await open({ name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes" });
+    const address = (kind) => ({ deviceId: "dev-1", entityId: 'workspace:["ws-1","repo"]', kind });
+    await vi.waitFor(async () => {
+      for (const kind of ["refs", "status", "log", "unpushed", "diff"]) {
+        expect((await readCached(address(kind)))?.value).toBeTruthy();
+      }
+      expect(document.querySelector(".gitpane")?.textContent).toContain("Seed the repository");
+    });
+    const firstPane = document.querySelector(".gitpane");
+    document.querySelector(`#dir-rail [data-tab="${tab}"]`).click();
+    await vi.waitFor(() => expect(App.route.tab).toBe(tab));
+    await vi.waitFor(() => expect(firstPane.isConnected).toBe(false));
+    asked.length = 0;
+
+    document.querySelector('#dir-rail [data-tab="changes"]').click();
+    await vi.waitFor(() => expect(document.querySelector(".gitpane")?.textContent).toContain("Seed the repository"));
+    await vi.waitFor(() => expect(document.querySelector(".workspace-reftrigger-name")?.textContent).toBe("main"));
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(App.route.tab).toBe("changes");
+    expect(asked.filter(({ method }) => method.startsWith("git.")).sort((a, b) => a.method.localeCompare(b.method))).toEqual([
+      { method: "git.status", params: { workspace_id: "ws-1", source_id: "repo", if_status_key: "status-1" } },
+      { method: "git.unpushed", params: { workspace_id: "ws-1", source_id: "repo", if_diff_key: "review-1" } },
+    ]);
   });
 
   // A comment being written floats over the page, outside the surface it was

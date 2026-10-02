@@ -91,10 +91,43 @@ describe("workspace ref picker", () => {
   it("paints cached refs while the pull is absent", async () => {
     const address = cacheScope.address({ entityId: 'workspace:["ws-1","repo"]', kind: "refs" });
     await writeCached(address, listing);
-    const { host, mounted } = await mount({ refsResponse: new Promise(() => {}) });
+    const { host, callRpc, mounted } = await mount({ refsResponse: new Promise(() => {}) });
     await vi.waitFor(() => expect(host.querySelector(".workspace-reftrigger-name").textContent).toBe("main"));
+    expect(callRpc).not.toHaveBeenCalled();
     host.querySelector("[data-refpicker-toggle]").click();
+    expect(callRpc).toHaveBeenCalledWith("git.refs", scope);
     expect(refNames(host).join(" ")).toContain("feature/search");
+    mounted.dispose();
+  });
+
+  it("defers a stale refs read while hidden and refreshes on reveal", async () => {
+    const address = cacheScope.address({ entityId: 'workspace:["ws-1","repo"]', kind: "refs" });
+    await writeCached(address, listing);
+    const fresh = { ...listing, current: { kind: "branch", name: "feature/search", full_ref: "refs/heads/feature/search" } };
+    const { host, callRpc, mounted } = await mount({ refsResponse: fresh });
+    mounted.setVisible(false);
+    await writeCached(address, { ...listing, stale: true });
+    await flush();
+    expect(host.querySelector(".workspace-reftrigger-name").textContent).toBe("main");
+    expect(callRpc).not.toHaveBeenCalled();
+
+    mounted.setVisible(true);
+    await vi.waitFor(() => expect(host.querySelector(".workspace-reftrigger-name").textContent).toBe("feature/search"));
+    expect(callRpc.mock.calls.filter(([method]) => method === "git.refs")).toHaveLength(1);
+    mounted.dispose();
+  });
+
+  it("defers a cold mount read when hidden before the cache answers", async () => {
+    const host = document.querySelector("#host");
+    const callRpc = vi.fn(async (method) => method === "git.refs" ? listing : {});
+    const mounted = mountWorkspaceRefPicker(host, { scope, callRpc, cacheScope });
+    mounted.setVisible(false);
+    await flush();
+    expect(callRpc).not.toHaveBeenCalled();
+
+    mounted.setVisible(true);
+    await vi.waitFor(() => expect(host.querySelector(".workspace-reftrigger-name").textContent).toBe("main"));
+    expect(callRpc.mock.calls.filter(([method]) => method === "git.refs")).toHaveLength(1);
     mounted.dispose();
   });
 
@@ -171,9 +204,11 @@ describe("workspace ref picker", () => {
     const address = cacheScope.address({ entityId: 'workspace:["ws-1","repo"]', kind: "refs" });
     await writeCached(address, listing);
     const { host, callRpc } = await mount({ refsAnswers: [new Error("Not a git repository")] });
+    host.querySelector("[data-refpicker-toggle]").click();
     const status = host.querySelector('[role="status"]');
     await vi.waitFor(() => expect(status.textContent).toBe("Not a git repository"));
 
+    host.querySelector("[data-refpicker-toggle]").click();
     host.querySelector("[data-refpicker-toggle]").click();
     await vi.waitFor(() => expect(callRpc.mock.calls.filter(([method]) => method === "git.refs")).toHaveLength(2));
     await vi.waitFor(() => expect(status.textContent).toBe(""));
@@ -198,6 +233,7 @@ describe("workspace ref picker", () => {
       const address = cacheScope.address({ entityId: 'workspace:["ws-1","repo"]', kind: "refs" });
       await writeCached(address, listing);
       const { host, callRpc } = await mount({ refsAnswers: [new Error(mark)] });
+      host.querySelector("[data-refpicker-toggle]").click();
       await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("git.refs", scope));
       await flush();
       expect(host.querySelector(".workspace-reftrigger-name").textContent).toBe("main");

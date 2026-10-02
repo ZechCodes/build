@@ -60,6 +60,7 @@ export function mountWorkspaceRefPicker(host, { scope, callRpc, cacheScope, onCh
   let disposed = false;
   let visible = true;
   let pending = false;
+  let loadWhenShown = false;
   let loadRequest = 0;
   let readRequest = 0;
   let cacheWrites = 0;
@@ -115,22 +116,30 @@ export function mountWorkspaceRefPicker(host, { scope, callRpc, cacheScope, onCh
     readShown = true;
   };
   const readRecord = async (written = false) => {
-    if (!address) return;
+    if (!address) return false;
     const version = ++readRequest;
     const record = await readCached(address);
-    if (disposed || version !== readRequest) return;
+    if (disposed || version !== readRequest) return true;
     const listing = record?.value;
-    if (!listing) return;
+    if (!listing) return false;
     // A record written while mounted is a read that landed, whoever made it.
     if (written) readLanded();
     paintListing(listing);
+    return !listing.stale;
   };
   const unwatch = address ? subscribeCache(address, () => {
     cacheWrites += 1;
-    void readRecord(true);
+    void readRecord(true).then((held) => {
+      if (!disposed && !held) void load();
+    });
   }) : null;
   const mayWrite = (before) => !pending && Boolean(address) && cacheScope.active?.() !== false && cacheWrites === before;
   const load = async () => {
+    if (!visible) {
+      loadWhenShown = true;
+      return;
+    }
+    loadWhenShown = false;
     const request = ++loadRequest;
     const before = cacheWrites;
     try {
@@ -170,6 +179,7 @@ export function mountWorkspaceRefPicker(host, { scope, callRpc, cacheScope, onCh
       await onCheckout?.();
     } catch (error) {
       if (!disposed) errorHost.textContent = errorText(error);
+      return;
     } finally {
       pending = false;
       if (!disposed) {
@@ -177,6 +187,7 @@ export function mountWorkspaceRefPicker(host, { scope, callRpc, cacheScope, onCh
         picker.classList.remove("pending");
       }
     }
+    if (!disposed) await load();
   };
   trigger.onclick = () => {
     if (!visible) return;
@@ -200,8 +211,9 @@ export function mountWorkspaceRefPicker(host, { scope, callRpc, cacheScope, onCh
   const keydown = (event) => { if (visible && event.key === "Escape") { close(); trigger.focus(); } };
   document.addEventListener("pointerdown", outside);
   picker.addEventListener("keydown", keydown);
-  void readRecord();
-  void load();
+  void readRecord().then((held) => {
+    if (!disposed && !held) void load();
+  });
   return { setVisible(shown) {
     if (disposed || shown === visible) return;
     visible = shown;
@@ -209,7 +221,10 @@ export function mountWorkspaceRefPicker(host, { scope, callRpc, cacheScope, onCh
       close();
       if (picker.contains(document.activeElement)) document.activeElement.blur();
       document.removeEventListener("pointerdown", outside);
-    } else document.addEventListener("pointerdown", outside);
+    } else {
+      document.addEventListener("pointerdown", outside);
+      if (loadWhenShown) void load();
+    }
   }, dispose() {
     disposed = true;
     unwatch?.();

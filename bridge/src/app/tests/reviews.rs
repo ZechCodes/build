@@ -50,6 +50,13 @@ fn review_snapshot_rpc_keeps_task_position_and_completion_is_explicit() {
     let held = review_call(&mut state, "tasks.get", json!({"task_id": task_id}));
     assert_eq!(held["task"]["status"], "done");
     assert_eq!(held["task"]["state"], "open");
+    let timeline = held["timeline"].as_array().unwrap();
+    assert_eq!(timeline[timeline.len() - 2]["kind"], "moved");
+    assert_eq!(
+        timeline[timeline.len() - 2]["payload"],
+        json!({"from": "backlog", "to": "done"})
+    );
+    assert_eq!(timeline[timeline.len() - 1]["kind"], "review_completed");
     assert!(state.workspaces.get(&workspace_id).is_some());
 }
 
@@ -155,4 +162,23 @@ fn review_mcp_authenticates_actor_and_fences_both_task_and_workspace_projects() 
         completed["review"]["completion"]["actor"]["agent_id"],
         agent
     );
+    let held = review_call(&mut state, "tasks.get", json!({"task_id": task["id"]}));
+    let timeline = held["timeline"].as_array().unwrap();
+    assert_eq!(timeline[timeline.len() - 2]["kind"], "moved");
+    assert_eq!(timeline[timeline.len() - 2]["actor"]["agent_id"], agent);
+    assert_eq!(timeline[timeline.len() - 1]["kind"], "review_completed");
+    let conversation = state.handle(req(
+        "thread.page",
+        json!({"entity_id": owner, "agent_id": agent, "limit": 50}),
+    ));
+    assert_eq!(conversation["ok"], true, "{conversation}");
+    let actions: Vec<_> = conversation["result"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|item| item["data"]["task_action"].as_object())
+        .collect();
+    assert_eq!(actions.len(), 1, "{conversation}");
+    assert_eq!(actions[0]["action"], "moved");
+    assert_eq!(actions[0]["to"], "done");
 }

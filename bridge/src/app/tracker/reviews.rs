@@ -9,7 +9,7 @@ use crate::app::git::deferred::DeferredGitWork;
 use crate::app::{AppState, DeferredGit, DeferredWork};
 use crate::reviews::service::SnapshotRequest;
 use crate::store::Store;
-use crate::tracker::{Actor, TaskEventKind, TimelineEntry};
+use crate::tracker::Actor;
 use serde_json::{json, Value};
 
 struct SnapshotJob {
@@ -104,43 +104,19 @@ impl AppState {
         actor: Actor,
     ) -> Result<Value, String> {
         let (project_id, _) = self.tracker_task(&params.task_id)?;
-        let review = self
+        let (review, events) = self
             .tracker_store()?
-            .complete_review(
+            .complete_review_with_events(
                 &params.task_id,
                 params.expected_version,
                 &actor,
                 &params.description,
             )
             .stored()?;
-        self.note_tasks_changed(&project_id, &params.task_id);
-        self.nudge_workspace_reclaim();
-        self.notify_review_completion(&params.task_id, actor);
-        Ok(json!({ "review": review }))
-    }
-
-    /// Notification failure cannot undo a durable completion. The event and
-    /// task were written together by the service, before any tracker is woken.
-    fn notify_review_completion(&mut self, task_id: &str, actor: Actor) {
-        let Ok((_, task)) = self.tracker_task(task_id) else {
-            return;
-        };
-        let Ok(timeline) = self
-            .tracker_store()
-            .and_then(|store| store.load_tracker_timeline(task_id).stored())
-        else {
-            return;
-        };
+        let (_, task) = self.tracker_task(&params.task_id)?;
         let mut write = TaskWrite::by(actor, task);
-        if let Some(event) = timeline.into_iter().rev().find_map(|entry| match entry {
-            TimelineEntry::Event(event) if event.kind == TaskEventKind::ReviewCompleted => {
-                Some(event)
-            }
-            _ => None,
-        }) {
-            write.events.push(event);
-            self.notify_trackers(&write);
-            self.push_task_news(&write);
-        }
+        write.events = events;
+        self.publish_task_write(&project_id, &write);
+        Ok(json!({ "review": review }))
     }
 }

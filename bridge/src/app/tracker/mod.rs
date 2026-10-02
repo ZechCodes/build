@@ -450,20 +450,24 @@ impl AppState {
                 .save_tracker_task_activity(&write.task, &write.comments, &write.events)
                 .stored()?;
         }
+        self.publish_task_write(project_id, &write);
+        let task = self.task_with_read_identities(write.task, &timeline, &StoredRosters::default());
+        Ok(json!({ "task": task_json(project_id, &task) }))
+    }
+
+    /// Deliver side effects only after the task and its activity are durable.
+    /// Explicit review completion uses this path too, including workspace
+    /// reclaim when completion moved a linked task into Done.
+    fn publish_task_write(&mut self, project_id: &str, write: &TaskWrite) {
         self.note_tasks_changed(project_id, &write.task.id);
         if write.finishes_a_workspace_task() {
             self.nudge_workspace_reclaim();
         }
-        // AFTER the write is durable, and quiet about its own failure: the
-        // change landed, and a conversation that could not be written must not
-        // turn it back into a refusal.
-        self.notify_trackers(&write);
-        // And the user's browsers, when the write adds to their badge (#191).
-        self.push_task_news(&write);
-        // And the agent says, in its own conversation, what it just did.
-        self.say_what_the_agent_did(&write);
-        let task = self.task_with_read_identities(write.task, &timeline, &StoredRosters::default());
-        Ok(json!({ "task": task_json(project_id, &task) }))
+        // A failed conversation write cannot turn a durable task change into
+        // a refusal.
+        self.notify_trackers(write);
+        self.push_task_news(write);
+        self.say_what_the_agent_did(write);
     }
 
     /// One timeline entry about a linked workspace, without waking anybody.

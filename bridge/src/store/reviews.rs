@@ -103,6 +103,19 @@ impl Store {
         actor: &Actor,
         description: &str,
     ) -> Result<Review, StoreError> {
+        self.complete_review_with_events(task_id, expected_version, actor, description)
+            .map(|(review, _)| review)
+    }
+
+    /// Return the activity written in the completion transaction so the app
+    /// can deliver the same post-write notices as an ordinary task move.
+    pub fn complete_review_with_events(
+        &self,
+        task_id: &str,
+        expected_version: u64,
+        actor: &Actor,
+        description: &str,
+    ) -> Result<(Review, Vec<TaskEvent>), StoreError> {
         let description = validate_description(description)?;
         self.in_transaction(|tx| {
             let task = require_task(tx, task_id)?;
@@ -119,7 +132,6 @@ impl Store {
                     now: &now,
                 },
             )
-            .map(|(review, _)| review)
         })
     }
 
@@ -148,7 +160,7 @@ impl Store {
                         now,
                     },
                 )
-                .map(|(_, event)| Some(event));
+                .map(|(_, mut events)| events.pop());
             }
             write_tracker_task(tx, task)?;
             append_activity(tx, comments, events)?;
@@ -186,7 +198,7 @@ pub(super) fn load_reviews_of_project(
 fn complete_review_in_tx(
     tx: &Transaction,
     write: CompletionWrite<'_>,
-) -> Result<(Review, TaskEvent), StoreError> {
+) -> Result<(Review, Vec<TaskEvent>), StoreError> {
     let task_id = &write.task.id;
     require_task(tx, task_id)?;
     let mut header = load_header(tx, task_id)?.ok_or_else(|| StoreError::ReviewNotFound {
@@ -209,9 +221,22 @@ fn complete_review_in_tx(
         completed_at: write.now.into(),
     });
     let mut task = write.task.clone();
+    let moved = task.status != DONE_STATUS;
+    let from = task.status.clone();
     task.status = DONE_STATUS.into();
-    task.done_at = Some(write.now.into());
+    if moved {
+        task.done_at = Some(write.now.into());
+    }
     task.updated_at = write.now.into();
+    let moved_event = moved.then(|| {
+        TaskEvent::new(
+            task_id,
+            write.actor.clone(),
+            TaskEventKind::Moved,
+            json!({ "from": from, "to": DONE_STATUS }),
+            write.now,
+        )
+    });
     let event = TaskEvent::new(
         task_id,
         write.actor.clone(),
@@ -226,10 +251,15 @@ fn complete_review_in_tx(
     write_header(tx, &header)?;
     write_tracker_task(tx, &task)?;
     append_activity(tx, write.comments, write.events)?;
-    append_activity(tx, &[], std::slice::from_ref(&event))?;
+    let mut events = Vec::with_capacity(2);
+    if let Some(moved_event) = moved_event {
+        events.push(moved_event);
+    }
+    events.push(event);
+    append_activity(tx, &[], &events)?;
     Ok((
         load_review(tx, task_id)?.expect("review was written"),
-        event,
+        events,
     ))
 }
 

@@ -82,13 +82,43 @@ fn completion_writes_review_task_and_timeline_in_one_transaction() {
             _ => None,
         })
         .collect();
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].kind, TaskEventKind::ReviewCompleted);
-    assert_eq!(events[0].payload["description"], "merged API to dev");
-    assert_eq!(events[0].payload["snapshot_id"], "rs-first");
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].kind, TaskEventKind::Moved);
+    assert_eq!(
+        events[0].payload,
+        serde_json::json!({"from": "backlog", "to": "done"})
+    );
+    assert_eq!(events[1].kind, TaskEventKind::ReviewCompleted);
+    assert_eq!(events[1].payload["description"], "merged API to dev");
+    assert_eq!(events[1].payload["snapshot_id"], "rs-first");
     assert!(matches!(
         store.complete_review(&task.id, 1, &Actor::User, "again"),
         Err(StoreError::ReviewVersionConflict { .. })
+    ));
+}
+
+#[test]
+fn completing_an_already_done_task_does_not_claim_another_move() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut task = task(&store);
+    task.status = DONE_STATUS.into();
+    task.done_at = Some("2026-10-01T12:00:00Z".into());
+    store.save_tracker_task_activity(&task, &[], &[]).unwrap();
+    store
+        .save_review_snapshot(&task.id, "ws-1", 0, snapshot("rs-first"))
+        .unwrap();
+    store
+        .complete_review(&task.id, 1, &Actor::User, "checked completed work")
+        .unwrap();
+    let after = store.load_tracker_task(&task.id).unwrap().unwrap();
+    assert_eq!(after.done_at, task.done_at);
+    let events = store.load_tracker_timeline(&task.id).unwrap();
+    assert_eq!(events.len(), 1);
+    assert!(matches!(
+        &events[0],
+        crate::tracker::TimelineEntry::Event(event)
+            if event.kind == TaskEventKind::ReviewCompleted
     ));
 }
 
@@ -132,7 +162,7 @@ fn fresh_snapshot_reopens_review_without_moving_or_reopening_task() {
         store.load_tracker_task(&task.id).unwrap().unwrap(),
         task_before
     );
-    assert_eq!(store.load_tracker_timeline(&task.id).unwrap().len(), 1);
+    assert_eq!(store.load_tracker_timeline(&task.id).unwrap().len(), 2);
 }
 
 #[test]

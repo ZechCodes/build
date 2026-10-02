@@ -13,8 +13,8 @@ use std::sync::Mutex;
 use serde_json::{json, Value};
 
 use crate::harness::{
-    installed, is_a_filename, Harness, HarnessContext, SessionLocator, INHERITED_AGENT_MARKERS,
-    REAL_TUI_SETTLE, REAL_TUI_SUBMIT_DELAY,
+    installed, is_a_filename, Harness, HarnessContext, SessionLocator, DAEMON_IDENTITY_VARS,
+    INHERITED_AGENT_MARKERS, REAL_TUI_SETTLE, REAL_TUI_SUBMIT_DELAY,
 };
 use crate::models::{AgentProvider, ModelChoice, ModelOption};
 use crate::orchestrator::SpawnOptions;
@@ -175,6 +175,7 @@ impl Harness for ClaudeHarness {
             .settle(REAL_TUI_SETTLE)
             .submit_delay(REAL_TUI_SUBMIT_DELAY)
             .unset_all(INHERITED_AGENT_MARKERS)
+            .unset_all(DAEMON_IDENTITY_VARS)
             .arg("--mcp-config")
             .arg(options.mcp_config())
             .arg("--strict-mcp-config")

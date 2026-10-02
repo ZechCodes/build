@@ -45,6 +45,15 @@ pub enum PairingError {
     Rejected(String),
     #[error("identity error: {0}")]
     Identity(String),
+    /// The api said "not approved", but it is not known to be the api that
+    /// approved this identity, so its word is not enough to retire it (#320).
+    #[error("{asked} said not approved, but it is not known to have approved this device")]
+    ApprovedElsewhere {
+        /// The api that was asked.
+        asked: String,
+        /// The api the identity records as its approver, if it records one.
+        approver: Option<String>,
+    },
 }
 
 type Result<T> = std::result::Result<T, PairingError>;
@@ -157,7 +166,7 @@ impl RetiredApproval {
                 INDENT,
             ),
         ];
-        if self.api_url.trim_end_matches('/') != crate::config::DEFAULT_API_URL {
+        if !same_api(&self.api_url, crate::config::DEFAULT_API_URL) {
             lines.push(wrapped(&format!("Asked {}", self.api_url), INDENT));
         }
         lines.join("\n")
@@ -396,10 +405,16 @@ pub async fn poll_until_approved(
 /// New keys rather than the old ones: a device is revoked because it was lost
 /// or its keys may have leaked, and a fresh approval of the old key would
 /// re-trust whoever else holds it.
+///
+/// Only the api that approved the identity is believed (#320): an agent's mock
+/// behind `BRIDGE_API_URL` once retired a machine's production pairing on one
+/// answer. Another api's "not approved" is [`PairingError::ApprovedElsewhere`],
+/// unless `when` is [`RetireWhen::AnyApiSays`] (`pair --retire`).
 pub async fn retire_lapsed_approval(
     client: &reqwest::Client,
     api_url: &str,
     identity_path: &Path,
+    when: RetireWhen,
 ) -> Result<Option<RetiredApproval>> {
     let file_error = |e: identity::IdentityError| {
         PairingError::Identity(format!("{}: {e}", identity_path.display()))
@@ -408,12 +423,16 @@ pub async fn retire_lapsed_approval(
         Some(stored) if stored.approved => stored,
         _ => return Ok(None),
     };
-    let Some(lapse) = fetch_status(client, api_url, &stored.device_id)
-        .await?
-        .lapse()
-    else {
+    let status = fetch_status(client, api_url, &stored.device_id).await?;
+    let Some(lapse) = status.lapse() else {
         return Ok(None);
     };
+    if when == RetireWhen::ApproverSays && !may_retire(&stored, api_url) {
+        return Err(PairingError::ApprovedElsewhere {
+            asked: api_url.to_string(),
+            approver: stored.approved_by.clone(),
+        });
+    }
     let kept_at = identity::retire(identity_path, &stored).map_err(file_error)?;
     Ok(Some(RetiredApproval {
         lapse,
@@ -421,6 +440,53 @@ pub async fn retire_lapsed_approval(
         identity_path: identity_path.to_path_buf(),
         kept_at,
     }))
+}
+
+/// Whose "not approved" retires a stored approval.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetireWhen {
+    /// Only the api that approved it: the default.
+    ApproverSays,
+    /// Whichever api is configured: `pair --retire`.
+    AnyApiSays,
+}
+
+/// Whether `api_url`'s "not approved" may retire `stored` without `--retire`:
+/// it is the api `stored` records as its approver, or, for an identity that
+/// records none, the default api, the only one the installer pairs with.
+/// Only a pairing an api completes records it as approver: an api that merely
+/// says an approved identity is approved never does, or a mock's "approved"
+/// then "not approved" would retire a good identity (#320).
+fn may_retire(stored: &StoredIdentity, api_url: &str) -> bool {
+    let approver = stored
+        .approved_by
+        .as_deref()
+        .unwrap_or(crate::config::DEFAULT_API_URL);
+    same_api(approver, api_url)
+}
+
+/// An api url with any trailing slash dropped, as it is recorded.
+fn api_key(api_url: &str) -> &str {
+    api_url.trim_end_matches('/')
+}
+
+/// Whether two api urls name the same api: the same scheme, host (any case)
+/// and port (written or the scheme's default), and the same path but for a
+/// trailing slash. Urls that do not parse are compared as written.
+pub fn same_api(a: &str, b: &str) -> bool {
+    fn parts(url: &str) -> Option<(String, String, u16, String)> {
+        let parsed = reqwest::Url::parse(url).ok()?;
+        Some((
+            parsed.scheme().to_string(),
+            parsed.host_str()?.to_ascii_lowercase(),
+            parsed.port_or_known_default()?,
+            parsed.path().trim_end_matches('/').to_string(),
+        ))
+    }
+    match (parts(a), parts(b)) {
+        (Some(a), Some(b)) => a == b,
+        _ => api_key(a) == api_key(b),
+    }
 }
 
 /// Ensure the device is registered and approved. If `stored.approved`, returns it
@@ -457,6 +523,7 @@ pub async fn ensure_paired(
 
     poll_until_approved(client, api_url, &stored.device_id, poll_interval).await?;
     stored.approved = true;
+    stored.approved_by = Some(api_key(api_url).to_string());
     identity::save(identity_path, &stored).map_err(|e| PairingError::Identity(e.to_string()))?;
     // What happens next is the caller's business — `serve` connects to the
     // relay, `pair` exits — so pairing reports only the pairing it did.
@@ -591,7 +658,7 @@ mod tests {
     /// The notice from the photo in #319, at the installer's width: what is
     /// happening and where the old identity went, nothing more.
     #[test]
-    fn a_retired_approval_says_so_in_two_short_lines() {
+    fn a_retired_approval_at_the_default_api_says_what_happened_and_where_it_went() {
         let home = Path::new("/Users/zechariahzimmerman");
         let notice = retired_at(crate::config::DEFAULT_API_URL, home).notice(home);
         assert_fits(&notice);
@@ -660,6 +727,46 @@ mod tests {
 
     /// A refusal is one sentence of any length; printed, it breaks between
     /// words into indented lines, and a word longer than a line stands alone.
+    /// An identity that records no approver is the default api's to retire,
+    /// and no other api's (#320).
+    #[test]
+    fn without_a_recorded_approver_only_the_default_api_may_retire() {
+        let legacy = identity::generate("my-box");
+        assert!(may_retire(&legacy, crate::config::DEFAULT_API_URL));
+        assert!(!may_retire(&legacy, "http://localhost:8090"));
+    }
+
+    /// The same api however its url is written: scheme, host in any case,
+    /// port written or implied, trailing slash or not (#320).
+    #[test]
+    fn same_api_compares_scheme_host_and_effective_port() {
+        let default = crate::config::DEFAULT_API_URL;
+        for same in [
+            "https://getbuild.ing",
+            "https://getbuild.ing/",
+            "https://GetBuild.ing",
+            "HTTPS://GETBUILD.ING/",
+            "https://getbuild.ing:443",
+            "https://getbuild.ing:443/",
+        ] {
+            assert!(same_api(same, default), "{same}");
+            assert!(same_api(default, same), "{same}");
+        }
+        for other in [
+            "http://getbuild.ing",
+            "https://getbuild.ing:8443",
+            "https://staging.getbuild.ing",
+            "https://getbuild.ing/v2",
+            "http://localhost:8090",
+        ] {
+            assert!(!same_api(other, default), "{other}");
+        }
+        assert!(same_api("http://localhost:80/", "http://LOCALHOST"));
+        assert!(same_api("http://app:8080/api/", "http://app:8080/api"));
+        assert!(same_api("not a url/", "not a url"));
+        assert!(!same_api("not a url", default));
+    }
+
     #[test]
     fn wrapped_breaks_between_words_under_an_indent() {
         let reason = "not paired: could not confirm this device's pairing with the api \

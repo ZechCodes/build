@@ -42,6 +42,13 @@ pub enum InstallGateError {
     /// Stored as approved, but the api no longer approves it: revoked, or a
     /// device the api does not know (#317). Pairing again is the only way on.
     NoLongerPaired(Lapse),
+    /// An api not known to have approved this device said it is not approved;
+    /// `pair` keeps the identity unless told `--retire` (#320). `approver` is
+    /// the api the identity records, if it records one.
+    ApprovedElsewhere {
+        asked: String,
+        approver: Option<String>,
+    },
     /// The status call failed — the api could not say either way.
     Unreachable { detail: String },
     /// The identity file could not be read, or could not be moved aside.
@@ -70,6 +77,22 @@ impl std::fmt::Display for InstallGateError {
                 "this machine's earlier pairing is no longer valid: {lapse} — run \
                  `build-bridge pair` to pair it again"
             ),
+            Self::ApprovedElsewhere {
+                asked,
+                approver: Some(approver),
+            } => write!(
+                f,
+                "asked {asked}, but {approver} approved this device; \
+                 pair --retire sets it aside anyway"
+            ),
+            Self::ApprovedElsewhere {
+                asked,
+                approver: None,
+            } => write!(
+                f,
+                "asked {asked}, but this identity does not record which api approved \
+                 it; pair --retire sets it aside anyway"
+            ),
             Self::Unreachable { detail } => write!(
                 f,
                 "could not confirm this device's pairing with the api ({detail}) — check \
@@ -95,6 +118,9 @@ impl From<PairingError> for InstallGateError {
     fn from(error: PairingError) -> Self {
         match error {
             PairingError::Identity(detail) => Self::IdentityFile { detail },
+            PairingError::ApprovedElsewhere { asked, approver } => {
+                Self::ApprovedElsewhere { asked, approver }
+            }
             other => Self::Unreachable {
                 detail: other.to_string(),
             },

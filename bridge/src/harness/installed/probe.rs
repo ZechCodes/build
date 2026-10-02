@@ -78,6 +78,12 @@ pub fn version_in(said: &str) -> Option<Version> {
 }
 
 mod child;
+
+/// The command a probe runs (#320's environment tests).
+#[cfg(test)]
+pub(crate) fn command_for_test(binary: &str, args: &[&str]) -> std::process::Command {
+    child::command(binary, args, false)
+}
 mod codex_list;
 
 use child::ProbeChild;

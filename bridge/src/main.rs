@@ -92,7 +92,7 @@ async fn main() {
         }
         Some(other) => {
             eprintln!(
-                "unknown command: {other}\nusage: build-bridge [serve|pair|backup <path>|provision|install-service|uninstall-service|update-helper <job-path>|--version]"
+                "unknown command: {other}\nusage: build-bridge [serve|pair [--retire]|backup <path>|provision|install-service|uninstall-service|update-helper <job-path>|--version]"
             );
             std::process::exit(2);
         }
@@ -848,6 +848,8 @@ fn exit_startup(error: String) -> ! {
 /// An identity stored as approved that the api no longer approves (revoked in
 /// Settings → Devices, or unknown to it) is retired first, so this run pairs a
 /// new identity instead of dead-ending on a code that does not exist (#317).
+/// Only the api that approved it is believed; `--retire` takes any api's word
+/// (#320).
 ///
 /// It ends on the same gate `install-service` runs — one status GET, even for an
 /// identity that was already approved — so the account it names is the account
@@ -859,23 +861,72 @@ async fn pair() {
     // Pairing talks https before anything else does; the provider must be in
     // place first.
     relay::install_crypto_provider();
-    let outcome = pair_device(&bridge_config(), provisioned_identity()).await;
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    let when = match pair_args(&args) {
+        Ok(when) => when,
+        Err(unknown) => {
+            eprintln!("unknown argument to pair: {unknown}\nusage: build-bridge pair [--retire]");
+            std::process::exit(2);
+        }
+    };
+    let outcome = pair_device(&bridge_config(), provisioned_identity(), when).await;
     let said = pair_said(&outcome);
     match outcome {
         Ok(_) => println!("{said}"),
-        Err(_) => {
+        Err(not_paired) => {
             eprintln!("{said}");
-            std::process::exit(1);
+            std::process::exit(not_paired.status);
+        }
+    }
+}
+
+/// `pair`'s arguments: nothing, or `--retire`. Anything else is refused,
+/// named, so a mistyped flag never runs the default path.
+fn pair_args(args: &[String]) -> Result<pairing::RetireWhen, String> {
+    match args {
+        [] => Ok(pairing::RetireWhen::ApproverSays),
+        [only] if only == "--retire" => Ok(pairing::RetireWhen::AnyApiSays),
+        _ => Err(args.join(" ")),
+    }
+}
+
+/// `pair`'s exit status when it kept an identity because the api that said
+/// "not approved" is not known to have approved it (#320): the installer
+/// reads it to offer `pair --retire` instead of `pair` again.
+const PAIR_STATUS_APPROVED_ELSEWHERE: i32 = 3;
+
+/// Why `pair` did not pair, and the exit status that says which way.
+#[derive(Debug)]
+struct NotPaired {
+    reason: String,
+    status: i32,
+}
+
+impl From<String> for NotPaired {
+    fn from(reason: String) -> Self {
+        Self { reason, status: 1 }
+    }
+}
+
+impl From<service::InstallGateError> for NotPaired {
+    fn from(gate: service::InstallGateError) -> Self {
+        let status = match gate {
+            service::InstallGateError::ApprovedElsewhere { .. } => PAIR_STATUS_APPROVED_ELSEWHERE,
+            _ => 1,
+        };
+        Self {
+            reason: gate.to_string(),
+            status,
         }
     }
 }
 
 /// What `pair` prints last, either way it ended: under the installer's step,
 /// broken between words to fit 80 columns.
-fn pair_said(outcome: &Result<String, String>) -> String {
+fn pair_said(outcome: &Result<String, NotPaired>) -> String {
     let text = match outcome {
         Ok(line) => line.clone(),
-        Err(reason) => format!("not paired: {reason}"),
+        Err(not_paired) => format!("not paired: {}", not_paired.reason),
     };
     pairing::wrapped(&text, pairing::INDENT)
 }
@@ -887,7 +938,8 @@ fn pair_said(outcome: &Result<String, String>) -> String {
 async fn pair_device(
     cfg: &BridgeConfig,
     provisioned: Option<LoadedIdentity>,
-) -> Result<String, String> {
+    when: pairing::RetireWhen,
+) -> Result<String, NotPaired> {
     if let Some(provisioned) = provisioned {
         return Ok(format!(
             "provisioned device {} — nothing to pair",
@@ -898,9 +950,10 @@ async fn pair_device(
         &pairing::status_client(),
         &cfg.api_url,
         &cfg.identity_file,
+        when,
     )
     .await
-    .map_err(|error| service::InstallGateError::from(error).to_string())?;
+    .map_err(service::InstallGateError::from)?;
     if let Some(retired) = retired {
         eprintln!("{}", retired.notice(&cfg.home));
     }
@@ -1219,10 +1272,11 @@ fn mcp_stdio() {
 #[cfg(test)]
 mod tests {
     use super::{
-        kept_identity_note, pair_device, pair_said, service_environment, valid_release_repo,
-        LoadedIdentity, PairingOutcome,
+        kept_identity_note, pair_args, pair_device, pair_said, service_environment,
+        valid_release_repo, LoadedIdentity, NotPaired, PairingOutcome,
+        PAIR_STATUS_APPROVED_ELSEWHERE,
     };
-    use build_bridge::{config, identity, relay::DeviceIdentity, transport};
+    use build_bridge::{config, identity, pairing, relay::DeviceIdentity, transport};
     use wiremock::matchers::{method, path, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1355,11 +1409,11 @@ mod tests {
     #[test]
     fn pair_says_its_last_line_within_80_columns_either_way() {
         let long = "x".repeat(10);
-        let ok: Result<String, String> = Ok(format!(
+        let ok: Result<String, NotPaired> = Ok(format!(
             "provisioned device {} — nothing to pair, and a long tail of words to wrap {long}",
             "a".repeat(30)
         ));
-        let err: Result<String, String> = Err(format!("could not confirm this device's pairing with the api ({}) — check the connection and try again", "b".repeat(30)));
+        let err: Result<String, NotPaired> = Err(NotPaired::from(format!("could not confirm this device's pairing with the api ({}) — check the connection and try again", "b".repeat(30))));
         for outcome in [&ok, &err] {
             let said = pair_said(outcome);
             assert!(said.lines().count() > 1, "{said}");
@@ -1398,9 +1452,10 @@ mod tests {
         )
     }
 
-    fn stored_approved(path: &std::path::Path) -> identity::StoredIdentity {
+    fn stored_approved(path: &std::path::Path, by: &str) -> identity::StoredIdentity {
         let mut stored = identity::generate("my-box");
         stored.approved = true;
+        stored.approved_by = Some(by.to_string());
         identity::save(path, &stored).unwrap();
         stored
     }
@@ -1413,7 +1468,7 @@ mod tests {
         let server = MockServer::start().await;
         let home = tempfile::tempdir().unwrap();
         let cfg = config_for(&server.uri(), home.path());
-        let old = stored_approved(&cfg.identity_file);
+        let old = stored_approved(&cfg.identity_file, &server.uri());
         Mock::given(method("GET"))
             .and(path(format!("/api/devices/{}/status", old.device_id)))
             .respond_with(ResponseTemplate::new(200).set_body_json(
@@ -1437,7 +1492,9 @@ mod tests {
             .mount(&server)
             .await;
 
-        let line = pair_device(&cfg, None).await.expect("pairs a new device");
+        let line = pair_device(&cfg, None, pairing::RetireWhen::ApproverSays)
+            .await
+            .expect("pairs a new device");
 
         assert_eq!(line, "paired to account u1");
         let new = identity::load(&cfg.identity_file).unwrap().unwrap();
@@ -1455,7 +1512,7 @@ mod tests {
         let server = MockServer::start().await;
         let home = tempfile::tempdir().unwrap();
         let cfg = config_for(&server.uri(), home.path());
-        let stored = stored_approved(&cfg.identity_file);
+        let stored = stored_approved(&cfg.identity_file, &server.uri());
         let provisioned = LoadedIdentity {
             identity: DeviceIdentity {
                 device_id: "bridge-dev".into(),
@@ -1465,10 +1522,224 @@ mod tests {
             outcome: PairingOutcome::Provisioned,
         };
 
-        let line = pair_device(&cfg, Some(provisioned)).await.unwrap();
+        let line = pair_device(&cfg, Some(provisioned), pairing::RetireWhen::ApproverSays)
+            .await
+            .unwrap();
 
         assert_eq!(line, "provisioned device bridge-dev — nothing to pair");
         assert_eq!(server.received_requests().await.unwrap().len(), 0);
         assert_eq!(identity::load(&cfg.identity_file).unwrap(), Some(stored));
+    }
+
+    /// A machine paired with production, asked by another api (#320): `pair`
+    /// keeps its identity, registers nothing, says which api it asked and
+    /// which approved it within 80 columns, and exits with its own status.
+    #[tokio::test]
+    async fn pair_keeps_an_identity_another_api_calls_unknown_and_names_the_api_it_asked() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/api/devices/.+/status$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"approved": false, "owner_user_id": null, "state": "unknown"}),
+            ))
+            .mount(&server)
+            .await;
+        let home = tempfile::tempdir().unwrap();
+        let cfg = config_for(&server.uri(), home.path());
+        let stored = stored_approved(&cfg.identity_file, config::DEFAULT_API_URL);
+
+        let outcome = pair_device(&cfg, None, pairing::RetireWhen::ApproverSays).await;
+
+        let said = pair_said(&outcome);
+        let status = outcome.as_ref().err().map(|not_paired| not_paired.status);
+        assert_eq!(status, Some(PAIR_STATUS_APPROVED_ELSEWHERE), "{said}");
+        assert_eq!(
+            words(&said),
+            format!(
+                "not paired: asked {}, but https://getbuild.ing approved this device; \
+                 pair --retire sets it aside anyway",
+                server.uri()
+            )
+        );
+        assert!(
+            said.lines()
+                .all(|line| line.starts_with("    ") && line.chars().count() <= 80),
+            "{said}"
+        );
+        assert_eq!(identity::load(&cfg.identity_file).unwrap(), Some(stored));
+        assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 1);
+        let requests = server.received_requests().await.unwrap();
+        assert!(
+            requests.iter().all(|r| r.method.as_str() == "GET"),
+            "registered nothing"
+        );
+    }
+
+    /// `pair --retire` takes the other api's word and pairs a new device there.
+    #[tokio::test]
+    async fn pair_retire_takes_another_apis_word() {
+        let server = MockServer::start().await;
+        let home = tempfile::tempdir().unwrap();
+        let cfg = config_for(&server.uri(), home.path());
+        let old = stored_approved(&cfg.identity_file, config::DEFAULT_API_URL);
+        Mock::given(method("GET"))
+            .and(path(format!("/api/devices/{}/status", old.device_id)))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"approved": false, "owner_user_id": null, "state": "unknown"}),
+            ))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/devices/register"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/api/devices/.+/status$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"approved": true, "owner_user_id": "u1", "state": "approved"}),
+            ))
+            .with_priority(2)
+            .mount(&server)
+            .await;
+
+        let line = pair_device(&cfg, None, pairing::RetireWhen::AnyApiSays)
+            .await
+            .expect("pairs a new device");
+
+        assert_eq!(line, "paired to account u1");
+        let new = identity::load(&cfg.identity_file).unwrap().unwrap();
+        assert_ne!(new.device_id, old.device_id);
+        assert_eq!(new.approved_by.as_deref(), Some(server.uri().as_str()));
+    }
+
+    /// `text` with its line breaks and indents read as single spaces.
+    fn words(text: &str) -> String {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// An identity from before the approver was recorded, asked by an api
+    /// that is not the default, is not said to be another api's: it is said
+    /// not to record one (#320).
+    #[tokio::test]
+    async fn pair_says_an_identity_without_a_recorded_approver_does_not_record_one() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/api/devices/.+/status$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"approved": false, "owner_user_id": null, "state": "revoked"}),
+            ))
+            .mount(&server)
+            .await;
+        let home = tempfile::tempdir().unwrap();
+        let cfg = config_for(&server.uri(), home.path());
+        let mut stored = stored_approved(&cfg.identity_file, "unused");
+        stored.approved_by = None;
+        identity::save(&cfg.identity_file, &stored).unwrap();
+
+        let outcome = pair_device(&cfg, None, pairing::RetireWhen::ApproverSays).await;
+
+        let said = pair_said(&outcome);
+        assert_eq!(
+            outcome.as_ref().err().map(|not_paired| not_paired.status),
+            Some(PAIR_STATUS_APPROVED_ELSEWHERE)
+        );
+        assert_eq!(
+            words(&said),
+            format!(
+                "not paired: asked {}, but this identity does not record which api approved \
+                 it; pair --retire sets it aside anyway",
+                server.uri()
+            )
+        );
+        assert!(
+            said.lines().all(|line| line.chars().count() <= 80),
+            "{said}"
+        );
+        assert_eq!(identity::load(&cfg.identity_file).unwrap(), Some(stored));
+    }
+
+    /// A `pair` that another api answers approved for an identity without a
+    /// recorded approver does not make that api its approver: its next
+    /// "not approved" is refused like the first would have been (#320).
+    #[tokio::test]
+    async fn pair_lets_no_other_api_adopt_an_identity_without_a_recorded_approver() {
+        let server = MockServer::start().await;
+        // The first `pair` asks twice: before retiring and at the gate.
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/api/devices/.+/status$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"approved": true, "owner_user_id": "u1", "state": "approved"}),
+            ))
+            .up_to_n_times(2)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/api/devices/.+/status$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"approved": false, "owner_user_id": null, "state": "revoked"}),
+            ))
+            .with_priority(2)
+            .mount(&server)
+            .await;
+        let home = tempfile::tempdir().unwrap();
+        let cfg = config_for(&server.uri(), home.path());
+        let mut stored = stored_approved(&cfg.identity_file, "unused");
+        stored.approved_by = None;
+        identity::save(&cfg.identity_file, &stored).unwrap();
+
+        let first = pair_device(&cfg, None, pairing::RetireWhen::ApproverSays).await;
+        assert_eq!(first.ok().as_deref(), Some("already paired to account u1"));
+        assert_eq!(
+            identity::load(&cfg.identity_file).unwrap().as_ref(),
+            Some(&stored)
+        );
+
+        let second = pair_device(&cfg, None, pairing::RetireWhen::ApproverSays).await;
+        assert_eq!(
+            second.err().map(|not_paired| not_paired.status),
+            Some(PAIR_STATUS_APPROVED_ELSEWHERE)
+        );
+        assert_eq!(identity::load(&cfg.identity_file).unwrap(), Some(stored));
+    }
+
+    /// Any other way `pair` stops exits 1, not the status the installer reads
+    /// as "approved elsewhere".
+    #[tokio::test]
+    async fn pair_that_cannot_reach_the_api_exits_one() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/api/devices/.+/status$"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+        let home = tempfile::tempdir().unwrap();
+        let cfg = config_for(&server.uri(), home.path());
+        stored_approved(&cfg.identity_file, &server.uri());
+
+        let outcome = pair_device(&cfg, None, pairing::RetireWhen::ApproverSays).await;
+
+        assert_eq!(outcome.err().map(|not_paired| not_paired.status), Some(1));
+    }
+
+    /// `pair` takes `--retire` and nothing else; a mistyped flag is named, not
+    /// read as the default.
+    #[test]
+    fn pair_takes_retire_and_refuses_anything_else() {
+        let args = |list: &[&str]| list.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+        assert_eq!(pair_args(&args(&[])), Ok(pairing::RetireWhen::ApproverSays));
+        assert_eq!(
+            pair_args(&args(&["--retire"])),
+            Ok(pairing::RetireWhen::AnyApiSays)
+        );
+        assert_eq!(pair_args(&args(&["--retired"])), Err("--retired".into()));
+        assert_eq!(
+            pair_args(&args(&["--retire", "now"])),
+            Err("--retire now".into())
+        );
+        assert_eq!(pair_args(&args(&["-r"])), Err("-r".into()));
     }
 }

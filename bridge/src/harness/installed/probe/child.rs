@@ -13,7 +13,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use super::PROBE_DEADLINE;
-use crate::harness::INHERITED_AGENT_MARKERS;
+use crate::harness::{DAEMON_IDENTITY_VARS, INHERITED_AGENT_MARKERS};
 
 /// The longest line kept. A `model/list` page is about 10 KiB today.
 pub(super) const MAX_LINE: usize = 1024 * 1024;
@@ -114,7 +114,10 @@ pub(super) fn command(binary: &str, args: &[&str], talks: bool) -> Command {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    for marker in INHERITED_AGENT_MARKERS {
+    for marker in INHERITED_AGENT_MARKERS
+        .into_iter()
+        .chain(DAEMON_IDENTITY_VARS)
+    {
         command.env_remove(marker);
     }
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);

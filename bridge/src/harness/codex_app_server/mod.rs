@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use crate::harness::codex::{self, CodexHarness, CodexMcpConfig, EFFORT_LEVELS};
 use crate::harness::{
     installed, AgentSession, Harness, HarnessContext, HarnessError, OpenedSession,
-    SessionOpenRequest, SessionOutput, INHERITED_AGENT_MARKERS,
+    SessionOpenRequest, SessionOutput, DAEMON_IDENTITY_VARS, INHERITED_AGENT_MARKERS,
 };
 use crate::models::{AgentProvider, ModelChoice, ModelOption};
 use crate::orchestrator::SpawnOptions;
@@ -44,8 +44,38 @@ impl CodexAppServerHarness {
     }
 }
 
+/// Spawn `spec` the way a session spawns its app server, run `while_running`,
+/// then shut it down (#320's environment tests).
+#[cfg(test)]
+pub(crate) fn with_spawned_process_for_test(
+    spec: &HarnessSpec,
+    root: &Path,
+    while_running: impl FnOnce(),
+) {
+    let events: process::TerminalEventSink = std::sync::Arc::new(|_| {});
+    let (process, pipes) = process::AppServerProcess::spawn(
+        spec,
+        root.to_path_buf(),
+        limits::AppServerLimits::default().process(),
+        events,
+    )
+    .expect("the app server spawns");
+    while_running();
+    drop(pipes);
+    process.shutdown().expect("the app server shuts down");
+}
+
+#[cfg(test)]
+pub(crate) fn version_probe_for_test(binary: &Path) -> Result<String, String> {
+    run_version_probe(binary)
+}
+
 fn run_version_probe(binary: &Path) -> Result<String, String> {
-    let output = Command::new(binary)
+    let mut command = Command::new(binary);
+    for name in DAEMON_IDENTITY_VARS {
+        command.env_remove(name);
+    }
+    let output = command
         .arg("--version")
         .output()
         .map_err(|error| format!("cannot run {} --version: {error}", binary.display()))?;
@@ -125,6 +155,7 @@ impl Harness for CodexAppServerHarness {
     ) -> Result<HarnessSpec, HarnessError> {
         let mut spec = HarnessSpec::new("codex")
             .unset_all(INHERITED_AGENT_MARKERS)
+            .unset_all(DAEMON_IDENTITY_VARS)
             .arg("app-server")
             .arg("--stdio");
         if let Some(effort) = &choice.effort {

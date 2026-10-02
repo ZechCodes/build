@@ -32,6 +32,8 @@ pub(crate) mod adk;
 pub(crate) mod claude;
 pub(crate) mod codex;
 pub(crate) mod codex_app_server;
+#[cfg(test)]
+mod identity_env_tests;
 pub mod installed;
 pub(crate) mod pi;
 mod session;
@@ -82,6 +84,21 @@ pub const INHERITED_AGENT_MARKERS: [&str; 6] = [
     "CLAUDE_CODE_BRIDGE_SESSION_ID",
     "CLAUDE_CODE_ENTRYPOINT",
     "CLAUDE_EFFORT",
+];
+
+/// The daemon's own identity: where its identity file is, and keys given in
+/// the environment. No agent needs them, and an agent that inherits
+/// `BRIDGE_IDENTITY_FILE` reaches the user's real identity even under a
+/// temporary `HOME`: how an agent's test `pair` retired this machine's pairing
+/// (#320). Every agent session and CLI probe removes them; the user's own
+/// terminal keeps them, so `build-bridge pair` typed there finds the identity
+/// the daemon uses.
+pub const DAEMON_IDENTITY_VARS: [&str; 5] = [
+    "BRIDGE_IDENTITY_FILE",
+    "BRIDGE_DEVICE_ID",
+    "BRIDGE_IDENTITY_PRIV",
+    "BRIDGE_TRANSPORT_PRIV",
+    "BRIDGE_TRANSPORT_PUB",
 ];
 
 /// What the daemon supplies to every harness at spawn time, whichever provider

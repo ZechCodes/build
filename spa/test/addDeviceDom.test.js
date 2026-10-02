@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { beforeEach, expect, it, vi } from "vitest";
 import { openAddDevice } from "../src/sheets/addDevice.js";
 import { lookupDevice, approveDevice } from "../src/api.js";
@@ -94,6 +96,21 @@ it("a sheet a link opened says so and warns before anything can be approved", ()
   expect(sheet.querySelector(".sub").textContent).toBe(LINK_SUBTITLE);
   expect(sheet.textContent).not.toContain("Enter the pairing code your bridge printed");
   expect(sheet.querySelector("[data-link-warning]").textContent.replace(/\s+/g, " ").trim()).toBe(LINK_WARNING);
+});
+
+// A warning, not an error: its own class, styled from theme tokens, with no
+// inline style and nothing borrowed from the error line (#320).
+it("the link warning is styled as a warning from theme tokens", () => {
+  lookupDevice.mockReturnValue(new Promise(() => {}));
+  openAddDevice(vi.fn(), { code: "ZSAC-ABU6", fromLink: true });
+  const warning = document.querySelector("[data-link-warning]");
+  expect(warning.className).toBe("addwarn");
+  expect(warning.hasAttribute("style")).toBe(false);
+  const css = readFileSync(resolve("src/styles.css"), "utf8");
+  const rule = css.match(/^\.addwarn \{([^}]*)\}/m)?.[1];
+  expect(rule).toContain("color:var(--amber)");
+  expect(rule).toContain("background:var(--amber-bg)");
+  expect(rule).not.toMatch(/#[0-9a-f]{3,8}\b|rgb|hsl/i);
 });
 
 it("a sheet opened by hand keeps its own subtitle and carries no link warning", () => {

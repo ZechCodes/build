@@ -69,7 +69,7 @@ the relay binary `bridge/src/bin/relay.rs`.
 | --- | --- |
 | `serve` (default) | runs the daemon |
 | `mcp --task <owner>` | the stdio MCP server an agent's harness launches (`mcp_stdio`) |
-| `pair` | device-initiated pairing: prints a code, the short fingerprint and an approve link (`<web>/app/#/pair/<code>`), all within 80 columns, and waits for approval in Build (`bridge/src/pairing.rs`); an identity stored as approved that the api's status answer reports `revoked` or `unknown` (or, from an older api, just not approved) is renamed to `identity.json.retired-<device id>` and a new identity is paired in its place |
+| `pair` | device-initiated pairing: prints a code, the short fingerprint and an approve link (`<web>/app/#/pair/<code>`), all within 80 columns, and waits for approval in Build (`bridge/src/pairing.rs`); an identity stored as approved that the api's status answer reports `revoked` or `unknown` (or, from an older api, just not approved) is renamed to `identity.json.retired-<device id>` and a new identity is paired in its place, when that answer comes from the api that approved it (`approved_by` in the identity file, recorded only when a pairing through that api completes, else the default api; urls compared by scheme, host and effective port) or `pair --retire` says so; another api's answer ends `pair` with the identity untouched and exit status 3, which `install.sh` answers with `pair --retire` |
 | `install-service` / `uninstall-service` | systemd user unit or launchd agent (`bridge/src/service/`); both gate on the same status answer as `pair`, and uninstalling keeps the identity file and says so |
 | `update-helper` | the detached self-update helper (`bridge/src/update/installer.rs`) |
 | `provision`, `backup` | print an identity bundle; online SQLite backup |
@@ -82,6 +82,14 @@ few are owned by the module they tune and read there instead. Examples:
 `BRIDGE_CHILD_SCOPE` (child placement) in `bridge/src/priority.rs`, and the
 `BRIDGE_ICE_*` policy in `bridge/src/rtc/policy.rs`. To find a variable, grep
 for it.
+
+The processes the daemon starts inherit its environment, with two exceptions
+for agent sessions (PTY harnesses, the ADK session, the codex app server) and
+CLI version probes: they drop a parent agent's session markers
+(`INHERITED_AGENT_MARKERS`) and the daemon's identity (`DAEMON_IDENTITY_VARS`:
+`BRIDGE_IDENTITY_FILE` and env-provisioned keys), both in
+`bridge/src/harness/mod.rs`. A user's own terminal tab keeps the identity, so
+`build-bridge pair` typed there finds the identity the daemon uses (#320).
 
 ### Module layout
 

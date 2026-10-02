@@ -3,7 +3,7 @@
 use crate::harness::claude::ClaudeHarness;
 use crate::harness::{
     installed, AgentSession, Harness, HarnessContext, HarnessError, OpenedSession, SessionLocator,
-    SessionOpenRequest, SessionOutput, INHERITED_AGENT_MARKERS,
+    SessionOpenRequest, SessionOutput, DAEMON_IDENTITY_VARS, INHERITED_AGENT_MARKERS,
 };
 use crate::models::{AgentProvider, ModelChoice, ModelOption};
 use crate::orchestrator::SpawnOptions;
@@ -106,6 +106,7 @@ impl Harness for AdkHarness {
     ) -> Result<HarnessSpec, HarnessError> {
         let mut spec = HarnessSpec::new("claude")
             .unset_all(INHERITED_AGENT_MARKERS)
+            .unset_all(DAEMON_IDENTITY_VARS)
             .arg("-p")
             .arg("--input-format")
             .arg("stream-json")

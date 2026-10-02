@@ -6,6 +6,37 @@ Notable changes to the bridge (`build-bridge`). The format follows
 protocol versions; see
 [Wire versioning and capabilities](ARCHITECTURE.md#wire-versioning-and-capabilities).
 
+## [0.2.7] - Unreleased
+
+### Fixed
+
+- `build-bridge pair` retires a stored approval only on the word of the api
+  that approved it. The identity file now records that api when a pairing
+  through it completes; one paired before that counts as approved by
+  `https://getbuild.ing`, whatever another api later says about it, so one
+  paired with a self-hosted api needs `pair --retire` after a revoke. Urls
+  name the same api when scheme, host (any case) and port (written or
+  implied) agree.
+  Another api's "not approved" leaves the identity untouched: `pair` names
+  the api it asked and exits with status 3, and the installer then offers
+  `pair --retire`, which takes that api's word. `pair` refuses any other
+  argument (#320).
+- Agent sessions and CLI probes the bridge starts no longer inherit
+  `BRIDGE_IDENTITY_FILE` or identity keys from its environment, so a tool an
+  agent runs under a temporary `HOME` cannot reach this machine's identity.
+  A user's own terminal keeps them (#320).
+- `install.sh` quotes the commands it prints to paste, and the line that puts
+  the install directory on `PATH`, so any install path it accepts works
+  pasted into sh, bash or zsh, including one with `$`, a backtick, a quote, a
+  backslash or `!`. Run with `BRIDGE_API_URL`, it starts each command it
+  prints with that variable, so a pasted `pair` or `install-service` asks
+  the same api (#320).
+
+### Changed
+
+- Add a device's pairing-link warning reads as a warning, in amber, not as an
+  error (#320).
+
 ## [0.2.6] - 2026-10-01
 
 ### Changed

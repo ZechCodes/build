@@ -13,7 +13,7 @@ import { pendingDeviceHtml } from "../core/deviceFingerprint.js";
  *  approving does before the device it names can be approved (#319). */
 const LINK_ARRIVAL = {
   subtitleHtml: "A pairing link opened this.",
-  warningHtml: `<div class="adderr" data-link-warning style="margin:0 0 10px">Only approve if you just ran the installer or
+  warningHtml: `<div class="addwarn" data-link-warning>Only approve if you just ran the installer or
     <code>build-bridge pair</code> on a machine you own. Approving gives that machine access to your account.</div>`,
 };
 const TYPED = { subtitleHtml: "Enter the pairing code your bridge printed on startup.", warningHtml: "" };

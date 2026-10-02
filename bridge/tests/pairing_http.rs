@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use build_bridge::identity;
 use build_bridge::pairing::{
-    self, build_register_request, fetch_status, poll_until_approved, register,
+    self, build_register_request, fetch_status, poll_until_approved, register, RetireWhen,
 };
 use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -186,13 +186,16 @@ async fn api_answering_status(body: serde_json::Value) -> MockServer {
     server
 }
 
+/// An identity saved in `dir`: approved by `approved_by` when there is one,
+/// else still pending.
 fn stored(
     dir: &tempfile::TempDir,
-    approved: bool,
+    approved_by: Option<&str>,
 ) -> (std::path::PathBuf, identity::StoredIdentity) {
     let path = dir.path().join("identity.json");
     let mut id = identity::generate("my-box");
-    id.approved = approved;
+    id.approved = approved_by.is_some();
+    id.approved_by = approved_by.map(str::to_string);
     identity::save(&path, &id).unwrap();
     (path, id)
 }
@@ -222,12 +225,17 @@ async fn a_revoked_approval_is_retired_so_the_next_pairing_mints_a_new_identity(
     }))
     .await;
     let dir = tempfile::tempdir().unwrap();
-    let (path, id) = stored(&dir, true);
+    let (path, id) = stored(&dir, Some(&server.uri()));
 
-    let retired = pairing::retire_lapsed_approval(&reqwest::Client::new(), &server.uri(), &path)
-        .await
-        .unwrap()
-        .expect("a revoked approval is retired");
+    let retired = pairing::retire_lapsed_approval(
+        &reqwest::Client::new(),
+        &server.uri(),
+        &path,
+        RetireWhen::ApproverSays,
+    )
+    .await
+    .unwrap()
+    .expect("a revoked approval is retired");
 
     assert_eq!(retired.lapse, pairing::Lapse::Revoked);
     assert!(
@@ -248,11 +256,16 @@ async fn an_approval_the_api_never_heard_of_is_retired_too() {
     }))
     .await;
     let dir = tempfile::tempdir().unwrap();
-    let (path, _) = stored(&dir, true);
-    let retired = pairing::retire_lapsed_approval(&reqwest::Client::new(), &server.uri(), &path)
-        .await
-        .unwrap()
-        .expect("an unknown device is retired");
+    let (path, _) = stored(&dir, Some(&server.uri()));
+    let retired = pairing::retire_lapsed_approval(
+        &reqwest::Client::new(),
+        &server.uri(),
+        &path,
+        RetireWhen::ApproverSays,
+    )
+    .await
+    .unwrap()
+    .expect("an unknown device is retired");
     assert_eq!(retired.lapse, pairing::Lapse::Unknown);
 }
 
@@ -263,10 +276,15 @@ async fn an_approval_the_api_still_honours_is_left_alone() {
     }))
     .await;
     let dir = tempfile::tempdir().unwrap();
-    let (path, id) = stored(&dir, true);
-    let retired = pairing::retire_lapsed_approval(&reqwest::Client::new(), &server.uri(), &path)
-        .await
-        .unwrap();
+    let (path, id) = stored(&dir, Some(&server.uri()));
+    let retired = pairing::retire_lapsed_approval(
+        &reqwest::Client::new(),
+        &server.uri(),
+        &path,
+        RetireWhen::ApproverSays,
+    )
+    .await
+    .unwrap();
     assert!(retired.is_none());
     assert_eq!(identity::load(&path).unwrap(), Some(id));
 }
@@ -279,19 +297,25 @@ async fn only_a_stored_approval_is_checked() {
     let dir = tempfile::tempdir().unwrap();
     let missing = dir.path().join("none.json");
     let client = reqwest::Client::new();
-    assert!(
-        pairing::retire_lapsed_approval(&client, &server.uri(), &missing)
-            .await
-            .unwrap()
-            .is_none()
-    );
-    let (pending, id) = stored(&dir, false);
-    assert!(
-        pairing::retire_lapsed_approval(&client, &server.uri(), &pending)
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert!(pairing::retire_lapsed_approval(
+        &client,
+        &server.uri(),
+        &missing,
+        RetireWhen::ApproverSays
+    )
+    .await
+    .unwrap()
+    .is_none());
+    let (pending, id) = stored(&dir, None);
+    assert!(pairing::retire_lapsed_approval(
+        &client,
+        &server.uri(),
+        &pending,
+        RetireWhen::ApproverSays
+    )
+    .await
+    .unwrap()
+    .is_none());
     assert_eq!(identity::load(&pending).unwrap(), Some(id));
     assert_eq!(server.received_requests().await.unwrap().len(), 0);
 }
@@ -306,12 +330,15 @@ async fn an_unreachable_api_retires_nothing() {
         .mount(&server)
         .await;
     let dir = tempfile::tempdir().unwrap();
-    let (path, id) = stored(&dir, true);
-    assert!(
-        pairing::retire_lapsed_approval(&reqwest::Client::new(), &server.uri(), &path)
-            .await
-            .is_err()
-    );
+    let (path, id) = stored(&dir, Some(&server.uri()));
+    assert!(pairing::retire_lapsed_approval(
+        &reqwest::Client::new(),
+        &server.uri(),
+        &path,
+        RetireWhen::ApproverSays
+    )
+    .await
+    .is_err());
     assert_eq!(identity::load(&path).unwrap(), Some(id));
 }
 
@@ -330,12 +357,14 @@ async fn a_hung_api_times_out_and_retires_nothing() {
         .mount(&server)
         .await;
     let dir = tempfile::tempdir().unwrap();
-    let (path, id) = stored(&dir, true);
+    let (path, id) = stored(&dir, Some(&server.uri()));
     let client =
         pairing::status_client_with(Duration::from_millis(200), Duration::from_millis(300));
 
     let started = std::time::Instant::now();
-    let outcome = pairing::retire_lapsed_approval(&client, &server.uri(), &path).await;
+    let outcome =
+        pairing::retire_lapsed_approval(&client, &server.uri(), &path, RetireWhen::ApproverSays)
+            .await;
 
     assert!(outcome.is_err(), "a timeout is not an answer");
     assert!(
@@ -358,8 +387,14 @@ fn the_status_client_bounds_are_bounded() {
 /// Every way the api can fail to say "not approved" leaves the identity alone.
 async fn assert_retires_nothing(api_url: &str) {
     let dir = tempfile::tempdir().unwrap();
-    let (path, id) = stored(&dir, true);
-    let outcome = pairing::retire_lapsed_approval(&pairing::status_client(), api_url, &path).await;
+    let (path, id) = stored(&dir, Some(api_url));
+    let outcome = pairing::retire_lapsed_approval(
+        &pairing::status_client(),
+        api_url,
+        &path,
+        RetireWhen::ApproverSays,
+    )
+    .await;
     assert!(outcome.is_err(), "{api_url}: {outcome:?}");
     assert_eq!(identity::load(&path).unwrap(), Some(id), "{api_url}");
 }
@@ -400,11 +435,16 @@ async fn the_retire_message_names_the_api_and_where_the_old_identity_is() {
     let server =
         api_answering_status(serde_json::json!({"approved": false, "state": "unknown"})).await;
     let dir = tempfile::tempdir().unwrap();
-    let (path, _) = stored(&dir, true);
-    let retired = pairing::retire_lapsed_approval(&pairing::status_client(), &server.uri(), &path)
-        .await
-        .unwrap()
-        .unwrap();
+    let (path, _) = stored(&dir, Some(&server.uri()));
+    let retired = pairing::retire_lapsed_approval(
+        &pairing::status_client(),
+        &server.uri(),
+        &path,
+        RetireWhen::ApproverSays,
+    )
+    .await
+    .unwrap()
+    .unwrap();
     let said = words(&retired.notice(std::path::Path::new("/nowhere")));
     assert!(said.contains(&server.uri()), "{said}");
     assert!(
@@ -420,11 +460,16 @@ async fn the_identity_minted_after_a_retire_is_a_new_device() {
     let server =
         api_answering_status(serde_json::json!({"approved": false, "state": "revoked"})).await;
     let dir = tempfile::tempdir().unwrap();
-    let (path, old) = stored(&dir, true);
-    pairing::retire_lapsed_approval(&pairing::status_client(), &server.uri(), &path)
-        .await
-        .unwrap()
-        .unwrap();
+    let (path, old) = stored(&dir, Some(&server.uri()));
+    pairing::retire_lapsed_approval(
+        &pairing::status_client(),
+        &server.uri(),
+        &path,
+        RetireWhen::ApproverSays,
+    )
+    .await
+    .unwrap()
+    .unwrap();
     let new = identity::load_or_generate(&path, "my-box").unwrap();
     assert_ne!(new.device_id, old.device_id);
     assert_ne!(new.identity_public_key_b64, old.identity_public_key_b64);
@@ -435,6 +480,234 @@ async fn the_identity_minted_after_a_retire_is_a_new_device() {
         Some(new),
         "the new identity is saved"
     );
+}
+
+// --- only the api that approved an identity retires it (#320) ------------------
+
+/// An api pointed at by a stray `BRIDGE_API_URL` — a local mock, say — is not
+/// the api that approved this machine, and its "not approved" retires nothing.
+#[tokio::test]
+async fn another_apis_answer_retires_nothing() {
+    let server =
+        api_answering_status(serde_json::json!({"approved": false, "state": "unknown"})).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (path, id) = stored(&dir, Some("https://getbuild.ing"));
+
+    let outcome = pairing::retire_lapsed_approval(
+        &pairing::status_client(),
+        &server.uri(),
+        &path,
+        RetireWhen::ApproverSays,
+    )
+    .await;
+
+    match outcome {
+        Err(pairing::PairingError::ApprovedElsewhere { asked, approver }) => {
+            assert_eq!(asked, server.uri());
+            assert_eq!(approver.as_deref(), Some("https://getbuild.ing"));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(identity::load(&path).unwrap(), Some(id));
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+/// An identity approved before the approver was recorded was approved by the
+/// default api, the only one the installer pairs with: any other api's
+/// answer leaves it alone.
+#[tokio::test]
+async fn an_approval_from_before_the_approver_was_recorded_belongs_to_the_default_api() {
+    let server =
+        api_answering_status(serde_json::json!({"approved": false, "state": "revoked"})).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (path, mut id) = stored(&dir, Some("unused"));
+    id.approved_by = None;
+    identity::save(&path, &id).unwrap();
+
+    let outcome = pairing::retire_lapsed_approval(
+        &pairing::status_client(),
+        &server.uri(),
+        &path,
+        RetireWhen::ApproverSays,
+    )
+    .await;
+
+    assert!(
+        matches!(
+            outcome,
+            Err(pairing::PairingError::ApprovedElsewhere { approver: None, .. })
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(identity::load(&path).unwrap(), Some(id));
+}
+
+/// The approver is the same api with or without a trailing slash.
+#[tokio::test]
+async fn the_approver_is_matched_without_its_trailing_slash() {
+    let server =
+        api_answering_status(serde_json::json!({"approved": false, "state": "revoked"})).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (path, _) = stored(&dir, Some(&format!("{}/", server.uri())));
+    let retired = pairing::retire_lapsed_approval(
+        &pairing::status_client(),
+        &server.uri(),
+        &path,
+        RetireWhen::ApproverSays,
+    )
+    .await
+    .unwrap();
+    assert!(retired.is_some());
+}
+
+/// `pair --retire` takes any api's word for it.
+#[tokio::test]
+async fn retire_takes_any_apis_answer() {
+    let server =
+        api_answering_status(serde_json::json!({"approved": false, "state": "unknown"})).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (path, id) = stored(&dir, Some("https://getbuild.ing"));
+
+    let retired = pairing::retire_lapsed_approval(
+        &pairing::status_client(),
+        &server.uri(),
+        &path,
+        RetireWhen::AnyApiSays,
+    )
+    .await
+    .unwrap()
+    .expect("retired on the operator's say-so");
+
+    assert_eq!(identity::load(&retired.kept_at).unwrap(), Some(id));
+}
+
+/// An api that still approves the identity is no reason to refuse, whoever
+/// approved it.
+#[tokio::test]
+async fn another_api_that_still_approves_is_no_refusal() {
+    let server = api_answering_status(serde_json::json!({
+        "approved": true, "owner_user_id": "u1", "state": "approved"
+    }))
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (path, id) = stored(&dir, Some("https://getbuild.ing"));
+    let retired = pairing::retire_lapsed_approval(
+        &pairing::status_client(),
+        &server.uri(),
+        &path,
+        RetireWhen::ApproverSays,
+    )
+    .await
+    .unwrap();
+    assert!(retired.is_none());
+    assert_eq!(identity::load(&path).unwrap(), Some(id));
+}
+
+/// The approval `ensure_paired` saves names the api that gave it.
+#[tokio::test]
+async fn a_new_approval_records_the_api_that_gave_it() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/devices/register"))
+        .respond_with(ResponseTemplate::new(201))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/devices/.+/status$"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"approved": true, "owner_user_id": "u1"})),
+        )
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("identity.json");
+
+    let api = format!("{}/", server.uri());
+    let out = pairing::ensure_paired(
+        &reqwest::Client::new(),
+        &api,
+        &server.uri(),
+        &path,
+        identity::generate("my-box"),
+        Duration::from_millis(10),
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(out.approved_by.as_deref(), Some(server.uri().as_str()));
+    assert_eq!(identity::load(&path).unwrap(), Some(out));
+}
+
+/// An identity approved before the approver was recorded stays the default
+/// api's whatever another api says: that api's "approved" does not make it
+/// the approver, so its next "not approved" retires nothing. Two answers
+/// from a mock must not do what one could not (#320).
+#[tokio::test]
+async fn another_apis_approved_then_revoked_retires_nothing() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (path, mut id) = stored(&dir, Some("unused"));
+    id.approved_by = None;
+    identity::save(&path, &id).unwrap();
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/devices/.+/status$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "approved": true, "owner_user_id": "u1", "state": "approved"
+        })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/devices/.+/status$"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"approved": false, "state": "revoked"})),
+        )
+        .with_priority(2)
+        .mount(&server)
+        .await;
+    let client = pairing::status_client();
+    let api = server.uri();
+    let ask = || pairing::retire_lapsed_approval(&client, &api, &path, RetireWhen::ApproverSays);
+
+    assert!(ask().await.unwrap().is_none());
+    assert_eq!(identity::load(&path).unwrap().as_ref(), Some(&id));
+
+    let outcome = ask().await;
+    assert!(
+        matches!(
+            outcome,
+            Err(pairing::PairingError::ApprovedElsewhere { approver: None, .. })
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(identity::load(&path).unwrap(), Some(id));
+    let files = std::fs::read_dir(dir.path()).unwrap().count();
+    assert_eq!(files, 1, "nothing set aside beside identity.json");
+}
+
+/// A recorded approver is never replaced by another api that also says
+/// approved.
+#[tokio::test]
+async fn a_recorded_approver_stays_whoever_else_approves() {
+    let server = api_answering_status(serde_json::json!({
+        "approved": true, "owner_user_id": "u1", "state": "approved"
+    }))
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (path, id) = stored(&dir, Some("https://getbuild.ing"));
+    pairing::retire_lapsed_approval(
+        &pairing::status_client(),
+        &server.uri(),
+        &path,
+        RetireWhen::ApproverSays,
+    )
+    .await
+    .unwrap();
+    assert_eq!(identity::load(&path).unwrap(), Some(id));
 }
 
 /// `text` with its line breaks and indents read as single spaces, so an

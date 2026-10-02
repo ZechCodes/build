@@ -13,11 +13,11 @@ pub fn capture(
     author: &Actor,
 ) -> Result<ReviewSnapshot, String> {
     for directory_id in base_overrides.keys() {
-        if !workspace.directories.iter().any(|directory| {
-            &directory.id == directory_id
-                && directory.is_git
-                && directory.status == DirectoryStatus::Ready
-        }) {
+        if !workspace
+            .directories
+            .iter()
+            .any(|directory| &directory.id == directory_id && directory.is_git)
+        {
             return Err(format!("unknown directory override: {directory_id}"));
         }
     }
@@ -449,15 +449,12 @@ mod tests {
     #[test]
     fn invalid_override_leaves_no_refs() {
         let (_temp, repo) = init_repo();
-        let overrides = BTreeMap::from([("directory-1".into(), "missing-branch".into())]);
-        assert!(capture(
-            "task-1",
-            "snapshot-2",
-            &workspace(&repo),
-            &overrides,
-            &Actor::User
-        )
-        .is_err());
+        let mut workspace = workspace(&repo);
+        let mut second = workspace.directories[0].clone();
+        second.id = "directory-2".into();
+        workspace.directories.push(second);
+        let overrides = BTreeMap::from([("directory-2".into(), "missing-branch".into())]);
+        assert!(capture("task-1", "snapshot-2", &workspace, &overrides, &Actor::User).is_err());
         let pin = git_command(
             &repo,
             &[
@@ -808,6 +805,7 @@ mod tests {
         let mut missing = workspace.directories[0].clone();
         missing.id = "missing".into();
         missing.path = temp.path().join("missing");
+        missing.status = DirectoryStatus::Failed;
         missing.error = Some("removed".into());
         let mut later = workspace.directories[0].clone();
         later.id = "later".into();

@@ -55,6 +55,7 @@ pub fn read(
     directory: &ReviewDirectory,
     request: &ReviewReadRequest,
 ) -> Result<ReviewReadResult, String> {
+    validate_request(request)?;
     if directory.status == super::model::ReviewDirectoryStatus::Unavailable || !directory.is_git {
         return Err("Source unavailable".into());
     }
@@ -69,6 +70,42 @@ pub fn read(
         ReviewReadMode::Tree => read_tree(directory, request, &repo),
         ReviewReadMode::Blob => read_blob(directory, request, &repo),
     }
+}
+
+fn validate_request(request: &ReviewReadRequest) -> Result<(), String> {
+    match request.mode {
+        ReviewReadMode::Changes => {
+            if request.path.is_some()
+                || (request.range.is_some() && !request.patch)
+                || request.range.is_some_and(|range| range.raw == Some(true))
+                || request.paths.len() > 100
+            {
+                return Err("invalid review read: invalid changes options".into());
+            }
+            for path in &request.paths {
+                safe_path(path)?;
+            }
+        }
+        ReviewReadMode::Tree => {
+            if request.range.is_some() || !request.paths.is_empty() {
+                return Err("invalid review read: invalid tree options".into());
+            }
+            if let Some(path) = request.path.as_deref().filter(|path| !path.is_empty()) {
+                safe_path(path)?;
+            }
+        }
+        ReviewReadMode::Blob => {
+            if !request.paths.is_empty() {
+                return Err("invalid review read: invalid blob options".into());
+            }
+            let path = request
+                .path
+                .as_deref()
+                .ok_or("invalid review read: missing path")?;
+            safe_path(path)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -194,6 +231,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(blob.range.unwrap().version.unwrap(), expected_blob.trim());
+        blob_request.range.as_mut().unwrap().raw = Some(true);
+        assert!(read(&directory, &blob_request).is_err());
         assert!(read(
             &directory,
             &request(ReviewReadMode::Blob, Some("../README.md"))
@@ -299,6 +338,79 @@ mod tests {
         assert_eq!(collected, body.as_bytes());
     }
 
+    #[test]
+    fn large_patch_has_a_bounded_first_read_and_readable_later_pages() {
+        let (_temp, repo) = init_repo();
+        let mut directory = saved_directory(&repo);
+        let body = "line of new committed text repeated many times\n".repeat(30_000);
+        std::fs::write(repo.join("large.txt"), body).unwrap();
+        git_in(&repo, &["add", "large.txt"]);
+        git_in(&repo, &["commit", "-m", "large patch"]);
+        directory.head = Some(
+            String::from_utf8(
+                git_command(&repo, &["rev-parse", "HEAD"])
+                    .output()
+                    .unwrap()
+                    .stdout,
+            )
+            .unwrap()
+            .trim()
+            .into(),
+        );
+        let ReviewReadResult::Changes(first) =
+            read(&directory, &request(ReviewReadMode::Changes, None)).unwrap()
+        else {
+            panic!("changes expected")
+        };
+        let patch = first.patch.unwrap();
+        assert!(first.truncated);
+        assert!(patch.len() <= crate::body_page::BODY_PAGE_MAX_BYTES as usize);
+        let mut later = request(ReviewReadMode::Changes, None);
+        later.range = Some(FileRange {
+            offset: patch.len() as u64,
+            bytes: 4096,
+            raw: None,
+        });
+        let ReviewReadResult::Changes(page) = read(&directory, &later).unwrap() else {
+            panic!("changes expected")
+        };
+        let span = page.range.unwrap();
+        assert!(span.end > span.offset);
+        assert!(span.total > patch.len() as u64);
+        assert!(!page.truncated);
+    }
+
+    #[test]
+    fn invalid_options_are_refused_before_opening_git() {
+        let (_temp, repo) = init_repo();
+        let mut directory = saved_directory(&repo);
+        directory.common_git_dir = None;
+        let mut bad = request(ReviewReadMode::Blob, None);
+        assert!(read(&directory, &bad)
+            .unwrap_err()
+            .starts_with("invalid review read:"));
+        let traversal = request(ReviewReadMode::Blob, Some("../outside"));
+        assert!(read(&directory, &traversal)
+            .unwrap_err()
+            .starts_with("invalid review read:"));
+        bad.mode = ReviewReadMode::Tree;
+        bad.range = Some(FileRange {
+            offset: 0,
+            bytes: 4096,
+            raw: None,
+        });
+        assert!(read(&directory, &bad)
+            .unwrap_err()
+            .starts_with("invalid review read:"));
+        bad.mode = ReviewReadMode::Changes;
+        bad.path = None;
+        bad.range = None;
+        bad.paths = vec!["README.md".into(); 101];
+        assert!(read(&directory, &bad)
+            .unwrap_err()
+            .starts_with("invalid review read:"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn symlinks_and_gitlinks_are_labelled_and_not_opened() {
@@ -387,7 +499,7 @@ fn read_changes(
     let base_oid =
         (base.kind != super::model::ReviewBaseKind::EmptyTree).then_some(base.oid.as_str());
     let diff = crate::diff::diff_between_saved_commits(git_dir, base_oid, head, paths)
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| "Source unavailable".to_string())?;
     let stat = diff.stat();
     let files = diff
         .files()
@@ -441,7 +553,7 @@ fn saved_tree<'repo>(
     let Some(head) = directory.head.as_deref() else {
         return Ok(None);
     };
-    let oid = git2::Oid::from_str(head).map_err(|error| error.to_string())?;
+    let oid = git2::Oid::from_str(head).map_err(|_| "Source unavailable".to_string())?;
     repo.find_commit(oid)
         .and_then(|commit| commit.tree())
         .map(Some)
@@ -457,7 +569,7 @@ fn safe_path(path: &str) -> Result<&Path, String> {
     {
         Ok(path)
     } else {
-        Err("invalid review path".into())
+        Err("invalid review read: invalid path".into())
     }
 }
 
@@ -480,13 +592,20 @@ fn read_tree(
         }
         (None, false) => return Err("not a directory".into()),
         (Some(root), true) => root,
-        (Some(root), false) => root
-            .get_path(safe_path(path)?)
-            .and_then(|entry| repo.find_tree(entry.id()))
-            .map_err(|_| "not a directory".to_string())?,
+        (Some(root), false) => {
+            let entry = root
+                .get_path(safe_path(path)?)
+                .map_err(|_| "not a directory".to_string())?;
+            if entry.kind() != Some(git2::ObjectType::Tree) {
+                return Err("not a directory".into());
+            }
+            repo.find_tree(entry.id())
+                .map_err(|_| "Source unavailable".to_string())?
+        }
     };
     let mut dirs = Vec::new();
     let mut rest = Vec::new();
+    let odb = repo.odb().map_err(|_| "Source unavailable".to_string())?;
     for entry in tree.iter() {
         let name = entry.name().ok_or("invalid Git tree name")?.to_owned();
         let kind = if entry.kind() == Some(git2::ObjectType::Tree) {
@@ -500,9 +619,9 @@ fn read_tree(
         };
         let size = if kind == "file" {
             Some(
-                repo.find_blob(entry.id())
-                    .map_err(|error| error.to_string())?
-                    .size() as u64,
+                odb.read_header(entry.id())
+                    .map_err(|_| "Source unavailable".to_string())?
+                    .0 as u64,
             )
         } else {
             None
@@ -552,10 +671,18 @@ fn read_blob(
     }
     let blob = repo
         .find_blob(entry.id())
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| "Source unavailable".to_string())?;
     let bytes = blob.content();
     let mime = crate::app::mime_hint(safe, &bytes[..bytes.len().min(8192)]);
     let (content, truncated, range) = match request.range {
+        Some(range) if range.raw == Some(true) && !is_blob_media(mime) => {
+            return Err(
+                "invalid review read: raw range must name an image, audio, or video file".into(),
+            );
+        }
+        Some(range) if range.raw == Some(true) && bytes.len() > 64 * 1_048_576 => {
+            (Vec::new(), true, None)
+        }
         Some(range) => {
             let offset = usize::try_from(range.offset)
                 .unwrap_or(usize::MAX)
@@ -576,7 +703,11 @@ fn read_blob(
             (page, false, Some(span))
         }
         None => {
-            let limit = crate::body_page::BODY_PAGE_MAX_BYTES as usize;
+            let limit = if mime.starts_with("audio/") || mime.starts_with("video/") {
+                32 * 1_048_576
+            } else {
+                crate::body_page::BODY_PAGE_MAX_BYTES as usize
+            };
             (
                 bytes[..bytes.len().min(limit)].to_vec(),
                 bytes.len() > limit,
@@ -595,4 +726,10 @@ fn read_blob(
         revision: None,
         range,
     }))
+}
+
+fn is_blob_media(mime: &str) -> bool {
+    (mime.starts_with("image/") && mime != "image/svg+xml")
+        || mime.starts_with("audio/")
+        || mime.starts_with("video/")
 }

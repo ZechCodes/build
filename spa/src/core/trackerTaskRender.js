@@ -82,10 +82,16 @@ const reviewVerdictHtml = (opinion) => ({
 const reviewAnchorHtml = (anchor) => anchor
   ? `<button class="btn" type="button" data-review-anchor="${esc(JSON.stringify(anchor))}">` +
     `${esc(anchor.path)} · ${esc(anchor.side)} line ${esc(anchor.line)}</button>` : "";
-const reviewMetadataHtml = (row) => {
+const snapshotLabel = (snapshotId, snapshots) => {
+  if (!snapshotId) return "";
+  const snapshot = (snapshots || []).find((saved) => saved.id === snapshotId);
+  return snapshot?.number ? `Snapshot ${esc(snapshot.number)}` : "Earlier snapshot";
+};
+const reviewMetadataHtml = (row, context) => {
   const snapshotId = row.opinion?.snapshot_id || row.anchor?.snapshot_id;
   const verdict = reviewVerdictHtml(row.opinion);
-  const snapshot = snapshotId ? `<span>Snapshot ${esc(snapshotId)}</span>` : "";
+  const label = snapshotLabel(snapshotId, context.reviewSnapshots);
+  const snapshot = label ? `<span>${label}</span>` : "";
   const place = reviewAnchorHtml(row.anchor);
   const reply = row.replyTo ? `<span>Reply to ${esc(row.replyTo)}</span>` : "";
   if (!snapshot && !verdict && !place && !reply) return "";
@@ -98,7 +104,7 @@ const commentHtml = (row, context) => `<li class="task-entry task-comment${row.m
     ${taskAvatarHtml(row.actor, context)}
     <div class="task-comment-card">
       <div class="task-entry-head"><strong>${actorIdentityHtml(row.actor, context)}</strong>${whenHtml(row)}</div>
-      ${reviewMetadataHtml(row)}
+      ${reviewMetadataHtml(row, context)}
       <div class="task-comment-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ taskMarkdownHtml(row.body, context)}</div>
       ${attachmentListHtml(row.attachments, { className: "task-comment-attachments" })}
       ${row.anchor || row.opinion || row.replyTo ? `<button class="btn" type="button" data-review-reply="${esc(row.key)}">Reply</button>` : ""}

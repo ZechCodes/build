@@ -24,8 +24,9 @@ import {
   readTasksRecord,
   writeTaskRecord,
 } from "./trackerCache.js";
-import { subscribeCache } from "./localCache.js";
+import { readCached, subscribeCache } from "./localCache.js";
 import { mountTaskReviewPage } from "./taskReviewPage.js";
+import { reviewAddress } from "./taskReviewCache.js";
 import { createReadRetry } from "./transientRead.js";
 import { deviceSession, deviceWatch } from "./deviceReconnect.js";
 import { trailingRead } from "./trailingRead.js";
@@ -80,6 +81,7 @@ export function mountTaskPage(host, options) {
     ...options,
     task: null,
     rows: [],
+    reviewSnapshots: [],
     columns: [],
     draft: "",
     labelsDraft: "",
@@ -251,6 +253,7 @@ export function mountTaskPage(host, options) {
     projectId: state.projectId,
     projectName: projectName(state.feed(), state.projectKey),
     rows: state.rows,
+    reviewSnapshots: state.reviewSnapshots,
     unreadFrom,
     links: taskLinkRows(state.task, place(), state.feed()),
     watch: watch.state(),
@@ -406,6 +409,20 @@ export function mountTaskPage(host, options) {
     reads.succeeded();
     paint();
   });
+
+  // Review metadata has its own cache record. Repaint only the timeline rows
+  // whose visible snapshot label changes; the keyed review pane stays mounted.
+  const savedReviewAddress = reviewAddress({ deviceId: state.deviceId, projectId: state.projectId, taskId: state.taskId });
+  let reviewReadSerial = 0;
+  const readReviewSnapshots = async () => {
+    const serial = ++reviewReadSerial;
+    const cached = await readCached(savedReviewAddress);
+    if (state.disposed || serial !== reviewReadSerial) return;
+    state.reviewSnapshots = cached?.value?.review?.snapshots || [];
+    paint();
+  };
+  const reviewWatcher = subscribeCache(savedReviewAddress, () => void readReviewSnapshots());
+  void readReviewSnapshots();
 
   /** Read the task again. Agents commenting push every flush, so a read
    *  asked for while one is out waits for it and runs once after it (#126, as
@@ -679,6 +696,7 @@ export function mountTaskPage(host, options) {
       watcher.dispose();
       stopGreeting();
       taskWatcher?.();
+      reviewWatcher();
       referencesWatcher();
       reads.dispose();
       unreadMarker.leave();

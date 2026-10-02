@@ -167,4 +167,49 @@ describe("snapshot Changes", () => {
     expect(host.textContent).not.toContain("Source unavailable");
     pane.dispose();
   });
+
+  it("keeps keyboard focus on the same file control through repaint", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const callRpc = vi.fn(async (_method, params) => params.paths ? { ...list, patch } : list);
+    const pane = mountTaskReviewChanges(host, { deviceId: "dev", projectId: "project", taskId: "task", snapshot, directory, callRpc });
+    await settle();
+    const expand = host.querySelector("[data-review-expand]");
+    expand.focus();
+    expand.click();
+    await settle();
+    expect(document.activeElement).toBe(host.querySelector('[data-review-path="src/a.js"] [data-review-expand]'));
+    const viewed = host.querySelector("[data-review-viewed]");
+    viewed.focus();
+    viewed.click();
+    await settle();
+    expect(document.activeElement).toBe(host.querySelector('[data-review-path="src/a.js"] [data-review-viewed]'));
+    pane.dispose();
+  });
+
+  it("keeps focus on Load more while pages remain, then moves to the file toggle", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const cuts = [patch.slice(0, 42), patch.slice(42, 83), patch.slice(83)];
+    const ends = [42, 83, patch.length];
+    const callRpc = vi.fn(async (_method, params) => {
+      if (!params.paths) return list;
+      if (!params.range) return { ...list, patch: cuts[0], truncated: true };
+      const index = [0, 42, 83].indexOf(params.range.offset);
+      return { ...list, patch: cuts[index], range: { offset: params.range.offset, end: ends[index], total: patch.length, version: "patch-v1" } };
+    });
+    const pane = mountTaskReviewChanges(host, { deviceId: "dev", projectId: "project", taskId: "task", snapshot, directory, callRpc });
+    await settle();
+    host.querySelector("[data-review-expand]").click();
+    await settle();
+    const firstMore = host.querySelector("[data-review-more]");
+    firstMore.focus();
+    firstMore.click();
+    await settle();
+    expect(document.activeElement).toBe(host.querySelector("[data-review-more]"));
+    document.activeElement.click();
+    await settle();
+    expect(document.activeElement).toBe(host.querySelector("[data-review-expand]"));
+    pane.dispose();
+  });
 });

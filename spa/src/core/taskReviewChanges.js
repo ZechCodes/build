@@ -97,6 +97,25 @@ function validAnchor(target) {
   return Boolean(target?.path) && ["old", "new"].includes(target.side) && Number(target.line) > 0;
 }
 
+const FOCUS_CONTROLS = ["data-review-expand", "data-review-viewed", "data-review-more", "data-open-file", "data-review-comment"];
+
+function focusedControl(host) {
+  const active = host.ownerDocument.activeElement;
+  if (!host.contains(active)) return null;
+  const path = active.closest("[data-review-path]")?.dataset.reviewPath;
+  const control = FOCUS_CONTROLS.find((name) => active.hasAttribute(name));
+  return path && control ? { path, control, side: active.dataset.side, line: active.dataset.line } : null;
+}
+
+function restoreFocusedControl(host, saved) {
+  if (!saved) return;
+  const section = [...host.querySelectorAll("[data-review-path]")].find((row) => row.dataset.reviewPath === saved.path);
+  const candidates = [...(section?.querySelectorAll(`[${saved.control}]`) || [])];
+  const matching = candidates.find((button) => button.dataset.side === saved.side && button.dataset.line === saved.line);
+  const fallback = saved.control === "data-review-more" ? section?.querySelector("[data-review-expand]") : null;
+  (matching || fallback)?.focus({ preventScroll: true });
+}
+
 async function seekAnchorPages(host, target, bodies) {
   for (let page = 0; page < MAX_REVEAL_PAGES; page++) {
     if (anchoredRow(host, target)) return true;
@@ -130,7 +149,9 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
 
   const paint = () => {
     if (!alive) return;
+    const focus = focusedControl(host);
     host.innerHTML = changesHtml(state, Boolean(onComment), (path) => ({ ...bodies.bodyOf(path), loading: state.loading.has(path) }));
+    restoreFocusedControl(host, focus);
     const row = state.anchor && anchoredRow(host, state.anchor);
     if (!row) return;
     row.classList.add("task-review-anchor");

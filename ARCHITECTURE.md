@@ -1097,6 +1097,13 @@ refuses when that device cannot answer.
   get a name.
 - Surfaces read the flags with `bridgeCapabilities(deviceId)`
   (`spa/src/core/changeEvents.js`), which falls back to `NO_CAPABILITIES`.
+- The task and conversation watch switches, task attachment buttons, and
+  conversation compaction settings are available before a greeting (#182).
+  Their values come from cached task and agent records. A late greeting does
+  not replace the controls or their drafts, and an older bridge refusing a
+  chosen command is explained in plain language (`commandRefusal.js`).
+  Automatic task read marks still require watch support; a mounted task page
+  resumes that housekeeping when its device greets.
 - A flag that changes what a view draws is written to the cache at the
   greeting and read from there, so a cold mount draws what it will keep:
   `tasks.commentUserNotifies` becomes the per-device Needs you rule in

@@ -878,7 +878,8 @@ In practice:
   owners remain when the lists cannot establish deletion; no age cap touches
   a live owner's draft. Pushed owner lists trigger a fresh three-list read
   only when recognized draft candidates exist, since the push may predate a
-  newly created owner. Failed/incomplete reads, intervening ownership writes
+  newly created owner. Confirmation follows ordinary push writes without
+  delaying later pushed items. Failed/incomplete reads, intervening ownership writes
   and stopped sync leave drafts alone. Conditional deletion checks each
   captured write inside the UI-store transaction, so another tab's newer
   edit survives even at the same timestamp. Replica eviction still never

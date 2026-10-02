@@ -188,6 +188,27 @@ export function writeUiRecord(address, value, { source, sequence } = {}) {
   });
 }
 
+/** Clear a sent draft only while the write captured before sending is still
+ * current. Another tab's edit is protected by the comparison in this same
+ * readwrite transaction. */
+export function writeUiRecordIfUnwritten(address, captured, value) {
+  if (!captured) return Promise.resolve(false);
+  const key = recordKey(address);
+  let applied = false;
+  return database.write((store) => {
+    applied = false;
+    const current = store.get(key);
+    current.onsuccess = () => {
+      if (recordWriteOf(current.result) !== recordWriteOf(captured)) return;
+      applied = putOrAbort(store, { ...writeStamp(), value }, key);
+    };
+    return null;
+  }).then((committed) => {
+    if (committed && applied) announce(partsOfKey(key));
+    return Boolean(committed && applied);
+  });
+}
+
 /** Replay one page-exit edit only if it is still the newest edit. The get
  * and conditional put share a readwrite transaction, so another tab cannot
  * insert a newer record between the comparison and the write. A same-owner

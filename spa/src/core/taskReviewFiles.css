@@ -1,0 +1,11 @@
+.task-review-files .trf-labels { display: flex; flex-wrap: wrap; gap: .7rem; color: var(--muted); font-size: .8rem; margin-bottom: .45rem; }
+.task-review-files .trf-status:not(:empty) { color: var(--danger, #c65); padding: .35rem 0; }
+.task-review-files .trf-layout { display: grid; grid-template-columns: minmax(12rem, 32%) minmax(0, 1fr); min-height: 18rem; }
+.task-review-files .trf-tree { overflow: auto; border-right: 1px solid var(--border, #555); }
+.task-review-files .trf-right { min-width: 0; }
+.task-review-files .trf-preview { overflow: auto; padding: .55rem; }
+.task-review-files .trf-file-head { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: .5rem; margin-bottom: .5rem; }
+.task-review-files .trf-file-head input { width: 4.5rem; }
+.task-review-files .fsrc-ln button { border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; padding: 0; }
+.task-review-files .fsrc-ln button:hover, .task-review-files .fsrc-ln button:focus-visible { text-decoration: underline; color: var(--accent); }
+@media (max-width: 650px) { .task-review-files .trf-layout { grid-template-columns: 1fr; } .task-review-files .trf-tree { max-height: 12rem; border-right: 0; border-bottom: 1px solid var(--border, #555); } }

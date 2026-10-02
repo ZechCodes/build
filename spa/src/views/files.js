@@ -39,12 +39,13 @@ import { FILE_RECORD_KIND, cacheFileBody, filePageReader, filePagesReadable } fr
 import {
   mountPagedFile,
   sourceLinesPainter,
-  sourceRowsHtml,
   wholeBytesPainter,
   wholeTextPainter,
 } from "../core/pagedFileView.js";
 import { markdownHtml } from "../core/markdown.js";
 import { langForPath } from "../core/highlight.js";
+import { decodeBase64Text, mediaPreviewHtml, previewHasSourceToggle, previewModeFor, sourcePreviewHtml } from "../core/filePreview.js";
+export { decodeBase64Text, mediaPreviewHtml, previewHasSourceToggle, previewModeFor, sourcePreviewHtml } from "../core/filePreview.js";
 import { initPaneDrawer, paneDrawerHtml } from "../core/paneDrawer.js";
 import { isDotenvPath, renderDotenvSourceHtml, SPOILER_DOTS } from "../core/secrets.js";
 import { confirmAction } from "../core/confirm.js";
@@ -60,55 +61,6 @@ import { requestPriorityFields } from "../core/readRequests.js";
 import { bridgeCapabilities } from "../core/changeEvents.js";
 
 const FS_READ_MAX_BYTES = 1_048_576;
-
-/** Pure: the preview mode for a server `mime` hint + `truncated` flag. A
- *  truncated image/html/svg is garbage as a partial, so it demotes to a
- *  size placeholder ("toolarge"); markdown/source render what arrived. */
-// eslint-disable-next-line complexity -- ratchet: previewModeFor is at 18, cap 10 — reduce it, then drop this line
-export function previewModeFor(mime, truncated) {
-  const base =
-    mime === "text/markdown"
-      ? "markdown"
-      : mime === "text/html"
-        ? "html"
-        : mime === "image/svg+xml"
-          ? "svg"
-          : (mime || "").startsWith("image/")
-            ? "image"
-            : (mime || "").startsWith("audio/")
-              ? "audio"
-              : (mime || "").startsWith("video/")
-                ? "video"
-            : mime === "application/octet-stream" || mime === "application/pdf"
-              ? "binary"
-              : "source";
-  if (truncated && (base === "html" || base === "svg" || base === "image" || base === "audio" || base === "video")) return "toolarge";
-  return base;
-}
-
-/** Whether a preview mode offers a "view source" toggle (rendered ⇄ raw). */
-export function previewHasSourceToggle(mode) {
-  return mode === "markdown" || mode === "html" || mode === "svg";
-}
-
-/** Pure: decode a base64 payload to a UTF-8 string (for text/source previews). */
-export function decodeBase64Text(contentB64) {
-  const bytes = Uint8Array.from(atob(contentB64 || ""), (c) => c.charCodeAt(0));
-  return new TextDecoder().decode(bytes);
-}
-
-/** Pure: the syntax-highlighted source view for a file. Code is highlighted by
- *  the path's extension (langForPath) and, for an unknown extension, falls back
- *  to escaped plain text — highlightCode never emits a live tag either way. */
-export function sourcePreviewHtml(path, text) {
-  return `<div class="fsrc"><table>${sourceRowsHtml(text.split("\n"), langForPath(path))}</table></div>`;
-}
-
-export function mediaPreviewHtml(mode) {
-  const tag = mode === "audio" ? "audio" : "video";
-  const className = mode === "audio" ? "faudio" : "fvideo";
-  return `<${tag} class="fmedia ${className}" controls preload="metadata"></${tag}>`;
-}
 
 function bindPreviewMedia(host, file, pages) {
   const element = host.querySelector(".fmedia, .fimg");

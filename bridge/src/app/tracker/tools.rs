@@ -88,6 +88,30 @@ impl AppState {
                 CommentAsks {
                     mentions_user: mention_user.unwrap_or(false),
                     notifies_user: notify_user.unwrap_or(false),
+                    metadata: Value::Null,
+                },
+            ),
+            BridgeAction::TrackerReviewCommentTask {
+                task_id,
+                body,
+                refs,
+                attachments,
+                anchor,
+                reply_to,
+                opinion,
+                mention_user,
+                notify_user,
+                ..
+            } => self.comment_task_as_agent(
+                &scope,
+                task_id,
+                body,
+                refs,
+                attachments,
+                CommentAsks {
+                    mentions_user: mention_user.unwrap_or(false),
+                    notifies_user: notify_user.unwrap_or(false),
+                    metadata: json!({"anchor": anchor, "reply_to": reply_to, "opinion": opinion}),
                 },
             ),
             BridgeAction::TrackerAssignTask {
@@ -399,12 +423,17 @@ impl AppState {
         let attachments = self.parse_task_attachments(
             &json!({ "attachments": self.take_in_agent_files(attachments)? }),
         )?;
+        let metadata =
+            super::comments::CommentMetadata::from_params(self, &task.id, &asks.metadata)?;
         let now = crate::store::now_rfc3339();
         let comment = crate::tracker::TaskComment {
             id: crate::tracker::new_comment_id(),
             task_id: task.id.clone(),
             author: scope.actor.clone(),
             body,
+            anchor: metadata.anchor.map(Box::new),
+            reply_to: metadata.reply_to,
+            opinion: metadata.opinion.map(Box::new),
             mentions_user: asks.mentions_user,
             notifies_user: asks.notifies_user,
             refs,
@@ -573,10 +602,10 @@ impl AppState {
 /// What an agent's comment asked of the user, kept on the comment: a mention
 /// (`mention_user`) and a notice (`notify_user`). Either one also watches the
 /// task ([`wants_the_user_told`]).
-#[derive(Clone, Copy)]
 struct CommentAsks {
     mentions_user: bool,
     notifies_user: bool,
+    metadata: Value,
 }
 
 /// Whether a tool call asked for the user to be told. Absent is no.
@@ -613,6 +642,11 @@ fn wants_the_user_told(action: &BridgeAction) -> bool {
             notify_user,
             mention_user,
             ..
+        }
+        | BridgeAction::TrackerReviewCommentTask {
+            notify_user,
+            mention_user,
+            ..
         } => notify_user.unwrap_or(false) || mention_user.unwrap_or(false),
         BridgeAction::TrackerAssignTask { notify_user, .. } => notify_user.unwrap_or(false),
         _ => false,
@@ -630,6 +664,7 @@ fn wants_tracking(action: &BridgeAction) -> bool {
     match action {
         BridgeAction::TrackerCreateTask { track, .. } => track.unwrap_or(true),
         BridgeAction::TrackerCommentTask { track, .. }
+        | BridgeAction::TrackerReviewCommentTask { track, .. }
         | BridgeAction::TrackerAssignTask { track, .. }
         | BridgeAction::TrackerMoveTask { track, .. }
         | BridgeAction::TrackerLabelTask { track, .. }
@@ -647,6 +682,7 @@ fn is_a_task_tool(action: &BridgeAction) -> bool {
             | BridgeAction::TrackerReadComment { .. }
             | BridgeAction::TrackerCreateTask { .. }
             | BridgeAction::TrackerCommentTask { .. }
+            | BridgeAction::TrackerReviewCommentTask { .. }
             | BridgeAction::TrackerAssignTask { .. }
             | BridgeAction::TrackerMoveTask { .. }
             | BridgeAction::TrackerLabelTask { .. }

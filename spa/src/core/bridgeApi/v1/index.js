@@ -141,6 +141,11 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
     errors: { codes: names.has("errors.codes") },
     diffs: { perFile: names.has("diffs.perFile") },
     bodies: { pages: names.has("bodies.pages"), mediaRawPages: names.has("fs.mediaRawPages") },
+    reviews: {
+      get: names.has("tasks.review.get"), snapshot: names.has("tasks.review.snapshot"),
+      diff: names.has("tasks.review.diff"), complete: names.has("tasks.review.complete"),
+      comments: names.has("tasks.reviewComments"),
+    },
     tasks: {
       context: names.has("tasks.context"),
       attachments: names.has("tasks.attachments"),

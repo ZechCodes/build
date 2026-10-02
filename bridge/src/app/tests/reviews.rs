@@ -61,6 +61,219 @@ fn review_snapshot_rpc_keeps_task_position_and_completion_is_explicit() {
 }
 
 #[test]
+fn review_comment_metadata_round_trips_and_rejects_foreign_context() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_repo, mut state, project) = tracked(tmp.path());
+    let workspace_id = workspace(&mut state, &project, "comments");
+    let task = filed(&mut state, &project, "Comment on review");
+    let task_id = task["id"].as_str().unwrap();
+    let saved = review_call(
+        &mut state,
+        "tasks.review.snapshot",
+        json!({
+            "task_id": task_id, "workspace_id": workspace_id, "expected_version": 0,
+        }),
+    );
+    let snapshot = &saved["review"]["snapshots"][0];
+    let anchor = json!({
+        "snapshot_id": snapshot["id"], "directory_id": snapshot["directories"][0]["id"],
+        "path": "README.md", "side": "new", "line": 1,
+    });
+    let first = review_call(
+        &mut state,
+        "tasks.comment",
+        json!({
+            "task_id": task_id, "body": "Check this line", "anchor": anchor,
+            "opinion": {"snapshot_id": snapshot["id"], "verdict": "request_changes"},
+        }),
+    );
+    assert_eq!(first["comment"]["anchor"], anchor);
+    let mut unknown_anchor = anchor.clone();
+    unknown_anchor["future"] = json!("unknown");
+    let strict_anchor = state.handle(req(
+        "tasks.comment",
+        json!({
+            "task_id": task_id, "body": "Unknown anchor field", "anchor": unknown_anchor,
+        }),
+    ));
+    assert_eq!(
+        strict_anchor["error_code"], "invalid_params",
+        "{strict_anchor}"
+    );
+    let strict_opinion = state.handle(req(
+        "tasks.comment",
+        json!({
+            "task_id": task_id, "body": "Unknown opinion field",
+            "opinion": {"snapshot_id": snapshot["id"], "verdict": "approve", "future": "unknown"},
+        }),
+    ));
+    assert_eq!(
+        strict_opinion["error_code"], "invalid_params",
+        "{strict_opinion}"
+    );
+    let persisted = state
+        .tracker_store()
+        .unwrap()
+        .load_tracker_comment(first["comment"]["id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted.anchor.unwrap().path, "README.md");
+    let second = review_call(
+        &mut state,
+        "tasks.comment",
+        json!({
+            "task_id": task_id, "body": "Agreed", "reply_to": first["comment"]["id"],
+        }),
+    );
+    assert_eq!(second["comment"]["reply_to"], first["comment"]["id"]);
+    let invalid = state.handle(req(
+        "tasks.comment",
+        json!({
+            "task_id": task_id, "body": "Wrong", "anchor": {"snapshot_id": snapshot["id"],
+            "directory_id": "other", "path": "README.md", "side": "new", "line": 1},
+        }),
+    ));
+    assert_eq!(invalid["ok"], false, "{invalid}");
+    assert_eq!(invalid["error_code"], "invalid_params", "{invalid}");
+    let invalid_path = state.handle(req(
+        "tasks.comment",
+        json!({
+            "task_id": task_id, "body": "Wrong path", "anchor": {
+                "snapshot_id": snapshot["id"], "directory_id": snapshot["directories"][0]["id"],
+                "path": "../README.md", "side": "new", "line": 1,
+            },
+        }),
+    ));
+    assert_eq!(invalid_path["ok"], false, "{invalid_path}");
+    assert_eq!(
+        invalid_path["error_code"], "invalid_params",
+        "{invalid_path}"
+    );
+    let foreign_task = filed(&mut state, &project, "Another task");
+    let foreign_reply = state.handle(req(
+        "tasks.comment",
+        json!({
+            "task_id": foreign_task["id"], "body": "Wrong task",
+            "reply_to": first["comment"]["id"],
+        }),
+    ));
+    assert_eq!(foreign_reply["ok"], false, "{foreign_reply}");
+    assert_eq!(
+        foreign_reply["error_code"], "invalid_params",
+        "{foreign_reply}"
+    );
+    let empty_reply = state.handle(req(
+        "tasks.comment",
+        json!({
+            "task_id": task_id, "body": "Wrong reply", "reply_to": "",
+        }),
+    ));
+    assert_eq!(empty_reply["error_code"], "invalid_params", "{empty_reply}");
+    let second_snapshot = review_call(
+        &mut state,
+        "tasks.review.snapshot",
+        json!({
+            "task_id": task_id, "workspace_id": workspace_id, "expected_version": 1,
+        }),
+    );
+    let new_snapshot_id = &second_snapshot["review"]["snapshots"][1]["id"];
+    let mismatched_opinion = state.handle(req(
+        "tasks.comment",
+        json!({
+            "task_id": task_id, "body": "Wrong opinion", "anchor": anchor,
+            "opinion": {"snapshot_id": new_snapshot_id, "verdict": "approve"},
+        }),
+    ));
+    assert_eq!(
+        mismatched_opinion["error_code"], "invalid_params",
+        "{mismatched_opinion}"
+    );
+    let replacement_workspace = workspace(&mut state, &project, "replacement");
+    review_call(
+        &mut state,
+        "tasks.review.snapshot",
+        json!({
+            "task_id": task_id, "workspace_id": replacement_workspace, "expected_version": 2,
+        }),
+    );
+    let timeline = review_call(&mut state, "tasks.get", json!({"task_id": task_id}));
+    assert!(timeline["timeline"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| {
+            entry["id"] == first["comment"]["id"]
+                && entry["opinion"]["verdict"] == "request_changes"
+                && entry["anchor"] == anchor
+        }));
+}
+
+#[test]
+fn mcp_review_comment_uses_the_same_metadata_writer() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_repo, mut state, project) = tracked(tmp.path());
+    let workspace_id = workspace(&mut state, &project, "agent comments");
+    let task = filed(&mut state, &project, "Ask for review");
+    let (owner, agent) = project_agent(&mut state, &project);
+    let saved = review_call(
+        &mut state,
+        "tasks.review.snapshot",
+        json!({
+            "task_id": task["id"], "workspace_id": workspace_id, "expected_version": 0,
+        }),
+    );
+    let snapshot = &saved["review"]["snapshots"][0];
+    let frame = json!({"jsonrpc":"2.0", "id": 1, "method":"tools/call",
+    "params": {"name":"comment_task", "arguments": {
+        "task_id": task["id"], "body": "Approved",
+        "opinion": {"snapshot_id": snapshot["id"], "verdict":"approve"}
+    }}});
+    let action = crate::mcp::DoneServer::new(&agent)
+        .handle_message(&frame.to_string())
+        .action
+        .unwrap();
+    let result = state.agent_action(&owner, &agent, action).unwrap();
+    assert_eq!(result["comment"]["opinion"]["verdict"], "approve");
+    assert_eq!(result["comment"]["author"]["agent_id"], agent);
+}
+
+#[test]
+fn review_anchor_path_is_bounded_in_utf8_bytes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_repo, mut state, project) = tracked(tmp.path());
+    let workspace_id = workspace(&mut state, &project, "path bound");
+    let task = filed(&mut state, &project, "Review path bound");
+    let saved = review_call(
+        &mut state,
+        "tasks.review.snapshot",
+        json!({
+            "task_id": task["id"], "workspace_id": workspace_id, "expected_version": 0,
+        }),
+    );
+    let snapshot = &saved["review"]["snapshots"][0];
+    let anchor = |path: String| {
+        json!({
+            "snapshot_id": snapshot["id"], "directory_id": snapshot["directories"][0]["id"],
+            "path": path, "side": "new", "line": 1,
+        })
+    };
+    let at_limit = state.handle(req(
+        "tasks.comment",
+        json!({
+            "task_id": task["id"], "body": "At limit", "anchor": anchor("é".repeat(2048)),
+        }),
+    ));
+    assert_eq!(at_limit["ok"], true, "{at_limit}");
+    let over_limit = state.handle(req(
+        "tasks.comment",
+        json!({
+            "task_id": task["id"], "body": "Over limit", "anchor": anchor("é".repeat(2049)),
+        }),
+    ));
+    assert_eq!(over_limit["error_code"], "invalid_params", "{over_limit}");
+}
+
+#[test]
 fn review_rpc_reads_whole_saved_files_and_refuses_caller_supplied_locations() {
     let tmp = tempfile::tempdir().unwrap();
     let (_repo, mut state, project) = tracked(tmp.path());

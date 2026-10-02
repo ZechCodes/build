@@ -68,6 +68,7 @@ import { rememberBridgeUpdateStatus } from "./bridgeUpdates.js";
 import { modelsChangedOn } from "./modelCatalog.js";
 import { rememberNeedsYouRule } from "./needsYouRule.js";
 import { rememberBranchDelete } from "./branchDeleteSupport.js";
+import { NO_REVIEW_SUPPORT, rememberReviewSupport } from "./taskReviewSupport.js";
 import { rememberAgentLineageSupport } from "./agentLineageSupport.js";
 import { rememberSourceEditSupport } from "./sourceEditSupport.js";
 import { rememberWorkspaceSizeSupport } from "./workspaceSizeSupport.js";
@@ -84,6 +85,7 @@ const NO_CAPABILITIES = Object.freeze({
   errors: Object.freeze({ codes: false }),
   diffs: Object.freeze({ perFile: false }),
   bodies: Object.freeze({ pages: false, mediaRawPages: false }),
+  reviews: NO_REVIEW_SUPPORT,
   tasks: Object.freeze({
     attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false,
     listPaged: false,
@@ -867,7 +869,17 @@ export async function greetBridge(
   // Installing announces device state; a listener may issue another greeting
   // synchronously. That newer greeting now owns the shared bridge state too.
   if (!isCurrent()) return changeEventsArmed(deviceId);
+  rememberGreetedReviews(deviceId, adapter, isCurrent);
   return publishGreeting(call, deviceId, greeting, adapter, onGreeting);
+}
+
+// Storage recovery must never hold a greeting open. Refresh again after the
+// capability write, so an upgraded bridge fills reviews even if the first
+// sync ran before this write. Superseded greetings cannot change the record.
+function rememberGreetedReviews(deviceId, adapter, isCurrent) {
+  void rememberReviewSupport(deviceId, adapter?.capabilities, isCurrent).then((written) => {
+    if (written && adapter?.capabilities.reviews?.get && isCurrent()) refetchEverything(deviceId);
+  });
 }
 
 /** Hear every greeting that settles what a machine's bridge can do — a

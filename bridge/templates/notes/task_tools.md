@@ -41,6 +41,12 @@ the entire saved head including unchanged files, and `blob` reads one saved
 file. Tree and blob reads do not need the original checkout to remain on that
 branch. A non-Git directory is live, not saved; unavailable sources remain
 visible in the review. After taking the action the task needs, use
+`comment_task` to leave feedback: `anchor` names a saved `snapshot_id`,
+`directory_id`, relative `path`, `side` (`old` or `new`) and positive `line`;
+`reply_to` names a comment on the same task; `opinion` names the snapshot ID
+and a `verdict` of `approve` or `request_changes`. An opinion can stand alone
+without a line anchor. Comments keep their original snapshot context after a
+new snapshot, and any agent in the project may give an opinion. Then use
 `complete_review` with the latest review version and a short factual account,
 such as “merged API to dev; pushed web”. You can use your own Git tools and
 complete without a Build Git action. Completion leaves the workspace in place

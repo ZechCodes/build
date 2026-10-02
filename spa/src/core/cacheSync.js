@@ -64,6 +64,7 @@ import { TASK_RECORD_KIND } from "./taskCache.js";
 import { tasksAddress, tasksRecord, readTasksRecord, writeTasksRecord } from "./trackerCache.js";
 import { foldTasksPage, pagesTasks, pullTaskPages } from "./trackerPages.js";
 import { nextTaskRead } from "./taskReadOrder.js";
+import { refreshCachedReviews } from "./taskReviewCache.js";
 import { writeListedUserSession } from "./userSessionCache.js";
 import { inboxPushKinds } from "./trackerPush.js";
 import {
@@ -580,6 +581,7 @@ async function readProjectTasks(context, view) {
   for (const projectId of projectIds(view)) {
     if (!context.active()) return;
     await readTasks(context, projectId);
+    await readReviews(context, projectId);
   }
 }
 
@@ -1719,8 +1721,14 @@ const applyTerminals = (context, entityId, terminals) =>
  *  entity, and this one is handed the project the tasks belong to. Not
  *  awaited: a read folded behind one already out settles only after the read
  *  that follows it, and the rest of the flush has nothing to wait for. */
-const applyTasks = (context, projectId) => {
+const readReviews = (context, projectId, ids = null) => refreshCachedReviews({
+  deviceId: context.deviceId, projectId, active: context.active,
+  callRpc: (method, params) => context.call(method, params, requestPriorityFields("background")),
+}, ids);
+
+const applyTasks = (context, projectId, tasks) => {
   void readTasks(context, projectId);
+  void readReviews(context, projectId, tasks?.truncated ? null : tasks?.task_ids || null);
 };
 
 /** One writer per kind, in the order a reader would want them applied: what

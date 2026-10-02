@@ -36,7 +36,8 @@ use std::collections::BTreeSet;
 /// replaces it. It also carries `to` on a `moved` task action, the column an
 /// agent's own line names (#323).
 /// 3.6.0 adds committed workspace review snapshots and explicit completion.
-pub const API_VERSION: &str = "3.6.0";
+/// 3.7.0 adds anchored task comments, replies and snapshot opinions.
+pub const API_VERSION: &str = "3.7.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -83,6 +84,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "tasks.attachments",
     "tasks.commentUserMentions",
     "tasks.commentUserNotifies",
+    "tasks.reviewComments", // Since 3.7.0: anchor, reply_to and opinion on task comments.
     "tasks.context",
     "tasks.createdUserMentions", // Since 1.27.0: mentions_user on an agent's created event.
     "tasks.doneSinceLeft",

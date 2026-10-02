@@ -653,6 +653,9 @@ describe("a pane over a checkout nothing walks", () => {
   });
 
   it.each([SOURCE, { project_id: "p-1" }])("finds an outside commit after remount without a board push: %s", async (scope) => {
+    // A source review can independently invalidate history while the first
+    // pane mounts. Keep that unrelated read settled for this status-key case.
+    if (scope.workspace_id) await cache.writeCached({ deviceId: "dev-1", entityId: ENTITY, kind: "unpushed" }, { base: { kind: "empty" } });
     let committed = false;
     let releaseStatus;
     const callRpc = vi.fn(async (method, params) => {
@@ -677,6 +680,45 @@ describe("a pane over a checkout nothing walks", () => {
       releaseStatus();
       await vi.waitFor(() => expect(second.container.textContent).toContain("outside commit"));
     } finally {
+      second.pane.dispose();
+    }
+  });
+
+  it("refreshes history invalidated by source review while remount status is held", async () => {
+    let committed = false;
+    let releaseUnpushed;
+    let releaseStatus;
+    const callRpc = vi.fn(async (method, params) => {
+      if (method === "git.status") {
+        const next = status({ head: committed ? "b".repeat(40) : "a".repeat(40) });
+        if (committed) return new Promise((resolve) => { releaseStatus = () => resolve(next); });
+        return next;
+      }
+      if (method === "git.log") {
+        return { ...log(), commits: [{ ...log().commits[0], hash: committed ? "b".repeat(40) : "a".repeat(40), subject: committed ? "outside commit" : "earlier work" }] };
+      }
+      if (method === "git.unpushed") {
+        if (committed) return { patch: "", base: { kind: "empty" } };
+        return new Promise((resolve) => { releaseUnpushed = () => resolve({ patch: "", base: { kind: "empty" } }); });
+      }
+      return sourceRpc()(method, params);
+    });
+    const first = mountPaneNow(callRpc, { scope: SOURCE });
+    await vi.waitFor(() => expect(first.container.textContent).toContain("earlier work"));
+    await vi.waitFor(() => expect(releaseUnpushed).toBeTypeOf("function"));
+    first.pane.dispose();
+    expect(await cache.readCached({ deviceId: "dev-1", entityId: ENTITY, kind: "unpushed" })).toBeUndefined();
+    committed = true;
+    const second = mountPaneNow(callRpc, { scope: SOURCE });
+    try {
+      await vi.waitFor(() => expect(releaseStatus).toBeTypeOf("function"));
+      await vi.waitFor(() => expect(second.container.textContent).toContain("outside commit"));
+      const logAddress = { deviceId: "dev-1", entityId: ENTITY, kind: "log" };
+      expect((await cache.readCached(logAddress))?.value.commits[0].subject).toBe("outside commit");
+      expect((await cache.readCached({ deviceId: "dev-1", entityId: ENTITY, kind: "status" }))?.value.head).toBe("a".repeat(40));
+    } finally {
+      releaseUnpushed?.();
+      releaseStatus?.();
       second.pane.dispose();
     }
   });

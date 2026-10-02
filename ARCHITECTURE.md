@@ -221,7 +221,7 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.6.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.7.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
@@ -288,6 +288,11 @@ runtime that starts them.
   and `tasks.review.complete` (#328). Each verb is its own capability; review
   comments and Git actions arrive separately. Stale review mutations answer
   `stale_version`.
+  3.7.0 adds `tasks.reviewComments` (#329): `tasks.comment` and MCP
+  `comment_task` accept optional `anchor` (snapshot, directory, path, side,
+  line), `reply_to` and `opinion` (snapshot and approve/request_changes verdict).
+  These are ordinary task comments, with their metadata in the existing JSON
+  comment record; old anchors keep their original snapshot identity.
   The SPA's adapter claims `>=2.0.0 <4.0.0`: it calls nothing a 2.x bridge
   lacks (what 2.x added after 2.0.0 is capability-gated), so the app can
   roll before the bridge.
@@ -653,6 +658,28 @@ and refs; replacing its workspace or explicitly deleting task history releases
 the previous pins. MCP exposes
 `snapshot_review`, `get_review`, `read_review`, `complete_review` to coding and
 project agents, authenticated and restricted to their own project.
+
+The task page embeds the saved review (`spa/src/core/taskReviewPage.js`), with
+every saved directory and Changes/Files views. Workspace Changes can save a
+review on a task (`workspaceReviewEntry.js`). Snapshot/base changes and explicit
+completion live in `taskReviewControls.js`; assigning a reviewer uses the
+ordinary assignee picker and a note naming the snapshot. Opinions and line
+comments use `taskReviewFeedback.js` and stay in the task timeline, with no
+reviewer or model restrictions. Git action buttons remain a later increment.
+
+`taskReviewSupport.js` holds the individually announced review verbs and the
+comment feature in the device cache. `taskReviewCache.js` stores metadata under
+the project and task, orders replies by review version and shared task read
+order, and refetches stale writes without retrying mutations. Sync and task
+invalidations refresh previously opened review records. The Changes and Files
+adapters use distinct project-owned kinds and snapshot/directory/path subkeys;
+Git trees/blobs come from the saved head and plain folders use exact saved
+directory IDs with live filesystem reads. Body pages use the ordinary body
+cache, with the file-head writer accepting review kinds. Failed refreshes remain
+visible alongside held data. Selection, viewed marks and drafts use `build-ui`
+and survive replica eviction and reconnects. Drafts belong to a task/snapshot;
+viewed marks match task, directory, path and content key so unchanged files
+remain viewed across snapshots.
 
 ### Harnesses and the agents' slice
 

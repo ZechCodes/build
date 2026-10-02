@@ -46,9 +46,10 @@ const ROW_MARK = {
   dir: '<span class="fk fchev" aria-hidden="true">▸</span>',
   file: '<span class="fk" aria-hidden="true">·</span>',
   symlink: '<span class="fk" aria-hidden="true">↳</span>',
+  submodule: '<span class="fk" aria-hidden="true">◧</span>',
 };
 
-const ROW_CLASS = { dir: "fdir", file: "ffile", symlink: "fsym" };
+const ROW_CLASS = { dir: "fdir", file: "ffile", symlink: "fsym", submodule: "fsubmodule" };
 
 const rowStates = (row, { openPath, cursorPath }, focusable) => {
   const open = row.path === openPath;
@@ -62,7 +63,10 @@ const rowStates = (row, { openPath, cursorPath }, focusable) => {
 const rowTail = (row) =>
   row.kind === "file" ? `<span class="fsize mono">${row.size}</span>` : "";
 
-const rowTitle = (row) => (row.kind === "symlink" ? ' title="symlink — not followed"' : "");
+const rowTitle = (row) => ({
+  symlink: ' title="symlink — not followed"',
+  submodule: ' title="submodule — not followed"',
+})[row.kind] || "";
 
 // The name is its own element in every row: the tree is a fixed-width column
 // that gives ground rather than growing, so a long unbroken name has to

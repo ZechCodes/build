@@ -76,13 +76,13 @@ export function assigneePickerBodyHtml(state) {
  * task AND the dispatch — because what was started is the half the caller most
  * needs to say something about.
  */
-export function openAssigneePicker({ task, options, current = "none", catalog = null, callRpc, onAssigned = null }) {
+export function openAssigneePicker({ task, options, current = "none", catalog = null, callRpc, onAssigned = null, note = "" }) {
   const state = {
     task,
     options,
     catalog,
     draft: emptyAssigneeDraft(current),
-    note: "",
+    note,
     busy: false,
     error: "",
   };

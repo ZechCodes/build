@@ -65,7 +65,7 @@ const markRows = (listEl, openPath, cursorPath) => {
  *
  * Returns { ready, setOpenPath, reveal, relist, dispose }.
  */
-export function mountFileTree(listEl, { listingAddress, stateAddress = null, readsForItself, listDirectory, finePointer, onOpen, baseDepth = 0, onEdge = null }) {
+export function mountFileTree(listEl, { listingAddress, stateAddress = null, readsForItself, listDirectory, finePointer, onOpen, baseDepth = 0, onEdge = null, keepHeldOnError = false }) {
   let disposed = false;
   const listings = new Map();
   let expanded = new Set();
@@ -120,7 +120,11 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
     if (!stillListing(dir, request)) return;
     const address = listingAddress(dir);
     // An error is this mount's news, not the directory's: it never replaces a record.
-    if (!address || listing.error) return takeListing(dir, listing);
+    if (listing.error) {
+      if (!keepHeldOnError || !listings.has(dir)) takeListing(dir, listing);
+      return;
+    }
+    if (!address) return takeListing(dir, listing);
     const current = await heldRecord(address);
     if (!stillListing(dir, request) || current?.at !== previousAt) return;
     await writeCached(address, listing);
@@ -266,8 +270,9 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
       if (missing.length) await commitExpanded(new Set([...expanded, ...missing]));
     },
     /** Read every shown directory again — the scope under the tree moved. */
-    relist() {
-      ["", ...expanded].filter(shown).forEach((dir) => void load(dir));
+    relist(paths = null) {
+      ["", ...expanded].filter((dir) => shown(dir) && (!paths || !dir || paths.some((path) => path === dir || path.startsWith(`${dir}/`))))
+        .forEach((dir) => void load(dir));
     },
     dispose() {
       disposed = true;

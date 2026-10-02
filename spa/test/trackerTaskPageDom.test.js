@@ -165,6 +165,30 @@ afterEach(() => {
   page?.dispose();
 });
 
+describe("review comment snapshot labels", () => {
+  it("uses cached snapshot numbers and repaints when review history changes", async () => {
+    const reviewCache = await import("../src/core/taskReviewCache.js");
+    const written = comment({ id: "tc-review", body: "Check this line", anchor: {
+      snapshot_id: "opaque-snapshot", directory_id: "dir-1", path: "a.js", side: "new", line: 4,
+    } });
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", answerFor({}, [written]));
+    call = vi.fn(async (method) => method === "tasks.get" ? answerFor({}, [written]) : {});
+    await mount();
+    const label = () => host.querySelector(".task-review-comment-meta")?.textContent || "";
+    expect(label()).toContain("Earlier snapshot");
+    expect(label()).not.toContain("opaque-snapshot");
+
+    const scope = { deviceId: "dev-1", projectId: "proj-1", taskId: "task-1" };
+    await reviewCache.writeReviewRecord(scope, { version: 1, state: "open", workspace_id: "ws-1",
+      snapshots: [{ id: "opaque-snapshot", number: 2, directories: [] }] }, 1);
+    await vi.waitFor(() => expect(label()).toContain("Snapshot 2"));
+    await reviewCache.writeReviewRecord(scope, { version: 2, state: "open", workspace_id: "ws-2",
+      snapshots: [{ id: "replacement", number: 3, directories: [] }] }, 2);
+    await vi.waitFor(() => expect(label()).toContain("Earlier snapshot"));
+    expect(label()).not.toContain("opaque-snapshot");
+  });
+});
+
 describe("mounted task identity links", () => {
   it("links an unwatched prose author, then removes dead routes when the workspace cache changes", async () => {
     const agentId = "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E";

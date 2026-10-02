@@ -75,14 +75,39 @@ export const taskAttachmentsHtml = (attachments) =>
 
 const whenHtml = (row) => (row.at ? `<span class="task-when" title="${esc(row.at)}">${esc(ageText(row.at))}</span>` : "");
 
+const reviewVerdictHtml = (opinion) => ({
+  approve: "<span>Approved</span>",
+  request_changes: "<span>Requested changes</span>",
+})[opinion?.verdict] || "";
+const reviewAnchorHtml = (anchor) => anchor
+  ? `<button class="btn" type="button" data-review-anchor="${esc(JSON.stringify(anchor))}">` +
+    `${esc(anchor.path)} · ${esc(anchor.side)} line ${esc(anchor.line)}</button>` : "";
+const snapshotLabel = (snapshotId, snapshots) => {
+  if (!snapshotId) return "";
+  const snapshot = (snapshots || []).find((saved) => saved.id === snapshotId);
+  return snapshot?.number ? `Snapshot ${esc(snapshot.number)}` : "Earlier snapshot";
+};
+const reviewMetadataHtml = (row, context) => {
+  const snapshotId = row.opinion?.snapshot_id || row.anchor?.snapshot_id;
+  const verdict = reviewVerdictHtml(row.opinion);
+  const label = snapshotLabel(snapshotId, context.reviewSnapshots);
+  const snapshot = label ? `<span>${label}</span>` : "";
+  const place = reviewAnchorHtml(row.anchor);
+  const reply = row.replyTo ? `<span>Reply to ${esc(row.replyTo)}</span>` : "";
+  if (!snapshot && !verdict && !place && !reply) return "";
+  return `<div class="task-review-comment-meta">${snapshot}${verdict}${place}${reply}</div>`;
+};
+
 /// The id an action line in a conversation lands on: a comment is linked as
 /// `#comment-<id>` (core/trackerActionLine.js), so the row has to answer to it.
 const commentHtml = (row, context) => `<li class="task-entry task-comment${row.mentionsUser ? " task-comment-mentioned" : ""}" id="comment-${esc(row.key)}">
     ${taskAvatarHtml(row.actor, context)}
     <div class="task-comment-card">
       <div class="task-entry-head"><strong>${actorIdentityHtml(row.actor, context)}</strong>${whenHtml(row)}</div>
+      ${reviewMetadataHtml(row, context)}
       <div class="task-comment-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ taskMarkdownHtml(row.body, context)}</div>
       ${attachmentListHtml(row.attachments, { className: "task-comment-attachments" })}
+      ${row.anchor || row.opinion || row.replyTo ? `<button class="btn" type="button" data-review-reply="${esc(row.key)}">Reply</button>` : ""}
     </div>
   </li>`;
 
@@ -276,6 +301,7 @@ export function taskPageParts(task, context) {
       { name: "head", html: taskHeadHtml(task, context) },
       { name: "body", html: taskBodyHtml(task, context) },
       { name: "attachments", html: taskAttachmentsHtml(task.attachments) },
+      { name: "review", html: '<section data-task-review hidden></section>', key: "review" },
       { name: "timeline", html: timeline.frame },
       {
         name: "composer",
@@ -295,6 +321,7 @@ export function taskPageHtml(task, context) {
       ${taskHeadHtml(task, context)}
       ${taskBodyHtml(task, context)}
       ${taskAttachmentsHtml(task.attachments)}
+      <section data-task-review hidden></section>
       ${timelineHtml(context.rows, context)}
       ${composerHtml(context.draft, context.sending, context.hasFiles)}
     </div>

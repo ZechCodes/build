@@ -171,6 +171,14 @@ impl RelayError {
     }
 }
 
+/// The redial schedule for the relay socket: half a second after the first
+/// failure, doubling to a 30 s cap so an outage is not a tight loop hammering
+/// the relay. Short first, because the common end is a blip, and every second
+/// the socket is down is a second no browser can reach the device (#321).
+pub fn redial_backoff() -> crate::backoff::Backoff {
+    crate::backoff::Backoff::new(Duration::from_millis(500), Duration::from_secs(30))
+}
+
 /// How soon a relay whose name did not resolve is dialed again.
 pub const NAME_RESOLUTION_RETRY: Duration = Duration::from_secs(2);
 
@@ -197,7 +205,7 @@ static NAME_RESOLUTION_LINES: Throttle = Throttle::new(Duration::from_secs(60));
 
 /// The line a redial says: why the socket ended and when it is dialed again.
 pub fn say_redial(outcome: &Result<(), RelayError>, wait: Duration) {
-    let reconnecting = format!("reconnecting in {}s", wait.as_secs());
+    let reconnecting = format!("reconnecting in {:.1}s", wait.as_secs_f64());
     match outcome {
         Ok(()) => say(format!("relay disconnected; {reconnecting}")),
         Err(error) if error.is_name_resolution() => {
@@ -757,6 +765,20 @@ mod redial_tests {
         );
         assert_eq!(redial_wait(&failed, &mut backoff), NAME_RESOLUTION_RETRY);
         assert_eq!(backoff.current(), Duration::from_secs(8), "untouched");
+    }
+
+    /// The first redial comes half a second after a socket ends, and a relay
+    /// that stays away is asked less often, up to every 30 s.
+    #[test]
+    fn the_first_redial_is_quick_and_the_rest_back_off() {
+        let mut backoff = redial_backoff();
+        let refused = Err(RelayError::from(tokio_tungstenite::tungstenite::Error::Io(
+            std::io::Error::from(std::io::ErrorKind::ConnectionRefused),
+        )));
+        let waits: Vec<u128> = (0..8)
+            .map(|_| redial_wait(&refused, &mut backoff).as_millis())
+            .collect();
+        assert_eq!(waits, [500, 1000, 2000, 4000, 8000, 16000, 30000, 30000]);
     }
 
     /// Anything else waits the backoff out and doubles it.

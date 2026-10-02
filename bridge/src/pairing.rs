@@ -378,21 +378,82 @@ pub async fn fetch_status(
         .map_err(|e| PairingError::Http(e.to_string()))
 }
 
-/// Poll `fetch_status` every `interval` until the device is approved; returns the
-/// owner user id once it is.
+/// How often a device showing a pairing code asks whether it is approved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApprovalPolls {
+    /// The wait between asks while the code is fresh.
+    pub fast: Duration,
+    /// How long the code counts as fresh.
+    pub fast_for: Duration,
+    /// The wait between asks after that.
+    pub then: Duration,
+}
+
+impl ApprovalPolls {
+    /// Every half second for the two minutes a human typically takes to
+    /// approve a code they were just shown, so the approval is seen within half
+    /// a second of the click (#321); every 2 s after, for a code left waiting.
+    /// At 120 asks a minute, a quarter of what the api allows one address.
+    pub const AFTER_SHOWING_A_CODE: ApprovalPolls = ApprovalPolls {
+        fast: Duration::from_millis(500),
+        fast_for: Duration::from_secs(120),
+        then: Duration::from_secs(2),
+    };
+
+    /// The same wait throughout.
+    pub fn every(interval: Duration) -> ApprovalPolls {
+        ApprovalPolls {
+            fast: interval,
+            fast_for: Duration::ZERO,
+            then: interval,
+        }
+    }
+
+    /// The wait before the next ask, `elapsed` after the code was shown.
+    pub fn wait_after(&self, elapsed: Duration) -> Duration {
+        if elapsed < self.fast_for {
+            self.fast
+        } else {
+            self.then
+        }
+    }
+}
+
+impl From<Duration> for ApprovalPolls {
+    fn from(interval: Duration) -> ApprovalPolls {
+        ApprovalPolls::every(interval)
+    }
+}
+
+/// Poll `fetch_status` on `polls` until the device is approved; returns the
+/// owner user id once it is. An api that is busy (429) or failing (5xx) is
+/// asked again on the same schedule: a human may be approving the code right
+/// now, and a refused ask says nothing about the device.
 pub async fn poll_until_approved(
     client: &reqwest::Client,
     api_url: &str,
     device_id: &str,
-    interval: Duration,
+    polls: impl Into<ApprovalPolls>,
 ) -> Result<String> {
+    let polls = polls.into();
+    let shown = tokio::time::Instant::now();
     loop {
-        let status = fetch_status(client, api_url, device_id).await?;
-        if status.approved {
-            return Ok(status.owner_user_id.unwrap_or_default());
+        match fetch_status(client, api_url, device_id).await {
+            Ok(status) if status.approved => {
+                return Ok(status.owner_user_id.unwrap_or_default());
+            }
+            Ok(_) => {}
+            Err(PairingError::Rejected(status)) if refused_in_passing(&status) => {}
+            Err(error) => return Err(error),
         }
-        tokio::time::sleep(interval).await;
+        tokio::time::sleep(polls.wait_after(shown.elapsed())).await;
     }
+}
+
+/// A status the api answers for reasons that pass: a rate limit or a server
+/// error. `status` is how [`fetch_status`] reports it, the code first.
+fn refused_in_passing(status: &str) -> bool {
+    status.starts_with("429") || status.starts_with('5')
 }
 
 /// Retire the stored identity if it says approved and the api disagrees, so
@@ -503,7 +564,7 @@ pub async fn ensure_paired(
     web_url: &str,
     identity_path: &Path,
     mut stored: StoredIdentity,
-    poll_interval: Duration,
+    polls: impl Into<ApprovalPolls>,
     pairing_code_override: Option<&str>,
 ) -> Result<StoredIdentity> {
     if stored.approved {
@@ -521,7 +582,7 @@ pub async fn ensure_paired(
         .map_err(|e| PairingError::Identity(e.to_string()))?;
     eprintln!("{}", pairing_prompt(&pairing_code, &fingerprint, web_url));
 
-    poll_until_approved(client, api_url, &stored.device_id, poll_interval).await?;
+    poll_until_approved(client, api_url, &stored.device_id, polls).await?;
     stored.approved = true;
     stored.approved_by = Some(api_key(api_url).to_string());
     identity::save(identity_path, &stored).map_err(|e| PairingError::Identity(e.to_string()))?;
@@ -543,6 +604,28 @@ fn hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::identity;
+
+    /// Half a second between asks for the first two minutes after a code is
+    /// shown, 2 s after.
+    #[test]
+    fn a_fresh_code_is_asked_about_every_half_second_then_every_two() {
+        let polls = ApprovalPolls::AFTER_SHOWING_A_CODE;
+        let wait = |secs: f64| polls.wait_after(Duration::from_secs_f64(secs));
+        assert_eq!(wait(0.0), Duration::from_millis(500));
+        assert_eq!(wait(119.9), Duration::from_millis(500));
+        assert_eq!(wait(120.0), Duration::from_secs(2));
+        assert_eq!(wait(3600.0), Duration::from_secs(2));
+        let every = ApprovalPolls::from(Duration::from_secs(3));
+        assert_eq!(every.wait_after(Duration::ZERO), Duration::from_secs(3));
+    }
+
+    #[test]
+    fn only_a_rate_limit_or_a_server_error_passes() {
+        assert!(refused_in_passing("429 Too Many Requests"));
+        assert!(refused_in_passing("503 Service Unavailable"));
+        assert!(!refused_in_passing("404 Not Found"));
+        assert!(!refused_in_passing("403 Forbidden"));
+    }
 
     fn status(json: serde_json::Value) -> StatusResponse {
         serde_json::from_value(json).unwrap()

@@ -95,6 +95,55 @@ async fn poll_until_approved_waits_then_returns_owner() {
     assert_eq!(owner, "owner-9");
 }
 
+/// A busy or failing api is asked again rather than ending the pairing: the
+/// human may be approving the code right now (#321).
+#[tokio::test]
+async fn poll_until_approved_rides_out_a_busy_api() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/devices/.+/status$"))
+        .respond_with(ResponseTemplate::new(429))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/devices/.+/status$"))
+        .respond_with(ResponseTemplate::new(503))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/devices/.+/status$"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"approved": true, "owner_user_id": "owner-9"})),
+        )
+        .mount(&server)
+        .await;
+
+    let client = reqwest::Client::new();
+    let owner = poll_until_approved(&client, &server.uri(), "dev-1", Duration::from_millis(10))
+        .await
+        .unwrap();
+    assert_eq!(owner, "owner-9");
+}
+
+/// A device the api does not know is still a refusal.
+#[tokio::test]
+async fn poll_until_approved_ends_on_an_unknown_device() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/devices/.+/status$"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+
+    let client = reqwest::Client::new();
+    let refused =
+        poll_until_approved(&client, &server.uri(), "dev-1", Duration::from_millis(10)).await;
+    assert!(refused.is_err(), "{refused:?}");
+}
+
 #[tokio::test]
 async fn ensure_paired_uses_the_injected_pairing_code() {
     // Compose/dev automation injects a known code (BRIDGE_PAIRING_CODE) so a

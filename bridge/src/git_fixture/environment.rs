@@ -6,6 +6,21 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const CHILD_TEST: &str = "BUILD_GIT_FIXTURE_TEST";
+const CHILD_MARKER: &str = "BUILD_GIT_FIXTURE_MARKER";
+
+/// An unsigned isolated process for a test that creates its own repository.
+macro_rules! isolated_git_test {
+    () => {
+        if $crate::git_fixture::environment::run_test(
+            $crate::git_fixture::environment::GitEnvironment::unsigned,
+        )
+        .is_some()
+        {
+            return;
+        }
+    };
+}
+pub(crate) use isolated_git_test;
 
 pub struct GitEnvironment {
     home: tempfile::TempDir,
@@ -49,14 +64,7 @@ impl GitEnvironment {
         self.home.path().join("signer.log")
     }
 
-    /// True in the isolated child; in the parent, run this exact test to
-    /// completion and return false. Call before starting any test work.
-    pub fn run_test(&self) -> bool {
-        let thread = std::thread::current();
-        let name = thread.name().expect("a named test thread");
-        if std::env::var(CHILD_TEST).as_deref() == Ok(name) {
-            return true;
-        }
+    fn run_named_test(&self, name: &str) {
         let output = test_command(self.home.path(), name).output().unwrap();
         assert!(
             output.status.success(),
@@ -65,8 +73,44 @@ impl GitEnvironment {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-        false
+        assert_eq!(
+            std::fs::read_to_string(self.home.path().join("entered-test"))
+                .ok()
+                .as_deref(),
+            Some(name),
+            "isolated {name} did not enter its test body"
+        );
     }
+}
+
+/// Run this exact test in a child. The parent gets its environment back for
+/// assertions on artifacts; the child returns None without constructing
+/// another HOME. Call before starting any test work.
+pub fn run_test(make_environment: fn() -> GitEnvironment) -> Option<GitEnvironment> {
+    let thread = std::thread::current();
+    let name = thread.name().expect("a named test thread");
+    if std::env::var(CHILD_TEST).as_deref() == Ok(name) {
+        record_entry(name);
+        return None;
+    }
+    let environment = make_environment();
+    environment.run_named_test(name);
+    Some(environment)
+}
+
+fn record_entry(name: &str) {
+    use std::io::Write;
+
+    let marker = std::env::var_os(CHILD_MARKER).expect("the parent's execution marker");
+    // create_new also rejects a second entry: one successful child exit must
+    // represent exactly one execution of the requested test body.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(marker)
+        .unwrap()
+        .write_all(name.as_bytes())
+        .unwrap();
 }
 
 fn test_command(home: &Path, name: &str) -> Command {
@@ -82,7 +126,13 @@ fn test_command(home: &Path, name: &str) -> Command {
         .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("BRIDGE_IDENTITY_FILE", home.join("identity.json"))
+        .env(CHILD_MARKER, home.join("entered-test"))
         .env(CHILD_TEST, name);
+    for variable in ["RUST_BACKTRACE", "TMPDIR", "LLVM_PROFILE_FILE"] {
+        if let Some(value) = std::env::var_os(variable) {
+            command.env(variable, value);
+        }
+    }
     command
 }
 
@@ -94,11 +144,25 @@ mod tests {
     fn a_child_with_no_matching_test_is_rejected() {
         let result = std::thread::Builder::new()
             .name("no such isolated git fixture test".into())
-            .spawn(|| GitEnvironment::unsigned().run_test())
+            .spawn(|| run_test(GitEnvironment::unsigned).is_some())
             .unwrap()
             .join();
         let panic = result.expect_err("a child running zero tests must not pass");
         let message = panic.downcast_ref::<String>().unwrap();
         assert!(message.contains("did not enter"), "{message}");
+    }
+
+    #[test]
+    fn a_matching_child_reuses_the_prepared_environment() {
+        fn only_in_parent() -> GitEnvironment {
+            assert!(std::env::var_os(CHILD_TEST).is_none());
+            GitEnvironment::unsigned()
+        }
+
+        if run_test(only_in_parent).is_some() {
+            return;
+        }
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap());
+        assert!(home.join(".gitconfig").is_file());
     }
 }

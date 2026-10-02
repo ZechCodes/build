@@ -371,9 +371,7 @@ fn project_set_remote_writes_its_config_with_the_state_lock_free() {
 /// was asked for.
 #[test]
 fn project_create_writes_its_repository_with_the_state_lock_free() {
-    if !crate::git_fixture::environment::GitEnvironment::unsigned().run_test() {
-        return;
-    }
+    crate::git_fixture::environment::isolated_git_test!();
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
     let parent = dir.path().join("made-here");
@@ -421,9 +419,7 @@ fn project_create_writes_its_repository_with_the_state_lock_free() {
 
 #[test]
 fn name_only_project_create_makes_the_missing_configured_projects_directory() {
-    if !crate::git_fixture::environment::GitEnvironment::unsigned().run_test() {
-        return;
-    }
+    crate::git_fixture::environment::isolated_git_test!();
     let (dir, repo) = init_repo();
     let projects_dir = dir.path().join("missing-parent").join("projects");
     let mut state = qa_state(&repo, dir.path()).with_projects_dir_default(projects_dir.clone());
@@ -446,9 +442,7 @@ fn name_only_project_create_makes_the_missing_configured_projects_directory() {
 /// the repository lands exactly where the row said it would.
 #[test]
 fn a_second_create_of_one_directory_is_refused_by_the_row_guarding_it() {
-    if !crate::git_fixture::environment::GitEnvironment::unsigned().run_test() {
-        return;
-    }
+    crate::git_fixture::environment::isolated_git_test!();
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
     let parent = dir.path().join("made-here");
@@ -564,9 +558,7 @@ fn project_add_persistence_failures_leave_state_and_user_repo_unchanged() {
 
 #[test]
 fn project_create_persistence_failures_leave_state_and_remove_new_repo() {
-    if !crate::git_fixture::environment::GitEnvironment::unsigned().run_test() {
-        return;
-    }
+    crate::git_fixture::environment::isolated_git_test!();
     for failure in [ConfigPersistStep::Write, ConfigPersistStep::Rename] {
         let directory = tempfile::tempdir().unwrap();
         let (_initial_repo_directory, initial_repo) = init_repo();

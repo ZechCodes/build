@@ -86,8 +86,8 @@ mod tests {
     /// made later by the product must be protected by the fixture too.
     #[test]
     fn product_commits_in_a_fixture_do_not_use_the_machines_signer() {
-        let environment = environment::GitEnvironment::with_signing();
-        if !environment.run_test() {
+        if let Some(environment) = environment::run_test(environment::GitEnvironment::with_signing)
+        {
             assert!(!environment.signer_log().exists());
             return;
         }
@@ -101,8 +101,8 @@ mod tests {
     /// config. The fake signer fails instead of accessing any real key.
     #[test]
     fn product_commits_honor_explicit_signing_config() {
-        let environment = environment::GitEnvironment::with_signing();
-        if !environment.run_test() {
+        if let Some(environment) = environment::run_test(environment::GitEnvironment::with_signing)
+        {
             assert_eq!(
                 std::fs::read_to_string(environment.signer_log()).unwrap(),
                 "sign\n"

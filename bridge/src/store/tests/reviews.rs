@@ -20,6 +20,31 @@ fn snapshot(id: &str) -> ReviewSnapshot {
     }
 }
 
+fn task_events(store: &Store, task_id: &str) -> Vec<TaskEvent> {
+    store
+        .load_tracker_timeline(task_id)
+        .unwrap()
+        .into_iter()
+        .filter_map(|entry| match entry {
+            crate::tracker::TimelineEntry::Event(event) => Some(event),
+            _ => None,
+        })
+        .collect()
+}
+
+fn assert_completion_timeline(store: &Store, task_id: &str) {
+    let events = task_events(store, task_id);
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].kind, TaskEventKind::Moved);
+    assert_eq!(
+        events[0].payload,
+        serde_json::json!({"from": "backlog", "to": "done"})
+    );
+    assert_eq!(events[1].kind, TaskEventKind::ReviewCompleted);
+    assert_eq!(events[1].payload["description"], "merged API to dev");
+    assert_eq!(events[1].payload["snapshot_id"], "rs-first");
+}
+
 #[test]
 fn snapshots_append_and_compare_versions_without_losing_the_winner() {
     let dir = tempfile::tempdir().unwrap();
@@ -80,24 +105,7 @@ fn completion_writes_review_task_and_timeline_in_one_transaction() {
     assert_eq!(task.status, DONE_STATUS);
     assert_eq!(task.state, crate::tracker::TaskState::Open);
     assert!(task.done_at.is_some());
-    let events: Vec<TaskEvent> = store
-        .load_tracker_timeline(&task.id)
-        .unwrap()
-        .into_iter()
-        .filter_map(|entry| match entry {
-            crate::tracker::TimelineEntry::Event(event) => Some(event),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(events.len(), 2);
-    assert_eq!(events[0].kind, TaskEventKind::Moved);
-    assert_eq!(
-        events[0].payload,
-        serde_json::json!({"from": "backlog", "to": "done"})
-    );
-    assert_eq!(events[1].kind, TaskEventKind::ReviewCompleted);
-    assert_eq!(events[1].payload["description"], "merged API to dev");
-    assert_eq!(events[1].payload["snapshot_id"], "rs-first");
+    assert_completion_timeline(&store, &task.id);
     assert!(matches!(
         store.complete_review(&task.id, 1, &Actor::User, "again"),
         Err(StoreError::ReviewVersionConflict { .. })

@@ -576,7 +576,7 @@ jobs:
         run: |
           verify() {
             curl -sf -o /dev/null https://getbuild.ing/healthz &&
-            curl -sf https://getbuild.ing/ | grep -q "Your agents. Your machine. Your call." &&
+            curl -sf https://getbuild.ing/ | grep -q "Build: know what your coding agents need from you" &&
             curl -sf -o /dev/null https://getbuild.ing/landing/generated/waitlist-boot.js &&
             curl -sf -o /dev/null https://getbuild.ing/landing/assets/devices/laptop-low.glb &&
             curl -sf -o /dev/null https://getbuild.ing/landing/assets/devices/scene-01-desktop.webp &&

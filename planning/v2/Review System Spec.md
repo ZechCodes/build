@@ -6,7 +6,7 @@ The lead's decisions on all 15 new challenges are logged below. They await the
 challenger's next read; this is not a claim of fresh joint signoff.
 
 Code baseline: `origin/main` at
-`adf08b062c741723addb1b861ce434f573b87512`, verified again on 2026-10-02 UTC.
+`2938697c7e3215d9f1febc5267c356f4a067cdc7`, verified on 2026-10-02 UTC.
 [E1]–[E12] cite that code. Sections 1–8 describe **proposed work**, except where
 current behavior is identified. Only this plan changes; it authorizes no product
 implementation or deployment. Read `AGENTS.md` and `ARCHITECTURE.md` first.
@@ -72,7 +72,7 @@ coverage. Section 8 lists the remaining choices in full.
 | Separate PRs, `PR #N`, a Reviews project tab, PR comments beside issue comments | Superseded by #145: task identity and timeline, task Changes/review surface, branch attachments. Release 1 supports one; several follow under #145. No PR-to-task join or second numbering sequence. |
 | A review request must not reassign the implementation issue | Superseded by #145: explicit handoff assigns the same task to its reviewer, back to its implementer for fixes, then to its deployer. Contributor identity persists independently of the current assignee. |
 | Every step waits for a human, or workflow runs only in a connected SPA | #145/c/tc-01M3A6P0V88S483NXWH48CP83K makes human an explicit step type; #86/c/tc-01M37YEQS990896PCGFJV7KYGA keeps always-on work in bridge services. |
-| API 1.12.0; `issues.*`; `Issues Spec.md` | API is **3.4.0**, tracker is `tasks.*`, spec is `Tasks Spec.md`. The leading 3.2.0 sentence in `ARCHITECTURE.md` lags its own later notes and code. `api/v1/` paths still exist. [E1] |
+| API 1.12.0; `issues.*`; `Issues Spec.md` | API is **3.5.0**, tracker is `tasks.*`, spec is `Tasks Spec.md`. #322 advanced the wire during this challenge and corrected the architecture's earlier 3.2.0 summary. `api/v1/` paths still exist. [E1] |
 | Unknown top-level request params are silently discarded | `parse_params` now refuses unknown top-level fields; nested types still need explicit validation. Named capabilities remain required. [E1] |
 | `tasks.link` is an available wire primitive | Removed from the wire in 3.0; `link_task` MCP still exists. Add explicit task-review attachment primitives, not calls to removed verbs. [E2, E7] |
 | `workspace_finish_legacy` drops `action: delete` (#87) | Fixed: it forwards the selected branch into `finish_workspace`. Do not plan to fix it again. [E4] |
@@ -280,7 +280,7 @@ record. Reuse the existing 32,000-byte task text limit; cap inline log tails at
 16 KiB and page larger bodies. Current version fencing must compose with list
 paging/read order, not create a second task membership cache [E9].
 
-Baseline wire is 3.4.0 [E1]. Choose the next additive minor at implementation.
+Baseline wire is 3.5.0 [E1]. Choose the next additive minor at implementation.
 Update typed handlers, `api/mod.rs`, versions/hello/events fixtures, verb
 fixtures and the prior-minor manifest with `scripts/api-verbs-manifest.mjs`.
 Nested safety types reject unknown fields as well as top-level params.
@@ -723,13 +723,20 @@ small Git/SQLite recovery record. Removed first-release obligations are deferred
 not represented as implemented or waived review requirements. Post this round's
 summary/open choices on #89 and request the next Opus read of the pushed SHA.
 
+**Main advanced during final validation:** #322 landed at `2938697c`, moving
+wire 3.4.0 to 3.5.0 and correcting the architecture version summary. Its changed
+files and relevant architecture/API/main/SPA wiring diffs were inspected; the
+review, assignment, Git and cache contracts cited here are otherwise unchanged.
+The document branch was rebased and current-version references updated. The
+Opus challenge still refers to its original 700e642e/adf08b06 baseline.
+
 The evidence index records current code, not proposed module existence. All
 paths are repository-relative at the baseline SHA above. The listed existing
 symbols are the implementation seams; new files in section 7 are proposals.
 
 | Ref | Current source and fact |
 | --- | --- |
-| E1 | `bridge/src/api/mod.rs:32` (`API_VERSION = 3.4.0`), `fixtures/api/versions.json`; `api/v1/mod.rs` (`parse_params`, typed dispatch); `api/v1/tasks.rs` (tracker verbs); `scripts/api-verbs-manifest.mjs`, `bridge/tests/api_contract.rs`, `spa/test/apiContract.test.js`. Wire names/strictness/capability/version discipline; `api/v1/` is not the wire major. |
+| E1 | `bridge/src/api/mod.rs:37` (`API_VERSION = 3.5.0`), `fixtures/api/versions.json`; `api/v1/mod.rs` (`parse_params`, typed dispatch); `api/v1/tasks.rs` (tracker verbs); `scripts/api-verbs-manifest.mjs`, `bridge/tests/api_contract.rs`, `spa/test/apiContract.test.js`. Wire names/strictness/capability/version discipline; `api/v1/` is not the wire major. |
 | E2 | `bridge/src/tracker.rs:213,275,477` (TaskLinks, Task, TaskComment); `bridge/src/app/tracker/{mod,views,pages,dispatch,activity,notices,tools,attachments}.rs`; `bridge/src/store/tracker.rs:144` (`save_tracker_task_activity`). Existing canonical task/timeline, path-scoped storage, uploaded attachments, paged list, assignment/notice and Complete behavior. |
 | E3 | `bridge/src/store.rs` (Store/open), `bridge/src/store/schema.rs`, `bridge/src/store/operations.rs:26` (`backup_to`); `bridge/src/app/conversations/operation_ledger.rs`, `bridge/src/app/runtime/delivery/receipts.rs`. `bridge/src/app/{transactions,runtime/deferred,runtime/recovery}.rs`, `bridge/src/app/conversations/post.rs`, `bridge/src/store/entities.rs`. Owner/transcript/receipt composites exist separately from tracker writes; queued operations recover at boot. No current atomic task-assignment/review transaction is implied. |
 | E4 | `bridge/src/app/workspaces/mod.rs:544` (`workspace_create`), `:648` (`finish_workspace`), `:808` (`workspace_finish_legacy`); `app/workspaces/deletion.rs:314` (`remove_workspace`, closure only for merged Finish); `workspace.rs:1004` (`summary_finish_blockers`). Current creation, Finish deletion support and remote-publication completion guards. |

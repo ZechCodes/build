@@ -226,7 +226,7 @@ fn complete_review_in_tx(
     write_header(tx, &header)?;
     write_tracker_task(tx, &task)?;
     append_activity(tx, write.comments, write.events)?;
-    append_activity(tx, &[], &[event.clone()])?;
+    append_activity(tx, &[], std::slice::from_ref(&event))?;
     Ok((
         load_review(tx, task_id)?.expect("review was written"),
         event,

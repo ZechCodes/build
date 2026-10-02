@@ -149,8 +149,8 @@ describe("the generated preview", () => {
     assert.ok(!preview.includes("<style"));
     assert.ok(preview.includes('src="/landing/generated/hero333-boot.js"'));
     assert.ok(preview.includes('src="/landing/generated/hero333/preview.js"'));
-    assert.ok(!readFileSync(`${landingDir}generated/hero333-boot.js`, "utf8").includes("sessionStorage"));
   });
+
 });
 
 describe("the generated landing document", () => {

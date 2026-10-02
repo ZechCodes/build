@@ -5,10 +5,11 @@
 //! work is worse than no task: it says something false about where the work
 //! got to, and a board nobody trusts is a board nobody reads.
 //!
-//! 1. **An agent holding a dispatched task reports Complete.** The task
-//!    moves to In review.
+//! 1. **An agent holding a dispatched task reports Complete.** An ordinary
+//!    task moves to In review; a task with a saved review stays put.
 //! 2. **A workspace a task links is finished after a merge.** The task
-//!    closes, and when Done deleted the branch too, its timeline says which.
+//!    closes unless it has a saved review, and when Done deleted the branch
+//!    too, its timeline says which.
 //!    Finishing before merge leaves the task open.
 //!
 //! Neither moves the inbox anchor or crosses a dismissal line. They are the
@@ -33,9 +34,10 @@ impl AppState {
     /// An agent reported Complete. Move the task THIS TURN was dispatched
     /// under, and nothing else.
     ///
-    /// Complete means the work is ready to be looked at, which is what In
-    /// review means on a board — so the card follows the report without
-    /// anybody dragging it. A **Blocked or Failed** report moves nothing:
+    /// For an ordinary task, Complete means the work is ready to be looked
+    /// at, which is what In review means on a board. A task with a saved
+    /// review stays where the user or agent put it. A **Blocked or Failed**
+    /// report moves nothing:
     /// blocked is not ready to look at, and a board that said it was would be
     /// lying in the direction that wastes a reviewer's time.
     ///

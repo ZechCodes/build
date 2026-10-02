@@ -30,8 +30,8 @@ describe("the notification field", () => {
     assert.equal(fill.length, 8);
     assert.deepEqual([...lanes.map((lane) => lane.tallRow)].sort((a, b) => a - b), Array.from({ length: 32 }, (_, index) => index));
     assert.equal(base.filter((lane) => lane.narrow).length, 18);
-    assert.equal(fill.filter((lane) => lane.narrow).length, 8);
-    assert.deepEqual([...lanes.filter((lane) => lane.narrow).map((lane) => lane.narrowTallRow)].sort((a, b) => a - b), Array.from({ length: 26 }, (_, index) => index));
+    assert.equal(fill.filter((lane) => lane.narrow).length, 4);
+    assert.deepEqual([...lanes.filter((lane) => lane.narrow).map((lane) => lane.narrowTallRow)].sort((a, b) => a - b), Array.from({ length: 22 }, (_, index) => index));
   });
 
   it("mixes fast faint lanes with slow sharp ones, at no two speeds alike", () => {
@@ -72,22 +72,16 @@ describe("the notification field", () => {
     for (const lane of lanes.filter((candidate) => candidate.after[0]?.attention)) assert.equal(lane.size, 1);
   });
 
-  it("jostles every routine lane up and down, out of step, and holds the requests' lanes still", () => {
+  it("keeps each lane centered in its row, including the attention lanes", () => {
     const { lanes } = createField();
     for (const lane of lanes) {
-      if (lane.after[0]?.attention) {
-        assert.equal(lane.sway, 0, `lane ${lane.index} carries a request`);
-        continue;
-      }
-      assert.ok(lane.sway >= 2 && lane.sway <= 4, `lane ${lane.index} sway ${lane.sway}`);
-      assert.ok(lane.swaySeconds >= 0.4 && lane.swaySeconds <= 1.2, `lane ${lane.index} sway period ${lane.swaySeconds}`);
+      assert.ok(!Object.hasOwn(lane, "nudge"), `lane ${lane.index} has no vertical offset`);
+      assert.ok(!Object.hasOwn(lane, "sway"), `lane ${lane.index} has no vertical sway`);
     }
-    const periods = lanes.filter((lane) => lane.sway).map((lane) => lane.swaySeconds);
-    assert.ok(new Set(periods).size > periods.length / 2, "the lanes do not jostle in step");
   });
 
   it("carries enough pills in each lane to stay full while it drifts, and no more than the DOM can bear", () => {
-    const covered = (pills, size, tier) => pills.reduce((sum, pill) => sum + pillWidthVw(pill.text, size, tier) + Math.max(0, pill.gap) / 14.4, 0);
+    const covered = (pills, size, tier) => pills.reduce((sum, pill) => sum + pillWidthVw(pill.text, size, tier) + Math.max(6 / 25.6, pill.gap / 14.4), 0);
     let total = 0;
     for (const lane of createField().lanes) {
       // The side the lane comes from also carries everything that drifts in

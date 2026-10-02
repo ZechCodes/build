@@ -2,9 +2,9 @@
 // same field and nothing changes on a rerender; HeroField.astro renders it
 // and entrance.js moves it. No DOM here.
 //
-// The opening beat is a flood: many lanes, overlapping in depth, some
-// running against the others, each at its own speed and size, the routine
-// ones jostling up and down. Each lane is two tracks meeting at its anchor
+// The opening beat is a flood: many evenly spaced lanes, some running
+// against the others, each at its own speed and size. Each lane has two
+// tracks meeting at its anchor
 // (a fraction of the field's width): `before` runs left from the anchor,
 // nearest first, and `after` runs right from it. The whole lane drifts by
 // `drift` vw over DRIFT_SECONDS (negative runs left), so the track it comes
@@ -63,8 +63,8 @@ export const LANE_TIERS = Object.freeze({
 });
 
 // The lanes top to bottom: their tier, whether a phone keeps them, and
-// which way they run (1 right, -1 left). Closer together than a pill is
-// tall, so neighbouring lanes overlap and the field reads as layers.
+// which way they run (1 right, -1 left). The stylesheet reserves a gap
+// between their row slots even when their pill sizes vary.
 const LANES = [
   ["far", false, -1], ["mid", true, 1], ["far", true, 1], ["near", true, 1],
   ["far", false, -1], ["mid", true, -1], ["near", false, 1], ["far", true, -1],
@@ -74,11 +74,11 @@ const LANES = [
   ["near", false, 1], ["mid", true, -1], ["far", true, 1], ["near", true, 1],
 ];
 
-// Extra rows sit between every third base row on tall screens and between
-// every other base row on an ordinary portrait phone.
+// Extra rows sit between every third base row on tall screens. Four also
+// fill the wider spacing on a portrait phone.
 const FILL_LANES = [
-  ["far", true, -1], ["mid", true, 1], ["far", true, 1], ["mid", true, -1],
-  ["near", true, 1], ["far", true, -1], ["mid", true, 1], ["near", true, 1],
+  ["far", false, -1], ["mid", true, 1], ["far", false, 1], ["mid", true, -1],
+  ["near", false, 1], ["far", true, -1], ["mid", false, 1], ["near", true, 1],
 ];
 
 // hero.css caps text at 15/16/17px by tier. At an ultrawide width the cap
@@ -90,7 +90,7 @@ export function pillWidthVw(text, size, tier = "mid") {
 }
 
 // How much of a track's length a pill fills, gap included, in vw.
-const spanVw = (pill, size, tier) => pillWidthVw(pill.text, size, tier) + Math.max(0, pill.gap) / 14.4;
+const spanVw = (pill, size, tier) => pillWidthVw(pill.text, size, tier) + Math.max(6 / 25.6, pill.gap / 14.4);
 
 // mulberry32: small, fast and the same everywhere. The lab's variants draw
 // from it too.
@@ -152,12 +152,9 @@ function attentionLead(attention, harnesses) {
 
 // A request's lane holds still and at full size, so the request is read
 // where it starts and lands where it was aimed.
-function laneMotion(next, tier, attention) {
+function laneSize(next, tier, attention) {
   const size = round(between(next, LANE_TIERS[tier].size), 2);
-  const sway = Math.round(between(next, [2, 4]));
-  const swaySeconds = round(between(next, [0.4, 1.2]), 2);
-  const swayDelay = round(-next() * swaySeconds, 2);
-  return attention ? { size: 1, sway: 0, swaySeconds: 0, swayDelay: 0 } : { size, sway, swaySeconds, swayDelay };
+  return attention ? 1 : size;
 }
 
 function lane(index, [tier, narrow, direction], context) {
@@ -165,10 +162,10 @@ function lane(index, [tier, narrow, direction], context) {
   const attention = ATTENTION.find((entry) => entry.lane === index);
   const drift = round(direction * between(next, LANE_TIERS[tier].drift), 2);
   const anchor = attention ? attention.anchor : round(0.05 + next() * 0.9);
-  const motion = laneMotion(next, tier, attention);
+  const size = laneSize(next, tier, attention);
   const incoming = Math.abs(drift) * DRIFT_REACH;
   const [left, right] = [anchor * 100, (1 - anchor) * 100];
-  const shared = { ...context, tier, size: motion.size };
+  const shared = { ...context, tier, size };
   const before = track({ ...shared, key: `lane-${index}-before`, length: drift > 0 ? left + incoming : left });
   return {
     index,
@@ -177,9 +174,7 @@ function lane(index, [tier, narrow, direction], context) {
     drift,
     anchor,
     narrowAnchor: attention ? attention.narrowAnchor : anchor,
-    ...motion,
-    // A lane's own small vertical offset, in px, so the rows are staggered.
-    nudge: Math.round((next() - 0.5) * 6),
+    size,
     before,
     after: track({ ...shared, key: `lane-${index}-after`, length: drift > 0 ? right : right + incoming, lead: attentionLead(attention, harnesses), neighbour: before[0] }),
   };
@@ -192,7 +187,7 @@ export function createField({ seed = 310, harnesses = SUPPORTED_HARNESSES } = {}
   const base = LANES.map((spec, index) => {
     const built = lane(index, spec, context);
     const row = spec[1] ? narrowRow++ : null;
-    return { ...built, tallRow: index + Math.floor(index / 3), ...(row === null ? {} : { narrowRow: row, narrowTallRow: row + Math.floor(row / 2) }) };
+    return { ...built, tallRow: index + Math.floor(index / 3), ...(row === null ? {} : { narrowRow: row, narrowTallRow: row + Math.floor(row / 4) }) };
   });
   let narrowFill = 0;
   const fill = FILL_LANES.map((spec, offset) => {
@@ -201,7 +196,7 @@ export function createField({ seed = 310, harnesses = SUPPORTED_HARNESSES } = {}
       ...built,
       fill: true,
       tallRow: offset * 4 + 3,
-      ...(spec[1] ? { narrowTallRow: narrowFill++ * 3 + 2 } : {}),
+      ...(spec[1] ? { narrowTallRow: narrowFill++ * 5 + 4 } : {}),
     };
   });
   return { lanes: [...base, ...fill], baseLanes: base.length, narrowLanes: narrowRow, tallLanes: base.length + fill.length, narrowTallLanes: narrowRow + narrowFill };

@@ -120,9 +120,11 @@ html:not([data-mode="film"]) #act-1 {
 [data-hero="entrance"] .hero-field,
 [data-hero="playing"] .hero-field {
   --pill-height: clamp(34px, 2.36vw, 42px);
+  --row-count: var(--lanes);
+  --row-gap: 10px;
   --field-top-clear: 0px;
-  --field-top-fade: clamp(64px, 8vh, 120px);
-  --field-bottom-fade: clamp(64px, 8vh, 120px);
+  --field-top-fade: 16%;
+  --field-bottom-fade: 16%;
   display: block;
   position: absolute;
   inset: 0;
@@ -130,8 +132,8 @@ html:not([data-mode="film"]) #act-1 {
   overflow: hidden;
   pointer-events: none;
   contain: strict;
-  -webkit-mask-image: linear-gradient(to right, transparent, #000 5%, #000 95%, transparent), linear-gradient(to bottom, transparent var(--field-top-clear), #000 calc(var(--field-top-clear) + var(--field-top-fade)), #000 calc(100% - var(--field-bottom-fade)), transparent);
-  mask-image: linear-gradient(to right, transparent, #000 5%, #000 95%, transparent), linear-gradient(to bottom, transparent var(--field-top-clear), #000 calc(var(--field-top-clear) + var(--field-top-fade)), #000 calc(100% - var(--field-bottom-fade)), transparent);
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 16%, #000 84%, transparent), linear-gradient(to bottom, transparent var(--field-top-clear), #000 calc(var(--field-top-clear) + var(--field-top-fade)), #000 calc(100% - var(--field-bottom-fade)), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 16%, #000 84%, transparent), linear-gradient(to bottom, transparent var(--field-top-clear), #000 calc(var(--field-top-clear) + var(--field-top-fade)), #000 calc(100% - var(--field-bottom-fade)), transparent);
   -webkit-mask-composite: source-in;
   mask-composite: intersect;
 }
@@ -144,12 +146,13 @@ html:not([data-mode="film"]) #act-1 {
   /* A phone's pills are a larger share of its width, so its lanes run
      faster to look as fast; entrance.js reads this to take them over. */
   --drift-scale: 1;
-  --lane-height: calc(var(--pill-height) * var(--size));
+  --display-row: var(--row);
+  --lane-height: min(calc(var(--pill-height) * var(--size)), calc(100% / var(--row-count) - var(--row-gap)));
   position: absolute;
   left: 0;
   right: 0;
   height: var(--lane-height);
-  top: calc((var(--row) + 0.5) / var(--lanes) * 100% - var(--lane-height) / 2 + var(--nudge));
+  top: calc((var(--display-row) + 0.5) / var(--row-count) * 100% - var(--lane-height) / 2);
 }
 
 .hero-lane[data-fill] {
@@ -157,8 +160,13 @@ html:not([data-mode="film"]) #act-1 {
 }
 
 @media (min-width: 768px) and (min-height: 1150px) {
+  [data-hero="entrance"] .hero-field,
+  [data-hero="playing"] .hero-field {
+    --row-count: var(--tall-lanes);
+  }
+
   .hero-lane {
-    top: calc((var(--tall-row) + 0.5) / var(--tall-lanes) * 100% - var(--lane-height) / 2 + var(--nudge));
+    --display-row: var(--tall-row);
   }
 
   .hero-lane[data-fill] {
@@ -166,8 +174,8 @@ html:not([data-mode="film"]) #act-1 {
   }
 }
 
-/* Depth: the lanes sit closer together than a pill is tall, so the near
-   ones cover the far ones, and a lane carrying a request covers them all. */
+/* Depth comes from opacity, size and paint order. The row slots keep even
+   vertical gaps between far, mid, near and attention pills. */
 .hero-lane--far {
   z-index: 1;
 }
@@ -189,22 +197,15 @@ html:not([data-mode="film"]) #act-1 {
   inset: 0;
 }
 
-/* Every lane is moving from the first paint; entrance.js takes the drift
-   over from wherever this has got to. The routine lanes jostle inside their
-   drift on CSS until the field goes; the lanes carrying a request hold
-   still, so each lands where it was aimed. Both are composited while they
-   run; GSAP's drift needs the hint. */
+/* Every lane drifts horizontally from the first paint; entrance.js takes
+   it over from wherever it has got to. Their fixed vertical slots stay
+   separate while they move, and GSAP's drift needs the compositor hint. */
 [data-hero="entrance"] .hero-lane {
   animation: hero-drift 6s linear both;
 }
 
 [data-hero="playing"] .hero-lane {
   will-change: transform;
-}
-
-[data-hero="entrance"] .hero-lane[data-sway] > .hero-lane__body,
-[data-hero="playing"] .hero-lane[data-sway] > .hero-lane__body {
-  animation: hero-sway var(--sway-time) ease-in-out var(--sway-delay) infinite alternate both;
 }
 
 /* `--drift` is how far a lane would go in 6s at its speed. It keeps that
@@ -220,16 +221,6 @@ html:not([data-mode="film"]) #act-1 {
 
   to {
     transform: translateX(calc(var(--drift) * var(--drift-scale) * 0.55));
-  }
-}
-
-@keyframes hero-sway {
-  from {
-    transform: translateY(calc(var(--sway) * -1px));
-  }
-
-  to {
-    transform: translateY(calc(var(--sway) * 1px));
   }
 }
 
@@ -270,11 +261,11 @@ html:not([data-mode="film"]) #act-1 {
 /* Gaps and type grow with a wide window, so the field holds about as many
    pills at 1920 as at 1440. Type grows with its lane's size. */
 .hero-track--before .hero-pill {
-  margin-right: calc(var(--gap) * 100vw / 1440);
+  margin-right: max(6px, calc(var(--gap) * 100vw / 1440));
 }
 
 .hero-track--after .hero-pill {
-  margin-left: calc(var(--gap) * 100vw / 1440);
+  margin-left: max(6px, calc(var(--gap) * 100vw / 1440));
 }
 
 /* The harness's mark, painted through its mask (HeroField.astro sets one
@@ -351,6 +342,7 @@ html:not([data-mode="film"]) #act-1 {
   [data-hero="entrance"] .hero-field,
   [data-hero="playing"] .hero-field {
     --pill-height: 30px;
+    --row-count: var(--narrow-tall-lanes);
   }
 
   .hero-lane:not([data-narrow]) {
@@ -361,11 +353,10 @@ html:not([data-mode="film"]) #act-1 {
     display: block;
   }
 
-  /* Down the whole field below the bar: the lanes overlap as they do on a
-     desktop, and settle to nothing before the copy comes in. */
+  /* The phone keeps the same slot gap while the cards drift across it. */
   .hero-lane {
     --drift-scale: 2;
-    top: calc((var(--narrow-tall-row) + 0.5) / var(--narrow-tall-lanes) * 100% - var(--lane-height) / 2 + var(--nudge));
+    --display-row: var(--narrow-tall-row);
   }
 
   .hero-pill,
@@ -386,11 +377,11 @@ html:not([data-mode="film"]) #act-1 {
   }
 
   .hero-track--before .hero-pill {
-    margin-right: calc(var(--gap) * 0.25px);
+    margin-right: max(6px, calc(var(--gap) * 0.25px));
   }
 
   .hero-track--after .hero-pill {
-    margin-left: calc(var(--gap) * 0.25px);
+    margin-left: max(6px, calc(var(--gap) * 0.25px));
   }
 
   .hero-pill {
@@ -399,12 +390,17 @@ html:not([data-mode="film"]) #act-1 {
 }
 
 @media (max-width: 767px) and (max-height: 760px) {
+  [data-hero="entrance"] .hero-field,
+  [data-hero="playing"] .hero-field {
+    --row-count: var(--narrow-lanes);
+  }
+
   .hero-lane[data-fill][data-narrow] {
     display: none;
   }
 
   .hero-lane {
-    top: calc((var(--narrow-row) + 0.5) / var(--narrow-lanes) * 100% - var(--lane-height) / 2 + var(--nudge));
+    --display-row: var(--narrow-row);
   }
 }
 

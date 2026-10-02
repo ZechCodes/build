@@ -210,20 +210,19 @@ describe("the generated landing document", () => {
     for (const id of ["claude", "codex", "pi"]) assert.ok(field.slice(0, field.indexOf(">")).includes(`--mark-${id}:url(data:image/svg+xml,`), id);
   });
 
-  it("jostles every routine lane and holds still the three lanes that carry a request", () => {
+  it("keeps every moving lane in a fixed vertical slot", () => {
     const field = html.slice(html.indexOf("data-hero-field"), html.indexOf('class="content-container act__inner"', html.indexOf("data-hero-field")));
     const lanes = field.split('<div class="hero-lane ').slice(1);
     assert.ok(lanes.length >= 22, `${lanes.length} lanes`);
     for (const lane of lanes) {
-      const swaying = /^[^>]*data-sway/.test(lane);
-      assert.equal(swaying, !lane.includes("data-attention="), lane.slice(0, 120));
+      assert.ok(!/^[^>]*data-sway/.test(lane), lane.slice(0, 120));
       assert.match(lane, /^[^>]*--size:[\d.]+;/);
     }
   });
 
   it("animates the field's motion on transform alone, so the compositor can run it", () => {
     const css = linkedCss(html);
-    for (const name of ["hero-drift", "hero-sway"]) {
+    for (const name of ["hero-drift"]) {
       const start = css.indexOf(`@keyframes ${name}`);
       assert.ok(start >= 0, name);
       let depth = 0;

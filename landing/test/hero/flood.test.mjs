@@ -105,7 +105,7 @@ describe("the field's motion", () => {
     assert.ok(Math.abs(fade.currentTime - 100) < 1e-6);
     assert.equal(fade.options.duration, HERO_TIMING.fade * 1000);
     assert.equal(fade.keyframes[0].opacity, "0.6");
-    assert.equal(fade.keyframes[0].transform, "translate(0px, 0px)");
+    assert.ok(fade.keyframes.every((frame) => frame.transform === undefined), "routine cards stay with their lane");
     assert.equal(fade.keyframes.at(-1).opacity, "0");
     motion.update(hit + HERO_TIMING.fade + 0.01, true);
     assert.equal(routine.element.live().length, 0);
@@ -114,6 +114,23 @@ describe("the field's motion", () => {
     motion.update(hit - 0.2, false);
     assert.equal(routine.element.live().length, 0);
     assert.deepEqual([routine.element.style.transform, routine.element.style.opacity, routine.element.style.visibility], ["", "", ""]);
+  });
+
+  it("keeps neighboring routine pills apart while the ripple reaches them at different times", () => {
+    const { field, lane, routine } = fieldOf();
+    const neighbor = { element: element(), attention: null, x: 450, y: 200, width: 120, shown: true, opacity: 0.6 };
+    lane.pills.push(neighbor);
+    const motion = createFieldMotion({ field, ripple, flights });
+    assert.notEqual(motion.pathOf(routine).hit, motion.pathOf(neighbor).hit);
+    for (const time of [1.3, 1.4, 1.5, 1.6]) {
+      motion.update(time, false);
+      for (const pill of [routine, neighbor]) {
+        assert.equal(pill.element.style.transform, "", "no individual displacement narrows the gap");
+        for (const animation of pill.element.live()) {
+          assert.ok(animation.keyframes.every((frame) => frame.transform === undefined), "only opacity changes during the ripple");
+        }
+      }
+    }
   });
 
   it("starts nothing for a pill that never comes into the field", () => {

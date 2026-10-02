@@ -21,8 +21,8 @@ import { homographyFromQuad, matrix3d, projectPoint } from "../stage/overlay.js"
 
 export const PLAYED_KEY = "build.hero.played";
 const NARROW_QUERY = "(max-width: 767px)";
-// How far the wave pushes a pill out of its way, in px.
-const NUDGE = { wide: 10, narrow: 6 };
+// Rows keep their separation while the ripple brakes and fades their pills.
+const NUDGE = { wide: 0, narrow: 0 };
 
 function rememberPlayed() {
   try {

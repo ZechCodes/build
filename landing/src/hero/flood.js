@@ -1,20 +1,20 @@
 // The notification field's motion through the entrance, on the compositor.
 // A field this full cannot be moved by writing styles every frame: a phone
 // spends whole frames restyling the pills. So every lane drifts on one Web
-// Animation, and each pill, when the wave reaches it, brakes (and, unless
-// it needs a person, fades) on one of its own that lives only while it
-// moves. The entrance's clock calls update(): while it plays, the
-// animations run on the compositor's time and are only caught up if they
-// fall behind; while it is held or scrubbed, they are paused and seeked to
-// it. Between those, a pill is styled once, when its part changes.
+// Animation. Routine pills stay in their lane and fade as the wave reaches
+// them; attention pills brake individually before their flight. Each pill
+// animation exists only while it changes. The entrance's clock calls
+// update(): while it plays, animations run on the compositor's time and
+// are only caught up if they fall behind. While held or scrubbed, they
+// are paused and seeked to it. Between those, a pill is styled once when
+// its part changes.
 //
 // The paths themselves are timing.js's; nothing here reads layout.
 import { pillPath, reachesField } from "./timing.js";
 
 // How far an animation may drift from the clock before it is caught up, ms.
 const SLACK = 50;
-// Points sampled along a pill's brake; the animation runs straight between
-// them.
+// Points sampled along a pill's fade or brake, interpolated by the browser.
 const STEPS = 8;
 
 const px = (value) => `${Math.round(value * 10) / 10}px`;
@@ -95,7 +95,7 @@ export function createFieldMotion({ field, ripple, flights }) {
   const routinePart = (pill, path) => ({
     from: path.hit,
     to: path.hit + ripple.timing.fade,
-    frame: (time) => ({ transform: translate(offsetAt(pill, time)), opacity: String(Math.round(pill.opacity * (1 - path.at(time).faded) * 1000) / 1000) }),
+    frame: (time) => ({ opacity: String(Math.round(pill.opacity * (1 - path.at(time).faded) * 1000) / 1000) }),
     final: () => ["", "0"],
   });
   const requestPart = (pill, path) => {

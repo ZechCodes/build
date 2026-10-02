@@ -130,6 +130,28 @@ async def test_fifty_people_on_one_address_are_never_answered_429():
     assert refused == []
 
 
+# A device being paired on the same address (#321): its bridge asks for its
+# approval every half second, and the tab that approved it reads the devices
+# every second while it comes up.
+PAIRING_MINUTE = [
+    *[("GET", "/api/devices/7d1f1d4e-8a54-4a4e-9a8e-2f7d2c1b9a10/status")] * 120,
+    *[("GET", "/api/devices")] * 60,
+]
+
+
+@pytest.mark.asyncio
+async def test_a_device_paired_on_a_busy_address_is_never_answered_429():
+    middleware = _production_rate_limiter()
+    refused = []
+    for _ in range(PEOPLE):
+        for method, path in ONE_PERSONS_MINUTE:
+            await _status(middleware, method, path)
+    for method, path in PAIRING_MINUTE:
+        if await _status(middleware, method, path) == 429:
+            refused.append((method, path))
+    assert refused == []
+
+
 @pytest.mark.asyncio
 async def test_the_waitlist_join_stays_tight_on_a_busy_address():
     middleware = _production_rate_limiter()

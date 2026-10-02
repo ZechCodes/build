@@ -80,16 +80,18 @@ rate_limit:
           per: minute
     # The SPA's API calls. 50 idle tabs polling devices is 50 x 4 = 200; all 50
     # loading in that minute adds 50 x 3 = 150; 5 people on the offline gate
-    # add 5 x 20 = 100 and 5 devices in recovery 5 x 12 = 60: 510. 600 also
-    # absorbs a pairing bridge polling its status every 2 s (30 a minute). The
-    # waitlist join and the bridge's signed posts keep rules of their own.
+    # add 5 x 20 = 100 and 5 devices in recovery 5 x 12 = 60: 510. A device
+    # being paired adds its bridge asking for its approval every half second
+    # (120 a minute) and the tab that approved it reading the devices every
+    # second (60) while it comes up (#321): 690. The waitlist join and the
+    # bridge's signed posts keep rules of their own.
     - name: spa_api
       match:
         path: /api/
         prefix: true
       key: ip
       limits:
-        - limit: 600
+        - limit: 720
           per: minute
     # A landing view fetches about 20 /landing/ files in film mode (scripts,
     # CSS, fonts, poster, models, first screen textures) and up to 12 more as

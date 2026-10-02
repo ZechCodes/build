@@ -99,8 +99,8 @@ const openedAt = (record) =>
 
 /** Keep one workspace's five most recently opened file bodies and drop the
  *  rest. Called after a file is read into the cache. */
-export async function trimRecentFiles(deviceId, entityId) {
-  const files = await cachedRecords({ deviceId, entityId, kind: FILE_RECORD_KIND });
+export async function trimRecentFiles(deviceId, entityId, kind = FILE_RECORD_KIND) {
+  const files = await cachedRecords({ deviceId, entityId, kind });
   const newestFirst = [...files].sort((one, other) => openedAt(other) - openedAt(one));
   let largeMedia = 0;
   const doomed = newestFirst.filter((record, index) => {
@@ -262,7 +262,7 @@ const stillStands = async (still) => !still || still();
  *  put. */
 const putFileRecord = async (head, value, { pages = [], drop = null }, guard) => {
   const put = await writeCachedIfStill({ guard, puts: [...pages, { address: head, value }], drop });
-  if (put) await trimRecentFiles(head.deviceId, head.entityId);
+  if (put) await trimRecentFiles(head.deviceId, head.entityId, head.kind);
   return put;
 };
 
@@ -297,9 +297,13 @@ const guardOf = (head, written) => (written === undefined ? null : { address: he
  *  is still that write, checked in the same transaction as the put — and as
  *  every page put or let go of: a push landing between a `still()` check and
  *  the write would otherwise be written over, or lose its pages (#270). */
-export async function cacheFileBody({ deviceId, entityId, path, file, openedAt = Date.now(), readPage = null, still = null, written }) {
+export function cacheFileBody(options) {
+  return cacheFileBodyOfKind({ ...options, kind: options.kind || FILE_RECORD_KIND });
+}
+
+async function cacheFileBodyOfKind({ deviceId, entityId, path, file, kind, openedAt = Date.now(), readPage = null, still = null, written }) {
   if (!deviceId || !entityId || !file) return false;
-  const head = { deviceId, entityId, kind: FILE_RECORD_KIND, sub: path || "" };
+  const head = { deviceId, entityId, kind, sub: path || "" };
   const guard = guardOf(head, written);
   const record = await fileRecordOf(head, file, readingWhileStill(readPage, still), guard);
   if (!record || !(await stillStands(still))) return false;

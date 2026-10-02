@@ -53,6 +53,12 @@ describe("visibleTreeRows", () => {
 });
 
 describe("fileTreeHtml", () => {
+  it("labels saved submodules without offering a file open", () => {
+    const html = fileTreeHtml([{ kind: "submodule", path: "vendor/lib", name: "lib", depth: 0 }], {});
+    expect(html).toContain('data-kind="submodule"');
+    expect(html).toContain('title="submodule — not followed"');
+    expect(html).toContain('class="frow fsubmodule"');
+  });
   const rows = visibleTreeRows(TREE, new Set(["src"]));
 
   it("draws a chevron on directories, turned by aria-expanded, and indents by depth", () => {

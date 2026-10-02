@@ -201,6 +201,7 @@ try {
   console.log(`forced relay: ${await page.evaluate(() => window.__relayForced === true)}   app says carrying: ${path || "?"}`);
   if (path !== "turn") {
     console.log("!! the connection is not relayed — the rest of this run says nothing about the phone's conditions");
+    process.exitCode = 1;
   }
 
   await watchIdle(page);

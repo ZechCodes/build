@@ -120,6 +120,9 @@ html:not([data-mode="film"]) #act-1 {
 [data-hero="entrance"] .hero-field,
 [data-hero="playing"] .hero-field {
   --pill-height: clamp(34px, 2.36vw, 42px);
+  --field-top-clear: 0px;
+  --field-top-fade: clamp(64px, 8vh, 120px);
+  --field-bottom-fade: clamp(64px, 8vh, 120px);
   display: block;
   position: absolute;
   inset: 0;
@@ -127,6 +130,14 @@ html:not([data-mode="film"]) #act-1 {
   overflow: hidden;
   pointer-events: none;
   contain: strict;
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 5%, #000 95%, transparent), linear-gradient(to bottom, transparent var(--field-top-clear), #000 calc(var(--field-top-clear) + var(--field-top-fade)), #000 calc(100% - var(--field-bottom-fade)), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 5%, #000 95%, transparent), linear-gradient(to bottom, transparent var(--field-top-clear), #000 calc(var(--field-top-clear) + var(--field-top-fade)), #000 calc(100% - var(--field-bottom-fade)), transparent);
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
+}
+
+[data-mode="film"] .hero-field {
+  --field-top-clear: var(--nav-height);
 }
 
 .hero-lane {
@@ -139,6 +150,20 @@ html:not([data-mode="film"]) #act-1 {
   right: 0;
   height: var(--lane-height);
   top: calc((var(--row) + 0.5) / var(--lanes) * 100% - var(--lane-height) / 2 + var(--nudge));
+}
+
+.hero-lane[data-fill] {
+  display: none;
+}
+
+@media (min-width: 768px) and (min-height: 1150px) {
+  .hero-lane {
+    top: calc((var(--tall-row) + 0.5) / var(--tall-lanes) * 100% - var(--lane-height) / 2 + var(--nudge));
+  }
+
+  .hero-lane[data-fill] {
+    display: block;
+  }
 }
 
 /* Depth: the lanes sit closer together than a pill is tall, so the near
@@ -321,7 +346,7 @@ html:not([data-mode="film"]) #act-1 {
   background: var(--accent);
 }
 
-/* A phone keeps fewer lanes, as close as on a desktop, and smaller type. */
+/* Portrait phones use the fill rows too; short phones keep the base rows. */
 @media (max-width: 767px) {
   [data-hero="entrance"] .hero-field,
   [data-hero="playing"] .hero-field {
@@ -332,11 +357,15 @@ html:not([data-mode="film"]) #act-1 {
     display: none;
   }
 
+  .hero-lane[data-fill][data-narrow] {
+    display: block;
+  }
+
   /* Down the whole field below the bar: the lanes overlap as they do on a
      desktop, and settle to nothing before the copy comes in. */
   .hero-lane {
     --drift-scale: 2;
-    top: calc(3% + (var(--narrow-row) + 0.5) / var(--narrow-lanes) * 94% - var(--lane-height) / 2 + var(--nudge));
+    top: calc((var(--narrow-tall-row) + 0.5) / var(--narrow-tall-lanes) * 100% - var(--lane-height) / 2 + var(--nudge));
   }
 
   .hero-pill,
@@ -366,6 +395,16 @@ html:not([data-mode="film"]) #act-1 {
 
   .hero-pill {
     padding: 0 0.8em 0 0.65em;
+  }
+}
+
+@media (max-width: 767px) and (max-height: 760px) {
+  .hero-lane[data-fill][data-narrow] {
+    display: none;
+  }
+
+  .hero-lane {
+    top: calc((var(--narrow-row) + 0.5) / var(--narrow-lanes) * 100% - var(--lane-height) / 2 + var(--nudge));
   }
 }
 

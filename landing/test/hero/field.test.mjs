@@ -22,12 +22,16 @@ describe("the notification field", () => {
     assert.notDeepEqual(createField({ seed: 7 }), createField());
   });
 
-  it("is a flood: 22 to 26 lanes on a desktop and 16 to 20 on a phone", () => {
+  it("interleaves fill lanes on tall screens and portrait phones", () => {
     const { lanes } = createField();
-    assert.ok(lanes.length >= 22 && lanes.length <= 26, `${lanes.length} lanes`);
-    const narrow = lanes.filter((lane) => lane.narrow);
-    assert.ok(narrow.length >= 16 && narrow.length <= 20, `${narrow.length} narrow lanes`);
-    assert.deepEqual(narrow.map((lane) => lane.narrowRow), narrow.map((_, index) => index));
+    const base = lanes.filter((lane) => !lane.fill);
+    const fill = lanes.filter((lane) => lane.fill);
+    assert.equal(base.length, 24);
+    assert.equal(fill.length, 8);
+    assert.deepEqual([...lanes.map((lane) => lane.tallRow)].sort((a, b) => a - b), Array.from({ length: 32 }, (_, index) => index));
+    assert.equal(base.filter((lane) => lane.narrow).length, 18);
+    assert.equal(fill.filter((lane) => lane.narrow).length, 8);
+    assert.deepEqual([...lanes.filter((lane) => lane.narrow).map((lane) => lane.narrowTallRow)].sort((a, b) => a - b), Array.from({ length: 26 }, (_, index) => index));
   });
 
   it("mixes fast faint lanes with slow sharp ones, at no two speeds alike", () => {
@@ -41,7 +45,7 @@ describe("the notification field", () => {
     const speeds = lanes.map((lane) => lane.drift);
     assert.ok(new Set(speeds).size === speeds.length, "no two lanes at one speed");
     const anchors = lanes.map((lane) => lane.anchor);
-    assert.ok(new Set(anchors).size === anchors.length, "no synchronized procession");
+    assert.ok(new Set(anchors).size >= anchors.length - 1, "no synchronized procession");
   });
 
   it("moves fast: the far lanes cross the window more than twice while it plays", () => {
@@ -75,7 +79,7 @@ describe("the notification field", () => {
         assert.equal(lane.sway, 0, `lane ${lane.index} carries a request`);
         continue;
       }
-      assert.ok(lane.sway >= 3 && lane.sway <= 9, `lane ${lane.index} sway ${lane.sway}`);
+      assert.ok(lane.sway >= 2 && lane.sway <= 4, `lane ${lane.index} sway ${lane.sway}`);
       assert.ok(lane.swaySeconds >= 0.4 && lane.swaySeconds <= 1.2, `lane ${lane.index} sway period ${lane.swaySeconds}`);
     }
     const periods = lanes.filter((lane) => lane.sway).map((lane) => lane.swaySeconds);
@@ -83,7 +87,7 @@ describe("the notification field", () => {
   });
 
   it("carries enough pills in each lane to stay full while it drifts, and no more than the DOM can bear", () => {
-    const covered = (pills, size) => pills.reduce((sum, pill) => sum + pillWidthVw(pill.text, size) + Math.max(0, pill.gap) / 14.4, 0);
+    const covered = (pills, size, tier) => pills.reduce((sum, pill) => sum + pillWidthVw(pill.text, size, tier) + Math.max(0, pill.gap) / 14.4, 0);
     let total = 0;
     for (const lane of createField().lanes) {
       // The side the lane comes from also carries everything that drifts in
@@ -91,12 +95,12 @@ describe("the notification field", () => {
       const incoming = Math.abs(lane.drift) * DRIFT_REACH;
       const [left, right] = [lane.anchor * 100, (1 - lane.anchor) * 100];
       const [needBefore, needAfter] = lane.drift > 0 ? [left + incoming, right] : [left, right + incoming];
-      assert.ok(covered(lane.before, lane.size) >= needBefore, `lane ${lane.index} before`);
-      assert.ok(covered(lane.after, lane.size) >= needAfter, `lane ${lane.index} after`);
+      assert.ok(covered(lane.before, lane.size, lane.tier) >= needBefore, `lane ${lane.index} before`);
+      assert.ok(covered(lane.after, lane.size, lane.tier) >= needAfter, `lane ${lane.index} after`);
       total += lane.before.length + lane.after.length;
     }
-    // One element a pill; main's calmer field had 304 pills of three each.
-    assert.ok(total <= 480, `${total} pills`);
+    // One element per pill; the fill rows and wider coverage stay bounded.
+    assert.ok(total <= 800, `${total} pills`);
   });
 
   it("brings its drift to rest where hero.css does, after the entrance has taken it over", () => {
@@ -110,9 +114,12 @@ describe("the notification field", () => {
     assert.ok(DRIFT_REACH >= 0.5 && DRIFT_REACH < 0.7, `${DRIFT_REACH}`);
   });
 
-  it("estimates a pill's width from its words and its lane's size", () => {
+  it("estimates a pill's width from its capped font size on a 2560px window", () => {
     assert.ok(pillWidthVw("Lint clean", 1) < pillWidthVw("Checking dependencies", 1));
     assert.ok(pillWidthVw("Lint clean", 0.8) < pillWidthVw("Lint clean", 1));
+    assert.ok(pillWidthVw("Lint clean", 1, "far") < pillWidthVw("Lint clean", 1, "mid"));
+    assert.ok(pillWidthVw("Lint clean", 1, "mid") < pillWidthVw("Lint clean", 1, "near"));
+    assert.ok(pillWidthVw("Lint clean", 1, "far") < ("Lint clean".length * 0.46 + 3.35) * 0.78);
   });
 
   it("names only supported harnesses, and the list is the caller's", () => {

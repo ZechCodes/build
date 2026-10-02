@@ -243,7 +243,14 @@ describe("the generated landing document", () => {
     const css = linkedCss(html).replace(/\s+/g, "");
     const masks = [...css.matchAll(/(?<![\w-])mask-([a-z]+):([^;}]+)/g)];
     assert.ok(masks.length >= 6, `${masks.length} mask declarations`);
-    for (const [, property, value] of masks) assert.ok(css.includes(`-webkit-mask-${property}:${value}`), `-webkit-mask-${property}:${value}`);
+    for (const [, property, value] of masks) {
+      if (property === "composite") {
+        assert.equal(value, "intersect");
+        assert.ok(css.includes("-webkit-mask-composite:source-in"));
+      } else {
+        assert.ok(css.includes(`-webkit-mask-${property}:${value}`), `-webkit-mask-${property}:${value}`);
+      }
+    }
   });
 
   it("runs a phone's lanes faster, where a pill is a larger share of the width", () => {

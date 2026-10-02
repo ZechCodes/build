@@ -74,16 +74,23 @@ const LANES = [
   ["near", false, 1], ["mid", true, -1], ["far", true, 1], ["near", true, 1],
 ];
 
-// A pill's width in vw on a wide window, from hero.css: its words at about
-// half an em a character, and its mark, gap and padding at 3.35em, at a
-// type size of 0.78vw (the far tier's 15px at 1920) times its lane's size.
-// A little under the truth, so a lane counted by it is never short.
-export function pillWidthVw(text, size) {
-  return (text.length * 0.46 + 3.35) * 0.78 * size;
+// Extra rows sit between every third base row on tall screens and between
+// every other base row on an ordinary portrait phone.
+const FILL_LANES = [
+  ["far", true, -1], ["mid", true, 1], ["far", true, 1], ["mid", true, -1],
+  ["near", true, 1], ["far", true, -1], ["mid", true, 1], ["near", true, 1],
+];
+
+// hero.css caps text at 15/16/17px by tier. At an ultrawide width the cap
+// means each pill covers fewer vw than a fluid-font estimate suggests.
+// Count against 2560px, where a capped font occupies much less of the row.
+const FONT_CAPS = { far: 15, mid: 16, near: 17 };
+export function pillWidthVw(text, size, tier = "mid") {
+  return (text.length * 0.46 + 3.35) * FONT_CAPS[tier] * size / 25.6;
 }
 
 // How much of a track's length a pill fills, gap included, in vw.
-const spanVw = (pill, size) => pillWidthVw(pill.text, size) + Math.max(0, pill.gap) / 14.4;
+const spanVw = (pill, size, tier) => pillWidthVw(pill.text, size, tier) + Math.max(0, pill.gap) / 14.4;
 
 // mulberry32: small, fast and the same everywhere. The lab's variants draw
 // from it too.
@@ -126,13 +133,13 @@ function routinePill({ next, used, harnesses, tier }, previous, key) {
 
 // Pills until the track is `length` vw long, the first unlike `neighbour`
 // (the pill across the anchor).
-function track({ length, size, lead = null, neighbour = null, key, ...context }) {
+function track({ length, size, tier, lead = null, neighbour = null, key, ...context }) {
   const pills = lead ? [lead] : [];
-  let filled = pills.reduce((sum, pill) => sum + spanVw(pill, size), 0);
+  let filled = pills.reduce((sum, pill) => sum + spanVw(pill, size, tier), 0);
   while (filled < length) {
-    const pill = routinePill(context, pills.at(-1) || neighbour, `${key}-${pills.length}`);
+    const pill = routinePill({ ...context, tier }, pills.at(-1) || neighbour, `${key}-${pills.length}`);
     pills.push(pill);
-    filled += spanVw(pill, size);
+    filled += spanVw(pill, size, tier);
   }
   return pills;
 }
@@ -147,7 +154,7 @@ function attentionLead(attention, harnesses) {
 // where it starts and lands where it was aimed.
 function laneMotion(next, tier, attention) {
   const size = round(between(next, LANE_TIERS[tier].size), 2);
-  const sway = Math.round(between(next, [3, 9]));
+  const sway = Math.round(between(next, [2, 4]));
   const swaySeconds = round(between(next, [0.4, 1.2]), 2);
   const swayDelay = round(-next() * swaySeconds, 2);
   return attention ? { size: 1, sway: 0, swaySeconds: 0, swayDelay: 0 } : { size, sway, swaySeconds, swayDelay };
@@ -172,7 +179,7 @@ function lane(index, [tier, narrow, direction], context) {
     narrowAnchor: attention ? attention.narrowAnchor : anchor,
     ...motion,
     // A lane's own small vertical offset, in px, so the rows are staggered.
-    nudge: Math.round((next() - 0.5) * 24),
+    nudge: Math.round((next() - 0.5) * 6),
     before,
     after: track({ ...shared, key: `lane-${index}-after`, length: drift > 0 ? right : right + incoming, lead: attentionLead(attention, harnesses), neighbour: before[0] }),
   };
@@ -182,9 +189,20 @@ export function createField({ seed = 310, harnesses = SUPPORTED_HARNESSES } = {}
   checkHarnesses(harnesses);
   const context = { next: random(seed), used: new Map(), harnesses };
   let narrowRow = 0;
-  const lanes = LANES.map((spec, index) => {
+  const base = LANES.map((spec, index) => {
     const built = lane(index, spec, context);
-    return spec[1] ? { ...built, narrowRow: narrowRow++ } : built;
+    const row = spec[1] ? narrowRow++ : null;
+    return { ...built, tallRow: index + Math.floor(index / 3), ...(row === null ? {} : { narrowRow: row, narrowTallRow: row + Math.floor(row / 2) }) };
   });
-  return { lanes, narrowLanes: narrowRow };
+  let narrowFill = 0;
+  const fill = FILL_LANES.map((spec, offset) => {
+    const built = lane(LANES.length + offset, spec, context);
+    return {
+      ...built,
+      fill: true,
+      tallRow: offset * 4 + 3,
+      ...(spec[1] ? { narrowTallRow: narrowFill++ * 3 + 2 } : {}),
+    };
+  });
+  return { lanes: [...base, ...fill], baseLanes: base.length, narrowLanes: narrowRow, tallLanes: base.length + fill.length, narrowTallLanes: narrowRow + narrowFill };
 }

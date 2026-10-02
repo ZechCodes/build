@@ -29,13 +29,13 @@ const field = createField();
 const harnesses = [...new Set(field.lanes.flatMap((lane) => [...lane.before, ...lane.after].map((pill) => pill.harness)))];
 const marks = harnesses.map((id) => `--mark-${id}:${markUrl(id, MARKS[id])}`).join(";");
 const laneStyle = (lane: (typeof field.lanes)[number]) =>
-  `--size:${lane.size};--row:${lane.index};--narrow-row:${lane.narrowRow ?? 0};--anchor:${lane.anchor};--narrow-anchor:${lane.narrowAnchor};` +
+  `--size:${lane.size};--row:${lane.index};--tall-row:${lane.tallRow};--narrow-row:${lane.narrowRow ?? 0};--narrow-tall-row:${lane.narrowTallRow ?? 0};--anchor:${lane.anchor};--narrow-anchor:${lane.narrowAnchor};` +
   `--drift:${lane.drift}vw;--nudge:${lane.nudge}px;--sway:${lane.sway};--sway-time:${lane.swaySeconds}s;--sway-delay:${lane.swayDelay}s`;
 ---
 
-<div class="hero-field" data-hero-field aria-hidden="true" style={`--lanes:${field.lanes.length};--narrow-lanes:${field.narrowLanes};${marks}`}>
+<div class="hero-field" data-hero-field aria-hidden="true" style={`--lanes:${field.baseLanes};--tall-lanes:${field.tallLanes};--narrow-lanes:${field.narrowLanes};--narrow-tall-lanes:${field.narrowTallLanes};${marks}`}>
   {field.lanes.map((lane) => (
-    <div class={`hero-lane hero-lane--${lane.tier}`} data-lane={lane.index} data-drift={lane.drift} data-narrow={lane.narrow ? "" : undefined} data-sway={lane.sway ? "" : undefined} data-request={lane.after[0]?.attention ? "" : undefined} style={laneStyle(lane)}>
+    <div class={`hero-lane hero-lane--${lane.tier}`} data-lane={lane.index} data-drift={lane.drift} data-narrow={lane.narrow ? "" : undefined} data-fill={lane.fill ? "" : undefined} data-sway={lane.sway ? "" : undefined} data-request={lane.after[0]?.attention ? "" : undefined} style={laneStyle(lane)}>
       <div class="hero-lane__body">
         {[["before", lane.before], ["after", lane.after]].map(([side, pills]) => (
           <div class={`hero-track hero-track--${side}`}>

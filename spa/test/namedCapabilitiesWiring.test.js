@@ -94,7 +94,7 @@ it("renders and wires watching from the real names-only bridge greeting", async 
   await vi.waitFor(() => expect(calls).toContainEqual(["tasks.watch", { task_id: "task-1" }]));
 });
 
-it("hides watching when the same bridge version omits its name", async () => {
+it("still offers watching when the same bridge version omits its name", async () => {
   const greeting = {
     ...realGreeting,
     capabilities: realGreeting.capabilities.filter((name) => name !== "tasks.watching"),
@@ -102,6 +102,6 @@ it("hides watching when the same bridge version omits its name", async () => {
   await mountWith(greeting);
   expect(bridgeCapabilities("dev-1").tasks.watching).toBe(false);
   expect(carriesWatching("dev-1")).toBe(false);
-  expect(host.querySelector(".rail-watch")).toBeNull();
+  expect(host.querySelector(".rail-watch")?.getAttribute("aria-pressed")).toBe("false");
   expect(calls.some(([method]) => method === "tasks.read_through")).toBe(false);
 });

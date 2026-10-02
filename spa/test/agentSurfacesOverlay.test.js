@@ -89,10 +89,9 @@ const flush = async () => {
 const panel = () => document.getElementById("rail-panel");
 const menuCaret = () => panel().querySelector(".rail-surface-menu .caret");
 const menuItems = () => [...panel().querySelectorAll(".rail-surface-menu .mi")];
-/// The menu's SURFACE half. Its other half is the detail levels the
-/// conversation is read at (core/conversationDetail.js), which are always
-/// there — and so are not what these tests are about.
-const surfaceMenuItems = () => menuItems().filter((item) => !item.dataset.action.startsWith("detail:"));
+/// The menu's surface rows, excluding the detail and compaction settings.
+const surfaceMenuItems = () => menuItems().filter((item) =>
+  !item.dataset.action.startsWith("detail:") && !item.dataset.action.startsWith("compact:"));
 const menuItem = (kind) => panel().querySelector(`.rail-surface-menu .mi[data-action="${kind}"]`);
 const openMenuElement = () => panel().querySelector(".rail-surface-menu .splitmenu");
 const overlay = () => document.querySelector(".modal-surface");
@@ -338,12 +337,15 @@ describe("the conversation header's menu", () => {
     expect(overlay()).not.toBe(null);
   });
 
-  it("still opens on the detail levels while the agent has no surfaces at all", async () => {
+  it("still opens on the settings while the agent has no surfaces at all", async () => {
     payload = branchRow({ surfaces: null });
     await mount();
     expect(menuCaret()).not.toBe(null);
     expect(surfaceMenuItems()).toEqual([]);
-    expect(menuItems().map((item) => item.dataset.action)).toEqual(["detail:all", "detail:messages", "detail:agent"]);
+    expect(menuItems().map((item) => item.dataset.action)).toEqual([
+      "detail:all", "detail:messages", "detail:agent",
+      "compact:default", "compact:150000", "compact:200000", "compact:300000", "compact:off",
+    ]);
     // The group of things to open is absent, not empty.
     expect(panel().querySelector('.rail-surface-menu [data-group="show"]')).toBe(null);
   });
@@ -351,7 +353,7 @@ describe("the conversation header's menu", () => {
   it("heads the surfaces as things to show, apart from the settings under them", async () => {
     await mount();
     const groups = [...panel().querySelectorAll('.rail-surface-menu [role="group"]')];
-    expect(groups.map((group) => group.getAttribute("aria-label"))).toEqual(["Show", "Detail"]);
+    expect(groups.map((group) => group.getAttribute("aria-label"))).toEqual(["Show", "Detail", "Compact at"]);
     expect([...groups[0].querySelectorAll(".mi")].map((item) => item.dataset.action)).toEqual([WORKFLOW_ENTRY_KIND, SHELL_ENTRY_KIND]);
   });
 
@@ -382,7 +384,7 @@ describe("the conversation header's menu", () => {
     ]);
   });
 
-  it("loses its surface rows when the agent's last surface does, and keeps the levels", async () => {
+  it("loses its surface rows when the agent's last surface does, and keeps the settings", async () => {
     await mount();
     expect(surfaceMenuItems()).not.toEqual([]);
 

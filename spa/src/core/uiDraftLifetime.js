@@ -113,6 +113,16 @@ function obsoleteDrafts(entries, before, after) {
   return entries.filter(({ address }) => draftIsGone(address, state));
 }
 
+/** Only a previously listed owner disappearing can justify a pushed-list
+ * confirmation. A push may contain just one of the two owner lists. */
+export function removedOwnerId(before, after) {
+  return ["workspaces", "projects"].some((kind) => {
+    if (!validList(before[kind], kind) || !validList(after[kind], kind)) return false;
+    const present = new Set(after[kind].map(listId[kind]));
+    return before[kind].some((row) => !present.has(listId[kind](row)));
+  });
+}
+
 const ownershipWrite = (address) => !address.kind
   || ["feed", "row", "projects", "workspaces"].includes(address.kind);
 
@@ -120,10 +130,10 @@ const recognizedDraft = ({ address }) => Boolean(address.entityId && (
   workspaceOf(address) || /^chat:agent:([^:]+):(.+)$/.test(address.sub) || isWorkspaceDraft(address)
 ));
 
-/** Capture before the list requests. Ownership writes, including cross-tab
- * announcements, make the pass inconclusive. A pushed list resets this
- * observation just before its fresh confirmation requests, after its own writes. */
-export async function prepareDraftPrune(deviceId) {
+/** Capture draft candidates and observe ownership writes. After a list write,
+ * confirmation starts a new observation; any ownership change while its
+ * fresh requests are out makes deletion inconclusive. */
+export async function prepareDraftPrune(deviceId, beforeOverride) {
   let changed = false;
   const dispose = subscribeCache({ deviceId }, (address) => {
     if (ownershipWrite(address)) changed = true;
@@ -131,15 +141,16 @@ export async function prepareDraftPrune(deviceId) {
   try {
     const [entries, workspaces, projects] = await Promise.all([
       uiDraftRecords(deviceId),
-      readCached({ deviceId, entityId: "", kind: "workspaces" }),
-      readCached({ deviceId, entityId: "", kind: "projects" }),
+      beforeOverride ? null : readCached({ deviceId, entityId: "", kind: "workspaces" }),
+      beforeOverride ? null : readCached({ deviceId, entityId: "", kind: "projects" }),
     ]);
-    const before = { workspaces: workspaces?.value, projects: projects?.value };
+    const before = beforeOverride || { workspaces: workspaces?.value, projects: projects?.value };
     const candidates = entries.filter(recognizedDraft);
     return {
       dispose,
       hasCandidates: candidates.length > 0,
-      // The push's own writes precede fresh confirmation reads.
+      hasObsoleteDrafts: (after) => obsoleteDrafts(candidates, before, after).length > 0,
+      // Writes that preceded fresh confirmation cannot invalidate its result.
       resetOwnershipChanges: () => { changed = false; },
       prune: (after, active) => deleteUiDraftsIfUnwritten(
         obsoleteDrafts(candidates, before, after), () => !changed && active(),

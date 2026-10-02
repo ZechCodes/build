@@ -87,7 +87,7 @@ import { pageVisible } from "./visibility.js";
 import { dropBodyPages } from "./bodyPages.js";
 import { isMediaPath } from "./fileViewer.js";
 import { writeUsageLimits } from "./usageLimits.js";
-import { prepareDraftPrune } from "./uiDraftLifetime.js";
+import { prepareDraftPrune, removedOwnerId } from "./uiDraftLifetime.js";
 import {
   BACKGROUND_COOLDOWN_MS,
   COMMIT_PATCH_MAX_BYTES,
@@ -342,8 +342,9 @@ async function orderedSync(deviceId, turn) {
   turn.reading = true;
   const passStartedAt = Date.now();
   const fence = pushFence();
-  const view = await readLists(context, fence);
-  if (!view || !context.active()) return false;
+  const lists = await readLists(context, fence);
+  if (!lists || !context.active()) return false;
+  const { view, before, ownership } = lists;
   const pass = await workspacesToRead(context, view);
   const filesRecovered = await readWorkspaces(context, pass, fence);
   await readProjectTasks(context, view);
@@ -354,6 +355,9 @@ async function orderedSync(deviceId, turn) {
   // The reader may have walked off while the pass read, and on a cold cache
   // the workspace they stand in had no row to resolve until the lists landed.
   await refollowRoute(deviceId);
+  // The pass's row writes and evictions must finish before observing changes
+  // to ownership for cleanup. This work never holds up the sync result.
+  void pruneReadDrafts(context, before, ownership).catch(() => {});
   return true;
 }
 
@@ -423,25 +427,25 @@ const whileOnBoard = (context, entityId, fence) => ({
  *  any workspace has been read. A device whose bridge does not serve
  *  workspaces still has a board. */
 async function readLists(context, fence) {
-  const drafts = await prepareDraftPrune(context.deviceId);
-  try {
-    return await readOwnershipLists(context, fence, drafts);
-  } finally {
-    drafts.dispose();
-  }
-}
-
-async function readOwnershipLists(context, fence, drafts) {
   const [board, projects, workspaces] = await askOwnershipLists(context);
   if (!board || !projects || !context.active()) return null;
   await writeUsageLimits(context.deviceId, board.usage_limits);
   const view = liveFeedSnapshot(board, projects, workspaces || { workspaces: [] }, context.deviceId);
   // The compatibility fallback above paints a board without workspace
   // support. It is never evidence that an unsent draft's owner was deleted.
-  await drafts.prune({ ...view, workspaces: workspaces?.workspaces, projects: projects.projects },
-    () => context.active() && pushFence() === fence);
-  await writeLists(context, view, fence);
-  return view;
+  const before = {};
+  await writeLists(context, view, fence, before);
+  return { view, before, ownership: { ...view, workspaces: workspaces?.workspaces, projects: projects.projects } };
+}
+
+async function pruneReadDrafts(context, before, view) {
+  const drafts = await prepareDraftPrune(context.deviceId, before);
+  try {
+    if (!drafts.hasObsoleteDrafts(view) || !context.active()) return;
+    await confirmDraftPrune(context, drafts);
+  } finally {
+    drafts.dispose();
+  }
 }
 
 const askOwnershipLists = (context) => Promise.all([
@@ -450,7 +454,7 @@ const askOwnershipLists = (context) => Promise.all([
   ask(context, "workspace.list", {}, "background"),
 ]);
 
-async function writeLists(context, view, fence) {
+async function writeLists(context, view, fence, before) {
   if (!context.active()) return;
   // Inside the feed's own transaction, so a push landing while it waits is
   // still seen: the rows a push wrote since the fence are not this read's
@@ -461,7 +465,7 @@ async function writeLists(context, view, fence) {
   });
   for (const kind of ["projects", "workspaces"]) {
     if (!context.active()) return;
-    if (!pushedSince(addressOf(context, "", kind), fence)) await writeSessionList(context, kind, view[kind]);
+    if (!pushedSince(addressOf(context, "", kind), fence)) await writeSessionList(context, kind, view[kind], before);
   }
   for (const row of view.items || []) {
     if (!context.active()) return;
@@ -1277,8 +1281,10 @@ const validSession = (record) => Number.isSafeInteger(record?.session_started_ms
   && Number.isSafeInteger(record?.last_activity_ms)
   && record.session_started_ms <= record.last_activity_ms;
 
-async function writeSessionList(context, kind, incoming) {
-  await replaceSessionList(addressOf(context, "", kind), kind, incoming);
+async function writeSessionList(context, kind, incoming, before) {
+  await replaceSessionList(addressOf(context, "", kind), kind, incoming, (held) => {
+    if (before) before[kind] = held;
+  });
 }
 
 /** A record as a push carries it, marked so a read that was already out when
@@ -1291,18 +1297,22 @@ function writePushed(address, value) {
 async function applyChanges(items, deviceId) {
   const context = syncContext(contextFor(deviceId));
   if (!context || !holdingLock) return;
+  const removedOwners = [];
   for (const item of items) {
     if (!context.active()) return;
-    await applyItem(context, item);
+    const before = await applyItem(context, item);
+    if (before) removedOwners.push(before);
   }
+  // Later items in this delivery can write or evict owner records. Confirm
+  // after they finish, while leaving the next delivery free to proceed.
+  for (const before of removedOwners) void prunePushedDrafts(context, before).catch(() => {});
 }
 
 async function applyItem(context, item) {
   const entityId = String(item.entity_id || "");
   if (!entityId) return;
   if (entityId === BOARD_ENTITY) {
-    await applyBoard(context, item.state || {});
-    return;
+    return applyBoard(context, item.state || {});
   }
   const scoped = whileOnBoard(context, entityId, pushFence());
   for (const [field, apply] of APPLIERS) {
@@ -1316,16 +1326,12 @@ async function applyItem(context, item) {
  *  `removed`, and everything it had goes at once — its data and its row. */
 async function applyBoard(context, state) {
   notePushedLists(context, state);
-  const draftPreparation = state.workspaces || state.projects
-    ? prepareDraftPrune(context.deviceId).catch(() => null) : null;
-  try {
-    await writePushedBoard(context, state);
-  } finally {
-    if (draftPreparation) void prunePushedDrafts(context, draftPreparation).catch(() => {});
-  }
+  const before = {};
+  await writePushedBoard(context, state, before);
+  return removedOwnerId(before, state) ? before : null;
 }
 
-async function writePushedBoard(context, state) {
+async function writePushedBoard(context, state, before) {
   // The harnesses out of usage there (#58): the pushed reading replaces the
   // device's record, and mounted surfaces repaint from its cache announcement.
   await writeUsageLimits(context.deviceId, state.usage_limits);
@@ -1334,7 +1340,7 @@ async function writePushedBoard(context, state) {
   if (removed.length) await dropRemovedRows(context, removed);
   if (!context.active()) return;
   if (state.projects) {
-    await writeSessionList(context, "projects", state.projects.map((project) => stampProject(project, context.deviceId)));
+    await writeSessionList(context, "projects", state.projects.map((project) => stampProject(project, context.deviceId)), before);
   }
   if (!context.active()) return;
   if (state.workspaces) {
@@ -1345,7 +1351,7 @@ async function writePushedBoard(context, state) {
     const summaries = workspaceSummaries(await heldValue(context, "", "workspaces"));
     if (!context.active()) return;
     await writeSessionList(context, "workspaces", state.workspaces.map((workspace) =>
-      stampWorkspace(workspace, context.deviceId, workspace.work_summary === undefined ? summaries : [])));
+      stampWorkspace(workspace, context.deviceId, workspace.work_summary === undefined ? summaries : [])), before);
   }
 }
 
@@ -1360,20 +1366,23 @@ function notePushedLists(context, state) {
  * that capture, so confirm with fresh reads: a newly created owner's draft
  * may already be here when an older push arrives. No drafts, no extra reads;
  * `removed` alone is only a board departure and never starts cleanup. */
-async function prunePushedDrafts(context, draftPreparation) {
-  const drafts = await draftPreparation;
-  if (!drafts) return;
+async function prunePushedDrafts(context, before) {
+  const drafts = await prepareDraftPrune(context.deviceId, before);
   try {
     if (!drafts.hasCandidates || !context.active()) return;
-    drafts.resetOwnershipChanges();
-    const fence = pushFence();
-    const [board, projects, workspaces] = await askOwnershipLists(context);
-    if (!board || !projects || !workspaces) return;
-    await drafts.prune({ ...board, projects: projects.projects, workspaces: workspaces.workspaces },
-      () => context.active() && pushFence() === fence);
+    await confirmDraftPrune(context, drafts);
   } finally {
     drafts.dispose();
   }
+}
+
+async function confirmDraftPrune(context, drafts) {
+  drafts.resetOwnershipChanges();
+  const fence = pushFence();
+  const [board, projects, workspaces] = await askOwnershipLists(context);
+  if (!board || !projects || !workspaces) return;
+  await drafts.prune({ ...board, projects: projects.projects, workspaces: workspaces.workspaces },
+    () => context.active() && pushFence() === fence);
 }
 
 /** The `feed` record's own collections: the board's five. The project and

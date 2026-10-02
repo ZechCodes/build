@@ -694,6 +694,7 @@ describe("draft ownership reconciliation", () => {
   const settings = { deviceId: "dev-1", entityId: "ws-1", kind: "ui-draft", sub: "workspace-settings:" };
   const chat = { deviceId: "dev-1", entityId: "conv-1", kind: "ui-draft", sub: "chat:agent:run-1:ag-1" };
   const commit = { deviceId: "dev-1", entityId: "run-1", kind: "ui-draft", sub: "run-1" };
+  const worktree = { deviceId: "dev-1", entityId: "run-1", kind: "ui-draft", sub: "worktree:run-1" };
   const changes = { deviceId: "dev-1", entityId: "run-1", kind: "ui-draft", sub: "changes:inline-comments" };
   const pushBoard = async (state) => {
     registeredWatchers.find((watcher) => watcher.id === "s-inbox" && !watcher.disposed)
@@ -752,7 +753,7 @@ describe("draft ownership reconciliation", () => {
     script["workspace.list"] = () => ({ workspaces: [workspace] });
     script["project.list"] = () => ({ projects: [{ project_id: "p1", conversations: [] }] });
     await boot([]);
-    for (const address of [settings, chat, commit, changes]) await ui.writeUiRecord(address, { body: "unsent" });
+    for (const address of [settings, chat, commit, worktree, changes]) await ui.writeUiRecord(address, { body: "unsent" });
     const original = ui.uiDraftRecords;
     let release;
     let scanStarted = false;
@@ -780,7 +781,7 @@ describe("draft ownership reconciliation", () => {
     await releaseOldList?.();
     oldListRead.mockRestore();
     await vi.waitFor(async () => {
-      for (const address of [settings, chat, commit, changes]) expect(await ui.readUiRecord(address)).toBeUndefined();
+      for (const address of [settings, chat, commit, worktree, changes]) expect(await ui.readUiRecord(address)).toBeUndefined();
     });
   });
 
@@ -815,11 +816,11 @@ describe("draft ownership reconciliation", () => {
   it("prunes a deleted owner while another board row remains active", async () => {
     const ui = await import("../src/core/localUiStore.js");
     await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "workspaces" }, [workspace]);
-    for (const address of [settings, chat, commit, changes]) await ui.writeUiRecord(address, { body: "unsent" });
+    for (const address of [settings, chat, commit, worktree, changes]) await ui.writeUiRecord(address, { body: "unsent" });
     script["project.list"] = () => ({ projects: [{ project_id: "p1", conversations: [] }] });
     await boot([branchItem({ run_id: "run-2", worktree_id: "wt-2" })]);
     await vi.waitFor(async () => {
-      for (const address of [settings, chat, commit, changes]) expect(await ui.readUiRecord(address)).toBeUndefined();
+      for (const address of [settings, chat, commit, worktree, changes]) expect(await ui.readUiRecord(address)).toBeUndefined();
     });
   });
 

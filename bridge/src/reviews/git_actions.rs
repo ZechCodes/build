@@ -626,73 +626,7 @@ fn restore_timed_out_merge(
             "index lock remains without proof it belonged to the timed-out Git child".into(),
         );
     }
-    let current = repo
-        .find_commit(before)
-        .map_err(|error| error.to_string())?
-        .tree()
-        .map_err(|error| error.to_string())?;
-    let incoming = repo
-        .find_commit(git2::Oid::from_str(head).map_err(|error| error.to_string())?)
-        .map_err(|error| error.to_string())?
-        .tree()
-        .map_err(|error| error.to_string())?;
-    let diff = repo
-        .diff_tree_to_tree(Some(&current), Some(&incoming), None)
-        .map_err(|error| error.to_string())?;
-    let touched = diff
-        .deltas()
-        .filter_map(|delta| delta.new_file().path().or_else(|| delta.old_file().path()))
-        .map(Path::to_path_buf)
-        .collect::<std::collections::HashSet<_>>();
-    let mut options = git2::StatusOptions::new();
-    options.include_untracked(true).recurse_untracked_dirs(true);
-    let index = repo.index().map_err(|error| error.to_string())?;
-    let mut partial_worktree = Vec::new();
-    for entry in repo
-        .statuses(Some(&mut options))
-        .map_err(|error| error.to_string())?
-        .iter()
-    {
-        let path = entry.path().ok_or("changed path cannot be verified")?;
-        if !touched.contains(Path::new(path)) {
-            return Err(format!(
-                "unrelated changed path {path} may belong to another process"
-            ));
-        }
-        let relative = Path::new(path);
-        let indexed = index.get_path(relative, 0).map(|entry| entry.id);
-        let original = current.get_path(relative).ok().map(|entry| entry.id());
-        let selected = incoming.get_path(relative).ok().map(|entry| entry.id());
-        if indexed != original && indexed != selected {
-            return Err(format!(
-                "changed index content for {path} cannot be attributed to the merge"
-            ));
-        }
-        if repo.state() != git2::RepositoryState::Merge
-            && entry.status().intersects(
-                git2::Status::WT_MODIFIED
-                    | git2::Status::WT_DELETED
-                    | git2::Status::WT_NEW
-                    | git2::Status::WT_RENAMED
-                    | git2::Status::WT_TYPECHANGE,
-            )
-        {
-            let bytes = std::fs::read(checkout.join(relative))
-                .map_err(|_| format!("changed working file {path} cannot be verified"))?;
-            let blob = git2::Oid::hash_object(git2::ObjectType::Blob, &bytes)
-                .map_err(|error| error.to_string())?;
-            if owned_lock.is_none()
-                || indexed != original
-                || original.is_none()
-                || selected != Some(blob)
-            {
-                return Err(format!(
-                    "changed working file {path} cannot be attributed to the merge"
-                ));
-            }
-            partial_worktree.push(path.to_owned());
-        }
-    }
+    let partial_worktree = planned_partial_worktree(repo, checkout, head, before, owned_lock)?;
     let expected = format!("refs/heads/{branch}");
     if repo
         .head()
@@ -711,6 +645,7 @@ fn restore_timed_out_merge(
         git(
             checkout,
             &[
+                "--literal-pathspecs",
                 "restore",
                 "--source",
                 &before.to_string(),
@@ -737,6 +672,112 @@ fn restore_timed_out_merge(
         return Err("checkout could not be verified after restoration".into());
     }
     Ok(())
+}
+
+fn planned_partial_worktree(
+    repo: &git2::Repository,
+    checkout: &Path,
+    head: &str,
+    before: git2::Oid,
+    owned_lock: Option<ObservedLock>,
+) -> Result<Vec<String>, String> {
+    let current = repo
+        .find_commit(before)
+        .map_err(|error| error.to_string())?
+        .tree()
+        .map_err(|error| error.to_string())?;
+    let incoming = repo
+        .find_commit(git2::Oid::from_str(head).map_err(|error| error.to_string())?)
+        .map_err(|error| error.to_string())?
+        .tree()
+        .map_err(|error| error.to_string())?;
+    let diff = repo
+        .diff_tree_to_tree(Some(&current), Some(&incoming), None)
+        .map_err(|error| error.to_string())?;
+    let touched = diff
+        .deltas()
+        .filter_map(|delta| delta.new_file().path().or_else(|| delta.old_file().path()))
+        .map(Path::to_path_buf)
+        .collect::<std::collections::HashSet<_>>();
+    let mut options = git2::StatusOptions::new();
+    options.include_untracked(true).recurse_untracked_dirs(true);
+    let index = repo.index().map_err(|error| error.to_string())?;
+    let merging = repo.state() == git2::RepositoryState::Merge;
+    let context = PartialPathContext {
+        current: &current,
+        incoming: &incoming,
+        index: &index,
+        touched: &touched,
+        checkout,
+        merging,
+        owned_lock: owned_lock.is_some(),
+    };
+    repo.statuses(Some(&mut options))
+        .map_err(|error| error.to_string())?
+        .iter()
+        .map(|entry| verified_partial_path(entry.path(), entry.status(), &context))
+        .collect::<Result<Vec<_>, _>>()
+        .map(|paths| paths.into_iter().flatten().collect())
+}
+
+struct PartialPathContext<'a, 'repo> {
+    current: &'a git2::Tree<'repo>,
+    incoming: &'a git2::Tree<'repo>,
+    index: &'a git2::Index,
+    touched: &'a std::collections::HashSet<PathBuf>,
+    checkout: &'a Path,
+    merging: bool,
+    owned_lock: bool,
+}
+
+fn verified_partial_path(
+    path: Option<&str>,
+    status: git2::Status,
+    context: &PartialPathContext<'_, '_>,
+) -> Result<Option<String>, String> {
+    let path = path.ok_or("changed path cannot be verified")?;
+    let relative = Path::new(path);
+    if !context.touched.contains(relative) {
+        return Err(format!(
+            "unrelated changed path {path} may belong to another process"
+        ));
+    }
+    let indexed = context.index.get_path(relative, 0).map(|entry| entry.id);
+    let original = context
+        .current
+        .get_path(relative)
+        .ok()
+        .map(|entry| entry.id());
+    let selected = context
+        .incoming
+        .get_path(relative)
+        .ok()
+        .map(|entry| entry.id());
+    if indexed != original && indexed != selected {
+        return Err(format!(
+            "changed index content for {path} cannot be attributed to the merge"
+        ));
+    }
+    let worktree_changed = status.intersects(
+        git2::Status::WT_MODIFIED
+            | git2::Status::WT_DELETED
+            | git2::Status::WT_NEW
+            | git2::Status::WT_RENAMED
+            | git2::Status::WT_TYPECHANGE,
+    );
+    if context.merging || !worktree_changed {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(context.checkout.join(relative))
+        .map_err(|_| format!("changed working file {path} cannot be verified"))?;
+    let blob = git2::Oid::hash_object(git2::ObjectType::Blob, &bytes)
+        .map_err(|error| error.to_string())?;
+    if !context.owned_lock || indexed != original || original.is_none() || selected != Some(blob) {
+        return Err(format!(
+            "changed working file {path} cannot be attributed to the merge"
+        ));
+    }
+    Ok(Some(path.to_owned()))
 }
 
 fn merged_tip(
@@ -1200,6 +1241,36 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(repo.join("README.md")).unwrap(),
             "# project\n"
+        );
+    }
+
+    #[test]
+    fn timed_out_merge_restores_literal_pathspec_filename() {
+        let (_temp, repo) = init_repo();
+        let name = ":(literal)README.md";
+        std::fs::write(repo.join(name), "original\n").unwrap();
+        git_in(&repo, &["--literal-pathspecs", "add", "--", name]);
+        git_in(&repo, &["commit", "-m", "literal filename"]);
+        git_in(&repo, &["checkout", "-b", "feature"]);
+        std::fs::write(repo.join(name), "incoming\n").unwrap();
+        git_in(&repo, &["commit", "-am", "incoming"]);
+        let saved = directory(&repo, &repo);
+        git_in(&repo, &["checkout", "main"]);
+        let admin = repo.join(".git");
+        let error =
+            merge_checkout_with_runner(&repo, "main", saved.head.as_deref().unwrap(), |path, _| {
+                std::fs::write(path.join(name), "incoming\n").unwrap();
+                std::fs::write(admin.join("index.lock"), "pending index").unwrap();
+                Err(GitActionError::TimedOutWithOwnedLock(
+                    "merge timed out".into(),
+                    lock_identity(&admin.join("index.lock")).unwrap(),
+                ))
+            })
+            .unwrap_err();
+        assert!(error.contains("restored"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(repo.join(name)).unwrap(),
+            "original\n"
         );
     }
 

@@ -9,7 +9,7 @@ Uncommitted files are counted and clearly excluded.
 Plain folders appear as “No Git diff”, with a link to live Files.
 Pick a reviewer using the existing user/agent picker.
 Any agent or model can review and finish the work.
-Choose Merge or Push for each source, with the destination you want.
+Choose Merge, Push, or both for each source, with the destination you want.
 You can select both steps, or leave a source unchanged.
 An agent can instead use its own tools and mark the review complete.
 Completion shows a short description, such as “merged API to dev; pushed web”.
@@ -99,7 +99,7 @@ snapshot seen; the picker routes the task and grants no exclusive rights.
 | `tasks.review.get` | Read review state, snapshots and per-source action results, plus available destinations. |
 | `tasks.review.diff` | Read a snapshot's file list, patch or old/new file content from Git; reuse existing body/page shapes. |
 | `tasks.review.act` | Run the selected Merge/Push steps for named sources and record their results on the review. |
-| `tasks.review.complete` | Record a brief action-taken description and mark the review/task Done; no preceding Build action is required. |
+| `tasks.review.complete` | Record the actor and a brief action-taken description, and mark the review/task Done; no preceding Build action is required. |
 
 Use existing task CRUD, assignment and comment verbs. Add optional anchor/opinion/
 reply metadata to both `tasks.comment` and MCP `comment_task`, including their
@@ -261,7 +261,7 @@ checkout handling is the remaining uncertainty, covered in C's estimate.
 
 | Increment | Deliverable and code areas | Verification / rollout | Size |
 | --- | --- | --- | --- |
-| A: useful agent reviews | Proposed `bridge/src/reviews/`, store/schema and typed API/MCP adapters. Four verbs: snapshot/get/diff/complete. All-source metadata/refs, base overrides/fallbacks, action description and the exact legacy-hook guards above. | Shared-repo directories have distinct refs; concurrent snapshots cannot overwrite/remove winning pins; detached/unborn/missing bases; base override/empty tree; dirty files excluded; pin survives branch deletion/GC; deleted repo reads unavailable; version checks and review/ordinary task hooks. Bridge roll. Agents can read diffs and complete using their own tools. | 1–2 days |
+| A: useful agent reviews | Proposed `bridge/src/reviews/`, store/schema and typed API/MCP adapters. Four verbs: snapshot/get/diff/complete (`act` lands in C). All-source metadata/refs, base overrides/fallbacks, action description and the exact legacy-hook guards above. | Shared-repo directories have distinct refs; concurrent snapshots cannot overwrite/remove winning pins; detached/unborn/missing bases; base override/empty tree; dirty files excluded; pin survives branch deletion/GC; deleted repo reads unavailable; version checks and review/ordinary task hooks. Bridge roll. Agents can read diffs and complete using their own tools. | 1–2 days |
 | B: review UI | Task/Changes adapter, saved directory tabs, base picker, anchored task comments/opinions in RPC and MCP, reviewer picker, cache/drafts in `spa/src/core/` and `spa/src/views/`. | Same paths in two repos, old snapshot anchors, unavailable source, two tabs/stale version, reconnect/cache paint, mobile; comment RPC/MCP schemas/fixtures/capability. Bridge+app roll. | 2 days |
 | C: selectable steps | `act`, review result rows, targeted Git helpers, temporary worktree handling and action sheet. | Checked-out clean/dirty targets; unchecked-out target/ref race; source sync contention on both paths; Rift import; Merge success/Push failure; interrupted row after restart; no automatic retry or workspace deletion. Temporary repos only. Bridge+app roll. | 2–3 days |
 
@@ -300,3 +300,10 @@ update-ref left a newly checked-out target's files behind its HEAD. A temporary
 checkout on the target branch refused a second ordinary checkout and kept its
 index/files aligned when merged. This is normal Git protection, not a guarantee
 against forced/manual ref writes by an external process.
+
+### Final Opus signoff
+
+Opus signed off on `fd106344` on 2026-10-02, including the temporary checkout
+on the target branch. Its three final text edits are applied: increment A names
+the later arrival of `act` in C; `complete` explicitly records the actor; and the
+owner summary offers Merge, Push, or both. No further review round is requested.

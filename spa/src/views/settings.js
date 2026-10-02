@@ -43,7 +43,7 @@ const BUNDLE_VERSION = import.meta.env.VITE_BUILD_VERSION || "dev";
 const deviceRowHtml = (device) => `
         <div class="projrow"><span class="pname">${esc(device.name)}</span>
           <span class="ppath mono" style="font-size:11px" title="${esc(device.fingerprint)}">${esc(device.fingerprint.slice(0, 16))}…</span>
-          <span class="dim" style="font-size:11.5px"><span class="dot" style="background:${device.status === "online" ? "var(--green)" : "var(--dim)"}"></span> ${esc(isPairingConnecting(device.id) ? "connecting…" : device.status)}</span>
+          <span class="dim" style="font-size:11.5px"><span class="dot" style="background:${device.status === "online" ? "var(--green)" : "var(--dim)"}"></span> ${esc(isPairingConnecting(device) ? "connecting…" : device.status)}</span>
           <a class="btn mini devsettings" href="${esc(hashFromRoute({ name: "device", id: device.id }))}">Settings…</a>
           <button class="btn mini revoke" data-id="${esc(device.id)}">Revoke</button></div>`;
 

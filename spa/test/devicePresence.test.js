@@ -50,7 +50,7 @@ const { refreshDevices, watchPresence, stopWatchingPresence } = await import("..
 const { adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
 const { fakeSession } = await import("./deviceSessionFixture.js");
 const { clearMemoryCacheRecords } = await import("./memoryCache.js");
-const { notePairingApproved, pairingState, resetPendingPairing } = await import("../src/core/pendingPairing.js");
+const { notePairingApproved, pairingsConnecting, resetPendingPairing } = await import("../src/core/pendingPairing.js");
 
 const online = (id) => ({ id, name: id, status: "online", fingerprint: `${id}-fp` });
 const away = (id) => ({ ...online(id), status: "offline" });
@@ -104,23 +104,21 @@ describe("the presence poll", () => {
 
     await vi.advanceTimersByTimeAsync(5000);
     expect(account.fetchDevices).toHaveBeenCalledTimes(5);
-
-    await vi.advanceTimersByTimeAsync(90000);
-    const atWindowEnd = account.fetchDevices.mock.calls.length;
-    await vi.advanceTimersByTimeAsync(15000);
-    expect(account.fetchDevices.mock.calls.length - atWindowEnd).toBe(1);
   });
 
-  it("ends the wait when that device answers", async () => {
-    listed = [online("dev-a"), online("dev-new")];
+  // The wait ends on what the cached account list says, not on any session:
+  // the device listed online is landed whether or not a session to it opened.
+  it("ends the wait when the account lists that device online, then reads at its own cadence", async () => {
+    listed = [online("dev-a"), away("dev-new")];
     watchPresence();
     notePairingApproved({ device_id: "dev-new", name: "Studio" });
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(connection.openDeviceSessions).toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(pairingsConnecting()).toHaveLength(1);
 
-    adoptDeviceSession(fakeSession("dev-new"));
+    listed = [online("dev-a"), online("dev-new")];
     await vi.advanceTimersByTimeAsync(1000);
-    expect(pairingState()).toBe(null);
+    expect(pairingsConnecting()).toEqual([]);
+    expect(document.getElementById("devpick").textContent).not.toContain("connecting…");
     account.fetchDevices.mockClear();
     await vi.advanceTimersByTimeAsync(14000);
     expect(account.fetchDevices).not.toHaveBeenCalled();
@@ -128,12 +126,47 @@ describe("the presence poll", () => {
     expect(account.fetchDevices).toHaveBeenCalledTimes(1);
   });
 
-  it("names a just-approved device as connecting in the picker", async () => {
-    const { paintDevicePicker } = await import("../src/devices.js");
-    App.devices = [away("dev-new")];
+  it("gives up on a device that never comes online when its window ends: the picker drops the label, the poll slows", async () => {
+    listed = [online("dev-a"), away("dev-new")];
+    watchPresence();
     notePairingApproved({ device_id: "dev-new", name: "Studio" });
+    await vi.advanceTimersByTimeAsync(1000);
+    // The rail repaints the picker on a new list; it is not loaded here.
+    const { paintDevicePicker } = await import("../src/devices.js");
     paintDevicePicker();
     expect(document.getElementById("devpick").textContent).toContain("dev-new (connecting…)");
+
+    await vi.advanceTimersByTimeAsync(89_000);
+    expect(pairingsConnecting()).toEqual([]);
+    expect(document.getElementById("devpick").textContent).not.toContain("connecting…");
+    account.fetchDevices.mockClear();
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(account.fetchDevices).toHaveBeenCalledTimes(1);
+  });
+
+  it("names each of two just-approved devices as connecting until it lands", async () => {
+    listed = [away("dev-one"), away("dev-two")];
+    watchPresence();
+    notePairingApproved({ device_id: "dev-one", name: "One" });
+    notePairingApproved({ device_id: "dev-two", name: "Two" });
+    await vi.advanceTimersByTimeAsync(1000);
+    const picker = () => document.getElementById("devpick").textContent;
+    expect(picker()).toContain("dev-one (connecting…)");
+    expect(picker()).toContain("dev-two (connecting…)");
+
+    listed = [away("dev-one"), online("dev-two")];
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(picker()).toContain("dev-one (connecting…)");
+    expect(picker()).not.toContain("dev-two (connecting…)");
+    expect(pairingsConnecting().map((pairing) => pairing.deviceId)).toEqual(["dev-one"]);
+  });
+
+  it("never names a device the account calls online as connecting", async () => {
+    const { paintDevicePicker } = await import("../src/devices.js");
+    App.devices = [online("dev-new")];
+    notePairingApproved({ device_id: "dev-new", name: "Studio" });
+    paintDevicePicker();
+    expect(document.getElementById("devpick").textContent).not.toContain("connecting…");
   });
 
   it("reads it at once when the tab comes back to the front", async () => {

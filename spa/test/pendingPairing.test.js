@@ -1,71 +1,127 @@
-// A device the reader just approved (#321): remembered while it comes up, read
-// for every second for PAIRING_WINDOW_MS, then remembered as late until it
-// lands.
+// Devices the reader just approved (#321): each remembered while it comes up,
+// the account read every second meanwhile, until the account lists it online
+// or its window runs out.
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   PAIRING_WINDOW_MS,
   accountReadCadence,
   isPairingConnecting,
   notePairingApproved,
   onPairingChanged,
-  pairingLanded,
-  pairingLandedAmong,
-  pairingState,
+  pairingsConnecting,
+  pairingsLandedIn,
   resetPendingPairing,
 } from "../src/core/pendingPairing.js";
 
-const APPROVED_AT = 1_000_000;
+const listed = (id, status) => ({ id, name: id, status });
+const pendingIds = () => pairingsConnecting().map((pairing) => pairing.deviceId);
 
-beforeEach(() => resetPendingPairing());
+beforeEach(() => {
+  vi.useFakeTimers();
+  resetPendingPairing();
+});
+
+afterEach(() => {
+  resetPendingPairing();
+  vi.useRealTimers();
+});
 
 describe("a pending pairing", () => {
   it("is nothing until something is approved", () => {
-    expect(pairingState()).toBe(null);
+    expect(pairingsConnecting()).toEqual([]);
     expect(accountReadCadence(15000)).toBe(15000);
   });
 
-  it("is connecting for its window, then late", () => {
-    notePairingApproved({ device_id: "dev-1", name: "Studio" }, APPROVED_AT);
+  it("names a listed device as connecting while the account does not call it online", () => {
+    notePairingApproved({ device_id: "dev-1", name: "Studio" });
 
-    expect(pairingState(APPROVED_AT + 1)).toMatchObject({ deviceId: "dev-1", name: "Studio", phase: "connecting" });
-    expect(isPairingConnecting("dev-1", APPROVED_AT + PAIRING_WINDOW_MS - 1)).toBe(true);
-    expect(isPairingConnecting("dev-2", APPROVED_AT + 1)).toBe(false);
-    expect(pairingState(APPROVED_AT + PAIRING_WINDOW_MS).phase).toBe("late");
-    expect(isPairingConnecting("dev-1", APPROVED_AT + PAIRING_WINDOW_MS)).toBe(false);
+    expect(pairingsConnecting()).toMatchObject([{ deviceId: "dev-1", name: "Studio" }]);
+    expect(isPairingConnecting(listed("dev-1", "offline"))).toBe(true);
+    expect(isPairingConnecting(listed("dev-1", "online"))).toBe(false);
+    expect(isPairingConnecting(listed("dev-2", "offline"))).toBe(false);
   });
 
-  it("reads the account every second while connecting, and at its own cadence otherwise", () => {
-    notePairingApproved({ device_id: "dev-1", name: "Studio" }, APPROVED_AT);
+  it("reads the account every second while one is pending, and at its own cadence otherwise", () => {
+    notePairingApproved({ device_id: "dev-1", name: "Studio" });
 
-    expect(accountReadCadence(15000, APPROVED_AT + 10)).toBe(1000);
-    expect(accountReadCadence(3000, APPROVED_AT + 10)).toBe(1000);
-    expect(accountReadCadence(500, APPROVED_AT + 10)).toBe(500);
-    expect(accountReadCadence(15000, APPROVED_AT + PAIRING_WINDOW_MS)).toBe(15000);
+    expect(accountReadCadence(15000)).toBe(1000);
+    expect(accountReadCadence(3000)).toBe(1000);
+    expect(accountReadCadence(500)).toBe(500);
   });
 
-  it("ends when that device lands, and not when another does", () => {
+  it("ends when the account lists that device online, and not when it lists another", () => {
     const heard = vi.fn();
     const stop = onPairingChanged(heard);
     notePairingApproved({ device_id: "dev-1", name: "Studio" });
-    pairingLanded("dev-2");
-    expect(pairingState()).not.toBe(null);
-    pairingLanded("dev-1");
-    expect(pairingState()).toBe(null);
-    expect(heard.mock.calls.map(([state]) => state?.deviceId ?? null)).toEqual(["dev-1", null]);
+
+    pairingsLandedIn([listed("dev-1", "offline"), listed("dev-2", "online")]);
+    expect(pendingIds()).toEqual(["dev-1"]);
+    pairingsLandedIn([listed("dev-1", "online")]);
+    expect(pendingIds()).toEqual([]);
+    expect(accountReadCadence(15000)).toBe(15000);
+    expect(heard).toHaveBeenCalledTimes(2);
     stop();
   });
 
-  it("ends when that device is among the machines answering", () => {
+  it("is forgotten, and heard of, when its window runs out with the device never online", () => {
+    const heard = vi.fn();
+    const stop = onPairingChanged(heard);
     notePairingApproved({ device_id: "dev-1", name: "Studio" });
-    pairingLandedAmong(["dev-2"]);
-    expect(pairingState()).not.toBe(null);
-    pairingLandedAmong(["dev-2", "dev-1"]);
-    expect(pairingState()).toBe(null);
+    heard.mockClear();
+
+    vi.advanceTimersByTime(PAIRING_WINDOW_MS - 1);
+    expect(pendingIds()).toEqual(["dev-1"]);
+    expect(heard).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(pendingIds()).toEqual([]);
+    expect(isPairingConnecting(listed("dev-1", "offline"))).toBe(false);
+    expect(accountReadCadence(15000)).toBe(15000);
+    expect(heard).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
+  it("keeps two approved devices apart: each lands or runs out on its own", () => {
+    notePairingApproved({ device_id: "dev-1", name: "Studio" });
+    vi.advanceTimersByTime(30_000);
+    notePairingApproved({ device_id: "dev-2", name: "Laptop" });
+    expect(pendingIds()).toEqual(["dev-1", "dev-2"]);
+
+    pairingsLandedIn([listed("dev-2", "online"), listed("dev-1", "offline")]);
+    expect(pendingIds()).toEqual(["dev-1"]);
+    expect(accountReadCadence(15000)).toBe(1000);
+
+    notePairingApproved({ device_id: "dev-3", name: "Mini" });
+    vi.advanceTimersByTime(PAIRING_WINDOW_MS - 30_000);
+    expect(pendingIds()).toEqual(["dev-3"]);
+    vi.advanceTimersByTime(30_000);
+    expect(pendingIds()).toEqual([]);
+  });
+
+  it("starts a device's window over when it is approved again", () => {
+    notePairingApproved({ device_id: "dev-1", name: "Studio" });
+    vi.advanceTimersByTime(60_000);
+    notePairingApproved({ device_id: "dev-1", name: "Studio" });
+    vi.advanceTimersByTime(60_000);
+    expect(pendingIds()).toEqual(["dev-1"]);
+    vi.advanceTimersByTime(30_000);
+    expect(pendingIds()).toEqual([]);
   });
 
   it("ignores an approve that names no device", () => {
     notePairingApproved({ name: "Studio" });
-    expect(pairingState()).toBe(null);
+    expect(pairingsConnecting()).toEqual([]);
+  });
+
+  it("forgets everything, timers included, on a reset", () => {
+    const heard = vi.fn();
+    const stop = onPairingChanged(heard);
+    notePairingApproved({ device_id: "dev-1", name: "Studio" });
+    resetPendingPairing();
+    heard.mockClear();
+    vi.advanceTimersByTime(PAIRING_WINDOW_MS);
+    expect(heard).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    stop();
   });
 });

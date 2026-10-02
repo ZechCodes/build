@@ -463,7 +463,8 @@ describe("the bridge's approve link", () => {
 // one that does not come up within the window gets the waiting screen back,
 // with what to check.
 describe("a device just approved", () => {
-  const studio = (status) => ({ id: "d1", name: "studio", fingerprint: "AAAA", status });
+  // A device just approved has never beaten: the account has no last_seen_at.
+  const studio = (status) => ({ id: "d1", name: "studio", fingerprint: "AAAA", status, last_seen_at: null });
   let reads = 0;
 
   async function approveStudio() {
@@ -481,11 +482,13 @@ describe("a device just approved", () => {
       return devices;
     };
     lookupDevice.mockResolvedValueOnce({ device_id: "d1", name: "studio", fingerprint: "AAAA BBBB CCCC DDDD" });
+    // The window's own timer may be faked, and then so is the one flush waits on.
+    const settle = vi.isFakeTimers() ? () => vi.advanceTimersByTimeAsync(0) : flush;
     await boot();
-    await flush();
+    await settle();
     document.getElementById("ocode").value = "G6ZP-KD2U";
     document.getElementById("olookup").click();
-    await flush();
+    await settle();
     devices = [studio("offline")];
     openSession = async () => { throw new Error("offline"); };
     document.getElementById("oapprove").click();
@@ -516,15 +519,39 @@ describe("a device just approved", () => {
     openSession = async () => ({ deviceId: "d1" });
     await vi.advanceTimersByTimeAsync(1000);
     await vi.waitFor(() => expect(document.body.classList.contains("gated")).toBe(false));
-    const { pairingState } = await import("../src/core/pendingPairing.js");
-    expect(pairingState()).toBe(null);
+  });
+
+  it("waits for two devices approved one after the other, naming each until it is online", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
+    await approveStudio();
+    const { notePairingApproved } = await import("../src/core/pendingPairing.js");
+    const laptop = (status) => ({ id: "d2", name: "laptop", fingerprint: "BBBB", status, last_seen_at: null });
+    devices = [studio("offline"), laptop("offline")];
+    notePairingApproved({ device_id: "d2", name: "laptop" });
+    await vi.advanceTimersByTimeAsync(1000);
+    const rows = () => [...document.querySelectorAll("#waitlist .projrow")].map((row) => row.textContent.replace(/\s+/g, " "));
+    expect(rows()[0]).toContain("connecting…");
+    expect(rows()[1]).toContain("connecting…");
+    expect(document.getElementById("waittitle").textContent).toBe("Connecting to studio…");
+
+    // The api calls the second one online before any session to it opens:
+    // its row says so, and the first is still connecting.
+    devices = [studio("offline"), laptop("online")];
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(rows()[0]).toContain("connecting…");
+    expect(rows()[1]).not.toContain("connecting…");
+    expect(rows()[1]).toContain("online");
   });
 
   it("says what to check when it has not come online in its window, and slows down", async () => {
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
     await approveStudio();
 
-    await vi.advanceTimersByTimeAsync(91000);
+    // The window ending repaints the screen by itself, between two reads.
+    await vi.advanceTimersByTimeAsync(89_500);
+    expect(document.getElementById("waittitle").textContent).toBe("Connecting to studio…");
+    await vi.advanceTimersByTimeAsync(600);
+    expect(document.getElementById("waitlist").textContent).not.toContain("connecting…");
     expect(document.getElementById("waittitle").textContent).toBe("Waiting for your device");
     expect(document.getElementById("waitintro").textContent).toContain("studio was approved but has not come online");
     expect(document.getElementById("waitintro").textContent).toContain("build-bridge install-service");

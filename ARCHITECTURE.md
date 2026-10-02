@@ -973,8 +973,8 @@ In practice:
 No timer polls the bridge for data. The data timers are the device presence
 poll against skriftapp and the served-version check. The presence poll runs
 every 15 s in the app and every 3 s on the waiting screen, and every second
-for 90 s after this page approves a device (`spa/src/core/pendingPairing.js`,
-#321). The transport has its own:
+after this page approves a device, until the cached list calls it online or
+90 s pass (`spa/src/core/pendingPairing.js`, #321). The transport has its own:
 the reconnect backoff (`spa/src/core/deviceRecovery.js`) and the peer's open
 timeout and TURN-to-direct upgrade (`spa/src/core/peerLink.js`). Two more
 touch data without polling for it: the persistence debounce in

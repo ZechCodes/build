@@ -40,7 +40,7 @@ import { initToolbar } from "../core/toolbar.js";
 import { DEVICES_ADDRESS, readCached } from "../core/localCache.js";
 import { fieldTraits } from "../core/fieldTraits.js";
 import { pendingDeviceHtml } from "../core/deviceFingerprint.js";
-import { accountReadCadence, notePairingApproved, onPairingChanged, pairingLandedAmong, pairingState } from "../core/pendingPairing.js";
+import { accountReadCadence, isPairingConnecting, notePairingApproved, onPairingChanged } from "../core/pendingPairing.js";
 
 /** Whether the cache's two readers are up. They are started once, before any
  *  session answers, and stood down when a gate screen takes the page (which is
@@ -166,11 +166,7 @@ async function connectToApp(asked) {
   // answers first rather than waiting out the slowest one. The gate names no
   // home: which device that is, the account list and the user's pick already
   // say, and each device takes it in hand as it lands.
-  const first = await openDeviceSessions(asked).first;
-  // The device a pairing on this page was waiting for may be the one that
-  // answered: the wait is over, and the poll the app starts goes at its own
-  // cadence.
-  if (first?.deviceId) pairingLandedAmong([first.deviceId]);
+  await openDeviceSessions(asked).first;
   gateGeneration += 1;
   stopWatchingForOnline();
   handBackToReader();
@@ -351,7 +347,8 @@ function watchOnGateCadence(tick) {
 let gateTick = null;
 
 // A device the reader just approved is asked for every second while it comes
-// up, and the screen waiting on it says so.
+// up, and the screen waiting on it says so; when it lands or its wait runs out,
+// the clock slows and the screen says what it says of any device.
 onPairingChanged(() => {
   if (gateTick) watchOnGateCadence(gateTick);
   paintWaiting(App.devices);
@@ -513,8 +510,7 @@ function paintWaiting(devices) {
 function waitingRowHtml(device) {
   const context = contextFor(device.id);
   const blocked = Boolean(context?.blocked);
-  const connecting = pairingOnScreen([device])?.phase === "connecting";
-  const word = blocked ? deviceAwayWord(context) : connecting ? "connecting…" : device.status;
+  const word = blocked ? deviceAwayWord(context) : isPairingConnecting(device) ? "connecting…" : device.status;
   return `
     <div class="projrow"><span class="pname">${esc(device.name)}</span>
       <span class="ppath mono" style="font-size:11px">${esc(device.fingerprint.slice(0, 16))}…</span>
@@ -544,6 +540,7 @@ const WAITING_TEXT = {
   blocked: devicesBlockedText,
   unreached: devicesNotReachedYetText,
   lone: (devices) => deviceUnreachableText(devices[0].name, contextFor(devices[0].id)?.offlineSince || Date.now()),
+  neverSeen: (devices) => pairingLateText(devices[0].name),
   all: allDevicesOfflineText,
 };
 
@@ -554,36 +551,28 @@ const waitingSituation = (devices) => {
   if (devices.some((device) => device.status === "online" && contextFor(device.id)?.blocked)) return "blocked";
   const unreached = devices.some((device) => device.status === "online" && !contextFor(device.id));
   if (unreached) return "unreached";
-  return devices.length === 1 ? "lone" : "all";
+  if (devices.length > 1) return "all";
+  // A lone machine the account has never heard from was approved and has not
+  // come up since: what to check is its bridge (#321).
+  return devices[0].last_seen_at === null ? "neverSeen" : "lone";
 };
 
-/** The device a pairing on this page is waiting for, when the account lists
- *  it and it is the page's news: still connecting, or late and not online. */
-function pairingOnScreen(devices) {
-  const pairing = pairingState();
-  const listed = pairing && devices.find((device) => device.id === pairing.deviceId);
-  if (!listed) return null;
-  if (pairing.phase === "late" && listed.status === "online") return null;
-  return { ...pairing, name: listed.name || pairing.name, listedOnline: listed.status === "online" };
-}
-
-const PAIRING_TEXT = {
-  connecting: (pairing) => pairingConnectingText(pairing.name, pairing.listedOnline),
-  late: (pairing) => pairingLateText(pairing.name),
-};
+/** The first device a pairing on this page is waiting for that the account
+ *  lists and does not call online yet. */
+const pairingOnScreen = (devices) => devices.find(isPairingConnecting) || null;
 
 const waitingText = (devices) => {
   const pairing = pairingOnScreen(devices);
-  return pairing ? PAIRING_TEXT[pairing.phase](pairing) : WAITING_TEXT[waitingSituation(devices)](devices);
+  return pairing ? pairingConnectingText(pairing.name) : WAITING_TEXT[waitingSituation(devices)](devices);
 };
 
 const waitingTitle = (devices) => {
   const pairing = pairingOnScreen(devices);
-  return pairing?.phase === "connecting" ? pairingConnectingTitle(pairing.name) : waitingForDeviceText(devices.length);
+  return pairing ? pairingConnectingTitle(pairing.name) : waitingForDeviceText(devices.length);
 };
 
 const watchingText = (devices) =>
-  pairingOnScreen(devices)?.phase === "connecting" ? "⟳ checking every second…" : "⟳ watching for a device to come online…";
+  pairingOnScreen(devices) ? "⟳ checking every second…" : "⟳ watching for a device to come online…";
 
 function renderWaiting(devices) {
   if (keepPaintedShell()) return;

@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { beforeEach, expect, it, vi } from "vitest";
 import { openAddDevice } from "../src/sheets/addDevice.js";
 import { lookupDevice, approveDevice } from "../src/api.js";
-import { pairingState, resetPendingPairing } from "../src/core/pendingPairing.js";
+import { pairingsConnecting, resetPendingPairing } from "../src/core/pendingPairing.js";
 
 vi.mock("../src/api.js", () => ({ lookupDevice: vi.fn(), approveDevice: vi.fn() }));
 
@@ -64,11 +64,11 @@ it("remembers the approved device as connecting, and nothing on a refusal", asyn
   document.querySelector("#paircode").value = "code";
   await document.querySelector("#plookup").onclick();
   await document.querySelector("#papprove").onclick();
-  expect(pairingState()).toBe(null);
+  expect(pairingsConnecting()).toEqual([]);
 
   approveDevice.mockResolvedValue(undefined);
   await document.querySelector("#papprove").onclick();
-  expect(pairingState()).toMatchObject({ deviceId: "d1", name: "Machine", phase: "connecting" });
+  expect(pairingsConnecting()).toMatchObject([{ deviceId: "d1", name: "Machine" }]);
   resetPendingPairing();
 });
 

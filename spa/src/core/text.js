@@ -128,15 +128,11 @@ export const waitingForDeviceText = (deviceCount) =>
  *  up (#321). */
 export const pairingConnectingTitle = (name) => `Connecting to ${name || "your device"}…`;
 
-/** What is happening with that device, by what the account list says of it:
- *  not online yet, its bridge has still to say so; online, the encrypted
- *  connection is being opened. */
-export const pairingConnectingText = (name, listedOnline) =>
-  listedOnline
-    ? `${name || "Your device"} is online. Opening an end-to-end encrypted connection to it…`
-    : `Approved. Waiting for ${name || "your device"} to come online — this usually takes a few seconds.`;
+/** What is happening with that device: its bridge has still to say it is up. */
+export const pairingConnectingText = (name) =>
+  `Approved. Waiting for ${name || "your device"} to come online — this usually takes a few seconds.`;
 
-/** The same device, still not online after its wait: what to check. */
+/** A device approved and never heard from since: what to check. */
 export const pairingLateText = (name) =>
   `${name || "Your device"} was approved but has not come online. Check that its bridge is running on that machine: the installer starts it, and after a manual build-bridge pair, run build-bridge install-service.`;
 

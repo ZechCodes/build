@@ -12,7 +12,7 @@
 
 import { $ } from "./dom.js";
 import { esc, nothingAnswersMark } from "./core/text.js";
-import { canAnswer, knownContexts, liveContexts, noteAccountPresence, onDeviceStateChanged, openedContext } from "./core/deviceContexts.js";
+import { canAnswer, knownContexts, noteAccountPresence, onDeviceStateChanged, openedContext } from "./core/deviceContexts.js";
 import { deviceAwayWord } from "./core/deviceAway.js";
 import { ICON_CHEVRON_DOWN, ICON_HOURGLASS, ICON_SETTINGS, ICON_WIFI_OFF } from "./core/icons.js";
 import { onUsageLimitsChanged, readCachedUsageLimits, untilAnyTextChanges, usageLimitText, usageLimitsOf } from "./core/usageLimits.js";
@@ -25,7 +25,7 @@ import { deviceWentAway, openDeviceSessions, retireDevice, syncDeviceRecoveryPre
 import { DEVICES_ADDRESS, readCached, subscribeCache, writeCached } from "./core/localCache.js";
 import { uiAddress, watchUiState } from "./core/localUiState.js";
 import { bridgeUpdateAvailable, bridgeUpdateStatus, onBridgeUpdatesChanged, trackBridgeUpdateDevices } from "./core/bridgeUpdates.js";
-import { accountReadCadence, isPairingConnecting, onPairingChanged, pairingLandedAmong } from "./core/pendingPairing.js";
+import { accountReadCadence, isPairingConnecting, onPairingChanged, pairingsLandedIn } from "./core/pendingPairing.js";
 
 let presenceGeneration = 0;
 const deviceListListeners = new Set();
@@ -50,6 +50,9 @@ function takeUpCachedDevices({ clearMissing = false } = {}) {
     if (!record && !clearMissing) return App.devices;
     const devices = Array.isArray(record?.value) ? record.value : [];
     App.devices = devices;
+    // A device just approved that the account now calls online has landed:
+    // the surfaces naming it as connecting repaint, and the poll slows down.
+    pairingsLandedIn(devices);
     trackBridgeUpdateDevices(devices);
     paintBridgeUpdateMark();
     syncDeviceRecoveryPresence(devices);
@@ -165,8 +168,8 @@ function armPresencePoll() {
   }, cadence);
 }
 
-// An approve speeds a running poll up at once, and a pairing that landed slows
-// it back down. Only a poll that is running: the gate stops this one while it
+// An approve speeds a running poll up at once, and a pairing that landed or
+// ran out slows it back down. Only a poll that is running: the gate stops this one while it
 // holds the page and paces its own.
 onPairingChanged(() => {
   if (presenceTimer !== null) armPresencePoll();
@@ -219,8 +222,6 @@ export async function readPresence() {
   const retired = retireWhatTheAccountNoLongerHas(listed, heldWhenAsked);
   markWhatTheAccountNoLongerLists(retired);
   openDeviceSessions(); // a late device, a machine that came back, one paired elsewhere
-  // A device just approved that answers now has landed: the poll slows down.
-  pairingLandedAmong(liveContexts().map((context) => context.deviceId));
   // Which device is home is what these statuses say: the picked device dropping
   // hands home to the first that is still online, and its coming back takes it
   // straight back.
@@ -417,7 +418,7 @@ function choiceHtml(deviceId, label, pressed) {
  *  opened yet has nothing of its own to say, so the account list speaks for it. */
 function deviceLabel(device) {
   const context = openedContext(device.id);
-  if (isPairingConnecting(device.id)) return `${device.name} (connecting…)`;
+  if (isPairingConnecting(device)) return `${device.name} (connecting…)`;
   if (deviceIsOffline(device)) return device.name;
   return context && !canAnswer(context) ? `${device.name} (${deviceAwayWord(context)})` : device.name;
 }

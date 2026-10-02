@@ -1,17 +1,17 @@
-// A device the reader has just approved, until it answers (#321).
+// Devices the reader has just approved, until each answers (#321).
 //
 // Approving a pairing used to land the reader on "watching for a device to
 // come online…" for half a minute or more: the bridge beat late, and the page
-// read the account every three seconds (gated) or fifteen (in the app). So the
+// read the account every three seconds (gated) or fifteen (in the app). So an
 // approve is remembered here, and for PAIRING_WINDOW_MS the account is read
 // every second, wherever the reader is, and the device is named while it comes
-// up. It is what this page did, not a read of any connection: the surfaces
-// that paint it paint the account list beside it, from the cache.
+// up. It is what this page did, not a read of any connection: a wait ends when
+// the cached account list calls the device online, or when its window runs
+// out, and either way the surfaces that named it hear so and repaint.
 //
-// Past the window the device is still remembered, as late, so the waiting
-// screen can say what to check rather than only that it is waiting. The phase
-// is read off the clock, not announced: the polls that pace themselves by it
-// tick every second while it lasts and see it end.
+// One entry per device, so approving a second machine while the first is still
+// coming up waits for both. Nothing here survives a reload: a page loaded
+// afterwards reads the account at its own cadence, which is what it did before.
 
 /** How long after an approve the device is expected. A bridge beats within a
  *  second of its relay socket coming up and every 30 s after, so one that has
@@ -21,58 +21,62 @@ export const PAIRING_WINDOW_MS = 90_000;
 /** How often the account is read while a just-approved device is expected. */
 export const PAIRING_CADENCE_MS = 1000;
 
-let held = null;
+/** deviceId → { deviceId, name, approvedAt, windowEnds } */
+const pending = new Map();
 const listeners = new Set();
 
 const announce = () => {
-  for (const listener of [...listeners]) listener(pairingState());
+  for (const listener of [...listeners]) listener();
 };
+
+function endPairing(deviceId) {
+  const pairing = pending.get(deviceId);
+  if (!pairing) return false;
+  clearTimeout(pairing.windowEnds);
+  pending.delete(deviceId);
+  return true;
+}
 
 /** The reader approved `device` (the lookup's answer: `device_id`, `name`). */
 export function notePairingApproved(device, now = Date.now()) {
-  if (!device?.device_id) return;
-  held = { deviceId: device.device_id, name: device.name || "", approvedAt: now };
+  const deviceId = device?.device_id;
+  if (!deviceId) return;
+  endPairing(deviceId);
+  const windowEnds = setTimeout(() => {
+    if (endPairing(deviceId)) announce();
+  }, PAIRING_WINDOW_MS);
+  pending.set(deviceId, { deviceId, name: device.name || "", approvedAt: now, windowEnds });
   announce();
 }
 
-/** The device being waited for, or null: `phase` is "connecting" inside the
- *  window and "late" after it. */
-export function pairingState(now = Date.now()) {
-  if (!held) return null;
-  return { ...held, phase: now - held.approvedAt < PAIRING_WINDOW_MS ? "connecting" : "late" };
+/** The devices still being waited for, oldest approve first. */
+export const pairingsConnecting = () =>
+  [...pending.values()].map(({ deviceId, name, approvedAt }) => ({ deviceId, name, approvedAt }));
+
+/** Whether a device as the account lists it is one being waited for: approved
+ *  here, inside its window, and not yet called online. */
+export const isPairingConnecting = (device) => pending.has(device?.id) && device.status !== "online";
+
+/** The account list was taken up: every device it calls online has landed. */
+export function pairingsLandedIn(devices) {
+  let landed = false;
+  for (const device of devices) {
+    if (device.status === "online" && endPairing(device.id)) landed = true;
+  }
+  if (landed) announce();
 }
 
-/** Whether `deviceId` is the device a pairing is still connecting. */
-export const isPairingConnecting = (deviceId, now = Date.now()) => {
-  const state = pairingState(now);
-  return Boolean(state && state.phase === "connecting" && state.deviceId === deviceId);
-};
-
-/** The device answered: nothing is pending any more. */
-export function pairingLanded(deviceId) {
-  if (!held || held.deviceId !== deviceId) return;
-  held = null;
-  announce();
-}
-
-/** End the wait if one of `deviceIds` — the machines answering now — is the
- *  device it is for. */
-export function pairingLandedAmong(deviceIds) {
-  if (held && deviceIds.includes(held.deviceId)) pairingLanded(held.deviceId);
-}
-
-/** Hear the pending device change: approved, or landed. */
+/** Hear the devices being waited for change: approved, landed, or run out. */
 export function onPairingChanged(listener) {
   listeners.add(listener);
   return () => listeners.delete(listener);
 }
 
-/** How often to read the account: every second while a device is connecting,
+/** How often to read the account: every second while a device is awaited,
  *  `slowMs` otherwise. */
-export const accountReadCadence = (slowMs, now = Date.now()) =>
-  pairingState(now)?.phase === "connecting" ? Math.min(slowMs, PAIRING_CADENCE_MS) : slowMs;
+export const accountReadCadence = (slowMs) => (pending.size ? Math.min(slowMs, PAIRING_CADENCE_MS) : slowMs);
 
 /** Forget everything (tests, account reset). */
 export function resetPendingPairing() {
-  held = null;
+  for (const deviceId of [...pending.keys()]) endPairing(deviceId);
 }

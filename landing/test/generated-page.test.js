@@ -5,6 +5,7 @@
 import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
@@ -15,6 +16,9 @@ const generatedPage = `${landingDir}generated/index.html`;
 // The notifications lab (#311): unlisted, so its path is written here once.
 const LAB_PATH = "/lab/notifications-133c027df9b5/";
 const labPage = `${landingDir}generated${LAB_PATH}index.html`;
+const PREVIEW_PATH = "/lab/hero-7c92e4b1a630/";
+const previewPage = `${landingDir}generated${PREVIEW_PATH}index.html`;
+const baselineManifest = fileURLToPath(new URL("./fixtures/generated-main.sha256", import.meta.url));
 
 let html = "";
 let lab = "";
@@ -106,6 +110,46 @@ describe("the notifications lab", () => {
   it("keeps the wall's styles to the lab", () => {
     assert.ok(linkedCss(lab).includes(".hero-wall"));
     assert.ok(!linkedCss(html).includes(".hero-wall"));
+  });
+});
+
+describe("the generated preview", () => {
+  it("keeps every byte of the existing home, notifications lab, and their built assets", () => {
+    const entries = readFileSync(baselineManifest, "utf8").trim().split("\n");
+    assert.equal(entries.length, 10, "the clean main build has ten generated files");
+    for (const entry of entries) {
+      const [, expected, path] = entry.match(/^([a-f0-9]{64})  (.+)$/) ?? [];
+      assert.ok(path, `invalid baseline entry: ${entry}`);
+      const file = `${landingDir}generated/${path}`;
+      assert.ok(existsSync(file), `missing baseline file: ${path}`);
+      const actual = createHash("sha256").update(readFileSync(file)).digest("hex");
+      assert.equal(actual, expected, `baseline bytes changed: ${path}`);
+    }
+  });
+
+  it("builds an unlisted, complete document with noindex and nofollow", () => {
+    const preview = readFileSync(previewPage, "utf8");
+    assert.match(preview, /^<!DOCTYPE html>/i);
+    assert.match(preview, /<html[^>]*data-field="full"/);
+    assert.ok(preview.includes('<meta name="robots" content="noindex, nofollow">'));
+    assert.ok(!html.includes(PREVIEW_PATH));
+    assert.ok(!lab.includes(PREVIEW_PATH));
+  });
+
+  it("loads its preview runtime and replay boot through external same-origin scripts", () => {
+    const preview = readFileSync(previewPage, "utf8");
+    const tags = preview.match(/<script\b[^>]*>(?:[\s\S]*?<\/script>)?/g) ?? [];
+    assert.ok(tags.length > 0);
+    for (const tag of tags) {
+      const [, source] = tag.match(/\bsrc="([^"]+)"/) ?? [];
+      assert.ok(source?.startsWith("/landing/generated/"), tag);
+      assert.ok(existsSync(`${landingDir}${source.slice("/landing/".length)}`), source);
+      assert.ok(!tag.replace(/<script\b[^>]*>/, "").replace(/<\/script>$/, "").trim(), "inline script body");
+    }
+    assert.ok(!preview.includes("<style"));
+    assert.ok(preview.includes('src="/landing/generated/hero333-boot.js"'));
+    assert.ok(preview.includes('src="/landing/generated/hero333/preview.js"'));
+    assert.ok(!readFileSync(`${landingDir}generated/hero333-boot.js`, "utf8").includes("sessionStorage"));
   });
 });
 

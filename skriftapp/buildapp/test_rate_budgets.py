@@ -130,12 +130,16 @@ async def test_fifty_people_on_one_address_are_never_answered_429():
     assert refused == []
 
 
-# A device being paired on the same address (#321): its bridge asks for its
-# approval every half second, and the tab that approved it reads the devices
-# every second while it comes up.
+# A device being paired on the same address (#321), in the minute it is
+# approved: its bridge asks for its approval every second until the approve
+# (bridge/src/pairing.rs), and from then the tab that approved it reads the
+# devices every second while it comes up (spa/src/core/pendingPairing.js).
+# They take turns, the bridge stopping within a second of the approve the tab
+# starts reading at, so the minute holds 60 of them and the second they
+# overlap: 50 x 10 + 62 = 562 of the 600.
 PAIRING_MINUTE = [
-    *[("GET", "/api/devices/7d1f1d4e-8a54-4a4e-9a8e-2f7d2c1b9a10/status")] * 120,
-    *[("GET", "/api/devices")] * 60,
+    *[("GET", "/api/devices/7d1f1d4e-8a54-4a4e-9a8e-2f7d2c1b9a10/status")] * 31,
+    *[("GET", "/api/devices")] * 31,
 ]
 
 

@@ -30,7 +30,7 @@ LANDING_RATE_LIMIT_WINDOWS = [(2000, 60.0)]
 # Sized for about 50 people behind one NAT (#173); the arithmetic is in app.yaml.
 PAGE_RATE_LIMIT_WINDOWS = [(300, 60.0)]
 APP_STATIC_RATE_LIMIT_WINDOWS = [(1200, 60.0)]
-SPA_API_RATE_LIMIT_WINDOWS = [(720, 60.0)]
+SPA_API_RATE_LIMIT_WINDOWS = [(600, 60.0)]
 WAITLIST_INVITE_SEND_RATE_LIMIT_WINDOWS = [(20, 60.0), (300, 86400.0)]
 # A bridge beats twice a minute, and a beat refused in passing is tried again
 # after about 5, 10 and 20 s (bridge/src/presence.rs): fifty bridges behind one

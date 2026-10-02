@@ -93,10 +93,16 @@ run_case() {
         escaping-link) ln -s ../../outside "$TEST_ROOT/payload/escape";;
         absolute-link) ln -s /tmp "$TEST_ROOT/payload/escape";;
         missing-binary) rm "$TEST_ROOT/payload/build-desktop";;
+        symlinked-binary)
+            # A valid, contained link reaches the binary-shape check.
+            mv "$TEST_ROOT/payload/build-desktop" "$TEST_ROOT/payload/real-build-desktop"
+            ln -s real-build-desktop "$TEST_ROOT/payload/build-desktop"
+            ;;
+        missing-app) mv "$TEST_ROOT/payload/Build.app" "$TEST_ROOT/payload/Other.app";;
         bad-signature) TEST_SIGNATURE_STATUS=1;;
     esac
     case "$asset" in
-        *.zip) "$TEST_TAR" --format zip -cf "$TEST_ROOT/mirror/$asset" -C "$TEST_ROOT/payload" Build.app;;
+        *.zip) "$TEST_TAR" --format zip -cf "$TEST_ROOT/mirror/$asset" -C "$TEST_ROOT/payload" .;;
         *) tar -czf "$TEST_ROOT/mirror/$asset" -C "$TEST_ROOT/payload" .;;
     esac
     if [ "$mode" = absolute-path ]; then
@@ -193,6 +199,9 @@ run_case() {
     esac
     # A refusal reads as an error, names what failed, and says what to do next.
     case "$mode" in
+        # chmod/mv can fail later too; require the archive check's diagnostic.
+        missing-binary|symlinked-binary) says "not contain build-desktop." ;;
+        missing-app) says "not contain Build.app." ;;
         tampered) says "Error: build-desktop-linux-x86_64.tar.gz does not match its published" \
             "https://github.com/example/releases/releases/download/desktop-v1.2.3" "Run the installer again" ;;
         bad-signature) says "Error: the release signature did not verify" "none of the expected identities matched" \
@@ -222,9 +231,10 @@ if [ "$has_pty" = 1 ]; then
 else
     printf 'skip terminal cases: no util-linux script\n'
 fi
-for mode in tampered download-failure missing-checksum bad-signature bad-version corrupt-archive absolute-path escaping-link absolute-link missing-binary; do
+for mode in tampered download-failure missing-checksum bad-signature bad-version corrupt-archive absolute-path escaping-link absolute-link missing-binary symlinked-binary; do
     check "$mode" Linux x86_64 linux-x86_64 "$mode"
 done
+check missing-app Darwin arm64 macos-arm64 missing-app
 check unsupported Plan9 mips linux-x86_64 unsupported
 [ "$failures" = 0 ] || exit 1
 printf 'install-desktop.sh: every case passed\n'

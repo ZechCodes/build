@@ -292,7 +292,7 @@ a { color:inherit; }
 /* A filled button at half opacity still reads as pressable: a disabled
    install drops the fill and reads as the other disabled buttons do. */
 .bridge-update-actions .btn.primary:disabled { background:var(--panel); border-color:var(--line); color:var(--ink); }
-.bridge-update-command { margin:6px 0 0; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--panel2); overflow-x:auto; user-select:all; }
+.bridge-update-command { margin:6px 0 0; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--panel2); white-space:pre-wrap; overflow-wrap:anywhere; user-select:all; }
 .bridge-update-confirm { margin-top:14px; padding:12px 14px; border:1px solid var(--amber); border-radius:9px; max-width:520px; }
 .bridge-update-confirm p { margin:0; }
 .device-picker-offline { color:var(--dim); }

@@ -50,6 +50,53 @@ for (const { label, width, height, state } of [
   }, 30_000);
 }
 
+async function mountDevelopmentPanel(page, basePath, status) {
+  await mountLayout(page, '<div class="device-settings"><div id="device-updates-panel"></div></div>', { basePath });
+  await loadBrowserModules(page, { panel: "src/core/bridgeUpdatePanel.js" }, basePath);
+  await page.evaluate((answer) => {
+    window.__layoutModules.panel.mountBridgeUpdatePanel(document.querySelector("#device-updates-panel"), {
+      deviceId: "dev-box", callRpc: async () => answer,
+    });
+  }, status);
+  await page.waitForFunction(() => document.querySelector(".bridge-update-state")?.textContent.includes("0.3.0"));
+}
+
+const DEVELOPMENT = { ...UPDATE, development_build: true, can_install: false };
+
+it("draws a development build's disabled Install without the fill that says press me", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await mountDevelopmentPanel(page, basePath, { ...DEVELOPMENT, can_replace_development_build: false });
+    const looks = await page.evaluate(() => {
+      const style = (selector) => getComputedStyle(document.querySelector(selector));
+      const command = document.querySelector(".bridge-update-command").getBoundingClientRect();
+      return {
+        now: style("[data-bridge-install-now]").backgroundColor,
+        check: style("[data-bridge-check]").backgroundColor,
+        disabled: document.querySelector("[data-bridge-install-now]").disabled,
+        commandRight: command.right, viewport: innerWidth,
+      };
+    });
+    expect(looks.disabled).toBe(true);
+    expect(looks.now).toBe(looks.check);
+    expect(looks.commandRight).toBeLessThanOrEqual(looks.viewport);
+    await captureLayout(page, "development-cannot-replace-mobile.png");
+  }, { width: 390, height: 760 });
+}, 30_000);
+
+it("shows the replacement warning on a development build the app can replace", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await mountDevelopmentPanel(page, basePath, { ...DEVELOPMENT, can_replace_development_build: true });
+    await page.locator("[data-bridge-install-now]").click();
+    const warning = await page.evaluate(() => {
+      const box = document.querySelector(".bridge-update-confirm").getBoundingClientRect();
+      return { right: box.right, height: box.height, viewport: innerWidth };
+    });
+    expect(warning.height).toBeGreaterThan(0);
+    expect(warning.right).toBeLessThanOrEqual(warning.viewport);
+    await captureLayout(page, "development-replace-warning-mobile.png");
+  }, { width: 390, height: 760 });
+}, 30_000);
+
 it("renders the complete device settings view with a connected fixture bridge", async () => {
   await withLayoutPage(async ({ page, basePath }) => {
     const errors = [];

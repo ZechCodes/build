@@ -1096,10 +1096,7 @@ describe("the two presses", () => {
     expect(notifyError).not.toHaveBeenCalled();
   });
 
-  // #57, the other half of being honest about a bridge that cannot carry
-  // files: do not offer the press at all. The apology below is for a bridge
-  // that claimed it could and then did not.
-  it("offers the paperclip on a bridge that carries files, and none on one that does not", async () => {
+  it("offers the paperclip before the bridge announces file support", async () => {
     await mount();
     await openComposer();
     expect(host.querySelector(".composer-attach")).not.toBeNull();
@@ -1110,11 +1107,30 @@ describe("the two presses", () => {
     host = document.querySelector("#pane");
     await mount();
     await openComposer();
-    expect(host.querySelector(".composer-attach")).toBeNull();
-    expect(host.querySelector(".composer-tray")).toBeNull();
-    // The composer is otherwise the same composer.
+    expect(host.querySelector(".composer-attach")).not.toBeNull();
+    expect(host.querySelector(".composer-tray")).not.toBeNull();
     expect(host.querySelector(".task-compose-title")).not.toBeNull();
     expect(host.querySelector("[data-compose-file]")).not.toBeNull();
+  });
+
+  it("keeps a task draft and explains a refused attachment plainly", async () => {
+    carriesAttachments = false;
+    await mount();
+    await openComposer();
+    typeIn(".task-compose-title", "Keep this task");
+    typeIn("#task-new-body", "Keep this description");
+    call.mockImplementation(async (method) => {
+      if (method === "tasks.attach") throw new Error("unknown method: tasks.attach");
+      return { tasks: [] };
+    });
+    drop(new File(["png"], "shot.png", { type: "image/png" }));
+    await vi.waitFor(() => expect(host.querySelector(".composer-chip.failed")).not.toBeNull());
+    expect(host.querySelector(".task-compose-title").value).toBe("Keep this task");
+    expect(host.querySelector("#task-new-body").value).toBe("Keep this description");
+    expect(host.querySelector(".composer-chip.failed .composer-chip-note").textContent)
+      .toBe("This bridge does not support task attachments.");
+    expect(host.querySelector(".task-compose-error").textContent)
+      .toBe("shot.png: This bridge does not support task attachments.");
   });
 
   // The v1 facade drops a field the bridge predates rather than refusing it,

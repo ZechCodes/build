@@ -226,21 +226,17 @@ describe("the inline task composer", () => {
     expect(document.querySelector(".composer-dropmask")).not.toBeNull();
   });
 
-  // A press that cannot work is worse than no press: a bridge with no
-  // `tasks.attach` gets the plain box, not one that apologises afterwards.
-  it("offers no paperclip at all against a bridge that cannot carry files", () => {
+  it("keeps the paperclip available before a bridge announces file support", () => {
     open({ attachable: false });
-    expect(document.querySelector(".composer-attach")).toBeNull();
-    expect(document.querySelector(".composer-tray")).toBeNull();
-    expect(document.querySelector(".composer-dropmask")).toBeNull();
-    expect(document.querySelector(".task-compose .composer.attachable")).toBeNull();
-    // And the rest of the form is untouched — this is one affordance gone,
-    // not a degraded composer.
+    expect(document.querySelector(".composer-attach")).not.toBeNull();
+    expect(document.querySelector(".composer-tray")).not.toBeNull();
+    expect(document.querySelector(".composer-dropmask")).not.toBeNull();
+    expect(document.querySelector(".task-compose .composer.attachable")).not.toBeNull();
     expect(document.querySelector("#task-new-summary")).not.toBeNull();
     expect(document.querySelector("#task-new-body")).not.toBeNull();
   });
 
-  it("still files, and carries no attachments, without the tray", async () => {
+  it("still files without attachments when the tray is empty", async () => {
     open({ attachable: false });
     type("#task-new-summary", "Kanban drag");
     press("[data-compose-file]");

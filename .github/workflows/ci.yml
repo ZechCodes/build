@@ -246,6 +246,11 @@ jobs:
       - name: vitest
         working-directory: spa
         run: npx vitest run
+      # Serial review captures assert current UI behavior without extending
+      # npm test or writing over the tracked design screenshots.
+      - name: Inbox captures
+        working-directory: spa
+        run: nice -n 10 npm run test:captures
 
   # The landing page's own gate. `npm test` BUILDS the Astro document and then
   # reads it back (landing/test/), so this job is both the build proof and the

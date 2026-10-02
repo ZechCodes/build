@@ -15,6 +15,7 @@
     "lint": "eslint src",
     "test": "vitest run",
     "test:browser": "vitest run test/browser",
+    "test:captures": "node test/browser/checkInboxCaptures.mjs",
     "capture:board": "node test/browser/captureBoard.mjs",
     "test:watch": "vitest"
   },

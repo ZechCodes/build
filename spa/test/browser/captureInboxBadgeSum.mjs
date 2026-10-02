@@ -150,7 +150,7 @@ await withLayoutPage(async ({ page, basePath }) => {
     return `top ${document.querySelector("#inbox-open .inbox-open-count").textContent || 0} · ${heads.join(" · ")}`;
   });
   await page.mouse.move(0, 0);
-  await page.screenshot({ path: `${output}/inbox-popover.png` });
+  await page.screenshot({ path: `${output}/inbox-popover.png`, animations: "disabled" });
   console.log(said);
   for (const project of ["build", "smarter"]) {
     const fold = page.locator(`[data-project-fold="${DEVICE}/${project}"]`);
@@ -160,8 +160,9 @@ await withLayoutPage(async ({ page, basePath }) => {
     `${DEVICE}/${project}`);
   }
   await expectBadges(page);
+  await page.evaluate(() => document.activeElement?.blur());
   await page.mouse.move(0, 0);
-  await page.screenshot({ path: `${output}/inbox-popover-folded.png` });
+  await page.screenshot({ path: `${output}/inbox-popover-folded.png`, animations: "disabled" });
 }, { width: 390, height: 844 });
 
 console.log(`captured into ${output}`);

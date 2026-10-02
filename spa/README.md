@@ -40,6 +40,7 @@ nice -n 10 npm install
 nice -n 10 npm run lint       # eslint: one rule — no function over complexity 10
 nice -n 10 npm test           # vitest: session core, diff, markdown, notes, router, terminal
 nice -n 10 npm run test:browser # Chromium layout regressions, also included in npm test
+nice -n 10 npm run test:captures # sequential inbox review captures (separate CI gate)
 nice -n 10 npm run build      # emits skriftapp/buildapp/static/ (served by BuildController)
 nice -n 10 npm run dev        # Vite dev server (proxy /api to a running skriftapp yourself)
 ```
@@ -47,6 +48,20 @@ nice -n 10 npm run dev        # Vite dev server (proxy /api to a running skrifta
 Browser tests use the `playwright-core` dev dependency and require Chromium or
 Chrome on `PATH`, or `CHROMIUM_PATH` set to its executable. The app image only
 runs `npm run build`; it does not need a browser.
+
+`test:captures` runs `captureInboxBadgeSum`, `captureTaskUnread` and
+`captureWatching` against sample data in headless Chromium. It checks badge
+values, fold behavior and watching controls, with no bridge or relay. The
+runner removes inherited `BRIDGE_*` variables from each child. It prints and
+retains a temporary output directory; pass `-- /path/to/captures` to choose one.
+Direct script invocations also accept an output directory, otherwise they write
+to their original `design/` directories.
+
+CI runs the capture gate separately after Vitest. It stays out of `npm test`
+because the scripts start multiple browser/server pairs and write review PNGs;
+those serial captures should not compete with the parallel layout suite. A
+failed assertion or capture fails the command by exit code. This is a DOM
+assertion gate, not a pixel comparison against historical screenshots.
 
 ## Configuration
 

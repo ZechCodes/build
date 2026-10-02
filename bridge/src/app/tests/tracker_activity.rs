@@ -224,7 +224,14 @@ fn a_review_task_consumes_its_dispatch_marker_without_moving_on_report() {
         assert_eq!(read["result"]["task"]["status"], expected);
         assert!(!state.dispatched_task.contains_key(&agent_id));
     }
-    assert!(!event_kinds(&mut state, &reviewed).contains(&"moved".into()));
+    let timeline = state.handle(req("tasks.get", json!({ "task_id": reviewed })))["result"]
+        ["timeline"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert!(!timeline
+        .iter()
+        .any(|entry| entry["kind"] == "moved" && entry["payload"]["by"] == "report"));
 }
 
 /// An agent whose turn stopped at a usage limit mid-task (#58) is still working

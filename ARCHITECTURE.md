@@ -876,7 +876,11 @@ In practice:
   workspace drafts use previously cached ownership. A present conversation
   anywhere wins, including on unwatched runs. Unknown, provisional and legacy
   owners remain when the lists cannot establish deletion; no age cap touches
-  a live owner's draft. Pushed owner lists trigger a fresh three-list read
+  a live owner's draft. Cleanup does not prune project-keyed task composers
+  (`task-composer:`), provisional chats (`chat:draft:*`), project settings
+  (`project-settings:`), task comments (`tracker-task:*`), or global
+  `compose:` and `new-project:` drafts. Those need their own ownership rules.
+  Pushed owner lists trigger a fresh three-list read
   only when recognized draft candidates exist, since the push may predate a
   newly created owner. Confirmation follows ordinary push writes without
   delaying later pushed items. Failed/incomplete reads, intervening ownership writes

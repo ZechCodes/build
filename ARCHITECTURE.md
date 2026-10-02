@@ -646,8 +646,11 @@ It adds `review_actions`, one row per selected source with its ordered step
 results. Admission checks the review version and records running sources in
 one transaction. Each step records its input and result before the next starts;
 running rows prevent another action on that source until the operation ends.
-Daemon recovery marks unfinished rows interrupted, preserving successful steps
-without replaying Git. Ordinary database opens do not perform this recovery.
+Daemon recovery reclaims registered, owned temporary review checkouts for
+unfinished sources, then marks their rows interrupted without replaying Git.
+Ownership and child-process markers protect live or uncertain merge children;
+temporary review checkouts are never reused as user target checkouts. Ordinary
+database opens do not perform this recovery.
 `read.rs` uses the recorded common Git directory and saved OIDs for commit
 diffs, full tree listings and read-only, paged blobs, including unchanged files.
 Diff listings cap file rows at 1,000 with `files_truncated`; patch reads retain
@@ -678,7 +681,11 @@ target checkout or an owned temporary checkout on the target branch. Separate
 repositories import only the saved OID under a private ref. Push is non-forced
 to a configured remote and explicit branch, using the saved head or a recorded
 merge tip. A Push retry can name the successful merge action; it never reruns
-Merge. Destination reads cover only the latest snapshot's directories, so
+Merge. Merge disables commit signing and has a five-minute deadline; Push has
+ten minutes, while reads retain thirty seconds. A merge timeout restores the
+previously clean checkout only after verifying its state and any leftover lock.
+A Push timeout is interrupted with an unknown outcome and a prompt to check the
+remote. Destination reads cover only the latest snapshot's directories, so
 retained history adds no Git reads to `tasks.review.get`. Results survive
 completion and workspace replacement; an old result
 still names its original snapshot. None of these operations finishes or removes

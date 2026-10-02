@@ -2,7 +2,7 @@
 // When a conversation compacts, chosen on the ⋮ of its head.
 //
 // Nothing here is mocked that the choice passes through: the bridge greets
-// through the real greeting path, so the gate is the adapter's own; the verb
+// through the real greeting path where needed; the verb
 // goes out through the device's real `call`; and a refusal is read off the
 // notices the real notify module draws.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -112,7 +112,9 @@ let rail;
 const SETTINGS_CAPABILITIES = ["conversations.settings"];
 
 const mountWorkspaceRail = async (capabilities = SETTINGS_CAPABILITIES) => {
-  await greetBridge(async () => ({ push_events: true, api_version: "2.0.0", capabilities }), { deviceId: DEVICE_ID });
+  if (capabilities !== null) {
+    await greetBridge(async () => ({ push_events: true, api_version: "2.0.0", capabilities }), { deviceId: DEVICE_ID });
+  }
   await writeRailBoard({
     projects: [{ project_id: PROJECT_ID, name: "build" }],
     workspaces: [{ id: WORKSPACE_ID, project_id: PROJECT_ID, name: "login", status: "ready", entity_id: WORKSPACE_OWNER }],
@@ -265,11 +267,18 @@ describe("compaction on the conversation's menu", () => {
     expect(compactionRows().map((row) => row.dataset.action)).not.toContain("compact:250000");
   });
 
-  it("is not offered by a bridge whose greeting does not name conversations.settings", async () => {
+  it("shows the digest's compaction choice before greeting", async () => {
+    digestCompaction = { max_context_tokens: 300000, compact_at_tokens: 300000 };
+    await mountWorkspaceRail(null);
+
+    expect(markedRow().dataset.action).toBe("compact:300000");
+  });
+
+  it("keeps the compaction rows when a bridge's greeting does not name conversations.settings", async () => {
     await mountWorkspaceRail([]);
 
     expect(menuCaret()).not.toBe(null);
-    expect(compactionRows()).toEqual([]);
+    expect(compactionRows()).toHaveLength(5);
   });
 
   it.each([
@@ -391,6 +400,20 @@ describe("compaction on the conversation's menu", () => {
     await choose("compact:150000");
 
     expect(errorNotices().some((text) => text.includes("Build could not change when this chat compacts."))).toBe(true);
+    expect(markedRow().dataset.action).toBe("compact:default");
+  });
+
+  it("says an unsupported compaction command plainly and keeps the cached choice", async () => {
+    answerSettings = () => {
+      throw Object.assign(new Error("unknown method: conversation.settings"), { code: "unknown_method" });
+    };
+    await mountWorkspaceRail([]);
+
+    await choose("compact:150000");
+
+    expect(settingsAsked).toEqual([{ entity_id: WORKSPACE_OWNER, agent_id: "wa-1", max_context_tokens: 150000 }]);
+    expect(errorNotices()).toEqual(["This device does not support changing when this chat compacts.×"]);
+    expect((await cachedAgent()).max_context_tokens).toBe(null);
     expect(markedRow().dataset.action).toBe("compact:default");
   });
 });

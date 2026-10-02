@@ -9,20 +9,8 @@
 // by these names: if the bridge lands something different, this file changes
 // and `trackerTaskItem` is the only thing that has to.
 
-import { describe, it, expect, vi } from "vitest";
-
-// These rows only exist on a bridge that carries watching (#65), so the fixture
-// says what the machine they are on can do.
-//
-// Mocking the capability read rather than a version: the gate moved onto
-// `capabilities.tasks.watching`, and a fixture that kept answering with a
-// version would have gone on passing while the gate read `undefined` — which
-// looks exactly like the gate working. railWatchSwitch.test.js is where a real
-// greeting proves the wiring.
-const capabilities = vi.fn(() => ({ tasks: { watching: true } }));
-vi.mock("../src/core/changeEvents.js", () => ({ bridgeCapabilities: (...args) => capabilities(...args) }));
-
-const { inboxEntries, entryRoute, entryKeyOf } = await import("../src/core/inbox.js");
+import { describe, it, expect } from "vitest";
+import { inboxEntries, entryRoute, entryKeyOf } from "../src/core/inbox.js";
 
 /** One watched task, as #64 will push it. */
 const taskRow = (over = {}) => ({
@@ -160,34 +148,5 @@ describe("when the row says it moved", () => {
     const [entry] = listed([row]);
     expect(entry.anchorMs).toBe(Date.parse("2026-09-21T00:06:00Z"));
     expect(entry.lastActivityMs).toBe(Date.parse("2026-09-21T00:06:00Z"));
-  });
-});
-
-describe("the bridge that has never heard of watching", () => {
-  // Such a machine pushes no such row, and one arriving from anywhere else is
-  // not something this client can act on: Mute and Done on it would call verbs
-  // that bridge refuses.
-  const withoutWatching = () => capabilities.mockReturnValue({ tasks: { attachments: true, watching: false } });
-
-  it("lists no task rows at all", () => {
-    withoutWatching();
-    expect(listed([taskRow()])).toEqual([]);
-  });
-
-  it("leaves its conversation rows alone", () => {
-    withoutWatching();
-    expect(listed([branchRow(), taskRow()]).map((row) => row.kind)).toEqual(["branch"]);
-  });
-
-  // An adapter older than the flag has no `tasks` group at all, which must
-  // read as no rather than throw on the way past.
-  it("lists none for an adapter that predates the flag entirely", () => {
-    capabilities.mockReturnValue({});
-    expect(listed([taskRow()])).toEqual([]);
-  });
-
-  it("lists them again on a bridge that does carry it", () => {
-    capabilities.mockReturnValue({ tasks: { watching: true } });
-    expect(listed([taskRow()]).map((row) => row.kind)).toEqual(["tracker_task"]);
   });
 });

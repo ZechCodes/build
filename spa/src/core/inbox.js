@@ -33,7 +33,6 @@
 // No DOM, no app imports — the wiring (core/inboxView.js) renders these.
 
 import { esc } from "./text.js";
-import { carriesWatching } from "./trackerWatch.js";
 import { entityIdOf } from "./entityId.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT } from "./icons.js";
 import { workspaceRoute } from "./projectModel.js";
@@ -671,11 +670,8 @@ function isListed(item) {
   // A watched task is listed because it is watched. The rules below are the
   // legacy task's — a state machine and a branch implementing it — and a
   // tracker task has neither; `status` here is a board column, not a state.
-  //
-  // Gated on the bridge that pushes it (#65): a machine below 1.9.0 sends no
-  // such row, and one arriving from anywhere else is not something this client
-  // can act on — Mute and Done on it would call verbs that bridge refuses.
-  if (item.kind === TRACKER_TASK) return carriesWatching(item.deviceId);
+  // Its cached presence is enough; a greeting does not decide what is listed.
+  if (item.kind === TRACKER_TASK) return true;
   if (FINISHED_STATES.has(item.state)) return false;
   return !(item.kind === "task" && item.implementation_active);
 }

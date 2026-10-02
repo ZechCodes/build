@@ -71,6 +71,7 @@ export function mountTaskReviewPage(host, options) {
       onTaskChanged: options.onTaskChanged,
       onSaved: async (verb) => {
         if (verb !== "snapshot") return;
+        await repository.refresh();
         await hydrate();
         await choose({ snapshotId: review()?.snapshots.at(-1)?.id, directoryId: null, view: null, path: "", anchor: null });
       },

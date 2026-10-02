@@ -43,9 +43,8 @@ function sourceHtml(destination, directory, choice, rows) {
 }
 
 function retryable(row) {
-  const merge = row.steps?.find((step) => step.kind === "merge" && step.status === "succeeded");
   const push = row.steps?.find((step) => step.kind === "push" && ["failed", "interrupted"].includes(step.status));
-  return merge && push?.remote && push?.branch ? push : null;
+  return push?.remote && push?.branch ? push : null;
 }
 
 function resultHtml(row, canAct) {
@@ -86,25 +85,66 @@ function requestError(sources) {
   return "";
 }
 
+const stepMatches = (step, wanted, kind) => step?.kind === kind && step.branch === wanted?.branch &&
+  (step.remote || "") === (wanted?.remote || "");
+const succeeded = (row) => row?.status === "succeeded" && row.steps.every((step) => step.status === "succeeded");
+const sourceMatches = (row, source) => row.directory_id === source.directory_id &&
+  row.steps?.length === Number(Boolean(source.merge)) + Number(Boolean(source.push)) &&
+  (!source.merge || stepMatches(row.steps[0], source.merge, "merge")) &&
+  (!source.push || stepMatches(row.steps.at(-1), source.push, "push"));
+
+function resolvedRow(rows, source) {
+  const full = rows.filter((row) => sourceMatches(row, source));
+  const success = full.find(succeeded);
+  if (success) return success;
+  const merged = source.merge && source.push && full.find((row) => row.steps[0]?.status === "succeeded");
+  const pushed = merged && rows.find((row) => row.directory_id === source.directory_id && row.steps?.length === 1 &&
+    stepMatches(row.steps[0], source.push, "push") && succeeded(row) &&
+    row.steps[0].input_head === merged.steps[0].result_head && row.steps[0].merge_action_id === merged.id);
+  if (pushed) return { ...merged, status: "succeeded", steps: [merged.steps[0], pushed.steps[0]] };
+  return full.at(-1);
+}
+
 function matchingRows(review, intent) {
   const rows = (review?.actions || []).filter((row) => row.snapshot_id === intent.snapshotId && !intent.before.includes(row.id)
     && row.actor?.kind === "user");
-  return intent.sources.map((source) => rows.find((row) => row.directory_id === source.directory_id &&
-    row.steps?.length === Number(Boolean(source.merge)) + Number(Boolean(source.push)) &&
-    row.steps.every((step, index) => {
-      const wanted = index === 0 && source.merge ? { kind: "merge", ...source.merge } : { kind: "push", ...source.push };
-      return step.kind === wanted.kind && step.branch === wanted.branch && (step.remote || "") === (wanted.remote || "");
-    })));
-}
-
-function unresolvedFailures(review, snapshot) {
-  const latest = new Map();
-  for (const row of actionRows(review, snapshot)) latest.set(row.directory_id, row);
-  return [...latest.values()].some((row) => ["failed", "interrupted", "running"].includes(row.status));
+  return intent.sources.map((source) => resolvedRow(rows, source));
 }
 
 function completedDescription(rows) {
-  return rows.flatMap((row) => row.steps.map((step) => `${step.kind === "merge" ? "merged" : "pushed"} ${row.source_name || row.directory_id} ${step.kind === "merge" ? `to ${step.branch}` : `to ${step.remote}/${step.branch}`}`)).join("; ");
+  const steps = rows.flatMap((row) => row.steps.map((step) => ({ row, step })));
+  const detail = steps.map(({ row, step }) => `${step.kind === "merge" ? "merged" : "pushed"} ${row.source_name || row.directory_id} ${step.kind === "merge" ? `to ${step.branch}` : `to ${step.remote}/${step.branch}`}`).join("; ");
+  if (new TextEncoder().encode(detail).length <= 2000) return detail;
+  const merges = steps.filter(({ step }) => step.kind === "merge").length;
+  const pushes = steps.filter(({ step }) => step.kind === "push").length;
+  return `Merged ${merges} source${merges === 1 ? "" : "s"}; pushed ${pushes} source${pushes === 1 ? "" : "s"}`;
+}
+
+function focusedControl(host) {
+  const active = document.activeElement;
+  if (!host.contains(active)) return null;
+  const index = [...host.querySelectorAll("input, select, textarea, button")].indexOf(active);
+  return index < 0 ? null : { index, start: active.selectionStart, end: active.selectionEnd };
+}
+
+function restoreFocus(host, focused) {
+  if (!focused) return;
+  const control = host.querySelectorAll("input, select, textarea, button")[focused.index];
+  control?.focus();
+  if (control?.setSelectionRange && focused.start !== null) control.setSelectionRange(focused.start, focused.end);
+}
+
+function submittedIntent(draft, snapshot, review, sources, retry) {
+  const original = retry && draft.intent?.snapshotId === snapshot.id ? draft.intent : null;
+  const pendingRetry = { directories: sources.map((source) => source.directory_id), before: actionRows(review, snapshot).map((row) => row.id) };
+  return original ? { ...original, paused: false, pendingRetry } :
+    { snapshotId: snapshot.id, sources, before: actionRows(review, snapshot).map((row) => row.id), paused: false };
+}
+
+function retryHasResult(review, snapshot, pendingRetry) {
+  if (!pendingRetry) return true;
+  const newer = actionRows(review, snapshot).filter((row) => !pendingRetry.before.includes(row.id));
+  return pendingRetry.directories.every((id) => newer.some((row) => row.directory_id === id));
 }
 
 export function mountTaskReviewActions(host, options) {
@@ -124,11 +164,11 @@ export function mountTaskReviewActions(host, options) {
   const editChoice = (id, changes) => save({ selected: { ...draft.selected, [id]: { ...draft.selected[id], ...changes } } });
   const setError = (message) => { error = message; paint(); };
 
-  async function act(sources) {
+  async function act(sources, retry = false) {
     if (busy || !sources.length) return;
     busy = true;
     setError("");
-    const intent = { snapshotId: snapshot.id, sources, before: actionRows(review, snapshot).map((row) => row.id) };
+    const intent = submittedIntent(draft, snapshot, review, sources, retry);
     save({ intent });
     try {
       await state.flush();
@@ -147,24 +187,26 @@ export function mountTaskReviewActions(host, options) {
       save({ intent: null });
       await state.flush();
       await onTaskChanged?.();
-    } catch (failure) { setError(reviewFailure(failure)); }
+    } catch (failure) { completingVersion = null; setError(reviewFailure(failure)); }
   }
 
   function checkCompletion() {
-    if (!draft.intent || !review || review.state !== "open") return;
+    if (busy || !draft.intent || draft.intent.paused || !review || review.state !== "open") return;
+    if (!retryHasResult(review, snapshot, draft.intent.pendingRetry)) return;
     const rows = matchingRows(review, draft.intent);
     if (rows.some((row) => !row)) return;
-    if (rows.some((row) => ["failed", "interrupted"].includes(row.status))) { save({ intent: null }); return; }
-    if (unresolvedFailures(review, snapshot)) return;
+    if (rows.some((row) => ["failed", "interrupted"].includes(row.status))) { save({ intent: { ...draft.intent, paused: true } }); return; }
     if (rows.every((row) => row.status === "succeeded" && row.steps.every((step) => step.status === "succeeded"))) void complete(rows);
   }
 
   function renderHtml(rows) {
     const wasOpen = host.querySelector('[data-review-act-sheet]')?.open || false;
-    const form = support.act && review?.state === "open" ? `<details data-review-act-sheet${wasOpen ? " open" : ""}><summary>Merge and Push</summary>
+    const focused = focusedControl(host);
+    const form = support.act ? `<details data-review-act-sheet${wasOpen ? " open" : ""}><summary>Merge and Push</summary>
       <form data-review-act>${choicesFor(review, snapshot, draft.selected)}<button class="btn primary" type="submit"${busy ? " disabled" : ""}>Run selected steps</button></form></details>` : "";
-    host.innerHTML = `${form}${rows.length ? `<div class="task-review-results"><h3>Results</h3><ul>${rows.map((row) => resultHtml(row, support.act && review?.state === "open")).join("")}</ul></div>` : ""}
+    host.innerHTML = `${form}${rows.length ? `<div class="task-review-results"><h3>Results</h3><ul>${rows.map((row) => resultHtml(row, support.act)).join("")}</ul></div>` : ""}
       <p class="warn" data-review-act-error role="alert"${error ? "" : " hidden"}>${esc(error)}</p>`;
+    restoreFocus(host, focused);
   }
 
   function paint() {
@@ -192,8 +234,12 @@ export function mountTaskReviewActions(host, options) {
     host.querySelectorAll('[data-review-retry-push]').forEach((button) => { button.onclick = () => {
       const row = rows.find((item) => item.id === button.dataset.reviewRetryPush);
       const push = row && retryable(row);
-      if (push && !running(rows, row.directory_id)) void act([{ directory_id: row.directory_id,
-        push: { remote: push.remote, branch: push.branch, merge_action_id: row.id } }]);
+      if (push && !running(rows, row.directory_id)) {
+        const merged = row.steps.some((step) => step.kind === "merge" && step.status === "succeeded");
+        const mergeActionId = push.merge_action_id || (merged ? row.id : null);
+        void act([{ directory_id: row.directory_id,
+          push: { remote: push.remote, branch: push.branch, ...(mergeActionId ? { merge_action_id: mergeActionId } : {}) } }], true);
+      }
     }; });
   }
   paint();

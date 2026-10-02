@@ -36,7 +36,8 @@ async function mountSeededRail(page, basePath) {
       kind: "project", run_id: "layout-project-run", project_id: "layout-project", agents: [{
         id: "boss", ordinal: 1, provider: "claude_adk", state: "live", name: "Orchestrator", topic: "Rolling the batch",
         working: false, unread_count: 0,
-        surfaces: { subagents: [{ id: "sub-1", label: "Explore the rail", state: "running", started_at: Date.now() - 30_000 }] },
+        surfaces: { subagents: [{ id: "sub-1", label: "Explore the rail", model: RAW_MODEL_ID,
+          state: "running", started_at: Date.now() - 30_000 }] },
       }],
     });
     await writeCached({ deviceId: device, entityId: "layout-ws-run", kind: "row", sub: "" }, {
@@ -71,8 +72,8 @@ async function mountSeededRail(page, basePath) {
 const RAW_MODEL_ID = "house-research-model-20260915-experimental-preview";
 const WORKSPACE_TITLE = "Review #253: markdown dividers in every theme";
 
-/** The narrowest the agent's name gets on a Build agent row: enough to read
- *  a short name whole and a long one's start (#226). */
+/** The narrowest the agent's name gets on a Build agent or sub-agent row:
+ *  enough to read a short name whole and a long one's start (#226, #261). */
 const MIN_NAME_WIDTH = 64;
 
 const inViewport = (box, viewport) => box && box.x >= -1 && box.y >= -1
@@ -106,9 +107,18 @@ for (const [name, viewport] of VIEWPORTS) {
           const { x, y, width, height } = element.getBoundingClientRect();
           return { x, y, width, height };
         };
+        const subagent = group("subagents").querySelector(".surface-agent-summary");
+        const subagentModel = subagent.querySelector(".surface-row-model");
         return {
           heads: [...document.querySelectorAll(".surface-group:not([hidden]) .surface-group-head")].map((head) => head.textContent.trim()),
           subagents: [...group("subagents").querySelectorAll(".surface-row-label")].map((label) => label.textContent),
+          subagentRow: {
+            row: box(subagent),
+            name: box(subagent.querySelector(".surface-row-label")),
+            model: subagentModel.textContent,
+            modelBox: box(subagentModel),
+            modelFits: { scrollWidth: subagentModel.scrollWidth, clientWidth: subagentModel.clientWidth },
+          },
           builds: [...group("build_agents").querySelectorAll(".surface-build-agent")].map((row) => row.dataset.buildAgent),
           firstBuild: box(group("build_agents").querySelector(".surface-build-agent")),
           buildRows: [...group("build_agents").querySelectorAll(".surface-build-agent")].map((row) => ({
@@ -137,6 +147,14 @@ for (const [name, viewport] of VIEWPORTS) {
       await page.evaluate(() => { delete document.documentElement.dataset.theme; });
       assert.ok(inViewport(read.firstBuild, viewport), `the first Build agent is on screen: ${JSON.stringify(read.firstBuild)}`);
       assert.ok(read.overflow <= 0, `nothing scrolls sideways (${read.overflow}px)`);
+      // #261: a raw model wraps without squeezing the sub-agent's name away.
+      const { row: subagent, name: subagentName, model, modelBox, modelFits } = read.subagentRow;
+      assert.equal(model, RAW_MODEL_ID);
+      assert.ok(subagentName.width >= MIN_NAME_WIDTH, `the sub-agent name keeps a readable width: ${subagentName.width}px`);
+      assert.ok(modelFits.scrollWidth <= modelFits.clientWidth, `the sub-agent model is not clipped: ${JSON.stringify(modelFits)}`);
+      assert.ok(modelBox.x >= subagent.x && modelBox.x + modelBox.width <= subagent.x + subagent.width + 1
+        && modelBox.y >= subagent.y && modelBox.y + modelBox.height <= subagent.y + subagent.height + 1,
+      `the sub-agent model stays inside its row: ${JSON.stringify({ modelBox, subagent })}`);
       // #257: each row wears its model's short name, whole, and no longer
       // names its workspace; the agent's name is what gives way (#226).
       assert.deepEqual(read.buildRows.map((row) => row.model), ["Opus 5.5", RAW_MODEL_ID, "6 Astra"]);

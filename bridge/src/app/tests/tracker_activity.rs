@@ -553,6 +553,103 @@ fn hidden_merged_run_and_visible_abandoned_run_agree_with_finish_in_both_orders(
     }
 }
 
+/// The workspace selector may see two states with the same finish outcome.
+/// Whichever one supplies the row must keep its own more specific state.
+fn assert_visible_run_state_with_hidden_peer(
+    state: &mut AppState,
+    ordered: &[String],
+    visible_index: usize,
+    visible_state: crate::run::RunState,
+    hidden_state: crate::run::RunState,
+    expected: &str,
+) {
+    let hidden_index = 1 - visible_index;
+    state
+        .runs
+        .get_mut(&ordered[visible_index])
+        .unwrap()
+        .run
+        .state = visible_state;
+    state
+        .runs
+        .get_mut(&ordered[hidden_index])
+        .unwrap()
+        .run
+        .state = hidden_state;
+    for (index, run_id) in ordered.iter().enumerate() {
+        for agent in state.runs.get_mut(run_id).unwrap().agents.iter_mut() {
+            agent.watched = index == visible_index;
+        }
+    }
+    assert_workspace_run_row(
+        state,
+        &ordered[visible_index],
+        &ordered[hidden_index],
+        expected,
+    );
+}
+
+#[test]
+fn a_run_row_keeps_its_state_when_workspace_outcome_ties() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (mut state, project_id) = tracked_with_origin(&state_root);
+    let ws = workspace(&mut state, &project_id, "same outcome class");
+    let first_id = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": ws }),
+    ))["result"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let added = state.handle(req("agent.add", json!({ "entity_id": first_id })));
+    assert_eq!(added["ok"], true, "{added:?}");
+    state.runs.get_mut(&first_id).unwrap().run.state = crate::run::RunState::Merged;
+    let second_id = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": ws }),
+    ))["result"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(first_id, second_id);
+    let added = state.handle(req("agent.add", json!({ "entity_id": second_id })));
+    assert_eq!(added["ok"], true, "{added:?}");
+
+    // Read the real HashMap iterator order, then place the visible run at
+    // both positions. The hidden peer must not rename the visible row.
+    let ordered: Vec<String> = state
+        .runs
+        .keys()
+        .filter(|id| **id == first_id || **id == second_id)
+        .cloned()
+        .collect();
+    assert_eq!(ordered.len(), 2);
+    for (visible, hidden, expected) in [
+        (
+            crate::run::RunState::Building,
+            crate::run::RunState::Review,
+            "building",
+        ),
+        (
+            crate::run::RunState::Abandoned,
+            crate::run::RunState::Archived,
+            "abandoned",
+        ),
+    ] {
+        for visible_index in [0, 1] {
+            assert_visible_run_state_with_hidden_peer(
+                &mut state,
+                &ordered,
+                visible_index,
+                visible,
+                hidden,
+                expected,
+            );
+        }
+    }
+}
+
 /// Finishing before merge removes the branch but keeps its linked tasks live.
 #[test]
 fn unmerged_branch_finish_leaves_linked_tasks_open() {

@@ -85,7 +85,7 @@ it("draws a development build's disabled Install without the fill that says pres
 
 it("shows the replacement warning on a development build the app can replace", async () => {
   await withLayoutPage(async ({ page, basePath }) => {
-    await mountDevelopmentPanel(page, basePath, { ...DEVELOPMENT, can_replace_development_build: true });
+    await mountDevelopmentPanel(page, basePath, { ...DEVELOPMENT, can_replace_development_build: true, running_from_cargo_target: true });
     await page.locator("[data-bridge-install-now]").click();
     const warning = await page.evaluate(() => {
       const box = document.querySelector(".bridge-update-confirm").getBoundingClientRect();

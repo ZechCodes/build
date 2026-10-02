@@ -20,15 +20,23 @@ const dateText = (value) => {
 const installFailed = (status) => status.state === "failed"
   && (!status.development_build || "can_replace_development_build" in status);
 
+const CHECK_FAILED = "Could not check for updates.";
+
+/** What the last check found. A failed check keeps an earlier find in view:
+ *  that release can still be installed. */
+function checkText(status) {
+  if (bridgeUpdateAvailable(status)) {
+    const available = `Version ${status.latest_release?.version || "new"} is available.`;
+    return status.last_error ? `${available} ${CHECK_FAILED}` : available;
+  }
+  if (status.last_error) return CHECK_FAILED;
+  return !status.last_checked_at && !status.latest_release ? "Not checked yet." : "Up to date.";
+}
+
 function stateText(status) {
   if (status.state === "scheduled_when_idle") return "Queued until agents are done.";
   if (status.state === "installing") return "Installing update. The bridge will reconnect shortly.";
-  if (installFailed(status)) return "The update failed.";
-  if (status.last_error) return "Could not check for updates.";
-  if (!status.last_checked_at && !status.latest_release) return "Not checked yet.";
-  return bridgeUpdateAvailable(status)
-    ? `Version ${status.latest_release?.version || "new"} is available.`
-    : "Up to date.";
+  return installFailed(status) ? "The update failed." : checkText(status);
 }
 
 function developmentNote(status) {
@@ -56,7 +64,7 @@ function replacementWarning(status, when) {
   const version = esc(status.latest_release?.version || "the latest release");
   const timing = when === "idle" ? "once agents are done" : "now";
   return `<div class="bridge-update-confirm" role="group" aria-label="Replace the development build">
-    <p>This replaces this development build with release ${version} ${timing}. The bridge restarts, and changes from your local source are no longer in the running bridge.</p>
+    <p>This replaces this development build with release ${version} ${timing}. The bridge restarts, and changes from your local source are no longer in the running bridge.${status.running_from_cargo_target ? " The next cargo build in this checkout overwrites the release with a development build again." : ""}</p>
     <div class="bridge-update-actions">
       <button class="btn primary" data-bridge-confirm-replace type="button">Replace with ${version}</button>
       <button class="btn" data-bridge-confirm-cancel type="button">Cancel</button>

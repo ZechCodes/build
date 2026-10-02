@@ -168,15 +168,41 @@ describe("the machine's own panels", () => {
     answerUpdate({ ...UPDATE, development_build: true, can_install: false, state: "failed", last_error: "HTTP status client error (404 Not Found)" });
     await renderDeviceSettings();
     await vi.waitFor(() => expect(document.querySelector(".bridge-update-error")?.textContent).toContain("404"));
-    expect(document.querySelector(".bridge-update-state").textContent).toBe("Could not check for updates.");
+    expect(document.querySelector(".bridge-update-state").textContent).toBe("Version 0.3.0 is available. Could not check for updates.");
     expect(document.querySelector(".bridge-update-body").textContent).not.toContain("The update failed");
   });
 
   it("says a failed check plainly", async () => {
-    answerUpdate({ ...UPDATE, last_error: "network down" });
+    answerUpdate({ ...UPDATE, latest_release: { ...UPDATE.latest_release, version: "0.2.0" }, update_available: false, can_install: false, state: "idle", last_error: "network down" });
     await renderDeviceSettings();
     await vi.waitFor(() => expect(document.querySelector(".bridge-update-state")?.textContent).toBe("Could not check for updates."));
     expect(document.querySelector(".bridge-update-error").textContent).toBe("network down");
+  });
+
+  it("keeps an available update in view beside a failed check", async () => {
+    answerUpdate({ ...UPDATE, last_error: "network down" });
+    await renderDeviceSettings();
+    await vi.waitFor(() => expect(document.querySelector(".bridge-update-state")?.textContent).toBe("Version 0.3.0 is available. Could not check for updates."));
+    expect(document.querySelector(".bridge-update-error").textContent).toBe("network down");
+    expect(document.querySelector("[data-bridge-install-now]").disabled).toBe(false);
+  });
+
+  it("warns that cargo rebuilds a development build replaced in its target directory", async () => {
+    const replaceable = { ...UPDATE, development_build: true, can_install: false, can_replace_development_build: true };
+    answerUpdate({ ...replaceable, running_from_cargo_target: true });
+    await renderDeviceSettings();
+    await vi.waitFor(() => expect(document.querySelector("[data-bridge-install-now]").disabled).toBe(false));
+    document.querySelector("[data-bridge-install-now]").click();
+    expect(document.querySelector(".bridge-update-confirm").textContent)
+      .toContain("The next cargo build in this checkout overwrites the release with a development build again.");
+  });
+
+  it("leaves the cargo note out for a development build outside a target directory", async () => {
+    answerUpdate({ ...UPDATE, development_build: true, can_install: false, can_replace_development_build: true });
+    await renderDeviceSettings();
+    await vi.waitFor(() => expect(document.querySelector("[data-bridge-install-now]").disabled).toBe(false));
+    document.querySelector("[data-bridge-install-now]").click();
+    expect(document.querySelector(".bridge-update-confirm").textContent).not.toContain("cargo");
   });
 
   it("replaces a development build only after its warning is confirmed", async () => {

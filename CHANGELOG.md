@@ -19,7 +19,10 @@ Wire 3.5.0.
   verified download and helper, and rollback restores the development build
   and its marker as they were. A bridge started by hand, or a service running
   another executable, is still refused; the panel shows the install script
-  command (#322).
+  command. A development build running from a cargo target directory is
+  warned that the next `cargo build` overwrites the release. An install
+  queued for when agents are done keeps the confirmation; one queued before
+  the binary became a development build never runs (#322).
 
 ### Fixed
 
@@ -59,9 +62,11 @@ Wire 3.5.0.
   `build-bridge pair` again. After an approve, the app reads the device list every
   second until it lists the device online, for up to 90 s (#321).
 - A failed update check no longer sticks: the next successful check clears
-  it, and it reads "Could not check for updates." Only a failed install reads
-  "The update failed." and lasts until an install succeeds. A development
-  build's old check error is no longer shown as a failed update (#322).
+  it, and it reads "Could not check for updates.", beside the available
+  version when one was found. Only a failed install reads "The update
+  failed." and lasts until an install succeeds. An error saved by an older
+  bridge with no sign an install ran is read as a check's, so the stuck 404
+  goes with the next check; a development build drops it at startup (#322).
 - A disabled Install button in the update panel no longer looks pressable
   (#322).
 
@@ -70,7 +75,9 @@ Wire 3.5.0.
 - Add a device's pairing-link warning reads as a warning, in amber, not as an
   error (#320).
 - A development build no longer checks for releases on its own, at startup
-  or daily; it checks when asked. Nothing marks it as having an update (#322).
+  or daily; it checks when asked. Nothing marks it as having an update, and
+  it forgets an earlier run's check at startup, so it sends no
+  `update_available` an older app would badge (#322).
 
 ## [0.2.6] - 2026-10-01
 

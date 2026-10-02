@@ -30,9 +30,10 @@ use std::collections::BTreeSet;
 /// for each workspace's size on disk, which lands on its row with
 /// `size_measured_at_ms`.
 /// 3.5.0 adds `updates.replaceDevelopmentBuild` (#322): the update status
-/// carries `can_replace_development_build`, and `bridge.install_update`
-/// takes `replace_development_build`, the confirmation a development build
-/// the service runs needs before a release replaces it.
+/// carries `can_replace_development_build` and `running_from_cargo_target`,
+/// and `bridge.install_update` takes `replace_development_build`, the
+/// confirmation a development build the service runs needs before a release
+/// replaces it.
 pub const API_VERSION: &str = "3.5.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the

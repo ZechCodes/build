@@ -58,8 +58,8 @@ for (const { label, width } of [{ label: "mobile", width: 390 }, { label: "deskt
       await captureLayout(page, `task-review-files-${label}.png`);
 
       await page.locator('[data-directory="dir-notes"]').click();
-      await page.waitForSelector('.task-review-files .trf-labels');
-      await page.waitForFunction(() => document.querySelector(".trf-labels")?.textContent.includes("Live files — not saved with this review"));
+      await page.waitForSelector('.trf-tree .frow[data-path="notes.md"]');
+      expect(await page.locator(".task-review-facts").textContent()).toContain("Live files — not saved with this review");
       expect(await page.locator("#review").textContent()).toContain("Not a Git repository");
       const liveWidth = await page.evaluate(() => ({ viewport: innerWidth, page: document.documentElement.scrollWidth }));
       expect(liveWidth.page, JSON.stringify(liveWidth)).toBeLessThanOrEqual(liveWidth.viewport + 1);

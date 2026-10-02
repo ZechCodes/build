@@ -437,7 +437,9 @@ fn deleting_a_projects_tasks_leaves_another_projects_standing() {
         store.create_tracker_task(draft, &[event]).unwrap()
     };
 
-    store.delete_tracker_tasks_of_project(PROJECT).unwrap();
+    store
+        .delete_tracker_tasks_of_project(PROJECT, |_| Ok(()))
+        .unwrap();
 
     assert!(store.load_tracker_task(&going.id).unwrap().is_none());
     assert!(

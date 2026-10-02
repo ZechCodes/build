@@ -179,6 +179,8 @@ pub enum StoreError {
     ReviewSnapshotExists { snapshot_id: String },
     #[error("review completion needs a brief action description (1 to 2000 bytes)")]
     ReviewDescriptionInvalid,
+    #[error("release review pins: {0}")]
+    ReviewPinCleanup(String),
 }
 
 /// The schema this build writes. A stored value ahead of this one means the

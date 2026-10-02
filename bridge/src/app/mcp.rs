@@ -692,6 +692,9 @@ impl AppState {
         // The task tracker, before the per-surface tables: it is the one
         // family both working surfaces carry, so it is answered in one place
         // rather than once in each.
+        if let Some(answered) = self.review_surface_action(entity_id, agent_id, &action) {
+            return answered;
+        }
         if let Some(answered) = self.task_surface_action(entity_id, agent_id, &action) {
             return answered;
         }

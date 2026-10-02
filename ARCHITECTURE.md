@@ -221,7 +221,7 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.5.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.6.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
@@ -284,6 +284,10 @@ runtime that starts them.
   install script command instead of an Install it would refuse.
   It also adds `to` to a `moved` `task_action` on an agent's conversation
   message (#323), naming the destination column. Older messages omit it.
+  3.6.0 adds `tasks.review.snapshot`, `tasks.review.get`, `tasks.review.diff`
+  and `tasks.review.complete` (#328). Each verb is its own capability; review
+  comments and Git actions arrive separately. Stale review mutations answer
+  `stale_version`.
   The SPA's adapter claims `>=2.0.0 <4.0.0`: it calls nothing a 2.x bridge
   lacks (what 2.x added after 2.0.0 is capability-gated), so the app can
   roll before the bridge.
@@ -611,6 +615,37 @@ once on a greeted machine that names the verb, else at its next greeting), and
 paints from the cache: the greeting writes whether the machine measures
 (`spa/src/core/workspaceSizeSupport.js`), and a row with no size yet shows a
 dim dash there rather than a spinner.
+
+### Task reviews
+
+`bridge/src/reviews/` saves one task's workspace review as numbered snapshots.
+`capture.rs` reads every manifest directory, resolves each Git directory's
+committed HEAD and base (explicit override, configured base, upstream, empty
+tree), and pins its nonempty base and head under private refs. Ref components
+percent-encode bytes outside ASCII letters, digits, `_` and `-`: directory IDs
+contain `:`, which Git cannot use in ref names. Metadata keeps the original IDs.
+The snapshot ID is unique before any pins are written; `service.rs` saves the
+metadata with a review version check and removes only the losing call's pins
+at their expected OIDs. Git work runs through the deferred drain off the app
+lock (`app/tracker/reviews.rs`).
+
+Schema 12 stores review headers and snapshot metadata in `reviews` and
+`review_snapshots` (`store/reviews.rs`), without patches or file bodies.
+`read.rs` uses the recorded common Git directory and saved OIDs for commit
+diffs, full tree listings and read-only, paged blobs, including unchanged files.
+A removed linked worktree can still be read while its common repository exists;
+a deleted repository is unavailable. Non-Git directories stay in the manifest
+as live folders; existing scoped filesystem reads remain their reader.
+
+Completion records the actor, description, timeline event and task Done in one
+transaction, leaving task closure and workspace Finish separate. Ordinary moves
+to Done complete an open review through the same writer with “Marked done”.
+Snapshots change only review metadata. Agent Complete reports and merged
+workspace Finish skip their old task-movement/closure hooks for review tasks.
+Closing/completing and removing workspaces or projects retain review history
+and refs; explicit task-history deletion releases the pins. MCP exposes
+`snapshot_review`, `get_review`, `read_review`, `complete_review` to coding and
+project agents, authenticated and restricted to their own project.
 
 ### Harnesses and the agents' slice
 

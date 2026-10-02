@@ -1,0 +1,81 @@
+{
+  "method": "tasks.review.get",
+  "since": "3.6.0",
+  "params": {
+    "task_id": "task-1"
+  },
+  "result": {
+    "review": {
+      "task_id": "task-1",
+      "workspace_id": "workspace-1",
+      "version": 1,
+      "state": "open",
+      "snapshots": [
+        {
+          "id": "snapshot-1",
+          "number": 1,
+          "created_at": "2026-10-02T16:00:00Z",
+          "author": {
+            "kind": "agent",
+            "agent_id": "agent-1"
+          },
+          "directories": [
+            {
+              "id": "dir-api",
+              "source_id": "source-api",
+              "name": "API",
+              "path": "/workspaces/review/api",
+              "source_path": "/sources/api",
+              "is_git": true,
+              "status": "git",
+              "common_git_dir": "/sources/api/.git",
+              "branch": "build/review",
+              "base": {
+                "kind": "configured",
+                "name": "main",
+                "oid": "1111111111111111111111111111111111111111"
+              },
+              "head": "2222222222222222222222222222222222222222",
+              "uncommitted_files": 2
+            },
+            {
+              "id": "dir-notes",
+              "source_id": "source-notes",
+              "name": "Notes",
+              "path": "/workspaces/review/notes",
+              "source_path": "/sources/notes",
+              "is_git": false,
+              "status": "not_git"
+            },
+            {
+              "id": "dir-missing",
+              "source_id": "source-missing",
+              "name": "Removed source",
+              "path": "/workspaces/review/missing",
+              "source_path": "/sources/missing",
+              "is_git": true,
+              "status": "unavailable",
+              "reason": "Source unavailable"
+            }
+          ]
+        }
+      ],
+      "completion": null
+    }
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "internal"
+  ],
+  "examples": [
+    {
+      "params": {
+        "task_id": "task-without-review"
+      },
+      "result": {
+        "review": null
+      }
+    }
+  ]
+}

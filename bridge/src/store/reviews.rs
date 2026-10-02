@@ -159,22 +159,28 @@ impl Store {
     /// Histories belonging to tasks of one project, for an explicit future
     /// history-deletion flow to release their Git refs before deleting rows.
     pub fn load_reviews_of_project(&self, project_path: &str) -> Result<Vec<Review>, StoreError> {
-        let conn = self.connection();
-        let mut statement = conn.prepare(
+        load_reviews_of_project(&self.connection(), project_path)
+    }
+}
+
+pub(super) fn load_reviews_of_project(
+    conn: &Connection,
+    project_path: &str,
+) -> Result<Vec<Review>, StoreError> {
+    let mut statement = conn.prepare(
             "SELECT reviews.task_id FROM reviews JOIN tracker_tasks ON tracker_tasks.id = reviews.task_id \
              WHERE tracker_tasks.project_key = ?1 ORDER BY tracker_tasks.number",
         )?;
-        let ids = statement
-            .query_map([project_path], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-        ids.iter()
-            .map(|id| {
-                load_review(&conn, id)?.ok_or_else(|| StoreError::ReviewNotFound {
-                    task_id: id.clone(),
-                })
+    let ids = statement
+        .query_map([project_path], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    ids.iter()
+        .map(|id| {
+            load_review(conn, id)?.ok_or_else(|| StoreError::ReviewNotFound {
+                task_id: id.clone(),
             })
-            .collect()
-    }
+        })
+        .collect()
 }
 
 fn complete_review_in_tx(

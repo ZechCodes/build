@@ -148,7 +148,7 @@ fn every_fixture_verb_has_an_advertised_capability() {
 #[test]
 fn media_page_features_are_announced_together() {
     let advertised: BTreeSet<&str> = capabilities(false).into_iter().collect();
-    assert_eq!(API_VERSION, "3.5.0");
+    assert_eq!(API_VERSION, "3.6.0");
     assert!(advertised.contains("thread.attachmentChunks"));
     assert!(advertised.contains("fs.mediaRawPages"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
@@ -158,6 +158,32 @@ fn media_page_features_are_announced_together() {
         .unwrap()
         .iter()
         .any(|entry| entry == "thread.attachmentChunks"));
+}
+
+#[test]
+fn review_snapshots_are_a_separate_capability_from_later_review_actions() {
+    let advertised = capabilities(false);
+    for method in ["snapshot", "get", "diff", "complete"] {
+        let method = format!("tasks.review.{method}");
+        assert!(advertised.contains(&method.as_str()));
+        let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
+        assert_eq!(fixture["since"], "3.6.0");
+    }
+    assert!(!advertised.contains(&"tasks.review.act"));
+    let read = read_json(&fixtures_root().join("v1/tasks.review.diff.json"));
+    let examples = read["examples"].as_array().unwrap();
+    assert!(examples
+        .iter()
+        .any(|example| example["params"]["mode"] == "tree"));
+    let blob = examples
+        .iter()
+        .find(|example| example["params"]["mode"] == "blob")
+        .unwrap();
+    assert_eq!(blob["result"]["editable"], false);
+    assert_eq!(
+        blob["result"]["range"]["version"].as_str().unwrap().len(),
+        40
+    );
 }
 
 #[test]

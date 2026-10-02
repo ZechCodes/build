@@ -57,6 +57,9 @@ per-directory base overrides. For each Git directory:
    resolves, then the empty tree. Record and show the exact base used. Do not hide
    a base equal to HEAD behind an inferred alternative; the caller can override it.
 3. Retain the head with `refs/build/reviews/<task>/<snapshot-id>/<directory-id>/head`.
+   Ref components encode bytes outside ASCII letters, digits, `_` and `-` as
+   `%HH` (including `%` itself). Actual directory IDs contain `:`, which Git
+   forbids in ref names; metadata retains the original IDs (#328).
    Retain a non-empty base under the sibling `/base` ref too: it need not be an
    ancestor of HEAD. Directory IDs keep two sources sharing one repo distinct.
    Allocate a unique snapshot ID before pinning, independent of its display number,
@@ -147,13 +150,18 @@ becomes “Interrupted: check and retry, or mark complete”. Nothing is replaye
 Thin RPC/MCP adapters call the storage/Git service. Accepted Git work runs without
 a browser; action results are facts stored by that service. The SPA chooses the
 steps and calls `complete` after they succeed, using recorded results after a
-reconnect. `complete` is the single writer of review completion and task Done.
+reconnect. The service has one completion writer for review completion and task
+Done. `complete` calls it with a specific action description. An ordinary move
+to Done by a user or agent calls the same writer for an open review, with the
+mover as actor and “Marked done” as the default description, atomically with the
+move. A review never refuses that ordinary task movement.
 
 Add typed contracts in `bridge/src/api/v1/`, fixtures in `fixtures/api/v1/`, and
-both `bridge/tests/api_contract.rs` and `spa/test/apiContract.test.js`. Main's wire
-is **3.5.0** (`bridge/src/api/mod.rs`, `fixtures/api/versions.json`); allocate the next
-minor during implementation. Gate snapshots, anchored comments and Git actions
-separately so each increment works with older connected devices.
+both `bridge/tests/api_contract.rs` and `spa/test/apiContract.test.js`. Increment A
+uses wire **3.6.0** (`bridge/src/api/mod.rs`, `fixtures/api/versions.json`), announcing
+its four verbs individually. `get` returns metadata/snapshots/completion in A;
+available destinations and action results arrive with C. Gate snapshots, anchored
+comments and Git actions separately so each increment works with older devices.
 
 ## 3. Selected Git steps
 
@@ -297,6 +305,12 @@ Test both paths with review and ordinary tasks linked to the same workspace.
 Review completion never invokes Finish/deletion. Existing lifecycle/reclaim is
 separate; if it deletes a repository, old review metadata survives but its diffs
 may no longer be available.
+
+Implementation note (#328): project removal preserves task history too, so it
+also keeps review pins. Explicit task-history deletion goes through the review
+service to release pins before removing metadata. Ordinary moves to Done also
+complete an open review with “Marked done”; `complete` remains the way to give
+a specific description. Both use the same transactional completion writer.
 
 ## 7. Rollout
 

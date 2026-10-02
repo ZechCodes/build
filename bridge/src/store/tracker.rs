@@ -328,14 +328,18 @@ impl Store {
         Ok(timelines)
     }
 
-    /// Take a project's whole tracker with it.
-    ///
-    /// Only reached by project deletion. Nothing else removes a task: a
-    /// task is closed, so a number is never reused and a timeline never loses
-    /// an entry. A caller deleting history with reviews must release their
-    /// Git pins first; this transaction then removes review rows with tasks.
-    pub fn delete_tracker_tasks_of_project(&self, project_path: &str) -> Result<(), StoreError> {
+    /// Explicit history deletion, called by the review service off the app
+    /// lock. Release each history's Git pins inside the transaction: a snapshot
+    /// cannot commit new pins between their enumeration and metadata deletion.
+    pub(crate) fn delete_tracker_tasks_of_project(
+        &self,
+        project_path: &str,
+        release: impl Fn(&crate::reviews::records::Review) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
+            for review in super::reviews::load_reviews_of_project(tx, project_path)? {
+                release(&review)?;
+            }
             for table in [
                 "tracker_comments",
                 "tracker_events",

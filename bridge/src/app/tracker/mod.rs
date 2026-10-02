@@ -25,6 +25,7 @@ mod push;
 pub(in crate::app) use push::news_phrase;
 mod refs;
 mod reminder;
+mod reviews;
 mod said;
 mod tools;
 mod tracking;

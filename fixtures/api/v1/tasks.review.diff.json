@@ -1,0 +1,161 @@
+{
+  "method": "tasks.review.diff",
+  "since": "3.6.0",
+  "params": {
+    "task_id": "task-1",
+    "snapshot_id": "snapshot-1",
+    "directory_id": "dir-api",
+    "mode": "changes"
+  },
+  "result": {
+    "stat": {
+      "files_changed": 1,
+      "insertions": 1,
+      "deletions": 0
+    },
+    "files": [
+      {
+        "path": "new.txt",
+        "status": "Added",
+        "additions": 1,
+        "deletions": 0,
+        "content_key": "new-text"
+      }
+    ],
+    "patch": "+saved text\n",
+    "diff_key": "1111111111111111111111111111111111111111:2222222222222222222222222222222222222222",
+    "truncated": false
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "unavailable",
+    "internal"
+  ],
+  "examples": [
+    {
+      "params": {
+        "task_id": "task-1",
+        "snapshot_id": "snapshot-1",
+        "directory_id": "dir-api",
+        "mode": "tree"
+      },
+      "result": {
+        "path": "",
+        "entries": [
+          {
+            "name": "src",
+            "kind": "dir"
+          },
+          {
+            "name": "README.md",
+            "kind": "file",
+            "size": 10
+          },
+          {
+            "name": "linked",
+            "kind": "symlink"
+          },
+          {
+            "name": "vendor",
+            "kind": "submodule"
+          }
+        ]
+      }
+    },
+    {
+      "params": {
+        "task_id": "task-1",
+        "snapshot_id": "snapshot-1",
+        "directory_id": "dir-api",
+        "mode": "blob",
+        "path": "README.md",
+        "range": {
+          "offset": 0,
+          "bytes": 4096
+        }
+      },
+      "result": {
+        "path": "README.md",
+        "size": 10,
+        "truncated": false,
+        "mime": "text/markdown",
+        "content_b64": "IyBwcm9qZWN0Cg==",
+        "editable": false,
+        "range": {
+          "offset": 0,
+          "end": 10,
+          "total": 10,
+          "version": "3333333333333333333333333333333333333333"
+        }
+      }
+    },
+    {
+      "params": {
+        "task_id": "task-1",
+        "snapshot_id": "snapshot-1",
+        "directory_id": "dir-api",
+        "mode": "changes",
+        "paths": [
+          "new.txt"
+        ],
+        "range": {
+          "offset": 0,
+          "bytes": 4096
+        }
+      },
+      "result": {
+        "stat": {
+          "files_changed": 1,
+          "insertions": 1,
+          "deletions": 0
+        },
+        "files": [
+          {
+            "path": "new.txt",
+            "status": "Added",
+            "additions": 1,
+            "deletions": 0,
+            "content_key": "new-text"
+          }
+        ],
+        "patch": "+saved text\n",
+        "diff_key": "1111111111111111111111111111111111111111:2222222222222222222222222222222222222222",
+        "truncated": false,
+        "range": {
+          "offset": 0,
+          "end": 12,
+          "total": 12,
+          "version": "patch-key"
+        }
+      }
+    },
+    {
+      "params": {
+        "task_id": "task-1",
+        "snapshot_id": "snapshot-1",
+        "directory_id": "dir-api",
+        "mode": "changes",
+        "patch": false
+      },
+      "result": {
+        "stat": {
+          "files_changed": 1,
+          "insertions": 1,
+          "deletions": 0
+        },
+        "files": [
+          {
+            "path": "new.txt",
+            "status": "Added",
+            "additions": 1,
+            "deletions": 0,
+            "content_key": "new-text"
+          }
+        ],
+        "diff_key": "1111111111111111111111111111111111111111:2222222222222222222222222222222222222222",
+        "truncated": false
+      }
+    }
+  ]
+}

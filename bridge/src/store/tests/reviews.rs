@@ -226,7 +226,9 @@ fn explicit_project_history_deletion_removes_reviews_with_tasks() {
         .save_review_snapshot(&task.id, "ws-1", 0, snapshot("rs-first"))
         .unwrap();
     assert_eq!(store.load_reviews_of_project("/repo").unwrap().len(), 1);
-    store.delete_tracker_tasks_of_project("/repo").unwrap();
+    store
+        .delete_tracker_tasks_of_project("/repo", |_| Ok(()))
+        .unwrap();
     assert!(store.load_review(&task.id).unwrap().is_none());
     assert!(store.load_reviews_of_project("/repo").unwrap().is_empty());
     let count: i64 = store

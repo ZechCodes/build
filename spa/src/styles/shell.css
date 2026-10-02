@@ -1413,9 +1413,9 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .surface-build-agent .surface-clip { cursor:inherit; }
 .surface-build-agent-unreachable { cursor:default; }
 .surface-build-agent:focus-visible { outline:1px solid var(--accent); outline-offset:-1px; }
-/* #257: status · name · short model · clock. The workspace is left to the
-   row's title and where it opens. The name gives way, down to a readable
-   6em (#226); the model never does. */
+/* Agent names give way down to a readable 6em (#226, #261).
+   Short models stay whole; raw model ids wrap beside that floor (#257). */
+.surface-agent-summary .surface-row-label,
 .surface-build-agent .surface-row-label { flex:1 1 auto; min-width:6em; }
 .surface-completed[open] { margin-top:10px; padding-top:0; }
 .rail-surfaces-viewer .surface-completed-head { display:none; }

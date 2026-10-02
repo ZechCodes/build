@@ -6,7 +6,7 @@ Notable changes to the bridge (`build-bridge`). The format follows
 protocol versions; see
 [Wire versioning and capabilities](ARCHITECTURE.md#wire-versioning-and-capabilities).
 
-## [0.2.7] - Unreleased
+## [0.2.7] - 2026-10-02
 
 Wire 3.5.0.
 
@@ -28,6 +28,9 @@ Wire 3.5.0.
 
 ### Fixed
 
+- `capture.reroute` with a destination other than a branch is refused before
+  the capture's router is touched; it used to end the routing session first
+  (#211).
 - Conversation task notices use the new wording on one line, with an ellipsis
   when they run out of room. Actor and assignee names omit the workspace;
   hover text carries the full line and task title (#323).
@@ -229,6 +232,7 @@ Wire 3.1.0.
   run.
 - Done refuses a run in a linked worktree or an adopted checkout (#172).
 
+[0.2.7]: https://github.com/ZechCodes/build-releases/releases/tag/bridge-v0.2.7
 [0.2.6]: https://github.com/ZechCodes/build-releases/releases/tag/bridge-v0.2.6
 [0.2.5]: https://github.com/ZechCodes/build-releases/releases/tag/bridge-v0.2.5
 [0.2.4]: https://github.com/ZechCodes/build-releases/releases/tag/bridge-v0.2.4

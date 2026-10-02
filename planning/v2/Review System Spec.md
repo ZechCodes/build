@@ -1,38 +1,75 @@
 # Local reviews
 
-Implementation plan for #89, revised 2026-10-02 from the Astra / Opus 5.5
-workshop of 2026-09-22, commit `2942c209e39988e216b4e4ed1166adf3cb62b882`.
-The original two rounds are historical agreement; **this revision awaits a new
-Opus challenge**. Product choices remain in section 8. No product code or
-implementation/deployment authorization is delivered by this document.
+Implementation plan for #89. Revised 2026-10-02 after the Opus 5.5 challenge
+of `700e642e`. This continues the two September workshop rounds at `2942c209`.
+The lead's decisions on all 15 new challenges are logged below. They await the
+challenger's next read; this is not a claim of fresh joint signoff.
 
 Code baseline: `origin/main` at
-`adf08b062c741723addb1b861ce434f573b87512`, fetched 2026-10-02 UTC. References
-[E1]–[E12] below describe that exact code, not a live branch. Everything under
-sections 1–8 is a **proposal** except explicitly identified current behavior.
-Read `AGENTS.md` and `ARCHITECTURE.md` first; code wins where historical specs
-or even the architecture's version summary disagree.
+`adf08b062c741723addb1b861ce434f573b87512`, verified again on 2026-10-02 UTC.
+[E1]–[E12] cite that code. Sections 1–8 describe **proposed work**, except where
+current behavior is identified. Only this plan changes; it authorizes no product
+implementation or deployment. Read `AGENTS.md` and `ARCHITECTURE.md` first.
 
-The task is the review. Attach committed local branches to a task, review their
-changes together, leave anchored feedback in its existing timeline, pass the
-work to another workspace, and integrate the reviewed revisions. There is no
-second PR identity, number, title, assignee, or comment stream. This applies
-Zech's later direction in #145 to #89's original eight-section brief. A review
-round and its branch snapshots are child records of the task, not another
-product object. GitHub and a network remote are unnecessary.
+## The first release, in one page
 
-Zech's requirement preserved from #89's second workshop: deployed work needs
-review by Zech or an independent agent of the configured qualifying model
-class. Implementer self-approval never counts. #145's timeline correction is
-also settled: **human-in-the-loop is a step type**, not a pause imposed on every
-step. #86's later correction puts work that requires an always-on process in
-isolated bridge services; the SPA owns presentation and connected interaction.
+**The task is the review.** Attach one committed branch to a task. Publish an
+immutable revision. Read its diff and leave line or hunk comments in the task's
+existing timeline. Ask the designated reviewer to approve or request changes.
+Prepare a no-ff merge commit, record checks on that exact commit, then merge it.
+There is no second PR number, title, assignee or comment stream.
+
+Release 1 is **10–15 focused engineer days**, including failure tests and review.
+The first PR fixes assignment persistence for everyone and ships independently.
+The next increment makes task diffs, anchored comments and decisions usable;
+the final increment enables candidate preparation and local merge. Existing
+`assign_task` handles handoffs. Agents use their own workspaces and run checks
+there. A workflow engine is not a prerequisite.
+
+**The merge target must not be checked out.** Release 1 advances only an
+explicitly selected local target ref, using Git compare-and-swap. It refuses a
+checked-out `main`, including the project base checkout. Choose an unchecked-out
+integration branch in the canonical project repository for the first rollout;
+automatic base sync must not manage that branch. Merging
+there does not mean production main moved or a deployment passed. Build's
+existing project-agent roll procedure still performs those separate actions.
+If landing directly into checked-out main is required for launch, add the later
+landing slice and revise the estimate; do not hide that work in this release.
+
+The reviewer is chosen by the user, not by the implementer. Agent approval must
+come from that designated recipient, be independent of implementation, and meet
+the user's provider/model rule. An agent cannot merge using its own approval.
+Show configured and reported model information separately; never turn a model
+fallback into an observation. Human review is an explicit choice, not a pause
+on every agent step.
+
+Owner choices before activation, with recommendations:
+
+- **Scope:** ship one attachment and manual handoffs now; finish the richer
+  multi-branch workflow in #145.
+- **Landing:** select an unchecked-out integration ref. Keep checked-out targets
+  unsupported until their own tested slice.
+- **Reviewer:** select a concrete reviewer agent or Zech. Keep agent reviewer
+  and merger distinct. Save the exact allowed provider/model IDs.
+- **Model uncertainty:** allow configured-only evidence only if Zech explicitly
+  enables it; recommend enabling it for the initial PTY workflow, with its
+  weaker provenance visible. Missing configuration never silently qualifies.
+- **Checks:** accept structured, actor-reported results on the exact candidate.
+  The bridge records and matches them; it does not claim to observe the command.
+- **Completion:** retain workspaces and branches. Build tasks become Done and
+  close only after the deploy agent records verification through existing tools.
+
+Deferred: automatic step progression, multiple attachments/round tables,
+checked-out landing, release coverage enforcement, retrospective range approval,
+and local integration cleanup. A read-only roll report may list first-parent
+merges without review receipts; it is an audit aid, not proof of deployment
+coverage. Section 8 lists the remaining choices in full.
 
 ## What was stale in the September plan
 
 | September assumption | Current evidence / revised decision |
 | --- | --- |
-| Separate PRs, `PR #N`, a Reviews project tab, PR comments beside issue comments | Superseded by #145: task identity and timeline, task Changes/review surface, multiple attached branch proposals. No PR-to-task join or second numbering sequence. |
+| Separate PRs, `PR #N`, a Reviews project tab, PR comments beside issue comments | Superseded by #145: task identity and timeline, task Changes/review surface, branch attachments. Release 1 supports one; several follow under #145. No PR-to-task join or second numbering sequence. |
 | A review request must not reassign the implementation issue | Superseded by #145: explicit handoff assigns the same task to its reviewer, back to its implementer for fixes, then to its deployer. Contributor identity persists independently of the current assignee. |
 | Every step waits for a human, or workflow runs only in a connected SPA | #145/c/tc-01M3A6P0V88S483NXWH48CP83K makes human an explicit step type; #86/c/tc-01M37YEQS990896PCGFJV7KYGA keeps always-on work in bridge services. |
 | API 1.12.0; `issues.*`; `Issues Spec.md` | API is **3.4.0**, tracker is `tasks.*`, spec is `Tasks Spec.md`. The leading 3.2.0 sentence in `ARCHITECTURE.md` lags its own later notes and code. `api/v1/` paths still exist. [E1] |
@@ -40,781 +77,599 @@ isolated bridge services; the SPA owns presentation and connected interaction.
 | `tasks.link` is an available wire primitive | Removed from the wire in 3.0; `link_task` MCP still exists. Add explicit task-review attachment primitives, not calls to removed verbs. [E2, E7] |
 | `workspace_finish_legacy` drops `action: delete` (#87) | Fixed: it forwards the selected branch into `finish_workspace`. Do not plan to fix it again. [E4] |
 | Every workspace finish closes all linked tasks | Too broad now: closure is conditional on a merged run. Still unsuitable for review cleanup, which must not close unrelated tasks. [E4] |
-| Cleanup needs a new independent lifecycle system | Reclaim, reservations, path containment and checked branch deletion now exist. Extend these for local integration evidence; preserve remote-based behavior for old callers. [E4, E5] |
-| The review target has no other background writer | Source-base synchronization now fetches/fast-forwards bases. It has its own path lock; review landing needs coordinated reservations, not a second independent mutex. [E6] |
+| Cleanup needs a new independent lifecycle system | Reclaim, reservations, path containment and checked branch deletion now exist. Keep them. Local integration cleanup is deferred; preserve existing behavior for non-review tasks. [E4, E5] |
+| The review target has no other background writer | Source-base synchronization now fetches/fast-forwards bases. It has its own path lock; release 1 refuses every checked-out target and does not alter source sync. [E6] |
 | Reconnect reads first and subscribes later; drafts share the evictable replica | Current sync repairs late subscription coverage and fences pushes; drafts/UI state have their own `build-ui` store. Extend those seams, do not rebuild them. [E9] |
 | New active review UI can extend legacy `taskReview.js` plan approval | Singular `task.*` is historical plan data; several mutations were removed. Tracker tasks use `trackerTaskView.js`. Keep legacy browsing separate. [E1, E8] |
-| `templates.rs` is the only prompt source, and model configuration proves the model that reviewed | Prompt text is in `bridge/templates/`; live model observations need capture and validity checks. Configured choice alone is insufficient. [E7] |
+| `templates.rs` is the only prompt source, and model configuration proves the model that reviewed | Prompt text is in `bridge/templates/`; capture configured and reported models separately. Configured-only qualification requires a visible user setting. [E7] |
 
-Retained from the two earlier rounds: immutable H/T/B snapshots; private local
-refs for Rift imports; no-ff candidates; exact-candidate checks; a small Git/DB
-journal; conservative line anchors; qualified independent review; reviewed
-release coverage; explicit completion and cleanup. The sections below adapt
-those decisions rather than reopen them as a blank design exercise.
+The earlier exact-snapshot Git design, local private refs, task history and
+independent review remain. The October challenge removes the extra first-release
+workflow, coverage, cleanup and multi-repository machinery. The workshop log
+records why each prior decision changed.
 
 ## 1. Model
 
-### Task identity, branch attachments and persistence
+### One task, one branch attachment, immutable revisions
 
-Reuse the tracker task's ID, `#number`, title, Markdown body, author, assignee,
-open/closed state, board column, labels, links and timeline [E2]. A task's
-`review` extension holds its draft/open intent and active round; it does not
-replace the task's board column or create another independently assignable item.
-Legacy `links.branches` strings remain useful navigation but cannot identify a
-repository or a reviewed revision. Never silently convert them into approvals.
-Existing task `attachments` are uploaded files [E2]; name the new field
-`branch_attachments` and do not repurpose those upload records.
+Reuse the tracker's task ID, number, title/body, author, assignee, board column,
+open/closed state and timeline [E2]. Existing task `attachments` are uploaded
+files. Add a distinct `branch_attachments` field, constrained to **zero or one**
+in release 1. Keep the plural field as an extension point, not a promise of
+multi-repository support. Branch strings in `links` remain navigation only.
 
-| Task-owned record | Proposed fields / meaning |
+| Task-owned record | Release-1 contents |
 | --- | --- |
-| Branch attachment | Stable child ID, task ID, repository binding, original workspace/directory, authoritative source checkout and full source/target refs, implementer identities, current immutable revision ID, active/retired flag. One source branch/target per attachment; a task may have several repositories. |
-| Repository binding | Persistent repository ID and canonical registered source identity; verified Git common directory and independent-clone provenance; explicit authoritative local target repository/ref. Device paths are locators derived from registered scope, never arbitrary caller authority. |
-| Revision | Immutable ID/sequence, attachment ID, source `H`, observed target `T`, merge base `B`, source/target refs, actor/time, retained object refs. Commits are `B..H`; files compare trees `B` and `H`. |
-| Review round | Task-owned immutable scope ID containing the complete ordered set of required attachment/revision IDs and the implementation contributor set. Adding/removing/retargeting an attachment or publishing a different H creates a new round; it never broadens an existing approval. |
-| Submission | Append-only task event with round ID, reviewer actor, decision (`approve`, `request_changes`, `withdraw`), rationale comment ID, timestamp and bridge-captured session/model facts. A submission covers the entire named set; partial findings can be comments, not an implicit whole-task approval. |
-| Thread/anchor metadata | Child thread ID, task/round/revision, immutable line/hunk/file anchor, optional reply-to, open/resolved metadata and version. The text itself is a `tracker_comments` record; replies are also ordinary task comments. |
-| Workflow instance | Task ID, configuration version, ordered bounded steps, current step ID/generation, input round, prior implementer, explicit recipient/workspace and transitions, status, receipts. Each step is `agent` or `human`, with a purpose such as implement/review/deploy. Not the retired plan/stage scheduler. |
-| Candidate / check / operation | Attachment/revision, exact H/T/C/tree, check execution IDs, producer and raw exit/signal, journal status, explicit evidence/configuration versions, outcome and timestamps. No separate PR lifecycle. |
-| Delivery / completion evidence | Task timeline events referring to handoff receipt, merge SHA, exact release SHA, deployment/verification outcome, and explicit task completion intent. |
-| Project review configuration | Versioned qualifying provider + exact model-ID allowlist, user-only writes; selected workflow/check requirements stored separately from display. No model names hard-coded into admission code. |
-| Retrospective review | User-only exact repository/from/to/tree range approval and withdrawal, recorded as evidence on a designated task so uncovered work also has one discussion surface. |
+| Branch attachment | Stable child ID, repository identity, registered source workspace/directory/ref, explicit target repository/ref, author and accumulated implementer identities. Binding survives reassignment. |
+| Revision | Sequence and immutable ID; attachment, source H, observed target T, merge base B, refs, actor/time and retained Git pins. The revision **is the review round**. No round table, revision-set approval or successor/partial-merge state. |
+| Review slot | Designated recipient (user or concrete agent), kind `human` or `agent`, designating user/time, and current input revision. Only the user sets recipient/kind; successful publication advances the input revision while keeping that designation. Existing task assignment records who dispatched the reviewer separately. |
+| Submission | Append-only approve/request_changes/withdraw decision on one revision, rationale task-comment ID, authenticated actor and model provenance. Current decision is the latest decisive submission by the designated recipient. |
+| Thread | Immutable file/line/hunk anchor and reply/resolution metadata. Text and replies live once in `tracker_comments`, in the ordinary task timeline. |
+| Candidate | Revision and exact H/T/C/tree, merge metadata and retained candidate ref. C has parents `[T, H]`. |
+| Merge operation | Stable caller operation ID, expected review version, H/T/C, admitted decision/check-comment references, pending or settled result, actor and timestamps. Git and SQLite are separate stores. |
+| Project review settings | User-only exact provider/model allowlist, configured-only qualification switch, required check commands, and settings version. No model IDs or gate names hard-coded into Rust. |
 
-Use the existing `build.db` (default `~/.build/tasks/build.db`) and additive
-child tables beside `store/tracker.rs`, with query keys hoisted like tracker
-rows [E2, E3]. Proposed tables hold branch bindings, revisions, rounds,
-submissions, thread metadata, workflow steps and Git operations; **no PR table
-or parallel review-comment table**. Persist task change, canonical comment/event,
-aggregate `review_version`, caller operation receipt and explicit next delivery
-intent in one SQLite transaction. Extending store transaction APIs is work to
-implement; current tracker writes do not already guarantee that whole set.
+Store additive child rows in the existing `build.db` (default
+`~/.build/tasks/build.db`), beside tracker storage [E3]. Include them in project
+deletion and backup handling. No PR table or separate comment store. Each task-review mutation commits
+its child records, canonical task comment/event, operation receipt and one
+aggregate `review_version` in the same SQLite transaction. Review-relevant task
+assignment, contributor, lifecycle and configuration changes bump that version
+too. Keep current state bounded and separate from the growing timeline.
 
-Task storage uses the canonical project path, mapped to live `proj-N` IDs on
-reads [E2]. A source ID or path alone must not silently rebind retained history
-after a repository replacement. Persist a repo binding, validate it on each
-operation, and mark missing/replaced repositories unavailable. Explicit project
-relocation/rebinding is later work. Attachments survive workspace deletion.
-Review data participates in project deletion/backup policies; no orphaned child
-rows, pins silently dropped by source removal, or hidden global archive.
+Use canonical project/repository identity as well as paths [E2]. Resolve paths
+from registered scope, never arbitrary caller input. Refuse a missing/replaced
+repository rather than silently attach old evidence to another clone. Pin
+H/T/B/C in the canonical source repository under
+`refs/build/task-reviews/<task>/<revision>/...`; import before publishing the DB
+record and reconcile an interrupted pin/write. Published objects must survive
+workspace deletion and Git GC without alternates to disposable workspaces.
+Retain history initially. A restorable backup needs SQLite **and** those Git
+objects/refs. Missing Git bodies are unavailable, never empty diffs.
 
-Retain immutable Git refs in the canonical project source repository, e.g.
-`refs/build/task-reviews/<task>/<attachment>/<revision>/{head,target,base}` plus
-candidate refs. Import and verify connectivity without depending on alternates
-into disposable workspaces. Install/verify pins before publishing the DB
-revision; journal and reconcile interruptions. Retain published history in the
-first release. A backup must cover a consistent SQLite snapshot and the source
-repositories/private refs; DB backup alone cannot restore historical diffs.
-Do not add a second bare archive. Loss of the canonical repository leaves
-metadata readable and Git bodies explicitly unavailable.
+Do not replace the attachment after it has history. A new H on the same source
+creates a new revision and invalidates approval, including an equivalent rebased
+patch. Retargeting after publication uses a new task in release 1. After merge,
+follow-on work also uses a new task. A second repository requires another task;
+#145's later multi-attachment slice can migrate revisions into rounds then.
 
-### States and review validity
+### States, designated review and provenance
 
-The six requested display states are task-review projections, not new tracker
-columns: Draft (review not opened), Open (opened without a qualifying decision),
-Changes requested, Approved, Merged (every required attachment of that round
-integrated), Closed (task closed with unmerged work). Preserve merged history
-when a task later closes or reopens. Show partial integration and deployment as
-separate facts; a partially merged multi-repository task is never simply Merged.
+Derive the requested display states in the SPA: Draft, Open, Changes requested,
+Approved, Merged, Closed. They do not create tracker columns. Attach starts Draft;
+publish explicitly opens the committed revision. Merged means C was integrated
+into the named target, not that deployment succeeded. Closure preserves history.
+Target-only movement retains source review on H but invalidates the candidate
+and its checks. An already-contained H is an external-integration fact, not a
+successful merge by this feature.
 
-Use the latest decisive submission per reviewer on the exact round. Ordinary
-comments never supersede a decision. A qualifying current
-approval wins the aggregate Approved label; another reviewer's disagreement
-remains prominent but adds no veto that Zech has not asked for. A relied-on
-approver's withdrawal/request-changes removes their approval. Thread resolution
-is independent. Review admission requires opening the draft explicitly.
+Only the **current designated review recipient**, while holding the review
+assignment for the current revision, can submit a decisive approval or change
+request. Other actors leave ordinary findings. A designated reviewer may later
+withdraw its own decision after handoff; that invalidates an unmerged admission.
+Holding the review assignment means current assignee equals designated recipient
+and the persisted handoff input equals the current revision. Recheck both at
+submission. Later reassignment for checks/merge does not erase that approval.
+Changing the recipient is user-only and invalidates earlier approval. Record
+both the user who designated the reviewer and the actor who dispatched it.
+`assign_task` never grants approval authority or rewrites the designation.
 
-At merge/deploy admission require approval by the authenticated user or an
-agent outside the accumulated implementer set whose captured model qualifies
-under the current project configuration. User self-review remains allowed;
-agent self-review does not. Create/publish callers and explicitly named
-contributors accumulate; reassignment to a reviewer never erases implementers.
-A project agent importing a snapshot on behalf of another agent records both
-publisher and declared contributors. Git author strings and same-workspace
-membership do not establish contributor identity.
+Agent reviewers must be outside the persistent implementer set. Publication and
+explicit contributor declarations accumulate; handing the task away does not
+erase authorship. A project agent publishing for an implementer records both
+identities. Creating an agent or claiming a role does not qualify it. Review in
+another workspace is the convention, but workspace membership and Git author
+strings do not prove independence. The authenticated user may select themselves
+as reviewer; an agent cannot manufacture that selection or a user approval.
 
-Preserve the prior plan's exact-model rule, but do not present its September
-sample model IDs as today's approved defaults. Initial configuration must be
-explicitly saved by the user from current model discovery. A fallback catalog
-or role preference is not evidence of the runtime model. Capture agent ID,
-session instance/generation, provider, selected model, observed model, provenance
-and uncertainty
-at submission; refuse qualification on unknown/fallback/mismatch evidence.
-The current observations are a starting seam [E7], not a ready-made durable
-review attestation. Missing config permits user approval or an explicit user
-configuration followed by a qualifying agent review; missing runtime evidence
-requires a user or another reviewer with valid evidence.
-MCP cannot create user approvals or change the allowlist.
-Both the current digest and `Agent.active_model` can contain the configured
-choice when no runtime model was reported (`runtime/spawning.rs`). Add a
-per-session model-observation record with an explicit observed/unknown/fallback
-status, tied to the authenticated MCP session instance. Do not derive that bit
-from either existing display field. Preserve the durable session-instance
-lineage and snapshot it with the decision; live generation alone is
-process-local [E7]. Qualify by provider plus exact model ID, not an assumed
-globally unique model string.
+The agent performing merge cannot rely on its own approval, even if it did not
+implement the work. Release-1 MCP merge remains on the Project surface; the
+project agent delegates review to a different designated agent. A user can both
+review and merge. Designated agents need not be process-isolated from malicious
+same-user shell access; this is accountable workflow, not a sandbox.
 
-Snapshot qualifying evidence/config versions in a transactional `applying`
-claim immediately before the Git effect. That claim is the policy
-linearization point. While it exists, mutations to the claimed round,
-contributors, task closure or relevant review/check configuration refuse with
-`busy` (unrelated comments remain writable). They must consult the durable
-claim, not just an in-memory mutex. Revalidate all versions as the claim is
-written; after settlement, withdrawals retain the merge fact but may invalidate
-pending deployment. Recovery reconciles an interrupted claim before reopening
-those writes; an expired timer never silently unlocks a possibly running Git
-effect. Repository/ref reservations separately serialize Git writers. No
-AppState mutex is held across Git. This is a workflow correctness guard, not
-an adversarial sandbox: same-user shell/database access can bypass Build.
+Capture `{configured, reported, source}` at submission, plus provider, agent,
+authenticated session instance and time. `reported` may be absent or a provider/
+PTY observation. `source` distinguishes provider report, PTY parse, configured
+only and known fallback. Preserve durable session lineage; do not accept a model
+string supplied in the approval payload. Today's digest and `active_model` may
+fall back to configuration [E7], so they cannot establish a reported model.
 
-Authors explicitly publish committed fixes. A new H, retargeting, or a changed
-attachment set starts a new round requiring re-review, even for an identical
-patch after rebase. Ordinary target advancement preserves the unchanged source
-review but needs a new candidate and new checks; keep original B/T for the
-historical diff. Title/body edits retain code approval and get visible task
-history; changing scope requires a new round. An empty/already-contained source
-is a fact, not an invented merge. Dirty edits stay outside the snapshot.
+If a report exists, qualify its exact provider/model against the allowlist. Show
+configured/reported differences; never substitute the configured value for a
+known disallowed report. If no report exists, configured-only evidence counts
+**only** under the user's explicit project setting, and only with a concrete
+allowed configured ID and no contradictory known fallback. Unknown configuration
+or an alias that cannot name an exact model does not qualify. Default the switch
+off; the recommendation is to explicitly enable it for initial PTY use. A model
+report is attributed evidence, not a cryptographic guarantee.
 
-A round with any integrated attachment stays immutable. If another attachment
-needs fixes, explicitly supersede the unfinished round with a successor: carry
-already integrated attachments and their original receipts as fixed evidence,
-name the revised remaining revisions, and obtain approval of that complete
-successor set. Do not re-merge carried attachments or rewrite the old approval.
-Release coverage retains both the earlier receipts and the successor's receipts;
-partial effects and the superseding transition remain visible on the task.
+The bridge rechecks these configured predicates when admitting merge; it does
+not select the reviewer or invent workflow policy. Project settings edits bump
+affected tasks' `review_version` in the same transaction. No stale approval is
+inferred from an old SPA label. Record the admitted facts in a short pending
+merge claim. While a Git effect may still run, review/control mutations and
+relevant settings changes return `busy`; ordinary unanchored comments continue.
+Reconcile the claim before releasing it after a crash. Do not hold AppState
+across Git or use a timeout as proof an effect stopped.
 
-Prevent competing active attachments from claiming the same registered
-source-checkout/ref/target tuple under different tasks. Related tasks link to
-the owning task instead of duplicating reviews. Multiple attachments are not an
-atomic multi-repository transaction; first release allows at most one required
-attachment per target repository/ref in a round, avoiding an implicit stacked
-merge protocol. Same-name branches in independent clones are distinct bindings.
+### Line and hunk comments
 
-### Line and hunk anchors
+An anchor names revision, old/new path, side, blob OID and inclusive line range;
+hunk feedback includes its exact ranges/content digest, not a mutable ordinal.
+Derive bounded selected text and context deterministically from the retained
+original blob for line matching, using a fixed documented context window.
+Validate membership and ranges against retained Git objects. Renames keep both
+paths, additions use the new side, deletions the old. Binary/submodule/oversized
+content supports file comments with a visible reason line feedback is absent.
+Read symlinks as blobs. Current file refs lack immutable review identity [E8].
 
-An anchor stores `{round_id, revision_id, old_path, new_path, side, blob_oid,
-start_line, end_line, context_digest}`. Positive inclusive lines name the blob,
-not rendered patch rows. Hunk feedback stores the exact old/new ranges and patch
-content key; it must not attach a hunk ordinal to a moving diff. Validate blob,
-path, side, range and task membership against retained objects. Additions use
-the new side, deletions the old; renames retain both paths. Read symlinks as Git
-blobs, not filesystem targets. Binary/submodule/capped text gets file-level
-feedback with an explicit reason line feedback is unavailable.
-
-The original anchor is immutable. Carry its placement forward only when path,
-side and blob OID remain identical. Otherwise show “Outdated — revision N” and
-open the original diff; replies/resolution still work. No guessed line migration.
-Store comment text once in the task timeline with thread/anchor metadata; the
-diff view projects those same records. Draft comments use `localUiState` keyed
-by device/task/round/revision/anchor [E9], separate from evictable replicas.
-Current task file refs carry only path/line ranges, and the timeline renderer
-does not render them as immutable review anchors [E8]. Add the typed anchor and
-its timeline rendering; reusing the comment text alone is not enough.
+Never edit the original anchor. On a later revision, identical path/side/blob
+keeps placement. Otherwise the SPA may find the original selected content plus
+context digest in the same file. Exactly one match is shown as **Moved — best
+effort**, linking back to the original; ambiguous/missing matches stay Outdated.
+This is a rendering hint, not stored migration or evidence the reviewer saw the
+new code. Do not guess across renamed paths in this first implementation.
+Missing, truncated or unavailable original/new match material stays Outdated;
+do not call a match unique when the whole candidate file has not been searched.
+Replies and resolution still refer to the original thread. Drafts live in the
+existing `build-ui` store, keyed by task/revision/anchor [E9].
 
 ## 2. Wire
 
-Extend plural `tasks.*` with a typed `tasks.review.*` subfamily in a new
-`bridge/src/api/v1/task_reviews.rs`; keep adapters thin. Names below are
-**proposed**, not callable today. Reuse existing task CRUD/assignment/comments
-where their semantics match [E1, E2]; do not revive singular legacy `task.*`.
+Names below are proposals. Use a small typed `tasks.review.*` family, with nine
+review verbs and one additional user-only configuration verb. Reuse task CRUD, comments,
+assignment and settings in the review response instead of new parallel APIs.
 
-| Method / family | Inputs and primitive result |
+| Method | Contract |
 | --- | --- |
-| Existing `tasks.list`, `tasks.get` | Add capability-gated compact review summary/current round. Existing list remains the review list; add review filtering/paged detail only with declared new semantics. |
-| Existing `tasks.create`, `tasks.update`, `tasks.close`, `tasks.reopen` | Task identity, description and lifecycle. No `reviews.create`/separate close API. Legacy callers continue their documented behavior. |
-| `tasks.review.attach`, `.retire_attachment`, `.open`, `.publish` | Task, registered workspace/directory/repo binding, full refs, expected H/T, aggregate version and operation ID. Pin immutable revisions and explicitly create/open a round; never auto-commit. |
-| `tasks.review.get`, `.timeline` | Current round/evidence block plus independently paged task timeline; current state is not reconstructed from the first history page. Keep old `tasks.get` whole-history response for callers that did not opt into paging. |
-| Extended `tasks.comment` | Optional review anchor/thread/reply metadata, caller-stable comment ID and expected review/thread version. Stores an ordinary task comment and invokes the same task notice path. |
-| `tasks.review.resolve`, `.submit` | Thread resolution, or exact-round decision with rationale; authenticated actor/model capture and expected version. Append events and task comment in one transaction. Late historical submissions need explicit historical intent and never advance current work. |
-| `tasks.review.handoff`, `.workflow_get`, `.workflow_set`, `.advance` | Expected step/generation/round/assignee; explicit recipient and destination workspace plus step configuration. Durable checkout/delivery receipt; reused task assignment service. Human advancement only by the user on the current human step. |
-| `tasks.review.commits`, `.files`, `.diff`, `.file` | Attachment/revision and bounded cursor/body range. Immutable OIDs/content keys, completeness/truncation; no arbitrary filesystem/ref access. |
-| `tasks.review.prepare_merge`, `.record_check`, `.checks`, `.merge`, `.operation` | Exact revision/H/T/C and config/version/evidence IDs; candidate or conflict facts, attributed check executions, durable merge result and recovery status. |
-| `tasks.review.settings_get`, `.settings_set` | Project provider/model allowlist and version; writes only from authenticated user context. |
-| `tasks.review.coverage`, `.approve_range`, `.withdraw_range` | Registered repository, trusted deployed baseline and exact release range/tree; complete coverage facts. Range approvals attach to a task and are user-only. |
-| `workspace.cleanup_integrated` | Explicit local-only cleanup mode with per-directory target binding/current expected heads and stable operation ID. Reuses lifecycle guards/removal, never closes linked tasks. |
+| `tasks.review.attach` | One registered repository/source/target binding, implementers, expected review version and operation ID. Refuse a second attachment. |
+| `tasks.review.publish` | Expected H and review version; pin revision and open it. No implicit commit. |
+| `tasks.review.get` | Consistent current task/review snapshot: revision, decisions/provenance, designation, candidates, structured check comments, operations, project settings and review_version. Include paged task-history continuation using existing task records. |
+| `tasks.review.diff`, `.file` | Revision/candidate and bounded body range. Reuse changeset body shapes, immutable content keys, completeness and truncation. `diff` includes the changed-file/commit summary; no separate inventory verbs. |
+| `tasks.review.submit` | Exact revision and approve/request_changes/withdraw, rationale, expected review_version, operation ID. Actor/provenance captured by the bridge. |
+| `tasks.review.prepare_merge` | Exact revision and expected T/version. Return retained C or conflict facts. |
+| `tasks.review.merge` | Exact candidate, expected review_version and operation ID. Service resolves current decisions/check comments; no SPA-generated approval/evidence list. |
+| `tasks.review.operation` | Durable operation result after timeout/reconnect/restart. |
+| `tasks.review.configure` | Project policy and expected settings version; user-only, never an MCP write. One extra verb is justified because current settings are device-wide [E7], not a typed project-review config API. |
 
-Every new mutation gets caller-stable operation identity bound to actor,
-project, input hash and versions. Same ID/same body returns the receipt; same
-ID/different body conflicts. Do not assume current `INSERT OR IGNORE` comment
-persistence proves content-sensitive idempotency. New nested types reject unknown
-safety fields explicitly as well as current top-level strictness [E1, E3].
+Extend existing `tasks.update` with user-only review-recipient configuration;
+`tasks.assign` with optional expected review version and immutable review input;
+and `tasks.comment` with optional anchor/reply/resolution or structured check
+metadata. These are new, capability-gated fields, not existing behavior [E2].
+A check comment contains C, command, exit code or signal, bounded log tail and
+producer/time. Its text appears in the same timeline. Thread resolution is a
+typed comment action, not a second comment stream or new resolve verb.
+Existing task create/list/get/close/reopen retain their normal roles.
+The corresponding MCP task tools carry the same review CAS when changing
+review-relevant fields; a legacy caller that omits it is refused for those
+fields on an attached task. It can still read and post ordinary comments.
 
-`get` returns a consistent bounded current block: attachment set, H/T/B per
-revision, latest decisions/model facts, contributors, step, candidates/check
-IDs and operation states; growing history is separately paged. Define limits
-(e.g. 20 attachments and 50 current reviewers per round) and **refuse writes
-exceeding them** rather than truncate the authoritative approval set. Logs are
-paged/capped (16 KiB inline tail); task text uses the existing 32,000-byte bound.
-Repository/commit-indexed checks update the current task projection only when
-that SHA is part of its active round/candidate. Missing/incomplete evidence
-cannot mean approved or passing. Decisions are raw facts plus config; SPA owns
-labels while the service rechecks authoritative admission.
+Every mutation of review state requires **one** `expected_review_version` CAS.
+This includes review-related use of existing task verbs. There are no separate
+SPA-computed evidence, thread or step-generation preconditions in release 1.
+Project-wide configuration has its own expected settings version; changing it
+bumps affected task review versions. Both use the same named `stale_version`
+refusal, with expected/actual values and task or project identity. A refused
+mutation performs no side effect. Stable operation ID + same actor/body returns
+the stored receipt before checking a now-old version; reused ID + different body
+is an idempotency conflict. Do not infer this from current INSERT OR IGNORE.
+Legacy clients cannot change review control fields without the new capability;
+ordinary task comments remain usable.
 
-Reuse the project-scoped `tasks` change kind [E2, E10]. Each child write bumps
-aggregate `review_version` and notes its task after commit; do not add an
-independent reviews stream. Subscribers refetch the affected review/current
-block and membership; truncation repairs the list. Review/config changes also
-invalidate affected selectors; settings need a declared project settings-change
-signal. Reuse subscribe/coverage repair, push fencing and cross-tab read-order
-infrastructure [E9]. For this subfamily, hold subscription coverage before the
-snapshot or re-read when coverage is late; per-record version fences prevent a
-slow pull overwriting new evidence. Reconnect refetches bounded current data;
-no durable generic replay log is promised.
+For an attached task, assignment, status/move, close/reopen, recipient or
+contributor edits, anchored/thread/check comments, publish/submit/prepare/merge
+all require and bump the review CAS. Its omission is refused even through a
+legacy verb. Assignment checks it inside the same transaction as the queued
+intent. Ordinary unanchored comments and title/body/label/priority/navigation-link
+edits remain outside this CAS and cannot alter review authority or Git inputs.
+For an unattached task, existing verbs retain their contract; initial attach
+uses the empty review version returned by get. Pure reads need no CAS.
 
-Baseline wire is 3.4.0. Allocate the next available additive minor **at
-implementation**, not a hard-coded future number. Update `api/mod.rs`,
-`fixtures/api/versions.json`, `session.hello.json`, each verb fixture's `since`,
-`events.json`, and the prior-minor verb/capability manifest using
-`scripts/api-verbs-manifest.mjs` [E1]. Advertise method names and a complete
-`tasks.localReview` capability only when the usable vertical slice is ready;
-optional params on existing verbs need their own named feature. New SPA on old
-bridge keeps normal task/Changes surfaces and explains the missing review
-capability. Cache any flag that changes paint; dispatch on the current greeting
-via `whenGreeted` [E9]. Never send safety fields to a legacy merge verb and hope
-it implements them. Retiring/changing old semantics requires separate versioning.
+On `stale_version` the SPA preserves the draft, refetches current data, commits
+it through the normal version-fenced cache, and repaints. It does not silently
+retry approval, assignment or merge against a changed revision. Two tabs can
+both render old data; only one can admit a mutation at that version. A later
+review mutation makes the other tab refetch. Git target movement separately
+returns `target_moved`, and checked-out targets return `target_checked_out`.
 
-RPC/MCP handlers perform typed conversion, authenticated scope checks and invoke
-services. Proposed isolated `task_reviews` service owns transactions, admitted
-Git operations, workflow handoffs and recovery while clients are absent. SPA
-owns selectors, workflow editing, reviewer selection and action composition;
-settings supply reviewer/check policy. Do not introduce a general downloadable
-policy runtime or move an always-on loop into a browser [E11].
+Reuse the project-scoped `tasks` invalidation [E10]. Bump the review version and
+emit only after commit. Read current data independently of timeline paging;
+cap decision history and logs without truncating the authoritative current
+record. Reuse the existing 32,000-byte task text limit; cap inline log tails at
+16 KiB and page larger bodies. Current version fencing must compose with list
+paging/read order, not create a second task membership cache [E9].
+
+Baseline wire is 3.4.0 [E1]. Choose the next additive minor at implementation.
+Update typed handlers, `api/mod.rs`, versions/hello/events fixtures, verb
+fixtures and the prior-minor manifest with `scripts/api-verbs-manifest.mjs`.
+Nested safety types reject unknown fields as well as top-level params.
+Advertise `tasks.localReview` for attach/publish/get/diff/file/submit/operation,
+configure, and the new task comment/update/assignment/CAS fields in increment B.
+Advertise `tasks.localReviewMerge` for prepare_merge/merge and structured check
+comments only in increment C. Operation lookup is shared; C adds merge outcomes
+without removing B's receipt reads. Method names remain individually advertised
+by the typed contract. Thus review is usable before merge ships. Cache capability changes;
+use the current greeting at dispatch. Old bridges retain normal Tasks/Changes.
+No unsafe fallback to a legacy merge verb.
+
+RPC/MCP adapters validate types/scope and call isolated services. The service
+persists facts, authenticates actors, checks declared preconditions and performs
+Git/delivery. SPA owns review labels, configuration editing and action selection
+[E11]. Automatic workflow transition policy is not part of release 1.
 
 ## 3. Git mechanics
 
-### Local publication and target authority
+### Publish and prepare without changing a checkout
 
-The workspace branch is the source. A task review publishes references to commits, not
-a copied patch and not uncommitted/index state. Worktree sources share objects
-with their parent repository; rift sources have independent refs/object stores.
-For both, capture exact `H` from the registered source checkout, import/pin it
-in the canonical project source repository, and verify the imported commit.
-For rifts use a local fetch like `git fetch --no-tags <registered clone>
-refs/heads/<branch>:refs/build/task-reviews/<task>/<attachment>/<revision>/head`, with a fresh private
-ref and no force prefix, then verify its OID equals `expected_head`. Reject a
-race and do not publish the revision on mismatch. Do not call the current
-`publish` helper: it force-updates shared `refs/heads/<branch>` and another
-clone may use that name. An external push is unrelated to updating the task review.
-Reads always use the private retained refs, never a workspace's mutable HEAD.
-Publication is explicit; phase 1 does not depend on clone/common-ref filesystem
-watchers. Refresh/reopen/prepare re-read live facts before an action.
+The source is the workspace's committed branch. Worktree sources share objects;
+Rift sources need local import. Import H into a fresh private review ref, verify
+expected H and object connectivity, then publish the revision. Do not use Rift's
+current force-publish helper, which updates a shared same-named branch [E6].
+Use registered local paths, no network remote, force update or dependence on a
+disposable workspace's object store. Review reads use retained OIDs.
 
-The target is an explicitly registered local repository/ref, defaulting to the
-source's project repository and configured base branch (usually `main`). Never
-infer `origin/main` or a same-named branch in an arbitrary integration clone.
-An existing integration clone can be selected as authority only through an
-explicit binding; the UI names where the merge will land. Additional source
-directories need this mapping before they can open task reviews. Detached HEAD,
-non-Git directories, unrelated histories, source equal to target and unresolved
-repository identity are precise refusals.
-When authority is a separate registered local clone, capture/import its exact
-target `T` into private refs before preparing in the canonical source repo, then
-import and verify exact candidate `C` in the authority before landing. Query
-target ancestry/coverage there. Object transfer is local in both directions and
-never changes a shared source branch or relies on a network remote.
+Release 1 targets an explicit existing unchecked-out branch in the same canonical
+registered repository that retains the review objects. No alternate integration
+clone mapping in this slice. Source and target must differ; reject unborn refs,
+symbolic/pseudo refs, non-Git sources, unrelated histories and replaced repository
+bindings. Require a full direct `refs/heads/...` target. To keep source-sync
+coordination out of this slice, refuse a target configured as any source's
+automatically synchronized base. Do not
+silently assume the configured base branch is writable. A launch owner must
+choose/create the integration branch through existing Git workflow; attaching a
+review does not create or move a target branch as a side effect.
 
-### Candidate, checks and merge
+Prepare C from exact T/H with `merge-tree --write-tree` and `commit-tree` with
+parents `[T, H]`, including task/revision trailers. Even a fast-forwardable source
+gets a merge commit. This preserves the reviewed commits and one clear merge
+boundary. Do not offer squash/rebase initially. Persist the candidate metadata
+and reuse C for the same inputs rather than changing its timestamp on every
+read. Pin C before returning it. Probe installed Git support and cover exact
+argument forms in temporary-repository tests. A conflict leaves target untouched;
+the implementer fixes the source, commits and publishes a new revision.
 
-Recommend a **no-fast-forward merge commit**. It preserves reviewed commits and
-anchors and gives each task review a visible integration boundary; it also matches
-the integration convention recorded in #89's task brief. Squash would require mapping the reviewed
-history to another commit; rebase rewrites it and complicates approval and
-recovery. Neither is offered in phase 1. Even a fast-forwardable source gets a
-merge commit. A source already contained in target returns `already_integrated`
-with evidence and asks the controller to reconcile; it does not create a second
-merge or falsely attribute an external merge to this operation.
+Use structured argv, full refs/OIDs, process deadlines and disabled hooks/auto
+maintenance, following existing Git process seams [E6]. No external diff or
+textconv. Refuse custom merge drivers until explicitly supported. There is no
+checkout/filter execution in candidate preparation or landing. Retained blobs,
+not arbitrary filesystem reads, supply review content.
 
-1. **Prepare.** Resolve/pin exact `H/T/B`, take a per-repository operation lease,
-   and run `git merge-tree --write-tree -z --name-only --messages T H` in the
-   canonical repository. Exit 1 with a valid conflict result records conflict
-   paths; other failures are errors, not mergeability answers. On success use
-   `git commit-tree <tree> -p T -p H -F <message-file>` to create `C`; record its
-   tree, author/message and SHA, and pin it. Include task/round/revision trailers in the
-   message. Reuse the persisted candidate for the same parents and merge inputs,
-   including metadata; do not recreate it with a new timestamp on every read.
-   Probe the installed Git for the needed merge-tree/commit-tree behavior and
-   flags before advertising preparation; refuse unsupported Git explicitly.
-   The implementation must cover these command forms in temporary-repo tests;
-   this plan has not executed them against a live project.
-   Merge conflicts leave the target unchanged.
-   The author resolves on the source branch, commits and publishes a new
-   revision; Build never silently edits the source to resolve a conflict.
-2. **Check.** A designated check/deploy agent runs gates in its own managed
-   workspace, locally importing the retained candidate and checking out exact
-   `C` detached there. It may reuse that controlled workspace across checks.
-   The project agent normally stands in the primary base checkout and is
-   instructed not to build/write there [E7]; its scaffold scratch is not an
-   integration checkout. It selects requirements and delegates execution.
-   The executing workspace agent records cwd, verifies HEAD and tracked
-   cleanliness before/after, captures actual exit status and submits the
-   evidence as its own authenticated identity. The orchestrator cannot claim
-   to have observed a subprocess it did not execute. Record divergence explicitly; a run
-   against edited tracked files is not clean-candidate evidence. Build's
-   initial set is SPA lint and full Vitest, gitleaks, semgrep, and diff-check,
-   plus applicable bridge tests for bridge changes. Command definitions and
-   requiredness are project policy; record exact commands and versions, not a
-   hard-coded Rust list. Record runs against `C` with raw exit/signal, log and
-   timestamps. A missing, interrupted or skipped check is not success. A rerun
-   appends evidence instead of overwriting failure. Phase 1 clearly labels this
-   evidence actor-attested; a generic process scheduler is not a prerequisite.
-3. **Decide.** SPA/controller evaluates current review submissions and checks.
-   It supplies evidence IDs, expected review/configuration versions and exact candidate
-   tuple. New review decisions or revision changes invalidate an old admission.
-   Target advancement needs a new candidate and checks; approval remains bound
-   to unchanged source revision `H`. Checks of `H` alone do not cover `C`.
-   Persist the selected check requirements/version with the workflow. Admission
-   matches selected successful execution IDs against exact C and that recorded
-   requirement set; no missing run or caller-supplied success boolean counts.
-   Names and commands are project inputs, not a fixed Rust list.
-4. **Apply.** Persist a write-ahead operation containing `H/T/C` before target
-   mutation. Revalidate qualifying approval, lifecycle/versions, object
-   connectivity, target identity, target SHA and candidate tree. Advance the named target from `T` to
-   exact `C`, never recompute a different merge after checks. Serialize competing
-   Build operations using one repository/ref reservation shared with source sync,
-   review checkout, direct git writers and reclaim (new integration work [E5, E6]); preserve the caller's chosen merge/evidence in the receipt.
-5. **Settle.** Confirm target ancestry and checkout state, record this attachment's
-   merge receipt and task event transactionally, then emit the task invalidation.
-   The round displays Merged only after all its required attachments integrate.
-   Network pushing is a separate caller step and, for Build's main branch, a
-   deployment action gated by coverage. Task completion, deployment and
-   cleanup are separate explicit steps and may fail separately.
+### Checks and merge admission
 
-**Land in the actual target checkout.** Enumerate `git worktree list --porcelain`
-in the authoritative repository. If target is not checked out anywhere, use
-`git update-ref <ref> C T`, a true ref compare-and-swap. If checked out at path
-`K`, require HEAD on the target at `T`, no tracked dirt/in-progress Git state,
-and no active Build mutation job, write-capable coding session or user terminal
-in that checkout. Add a checkout write reservation consulted by starts and all
-Build mutations; the read-only project orchestrator's cwd by itself is not a
-write lease or veto. This distinction is new admission work, not something the
-existing `agent_working_at_root` already implements. Prefer an explicitly
-registered controlled integration authority when write ownership cannot be
-established; refuse that target rather than infer safety from an idle display.
-External shell/file writers remain outside this coordination. Then run `git -C K merge --ff-only --no-overwrite-ignore C`, allowing Git's
-untracked-overwrite checks to refuse. Never stash/reset a user's work. If the
-target is checked out more than once, refuse the ambiguous arrangement.
+The project agent uses existing assignment to ask a workspace agent to check
+exact C in its own checkout. The project agent's usual base cwd is not an
+integration workspace [E7]. This plan does not grant permission to write there.
+The executing agent records a structured task comment: exact C, command, raw exit
+code/signal and log tail. The bridge authenticates the author and matches C and
+required command names; it does not observe the process, inspect its cleanliness
+or create trusted execution IDs. Show **Reported by <actor>**. Agents should
+state checkout divergence in the comment instead of calling it a clean run.
 
-Source sync already uses unattended Git and disables hooks/automatic
-maintenance [E6]. Reuse those process/timeout primitives for prepare/import/land,
-with structured argv and no arbitrary external diff/textconv. Preparation must
-refuse repository-selected custom merge drivers until explicitly supported;
-include driver configuration/attribute tests rather than assuming hooks cover
-every executable Git can invoke. Do not copy its
-mutable tracking-ref operand: landing must name retained C. Keep filters needed
-for a correct checkout, with bounded execution and explicit failures.
+The configured required commands remain data. Use the latest submitted result
+for each required command on C; missing/interrupted/nonzero results fail
+admission. Keep earlier results visible. Only the assigned check executor named
+in the task's handoff input, or the user, may supply a counted check result;
+ordinary agents may still comment. Record that assignment's actor. This uses
+existing task assignment and a small typed handoff input, not a new runner or
+gate scheduler. Validate the producer when the result is appended; handing the
+task on for merge does not erase an accepted result on C. The project agent
+cannot report another agent's exit as its own.
 
-Run prepare/land Git with hooks disabled for deterministic primitive behavior;
-post-merge and reference-transaction hooks do not run for these actions. This
-visible choice is listed for Zech below. Explicit gates remain separate.
-Use full refs/OIDs and structured arguments; no branch/Markdown interpolation
-into shell. Refuse incomplete/submodule-specific checkout states that cannot
-be handled safely in phase 1.
+Merge accepts the candidate plus one expected review_version. In a transaction,
+recheck current designated approval, implementer independence, model policy,
+check comments on C and task lifecycle; write a pending operation claim. Retain
+the admitted comment/decision references for audit, without asking the SPA to
+assemble them. Target-only movement requires a new C and checks; source review
+of unchanged H remains. Source movement known before admission is reported and
+requires explicit publication, never silent inclusion of new commits.
 
-The checked-out path is a guarded fast-forward, **not** an atomic CAS across
-Git, index and files. Serialize Build writers and use Git's locks/overwrite
-checks; reread actual target/index state afterwards. An unrelated external
-advance normally refuses ff-only; if target already contains `C`, reconcile
-the recorded candidate rather than claim a second landing. External file writes
-remain outside Build's lock. An interrupted update can leave target at `T` with
-a dirty checkout: record interrupted/uncertain and require inspection. No
-automatic checkout repair. Test these boundaries explicitly.
+### Land only an unchecked-out target
 
-Fixed `H/C` protects what is merged even if an external Git process subsequently
-moves the source. Recheck observed source state before admission and report a
-known change, but do not claim to lock arbitrary external Git/file writers with
-a Build mutex. Target locking and checkout ownership are execution requirements.
+Under a short repository/ref operation reservation, enumerate worktrees with
+`git worktree list --porcelain -z` in the
+canonical repository and refuse the target if checked out anywhere. Recheck
+placement and expected T immediately before `git update-ref <ref> C T`. Reuse
+existing lifecycle reservations to keep the registered repository/workspace
+from removal during the operation. Coordinate the narrow target-ref reservation
+with Build checkout/branch-creation requests that could newly occupy that ref
+and source configuration changes that could start synchronizing it;
+this is not a general lock on every writer, terminal or source-sync checkout.
+The Git CAS arbitrates competing ref writers. External shells that change
+checkout placement remain outside Build coordination and are an explicit limit.
 
-### Recovery and cleanup
+**No base-checkout exception.** `SyncLock` coordinates source sync by path; it
+does not own all writers. Nor can update-ref safely move checked-out main and
+leave files for source sync: `source_sync.rs` can return UpToDate before touching
+the checkout, and its fast-forward uses the tracking ref [E6]. A disposable Git
+2.55.0 experiment for this workshop confirmed that updating checked-out main
+left the old index/files; `merge --ff-only C` then said Already up to date and
+left them unchanged. No project checkout was used. Checked-out landing needs a
+separate implementation and failure model, deferred from release 1.
 
-Journal phases include `accepted`, `prepared`, `applying`, `ref_applied`,
-`completed`, `failed`, `uncertain`. On restart inspect Git before retrying:
+After CAS, settle the merge receipt and task event once. Never push a remote,
+deploy, close a task or delete a workspace as a merge side effect. If the user
+chose `build-reviewed` as target, the UI says it merged into `build-reviewed`.
+The project agent may then carry C through its existing roll procedure; that is
+outside this merge receipt and the feature cannot claim it verified main.
 
-| Observed state | Recovery |
+### Small recovery record
+
+C is prepared and pinned before merge. Keep one pending merge intent and a
+settled outcome rather than seven workflow phases. After restart, first prove
+any old Git child has stopped or finished before retrying; a timer alone is not
+proof. Read the actual target:
+
+| Target after interruption | Result |
 | --- | --- |
-| Target still `T`, no target effect recorded | Inspect index, worktree and in-progress state first. Retry under the same operation ID only with a known-consistent checkout and fresh admission; dirty/unfinished/unknown state stays uncertain. Never rerun checks invisibly. |
-| Target exactly `C` or a descendant containing retained `C` | Verify parents/tree and record this attachment integrated once. For a checked-out target, separately reconcile HEAD/index/worktree/in-progress state; keep operation/cleanup uncertain until consistency is known. Ref reachability alone is not clean completion. |
-| Only current revision `H` is reachable, and recorded `C` is not | Record external integration with observed target SHA; original merge SHA/check provenance unknown. Do not declare our merge operation successful or grant deploy coverage. |
-| Target unrelated/moved, or target checkout inconsistent | Mark uncertain/conflict, expose actual facts; no reset or blind replay. |
-| Git success, task update/roll/cleanup fails | The attachment stays integrated; reconcile its receipt once and retry only the separate failed effect. |
+| Exactly C | Verify retained C's parents/tree, settle integrated once. |
+| Exactly T | No current ref effect; recheck placement/admission, then retry the same operation only if it remains valid. |
+| Another OID | Report moved/uncertain. If retained C is an ancestor, record that integration fact with its original intent; if only H is reachable, record external integration. Neither invents a successful second CAS. |
 
-No cross-store atomicity is claimed between SQLite and Git. The retained `C`
-and journal make reconciliation possible. Test termination at every boundary,
-including after ref change but before database commit and after commit before
-response. A timeout is a reason to query `tasks.review.operation`, not merge again.
+This third case matters when another writer advances the ref after our CAS.
+Never reset or blindly replay. A force move away and back is not detectable
+from OID equality alone; Build can reconcile present integration, not reconstruct
+all external history. A timeout tells the caller to query `.operation`, not to
+start another merge. Fault-inject after CAS/before SQLite, after SQLite/before
+reply, and concurrent source/target movement. There is no index/worktree crash
+repair because this primitive never writes them.
 
-Keep the workspace, source branch and task history after merge. Follow-on work
-requires an explicit new task or reopened task/new round; it never amends the
-already merged round. Cleanup checks every workspace directory, agents and
-terminals anywhere beneath it, dirty/untracked files, and reachability of all
-current work. Retained review pins preserve history, not every unpublished
-follow-on commit. Never delete adopted/user checkouts.
+### Roll audit and workspace retention
 
-Current `workspace_finish_legacy` honors branch deletion, and merged-run Done
-can close linked tasks [E4]. Current reclaim/path containment and branch
-restoration guards are substantial existing code [E5]. Reuse those mechanisms
-with a new explicit local-integration proof; do not bolt on another destructive
-workflow or route through the merged-Done close hook. Keep legacy remote-based
-finish/reclaim behavior unchanged for callers without the new capability.
+Keep workspaces and source branches after merge. Current reclaim/deletion guards
+still apply [E4, E5]; do not add `workspace.cleanup_integrated` or pretend pins
+protect unpublished follow-on work. New local integration cleanup belongs in a
+later lifecycle slice. Review attachments suppress the automatic linked-task
+close hook, as section 6 specifies, but do not authorize deletion.
 
-`workspace.cleanup_integrated` measures each directory's **current checkout
-HEAD**, imports that exact object if needed, and proves reachability from its
-registered current target. Never substitute last reviewed H or a same-name
-branch in the canonical repository for a Rift's live head. Refuse plain
-directories, dirt, untracked work, missing objects or active writers. Under the
-shared reservation, recheck heads/status before deferred removal, preserve
-managed-root/descriptor boundaries, and journal partial removal. Branch deletion
-needs an explicit local proof and expected-tip CAS, default/checked-out branch
-guards and restoration reporting; current remote-only deletion proof is not
-reusable unchanged. A pin by itself never authorizes deletion. Task closure
-and workspace reclamation remain separate even after successful deployment.
+Release 1 has **no** per-tier deployment baseline, coverage gate, user range
+approval or CI enforcement. Current CI responds to main pushes/manual dispatch
+and does not read local review state [E12]. Keep mandatory independent review
+in the project-agent roll procedure, and record verification on the task. The
+feature cannot prove all deployed work was covered or prevent shell bypass.
 
-### Deployment coverage
-
-Build's current CI deploys on pushes to main and manual workflow dispatch
-(`.github/workflows/ci.yml`, [E12]). The review data and operations remain local, but
-Build's own rollout procedure must check review coverage **before a main push,
-CI dispatch, or local bridge/app restart that deploys new work**, not afterwards.
-`tasks.review.coverage` walks first-parent commits between an explicitly trusted last
-deployed SHA and the exact proposed release SHA. Require the baseline to be an
-ancestor; page with explicit completeness, never treat the first page as all.
-Each integration commit must match a retained completed attachment candidate
-with its qualifying task-round approval evidence. Direct commits, `H`-only external integrations,
-missing receipts and unqualified approvals are uncovered and block the normal
-roll procedure. Each candidate binds its attachment’s source-side work; earlier
-target integrations are covered independently along first-parent history.
-
-At deployment re-evaluate retained submissions against current project config
-and latest decisions, in addition to the evidence snapshot at merge. A removed
-reviewer model or withdrawn approval can therefore block a still-pending roll.
-`tasks.review.submit` remains available on merged task reviews: an approver's later withdrawal
-or request-changes means that approval no longer qualifies for deployment.
-Another reviewer's change request does not veto qualifying evidence. A new
-qualifying approval of that unchanged revision or a user retrospective range
-approval restores coverage; history and the completed merge stay unchanged.
-Return commit/task/round/evidence/config versions and reasons, never accept a caller's
-`reviewed: true`. The project agent verifies the exact to-SHA and complete
-coverage immediately before the deployment action and records the result; a
-new main commit requires another check. Show uncovered commits in the SPA.
-
-This does not make CI consult a local database or prevent a same-user shell
-from pushing anyway. Implement the check in the project-agent roll procedure
-and any Build-owned deployment entry point; manual shell bypass remains a
-workflow violation. Strong prevention would require a separately trusted deploy
-gate/CI evidence transport, outside this local task review scope. Task trailers identify
-work but are not approval evidence. Initial adoption needs a user-selected,
-verified deployed baseline for each deployed tier (app, relay, bridge may differ); it does not retroactively certify older history.
-Include retrospective user review in phase 1, subject to Zech's product answer
-below: show the exact from/to diff, then record `tasks.review.approve_range` with the
-Git-verified to-tree. Coverage accepts only that repository and explicit
-first-parent range; descendants outside it still need evidence. The baseline
-must lie on the first-parent chain, not merely be a reachable side-parent.
-Range endpoints, tree, actor and approval ID are immutable; user-only withdrawal
-removes that evidence. No agent can manufacture this user approval through MCP. Range review uses
-the same task diff surface and timeline, with explicit immutable from/to scope.
-Coverage must use the release SHA each deployment actually consumes; checking
-a mutable main and then dispatching a different SHA is not sufficient. If a
-legacy deployment trigger cannot pin that identity, refuse the managed action
-or add that precondition before claiming it is covered.
-This makes direct user commits/external merges reviewable before deployment
-instead of wedging the rollout. There is no silent retrospective exemption.
-
+An optional read-only roll report can compare an explicitly selected tag to an
+exact proposed SHA, walk first-parent merge commits, and show which lack task
+merge receipts. Use existing Git reads plus review receipts; no new coverage
+verb is needed. Refuse a non-ancestor/missing tag and show the full chosen range.
+Do not infer a trusted deployed baseline from the newest tag. Direct commits
+must be shown separately as unclassified; a merge-only report cannot certify
+them. This report is a small follow-on, not a release-1 dependency or exemption.
 
 ## 4. SPA
 
-Use the existing tracker task route, canonically
-`#/device/<deviceId>/project/<projectId>/tasks/<taskId>` (device-less links resolve
-to it), and add a Changes/review section with selected attachment and revision
-in route/query state. Preserve the existing `/c/<commentId>` focus when composing
-those selections. A filtered review queue
-is a view of Tasks, not a new project PR collection. Keep the project rail and
-shell; workspace Changes links to the owning task or explicitly chooses/creates
-a task before attaching its selected directory. Current routes and renderers
-are [E8]; proposed routing extensions need parser/builder and shell tests.
+Use the existing tracker task route
+`#/device/<deviceId>/project/<projectId>/tasks/<taskId>` and a **Changes** section.
+Device-less links resolve to it. Preserve `/c/<commentId>` focus and add revision
+selection without a new PR collection [E8]. Tasks may filter by review state;
+workspace Changes links to its owning task. The first release has no attachment
+picker because there can be only one attachment.
 
-The task page shows its title/body, single timeline and assignee alongside:
+Show the branch/target, revision/commits/files, anchored feedback, designated
+reviewer, model provenance, reported checks and precise merge result. Actions
+are attach, publish, assign for review, approve/request changes, prepare and
+merge. Candidate checks/deployment are existing agent handoffs. Human review
+names Zech as recipient and uses In review; agent review stays In progress.
+The UI must make an unchecked-out-target refusal understandable before offering
+merge, while the bridge still rechecks at admission.
 
-- All attached repository branches, source/target identity, current round and
-  revision, and whether the live source has moved. Non-Git/unborn sources show
-  why no committed review is available.
-- Commits, changed files, lazy diffs, old/new line and hunk feedback, replies,
-  resolution and outdated-thread links. A timeline comment links to its exact
-  immutable diff; a diff comment links back to that same timeline record.
-- Per-reviewer decision/model evidence, qualification reason, current workflow
-  step/recipient, gate execution evidence and partial/all integration state.
-- Explicit publish/open, request review, approve/request changes, prepare/check,
-  merge and step advance actions. Drafts, submissions, merges and deployment
-  are different actions; no “Complete implies approve” shortcut.
+Reuse `changesReview.js`, `changesComments.js`, `changesetBodies.js` and the diff
+viewport/folds/composer via a focused task-comment adapter. Current file viewed
+marks and `run.request_changes` conversation posts are not task approval [E8].
+Keep historical `taskReview.js` plan browsing separate. Render the same comment
+record in timeline and diff, including original and best-effort Moved links.
 
-Approval applies to the visible complete revision set. Make missing bodies,
-truncation and unresolved feedback visible. Display config changes and stale
-review/candidate checks. On narrow screens these are sections of one task page,
-with a persistent shell and no horizontal overflow caused by filenames/actions.
-The human step names the decision and destination: approve/advance or send back
-with comments. Agent steps do not manufacture a Needs you pause.
+Add focused task-review cache/sync/model/action modules beside tracker modules.
+Current record address is device/project/task; review_version lives in its value
+and write fence. Immutable bodies use repository/revision/blob/path/options.
+Reuse body paging, content-key fences, task list read ordering, subscription
+repair and separate UI drafts [E9]. Do not evict task history with its workspace.
+Distinguish missing, empty, truncated and unavailable.
 
-Reuse the rendering, viewport, folds, lazy bodies, place keeping, escaping and
-composer freeze behavior of `changesReview.js`, `changesComments.js`,
-`changesetBodies.js` and the diff stack [E8]. Extract a focused adapter that
-reads task anchors and writes task comments; do not inflate the legacy review
-controller with workflow policy. Current `run.request_changes` posts into a
-conversation, and file viewed marks are local UI state [E8]. Keep that adapter
-for adopted/legacy review; neither constitutes approval of a tracker task.
-`taskReview.js` is the old plan surface, not the new task review controller.
+Task pushes carry IDs, not review content [E10]. An invalidation or partial
+mutation receipt triggers a canonical refresh; a complete returned snapshot may
+be written directly to the cache. `tasks.review.get` reads the current task,
+review block and requested timeline page coherently. Write timeline comments
+and their anchor metadata together under that review version. If composing
+separate task/review reads, require matching review versions; reject and reread
+mixed versions instead of painting mismatched comments. All paint comes from
+the version-fenced cache after writes, never directly from a reply. Cold or
+offline mounts draw held data. Do not use a private in-memory store when cache
+recovery is pending. `stale_version` preserves
+the draft and triggers a versioned refetch/repaint, then asks for a fresh action.
+The same rule applies across two tabs. Approval/merge is pending until admitted;
+optimistic comments use operation IDs and the normal task comment path.
 
-Add `taskReviewCache.js`, `taskReviewSync.js`, `taskReviewModel.js` and small
-mutation/thread adapters beside the existing tracker modules. Key current-review
-replicas by device + project + task; keep aggregate version in the record and
-write fence, not its address. Key immutable bodies by device/project + repository,
-with revision/blob/path/options. Task-owned history must not be evicted when its workspace
-is removed. Reuse `bodyPages.js`/`cachedBodies.js` continuation and content-key
-fences; body metadata and pages commit before painting [E9]. Keep absent, empty,
-truncated and unavailable distinct. No fresh uncached-Git exception is needed.
-
-Every path is `RPC/push → versioned cache write → notification → cache read →
-paint`. Mount the cache-backed task page using the route's `surfaceContext`;
-the page paints held records on cold/offline loads before refreshing. Never
-paint a mutation reply directly. Preserve drafts
-in `localUiState`; optimistic comments are pending task records reconciled by
-stable operation ID, while approval/merge stays pending until admitted. Reuse
-existing cache recovery rather than adding a private memory store [E9].
-
-Current tracker list paging already has cross-tab read ordering [E9]. Add
-review summary/version participation to that fold; do not replace it with a
-separate list cache that resurrects old membership. A versioned current-review
-read supplements the task timeline. Settings and capability changes write cache
-records before selectors/button paint change; operation dispatch still checks
-the live greeting/bridge preconditions.
+Tests cover real cache-write-to-redraw, concurrent tabs, late invalidation,
+comment deep links, body continuation, repeated-line ambiguity, moved versus
+outdated anchors, capability fallback, keyboard navigation and a 390px layout.
 
 ## 5. Agents and workspace handoffs
 
-Keep `get_task`, `comment_task`, `assign_task`, `move_task`, `link_task` and
-existing workspace/agent creation tools [E7]. Add a small task-scoped tool
-family mirroring the new contracts: `open_task_review`,
-`publish_task_review`, `get_task_review`, `read_task_review_diff`,
-`read_task_review_file`, `submit_task_review`, `handoff_task_review`,
-`advance_task_review`, `prepare_task_merge`, `record_task_check`,
-`merge_task_branch`, `get_task_review_operation`, `check_deploy_coverage`.
-Use `comment_task` for feedback/replies with optional anchors. Do not add a
-parallel `comment_review` stream or a `list_reviews` object inventory.
+### First PR: fix assignment durability for all callers
 
-MCP derives project and actor from the bound conversation, validates scope on
-every child ID/repository/blob, and enforces action surfaces at dispatch as well
-as discovery. Prepare/merge/cleanup default to Project surface; authors/reviewers
-use Coding surface for publication/findings. A deploy agent in a workspace needs
-an explicit scoped capability/dispatch entitlement before these operations
-become available there, not a misleading prompt telling it to call tools its
-surface cannot use. First release may use the project agent as the deploy step;
-independent workspace deployers require that entitlement in the same slice.
-User config, human-step approval and retrospective range approval have no MCP
-write counterpart. Reuse current model discovery and role choice; the service
-records actual session evidence, not a reviewer-supplied model string [E7].
+Today `assign_task_to` calls `deliver_for` before `settle_assignment` and
+`commit_task_write` (`dispatch.rs:259–270`); new-workspace dispatch has a similar
+boundary [E2]. A reviewer can start before its assignment is durable. Fix this
+once for wire, MCP, existing/new-agent and new-workspace callers. Do **not** keep
+a second legacy ordering for tasks without reviews.
 
-### Branch movement is part of the handoff
+Split preparation from delivery. Resolve/create the destination identity and,
+where needed, provision a workspace without delivering its task. Then commit
+assignment, task events/links, input revision, destination conversation transcript
+and owner/agent records, and queued delivery receipt with its operation ID in
+**one SQLite transaction**, extending the existing store composites [E3].
+Only after commit may the delivery runner claim and enqueue/provider-deliver it.
+A failed commit leaves no runnable task delivery; a crash after commit is resumed
+from the outbox. Reuse the current delivery receipt/claim machinery [E3, E7],
+with a durable link from assignment intent to the delivery transcript/receipt.
+Do not make two independent commits masquerade as an atomic handoff.
 
-1. The implementer commits and publishes a task round with exact attachment
-   revisions. “Ready to roll” becomes a review handoff on the task.
-2. The controller/user chooses the next explicit agent or human step. For an
-   agent reviewer, persist a handoff intent naming task/round, old assignee,
-   destination workspace and recipient; reserve destination checkouts before
-   materialization. The old assignee is not silently stopped. Any ongoing writer
-   at the destination blocks the checkout step.
-3. Prepare the reviewer's own managed workspace via existing provisioning
-   machinery, importing locally from retained refs and checking out exact H.
-   Review-only checkouts may be detached; editable handback uses an explicitly
-   owned local branch. A worktree cannot simultaneously own a branch already
-   checked out elsewhere; use a separate review branch/detached checkout or a
-   Rift clone. Never run ad hoc `git worktree add` on a registered repository.
-   Existing `workspace.create` normally cuts new branches [E4]; attaching an
-   existing immutable revision is **new work**, not current assignment behavior.
-4. Verify every destination's repository/HEAD, record bindings, then settle the
-   task assignment and durable reviewer delivery. Existing tracker dispatch
-   already prepares assignments and rechecks assignee state around deferred work
-   [E2]; extend that service rather than call raw assignment twice. The review
-   intent, step generation and operation ID make retries/readback unambiguous.
-5. Delivery carries task ID, exact round/attachments/H/T/B, scope, expected
-   outcome and instructions to read the task/current review. Reviewer comments
-   enter the task timeline and reach the assignee like other task comments.
-   One decision is submitted for that round. A late decision remains historical.
-6. A current designated reviewer’s changes-requested decision is consumed by
-   the service into the configured backward transition, assigning the
-   task to its saved implementer (and preserving reviewer tracking). Fixes may
-   happen in another registered workspace; transferring writable ownership uses
-   expected source head/step generation and no force overwrite. New commits are
-   imported into fresh private revision refs, then explicitly re-reviewed.
-7. The service is the single transition owner: it consumes an accepted decision
-   from the designated reviewer on the exact step/round generation, durably
-   claims it, and advances/backtracks once. Submission persists the immutable
-   decision and pending transition intent together; the caller need not send a
-   second advance after approval. `.advance` records a human/manual input for
-   this same service, never executes a second scheduler. Another observer's
-   comment/decision or a stale generation cannot redirect the workflow. A later
-   human step, if present, waits for
-   that user. Otherwise the task goes directly to its configured deploy agent,
-   which prepares/checks/merges exact candidates, checks release coverage,
-   deploys and records verification before task completion.
+Split tracker persistence from after-commit notices and in-memory state. In
+particular, set `dispatched_task` only after commit, and reconstruct it from the
+durable assignment payload when a queued turn resumes. Today dropping the
+deferred in-memory queue does not remove an already persisted delivery receipt;
+boot recovery can replay it [E3]. Validate older queued assignment receipts
+against the task's durable recipient and dispatched operation before replay.
+An absent/mismatched assignment becomes uncertain without delivery. A reused
+operation ID is successful only if both the receipt and assignment/event match;
+the current receipt-only early return is insufficient for pre-fix orphans.
 
-The task owns a **small persisted sequence**, sufficient for implement →
-review → deploy, including explicit backward edges and human/agent recipients.
-A general workflow editor, arbitrary loops, parallel DAGs and cross-device
-checkout transfer are follow-ons under #145. The first slice must still make
-manual handoff between workspaces truthful and durable; a mere message to a
-reviewer on the implementer's moving checkout does not satisfy #145.
+Filesystem creation cannot join SQLite. Keep a preparation receipt; an
+interrupted provision may leave an idle reusable workspace, never a recipient
+already executing the uncommitted task. Recheck expected assignment before the
+commit. A superseding assignment cancels an unclaimed old intent; provider
+acceptance that is uncertain is reported, not blindly redelivered. Persist
+recipient/input identity in the payload so a resumed recipient reads the current
+task before acting. Do not promise exactly-once execution across provider
+failure. Ordinary coalesced comment notices are not being rebuilt as an outbox.
 
-Separate the service from RPC/event delivery [E11]. A bridge restart resumes
-accepted handoffs after checking workspace/HEAD/assignee facts; it does not
-repeat checkout or launch blindly. Store intent and delivery receipt together,
-then reuse operation-ledger and delivery-runner claim/uncertain handling [E3,
-E7]. A DB transaction cannot include provider delivery or filesystem creation;
-journal those boundaries. A crash after checkout but before assignment can
-leave an idle reusable workspace; it must not start an unassigned reviewer.
-Concurrent reassignments fail expected-generation checks and never overwrite a
-human's newer assignment. Two browser tabs cannot become two schedulers.
-Today `assign_task_to`/`hand_over` can accept delivery before persisting the
-settled assignment [E2]. Do not treat a call to that existing method as an
-atomic workflow handoff. Extract its preparation/delivery pieces, persist the
-step/assignment, task events, delivery transcript entry and queued delivery
-receipt together, then enqueue/claim/provider-deliver only after commit; retain the legacy ordering for non-opted-in callers until
-separately migrated. Fault-inject task-write failure after preparation and
-restart before/after delivery claim. Keep filesystem/Git/task operation journals
-separate from the existing agent/conversation-bound delivery receipt table;
-reuse that table only for the actual message delivery.
+This fix is independently useful and must ship before review-specific work.
+Tests inject failures before/after task commit and provider claim, plus concurrent
+reassignment and old orphan receipts, and cover **both review and legacy callers**,
+including create-with-assignee. User/unassigned targets have no provider receipt
+and keep a normal task transaction. The legacy repair need not add a client
+retry-deduplication promise: review-capable assignment later adds caller-stable
+operation IDs alongside its CAS. No browser is required
+to resume a committed delivery.
 
-Ordinary task notices retain the existing fan-out/coalescing path; don't claim
-it is already a transactional outbox. Explicit workflow handoffs and decision
-transitions require durable delivery intent added to the store. Agent messages
-say to read the task; they are not a second authoritative feedback record.
-A generic Complete report or idle session never advances this workflow. Report
-and transition outcomes are separate, both visible on the task when relevant.
+### Release 1 uses explicit assignment, not an automatic sequence
 
-Update `bridge/templates/notes/task_tools.md`,
-`bridge/templates/notes/workspace.md`, `bridge/templates/project_agent.md` as
-applicable, their assembly in `bridge/src/templates.rs`, MCP descriptions and
-`bridge/src/orchestrator/workspace.rs` together [E7]. Teach:
+Keep `get_task`, `comment_task`, `assign_task`, `move_task`, `link_task` and existing
+workspace/agent creation tools. Add MCP counterparts for the nine review verbs,
+not separate workflow, cleanup, coverage or settings tools. User-only recipient
+and project policy edits have no agent write counterpart. Scope every task,
+repository and child ID to the authenticated conversation. Coding agents publish,
+read and submit; the Project agent prepares/merges. Checks run under the workspace
+agent that actually executes them, using structured `comment_task` evidence.
 
-- Read task and exact active round before acting; publish only committed work.
-- Findings/replies belong on that task with immutable anchors. No acknowledgments,
-  starting notices or repeated diff recaps; post decisions, blockers, questions,
-  changed state and necessary evidence.
-- Submit approval/request-changes explicitly; Complete is not a review or gate.
-- Handoff assigns the task and names its input revision/destination. A human is
-  involved only where the workflow has a human step or explicitly asks them.
-- Before deployment/main publication, verify complete review coverage for the
-  exact release SHA; shell access is not permission to bypass the rule.
+1. The implementer commits, attaches and publishes H, then asks through the task
+   for the already user-designated recipient to review. If none is designated,
+   that is an explicit user setup action, not permission to pick a puppet.
+2. The controller uses existing workspace/agent provisioning and `assign_task`.
+   The reviewer imports retained H into its own workspace and checks it out
+   detached or on its own review branch, then verifies HEAD. No product-owned
+   checkout-transfer state machine ships here. Never run ad hoc `git worktree
+   add` on a registered repository or change the implementer's checkout.
+3. The reviewer reads that revision and posts anchored findings plus one decisive
+   submission. On requested changes, the controller explicitly assigns the task
+   back to its saved implementer. Fixes publish a new revision and need re-review.
+4. On approval, explicit assignment hands checks to an executor, then integration
+   to the project agent. Each assignment carries its immutable H or C input and
+   expected review version. The user can be the reviewer or an explicitly chosen
+   handoff recipient; no other step implicitly waits on them.
+5. The project agent prepares/merges C, follows the existing roll procedure,
+   records verification and explicitly moves/closes the task. A source/target
+   race sends it back for new preparation or review; Complete is never approval.
 
-Keep new instructions capability-gated. Current templates are compiled defaults,
-with no per-project override support (`templates.rs:3–8`); do not claim an
-app-only prompt update or invent an override dependency. Do not ask legacy
-agents to call unavailable tools. This revision
-uses always-on bridge services per #86, not the old plan's proposed browser-owned
-prompt runtime.
+There is no automatic submit→assign transition in release 1. If the controller
+stops between those actions, the task shows a durable decision awaiting handoff;
+it does not secretly lose a queued transition. Existing assignment delivery is
+headless after it is accepted. #145 owns the later automatic sequence and branch
+checkout transfer; the task identity and handoff convention are adopted now.
+
+For that follow-on, workflow is user-authored data: ordered steps with recipient,
+kind and explicit `on_decision` edges. An isolated bridge service may apply only
+the declared transition to `step[n+1]` or `step[n-1]`, under expected-generation
+CAS, and durably queue delivery. It must not choose a reviewer, infer a gate,
+interpret an ordinary comment as a decision, or invent a next step. The SPA edits
+and displays the data. Persist decision plus transition intent together when
+that automatic feature is added. This limit follows rule 5 [E11]; only delivery
+and accepted transition execution need to continue without a browser.
+
+Update `bridge/templates/notes/{task_tools,workspace}.md`,
+`bridge/templates/project_agent.md`, `bridge/src/templates.rs`, MCP descriptions
+and `bridge/src/orchestrator/workspace.rs` together [E7]. Teach exact revisions,
+designated review, task comments, check provenance, manual handoff and explicit
+roll verification. Post only decisions, necessary questions, blockers and changed
+state; no acknowledgments or repeated diff recaps. Capability-gate instructions.
+Templates are compiled defaults, not current per-project overrides.
 
 ## 6. Tasks integration (the original Issues integration section)
 
-The task page is the review page. Ordinary branch/workspace/commit links remain
-for navigation, while typed attachments establish exact repository authority.
-Related tasks use normal links/parent references; they do not gain duplicate
-comments, approvals or completion by being mentioned. All review events,
-requests and gate/merge outcomes share the task timeline.
+**A task has opted in if it has a branch attachment.** Test the stored child row,
+not a prompt, transient dispatch flag, separate workflow table or current board
+column. The attachment is retained after merge/close, so the opt-in remains
+stable. Existing file uploads and `links.branches` do not opt a task in.
 
-Current `app/tracker/activity.rs` moves a held dispatched task to In review on
-Complete; merged workspace Done can close linked open tasks [E2, E4]. These
-hooks must be narrowed for **explicitly opted-in workflow tasks** in phase 1.
-Persist workflow ownership/generation in the dispatch context, and make these
-legacy hooks yield to the review service for that task. Existing non-review
-work retains its old behavior. Prompts alone cannot stop automatic hooks.
+For these tasks, suppress `activity.rs`'s Complete→In review movement and
+`workspaces/deletion.rs`'s merged-Finish linked-task close [E2, E4]. Preserve the
+Complete report and merge history, but wait for explicit task actions to change
+completion. Non-review tasks keep current behavior. Test both paths, including a
+workspace linked to one review task and one ordinary task. Do not let cleanup
+close the review task merely because it shares that workspace.
 
-The #89 task body and #145 body explicitly reserve In review for Zech. For
-these review workflows, that means an explicit human step needs Zech.
-Agent-only review stays In progress with its reviewer as assignee. A human
-step assigns the user and sets In review; Needs you derives through existing
-assignment/mention/read-mark rules [E2]. Moving back to an agent restores the
-appropriate active column via the explicit transition. Simply opening a diff,
-receiving a comment or entering an agent step never requests human attention.
+The task remains In progress for agent review and check work. A handoff to Zech
+explicitly assigns the user and moves it to In review through existing tools;
+Needs you uses current assignment/mention/read-mark behavior. This follows #89
+and #145; opening a diff or leaving an ordinary comment does not request a human.
 
-“Done with this step” is not the board's Done column. The review step can
-finish and dispatch deployment while the task remains In progress. Recommended
-completion for Build: all required attachments integrated, exact release
-coverage checked, deployment verified, then an idempotent task Done event and
-explicit closure. For projects without deployment, configure an end-after-merge
-step. Closing remains separate from the column; #145's last “issue is closed”
-is an explicit terminal workflow action, not a side effect of deleting a folder.
+A merge into the selected target records integration only. For Build, the deploy
+agent explicitly records verification, moves Done and closes. Projects without
+deployment may do this after verified merge. Closure and the board column remain
+separate actions. Task close/reopen must carry the review CAS when relevant;
+closing refuses new merge admission, but cannot undo an admitted Git effect.
+A reopening never silently replays merge/deployment. Related tasks get no
+approval or completion just from being linked.
 
-Completion records the required attachment set and evidence versions. Partial
-merge/deploy failure keeps the task open; already integrated branches stay
-integrated, and retries only address remaining effects. A failed task update
-cannot roll back Git. User closure/cancellation pauses further workflow
-admission, preserves historical decisions and branches, and does not pretend to
-undo effects already accepted. Reopening requires an explicit new active round
-or resumed step, never silent replay of an old deployment.
-
-The planning task #89 itself still goes to In review for Zech's read when its
-deliverable is reported Complete. This plan does not change current task
-behavior or opt itself into an unimplemented workflow.
+This planning task still moves to In review when its document is ready for
+Zech. The plan does not opt itself into a feature that has not been built.
 
 ## 7. Rollout
 
-Ship one usable vertical slice behind `tasks.localReview`: task branch
-attachments → durable comments → independent review in another workspace →
-fix/re-review → candidate gates → safe local integration → explicit completion.
-Include the narrow sequence/human-step semantics needed by #145; defer its rich
-workflow editor. No product code or roll occurs in this planning task.
+**Release 1: 10–15 focused engineer days**, including review and failure-path
+tests. This estimate is for the narrow path above, with one repository/attachment,
+explicit handoffs and unchecked-out ref landing. It is not an estimate for all
+of #145 or for production deployment coverage. If a prerequisite exceeds its
+budget, re-estimate openly; do not silently drop durability or widen scope.
 
-Sizes are estimates including review and failure-path tests: S = 1–2 focused
-engineer days, M = 3–5, L = 6–10. The original 24–40-day first-release estimate
-predated task ownership and cross-workspace workflow work. Revised estimate:
-**30–48 engineer days** for the complete first slice, with overlap possible
-after the contract is agreed. The baseline has more reusable infrastructure,
-but durable handoff/model-evidence integration remains substantial work.
-
-| Phase | Concrete files / deliverable | Tests and exit condition | Size; rollout |
+| Increment | Files and deliverable | Tests and rollout | Estimate |
 | --- | --- | --- | --- |
-| 1a: task records and contracts | New `bridge/src/task_reviews/` domain/service, `store/task_reviews.rs`, `app/task_reviews/`, `api/v1/task_reviews.rs`; extend `tracker.rs`, `store/{schema,tracker,operations}.rs`, module roots, `app/rpc.rs`, task typed DTOs; fixtures and version manifest. Branch bindings/rounds/anchors, task comment extension, current projection, operation IDs, config/user-only range review. | Additive migration/restart/backup; same ID different body; project/actor/path fences; aggregate versions and legacy task shape; current data independent of paged timeline; pin-before-publish recovery; both contract suites. | L, 6–10 days; bridge, feature not announced. |
-| 1b: Git and lifecycle | New task-review git/candidate/recovery modules; reuse `app/git/deferred.rs`, `git_process.rs`, isolation/worktree APIs; integrate `source_sync.rs`/`app/projects/base_sync.rs`, `app/workspaces/{reclaim,deletion,branch_delete}` and containment guards. | Real temporary-repo tests for local worktree/Rift imports, name collision, no remote, GC after workspace deletion, exact candidate, source/target moves, sync/reclaim races, dirty/ignored/in-progress/multiply checked-out target, hooks/filter failure, crash boundaries and uncertain checkout. Local cleanup tests live heads/all directories/unpublished fixes. | L+, 8–12 days; bridge, hidden. |
-| 1c: task review UI/cache | New focused `spa/src/core/taskReview{Cache,Sync,Model,Actions,Threads}.js`; extend `spa/src/core/{trackerTaskPage,trackerTaskRender,trackerTimeline,trackerCache,cacheSync,router,shell,changesReview}.js` and `spa/src/views/trackerTaskView.js`; reuse body/draft stores and styles. | Cached cold/offline mount, actual cache-write-to-redraw, cross-tab older page/new decision, late subscription/reconnect/truncation, same comment in diff/timeline, rename/deletion/hunk/outdated anchors, body continuation, draft preservation, 390px layout and keyboard review. | L, 6–10 days; app plus 1a/1b bridge capability. |
-| 1d: handoff and admission | New isolated task-review workflow/admission service; extend `app/tracker/{dispatch,activity,notices,tools}.rs`, `delivery.rs`, `store/operations.rs`, model/session observation capture, `mcp.rs`, `app/mcp.rs`, templates/notes and `orchestrator/workspace.rs`; workspace exact-revision provisioning. | Separate reviewer workspace; existing branch collision; human versus agent step; implementer self-approval rejection; missing/fallback/mismatched observed model; concurrent reassignment; uncertain delivery; duplicate restart; old Complete/finish hooks bypassed only for opted-in tasks; no browser for entire flow. | L+, 8–12 days; coordinated bridge + app activation. |
-| 1e: release integration/acceptance | Project-agent instructions/roll procedure and any Build-owned deploy caller, range-review UI, capability activation, evidence for security checklist (new review checklist during implementation). Amend `ARCHITECTURE.md`, Tasks/Wire specs to implementation then. | Candidate checks pinned to C; coverage by exact deployed tier baseline/SHA; direct/external work blocked until explicit range review; withdrawal/config changes; failed deployment doesn't complete task; no remote end-to-end through restart/history/cleanup; old/new app/bridge matrix. | S–M, 2–4 days; procedure + app; bridge only if contracts changed. |
-| 2: task workflow presentation | Review queue/filter polish, comparison selector, workflow editor over already shipped step primitives, viewed marks and task navigation. | Cache/route/mobile and persisted explicit-step consistency. | M per feature; app-only when semantics fit shipped contracts. |
-| 3: additional device capabilities | Stronger device-observed gate execution, safe retention/rebinding, optional anchor mapping persistence or cross-device handoff (separately designed). | Provenance/retention/failure/ambiguity-specific tests. | M–L per capability; bridge + app when device contracts change. |
+| A: assignment fix | `bridge/src/app/tracker/dispatch.rs`, tracker/store transaction seams, delivery receipt/runner integration. Prepare destination, commit assignment + queued intent, deliver after commit for every caller. | Commit/claim/restart faults, superseding assignment, wire/MCP and new-workspace paths. Bridge roll; ships alone and benefits existing tasks. | 2–3 days |
+| B: usable review | Proposed `bridge/src/task_reviews/`, `store/task_reviews.rs`, `api/v1/task_reviews.rs` and thin app adapter; extend tracker/schema/MCP/fixtures. One attachment, pin/publish, anchors, designation/provenance and decisions; activity/deletion attachment opt-in guards. Task Changes adapter in `spa/src/core/`, extend tracker page/render/timeline/cache/router and `spa/src/views/trackerTaskView.js`. | Migration/pins/restart/GC, actor/scope/CAS, configured-only toggle, non-designated/self approval, moved/outdated anchors, two-tab cache, mobile and legacy hook both paths. Coordinated bridge+app roll with review capability. Users can review and hand off before merge ships. | 5–7 days |
+| C: prepare and merge | Candidate/ref CAS/recovery in task-review Git service; structured check comments; narrow checkout-placement/lifecycle reservation integration; MCP/templates and merge UI. | Temporary worktree/Rift import, conflicts, exact C, checked-out refusal, stale H/T, hooks/driver refusal, ref crash boundaries, self-merge refusal; full local flow without network or a browser staying open. Bridge+app merge capability; amend architecture/specs to match shipped code. | 3–5 days |
 
-Contract design and review precede splitting implementation. Do not activate a
-record-only feature that cannot complete the workflow. No resurrection of the
-removed plan scheduler, independent PR collection, automatic merge queue,
-GitHub sync, squash/rebase choices, stacked same-target attachments or atomic
-multi-repository landing in phase 1. Keep immutable anchors, recovery and truthful
-evidence rather than trimming correctness to fit a roll deadline.
+Do not hold increment A for the final capability. Do not announce merge before
+its tests pass. Increment B supports the existing manual roll workflow while C
+is built. Activation requires an owner-selected unchecked-out target, designated
+reviewer, explicit model/provenance settings and gate commands. These choices
+are part of the estimate, not hidden automatic discovery work.
 
-Follow AGENTS.md's TDD and gates for implementation: relevant Rust tests,
-format/clippy, SPA lint/full Vitest/build where applicable, gitleaks before every
-push, semgrep before ready, and diff-check, all under `nice -n 10` where
-applicable and judged by exit status. Add security checklist coverage for
-scope/identity, model provenance, anchors, process inputs, lifecycle boundaries
-and durable effects; this plan does not claim an unimplemented checklist passes.
-Use disposable test repositories, not user checkouts, bridge binaries or an
-actual deployment to validate the proposal. The plan-only deliverable is checked
-for code-reference accuracy, eight-section coverage, stale-decision consistency,
-whitespace and required scans; app suites cannot validate Markdown behavior.
+Follow-ons are separate tasks/estimates, not release-1 gates:
+
+| Later slice | Boundary / likely size |
+| --- | --- |
+| #145 sequence and checkout transfer | User-authored step data, bounded transition CAS, exact-revision workspace preparation/recovery. Bridge+app, 5–8 days before richer editing. |
+| Multiple attachments | Introduce round table, whole-set decisions and partial-integration semantics only when needed. Bridge+app, 3–5 days. |
+| Checked-out landing | Reuse source-sync primitives where sound, design writer ownership and crash recovery for the actual index/worktree. Bridge+app, 4–7 days; not update-ref followed by sync. |
+| Read-only roll audit | Selected tag→SHA first-parent report against receipts, direct commits labeled. Existing reads/procedure, 1–2 days. |
+| Coverage/range approval/cleanup | Separate product and trust decisions, then estimates. No promised per-tier baseline, CI guarantee or duplicate reclaim system. |
+
+Implement with TDD and the relevant AGENTS.md gates: Rust tests/fmt/clippy, SPA
+lint/full Vitest/build where touched, semgrep, gitleaks and diff-check, judged by
+exit status under `nice -n 10`. Add the review security checklist during
+implementation for scope, actor/model evidence, anchors, process inputs and
+transaction boundaries. This plan claims no product tests or checklist passes.
+Use disposable repositories and isolated test checkouts, never the user's base
+checkout, bridge binary, paired client or browser to validate this plan.
 
 ## 8. Open questions for Zech
 
-These are product choices with recommended defaults, not permission to skip
-review or missing prerequisites to complete this draft. Record answers before
-activating their behavior. #145 already settled task identity, one discussion
-stream, reassignment, and explicit human step types; those are **not** open.
-The qualifying independent-review requirement from #89 is likewise settled.
+The task identity, one discussion stream, independent review and explicit human
+step type are settled by #89/#145. The following choices have recommendations;
+record the owner's answers before feature activation, not before finishing this
+planning document.
 
-| Question | Recommended answer / consequence |
+| Choice | Recommendation |
 | --- | --- |
-| What should the task surface call this? | **Changes** on the task, with a **Review** state/action and a review filter in Tasks. No separate PR terminology or numbering. |
-| How much #145 workflow ships first? | A narrow persisted implement → review → deploy sequence with explicit human/agent steps and manual configuration; rich editing and parallel graphs follow. Cross-workspace checkout and handback are required initially. |
-| Which merge strategy? | No-ff merge commits only, retaining original commits and an exact candidate boundary. |
-| Can one task review multiple repositories? | Yes, one required attachment per repository/target initially, one immutable round covering all; show partial integration and do not promise atomic merge/deploy. |
-| What happens after merge? | Keep workspaces/branches/history. Explicit cleanup uses current-head local integration proof and existing lifecycle guards; no automatic deletion. |
-| When is the task Done/closed? | For Build after verified deployment; without deployment after verified merge. Terminal workflow explicitly moves Done and closes; it never closes related tasks by workspace membership. |
-| How conservative is stale approval? | New H, retargeting or attachment-set change requires review; target-only advance requires new C/checks. One qualifying approval suffices; disagreement stays visible. |
-| Are agent-reported gate results enough initially? | Yes, clearly attributed and pinned to exact C with cwd/cleanliness/exit evidence. Do not label them bridge-observed. |
-| Which merge target checkout is supported first? | Explicit registered authority; CAS if target isn't checked out, otherwise guarded ff-only to retained C in its actual clean checkout. Coordinate source sync; refuse dirty/busy/ambiguous targets. |
-| Disable hooks during preparation/import/landing? | Yes, consistent with source sync; configured validation runs as explicit gates. Retain necessary checkout filters and report failures. |
-| Retrospective review for already-integrated work? | User-only exact-range approval on a task in phase 1, with explicit per-tier deployed baseline. No inferred approval from trailers/reachability. |
-| Can the reviewer also merge/deploy? | Yes when independent of implementation and qualified; a workspace deployer needs explicit scope. No third actor is mandated. |
-| Which exact model IDs qualify initially? | User saves the current qualifying models from discovery. Preserve the Fable/Astra-class requirement without silently treating the old sample IDs, model aliases or catalog fallback as runtime evidence. |
+| First-release scope | One attachment, manual assignment, diff/comments/review and unchecked-out merge. Keep #145 automation and multi-branch scope later. |
+| Target for the first rollout | Explicit unchecked-out integration branch in the canonical registered repository. If checked-out main must be supported at launch, add that later slice and revise 10–15 days. |
+| Review recipient and model list | User designates one concrete reviewer (or themselves), selects exact provider/model IDs, and keeps agent reviewer separate from merger. No September sample IDs as automatic defaults. |
+| Configured-only model evidence | Explicitly enable it for initial PTY use if acceptable; show its source. The implementation default is off until chosen. A known disallowed reported model never falls back to the configured one. |
+| Check evidence | Actor-reported structured task comments on exact C, with required commands from configuration. No claim of bridge-observed execution. |
+| Merge and hooks | No-ff only; hooks disabled for the primitive, explicit gates retained. |
+| State and completion | Task Changes surface and Review actions; agent work stays In progress. Build moves Done/closes after recorded deployment verification; retain branches/workspaces. |
+| Future roll guarantees | Begin with an optional read-only report. Plan per-tier coverage/enforcement only with a real baseline and deployment integration. |
 
 ## Workshop record and current code evidence
 
@@ -832,18 +687,41 @@ added. Opus agreed after clarifying local publication, existing gate checkouts,
 range review and withdrawals. This is preserved history, not approval of the
 current revision.
 
-**Refresh draft (2026-10-02):** the original commit was reapplied unchanged onto
-today's main before editing, preserving a direct diff against the prior plan. Main advanced
-during the audit from `99e659a3` to `adf08b06`; the intervening #321 changes
-were inspected (pairing/presence, plus architecture and app wiring), and this
-branch was rebased onto the latter without changing the review conclusions.
-#89 and #145 full timelines and all five historical #86 audit sections plus its
-later user correction were read. This document now folds review into tasks,
-corrects stale wire/cache/lifecycle assumptions, adds explicit workspace
-handoff/step recovery, and records source-sync coordination. The project agent
-will arrange the next Opus challenge against the pushed SHA. Record its findings,
-lead decisions and a revised summary on #89; do not carry over the prior
-“no blockers” statement as fresh signoff.
+**Refresh draft (2026-10-02, `700e642e`):** reapplied the original plan before
+updating it against `adf08b06`, preserving its history. Read #89/#145 timelines
+and #86's later always-on-service correction. Corrected task/wire/cache/lifecycle
+claims, then proposed a 30–48-day slice with rounds, workflow, coverage and
+cleanup. Opus 5.5 confirmed the cited current-code claims but challenged scope
+and placement of logic. That large first-release scope is now superseded below.
+
+**New challenge round (2026-10-02, Opus 5.5 via project agent):** decisions by
+the Astra lead on the 15 numbered challenges. “Accept” accepts the stated core
+change; any narrower alternative or retained boundary is explicit. This is the
+lead's revised draft, awaiting the next challenger read.
+
+| # | Decision and reason | Result in this revision |
+| --- | --- | --- |
+| 1 | **Accept.** The 30–48-day all-at-once feature delayed useful review behind automation and deployment machinery. | Three independently usable increments, 10–15 days total. Existing assignment/agent gates; unchecked-out CAS landing only. Limitation for checked-out main is on the first page. |
+| 2 | **Accept.** One attachment removes artificial whole-set rounds and partial-merge successors. Build's current task use does not justify that machinery in release 1, while #145 still owns future multi-branch intent. | Revision is the round; no round table. Additional repositories use separate tasks until the later migration. |
+| 3 | **Accept, with automation deferred.** The bridge must not decide product policy from a submission. Existing accepted delivery already needs to run headless. | Manual `assign_task` now. Future ordered step data permits only declared on_decision forward/back edges with generation CAS, never inferred policy. |
+| 4 | **Accept.** Delivery-before-persistence is an existing correctness fault; preserving it for legacy callers would create two inconsistent assignment paths. | First small PR persists assignment plus queued delivery intent together and delivers after commit for all callers, including deferred new-workspace assignment. |
+| 5 | **Accept.** Reported model information can be absent or parsed; configured fallback must stay visible without making the entire PTY workflow unusable. | Configured/reported/source capture; explicit user configured-only switch. A known disallowed report cannot be hidden behind an allowed configured value. |
+| 6 | **Accept.** A model allowlist alone lets an implementer nominate a convenient reviewer and lets an agent merge its own decision. | Only the user-designated current review recipient submits a decisive approval. Record designation and dispatch actors; keep implementer identity. Agent reviewer and merger must differ. |
+| 7 | **Accept deferring general reservations; reject both checked-out-target shortcuts for release 1.** SyncLock excludes sync calls, not all checkout writers. CAS on checked-out main moves HEAD without index/files; source sync is not a repair mechanism. | Refuse all checked-out targets. Keep only narrow ref/placement/removal coordination. The disposable Git experiment and current sync early return support this decision. |
+| 8 | **Accept.** Actor-attested checks gain no process trust from invented execution IDs or cleanliness snapshots. | Structured task comment on C, command, raw exit/signal and log tail. Match required commands/exact C and authenticated producer; label the evidence reported. |
+| 9 | **Accept.** No per-tier baseline or local-store CI enforcement exists, and cleanup duplicates lifecycle work. | Remove coverage/range approval/cleanup from release 1. Optional tag→SHA audit later, explicitly incomplete for direct commits/deployment state. Mandatory review remains a roll procedure obligation. |
+| 10 | **Accept.** Identical-blob-only display makes useful comments disappear after nearby edits. | Immutable original plus unique content/context match in the same file, labeled Moved; no stored migration, and ambiguity stays Outdated. |
+| 11 | **Accept reduction; retain one explicit config write.** Nine review verbs cover the requested path. User-only project policy needs an honest contract; today's device settings are not that API. | Nine review verbs plus configure; existing task CRUD/assignment/comments, no workflow/coverage/cleanup inventories. Read config with current review data. |
+| 12 | **Accept.** The client should not assemble authority from stale evidence IDs. | One review_version CAS per task-review mutation; named stale_version refusal, cache refetch/repaint and explicit fresh action. Project settings have their own CAS and bump affected task versions. |
+| 13 | **Accept.** Opt-in must be durable and unambiguous at both legacy hooks. | Existence of the branch attachment is the opt-in; keep attachment history after merge/close. Test review and ordinary tasks together. |
+| 14 | **Accept simplification; reject an exhaustive two-case recovery model.** Ref-only landing removes checkout phases, but a third writer can move the target after our CAS. | Pending/settled intent, C/T checks, and an explicit other-OID/uncertain path. Retain C ancestry for reconciliation; never reset or blindly replay. |
+| 15 | **Accept.** The owner should be able to judge scope and choices without reading the storage design. | One-page scope, limit, estimate and owner recommendations precede the technical sections; remove superseded mechanisms instead of hedging them as release-1 options. |
+
+Retained boundaries after this round: an explicit configured reviewer rule,
+immutable approval scope, truthful check/model provenance, no-ff candidate and
+small Git/SQLite recovery record. Removed first-release obligations are deferred,
+not represented as implemented or waived review requirements. Post this round's
+summary/open choices on #89 and request the next Opus read of the pushed SHA.
 
 The evidence index records current code, not proposed module existence. All
 paths are repository-relative at the baseline SHA above. The listed existing
@@ -853,16 +731,16 @@ symbols are the implementation seams; new files in section 7 are proposals.
 | --- | --- |
 | E1 | `bridge/src/api/mod.rs:32` (`API_VERSION = 3.4.0`), `fixtures/api/versions.json`; `api/v1/mod.rs` (`parse_params`, typed dispatch); `api/v1/tasks.rs` (tracker verbs); `scripts/api-verbs-manifest.mjs`, `bridge/tests/api_contract.rs`, `spa/test/apiContract.test.js`. Wire names/strictness/capability/version discipline; `api/v1/` is not the wire major. |
 | E2 | `bridge/src/tracker.rs:213,275,477` (TaskLinks, Task, TaskComment); `bridge/src/app/tracker/{mod,views,pages,dispatch,activity,notices,tools,attachments}.rs`; `bridge/src/store/tracker.rs:144` (`save_tracker_task_activity`). Existing canonical task/timeline, path-scoped storage, uploaded attachments, paged list, assignment/notice and Complete behavior. |
-| E3 | `bridge/src/store.rs` (Store/open), `bridge/src/store/schema.rs`, `bridge/src/store/operations.rs:26` (`backup_to`); `bridge/src/app/conversations/operation_ledger.rs`, `bridge/src/app/runtime/delivery/receipts.rs`. SQLite authority and operation receipts exist; no current task-review transaction is implied. |
+| E3 | `bridge/src/store.rs` (Store/open), `bridge/src/store/schema.rs`, `bridge/src/store/operations.rs:26` (`backup_to`); `bridge/src/app/conversations/operation_ledger.rs`, `bridge/src/app/runtime/delivery/receipts.rs`. `bridge/src/app/{transactions,runtime/deferred,runtime/recovery}.rs`, `bridge/src/app/conversations/post.rs`, `bridge/src/store/entities.rs`. Owner/transcript/receipt composites exist separately from tracker writes; queued operations recover at boot. No current atomic task-assignment/review transaction is implied. |
 | E4 | `bridge/src/app/workspaces/mod.rs:544` (`workspace_create`), `:648` (`finish_workspace`), `:808` (`workspace_finish_legacy`); `app/workspaces/deletion.rs:314` (`remove_workspace`, closure only for merged Finish); `workspace.rs:1004` (`summary_finish_blockers`). Current creation, Finish deletion support and remote-publication completion guards. |
 | E5 | `bridge/src/app/workspaces/reclaim.rs` (reservations), `app/workspaces/reclaim/explicit.rs`, `reclaim/containment.rs`, `app/workspaces/branch_delete/{mod,checkouts,defaults}.rs`; `gitgui/unpushed.rs`. Managed-path safety, explicit reclaim and conditional branch deletion already exist; their publication proof is remote-based. |
-| E6 | `bridge/src/app/projects/mod.rs:8` (`ProjectSource`), `:25`/`:29` (sync defaults), `app/projects/base_sync.rs`; `source_sync.rs:309` (`fast_forward`), `:424` (`SyncLock::acquire`), `source_sync/{checkout,in_progress,git}.rs`. Background/base-at-cut synchronization is a competing writer; current locks are sync-path-specific. `isolation/rift.rs:396,509` force-fetches shared branch refs; `isolation/worktree.rs:58` needs no publication because objects are shared. |
-| E7 | `bridge/src/mcp.rs` (`BridgeAction`, tool lists/surfaces); `bridge/src/app/{mcp,tracker/tools,runtime/spawning,projects/conversation}.rs`; `bridge/src/{delivery,agent,templates}.rs`; `bridge/src/app/runtime/agents/{records,endpoints}.rs` (observed model versus digest fallback), `bridge/src/app/runtime/sessions/registry.rs` (generation), `bridge/src/harness/installed/`; `bridge/templates/notes/{task_tools,workspace}.md`, `bridge/templates/project_agent.md`, `bridge/src/orchestrator/workspace.rs`. MCP authority, assignment delivery, model/prompt seams. |
+| E6 | `bridge/src/app/projects/mod.rs:8` (`ProjectSource`), `:25`/`:29` (sync defaults), `app/projects/base_sync.rs`; `source_sync.rs:231` (`run`, early UpToDate), `:309` (`fast_forward`), `:424` (`SyncLock::acquire`), `source_sync/{checkout,in_progress,git}.rs`. Background/base-at-cut synchronization is a competing writer; current locks are sync-path-specific. `isolation/rift.rs:396,509` force-fetches shared branch refs; `isolation/worktree.rs:58` needs no publication because objects are shared. |
+| E7 | `bridge/src/mcp.rs` (`BridgeAction`, tool lists/surfaces); `bridge/src/app/{mcp,tracker/tools,runtime/spawning,projects/conversation}.rs`; `bridge/src/{delivery,agent,templates}.rs`; `bridge/src/app/runtime/agents/{records,endpoints}.rs` (observed model versus digest fallback), `bridge/src/app/runtime/sessions/registry.rs` (generation), `bridge/src/harness/installed/`; `bridge/templates/notes/{task_tools,workspace}.md`, `bridge/templates/project_agent.md`, `bridge/src/orchestrator/workspace.rs`. `bridge/src/app/config/settings.rs` (`settings_get`/`settings_set` are device-wide). MCP authority, assignment delivery, model/prompt/settings seams. |
 | E8 | `spa/src/core/router.js:145,492`, `spa/src/app.js:296`, `spa/src/views/trackerTaskView.js`, `spa/src/core/{trackerTaskPage,trackerTaskRender,trackerTimeline}.js`; `spa/src/views/{taskReview,worktreeReview,workspaceChanges}.js`, `spa/src/core/{changesReview,changesComments,changesetBodies,diffRender}.js`; `bridge/src/thread/items.rs` (`ThreadLink`), `bridge/src/app/tracker/refs.rs`. Tracker versus legacy review routes; existing diff/composer stack and mutable file refs. |
 | E9 | `spa/src/core/{localCache,localUiState,localUiStore,cacheSync,pushFence,taskReadOrder,bodyPages,cachedBodies,surfaceContext,deviceContexts}.js`; `core/bridgeApi/{index,v1/index}.js`, `core/changeEvents.js`. Cache-only paint, separate drafts, body paging, subscription repair, read ordering and greeting/capability gates. |
 | E10 | `bridge/src/changes.rs` (`Kind::Tasks`, task invalidations/bounds) and `spa/src/core/cacheSync.js` task appliers. Task push is an invalidation, not a durable review/event replay service. |
 | E11 | `AGENTS.md` design rules 5–6 and `ARCHITECTURE.md` RPC/push and persistence sections; #86/c/tc-01M37YEQS990896PCGFJV7KYGA. Client-safe policy/paint in SPA; autonomous work in isolated bridge services. Existing request handlers still contain policy and need extraction rather than being assumed thin. |
-| E12 | `.github/workflows/ci.yml:14` (main push/manual dispatch) and tier filtering/roll jobs. Build deployment is not an automatic local review-store consumer; exact-release coverage integration is proposed work. |
+| E12 | `.github/workflows/ci.yml:14` (main push/manual dispatch) and tier filtering/roll jobs. Build deployment is not an automatic local review-store consumer; deployment coverage is deferred, not a release-1 gate. |
 
 Historical specs read for intent: `planning/v2/Tasks Spec.md` (formerly Issues),
 `Bridge Wire Protocol Spec.md`, `E2EE Platform Scope.md`, `UI Design Brief for

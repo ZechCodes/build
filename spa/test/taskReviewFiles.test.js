@@ -42,13 +42,11 @@ describe("task review Files", () => {
       return textFile(params.path, "unchanged");
     });
     const { host, view } = mount(git, callRpc);
-    await tick();
-    expect(host.textContent).toContain("unchanged.txt");
+    await vi.waitFor(() => expect(host.querySelector('.frow[data-path="unchanged.txt"]')).toBeTruthy());
     await view.open("unchanged.txt");
-    await tick();
-    expect(host.textContent).toContain("unchanged");
-    expect(await readCached(address(git, ""))).toMatchObject({ value: { entries: [{ name: "unchanged.txt" }] } });
-    expect(await readCached(address(git, "unchanged.txt", "task-review-file"))).toMatchObject({ value: { file: { path: "unchanged.txt" } } });
+    await vi.waitFor(() => expect(host.querySelector(".trf-preview")?.textContent).toContain("unchanged"));
+    await vi.waitFor(async () => expect(await readCached(address(git, ""))).toMatchObject({ value: { entries: [{ name: "unchanged.txt" }] } }));
+    await vi.waitFor(async () => expect(await readCached(address(git, "unchanged.txt", "task-review-file"))).toMatchObject({ value: { file: { path: "unchanged.txt" } } }));
   });
 
   it("keeps equal paths in separate directories and makes live reads exact", async () => {
@@ -116,15 +114,13 @@ describe("task review Files", () => {
     });
     const { host, view } = mount(git, callRpc);
     await view.open("large.txt");
-    await tick();
-    expect(host.textContent).toContain("first line");
-    expect((await readCached(address(git, "large.txt", "task-review-file"))).value.file).toMatchObject({ paged: true, of: "blob-oid" });
+    await vi.waitFor(async () => expect((await readCached(address(git, "large.txt", "task-review-file")))?.value.file).toMatchObject({ paged: true, of: "blob-oid" }));
+    await vi.waitFor(() => expect(host.querySelector(".trf-preview")?.textContent).toContain("first line"));
     expect(callRpc.mock.calls.some(([, params]) => params.range?.offset === 0)).toBe(true);
     view.dispose();
     const remount = mount(git, vi.fn(async () => { throw new Error("offline"); }), { path: "large.txt" });
-    await tick();
-    expect(remount.host.textContent).toContain("first line");
-    expect(remount.host.textContent).toContain("offline");
+    await vi.waitFor(() => expect(remount.host.querySelector(".trf-preview")?.textContent).toContain("first line"));
+    await vi.waitFor(() => expect(remount.host.querySelector(".trf-status")?.textContent).toContain("offline"));
   });
 
   it("shows an empty committed tree when a saved Git head has no commits", async () => {

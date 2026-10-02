@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 
 use crate::body_page::FileRange;
 use crate::renamed_ids::current_id;
+use crate::reviews::actions::{ReviewActParams, SourceSelection};
 use crate::reviews::read::ReviewReadMode;
 use crate::reviews::records::{review_description, MAX_REVIEW_DESCRIPTION_BYTES};
 
@@ -73,6 +74,28 @@ pub(super) fn tools() -> Vec<Value> {
             }
         }),
         json!({
+            "name":"act_review",
+            "description":"Run selected Merge and Push steps for saved Git sources, or leave a selected source unchanged. Choose each directory and destination from get_review. Merge precedes Push when both are selected. Results are recorded on the review; read get_review after interruption. This does not complete the task or remove its workspace.",
+            "inputSchema":{
+                "type":"object",
+                "properties":{
+                    "task_id":task_id,
+                    "expected_version":{"type":"integer", "minimum":0},
+                    "snapshot_id":{"type":"string"},
+                    "sources":{"type":"array", "minItems":1, "maxItems":100, "items":{
+                        "type":"object", "additionalProperties":false,
+                        "properties":{
+                            "directory_id":{"type":"string", "minLength":1},
+                            "merge":{"type":"object", "additionalProperties":false, "properties":{"branch":{"type":"string", "minLength":1}}, "required":["branch"]},
+                            "push":{"type":"object", "additionalProperties":false, "properties":{"remote":{"type":"string", "minLength":1}, "branch":{"type":"string", "minLength":1}, "merge_action_id":{"type":"string", "minLength":1}}, "required":["remote","branch"]}
+                        },
+                        "required":["directory_id"]
+                    }}
+                },
+                "required":["task_id","expected_version","snapshot_id","sources"]
+            }
+        }),
+        json!({
             "name":"complete_review",
             "description":"Finish this task's review and move the task to Done. Describe the action actually taken, such as 'merged API to dev; pushed web'. You may use your own Git tools and complete without a Build Git action. Any agent in this project may complete it; Build records the caller as actor. This does not delete the workspace or close the task.",
             "inputSchema":{
@@ -93,6 +116,7 @@ pub(super) fn handle_call(id: &Value, name: &str, params: Option<&Value>) -> Opt
         "snapshot_review" => snapshot_action(params),
         "get_review" => task_id(params).map(|task_id| BridgeAction::TrackerGetReview { task_id }),
         "read_review" => read_action(params),
+        "act_review" => act_action(params),
         "complete_review" => complete_action(params),
         _ => return None,
     };
@@ -160,6 +184,46 @@ fn complete_action(params: Option<&Value>) -> Result<BridgeAction, String> {
         task_id: task_id(params)?,
         expected_version: required_version(params)?,
         description,
+    })
+}
+
+fn act_action(params: Option<&Value>) -> Result<BridgeAction, String> {
+    let args = arguments(params)?;
+    let task_id = task_id(params)?;
+    let expected_version = required_version(params)?;
+    let snapshot_id = required_argument(params, "snapshot_id")?;
+    let sources: Vec<SourceSelection> =
+        serde_json::from_value(args.get("sources").cloned().ok_or("sources are required")?)
+            .map_err(|error| format!("sources: {error}"))?;
+    if sources.is_empty() || sources.len() > 100 {
+        return Err("sources must contain 1 to 100 selections".to_string());
+    }
+    if sources.iter().any(|source| {
+        source.directory_id.trim().is_empty()
+            || source
+                .merge
+                .as_ref()
+                .is_some_and(|merge| merge.branch.trim().is_empty())
+            || source.push.as_ref().is_some_and(|push| {
+                push.remote.trim().is_empty()
+                    || push.branch.trim().is_empty()
+                    || push
+                        .merge_action_id
+                        .as_ref()
+                        .is_some_and(|id| id.trim().is_empty())
+            })
+    }) {
+        return Err(
+            "each source needs a directory ID and non-empty selected Git destinations".to_string(),
+        );
+    }
+    Ok(BridgeAction::TrackerActReview {
+        params: ReviewActParams {
+            task_id,
+            expected_version,
+            snapshot_id,
+            sources,
+        },
     })
 }
 

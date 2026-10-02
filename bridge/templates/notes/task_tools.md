@@ -1,7 +1,7 @@
 Your project has a task board, and Build's task tools reach it: `list_tasks`,
 `get_task`, `create_task`, `comment_task`, `assign_task`, `move_task`,
 `close_task` and `link_task`. Reviews on those tasks have `snapshot_review`,
-`get_review`, `read_review` and `complete_review`. A Build task is a card on that board. It is not
+`get_review`, `read_review`, `act_review` and `complete_review`. A Build task is a card on that board. It is not
 your harness's own task or todo list (TaskCreate, TodoWrite, update_plan): that
 one tracks the steps of this conversation, and nothing in it reaches the board.
 The task tools are about YOUR project — there is nothing to pass and no other
@@ -40,13 +40,18 @@ directory. `changes` gives committed changed files and patches, `tree` lists
 the entire saved head including unchanged files, and `blob` reads one saved
 file. Tree and blob reads do not need the original checkout to remain on that
 branch. A non-Git directory is live, not saved; unavailable sources remain
-visible in the review. After taking the action the task needs, use
-`comment_task` to leave feedback: `anchor` names a saved `snapshot_id`,
+visible in the review. Use `comment_task` to leave feedback: `anchor` names a saved `snapshot_id`,
 `directory_id`, relative `path`, `side` (`old` or `new`) and positive `line`;
 `reply_to` names a comment on the same task; `opinion` names the snapshot ID
 and a `verdict` of `approve` or `request_changes`. An opinion can stand alone
 without a line anchor. Comments keep their original snapshot context after a
-new snapshot, and any agent in the project may give an opinion. Then use
+new snapshot, and any agent in the project may give an opinion. Use
+`act_review` if selected Git work is needed: choose one or more saved directory
+IDs, each with a Merge target branch, a Push remote and destination branch,
+both, or neither to leave it unchanged. Read available destinations from `get_review`; Build resolves the
+configured source path and records each result. Merge runs before Push when
+both are selected. A failed Push leaves a successful Merge recorded, so inspect
+the review before retrying. Actions do not complete the review. Use
 `complete_review` with the latest review version and a short factual account,
 such as “merged API to dev; pushed web”. You can use your own Git tools and
 complete without a Build Git action. Completion leaves the workspace in place

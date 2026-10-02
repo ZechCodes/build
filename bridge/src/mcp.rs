@@ -431,6 +431,10 @@ pub enum BridgeAction {
         patch: bool,
         range: Option<crate::body_page::FileRange>,
     },
+    /// Run selected Git steps against the saved review snapshot.
+    TrackerActReview {
+        params: crate::reviews::actions::ReviewActParams,
+    },
     /// Report what was done and finish the task's review.
     TrackerCompleteReview {
         task_id: String,
@@ -506,6 +510,7 @@ impl BridgeAction {
             BridgeAction::TrackerSnapshotReview { .. } => "snapshot_review",
             BridgeAction::TrackerGetReview { .. } => "get_review",
             BridgeAction::TrackerReadReview { .. } => "read_review",
+            BridgeAction::TrackerActReview { .. } => "act_review",
             BridgeAction::TrackerCompleteReview { .. } => "complete_review",
         }
     }
@@ -572,6 +577,7 @@ impl BridgeAction {
             | BridgeAction::TrackerSnapshotReview { .. }
             | BridgeAction::TrackerGetReview { .. }
             | BridgeAction::TrackerReadReview { .. }
+            | BridgeAction::TrackerActReview { .. }
             | BridgeAction::TrackerCompleteReview { .. } => {
                 &[McpSurface::Coding, McpSurface::Project]
             }
@@ -3000,7 +3006,7 @@ mod tests {
     /// The task tracker and review inventory shared between the two
     /// working surfaces — and for the same reason: both agents are bound to a
     /// project, and a project has one board.
-    const TASK_TOOLS: [&str; 16] = [
+    const TASK_TOOLS: [&str; 17] = [
         "list_tasks",
         "get_task",
         "read_comment",
@@ -3016,6 +3022,7 @@ mod tests {
         "snapshot_review",
         "get_review",
         "read_review",
+        "act_review",
         "complete_review",
     ];
 
@@ -3542,6 +3549,7 @@ mod tests {
             "snapshot_review",
             "get_review",
             "read_review",
+            "act_review",
             "complete_review",
         ];
         for surface in [&server(), &project()] {
@@ -3583,6 +3591,16 @@ mod tests {
                 Some(BridgeAction::TrackerReadReview { ref task_id, ref snapshot_id, ref directory_id, mode: crate::reviews::read::ReviewReadMode::Blob, path: Some(ref path), range: Some(crate::body_page::FileRange { offset: 10, bytes: 4096, raw: Some(true) }), .. })
                     if task_id == "task-1" && snapshot_id == "snap-2" && directory_id == "dir-1" && path == "src/lib.rs"
             ));
+            assert!(matches!(
+                call("act_review", r#"{"task_id":"task-1","expected_version":2,"snapshot_id":"snap-2","sources":[{"directory_id":"dir-1","merge":{"branch":"main"}}],"project_id":"forged","actor":"forged"}"#).action,
+                Some(BridgeAction::TrackerActReview { ref params })
+                    if params.task_id == "task-1" && params.sources.len() == 1 && params.sources[0].directory_id == "dir-1"
+            ));
+            assert!(matches!(
+                call("act_review", r#"{"task_id":"task-1","expected_version":2,"snapshot_id":"snap-2","sources":[{"directory_id":"dir-1"}]}"#).action,
+                Some(BridgeAction::TrackerActReview { ref params })
+                    if params.sources[0].merge.is_none() && params.sources[0].push.is_none()
+            ));
         }
     }
 
@@ -3604,6 +3622,18 @@ mod tests {
             (
                 "complete_review",
                 r#"{"task_id":"task-1","expected_version":1,"description":"  "}"#,
+            ),
+            (
+                "act_review",
+                r#"{"task_id":"task-1","expected_version":1,"snapshot_id":"snap-1","sources":[]}"#,
+            ),
+            (
+                "act_review",
+                r#"{"task_id":"task-1","expected_version":-1,"snapshot_id":"snap-1","sources":[{"directory_id":"dir-1","merge":{"branch":"main"}}]}"#,
+            ),
+            (
+                "act_review",
+                r#"{"task_id":"task-1","expected_version":1,"snapshot_id":"snap-1","sources":[{"directory_id":"dir-1","push":{"remote":"origin"}}]}"#,
             ),
             (
                 "read_review",

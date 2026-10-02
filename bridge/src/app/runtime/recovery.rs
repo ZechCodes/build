@@ -152,6 +152,12 @@ pub(in crate::app) fn load_stored_tasks(dir: std::path::PathBuf) -> Result<Store
         Ok(imported) => eprintln!("store: imported {imported} records from the JSON store"),
         Err(error) => return Err(format!("store import failed: {error}")),
     }
+    let interrupted = store
+        .interrupt_review_actions()
+        .map_err(|error| error.to_string())?;
+    if interrupted > 0 {
+        eprintln!("store: marked {interrupted} interrupted review actions");
+    }
     // Recovery mutates operation-owned messages and the thread sequence kept
     // in each agent skeleton. Read plans and runs only after those writes, or
     // restoration would hydrate the pre-recovery copies and later overwrite

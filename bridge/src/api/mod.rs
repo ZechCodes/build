@@ -37,7 +37,8 @@ use std::collections::BTreeSet;
 /// agent's own line names (#323).
 /// 3.6.0 adds committed workspace review snapshots and explicit completion.
 /// 3.7.0 adds anchored task comments, replies and snapshot opinions.
-pub const API_VERSION: &str = "3.7.0";
+/// 3.8.0 adds selected review Git actions and persisted action results.
+pub const API_VERSION: &str = "3.8.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.

@@ -3,7 +3,7 @@
   "since": "1.0.0",
   "params": {},
   "result": {
-    "api_version": "3.7.0",
+    "api_version": "3.8.0",
     "capabilities": [
       "agent.add",
       "agent.attach",
@@ -131,6 +131,7 @@
       "tasks.listPaged",
       "tasks.read_through",
       "tasks.reopen",
+      "tasks.review.act",
       "tasks.review.complete",
       "tasks.review.diff",
       "tasks.review.get",

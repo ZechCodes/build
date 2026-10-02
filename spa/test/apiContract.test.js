@@ -28,12 +28,14 @@ const eventExamples = fixtures
   .flatMap(({ name, body }) => body.events.map((event, index) => ({ where: `${name}[${index}]`, event })));
 
 describe("the v1 adapter against fixtures/api/v1", () => {
-  it("keeps review snapshots, saved file pages and completion distinct from later Git actions", () => {
+  it("keeps review snapshots and Git actions independently gated", () => {
     for (const verb of ["snapshot", "get", "diff", "complete"]) {
       const fixture = methodFixtures.find(({ body }) => body.method === `tasks.review.${verb}`).body;
       expect(fixture.since).toBe("3.6.0");
     }
-    expect(methodFixtures.some(({ body }) => body.method === "tasks.review.act")).toBe(false);
+    const action = methodFixtures.find(({ body }) => body.method === "tasks.review.act").body;
+    expect(action.since).toBe("3.8.0");
+    expect(action.params.sources[0].merge.branch).toBe("main");
     const fixture = methodFixtures.find(({ body }) => body.method === "tasks.review.diff").body;
     expect(fixture.result.files_truncated).toBe(false);
     expect(fixture.examples.some(({ params }) => params.mode === "tree")).toBe(true);

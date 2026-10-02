@@ -148,7 +148,7 @@ fn every_fixture_verb_has_an_advertised_capability() {
 #[test]
 fn media_page_features_are_announced_together() {
     let advertised: BTreeSet<&str> = capabilities(false).into_iter().collect();
-    assert_eq!(API_VERSION, "3.7.0");
+    assert_eq!(API_VERSION, "3.8.0");
     assert!(advertised.contains("thread.attachmentChunks"));
     assert!(advertised.contains("fs.mediaRawPages"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
@@ -161,7 +161,7 @@ fn media_page_features_are_announced_together() {
 }
 
 #[test]
-fn review_snapshots_are_a_separate_capability_from_later_review_actions() {
+fn review_snapshots_and_selected_git_actions_have_separate_capabilities() {
     let advertised = capabilities(false);
     for method in ["snapshot", "get", "diff", "complete"] {
         let method = format!("tasks.review.{method}");
@@ -169,7 +169,10 @@ fn review_snapshots_are_a_separate_capability_from_later_review_actions() {
         let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
         assert_eq!(fixture["since"], "3.6.0");
     }
-    assert!(!advertised.contains(&"tasks.review.act"));
+    assert!(advertised.contains(&"tasks.review.act"));
+    let action = read_json(&fixtures_root().join("v1/tasks.review.act.json"));
+    assert_eq!(action["since"], "3.8.0");
+    assert_eq!(action["params"]["sources"][0]["merge"]["branch"], "main");
     let read = read_json(&fixtures_root().join("v1/tasks.review.diff.json"));
     assert_eq!(read["result"]["files_truncated"], false);
     let examples = read["examples"].as_array().unwrap();
@@ -185,6 +188,34 @@ fn review_snapshots_are_a_separate_capability_from_later_review_actions() {
         blob["result"]["range"]["version"].as_str().unwrap().len(),
         40
     );
+}
+
+#[test]
+fn review_action_params_are_typed_and_accept_no_caller_paths() {
+    let handler = v1::methods()
+        .iter()
+        .find(|(name, _)| *name == "tasks.review.act")
+        .unwrap();
+    let valid = serde_json::json!({
+        "task_id":"task-1", "expected_version":1, "snapshot_id":"snapshot-1",
+        "sources":[{"directory_id":"dir-api", "merge":{"branch":"main"},
+                    "push":{"remote":"origin", "branch":"release", "merge_action_id":"action-1"}}]
+    });
+    assert!(handler.1.parse_params(&valid).is_ok());
+    for extra in ["source_path", "repo_path", "workspace_id", "actor"] {
+        let mut injected = valid.clone();
+        injected[extra] = serde_json::json!("/tmp/forged");
+        assert!(
+            handler.1.parse_params(&injected).is_err(),
+            "accepted {extra}"
+        );
+    }
+    let mut nested = valid.clone();
+    nested["sources"][0]["merge"]["path"] = serde_json::json!("/tmp/forged");
+    assert!(handler.1.parse_params(&nested).is_err());
+    let mut wrong = valid;
+    wrong["expected_version"] = serde_json::json!(-1);
+    assert!(handler.1.parse_params(&wrong).is_err());
 }
 
 #[test]

@@ -84,6 +84,7 @@ impl AppState {
                 },
                 actor,
             ),
+            BridgeAction::TrackerActReview { params } => self.review_act(params.clone(), actor),
             _ => unreachable!("review_task_id selected only review actions"),
         }
     }
@@ -94,6 +95,9 @@ fn review_task_id(action: &BridgeAction) -> Option<&str> {
         BridgeAction::TrackerSnapshotReview { task_id, .. }
         | BridgeAction::TrackerGetReview { task_id }
         | BridgeAction::TrackerReadReview { task_id, .. }
+        | BridgeAction::TrackerActReview {
+            params: crate::reviews::actions::ReviewActParams { task_id, .. },
+        }
         | BridgeAction::TrackerCompleteReview { task_id, .. } => Some(task_id),
         _ => None,
     }

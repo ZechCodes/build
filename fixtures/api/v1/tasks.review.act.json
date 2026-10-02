@@ -1,17 +1,29 @@
 {
-  "method": "tasks.review.complete",
-  "since": "3.6.0",
+  "method": "tasks.review.act",
+  "since": "3.8.0",
   "params": {
     "task_id": "task-1",
     "expected_version": 1,
-    "description": "merged API to dev; pushed web"
+    "snapshot_id": "snapshot-1",
+    "sources": [
+      {
+        "directory_id": "dir-api",
+        "merge": {
+          "branch": "main"
+        },
+        "push": {
+          "remote": "origin",
+          "branch": "main"
+        }
+      }
+    ]
   },
   "result": {
     "review": {
       "task_id": "task-1",
       "workspace_id": "workspace-1",
-      "version": 2,
-      "state": "completed",
+      "version": 4,
+      "state": "open",
       "snapshots": [
         {
           "id": "snapshot-1",
@@ -62,16 +74,58 @@
           ]
         }
       ],
-      "completion": {
-        "actor": {
-          "kind": "agent",
-          "agent_id": "agent-1"
-        },
-        "description": "merged API to dev; pushed web",
-        "completed_at": "2026-10-02T16:00:00Z"
-      },
-      "actions": [],
-      "destinations": []
+      "completion": null,
+      "actions": [
+        {
+          "id": "action-1",
+          "snapshot_id": "snapshot-1",
+          "directory_id": "dir-api",
+          "source_name": "API",
+          "source_path": "/sources/api",
+          "actor": {
+            "kind": "user"
+          },
+          "started_at": "2026-10-02T16:05:00Z",
+          "finished_at": "2026-10-02T16:05:02Z",
+          "status": "succeeded",
+          "steps": [
+            {
+              "kind": "merge",
+              "branch": "main",
+              "status": "succeeded",
+              "input_head": "2222222222222222222222222222222222222222",
+              "result_head": "3333333333333333333333333333333333333333"
+            },
+            {
+              "kind": "push",
+              "branch": "main",
+              "remote": "origin",
+              "status": "succeeded",
+              "input_head": "3333333333333333333333333333333333333333",
+              "result_head": "3333333333333333333333333333333333333333"
+            }
+          ]
+        }
+      ],
+      "destinations": [
+        {
+          "snapshot_id": "snapshot-1",
+          "directory_id": "dir-api",
+          "source_path": "/sources/api",
+          "branches": [
+            "main"
+          ],
+          "remotes": [
+            {
+              "name": "origin",
+              "branches": [
+                "main"
+              ]
+            }
+          ],
+          "live_head": "2222222222222222222222222222222222222222"
+        }
+      ]
     }
   },
   "errors": [
@@ -79,6 +133,7 @@
     "invalid_params",
     "stale_version",
     "conflict",
+    "busy",
     "internal"
   ]
 }

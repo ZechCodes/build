@@ -61,6 +61,47 @@ fn review_snapshot_rpc_keeps_task_position_and_completion_is_explicit() {
 }
 
 #[test]
+fn review_act_rpc_merges_a_saved_temp_checkout_and_keeps_its_workspace() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_repo, mut state, project) = tracked(tmp.path());
+    let workspace_id = workspace(&mut state, &project, "action");
+    let checkout = state.workspaces.get(&workspace_id).unwrap().directories[0]
+        .path
+        .clone();
+    std::fs::write(checkout.join("review-action.txt"), "saved work\n").unwrap();
+    git_in(&checkout, &["add", "review-action.txt"]);
+    git_in(&checkout, &["commit", "-m", "review action fixture"]);
+    let task = filed(&mut state, &project, "Merge the saved checkout");
+    let task_id = task["id"].as_str().unwrap();
+    let saved = review_call(
+        &mut state,
+        "tasks.review.snapshot",
+        json!({
+            "task_id": task_id, "workspace_id": workspace_id, "expected_version": 0,
+        }),
+    );
+    let snapshot = &saved["review"]["snapshots"][0];
+    let acted = review_call(
+        &mut state,
+        "tasks.review.act",
+        json!({
+            "task_id": task_id, "expected_version": 1, "snapshot_id": snapshot["id"],
+            "sources": [{"directory_id": snapshot["directories"][0]["id"],
+                         "merge": {"branch": "main"}}],
+        }),
+    );
+    assert_eq!(
+        acted["review"]["actions"][0]["status"], "succeeded",
+        "{acted}"
+    );
+    assert_eq!(acted["review"]["actions"][0]["actor"]["kind"], "user");
+    assert!(state.workspaces.get(&workspace_id).is_some());
+    assert!(checkout.join("review-action.txt").exists());
+    let held = review_call(&mut state, "tasks.get", json!({"task_id": task_id}));
+    assert_eq!(held["task"]["status"], "backlog");
+}
+
+#[test]
 fn review_comment_metadata_round_trips_and_rejects_foreign_context() {
     let tmp = tempfile::tempdir().unwrap();
     let (_repo, mut state, project) = tracked(tmp.path());
@@ -349,6 +390,21 @@ fn review_mcp_authenticates_actor_and_fences_both_task_and_workspace_projects() 
     )
     .unwrap_err();
     assert!(refused.starts_with("unknown task_id"), "{refused}");
+    let refused = agent_review(
+        &mut state,
+        &owner,
+        &agent,
+        json!({
+            "action": "tracker_act_review", "params": {
+                "task_id": other_task["id"], "expected_version": 1,
+                "snapshot_id": "foreign-snapshot", "sources": [{
+                    "directory_id": "foreign-directory", "merge": {"branch": "main"}
+                }]
+            }
+        }),
+    )
+    .unwrap_err();
+    assert!(refused.starts_with("unknown task_id"), "{refused}");
     let other_workspace = workspace(&mut state, &other_project, "foreign");
     let refused = agent_review(
         &mut state,
@@ -361,13 +417,30 @@ fn review_mcp_authenticates_actor_and_fences_both_task_and_workspace_projects() 
     )
     .unwrap_err();
     assert!(refused.starts_with("unknown workspace_id"), "{refused}");
+    let saved_snapshot = &saved["review"]["snapshots"][0];
+    let acted = agent_review(
+        &mut state,
+        &owner,
+        &agent,
+        json!({
+            "action": "tracker_act_review", "params": {
+                "task_id": task["id"], "expected_version": 1,
+                "snapshot_id": saved_snapshot["id"], "sources": [{
+                    "directory_id": saved_snapshot["directories"][0]["id"],
+                    "merge": {"branch": "main"}
+                }]
+            }
+        }),
+    )
+    .unwrap();
+    assert_eq!(acted["review"]["actions"][0]["actor"]["agent_id"], agent);
     let completed = agent_review(
         &mut state,
         &owner,
         &agent,
         json!({
             "action": "tracker_complete_review", "task_id": task["id"],
-            "expected_version": 1, "description": "Reviewed and merged using my tools",
+            "expected_version": acted["review"]["version"], "description": "Reviewed and merged using my tools",
         }),
     )
     .unwrap();

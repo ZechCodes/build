@@ -1,5 +1,6 @@
 /** @vitest-environment jsdom */
-// The watch gate, asked of a bridge that actually greeted (#65).
+// A real bridge greeting enables automatic read marks on a cached task page;
+// the switch itself paints before that greeting arrives (#182).
 //
 // The shell agent found this hole in their half and it was in mine too, in
 // both halves:
@@ -12,13 +13,11 @@
 //   `carriesWatching`: my own suite said nothing, and only their call sites
 //   failed.
 //
-//   test/taskWatchDom.test.js drives the gate by mocking THIS module, so
-//   "the page draws no switch without watching" is asserted through a stand-in and
-//   would go on passing with the gate deleted.
+//   test/taskWatchDom.test.js drives the read-mark gate by mocking THIS module,
+//   so it cannot prove that a real greeting reaches the mounted page.
 //
-// So nothing is mocked here but the reconnect watcher: a real greeting goes
-// into the real store, the real gate reads it, and the real page is mounted on
-// top.
+// Nothing is mocked here but the reconnect watcher: a real greeting goes into
+// the real store and the real page stays mounted on top.
 //
 // Since ea3de439 the gate is a capability rather than a version compare, and
 // since API 2.0.0 a capability is a name in the greeting's `capabilities`
@@ -42,7 +41,7 @@ globalThis.IDBKeyRange = IDBKeyRange;
 const { bridgeApiVersion, greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
 const { carriesWatching } = await import("../src/core/trackerWatch.js");
 const { mountTaskPage } = await import("../src/core/trackerTaskPage.js");
-const { writeTasksRecord } = await import("../src/core/trackerCache.js");
+const { taskRecord, writeTaskRecord, writeTasksRecord } = await import("../src/core/trackerCache.js");
 
 /** The capabilities a bridge that carries watching names, and one that does not. */
 const WATCHING = ["tasks.watching"];
@@ -83,7 +82,7 @@ const mount = async (deviceId = "dev-1") => {
     feed: () => ({ workspaces: [], items: [], projects: [] }),
     navigate: vi.fn(),
   });
-  await flush();
+  await vi.waitFor(() => expect(host.querySelector(".task-page-title")).not.toBeNull());
   return page;
 };
 
@@ -145,10 +144,95 @@ describe("the gate, asked of a bridge that actually greeted", () => {
 });
 
 describe("the page, on top of that gate", () => {
-  it("draws no switch and marks nothing read on a bridge that does not name watching", async () => {
+  it("draws a switch from the task record but marks nothing read before watching is announced", async () => {
     await greet(NO_WATCHING);
     await mount();
-    expect(host.querySelector(".rail-watch")).toBeNull();
+    expect(host.querySelector(".rail-watch")?.getAttribute("aria-pressed")).toBe("false");
+    expect(listed("tasks.read_through")).toHaveLength(0);
+  });
+
+  it("keeps a cold page and its composer mounted as the greeting enables read-through", async () => {
+    const cached = answer();
+    await writeTaskRecord("dev-1", "proj-1", "task-1", taskRecord(cached.task, cached.timeline));
+    call.mockImplementation(async (method) => (method === "tasks.get" ? new Promise(() => {}) : {}));
+    await mount();
+    const field = host.querySelector("#task-comment");
+    field.focus();
+    expect(host.querySelector(".rail-watch")?.getAttribute("aria-pressed")).toBe("false");
+    expect(host.querySelector(".composer-attach")).not.toBeNull();
+    expect(listed("tasks.read_through")).toHaveLength(0);
+    expect(listed("tasks.get")).toHaveLength(1);
+
+    await greet(WATCHING);
+    await vi.waitFor(() => expect(listed("tasks.read_through")).toHaveLength(1));
+    expect(listed("tasks.read_through")[0][1]).toEqual({ task_id: "task-1", event_id: "tc-1" });
+    expect(host.querySelector("#task-comment")).toBe(field);
+    expect(document.activeElement).toBe(field);
+    host.querySelector(".rail-watch").click();
+    await vi.waitFor(() => expect(listed("tasks.watch")).toHaveLength(1));
+  });
+
+  it("keeps a cached unread divider and caret through greeting and re-greeting", async () => {
+    const timeline = [
+      comment({ id: "tc-1", body: "Already read" }),
+      comment({ id: "tc-2", author: { kind: "agent", agent_id: "agent-1" }, body: "New reply" }),
+    ];
+    const cached = task({ id: "task-1", watched: true, read_through: "tc-1" });
+    await writeTaskRecord("dev-1", "proj-1", "task-1", taskRecord(cached, timeline));
+    call.mockImplementation(async (method) => (
+      method === "tasks.get" || method === "tasks.read_through" ? new Promise(() => {}) : {}
+    ));
+    await mount();
+    const divider = host.querySelector(".task-unread-line");
+    const pill = host.querySelector(".new-messages-pill");
+    const field = host.querySelector("#task-comment");
+    expect(divider).not.toBeNull();
+    expect(pill).not.toBeNull();
+    expect(listed("tasks.read_through")).toHaveLength(0);
+    field.value = "Draft stays";
+    field.focus();
+    field.setSelectionRange(5, 5);
+
+    await greet(WATCHING);
+    await vi.waitFor(() => expect(listed("tasks.read_through")).toHaveLength(1));
+    await greet(NO_WATCHING);
+    expect(host.querySelector(".task-unread-line")).toBe(divider);
+    expect(host.querySelector(".new-messages-pill")).toBe(pill);
+    expect(host.querySelector("#task-comment")).toBe(field);
+    expect(field.value).toBe("Draft stays");
+    expect(field.selectionStart).toBe(5);
+    expect(document.activeElement).toBe(field);
+    expect(listed("tasks.read_through")).toHaveLength(1);
+  });
+
+  it("shows a watched cached task's unread reply even without a read mark or greeting", async () => {
+    const cached = task({ id: "task-1", watched: true });
+    const timeline = [comment({ id: "tc-2", author: { kind: "agent", agent_id: "agent-1" } })];
+    await writeTaskRecord("dev-1", "proj-1", "task-1", taskRecord(cached, timeline));
+    call.mockImplementation(async (method) => (method === "tasks.get" ? new Promise(() => {}) : {}));
+    await mount();
+    expect(host.querySelector(".task-unread-line")).not.toBeNull();
+    expect(listed("tasks.read_through")).toHaveLength(0);
+  });
+
+  it("ignores another device's greeting while a cached page is open", async () => {
+    await writeTaskRecord("dev-1", "proj-1", "task-1", taskRecord(answer().task, answer().timeline));
+    call.mockImplementation(async (method) => (method === "tasks.get" ? new Promise(() => {}) : {}));
+    await mount();
+    await greet(WATCHING, { deviceId: "dev-2" });
+    expect(listed("tasks.read_through")).toHaveLength(0);
+    await greet(WATCHING);
+    await vi.waitFor(() => expect(listed("tasks.read_through")).toHaveLength(1));
+  });
+
+  it("does not react to a greeting after the page is disposed", async () => {
+    await writeTaskRecord("dev-1", "proj-1", "task-1", taskRecord(answer().task, answer().timeline));
+    call.mockImplementation(async (method) => (method === "tasks.get" ? new Promise(() => {}) : {}));
+    await mount();
+    const button = host.querySelector(".rail-watch");
+    page.dispose();
+    await greet(WATCHING);
+    expect(host.querySelector(".rail-watch")).toBe(button);
     expect(listed("tasks.read_through")).toHaveLength(0);
   });
 
@@ -167,17 +251,19 @@ describe("the page, on top of that gate", () => {
     expect(listed("tasks.watch")[0][1]).toEqual({ task_id: "task-1" });
   });
 
-  it("draws no switch for a bridge that states only the old tasks.watching flag", async () => {
+  it("offers the switch without starting read-through for an unsupported greeting", async () => {
     await greet(NO_WATCHING, { states: true });
     await mount();
-    expect(host.querySelector(".rail-watch")).toBeNull();
+    expect(host.querySelector(".rail-watch")).not.toBeNull();
+    expect(listed("tasks.read_through")).toHaveLength(0);
   });
 
   // The same page mounted against the one of two paired machines without it.
-  it("is dark on the machine that does not name watching while the other one does", async () => {
+  it("keeps read-through off on the machine that does not name watching", async () => {
     await greet(WATCHING);
     await greet(NO_WATCHING, { deviceId: "dev-old" });
     await mount("dev-old");
-    expect(host.querySelector(".rail-watch")).toBeNull();
+    expect(host.querySelector(".rail-watch")).not.toBeNull();
+    expect(listed("tasks.read_through")).toHaveLength(0);
   });
 });

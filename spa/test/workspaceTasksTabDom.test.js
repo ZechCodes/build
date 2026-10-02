@@ -17,6 +17,7 @@ let watchers = [];
 const RETIRED = ["intervalMs", "keepPolling", "catchUpOnVisible"];
 let apiVersion = "1.5.0";
 vi.mock("../src/core/changeEvents.js", () => ({
+  onBridgeGreeted: () => () => {},
   bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: ["state", "thread", "tasks"] } }),
   bridgeApiVersion: () => apiVersion,
   watchChanges: (registration) => {

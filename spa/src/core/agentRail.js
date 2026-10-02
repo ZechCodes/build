@@ -43,6 +43,7 @@ import {
   agentCanInterrupt,
   agentHasTerminal,
   agentIsUp,
+  agentIsWatched,
   agentSessionAnswered,
   agentStartFailure,
   agentHeading,
@@ -162,13 +163,12 @@ import { mountAgentTab } from "./surfaceTabs.js";
 import { harnessIconHtml } from "./harnessIcon.js";
 import { PIN_CLASS, pinButtonHtml, syncPinButton } from "./pinControl.js";
 import { WATCH_BUTTON_SELECTOR, createWatchToggle, syncWatchButton, watchButtonHtml } from "./watchToggle.js";
-import { carriesWatching } from "./trackerWatch.js";
 import {
-  carriesCompactionSettings,
   compactionLimitOfOptionId,
   compactionMenuGroup,
   createCompactionChoice,
 } from "./conversationCompaction.js";
+import { notifyCommandFailure } from "./commandRefusal.js";
 import { providerInSameFamily } from "./providerCatalog.js";
 import { mountComposerClearance } from "./composerClearance.js";
 import { createChatPanelMotion } from "./chatPanelMotion.js";
@@ -217,6 +217,8 @@ const SURFACE_MENU_LABEL = "⋮";
 const SURFACE_MENU_TITLE = "Conversation menu";
 const AGENT_NOT_YET_BORN = "ghost";
 const COMPACTION_REFUSED = "Build could not change when this chat compacts.";
+const WATCH_UNSUPPORTED = "This device does not support changing who watches this chat.";
+const COMPACTION_UNSUPPORTED = "This device does not support changing when this chat compacts.";
 
 // What makes this page's faces this page's own. An agent's pattern is drawn
 // from its id, so without a salt every agent would move exactly the same way on
@@ -931,13 +933,12 @@ const WATCH_VERB = "conversation.watch";
 /**
  * Whether this rail offers a watch switch, and what it says to begin with.
  *
- * Null on a bridge that has never heard of watching (#65) — the verbs arrive
- * with #64, and a switch wired to one an older bridge does not know can only
- * refuse. `panelHeadHtml` reads null as "this head has no switch".
+ * The digest says whether this reader watches, even before the bridge greets.
+ * An older bridge can refuse the command when the reader presses the switch.
  */
-function watchStateFor(context, agent) {
-  if (!agent || !carriesWatching(context.deviceId)) return null;
-  return { watching: agent?.watched === true, watchers: agent?.watchers || 0, pending: false };
+function watchStateFor(agent) {
+  if (!agent) return null;
+  return { watching: agentIsWatched(agent), watchers: agent.watchers || 0, pending: false };
 }
 
 /** The rail standing on ONE of its contexts. `swap` is how it moves to the
@@ -980,7 +981,7 @@ function mountRailOnContext(host, context, swap) {
   // Whether the reader hears about this conversation (#65). One switch per
   // mounted rail, because the rail stands on one conversation at a time — a
   // swap to the project's side mounts a rail of its own with its own.
-  let watchState = watchStateFor(context, entity.agents.find((agent) => agent.id === selectedId));
+  let watchState = watchStateFor(entity.agents.find((agent) => agent.id === selectedId));
   /** A watch the bridge took, written into the cached row where nothing has
    *  written it since the ask: the strip keeps a watched agent from the answer
    *  on, not from whenever the push behind it lands (#105). The answer is the
@@ -1010,7 +1011,9 @@ function mountRailOnContext(host, context, swap) {
       repaintStrip();
     },
     onFailure: (error, addressed) => {
-      if (standing() && addressed.agent_id === selectedId) notifyError("Could not change watching", error.message || String(error));
+      if (standing() && addressed.agent_id === selectedId) {
+        notifyCommandFailure(error, "Could not change watching", WATCH_UNSUPPORTED);
+      }
     },
   });
   // When this rail's conversations compact (wire 1.10): what the bridge
@@ -1023,7 +1026,7 @@ function mountRailOnContext(host, context, swap) {
     write: (captured, agentId, rewrite) => motionSettled().then(() =>
       standing() ? records.patchAgentIfUnwritten(captured, agentId, rewrite) : undefined),
     onFailure: (error) => {
-      if (standing()) notifyError(COMPACTION_REFUSED, error.message || String(error));
+      if (standing()) notifyCommandFailure(error, COMPACTION_REFUSED, COMPACTION_UNSUPPORTED);
     },
   });
   const { projectAgent, standing: onProjectAgentRail, entityId: knownOwner, name: knownName, projectId } = projectAgentState(context);
@@ -1269,7 +1272,7 @@ function mountRailOnContext(host, context, swap) {
     chooseAgent(selectAgentId(agents, wanted));
   };
   const syncWatchFromAgent = () => {
-    const current = watchStateFor(context, agentOf(selectedId));
+    const current = watchStateFor(agentOf(selectedId));
     if (current) watchSwitch.settle(current);
     else watchState = null;
   };
@@ -3137,12 +3140,11 @@ function mountRailOnContext(host, context, swap) {
     compactionMenuGroupInFocus(),
   ].filter(Boolean);
 
-  /** The compaction group, for a settled agent on a bridge that has the verb
-   *  — none while the chooser is up, and none for an agent not yet born,
-   *  which has no conversation to set. */
+  /** The compaction group for a settled agent with a conversation to set.
+   *  Its selected row comes from the digest, including before greeting. */
   const compactionMenuGroupInFocus = () => {
     const agent = settledAgentInFocus();
-    if (!agent || !entity.entityId || !carriesCompactionSettings(context.deviceId)) return null;
+    if (!agent || !entity.entityId) return null;
     return compactionMenuGroup(agent);
   };
 

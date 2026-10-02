@@ -1,13 +1,9 @@
 // Whether this device's bridge knows what watching is (#65).
 //
-// `tasks.watch`, `conversation.watch` and `tasks.read_through` all arrive
-// with the bridge half (#64), and a control wired to them on an older bridge is
-// a control that can only refuse — a client asking a bridge for a verb it has
-// never heard of does not get a polite no.
-//
-// The read mark is why this matters more than a dark button would suggest:
-// ungated, it is sent on every open and every scroll to the end, so an older
-// bridge would produce a refusal per glance at a task.
+// The task's watch switch stands from cached state before a greeting. A press
+// on an older bridge gets a plain refusal; its optimistic state reverts.
+// Automatic read marks remain gated because they are sent on open and scroll,
+// without an explicit press, and an older bridge would refuse each one.
 //
 // A CAPABILITY, not a version compare. The v1 adapter's own header states the
 // rule — "a surface never asks what version the bridge reports, it asks the
@@ -19,17 +15,15 @@
 //
 // Refused by default, which `bridgeCapabilities` already is: an unknown device,
 // a bridge that never greeted and one no adapter claims all read as a
-// capabilities object with every flag off. The cost of a wrong no is a control
-// not offered yet; the cost of a wrong yes is a refusal in the reader's face
-// for something they did not ask to do.
+// capabilities object with every flag off.
 
 import { bridgeCapabilities } from "./changeEvents.js";
 
 /**
- * Whether this device's bridge carries the watch verbs and the read mark.
+ * Whether this device's bridge carries automatic read marks.
  *
- * Per machine: a phone paired to a new bridge and an old one is offered the
- * switch on the first and not the second.
+ * Per machine: a phone paired to a new bridge and an old one sends read marks
+ * only to the first.
  *
  * `=== true` rather than a truthy test, so a bridge that states something other
  * than a boolean is not read as having claimed anything; optional chaining

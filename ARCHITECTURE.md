@@ -1032,6 +1032,9 @@ Others include the boot retry and cosmetic clocks.
 **Current exceptions.** These describe today's code, not the rule. Don't copy
 them into new code; each is a candidate to bring under the rule.
 
+- **Greeting-gated inbox rows.** `isListed` in `spa/src/core/inbox.js`
+  still hides tracker-task feed rows until the device's greeting announces
+  watching. This pre-existing gate remains outside #182's control fixes.
 - **Surface-owned reads.** A few surfaces read on demand, for data the sync
   pass does not hold:
   - the Files tab lists a directory the reader expands with `fs.tree`
@@ -1111,6 +1114,13 @@ refuses when that device cannot answer.
   get a name.
 - Surfaces read the flags with `bridgeCapabilities(deviceId)`
   (`spa/src/core/changeEvents.js`), which falls back to `NO_CAPABILITIES`.
+- The task and conversation watch switches, task attachment buttons, and
+  conversation compaction settings are available before a greeting (#182).
+  Their values come from cached task and agent records. A late greeting does
+  not replace the controls or their drafts, and an older bridge refusing a
+  chosen command is explained in plain language (`commandRefusal.js`).
+  Automatic task read marks still require watch support; a mounted task page
+  resumes that housekeeping when its device greets.
 - A flag that changes what a view draws is written to the cache at the
   greeting and read from there, so a cold mount draws what it will keep:
   `tasks.commentUserNotifies` becomes the per-device Needs you rule in

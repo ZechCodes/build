@@ -10,6 +10,7 @@ import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { columns, comment, event, task } from "./trackerWireFixture.js";
 
 vi.mock("../src/core/changeEvents.js", () => ({
+  onBridgeGreeted: () => () => {},
   bridgeCapabilities: () => ({
     changes: { subscriptions: true, kinds: ["tasks"] },
     tasks: { attachments: true, watching: false },

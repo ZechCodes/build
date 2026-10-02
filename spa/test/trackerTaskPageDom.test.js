@@ -16,6 +16,7 @@ let watchers = [];
 // into a surface fails here rather than only in a browser.
 const RETIRED = ["intervalMs", "keepPolling", "catchUpOnVisible"];
 vi.mock("../src/core/changeEvents.js", () => ({
+  onBridgeGreeted: () => () => {},
   // The greeting says which kinds a bridge carries; a stand-in that
   // answers none would have the sync layer ask for none of the new ones.
   bridgeCapabilities: () => ({
@@ -637,7 +638,7 @@ describe("the composer", () => {
 
   // #57: the comment box takes files too, and only against a bridge that can
   // carry them. A press that cannot work is worse than no press.
-  it("offers the paperclip on a bridge that carries files, and none on one that does not", async () => {
+  it("offers the paperclip before the bridge has announced file support", async () => {
     await mount();
     expect(host.querySelector(".task-composer .composer-attach")).not.toBeNull();
     expect(host.querySelector(".task-composer .composer.attachable")).not.toBeNull();
@@ -647,11 +648,76 @@ describe("the composer", () => {
     document.body.innerHTML = '<div id="page"></div>';
     host = document.querySelector("#page");
     await mount();
-    expect(host.querySelector(".task-composer .composer-attach")).toBeNull();
-    expect(host.querySelector(".task-composer .composer-tray")).toBeNull();
-    expect(host.querySelector(".task-composer .composer-dropmask")).toBeNull();
-    // Still a comment box, still sends.
+    expect(host.querySelector(".task-composer .composer-attach")).not.toBeNull();
+    expect(host.querySelector(".task-composer .composer-tray")).not.toBeNull();
+    expect(host.querySelector(".task-composer .composer-dropmask")).not.toBeNull();
     expect(host.querySelector("#task-comment")).not.toBeNull();
+  });
+
+  it("reverts a refused watch and explains an unsupported command plainly", async () => {
+    await mount();
+    refuses = { method: "tasks.watch", message: "unknown method: tasks.watch" };
+    host.querySelector(".rail-watch").click();
+    await vi.waitFor(() => expect(notifyError).toHaveBeenCalled());
+    expect(host.querySelector(".rail-watch").getAttribute("aria-pressed")).toBe("false");
+    expect(notifyError).toHaveBeenCalledWith("This bridge does not support watching tasks.");
+  });
+
+  it("keeps the comment draft when an older bridge refuses an attachment", async () => {
+    carriesAttachments = false;
+    await mount();
+    const field = host.querySelector("#task-comment");
+    field.value = "Keep this draft";
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    refuses = { method: "tasks.attach", message: "unknown method: tasks.attach" };
+    const drop = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, "dataTransfer", { value: { files: [new File(["png"], "shot.png", { type: "image/png" })] } });
+    host.querySelector("[data-task-composer]").dispatchEvent(drop);
+    await vi.waitFor(() => expect(notifyError).toHaveBeenCalled());
+    expect(field.value).toBe("Keep this draft");
+    expect(host.querySelector(".composer-chip.failed .composer-chip-note")?.textContent)
+      .toBe("This bridge does not support task attachments.");
+    expect(notifyError).toHaveBeenCalledWith(
+      "Could not attach that file", "shot.png: This bridge does not support task attachments.",
+    );
+    expect(host.querySelector('[data-task-composer] button[type="submit"]').disabled).toBe(false);
+    notifyError.mockClear();
+    host.querySelector('[data-task-composer] button[type="submit"]').click();
+    await vi.waitFor(() => expect(notifyError).toHaveBeenCalledWith("Remove the failed attachment before sending this comment."));
+    expect(listed("tasks.comment")).toHaveLength(0);
+    expect(field.value).toBe("Keep this draft");
+    host.querySelector(".composer-chip.failed .composer-chip-remove").click();
+    host.querySelector('[data-task-composer] button[type="submit"]').click();
+    await vi.waitFor(() => expect(listed("tasks.comment")).toHaveLength(1));
+    expect(listed("tasks.comment")[0][1]).toEqual({ task_id: "task-1", body: "Keep this draft" });
+  });
+
+  it("does not send a ready file while another attachment has failed", async () => {
+    await mount();
+    call.mockImplementation(async (method, params) => {
+      if (method === "tasks.attach" && params.filename === "bad.png") throw new Error("upload refused");
+      if (method === "tasks.attach") return { name: params.filename, path: `/store/${params.filename}`, mime: "image/png", size: 3 };
+      return method === "tasks.get" ? answerFor() : {};
+    });
+    const drop = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, "dataTransfer", { value: { files: [
+      new File(["png"], "good.png", { type: "image/png" }),
+      new File(["png"], "bad.png", { type: "image/png" }),
+    ] } });
+    host.querySelector("[data-task-composer]").dispatchEvent(drop);
+    await vi.waitFor(() => {
+      expect(host.querySelector(".composer-chip.ready")).not.toBeNull();
+      expect(host.querySelector(".composer-chip.failed")).not.toBeNull();
+    });
+    host.querySelector('[data-task-composer] button[type="submit"]').click();
+    await vi.waitFor(() => expect(notifyError).toHaveBeenCalledWith("Remove the failed attachment before sending this comment."));
+    expect(listed("tasks.comment")).toHaveLength(0);
+    host.querySelector(".composer-chip.failed .composer-chip-remove").click();
+    host.querySelector('[data-task-composer] button[type="submit"]').click();
+    await vi.waitFor(() => expect(listed("tasks.comment")).toHaveLength(1));
+    expect(listed("tasks.comment")[0][1].attachments).toEqual([
+      { name: "good.png", path: "/store/good.png", mime: "image/png", size: 3 },
+    ]);
   });
 
   it("sends a dropped file with the comment, through tasks.attach", async () => {
@@ -1134,14 +1200,16 @@ describe("the comment box across what arrives while typing", () => {
     }
   };
 
-  it("hangs the paperclip around the textarea already on screen when a late greeting says files travel", async () => {
+  it("keeps the paperclip and textarea in place across a late greeting", async () => {
     carriesAttachments = false;
     await mount();
     await settle();
     const field = host.querySelector("#task-comment");
     field.focus();
     typeText(field, "typed before the greeting");
-    expect(host.querySelector(".task-composer .composer-attach")).toBeNull();
+    const clip = host.querySelector(".task-composer .composer-attach");
+    const tray = host.querySelector(".task-composer .composer-tray");
+    expect(clip).not.toBeNull();
 
     carriesAttachments = true;
     page.feedMoved();
@@ -1151,8 +1219,8 @@ describe("the comment box across what arrives while typing", () => {
     expect(field.value).toBe("typed before the greeting");
     expect(field.closest(".composer.attachable.task-comment-box")).not.toBeNull();
     expect(host.querySelector(".task-composer .composer-attach")).not.toBeNull();
-    const tray = host.querySelector(".task-composer .composer-tray");
-    expect(tray).not.toBeNull();
+    expect(host.querySelector(".task-composer .composer-attach")).toBe(clip);
+    expect(host.querySelector(".task-composer .composer-tray")).toBe(tray);
 
     // The controls hung on late are wired: a dropped file goes up and rides
     // the comment.
@@ -1165,14 +1233,13 @@ describe("the comment box across what arrives while typing", () => {
     host.querySelector("[data-task-composer]").dispatchEvent(drop);
     await vi.waitFor(() => expect(host.querySelector(".task-composer .composer-chip.ready")).not.toBeNull());
 
-    // And a bridge that stops carrying files takes them off the same box, and
-    // puts the same tray back if it carries them again.
+    // A new greeting cannot remove controls or draft state from this page.
     carriesAttachments = false;
     page.feedMoved();
     expect(host.querySelector("#task-comment")).toBe(field);
-    expect(host.querySelector(".task-composer .composer-attach")).toBeNull();
-    expect(host.querySelector(".task-composer .composer-tray")).toBeNull();
-    expect(field.closest(".composer")).toBeNull();
+    expect(host.querySelector(".task-composer .composer-attach")).toBe(clip);
+    expect(host.querySelector(".task-composer .composer-tray")).toBe(tray);
+    expect(field.closest(".composer")).not.toBeNull();
     carriesAttachments = true;
     page.feedMoved();
     expect(host.querySelector("#task-comment")).toBe(field);
@@ -1211,46 +1278,14 @@ describe("the comment box across what arrives while typing", () => {
     return method === "tasks.get" ? answerFor() : {};
   });
 
-  it("takes a long paste as text and a drop as nothing while the paperclip is off", async () => {
+  it("takes pastes and drops as files before any capability greeting", async () => {
+    carriesAttachments = false;
     await mount();
     await settle();
     attachAnswers();
     const field = host.querySelector("#task-comment");
     const form = host.querySelector("[data-task-composer]");
     field.focus();
-    carriesAttachments = false;
-    page.feedMoved();
-    expect(host.querySelector(".task-composer .composer-attach")).toBeNull();
-
-    const long = "x".repeat(1300);
-    expect(paste(field, long), "the paste was cancelled").toBe(false);
-    expect(dropFile(form), "the drop was cancelled").toBe(false);
-    const dragOver = new Event("dragover", { bubbles: true, cancelable: true });
-    form.dispatchEvent(dragOver);
-    expect(dragOver.defaultPrevented).toBe(false);
-    await settle();
-    expect(listed("tasks.attach")).toEqual([]);
-    expect(host.querySelector("#task-comment")).toBe(field);
-    expect(field.value).toBe(long);
-    expect(form.querySelector('button[type="submit"]').disabled).toBe(false);
-
-    call.mockClear();
-    form.dispatchEvent(new Event("submit", { cancelable: true }));
-    await vi.waitFor(() => expect(listed("tasks.comment")).toHaveLength(1));
-    expect(listed("tasks.comment")[0][1]).toEqual({ task_id: "task-1", body: long });
-  });
-
-  it("takes pastes and drops as files again once the paperclip is back", async () => {
-    await mount();
-    await settle();
-    attachAnswers();
-    const field = host.querySelector("#task-comment");
-    const form = host.querySelector("[data-task-composer]");
-    field.focus();
-    carriesAttachments = false;
-    page.feedMoved();
-    carriesAttachments = true;
-    page.feedMoved();
     expect(host.querySelector(".task-composer .composer-attach")).not.toBeNull();
 
     expect(paste(field, "y".repeat(1300)), "the long paste went in as text").toBe(true);

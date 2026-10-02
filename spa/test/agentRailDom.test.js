@@ -1026,6 +1026,27 @@ describe("the rail over a machine that is asked nothing", () => {
     }
   });
 
+  it("offers a cached conversation's watch switch before the bridge greets and restores it after an unsupported command", async () => {
+    payload = branchRow({ agents: [agent({ watched: true, watchers: 2 })] });
+    await mount();
+    const switchButton = () => panel().querySelector(".rail-watch");
+    expect(switchButton()?.getAttribute("aria-pressed")).toBe("true");
+    expect(switchButton()?.title).toBe("Watching · 2");
+
+    bridge.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "conversation.unwatch") {
+        throw Object.assign(new Error("unknown method: conversation.unwatch"), { code: "unknown_method" });
+      }
+      return {};
+    });
+    switchButton().click();
+    await vi.waitFor(() => expect(callsTo("conversation.unwatch")).toHaveLength(1));
+    await vi.waitFor(() => expect(switchButton().getAttribute("aria-pressed")).toBe("true"));
+    expect(switchButton().title).toBe("Watching · 2");
+    expect(notifyError).toHaveBeenCalledWith("This device does not support changing who watches this chat.");
+  });
+
   it("keeps B's cached watch state when A's earlier watch is refused", async () => {
     const { greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
     await greetBridge(async () => WATCHING_GREETING, { deviceId: "dev-1" });
@@ -4414,11 +4435,11 @@ describe("the agent's surfaces, seeded from the local cache", () => {
   const savedSurfaces = (sub) => readCached(surfacesAddress(sub));
   const savedDescription = async (sub) => (await savedSurfaces(sub)).value.surfaces.shells[0].description;
   /// The SURFACE rows of the conversation's ⋮, which also carries the detail
-  /// levels the thread is read at (core/conversationDetail.js).
+  /// and compaction settings.
   const menuKinds = () =>
     [...railHost().querySelectorAll(".rail-surface-menu .mi")]
       .map((item) => item.dataset.action)
-      .filter((action) => !action.startsWith("detail:"));
+      .filter((action) => !action.startsWith("detail:") && !action.startsWith("compact:"));
   const pillKinds = () =>
     [...railStatusPills().querySelectorAll(".surface-pill")].map((pill) => pill.dataset.surfaceKind);
   const pillCount = (kind) =>

@@ -11,8 +11,6 @@
 // way: by a prefix on their ids (core/conversationDetail.js). They stand as a
 // group of their own under the setting's name, so each row is the bare value.
 
-import { bridgeCapabilities } from "./changeEvents.js";
-
 export const COMPACT_OPTION_PREFIX = "compact:";
 
 /** What the rows ask for, in the order they stand. `null` is the device's
@@ -112,12 +110,6 @@ export function compactionLimitOfOptionId(optionId) {
 /** `conversation.settings`'s params, in the fixture's shape. */
 export function compactionSettingsParams(entityId, agentId, maxContextTokens) {
   return { entity_id: entityId, agent_id: agentId, max_context_tokens: maxContextTokens };
-}
-
-/** Whether this device's bridge carries `conversation.settings` (1.10). A
- *  row wired to a verb an older bridge has never heard of can only refuse. */
-export function carriesCompactionSettings(deviceId) {
-  return bridgeCapabilities(deviceId)?.conversations?.settings === true;
 }
 
 /**

@@ -27,9 +27,8 @@ import { fieldTraits } from "./fieldTraits.js";
 /** The head: what the task is called, and the two facts that are independent
  *  of each other — is it still open, and where does it stand on the board.
  *
- *  `watch` is the switch's state when this device's bridge can be asked about
- *  watching (#65) and nothing at all when it cannot: a control that refuses
- *  every press is worse than one the reader has not been given yet. */
+ *  `watch` comes from the cached task. A cold page offers the control before
+ *  this device has greeted. */
 export const taskHeadHtml = (task, { watch = null } = {}) => `<header class="task-page-head">
     <div class="task-page-marks">
       ${stateMarkHtml(task)}<span class="task-page-state">${esc(stateLabel(task.state))}</span>
@@ -155,15 +154,10 @@ const commentParts = composerPartIds(COMMENT_INPUT_ID);
 /**
  * The comment box.
  *
- * `attachable` is whether this device's bridge can carry files on a task
- * (core/taskAttachments.js). One that cannot gets the plain box it always had
- * — no paperclip, no tray, no drop mask — because an affordance that is drawn
- * and then apologised for is worse than one that was never offered.
- *
  * The send press is enabled by a draft OR by a tray with something in it: a
  * comment that is only a screenshot is a comment.
  */
-/// The paperclip, the hidden picker and the drop mask — or nothing at all.
+/// The paperclip, the hidden picker and the drop mask.
 export const commentAttachHtml = () => `<div class="composer-bar">
       <div class="composer-actions">
         <input type="file" id="${commentParts.file}" class="composer-file" multiple hidden>
@@ -185,27 +179,17 @@ const commentFieldHtml = (draft, busy) =>
 /// The tray the attached files sit in, above the box.
 export const commentTrayHtml = () => `<div class="composer-tray" id="${commentParts.tray}" hidden></div>`;
 
-/// The classes the box's frame wears on a bridge that carries files: the
-/// conversation's own composer, framed on the field with the paperclip under it.
-export const COMMENT_BOX_ATTACHABLE_CLASSES = ["composer", "attachable", "task-comment-box"];
-
 /// The box in its frame. The frame is there on every bridge, so a greeting
-/// that arrives after the page painted can hang the paperclip, the picker and
-/// the tray around the textarea already on screen rather than standing up a
-/// new one under the reader's fingers (#153). A bridge that cannot carry files
-/// gets a bare frame: no paperclip, no tray, no drop mask.
-const commentBoxHtml = (draft, busy, attachable) => {
-  const frameClass = ["task-comment-field", ...(attachable ? COMMENT_BOX_ATTACHABLE_CLASSES : [])].join(" ");
-  return `${attachable ? commentTrayHtml() : ""}
-    <div class="${frameClass}">
+/// keeps the same textarea and tray as the page repaints under the reader (#153).
+const commentBoxHtml = (draft, busy) => `${commentTrayHtml()}
+    <div class="task-comment-field composer attachable task-comment-box">
       ${commentFieldHtml(draft, busy)}
-      ${attachable ? commentAttachHtml() : ""}
+      ${commentAttachHtml()}
     </div>`;
-};
 
-export const composerHtml = (draft, busy, attachable = false, hasFiles = false) => `<form class="task-composer" data-task-composer>
+export const composerHtml = (draft, busy, hasFiles = false) => `<form class="task-composer" data-task-composer>
     <label class="sr-only" for="${COMMENT_INPUT_ID}">Comment on this task</label>
-    ${commentBoxHtml(draft, busy, attachable)}
+    ${commentBoxHtml(draft, busy)}
     <div class="row task-composer-row">
       <button class="btn primary" type="submit"${canComment(draft, busy, hasFiles) ? "" : " disabled"}>${commentSendLabel(busy)}</button>
     </div>
@@ -295,7 +279,7 @@ export function taskPageParts(task, context) {
       { name: "timeline", html: timeline.frame },
       {
         name: "composer",
-        html: composerHtml(context.draft, context.sending, context.attachable, context.hasFiles),
+        html: composerHtml(context.draft, context.sending, context.hasFiles),
         key: "composer",
       },
     ],
@@ -312,7 +296,7 @@ export function taskPageHtml(task, context) {
       ${taskBodyHtml(task, context)}
       ${taskAttachmentsHtml(task.attachments)}
       ${timelineHtml(context.rows, context)}
-      ${composerHtml(context.draft, context.sending, context.attachable, context.hasFiles)}
+      ${composerHtml(context.draft, context.sending, context.hasFiles)}
     </div>
     ${taskRailHtml(task, context)}
   </div>`;

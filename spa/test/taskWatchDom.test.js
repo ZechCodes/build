@@ -1,9 +1,9 @@
 /** @vitest-environment jsdom */
 // #65 on the task page: the watch switch, and the read mark.
 //
-// Both call verbs #64 is still building, so both are gated on the bridge
-// saying it carries them (core/trackerWatch.js) and this file drives the gate
-// rather than the version — the gate's own arithmetic is held in
+// Automatic read marks are gated on the bridge saying it carries them
+// (core/trackerWatch.js), while the switch paints from the cached record.
+// This file drives the mark gate rather than the version — its arithmetic is in
 // test/trackerWatch.test.js.
 //
 // The two things that matter here are the ones a fixture cannot get wrong by
@@ -17,6 +17,7 @@ import { columns, comment, event, task } from "./trackerWireFixture.js";
 
 let watchers = [];
 vi.mock("../src/core/changeEvents.js", () => ({
+  onBridgeGreeted: () => () => {},
   bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: ["tasks"] } }),
   bridgeApiVersion: () => "1.7.0",
   watchChanges: (registration) => {
@@ -39,8 +40,7 @@ vi.mock("../src/core/deviceReconnect.js", () => ({
 const notifyError = vi.fn();
 vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args) }));
 
-/** The gate, driven by the case. The bridge that carries these verbs does not
- *  exist yet — #64 is building it — which is the whole reason it is a gate. */
+/** The automatic read-mark gate, driven by the case. */
 let carries = true;
 vi.mock("../src/core/trackerWatch.js", async (original) => ({
   ...(await original()),
@@ -111,10 +111,10 @@ beforeEach(async () => {
 afterEach(() => page?.dispose());
 
 describe("the watch switch", () => {
-  it("is not drawn at all on a bridge that cannot be asked", async () => {
+  it("draws from the record before the bridge can be asked", async () => {
     carries = false;
     await mount();
-    expect(button()).toBeNull();
+    expect(button().getAttribute("aria-pressed")).toBe("false");
   });
 
   it("says what the record says: not watching, and who else is", async () => {
@@ -157,7 +157,7 @@ describe("the watch switch", () => {
     await flush();
     expect(button().getAttribute("aria-pressed")).toBe("false");
     expect(button().getAttribute("title")).toBe("Not watching · 2");
-    expect(notifyError).toHaveBeenCalledWith("Could not change whether you are watching this task");
+    expect(notifyError).toHaveBeenCalledWith("Could not change whether you are watching this task", "the bridge said no");
   });
 
   // The helper draws `pending` as disabled (the shell agent's 4c4fb8a3). This

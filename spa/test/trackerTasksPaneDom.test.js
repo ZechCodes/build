@@ -1096,10 +1096,7 @@ describe("the two presses", () => {
     expect(notifyError).not.toHaveBeenCalled();
   });
 
-  // #57, the other half of being honest about a bridge that cannot carry
-  // files: do not offer the press at all. The apology below is for a bridge
-  // that claimed it could and then did not.
-  it("offers the paperclip on a bridge that carries files, and none on one that does not", async () => {
+  it("offers the paperclip before the bridge announces file support", async () => {
     await mount();
     await openComposer();
     expect(host.querySelector(".composer-attach")).not.toBeNull();
@@ -1110,11 +1107,74 @@ describe("the two presses", () => {
     host = document.querySelector("#pane");
     await mount();
     await openComposer();
-    expect(host.querySelector(".composer-attach")).toBeNull();
-    expect(host.querySelector(".composer-tray")).toBeNull();
-    // The composer is otherwise the same composer.
+    expect(host.querySelector(".composer-attach")).not.toBeNull();
+    expect(host.querySelector(".composer-tray")).not.toBeNull();
     expect(host.querySelector(".task-compose-title")).not.toBeNull();
     expect(host.querySelector("[data-compose-file]")).not.toBeNull();
+  });
+
+  it("keeps a task draft and explains a refused attachment plainly", async () => {
+    carriesAttachments = false;
+    await mount();
+    await openComposer();
+    typeIn(".task-compose-title", "Keep this task");
+    typeIn("#task-new-body", "Keep this description");
+    call.mockImplementation(async (method) => {
+      if (method === "tasks.attach") throw new Error("unknown method: tasks.attach");
+      return { tasks: [] };
+    });
+    drop(new File(["png"], "shot.png", { type: "image/png" }));
+    await vi.waitFor(() => expect(host.querySelector(".composer-chip.failed")).not.toBeNull());
+    expect(host.querySelector(".task-compose-title").value).toBe("Keep this task");
+    expect(host.querySelector("#task-new-body").value).toBe("Keep this description");
+    expect(host.querySelector(".composer-chip.failed .composer-chip-note").textContent)
+      .toBe("This bridge does not support task attachments.");
+    expect(host.querySelector(".task-compose-error").textContent)
+      .toBe("shot.png: This bridge does not support task attachments.");
+    expect(host.querySelector("[data-compose-file]").disabled).toBe(false);
+    await fileIt();
+    expect(listed("tasks.create")).toHaveLength(0);
+    expect(host.querySelector(".task-compose-error").textContent)
+      .toBe("Remove the failed attachment before filing this task.");
+    expect(host.querySelector(".task-compose-title").value).toBe("Keep this task");
+    expect(host.querySelector("#task-new-body").value).toBe("Keep this description");
+    host.querySelector(".composer-chip.failed .composer-chip-remove").click();
+    expect(host.querySelector(".task-compose-error").hidden).toBe(true);
+    await fileIt();
+    expect(listed("tasks.create")).toHaveLength(1);
+    expect(listed("tasks.create")[0][1]).toMatchObject({ title: "Keep this task", body: "Keep this description" });
+  });
+
+  it("does not file a ready attachment while another chip has failed", async () => {
+    await mount();
+    await openComposer();
+    typeIn(".task-compose-title", "Keep both files");
+    call.mockImplementation(async (method, params) => {
+      if (method === "tasks.attach" && params.filename === "bad.png") throw new Error("upload refused");
+      if (method === "tasks.attach") return { name: params.filename, path: `/store/${params.filename}`, mime: "image/png", size: 3 };
+      if (method === "tasks.create") return { task: task({ id: "task-20", number: 20 }) };
+      return { tasks: [] };
+    });
+    const dropped = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(dropped, "dataTransfer", { value: { files: [
+      new File(["png"], "good.png", { type: "image/png" }),
+      new File(["png"], "bad.png", { type: "image/png" }),
+    ] } });
+    host.querySelector(".task-compose").dispatchEvent(dropped);
+    await vi.waitFor(() => {
+      expect(host.querySelector(".composer-chip.ready")).not.toBeNull();
+      expect(host.querySelector(".composer-chip.failed")).not.toBeNull();
+    });
+    await fileIt();
+    expect(listed("tasks.create")).toHaveLength(0);
+    expect(host.querySelector(".task-compose-error").textContent)
+      .toBe("Remove the failed attachment before filing this task.");
+    host.querySelector(".composer-chip.failed .composer-chip-remove").click();
+    await fileIt();
+    expect(listed("tasks.create")).toHaveLength(1);
+    expect(listed("tasks.create")[0][1].attachments).toEqual([
+      { name: "good.png", path: "/store/good.png", mime: "image/png", size: 3 },
+    ]);
   });
 
   // The v1 facade drops a field the bridge predates rather than refusing it,

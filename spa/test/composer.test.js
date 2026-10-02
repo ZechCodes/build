@@ -173,7 +173,7 @@ describe("attaching", () => {
     expect(host.querySelectorAll(".composer-chip")).toHaveLength(1);
   });
 
-  it("marks a failed upload on its own chip and keeps the others sendable", async () => {
+  it("reports a failed chip until it is removed, even with a ready file", async () => {
     const { host, controller } = mount({
       upload: (file) =>
         file.name === "bad.txt"
@@ -187,6 +187,10 @@ describe("attaching", () => {
     expect(controller.attachments().map((a) => a.name)).toEqual(["good.txt"]);
     expect(host.querySelector(".composer-chip.failed .composer-chip-name").textContent).toBe("bad.txt");
     expect(controller.busy()).toBe(false);
+    expect(controller.hasFailed()).toBe(true);
+    host.querySelector(".composer-chip.failed .composer-chip-remove").click();
+    expect(controller.hasFailed()).toBe(false);
+    expect(controller.attachments().map((a) => a.name)).toEqual(["good.txt"]);
   });
 
   it("is busy until every upload has landed", async () => {

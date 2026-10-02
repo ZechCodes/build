@@ -188,7 +188,6 @@ describe("the inline task composer", () => {
       labels: ["bug", "ui"],
       options: options(),
       catalog: CATALOG,
-      attachable: true,
       callRpc: call,
       ...over,
     });
@@ -226,22 +225,18 @@ describe("the inline task composer", () => {
     expect(document.querySelector(".composer-dropmask")).not.toBeNull();
   });
 
-  // A press that cannot work is worse than no press: a bridge with no
-  // `tasks.attach` gets the plain box, not one that apologises afterwards.
-  it("offers no paperclip at all against a bridge that cannot carry files", () => {
-    open({ attachable: false });
-    expect(document.querySelector(".composer-attach")).toBeNull();
-    expect(document.querySelector(".composer-tray")).toBeNull();
-    expect(document.querySelector(".composer-dropmask")).toBeNull();
-    expect(document.querySelector(".task-compose .composer.attachable")).toBeNull();
-    // And the rest of the form is untouched — this is one affordance gone,
-    // not a degraded composer.
+  it("keeps the paperclip available before a bridge announces file support", () => {
+    open();
+    expect(document.querySelector(".composer-attach")).not.toBeNull();
+    expect(document.querySelector(".composer-tray")).not.toBeNull();
+    expect(document.querySelector(".composer-dropmask")).not.toBeNull();
+    expect(document.querySelector(".task-compose .composer.attachable")).not.toBeNull();
     expect(document.querySelector("#task-new-summary")).not.toBeNull();
     expect(document.querySelector("#task-new-body")).not.toBeNull();
   });
 
-  it("still files, and carries no attachments, without the tray", async () => {
-    open({ attachable: false });
+  it("still files without attachments when the tray is empty", async () => {
+    open();
     type("#task-new-summary", "Kanban drag");
     press("[data-compose-file]");
     await flush();
@@ -249,7 +244,7 @@ describe("the inline task composer", () => {
   });
 
   it("cancels without a confirm when there is nothing to throw away", async () => {
-    open({ attachable: false });
+    open();
     slot.querySelector(".task-compose").dispatchEvent(
       new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
     );

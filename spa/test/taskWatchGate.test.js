@@ -172,6 +172,39 @@ describe("the page, on top of that gate", () => {
     await vi.waitFor(() => expect(listed("tasks.watch")).toHaveLength(1));
   });
 
+  it("keeps a cached unread divider and caret through greeting and re-greeting", async () => {
+    const timeline = [
+      comment({ id: "tc-1", body: "Already read" }),
+      comment({ id: "tc-2", author: { kind: "agent", agent_id: "agent-1" }, body: "New reply" }),
+    ];
+    const cached = task({ id: "task-1", watched: true, read_through: "tc-1" });
+    await writeTaskRecord("dev-1", "proj-1", "task-1", taskRecord(cached, timeline));
+    call.mockImplementation(async (method) => (
+      method === "tasks.get" || method === "tasks.read_through" ? new Promise(() => {}) : {}
+    ));
+    await mount();
+    const divider = host.querySelector(".task-unread-line");
+    const pill = host.querySelector(".new-messages-pill");
+    const field = host.querySelector("#task-comment");
+    expect(divider).not.toBeNull();
+    expect(pill).not.toBeNull();
+    expect(listed("tasks.read_through")).toHaveLength(0);
+    field.value = "Draft stays";
+    field.focus();
+    field.setSelectionRange(5, 5);
+
+    await greet(WATCHING);
+    await vi.waitFor(() => expect(listed("tasks.read_through")).toHaveLength(1));
+    await greet(NO_WATCHING);
+    expect(host.querySelector(".task-unread-line")).toBe(divider);
+    expect(host.querySelector(".new-messages-pill")).toBe(pill);
+    expect(host.querySelector("#task-comment")).toBe(field);
+    expect(field.value).toBe("Draft stays");
+    expect(field.selectionStart).toBe(5);
+    expect(document.activeElement).toBe(field);
+    expect(listed("tasks.read_through")).toHaveLength(1);
+  });
+
   it("ignores another device's greeting while a cached page is open", async () => {
     await writeTaskRecord("dev-1", "proj-1", "task-1", taskRecord(answer().task, answer().timeline));
     call.mockImplementation(async (method) => (method === "tasks.get" ? new Promise(() => {}) : {}));

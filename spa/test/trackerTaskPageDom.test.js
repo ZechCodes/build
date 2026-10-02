@@ -680,6 +680,43 @@ describe("the composer", () => {
     expect(notifyError).toHaveBeenCalledWith(
       "Could not attach that file", "shot.png: This bridge does not support task attachments.",
     );
+    notifyError.mockClear();
+    host.querySelector('[data-task-composer] button[type="submit"]').click();
+    await vi.waitFor(() => expect(notifyError).toHaveBeenCalledWith("Remove the failed attachment before sending this comment."));
+    expect(listed("tasks.comment")).toHaveLength(0);
+    expect(field.value).toBe("Keep this draft");
+    host.querySelector(".composer-chip.failed .composer-chip-remove").click();
+    host.querySelector('[data-task-composer] button[type="submit"]').click();
+    await vi.waitFor(() => expect(listed("tasks.comment")).toHaveLength(1));
+    expect(listed("tasks.comment")[0][1]).toEqual({ task_id: "task-1", body: "Keep this draft" });
+  });
+
+  it("does not send a ready file while another attachment has failed", async () => {
+    await mount();
+    call.mockImplementation(async (method, params) => {
+      if (method === "tasks.attach" && params.filename === "bad.png") throw new Error("upload refused");
+      if (method === "tasks.attach") return { name: params.filename, path: `/store/${params.filename}`, mime: "image/png", size: 3 };
+      return method === "tasks.get" ? answerFor() : {};
+    });
+    const drop = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, "dataTransfer", { value: { files: [
+      new File(["png"], "good.png", { type: "image/png" }),
+      new File(["png"], "bad.png", { type: "image/png" }),
+    ] } });
+    host.querySelector("[data-task-composer]").dispatchEvent(drop);
+    await vi.waitFor(() => {
+      expect(host.querySelector(".composer-chip.ready")).not.toBeNull();
+      expect(host.querySelector(".composer-chip.failed")).not.toBeNull();
+    });
+    host.querySelector('[data-task-composer] button[type="submit"]').click();
+    await vi.waitFor(() => expect(notifyError).toHaveBeenCalledWith("Remove the failed attachment before sending this comment."));
+    expect(listed("tasks.comment")).toHaveLength(0);
+    host.querySelector(".composer-chip.failed .composer-chip-remove").click();
+    host.querySelector('[data-task-composer] button[type="submit"]').click();
+    await vi.waitFor(() => expect(listed("tasks.comment")).toHaveLength(1));
+    expect(listed("tasks.comment")[0][1].attachments).toEqual([
+      { name: "good.png", path: "/store/good.png", mime: "image/png", size: 3 },
+    ]);
   });
 
   it("sends a dropped file with the comment, through tasks.attach", async () => {

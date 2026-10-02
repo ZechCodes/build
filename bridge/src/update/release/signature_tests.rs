@@ -410,6 +410,7 @@ async fn local_release_metadata_makes_a_newer_version_available() {
             running_version: "0.2.0".into(),
             platform: platform_key().unwrap().into(),
             development_build: false,
+            replaceable_development_build: false,
             check_interval: Duration::from_secs(86_400),
         },
         backend,

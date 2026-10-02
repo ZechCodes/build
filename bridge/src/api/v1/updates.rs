@@ -30,6 +30,10 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct InstallParams {
     pub when: InstallWhen,
+    /// The person confirmed replacing this development build with the
+    /// release (wire 3.5.0). Without it a development build refuses.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub replace_development_build: bool,
 }
 
 fn service(app: &AppState) -> Result<Arc<UpdateService>, ApiError> {
@@ -47,14 +51,20 @@ fn check_update(app: &mut AppState, _params: NoParams) -> Result<UpdateStatus, A
 
 fn install_update(app: &mut AppState, params: InstallParams) -> Result<UpdateStatus, ApiError> {
     service(app)?
-        .request_install(params.when, app.update_has_working_agents())
+        .request_install(
+            params.when,
+            app.update_has_working_agents(),
+            params.replace_development_build,
+        )
         .map_err(update_error)
 }
 
 fn update_error(error: UpdateError) -> ApiError {
     match error {
         UpdateError::DevelopmentBuild => ApiError::unavailable(error.to_string()),
-        UpdateError::NoUpdateAvailable => ApiError::conflict(error.to_string(), None),
+        UpdateError::NoUpdateAvailable | UpdateError::ReplacementNotConfirmed => {
+            ApiError::conflict(error.to_string(), None)
+        }
         UpdateError::AlreadyInstalling | UpdateError::AlreadyChecking | UpdateError::Busy => {
             ApiError::busy(error.to_string())
         }

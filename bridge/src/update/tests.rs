@@ -57,24 +57,38 @@ fn fixture(root: &Path, backend: Arc<FakeBackend>, development_build: bool) -> U
     fixture_version(root, backend, development_build, "1.0.0")
 }
 
+/// A development build the bridge service runs, so a confirmed install may
+/// replace it.
+fn replaceable_fixture(root: &Path, backend: Arc<FakeBackend>) -> UpdateService {
+    UpdateService::new(
+        UpdateConfig {
+            replaceable_development_build: true,
+            ..config(root, true, "1.0.0")
+        },
+        backend,
+    )
+    .unwrap()
+}
+
+fn config(root: &Path, development_build: bool, version: &str) -> UpdateConfig {
+    UpdateConfig {
+        status_path: root.join("tasks/bridge-update.json"),
+        result_path: root.join("update/result.json"),
+        running_version: version.into(),
+        platform: "linux-x86_64".into(),
+        development_build,
+        replaceable_development_build: false,
+        check_interval: Duration::from_secs(24 * 60 * 60),
+    }
+}
+
 fn fixture_version(
     root: &Path,
     backend: Arc<FakeBackend>,
     development_build: bool,
     version: &str,
 ) -> UpdateService {
-    UpdateService::new(
-        UpdateConfig {
-            status_path: root.join("tasks/bridge-update.json"),
-            result_path: root.join("update/result.json"),
-            running_version: version.into(),
-            platform: "linux-x86_64".into(),
-            development_build,
-            check_interval: Duration::from_secs(24 * 60 * 60),
-        },
-        backend,
-    )
-    .unwrap()
+    UpdateService::new(config(root, development_build, version), backend).unwrap()
 }
 
 fn attempt_id(root: &Path) -> String {
@@ -205,6 +219,7 @@ async fn uncertain_idle_launcher_keeps_attempt_and_admission_until_recovery() {
             running_version: "1.0.0".into(),
             platform: "linux-x86_64".into(),
             development_build: false,
+            replaceable_development_build: false,
             check_interval: Duration::from_secs(24 * 60 * 60),
         },
         backend.clone(),
@@ -311,11 +326,13 @@ async fn immediate_request_is_durable_before_it_returns() {
     });
     let service = Arc::new(fixture(dir.path(), backend, false));
     service.check_at(at(1)).await.unwrap();
-    let accepted = service.request_install(InstallWhen::Now, true).unwrap();
+    let accepted = service
+        .request_install(InstallWhen::Now, true, false)
+        .unwrap();
     assert_eq!(accepted.state, UpdateState::Installing);
     assert!(!attempt_id(dir.path()).is_empty());
     assert!(matches!(
-        service.request_install(InstallWhen::Now, true),
+        service.request_install(InstallWhen::Now, true, false),
         Err(UpdateError::AlreadyInstalling)
     ));
     assert!(matches!(
@@ -343,7 +360,7 @@ async fn queued_request_keeps_single_stage_and_waits_if_agents_start_during_down
     service.check_at(at(1)).await.unwrap();
     assert_eq!(
         service
-            .request_install(InstallWhen::Idle, false)
+            .request_install(InstallWhen::Idle, false, false)
             .unwrap()
             .state,
         UpdateState::ScheduledWhenIdle
@@ -353,7 +370,7 @@ async fn queued_request_keeps_single_stage_and_waits_if_agents_start_during_down
     // A repeated click observes the durable queued state and cannot start a
     // second download while the first remains in progress.
     assert!(matches!(
-        service.request_install(InstallWhen::Idle, true),
+        service.request_install(InstallWhen::Idle, true, false),
         Err(UpdateError::Busy) | Ok(_)
     ));
     assert_eq!(backend.stages.lock().unwrap().len(), 1);
@@ -738,18 +755,106 @@ async fn daily_check_is_due_only_after_interval() {
 }
 
 #[tokio::test]
-async fn development_build_checks_but_does_not_install() {
+async fn development_build_never_checks_on_its_own() {
     let dir = TempDir::new().unwrap();
     let backend = Arc::new(FakeBackend {
         latest: Mutex::new(Ok(release("1.1.0"))),
         ..Default::default()
     });
     let service = fixture(dir.path(), backend.clone(), true);
+    // Startup and every later tick: nothing is fetched or recorded.
     let status = service.tick_at(at(1), false).await.unwrap();
+    assert_eq!(status.last_checked_at, None);
+    assert_eq!(status.latest_release, None);
+    let status = service.tick_at(at(30), false).await.unwrap();
+    assert_eq!(status.last_checked_at, None);
+    assert!(!status.update_available);
+}
+
+#[tokio::test]
+async fn development_build_checks_when_asked_but_does_not_install() {
+    let dir = TempDir::new().unwrap();
+    let backend = Arc::new(FakeBackend {
+        latest: Mutex::new(Ok(release("1.1.0"))),
+        ..Default::default()
+    });
+    let service = fixture(dir.path(), backend.clone(), true);
+    let status = service.check_at(at(1)).await.unwrap();
     assert_eq!(status.latest_release, Some(release("1.1.0")));
     assert!(status.update_available);
     assert!(!status.can_install);
-    assert!(service.check_at(at(1)).await.is_ok());
+    // The service does not run this binary: no confirmation makes it replaceable.
+    assert!(!status.can_replace_development_build);
     assert!(service.install(InstallWhen::Now, false).await.is_err());
+    assert!(matches!(
+        service
+            .install_confirmed(InstallWhen::Now, false, true)
+            .await,
+        Err(UpdateError::DevelopmentBuild)
+    ));
     assert!(backend.installs.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn replaceable_development_build_installs_only_when_the_replacement_is_confirmed() {
+    let dir = TempDir::new().unwrap();
+    let backend = Arc::new(FakeBackend {
+        latest: Mutex::new(Ok(release("1.1.0"))),
+        ..Default::default()
+    });
+    let service = replaceable_fixture(dir.path(), backend.clone());
+    let status = service.check_at(at(1)).await.unwrap();
+    assert!(!status.can_install);
+    assert!(status.can_replace_development_build);
+    assert!(matches!(
+        service.install(InstallWhen::Now, false).await,
+        Err(UpdateError::ReplacementNotConfirmed)
+    ));
+    assert!(backend.installs.lock().unwrap().is_empty());
+    let installing = service
+        .install_confirmed(InstallWhen::Now, false, true)
+        .await
+        .unwrap();
+    assert_eq!(installing.state, UpdateState::Installing);
+    assert!(!service.status().can_replace_development_build);
+    assert_eq!(*backend.installs.lock().unwrap(), ["1.1.0"]);
+}
+
+#[tokio::test]
+async fn a_confirmed_idle_replacement_runs_without_an_automatic_check() {
+    let dir = TempDir::new().unwrap();
+    let backend = Arc::new(FakeBackend {
+        latest: Mutex::new(Ok(release("1.1.0"))),
+        ..Default::default()
+    });
+    let service = replaceable_fixture(dir.path(), backend.clone());
+    let checked = service.check_at(at(1)).await.unwrap();
+    let queued = service
+        .install_confirmed(InstallWhen::Idle, true, true)
+        .await
+        .unwrap();
+    assert_eq!(queued.state, UpdateState::ScheduledWhenIdle);
+    assert!(backend.installs.lock().unwrap().is_empty());
+    *backend.latest.lock().unwrap() = Ok(release("1.2.0"));
+    let launched = service.tick_at(at(5), false).await.unwrap();
+    assert_eq!(launched.state, UpdateState::Installing);
+    assert_eq!(launched.last_checked_at, checked.last_checked_at);
+    assert_eq!(*backend.stages.lock().unwrap(), ["1.1.0"]);
+}
+
+#[tokio::test]
+async fn development_build_status_never_offers_a_release_install() {
+    let dir = TempDir::new().unwrap();
+    let backend = Arc::new(FakeBackend {
+        latest: Mutex::new(Ok(release("1.1.0"))),
+        ..Default::default()
+    });
+    let service = fixture(dir.path(), backend, false);
+    assert!(
+        !service
+            .check_at(at(1))
+            .await
+            .unwrap()
+            .can_replace_development_build
+    );
 }

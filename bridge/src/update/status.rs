@@ -49,6 +49,14 @@ pub struct UpdateStatus {
     pub last_error: Option<String>,
     pub update_available: bool,
     pub can_install: bool,
+    /// A development build the service runs, with a newer release to put in
+    /// its place: `bridge.install_update` with `replace_development_build`
+    /// would be accepted. Absent from bridges before wire 3.5.0.
+    #[serde(default)]
+    pub can_replace_development_build: bool,
+    /// From the bridge's configuration on every start; not saved or sent.
+    #[serde(skip)]
+    pub(super) development_build_replaceable: bool,
     /// Saved beside the status (`PersistedUpdate`), not sent: on the wire a
     /// `Failed` state is what marks `last_error` as an install's.
     #[serde(skip)]
@@ -67,6 +75,8 @@ impl UpdateStatus {
             last_error: None,
             update_available: false,
             can_install: false,
+            can_replace_development_build: false,
+            development_build_replaceable: false,
             last_error_kind: None,
         }
     }
@@ -104,9 +114,16 @@ impl UpdateStatus {
                 _ => false,
             }
         });
-        self.can_install = !self.development_build
-            && self.update_available
-            && self.state != UpdateState::Installing;
+        let installable = self.update_available && self.state != UpdateState::Installing;
+        self.can_install = installable && !self.development_build;
+        self.can_replace_development_build =
+            installable && self.development_build && self.development_build_replaceable;
+    }
+
+    /// Withdraw both install offers while a helper owns or may own the bridge.
+    pub(super) fn hold_installs_unless(&mut self, helper_free: bool) {
+        self.can_install &= helper_free;
+        self.can_replace_development_build &= helper_free;
     }
 }
 

@@ -207,8 +207,19 @@ fn configure_updates(app: AppState, runtime: &RuntimePaths) -> Result<AppState, 
     let managed_binary = build_bridge::update::provenance::managed_binary(&home, &running_binary);
     let platform_key = build_bridge::update::release::platform_key();
     let development_build = managed_binary.is_err() || platform_key.is_err();
+    // A development build the service runs may be replaced by a release, but
+    // only on an install request that confirms it.
+    let replaceable_development_build = managed_binary.is_err()
+        && platform_key.is_ok()
+        && build_bridge::update::provenance::replaceable_development_binary(&home, &running_binary)
+            .is_ok();
     if let Err(reason) = &managed_binary {
-        eprintln!("bridge updates: read only ({reason})");
+        let mode = if replaceable_development_build {
+            "checks on request; a confirmed install replaces it with a release"
+        } else {
+            "read only"
+        };
+        eprintln!("bridge updates: {mode} ({reason})");
     }
     if let Err(reason) = &platform_key {
         eprintln!("bridge updates: read only ({reason})");
@@ -222,12 +233,14 @@ fn configure_updates(app: AppState, runtime: &RuntimePaths) -> Result<AppState, 
         running_version: env!("CARGO_PKG_VERSION").to_string(),
         platform,
         development_build,
+        replaceable_development_build,
         check_interval: Duration::from_secs(24 * 60 * 60),
     };
     let backend = build_bridge::update::release::ProductionBackend::new(
         home,
         runtime.tasks_dir.clone(),
         managed_binary.unwrap_or(running_binary),
+        replaceable_development_build,
     );
     let service = UpdateService::new(config, Arc::new(backend))
         .map_err(|error| format!("cannot load bridge update state: {error}"))?;

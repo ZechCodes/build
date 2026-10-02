@@ -40,6 +40,25 @@ fn report(status: DoneStatus, summary: &str) -> DoneReport {
     }
 }
 
+fn start_review(state: &AppState, task_id: &str, workspace_id: &str) {
+    state
+        .tracker_store()
+        .unwrap()
+        .save_review_snapshot(
+            task_id,
+            workspace_id,
+            0,
+            crate::reviews::model::ReviewSnapshot {
+                id: format!("snapshot-{task_id}"),
+                number: 0,
+                created_at: crate::store::now_rfc3339(),
+                author: crate::tracker::Actor::User,
+                directories: Vec::new(),
+            },
+        )
+        .unwrap();
+}
+
 // ------------------------------------------------------------------ push ---
 
 /// A tracker write reaches a session subscribed to its project as a `changes`
@@ -171,6 +190,41 @@ fn a_complete_from_the_agent_holding_a_task_moves_it_and_says_nothing() {
         moved["actor"],
         json!({ "kind": "agent", "agent_id": agent_id })
     );
+}
+
+#[test]
+fn a_review_task_consumes_its_dispatch_marker_without_moving_on_report() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let ws = workspace(&mut state, &project_id, "here");
+    let reviewed = task_id(&filed(&mut state, &project_id, "reviewed"));
+    let ordinary = task_id(&filed(&mut state, &project_id, "ordinary"));
+    start_review(&state, &reviewed, &ws);
+
+    for (id, expected) in [(&reviewed, "in_progress"), (&ordinary, "in_review")] {
+        let handed = state.handle(req(
+            "tasks.assign",
+            json!({
+                "task_id": id,
+                "assignee": { "kind": "new_agent", "workspace_id": ws }
+            }),
+        ));
+        assert_eq!(handed["ok"], true, "{handed:?}");
+        let entity_id = handed["result"]["dispatch"]["entity_id"].as_str().unwrap();
+        let agent_id = handed["result"]["dispatch"]["agent_id"].as_str().unwrap();
+        let entity_id = entity_id.to_string();
+        let agent_id = agent_id.to_string();
+        state.done_deferring_for_agent(
+            &entity_id,
+            &agent_id,
+            report(DoneStatus::Completed, "done"),
+        );
+        let read = state.handle(req("tasks.get", json!({ "task_id": id })));
+        assert_eq!(read["result"]["task"]["status"], expected);
+        assert!(!state.dispatched_task.contains_key(&agent_id));
+    }
+    assert!(!event_kinds(&mut state, &reviewed).contains(&"moved".into()));
 }
 
 /// An agent whose turn stopped at a usage limit mid-task (#58) is still working
@@ -349,6 +403,12 @@ fn merged_branch_finish_closes_the_tasks_that_link_its_workspace() {
 
     let worked = task_id(&filed(&mut state, &project_id, "worked here"));
     link_task(&mut state, json!({ "task_id": worked, "workspace_id": ws }));
+    let reviewed = task_id(&filed(&mut state, &project_id, "reviewed here"));
+    link_task(
+        &mut state,
+        json!({ "task_id": reviewed, "workspace_id": ws }),
+    );
+    start_review(&state, &reviewed, &ws);
     let other = task_id(&filed(&mut state, &project_id, "worked elsewhere"));
     link_task(
         &mut state,
@@ -376,6 +436,11 @@ fn merged_branch_finish_closes_the_tasks_that_link_its_workspace() {
         read(&mut state, &other)["state"],
         "open",
         "another workspace's"
+    );
+    assert_eq!(read(&mut state, &reviewed)["state"], "open");
+    assert_eq!(
+        event_kinds(&mut state, &reviewed),
+        vec!["created", "linked"]
     );
     assert_eq!(
         read(&mut state, &unlinked)["state"],

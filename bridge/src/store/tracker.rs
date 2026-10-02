@@ -332,10 +332,16 @@ impl Store {
     ///
     /// Only reached by project deletion. Nothing else removes a task: a
     /// task is closed, so a number is never reused and a timeline never loses
-    /// an entry.
+    /// an entry. A caller deleting history with reviews must release their
+    /// Git pins first; this transaction then removes review rows with tasks.
     pub fn delete_tracker_tasks_of_project(&self, project_path: &str) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
-            for table in ["tracker_comments", "tracker_events"] {
+            for table in [
+                "tracker_comments",
+                "tracker_events",
+                "review_snapshots",
+                "reviews",
+            ] {
                 tx.execute(
                     &format!(
                         "DELETE FROM {table} WHERE task_id IN \

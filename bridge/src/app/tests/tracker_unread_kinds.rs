@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 
 /// Every kind there is. The predicate's match is exhaustive, so a new kind
 /// cannot compile without a decision; this list puts each one in the table.
-const EVERY_KIND: [TaskEventKind; 18] = [
+const EVERY_KIND: [TaskEventKind; 19] = [
     TaskEventKind::Created,
     TaskEventKind::Assigned,
     TaskEventKind::Unassigned,
@@ -32,14 +32,16 @@ const EVERY_KIND: [TaskEventKind; 18] = [
     TaskEventKind::WorkspaceIdle,
     TaskEventKind::WorkspacePruned,
     TaskEventKind::WorkspaceReclaimed,
+    TaskEventKind::ReviewCompleted,
 ];
 
-const COUNTED: [TaskEventKind; 5] = [
+const COUNTED: [TaskEventKind; 6] = [
     TaskEventKind::Assigned,
     TaskEventKind::Unassigned,
     TaskEventKind::Moved,
     TaskEventKind::Closed,
     TaskEventKind::Reopened,
+    TaskEventKind::ReviewCompleted,
 ];
 
 /// An id `at` steps along one ULID clock; step 0 is the read mark.

@@ -282,6 +282,7 @@ fn notice_of(write: &TaskWrite, actor_name: Option<String>) -> Option<TaskNotice
         | TaskEventKind::WorkspaceIdle
         | TaskEventKind::WorkspacePruned
         | TaskEventKind::WorkspaceReclaimed => None,
+        TaskEventKind::ReviewCompleted => Some(plain("completed the review")),
     })
 }
 
@@ -350,6 +351,7 @@ pub(in crate::app) fn notice_of_entry(entry: &crate::tracker::TimelineEntry) -> 
                 | TaskEventKind::WorkspaceIdle
                 | TaskEventKind::WorkspacePruned
                 | TaskEventKind::WorkspaceReclaimed => None,
+                TaskEventKind::ReviewCompleted => Some(plain("completed the review")),
             }
         }
     }

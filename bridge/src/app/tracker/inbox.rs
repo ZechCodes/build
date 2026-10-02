@@ -154,7 +154,12 @@ pub(in crate::app) fn counts_as_unread(entry: &TimelineEntry) -> bool {
 pub(in crate::app) fn event_counts_as_unread(event: &crate::tracker::TaskEvent) -> bool {
     use crate::tracker::{Actor, TaskEventKind as Kind};
     match event.kind {
-        Kind::Assigned | Kind::Unassigned | Kind::Moved | Kind::Closed | Kind::Reopened => true,
+        Kind::Assigned
+        | Kind::Unassigned
+        | Kind::Moved
+        | Kind::Closed
+        | Kind::Reopened
+        | Kind::ReviewCompleted => true,
         Kind::Created => event.mentions_user && matches!(&event.actor, Actor::Agent { .. }),
         Kind::Labelled
         | Kind::Linked

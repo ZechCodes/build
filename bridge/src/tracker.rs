@@ -546,6 +546,9 @@ pub enum TaskEventKind {
     WorkspacePruned,
     /// A linked workspace was reclaimed: removed through `workspace.reclaim`.
     WorkspaceReclaimed,
+    /// A review was explicitly completed, with the actor and action taken in
+    /// its payload. This is distinct from task closure.
+    ReviewCompleted,
 }
 
 impl TaskEventKind {
@@ -569,6 +572,7 @@ impl TaskEventKind {
             TaskEventKind::WorkspaceIdle => "workspace_idle",
             TaskEventKind::WorkspacePruned => "workspace_pruned",
             TaskEventKind::WorkspaceReclaimed => "workspace_reclaimed",
+            TaskEventKind::ReviewCompleted => "review_completed",
         }
     }
 }

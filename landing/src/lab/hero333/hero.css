@@ -1,0 +1,493 @@
+/* The hero: a split layout at rest (copy left, laptop right; stacked on a
+   phone), and the entrance that resolves into it. hero-boot.js sets
+   html[data-hero="entrance"] before the first paint when this tab has not
+   seen the entrance; entrance.js turns it to "playing" as it takes over and
+   removes it when the hero is still. Without either, the hero is simply at
+   rest: repeat visits, reduced motion, no JavaScript. */
+
+#act-1 {
+  overflow: hidden;
+}
+
+html:not([data-mode="film"]) #act-1 {
+  position: relative;
+  /* The document snaps to an act's start; the hero's start is the top of
+     the page, not 2rem under the bar, or the page would open scrolled. */
+  scroll-margin-top: var(--nav-height);
+}
+
+/* The document's copy arrival (landing.css) is a transition; the entrance
+   animates this copy itself, and a transition would trail behind it. */
+html[data-js="ready"]:not([data-mode]) #act-1 .act__copy > * {
+  transition: none;
+}
+
+/* The fixed footprint: the hero is a screen tall from the first paint, so
+   nothing below it moves while it plays. */
+html:not([data-mode="film"]) #act-1 {
+  min-height: calc(100svh - var(--nav-height));
+  display: flex;
+  align-items: center;
+  padding-block: clamp(2.5rem, 6vh, 5rem);
+}
+
+#act-1 .act__inner {
+  position: relative;
+  z-index: 1;
+}
+
+/* The headline's two sentences: the first off-white, the second a softer,
+   still readable grey (#9aa3a0 on black is 7.9:1). */
+.hero-line {
+  display: block;
+}
+
+.hero-line--quiet {
+  color: var(--ink-dim);
+}
+
+#act-1 h1 {
+  font-size: clamp(2.25rem, 1.2rem + 3.4vw, 4rem);
+}
+
+[data-mode="film"] #act-1 h1 {
+  font-size: clamp(2rem, 0.9rem + 2.6vw, 3.6rem);
+}
+
+/* --- the laptop -------------------------------------------------------- */
+
+.hero-device {
+  position: relative;
+  perspective: 1400px;
+}
+
+.hero-device__frame {
+  transform-origin: 50% 60%;
+}
+
+.hero-device img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* In the film the picture stands where the stage will draw the laptop: its
+   centre at the pose's x% of the width and y% of the height, its size a
+   share of the width. The numbers come from web/capture-hero-laptop.mjs
+   with the picture, and change with it. */
+[data-mode="film"] .hero-device {
+  --cut-left: 36.01vw;
+  --cut-top: calc(54vh - 18.92vw);
+  --cut-width: 62.15vw;
+  position: absolute;
+  left: var(--cut-left);
+  top: var(--cut-top);
+  width: var(--cut-width);
+  pointer-events: none;
+}
+
+/* The rows the requests land on light up while they do. entrance.js
+   places each over its row with a matrix3d. */
+.hero-glows {
+  display: none;
+}
+
+[data-hero="playing"] .hero-glows {
+  display: block;
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.hero-glow {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  border: 2px solid rgba(81, 255, 180, 0.8);
+  border-radius: 6px;
+  background: rgba(81, 255, 180, 0.12);
+  opacity: 0;
+}
+
+/* --- the notification field -------------------------------------------- */
+
+.hero-field {
+  display: none;
+}
+
+[data-hero="entrance"] .hero-field,
+[data-hero="playing"] .hero-field {
+  --pill-height: clamp(34px, 2.36vw, 42px);
+  --row-count: var(--lanes);
+  --row-gap: 10px;
+  --field-side-fade: 16%;
+  --field-top-clear: 0px;
+  --field-top-fade: 16%;
+  --field-bottom-fade: 16%;
+  display: block;
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  overflow: hidden;
+  pointer-events: none;
+  contain: strict;
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 var(--field-side-fade), #000 calc(100% - var(--field-side-fade)), transparent), linear-gradient(to bottom, transparent var(--field-top-clear), #000 calc(var(--field-top-clear) + var(--field-top-fade)), #000 calc(100% - var(--field-bottom-fade)), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 var(--field-side-fade), #000 calc(100% - var(--field-side-fade)), transparent), linear-gradient(to bottom, transparent var(--field-top-clear), #000 calc(var(--field-top-clear) + var(--field-top-fade)), #000 calc(100% - var(--field-bottom-fade)), transparent);
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
+}
+
+[data-mode="film"] .hero-field {
+  --field-top-clear: var(--nav-height);
+}
+
+.hero-lane {
+  /* A phone's pills are a larger share of its width, so its lanes run
+     faster to look as fast; entrance.js reads this to take them over. */
+  --drift-scale: 1;
+  --display-row: var(--row);
+  --lane-height: min(calc(var(--pill-height) * var(--size)), calc(100% / var(--row-count) - var(--row-gap)));
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: var(--lane-height);
+  top: calc((var(--display-row) + 0.5) / var(--row-count) * 100% - var(--lane-height) / 2);
+}
+
+.hero-lane[data-fill] {
+  display: none;
+}
+
+@media (min-width: 768px) and (min-height: 1150px) {
+  [data-hero="entrance"] .hero-field,
+  [data-hero="playing"] .hero-field {
+    --row-count: var(--tall-lanes);
+  }
+
+  .hero-lane {
+    --display-row: var(--tall-row);
+  }
+
+  .hero-lane[data-fill] {
+    display: block;
+  }
+}
+
+/* Depth comes from opacity, size and paint order. The row slots keep even
+   vertical gaps between far, mid, near and attention pills. */
+.hero-lane--far {
+  z-index: 1;
+}
+
+.hero-lane--mid {
+  z-index: 2;
+}
+
+.hero-lane--near {
+  z-index: 3;
+}
+
+.hero-lane[data-request] {
+  z-index: 4;
+}
+
+.hero-lane__body {
+  position: absolute;
+  inset: 0;
+}
+
+/* Every lane drifts horizontally from the first paint; entrance.js takes
+   it over from wherever it has got to. Their fixed vertical slots stay
+   separate while they move, and GSAP's drift needs the compositor hint. */
+[data-hero="entrance"] .hero-lane {
+  animation: hero-drift 6s linear both;
+}
+
+[data-hero="playing"] .hero-lane {
+  will-change: transform;
+}
+
+/* `--drift` is how far a lane would go in 6s at its speed. It keeps that
+   speed for the first 2.4s (40%), then brakes to rest at 55% of it
+   (DRIFT_REACH in hero/field.js): the ease starts at 4 times its average
+   speed, which is the lane's own, so there is no jolt. Only a hero whose
+   script never comes sees the brake, before its field fades. */
+@keyframes hero-drift {
+  40% {
+    transform: translateX(calc(var(--drift) * var(--drift-scale) * 0.4));
+    animation-timing-function: cubic-bezier(0.1, 0.4, 0.4, 1);
+  }
+
+  to {
+    transform: translateX(calc(var(--drift) * var(--drift-scale) * 0.55));
+  }
+}
+
+.hero-track {
+  position: absolute;
+  top: 0;
+  display: flex;
+  height: 100%;
+}
+
+.hero-track--before {
+  right: calc((1 - var(--anchor)) * 100%);
+  flex-direction: row-reverse;
+}
+
+.hero-track--after {
+  left: calc(var(--anchor) * 100%);
+}
+
+.hero-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5em;
+  flex: none;
+  height: 100%;
+  padding: 0 0.95em 0 0.8em;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 999px;
+  background: #0c100f;
+  color: var(--ink-dim);
+  font-family: var(--text);
+  font-size: calc(clamp(13px, 0.9vw, 16px) * var(--size));
+  line-height: 1;
+  white-space: nowrap;
+  opacity: var(--tier-opacity, 1);
+}
+
+/* Gaps and type grow with a wide window, so the field holds about as many
+   pills at 1920 as at 1440. Type grows with its lane's size. */
+.hero-track--before .hero-pill {
+  margin-right: max(6px, calc(var(--gap) * 100vw / 1440));
+}
+
+.hero-track--after .hero-pill {
+  margin-left: max(6px, calc(var(--gap) * 100vw / 1440));
+}
+
+/* The harness's mark, painted through its mask (HeroField.astro sets one
+   per harness on the field). A harness joins the field with a line here. */
+.hero-pill::before {
+  content: "";
+  width: 1.1em;
+  height: 1.1em;
+  flex: none;
+  background: var(--ink-faint);
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+}
+
+.hero-pill[data-harness="claude"]::before {
+  -webkit-mask-image: var(--mark-claude);
+  mask-image: var(--mark-claude);
+}
+
+.hero-pill[data-harness="codex"]::before {
+  -webkit-mask-image: var(--mark-codex);
+  mask-image: var(--mark-codex);
+}
+
+.hero-pill[data-harness="pi"]::before {
+  -webkit-mask-image: var(--mark-pi);
+  mask-image: var(--mark-pi);
+}
+
+/* Depth: the far lanes are small and faint, the near ones sharp. */
+.hero-lane--far {
+  --tier-opacity: 0.38;
+}
+
+.hero-lane--far .hero-pill {
+  font-size: calc(clamp(12px, 0.84vw, 15px) * var(--size));
+  height: 84%;
+  margin-top: 3px;
+}
+
+.hero-lane--mid {
+  --tier-opacity: 0.6;
+}
+
+.hero-lane--near {
+  --tier-opacity: 0.85;
+}
+
+.hero-lane--near .hero-pill {
+  font-size: calc(clamp(14px, 0.97vw, 17px) * var(--size));
+  color: var(--ink);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+/* The three requests that need a person: brighter, a restrained mint. */
+.hero-pill[data-attention] {
+  --tier-opacity: 1;
+  color: var(--ink);
+  border-color: rgba(81, 255, 180, 0.6);
+  background: #08150f;
+  font-weight: 500;
+}
+
+.hero-pill[data-attention]::before {
+  background: var(--accent);
+}
+
+/* Portrait phones use the fill rows too; short phones keep the base rows. */
+@media (max-width: 767px) {
+  [data-hero="entrance"] .hero-field,
+  [data-hero="playing"] .hero-field {
+    --pill-height: 30px;
+    --row-count: var(--narrow-tall-lanes);
+  }
+
+  .hero-lane:not([data-narrow]) {
+    display: none;
+  }
+
+  .hero-lane[data-fill][data-narrow] {
+    display: block;
+  }
+
+  /* The phone keeps the same slot gap while the cards drift across it. */
+  .hero-lane {
+    --drift-scale: 2;
+    --display-row: var(--narrow-tall-row);
+  }
+
+  .hero-pill,
+  .hero-lane--far .hero-pill {
+    font-size: calc(12px * var(--size));
+  }
+
+  .hero-lane--near .hero-pill {
+    font-size: calc(13px * var(--size));
+  }
+
+  .hero-track--before {
+    right: calc((1 - var(--narrow-anchor)) * 100%);
+  }
+
+  .hero-track--after {
+    left: calc(var(--narrow-anchor) * 100%);
+  }
+
+  .hero-track--before .hero-pill {
+    margin-right: max(6px, calc(var(--gap) * 0.25px));
+  }
+
+  .hero-track--after .hero-pill {
+    margin-left: max(6px, calc(var(--gap) * 0.25px));
+  }
+
+  .hero-pill {
+    padding: 0 0.8em 0 0.65em;
+  }
+}
+
+@media (max-width: 767px) and (max-height: 760px) {
+  html:not([data-mode="film"])[data-hero="entrance"] #act-1 .hero-field,
+  html:not([data-mode="film"])[data-hero="playing"] #act-1 .hero-field {
+    bottom: auto;
+    height: min(100%, calc(100svh - var(--nav-height)));
+  }
+
+  [data-hero="entrance"] .hero-field,
+  [data-hero="playing"] .hero-field {
+    --row-count: var(--narrow-lanes);
+  }
+
+  .hero-lane[data-fill][data-narrow] {
+    display: none;
+  }
+
+  .hero-lane {
+    --display-row: var(--narrow-row);
+  }
+}
+
+/* --- before the entrance takes over -------------------------------------- */
+
+/* The copy and the laptop wait for the entrance. If its script never
+   arrives, this settles the hero on its own a little after the entrance
+   would have: the field goes, out of rendering, and the laptop and the copy
+   come in. A script that arrives after the field has begun to go leaves the
+   hero at rest (entrance.js reads the delay from here). */
+[data-hero="entrance"] #act-1 .act__copy > *,
+[data-hero="entrance"] .hero-device {
+  opacity: 0;
+  animation: hero-fallback-in 0.6s ease-out 5s both;
+}
+
+[data-hero="entrance"] .hero-field {
+  animation: hero-fallback-out 0.5s ease-in 4.8s both;
+}
+
+@keyframes hero-fallback-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes hero-fallback-out {
+  to {
+    opacity: 0;
+    visibility: hidden;
+    display: none;
+  }
+}
+
+/* --- the phone's split ------------------------------------------------- */
+
+@media (max-width: 767px) {
+  html:not([data-mode="film"]) #act-1 {
+    padding-block: 1.75rem 1.25rem;
+  }
+
+  #act-1 .act__inner {
+    gap: 1.25rem;
+  }
+
+  #act-1 h1 {
+    font-size: clamp(2rem, 1.2rem + 3.6vw, 2.5rem);
+  }
+
+  #act-1 .support {
+    margin-top: 1rem;
+    font-size: 1rem;
+  }
+
+  #act-1 .actions {
+    margin-top: 1.5rem;
+  }
+
+  #act-1 .meta {
+    margin-top: 1rem;
+  }
+
+  .hero-device {
+    margin-inline: -0.5rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-field,
+  .hero-glows {
+    display: none !important;
+  }
+
+  [data-hero] #act-1 .act__copy > *,
+  [data-hero] .hero-device {
+    opacity: 1 !important;
+    animation: none !important;
+  }
+}

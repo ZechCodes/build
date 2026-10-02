@@ -1,0 +1,451 @@
+---
+import "../../lab/hero333/preview.css";
+import Film from "../../components/Film.astro";
+import HeroField from "../../lab/hero333/HeroField.astro";
+import { ATTENTION } from "../../lab/hero333/field.js";
+import { HERO_POSTER } from "../../lab/hero333/poster-anchors.js";
+
+// Unlisted snapshot of #333 at 149bf3c3; see lab/hero333/README.md.
+const title = "Build: know what your coding agents need from you";
+const description =
+  "Build brings your coding agents into one place, with their questions and changes ready for your review. They run on your machines. Free and open source.";
+const socialTitle = title;
+const socialDescription = description;
+const socialImage = "https://getbuild.ing/landing/assets/social-preview.png";
+
+// The lab route serves static HTML without the home page's server slots.
+const activitySectionSlot = "";
+const repositoryUrlSlot = "https://github.com/ZechCodes/build";
+const repositoryTitle = "Build’s source code on GitHub";
+// Accounts are invite-only in the alpha: the calls to action lead to the waitlist.
+const waitlistUrl = "#act-8";
+const heroLaptop = HERO_POSTER;
+
+// One poster pair per act, rendered by Astra from the same poses the film
+// uses (DIRECTION.md §5).
+const poster = (act: number) => ({
+  desktop: `/landing/assets/devices/scene-0${act}-desktop.webp`,
+  mobile: `/landing/assets/devices/scene-0${act}-mobile.webp`,
+});
+
+// Code and shell text live here rather than in markup: braces in an .astro
+// template are expressions, and these lines are full of them.
+const machineLabel = "dev-mbp · ~/code/build · main";
+const workspacePath = "~/code/build/workspaces/archive-search";
+const branchLine = `build/archive-search · ${workspacePath}`;
+const diffRemoved = "- search.remove(id);";
+const diffAdded = ["+ search.update(id, {", "+   archived: true,"];
+const diffAddedByYou = '+   label: "Archived",';
+const diffAddedClose = "+ });";
+const commitMessage = "archive: keep archived results searchable";
+const reviewComment = "Match the label the sidebar uses.";
+---
+
+<!doctype html>
+<html lang="en" data-field="full">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="icon" href="/landing/favicon.png" type="image/png" sizes="32x32" />
+    <link rel="icon" href="/landing/favicon.svg" type="image/svg+xml" sizes="any" />
+    <link
+      rel="preload"
+      href="/landing/fonts/inter-400-latin.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="/landing/fonts/JetBrainsMono-latin.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <meta property="og:title" content={socialTitle} />
+    <meta property="og:description" content={socialDescription} />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content={socialImage} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={socialTitle} />
+    <meta name="twitter:description" content={socialDescription} />
+    <meta name="twitter:image" content={socialImage} />
+    <script src="/landing/generated/film-boot.js" is:inline></script>
+    <script src="/landing/generated/hero333-boot.js" is:inline></script>
+    <script type="module" src="/landing/generated/hero333/preview.js" is:inline></script>
+    <script type="module" src="/landing/generated/waitlist-boot.js" is:inline></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#act-1">Skip to the story</a>
+
+    <!-- The bar stays on screen through the film and reserves its height,
+         so the story is laid out below it. -->
+    <header class="site-nav">
+      <div class="site-nav__inner">
+        <a class="site-nav__brand" href="/"><img src="/landing/brand-mark.svg" alt="" width="20" height="20" />Build</a>
+        <nav aria-label="Primary">
+          <a href="/docs">Docs</a>
+          <a href={repositoryUrlSlot} title={repositoryTitle}>GitHub</a>
+          <a class="cta cta--small" href={waitlistUrl}>Join the waitlist</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="story" data-story>
+      <div class="film" data-film>
+      <!-- The device stage. display: none until film-boot.js decides the
+           visitor gets the film; the document reads without it. -->
+      <canvas class="stage" data-stage aria-hidden="true"></canvas>
+      <Film />
+      <!-- Act 1: the hero. Its entrance (src/hero/) runs once per tab: the
+           notification field resolves into the laptop's Needs you, then the
+           copy. The laptop picture is a capture of the live stage at the
+           hero's resting pose (web/capture-hero-laptop.mjs); the film hands
+           over from it to the stage, and the document keeps it. -->
+      <section class="act act--hero" id="act-1" data-act="1" aria-labelledby="act-1-title">
+        <HeroField />
+        <div class="content-container act__inner">
+          <div class="act__copy">
+            <h1 id="act-1-title"><span class="hero-line">Your agents are moving fast.</span> <span class="hero-line hero-line--quiet">Know what needs you.</span></h1>
+            <p class="support">
+              Build brings your coding agents into one workspace, with questions, progress,
+              and changes ready for your review. Run them on your machines. Stay in control
+              from any screen.
+            </p>
+            <div class="actions">
+              <a class="cta" href={waitlistUrl}>Join the waitlist</a>
+              <a class="link" href={repositoryUrlSlot} title={repositoryTitle}>GitHub</a>
+            </div>
+            <p class="meta">Free · Open source · Runs on your machines</p>
+          </div>
+          <div class="hero-device" data-hero-device data-hero-poster>
+            <div class="hero-device__frame" data-hero-frame>
+              <img src="/landing/assets/devices/hero-needs-you.webp" width={heroLaptop.width} height={heroLaptop.height} alt="Build’s Tasks dashboard on a laptop, with three tasks under Needs you" decoding="sync" fetchpriority="high" />
+            </div>
+          </div>
+        </div>
+        <div class="hero-glows" data-hero-glows aria-hidden="true">
+          {ATTENTION.map((entry) => <i class="hero-glow" data-glow={entry.row}></i>)}
+        </div>
+      </section>
+
+      <!-- Act 2 -->
+      <section class="act" id="act-2" data-act="2" aria-labelledby="act-2-title">
+        <div class="content-container act__inner">
+          <div class="act__copy">
+            <p class="kicker">02 / One place</p>
+            <h2 id="act-2-title">See your agents in one place.</h2>
+            <p class="support">
+              See what your agents are doing, what they changed, and which ones need an
+              answer. Run Claude Code, Codex and Pi together in Build.
+            </p>
+            <ul class="captions">
+              <li>Your agents run on your computer.</li>
+              <li>Your files stay there.</li>
+              <li>Build's servers cannot read your code or prompts.</li>
+            </ul>
+            <p class="scope">Model requests still go to the providers you configure.</p>
+          </div>
+          <picture class="poster">
+            <source media="(max-width: 767px)" srcset={poster(2).mobile} width="720" height="960" />
+            <img src={poster(2).desktop} width="1440" height="900" alt="" decoding="async" loading="lazy" />
+          </picture>
+        </div>
+      </section>
+
+      <!-- Act 3 -->
+      <section class="act" id="act-3" data-act="3" aria-labelledby="act-3-title">
+        <div class="content-container act__inner">
+          <div class="act__copy">
+            <p class="kicker">03 / Tasks</p>
+            <h2 id="act-3-title">Write the task. Hand it off.</h2>
+            <p class="support">
+              Write a task and assign an agent. Start it in a separate workspace on your
+              machine. Follow its progress on the board, from Backlog to Done.
+            </p>
+          </div>
+          <picture class="poster">
+            <source media="(max-width: 767px)" srcset={poster(3).mobile} width="720" height="960" />
+            <img src={poster(3).desktop} width="1440" height="900" alt="" decoding="async" loading="lazy" />
+          </picture>
+          <div class="act__proof">
+            <article class="card">
+              <p class="card__label">In progress</p>
+              <h3>Make archived items searchable</h3>
+              <ul class="chips">
+                <li>search</li>
+                <li>bug</li>
+                <li>Claude Code</li>
+              </ul>
+              <p class="card__foot">{branchLine}</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- Act 4 -->
+      <section class="act" id="act-4" data-act="4" aria-labelledby="act-4-title">
+        <div class="content-container act__inner">
+          <div class="act__copy">
+            <p class="kicker">04 / Questions</p>
+            <h2 id="act-4-title">See which agent needs an answer.</h2>
+            <p class="support">
+              Agent questions appear in your inbox. Open one on your phone, reply, and the
+              agent can continue. Turn on notifications to hear when an agent needs you.
+            </p>
+          </div>
+          <picture class="poster">
+            <source media="(max-width: 767px)" srcset={poster(4).mobile} width="720" height="960" />
+            <img src={poster(4).desktop} width="1440" height="900" alt="" decoding="async" loading="lazy" />
+          </picture>
+          <div class="act__proof">
+            <article class="card">
+              <p class="card__label">On your phone</p>
+              <ul class="conversation">
+                <li data-from="agent">
+                  <span class="who">Claude Code</span>Keep archived items in search?
+                </li>
+                <li data-from="you"><span class="who">You</span>Yes. Label them clearly.</li>
+                <li data-from="agent">
+                  <span class="who">Claude Code</span>Got it. I'll update the archive
+                  behavior and checks.
+                </li>
+              </ul>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- Act 5 -->
+      <section class="act" id="act-5" data-act="5" aria-labelledby="act-5-title">
+        <div class="content-container act__inner">
+          <div class="act__copy">
+            <p class="kicker">05 / A second reviewer</p>
+            <h2 id="act-5-title">Ask another agent to review it.</h2>
+            <p class="support">
+              Ask a second agent to review the change or run the tests. They can exchange
+              feedback in Build. Read their findings alongside the diff.
+            </p>
+            <p class="concept-note">Workflow editor concept. This feature is not available in Build.</p>
+          </div>
+          <picture class="poster">
+            <source media="(max-width: 767px)" srcset={poster(5).mobile} width="720" height="960" />
+            <img src={poster(5).desktop} width="1440" height="900" alt="" decoding="async" loading="lazy" />
+          </picture>
+          <div class="act__proof">
+            <article class="card">
+              <p class="card__label">One way a change can move</p>
+              <ul class="flow">
+                <li data-node="agent">Implement</li>
+                <li class="edge" aria-hidden="true">→</li>
+                <li data-node="agent">Review</li>
+                <li class="edge" aria-hidden="true">→</li>
+                <li data-node="gate">You decide</li>
+                <li class="edge" aria-hidden="true">→</li>
+                <li data-node="merge">Merge</li>
+              </ul>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- Act 6 -->
+      <section class="act" id="act-6" data-act="6" aria-labelledby="act-6-title">
+        <div class="content-container act__inner">
+          <div class="act__copy">
+            <p class="kicker">06 / Your edit</p>
+            <h2 id="act-6-title">Make the last edit yourself.</h2>
+            <p class="support">
+              Read the diff, edit a file, stage it and commit. All in your browser.
+            </p>
+          </div>
+          <picture class="poster">
+            <source media="(max-width: 767px)" srcset={poster(6).mobile} width="720" height="960" />
+            <img src={poster(6).desktop} width="1440" height="900" alt="" decoding="async" loading="lazy" />
+          </picture>
+          <div class="act__proof proof-pair">
+            <article class="card">
+              <p class="card__label">Git</p>
+              <p class="file-name">{branchLine}</p>
+              <ul class="tree">
+                <li>archive.ts · modified · Claude Code</li>
+                <li>archive.test.ts · modified · you</li>
+              </ul>
+              <p class="card__foot">{commitMessage}</p>
+            </article>
+            <article class="card">
+              <p class="card__label">Diff · archive.ts</p>
+              <pre><code><span class="line-removed">{diffRemoved}</span><span class="line-new">{diffAdded[0]}</span><span class="line-new">{diffAdded[1]}</span><span class="line-new line-you">{diffAddedByYou}</span><span class="line-new">{diffAddedClose}</span></code></pre>
+              <p class="card__foot">+4 −1 · one line yours · <span class="machine-label">{machineLabel}</span></p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- Act 7 -->
+      <section class="act" id="act-7" data-act="7" aria-labelledby="act-7-title">
+        <div class="content-container act__inner">
+          <div class="act__copy">
+            <p class="kicker">07 / Review</p>
+            <h2 id="act-7-title">Read the diff. Make the call.</h2>
+            <p class="support">
+              When the agent finishes, the task moves to In review. Leave comments on the
+              diff and send them to the agent together. Merge it yourself when it's right.
+            </p>
+            <p class="concept-note">
+              Review screen concept. In Build today, review changes in the Changes view.
+            </p>
+          </div>
+          <picture class="poster">
+            <source media="(max-width: 767px)" srcset={poster(7).mobile} width="720" height="960" />
+            <img src={poster(7).desktop} width="1440" height="900" alt="" decoding="async" loading="lazy" />
+          </picture>
+          <div class="act__proof">
+            <article class="card">
+              <p class="card__label">Diff · archive.ts</p>
+              <pre><code><span class="line-removed">{diffRemoved}</span><span class="line-new">{diffAdded[0]}</span><span class="line-new">{diffAdded[1]}</span><span class="line-new line-you">{diffAddedByYou}</span><span class="line-new">{diffAddedClose}</span></code></pre>
+              <ul class="conversation">
+                <li data-from="you"><span class="who">Your comment</span>{reviewComment}</li>
+              </ul>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- Act 8 -->
+      <section class="act" id="act-8" data-act="8" aria-labelledby="act-8-title">
+        <div class="content-container act__inner">
+          <div class="act__copy">
+            <p class="kicker">08 / Any screen</p>
+            <div class="beat" data-beat="a">
+            <h2 id="act-8-title">Answer from your phone.</h2>
+            <p class="support">
+              Answer a question or review a change from your phone or tablet. Your agents
+              keep running on the computer you left them on.
+            </p>
+            </div>
+            <div class="beat" data-beat="b">
+            <h2 class="beat-b">Free and open source.</h2>
+            <p class="support">
+              Anyone can install Build and read the code. Accounts are invite-only while
+              Build is in alpha. Join the waitlist for access.
+            </p>
+            <div class="waitlist" id="waitlist" data-waitlist>
+              <form class="waitlist-form" novalidate>
+                <input
+                  class="waitlist-input"
+                  type="email"
+                  name="email"
+                  placeholder="you@company.com"
+                  autocomplete="email"
+                  aria-label="Email address"
+                  required
+                />
+                <button class="cta button-primary button-primary--form" type="submit">
+                  Join the waitlist
+                </button>
+              </form>
+              <p class="note waitlist-error" role="alert" hidden>
+                We couldn’t add you. Please try again.
+              </p>
+              <p class="waitlist-success" role="status" hidden>
+                You’re on the list: <span data-waitlist-email></span>
+              </p>
+              <p class="note waitlist-confirmation" role="status" hidden>
+                A confirmation is on its way. Every email has a one-click unsubscribe.
+              </p>
+            </div>
+            <div class="actions">
+              <a class="link" href={repositoryUrlSlot} title={repositoryTitle}>GitHub</a>
+            </div>
+            </div>
+          </div>
+          <picture class="poster">
+            <source media="(max-width: 767px)" srcset={poster(8).mobile} width="720" height="960" />
+            <img src={poster(8).desktop} width="1440" height="900" alt="" decoding="async" loading="lazy" />
+          </picture>
+        </div>
+      </section>
+      </div>
+    </main>
+
+    <div class="practical">
+      <section class="practical-section hosts-section" id="details" aria-labelledby="hosts-title">
+        <div class="content-container practical-container">
+          <header class="practical-heading">
+            <p class="section-kicker">Setup</p>
+            <h2 id="hosts-title">Install Build where your agents run.</h2>
+            <p>
+              That computer does the work. Keep it online to connect from another device.
+            </p>
+          </header>
+
+          <div class="faq-list" aria-label="Build details">
+            <details open>
+              <summary>What do I install?</summary>
+              <p>
+                Install the Build bridge on a Mac or Linux computer with your coding tools
+                installed. Connect from a browser, or use the desktop app on macOS or Linux.
+              </p>
+              <a href="/docs#architecture">Read the setup and connection guide</a>
+            </details>
+            <details>
+              <summary>Which agents can I use?</summary>
+              <p>
+                Claude Code, Codex and Pi. Build runs the CLIs already installed and signed
+                in on your computer.
+              </p>
+              <a href="/docs#harnesses">See the maintained integration list</a>
+            </details>
+            <details>
+              <summary>What does it cost?</summary>
+              <p>
+                Build is free and open source under AGPL-3.0. You pay your model providers
+                as you do now.
+              </p>
+            </details>
+            <details id="privacy-summary">
+              <summary>What can Build's servers see?</summary>
+              <p>
+                Your account, your registered devices, connection diagnostics, and a push
+                subscription if you turn notifications on. Not your code or prompts. The
+                connection between your devices is end-to-end encrypted.
+              </p>
+              <a href="/privacy">Read the architecture and privacy details</a>
+            </details>
+            <details>
+              <summary>What is a workspace?</summary>
+              <p>
+                A separate copy of your project for a piece of work. Agents in the same
+                workspace share its files.
+              </p>
+            </details>
+            <details>
+              <summary>What isn't there yet?</summary>
+              <p>A native Windows bridge and OpenCode support are not available yet.</p>
+            </details>
+          </div>
+        </div>
+      </section>
+
+      <Fragment set:html={activitySectionSlot} />
+    </div>
+
+    <footer class="landing-footer">
+      <div class="content-container landing-footer-inner">
+        <a class="footer-brand" href="/">Build</a>
+        <nav aria-label="Footer">
+          <a href="/docs">Docs</a>
+          <a href={repositoryUrlSlot}>GitHub</a>
+          <a href="/privacy">Privacy</a>
+          <a href="/app/">Alpha</a>
+        </nav>
+      </div>
+    </footer>
+  </body>
+</html>

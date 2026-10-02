@@ -680,6 +680,7 @@ describe("the composer", () => {
     expect(notifyError).toHaveBeenCalledWith(
       "Could not attach that file", "shot.png: This bridge does not support task attachments.",
     );
+    expect(host.querySelector('[data-task-composer] button[type="submit"]').disabled).toBe(false);
     notifyError.mockClear();
     host.querySelector('[data-task-composer] button[type="submit"]').click();
     await vi.waitFor(() => expect(notifyError).toHaveBeenCalledWith("Remove the failed attachment before sending this comment."));

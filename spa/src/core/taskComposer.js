@@ -56,6 +56,7 @@ import { taskAttachmentRefusal } from "./taskAttachments.js";
 
 const PREFIX = "task-new";
 const INPUT_ID = `${PREFIX}-body`;
+const FAILED_ATTACHMENT_NOTE = "Remove the failed attachment before filing this task.";
 
 /**
  * What a priority menu offers.
@@ -248,7 +249,10 @@ export function openTaskComposer(host, {
     ids: { input: INPUT_ID },
     upload: (file, base64) => upload(file, base64),
     onError: (message) => say(message),
-    onChange: () => paintPress(),
+    onChange: () => {
+      if (errorLine.textContent === FAILED_ATTACHMENT_NOTE && !attachments?.hasFailed()) say("");
+      paintPress();
+    },
   });
 
   const menus = new Map(
@@ -332,10 +336,16 @@ export function openTaskComposer(host, {
     if (state.busy || state.closed) return "busy";
     draft.title = title.value;
     draft.body = body.value;
-    if (draft.title.trim()) return "";
-    say("A task needs a title.");
-    title.focus();
-    return "untitled";
+    if (!draft.title.trim()) {
+      say("A task needs a title.");
+      title.focus();
+      return "untitled";
+    }
+    if (attachments?.hasFailed()) {
+      say(FAILED_ATTACHMENT_NOTE);
+      return "failed-attachment";
+    }
+    return "";
   }
 
   /** What the answer did not say for itself. Both of these are silent

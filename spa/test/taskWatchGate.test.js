@@ -205,6 +205,16 @@ describe("the page, on top of that gate", () => {
     expect(listed("tasks.read_through")).toHaveLength(1);
   });
 
+  it("shows a watched cached task's unread reply even without a read mark or greeting", async () => {
+    const cached = task({ id: "task-1", watched: true });
+    const timeline = [comment({ id: "tc-2", author: { kind: "agent", agent_id: "agent-1" } })];
+    await writeTaskRecord("dev-1", "proj-1", "task-1", taskRecord(cached, timeline));
+    call.mockImplementation(async (method) => (method === "tasks.get" ? new Promise(() => {}) : {}));
+    await mount();
+    expect(host.querySelector(".task-unread-line")).not.toBeNull();
+    expect(listed("tasks.read_through")).toHaveLength(0);
+  });
+
   it("ignores another device's greeting while a cached page is open", async () => {
     await writeTaskRecord("dev-1", "proj-1", "task-1", taskRecord(answer().task, answer().timeline));
     call.mockImplementation(async (method) => (method === "tasks.get" ? new Promise(() => {}) : {}));

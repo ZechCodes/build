@@ -1131,6 +1131,7 @@ describe("the two presses", () => {
       .toBe("This bridge does not support task attachments.");
     expect(host.querySelector(".task-compose-error").textContent)
       .toBe("shot.png: This bridge does not support task attachments.");
+    expect(host.querySelector("[data-compose-file]").disabled).toBe(false);
     await fileIt();
     expect(listed("tasks.create")).toHaveLength(0);
     expect(host.querySelector(".task-compose-error").textContent)
@@ -1138,6 +1139,7 @@ describe("the two presses", () => {
     expect(host.querySelector(".task-compose-title").value).toBe("Keep this task");
     expect(host.querySelector("#task-new-body").value).toBe("Keep this description");
     host.querySelector(".composer-chip.failed .composer-chip-remove").click();
+    expect(host.querySelector(".task-compose-error").hidden).toBe(true);
     await fileIt();
     expect(listed("tasks.create")).toHaveLength(1);
     expect(listed("tasks.create")[0][1]).toMatchObject({ title: "Keep this task", body: "Keep this description" });

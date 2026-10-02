@@ -392,13 +392,12 @@ export function mountComposerModelMenu(root, { ids, onChoose, cacheKey = null })
 /// the next repaint, which on a polling surface is about a second away.
 ///
 /// `accepting()` says whether paste and drop take files right now. A surface
-/// that takes its paperclip off a box it keeps (the task page, when a bridge
-/// stops carrying files) answers false until it hangs it back on, and the box
-/// takes a paste or a drop the way a plain one would.
+/// that temporarily pauses attachments can leave its composer mounted while
+/// the box takes a paste or a drop the way a plain one would.
 ///
-/// Returns a controller: `attachments()` for the descriptors a send should
-/// carry, `busy()` for whether an upload is still in flight, and `clear()` for
-/// after a send lands.
+/// Returns a controller: `attachments()` for ready descriptors, `busy()` for
+/// an upload in flight, `hasFailed()` for a chip the reader must remove before
+/// sending, and `clear()` for after a send lands.
 // eslint-disable-next-line complexity -- ratchet: mountComposerAttachments is at 15, cap 10 — reduce it, then drop this line
 export function mountComposerAttachments(root, {
   ids,
@@ -547,13 +546,16 @@ export function mountComposerAttachments(root, {
   render();
 
   return {
-    /// The descriptors a send should carry: uploaded, in tray order. A failed
-    /// or in-flight chip contributes nothing.
+    /// Ready descriptors in tray order. A failed or in-flight chip contributes
+    /// no descriptor; callers can use `hasFailed()` to block a partial send.
     attachments() {
       return entries.filter((entry) => entry.status === "ready").map((entry) => entry.descriptor);
     },
     busy() {
       return entries.some((entry) => entry.status === "uploading");
+    },
+    hasFailed() {
+      return entries.some((entry) => entry.status === "failed");
     },
     /// Whether the tray holds anything at all — including a chip still going
     /// up, which is what makes an empty-bodied send worth waiting for.

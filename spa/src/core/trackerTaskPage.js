@@ -47,7 +47,7 @@ import { mountComposerAttachments } from "./composer.js";
 import { taskAttachmentRefusal } from "./taskAttachments.js";
 import { carriesWatching, readThrough, watchStateOf } from "./trackerWatch.js";
 import { createWatchToggle, syncWatchButton, WATCH_BUTTON_SELECTOR } from "./watchToggle.js";
-import { commandRefusalMessage } from "./commandRefusal.js";
+import { notifyCommandFailure } from "./commandRefusal.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
 import { createThreadState, wireThreadAttachments } from "./thread.js";
 import { createTaskAttachmentBodies } from "./taskAttachmentBodies.js";
@@ -125,11 +125,9 @@ export function mountTaskPage(host, options) {
     taskId: state.taskId,
     call: (method, params) => state.callRpc(method, params),
     onChange: (next) => syncWatchButton(host.querySelector(WATCH_BUTTON_SELECTOR), next),
-    onFailure: (error) => {
-      const reason = commandRefusalMessage(error, WATCH_UNSUPPORTED);
-      if (reason === WATCH_UNSUPPORTED) notifyError(reason);
-      else notifyError("Could not change whether you are watching this task", reason);
-    },
+    onFailure: (error) => notifyCommandFailure(
+      error, "Could not change whether you are watching this task", WATCH_UNSUPPORTED,
+    ),
   });
 
   /** The newest row this reader has been shown, as last told to the bridge.
@@ -145,7 +143,12 @@ export function mountTaskPage(host, options) {
   const unreadPill = mountNewMessagesPill(host, { targetSelector: ".task-unread-line" });
 
   const updateUnread = () => {
-    if (!canMarkRead) return;
+    // A cached mark, or a watch with no mark yet, is enough to paint what this
+    // reader has not seen. An older task with neither says nothing about it.
+    if (!state.task?.watched && !state.task?.read_through) {
+      unreadFrom = null;
+      return;
+    }
     unreadFrom = unreadMarker.update(taskUnreadReading(state.rows, state.task?.read_through, markedThrough));
   };
 
@@ -476,6 +479,10 @@ export function mountTaskPage(host, options) {
 
   async function sendComment() {
     await commentDraft.flush();
+    if (comments?.hasFailed()) {
+      notifyError("Remove the failed attachment before sending this comment.");
+      return;
+    }
     const params = commentToSend();
     if (!params) return;
     state.sending = true;
@@ -563,7 +570,7 @@ export function mountTaskPage(host, options) {
     field.onkeydown = (event) => {
       if (event.isComposing || event.key !== "Enter" || !(event.ctrlKey || event.metaKey)) return;
       event.preventDefault();
-      if (!field.value.trim() && !comments?.attachments().length) return;
+      if (!field.value.trim() && !comments?.attachments().length && !comments?.hasFailed()) return;
       form.requestSubmit();
     };
     form.onsubmit = (event) => {
@@ -613,9 +620,6 @@ export function mountTaskPage(host, options) {
   const stopGreeting = onBridgeGreeted((deviceId) => {
     if (state.disposed || deviceId !== state.deviceId) return;
     canMarkRead = carriesWatching(state.deviceId);
-    unreadFrom = null;
-    updateUnread();
-    paint();
     markRead();
   });
 

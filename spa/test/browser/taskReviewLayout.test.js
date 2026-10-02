@@ -14,6 +14,7 @@ async function mountReview(page, basePath) {
     review: "src/core/taskReviewPage.js",
     support: "src/core/taskReviewSupport.js",
     cache: "src/core/taskReviewCache.js",
+    local: "src/core/localCache.js",
   }, basePath);
   await page.evaluate(async (saved) => {
     const { review, support, cache } = window.__layoutModules;
@@ -68,3 +69,24 @@ for (const { label, width } of [{ label: "mobile", width: 390 }, { label: "deskt
     }, { width, height: 800 });
   }, 60_000);
 }
+
+it("keeps Merge and Push choices within a mobile viewport", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await mountReview(page, basePath);
+    await page.evaluate(async () => {
+      const { support, cache, local } = window.__layoutModules;
+      const scope = { deviceId: "layout-device", projectId: "layout-project", taskId: "task-1" };
+      const held = (await local.readCached(cache.reviewAddress(scope))).value.review;
+      const destination = { snapshot_id: held.snapshots[0].id, directory_id: "dir-api", source_path: "/sources/a/long/repository/path",
+        branches: ["main", "release"], remotes: [{ name: "origin", branches: ["main"] }], live_head: "3".repeat(40) };
+      await support.rememberReviewSupport(scope.deviceId, { reviews: { get: true, snapshot: true, diff: true, complete: true, act: true } });
+      await cache.writeReviewRecord(scope, { ...held, version: held.version + 1, destinations: [destination], actions: [] }, 2);
+    });
+    await page.locator('[data-review-act-sheet] summary').click();
+    await page.locator('[data-review-merge="dir-api"]').check();
+    const size = await page.evaluate(() => ({ viewport: innerWidth, page: document.documentElement.scrollWidth }));
+    expect(size.page, JSON.stringify(size)).toBeLessThanOrEqual(size.viewport + 1);
+    expect(await page.locator('[data-review-source="dir-api"]').textContent()).toContain("differs from saved head");
+    await page.evaluate(() => window.__reviewLayout.dispose());
+  }, { width: 390, height: 800 });
+}, 60_000);

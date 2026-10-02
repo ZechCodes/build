@@ -5,12 +5,13 @@ import { reviewSupportAddress, readReviewSupport, NO_REVIEW_SUPPORT } from "./ta
 import { createTaskReviewRepository, reviewAddress } from "./taskReviewCache.js";
 import { reviewSnapshot, reviewDirectory, defaultReviewView, reviewHeadHtml, reviewDirectoryHtml } from "./taskReviewRender.js";
 import { mountTaskReviewControls } from "./taskReviewControls.js";
+import { mountTaskReviewActions } from "./taskReviewActions.js";
 import { mountTaskReviewChanges } from "./taskReviewChanges.js";
 import { mountTaskReviewFiles } from "./taskReviewFiles.js";
 import { mountTaskReviewFeedback, openTaskReviewer } from "./taskReviewFeedback.js";
 import { wireDirectoryTabs } from "./workspaceDirectoryTabs.js";
 
-const FRAME = '<div data-review-head></div><div data-review-controls></div><p data-review-error class="warn" role="status" hidden></p><div data-review-directories></div><div data-review-content></div><div data-review-feedback-host></div>';
+const FRAME = '<div data-review-head></div><div data-review-controls></div><div data-review-git-actions></div><p data-review-error class="warn" role="status" hidden></p><div data-review-directories></div><div data-review-content></div><div data-review-feedback-host></div>';
 const setHtml = (node, html) => { if (node.__reviewHtml !== html) { node.innerHTML = html; node.__reviewHtml = html; } };
 
 /** One task's saved review. All server records arrive through cache reads;
@@ -31,6 +32,8 @@ export function mountTaskReviewPage(host, options) {
   let feedbackKey = "";
   let controls = null;
   let controlsKey = "";
+  let gitActions = null;
+  let gitActionsKey = "";
   let picker = null;
   host.classList.add("task-review");
   host.innerHTML = FRAME;
@@ -84,6 +87,18 @@ export function mountTaskReviewPage(host, options) {
     if (key) feedback = mountTaskReviewFeedback(node("feedback-host"), { ...scope, snapshot: saved, callRpc, onSent: options.onTaskChanged });
   }
 
+  function paintGitActions(saved) {
+    const key = saved ? JSON.stringify([saved.id, support.act, support.complete, review()?.state]) : "";
+    if (gitActionsKey === key) return gitActions?.update(review());
+    gitActionsKey = key;
+    gitActions?.dispose();
+    gitActions = null;
+    node("git-actions").innerHTML = "";
+    if (saved) gitActions = mountTaskReviewActions(node("git-actions"), {
+      ...scope, snapshot: saved, review: review(), repository, support, onTaskChanged: options.onTaskChanged,
+    });
+  }
+
   function openFiles(path = "") {
     return choose({ view: "files", path, anchor: null });
   }
@@ -135,6 +150,7 @@ export function mountTaskReviewPage(host, options) {
     const view = selection.view || defaultReviewView(dir);
     paintHead(saved);
     paintControls(saved);
+    paintGitActions(saved);
     paintFeedback(saved);
     paintDirectories(saved, dir, view);
     paintPane(saved, dir, view);
@@ -178,7 +194,7 @@ export function mountTaskReviewPage(host, options) {
     dispose() {
       disposed = true;
       unwatchRecord(); unwatchSupport(); state.dispose();
-      pane?.dispose(); controls?.dispose(); feedback?.dispose(); picker?.close();
+      pane?.dispose(); controls?.dispose(); gitActions?.dispose(); feedback?.dispose(); picker?.close();
     },
   };
 }

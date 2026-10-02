@@ -13,7 +13,7 @@ const NONE = {
   errors: { codes: false },
   diffs: { perFile: false },
   bodies: { pages: false, mediaRawPages: false },
-  reviews: { get: false, snapshot: false, diff: false, complete: false, comments: false },
+  reviews: { get: false, snapshot: false, diff: false, complete: false, act: false, comments: false },
   tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false },
   conversations: { settings: false },
   github: { repos: false },
@@ -70,7 +70,7 @@ describe("the adapter a greeting selects", () => {
       errors: { codes: true },
       diffs: { perFile: false },
       bodies: { pages: false, mediaRawPages: false },
-  reviews: { get: false, snapshot: false, diff: false, complete: false, comments: false },
+  reviews: { get: false, snapshot: false, diff: false, complete: false, act: false, comments: false },
       // A greeting that names no task feature carries none of them.
       tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false },
       conversations: { settings: false },

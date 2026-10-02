@@ -170,9 +170,12 @@ await withLayoutPage(async ({ page, basePath }) => {
 
   await page.evaluate(() => window.__layoutModules.inboxView.setInboxView("projects"));
   const head = page.locator(`#inbox-list .inbox-project[data-project="${PROJECT_KEY}"] > .inbox-project-head`);
-  await expectText(head.locator(".inbox-unread"), "4", "expanded head");
+  // A project head wears the whole block total on both faces (#183).
+  await expectText(head.locator(".inbox-unread"), "10", "expanded head");
   await page.locator("#inbox-rail").screenshot({ path: `${output}/projects-face-expanded.png` });
   await head.locator("[data-project-fold]").click();
+  await page.waitForFunction(() =>
+    document.querySelector("[data-project-fold]")?.getAttribute("aria-expanded") === "false");
   await expectText(head.locator(".inbox-unread"), "10", "folded head");
   await page.evaluate(() => document.activeElement?.blur());
   await page.mouse.move(0, 0);

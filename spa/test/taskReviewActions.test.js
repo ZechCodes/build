@@ -254,6 +254,7 @@ it("settles a late completion refusal without touching a disposed sheet", async 
   const heldHtml = document.querySelector("#actions").innerHTML;
   sheet.dispose();
   rejectCompletion(new Error("late refusal"));
+  await expect(completion).rejects.toThrow("late refusal");
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(document.querySelector("#actions").innerHTML).toBe(heldHtml);
 });

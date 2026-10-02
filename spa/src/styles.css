@@ -289,6 +289,12 @@ a { color:inherit; }
 .bridge-update-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }
 .bridge-update-request { min-height:1.5em; margin:8px 0 0; }
 .bridge-update-error { color:var(--red, #bb3f3f); overflow-wrap:anywhere; }
+/* A filled button at half opacity still reads as pressable: a disabled
+   install drops the fill and reads as the other disabled buttons do. */
+.bridge-update-actions .btn.primary:disabled { background:var(--panel); border-color:var(--line); color:var(--ink); }
+.bridge-update-command { margin:6px 0 0; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--panel2); overflow-x:auto; user-select:all; }
+.bridge-update-confirm { margin-top:14px; padding:12px 14px; border:1px solid var(--amber); border-radius:9px; max-width:520px; }
+.bridge-update-confirm p { margin:0; }
 .device-picker-offline { color:var(--dim); }
 /* A machine with a harness out of usage (#58): its line under its row, and the
    toggle's mark while a machine it stands for is limited. Amber, as the

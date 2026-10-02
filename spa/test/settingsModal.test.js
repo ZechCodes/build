@@ -22,7 +22,7 @@ vi.mock("../src/core/deviceContexts.js", () => ({ onDeviceStateChanged: (listene
   return () => listeners.delete(listener);
 } }));
 import { isSettingsRoute, renderSettingsModal } from "../src/views/settingsModal.js";
-import { rememberBridgeUpdateStatus, trackBridgeUpdateDevices } from "../src/core/bridgeUpdates.js";
+import { bridgeUpdateStatus, rememberBridgeUpdateStatus, trackBridgeUpdateDevices } from "../src/core/bridgeUpdates.js";
 import { wipeCache } from "../src/core/localCache.js";
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
@@ -59,6 +59,20 @@ describe("settings modal", () => {
     await vi.waitFor(() => expect(document.querySelector('[data-settings-device="a"] .bridge-update-dot')).toBeTruthy());
     expect(document.querySelector('[data-settings-device="a"]').textContent).toContain("Update available");
     expect(document.querySelector('[data-settings-device="b"] .bridge-update-dot')).toBeNull();
+  });
+  it("does not mark a development build in the settings sidebar", async () => {
+    trackBridgeUpdateDevices(App.devices);
+    openModal();
+    await rememberBridgeUpdateStatus("a", {
+      running_version: "0.2.0", platform: "linux-x86_64", development_build: true,
+      latest_release: { version: "0.3.0", tag: "bridge-v0.3.0", published_at: null },
+      last_checked_at: "2026-09-23T12:00:00Z", state: "available", last_error: null,
+      update_available: true, can_install: false, can_replace_development_build: true,
+    });
+    await vi.waitFor(() => expect(bridgeUpdateStatus("a")?.development_build).toBe(true));
+    await flush();
+    expect(document.querySelector('[data-settings-device="a"] .bridge-update-dot')).toBeNull();
+    expect(document.querySelector('[data-settings-device="a"]').textContent).not.toContain("Update available");
   });
   it("lists local settings and devices over the existing surface, returning on close", async () => {
     const returnRoute = { name: "workspace", deviceId: "a", workspaceId: "w1" };

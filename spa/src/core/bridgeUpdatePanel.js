@@ -1,9 +1,12 @@
 import { esc } from "./text.js";
 import {
-  bridgeCanInstall, bridgeUpdateAvailable, bridgeUpdateStatus, onBridgeUpdatesChanged,
-  bridgeUpdateCacheGeneration, bridgeUpdateRevision, refreshBridgeUpdateStatus,
+  bridgeCanInstall, bridgeCanReplaceDevelopmentBuild, bridgeUpdateAvailable, bridgeUpdateStatus,
+  onBridgeUpdatesChanged, bridgeUpdateCacheGeneration, bridgeUpdateRevision, refreshBridgeUpdateStatus,
   rememberBridgeUpdateStatus, watchBridgeUpdateDevice,
 } from "./bridgeUpdates.js";
+
+/** What replaces a development build the app cannot replace. */
+const INSTALL_COMMAND = "curl -fsSL https://getbuild.ing/install.sh | sh";
 
 const dateText = (value) => {
   if (!value) return "Never";
@@ -11,14 +14,30 @@ const dateText = (value) => {
   return Number.isNaN(date.getTime()) ? "Unknown" : date.toLocaleString();
 };
 
+/** A failed install. A development build from before wire 3.5.0 (no
+ *  can_replace_development_build) never installed, so its "failed" was a
+ *  check's error that stuck. */
+const installFailed = (status) => status.state === "failed"
+  && (!status.development_build || "can_replace_development_build" in status);
+
 function stateText(status) {
   if (status.state === "scheduled_when_idle") return "Queued until agents are done.";
   if (status.state === "installing") return "Installing update. The bridge will reconnect shortly.";
-  if (status.state === "failed") return "The update failed.";
+  if (installFailed(status)) return "The update failed.";
+  if (status.last_error) return "Could not check for updates.";
   if (!status.last_checked_at && !status.latest_release) return "Not checked yet.";
   return bridgeUpdateAvailable(status)
     ? `Version ${status.latest_release?.version || "new"} is available.`
     : "Up to date.";
+}
+
+function developmentNote(status) {
+  if (!status.development_build) return "";
+  if (bridgeCanReplaceDevelopmentBuild(status)) {
+    return '<p class="dim">This bridge is a development build. Installing a release replaces it.</p>';
+  }
+  return `<p class="dim">This bridge is a development build, which cannot update from the app. To replace it with a release build, run this on the machine:</p>
+    <pre class="bridge-update-command"><code>${esc(INSTALL_COMMAND)}</code></pre>`;
 }
 
 function statusBody(status, loading) {
@@ -28,18 +47,35 @@ function statusBody(status, loading) {
     <div class="row"><span class="k">Latest release</span><span class="v">${esc(status.latest_release?.version || "Not checked yet")}</span></div>
     <div class="row"><span class="k">Last checked</span><span class="v">${esc(dateText(status.last_checked_at))}</span></div>
     <p class="bridge-update-state">${esc(stateText(status))}</p>
-    ${status.development_build ? '<p class="dim">This is a development build. Check for releases here; install a release build manually to replace it.</p>' : ""}
+    ${developmentNote(status)}
     ${status.last_error ? `<p class="bridge-update-error" role="alert">${esc(status.last_error)}</p>` : ""}`;
 }
+
+/** The warning a development build's replacement waits behind. */
+function replacementWarning(status, when) {
+  const version = esc(status.latest_release?.version || "the latest release");
+  const timing = when === "idle" ? "once agents are done" : "now";
+  return `<div class="bridge-update-confirm" role="group" aria-label="Replace the development build">
+    <p>This replaces this development build with release ${version} ${timing}. The bridge restarts, and changes from your local source are no longer in the running bridge.</p>
+    <div class="bridge-update-actions">
+      <button class="btn primary" data-bridge-confirm-replace type="button">Replace with ${version}</button>
+      <button class="btn" data-bridge-confirm-cancel type="button">Cancel</button>
+    </div>
+  </div>`;
+}
+
+const installOffered = (status) => bridgeCanInstall(status) || bridgeCanReplaceDevelopmentBuild(status);
 
 function setActionAvailability({ check, now, idle }, status, busy) {
   const installing = status?.state === "installing";
   const scheduled = status?.state === "scheduled_when_idle";
-  const canInstall = bridgeCanInstall(status) && !installing;
+  const canInstall = installOffered(status) && !installing;
   check.disabled = busy || !status || installing;
   now.disabled = busy || !canInstall;
   idle.disabled = busy || !canInstall || scheduled;
 }
+
+const INSTALL_NOTES = { now: "Starting installation…", idle: "Scheduling installation…" };
 
 export function mountBridgeUpdatePanel(host, { deviceId, callRpc }) {
   watchBridgeUpdateDevice(deviceId);
@@ -56,6 +92,7 @@ export function mountBridgeUpdatePanel(host, { deviceId, callRpc }) {
       <button class="btn primary" data-bridge-install-now type="button">Install now</button>
       <button class="btn" data-bridge-install-idle type="button">Install when agents are done</button>
     </div>
+    <div class="bridge-update-confirm-host"></div>
     <p class="bridge-update-request" role="status" aria-live="polite"></p>
   </div>`;
   const body = host.querySelector(".bridge-update-body");
@@ -63,12 +100,22 @@ export function mountBridgeUpdatePanel(host, { deviceId, callRpc }) {
   const now = host.querySelector("[data-bridge-install-now]");
   const idle = host.querySelector("[data-bridge-install-idle]");
   const request = host.querySelector(".bridge-update-request");
+  const confirmHost = host.querySelector(".bridge-update-confirm-host");
+  // The install a development build's replacement warning is holding: "now",
+  // "idle", or null while no warning shows.
+  let confirming = null;
+
+  const paintConfirmation = (status) => {
+    if (!bridgeCanReplaceDevelopmentBuild(status) || busy) confirming = null;
+    confirmHost.innerHTML = confirming ? replacementWarning(status, confirming) : "";
+  };
 
   const paint = () => {
     if (!active) return;
     const status = bridgeUpdateStatus(deviceId);
     body.innerHTML = statusBody(status, loading);
     setActionAvailability({ check, now, idle }, status, busy);
+    paintConfirmation(status);
     request.textContent = requestError || requestNote;
     request.classList.toggle("bridge-update-error", Boolean(requestError));
   };
@@ -108,9 +155,27 @@ export function mountBridgeUpdatePanel(host, { deviceId, callRpc }) {
       paint();
     }
   };
+  const install = (when) => {
+    if (bridgeCanReplaceDevelopmentBuild(bridgeUpdateStatus(deviceId))) {
+      confirming = when;
+      paint();
+      return;
+    }
+    void act("bridge.install_update", { when }, INSTALL_NOTES[when]);
+  };
   check.onclick = () => void act("bridge.check_update", {}, "Starting update check…");
-  now.onclick = () => void act("bridge.install_update", { when: "now" }, "Starting installation…");
-  idle.onclick = () => void act("bridge.install_update", { when: "idle" }, "Scheduling installation…");
+  now.onclick = () => install("now");
+  idle.onclick = () => install("idle");
+  confirmHost.onclick = (event) => {
+    const when = confirming;
+    if (event.target.closest("[data-bridge-confirm-cancel]")) {
+      confirming = null;
+      paint();
+    } else if (when && event.target.closest("[data-bridge-confirm-replace]")) {
+      confirming = null;
+      void act("bridge.install_update", { when, replace_development_build: true }, INSTALL_NOTES[when]);
+    }
+  };
 
   paint();
   void refreshBridgeUpdateStatus(deviceId, callRpc, () => active).then(() => {

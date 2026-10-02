@@ -10,7 +10,7 @@ import { railViewSwitchHtml } from "./railMode.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import { subscribeInboxAttentionCount } from "./inboxAttention.js";
 import { ICON_PIN, ICON_PLUS, ICON_SETTINGS } from "./icons.js";
-import { anyBridgeUpdateAvailable, onBridgeUpdatesChanged } from "./bridgeUpdates.js";
+import { anyBridgeUpdateNotifies, onBridgeUpdatesChanged } from "./bridgeUpdates.js";
 import { syncPinButton } from "./pinControl.js";
 import { mountPushPrompt } from "./pushPrompt.js";
 import "../styles/shell.css";
@@ -308,7 +308,7 @@ export function paintBridgeUpdateMark() {
   if (typeof document === "undefined") return;
   const account = $("#nav-account");
   if (!account) return;
-  const available = anyBridgeUpdateAvailable(App.devices);
+  const available = anyBridgeUpdateNotifies(App.devices);
   account.classList.toggle("has-bridge-update", available);
   account.setAttribute("aria-label", available ? "Settings; bridge update available" : "Settings");
   account.querySelector(".bridge-update-dot")?.remove();

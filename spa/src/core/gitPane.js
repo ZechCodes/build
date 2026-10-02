@@ -155,7 +155,7 @@ export function createWorkspaceReview({ scope, callRpc, cacheScope = null, navig
     /** What the cache already knows this diff is measured against, so the
      *  rail's subtitle is not a round trip late. */
     seedBase(next) {
-      if (!next || base.label || base.kind !== "empty") return;
+      if (!next || (next.kind === base.kind && next.label === base.label)) return;
       base = next;
       onBaseChange();
     },

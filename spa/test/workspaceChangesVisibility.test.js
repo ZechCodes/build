@@ -291,7 +291,7 @@ describe("a Changes directory that is mounted but hidden", () => {
     await vi.waitFor(() => expect(repo.textContent).toContain("feature history"));
     await vi.waitFor(() => expect(repo.textContent).toContain("checked out branch"));
     await vi.waitFor(() => expect(repo.querySelector(".workspace-reftrigger-name").textContent).toBe("feature"));
-    expect(repo.querySelector('.rrow[data-sel="review"] .rsub').textContent).toBe("vs origin/feature");
+    await vi.waitFor(() => expect(repo.querySelector('.rrow[data-sel="review"] .rsub').textContent).toBe("vs origin/feature"));
     for (const finish of heldReads.values()) finish();
     for (let turn = 0; turn < 20; turn += 1) await flush();
     const cached = async (kind) => (await readCached({ deviceId: "dev-1", entityId: directoryCacheId({ workspace_id: "ws-1", source_id: "repo" }), kind }))?.value;

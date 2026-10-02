@@ -22,6 +22,8 @@
 import { esc } from "../core/text.js";
 import { mountGitPane } from "../core/gitPane.js";
 import { mountWorkspaceRefPicker } from "../core/workspaceRefPicker.js";
+import { directoryCacheId } from "../core/directoryScope.js";
+import { deleteCached } from "../core/localCache.js";
 
 /** Where an arrow takes the selection along the row. */
 const KEY_STEPS = { ArrowLeft: -1, ArrowRight: 1 };
@@ -30,6 +32,15 @@ const KEY_ENDS = { Home: 0, End: -1 };
 /** Whether a directory has git to show: only a record saying it has none is
  *  one without. */
 export const directoryHasGit = (directory) => directory?.is_git !== false;
+
+/** A successful branch checkout invalidates the previous branch's mutable
+ *  records. The remounted pane fills these misses; immutable patches stay. */
+const invalidateCheckout = (scope, cacheScope) => {
+  const entityId = directoryCacheId(scope);
+  const addresses = ["status", "log", "unpushed", "diff"]
+    .map((kind) => cacheScope?.address({ entityId, kind })).filter(Boolean);
+  return deleteCached(addresses);
+};
 
 /** Pure: the tab row — one tab per directory, in the workspace's order, git or
  *  not, the current one selected and the one Tab lands on. Names come from the
@@ -87,6 +98,8 @@ export function mountChanges(body, { scope, callRpc, cacheScope, projectId, navi
   const refPicker = mountWorkspaceRefPicker(refbar, { scope, callRpc, cacheScope, onCheckout: async () => {
       if (disposed) return;
       gitPane.dispose();
+      await invalidateCheckout(scope, cacheScope);
+      if (disposed) return;
       onCommitSelection?.(null);
       gitPane = mountGitPane(gitHost, { scope, callRpc, cacheScope, projectId, navigate, viewingContext, agentSelection,
         requestedCommit: null, onCommitSelection });

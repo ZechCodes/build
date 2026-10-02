@@ -39,6 +39,7 @@ import { adoptDeviceSession, resetDeviceContexts } from "../src/core/deviceConte
 import { standShell, stopShell } from "../src/core/shell.js";
 import { fakeSession } from "./deviceSessionFixture.js";
 import { readCached, wipeCache } from "../src/core/localCache.js";
+import { wipeUiRecords } from "../src/core/localUiStore.js";
 import { createViewingContext } from "../src/core/viewingContext.js";
 import { worktreeOf } from "./gitWireFixture.js";
 
@@ -99,6 +100,7 @@ beforeAll(() => initRouter());
 
 beforeEach(async () => {
   await wipeCache();
+  await wipeUiRecords();
   document.body.innerHTML = '<div id="toolbar"><span id="tb-verb"></span></div><nav id="dir-rail"></nav><div id="root"></div><aside id="agent-rail"></aside><div id="console-region"></div>';
   App.viewDispose = null;
   App.gated = false;

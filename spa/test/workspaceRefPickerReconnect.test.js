@@ -59,9 +59,8 @@ describe("workspace ref picker across a reconnect", () => {
   it.each([["untried"], ["blocked"]])("mounted while the machine is %s: quiet, then read by the adopted session", async (mode) => {
     const context = contexts.knownDeviceContext("dev-a");
     if (mode === "blocked") contexts.blockCurrentDevice("dev-a", "unreached");
-    await cache.writeCached(context.cacheScope.address({ entityId, kind: "refs" }), listing("cached-main"));
     const picker = await mountOver(context);
-    expect(picker.label()).toBe("cached-main");
+    expect(picker.label()).toBe("Loading refs…");
     expect(picker.status()).toBe("");
 
     const call = vi.fn(async (method) => (method === "git.refs" ? listing("fresh") : { ok: true }));
@@ -76,7 +75,7 @@ describe("workspace ref picker across a reconnect", () => {
     expect(picker.status()).toBe("");
   });
 
-  it("mount error → greet → refresh leaves the status empty", async () => {
+  it("requested read error → greet → refresh leaves the status empty", async () => {
     const context = contexts.knownDeviceContext("dev-a");
     await cache.writeCached(context.cacheScope.address({ entityId, kind: "refs" }), listing("cached-main"));
     const refusing = vi.fn(async (method) => {
@@ -85,6 +84,9 @@ describe("workspace ref picker across a reconnect", () => {
     });
     greet(context, refusing);
     const picker = await mountOver(context);
+    expect(refsCalls(refusing)).toHaveLength(0);
+    picker.toggle();
+    await flush();
     expect(refsCalls(refusing)).toHaveLength(1);
     expect(picker.status()).toBe("Could not read refs: repository is locked");
 
@@ -98,6 +100,7 @@ describe("workspace ref picker across a reconnect", () => {
     await vi.waitFor(() => expect(picker.label()).toBe("fresh"));
     expect(refsCalls(call)).toHaveLength(1);
 
+    picker.toggle();
     picker.toggle();
     await vi.waitFor(() => expect(refsCalls(call)).toHaveLength(2));
     await flush();

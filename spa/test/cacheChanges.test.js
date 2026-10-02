@@ -408,7 +408,7 @@ describe("a commit's detail", () => {
     pane.dispose();
   });
 
-  it("loads the routed commit diff while the workspace's refresh is still pending", async () => {
+  it("loads the routed commit diff while an explicit workspace refresh is still pending", async () => {
     const entityId = 'workspace:["ws-1","src"]';
     await cache.writeCached({ deviceId: "dev-1", entityId, kind: "status" }, status());
     await cache.writeCached({ deviceId: "dev-1", entityId, kind: "log" }, log());
@@ -421,6 +421,8 @@ describe("a commit's detail", () => {
       review: { getBase: () => "main", getRailSubtitle: () => "vs main" },
       requestedCommit: "aaaaaaaa",
     });
+    const { refetchEverything } = await import("../src/core/changeEvents.js");
+    refetchEverything();
     await vi.waitFor(() => expect(container.querySelector(".crow.sel")?.dataset.hash).toBe("a".repeat(40)));
     await vi.waitFor(() => expect(callRpc.mock.calls.some(([method]) => method === "git.show")).toBe(true));
     await vi.waitFor(() => expect(container.textContent).toContain("committed line"));
@@ -631,6 +633,18 @@ describe("a pane over a checkout nothing walks", () => {
     const { container, pane } = await mountPane(callRpc, { scope: SOURCE });
     expect(callRpc.mock.calls.filter(([method]) => ["git.status", "git.log"].includes(method)).map(([method]) => method)).toEqual([`git.${kind}`]);
     expect(container.querySelector(".crail-host")).not.toBeNull();
+    pane.dispose();
+  });
+
+  it("refreshes status and history marked stale while the pane is mounted", async () => {
+    await fill();
+    const callRpc = sourceRpc();
+    const { container, pane } = await mountPane(callRpc, { scope: SOURCE });
+    await cache.writeCached({ deviceId: "dev-1", entityId: ENTITY, kind: "status" }, { ...status(), stale: true });
+    await cache.writeCached({ deviceId: "dev-1", entityId: ENTITY, kind: "log" }, { ...log(), stale: true });
+    await vi.waitFor(() => expect(container.textContent).toContain("landed since"));
+    await vi.waitFor(async () => expect((await cache.readCached({ deviceId: "dev-1", entityId: ENTITY, kind: "status" }))?.value.stale).toBeUndefined());
+    expect(callRpc.mock.calls.find(([method]) => method === "git.status")[1]).not.toHaveProperty("if_status_key");
     pane.dispose();
   });
 

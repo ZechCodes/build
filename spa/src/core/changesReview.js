@@ -20,7 +20,7 @@
 
 import "../styles/surfaces.css";
 import { reviewCommentContext } from "./reviewCommentContext.js";
-import { readCached, subscribeCache, writeCached } from "./localCache.js";
+import { readCached, recordWriteOf, subscribeCache, writeCachedIfStill } from "./localCache.js";
 import { withinBytes } from "./cacheLifetime.js";
 import { WORKING_DIFF_MAX_BYTES } from "./cacheThresholds.js";
 import { createCommentLayer } from "./changesComments.js";
@@ -120,12 +120,6 @@ export function createReviewPlug({
   // A surface that names none is drawn from whatever patch `fetchDiff`
   // carried, exactly as before.
   fetchFiles = null,
-  // Whether this plug is the only reader of its changeset. A run's and a
-  // worktree's `diff` record is written by the sync layer on every pass and
-  // moved by every `git` push, so the record IS the diff. A workspace source
-  // is on no board row and the bridge names no entity for it, so its record is
-  // this plug's own last read: painted at once, and read through anyway.
-  readsForItself = false,
   navigate = null,
   viewingContext = null,
 }) {
@@ -525,8 +519,7 @@ export function createReviewPlug({
 
   /** What the plug draws on mount: the record, and one read of the wire only
    *  where there is no record to draw, where the push that wrote it said it
-   *  could not carry the body, where the record carries the body alone, or
-   *  where nothing but this plug reads the checkout the record came off. */
+   *  could not carry the body, or where the record carries the body alone. */
   const standUp = async () => {
     const mounted = host;
     const record = await heldDiff();
@@ -535,7 +528,7 @@ export function createReviewPlug({
       applyCachedDiff(record);
       render();
     }
-    if (!record || record.stale || readsForItself || bodyOnly(record)) paint();
+    if (!record || record.stale || bodyOnly(record)) paint();
   };
 
   /** The record moved — a `git` push carried a new working tree, or a reader
@@ -592,9 +585,11 @@ export function createReviewPlug({
   };
 
   const writePulledDiff = async (address, before, payload, patchUnchanged) => {
-    const current = await readCached(address);
-    if (current?.at !== before?.at) return;
-    await writeCached(address, diffRecordValue(payload, before, patchUnchanged));
+    if (!host) return;
+    await writeCachedIfStill({
+      guard: { address, written: recordWriteOf(before) },
+      puts: [{ address, value: diffRecordValue(payload, before, patchUnchanged) }],
+    });
   };
 
   const cachelessDiffKey = (payload, nextCommentable) => [

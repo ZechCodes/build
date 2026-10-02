@@ -1025,6 +1025,26 @@ describe("the board item", () => {
     expect(calls("project.list")).toHaveLength(0);
   });
 
+  it.each(["push", "catch-up"])("invalidates cached directory Git on %s even with no pane mounted", async (event) => {
+    await boot([]);
+    const entityId = 'workspace:["ws-1","repo"]';
+    const kinds = ["refs", "status", "log", "unpushed", "diff"];
+    for (const kind of kinds) {
+      await cache.writeCached({ deviceId: "dev-1", entityId, kind }, { from: kind });
+      await cache.writeCached({ deviceId: "dev-2", entityId, kind }, { from: kind });
+    }
+    await cache.writeCached({ deviceId: "dev-1", entityId, kind: "patch", sub: "sha" }, { patch: "immutable" });
+    bridge.call.mockClear();
+    if (event === "push") await deliver([{ entity_id: "board", state: { revision: 20 } }]);
+    else await sync.syncDevice("dev-1");
+    for (const kind of kinds) {
+      expect((await read(entityId, kind))?.value).toEqual(event === "push" ? { from: kind, stale: true } : undefined);
+      expect((await cache.readCached({ deviceId: "dev-2", entityId, kind }))?.value).toEqual({ from: kind });
+    }
+    expect((await read(entityId, "patch", "sha"))?.value).toEqual(event === "push" ? { patch: "immutable" } : undefined);
+    expect(bridge.call.mock.calls.filter(([method]) => method.startsWith("git."))).toEqual([]);
+  });
+
   const feedWriters = [
     { name: "a local patch to A", act: async ({ rows, boardWatched }) => {
       await rows.patchFeedRow("dev-1", rows.feedRowTarget(branchItem()), { muted: boardWatched });

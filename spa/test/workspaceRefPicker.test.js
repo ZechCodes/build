@@ -91,9 +91,11 @@ describe("workspace ref picker", () => {
   it("paints cached refs while the pull is absent", async () => {
     const address = cacheScope.address({ entityId: 'workspace:["ws-1","repo"]', kind: "refs" });
     await writeCached(address, listing);
-    const { host, mounted } = await mount({ refsResponse: new Promise(() => {}) });
+    const { host, callRpc, mounted } = await mount({ refsResponse: new Promise(() => {}) });
     await vi.waitFor(() => expect(host.querySelector(".workspace-reftrigger-name").textContent).toBe("main"));
+    expect(callRpc).not.toHaveBeenCalled();
     host.querySelector("[data-refpicker-toggle]").click();
+    expect(callRpc).toHaveBeenCalledWith("git.refs", scope);
     expect(refNames(host).join(" ")).toContain("feature/search");
     mounted.dispose();
   });
@@ -171,9 +173,11 @@ describe("workspace ref picker", () => {
     const address = cacheScope.address({ entityId: 'workspace:["ws-1","repo"]', kind: "refs" });
     await writeCached(address, listing);
     const { host, callRpc } = await mount({ refsAnswers: [new Error("Not a git repository")] });
+    host.querySelector("[data-refpicker-toggle]").click();
     const status = host.querySelector('[role="status"]');
     await vi.waitFor(() => expect(status.textContent).toBe("Not a git repository"));
 
+    host.querySelector("[data-refpicker-toggle]").click();
     host.querySelector("[data-refpicker-toggle]").click();
     await vi.waitFor(() => expect(callRpc.mock.calls.filter(([method]) => method === "git.refs")).toHaveLength(2));
     await vi.waitFor(() => expect(status.textContent).toBe(""));
@@ -198,6 +202,7 @@ describe("workspace ref picker", () => {
       const address = cacheScope.address({ entityId: 'workspace:["ws-1","repo"]', kind: "refs" });
       await writeCached(address, listing);
       const { host, callRpc } = await mount({ refsAnswers: [new Error(mark)] });
+      host.querySelector("[data-refpicker-toggle]").click();
       await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("git.refs", scope));
       await flush();
       expect(host.querySelector(".workspace-reftrigger-name").textContent).toBe("main");

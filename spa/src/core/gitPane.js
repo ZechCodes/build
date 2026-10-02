@@ -56,7 +56,7 @@ import { mountChangesComposer } from "./changesComposer.js";
 import { commitPaths, createReviewMarks } from "./reviewMarks.js";
 import { toggleSecretSpoiler } from "./secrets.js";
 import { watchChanges } from "./changeEvents.js";
-import { cachedSubKeys, mergeCached, readCached, readCachedMany, recordWriteOf, subscribeCache, writeCached } from "./localCache.js";
+import { cachedSubKeys, mergeCached, mergeCachedRecordsTogether, readCached, readCachedMany, recordWriteOf, subscribeCache, writeCached } from "./localCache.js";
 import { COMMIT_PATCH_MAX_BYTES, PATCH_RECORD_KIND } from "./cacheThresholds.js";
 import { withinBytes } from "./cacheLifetime.js";
 import { WHOLE_ANSWER } from "./cachedBodies.js";
@@ -105,6 +105,7 @@ async function keepUnpushed(cacheScope, scope, payload) {
  * aggregate without each hosting view having to remember special wiring. */
 export function createWorkspaceReview({ scope, callRpc, cacheScope = null, navigate = null, viewingContext = null, onBaseChange = () => {}, submit = null }) {
   let base = { kind: "empty", label: null };
+  let lifetime = 0;
   /** Whether this device's bridge answers hunks per file (`git.changeset_diff`,
    *  API 1.4) — read off the greeting, never by trying the verb. */
   const perFileDiffs = () => bridgeCapabilities(cacheScope?.deviceId)?.diffs?.perFile === true;
@@ -117,10 +118,10 @@ export function createWorkspaceReview({ scope, callRpc, cacheScope = null, navig
     // A workspace source is not an entity the sync layer walks — its records
     // are filed under the source, which only this side names — so this plug's
     // diff is the one it reads for itself, kept where the next mount of this
-    // source will find it and never taken as the last word.
+    // source will find it. Checkout invalidations refresh it explicitly.
     cacheEntity: directoryCacheId(scope),
-    readsForItself: true,
     fetchDiff: async (ifDiffKey) => {
+      const readLifetime = lifetime;
       const payload = await callRpc("git.unpushed", {
         ...scope,
         // The commit list, the base and the key, and — of a bridge that can
@@ -131,6 +132,7 @@ export function createWorkspaceReview({ scope, callRpc, cacheScope = null, navig
         ...(perFileDiffs() ? { patch: false } : {}),
         ...(ifDiffKey ? { if_diff_key: ifDiffKey } : {}),
       });
+      if (readLifetime !== lifetime) return null;
       if (!payload.unchanged) await keepUnpushed(cacheScope, scope, payload);
       return { ...payload, commentable: Boolean(submit) };
     },
@@ -142,6 +144,14 @@ export function createWorkspaceReview({ scope, callRpc, cacheScope = null, navig
   });
   return {
     ...plug,
+    mount(...args) {
+      lifetime += 1;
+      return plug.mount(...args);
+    },
+    unmount() {
+      lifetime += 1;
+      plug.unmount();
+    },
     /** What the cache already knows this diff is measured against, so the
      *  rail's subtitle is not a round trip late. */
     seedBase(next) {
@@ -345,7 +355,7 @@ export function gitPollKey(status, log, nowSeconds = Date.now() / 1000) {
  *  moved answers `{ unchanged: true }` and the bridge never serializes a shape
  *  nobody needed. A pane holding no status asks for the whole thing. */
 export function ifStatusKey(status) {
-  return status && status.status_key ? { if_status_key: status.status_key } : {};
+  return status && !status.stale && status.status_key ? { if_status_key: status.status_key } : {};
 }
 
 /** The status the pane holds after such a read: the shape it was handed, or
@@ -1243,8 +1253,9 @@ export function mountGitPane(
     if (!status) return true;
     const address = cacheAddress("status");
     if (!address) return false;
-    if (guarded && !await recordStill(address, before)) return true;
-    await writeCached(address, status);
+    await mergeCachedRecordsTogether([address], ([current]) => [
+      disposed || (guarded && recordWriteOf(current) !== recordWriteOf(before)) ? null : status,
+    ]);
     return true;
   };
 
@@ -1252,10 +1263,11 @@ export function mountGitPane(
     if (!log) return true;
     const address = cacheAddress("log");
     if (!address) return false;
-    if (guarded && !await recordStill(address, before)) return true;
     // Merged rather than replaced: another tab may hold more history than this
     // latest page, and a first-page pull must not throw the older pages away.
-    await mergeCached(address, (current) => freshLogPage(current, log));
+    await mergeCachedRecordsTogether([address], ([current]) => [
+      disposed || (guarded && recordWriteOf(current) !== recordWriteOf(before)) ? null : freshLogPage(current?.value, log),
+    ]);
     return true;
   };
 
@@ -1285,9 +1297,12 @@ export function mountGitPane(
     await rereadRecords();
   };
 
-  /** Read this checkout off the machine and repaint (post-action refresh, and
-   *  the one first paint a checkout the cache holds nothing for gets). */
-  const forceRefresh = async () => {
+  const readCheckoutRecord = (kind) =>
+    callRpc(`git.${kind}`, { ...scope, ...(kind === "status" ? ifStatusKey(lastStatus) : {}) });
+
+  /** Read the missing records on mount, or both after an invalidation/action.
+   *  Every answer goes through the cache before it can paint. */
+  const forceRefresh = async (kinds = ["status", "log"]) => {
     // Capture the records before the pull without holding the pull behind an
     // IndexedDB turn. Besides keeping a cold mount quick, this matters for a
     // route on another device: its own caller must be reached as soon as the
@@ -1299,10 +1314,7 @@ export function mountGitPane(
     try {
       [[statusBefore, logBefore], [answer, log]] = await Promise.all([
         before,
-        Promise.all([
-          callRpc("git.status", { ...scope, ...ifStatusKey(lastStatus) }),
-          callRpc("git.log", { ...scope }),
-        ]),
+        Promise.all(["status", "log"].map((kind) => kinds.includes(kind) ? readCheckoutRecord(kind) : null)),
       ]);
     } catch (e) {
       if (disposed) return;
@@ -1311,9 +1323,10 @@ export function mountGitPane(
       return;
     }
     const status = statusAfterRead(answer, lastStatus);
-    if (disposed || !status) return;
+    if (disposed) return;
     scopeErrorShown = null;
     await storeFrom(status, log, { statusBefore, logBefore, guarded: true });
+    return true;
   };
 
   /** Drop the scope's draft everywhere it lives: the stash and the live box. */
@@ -2088,7 +2101,23 @@ export function mountGitPane(
   const takeUpRecords = async () => {
     const held = await readRecords();
     if (disposed || !held) return false;
-    return paintRecords(held);
+    const painted = paintRecords(held);
+    refreshStaleRecords(held);
+    return painted;
+  };
+
+  // A board invalidation can reach the cache after this pane's own watcher
+  // already started a read. Repair that stale record after the older read
+  // settles. A failed read waits for another invalidation rather than spinning.
+  let staleRefresh = null;
+  const refreshStaleRecords = (held) => {
+    if (!visible || staleRefresh) return;
+    const kinds = ["status", "log"].filter((kind) => held[kind]?.stale);
+    if (!kinds.length) return;
+    staleRefresh = forceRefresh(kinds).then((landed) => {
+      staleRefresh = null;
+      if (landed && !disposed) void rereadRecords();
+    });
   };
 
   // One read at a time, and one more where the records moved while it ran: one
@@ -2126,28 +2155,22 @@ export function mountGitPane(
    * anything. Two checkouts are not on that list — a workspace SOURCE, whose
    * records are filed under the source and only this side names one, and a
    * project's own directory, which is no entity at all. For those, and for a
-   * pane mounted with no cache to hear from, this IS the reader: it reads once
-   * on mount and again when the bridge says the checkout moved. No timer
-   * either way.
+   * pane mounted with no cache to hear from, this IS the reader: it fills
+   * missing records on mount and refreshes when the bridge says the checkout
+   * moved. No timer either way.
    */
   const readsForItself = !cacheScope || !syncWalksCheckout(scope);
 
   /** The first paint. Whatever the records say goes on screen at once, so the
    *  reader gets the surface on the first frame. A checkout the cache holds
-   *  nothing for is then read off the machine and written down — and so is one
-   *  nothing walks, where the records are this pane's own last visit and a
-   *  remount painting them would show a checkout as it was left. */
+   *  nothing for is then read off the machine and written down. A remount
+   *  reuses each held record; pushes and explicit actions own refreshes. */
   const standUp = async () => {
-    // A checkout nobody else walks needs a pull on every mount. Start it beside
-    // the cache read: the read still owns the first paint, and the pull can
-    // only paint after its records are written and re-read. Keeping the wire
-    // behind several IndexedDB turns made a remote route look as though it had
-    // never reached its own device at all.
-    const refresh = readsForItself ? forceRefresh() : null;
-    const painted = await takeUpRecords();
+    const held = await readRecords();
     if (disposed) return;
-    if (!painted && !refresh) await forceRefresh();
-    else if (refresh) await refresh;
+    if (held) paintRecords(held);
+    const missing = ["status", "log"].filter((kind) => !held?.[kind] || held[kind].stale);
+    if (missing.length) await forceRefresh(missing);
     if (visible) await openRequestedCommit();
   };
 
@@ -2223,6 +2246,7 @@ export function mountGitPane(
   };
 
   const showPane = () => {
+    void rereadRecords();
     drawer?.setVisible(true);
     container.addEventListener("scroll", onContextScroll, true);
     document.addEventListener("selectionchange", captureViewingSelection);

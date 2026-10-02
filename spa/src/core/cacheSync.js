@@ -38,6 +38,7 @@
 // was asked, or under an entity a push took away since (core/pushFence.js).
 
 import { trailingRead } from "./trailingRead.js";
+import { invalidateDirectoryGit } from "./directoryGitCache.js";
 import { App } from "../app.js";
 import { contextFor, liveContexts, onDeviceStateChanged } from "./deviceContexts.js";
 import { bridgeCapabilities, onSubscriptionHeld, subscriptionsSettledFor, watchChanges } from "./changeEvents.js";
@@ -1332,6 +1333,7 @@ async function applyBoard(context, state) {
 }
 
 async function writePushedBoard(context, state, before) {
+  await invalidateDirectoryGit(context);
   // The harnesses out of usage there (#58): the pushed reading replaces the
   // device's record, and mounted surfaces repaint from its cache announcement.
   await writeUsageLimits(context.deviceId, state.usage_limits);

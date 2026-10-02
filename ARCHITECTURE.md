@@ -1070,6 +1070,13 @@ them into new code; each is a candidate to bring under the rule.
   - the agent rail reads `settings.get` (`spa/src/core/agentRail.js`).
 - **Invalidation pushes.** Some push fields only say what moved, and the
   applier reads again:
+  - a board item marks cached Git records for workspace sources and project
+    directories stale (`directoryGitCache.js`), even while Changes is unmounted.
+    These directories have no board entity of their own, so the invalidation
+    covers the device's cached directories. Their next mount reads only missing
+    or stale records; a quiet Files/Tasks rail round trip reads nothing again.
+    A ref checkout drops that directory's mutable Git records before remounting;
+    immutable commit patches stay cached.
   - `tasks` carries only ids, so the project's task list is re-read;
   - changed `files` paths re-list the directories the reader opened and
     re-read open file bodies with `fs.read` (a paged body from its first

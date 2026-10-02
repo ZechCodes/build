@@ -112,7 +112,7 @@ pub(in crate::app) fn ensure_attachments_ignored(
 /// Extension-based mime hint for `fs.read` previews (spec §4.3's pinned
 /// table). `head` is (at most) the first 8 KiB of the file's content — used
 /// only to distinguish text from binary when the extension doesn't match.
-pub(in crate::app) fn mime_hint(path: &std::path::Path, head: &[u8]) -> &'static str {
+pub(crate) fn mime_hint(path: &std::path::Path, head: &[u8]) -> &'static str {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())

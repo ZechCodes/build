@@ -34,6 +34,7 @@ export const ERROR_CODES = Object.freeze([
   "invalid_params",
   "not_found",
   "conflict",
+  "stale_version",
   "unavailable",
   "busy",
   "unsupported_version",

@@ -328,14 +328,24 @@ impl Store {
         Ok(timelines)
     }
 
-    /// Take a project's whole tracker with it.
-    ///
-    /// Only reached by project deletion. Nothing else removes a task: a
-    /// task is closed, so a number is never reused and a timeline never loses
-    /// an entry.
-    pub fn delete_tracker_tasks_of_project(&self, project_path: &str) -> Result<(), StoreError> {
+    /// Explicit history deletion, called by the review service off the app
+    /// lock. Release each history's Git pins inside the transaction: a snapshot
+    /// cannot commit new pins between their enumeration and metadata deletion.
+    pub(crate) fn delete_tracker_tasks_of_project(
+        &self,
+        project_path: &str,
+        release: impl Fn(&crate::reviews::records::Review) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
-            for table in ["tracker_comments", "tracker_events"] {
+            for review in super::reviews::load_reviews_of_project(tx, project_path)? {
+                release(&review)?;
+            }
+            for table in [
+                "tracker_comments",
+                "tracker_events",
+                "review_snapshots",
+                "reviews",
+            ] {
                 tx.execute(
                     &format!(
                         "DELETE FROM {table} WHERE task_id IN \
@@ -364,7 +374,7 @@ fn next_task_number(tx: &Transaction, project_path: &str) -> Result<u64, StoreEr
     Ok(highest as u64 + 1)
 }
 
-fn write_tracker_task(tx: &Transaction, task: &Task) -> Result<(), StoreError> {
+pub(super) fn write_tracker_task(tx: &Transaction, task: &Task) -> Result<(), StoreError> {
     tx.execute(
         "INSERT INTO tracker_tasks
              (id, project_key, number, state, status, created_at, updated_at, record)
@@ -389,7 +399,7 @@ fn write_tracker_task(tx: &Transaction, task: &Task) -> Result<(), StoreError> {
 /// Append what was said and what happened. Both are inserts that ignore a
 /// repeat of the same id: an append is idempotent, so a retry of a write whose
 /// answer was lost adds nothing a second time.
-fn append_activity(
+pub(super) fn append_activity(
     tx: &Transaction,
     comments: &[TaskComment],
     events: &[TaskEvent],

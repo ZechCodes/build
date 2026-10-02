@@ -28,6 +28,21 @@ const eventExamples = fixtures
   .flatMap(({ name, body }) => body.events.map((event, index) => ({ where: `${name}[${index}]`, event })));
 
 describe("the v1 adapter against fixtures/api/v1", () => {
+  it("keeps review snapshots, saved file pages and completion distinct from later Git actions", () => {
+    for (const verb of ["snapshot", "get", "diff", "complete"]) {
+      const fixture = methodFixtures.find(({ body }) => body.method === `tasks.review.${verb}`).body;
+      expect(fixture.since).toBe("3.6.0");
+    }
+    expect(methodFixtures.some(({ body }) => body.method === "tasks.review.act")).toBe(false);
+    const fixture = methodFixtures.find(({ body }) => body.method === "tasks.review.diff").body;
+    expect(fixture.result.files_truncated).toBe(false);
+    expect(fixture.examples.some(({ params }) => params.mode === "tree")).toBe(true);
+    const { result } = fixture.examples.find(({ params }) => params.mode === "blob");
+    expect(result.editable).toBe(false);
+    expect(result.range.version).toMatch(/^[0-9a-f]{40}$/);
+    expect(v1.ERROR_CODES).toContain("stale_version");
+  });
+
   it("finds fixtures at all", () => {
     expect(methodFixtures.length).toBeGreaterThan(100);
   });

@@ -29,6 +29,11 @@ deployment gate is part of this feature.
 
 Keep the task's identity, title, description, assignee and comment stream, as
 #145 specifies. A task review names one workspace and has numbered snapshots.
+Taking a snapshot from another workspace replaces the review's workspace and
+previous snapshot history. The version and snapshot number keep advancing;
+the old workspace's pins are released only after the new metadata commits.
+Failed or stale replacements leave the previous review and its pins intact.
+This does not change the task's comments, status or workspace links.
 Each snapshot includes every directory from that workspace's manifest, in order,
 including later-added directories and directories that are unchanged or unavailable.
 Do not enumerate only the project's current sources or use its first-source fields
@@ -57,6 +62,9 @@ per-directory base overrides. For each Git directory:
    resolves, then the empty tree. Record and show the exact base used. Do not hide
    a base equal to HEAD behind an inferred alternative; the caller can override it.
 3. Retain the head with `refs/build/reviews/<task>/<snapshot-id>/<directory-id>/head`.
+   Ref components encode bytes outside ASCII letters, digits, `_` and `-` as
+   `%HH` (including `%` itself). Actual directory IDs contain `:`, which Git
+   forbids in ref names; metadata retains the original IDs (#328).
    Retain a non-empty base under the sibling `/base` ref too: it need not be an
    ancestor of HEAD. Directory IDs keep two sources sharing one repo distinct.
    Allocate a unique snapshot ID before pinning, independent of its display number,
@@ -77,6 +85,9 @@ needed. Reuse `bridge/src/diff.rs`'s commit diff machinery, extending its input
 handling for an empty-tree base; do not call the live dirty-workdir diff. Current
 workspace `git.changeset_diff` uses an unpublished-work baseline
 (`bridge/src/app/git/mod.rs`, `changeset_subject`), so it is not this immutable read.
+Change listings include at most 1,000 file rows and an explicit
+`files_truncated` flag. A caller can narrow reads to specific paths; patch pages
+retain only the requested byte window rather than a whole-repository patch.
 
 ### Full Files view
 
@@ -147,13 +158,18 @@ becomes “Interrupted: check and retry, or mark complete”. Nothing is replaye
 Thin RPC/MCP adapters call the storage/Git service. Accepted Git work runs without
 a browser; action results are facts stored by that service. The SPA chooses the
 steps and calls `complete` after they succeed, using recorded results after a
-reconnect. `complete` is the single writer of review completion and task Done.
+reconnect. The service has one completion writer for review completion and task
+Done. `complete` calls it with a specific action description. An ordinary move
+to Done by a user or agent calls the same writer for an open review, with the
+mover as actor and “Marked done” as the default description, atomically with the
+move. A review never refuses that ordinary task movement.
 
 Add typed contracts in `bridge/src/api/v1/`, fixtures in `fixtures/api/v1/`, and
-both `bridge/tests/api_contract.rs` and `spa/test/apiContract.test.js`. Main's wire
-is **3.5.0** (`bridge/src/api/mod.rs`, `fixtures/api/versions.json`); allocate the next
-minor during implementation. Gate snapshots, anchored comments and Git actions
-separately so each increment works with older connected devices.
+both `bridge/tests/api_contract.rs` and `spa/test/apiContract.test.js`. Increment A
+uses wire **3.6.0** (`bridge/src/api/mod.rs`, `fixtures/api/versions.json`), announcing
+its four verbs individually. `get` returns metadata/snapshots/completion in A;
+available destinations and action results arrive with C. Gate snapshots, anchored
+comments and Git actions separately so each increment works with older devices.
 
 ## 3. Selected Git steps
 
@@ -279,7 +295,11 @@ workspace transfer remain #145's later work, not prerequisites for these tools.
 
 A task having a review record opts it into the new behavior. `complete` stores the
 review's completed state, brief description, actor, timeline entry and task Done
-in one metadata transaction. Task closure remains separate. Snapshot updates change
+in one metadata transaction. When completion changes the column, also append a
+Moved event with the previous column and `done`, and run the same follow-on
+behavior as an ordinary move to Done. An already-Done task gets no duplicate
+move event. RPC and MCP share a 2,000-byte UTF-8 limit for the trimmed description.
+Task closure remains separate. Snapshot updates change
 only the review; the SPA or agent explicitly moves/reopens the task when appropriate.
 Neither taking a snapshot nor choosing a reviewer implicitly moves the task.
 
@@ -297,6 +317,12 @@ Test both paths with review and ordinary tasks linked to the same workspace.
 Review completion never invokes Finish/deletion. Existing lifecycle/reclaim is
 separate; if it deletes a repository, old review metadata survives but its diffs
 may no longer be available.
+
+Implementation note (#328): project removal preserves task history too, so it
+also keeps review pins. Explicit task-history deletion goes through the review
+service to release pins before removing metadata. Ordinary moves to Done also
+complete an open review with “Marked done”; `complete` remains the way to give
+a specific description. Both use the same transactional completion writer.
 
 ## 7. Rollout
 

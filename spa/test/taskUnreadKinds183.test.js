@@ -41,6 +41,12 @@ describe("the SPA's count", () => {
     const said = comment({ id: "tc-01K5Z000000000000000000011", author: agent });
     expect(counted(mark, [said, event("moved", "te-01K5Z000000000000000000012")])).toBe(2);
   });
+
+  it("counts an agent completing a review until that event is read", () => {
+    const completed = event("review_completed", "te-01K5Z000000000000000000013");
+    expect(counted(mark, [completed])).toBe(1);
+    expect(counted(completed.id, [completed])).toBe(0);
+  });
 });
 
 describe("the bridge's cases", () => {

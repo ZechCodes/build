@@ -5,10 +5,11 @@
 //! work is worse than no task: it says something false about where the work
 //! got to, and a board nobody trusts is a board nobody reads.
 //!
-//! 1. **An agent holding a dispatched task reports Complete.** The task
-//!    moves to In review.
+//! 1. **An agent holding a dispatched task reports Complete.** An ordinary
+//!    task moves to In review; a task with a saved review stays put.
 //! 2. **A workspace a task links is finished after a merge.** The task
-//!    closes, and when Done deleted the branch too, its timeline says which.
+//!    closes unless it has a saved review, and when Done deleted the branch
+//!    too, its timeline says which.
 //!    Finishing before merge leaves the task open.
 //!
 //! Neither moves the inbox anchor or crosses a dismissal line. They are the
@@ -33,9 +34,10 @@ impl AppState {
     /// An agent reported Complete. Move the task THIS TURN was dispatched
     /// under, and nothing else.
     ///
-    /// Complete means the work is ready to be looked at, which is what In
-    /// review means on a board — so the card follows the report without
-    /// anybody dragging it. A **Blocked or Failed** report moves nothing:
+    /// For an ordinary task, Complete means the work is ready to be looked
+    /// at, which is what In review means on a board. A task with a saved
+    /// review stays where the user or agent put it. A **Blocked or Failed**
+    /// report moves nothing:
     /// blocked is not ready to look at, and a board that said it was would be
     /// lying in the direction that wastes a reviewer's time.
     ///
@@ -50,6 +52,14 @@ impl AppState {
         let Some((project_id, task)) = self.task_this_turn_was_for(entity_id, agent_id) else {
             return;
         };
+        match self.task_has_review(&task.id) {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(error) => {
+                eprintln!("check review on task {} after report: {error}", task.id);
+                return;
+            }
+        }
         if let Err(error) = self.hand_held_task_on(&project_id, task) {
             eprintln!("move the task {agent_id} holds on its report: {error}");
         }
@@ -165,6 +175,17 @@ impl AppState {
             .into_iter()
             .filter(|task| task.links.links_workspace(workspace_id))
         {
+            match self.task_has_review(&task.id) {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(error) => {
+                    eprintln!(
+                        "check review on task {} during workspace finish: {error}",
+                        task.id
+                    );
+                    continue;
+                }
+            }
             let mut write = TaskWrite::by(Actor::User, task);
             write.task.state = TaskState::Closed;
             write.task.closed_at = Some(now.clone());
@@ -178,6 +199,13 @@ impl AppState {
                 eprintln!("close task for finished workspace {workspace_id}: {error}");
             }
         }
+    }
+
+    fn task_has_review(&self, task_id: &str) -> Result<bool, String> {
+        self.tracker_store()?
+            .load_review(task_id)
+            .map(|review| review.is_some())
+            .map_err(|error| error.to_string())
     }
 
     /// Every task of the project that links the workspace or the branch,

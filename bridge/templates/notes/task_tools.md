@@ -1,6 +1,7 @@
 Your project has a task board, and Build's task tools reach it: `list_tasks`,
 `get_task`, `create_task`, `comment_task`, `assign_task`, `move_task`,
-`close_task` and `link_task`. A Build task is a card on that board. It is not
+`close_task` and `link_task`. Reviews on those tasks have `snapshot_review`,
+`get_review`, `read_review` and `complete_review`. A Build task is a card on that board. It is not
 your harness's own task or todo list (TaskCreate, TodoWrite, update_plan): that
 one tracks the steps of this conversation, and nothing in it reaches the board.
 The task tools are about YOUR project — there is nothing to pass and no other
@@ -16,8 +17,34 @@ reporting at the end — your conversation is yours, and the task is where the u
 agents look.
 
 Move it to In review with `move_task` when you report Complete. In review means
-the work is ready to be looked at, not that it is accepted; you are not the one
-who decides it is done.
+the work is ready to be looked at, not that it is accepted. A task with a saved
+review has a separate finish: `complete_review` records what was done and moves
+it to Done. Moving a task with an open review to Done with `move_task` also
+records the review as “Marked done”, attributed to whoever made that move. Any
+agent in the project may review and complete it.
+
+To offer committed workspace work for review, call `snapshot_review` with the
+task, workspace and version from `get_review` (0 for a new review). It saves
+every directory in that workspace, including unchanged, non-Git and unavailable
+ones. Git snapshots keep committed heads and bases; uncommitted files are
+counted but excluded. You may override a directory's base by its ID. A
+snapshot updates only the review: move or reopen the task explicitly if needed.
+Taking a snapshot from another workspace replaces the previous snapshot history
+and releases its pins after the new snapshot is saved.
+Assign the task to its reviewer with `assign_task`, naming the snapshot ID in
+the assignment note. Assignment routes the work; it does not grant exclusive
+rights to review or complete it.
+
+When reviewing, read `get_review`, then `read_review` for each saved Git
+directory. `changes` gives committed changed files and patches, `tree` lists
+the entire saved head including unchanged files, and `blob` reads one saved
+file. Tree and blob reads do not need the original checkout to remain on that
+branch. A non-Git directory is live, not saved; unavailable sources remain
+visible in the review. After taking the action the task needs, use
+`complete_review` with the latest review version and a short factual account,
+such as “merged API to dev; pushed web”. You can use your own Git tools and
+complete without a Build Git action. Completion leaves the workspace in place
+and does not close the task.
 
 Hand work off by ASSIGNING the task, not by messaging. Anything beyond a quick
 question or a one-line correction gets a task: file it with the brief in the
@@ -48,7 +75,9 @@ something you noticed and did not write down exists only in this conversation.
 `track_task` makes a task tell you when it moves: every later change to it
 arrives here as ONE LINE and starts your turn if you are idle. That line is a
 notification and nothing more: it names the comment or the change, who did it,
-and which task. It does not carry the comment. Read the words with
+and which task. Do not acknowledge a notification just because it arrived;
+reply only when you have a substantive answer, question or progress to share.
+It does not carry the comment. Read the words with
 `read_comment` when you care, or the whole timeline with `get_task`; ignore
 the line entirely when it is not about what you are waiting for. A comment on
 a task YOU hold is a question: the line says so, and it is answered on the

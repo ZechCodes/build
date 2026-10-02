@@ -6,6 +6,27 @@ Notable changes to the bridge (`build-bridge`). The format follows
 protocol versions; see
 [Wire versioning and capabilities](ARCHITECTURE.md#wire-versioning-and-capabilities).
 
+## [0.2.8] - Unreleased
+
+Wire 3.6.0.
+
+### Added
+
+- Task reviews save the committed head and resolved base of every Git directory
+  in a workspace, retain them with private refs, and keep non-Git and unavailable
+  directories visible. `tasks.review.snapshot`, `tasks.review.get`,
+  `tasks.review.diff` and `tasks.review.complete` have matching agent tools.
+  Reviews include the full saved tree and paged, read-only blob content, even
+  for unchanged files. Completion records who finished the review and what
+  they did, and moves the task to Done without closing it or finishing its
+  workspace. Moving a task to Done also completes its open review, recording
+  the mover and “Marked done”. Explicit completion also records the column move
+  and runs its normal follow-on behavior. Diff file listings and patch buffers
+  are bounded; truncated file listings are marked. Taking a snapshot from a new
+  workspace replaces the old review history and releases its pins. RPC and MCP
+  share one description limit. Snapshot updates use a version check; review tasks bypass the
+  older automatic report/merged-workspace task transitions (#328).
+
 ## [0.2.7] - 2026-10-02
 
 Wire 3.5.0.
@@ -232,6 +253,7 @@ Wire 3.1.0.
   run.
 - Done refuses a run in a linked worktree or an adopted checkout (#172).
 
+[0.2.8]: https://github.com/ZechCodes/build-releases/releases/tag/bridge-v0.2.8
 [0.2.7]: https://github.com/ZechCodes/build-releases/releases/tag/bridge-v0.2.7
 [0.2.6]: https://github.com/ZechCodes/build-releases/releases/tag/bridge-v0.2.6
 [0.2.5]: https://github.com/ZechCodes/build-releases/releases/tag/bridge-v0.2.5

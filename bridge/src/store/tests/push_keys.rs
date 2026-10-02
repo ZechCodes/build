@@ -108,7 +108,7 @@ fn v10_store(dir: &std::path::Path) {
 }
 
 #[test]
-fn a_v10_store_opens_at_schema_11_with_push_keys_and_its_data_intact() {
+fn a_v10_store_opens_at_current_schema_with_push_keys_and_its_data_intact() {
     let dir = tempfile::tempdir().unwrap();
     v10_store(dir.path());
 
@@ -122,8 +122,7 @@ fn a_v10_store_opens_at_schema_11_with_push_keys_and_its_data_intact() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, "11");
-    assert_eq!(SCHEMA_VERSION, 11);
+    assert_eq!(version, SCHEMA_VERSION.to_string());
     let session: String = conn
         .query_row(
             "SELECT value FROM meta WHERE key = 'user_session'",

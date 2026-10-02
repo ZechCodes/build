@@ -234,6 +234,24 @@ CREATE TABLE IF NOT EXISTS tracker_events (
 CREATE INDEX IF NOT EXISTS tracker_events_by_task
     ON tracker_events(task_id, at, id);
 
+-- One task review names one workspace. Snapshots are separate rows so adding
+-- one never rewrites older metadata. Git bodies and patches stay in Git.
+CREATE TABLE IF NOT EXISTS reviews (
+    task_id      TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    version      INTEGER NOT NULL,
+    record       TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS review_snapshots (
+    id       TEXT PRIMARY KEY,
+    task_id  TEXT NOT NULL,
+    number   INTEGER NOT NULL,
+    record   TEXT NOT NULL,
+    UNIQUE(task_id, number)
+);
+CREATE INDEX IF NOT EXISTS review_snapshots_by_task
+    ON review_snapshots(task_id, number);
+
 -- One bounded copy of each pre-v6 agent skeleton. The migration materializes
 -- formerly inherited settings and implicit conversation aliases; retaining the
 -- source makes that one-way interpretation auditable without copying any

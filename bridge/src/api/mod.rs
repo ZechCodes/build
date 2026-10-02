@@ -35,7 +35,8 @@ use std::collections::BTreeSet;
 /// confirmation a development build the service runs needs before a release
 /// replaces it. It also carries `to` on a `moved` task action, the column an
 /// agent's own line names (#323).
-pub const API_VERSION: &str = "3.5.0";
+/// 3.6.0 adds committed workspace review snapshots and explicit completion.
+pub const API_VERSION: &str = "3.6.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -148,6 +149,11 @@ pub enum ApiError {
         message: String,
         details: Option<Value>,
     },
+    /// A review changed after the caller read it. Refetch before mutating.
+    StaleVersion {
+        message: String,
+        details: Option<Value>,
+    },
     /// A backend this verb needs is not available (isolation, harness).
     Unavailable {
         message: String,
@@ -172,11 +178,12 @@ pub enum ApiError {
 
 impl ApiError {
     /// Every code, as a fixture may cite it.
-    pub const CODES: [&'static str; 8] = [
+    pub const CODES: [&'static str; 9] = [
         "unknown_method",
         "invalid_params",
         "not_found",
         "conflict",
+        "stale_version",
         "unavailable",
         "busy",
         "unsupported_version",
@@ -246,6 +253,7 @@ impl ApiError {
             ApiError::InvalidParams { .. } => "invalid_params",
             ApiError::NotFound { .. } => "not_found",
             ApiError::Conflict { .. } => "conflict",
+            ApiError::StaleVersion { .. } => "stale_version",
             ApiError::Unavailable { .. } => "unavailable",
             ApiError::Busy { .. } => "busy",
             ApiError::UnsupportedVersion { .. } => "unsupported_version",
@@ -264,6 +272,7 @@ impl ApiError {
             | ApiError::InvalidParams { message, details }
             | ApiError::NotFound { message, details }
             | ApiError::Conflict { message, details }
+            | ApiError::StaleVersion { message, details }
             | ApiError::Unavailable { message, details }
             | ApiError::Busy { message, details }
             | ApiError::UnsupportedVersion { message, details }
@@ -304,6 +313,9 @@ impl ApiError {
     /// so the list shrinks over time.
     pub fn classify(message: String) -> ApiError {
         let sentence = Self::unlabelled(&message);
+        if let Some(error) = review_refusal(sentence) {
+            return error;
+        }
         if sentence.starts_with("missing required param")
             || sentence.starts_with("missing scope")
             || sentence.starts_with("provide exactly one of")
@@ -350,6 +362,30 @@ impl From<String> for ApiError {
     }
 }
 
+/// Review service errors cross the off-lock drain as strings, just like Git
+/// errors. Keep their stable prefixes and the version refusal in one place.
+fn review_refusal(message: &str) -> Option<ApiError> {
+    if message.starts_with("stale_version:") {
+        return Some(ApiError::StaleVersion {
+            message: message.into(),
+            details: None,
+        });
+    }
+    if message == "Source unavailable" {
+        return Some(ApiError::unavailable(message));
+    }
+    if message.starts_with("review ") && message.ends_with("is already completed") {
+        return Some(ApiError::conflict(message, None));
+    }
+    if message.starts_with("invalid base override")
+        || message.starts_with("invalid review")
+        || message.starts_with("review completion needs")
+    {
+        return Some(ApiError::invalid_params(message));
+    }
+    None
+}
+
 /// One reply envelope for both outcomes, so the success shape and the refusal
 /// shape are written in exactly one place.
 pub fn reply(id: Value, result: Result<Value, ApiError>) -> Value {
@@ -382,6 +418,10 @@ mod tests {
             ApiError::invalid_params("m"),
             ApiError::not_found("m"),
             ApiError::conflict("m", None),
+            ApiError::StaleVersion {
+                message: "m".into(),
+                details: None,
+            },
             ApiError::unavailable("m"),
             ApiError::busy("m"),
             ApiError::unsupported_version("m"),

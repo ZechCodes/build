@@ -10,6 +10,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+mod saved;
+pub(crate) use saved::diff_between_saved_commits_bounded;
+
 /// Where plan-phase work is supposed to stay confined.
 pub const PLAN_SCOPE_PREFIX: &str = ".build/";
 
@@ -232,6 +235,30 @@ pub fn diff_between_commits(
     paths.narrow(&mut opts);
     let diff =
         repo.diff_tree_to_tree(Some(&start_tree), Some(&completion_tree), Some(&mut opts))?;
+    worktree_diff_from_git_diff(&diff)
+}
+
+/// Render saved review commits, using an empty tree when no base committed.
+/// This opens the object database at `git_dir`, so a removed linked checkout
+/// does not change the saved read while its common repository still exists.
+pub fn diff_between_saved_commits(
+    git_dir: &Path,
+    base_sha: Option<&str>,
+    head_sha: &str,
+    paths: DiffPaths<'_>,
+) -> Result<WorktreeDiff, DiffError> {
+    let repo = git2::Repository::open_bare(git_dir)?;
+    let base_tree = base_sha
+        .map(|sha| {
+            let oid = git2::Oid::from_str(sha)?;
+            repo.find_commit(oid)?.tree()
+        })
+        .transpose()?;
+    let head = repo.find_commit(git2::Oid::from_str(head_sha)?)?;
+    let head_tree = head.tree()?;
+    let mut opts = canonical_patch_options();
+    paths.narrow(&mut opts);
+    let diff = repo.diff_tree_to_tree(base_tree.as_ref(), Some(&head_tree), Some(&mut opts))?;
     worktree_diff_from_git_diff(&diff)
 }
 

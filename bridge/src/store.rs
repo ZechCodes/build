@@ -60,6 +60,7 @@ mod legacy;
 mod migrations;
 mod operations;
 pub mod push_keys;
+mod reviews;
 mod schema;
 mod source_sync;
 mod task_rename;
@@ -156,6 +157,27 @@ pub enum StoreError {
     NoStoredDocs { plan_id: String },
     #[error("operation {operation_id} was already used with a different request or target")]
     OperationConflict { operation_id: String },
+    #[error("stale_version: review {task_id} expected version {expected}, found {found}")]
+    ReviewVersionConflict {
+        task_id: String,
+        expected: u64,
+        found: u64,
+    },
+    #[error("unknown review for task_id: {task_id}")]
+    ReviewNotFound { task_id: String },
+    #[error("unknown task_id: {task_id}")]
+    ReviewTaskNotFound { task_id: String },
+    #[error("review {task_id} is already completed")]
+    ReviewCompleted { task_id: String },
+    #[error("review snapshot {snapshot_id} already exists")]
+    ReviewSnapshotExists { snapshot_id: String },
+    #[error(
+        "review completion needs a brief action description (1 to {} UTF-8 bytes)",
+        crate::reviews::records::MAX_REVIEW_DESCRIPTION_BYTES
+    )]
+    ReviewDescriptionInvalid,
+    #[error("release review pins: {0}")]
+    ReviewPinCleanup(String),
 }
 
 /// The schema this build writes. A stored value ahead of this one means the
@@ -171,7 +193,9 @@ pub enum StoreError {
 /// 11 adds `push_keys`, the notification keys push content is sealed to
 /// (#200). A new table only: a v10 store gains it empty, and nothing it held
 /// is touched.
-pub const SCHEMA_VERSION: i64 = 11;
+///
+/// 12 adds task review metadata and append-only snapshot rows (#328).
+pub const SCHEMA_VERSION: i64 = 12;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.

@@ -89,6 +89,7 @@ pub mod relay_server;
 pub mod remote_url;
 pub mod renamed_ids;
 pub mod resume;
+pub mod reviews;
 pub mod router;
 pub mod rtc;
 pub mod run;

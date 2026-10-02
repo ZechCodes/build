@@ -934,6 +934,15 @@ fn the_task_note_is_on_every_template_that_carries_the_tools() {
     assert!(note.contains("that task is the work"), "{note}");
     assert!(note.contains("`comment_task`"), "{note}");
     assert!(
+        note.contains("Move it to In review with `move_task`"),
+        "{note}"
+    );
+    assert!(
+        note.contains("records the review as “Marked done”"),
+        "{note}"
+    );
+    assert!(note.contains("`complete_review`"), "{note}");
+    assert!(
         note.contains("not that it is accepted"),
         "In review is not Done"
     );

@@ -52,6 +52,7 @@ pub mod git;
 pub mod github;
 pub mod lifecycle;
 pub mod push;
+pub mod reviews;
 pub mod tasks;
 pub mod thread;
 pub mod updates;
@@ -337,7 +338,7 @@ pub fn call_typed<P: DeserializeOwned + Serialize, R: Serialize>(
 }
 
 /// Every family's table, in one place.
-fn families() -> [&'static [(&'static str, Handler)]; 10] {
+fn families() -> [&'static [(&'static str, Handler)]; 11] {
     [
         board::methods(),
         changes::methods(),
@@ -345,6 +346,7 @@ fn families() -> [&'static [(&'static str, Handler)]; 10] {
         git::methods(),
         github::methods(),
         tasks::methods(),
+        reviews::methods(),
         lifecycle::methods(),
         push::methods(),
         updates::methods(),

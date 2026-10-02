@@ -94,6 +94,7 @@ pub(in crate::app) fn news_phrase(event: &TaskEvent) -> Option<String> {
         TaskEventKind::Closed => "closed it",
         TaskEventKind::Reopened => "reopened it",
         TaskEventKind::Created => "filed it for you",
+        TaskEventKind::ReviewCompleted => "completed the review",
         _ => return None,
     };
     Some(phrase.to_string())

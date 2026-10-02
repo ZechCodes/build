@@ -38,6 +38,7 @@ const READABLE_BODIES: &[&str] = &[
 ];
 
 mod compaction;
+mod reviews;
 
 /// The protocol version this server advertises when a client omits one.
 const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
@@ -394,6 +395,34 @@ pub enum BridgeAction {
         parent_task_id: Option<String>,
         track: Option<bool>,
     },
+    /// Save the committed state of every directory in one workspace for this task.
+    TrackerSnapshotReview {
+        task_id: String,
+        workspace_id: String,
+        expected_version: u64,
+        base_overrides: std::collections::BTreeMap<String, String>,
+    },
+    /// Review metadata and its saved directory snapshots.
+    TrackerGetReview {
+        task_id: String,
+    },
+    /// Read a saved directory's changes, full tree, or file blob.
+    TrackerReadReview {
+        task_id: String,
+        snapshot_id: String,
+        directory_id: String,
+        mode: crate::reviews::read::ReviewReadMode,
+        path: Option<String>,
+        paths: Vec<String>,
+        patch: bool,
+        range: Option<crate::body_page::FileRange>,
+    },
+    /// Report what was done and finish the task's review.
+    TrackerCompleteReview {
+        task_id: String,
+        expected_version: u64,
+        description: String,
+    },
 }
 
 /// The choices an `ask_user` call offered beside its question. Absent reads as
@@ -459,6 +488,10 @@ impl BridgeAction {
             BridgeAction::TrackerLinkTask { .. } => "link_task",
             BridgeAction::TrackerTrackTask { .. } => "track_task",
             BridgeAction::TrackerUntrackTask { .. } => "untrack_task",
+            BridgeAction::TrackerSnapshotReview { .. } => "snapshot_review",
+            BridgeAction::TrackerGetReview { .. } => "get_review",
+            BridgeAction::TrackerReadReview { .. } => "read_review",
+            BridgeAction::TrackerCompleteReview { .. } => "complete_review",
         }
     }
 
@@ -519,7 +552,13 @@ impl BridgeAction {
             | BridgeAction::TrackerCloseTask { .. }
             | BridgeAction::TrackerLinkTask { .. }
             | BridgeAction::TrackerTrackTask { .. }
-            | BridgeAction::TrackerUntrackTask { .. } => &[McpSurface::Coding, McpSurface::Project],
+            | BridgeAction::TrackerUntrackTask { .. }
+            | BridgeAction::TrackerSnapshotReview { .. }
+            | BridgeAction::TrackerGetReview { .. }
+            | BridgeAction::TrackerReadReview { .. }
+            | BridgeAction::TrackerCompleteReview { .. } => {
+                &[McpSurface::Coding, McpSurface::Project]
+            }
         }
     }
 
@@ -916,7 +955,7 @@ impl DoneServer {
                 "required": ["path"]
             }
         });
-        vec![
+        let mut tools = vec![
             json!({
                 "name": "list_tasks",
                 "description": "The tasks of your project, newest first: what each one is, who holds it, which column it is in and what it is about. Which project is read comes from who you are — there is nothing to pass, and no other project is reachable from here.",
@@ -1052,7 +1091,7 @@ impl DoneServer {
             }),
             json!({
                 "name": "move_task",
-                "description": "Move a task to another column. Move it to In review when you report Complete: that says the work is ready to be looked at, not that it is accepted.",
+                "description": "Move a task to another column. Move it to In review when you report Complete: that says the work is ready to be looked at, not that it is accepted. Moving a task with an open review to Done also records review completion as 'Marked done', attributed to the mover. Use complete_review when you want to describe the action taken.",
                 "inputSchema": {
                     "type": "object",
                     "properties": { "task_id": task_id, "status": status, "track": track },
@@ -1117,12 +1156,17 @@ impl DoneServer {
                     "required": ["task_id"]
                 }
             }),
-        ]
+        ];
+        tools.extend(reviews::tools());
+        tools
     }
 
     /// The tracker's `tools/call` arms, shared by both working surfaces.
     /// `None` is "not one of mine", which every other tool is.
     fn handle_task_tools_call(id: &Value, name: &str, params: Option<&Value>) -> Option<Handled> {
+        if let Some(handled) = reviews::handle_call(id, name, params) {
+            return Some(handled);
+        }
         // An id an agent read before the rename (#190) names the same task.
         let task = || required_argument(params, "task_id").map(|id| current_id(&id));
         Some(match name {
@@ -2843,10 +2887,10 @@ mod tests {
         "remove_workspace_directory",
     ];
 
-    /// The task tracker's twelve, the OTHER inventory shared between the two
+    /// The task tracker and review inventory shared between the two
     /// working surfaces — and for the same reason: both agents are bound to a
     /// project, and a project has one board.
-    const TASK_TOOLS: [&str; 12] = [
+    const TASK_TOOLS: [&str; 16] = [
         "list_tasks",
         "get_task",
         "read_comment",
@@ -2859,6 +2903,10 @@ mod tests {
         "link_task",
         "track_task",
         "untrack_task",
+        "snapshot_review",
+        "get_review",
+        "read_review",
+        "complete_review",
     ];
 
     /// Every body a person reads says how to link a Build thing in it (#229):
@@ -3376,6 +3424,96 @@ mod tests {
             Some(BridgeAction::MessageWorkspaceAgent { ref workspace_id, agent_id: None, ref body })
                 if workspace_id == "ws-1" && body == "start on the rail"
         ));
+    }
+
+    #[test]
+    fn review_tools_are_available_only_to_project_bound_agents() {
+        let names = [
+            "snapshot_review",
+            "get_review",
+            "read_review",
+            "complete_review",
+        ];
+        for surface in [&server(), &project()] {
+            let listed = tool_names(surface);
+            for name in names {
+                assert!(listed.contains(&name.to_string()), "{name} absent");
+            }
+        }
+        let routed = tool_names(&router());
+        for name in names {
+            assert!(!routed.contains(&name.to_string()), "router sees {name}");
+        }
+    }
+
+    #[test]
+    fn review_calls_carry_saved_ids_and_typed_arguments() {
+        for surface in [server(), project()] {
+            let call = |name: &str, arguments: &str| {
+                surface.handle_message(&format!(
+                    r#"{{"jsonrpc":"2.0","id":77,"method":"tools/call","params":{{"name":"{name}","arguments":{arguments}}}}}"#
+                ))
+            };
+            assert!(matches!(
+                call("snapshot_review", r#"{"task_id":"task-1","workspace_id":"ws-1","expected_version":0,"base_overrides":{"dir-1":"main"},"project_id":"elsewhere","author":"forged"}"#).action,
+                Some(BridgeAction::TrackerSnapshotReview { ref task_id, ref workspace_id, expected_version: 0, ref base_overrides })
+                    if task_id == "task-1" && workspace_id == "ws-1" && base_overrides.get("dir-1").map(String::as_str) == Some("main")
+            ));
+            assert!(matches!(
+                call("get_review", r#"{"task_id":"task-1"}"#).action,
+                Some(BridgeAction::TrackerGetReview { ref task_id }) if task_id == "task-1"
+            ));
+            assert!(matches!(
+                call("complete_review", r#"{"task_id":"task-1","expected_version":2,"description":"merged API to dev"}"#).action,
+                Some(BridgeAction::TrackerCompleteReview { ref task_id, expected_version: 2, ref description })
+                    if task_id == "task-1" && description == "merged API to dev"
+            ));
+            assert!(matches!(
+                call("read_review", r#"{"task_id":"task-1","snapshot_id":"snap-2","directory_id":"dir-1","mode":"blob","path":"src/lib.rs","range":{"offset":10,"bytes":4096,"raw":true}}"#).action,
+                Some(BridgeAction::TrackerReadReview { ref task_id, ref snapshot_id, ref directory_id, mode: crate::reviews::read::ReviewReadMode::Blob, path: Some(ref path), range: Some(crate::body_page::FileRange { offset: 10, bytes: 4096, raw: Some(true) }), .. })
+                    if task_id == "task-1" && snapshot_id == "snap-2" && directory_id == "dir-1" && path == "src/lib.rs"
+            ));
+        }
+    }
+
+    #[test]
+    fn malformed_review_calls_stop_at_the_mcp_boundary() {
+        for (name, args) in [
+            (
+                "snapshot_review",
+                r#"{"task_id":"task-1","workspace_id":"ws-1"}"#,
+            ),
+            (
+                "snapshot_review",
+                r#"{"task_id":"task-1","workspace_id":"ws-1","expected_version":-1}"#,
+            ),
+            (
+                "snapshot_review",
+                r#"{"task_id":"task-1","workspace_id":"ws-1","expected_version":0,"base_overrides":{"dir-1":42}}"#,
+            ),
+            (
+                "complete_review",
+                r#"{"task_id":"task-1","expected_version":1,"description":"  "}"#,
+            ),
+            (
+                "read_review",
+                r#"{"task_id":"task-1","snapshot_id":"snap-1","directory_id":"dir-1","mode":"blob"}"#,
+            ),
+            (
+                "read_review",
+                r#"{"task_id":"task-1","snapshot_id":"snap-1","directory_id":"dir-1","mode":"bogus"}"#,
+            ),
+            (
+                "read_review",
+                r#"{"task_id":"task-1","snapshot_id":"snap-1","directory_id":"dir-1","range":{"offset":0,"bytes":4096,"raw":true}}"#,
+            ),
+        ] {
+            let handled = server().handle_message(&format!(
+                r#"{{"jsonrpc":"2.0","id":78,"method":"tools/call","params":{{"name":"{name}","arguments":{args}}}}}"#
+            ));
+            assert!(handled.action.is_none(), "{name}: {args}");
+            assert_eq!(parse(&handled.reply.unwrap())["result"]["isError"], true);
+        }
     }
 
     // ==== the project surface ===============================================

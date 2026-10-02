@@ -19,6 +19,7 @@ mod legacy;
 mod migrations;
 mod operations;
 mod push_keys;
+mod reviews;
 mod support;
 mod task_rename;
 mod tracker;

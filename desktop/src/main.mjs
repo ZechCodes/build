@@ -9,6 +9,7 @@ import {
   classifyNavigation,
   createPermissionPolicy,
   createWindowOptions,
+  installNavigationPolicy,
 } from "./security-policy.mjs";
 import {
   CLIENT_ID,
@@ -43,27 +44,6 @@ function loadInsideElectron(window, url) {
   });
 }
 
-function protectWebContents(window) {
-  const handleNavigation = (event, url) => {
-    const destination = classifyNavigation(url);
-    if (destination === "internal") return;
-
-    event.preventDefault();
-    if (destination === "external") openOutsideElectron(url);
-  };
-
-  window.webContents.on("will-navigate", handleNavigation);
-  window.webContents.on("will-redirect", handleNavigation);
-
-  window.webContents.on("will-attach-webview", (event) => event.preventDefault());
-  window.webContents.setWindowOpenHandler(({ url }) => {
-    const destination = classifyNavigation(url);
-    if (destination === "internal") loadInsideElectron(window, url);
-    if (destination === "external") openOutsideElectron(url);
-    return { action: "deny" };
-  });
-}
-
 function installPermissionPolicy() {
   const permissionAllowed = createPermissionPolicy();
 
@@ -86,6 +66,7 @@ function installAuthorizationHeader() {
           details.url,
           details.requestHeaders,
           accessToken,
+          details.resourceType,
         ),
       });
     },
@@ -214,7 +195,10 @@ function createWindow() {
     title: "Build",
   });
 
-  protectWebContents(window);
+  installNavigationPolicy(window.webContents, {
+    openExternal: openOutsideElectron,
+    loadInternal: (url) => loadInsideElectron(window, url),
+  });
   window.once("ready-to-show", () => window.show());
   window.on("closed", () => {
     if (mainWindow === window) mainWindow = null;

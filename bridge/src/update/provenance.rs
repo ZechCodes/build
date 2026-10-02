@@ -1,5 +1,7 @@
 //! A bridge installed by the published installer has an explicit local marker.
-//! Development binaries and a service pointed at another executable are read only.
+//! Development binaries and a service pointed at another executable are read only,
+//! except that a development binary the service runs can be replaced by a
+//! verified release when the person confirms it (`replaceable_development_binary`).
 
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -44,6 +46,29 @@ pub fn managed_binary(home: &Path, running_binary: &Path) -> Result<PathBuf, Str
     Ok(marked)
 }
 
+/// A development or unmarked binary the platform service runs, which a
+/// confirmed install may replace in place with a verified release. The marker
+/// is not consulted: it makes no claim about this binary. A bridge started by
+/// hand, or a service starting another executable, is never replaceable: the
+/// helper restarts the service, which would not run what it wrote.
+pub fn replaceable_development_binary(
+    home: &Path,
+    running_binary: &Path,
+) -> Result<PathBuf, String> {
+    let running = fs::canonicalize(running_binary)
+        .map_err(|error| format!("running bridge path is invalid: {error}"))?;
+    let unit = service_unit(home)?;
+    let text = fs::read_to_string(&unit).map_err(|_| {
+        "this bridge does not run as the bridge service; install a release build".to_string()
+    })?;
+    if !unit_runs_binary(&text, &running) {
+        return Err(
+            "the bridge service runs another executable; install a release build".to_string(),
+        );
+    }
+    Ok(running)
+}
+
 fn service_unit(home: &Path) -> Result<PathBuf, String> {
     match std::env::consts::OS {
         "linux" => Ok(home.join(".config/systemd/user/build-bridge.service")),
@@ -82,10 +107,26 @@ pub fn write_marker(home: &Path, binary: &Path) -> Result<(), String> {
 }
 
 /// Restore exactly the marker saved before the swap. The rename is durable
-/// before the old service can be restarted after rollback.
+/// before the old service can be restarted after rollback. An empty saved
+/// marker stands for none: a replaced development build had no marker.
 pub fn restore_marker(home: &Path, saved: &Path) -> Result<(), String> {
     let content = fs::read(saved).map_err(|e| e.to_string())?;
+    if content.is_empty() {
+        return remove_marker(home);
+    }
     write_marker_content(home, &content)
+}
+
+fn remove_marker(home: &Path) -> Result<(), String> {
+    let path = marker_path(home);
+    match fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    }
+    fs::File::open(path.parent().ok_or("bridge marker has no parent")?)
+        .and_then(|parent| parent.sync_all())
+        .map_err(|e| e.to_string())
 }
 
 fn write_marker_content(home: &Path, content: &[u8]) -> Result<(), String> {
@@ -169,6 +210,68 @@ mod tests {
         write_marker(home, &binary).unwrap();
         fs::write(&unit, "ExecStart=/other/build-bridge serve").unwrap();
         assert!(managed_binary(home, &binary).is_err());
+    }
+
+    fn write_service_for(home: &Path, binary: &Path) {
+        let unit = service_unit(home).unwrap();
+        fs::create_dir_all(unit.parent().unwrap()).unwrap();
+        let config = ServiceConfig {
+            binary_path: binary.to_path_buf(),
+            log_dir: home.join(".build/log"),
+            env: vec![],
+        };
+        let manager = crate::service::manager_for(std::env::consts::OS).unwrap();
+        fs::write(&unit, manager.render_unit(&config)).unwrap();
+    }
+
+    #[test]
+    fn development_binary_the_service_runs_is_replaceable_with_or_without_a_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let binary = home.join("src/target/release/build-bridge");
+        fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        fs::write(&binary, b"source build").unwrap();
+        write_service_for(home, &binary);
+        assert!(managed_binary(home, &binary).is_err());
+        assert_eq!(
+            replaceable_development_binary(home, &binary).unwrap(),
+            fs::canonicalize(&binary).unwrap()
+        );
+        // A stale marker (a source build copied over a release) changes nothing.
+        fs::create_dir_all(home.join(".build")).unwrap();
+        fs::write(marker_path(home), "/elsewhere/build-bridge\nabc\n").unwrap();
+        assert!(replaceable_development_binary(home, &binary).is_ok());
+    }
+
+    #[test]
+    fn development_binary_is_not_replaceable_unless_the_service_runs_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let binary = home.join("build-bridge");
+        fs::write(&binary, b"source build").unwrap();
+        // No service at all: the bridge was started by hand.
+        assert!(replaceable_development_binary(home, &binary).is_err());
+        // A service that starts another executable would never run the release.
+        let other = home.join("other/build-bridge");
+        fs::create_dir_all(other.parent().unwrap()).unwrap();
+        fs::write(&other, b"release").unwrap();
+        write_service_for(home, &other);
+        assert!(replaceable_development_binary(home, &binary).is_err());
+    }
+
+    #[test]
+    fn an_empty_saved_marker_restores_as_no_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        fs::create_dir_all(home.join(".build")).unwrap();
+        fs::write(marker_path(home), "/a/build-bridge\nabc\n").unwrap();
+        let saved = home.join("saved-marker");
+        fs::write(&saved, b"").unwrap();
+        restore_marker(home, &saved).unwrap();
+        assert!(!marker_path(home).exists());
+        // Restoring absence twice is still absence.
+        restore_marker(home, &saved).unwrap();
+        assert!(!marker_path(home).exists());
     }
 
     #[test]

@@ -551,7 +551,8 @@ const waitingSituation = (devices) => {
   if (devices.some((device) => device.status === "online" && contextFor(device.id)?.blocked)) return "blocked";
   const unreached = devices.some((device) => device.status === "online" && !contextFor(device.id));
   if (unreached) return "unreached";
-  if (devices.length > 1) return "all";
+  // An empty list too: the account's last machine revoked in another tab.
+  if (devices.length !== 1) return "all";
   // A lone machine the account has never heard from was approved and has not
   // come up since: what to check is its bridge (#321).
   return devices[0].last_seen_at === null ? "neverSeen" : "lone";

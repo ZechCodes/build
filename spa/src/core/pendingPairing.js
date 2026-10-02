@@ -25,8 +25,16 @@ export const PAIRING_CADENCE_MS = 1000;
 const pending = new Map();
 const listeners = new Set();
 
+/** Tell every listener; one that throws (a surface torn down mid-repaint) is
+ *  reported and does not keep the rest from hearing. */
 const announce = () => {
-  for (const listener of [...listeners]) listener();
+  for (const listener of [...listeners]) {
+    try {
+      listener();
+    } catch (error) {
+      console.warn("a pending-pairing listener threw:", error);
+    }
+  }
 };
 
 function endPairing(deviceId) {

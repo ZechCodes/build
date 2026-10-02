@@ -108,6 +108,22 @@ describe("a pending pairing", () => {
     expect(pendingIds()).toEqual([]);
   });
 
+  it("tells every listener, even when one before it throws", () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const later = vi.fn();
+    const stopFirst = onPairingChanged(() => {
+      throw new Error("a surface that is gone");
+    });
+    const stopLater = onPairingChanged(later);
+    notePairingApproved({ device_id: "dev-1", name: "Studio" });
+    vi.advanceTimersByTime(PAIRING_WINDOW_MS);
+    expect(later).toHaveBeenCalledTimes(2);
+    expect(warned).toHaveBeenCalledTimes(2);
+    stopFirst();
+    stopLater();
+    warned.mockRestore();
+  });
+
   it("ignores an approve that names no device", () => {
     notePairingApproved({ name: "Studio" });
     expect(pairingsConnecting()).toEqual([]);

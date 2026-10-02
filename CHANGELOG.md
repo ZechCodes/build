@@ -41,7 +41,9 @@ protocol versions; see
   2 s; an api answering 429 or 5xx is asked less often, after its
   `Retry-After` when it gives one, and an api out of reach (no connection, or
   a 404 while it is redeployed) is waited for up to two minutes instead of
-  ending the pairing. After an approve, the app reads the device list every
+  ending the pairing. A code the api says is gone (revoked, or no such
+  device) ends the pairing after three such answers, saying to run
+  `build-bridge pair` again. After an approve, the app reads the device list every
   second until it lists the device online, for up to 90 s (#321).
 
 ### Changed

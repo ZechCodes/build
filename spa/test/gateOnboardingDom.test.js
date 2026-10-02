@@ -543,6 +543,23 @@ describe("a device just approved", () => {
     expect(rows()[1]).toContain("online");
   });
 
+  // The account's last device revoked in another tab leaves an empty list
+  // behind the waiting screen; a pairing changing then repaints it.
+  it("repaints the waiting screen over an empty account list without throwing", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
+    const App = await approveStudio();
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      App.devices = [];
+      const { notePairingApproved } = await import("../src/core/pendingPairing.js");
+      notePairingApproved({ device_id: "d2", name: "laptop" });
+      expect(warned).not.toHaveBeenCalled();
+      expect(document.getElementById("waittitle").textContent).toBe("Waiting for your device");
+    } finally {
+      warned.mockRestore();
+    }
+  });
+
   it("says what to check when it has not come online in its window, and slows down", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout", "Date"] });
     await approveStudio();

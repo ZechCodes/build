@@ -71,12 +71,12 @@ Existing task `attachments` are uploaded files [E2]; name the new field
 | Repository binding | Persistent repository ID and canonical registered source identity; verified Git common directory and independent-clone provenance; explicit authoritative local target repository/ref. Device paths are locators derived from registered scope, never arbitrary caller authority. |
 | Revision | Immutable ID/sequence, attachment ID, source `H`, observed target `T`, merge base `B`, source/target refs, actor/time, retained object refs. Commits are `B..H`; files compare trees `B` and `H`. |
 | Review round | Task-owned immutable scope ID containing the complete ordered set of required attachment/revision IDs and the implementation contributor set. Adding/removing/retargeting an attachment or publishing a different H creates a new round; it never broadens an existing approval. |
-| Submission | Append-only task event with round ID, reviewer actor, decision (`comment`, `approve`, `request_changes`, `withdraw`), rationale comment ID, timestamp and bridge-captured session/model facts. A submission covers the entire named set; partial findings can be comments, not an implicit whole-task approval. |
+| Submission | Append-only task event with round ID, reviewer actor, decision (`approve`, `request_changes`, `withdraw`), rationale comment ID, timestamp and bridge-captured session/model facts. A submission covers the entire named set; partial findings can be comments, not an implicit whole-task approval. |
 | Thread/anchor metadata | Child thread ID, task/round/revision, immutable line/hunk/file anchor, optional reply-to, open/resolved metadata and version. The text itself is a `tracker_comments` record; replies are also ordinary task comments. |
 | Workflow instance | Task ID, configuration version, ordered bounded steps, current step ID/generation, input round, prior implementer, explicit recipient/workspace and transitions, status, receipts. Each step is `agent` or `human`, with a purpose such as implement/review/deploy. Not the retired plan/stage scheduler. |
 | Candidate / check / operation | Attachment/revision, exact H/T/C/tree, check execution IDs, producer and raw exit/signal, journal status, explicit evidence/configuration versions, outcome and timestamps. No separate PR lifecycle. |
 | Delivery / completion evidence | Task timeline events referring to handoff receipt, merge SHA, exact release SHA, deployment/verification outcome, and explicit task completion intent. |
-| Project review configuration | Versioned exact qualifying model-ID allowlist, user-only writes; selected workflow/check requirements stored separately from display. No model names hard-coded into admission code. |
+| Project review configuration | Versioned qualifying provider + exact model-ID allowlist, user-only writes; selected workflow/check requirements stored separately from display. No model names hard-coded into admission code. |
 | Retrospective review | User-only exact repository/from/to/tree range approval and withdrawal, recorded as evidence on a designated task so uncovered work also has one discussion surface. |
 
 Use the existing `build.db` (default `~/.build/tasks/build.db`) and additive
@@ -115,7 +115,8 @@ integrated), Closed (task closed with unmerged work). Preserve merged history
 when a task later closes or reopens. Show partial integration and deployment as
 separate facts; a partially merged multi-repository task is never simply Merged.
 
-Use latest submission per reviewer on the exact round. A qualifying current
+Use the latest decisive submission per reviewer on the exact round. Ordinary
+comments never supersede a decision. A qualifying current
 approval wins the aggregate Approved label; another reviewer's disagreement
 remains prominent but adds no veto that Zech has not asked for. A relied-on
 approver's withdrawal/request-changes removes their approval. Thread resolution
@@ -134,22 +135,35 @@ Preserve the prior plan's exact-model rule, but do not present its September
 sample model IDs as today's approved defaults. Initial configuration must be
 explicitly saved by the user from current model discovery. A fallback catalog
 or role preference is not evidence of the runtime model. Capture agent ID,
-session generation, selected model, observed model, provenance and uncertainty
+session instance/generation, provider, selected model, observed model, provenance
+and uncertainty
 at submission; refuse qualification on unknown/fallback/mismatch evidence.
 The current observations are a starting seam [E7], not a ready-made durable
-review attestation. Missing config or facts requires user/qualified review.
+review attestation. Missing config permits user approval or an explicit user
+configuration followed by a qualifying agent review; missing runtime evidence
+requires a user or another reviewer with valid evidence.
 MCP cannot create user approvals or change the allowlist.
-In particular, the current agent digest falls back from unobserved runtime
-model to configured choice. Capture the underlying observation, not that
-display projection, and persist a session-instance identity across restart;
-today's live session generation alone is process-local [E7].
+Both the current digest and `Agent.active_model` can contain the configured
+choice when no runtime model was reported (`runtime/spawning.rs`). Add a
+per-session model-observation record with an explicit observed/unknown/fallback
+status, tied to the authenticated MCP session instance. Do not derive that bit
+from either existing display field. Preserve the durable session-instance
+lineage and snapshot it with the decision; live generation alone is
+process-local [E7]. Qualify by provider plus exact model ID, not an assumed
+globally unique model string.
 
-Snapshot qualifying evidence/config version at admission, and serialize relevant
-review/config edits with the short apply admission window. Updates before Git
-application invalidate admission; later withdrawals retain the merge fact and
-can invalidate pending deployment coverage. Do not hold the AppState mutex
-while Git runs. This is a workflow correctness guard, not an adversarial sandbox:
-same-user shell/database access can bypass Build's interfaces.
+Snapshot qualifying evidence/config versions in a transactional `applying`
+claim immediately before the Git effect. That claim is the policy
+linearization point. While it exists, mutations to the claimed round,
+contributors, task closure or relevant review/check configuration refuse with
+`busy` (unrelated comments remain writable). They must consult the durable
+claim, not just an in-memory mutex. Revalidate all versions as the claim is
+written; after settlement, withdrawals retain the merge fact but may invalidate
+pending deployment. Recovery reconciles an interrupted claim before reopening
+those writes; an expired timer never silently unlocks a possibly running Git
+effect. Repository/ref reservations separately serialize Git writers. No
+AppState mutex is held across Git. This is a workflow correctness guard, not
+an adversarial sandbox: same-user shell/database access can bypass Build.
 
 Authors explicitly publish committed fixes. A new H, retargeting, or a changed
 attachment set starts a new round requiring re-review, even for an identical
@@ -158,6 +172,14 @@ review but needs a new candidate and new checks; keep original B/T for the
 historical diff. Title/body edits retain code approval and get visible task
 history; changing scope requires a new round. An empty/already-contained source
 is a fact, not an invented merge. Dirty edits stay outside the snapshot.
+
+A round with any integrated attachment stays immutable. If another attachment
+needs fixes, explicitly supersede the unfinished round with a successor: carry
+already integrated attachments and their original receipts as fixed evidence,
+name the revised remaining revisions, and obtain approval of that complete
+successor set. Do not re-merge carried attachments or rewrite the old approval.
+Release coverage retains both the earlier receipts and the successor's receipts;
+partial effects and the superseding transition remain visible on the task.
 
 Prevent competing active attachments from claiming the same registered
 source-checkout/ref/target tuple under different tasks. Related tasks link to
@@ -205,7 +227,7 @@ where their semantics match [E1, E2]; do not revive singular legacy `task.*`.
 | `tasks.review.handoff`, `.workflow_get`, `.workflow_set`, `.advance` | Expected step/generation/round/assignee; explicit recipient and destination workspace plus step configuration. Durable checkout/delivery receipt; reused task assignment service. Human advancement only by the user on the current human step. |
 | `tasks.review.commits`, `.files`, `.diff`, `.file` | Attachment/revision and bounded cursor/body range. Immutable OIDs/content keys, completeness/truncation; no arbitrary filesystem/ref access. |
 | `tasks.review.prepare_merge`, `.record_check`, `.checks`, `.merge`, `.operation` | Exact revision/H/T/C and config/version/evidence IDs; candidate or conflict facts, attributed check executions, durable merge result and recovery status. |
-| `tasks.review.settings_get`, `.settings_set` | Project exact model allowlist and version; writes only from authenticated user context. |
+| `tasks.review.settings_get`, `.settings_set` | Project provider/model allowlist and version; writes only from authenticated user context. |
 | `tasks.review.coverage`, `.approve_range`, `.withdraw_range` | Registered repository, trusted deployed baseline and exact release range/tree; complete coverage facts. Range approvals attach to a task and are user-only. |
 | `workspace.cleanup_integrated` | Explicit local-only cleanup mode with per-directory target binding/current expected heads and stable operation ID. Reuses lifecycle guards/removal, never closes linked tasks. |
 
@@ -315,12 +337,16 @@ merge or falsely attribute an external merge to this operation.
    Merge conflicts leave the target unchanged.
    The author resolves on the source branch, commits and publishes a new
    revision; Build never silently edits the source to resolve a conflict.
-2. **Check.** The project agent uses a checkout it controls, such as its existing
-   integration scratch checkout or a workspace, locally fetches the retained
-   candidate ref and checks out exact `C` detached there. This is separate from
-   the target checkout; no new workspace per check is required. It records cwd and verifies HEAD
-   and tracked cleanliness before/after running configured gates with existing
-   execution, capturing actual exit status. Record divergence explicitly; a run
+2. **Check.** A designated check/deploy agent runs gates in its own managed
+   workspace, locally importing the retained candidate and checking out exact
+   `C` detached there. It may reuse that controlled workspace across checks.
+   The project agent normally stands in the primary base checkout and is
+   instructed not to build/write there [E7]; its scaffold scratch is not an
+   integration checkout. It selects requirements and delegates execution.
+   The executing workspace agent records cwd, verifies HEAD and tracked
+   cleanliness before/after, captures actual exit status and submits the
+   evidence as its own authenticated identity. The orchestrator cannot claim
+   to have observed a subprocess it did not execute. Record divergence explicitly; a run
    against edited tracked files is not clean-candidate evidence. Build's
    initial set is SPA lint and full Vitest, gitleaks, semgrep, and diff-check,
    plus applicable bridge tests for bridge changes. Command definitions and
@@ -329,7 +355,7 @@ merge or falsely attribute an external merge to this operation.
    timestamps. A missing, interrupted or skipped check is not success. A rerun
    appends evidence instead of overwriting failure. Phase 1 clearly labels this
    evidence actor-attested; a generic process scheduler is not a prerequisite.
-3. **Decide.** SPA/project agent evaluates current review submissions and checks.
+3. **Decide.** SPA/controller evaluates current review submissions and checks.
    It supplies evidence IDs, expected review/configuration versions and exact candidate
    tuple. New review decisions or revision changes invalidate an old admission.
    Target advancement needs a new candidate and checks; approval remains bound
@@ -355,15 +381,23 @@ merge or falsely attribute an external merge to this operation.
 in the authoritative repository. If target is not checked out anywhere, use
 `git update-ref <ref> C T`, a true ref compare-and-swap. If checked out at path
 `K`, require HEAD on the target at `T`, no tracked dirt/in-progress Git state,
-and no active Build writer whose cwd is that checkout. This is checkout-scoped,
-not project-scoped: the project agent runs from its own scratch directory and
-must be able to call merge. Then run `git -C K merge --ff-only --no-overwrite-ignore C`, allowing Git's
+and no active Build mutation job, write-capable coding session or user terminal
+in that checkout. Add a checkout write reservation consulted by starts and all
+Build mutations; the read-only project orchestrator's cwd by itself is not a
+write lease or veto. This distinction is new admission work, not something the
+existing `agent_working_at_root` already implements. Prefer an explicitly
+registered controlled integration authority when write ownership cannot be
+established; refuse that target rather than infer safety from an idle display.
+External shell/file writers remain outside this coordination. Then run `git -C K merge --ff-only --no-overwrite-ignore C`, allowing Git's
 untracked-overwrite checks to refuse. Never stash/reset a user's work. If the
 target is checked out more than once, refuse the ambiguous arrangement.
 
 Source sync already uses unattended Git and disables hooks/automatic
 maintenance [E6]. Reuse those process/timeout primitives for prepare/import/land,
-with structured argv and no arbitrary external diff/textconv. Do not copy its
+with structured argv and no arbitrary external diff/textconv. Preparation must
+refuse repository-selected custom merge drivers until explicitly supported;
+include driver configuration/attribute tests rather than assuming hooks cover
+every executable Git can invoke. Do not copy its
 mutable tracking-ref operand: landing must name retained C. Keep filters needed
 for a correct checkout, with bounded execution and explicit failures.
 
@@ -395,8 +429,8 @@ Journal phases include `accepted`, `prepared`, `applying`, `ref_applied`,
 
 | Observed state | Recovery |
 | --- | --- |
-| Target still `T`, no target effect recorded | Reconcile candidate/checkouts and expose retry under the same operation ID; never rerun checks as an invisible side effect. |
-| Target exactly `C` or a descendant containing retained `C` | Verify recorded parents/tree, repair DB completion once, retain original merge SHA. |
+| Target still `T`, no target effect recorded | Inspect index, worktree and in-progress state first. Retry under the same operation ID only with a known-consistent checkout and fresh admission; dirty/unfinished/unknown state stays uncertain. Never rerun checks invisibly. |
+| Target exactly `C` or a descendant containing retained `C` | Verify parents/tree and record this attachment integrated once. For a checked-out target, separately reconcile HEAD/index/worktree/in-progress state; keep operation/cleanup uncertain until consistency is known. Ref reachability alone is not clean completion. |
 | Only current revision `H` is reachable, and recorded `C` is not | Record external integration with observed target SHA; original merge SHA/check provenance unknown. Do not declare our merge operation successful or grant deploy coverage. |
 | Target unrelated/moved, or target checkout inconsistent | Mark uncertain/conflict, expose actual facts; no reset or blind replay. |
 | Git success, task update/roll/cleanup fails | The attachment stays integrated; reconcile its receipt once and retry only the separate failed effect. |
@@ -599,14 +633,20 @@ records actual session evidence, not a reviewer-supplied model string [E7].
    outcome and instructions to read the task/current review. Reviewer comments
    enter the task timeline and reach the assignee like other task comments.
    One decision is submitted for that round. A late decision remains historical.
-6. Changes requested applies the configured backward transition, assigning the
+6. A current designated reviewer’s changes-requested decision is consumed by
+   the service into the configured backward transition, assigning the
    task to its saved implementer (and preserving reviewer tracking). Fixes may
    happen in another registered workspace; transferring writable ownership uses
    expected source head/step generation and no force overwrite. New commits are
    imported into fresh private revision refs, then explicitly re-reviewed.
-7. The current step's designated reviewer explicitly submits and advances its
-   step; another observer's comment/decision never redirects the workflow. A
-   late step/round generation cannot advance it. A later human step, if present, waits for
+7. The service is the single transition owner: it consumes an accepted decision
+   from the designated reviewer on the exact step/round generation, durably
+   claims it, and advances/backtracks once. Submission persists the immutable
+   decision and pending transition intent together; the caller need not send a
+   second advance after approval. `.advance` records a human/manual input for
+   this same service, never executes a second scheduler. Another observer's
+   comment/decision or a stale generation cannot redirect the workflow. A later
+   human step, if present, waits for
    that user. Otherwise the task goes directly to its configured deploy agent,
    which prepares/checks/merges exact candidates, checks release coverage,
    deploys and records verification before task completion.
@@ -630,10 +670,12 @@ human's newer assignment. Two browser tabs cannot become two schedulers.
 Today `assign_task_to`/`hand_over` can accept delivery before persisting the
 settled assignment [E2]. Do not treat a call to that existing method as an
 atomic workflow handoff. Extract its preparation/delivery pieces, persist the
-step/assignment and queued delivery intent together, then dispatch from that
-durable intent; retain the legacy ordering for non-opted-in callers until
+step/assignment, task events, delivery transcript entry and queued delivery
+receipt together, then enqueue/claim/provider-deliver only after commit; retain the legacy ordering for non-opted-in callers until
 separately migrated. Fault-inject task-write failure after preparation and
-restart before/after delivery claim.
+restart before/after delivery claim. Keep filesystem/Git/task operation journals
+separate from the existing agent/conversation-bound delivery receipt table;
+reuse that table only for the actual message delivery.
 
 Ordinary task notices retain the existing fan-out/coalescing path; don't claim
 it is already a transactional outbox. Explicit workflow handoffs and decision
@@ -679,7 +721,8 @@ Persist workflow ownership/generation in the dispatch context, and make these
 legacy hooks yield to the review service for that task. Existing non-review
 work retains its old behavior. Prompts alone cannot stop automatic hooks.
 
-For review workflows, In review means an explicit human step needs Zech.
+The #89 task body and #145 body explicitly reserve In review for Zech. For
+these review workflows, that means an explicit human step needs Zech.
 Agent-only review stays In progress with its reviewer as assignee. A human
 step assigns the user and sets In review; Needs you derives through existing
 assignment/mention/read-mark rules [E2]. Moving back to an agent restores the
@@ -814,7 +857,7 @@ symbols are the implementation seams; new files in section 7 are proposals.
 | E4 | `bridge/src/app/workspaces/mod.rs:544` (`workspace_create`), `:648` (`finish_workspace`), `:808` (`workspace_finish_legacy`); `app/workspaces/deletion.rs:314` (`remove_workspace`, closure only for merged Finish); `workspace.rs:1004` (`summary_finish_blockers`). Current creation, Finish deletion support and remote-publication completion guards. |
 | E5 | `bridge/src/app/workspaces/reclaim.rs` (reservations), `app/workspaces/reclaim/explicit.rs`, `reclaim/containment.rs`, `app/workspaces/branch_delete/{mod,checkouts,defaults}.rs`; `gitgui/unpushed.rs`. Managed-path safety, explicit reclaim and conditional branch deletion already exist; their publication proof is remote-based. |
 | E6 | `bridge/src/app/projects/mod.rs:8` (`ProjectSource`), `:25`/`:29` (sync defaults), `app/projects/base_sync.rs`; `source_sync.rs:309` (`fast_forward`), `:424` (`SyncLock::acquire`), `source_sync/{checkout,in_progress,git}.rs`. Background/base-at-cut synchronization is a competing writer; current locks are sync-path-specific. `isolation/rift.rs:396,509` force-fetches shared branch refs; `isolation/worktree.rs:58` needs no publication because objects are shared. |
-| E7 | `bridge/src/mcp.rs` (`BridgeAction`, tool lists/surfaces); `bridge/src/app/{mcp,tracker/tools,runtime/spawning}.rs`; `bridge/src/{delivery,agent,templates}.rs`; `bridge/src/app/runtime/agents/{records,endpoints}.rs` (observed model versus digest fallback), `bridge/src/app/runtime/sessions/registry.rs` (generation), `bridge/src/harness/installed/`; `bridge/templates/notes/{task_tools,workspace}.md`, `bridge/templates/project_agent.md`, `bridge/src/orchestrator/workspace.rs`. MCP authority, assignment delivery, model/prompt seams. |
+| E7 | `bridge/src/mcp.rs` (`BridgeAction`, tool lists/surfaces); `bridge/src/app/{mcp,tracker/tools,runtime/spawning,projects/conversation}.rs`; `bridge/src/{delivery,agent,templates}.rs`; `bridge/src/app/runtime/agents/{records,endpoints}.rs` (observed model versus digest fallback), `bridge/src/app/runtime/sessions/registry.rs` (generation), `bridge/src/harness/installed/`; `bridge/templates/notes/{task_tools,workspace}.md`, `bridge/templates/project_agent.md`, `bridge/src/orchestrator/workspace.rs`. MCP authority, assignment delivery, model/prompt seams. |
 | E8 | `spa/src/core/router.js:145,492`, `spa/src/app.js:296`, `spa/src/views/trackerTaskView.js`, `spa/src/core/{trackerTaskPage,trackerTaskRender,trackerTimeline}.js`; `spa/src/views/{taskReview,worktreeReview,workspaceChanges}.js`, `spa/src/core/{changesReview,changesComments,changesetBodies,diffRender}.js`; `bridge/src/thread/items.rs` (`ThreadLink`), `bridge/src/app/tracker/refs.rs`. Tracker versus legacy review routes; existing diff/composer stack and mutable file refs. |
 | E9 | `spa/src/core/{localCache,localUiState,localUiStore,cacheSync,pushFence,taskReadOrder,bodyPages,cachedBodies,surfaceContext,deviceContexts}.js`; `core/bridgeApi/{index,v1/index}.js`, `core/changeEvents.js`. Cache-only paint, separate drafts, body paging, subscription repair, read ordering and greeting/capability gates. |
 | E10 | `bridge/src/changes.rs` (`Kind::Tasks`, task invalidations/bounds) and `spa/src/core/cacheSync.js` task appliers. Task push is an invalidation, not a durable review/event replay service. |

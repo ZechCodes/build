@@ -15,6 +15,34 @@ const mount = (repository, over = {}) => {
 };
 beforeEach(async () => { controls?.dispose(); await wipeUiRecords(); });
 
+it("keeps a saved base override on the next snapshot update", async () => {
+  const repository = { mutate: vi.fn(async () => {}) };
+  mount(repository);
+  const field = document.querySelector('[data-review-base="dir-api"]');
+  expect(field.value).toBe(""); // Configured bases still use Automatic.
+  field.value = "release/candidate"; field.dispatchEvent(new Event("input"));
+  document.querySelector('[data-review-save]').dispatchEvent(new Event("submit", { cancelable: true }));
+  await vi.waitFor(() => expect(repository.mutate).toHaveBeenCalledTimes(1));
+
+  const snapshot = { ...options.snapshot, id: "snapshot-2", number: 2,
+    directories: options.snapshot.directories.map((directory) => directory.id === "dir-api"
+      ? { ...directory, base: { ...directory.base, kind: "override", name: "release/candidate" } } : directory) };
+  controls.dispose();
+  mount(repository, { snapshot, review: { ...review, version: 2, snapshots: [...review.snapshots, snapshot] } });
+  expect(document.querySelector('[data-review-base="dir-api"]').value).toBe("release/candidate");
+  document.querySelector('[data-review-save]').dispatchEvent(new Event("submit", { cancelable: true }));
+  await vi.waitFor(() => expect(repository.mutate).toHaveBeenLastCalledWith("snapshot", {
+    workspace_id: "workspace-1", expected_version: 2, base_overrides: { "dir-api": "release/candidate" },
+  }));
+
+  const savedField = document.querySelector('[data-review-base="dir-api"]');
+  savedField.value = ""; savedField.dispatchEvent(new Event("input"));
+  document.querySelector('[data-review-save]').dispatchEvent(new Event("submit", { cancelable: true }));
+  await vi.waitFor(() => expect(repository.mutate).toHaveBeenLastCalledWith("snapshot", {
+    workspace_id: "workspace-1", expected_version: 2, base_overrides: {},
+  }));
+});
+
 it("sends one snapshot with exact per-directory base overrides and preserves a stale draft", async () => {
   let reject;
   const repository = { mutate: vi.fn(() => new Promise((_, fail) => { reject = fail; })) };

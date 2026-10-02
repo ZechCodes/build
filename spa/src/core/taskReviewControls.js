@@ -17,6 +17,10 @@ const baseField = (directory) => `<label class="task-review-base">${esc(director
   <input data-review-base="${esc(directory.id)}" type="text" ${fieldTraits("identifier")} placeholder="Automatic · branch, tag or commit" list="review-bases-${esc(directory.id)}" />
   <datalist id="review-bases-${esc(directory.id)}">${[directory.base?.name, directory.branch].filter(Boolean).map((name) => `<option value="${esc(name)}"></option>`).join("")}</datalist></label>`;
 
+const savedBaseOverrides = (snapshot) => Object.fromEntries((snapshot?.directories || [])
+  .filter((directory) => directory.base?.kind === "override")
+  .map((directory) => [directory.id, directory.base.name || directory.base.oid]));
+
 function controlsHtml(review, snapshot, support) {
   return `<div class="task-review-actions">
     ${support.snapshot ? `<details data-review-snapshot-form><summary>${review ? "Update review" : "Create review"}</summary>
@@ -34,7 +38,7 @@ export function mountTaskReviewControls(host, options) {
   const { deviceId, projectId, taskId, snapshot, repository, support, onSaved, onTaskChanged } = options;
   let review = options.review;
   let workspaces = options.workspaces;
-  let draft = { workspace: review?.workspace_id || "", bases: {}, description: "" };
+  let draft = { workspace: review?.workspace_id || "", bases: savedBaseOverrides(snapshot), description: "" };
   let busy = false;
   let disposed = false;
   host.innerHTML = controlsHtml(review, snapshot, support);
@@ -44,7 +48,7 @@ export function mountTaskReviewControls(host, options) {
   const bases = [...host.querySelectorAll('[data-review-base]')];
   function paint(saved) {
     if (disposed) return;
-    draft = { ...draft, ...saved };
+    draft = { ...draft, ...saved, bases: { ...draft.bases, ...saved?.bases } };
     if (workspace) workspace.value = draft.workspace;
     if (description && description.value !== draft.description) description.value = draft.description;
     for (const input of bases) {
@@ -100,6 +104,7 @@ export function mountTaskReviewControls(host, options) {
   if (saveForm) saveForm.onsubmit = saveSnapshot;
   if (completeForm) completeForm.onsubmit = complete;
   paintWorkspaces();
+  paint(draft);
   return {
     update(nextReview, nextWorkspaces) { review = nextReview; workspaces = nextWorkspaces; paintWorkspaces(); },
     dispose() { disposed = true; state.dispose(); },

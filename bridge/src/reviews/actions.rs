@@ -176,10 +176,12 @@ fn save(
 
 /// Destination reads run off the app mutex. Live facts are returned alongside
 /// the saved commit identities; they never rewrite those identities.
+/// Only the latest snapshot needs live destinations, regardless of history size.
 pub fn with_destinations(mut review: Review, sources: &[ActionSource]) -> Review {
     review.destinations = review
         .snapshots
-        .iter()
+        .last()
+        .into_iter()
         .flat_map(|snapshot| {
             snapshot.directories.iter().map(|directory| {
                 let source = sources

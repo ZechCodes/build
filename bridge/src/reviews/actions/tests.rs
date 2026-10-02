@@ -136,6 +136,33 @@ impl Fixture {
 }
 
 #[test]
+fn destinations_cover_only_the_latest_snapshot_directories() {
+    let fixture = Fixture::new();
+    let mut review = fixture.review();
+    let mut latest = review.snapshots[0].clone();
+    latest.id = "latest".into();
+    latest.number += 1;
+    latest.directories[0].id = "new-directory".into();
+    review.snapshots.push(latest.clone());
+    let mut sources = fixture.request.sources.clone();
+    sources.push(ActionSource {
+        directory: latest.directories[0].clone(),
+        source_path: fixture.repo.clone(),
+        error: None,
+    });
+
+    let result = with_destinations(review, &sources);
+
+    assert_eq!(result.snapshots.len(), 2, "snapshot history stays available");
+    assert_eq!(result.destinations.len(), 1);
+    let destination = &result.destinations[0];
+    assert_eq!(destination.snapshot_id, "latest");
+    assert_eq!(destination.directory_id, "new-directory");
+    assert!(destination.branches.contains(&"main".to_string()));
+    assert!(destination.error.is_none());
+}
+
+#[test]
 fn merge_is_recorded_before_push_and_retry_push_uses_its_tip() {
     let mut fixture = Fixture::new();
     fixture.request.params.sources[0].push = Some(PushSelection {

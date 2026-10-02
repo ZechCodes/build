@@ -121,7 +121,9 @@ describe("bridge identity through the task cache", () => {
     }, { place, projectName: "Build" });
     const host = document.createElement("div");
     host.innerHTML = html;
-    expect(host.querySelector(".thread-task-by").textContent).toContain("spa-flaky-tests · Fix drag");
+    // #323: the agent's name on the line, the workspace only in its hover text.
+    expect(host.querySelector(".thread-task-by").textContent.replace(/\s+/g, " ").trim()).toBe("from Fix drag");
+    expect(host.querySelector(".thread-task-by .thread-task-agent-name").getAttribute("title")).toBe("spa-flaky-tests · Fix drag");
     expect(host.querySelector(".rail-harness-icon")?.dataset.harnessIcon).toBe("codex_app_server");
     expect(host.querySelector(".thread-task-by a[href*='agent=']")).not.toBeNull();
     expect(host.querySelector("a.thread-task-number[href*='tasks']")).not.toBeNull();
@@ -135,7 +137,7 @@ describe("bridge identity through the task cache", () => {
     }, { place, projectName: "Build" });
     const host = document.createElement("div");
     host.innerHTML = html;
-    expect(host.querySelector(".thread-task-to").textContent.replace(/\s+/g, " ").trim()).toBe("to spa-flaky-tests · Fix drag");
+    expect(host.querySelector(".thread-task-to").textContent.replace(/\s+/g, " ").trim()).toBe("to Fix drag");
     expect(host.querySelector(".thread-task-to .rail-harness-icon")?.dataset.harnessIcon).toBe("codex_app_server");
     expect(host.querySelector(".thread-task-to a[href*='agent=']")).not.toBeNull();
   });
@@ -150,7 +152,7 @@ describe("bridge identity through the task cache", () => {
     }, { place, projectName: "Build", workspaces: [] });
     expect(host.querySelector("a[href*='agent=']")).toBeNull();
     expect(host.querySelector("a.thread-task-number[href*='tasks']")).not.toBeNull();
-    expect(host.querySelector(".thread-task-by").textContent).toContain("spa-flaky-tests · Fix drag");
+    expect(host.querySelector(".thread-task-by").textContent).toContain("Fix drag");
   });
 
   it("uses the task identity on list rows and board cards without a watched digest", () => {

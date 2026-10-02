@@ -3,11 +3,11 @@
 // column's width and every bubble and paragraph beside it was cut off at the
 // left. Measured in Chromium at 390px with the rail's production styles.
 //
-// #217: the #212 fix let a notice wrap between its parts, and a long one took
-// five ragged lines. Now a notice leads with what happened and is ONE line
-// when the whole of it fits; when it does not, it stacks all at once — the
-// action on the first line, each section indented on a line of its own,
-// ellipsised rather than wrapped.
+// #323: #217 stacked a notice too long for its line — the action, then "by"
+// and the agent, then the workspace — and the maintainer found three lines a
+// notice bad looking. Now every task notice and every action line is exactly
+// ONE line: it never wraps, and one too long for the width ends in an
+// ellipsis. The workspace is not on the line at all.
 import { expect, it } from "vitest";
 import { captureLayout, loadBrowserModules, mountLayout, withLayoutPage } from "./layoutHarness.mjs";
 
@@ -38,6 +38,11 @@ function paintConversation({ longSlug, longWorkspace }) {
       },
     },
   });
+  const acted = (sequence, number, action, over = {}) => ({
+    type: "message",
+    data: { sequence, role: "agent", created_at: "2026-09-28T20:04:00Z", body: "",
+      task_action: { action, task_id: `task-${number}`, number, title: "Fix email classification errors", ...over } },
+  });
   const hardener = identity("agent-hardener", longSlug, "Airlock queue hardener");
   const heartbeat = identity("agent-heartbeat", "do-stream-consumer-heartbeat", "Consumer heartbeat");
   const panel = identity("agent-panel", longWorkspace, "Activity panel agents");
@@ -64,6 +69,10 @@ function paintConversation({ longSlug, longWorkspace }) {
     { type: "message", data: { sequence: 10, role: "agent", created_at: "2026-09-28T20:03:00Z",
       body: `The digest was sha256:${"9f".repeat(40)} and nothing else.` } },
     notice(11, 219, "assigned", null, heartbeat, hardener),
+    // #323: this conversation's own agent acting, in its own voice.
+    acted(12, 320, "moved", { to: "done" }),
+    acted(13, 320, "linked"),
+    acted(14, 321, "commented_on", { comment_id: "tc-321" }),
   ];
   const place = { projectId: "proj-1", deviceId: "device-1", projectName: "Build" };
   // A poll that resolved the same conversation paints it again from scratch.
@@ -92,7 +101,9 @@ it("the conversation fits a 390px phone: nothing scrolls it sideways", async () 
       const scroller = document.querySelector(".rail-body");
       const right = scroller.getBoundingClientRect().right;
       const overflowing = [...scroller.querySelectorAll(
-        ".thread-message, .thread-task-notice, .thread-task-action, .thread-task-who, .viewing-context-chip, .thread-body > p",
+        // A task line's own parts run past its end on purpose: the line
+        // clips them with an ellipsis (#323), so the line is what is measured.
+        ".thread-message, .thread-task-notice, .thread-task-action, .viewing-context-chip, .thread-body > p",
       )].filter((element) => element.getBoundingClientRect().right > right + 0.5)
         .map((element) => element.className || element.tagName);
       return { scrollWidth: scroller.scrollWidth, clientWidth: scroller.clientWidth, overflowing,
@@ -106,120 +117,83 @@ it("the conversation fits a 390px phone: nothing scrolls it sideways", async () 
   }, PHONE);
 }, 30_000);
 
-/** Runs in the page: each notice as the lines it stands on — the action, then
- *  whichever sections sit below it — and what its name chips show. */
-function measureNotices() {
+/** Runs in the page: every task line — the notices from elsewhere and this
+ *  agent's own action lines — as the lines it stands on and what it shows. */
+function measureTaskLines() {
   const box = (element) => element.getBoundingClientRect();
-  const one = (element, lineHeight) => element.getClientRects().length === 1 && box(element).height <= lineHeight + 1;
-  return [...document.querySelectorAll("[data-task-notice]")].map((notice) => {
-    const lineHeight = parseFloat(getComputedStyle(notice).lineHeight);
-    const head = notice.querySelector(".thread-task-first-line");
-    const said = head.querySelector(".thread-task-said");
-    const number = head.querySelector(".thread-task-number");
-    const sections = [...notice.querySelectorAll(":scope > .thread-task-section")];
-    const by = notice.querySelector(".thread-task-by");
-    const to = notice.querySelector(".thread-task-to");
-    const agent = by?.querySelector(".thread-task-agent-name");
-    const workspace = by?.querySelector(".thread-task-workspace");
+  return [...document.querySelectorAll("[data-task-notice], .thread-task-action[data-task-action]")].map((line) => {
+    const style = getComputedStyle(line);
+    const lineHeight = parseFloat(style.lineHeight);
+    const number = line.querySelector(".thread-task-number");
+    const marks = [...line.querySelectorAll(".thread-task-actor-mark")];
     return {
-      text: notice.textContent.replace(/\s+/g, " ").trim(),
-      stacked: notice.dataset.fit === "stacked",
-      lines: Math.round(box(notice).height / lineHeight),
-      // The first line is the action with the task it happened to (#217, the
-      // maintainer: "keep the issue number on the same line as the action").
-      leadsWithAction: notice.firstElementChild === head && head.firstElementChild === said,
-      head: head.textContent.replace(/\s+/g, " ").trim(),
-      numberBesideAction: Math.abs(box(number).top - box(said).top) < 2,
-      sections: sections.length,
-      // Stacked, every section starts a line of its own below the action and
-      // is indented under it; nothing inside a section wraps.
-      ownLines: sections.every((section, index) =>
-        box(section).top >= box(index ? sections[index - 1] : head).bottom - 1),
-      indented: sections.every((section) => box(section).left > box(head).left),
-      unwrapped: [head, ...sections].every((section) => one(section, lineHeight * 2)),
-      agentLine: agent && { shown: agent.scrollWidth <= agent.clientWidth, withBy: Math.abs(box(agent).top - box(by).top) < 2 },
-      workspace: workspace && {
-        title: workspace.getAttribute("title"),
-        ellipsised: workspace.scrollWidth > workspace.clientWidth,
-        oneLine: one(workspace, lineHeight),
-      },
-      // One link per name, drawing no underline at rest, as the chat's other
-      // links do.
-      // Under "to" and under "by" a workspace starts at the same x.
-      workspaceLefts: [to, by].map((section) => section?.querySelector(".thread-task-workspace"))
-        .filter(Boolean).map((workspace) => Math.round(box(workspace).left)),
-      nameLinks: by ? by.querySelectorAll("a").length : 0,
-      underlined: [...notice.querySelectorAll("a")]
+      text: line.textContent.replace(/\s+/g, " ").trim(),
+      notice: line.hasAttribute("data-task-notice"),
+      oneLine: box(line).height <= lineHeight + 1,
+      // Nothing inside the line wraps onto a second one either: every part
+      // sits inside the line's own band.
+      partsOnOneLine: [...line.querySelectorAll("*")].every((part) => [...part.getClientRects()]
+        .every((rect) => rect.top >= box(line).top - 1 && rect.bottom <= box(line).bottom + 1)),
+      ellipsis: style.textOverflow === "ellipsis" && style.whiteSpace === "nowrap" && style.overflow === "hidden",
+      clipped: line.scrollWidth > line.clientWidth,
+      withinRow: box(line).right <= box(line.closest(".thread-message")).right + 0.5,
+      // The number is the styled task link it always was.
+      numberStyled: getComputedStyle(number).fontWeight === "650",
+      marksBesideNumber: marks.every((mark) => Math.abs(box(mark).top + box(mark).height / 2 - (box(number).top + box(number).height / 2)) < 6),
+      workspaces: line.querySelectorAll(".thread-task-workspace").length,
+      underlined: [...line.querySelectorAll("a")]
         .filter((link) => getComputedStyle(link).textDecorationLine !== "none").length,
     };
   });
 }
 
-it("on a phone a notice that does not fit stacks: the action, then each section on its own line", async () => {
+const OWN_LINES = ["Moved #320 to “Done”", "Linked #320", "Commented on #321"];
+
+it("on a phone every task line is one line, a long one ending in an ellipsis", async () => {
   await withLayoutPage(async ({ page, basePath }) => {
     await mountChat(page, basePath);
-    const notices = await page.evaluate(measureNotices);
-    for (const notice of notices) {
-      expect(notice.leadsWithAction, notice.text).toBe(true);
-      expect(notice.numberBesideAction, notice.text).toBe(true);
-      expect(notice.underlined, notice.text).toBe(0);
-      // All or nothing: one line, or the action and every section stacked.
-      if (!notice.stacked) expect(notice.lines, notice.text).toBe(1);
+    const lines = await page.evaluate(measureTaskLines);
+    expect(lines).toHaveLength(10);
+    for (const line of lines) {
+      expect(line, line.text).toMatchObject({
+        oneLine: true, partsOnOneLine: true, ellipsis: true, withinRow: true,
+        numberStyled: true, workspaces: 0, underlined: 0,
+      });
     }
-    const long = notices.find((notice) => notice.text.includes("Activity panel agents"));
-    expect(long.text).toMatch(/^Commented on #216 by /);
-    expect(long.stacked).toBe(true);
-    expect(long).toMatchObject({ ownLines: true, indented: true, unwrapped: true, nameLinks: 1 });
-    // The actor's line is "by" and the agent, whole; the workspace sits under
-    // it on one line of its own, ellipsised, its whole name as hover text.
-    expect(long.agentLine).toEqual({ shown: true, withBy: true });
-    expect(long.workspace).toEqual({ title: LONG_WORKSPACE, ellipsised: true, oneLine: true });
-    expect(long.head).toBe("Commented on #216");
-    expect(long.lines).toBe(long.sections + 2);
-    // A move's column is part of what happened, so it rides the first line.
-    const moved = notices.find((notice) => notice.text.includes("#213"));
-    expect(moved).toMatchObject({ stacked: true, head: "Moved #213 to In progress" });
-    // An assignee is a name like the actor: its own section, and its
-    // workspace lines up with the actor's.
-    const assigned = notices.find((notice) => notice.text.includes("#219"));
-    expect(assigned).toMatchObject({ stacked: true, head: "Assigned #219", sections: 2, ownLines: true });
-    expect(assigned.workspaceLefts).toHaveLength(2);
-    expect(assigned.workspaceLefts[0]).toBe(assigned.workspaceLefts[1]);
-    const short = notices.find((notice) => notice.text.includes("#218"));
-    expect(short.text).toBe("Commented on #218 by You");
-    expect(short).toMatchObject({ stacked: false, lines: 1 });
+    const said = (number) => lines.find((line) => line.text.includes(`#${number} `) || line.text.endsWith(`#${number}`)).text;
+    // #323's wording: the number leads a notice from elsewhere, and the
+    // agent's own name stands for it, without its workspace.
+    expect(said(212)).toBe("#212 moved to “In review” by Consumer heartbeat");
+    expect(said(214)).toBe("#214 comment from Airlock queue hardener");
+    expect(said(218)).toBe("#218 comment from you");
+    expect(lines.map((line) => line.text).join("\n")).not.toContain("do-stream-consumer-heartbeat");
+    // This conversation's own agent leads with its verb.
+    expect(lines.filter((line) => !line.notice).map((line) => line.text)).toEqual(
+      expect.arrayContaining(OWN_LINES),
+    );
+    // The harness mark rides the line beside the name it marks.
+    for (const line of lines.filter((one) => one.notice)) expect(line.marksBesideNumber, line.text).toBe(true);
+    // The long one is cut, not wrapped: its whole name is longer than a phone.
+    const long = lines.find((line) => line.text.startsWith("#219"));
+    expect(long.text).toBe("#219 assigned to Airlock queue hardener by Consumer heartbeat");
+    expect(long.clipped).toBe(true);
   }, PHONE);
 }, 30_000);
 
-it("at desktop width every notice is one line", async () => {
+it("at desktop width every task line is one line and none is cut", async () => {
   await withLayoutPage(async ({ page, basePath }) => {
     await mountChat(page, basePath);
     await captureLayout(page, "chat-desktop-1280.png");
-    const notices = await page.evaluate(measureNotices);
-    expect(notices).toHaveLength(6);
-    for (const notice of notices) {
-      expect(notice.stacked, notice.text).toBe(false);
-      expect(notice.lines, notice.text).toBe(1);
+    const lines = await page.evaluate(measureTaskLines);
+    expect(lines).toHaveLength(10);
+    for (const line of lines) {
+      expect(line.oneLine, line.text).toBe(true);
+      expect(line.clipped, line.text).toBe(false);
     }
   }, DESKTOP);
 }, 30_000);
 
-it("narrowing the chat restacks the notices that no longer fit, and widening it unstacks them", async () => {
-  await withLayoutPage(async ({ page, basePath }) => {
-    await mountChat(page, basePath);
-    const stackedAt = async (width) => {
-      await page.setViewportSize({ width, height: DESKTOP.height });
-      await page.evaluate(() => new Promise((settle) => requestAnimationFrame(() => requestAnimationFrame(settle))));
-      return page.evaluate(() => [...document.querySelectorAll('[data-task-notice][data-fit="stacked"]')]
-        .map((notice) => notice.dataset.taskNotice));
-    };
-    expect(await stackedAt(DESKTOP.width)).toEqual([]);
-    expect(await stackedAt(PHONE.width)).toContain("task-216");
-    expect(await stackedAt(DESKTOP.width)).toEqual([]);
-  }, DESKTOP);
-}, 30_000);
-
-it("a repaint of the same conversation changes no node, stacked notices included", async () => {
+it("a repaint of the same conversation changes no node", async () => {
   await withLayoutPage(async ({ page, basePath }) => {
     await mountChat(page, basePath);
     const mutations = await page.evaluate(() => {
@@ -233,12 +207,11 @@ it("a repaint of the same conversation changes no node, stacked notices included
       observer.disconnect();
       return records.map((record) => `${record.type} ${record.attributeName || ""} ${record.target.className || record.target.nodeName}`);
     });
-    expect(await page.locator('[data-task-notice][data-fit="stacked"]').count()).toBeGreaterThan(0);
     expect(mutations).toEqual([]);
   }, PHONE);
 }, 30_000);
 
-it("Build's own notices still wrap: only task notices are fitted to one line", async () => {
+it("Build's own notices still wrap: only task notices are held to one line", async () => {
   await withLayoutPage(async ({ page, basePath }) => {
     await mountChat(page, basePath);
     const restart = await page.evaluate(() => {

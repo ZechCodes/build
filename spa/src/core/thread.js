@@ -30,7 +30,6 @@ import { setAttr } from "../dom.js";
 import { taskCardHtml } from "./trackerMessageCard.js";
 import { taskActionLineHtml } from "./trackerActionLine.js";
 import { isTaskNotice, taskNoticeLineHtml, taskNoticeOf } from "./trackerNotice.js";
-import { fitTaskNotices, keepTaskNoticesFitted } from "./noticeFit.js";
 import { isTransientTransportError } from "./transientRead.js";
 import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
 import { scrollWithin } from "./scrollWithin.js";
@@ -2137,8 +2136,6 @@ export function paintThreadEntries(container, built, options = {}) {
     paintedTicks.set(source, ticks);
     section.querySelector(".thread-user-nav-list").removeAttribute("data-window-start");
   }
-  fitTaskNotices(container);
-  keepTaskNoticesFitted(container);
   syncUserMessageTicks(container);
   return framed;
 }

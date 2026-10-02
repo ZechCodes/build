@@ -51,23 +51,33 @@ describe("the line", () => {
   it("reads as one sentence in the agent's voice", () => {
     const line = paint([acted()]);
     expect(line.textContent.replace(/\s+/g, " ").trim())
-      // #49: the number leads, then what was done. No title — it is the
-      // heading of the page the link opens — and no actor, because this line
-      // IS the agent speaking in its own conversation.
-      .toBe("#14 commented on");
+      // #323: the maintainer, "Commented on #111". What was done leads, then
+      // the number. No title — it is the heading of the page the link opens —
+      // and no actor, because this line IS the agent speaking in its own
+      // conversation.
+      .toBe("Commented on #14");
   });
 
   // The maintainer's four, plus the rest of the board's verbs. A bare token and
   // a past tense both read, because the bridge may send either.
   it("renders each action", () => {
-    const said = (name) => paint([acted({ action: name })]).textContent.replace(/\s+/g, " ").trim().replace(/^#\d+\s*/, "");
+    const said = (name) => paint([acted({ action: name })]).textContent.replace(/\s+/g, " ").trim();
     // The wire says `update`; a reader calls it an edit (#40).
-    expect(said("updated")).toBe("edited");
-    expect(said("commented")).toBe("commented on");
+    expect(said("updated")).toBe("Edited #14");
+    expect(said("commented")).toBe("Commented on #14");
     // The token the bridge actually sends, underscore and all.
-    expect(said("commented_on")).toBe("commented on");
-    expect(said("moved")).toBe("moved");
-    expect(said("closed")).toBe("closed");
+    expect(said("commented_on")).toBe("Commented on #14");
+    expect(said("moved")).toBe("Moved #14");
+    expect(said("closed")).toBe("Closed #14");
+    expect(said("linked")).toBe("Linked #14");
+  });
+
+  // #323: "Moved #111 to “In Review”", the column in curly quotes, named the
+  // way the board names it.
+  it("says where a move went, when the action carries it", () => {
+    const text = (over) => paint([acted(over)]).textContent.replace(/\s+/g, " ").trim();
+    expect(text({ action: "moved", to: "in_review" })).toBe("Moved #14 to “In review”");
+    expect(text({ action: "moved", to: "qa_hold" })).toBe("Moved #14 to “qa hold”");
   });
 
   // The maintainer, 21:19Z: "Use 'Created #X {title}'". A creation is the one
@@ -146,6 +156,11 @@ describe("where it goes", () => {
     const line = paint([acted()], { deviceId: null, projectId: null });
     expect(line.tagName).not.toBe("A");
     expect(line.textContent).toContain("#14");
+  });
+
+  // #323: the number is still the accent-coloured task link it was.
+  it("keeps the number as its own styled part of the line", () => {
+    expect(paint([acted()]).querySelector(".thread-task-number").textContent).toBe("#14");
   });
 
   it("draws nothing for an action naming no task", () => {

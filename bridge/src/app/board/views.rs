@@ -678,13 +678,14 @@ impl AppState {
             .and_then(|id| self.workspaces.get(&id));
         // Visibility still chooses the row's run id. Its lifecycle outcome
         // includes every run on the root, as workspace Finish does.
-        let state = self
+        let selected_state = self
             .preferred_workspace_run_state(
                 project_id,
                 workspace.map_or(active.worktree.path.as_path(), |ws| ws.root.as_path()),
                 workspace.map(|ws| ws.id.as_str()),
             )
             .unwrap_or(active.run.state);
+        let state = crate::branch::displayed_run_state(active.run.state, selected_state);
         let row = json!({
             "kind": crate::branch::WorkItemKind::Branch.as_str(),
             "project_id": project_id,

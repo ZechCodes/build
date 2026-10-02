@@ -121,6 +121,19 @@ pub(crate) fn implementation_priority(active: bool, merged: bool) -> (bool, bool
     (!active, !merged)
 }
 
+/// A row keeps its run's specific state when the workspace selector chose
+/// another run in the same outcome class. A different class changes what Done
+/// will do, so the row shows the selected state instead.
+pub(crate) fn displayed_run_state(own: RunState, selected: RunState) -> RunState {
+    let priority =
+        |state: RunState| implementation_priority(!state.is_terminal(), state == RunState::Merged);
+    if priority(own) == priority(selected) {
+        own
+    } else {
+        selected
+    }
+}
+
 /// Pick the lifecycle outcome from every run on one workspace root. A run
 /// whose id is the workspace id retains its direct ownership; otherwise live
 /// work wins, then a merge among terminal runs.
@@ -506,6 +519,38 @@ mod tests {
             preferred_run_state([(false, RunState::Merged), (true, RunState::Abandoned)]),
             Some(RunState::Abandoned),
             "a run whose id is the workspace still owns it"
+        );
+    }
+
+    #[test]
+    fn a_run_keeps_its_state_when_another_run_has_the_same_outcome() {
+        for candidates in [
+            [(false, RunState::Review), (false, RunState::Building)],
+            [(false, RunState::Building), (false, RunState::Review)],
+        ] {
+            let selected = preferred_run_state(candidates).unwrap();
+            assert_eq!(
+                displayed_run_state(RunState::Building, selected),
+                RunState::Building
+            );
+        }
+        for candidates in [
+            [(false, RunState::Archived), (false, RunState::Abandoned)],
+            [(false, RunState::Abandoned), (false, RunState::Archived)],
+        ] {
+            let selected = preferred_run_state(candidates).unwrap();
+            assert_eq!(
+                displayed_run_state(RunState::Abandoned, selected),
+                RunState::Abandoned
+            );
+        }
+        assert_eq!(
+            displayed_run_state(RunState::Abandoned, RunState::Merged),
+            RunState::Merged,
+        );
+        assert_eq!(
+            displayed_run_state(RunState::Merged, RunState::Review),
+            RunState::Review,
         );
     }
 

@@ -239,3 +239,34 @@ fn explicit_project_history_deletion_removes_reviews_with_tasks() {
         .unwrap();
     assert_eq!(count, 0);
 }
+
+#[test]
+fn store_completion_description_boundary_counts_utf8_bytes() {
+    for (description, accepted) in [
+        ("a".repeat(2_000), true),
+        ("a".repeat(2_001), false),
+        (format!(" {} ", "a".repeat(2_000)), true),
+        (" \t ".into(), false),
+        ("é".repeat(1_000), true),
+        ("é".repeat(1_001), false),
+        ("🦀".repeat(500), true),
+        ("🦀".repeat(501), false),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        let task = task(&store);
+        store
+            .save_review_snapshot(&task.id, "ws-1", 0, snapshot("rs-first"))
+            .unwrap();
+        let result = store.complete_review(&task.id, 1, &Actor::User, &description);
+        assert_eq!(
+            result.is_ok(),
+            accepted,
+            "{} UTF-8 bytes",
+            description.len()
+        );
+        if !accepted {
+            assert!(matches!(result, Err(StoreError::ReviewDescriptionInvalid)));
+        }
+    }
+}

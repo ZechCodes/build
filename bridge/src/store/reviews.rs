@@ -234,11 +234,8 @@ fn complete_review_in_tx(
 }
 
 fn validate_description(description: &str) -> Result<&str, StoreError> {
-    let description = description.trim();
-    if description.is_empty() || description.len() > 2000 {
-        return Err(StoreError::ReviewDescriptionInvalid);
-    }
-    Ok(description)
+    crate::reviews::records::review_description(description)
+        .ok_or(StoreError::ReviewDescriptionInvalid)
 }
 
 fn load_review(conn: &Connection, task_id: &str) -> Result<Option<Review>, StoreError> {

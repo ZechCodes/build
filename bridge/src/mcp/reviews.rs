@@ -9,12 +9,12 @@ use serde_json::{json, Value};
 use crate::body_page::FileRange;
 use crate::renamed_ids::current_id;
 use crate::reviews::read::ReviewReadMode;
+use crate::reviews::records::{review_description, MAX_REVIEW_DESCRIPTION_BYTES};
 
 use super::{acted, optional_argument, refused, required_argument, BridgeAction, Handled};
 
 const MAX_PATHS: usize = 100;
 const MAX_BASE_OVERRIDES: usize = 100;
-const MAX_DESCRIPTION_CHARS: usize = 1_000;
 
 pub(super) fn tools() -> Vec<Value> {
     let task_id = json!({"type":"string", "description":"A task of your project."});
@@ -80,7 +80,7 @@ pub(super) fn tools() -> Vec<Value> {
                 "properties":{
                     "task_id":task_id,
                     "expected_version":{"type":"integer", "minimum":0, "description":"The latest review version from get_review."},
-                    "description":{"type":"string", "minLength":1, "maxLength":MAX_DESCRIPTION_CHARS, "description":"A brief factual description of what was done."}
+                    "description":{"type":"string", "minLength":1, "description":format!("A brief factual description of what was done, at most {MAX_REVIEW_DESCRIPTION_BYTES} UTF-8 bytes after trimming.")}
                 },
                 "required":["task_id","expected_version","description"]
             }
@@ -149,9 +149,13 @@ fn snapshot_action(params: Option<&Value>) -> Result<BridgeAction, String> {
 
 fn complete_action(params: Option<&Value>) -> Result<BridgeAction, String> {
     let description = required_argument(params, "description")?;
-    if description.chars().count() > MAX_DESCRIPTION_CHARS {
-        return Err("description must be at most 1000 characters".to_string());
-    }
+    let description = review_description(&description)
+        .ok_or_else(|| {
+            format!(
+                "description must contain 1 to {MAX_REVIEW_DESCRIPTION_BYTES} UTF-8 bytes after trimming"
+            )
+        })?
+        .to_string();
     Ok(BridgeAction::TrackerCompleteReview {
         task_id: task_id(params)?,
         expected_version: required_version(params)?,
@@ -223,5 +227,49 @@ fn validate_read_options(
             Err("range.raw is only for blob".to_string())
         }
         _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mcp_completion_description_boundary_counts_utf8_bytes() {
+        let tools = tools();
+        let completion = tools
+            .iter()
+            .find(|tool| tool["name"] == "complete_review")
+            .unwrap();
+        let schema = &completion["inputSchema"]["properties"]["description"];
+        assert!(
+            schema.get("maxLength").is_none(),
+            "JSON length is not a byte limit"
+        );
+        assert!(schema["description"]
+            .as_str()
+            .unwrap()
+            .contains("2000 UTF-8 bytes"));
+        for (description, accepted) in [
+            ("a".repeat(2_000), true),
+            ("a".repeat(2_001), false),
+            (format!(" {} ", "a".repeat(2_000)), true),
+            (" \t ".into(), false),
+            ("é".repeat(1_000), true),
+            ("é".repeat(1_001), false),
+            ("🦀".repeat(500), true),
+            ("🦀".repeat(501), false),
+        ] {
+            let params = json!({"arguments": {
+                "task_id":"task-1", "expected_version":1, "description":description
+            }});
+            let parsed = complete_action(Some(&params));
+            assert_eq!(
+                parsed.is_ok(),
+                accepted,
+                "{} UTF-8 bytes",
+                description.len()
+            );
+        }
     }
 }

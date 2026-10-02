@@ -12,6 +12,8 @@ Wire 3.5.0.
 
 ### Added
 
+- A moved task action carries its destination column as `task_action.to`
+  (wire 3.5.0), so the agent's own conversation line can name it (#323).
 - A development build the bridge service runs can be replaced by a release
   from Settings: Install shows a warning naming the release and the restart,
   then sends `bridge.install_update` with `replace_development_build` (wire
@@ -26,6 +28,9 @@ Wire 3.5.0.
 
 ### Fixed
 
+- Conversation task notices use the new wording on one line, with an ellipsis
+  when they run out of room. Actor and assignee names omit the workspace;
+  hover text carries the full line and task title (#323).
 - `build-bridge pair` retires a stored approval only on the word of the api
   that approved it. The identity file now records that api when a pairing
   through it completes; one paired before that counts as approved by

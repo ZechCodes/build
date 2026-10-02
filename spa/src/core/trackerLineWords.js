@@ -18,6 +18,8 @@
 //
 // Pure: no DOM, no app imports.
 
+import { FALLBACK_COLUMNS } from "./trackerModel.js";
+
 /**
  * What the bridge's verb is called on screen.
  *
@@ -76,6 +78,22 @@ export function actionPhrase(action) {
   const words = said.replace(/_/g, " ");
   return ACTION_WORDS[words.toLowerCase()] || words;
 }
+
+/** The column's display name for a slug the bridge sent, or the slug itself as
+ *  words when the bridge named a column this client has never heard of. */
+export const columnName = (slug) =>
+  FALLBACK_COLUMNS.find((column) => column.id === slug)?.name ?? String(slug).replace(/_/g, " ");
+
+/** A column as a line names it (#323): in curly quotes, so "moved to “In
+ *  review”" reads as the column's name rather than as more of the sentence. */
+export const quoted = (text) => `“${text}”`;
+
+/** An agent's name on a task line, without its workspace; names are
+ *  mid-sentence, so the reader is "you". Full identities stay on hover. */
+export const shownName = (name) => {
+  const short = String(name).split(" · ").pop();
+  return short === "You" ? "you" : short;
+};
 
 /** What Build's own agent for a project is called, when nothing names the
  *  project. It is Build's agent either way; the project's name only makes it

@@ -1,7 +1,7 @@
 // The line an agent leaves in its conversation when it acts on a task.
 //
-// One line, in the agent's own voice — "commented #12 Kanban drag does not
-// persist" — and the whole of it opens the task. It is a message like any
+// One line, in the agent's own voice — "Commented on #12" — and the whole of
+// it opens the task. It is a message like any
 // other: it reads in sequence, it counts as unread, and it is the agent
 // saying what it just did rather than a notice from Build about it.
 //
@@ -18,12 +18,12 @@
 
 import { esc } from "./text.js";
 import { hashFromRoute } from "./router.js";
-import { actionPhrase, actorName } from "./trackerLineWords.js";
+import { actionPhrase, actorName, columnName, quoted, shownName } from "./trackerLineWords.js";
 
 export const ACTION_LINE_CLASS = "thread-task-action";
 
-/** The verb. Mid-sentence now: the number leads the line (#49), so what
- *  happened is no longer opening it. */
+/** The verb, as the bridge's token reads; the line capitalises it, since it
+ *  opens the line (#323). */
 export const actionWord = (action) => actionPhrase(action);
 
 /**
@@ -45,35 +45,39 @@ export function actionHref(action, place) {
 }
 
 /**
- * The words of the line.
+ * The words of the line, verb first in the agent's own voice (#323, the
+ * maintainer: "Commented on #111", "Moved #111 to “In Review”").
  *
- * Two actions read verb first. A creation, because its news is the title —
- * nothing else on the page has named the task yet: "Created #X {title}".
- * And an assignment, because its news is WHO got it, and a line reading "#52
- * assigned" tells the reader the one half they already knew: "Assigned #52 to
- * tasks-spa · Agent 1".
+ * Three actions say more than the verb. A creation keeps the title, because
+ * its news is the title — nothing else on the page has named the task yet:
+ * "Created #X {title}". An assignment names WHO got it: "Assigned #52 to
+ * Agent 1". A move names the column it went to, quoted.
  *
- * An assignment whose record names nobody — an older bridge, which carried no
- * assignee at all — reads "Assigned #52" rather than inventing a target.
- * Every other action leads with the number and leaves the title to hover.
+ * Whatever the record does not carry — an assignee or a column from an older
+ * bridge — is left out rather than invented: "Assigned #52", "Moved #52".
  */
-function actionSpansHtml(action, reading) {
-  const number = `<span class="thread-task-number">#${esc(String(action.number ?? ""))}</span>`;
-  const word = actionWord(action.action);
-  if (word === "created") {
-    const title = action.title ? ` <span class="thread-task-title">${esc(action.title)}</span>` : "";
-    return `<span class="thread-task-said">Created</span> ${number}${title}`;
-  }
-  if (word === "assigned") {
+const part = (kind, text, hover = "") => ({ kind, text, hover });
+
+const ACTION_DETAILS = Object.freeze({
+  created: (action) => (action.title ? [part("title", action.title)] : []),
+  assigned: (action, reading) => {
     const who = actorName(action.assignee, reading);
-    const to = who ? ` <span class="thread-task-said">to</span> <span class="thread-task-who" title="${esc(who)}">${esc(who)}</span>` : "";
-    return `<span class="thread-task-said">Assigned</span> ${number}${to}`;
-  }
-  if (word === "unassigned") {
-    return `<span class="thread-task-said">Unassigned</span> ${number}`;
-  }
-  return `${number} <span class="thread-task-said">${esc(word)}</span>`;
+    return who ? [part("said", "to"), part("who", shownName(who), who)] : [];
+  },
+  moved: (action) => (action.to ? [part("said", `to ${quoted(columnName(action.to))}`)] : []),
+});
+
+const capitalised = (text) => text.charAt(0).toUpperCase() + text.slice(1);
+
+/** One set of words supplies both the visible line and its full hover text. */
+function actionParts(action, reading) {
+  const word = actionWord(action.action);
+  return [part("said", capitalised(word)), part("number", `#${action.number ?? ""}`),
+    ...(ACTION_DETAILS[word]?.(action, reading) ?? [])];
 }
+
+const partHtml = ({ kind, text, hover }) =>
+  `<span class="thread-task-${kind}"${hover ? ` title="${esc(hover)}"` : ""}>${esc(text)}</span>`;
 
 /**
  * The line itself, or nothing for a message that carries no action.
@@ -84,17 +88,17 @@ function actionSpansHtml(action, reading) {
  */
 export function taskActionLineHtml(action, { place = null, agentLabels = {}, projectName = "" } = {}) {
   if (!action || !action.task_id) return "";
-  // The number first, then what was done (#49). No actor: this line IS the
+  // What was done, then the number (#323). No actor: this line IS the
   // agent speaking in its own conversation, so "by …" would name the voice
   // already saying it. No title either — it was the longest part of the line
   // and the first to be cut off, and it is the heading of the page the link
-  // opens. Hover carries it, where length costs nothing.
-  //
-  // The spaces between the spans are for the reader, not for the layout: flex
-  // drops whitespace-only nodes and `gap` does the spacing, but they stay in
-  // the text a screen reader speaks and a copy takes.
-  const said = actionSpansHtml(action, { agentLabels, projectName });
-  const hover = action.title ? ` title="${esc(action.title)}"` : "";
+  // opens. Hover carries the full line and title, where length costs nothing.
+  const parts = actionParts(action, { agentLabels, projectName });
+  const said = parts.map(partHtml).join(" ");
+  const lineText = parts.map(({ text }) => text).filter(Boolean).join(" ");
+  // A creation already names the task title in its line.
+  const title = actionWord(action.action) === "created" ? "" : action.title;
+  const hover = ` title="${esc([lineText, title].filter(Boolean).join(" — "))}"`;
   const href = actionHref(action, place);
   return href
     ? `<a class="${ACTION_LINE_CLASS}" href="${esc(href)}"${hover} data-task-action="${esc(action.task_id)}">${said}</a>`

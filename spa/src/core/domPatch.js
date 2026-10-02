@@ -56,16 +56,10 @@ const menuTheReaderOpened = (live, name) => name === "hidden" && live.classList.
 
 const shownByAMove = (live, name) => MOVED_PROPERTIES.includes(name) && live.hasAttribute("data-motion");
 
-/** Set by measuring the drawn line, not by the render: a task notice that did
- *  not fit its width is stacked (core/noticeFit.js, #217). The render never
- *  writes it, so a repaint must not take it away. */
-export const LAYOUT_FIT_ATTRIBUTE = "data-fit";
-const fitTheLayoutOwns = (live, name) => name === LAYOUT_FIT_ATTRIBUTE;
-
 /** What the render declares but the reader or a move has since changed. */
 const HELD_AGAINST_THE_RENDER = [menuTheReaderOpened, expansionTheReaderOwns, shownByAMove];
 /** What the render leaves out but something other than the render put there. */
-const HELD_WHEN_UNRENDERED = [foldTheReaderOpened, expansionTheReaderOwns, shownByAMove, fitTheLayoutOwns];
+const HELD_WHEN_UNRENDERED = [foldTheReaderOpened, expansionTheReaderOwns, shownByAMove];
 const heldBy = (rules, live, name) => rules.some((rule) => rule(live, name));
 
 // eslint-disable-next-line complexity -- ratchet: patchAttributes is at 16, cap 10 — reduce it, then drop this line

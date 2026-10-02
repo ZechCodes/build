@@ -1,8 +1,8 @@
 // Capture the review images for #183 in a real Chromium against the production
 // app, at a phone's width: the inbox popover on the projects face, with the top
-// badge beside the project heads. The fixture is the report's: two projects,
-// a Needs-you task in each with nothing unread, and a watched task nobody
-// holds with 2 unread (its created and tracked events) and no row.
+// badge beside the project heads. Two projects each have a fully read task
+// assigned to the user, plus an unassigned watched task with unread moves
+// but no Needs-you row. Their badges must sum to 3 (Build 2 + smarter-dev 1).
 // Run from spa/: node test/browser/captureInboxBadgeSum.mjs [output directory]
 import { mkdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -34,14 +34,14 @@ async function seed({ device }) {
     created_by: { kind: "agent", agent_id: "filer" }, created_at: iso(minutes(300)), updated_at: iso(minutes(20 + number)),
     closed_at: null, watched: true, read_through: READ_MARK, unread_count: 0, ...over,
   });
-  // Filed and tracked by an agent after the read mark: 2 unread, no row.
-  const bookkeeping = (one) => ["created", "tracked"].map((kind, index) => ({
+  // Moves are unread news without asking the user; bookkeeping is not unread.
+  const updates = (one) => ["ready", "backlog"].map((to, index) => ({
     type: "event", id: `te-01K000000${index + 1}`, task_id: one.id, at: iso(minutes(30 - index)),
-    actor: { kind: "agent", agent_id: "filer" }, kind, payload: {},
+    actor: { kind: "agent", agent_id: "filer" }, kind: "moved", payload: { to },
   }));
   const tasksOf = {
     build: [
-      task("build", 159, "Tighten Needs you", { status: "in_review" }),
+      task("build", 159, "Tighten Needs you", { status: "in_review", assignee: { kind: "user" } }),
       task("build", 113, "Milestones for tasks", { unread_count: 2 }),
     ],
     smarter: [
@@ -49,7 +49,7 @@ async function seed({ device }) {
       task("smarter", 40, "Deploy batching", { unread_count: 1 }),
     ],
   };
-  const timelineOf = (one) => (one.unread_count ? bookkeeping(one).slice(0, one.unread_count) : []);
+  const timelineOf = (one) => (one.unread_count ? updates(one).slice(0, one.unread_count) : []);
   const columns = [
     { id: "backlog", name: "Backlog" }, { id: "ready", name: "Ready" }, { id: "in_progress", name: "In progress" },
     { id: "in_review", name: "In review" }, { id: "done", name: "Done" },
@@ -66,7 +66,7 @@ async function seed({ device }) {
   await events.greetBridge(async () => ({
     api_version: "2.0.0", push_events: true,
     capabilities: ["changes.subscriptions", "requests.priority", "errors.codes", "diffs.perFile", "tasks.context",
-      "tasks.attachments", "tasks.watching", "conversations.settings"],
+      "tasks.attachments", "tasks.watching", "tasks.commentUserNotifies", "conversations.settings"],
     changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "tasks"], items: "bodies" },
   }), { deviceId: device });
 
@@ -82,6 +82,10 @@ async function seed({ device }) {
   await cache.writeCached({ deviceId: device, entityId: "", kind: "workspaces" }, view.workspaces);
   for (const [id, tasks] of Object.entries(tasksOf)) {
     await trackerCache.writeTasksRecord(device, id, trackerCache.tasksRecord(tasks, columns));
+    for (const one of tasks) {
+      await cache.writeCached(trackerCache.taskAddress(device, id, one.id),
+        trackerCache.taskRecord(one, timelineOf(one)));
+    }
   }
   contexts.adoptDeviceSession({ deviceId: device, call, close() {}, peer() {}, onCarrier() {}, onPush() {} });
   await feed.startFeed();
@@ -109,39 +113,56 @@ async function mountApp(page, basePath) {
   await page.evaluate(() => document.fonts.ready);
 }
 
-/** Wait for the page's words to settle: a paint follows the cache write that
- *  asked for it, so the capture waits on the words, not a timer. */
-async function settled(read, what) {
-  let last = null;
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const now = await read();
-    if (now !== null && now === last) return now;
-    last = now;
-    await new Promise((done) => setTimeout(done, 150));
-  }
-  throw new Error(`${what} never settled: ${last}`);
+/** Assert the actual totals, not just a repeated (possibly empty) paint. */
+async function expectBadges(page) {
+  await page.waitForFunction(() => {
+    const count = (selector) => document.querySelector(selector)?.textContent.trim();
+    return count("#inbox-open .inbox-open-count") === "3"
+      && count('[data-project="dev-1/build"] > .inbox-project-head .inbox-unread') === "2"
+      && count('[data-project="dev-1/smarter"] > .inbox-project-head .inbox-unread') === "1";
+  });
 }
 
 await withLayoutPage(async ({ page, basePath }) => {
   page.on("pageerror", (error) => console.error("pageerror:", error.message));
   await mountApp(page, basePath);
   await loadBrowserModules(page, { app: MODULES.app }, basePath);
+  // Wait for this second module set, not the already loaded app-only set.
+  await page.evaluate(() => delete window.__layoutModules);
   await loadBrowserModules(page, MODULES, basePath);
   await page.evaluate(seed, { device: DEVICE });
-  await page.locator(`#inbox-list .inbox-entry[data-key="tracker_task:task-31"]`).waitFor();
   if (!(await page.evaluate(() => document.body.classList.contains("inbox-popover-open")))) {
     await page.locator("#inbox-open").click();
   }
   await page.waitForFunction(() => document.body.classList.contains("inbox-popover-open"));
-  const numbers = () => page.evaluate(() => {
+  for (const id of [159, 31]) {
+    await page.locator(`#inbox-list .inbox-entry[data-key="tracker_task:task-${id}"]`).waitFor();
+  }
+  await expectBadges(page);
+  for (const id of [113, 40]) {
+    if (await page.locator(`#inbox-list .inbox-entry[data-key="tracker_task:task-${id}"]`).count()) {
+      throw new Error(`Unassigned task ${id} unexpectedly needs the user`);
+    }
+  }
+  const said = await page.evaluate(() => {
     const heads = [...document.querySelectorAll("#inbox-list .inbox-project-head")]
       .map((head) => `${head.querySelector(".inbox-project-name").textContent} ${head.querySelector(".inbox-unread")?.textContent || 0}`);
     return `top ${document.querySelector("#inbox-open .inbox-open-count").textContent || 0} · ${heads.join(" · ")}`;
   });
-  const said = await settled(numbers, "badges");
   await page.mouse.move(0, 0);
-  await page.screenshot({ path: `${output}/inbox-popover.png` });
+  await page.screenshot({ path: `${output}/inbox-popover.png`, animations: "disabled" });
   console.log(said);
+  for (const project of ["build", "smarter"]) {
+    const fold = page.locator(`[data-project-fold="${DEVICE}/${project}"]`);
+    await fold.click();
+    await page.waitForFunction((key) =>
+      document.querySelector(`[data-project-fold="${key}"]`)?.getAttribute("aria-expanded") === "false",
+    `${DEVICE}/${project}`);
+  }
+  await expectBadges(page);
+  await page.evaluate(() => document.activeElement?.blur());
+  await page.mouse.move(0, 0);
+  await page.screenshot({ path: `${output}/inbox-popover-folded.png`, animations: "disabled" });
 }, { width: 390, height: 844 });
 
 console.log(`captured into ${output}`);

@@ -17,8 +17,9 @@ export function monotonicSession(incoming, held) {
 
 /** A bridge list is authoritative for membership. Merge every row against the
  * record held by the database while its write transaction is open. */
-export function replaceSessionList(address, kind, incoming) {
+export function replaceSessionList(address, kind, incoming, onReplaced) {
   return mergeCachedAtomically(address, (held) => {
+    onReplaced?.(held);
     const old = new Map((Array.isArray(held) ? held : []).map((row) => [rowId(kind, row), row]));
     return incoming.map((row) => monotonicSession(row, old.get(rowId(kind, row))));
   });

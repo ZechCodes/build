@@ -689,6 +689,207 @@ describe("the lifetime rules a pass applies", () => {
   });
 });
 
+describe("draft ownership reconciliation", () => {
+  const workspace = { id: "ws-1", workspace_id: "ws-1", project_id: "p1", entity_id: "run-1", conversations: [{ conversation_id: "conv-1" }] };
+  const settings = { deviceId: "dev-1", entityId: "ws-1", kind: "ui-draft", sub: "workspace-settings:" };
+  const chat = { deviceId: "dev-1", entityId: "conv-1", kind: "ui-draft", sub: "chat:agent:run-1:ag-1" };
+  const commit = { deviceId: "dev-1", entityId: "run-1", kind: "ui-draft", sub: "run-1" };
+  const worktree = { deviceId: "dev-1", entityId: "run-1", kind: "ui-draft", sub: "worktree:run-1" };
+  const changes = { deviceId: "dev-1", entityId: "run-1", kind: "ui-draft", sub: "changes:inline-comments" };
+  const pushBoard = async (state) => {
+    registeredWatchers.find((watcher) => watcher.id === "s-inbox" && !watcher.disposed)
+      .onChanges([{ entity_id: "board", state }]);
+    await settle();
+  };
+
+  it("writes ownership lists while the UI draft read is still pending", async () => {
+    const ui = await import("../src/core/localUiStore.js");
+    let release;
+    vi.spyOn(ui, "uiDraftRecords").mockImplementation(() => new Promise((resolve) => {
+      release = () => resolve([]);
+    }));
+    sync.startCacheSync();
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    await vi.waitFor(async () => expect((await read("", "projects"))?.value).toHaveLength(1));
+    expect((await read("", "workspaces"))?.value).toEqual([]);
+    release();
+  });
+
+  it("writes ownership lists when draft preparation rejects", async () => {
+    const ui = await import("../src/core/localUiStore.js");
+    vi.spyOn(ui, "uiDraftRecords").mockRejectedValue(new Error("UI store unavailable"));
+    await boot([]);
+    expect((await read("", "projects"))?.value).toHaveLength(1);
+    expect((await read("", "workspaces"))?.value).toEqual([]);
+  });
+
+  it("does not confirm a pushed list whose owner IDs are unchanged", async () => {
+    const ui = await import("../src/core/localUiStore.js");
+    script["workspace.list"] = () => ({ workspaces: [workspace] });
+    script["project.list"] = () => ({ projects: [{ project_id: "p1", conversations: [] }] });
+    await boot([]);
+    await ui.writeUiRecord(settings, { name: "unfinished" });
+    const before = ["board.list", "project.list", "workspace.list"].map((method) => calls(method).length);
+    await pushBoard({ workspaces: [{ ...workspace, name: "renamed" }], projects: [{ project_id: "p1", name: "renamed" }] });
+    expect(["board.list", "project.list", "workspace.list"].map((method) => calls(method).length)).toEqual(before);
+    expect((await ui.readUiRecord(settings))?.value).toEqual({ name: "unfinished" });
+  });
+
+  it("does not confirm an unchanged pushed project list", async () => {
+    const ui = await import("../src/core/localUiStore.js");
+    const project = { project_id: "p1", entity_id: "run-proj", conversations: [{ conversation_id: "conv-proj" }] };
+    const projectChat = { deviceId: "dev-1", entityId: "conv-proj", kind: "ui-draft", sub: "chat:agent:run-proj:ag-1" };
+    script["project.list"] = () => ({ projects: [project] });
+    await boot([]);
+    await ui.writeUiRecord(projectChat, { body: "unsent" });
+    const before = ["board.list", "project.list", "workspace.list"].map((method) => calls(method).length);
+    await pushBoard({ projects: [{ ...project, name: "renamed" }] });
+    expect(["board.list", "project.list", "workspace.list"].map((method) => calls(method).length)).toEqual(before);
+    expect((await ui.readUiRecord(projectChat))?.value).toEqual({ body: "unsent" });
+  });
+
+  it("uses the displaced owner list when a pushed removal outruns the UI draft read", async () => {
+    const ui = await import("../src/core/localUiStore.js");
+    script["workspace.list"] = () => ({ workspaces: [workspace] });
+    script["project.list"] = () => ({ projects: [{ project_id: "p1", conversations: [] }] });
+    await boot([]);
+    for (const address of [settings, chat, commit, worktree, changes]) await ui.writeUiRecord(address, { body: "unsent" });
+    const original = ui.uiDraftRecords;
+    let release;
+    let scanStarted = false;
+    vi.spyOn(ui, "uiDraftRecords").mockImplementation(async (...args) => {
+      scanStarted = true;
+      const entries = await original(...args);
+      await new Promise((resolve) => { release = resolve; });
+      return entries;
+    });
+    const originalRead = cache.readCached;
+    let releaseOldList;
+    const oldListRead = vi.spyOn(cache, "readCached").mockImplementation((address) => {
+      if (address.kind === "workspaces" && scanStarted && !releaseOldList) {
+        return new Promise((resolve) => {
+          releaseOldList = async () => resolve(await originalRead(address));
+        });
+      }
+      return originalRead(address);
+    });
+    script["workspace.list"] = () => ({ workspaces: [] });
+    await pushBoard({ workspaces: [] });
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    expect((await originalRead({ deviceId: "dev-1", entityId: "", kind: "workspaces" }))?.value).toEqual([]);
+    release();
+    await releaseOldList?.();
+    oldListRead.mockRestore();
+    await vi.waitFor(async () => {
+      for (const address of [settings, chat, commit, worktree, changes]) expect(await ui.readUiRecord(address)).toBeUndefined();
+    });
+  });
+
+  it("prunes deleted owners during sync even when no replica entity records remain", async () => {
+    const ui = await import("../src/core/localUiStore.js");
+    await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "workspaces" }, [workspace]);
+    await ui.writeUiRecord(settings, { name: "unfinished" });
+    await ui.writeUiRecord(chat, { body: "unsent" });
+    script["project.list"] = () => ({ projects: [{ project_id: "p1", conversations: [] }] });
+    await boot([]);
+    await vi.waitFor(async () => {
+      expect(await ui.readUiRecord(settings)).toBeUndefined();
+      expect(await ui.readUiRecord(chat)).toBeUndefined();
+    });
+  });
+
+  it("starts draft deletion only after the new ownership list has been written", async () => {
+    const ui = await import("../src/core/localUiStore.js");
+    await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "workspaces" }, [workspace]);
+    await ui.writeUiRecord(settings, { name: "unfinished" });
+    script["project.list"] = () => ({ projects: [{ project_id: "p1", conversations: [] }] });
+    const originalDelete = ui.deleteUiDraftsIfUnwritten;
+    const deletion = vi.spyOn(ui, "deleteUiDraftsIfUnwritten").mockImplementation(async (...args) => {
+      expect((await read("", "workspaces"))?.value).toEqual([]);
+      return originalDelete(...args);
+    });
+    await boot([]);
+    await vi.waitFor(() => expect(deletion).toHaveBeenCalled());
+    expect(await ui.readUiRecord(settings)).toBeUndefined();
+  });
+
+  it("prunes a deleted owner while another board row remains active", async () => {
+    const ui = await import("../src/core/localUiStore.js");
+    await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "workspaces" }, [workspace]);
+    for (const address of [settings, chat, commit, worktree, changes]) await ui.writeUiRecord(address, { body: "unsent" });
+    script["project.list"] = () => ({ projects: [{ project_id: "p1", conversations: [] }] });
+    await boot([branchItem({ run_id: "run-2", worktree_id: "wt-2" })]);
+    await vi.waitFor(async () => {
+      for (const address of [settings, chat, commit, worktree, changes]) expect(await ui.readUiRecord(address)).toBeUndefined();
+    });
+  });
+
+  it("prunes after evicting a deleted owner's replica records", async () => {
+    const ui = await import("../src/core/localUiStore.js");
+    await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "workspaces" }, [workspace]);
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "row" }, branchItem());
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, { head: "old" });
+    await ui.writeUiRecord(chat, { body: "unsent" });
+    script["project.list"] = () => ({ projects: [{ project_id: "p1", conversations: [] }] });
+    let boardReads = 0;
+    let releaseConfirmation;
+    script["board.list"] = () => {
+      boardReads += 1;
+      if (boardReads === 2) return new Promise((resolve) => { releaseConfirmation = () => resolve({ items: [] }); });
+      return { items: [] };
+    };
+    sync.startCacheSync();
+    await vi.waitFor(() => expect(releaseConfirmation).toBeTypeOf("function"));
+    await vi.waitFor(async () => expect(await read("run-1", "status")).toBeUndefined());
+    releaseConfirmation();
+    await vi.waitFor(async () => expect(await ui.readUiRecord(chat)).toBeUndefined());
+  });
+
+  it("keeps a draft when fresh confirmation names its owner after a late UI read", async () => {
+    const ui = await import("../src/core/localUiStore.js");
+    await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "workspaces" }, [workspace]);
+    await ui.writeUiRecord(settings, { name: "unfinished" });
+    const original = ui.uiDraftRecords;
+    let release;
+    vi.spyOn(ui, "uiDraftRecords").mockImplementation(async (...args) => {
+      const entries = await original(...args);
+      await new Promise((resolve) => { release = resolve; });
+      return entries;
+    });
+    script["project.list"] = () => ({ projects: [{ project_id: "p1", conversations: [] }] });
+    sync.startCacheSync();
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    expect((await read("", "workspaces"))?.value).toEqual([]);
+    script["workspace.list"] = () => ({ workspaces: [workspace] });
+    release();
+    await vi.waitFor(() => expect(calls("workspace.list")).toHaveLength(2));
+    expect((await ui.readUiRecord(settings))?.value).toEqual({ name: "unfinished" });
+  });
+
+  it("never treats the failed workspace-list fallback as proof of draft deletion", async () => {
+    const ui = await import("../src/core/localUiStore.js");
+    await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "workspaces" }, [workspace]);
+    await ui.writeUiRecord(settings, { name: "unfinished" });
+    await ui.writeUiRecord(chat, { body: "unsent" });
+    script["workspace.list"] = () => { throw new Error("away"); };
+    await boot([]);
+    expect((await ui.readUiRecord(settings)).value).toEqual({ name: "unfinished" });
+    expect((await ui.readUiRecord(chat)).value).toEqual({ body: "unsent" });
+  });
+
+  it("retains drafts when a newer push overtakes an empty workspace list", async () => {
+    const ui = await import("../src/core/localUiStore.js");
+    const { notePush } = await import("../src/core/pushFence.js");
+    await ui.writeUiRecord(settings, { name: "unfinished" });
+    script["workspace.list"] = () => {
+      notePush({ deviceId: "dev-1", entityId: "", kind: "workspaces" });
+      return { workspaces: [] };
+    };
+    await boot([]);
+    expect((await ui.readUiRecord(settings)).value).toEqual({ name: "unfinished" });
+  });
+});
+
 describe("no timers", () => {
   it("tasks nothing in an hour of wall clock", async () => {
     await boot([branchItem()]);

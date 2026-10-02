@@ -99,6 +99,26 @@ describe("the local UI store", () => {
     expect(heard).toEqual(["ui-draft"]);
   });
 
+  it("does not prune a newer migrated draft when neither migration has a write token", async () => {
+    await seedOldCache(4, { [DRAFT_KEY]: { at: 1, value: { body: "before" } } });
+    await store.adoptCachedUiRecords();
+    const captured = await store.uiDraftRecords("dev-1");
+    await seedOldCache(4, { [DRAFT_KEY]: { at: 2, value: { body: "newer" } } });
+    await store.adoptCachedUiRecords();
+    await store.deleteUiDraftsIfUnwritten(captured, () => true);
+    expect((await store.readUiRecord(DRAFT)).value).toEqual({ body: "newer" });
+  });
+
+  it("announces a pruned draft only after its conditional deletion commits", async () => {
+    await store.writeUiRecord(DRAFT, { body: "before" });
+    const captured = await store.uiDraftRecords("dev-1");
+    const heard = [];
+    const unwatch = store.subscribeUiRecords(DRAFT, () => heard.push(store.readUiRecord(DRAFT)));
+    await store.deleteUiDraftsIfUnwritten(captured, () => true);
+    expect(await Promise.all(heard)).toEqual([undefined]);
+    unwatch();
+  });
+
   it("replays a page-exit edit only while it is the newest", async () => {
     await store.writeUiRecord(DRAFT, { body: "committed" }, { source: "tab-a", sequence: 4 });
     expect(await store.writeUiRecordIfNewer(DRAFT, { body: "older" }, { at: 1, source: "tab-b", sequence: 1 })).toBe(false);

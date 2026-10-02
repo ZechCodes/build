@@ -73,7 +73,7 @@ import { srcJsFiles, srcSourceOf } from "./treeFiles.js";
 // loop over every kind of line became a reader per block in
 // core/markdownBlocks.js — a fence, a heading, a list, a table, a paragraph —
 // each asked in turn at the line it stands on.
-const RATCHETED_FUNCTIONS = 39;
+const RATCHETED_FUNCTIONS = 38;
 
 const DISABLE = "eslint-disable-next-line complexity";
 // A block or file-level disable would switch the rule off for everything

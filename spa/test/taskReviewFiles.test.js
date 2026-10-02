@@ -8,6 +8,7 @@ globalThis.IDBKeyRange = IDBKeyRange;
 const { readCached, wipeCache, writeCached } = await import("../src/core/localCache.js");
 const { wipeUiRecords } = await import("../src/core/localUiStore.js");
 const { cacheFileBody } = await import("../src/core/cacheLifetime.js");
+const { armChangeEvents, dispatchChangeEvent, refetchEverything, resetChangeEvents } = await import("../src/core/changeEvents.js");
 const { mountTaskReviewFiles } = await import("../src/core/taskReviewFiles.js");
 
 const snapshot = { id: "snap-1" };
@@ -29,8 +30,8 @@ const mount = (directory, callRpc, options = {}) => {
   return { host, view };
 };
 
-beforeEach(async () => { await wipeCache(); await wipeUiRecords(); });
-afterEach(() => { hosts.forEach(({ host, view }) => { view.dispose(); host.remove(); }); hosts = []; });
+beforeEach(async () => { await wipeCache(); await wipeUiRecords(); resetChangeEvents(); });
+afterEach(() => { hosts.forEach(({ host, view }) => { view.dispose(); host.remove(); }); hosts = []; resetChangeEvents(); });
 
 describe("task review Files", () => {
   it("lists the saved full head and opens unchanged blobs without filesystem RPC", async () => {
@@ -137,5 +138,67 @@ describe("task review Files", () => {
     await tick();
     expect(host.textContent).toContain("Empty directory.");
     expect(callRpc).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers accessible line comments anchored to the saved snapshot and directory", async () => {
+    const onComment = vi.fn();
+    const callRpc = vi.fn(async (_method, params) => params.mode === "tree"
+      ? { path: "", entries: [{ name: "readme.txt", kind: "file" }] }
+      : textFile(params.path, "first\nsecond\n"));
+    const { host, view } = mount(git, callRpc, { onComment });
+    await view.open("readme.txt");
+    await tick();
+    host.querySelector('[data-review-file-comment="2"]').click();
+    expect(onComment).toHaveBeenCalledWith({ snapshot_id: "snap-1", directory_id: "dir-1", path: "readme.txt", side: "new", line: 2 });
+    expect(host.querySelector('[data-review-file-comment="2"]').getAttribute("aria-label")).toContain("line 2");
+  });
+
+  it("keeps a file failure visible when the tree refresh succeeds", async () => {
+    let failFile = false;
+    let finishTree;
+    const callRpc = vi.fn(async (method, params) => {
+      if (method === "fs.tree" && failFile) return new Promise((resolve) => { finishTree = () => resolve({ path: params.path, entries: [{ name: "same.txt", kind: "file" }] }); });
+      if (method === "fs.tree") return { path: params.path, entries: [{ name: "same.txt", kind: "file" }] };
+      if (failFile) throw new Error("File unavailable");
+      return textFile(params.path, "held");
+    });
+    const { host, view } = mount(live, callRpc);
+    await view.open("same.txt");
+    await tick();
+    failFile = true;
+    view.refresh();
+    await tick();
+    expect(host.querySelector(".trf-status").textContent).toContain("File unavailable");
+    finishTree();
+    await tick();
+    expect(host.querySelector(".trf-status").textContent).toContain("File unavailable");
+    expect(host.querySelector(".trf-preview").textContent).toContain("held");
+  });
+
+  it("refetches named live files on push and on reconnect, without touching saved Git", async () => {
+    let text = "first";
+    const callRpc = vi.fn(async (method, params) => method === "fs.tree"
+      ? { path: params.path, entries: [{ name: "same.txt", kind: "file" }] }
+      : textFile(params.path, text));
+    const { host, view } = mount(live, callRpc);
+    const gitRpc = vi.fn(async (_method, params) => ({ path: params.path, entries: [] }));
+    mount(git, gitRpc);
+    await view.open("same.txt");
+    await tick();
+    const gitBefore = gitRpc.mock.calls.length;
+    const before = callRpc.mock.calls.filter(([method]) => method === "fs.read").length;
+    armChangeEvents({ push_events: true }, "device");
+    dispatchChangeEvent({ type: "changes", items: [{ entity_id: "workspace", files: { paths: ["other.txt"] } }] }, "device");
+    await tick();
+    expect(callRpc.mock.calls.filter(([method]) => method === "fs.read")).toHaveLength(before);
+    text = "second";
+    dispatchChangeEvent({ type: "changes", items: [{ entity_id: "workspace", files: { paths: ["same.txt"] } }] }, "device");
+    await tick();
+    expect(host.querySelector(".trf-preview").textContent).toContain("second");
+    text = "third";
+    refetchEverything("device");
+    await tick();
+    expect(host.querySelector(".trf-preview").textContent).toContain("third");
+    expect(gitRpc).toHaveBeenCalledTimes(gitBefore);
   });
 });

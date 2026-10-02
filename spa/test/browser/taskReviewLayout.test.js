@@ -10,9 +10,6 @@ async function mountReview(page, basePath) {
     const viewport = Object.assign(document.createElement("meta"), { name: "viewport", content: "width=device-width, initial-scale=1" });
     document.head.prepend(viewport);
   });
-  // The app's production entry establishes its connection/module cycle first.
-  await loadBrowserModules(page, { app: "src/app.js" }, basePath);
-  await page.evaluate(() => { delete window.__layoutModules; });
   await loadBrowserModules(page, {
     review: "src/core/taskReviewPage.js",
     support: "src/core/taskReviewSupport.js",

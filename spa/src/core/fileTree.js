@@ -270,8 +270,9 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
       if (missing.length) await commitExpanded(new Set([...expanded, ...missing]));
     },
     /** Read every shown directory again — the scope under the tree moved. */
-    relist() {
-      ["", ...expanded].filter(shown).forEach((dir) => void load(dir));
+    relist(paths = null) {
+      ["", ...expanded].filter((dir) => shown(dir) && (!paths || !dir || paths.some((path) => path === dir || path.startsWith(`${dir}/`))))
+        .forEach((dir) => void load(dir));
     },
     dispose() {
       disposed = true;

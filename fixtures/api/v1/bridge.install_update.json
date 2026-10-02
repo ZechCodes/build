@@ -27,6 +27,7 @@
   ],
   "examples": [
     {
+      "since": "3.5.0",
       "params": {
         "when": "now",
         "replace_development_build": true

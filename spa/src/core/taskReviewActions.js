@@ -143,8 +143,11 @@ function submittedIntent(draft, snapshot, review, sources, retry) {
 
 function retryHasResult(review, snapshot, pendingRetry) {
   if (!pendingRetry) return true;
-  const newer = actionRows(review, snapshot).filter((row) => !pendingRetry.before.includes(row.id));
-  return pendingRetry.directories.every((id) => newer.some((row) => row.directory_id === id));
+  const latest = new Map();
+  for (const row of actionRows(review, snapshot)) {
+    if (!pendingRetry.before.includes(row.id)) latest.set(row.directory_id, row);
+  }
+  return pendingRetry.directories.every((id) => ["succeeded", "failed", "interrupted"].includes(latest.get(id)?.status));
 }
 
 export function mountTaskReviewActions(host, options) {

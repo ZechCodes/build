@@ -150,6 +150,34 @@ it("does not count a Push of the wrong head as completing Merge and Push", async
   expect(repository.mutate.mock.calls.filter(([verb]) => verb === "complete")).toHaveLength(0);
 });
 
+it("keeps a disconnected Retry Push pending while its recorded row runs", async () => {
+  const repository = { mutate: vi.fn(async (verb) => {
+    if (verb === "act" && repository.mutate.mock.calls.filter(([name]) => name === "act").length === 2) throw new Error("offline");
+  }) };
+  mount(base, repository); choose("dir-api", "merge"); choose("dir-api", "push"); submit();
+  await vi.waitFor(() => expect(repository.mutate).toHaveBeenCalledWith("act", expect.anything()));
+  const failed = row("merge-row", "dir-api", [{ ...step("merge"), branch: "main", result_head: "4".repeat(40) },
+    { ...step("push", "failed"), merge_action_id: "merge-row" }], "failed");
+  sheet.update({ ...base, version: 3, actions: [failed] });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  document.querySelector('[data-review-retry-push="merge-row"]').click();
+  await vi.waitFor(() => expect(document.querySelector('[data-review-act-error]').textContent).toContain("offline"));
+  const retry = row("retry-row", "dir-api", [{ ...step("push", "running"), input_head: "4".repeat(40),
+    merge_action_id: "merge-row" }], "running");
+  sheet.update({ ...base, version: 4, actions: [failed, retry] });
+  await new Promise((resolve) => setTimeout(resolve, 220));
+  const address = uiAddress({ deviceId: "actions-device", entityId: "proj-1", view: "task-review-actions", kind: "git-draft",
+    sub: JSON.stringify(["task-1", snapshot.id]) });
+  expect((await readUiRecord(address)).value.intent.paused).toBe(false);
+  sheet.dispose();
+  mount({ ...base, version: 4, actions: [failed, retry] }, repository);
+  await vi.waitFor(() => expect(document.querySelector('[data-review-act]')).not.toBeNull());
+  sheet.update({ ...base, version: 5, actions: [failed, { ...retry, status: "succeeded",
+    steps: [{ ...retry.steps[0], status: "succeeded" }] }] });
+  await vi.waitFor(() => expect(repository.mutate.mock.calls.filter(([verb]) => verb === "complete")).toHaveLength(1));
+  expect(repository.mutate.mock.calls.filter(([verb]) => verb === "act")).toHaveLength(2);
+});
+
 it("completes selected success despite an unrelated historical failed source", async () => {
   const old = row("old", "dir-missing", [step("push", "failed")], "failed");
   const repository = { mutate: vi.fn(async () => {}) };

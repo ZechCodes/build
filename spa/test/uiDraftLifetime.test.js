@@ -94,7 +94,7 @@ describe("draft owners, independent of replica lifetime", () => {
     await expectKept(kept);
   });
 
-  it.each([undefined, null, {}, [{ unexpected: "shape" }]])("keeps drafts when the workspace list is incomplete: %j", async (workspaces) => {
+  it.each([undefined, null, {}, [{ unexpected: "shape" }], [{ project_id: "p1" }], [{ id: "" }]])("keeps drafts when the workspace list is incomplete: %j", async (workspaces) => {
     await remember();
     const addresses = [settings, directory, commit, chat()];
     await seed(addresses);
@@ -102,10 +102,26 @@ describe("draft owners, independent of replica lifetime", () => {
     await expectKept(addresses);
   });
 
-  it.each([undefined, null, {}, [{ unexpected: "shape" }]])("keeps conversations when the roster is incomplete: %j", async (conversations) => {
+  it.each([undefined, null, {}, [{ unexpected: "shape" }], [{ conversation_id: "" }]])("keeps conversations when the roster is incomplete: %j", async (conversations) => {
     await remember();
     await seed([chat()]);
     await reconcile(lists([workspace({ conversations })]));
+    await expectKept([chat()]);
+  });
+
+  it("tolerates malformed prior rosters without standing sync down", async () => {
+    await remember(lists([workspace({ conversations: [null] })]));
+    await seed([settings]);
+    await reconcile(lists([]));
+    await expectGone([settings]);
+  });
+
+  it("preserves the legacy conversation id a live agent digest names", async () => {
+    await remember();
+    await seed([chat()]);
+    const view = lists([]);
+    view.runs = [{ run_id: "run-2", agents: [{ id: "conv-1" }] }];
+    await reconcile(view);
     await expectKept([chat()]);
   });
 

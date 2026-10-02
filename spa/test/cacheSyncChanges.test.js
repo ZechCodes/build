@@ -927,6 +927,44 @@ describe("a push and a pass landing on the same record", () => {
 });
 
 describe("the board item", () => {
+  it("prunes a deleted workspace's drafts when its authoritative list is pushed", async () => {
+    const ui = await import("../src/core/localUiStore.js");
+    const workspace = { id: "ws-1", project_id: "p1", entity_id: "run-1", conversations: [{ conversation_id: "conv-1" }] };
+    script["workspace.list"] = () => ({ workspaces: [workspace] });
+    script["project.list"] = () => ({ projects: [{ project_id: "p1", conversations: [] }] });
+    await boot();
+    const chat = { deviceId: "dev-1", entityId: "conv-1", kind: "ui-draft", sub: "chat:agent:run-1:ag-1" };
+    const settings = { deviceId: "dev-1", entityId: "ws-1", kind: "ui-draft", sub: "workspace-settings:" };
+    await ui.writeUiRecord(chat, { body: "unsent" });
+    await ui.writeUiRecord(settings, { name: "unfinished" });
+    script["workspace.list"] = () => ({ workspaces: [] });
+    script["board.list"] = () => ({ items: [], runs: [] });
+    await deliver([{ entity_id: "board", state: { removed: ["run-1"], workspaces: [] } }]);
+    await vi.waitFor(async () => {
+      expect(await ui.readUiRecord(chat)).toBeUndefined();
+      expect(await ui.readUiRecord(settings)).toBeUndefined();
+    });
+  });
+
+  it("preserves a newly created owner's draft when an older pushed list arrives late", async () => {
+    const ui = await import("../src/core/localUiStore.js");
+    await boot();
+    const address = { deviceId: "dev-1", entityId: "ws-new", kind: "ui-draft", sub: "workspace-settings:" };
+    await ui.writeUiRecord(address, { name: "new workspace draft" });
+    script["workspace.list"] = () => ({ workspaces: [{ id: "ws-new", conversations: [] }] });
+    await deliver([{ entity_id: "board", state: { workspaces: [] } }]);
+    expect((await ui.readUiRecord(address))?.value).toEqual({ name: "new workspace draft" });
+  });
+
+  it("keeps drafts when a push only removes a board row without deleting its owner", async () => {
+    const ui = await import("../src/core/localUiStore.js");
+    await boot();
+    const address = { deviceId: "dev-1", entityId: "run-1", kind: "ui-draft", sub: "run-1" };
+    await ui.writeUiRecord(address, { text: "unsent" });
+    await deliver([{ entity_id: "board", state: { removed: ["run-1"] } }]);
+    expect((await ui.readUiRecord(address)).value).toEqual({ text: "unsent" });
+  });
+
   const feedWriters = [
     { name: "a local patch to A", act: async ({ rows, boardWatched }) => {
       await rows.patchFeedRow("dev-1", rows.feedRowTarget(branchItem()), { muted: boardWatched });

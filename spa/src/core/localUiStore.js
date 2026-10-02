@@ -15,8 +15,8 @@
 // `ui-*` write there. The replica upgrade keeps them until they are carried.
 
 import { createIdbDatabase, putOrAbort } from "./idbDatabase.js";
-import { createAnnouncer, partsOfKey, recordKey, writeStamp } from "./idbRecords.js";
-import { cachedUiRecords, deleteCachedIfUnwritten, subscribeCache } from "./localCache.js";
+import { addressOfParts, createAnnouncer, partsOfKey, prefixRange, recordKey, writeStamp } from "./idbRecords.js";
+import { cachedUiRecords, deleteCachedIfUnwritten, recordWriteOf, subscribeCache } from "./localCache.js";
 
 const DB_NAME = "build-ui";
 // v1: one store of records keyed as the replica keys them. A later format
@@ -126,6 +126,50 @@ function watchReplica() {
 export async function readUiRecord(address) {
   await watchReplica();
   return database.read("readonly", (store) => store.get(recordKey(address)));
+}
+
+/** Capture this device's drafts before asking for their owners. Never infer
+ * deletion from the absence of a replica: only the sync layer's successful
+ * ownership lists may decide which of these candidates can go. */
+export async function uiDraftRecords(deviceId) {
+  await watchReplica();
+  let entries = [];
+  await database.read("readonly", (store) => {
+    entries = [];
+    const request = store.openCursor(prefixRange(`${encodeURIComponent(deviceId)}|`));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) return;
+      const address = addressOfParts(partsOfKey(cursor.key));
+      if (address.kind === "ui-draft") entries.push({ address, record: cursor.value });
+      cursor.continue();
+    };
+    return null;
+  });
+  return entries;
+}
+
+/** Remove only the captured writes whose owners were confirmed gone. A newer
+ * edit in any tab wins, including one with the same timestamp. The guard is
+ * checked in the transaction, after any wait for database recovery. */
+export async function deleteUiDraftsIfUnwritten(entries, active) {
+  if (!entries.length) return;
+  let removed = [];
+  const wrote = await database.write((store) => {
+    removed = [];
+    for (const { address, record } of entries) {
+      if (address.kind !== "ui-draft") continue;
+      const key = recordKey(address);
+      const request = store.get(key);
+      request.onsuccess = () => {
+        if (!active() || recordWriteOf(request.result) !== recordWriteOf(record)) return;
+        store.delete(key);
+        removed.push(key);
+      };
+    }
+    return null;
+  });
+  if (wrote) for (const key of removed) announce(partsOfKey(key));
 }
 
 /** Write one record, stamped with when — and, for a UI writer, its owner and

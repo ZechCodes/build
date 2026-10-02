@@ -87,6 +87,7 @@ import { pageVisible } from "./visibility.js";
 import { dropBodyPages } from "./bodyPages.js";
 import { isMediaPath } from "./fileViewer.js";
 import { writeUsageLimits } from "./usageLimits.js";
+import { prepareDraftPrune } from "./uiDraftLifetime.js";
 import {
   BACKGROUND_COOLDOWN_MS,
   COMMIT_PATCH_MAX_BYTES,
@@ -422,17 +423,32 @@ const whileOnBoard = (context, entityId, fence) => ({
  *  any workspace has been read. A device whose bridge does not serve
  *  workspaces still has a board. */
 async function readLists(context, fence) {
-  const [board, projects, workspaces] = await Promise.all([
-    ask(context, "board.list", {}, "background"),
-    ask(context, "project.list", {}, "background"),
-    ask(context, "workspace.list", {}, "background"),
-  ]);
+  const drafts = await prepareDraftPrune(context.deviceId);
+  try {
+    return await readOwnershipLists(context, fence, drafts);
+  } finally {
+    drafts.dispose();
+  }
+}
+
+async function readOwnershipLists(context, fence, drafts) {
+  const [board, projects, workspaces] = await askOwnershipLists(context);
   if (!board || !projects || !context.active()) return null;
   await writeUsageLimits(context.deviceId, board.usage_limits);
   const view = liveFeedSnapshot(board, projects, workspaces || { workspaces: [] }, context.deviceId);
+  // The compatibility fallback above paints a board without workspace
+  // support. It is never evidence that an unsent draft's owner was deleted.
+  await drafts.prune({ ...view, workspaces: workspaces?.workspaces, projects: projects.projects },
+    () => context.active() && pushFence() === fence);
   await writeLists(context, view, fence);
   return view;
 }
+
+const askOwnershipLists = (context) => Promise.all([
+  ask(context, "board.list", {}, "background"),
+  ask(context, "project.list", {}, "background"),
+  ask(context, "workspace.list", {}, "background"),
+]);
 
 async function writeLists(context, view, fence) {
   if (!context.active()) return;
@@ -1299,6 +1315,10 @@ async function applyItem(context, item) {
  *  moved. An entity that finished, was deleted, or was cleared away appears in
  *  `removed`, and everything it had goes at once — its data and its row. */
 async function applyBoard(context, state) {
+  for (const kind of ["projects", "workspaces"]) {
+    if (state[kind]) notePush(addressOf(context, "", kind));
+  }
+  await prunePushedDrafts(context, state);
   // The harnesses out of usage there (#58): the pushed reading replaces the
   // device's record, and mounted surfaces repaint from its cache announcement.
   await writeUsageLimits(context.deviceId, state.usage_limits);
@@ -1307,7 +1327,6 @@ async function applyBoard(context, state) {
   if (removed.length) await dropRemovedRows(context, removed);
   if (!context.active()) return;
   if (state.projects) {
-    notePush(addressOf(context, "", "projects"));
     await writeSessionList(context, "projects", state.projects.map((project) => stampProject(project, context.deviceId)));
   }
   if (!context.active()) return;
@@ -1318,9 +1337,28 @@ async function applyBoard(context, state) {
     // the cache holds rather than losing its Done until the next whole read.
     const summaries = workspaceSummaries(await heldValue(context, "", "workspaces"));
     if (!context.active()) return;
-    notePush(addressOf(context, "", "workspaces"));
     await writeSessionList(context, "workspaces", state.workspaces.map((workspace) =>
       stampWorkspace(workspace, context.deviceId, workspace.work_summary === undefined ? summaries : [])));
+  }
+}
+
+/** A pushed list can retire an owner before the next ordered pass. Capture
+ * its old ownership before replacing the lists. The push itself predates
+ * that capture, so confirm with fresh reads: a newly created owner's draft
+ * may already be here when an older push arrives. No drafts, no extra reads;
+ * `removed` alone is only a board departure and never starts cleanup. */
+async function prunePushedDrafts(context, state) {
+  if (!state.workspaces && !state.projects) return;
+  const fence = pushFence();
+  const drafts = await prepareDraftPrune(context.deviceId);
+  try {
+    if (!drafts.hasCandidates || !context.active()) return;
+    const [board, projects, workspaces] = await askOwnershipLists(context);
+    if (!board || !projects || !workspaces) return;
+    await drafts.prune({ ...board, projects: projects.projects, workspaces: workspaces.workspaces },
+      () => context.active() && pushFence() === fence);
+  } finally {
+    drafts.dispose();
   }
 }
 

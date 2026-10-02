@@ -689,6 +689,48 @@ describe("the lifetime rules a pass applies", () => {
   });
 });
 
+describe("draft ownership reconciliation", () => {
+  const workspace = { id: "ws-1", workspace_id: "ws-1", project_id: "p1", entity_id: "run-1", conversations: [{ conversation_id: "conv-1" }] };
+  const settings = { deviceId: "dev-1", entityId: "ws-1", kind: "ui-draft", sub: "workspace-settings:" };
+  const chat = { deviceId: "dev-1", entityId: "conv-1", kind: "ui-draft", sub: "chat:agent:run-1:ag-1" };
+
+  it("prunes deleted owners during sync even when no replica entity records remain", async () => {
+    const ui = await import("../src/core/localUiStore.js");
+    await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "workspaces" }, [workspace]);
+    await ui.writeUiRecord(settings, { name: "unfinished" });
+    await ui.writeUiRecord(chat, { body: "unsent" });
+    script["project.list"] = () => ({ projects: [{ project_id: "p1", conversations: [] }] });
+    await boot([]);
+    await vi.waitFor(async () => {
+      expect(await ui.readUiRecord(settings)).toBeUndefined();
+      expect(await ui.readUiRecord(chat)).toBeUndefined();
+    });
+  });
+
+  it("never treats the failed workspace-list fallback as proof of draft deletion", async () => {
+    const ui = await import("../src/core/localUiStore.js");
+    await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "workspaces" }, [workspace]);
+    await ui.writeUiRecord(settings, { name: "unfinished" });
+    await ui.writeUiRecord(chat, { body: "unsent" });
+    script["workspace.list"] = () => { throw new Error("away"); };
+    await boot([]);
+    expect((await ui.readUiRecord(settings)).value).toEqual({ name: "unfinished" });
+    expect((await ui.readUiRecord(chat)).value).toEqual({ body: "unsent" });
+  });
+
+  it("retains drafts when a newer push overtakes an empty workspace list", async () => {
+    const ui = await import("../src/core/localUiStore.js");
+    const { notePush } = await import("../src/core/pushFence.js");
+    await ui.writeUiRecord(settings, { name: "unfinished" });
+    script["workspace.list"] = () => {
+      notePush({ deviceId: "dev-1", entityId: "", kind: "workspaces" });
+      return { workspaces: [] };
+    };
+    await boot([]);
+    expect((await ui.readUiRecord(settings)).value).toEqual({ name: "unfinished" });
+  });
+});
+
 describe("no timers", () => {
   it("tasks nothing in an hour of wall clock", async () => {
     await boot([branchItem()]);

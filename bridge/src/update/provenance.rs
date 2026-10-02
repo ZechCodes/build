@@ -87,12 +87,26 @@ pub fn installable_binary(
 /// a `CACHEDIR.TAG` it wrote. The next `cargo build` there overwrites
 /// whatever replaced the binary.
 pub fn in_cargo_target_dir(binary: &Path) -> bool {
-    binary.ancestors().skip(1).any(|dir| {
-        fs::read_to_string(dir.join("CACHEDIR.TAG")).is_ok_and(|tag| {
-            tag.starts_with("Signature: 8a477f597d28d172789f06886806bc55")
-                && tag.contains("created by cargo")
-        })
-    })
+    binary
+        .ancestors()
+        .skip(1)
+        .any(|dir| is_cargo_cache_tag(&dir.join("CACHEDIR.TAG")))
+}
+
+/// Reads only a regular file, and only the prefix cargo's tag fits in, so a
+/// FIFO or a huge file by that name cannot stall or bloat startup.
+fn is_cargo_cache_tag(path: &Path) -> bool {
+    use std::io::Read;
+    const TAG_PREFIX: u64 = 512;
+    if !fs::metadata(path).is_ok_and(|metadata| metadata.is_file()) {
+        return false;
+    }
+    let mut tag = String::new();
+    fs::File::open(path)
+        .and_then(|file| file.take(TAG_PREFIX).read_to_string(&mut tag))
+        .is_ok()
+        && tag.starts_with("Signature: 8a477f597d28d172789f06886806bc55")
+        && tag.contains("created by cargo")
 }
 
 fn service_unit(home: &Path) -> Result<PathBuf, String> {
@@ -203,6 +217,43 @@ fn unit_runs_binary_for(text: &str, binary: &Path, os: &str) -> bool {
 mod tests {
     use super::*;
     use crate::service::{Launchd, ServiceConfig, ServiceManager, Systemd};
+
+    /// `in_cargo_target_dir` on another thread, failing rather than hanging
+    /// the suite if it blocks.
+    fn probe_within_seconds(binary: &Path) -> bool {
+        let binary = binary.to_path_buf();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || sender.send(in_cargo_target_dir(&binary)));
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the cargo target probe returns without blocking")
+    }
+
+    #[test]
+    fn a_cargo_tag_that_is_not_a_small_regular_file_is_not_read_whole() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = tempfile::tempdir().unwrap();
+        let fifo_dir = dir.path().join("fifo");
+        let binary = fifo_dir.join("release/build-bridge");
+        fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        fs::write(&binary, b"binary").unwrap();
+        let fifo = std::ffi::CString::new(fifo_dir.join("CACHEDIR.TAG").as_os_str().as_bytes())
+            .unwrap();
+        // SAFETY: a valid NUL-terminated path; mkfifo only creates the node.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        assert!(!probe_within_seconds(&binary));
+
+        // Only a short prefix is read: the cargo line past it is never seen.
+        let padded_dir = dir.path().join("padded");
+        let padded = padded_dir.join("release/build-bridge");
+        fs::create_dir_all(padded.parent().unwrap()).unwrap();
+        fs::write(&padded, b"binary").unwrap();
+        let mut tag = b"Signature: 8a477f597d28d172789f06886806bc55\n".to_vec();
+        tag.extend(std::iter::repeat_n(b'#', 4096));
+        tag.extend(b"\n# created by cargo\n");
+        fs::write(padded_dir.join("CACHEDIR.TAG"), tag).unwrap();
+        assert!(!probe_within_seconds(&padded));
+    }
 
     #[test]
     fn a_binary_under_a_cargo_target_directory_is_one_cargo_rebuilds() {

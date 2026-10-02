@@ -305,22 +305,17 @@ impl UpdateService {
                     // invalidates the old queued attempt before handoff, and
                     // with it a confirmation that named the older release.
                     *attempt = AttemptMetadata::default();
-                    if !schedule_confirmed(&self.config, attempt) {
-                        status.state = UpdateState::Idle;
-                    }
                 }
+                // A development build's queue lasts only while its
+                // confirmation does; a release build's always may.
+                let scheduled = status.state == UpdateState::ScheduledWhenIdle
+                    && schedule_confirmed(&self.config, attempt);
                 status.latest_release = Some(release);
                 if !status.has_install_error() {
                     status.clear_error();
                 }
-                if status.state != UpdateState::ScheduledWhenIdle {
-                    status.state = if status.has_install_error() {
-                        UpdateState::Failed
-                    } else if release_available(&status) {
-                        UpdateState::Available
-                    } else {
-                        UpdateState::Idle
-                    };
+                if !scheduled {
+                    status.state = settled_state(&status);
                 } else if !release_available(&status) {
                     status.state = UpdateState::Idle;
                     *attempt = AttemptMetadata::default();

@@ -234,9 +234,11 @@ fn configure_updates(app: AppState, runtime: &RuntimePaths) -> Result<AppState, 
         platform,
         development_build,
         replaceable_development_build,
-        running_from_cargo_target: build_bridge::update::provenance::in_cargo_target_dir(
-            &std::fs::canonicalize(&running_binary).unwrap_or_else(|_| running_binary.clone()),
-        ),
+        // Only a development build walks its ancestors for a cargo tag.
+        running_from_cargo_target: development_build
+            && build_bridge::update::provenance::in_cargo_target_dir(
+                &std::fs::canonicalize(&running_binary).unwrap_or_else(|_| running_binary.clone()),
+            ),
         check_interval: Duration::from_secs(24 * 60 * 60),
     };
     let backend = build_bridge::update::release::ProductionBackend::new(

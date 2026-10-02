@@ -1092,3 +1092,34 @@ async fn status_says_when_a_development_build_runs_from_a_cargo_target_directory
     .unwrap();
     assert!(!release_build.status().running_from_cargo_target);
 }
+
+#[tokio::test]
+async fn a_confirmed_replacement_queued_while_agents_work_launches_after_restart() {
+    let dir = TempDir::new().unwrap();
+    let backend = Arc::new(FakeBackend {
+        latest: Mutex::new(Ok(release("1.1.0"))),
+        ..Default::default()
+    });
+    let service = Arc::new(replaceable_fixture(dir.path(), backend.clone()));
+    service.check_at(at(1)).await.unwrap();
+    let queued = service
+        .request_install(InstallWhen::Idle, true, true)
+        .unwrap();
+    assert_eq!(queued.state, UpdateState::ScheduledWhenIdle);
+    // The request's own tick stages the release and waits for the agents.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while saved_status(dir.path())["staged"] != true {
+        assert!(tokio::time::Instant::now() < deadline, "the release stages");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(saved_status(dir.path())["replaces_development_build"], true);
+    assert!(backend.installs.lock().unwrap().is_empty());
+    drop(service);
+
+    let restarted = replaceable_fixture(dir.path(), backend.clone());
+    assert_eq!(restarted.status().state, UpdateState::ScheduledWhenIdle);
+    let launched = restarted.tick_at(at(2), false).await.unwrap();
+    assert_eq!(launched.state, UpdateState::Installing);
+    assert_eq!(*backend.stages.lock().unwrap(), ["1.1.0"]);
+    assert_eq!(*backend.installs.lock().unwrap(), ["1.1.0"]);
+}

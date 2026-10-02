@@ -340,6 +340,15 @@ api_url() {
     printf '%s\n' "${BRIDGE_API_URL:-https://getbuild.ing}"
 }
 
+# What a pasted command starts with so it asks the api this run asked: a
+# BRIDGE_API_URL the installer was given, as one shell word, else nothing. A
+# command without it pasted into another shell asks the default api, and
+# install-service would point the service there (#320).
+api_prefix() {
+    [ -n "${BRIDGE_API_URL:-}" ] || return 0
+    printf 'BRIDGE_API_URL=%s ' "$(shell_word "$BRIDGE_API_URL")"
+}
+
 # `build-bridge pair`'s exit status when it kept this machine's identity
 # because the api it asked is not known to have approved it (#320).
 PAIR_STATUS_APPROVED_ELSEWHERE=3
@@ -349,7 +358,7 @@ PAIR_STATUS_APPROVED_ELSEWHERE=3
 # What each command prints is its own, framed by the step it belongs to.
 enable_service() {
     es_bridge="$(shown "$1")"
-    es_run="$(pasteable "$1")"
+    es_run="$(api_prefix)$(pasteable "$1")"
     if [ "$SKIP_SERVICE" = "1" ]; then
         finish "The Build bridge is installed at $es_bridge." \
             "Pairing and the background service were skipped (BUILD_BRIDGE_SKIP_SERVICE=1)." \

@@ -153,6 +153,11 @@ pub(in crate::app) use self::runtime::terminals::{
 pub(in crate::app) use self::runtime::terminals::{
     require_shell_kind, shell_harness_spec, terminal_size, MAX_USER_TERMINALS,
 };
+/// The spec a user's terminal tab spawns, for the harness's identity tests.
+#[cfg(test)]
+pub(crate) fn shell_harness_spec_for_test(shell: &str) -> crate::pty::HarnessSpec {
+    shell_harness_spec(shell)
+}
 pub(in crate::app) use self::streams::{sha256_hex, stream_start, StreamState};
 pub(in crate::app) use self::tasks::documents::{attach_plan_operation_turn, comment_json};
 pub(in crate::app) use self::tasks::sessions::PlanDraftingStarted;

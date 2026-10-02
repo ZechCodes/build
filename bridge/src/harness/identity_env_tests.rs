@@ -135,8 +135,19 @@ async fn a_pty_agent_loses_the_identity_and_a_terminal_keeps_it() {
     assert_eq!(reported(&agent_out), none_set());
     agent.end();
 
+    // The tab's own spec, with a "shell" that reports instead of prompting.
     let terminal_out = dir.path().join("terminal");
-    let terminal = reporting_spec(&terminal_out).as_terminal();
+    let shell = dir.path().join("shell");
+    std::fs::write(
+        &shell,
+        format!(
+            "#!/bin/sh\n{}\nexec cat >/dev/null\n",
+            report_identity(&terminal_out)
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&shell, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let terminal = crate::app::shell_harness_spec_for_test(shell.to_str().unwrap());
     let terminal = crate::pty::PtySession::spawn(&terminal, None, size).unwrap();
     assert_eq!(reported(&terminal_out), all_set());
     terminal.end();

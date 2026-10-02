@@ -125,8 +125,9 @@ new_sandbox() {
     cat > "$ns_root/payload/build-bridge" <<'BRIDGE'
 #!/bin/sh
 # Stands in for the released binary: records each subcommand the installer
-# runs and answers it the way the real one does, with the status the case
-# chose for pairing.
+# runs, and the api it would ask, and answers it the way the real one does,
+# with the status the case chose for pairing.
+printf '%s %s\n' "${BRIDGE_API_URL:-https://getbuild.ing}" "$*" >> "$HOME/bridge-apis"
 case "${1:-}" in
     pair)
         printf '%s\n' "$*" >> "$HOME/bridge-calls"
@@ -514,29 +515,37 @@ a_failed_pairing_says_how_to_resume() {
 
 # A pairing the bridge kept because the api it asked did not approve it
 # (exit 3, #320) is not one to retry as it was: the installer names the api
-# and gives `pair --retire`, which works pasted, all within 80 columns.
+# and gives `pair --retire` and `install-service`, which pasted into a shell
+# without BRIDGE_API_URL still ask that api. Every line fits 80 columns but
+# the commands, which are never broken.
 a_pairing_kept_for_another_api_offers_pair_retire() {
     name="a_pairing_kept_for_another_api_offers_pair_retire"
     root="$(new_sandbox "$name")"
     status="$(BRIDGE_API_URL=http://localhost:8090 CASE_INSTALL_DIR="$root/home/.local/bin" \
         CASE_SKIP_SERVICE=0 CASE_PAIR_STATUS=3 run_install "$root")"
     assert_exit "$name" "$root" "$status" 1 || return 1
+    pk_run="BRIDGE_API_URL='http://localhost:8090' ~/.local/bin/build-bridge"
     assert_says "$name" "$root/stderr" \
         "Error: pairing stopped: http://localhost:8090 did not approve this machine's" \
         "pair this machine with http://localhost:8090, run:" \
-        "  ~/.local/bin/build-bridge pair --retire" \
-        "  ~/.local/bin/build-bridge install-service" || return 1
+        "  $pk_run pair --retire" \
+        "  $pk_run install-service" || return 1
     assert_never_says "$name" "$root/stderr" "When you can approve it in Build" || return 1
     assert_never_says "$name" "$root/stderr" "Starting the background service" || return 1
-    assert_fits_80 "$name" "$root/stderr" || return 1
-    pk_line="$(grep -E '^      .* pair --retire$' "$root/stderr")"
-    : > "$root/home/bridge-calls"
-    HOME="$root/home" sh -c "$pk_line" > /dev/null 2>&1 || {
-        fail "$name" "pasted '$pk_line' did not run"
-        return 1
-    }
-    [ "$(cat "$root/home/bridge-calls")" = "pair --retire" ] || {
-        fail "$name" "pasted '$pk_line' ran: $(cat "$root/home/bridge-calls")"
+    grep -v "^ *$pk_run " "$root/stderr" > "$root/said" || true
+    assert_fits_80 "$name" "$root/said" || return 1
+    : > "$root/home/bridge-apis"
+    for pk_line in "$(grep -E '^ +.* pair --retire$' "$root/stderr")" \
+        "$(grep -E '^ +.* install-service$' "$root/stderr")"; do
+        env -u BRIDGE_API_URL HOME="$root/home" BUILD_TEST_PAIR_STATUS=0 \
+            sh -c "$pk_line" > /dev/null 2>&1 || {
+            fail "$name" "pasted '$pk_line' did not run"
+            return 1
+        }
+    done
+    pk_asked="$(printf 'http://localhost:8090 pair --retire\nhttp://localhost:8090 install-service')"
+    [ "$(cat "$root/home/bridge-apis")" = "$pk_asked" ] || {
+        fail "$name" "pasted lines asked: $(cat "$root/home/bridge-apis")"
         return 1
     }
     pass "$name"

@@ -727,6 +727,15 @@ mod tests {
 
     /// A refusal is one sentence of any length; printed, it breaks between
     /// words into indented lines, and a word longer than a line stands alone.
+    /// An identity that records no approver is the default api's to retire,
+    /// and no other api's (#320).
+    #[test]
+    fn without_a_recorded_approver_only_the_default_api_may_retire() {
+        let legacy = identity::generate("my-box");
+        assert!(may_retire(&legacy, crate::config::DEFAULT_API_URL));
+        assert!(!may_retire(&legacy, "http://localhost:8090"));
+    }
+
     /// The same api however its url is written: scheme, host in any case,
     /// port written or implied, trailing slash or not (#320).
     #[test]

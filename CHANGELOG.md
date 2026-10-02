@@ -28,7 +28,9 @@ protocol versions; see
 - `install.sh` quotes the commands it prints to paste, and the line that puts
   the install directory on `PATH`, so any install path it accepts works
   pasted into sh, bash or zsh, including one with `$`, a backtick, a quote, a
-  backslash or `!` (#320).
+  backslash or `!`. Run with `BRIDGE_API_URL`, it starts each command it
+  prints with that variable, so a pasted `pair` or `install-service` asks
+  the same api (#320).
 
 ### Changed
 

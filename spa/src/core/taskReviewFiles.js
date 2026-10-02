@@ -9,6 +9,7 @@ import { fileBodyReading, isMediaPath } from "./fileViewer.js";
 import { mountPagedFile, sourceLinesPainter, wholeBytesPainter } from "./pagedFileView.js";
 import { langForPath } from "./highlight.js";
 import { markdownHtml } from "./markdown.js";
+import { fieldTraits } from "./fieldTraits.js";
 import { attachMediaSource, createMediaBody, releaseMediaSource } from "./mediaBlob.js";
 import { readCached, recordWriteOf, subscribeCache, writeCached } from "./localCache.js";
 import { watchChanges } from "./changeEvents.js";
@@ -52,7 +53,7 @@ const previewBodyHtml = (path, file, mode) => {
 };
 
 const previewHtml = (path, file, commentable) => {
-  const lineAction = commentable ? '<label>Line <input data-review-line-input type="number" min="1" value="1" inputmode="numeric" aria-label="Line to comment on"></label><button type="button" data-review-comment-line>Comment</button>' : "";
+  const lineAction = commentable ? `<label>Line <input data-review-line-input type="number" min="1" value="1" ${fieldTraits("identifier")} aria-label="Line to comment on"></label><button type="button" data-review-comment-line>Comment</button>` : "";
   const head = `<div class="trf-file-head"><span class="mono">${esc(path)}</span><span>${Number(file.size) || 0} bytes</span>${lineAction}</div>`;
   if (file.paged) return head + '<div class="trf-paged"></div>';
   return head + previewBodyHtml(path, file, previewModeFor(file.mime, file.truncated));

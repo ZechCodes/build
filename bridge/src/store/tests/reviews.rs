@@ -26,12 +26,12 @@ fn snapshots_append_and_compare_versions_without_losing_the_winner() {
     let store = Store::new(dir.path()).unwrap();
     let task = task(&store);
     assert!(store.load_review(&task.id).unwrap().is_none());
-    let first = store
+    let (first, _) = store
         .save_review_snapshot(&task.id, "ws-1", 0, snapshot("rs-first"))
         .unwrap();
     assert_eq!((first.version, first.snapshots[0].number), (1, 1));
 
-    let second = store
+    let (second, _) = store
         .save_review_snapshot(&task.id, "ws-1", 1, snapshot("rs-second"))
         .unwrap();
     assert_eq!((second.version, second.snapshots[1].number), (2, 2));
@@ -39,13 +39,20 @@ fn snapshots_append_and_compare_versions_without_losing_the_winner() {
         store.save_review_snapshot(&task.id, "ws-1", 1, snapshot("rs-loser")),
         Err(StoreError::ReviewVersionConflict { .. })
     ));
-    assert!(matches!(
-        store.save_review_snapshot(&task.id, "ws-2", 2, snapshot("rs-other-workspace")),
-        Err(StoreError::ReviewWorkspaceMismatch { .. })
-    ));
+    assert_eq!(store.load_review(&task.id).unwrap().unwrap(), second);
+    let (replacement, replaced) = store
+        .save_review_snapshot(&task.id, "ws-2", 2, snapshot("rs-other-workspace"))
+        .unwrap();
+    assert_eq!(replacement.workspace_id, "ws-2");
+    assert_eq!(replacement.snapshots.len(), 1);
+    assert_eq!(replacement.snapshots[0].number, 3);
+    assert_eq!(replaced, second.snapshots);
     drop(store);
     let reopened = Store::new(dir.path()).unwrap();
-    assert_eq!(reopened.load_review(&task.id).unwrap().unwrap(), second);
+    assert_eq!(
+        reopened.load_review(&task.id).unwrap().unwrap(),
+        replacement
+    );
 }
 
 #[test]
@@ -127,7 +134,7 @@ fn failed_completion_leaves_every_record_untouched() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();
     let task = task(&store);
-    let before = store
+    let (before, _) = store
         .save_review_snapshot(&task.id, "ws-1", 0, snapshot("rs-first"))
         .unwrap();
     store.fail_next_write();
@@ -151,7 +158,7 @@ fn fresh_snapshot_reopens_review_without_moving_or_reopening_task() {
         .complete_review(&task.id, 1, &Actor::User, "used own tools")
         .unwrap();
     let task_before = store.load_tracker_task(&task.id).unwrap().unwrap();
-    let review = store
+    let (review, _) = store
         .save_review_snapshot(&task.id, "ws-1", 2, snapshot("rs-second"))
         .unwrap();
     assert_eq!(review.version, 3);

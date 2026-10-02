@@ -29,6 +29,8 @@ every directory in that workspace, including unchanged, non-Git and unavailable
 ones. Git snapshots keep committed heads and bases; uncommitted files are
 counted but excluded. You may override a directory's base by its ID. A
 snapshot updates only the review: move or reopen the task explicitly if needed.
+Taking a snapshot from another workspace replaces the previous snapshot history
+and releases its pins after the new snapshot is saved.
 Assign the task to its reviewer with `assign_task`, naming the snapshot ID in
 the assignment note. Assignment routes the work; it does not grant exclusive
 rights to review or complete it.

@@ -147,3 +147,69 @@ fn a_failed_ref_release_keeps_history_for_an_explicit_retry() {
     delete_project_history(&store, repo.to_str().unwrap()).unwrap();
     assert!(pins(&repo).is_empty());
 }
+
+#[test]
+fn another_workspace_replaces_the_review_and_releases_old_pins() {
+    let (_home, repo) = init_repo();
+    let (_new_home, new_repo) = init_repo();
+    let db = tempfile::tempdir().unwrap();
+    let store = Store::new(db.path()).unwrap();
+    let mut request = request(&store, &repo);
+    let first = snapshot(&store, &request).unwrap();
+    let task_before = store.load_tracker_task(&request.task_id).unwrap().unwrap();
+    request.expected_version = first.version;
+    request.workspace.id = "workspace-2".into();
+    request.workspace.root = new_repo.clone();
+    request.workspace.directories[0].path = new_repo.clone();
+    let replacement = snapshot(&store, &request).unwrap();
+    assert_eq!(replacement.workspace_id, "workspace-2");
+    assert_eq!(replacement.version, first.version + 1);
+    assert_eq!(replacement.snapshots.len(), 1);
+    assert_eq!(replacement.snapshots[0].number, 2);
+    assert_ne!(replacement.snapshots[0].id, first.snapshots[0].id);
+    assert!(pins(&repo).is_empty());
+    assert_eq!(pins(&new_repo).len(), 2);
+    assert!(pins(&new_repo)
+        .iter()
+        .all(|name| name.contains(&replacement.snapshots[0].id)));
+    assert_eq!(
+        store.load_tracker_task(&request.task_id).unwrap().unwrap(),
+        task_before
+    );
+    drop(store);
+    let reopened = Store::new(db.path()).unwrap();
+    assert_eq!(
+        reopened.load_review(&request.task_id).unwrap().unwrap(),
+        replacement
+    );
+}
+
+#[test]
+fn rejected_workspace_replacement_keeps_the_old_review_and_pins() {
+    let (_home, repo) = init_repo();
+    let (_new_home, new_repo) = init_repo();
+    let db = tempfile::tempdir().unwrap();
+    let store = Store::new(db.path()).unwrap();
+    let mut request = request(&store, &repo);
+    let before = snapshot(&store, &request).unwrap();
+    let before_pins = pins(&repo);
+    request.workspace.id = "workspace-2".into();
+    request.workspace.directories[0].path = new_repo.clone();
+    let stale = snapshot(&store, &request).unwrap_err();
+    assert!(stale.starts_with("stale_version:"));
+    assert_eq!(
+        store.load_review(&request.task_id).unwrap().unwrap(),
+        before
+    );
+    assert_eq!(pins(&repo), before_pins);
+    assert!(pins(&new_repo).is_empty());
+    request.expected_version = before.version;
+    store.fail_next_write();
+    assert!(snapshot(&store, &request).is_err());
+    assert_eq!(
+        store.load_review(&request.task_id).unwrap().unwrap(),
+        before
+    );
+    assert_eq!(pins(&repo), before_pins);
+    assert!(pins(&new_repo).is_empty());
+}

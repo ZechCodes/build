@@ -20,7 +20,11 @@ Wire 3.6.0.
   for unchanged files. Completion records who finished the review and what
   they did, and moves the task to Done without closing it or finishing its
   workspace. Moving a task to Done also completes its open review, recording
-  the mover and “Marked done”. Snapshot updates use a version check; review tasks bypass the
+  the mover and “Marked done”. Explicit completion also records the column move
+  and runs its normal follow-on behavior. Diff file listings and patch buffers
+  are bounded; truncated file listings are marked. Taking a snapshot from a new
+  workspace replaces the old review history and releases its pins. RPC and MCP
+  share one description limit. Snapshot updates use a version check; review tasks bypass the
   older automatic report/merged-workspace task transitions (#328).
 
 ## [0.2.7] - 2026-10-02

@@ -24,7 +24,8 @@
     ],
     "patch": "+saved text\n",
     "diff_key": "1111111111111111111111111111111111111111:2222222222222222222222222222222222222222",
-    "truncated": false
+    "truncated": false,
+    "files_truncated": false
   },
   "errors": [
     "not_found",
@@ -127,7 +128,8 @@
           "end": 12,
           "total": 12,
           "version": "patch-key"
-        }
+        },
+        "files_truncated": false
       }
     },
     {
@@ -154,7 +156,8 @@
           }
         ],
         "diff_key": "1111111111111111111111111111111111111111:2222222222222222222222222222222222222222",
-        "truncated": false
+        "truncated": false,
+        "files_truncated": false
       }
     }
   ]

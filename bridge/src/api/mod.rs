@@ -374,9 +374,7 @@ fn review_refusal(message: &str) -> Option<ApiError> {
     if message == "Source unavailable" {
         return Some(ApiError::unavailable(message));
     }
-    if message.starts_with("review ")
-        && (message.ends_with("is already completed") || message.contains("belongs to workspace"))
-    {
+    if message.starts_with("review ") && message.ends_with("is already completed") {
         return Some(ApiError::conflict(message, None));
     }
     if message.starts_with("invalid base override")

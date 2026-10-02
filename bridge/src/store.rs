@@ -163,12 +163,6 @@ pub enum StoreError {
         expected: u64,
         found: u64,
     },
-    #[error("review {task_id} belongs to workspace {existing}, not {requested}")]
-    ReviewWorkspaceMismatch {
-        task_id: String,
-        existing: String,
-        requested: String,
-    },
     #[error("unknown review for task_id: {task_id}")]
     ReviewNotFound { task_id: String },
     #[error("unknown task_id: {task_id}")]
@@ -177,7 +171,10 @@ pub enum StoreError {
     ReviewCompleted { task_id: String },
     #[error("review snapshot {snapshot_id} already exists")]
     ReviewSnapshotExists { snapshot_id: String },
-    #[error("review completion needs a brief action description (1 to 2000 bytes)")]
+    #[error(
+        "review completion needs a brief action description (1 to {} UTF-8 bytes)",
+        crate::reviews::records::MAX_REVIEW_DESCRIPTION_BYTES
+    )]
     ReviewDescriptionInvalid,
     #[error("release review pins: {0}")]
     ReviewPinCleanup(String),

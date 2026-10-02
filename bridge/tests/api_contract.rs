@@ -171,6 +171,7 @@ fn review_snapshots_are_a_separate_capability_from_later_review_actions() {
     }
     assert!(!advertised.contains(&"tasks.review.act"));
     let read = read_json(&fixtures_root().join("v1/tasks.review.diff.json"));
+    assert_eq!(read["result"]["files_truncated"], false);
     let examples = read["examples"].as_array().unwrap();
     assert!(examples
         .iter()

@@ -626,24 +626,31 @@ percent-encode bytes outside ASCII letters, digits, `_` and `-`: directory IDs
 contain `:`, which Git cannot use in ref names. Metadata keeps the original IDs.
 The snapshot ID is unique before any pins are written; `service.rs` saves the
 metadata with a review version check and removes only the losing call's pins
-at their expected OIDs. Git work runs through the deferred drain off the app
+at their expected OIDs. A snapshot from another workspace replaces the previous
+snapshot history; its old pins are released after the metadata commits. Git
+work runs through the deferred drain off the app
 lock (`app/tracker/reviews.rs`).
 
 Schema 12 stores review headers and snapshot metadata in `reviews` and
 `review_snapshots` (`store/reviews.rs`), without patches or file bodies.
 `read.rs` uses the recorded common Git directory and saved OIDs for commit
 diffs, full tree listings and read-only, paged blobs, including unchanged files.
+Diff listings cap file rows at 1,000 with `files_truncated`; patch reads retain
+only the requested byte window, with path filters applied before rendering.
 A removed linked worktree can still be read while its common repository exists;
 a deleted repository is unavailable. Non-Git directories stay in the manifest
 as live folders; existing scoped filesystem reads remain their reader.
 
-Completion records the actor, description, timeline event and task Done in one
-transaction, leaving task closure and workspace Finish separate. Ordinary moves
+Completion records the actor, description, review event and task Done in one
+transaction. A changed column also gets a Moved event and the same post-write
+behavior as an ordinary move. RPC and MCP share a 2,000-byte trimmed UTF-8
+description limit. Task closure and workspace Finish remain separate. Ordinary moves
 to Done complete an open review through the same writer with “Marked done”.
 Snapshots change only review metadata. Agent Complete reports and merged
 workspace Finish skip their old task-movement/closure hooks for review tasks.
 Closing/completing and removing workspaces or projects retain review history
-and refs; explicit task-history deletion releases the pins. MCP exposes
+and refs; replacing its workspace or explicitly deleting task history releases
+the previous pins. MCP exposes
 `snapshot_review`, `get_review`, `read_review`, `complete_review` to coding and
 project agents, authenticated and restricted to their own project.
 

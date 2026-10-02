@@ -32,7 +32,14 @@ pub fn snapshot(store: &Store, request: &SnapshotRequest) -> Result<Review, Stri
         captured.clone(),
     );
     match saved {
-        Ok(review) => Ok(review),
+        Ok((review, replaced)) => {
+            for snapshot in replaced {
+                if let Err(error) = cleanup_pins(&request.task_id, &snapshot) {
+                    eprintln!("release replaced review snapshot {}: {error}", snapshot.id);
+                }
+            }
+            Ok(review)
+        }
         Err(error) => {
             if let Err(cleanup) = cleanup_pins(&request.task_id, &captured) {
                 eprintln!("release refused review snapshot {}: {cleanup}", captured.id);

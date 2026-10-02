@@ -29,6 +29,11 @@ deployment gate is part of this feature.
 
 Keep the task's identity, title, description, assignee and comment stream, as
 #145 specifies. A task review names one workspace and has numbered snapshots.
+Taking a snapshot from another workspace replaces the review's workspace and
+previous snapshot history. The version and snapshot number keep advancing;
+the old workspace's pins are released only after the new metadata commits.
+Failed or stale replacements leave the previous review and its pins intact.
+This does not change the task's comments, status or workspace links.
 Each snapshot includes every directory from that workspace's manifest, in order,
 including later-added directories and directories that are unchanged or unavailable.
 Do not enumerate only the project's current sources or use its first-source fields
@@ -80,6 +85,9 @@ needed. Reuse `bridge/src/diff.rs`'s commit diff machinery, extending its input
 handling for an empty-tree base; do not call the live dirty-workdir diff. Current
 workspace `git.changeset_diff` uses an unpublished-work baseline
 (`bridge/src/app/git/mod.rs`, `changeset_subject`), so it is not this immutable read.
+Change listings include at most 1,000 file rows and an explicit
+`files_truncated` flag. A caller can narrow reads to specific paths; patch pages
+retain only the requested byte window rather than a whole-repository patch.
 
 ### Full Files view
 
@@ -287,7 +295,11 @@ workspace transfer remain #145's later work, not prerequisites for these tools.
 
 A task having a review record opts it into the new behavior. `complete` stores the
 review's completed state, brief description, actor, timeline entry and task Done
-in one metadata transaction. Task closure remains separate. Snapshot updates change
+in one metadata transaction. When completion changes the column, also append a
+Moved event with the previous column and `done`, and run the same follow-on
+behavior as an ordinary move to Done. An already-Done task gets no duplicate
+move event. RPC and MCP share a 2,000-byte UTF-8 limit for the trimmed description.
+Task closure remains separate. Snapshot updates change
 only the review; the SPA or agent explicitly moves/reopens the task when appropriate.
 Neither taking a snapshot nor choosing a reviewer implicitly moves the task.
 

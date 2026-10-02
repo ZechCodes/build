@@ -35,6 +35,7 @@ describe("the v1 adapter against fixtures/api/v1", () => {
     }
     expect(methodFixtures.some(({ body }) => body.method === "tasks.review.act")).toBe(false);
     const fixture = methodFixtures.find(({ body }) => body.method === "tasks.review.diff").body;
+    expect(fixture.result.files_truncated).toBe(false);
     expect(fixture.examples.some(({ params }) => params.mode === "tree")).toBe(true);
     const { result } = fixture.examples.find(({ params }) => params.mode === "blob");
     expect(result.editable).toBe(false);

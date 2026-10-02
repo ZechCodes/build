@@ -40,25 +40,19 @@ impl Store {
     /// Append one already-captured snapshot. The caller minted its unique ID
     /// before pinning Git refs; this transaction alone assigns its display
     /// number and checks the version. A losing caller can clean only its refs.
+    /// Return replaced snapshots so the service releases their pins after commit.
     pub fn save_review_snapshot(
         &self,
         task_id: &str,
         workspace_id: &str,
         expected_version: u64,
         mut snapshot: ReviewSnapshot,
-    ) -> Result<Review, StoreError> {
+    ) -> Result<(Review, Vec<ReviewSnapshot>), StoreError> {
         self.in_transaction(|tx| {
             require_task(tx, task_id)?;
             let mut header = match load_header(tx, task_id)? {
                 Some(header) => {
                     check_version(&header, expected_version)?;
-                    if header.workspace_id != workspace_id {
-                        return Err(StoreError::ReviewWorkspaceMismatch {
-                            task_id: task_id.into(),
-                            existing: header.workspace_id,
-                            requested: workspace_id.into(),
-                        });
-                    }
                     header
                 }
                 None if expected_version == 0 => ReviewHeader {
@@ -76,6 +70,14 @@ impl Store {
                 });
             }
             snapshot.number = next_snapshot_number(tx, task_id)?;
+            let replaced = if header.workspace_id != workspace_id {
+                let previous = load_review(tx, task_id)?.expect("review header exists");
+                tx.execute("DELETE FROM review_snapshots WHERE task_id = ?1", [task_id])?;
+                header.workspace_id = workspace_id.into();
+                previous.snapshots
+            } else {
+                Vec::new()
+            };
             header.version += 1;
             header.state = ReviewState::Open;
             header.completion = None;
@@ -89,7 +91,7 @@ impl Store {
                     serde_json::to_string(&snapshot).expect("snapshot serializes")
                 ],
             )?;
-            Ok(load_review(tx, task_id)?.expect("review was written"))
+            Ok((load_review(tx, task_id)?.expect("review was written"), replaced))
         })
     }
 
@@ -307,7 +309,7 @@ fn load_header(conn: &Connection, task_id: &str) -> Result<Option<ReviewHeader>,
 fn write_header(tx: &Transaction, header: &ReviewHeader) -> Result<(), StoreError> {
     tx.execute(
         "INSERT INTO reviews (task_id, workspace_id, version, record) VALUES (?1, ?2, ?3, ?4) \
-         ON CONFLICT(task_id) DO UPDATE SET version = ?3, record = ?4",
+         ON CONFLICT(task_id) DO UPDATE SET workspace_id = ?2, version = ?3, record = ?4",
         params![
             header.task_id,
             header.workspace_id,

@@ -88,3 +88,13 @@ it("finishes saved successful work after reconnect without replaying Git", async
     description: expect.stringContaining("merged") }));
   expect(repository.mutate.mock.calls.filter(([verb]) => verb === "act")).toHaveLength(1);
 });
+
+it("does not complete a multi-source review while another source remains failed", async () => {
+  const repository = { mutate: vi.fn(async () => {}) };
+  mount(base, repository); choose("dir-api", "merge"); choose("dir-missing", "push"); submit();
+  await vi.waitFor(() => expect(repository.mutate).toHaveBeenCalledWith("act", expect.anything()));
+  const failed = row("failed", "dir-missing", [step("push", "failed")], "failed");
+  sheet.update({ ...base, version: 4, actions: [row("success", "dir-api", [{ ...step("merge"), branch: "main" }]), failed] });
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  expect(repository.mutate.mock.calls.filter(([verb]) => verb === "complete")).toHaveLength(0);
+});

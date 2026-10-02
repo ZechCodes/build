@@ -97,6 +97,12 @@ function matchingRows(review, intent) {
     })));
 }
 
+function unresolvedFailures(review, snapshot) {
+  const latest = new Map();
+  for (const row of actionRows(review, snapshot)) latest.set(row.directory_id, row);
+  return [...latest.values()].some((row) => ["failed", "interrupted", "running"].includes(row.status));
+}
+
 function completedDescription(rows) {
   return rows.flatMap((row) => row.steps.map((step) => `${step.kind === "merge" ? "merged" : "pushed"} ${row.source_name || row.directory_id} ${step.kind === "merge" ? `to ${step.branch}` : `to ${step.remote}/${step.branch}`}`)).join("; ");
 }
@@ -149,6 +155,7 @@ export function mountTaskReviewActions(host, options) {
     const rows = matchingRows(review, draft.intent);
     if (rows.some((row) => !row)) return;
     if (rows.some((row) => ["failed", "interrupted"].includes(row.status))) { save({ intent: null }); return; }
+    if (unresolvedFailures(review, snapshot)) return;
     if (rows.every((row) => row.status === "succeeded" && row.steps.every((step) => step.status === "succeeded"))) void complete(rows);
   }
 

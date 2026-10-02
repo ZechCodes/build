@@ -1,8 +1,22 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../src/core/bridgeApi/v1/index.js";
-import { commandRefusalMessage } from "../src/core/commandRefusal.js";
+import { commandRefusalMessage, notifyCommandFailure } from "../src/core/commandRefusal.js";
+import { notifyError } from "../src/core/notify.js";
+
+vi.mock("../src/core/notify.js", () => ({ notifyError: vi.fn() }));
+beforeEach(() => vi.clearAllMocks());
 
 const unsupported = "This bridge does not support watching tasks yet.";
+
+it("shows unsupported commands in the visible notice summary", () => {
+  notifyCommandFailure(new ApiError("unknown_method", "unknown method: tasks.watch"), "Could not change watching", unsupported);
+  expect(notifyError).toHaveBeenCalledWith(unsupported);
+});
+
+it("keeps other errors as details under the action summary", () => {
+  notifyCommandFailure(new Error("The device is unavailable."), "Could not change watching", unsupported);
+  expect(notifyError).toHaveBeenCalledWith("Could not change watching", "The device is unavailable.");
+});
 
 describe("command refusal copy", () => {
   it.each([

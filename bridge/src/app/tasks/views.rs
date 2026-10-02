@@ -47,7 +47,7 @@ pub(in crate::app) fn next_unsettled_stage<'a>(
     })
 }
 
-/// The first stage `run.stage_dispatch` would currently accept for a run: the
+/// The first stage the run dispatcher would currently accept: the
 /// earliest stage not yet complete — provided its plan doc is `Approved` and
 /// every earlier stage already completed on this run.
 /// `None` when nothing is dispatchable right now (mirrors `dispatch_run_stage`).

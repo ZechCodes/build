@@ -20,7 +20,7 @@ use std::time::Duration;
 
 /// What a flush reads one checkout's git with: where it is, the branch its
 /// history is marked against, and the diff verb's own subject — the SAME
-/// [`ReadSubject`] `run.diff`, `worktree.diff` and `project.diff` render, so
+/// [`ReadSubject`] the run and worktree diff reads render, so
 /// a pushed diff and a pulled one are one shape and a client keeps them in
 /// one cache slot.
 pub(in crate::app) struct GitSubject {

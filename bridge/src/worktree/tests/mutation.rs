@@ -235,7 +235,7 @@ fn create_on_existing_branch_takes_back_a_branch_it_materialised_when_the_checko
 /// The marker is all that stands between a borrowed branch and the next
 /// teardown, so a registration it cannot be written into is taken back.
 /// Left behind, that checkout would read as one Build cut the branch for,
-/// and a `worktree.finish delete` on it would take somebody else's work.
+/// and finishing it with deletion would take somebody else's work.
 #[test]
 fn a_checkout_whose_teardown_cannot_be_stamped_is_taken_back() {
     use std::os::unix::fs::PermissionsExt;

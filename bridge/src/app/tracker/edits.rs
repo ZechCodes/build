@@ -271,7 +271,7 @@ pub(super) fn optional_assignee_filter(params: &Value) -> Result<AssigneeFilter,
     }
 }
 
-/// The links one `tasks.link` call asked for, in the order the verb applies
+/// The links one task update asked for, in the order the write applies
 /// them. Built as one value so a call naming three of the five is one walk.
 #[derive(Debug, Default)]
 pub(in crate::app) struct AskedLinks {

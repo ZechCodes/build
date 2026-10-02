@@ -1007,12 +1007,12 @@ impl AppState {
     /// Asked by every verb that would otherwise queue a SECOND turn for it: two
     /// harnesses in one checkout both report `done` for the same owner, and
     /// even where the spawn claim prevents that, the second turn survives as a
-    /// duplicate `read_unread_messages` nudge. Keyed per (root, agent), so a
+    /// duplicate message delivery. Keyed per (root, agent), so a
     /// branch's second agent is never suppressed by its first agent's turn.
     ///
     /// Only a turn with words counts. The verb that asks is about to leave a
     /// message durable on the thread, and a harness that opens on a cold
-    /// prompt is told to call `read_unread_messages` — so that turn reads the
+    /// prompt includes the pending messages — so that turn carries the
     /// message, and a second turn is a duplicate. A turn that says nothing
     /// (`agent.start` with nothing unread) opens a harness and sends it
     /// nothing: it promises the agent nothing to read, so the message has to

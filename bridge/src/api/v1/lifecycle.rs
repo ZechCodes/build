@@ -711,7 +711,7 @@ pub struct RunStageView {
     pub start_sha: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub built_sha: Option<String>,
-    /// The immutable successful boundary `run.stage_diff` reads against.
+    /// The immutable successful boundary a stage diff reads against.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion_sha: Option<String>,
     /// `local`, `pushed`, `merged`, or `legacy_unknown`.
@@ -782,7 +782,7 @@ pub struct RunView {
     pub current_stage_id: Option<String>,
     /// Minted around a checkout the human already had.
     pub adopted: bool,
-    /// Whether `run.finish` would be accepted, so the control is never
+    /// Whether finishing this run would be accepted, so the control is never
     /// offered where it would be refused.
     pub can_finish: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]

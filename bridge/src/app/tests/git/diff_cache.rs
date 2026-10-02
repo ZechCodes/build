@@ -735,7 +735,7 @@ fn a_create_before_the_first_scan_leaves_the_running_scan_alone() {
 }
 
 /// A checkout bound to a run is excluded from the scan, so removing it
-/// from the list is routinely a no-op — `run.finish`'s failure branch and
+/// from the list is routinely a no-op — a failed finish and
 /// the finish epilogue both reach here with a path the list never held.
 /// A removal that removed nothing neither overtakes the scan in flight
 /// (whose whole fresh list would be dropped on landing) nor tells every

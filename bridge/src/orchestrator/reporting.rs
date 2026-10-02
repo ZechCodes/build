@@ -115,8 +115,8 @@ pub struct AgentTurn {
     /// nothing to read the reviewer's messages into.
     pub cold: String,
     /// The bare instruction, for an agent already in the conversation. The
-    /// reviewer's words are already durable in the thread and the agent pulls
-    /// them with `read_unread_messages`, so the run context would be a repeat.
+    /// reviewer's words are already durable in the thread and delivery adds
+    /// them to the prompt, so the run context would be a repeat.
     pub warm: String,
     /// The phase label recorded on the thread's session lineage when a COLD
     /// delivery starts a new agent process.

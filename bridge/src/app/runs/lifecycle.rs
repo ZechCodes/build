@@ -61,8 +61,7 @@ impl AppState {
 impl AppState {
     // ---- Run surface ----------------------------------------------------------
 
-    /// `run.create`'s apply half on a checkout that was cut for it: open the
-    /// run around what the git prepared, and answer whoever asked.
+    /// Open a run around a prepared checkout after the git work completes.
     pub(in crate::app) fn open_prepared_implementation(
         &mut self,
         project_id: String,
@@ -170,7 +169,7 @@ impl AppState {
     /// record on the Task's conversation which checkout the work went into.
     ///
     /// The answer is not built here — who asked is what decides that, and by
-    /// this point they are as far apart as `run.create` and a scheduled stage.
+    /// this point they may have come from different dispatch paths.
     pub(in crate::app) fn open_implementation_run(
         &mut self,
         opened: OpenedImplementation,

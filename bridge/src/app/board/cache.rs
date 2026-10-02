@@ -14,11 +14,11 @@ pub(in crate::app) use super::super::board_index::{
 use super::super::{AppState, CacheEffect, OffLockJob, RefreshClaim};
 
 /// External-worktree scans are refreshed at most this often per project; the
-/// board polls task.list every ~1.6 s and must never trigger a full rescan per
+/// board polls `board.list` every ~1.6 s and must never trigger a full rescan per
 /// poll.
 pub(in crate::app) const EXTERNAL_SCAN_INTERVAL: Duration = Duration::from_secs(10);
 
-/// How long a task's `task.list` diffstat is served from cache before the next
+/// How long a task's board diffstat is served from cache before the next
 /// poll recomputes it (same reasoning as the external-worktree scan interval).
 pub(in crate::app) const TASK_STAT_TTL: Duration = Duration::from_secs(10);
 

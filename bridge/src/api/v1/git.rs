@@ -1,7 +1,5 @@
 //! The git family: every `git.*` verb, the `fs.*` reads and the one write,
-//! and the diff reads that render a checkout's uncommitted work
-//! (`worktree.diff`, `project.diff`, `run.diff`, `run.stage_diff`,
-//! `task.diff`, `task.stage_diff`).
+//! and the diff reads (`worktree.diff`, `run.diff`, `task.stage_diff`).
 //!
 //! This is the converted family — the pattern the other four follow. The git
 //! itself is untouched: each handler resolves its typed params, hands them to
@@ -760,7 +758,7 @@ pub struct RunDiff {
     pub patch: Option<String>,
     pub file_edited_at: FileEditedAt,
     pub diff_key: String,
-    /// The task that asked, when a task surface did (`task.diff`).
+    /// The task that asked, when a task surface reads its run's diff.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
 }

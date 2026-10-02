@@ -1,13 +1,14 @@
 //! The git linked-worktree backend: `git worktree add`, and the only place in
 //! the bridge that speaks to git's worktree registry.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use super::{
     checkout_name, local_branch_ref, teardown_in_git_dir, BranchTeardown, Isolation,
     IsolationBackend, WorktreeError,
 };
-use crate::git_process::run_git;
+use crate::git_process::{git_failure, run_git, run_git_with_deadline};
 
 /// Materializes a checkout as a git linked worktree of the project repository.
 /// The project repo already holds every ref, so publishing and base-syncing are
@@ -130,6 +131,110 @@ impl IsolationBackend for WorktreeBackend {
             Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(None),
             Err(error) => Err(error.into()),
         }
+    }
+}
+
+/// Create a short-lived review checkout on an existing branch. Its ownership
+/// record keeps removal from deleting the branch that the user selected.
+pub fn materialize_review_target(project: &Path, branch: &str, path: &Path) -> Result<(), String> {
+    review_worktree_git(
+        project,
+        &[
+            OsStr::new("worktree"),
+            OsStr::new("add"),
+            OsStr::new("--"),
+            path.as_os_str(),
+            OsStr::new(branch),
+        ],
+    )?;
+    if let Err(error) = super::record_branch_teardown(path, BranchTeardown::KeepsBranch) {
+        let cleanup = review_worktree_git(
+            project,
+            &[
+                OsStr::new("worktree"),
+                OsStr::new("remove"),
+                OsStr::new("--"),
+                path.as_os_str(),
+            ],
+        );
+        return Err(match cleanup {
+            Ok(()) => error.to_string(),
+            Err(cleanup) => format!(
+                "{error}; review checkout {} could not be removed: {cleanup}",
+                path.display()
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Remove only the temporary checkout recorded as Build-owned. Never remove
+/// an existing user checkout or the target branch itself.
+pub fn remove_review_target(project: &Path, branch: &str, path: &Path) -> Result<(), String> {
+    WorktreeBackend
+        .verify(project, path, branch)
+        .map_err(|error| error.to_string())?;
+    if super::branch_teardown(path).map_err(|error| error.to_string())?
+        != BranchTeardown::KeepsBranch
+    {
+        return Err(format!(
+            "review checkout {} lacks its keep-branch record",
+            path.display()
+        ));
+    }
+    let repo = git2::Repository::open(path).map_err(|error| error.to_string())?;
+    if repo.state() != git2::RepositoryState::Clean {
+        return Err(format!(
+            "review checkout {} has a Git operation in progress",
+            path.display()
+        ));
+    }
+    let expected = local_branch_ref(branch);
+    if repo
+        .head()
+        .ok()
+        .and_then(|head| head.name().map(str::to_owned))
+        != Some(expected)
+    {
+        return Err(format!(
+            "review checkout {} switched branches",
+            path.display()
+        ));
+    }
+    if !run_git(
+        path,
+        &[
+            "status",
+            "--porcelain",
+            "--ignored",
+            "--untracked-files=all",
+        ],
+    )
+    .map_err(|error| error.to_string())?
+    .is_empty()
+    {
+        return Err(format!(
+            "review checkout {} has local changes",
+            path.display()
+        ));
+    }
+    review_worktree_git(
+        project,
+        &[
+            OsStr::new("worktree"),
+            OsStr::new("remove"),
+            OsStr::new("--"),
+            path.as_os_str(),
+        ],
+    )
+}
+
+fn review_worktree_git(project: &Path, args: &[&OsStr]) -> Result<(), String> {
+    let output = run_git_with_deadline(project, args).map_err(|error| error.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(git_failure(args, &output).to_string())
     }
 }
 

@@ -41,6 +41,13 @@ use reason::{fetch_failure, fetch_timeout};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// An unfinished Git operation on a named branch in any checkout of a source.
+/// Review actions consult this before Git's branch placement checks, because
+/// rebase and bisect can leave the branch temporarily detached.
+pub(crate) fn unfinished_on_branch(repo: &git2::Repository, branch: &str) -> Option<String> {
+    in_progress::unfinished_on(repo, branch)
+}
+
 /// How long a workspace cut waits on a source's fetch before it goes ahead
 /// from the base as it stands.
 pub const CUT_FETCH_DEADLINE: Duration = Duration::from_secs(10);

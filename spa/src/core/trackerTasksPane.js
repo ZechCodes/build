@@ -56,7 +56,6 @@ import { taskUnreadCount } from "./taskUnread.js";
 import { createTrackerAgentActivityFeed } from "./trackerAgentActivityFeed.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
 import { openTaskComposer } from "./taskComposer.js";
-import { carriesTaskAttachments } from "./taskAttachments.js";
 import { labelsOf } from "./trackerFilters.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import { subscribeReferenceIndex } from "./referenceIndex.js";
@@ -656,10 +655,6 @@ export function mountTasksPane(host, options) {
       labels: labelsOf(state.all),
       options: assigneeOptions(groups()),
       catalog: state.catalog(),
-      // Asked as the form opens, not when the tab mounted: a greeting lands
-      // after a tab is on screen, and a paperclip that waited for the next
-      // navigation would be a capability nobody got the benefit of.
-      attachable: carriesTaskAttachments(state.deviceId),
       callRpc: state.callRpc,
       onFiled: (answer, outcome) => {
         void showTheNewTask(answer?.task);

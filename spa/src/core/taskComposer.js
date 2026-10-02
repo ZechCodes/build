@@ -52,6 +52,7 @@ import {
   wireAssigneeControl,
 } from "./trackerAssigneeControl.js";
 import { fieldTraits } from "./fieldTraits.js";
+import { taskAttachmentRefusal } from "./taskAttachments.js";
 
 const PREFIX = "task-new";
 const INPUT_ID = `${PREFIX}-body`;
@@ -151,27 +152,25 @@ const savedDraftFields = (saved) => ({
 /// paperclip, and wires the paste and the drop onto the root it is handed. The
 /// LAYOUT is ours — a send arrow belongs on a message, not on a form.
 ///
-/// A bridge that cannot carry files on a task gets the plain box: no
-/// paperclip, no tray, no drop mask, and nothing mounted over them. An
-/// affordance that is drawn and then apologised for is worse than one that was
-/// never offered (core/taskAttachments.js).
-const bodyBoxHtml = (attachable) => `${attachable ? `<div class="composer-tray" id="${ids.tray}" hidden></div>` : ""}
-  <div class="composer${attachable ? " attachable" : ""} task-compose-body">
+/// The paperclip and tray stand with the draft, including before the bridge
+/// has greeted. A refused upload stays in the tray and says why.
+const bodyBoxHtml = () => `<div class="composer-tray" id="${ids.tray}" hidden></div>
+  <div class="composer attachable task-compose-body">
     <textarea id="${INPUT_ID}" rows="3" ${fieldTraits("prose")} placeholder="Anything the title leaves out (markdown)"></textarea>
     <div class="composer-bar">
       <span class="hint task-compose-hint"></span>
       <div class="composer-actions">
-        ${attachable ? `<input type="file" id="${ids.file}" class="composer-file" multiple hidden>
-        <button type="button" class="composer-attach" id="${ids.attach}" aria-label="Attach files" title="Attach files">${ICON_PAPERCLIP}</button>` : ""}
+        <input type="file" id="${ids.file}" class="composer-file" multiple hidden>
+        <button type="button" class="composer-attach" id="${ids.attach}" aria-label="Attach files" title="Attach files">${ICON_PAPERCLIP}</button>
       </div>
     </div>
-    ${attachable ? `<div class="composer-dropmask" aria-hidden="true"><span>Drop to attach</span></div>` : ""}
+    <div class="composer-dropmask" aria-hidden="true"><span>Drop to attach</span></div>
   </div>`;
 
-const frameHtml = (projectName, attachable) => `<section class="task-compose" aria-label="File a task in ${esc(projectName)}">
+const frameHtml = (projectName) => `<section class="task-compose" aria-label="File a task in ${esc(projectName)}">
     <input class="task-compose-title" id="${PREFIX}-summary" type="text" ${fieldTraits("line", "next")}
       placeholder="What should be done" aria-label="Title">
-    ${bodyBoxHtml(attachable)}
+    ${bodyBoxHtml()}
     <div class="task-compose-facets"></div>
     <div class="task-compose-assignee"></div>
     <p class="warn task-compose-error" hidden></p>
@@ -192,8 +191,6 @@ const FACETS = [
 /**
  * Open the composer into `host`.
  *
- * `attachable` is whether this device's bridge can carry files on a task; a
- * form that is not gets no paperclip rather than one that apologises.
  * `onFiled(answer, outcome)` is handed the whole answer and what the answer did
  * not say for itself. `onClosed` runs however it ends, so the caller can put
  * the focus back where the reader left it.
@@ -206,12 +203,11 @@ export function openTaskComposer(host, {
   labels = [],
   options,
   catalog = null,
-  attachable = false,
   callRpc,
   onFiled = null,
   onClosed = null,
 }) {
-  host.innerHTML = frameHtml(projectName || projectId || "this project", attachable);
+  host.innerHTML = frameHtml(projectName || projectId || "this project");
   const root = host.querySelector(".task-compose");
   const title = root.querySelector(`#${PREFIX}-summary`);
   const body = root.querySelector(`#${INPUT_ID}`);
@@ -248,14 +244,12 @@ export function openTaskComposer(host, {
   // the tray calls `onChange` while it is still being mounted, so everything it
   // can reach has to exist before the mount rather than after it.
   let attachments = null;
-  if (attachable) {
-    attachments = mountComposerAttachments(root, {
-      ids: { input: INPUT_ID },
-      upload: (file, base64) => upload(file, base64),
-      onError: (message) => say(message),
-      onChange: () => paintPress(),
-    });
-  }
+  attachments = mountComposerAttachments(root, {
+    ids: { input: INPUT_ID },
+    upload: (file, base64) => upload(file, base64),
+    onError: (message) => say(message),
+    onChange: () => paintPress(),
+  });
 
   const menus = new Map(
     FACETS.map((facet) => [
@@ -326,7 +320,11 @@ export function openTaskComposer(host, {
   // ---- filing --------------------------------------------------------------
 
   async function upload(file, base64) {
-    return callRpc("tasks.attach", { project_id: projectId, filename: file.name, content_b64: base64 });
+    try {
+      return await callRpc("tasks.attach", { project_id: projectId, filename: file.name, content_b64: base64 });
+    } catch (error) {
+      throw new Error(taskAttachmentRefusal(error));
+    }
   }
 
   /** Ready to be filed, or the reason it is not. */

@@ -16,6 +16,7 @@ let watchers = [];
 // into a surface fails here rather than only in a browser.
 const RETIRED = ["intervalMs", "keepPolling", "catchUpOnVisible"];
 vi.mock("../src/core/changeEvents.js", () => ({
+  onBridgeGreeted: () => () => {},
   // The greeting says which kinds a bridge carries; a stand-in that
   // answers none would have the sync layer ask for none of the new ones.
   bridgeCapabilities: () => ({
@@ -659,10 +660,7 @@ describe("the composer", () => {
     host.querySelector(".rail-watch").click();
     await vi.waitFor(() => expect(notifyError).toHaveBeenCalled());
     expect(host.querySelector(".rail-watch").getAttribute("aria-pressed")).toBe("false");
-    expect(notifyError).toHaveBeenCalledWith(
-      "Could not change whether you are watching this task",
-      "This bridge does not support watching tasks.",
-    );
+    expect(notifyError).toHaveBeenCalledWith("This bridge does not support watching tasks.");
   });
 
   it("keeps the comment draft when an older bridge refuses an attachment", async () => {

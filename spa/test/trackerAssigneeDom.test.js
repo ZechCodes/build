@@ -188,7 +188,6 @@ describe("the inline task composer", () => {
       labels: ["bug", "ui"],
       options: options(),
       catalog: CATALOG,
-      attachable: true,
       callRpc: call,
       ...over,
     });
@@ -227,7 +226,7 @@ describe("the inline task composer", () => {
   });
 
   it("keeps the paperclip available before a bridge announces file support", () => {
-    open({ attachable: false });
+    open();
     expect(document.querySelector(".composer-attach")).not.toBeNull();
     expect(document.querySelector(".composer-tray")).not.toBeNull();
     expect(document.querySelector(".composer-dropmask")).not.toBeNull();
@@ -237,7 +236,7 @@ describe("the inline task composer", () => {
   });
 
   it("still files without attachments when the tray is empty", async () => {
-    open({ attachable: false });
+    open();
     type("#task-new-summary", "Kanban drag");
     press("[data-compose-file]");
     await flush();
@@ -245,7 +244,7 @@ describe("the inline task composer", () => {
   });
 
   it("cancels without a confirm when there is nothing to throw away", async () => {
-    open({ attachable: false });
+    open();
     slot.querySelector(".task-compose").dispatchEvent(
       new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
     );

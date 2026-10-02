@@ -10,6 +10,7 @@ import { columns, task } from "./trackerWireFixture.js";
 
 let watchers = [];
 vi.mock("../src/core/changeEvents.js", () => ({
+  onBridgeGreeted: () => () => {},
   bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: ["tasks"] }, tasks: {} }),
   watchChanges: (registration) => {
     watchers.push(registration);

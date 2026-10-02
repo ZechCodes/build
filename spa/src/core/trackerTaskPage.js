@@ -12,7 +12,7 @@
 // means.
 
 import { messageOf } from "./text.js";
-import { watchChanges } from "./changeEvents.js";
+import { onBridgeGreeted, watchChanges } from "./changeEvents.js";
 import { tasksPushKinds } from "./trackerPush.js";
 import { notifyError } from "./notify.js";
 import {
@@ -35,9 +35,6 @@ import { taskLinkRows } from "./trackerLinks.js";
 import { agentLabels, agentProviders, assigneeOptions, projectName, selectedOptionId, workspaceAgents } from "./trackerAssignee.js";
 import {
   canComment,
-  COMMENT_BOX_ATTACHABLE_CLASSES,
-  commentAttachHtml,
-  commentTrayHtml,
   COMMENT_INPUT_ID,
   commentSendLabel,
   TASK_PAGE_FRAME,
@@ -47,9 +44,10 @@ import {
 import { patchParts } from "./partPatch.js";
 import { subscribeReferenceIndex } from "./referenceIndex.js";
 import { mountComposerAttachments } from "./composer.js";
-import { carriesTaskAttachments } from "./taskAttachments.js";
+import { taskAttachmentRefusal } from "./taskAttachments.js";
 import { carriesWatching, readThrough, watchStateOf } from "./trackerWatch.js";
 import { createWatchToggle, syncWatchButton, WATCH_BUTTON_SELECTOR } from "./watchToggle.js";
+import { commandRefusalMessage } from "./commandRefusal.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
 import { createThreadState, wireThreadAttachments } from "./thread.js";
 import { createTaskAttachmentBodies } from "./taskAttachmentBodies.js";
@@ -109,13 +107,12 @@ export function mountTaskPage(host, options) {
   const projectWorkspaces = () => (state.feed()?.workspaces || [])
     .filter((workspace) => workspace.projectKey === state.projectKey);
 
-  /** Whether this bridge can be asked about watching at all (#65). Read once
-   *  at mount: a greeting arrives before any surface paints, and a bridge does
-   *  not gain a verb without a new one. */
-  const offersWatch = carriesWatching(state.deviceId);
+  /** Only automatic read marks need the bridge's watch capability. The switch
+   *  itself draws from the cached task before any greeting has arrived. */
+  let canMarkRead = carriesWatching(state.deviceId);
 
   /**
-   * The watch switch, or nothing where the bridge cannot serve it.
+   * The watch switch, available even before this device greets.
    *
    * The rule about how the switch behaves is the shell agent's
    * (core/watchToggle.js): it moves under the finger and a refusal puts it
@@ -123,14 +120,17 @@ export function mountTaskPage(host, options) {
    * — and that a press repaints the BUTTON rather than the page: a full
    * repaint here would take the reader's caret out of a half-written comment.
    */
-  const watch = offersWatch
-    ? createWatchToggle({
-      taskId: state.taskId,
-      call: (method, params) => state.callRpc(method, params),
-      onChange: (next) => syncWatchButton(host.querySelector(WATCH_BUTTON_SELECTOR), next),
-      onFailure: () => notifyError("Could not change whether you are watching this task"),
-    })
-    : null;
+  const WATCH_UNSUPPORTED = "This bridge does not support watching tasks.";
+  const watch = createWatchToggle({
+    taskId: state.taskId,
+    call: (method, params) => state.callRpc(method, params),
+    onChange: (next) => syncWatchButton(host.querySelector(WATCH_BUTTON_SELECTOR), next),
+    onFailure: (error) => {
+      const reason = commandRefusalMessage(error, WATCH_UNSUPPORTED);
+      if (reason === WATCH_UNSUPPORTED) notifyError(reason);
+      else notifyError("Could not change whether you are watching this task", reason);
+    },
+  });
 
   /** The newest row this reader has been shown, as last told to the bridge.
    *  Held so a scroll that reaches the end twice is one call, not one a frame:
@@ -145,7 +145,7 @@ export function mountTaskPage(host, options) {
   const unreadPill = mountNewMessagesPill(host, { targetSelector: ".task-unread-line" });
 
   const updateUnread = () => {
-    if (!offersWatch) return;
+    if (!canMarkRead) return;
     unreadFrom = unreadMarker.update(taskUnreadReading(state.rows, state.task?.read_through, markedThrough));
   };
 
@@ -162,7 +162,7 @@ export function mountTaskPage(host, options) {
     // mark is also the user being here (the bridge's user session), and a
     // window left showing this overnight must not say so each time an agent
     // comments. Coming back marks what is on screen (readerPresence.js).
-    if (!offersWatch || !state.task || !readerIsHere()) return;
+    if (!canMarkRead || !state.task || !readerIsHere()) return;
     const through = readThrough(state.rows);
     if (!through || through === markedThrough) return;
     markedThrough = through;
@@ -248,15 +248,11 @@ export function mountTaskPage(host, options) {
     rows: state.rows,
     unreadFrom,
     links: taskLinkRows(state.task, place(), state.feed()),
-    watch: watch?.state() || null,
+    watch: watch.state(),
     draft: state.draft,
     labelsDraft: state.labelsDraft,
     busy: state.busy,
     sending: state.sending,
-    // Asked at paint, never cached: a greeting lands after a page is on
-    // screen, and a paperclip that waited for the next navigation would be
-    // a capability nobody got the benefit of.
-    attachable: carriesTaskAttachments(state.deviceId),
     hasFiles: state.files.length > 0,
   });
 
@@ -292,7 +288,6 @@ export function mountTaskPage(host, options) {
     patchParts(main.parentElement, held.rail, parts.rail, { after: main }).forEach((name) => painted.add(name));
     if (patchTimeline(parts.timeline, painted.has("timeline"))) painted.add("timeline");
     wire(painted);
-    syncCommentAttachments();
     syncCommentBox();
     if (painted.has("timeline")) unreadPill.sync();
     restoreField(typing);
@@ -338,40 +333,6 @@ export function mountTaskPage(host, options) {
     field.scrollTop = scrollTop;
   }
 
-  /** The paperclip, the picker, the drop mask and the tray, hung around the
-   *  textarea on screen when this bridge can carry files and taken off it when
-   *  it cannot. A greeting can land after the page painted from the cache, and
-   *  the reader may be typing by then: the textarea is one node per mount, so
-   *  its caret and its undo history stay with it (#153).
-   *
-   *  Controls taken off are kept, not dropped: their tray and its uploads are
-   *  wired to this textarea, and they go back on as they were. While they are
-   *  held, the paste and drop wired with them take nothing. */
-  let heldControls = null;
-  function syncCommentAttachments() {
-    const frame = host.querySelector(".task-comment-field");
-    const attachable = carriesTaskAttachments(state.deviceId);
-    if (!frame || frame.classList.contains("attachable") === attachable) return;
-    COMMENT_BOX_ATTACHABLE_CLASSES.forEach((name) => frame.classList.toggle(name, attachable));
-    if (!attachable) {
-      heldControls = { tray: frame.previousElementSibling, extras: [...frame.children].filter((child) => child.id !== COMMENT_INPUT_ID), comments };
-      heldControls.tray.remove();
-      heldControls.extras.forEach((node) => node.remove());
-      comments = null;
-      return;
-    }
-    if (heldControls) {
-      frame.before(heldControls.tray);
-      frame.append(...heldControls.extras);
-      comments = heldControls.comments;
-      heldControls = null;
-      return;
-    }
-    frame.insertAdjacentHTML("beforebegin", commentTrayHtml());
-    frame.insertAdjacentHTML("beforeend", commentAttachHtml());
-    wireCommentAttachments(frame.closest("[data-task-composer]"));
-  }
-
   /** The comment a link routed to: marked on every paint that stood its row
    *  up, scrolled to once, and the page opened at the top — once — while the
    *  row is not there yet. */
@@ -405,7 +366,7 @@ export function mountTaskPage(host, options) {
     // What the record says outranks anything the switch guessed, and opening
     // a task is reading it: the mark moves on open as well as on the scroll
     // that reaches the end (#65).
-    watch?.settle(watchStateOf(record.task));
+    watch.settle(watchStateOf(record.task));
     markRead();
   }
 
@@ -571,10 +532,6 @@ export function mountTaskPage(host, options) {
   /// up settle into the tray after it.
   let comments = null;
   function wireCommentAttachments(form) {
-    if (!carriesTaskAttachments(state.deviceId)) {
-      comments = null;
-      return;
-    }
     comments = mountComposerAttachments(form, {
       ids: { input: COMMENT_INPUT_ID },
       upload: (file, base64) =>
@@ -582,7 +539,7 @@ export function mountTaskPage(host, options) {
           project_id: state.projectId,
           filename: file.name,
           content_b64: base64,
-        }),
+        }).catch((error) => { throw new Error(taskAttachmentRefusal(error)); }),
       onError: (message) => notifyError("Could not attach that file", message),
       readAttachments: () => state.files,
       writeAttachments: (entries) => {
@@ -591,15 +548,11 @@ export function mountTaskPage(host, options) {
       // The send press turns on the moment a file is in the tray, and off
       // again when the last one is taken out.
       onChange: () => paint(),
-      // Its paste and drop stay on the box and the form, which outlive the
-      // controls: while those are held off, the box is a plain one.
-      accepting: () => !heldControls,
     });
   }
 
   function wireComposer() {
     const form = host.querySelector("[data-task-composer]");
-    heldControls = null;
     const field = host.querySelector(`#${COMMENT_INPUT_ID}`);
     wireCommentAttachments(form);
     field.oninput = () => {
@@ -652,10 +605,19 @@ export function mountTaskPage(host, options) {
 
   function wireWatch() {
     const button = host.querySelector(WATCH_BUTTON_SELECTOR);
-    if (button && watch) button.onclick = () => void watch.press();
+    if (button) button.onclick = () => void watch.press();
   }
 
   // ---- lifecycle -----------------------------------------------------------
+
+  const stopGreeting = onBridgeGreeted((deviceId) => {
+    if (state.disposed || deviceId !== state.deviceId) return;
+    canMarkRead = carriesWatching(state.deviceId);
+    unreadFrom = null;
+    updateUnread();
+    paint();
+    markRead();
+  });
 
   paint();
   void paintFromCache().then(() => refresh());
@@ -686,6 +648,7 @@ export function mountTaskPage(host, options) {
       host.removeEventListener("scroll", onScroll);
       stopWaitingForReader();
       watcher.dispose();
+      stopGreeting();
       taskWatcher?.();
       referencesWatcher();
       reads.dispose();

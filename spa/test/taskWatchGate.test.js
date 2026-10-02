@@ -1,5 +1,6 @@
 /** @vitest-environment jsdom */
-// The watch gate, asked of a bridge that actually greeted (#65).
+// A real bridge greeting enables automatic read marks on a cached task page;
+// the switch itself paints before that greeting arrives (#182).
 //
 // The shell agent found this hole in their half and it was in mine too, in
 // both halves:
@@ -12,13 +13,11 @@
 //   `carriesWatching`: my own suite said nothing, and only their call sites
 //   failed.
 //
-//   test/taskWatchDom.test.js drives the gate by mocking THIS module, so
-//   "the page draws no switch without watching" is asserted through a stand-in and
-//   would go on passing with the gate deleted.
+//   test/taskWatchDom.test.js drives the read-mark gate by mocking THIS module,
+//   so it cannot prove that a real greeting reaches the mounted page.
 //
-// So nothing is mocked here but the reconnect watcher: a real greeting goes
-// into the real store, the real gate reads it, and the real page is mounted on
-// top.
+// Nothing is mocked here but the reconnect watcher: a real greeting goes into
+// the real store and the real page stays mounted on top.
 //
 // Since ea3de439 the gate is a capability rather than a version compare, and
 // since API 2.0.0 a capability is a name in the greeting's `capabilities`

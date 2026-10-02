@@ -454,6 +454,29 @@ fn merged_then_abandoned_runs_show_merged_and_close_linked_task() {
     assert!(event_kinds(&mut state, &linked).contains(&"closed".to_string()));
 }
 
+fn assert_workspace_run_row(
+    state: &mut AppState,
+    visible_run_id: &str,
+    other_run_id: &str,
+    expected_state: &str,
+) {
+    let direct_row = state
+        .branch_candidate_from_run(visible_run_id, &Value::Null)
+        .row;
+    assert_eq!(direct_row["state"], expected_state, "{direct_row:?}");
+    let board = state.handle(req("board.list", json!({})));
+    assert_eq!(board["ok"], true, "{board:?}");
+    let rows: Vec<&Value> = board["result"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["run_id"] == visible_run_id || row["run_id"] == other_run_id)
+        .collect();
+    assert_eq!(rows.len(), 1, "{board:?}");
+    assert_eq!(rows[0]["run_id"], visible_run_id, "{board:?}");
+    assert_eq!(rows[0]["state"], expected_state, "{board:?}");
+}
+
 fn assert_hidden_merged_run_agrees_with_finish(merged_first: bool) {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
@@ -512,21 +535,7 @@ fn assert_hidden_merged_run_agrees_with_finish(merged_first: bool) {
     let answer = link_task(&mut state, json!({ "task_id": linked, "workspace_id": ws }));
     assert_eq!(answer["ok"], true, "{answer:?}");
 
-    let direct_row = state
-        .branch_candidate_from_run(abandoned_id, &Value::Null)
-        .row;
-    assert_eq!(direct_row["state"], "merged", "{direct_row:?}");
-    let board = state.handle(req("board.list", json!({})));
-    assert_eq!(board["ok"], true, "{board:?}");
-    let rows: Vec<&Value> = board["result"]["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|row| row["run_id"] == *merged_id || row["run_id"] == *abandoned_id)
-        .collect();
-    assert_eq!(rows.len(), 1, "{board:?}");
-    assert_eq!(rows[0]["run_id"], *abandoned_id, "{board:?}");
-    assert_eq!(rows[0]["state"], "merged", "{board:?}");
+    assert_workspace_run_row(&mut state, abandoned_id, merged_id, "merged");
 
     let finished = state.handle(req(
         "branch.finish",
@@ -575,16 +584,7 @@ fn unmerged_branch_finish_leaves_linked_tasks_open() {
     let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
     assert_eq!(added["ok"], true, "{added:?}");
     state.runs.get_mut(&run_id).unwrap().run.state = crate::run::RunState::Review;
-    let visible_board = state.handle(req("board.list", json!({})));
-    let visible_rows: Vec<&Value> = visible_board["result"]["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|row| row["run_id"] == earlier_run_id || row["run_id"] == run_id)
-        .collect();
-    assert_eq!(visible_rows.len(), 1, "{visible_board:?}");
-    assert_eq!(visible_rows[0]["run_id"], run_id, "{visible_board:?}");
-    assert_eq!(visible_rows[0]["state"], "review", "{visible_board:?}");
+    assert_workspace_run_row(&mut state, &run_id, &earlier_run_id, "review");
 
     for agent in state.runs.get_mut(&run_id).unwrap().agents.iter_mut() {
         agent.watched = false;
@@ -595,21 +595,7 @@ fn unmerged_branch_finish_leaves_linked_tasks_open() {
         Some(crate::run::RunState::Review),
     );
 
-    let direct_row = state
-        .branch_candidate_from_run(&earlier_run_id, &Value::Null)
-        .row;
-    assert_eq!(direct_row["state"], "review", "{direct_row:?}");
-    let board = state.handle(req("board.list", json!({})));
-    assert_eq!(board["ok"], true, "{board:?}");
-    let rows: Vec<&Value> = board["result"]["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|row| row["run_id"] == earlier_run_id || row["run_id"] == run_id)
-        .collect();
-    assert_eq!(rows.len(), 1, "{board:?}");
-    assert_eq!(rows[0]["run_id"], earlier_run_id, "{board:?}");
-    assert_eq!(rows[0]["state"], "review", "{board:?}");
+    assert_workspace_run_row(&mut state, &earlier_run_id, &run_id, "review");
 
     let linked = ["first linked task", "second linked task"]
         .map(|title| task_id(&filed(&mut state, &project_id, title)));

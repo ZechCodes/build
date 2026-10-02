@@ -1,7 +1,9 @@
 {
   "method": "bridge.install_update",
   "since": "1.21.0",
-  "params": {"when": "idle"},
+  "params": {
+    "when": "idle"
+  },
   "result": {
     "running_version": "0.2.0",
     "platform": "linux-x86_64",
@@ -15,7 +17,36 @@
     "state": "scheduled_when_idle",
     "last_error": null,
     "update_available": true,
-    "can_install": true
+    "can_install": true,
+    "can_replace_development_build": false
   },
-  "errors": ["invalid_params", "unavailable", "conflict"]
+  "errors": [
+    "invalid_params",
+    "unavailable",
+    "conflict"
+  ],
+  "examples": [
+    {
+      "params": {
+        "when": "now",
+        "replace_development_build": true
+      },
+      "result": {
+        "running_version": "0.2.0",
+        "platform": "linux-x86_64",
+        "development_build": true,
+        "latest_release": {
+          "version": "0.3.0",
+          "tag": "bridge-v0.3.0",
+          "published_at": "2026-09-23T20:00:00Z"
+        },
+        "last_checked_at": "2026-09-23T20:10:00Z",
+        "state": "installing",
+        "last_error": null,
+        "update_available": true,
+        "can_install": false,
+        "can_replace_development_build": false
+      }
+    }
+  ]
 }

@@ -140,6 +140,55 @@ test("the desktop path receives a Bearer only as the main-frame document", () =>
   }
 });
 
+function authorizationHarness(getAccessToken = () => "access-token") {
+  let filter;
+  let listener;
+  securityPolicy.installAuthorizationHeader({
+    onBeforeSendHeaders: (requestFilter, callback) => {
+      filter = requestFilter;
+      listener = callback;
+    },
+  }, getAccessToken);
+  return {
+    filter,
+    requestHeaders(details) {
+      let result;
+      listener(details, (response) => { result = response.requestHeaders; });
+      return result;
+    },
+  };
+}
+
+test("the header hook covers all URLs so cross-origin redirects reach the policy", () => {
+  const { filter } = authorizationHarness();
+  assert.deepEqual(filter, { urls: ["<all_urls>"] });
+});
+
+test("the header hook removes any Authorization case from other hosts", () => {
+  const { requestHeaders } = authorizationHarness();
+  for (const url of ["https://example.com/api/devices", "https://docs.getbuild.ing/app/desktop", "http://example.com/"]) {
+    for (const name of ["Authorization", "authorization", "AUTHORIZATION", "aUtHoRiZaTiOn"]) {
+      assert.deepEqual(requestHeaders({
+        url,
+        resourceType: "xhr",
+        requestHeaders: { Accept: "application/json", [name]: "Bearer access-token" },
+      }), { Accept: "application/json" }, `${url}: ${name}`);
+    }
+  }
+});
+
+test("the header hook uses the current token only for the two allowed request types", () => {
+  let token = "first-token";
+  const { requestHeaders } = authorizationHarness(() => token);
+  for (const [url, resourceType] of [[APP_URL, "mainFrame"], ["https://getbuild.ing/api/devices", "xhr"]]) {
+    const details = { url, resourceType, requestHeaders: { Accept: "*/*" } };
+    assert.deepEqual(requestHeaders(details), { Accept: "*/*", Authorization: `Bearer ${token}` });
+    token = "refreshed-token";
+    assert.deepEqual(requestHeaders(details), { Accept: "*/*", Authorization: "Bearer refreshed-token" });
+  }
+  assert.deepEqual(requestHeaders({ url: APP_URL, resourceType: "image", requestHeaders: {} }), {});
+});
+
 function navigationHarness() {
   const webContents = new EventEmitter();
   webContents.setWindowOpenHandler = (handler) => { webContents.openWindow = handler; };

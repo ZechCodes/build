@@ -55,12 +55,29 @@ function isAuthenticatedRequest(value, resourceType) {
 }
 
 export function authorizeRequestHeaders(url, headers, accessToken, resourceType) {
-  // A redirect may carry the previous request's Authorization header.
+  // The all-URL hook strips supplied or inherited credentials before applying
+  // the app's request allowlist, including after cross-origin redirects.
   const cleanHeaders = Object.fromEntries(
     Object.entries(headers).filter(([name]) => name.toLowerCase() !== "authorization"),
   );
   if (!accessToken || !isAuthenticatedRequest(url, resourceType)) return cleanHeaders;
   return { ...cleanHeaders, Authorization: `Bearer ${accessToken}` };
+}
+
+export function installAuthorizationHeader(webRequest, getAccessToken) {
+  webRequest.onBeforeSendHeaders(
+    { urls: ["<all_urls>"] },
+    (details, callback) => {
+      callback({
+        requestHeaders: authorizeRequestHeaders(
+          details.url,
+          details.requestHeaders,
+          getAccessToken(),
+          details.resourceType,
+        ),
+      });
+    },
+  );
 }
 
 export function createWindowOptions({ development }) {

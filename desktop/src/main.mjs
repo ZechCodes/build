@@ -5,10 +5,10 @@ import { app, BrowserWindow, dialog, Menu, net, session, shell } from "electron"
 
 import {
   APP_URL,
-  authorizeRequestHeaders,
   classifyNavigation,
   createPermissionPolicy,
   createWindowOptions,
+  installAuthorizationHeader,
   installNavigationPolicy,
 } from "./security-policy.mjs";
 import {
@@ -54,22 +54,6 @@ function installPermissionPolicy() {
   session.defaultSession.setPermissionRequestHandler(
     (_webContents, permission, callback, details) =>
       callback(permissionAllowed(permission, details.requestingUrl)),
-  );
-}
-
-function installAuthorizationHeader() {
-  session.defaultSession.webRequest.onBeforeSendHeaders(
-    { urls: ["https://getbuild.ing/*"] },
-    (details, callback) => {
-      callback({
-        requestHeaders: authorizeRequestHeaders(
-          details.url,
-          details.requestHeaders,
-          accessToken,
-          details.resourceType,
-        ),
-      });
-    },
   );
 }
 
@@ -233,7 +217,7 @@ if (!hasSingleInstanceLock) {
 
   app.whenReady().then(() => {
     installPermissionPolicy();
-    installAuthorizationHeader();
+    installAuthorizationHeader(session.defaultSession.webRequest, () => accessToken);
     installApplicationMenu();
     void beginAuthentication();
 

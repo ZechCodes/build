@@ -128,20 +128,151 @@ async fn poll_until_approved_rides_out_a_busy_api() {
     assert_eq!(owner, "owner-9");
 }
 
-/// A device the api does not know is still a refusal.
+/// A refusal that names its `Retry-After` is not asked again before it
+/// (#321 review).
+#[tokio::test]
+async fn poll_until_approved_waits_out_a_retry_after() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/devices/.+/status$"))
+        .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "1"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/devices/.+/status$"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"approved": true, "owner_user_id": "owner-9"})),
+        )
+        .mount(&server)
+        .await;
+
+    let client = reqwest::Client::new();
+    let started = std::time::Instant::now();
+    let owner = poll_until_approved(&client, &server.uri(), "dev-1", Duration::from_millis(10))
+        .await
+        .unwrap();
+    assert_eq!(owner, "owner-9");
+    assert!(
+        started.elapsed() >= Duration::from_secs(1),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+fn riding_out(ride_out: Duration) -> pairing::ApprovalPolls {
+    pairing::ApprovalPolls::every(Duration::from_millis(10)).riding_out(ride_out)
+}
+
+/// The ingress answers 404 while the api's one pod is replaced: the pairing
+/// waits for the api to come back rather than ending (#321 review).
+#[tokio::test]
+async fn poll_until_approved_rides_out_an_api_pod_roll() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/devices/.+/status$"))
+        .respond_with(ResponseTemplate::new(404))
+        .up_to_n_times(3)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/devices/.+/status$"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"approved": true, "owner_user_id": "owner-9"})),
+        )
+        .mount(&server)
+        .await;
+
+    let client = reqwest::Client::new();
+    let owner = poll_until_approved(
+        &client,
+        &server.uri(),
+        "dev-1",
+        riding_out(Duration::from_secs(5)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(owner, "owner-9");
+}
+
+/// A 404 that goes on past the ride-out is a device the api does not know.
 #[tokio::test]
 async fn poll_until_approved_ends_on_an_unknown_device() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path_regex(r"^/api/devices/.+/status$"))
         .respond_with(ResponseTemplate::new(404))
+        .expect(2..)
         .mount(&server)
         .await;
 
     let client = reqwest::Client::new();
-    let refused =
-        poll_until_approved(&client, &server.uri(), "dev-1", Duration::from_millis(10)).await;
-    assert!(refused.is_err(), "{refused:?}");
+    let refused = poll_until_approved(
+        &client,
+        &server.uri(),
+        "dev-1",
+        riding_out(Duration::from_millis(200)),
+    )
+    .await;
+    assert!(
+        matches!(refused, Err(pairing::PairingError::Rejected(_))),
+        "{refused:?}"
+    );
+}
+
+/// No api at all — a transport error — is ridden out the same way, and ends
+/// the pairing with that error once the ride-out is spent.
+#[tokio::test]
+async fn poll_until_approved_ends_on_an_api_gone_for_good() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let gone = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+
+    let client = reqwest::Client::new();
+    let started = std::time::Instant::now();
+    let refused = poll_until_approved(
+        &client,
+        &gone,
+        "dev-1",
+        riding_out(Duration::from_millis(200)),
+    )
+    .await;
+    assert!(
+        matches!(refused, Err(pairing::PairingError::Http(_))),
+        "{refused:?}"
+    );
+    assert!(
+        started.elapsed() >= Duration::from_millis(200),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+/// Anything else the api refuses is about this device, and ends the pairing.
+#[tokio::test]
+async fn poll_until_approved_ends_on_a_forbidden_device() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/api/devices/.+/status$"))
+        .respond_with(ResponseTemplate::new(403))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = reqwest::Client::new();
+    let refused = poll_until_approved(
+        &client,
+        &server.uri(),
+        "dev-1",
+        riding_out(Duration::from_secs(5)),
+    )
+    .await;
+    assert!(
+        matches!(refused, Err(pairing::PairingError::Rejected(_))),
+        "{refused:?}"
+    );
 }
 
 #[tokio::test]

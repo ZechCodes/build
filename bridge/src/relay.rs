@@ -186,15 +186,27 @@ pub const NAME_RESOLUTION_RETRY: Duration = Duration::from_secs(2);
 ///
 /// A name that did not resolve is tried again on a short, fixed timer, and
 /// neither waits out the backoff nor grows it (#131); anything else waits the
-/// backoff's current delay and doubles it for the next time.
+/// backoff's current delay, spread half of itself either way, and doubles it
+/// for the next time. The spread is for a relay restart, which ends every
+/// bridge's socket in the same instant: unspread, they would all redial in the
+/// same instant too, and again at each doubling (#321 review).
 pub fn redial_wait(
     outcome: &Result<(), RelayError>,
     backoff: &mut crate::backoff::Backoff,
 ) -> Duration {
+    redial_wait_with(outcome, backoff, crate::presence::jitter())
+}
+
+/// [`redial_wait`] with the spread given: `jitter` is in `[0, 1)`.
+pub fn redial_wait_with(
+    outcome: &Result<(), RelayError>,
+    backoff: &mut crate::backoff::Backoff,
+    jitter: f64,
+) -> Duration {
     if outcome.as_ref().is_err_and(RelayError::is_name_resolution) {
         return NAME_RESOLUTION_RETRY;
     }
-    let wait = backoff.current();
+    let wait = backoff.current().mul_f64(0.5 + jitter);
     backoff.increase();
     wait
 }
@@ -776,9 +788,31 @@ mod redial_tests {
             std::io::Error::from(std::io::ErrorKind::ConnectionRefused),
         )));
         let waits: Vec<u128> = (0..8)
-            .map(|_| redial_wait(&refused, &mut backoff).as_millis())
+            .map(|_| redial_wait_with(&refused, &mut backoff, 0.5).as_millis())
             .collect();
         assert_eq!(waits, [500, 1000, 2000, 4000, 8000, 16000, 30000, 30000]);
+    }
+
+    /// Every bridge loses its socket at once when the relay restarts, so no
+    /// two redial in step: each wait is spread half of itself either way, the
+    /// first between a quarter and three quarters of a second (#321 review).
+    #[test]
+    fn a_redial_is_spread_so_bridges_do_not_redial_together() {
+        let refused = || {
+            Err(RelayError::from(tokio_tungstenite::tungstenite::Error::Io(
+                std::io::Error::from(std::io::ErrorKind::ConnectionRefused),
+            )))
+        };
+        let first =
+            |jitter| redial_wait_with(&refused(), &mut redial_backoff(), jitter).as_millis();
+        assert_eq!(first(0.0), 250);
+        assert_eq!(first(0.999), 749);
+        let mut backoff = redial_backoff();
+        let waits: Vec<Duration> = (0..2)
+            .map(|_| redial_wait(&refused(), &mut backoff))
+            .collect();
+        assert!((250..750).contains(&waits[0].as_millis()), "{waits:?}");
+        assert!((500..1500).contains(&waits[1].as_millis()), "{waits:?}");
     }
 
     /// Anything else waits the backoff out and doubles it.
@@ -789,8 +823,14 @@ mod redial_tests {
             std::io::Error::from(std::io::ErrorKind::ConnectionRefused),
         )));
         assert!(!refused.as_ref().is_err_and(RelayError::is_name_resolution));
-        assert_eq!(redial_wait(&refused, &mut backoff), Duration::from_secs(2));
-        assert_eq!(redial_wait(&Ok(()), &mut backoff), Duration::from_secs(4));
+        assert_eq!(
+            redial_wait_with(&refused, &mut backoff, 0.5),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            redial_wait_with(&Ok(()), &mut backoff, 0.5),
+            Duration::from_secs(4)
+        );
         assert_eq!(backoff.current(), Duration::from_secs(8));
     }
 }

@@ -607,9 +607,10 @@ async fn run_daemon(
     // liveness runtime. The main thread waits for the signal that ends the
     // daemon; the socket task is aborted then, which is the socket generation
     // ending the way every other end does (`relay::RelayConnection`'s drop).
-    // Dialled before the services below are started: none of them is needed
-    // to answer a browser, and a device the human just approved should be
-    // reachable as soon as it can be (#321).
+    // Dialled before the services below are started, so the socket does not
+    // wait on their start-up (reclaim and source sync each await theirs): a
+    // device the human just approved should be reachable as soon as it can be
+    // (#321). They start in the moments after, alongside it.
     let mut relay_socket = liveness.spawn(relay_forever(
         runtime.device_url.clone(),
         identity.clone(),
@@ -687,7 +688,8 @@ async fn run_daemon(
 
 /// Hold a relay socket open, and redial whenever it ends.
 ///
-/// Reconnect on `relay::redial_backoff` (0.5 s → 30 s cap) so a relay outage
+/// Reconnect on `relay::redial_backoff` (0.5 s → 30 s cap, each wait spread
+/// half of itself either way by `relay::redial_wait`) so a relay outage
 /// doesn't become a tight reconnect loop hammering the server. A connection that lasted
 /// long enough to be "clean" resets the delay, so a brief blip still recovers
 /// fast. The policy lives in `Backoff` so it is unit-tested, not inline-and-hoped.

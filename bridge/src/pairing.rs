@@ -361,21 +361,64 @@ pub async fn fetch_status(
     api_url: &str,
     device_id: &str,
 ) -> Result<StatusResponse> {
+    ask_status(client, api_url, device_id)
+        .await
+        .map_err(|(error, _)| error)
+}
+
+/// [`fetch_status`], saying of a status call that got no answer whether
+/// asking again could get one.
+async fn ask_status(
+    client: &reqwest::Client,
+    api_url: &str,
+    device_id: &str,
+) -> std::result::Result<StatusResponse, (PairingError, Unanswered)> {
+    let unreachable =
+        |e: reqwest::Error| (PairingError::Http(e.to_string()), Unanswered::Unreachable);
     let url = format!(
         "{}/api/devices/{device_id}/status",
         api_url.trim_end_matches('/')
     );
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| PairingError::Http(e.to_string()))?;
-    if !resp.status().is_success() {
-        return Err(PairingError::Rejected(resp.status().to_string()));
+    let resp = client.get(&url).send().await.map_err(unreachable)?;
+    let status = resp.status();
+    if !status.is_success() {
+        let retry_after = resp
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| crate::presence::retry_after(value, std::time::SystemTime::now()));
+        return Err((
+            PairingError::Rejected(status.to_string()),
+            Unanswered::from_status(status, retry_after),
+        ));
     }
-    resp.json::<StatusResponse>()
-        .await
-        .map_err(|e| PairingError::Http(e.to_string()))
+    resp.json::<StatusResponse>().await.map_err(unreachable)
+}
+
+/// Why a status call got no answer, by whether asking again could get one.
+#[derive(Debug)]
+enum Unanswered {
+    /// A rate limit or a server error: the api is there, busy or failing,
+    /// and may say when to ask again.
+    Refused { retry_after: Option<Duration> },
+    /// No api to ask: no connection, or the ingress's 404 while the api's one
+    /// pod is replaced (every deploy, for half a minute or so). Only a 404
+    /// that goes on is the api not knowing the device.
+    Unreachable,
+    /// A refusal about this device.
+    Final,
+}
+
+impl Unanswered {
+    fn from_status(status: reqwest::StatusCode, retry_after: Option<Duration>) -> Unanswered {
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+            Unanswered::Refused { retry_after }
+        } else if status == reqwest::StatusCode::NOT_FOUND {
+            Unanswered::Unreachable
+        } else {
+            Unanswered::Final
+        }
+    }
 }
 
 /// How often a device showing a pairing code asks whether it is approved.
@@ -385,37 +428,40 @@ pub struct ApprovalPolls {
     pub fast: Duration,
     /// How long the code counts as fresh.
     pub fast_for: Duration,
-    /// The wait between asks after that.
+    /// The wait between asks after that, and the first wait after a refusal.
     pub then: Duration,
+    /// How long an api out of reach is waited for before the pairing ends.
+    pub ride_out: Duration,
 }
 
 impl ApprovalPolls {
-    /// Every half second for the two minutes a human typically takes to
-    /// approve a code they were just shown, so the approval is seen within half
-    /// a second of the click (#321); every 2 s after, for a code left waiting.
-    /// At 120 asks a minute, a quarter of what the api allows one address.
+    /// Every second for the two minutes a human typically takes to approve a
+    /// code they were just shown, so the approval is seen within a second of
+    /// the click (#321); every 2 s after, for a code left waiting. At 60 asks
+    /// a minute, a tenth of the 600 the api allows one address. An api out of
+    /// reach is waited for as long as a code is fresh, which outlasts any
+    /// deploy.
     pub const AFTER_SHOWING_A_CODE: ApprovalPolls = ApprovalPolls {
-        fast: Duration::from_millis(500),
+        fast: Duration::from_secs(1),
         fast_for: Duration::from_secs(120),
         then: Duration::from_secs(2),
+        ride_out: Duration::from_secs(120),
     };
 
-    /// The same wait throughout.
+    /// The same wait throughout, and an api out of reach ends the pairing at
+    /// once.
     pub fn every(interval: Duration) -> ApprovalPolls {
         ApprovalPolls {
             fast: interval,
             fast_for: Duration::ZERO,
             then: interval,
+            ride_out: Duration::ZERO,
         }
     }
 
-    /// The wait before the next ask, `elapsed` after the code was shown.
-    pub fn wait_after(&self, elapsed: Duration) -> Duration {
-        if elapsed < self.fast_for {
-            self.fast
-        } else {
-            self.then
-        }
+    /// These polls, waiting `ride_out` for an api out of reach.
+    pub fn riding_out(self, ride_out: Duration) -> ApprovalPolls {
+        ApprovalPolls { ride_out, ..self }
     }
 }
 
@@ -425,35 +471,92 @@ impl From<Duration> for ApprovalPolls {
     }
 }
 
-/// Poll `fetch_status` on `polls` until the device is approved; returns the
-/// owner user id once it is. An api that is busy (429) or failing (5xx) is
-/// asked again on the same schedule: a human may be approving the code right
-/// now, and a refused ask says nothing about the device.
+/// The longest wait between asks while the api keeps refusing or stays out of
+/// reach.
+const LONGEST_SETBACK_WAIT: Duration = Duration::from_secs(30);
+
+/// The wait before each ask, by what the last one got back. An answer keeps
+/// the [`ApprovalPolls`] cadence. A setback — a refusal, or no api — drops to
+/// the slow cadence and doubles it with each setback after, up to
+/// [`LONGEST_SETBACK_WAIT`], or waits out a `Retry-After` when the api names
+/// one; only an answer brings the fast cadence back. An api out of reach for
+/// longer than `ride_out` ends the pairing.
+#[derive(Debug)]
+struct ApprovalPacing {
+    polls: ApprovalPolls,
+    /// Setbacks since the last answer.
+    setbacks: u32,
+    /// When, after the code was shown, the api went out of reach.
+    unreachable_since: Option<Duration>,
+}
+
+impl ApprovalPacing {
+    fn new(polls: ApprovalPolls) -> ApprovalPacing {
+        ApprovalPacing {
+            polls,
+            setbacks: 0,
+            unreachable_since: None,
+        }
+    }
+
+    /// The api answered, `elapsed` after the code was shown.
+    fn after_answer(&mut self, elapsed: Duration) -> Duration {
+        self.setbacks = 0;
+        self.unreachable_since = None;
+        if elapsed < self.polls.fast_for {
+            self.polls.fast
+        } else {
+            self.polls.then
+        }
+    }
+
+    /// A status call came back `setback`, `elapsed` after the code was shown;
+    /// None when the api has been out of reach for longer than it is waited
+    /// for. A `Final` setback is never waited out, and is not asked about.
+    fn after_setback(&mut self, setback: &Unanswered, elapsed: Duration) -> Option<Duration> {
+        let grown = self
+            .polls
+            .then
+            .saturating_mul(1 << self.setbacks.min(16))
+            .min(LONGEST_SETBACK_WAIT);
+        self.setbacks = self.setbacks.saturating_add(1);
+        match setback {
+            Unanswered::Refused { retry_after } => {
+                self.unreachable_since = None;
+                let asked = retry_after.unwrap_or_default();
+                Some(grown.max(asked.min(crate::presence::LONGEST_RETRY_AFTER)))
+            }
+            Unanswered::Unreachable => {
+                let since = *self.unreachable_since.get_or_insert(elapsed);
+                (elapsed.saturating_sub(since) < self.polls.ride_out).then_some(grown)
+            }
+            Unanswered::Final => None,
+        }
+    }
+}
+
+/// Poll the device's status on `polls` until it is approved; returns the
+/// owner user id once it is. A human may be approving the code right now, so
+/// a busy or failing api is asked again, less often while it goes on, and an
+/// api out of reach is waited for a while ([`ApprovalPacing`]).
 pub async fn poll_until_approved(
     client: &reqwest::Client,
     api_url: &str,
     device_id: &str,
     polls: impl Into<ApprovalPolls>,
 ) -> Result<String> {
-    let polls = polls.into();
+    let mut pacing = ApprovalPacing::new(polls.into());
     let shown = tokio::time::Instant::now();
     loop {
-        match fetch_status(client, api_url, device_id).await {
-            Ok(status) if status.approved => {
-                return Ok(status.owner_user_id.unwrap_or_default());
-            }
-            Ok(_) => {}
-            Err(PairingError::Rejected(status)) if refused_in_passing(&status) => {}
-            Err(error) => return Err(error),
-        }
-        tokio::time::sleep(polls.wait_after(shown.elapsed())).await;
+        let wait = match ask_status(client, api_url, device_id).await {
+            Ok(status) if status.approved => return Ok(status.owner_user_id.unwrap_or_default()),
+            Ok(_) => pacing.after_answer(shown.elapsed()),
+            Err((error, setback)) => pacing
+                .after_setback(&setback, shown.elapsed())
+                .ok_or(error)?,
+        };
+        tokio::time::sleep(wait).await;
     }
-}
-
-/// A status the api answers for reasons that pass: a rate limit or a server
-/// error. `status` is how [`fetch_status`] reports it, the code first.
-fn refused_in_passing(status: &str) -> bool {
-    status.starts_with("429") || status.starts_with('5')
 }
 
 /// Retire the stored identity if it says approved and the api disagrees, so
@@ -605,26 +708,97 @@ mod tests {
     use super::*;
     use crate::identity;
 
-    /// Half a second between asks for the first two minutes after a code is
+    /// A second between asks for the first two minutes after a code is
     /// shown, 2 s after.
     #[test]
-    fn a_fresh_code_is_asked_about_every_half_second_then_every_two() {
+    fn a_fresh_code_is_asked_about_every_second_then_every_two() {
+        let mut pacing = ApprovalPacing::new(ApprovalPolls::AFTER_SHOWING_A_CODE);
+        let mut answered = |secs: f64| pacing.after_answer(Duration::from_secs_f64(secs));
+        assert_eq!(answered(0.0), Duration::from_secs(1));
+        assert_eq!(answered(119.9), Duration::from_secs(1));
+        assert_eq!(answered(120.0), Duration::from_secs(2));
+        assert_eq!(answered(3600.0), Duration::from_secs(2));
+        let mut every = ApprovalPacing::new(Duration::from_secs(3).into());
+        assert_eq!(every.after_answer(Duration::ZERO), Duration::from_secs(3));
+    }
+
+    fn refused(retry_after: Option<u64>) -> Unanswered {
+        Unanswered::Refused {
+            retry_after: retry_after.map(Duration::from_secs),
+        }
+    }
+
+    fn waits(pacing: &mut ApprovalPacing, setback: &Unanswered, times: usize) -> Vec<u64> {
+        (0..times)
+            .map(|_| {
+                pacing
+                    .after_setback(setback, Duration::ZERO)
+                    .unwrap()
+                    .as_secs()
+            })
+            .collect()
+    }
+
+    /// A busy or failing api is not asked every second: it drops to the slow
+    /// cadence and backs off further each time it refuses again, and the fast
+    /// cadence comes back only with an answer (#321 review).
+    #[test]
+    fn a_refusal_backs_off_until_an_answer() {
+        let mut pacing = ApprovalPacing::new(ApprovalPolls::AFTER_SHOWING_A_CODE);
+        assert_eq!(waits(&mut pacing, &refused(None), 6), [2, 4, 8, 16, 30, 30]);
+        assert_eq!(
+            pacing.after_answer(Duration::from_secs(10)),
+            Duration::from_secs(1)
+        );
+        assert_eq!(waits(&mut pacing, &refused(None), 1), [2]);
+    }
+
+    /// A refusal that names its own `Retry-After` is not asked again before
+    /// it, and never sooner than the slow cadence.
+    #[test]
+    fn a_refusal_is_asked_again_when_it_says() {
+        let mut pacing = ApprovalPacing::new(ApprovalPolls::AFTER_SHOWING_A_CODE);
+        assert_eq!(waits(&mut pacing, &refused(Some(7)), 1), [7]);
+        assert_eq!(waits(&mut pacing, &refused(Some(0)), 1), [4]);
+        assert_eq!(waits(&mut pacing, &refused(Some(86_400)), 1), [600]);
+    }
+
+    /// An api out of reach — no connection, or the ingress's 404 while its pod
+    /// is replaced — is ridden out on the refusal's backoff for a bounded
+    /// time, then ends the pairing. An answer in between starts the bound over.
+    #[test]
+    fn an_api_out_of_reach_is_ridden_out_for_a_while() {
         let polls = ApprovalPolls::AFTER_SHOWING_A_CODE;
-        let wait = |secs: f64| polls.wait_after(Duration::from_secs_f64(secs));
-        assert_eq!(wait(0.0), Duration::from_millis(500));
-        assert_eq!(wait(119.9), Duration::from_millis(500));
-        assert_eq!(wait(120.0), Duration::from_secs(2));
-        assert_eq!(wait(3600.0), Duration::from_secs(2));
-        let every = ApprovalPolls::from(Duration::from_secs(3));
-        assert_eq!(every.wait_after(Duration::ZERO), Duration::from_secs(3));
+        let mut pacing = ApprovalPacing::new(polls);
+        let mut gone =
+            |secs: u64| pacing.after_setback(&Unanswered::Unreachable, Duration::from_secs(secs));
+        assert_eq!(gone(10), Some(Duration::from_secs(2)));
+        assert_eq!(gone(12), Some(Duration::from_secs(4)));
+        assert_eq!(
+            gone(10 + polls.ride_out.as_secs() - 1),
+            Some(Duration::from_secs(8))
+        );
+        assert_eq!(gone(10 + polls.ride_out.as_secs()), None);
+
+        let mut pacing = ApprovalPacing::new(polls);
+        pacing.after_setback(&Unanswered::Unreachable, Duration::from_secs(10));
+        pacing.after_answer(Duration::from_secs(100));
+        let back = Duration::from_secs(100 + polls.ride_out.as_secs() - 1);
+        pacing.after_setback(&Unanswered::Unreachable, Duration::from_secs(101));
+        assert!(pacing
+            .after_setback(&Unanswered::Unreachable, back)
+            .is_some());
     }
 
     #[test]
-    fn only_a_rate_limit_or_a_server_error_passes() {
-        assert!(refused_in_passing("429 Too Many Requests"));
-        assert!(refused_in_passing("503 Service Unavailable"));
-        assert!(!refused_in_passing("404 Not Found"));
-        assert!(!refused_in_passing("403 Forbidden"));
+    fn a_status_is_sorted_by_whether_it_could_pass() {
+        let sorted =
+            |code: u16| Unanswered::from_status(reqwest::StatusCode::from_u16(code).unwrap(), None);
+        assert!(matches!(sorted(429), Unanswered::Refused { .. }));
+        assert!(matches!(sorted(503), Unanswered::Refused { .. }));
+        assert!(matches!(sorted(404), Unanswered::Unreachable));
+        assert!(matches!(sorted(403), Unanswered::Final));
+        assert!(matches!(sorted(400), Unanswered::Final));
     }
 
     fn status(json: serde_json::Value) -> StatusResponse {

@@ -380,7 +380,7 @@ const FIRST_RETRY_PER_INTERVAL: u32 = 6;
 
 /// The longest a `Retry-After` is waited out. Longer than this and the device
 /// would go offline for the api's own say-so; past it the beat asks anyway.
-const LONGEST_RETRY_AFTER: Duration = Duration::from_secs(600);
+pub(crate) const LONGEST_RETRY_AFTER: Duration = Duration::from_secs(600);
 
 /// When a beat that failed in passing is tried again.
 ///
@@ -431,7 +431,7 @@ impl Retries {
 /// (a version 4 UUID is 122 bits of it). Only bytes 9 to 15 are taken, which
 /// the version's nibble (byte 6) and the variant's two bits (byte 8) leave
 /// alone, and 53 of their 56 bits — as many as an `f64` holds exactly.
-fn jitter() -> f64 {
+pub(crate) fn jitter() -> f64 {
     let uuid = uuid::Uuid::new_v4().into_bytes();
     let mut bits = [0u8; 8];
     bits[..7].copy_from_slice(&uuid[9..16]);
@@ -440,7 +440,7 @@ fn jitter() -> f64 {
 
 /// What a `Retry-After` header asks for, as a wait from `now`: a number of
 /// seconds, or an HTTP date. A date already past asks for no wait.
-fn retry_after(value: &str, now: SystemTime) -> Option<Duration> {
+pub(crate) fn retry_after(value: &str, now: SystemTime) -> Option<Duration> {
     let value = value.trim();
     if let Ok(seconds) = value.parse::<u64>() {
         return Some(Duration::from_secs(seconds));

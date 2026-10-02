@@ -359,7 +359,7 @@ def test_only_the_shell_is_a_complete_html_document():
 def test_deploy_smoke_checks_the_new_story_and_critical_assets():
     workflow = CI_WORKFLOW_PATH.read_text()
     for expected in (
-        "Your agents. Your machine. Your call.",
+        "Build: know what your coding agents need from you",
         "/landing/assets/devices/laptop-low.glb",
         "/landing/assets/screens/ui10-editor-macbook.webp",
         "/landing/assets/devices/scene-01-desktop.webp",

@@ -43,6 +43,7 @@ pub enum ReviewReadResult {
 pub struct ReviewChanges {
     pub stat: DiffStat,
     pub files: Vec<DiffFileRow>,
+    pub files_truncated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub patch: Option<String>,
     pub truncated: bool,
@@ -128,6 +129,7 @@ fn read_changes(
                 deletions: 0,
             },
             files: Vec::new(),
+            files_truncated: false,
             patch: request.patch.then(String::new),
             truncated: false,
             diff_key: format!("{}:unborn", base.oid),
@@ -141,11 +143,18 @@ fn read_changes(
     };
     let base_oid =
         (base.kind != super::model::ReviewBaseKind::EmptyTree).then_some(base.oid.as_str());
-    let diff = crate::diff::diff_between_saved_commits(git_dir, base_oid, head, paths)
-        .map_err(|_| "Source unavailable".to_string())?;
-    let stat = diff.stat();
+    let diff = crate::diff::diff_between_saved_commits_bounded(
+        git_dir,
+        base_oid,
+        head,
+        paths,
+        request.patch,
+        request.range.map(FileRange::body),
+    )
+    .map_err(|_| "Source unavailable".to_string())?;
+    let stat = diff.stat;
     let files = diff
-        .files()
+        .files
         .iter()
         .map(|file| DiffFileRow {
             path: file.path.clone(),
@@ -155,26 +164,6 @@ fn read_changes(
             content_key: file.content_key.clone(),
         })
         .collect();
-    let (patch, range, truncated) = match request.range {
-        Some(range) => {
-            if range.raw == Some(true) {
-                return Err("raw range is only for blobs".into());
-            }
-            let (page, span) = crate::body_page::text_page(diff.patch(), range.body());
-            (Some(page), Some(span), false)
-        }
-        None if request.patch => {
-            let full = diff.patch();
-            let mut end = full
-                .len()
-                .min(crate::body_page::BODY_PAGE_MAX_BYTES as usize);
-            while !full.is_char_boundary(end) {
-                end -= 1;
-            }
-            (Some(full[..end].to_owned()), None, end < full.len())
-        }
-        None => (None, None, false),
-    };
     Ok(ReviewReadResult::Changes(ReviewChanges {
         stat: DiffStat {
             files_changed: stat.files_changed as u64,
@@ -182,10 +171,11 @@ fn read_changes(
             deletions: stat.deletions as u64,
         },
         files,
-        patch,
-        truncated,
+        files_truncated: diff.files_truncated,
+        patch: diff.patch,
+        truncated: diff.truncated,
         diff_key: format!("{}:{head}", base.oid),
-        range,
+        range: diff.range,
     }))
 }
 

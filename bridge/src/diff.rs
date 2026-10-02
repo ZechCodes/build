@@ -10,6 +10,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+mod saved;
+pub(crate) use saved::diff_between_saved_commits_bounded;
+
 /// Where plan-phase work is supposed to stay confined.
 pub const PLAN_SCOPE_PREFIX: &str = ".build/";
 

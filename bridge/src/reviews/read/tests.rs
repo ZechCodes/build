@@ -245,15 +245,17 @@ fn large_patch_has_a_bounded_first_read_and_readable_later_pages() {
         .trim()
         .into(),
     );
-    let ReviewReadResult::Changes(first) =
-        read(&directory, &request(ReviewReadMode::Changes, None)).unwrap()
-    else {
+    let mut first_request = request(ReviewReadMode::Changes, None);
+    first_request.paths = vec!["large.txt".into()];
+    let ReviewReadResult::Changes(first) = read(&directory, &first_request).unwrap() else {
         panic!("changes expected")
     };
     let patch = first.patch.unwrap();
     assert!(first.truncated);
+    assert!(!first.files_truncated);
     assert!(patch.len() <= crate::body_page::BODY_PAGE_MAX_BYTES as usize);
     let mut later = request(ReviewReadMode::Changes, None);
+    later.paths = vec!["large.txt".into()];
     later.range = Some(FileRange {
         offset: patch.len() as u64,
         bytes: 4096,
@@ -266,6 +268,84 @@ fn large_patch_has_a_bounded_first_read_and_readable_later_pages() {
     assert!(span.end > span.offset);
     assert!(span.total > patch.len() as u64);
     assert!(!page.truncated);
+    let base = directory.base.as_ref().unwrap().oid.as_str();
+    let head = directory.head.as_deref().unwrap();
+    let paths = vec!["large.txt".into()];
+    let full = crate::diff::diff_between_saved_commits(
+        directory.common_git_dir.as_deref().unwrap(),
+        Some(base),
+        head,
+        crate::diff::DiffPaths::Only(&paths),
+    )
+    .unwrap();
+    let (expected, expected_span) =
+        crate::body_page::text_page(full.patch(), later.range.unwrap().body());
+    assert_eq!(page.patch.as_deref(), Some(expected.as_str()));
+    assert_eq!(span, expected_span);
+    let bounded = crate::diff::diff_between_saved_commits_bounded(
+        directory.common_git_dir.as_deref().unwrap(),
+        Some(base),
+        head,
+        crate::diff::DiffPaths::Only(&paths),
+        true,
+        Some(later.range.unwrap().body()),
+    )
+    .unwrap();
+    assert!(bounded.buffered_patch_bytes <= crate::body_page::BODY_PAGE_MAX_BYTES as usize + 3);
+}
+
+#[test]
+fn many_changed_paths_cap_rows_without_losing_the_total() {
+    let (_temp, repo) = init_repo();
+    let mut directory = saved_directory(&repo);
+    for index in 0..1_205 {
+        std::fs::write(repo.join(format!("file-{index:04}.txt")), "one line\n").unwrap();
+    }
+    git_in(&repo, &["add", "."]);
+    assert!(git_command(&repo, &["commit", "-m", "many paths"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    directory.head = Some(
+        String::from_utf8(
+            git_command(&repo, &["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .into(),
+    );
+    let mut listing = request(ReviewReadMode::Changes, None);
+    listing.patch = false;
+    let ReviewReadResult::Changes(changes) = read(&directory, &listing).unwrap() else {
+        panic!("changes expected")
+    };
+    assert_eq!(changes.stat.files_changed, 1_206);
+    assert_eq!(changes.files.len(), 1_000);
+    assert!(changes.files_truncated);
+    assert!(changes.patch.is_none());
+    listing.paths = vec!["file-1204.txt".into()];
+    let ReviewReadResult::Changes(single) = read(&directory, &listing).unwrap() else {
+        panic!("changes expected")
+    };
+    assert_eq!(single.files.len(), 1);
+    assert_eq!(single.files[0].path, "file-1204.txt");
+    assert!(!single.files_truncated);
+    let base = directory.base.as_ref().unwrap().oid.as_str();
+    let head = directory.head.as_deref().unwrap();
+    let bounded = crate::diff::diff_between_saved_commits_bounded(
+        directory.common_git_dir.as_deref().unwrap(),
+        Some(base),
+        head,
+        crate::diff::DiffPaths::All,
+        false,
+        None,
+    )
+    .unwrap();
+    assert_eq!(bounded.buffered_patch_bytes, 0);
 }
 
 #[test]

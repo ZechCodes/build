@@ -11,7 +11,13 @@ from skrift.lib.email_backends import EmailBackend
 
 from buildapp import releases
 from buildapp.email_message import OutboundEmail, compose_email, deliver_emails
-from buildapp.email_template import LAPTOP_IMAGE, EmailAction, EmailStep, EmailSteps
+from buildapp.email_template import (
+    LAPTOP_IMAGE,
+    EmailAction,
+    EmailLinkedText,
+    EmailStep,
+    EmailSteps,
+)
 
 #: The install command and docs link name the public site, as the docs page does: the
 #: invitee installs from getbuild.ing whichever deployment sent the mail.
@@ -29,9 +35,10 @@ GETTING_STARTED = EmailSteps(
         EmailStep(
             text="Install the bridge on the machine where your code lives:",
             command=releases.install_command(PUBLIC_SITE_URL),
-            detail=(
-                "There’s also a desktop app. It’s optional, and its installer is at "
-                f"{DOCS_URL}."
+            detail=EmailLinkedText(
+                before="There’s also a desktop app. It’s optional, and its installer is at ",
+                link=EmailAction(url=DOCS_URL, label=DOCS_URL),
+                after=".",
             ),
         ),
         EmailStep(text="In Build, enter the pairing code the bridge prints."),

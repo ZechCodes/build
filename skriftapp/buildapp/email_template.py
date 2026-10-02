@@ -14,7 +14,8 @@ from html import escape
 
 EMAIL_MAX_WIDTH_PX = 560
 EMAIL_BACKGROUND = "#030604"
-EMAIL_ACCENT = "#00ff88"
+# Keep this literal in sync with landing/src/styles/landing.css and the SPA dark --accent.
+EMAIL_ACCENT = "#51ffb4"
 EMAIL_TEXT_PRIMARY = "#f2fff8"
 EMAIL_TEXT_SECONDARY = "#8fa89a"
 EMAIL_TEXT_MUTED = "#54655c"
@@ -63,6 +64,16 @@ FOOTER_PREFIX = "Not you?"
 UNSUBSCRIBE_LINK_LABEL = "Unsubscribe"
 
 
+def link_html(
+    url: str, label: str, *, text_color: str = EMAIL_ACCENT, style: str = ""
+) -> str:
+    """Inline the link colour on both elements for mail clients that restyle anchors."""
+    return (
+        f'<a href="{escape(url)}" style="color:{text_color};{style}">'
+        f'<span style="color:{text_color}">{escape(label)}</span></a>'
+    )
+
+
 @dataclass(frozen=True)
 class EmailAction:
     """A message's call-to-action. One value, because a URL with nothing to call it is
@@ -75,15 +86,19 @@ class EmailAction:
     def html_row(self) -> str:
         """The landing's button style. Inline colours and a padded anchor rather than a
         real button: Outlook and Gmail drop both."""
+        button = link_html(
+            self.url,
+            self.label,
+            text_color=EMAIL_BACKGROUND,
+            style=(
+                f"display:inline-block;padding:{EMAIL_ACTION_PADDING};"
+                f"background:{EMAIL_ACCENT};font-size:{EMAIL_BODY_FONT_SIZE_PX}px;"
+                f"letter-spacing:{EMAIL_BRAND_LETTER_SPACING};text-decoration:none"
+            ),
+        )
         return (
             f'<tr><td style="padding-bottom:{EMAIL_ACTION_PADDING_BOTTOM_PX}px">'
-            f'<a href="{escape(self.url)}" '
-            f'style="display:inline-block;padding:{EMAIL_ACTION_PADDING};'
-            f"background:{EMAIL_ACCENT};color:{EMAIL_BACKGROUND};"
-            f"font-size:{EMAIL_BODY_FONT_SIZE_PX}px;"
-            f"letter-spacing:{EMAIL_BRAND_LETTER_SPACING};"
-            f'text-decoration:none">{escape(self.label)}</a>'
-            "</td></tr>"
+            f"{button}</td></tr>"
         )
 
     def text_line(self) -> str:
@@ -121,6 +136,25 @@ class EmailImage:
         )
 
 
+@dataclass(frozen=True)
+class EmailLinkedText:
+    """A deliberate link within copy; ordinary text is never treated as markup."""
+
+    before: str
+    link: EmailAction
+    after: str = ""
+
+    def html(self) -> str:
+        return (
+            f"{escape(self.before)}"
+            f"{link_html(self.link.url, self.link.label, style='text-decoration:underline')}"
+            f"{escape(self.after)}"
+        )
+
+    def text(self) -> str:
+        return f"{self.before}{self.link.label}{self.after}"
+
+
 #: The Build mark, 32 px tall, at the left of a transparent 80 px box: wide enough for
 #: its alt text "Build" where a client blocks images. brand-mark.svg rendered by
 #: design/email/README.md.
@@ -156,7 +190,7 @@ class EmailStep:
 
     text: str
     command: str | None = None
-    detail: str | None = None
+    detail: str | EmailLinkedText | None = None
 
     def html_cell(self) -> str:
         command = (
@@ -171,9 +205,14 @@ class EmailStep:
         return f"{paragraph_html(self.text)}{command}{detail}"
 
     def text_block(self, number: int) -> str:
+        detail = (
+            self.detail.text()
+            if isinstance(self.detail, EmailLinkedText)
+            else self.detail
+        )
         indented = tuple(
             f"{TEXT_STEP_INDENT}{line}"
-            for line in (self.command, self.detail)
+            for line in (self.command, detail)
             if line is not None
         )
         return "\n\n".join((f"{number}. {self.text}", *indented))
@@ -220,11 +259,12 @@ class EmailSteps:
 EmailBlock = str | EmailSteps
 
 
-def paragraph_html(text: str) -> str:
+def paragraph_html(text: str | EmailLinkedText) -> str:
+    content = text.html() if isinstance(text, EmailLinkedText) else escape(text)
     return (
         f'<p style="margin:0 0 {EMAIL_PARAGRAPH_SPACING_PX}px 0;'
         f"color:{EMAIL_TEXT_SECONDARY};font-size:{EMAIL_BODY_FONT_SIZE_PX}px;"
-        f'line-height:{EMAIL_BODY_LINE_HEIGHT}">{escape(text)}</p>'
+        f'line-height:{EMAIL_BODY_LINE_HEIGHT}">{content}</p>'
     )
 
 
@@ -239,15 +279,16 @@ def block_text(block: EmailBlock) -> tuple[str, ...]:
 
 
 def render_footer_row(unsubscribe_url: str) -> str:
+    unsubscribe_link = link_html(
+        unsubscribe_url, UNSUBSCRIBE_LINK_LABEL, style="text-decoration:underline"
+    )
     return (
         f'<tr><td style="border-top:{EMAIL_HAIRLINE_WIDTH_PX}px solid {EMAIL_HAIRLINE};'
         f'padding-top:{EMAIL_FOOTER_PADDING_TOP_PX}px">'
         f'<p style="margin:0;color:{EMAIL_TEXT_MUTED};'
         f"font-size:{EMAIL_FOOTER_FONT_SIZE_PX}px;"
         f'line-height:{EMAIL_FOOTER_LINE_HEIGHT}">'
-        f'{FOOTER_PREFIX} <a href="{escape(unsubscribe_url)}" '
-        f'style="color:{EMAIL_TEXT_SECONDARY};text-decoration:underline">'
-        f"{UNSUBSCRIBE_LINK_LABEL}</a></p>"
+        f"{FOOTER_PREFIX} {unsubscribe_link}</p>"
         "</td></tr>"
     )
 

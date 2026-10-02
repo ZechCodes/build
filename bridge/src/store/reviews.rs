@@ -166,7 +166,11 @@ impl Store {
             .query_map([project_path], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
         ids.iter()
-            .map(|id| load_review(&conn, id).map(Option::unwrap))
+            .map(|id| {
+                load_review(&conn, id)?.ok_or_else(|| StoreError::ReviewNotFound {
+                    task_id: id.clone(),
+                })
+            })
             .collect()
     }
 }

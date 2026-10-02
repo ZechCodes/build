@@ -502,6 +502,11 @@ fn assert_hidden_merged_run_agrees_with_finish(merged_first: bool) {
         .unwrap();
     let workspace = state.workspaces.get(&ws).unwrap();
     assert_eq!(state.workspace_conversation_owner(workspace), None);
+    assert_eq!(
+        state.preferred_workspace_run_state(&project_id, &workspace.root, None),
+        Some(crate::run::RunState::Merged),
+        "the root/project fallback works before workspace registration"
+    );
 
     let linked = task_id(&filed(&mut state, &project_id, "implemented here"));
     let answer = link_task(&mut state, json!({ "task_id": linked, "workspace_id": ws }));
@@ -569,10 +574,26 @@ fn unmerged_branch_finish_leaves_linked_tasks_open() {
     assert_ne!(run_id, earlier_run_id, "a new review owns this workspace");
     let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
     assert_eq!(added["ok"], true, "{added:?}");
+    state.runs.get_mut(&run_id).unwrap().run.state = crate::run::RunState::Review;
+    let visible_board = state.handle(req("board.list", json!({})));
+    let visible_rows: Vec<&Value> = visible_board["result"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["run_id"] == earlier_run_id || row["run_id"] == run_id)
+        .collect();
+    assert_eq!(visible_rows.len(), 1, "{visible_board:?}");
+    assert_eq!(visible_rows[0]["run_id"], run_id, "{visible_board:?}");
+    assert_eq!(visible_rows[0]["state"], "review", "{visible_board:?}");
+
     for agent in state.runs.get_mut(&run_id).unwrap().agents.iter_mut() {
         agent.watched = false;
     }
-    state.runs.get_mut(&run_id).unwrap().run.state = crate::run::RunState::Review;
+    let root = &state.workspaces.get(&ws).unwrap().root;
+    assert_eq!(
+        state.preferred_workspace_run_state(&project_id, root, None),
+        Some(crate::run::RunState::Review),
+    );
 
     let direct_row = state
         .branch_candidate_from_run(&earlier_run_id, &Value::Null)

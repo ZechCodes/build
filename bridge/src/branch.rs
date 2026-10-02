@@ -19,6 +19,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::run::RunState;
 use serde_json::Value;
 
 /// The kinds of work item, as they ship on the wire. Branch and task are the
@@ -114,6 +115,29 @@ pub struct WorkItemCandidate {
     pub row: Value,
 }
 
+/// Lower values win: live work first, then a merge among terminal runs.
+/// Both the feed fold and workspace Done use this order.
+pub(crate) fn implementation_priority(active: bool, merged: bool) -> (bool, bool) {
+    (!active, !merged)
+}
+
+/// Pick the lifecycle outcome from every run on one workspace root. A run
+/// whose id is the workspace id retains its direct ownership; otherwise live
+/// work wins, then a merge among terminal runs.
+pub(crate) fn preferred_run_state(
+    candidates: impl IntoIterator<Item = (bool, RunState)>,
+) -> Option<RunState> {
+    candidates
+        .into_iter()
+        .min_by_key(|(direct_owner, state)| {
+            (
+                !direct_owner,
+                implementation_priority(!state.is_terminal(), *state == RunState::Merged),
+            )
+        })
+        .map(|(_, state)| state)
+}
+
 /// Fold the candidates into the feed's `items[]`.
 ///
 /// Input order is the output order: callers decide how the feed sorts, and a
@@ -123,15 +147,19 @@ pub fn fold_work_items(candidates: Vec<WorkItemCandidate>) -> Vec<Value> {
     for (index, candidate) in candidates.iter().enumerate() {
         match winner_of.get(&candidate.key) {
             Some(&held) => {
-                // Lower keys win: source first, then live work, then merge.
+                // Source wins before implementation priority.
                 if (
                     candidate.source,
-                    !candidate.implementation_active,
-                    !candidate.implementation_merged,
+                    implementation_priority(
+                        candidate.implementation_active,
+                        candidate.implementation_merged,
+                    ),
                 ) < (
                     candidates[held].source,
-                    !candidates[held].implementation_active,
-                    !candidates[held].implementation_merged,
+                    implementation_priority(
+                        candidates[held].implementation_active,
+                        candidates[held].implementation_merged,
+                    ),
                 ) {
                     winner_of.insert(candidate.key.clone(), index);
                 }
@@ -458,6 +486,27 @@ mod tests {
             assert_eq!(labels(&folded), vec!["merged"]);
             assert_eq!(folded[0]["state"], "merged");
         }
+    }
+
+    #[test]
+    fn workspace_run_outcome_ignores_candidate_order() {
+        for candidates in [
+            [(false, RunState::Merged), (false, RunState::Abandoned)],
+            [(false, RunState::Abandoned), (false, RunState::Merged)],
+        ] {
+            assert_eq!(preferred_run_state(candidates), Some(RunState::Merged));
+        }
+        for candidates in [
+            [(false, RunState::Merged), (false, RunState::Review)],
+            [(false, RunState::Review), (false, RunState::Merged)],
+        ] {
+            assert_eq!(preferred_run_state(candidates), Some(RunState::Review));
+        }
+        assert_eq!(
+            preferred_run_state([(false, RunState::Merged), (true, RunState::Abandoned)]),
+            Some(RunState::Abandoned),
+            "a run whose id is the workspace still owns it"
+        );
     }
 
     /// Every distinct key keeps its own row — including two projects on the

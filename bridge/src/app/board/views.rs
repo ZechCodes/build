@@ -672,13 +672,26 @@ impl AppState {
         } else {
             active.run.goal.clone()
         };
+        let project_id = self.projects.project_id_of(run_id).unwrap_or_default();
+        let workspace = self
+            .surviving_workspace_of_run(run_id)
+            .and_then(|id| self.workspaces.get(&id));
+        // Visibility still chooses the row's run id. Its lifecycle outcome
+        // includes every run on the root, as workspace Finish does.
+        let state = self
+            .preferred_workspace_run_state(
+                project_id,
+                workspace.map_or(active.worktree.path.as_path(), |ws| ws.root.as_path()),
+                workspace.map(|ws| ws.id.as_str()),
+            )
+            .unwrap_or(active.run.state);
         let row = json!({
             "kind": crate::branch::WorkItemKind::Branch.as_str(),
-            "project_id": self.projects.project_id_of(run_id).unwrap_or_default(),
+            "project_id": project_id,
             "project": self.project_name_of(run_id),
             "branch": branch,
             "title": title,
-            "state": run_state_str(&active.run.state),
+            "state": run_state_str(&state),
             "unread": unread.is_unread(),
             "unread_count": unread.count,
             "unread_reason": unread.reason,

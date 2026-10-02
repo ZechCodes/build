@@ -683,20 +683,31 @@ impl AppState {
         Ok(json!({ "workspace_id": workspace.id, "pending": true }))
     }
 
-    /// A branch row calls a run `merged` from its run state. Use that same
-    /// state for Done, including a terminal run whose workspace still exists.
+    /// The lifecycle outcome selected from all runs on this root, including runs
+    /// hidden from the inbox because nobody watches their agents. The direct
+    /// workspace-id owner keeps its established precedence.
+    pub(in crate::app) fn preferred_workspace_run_state(
+        &self,
+        project_id: &str,
+        root: &Path,
+        workspace_id: Option<&str>,
+    ) -> Option<crate::run::RunState> {
+        crate::branch::preferred_run_state(self.runs.iter().filter_map(|(run_id, active)| {
+            let direct_owner = workspace_id == Some(run_id.as_str());
+            let shares_root = self.projects.project_id_of(run_id) == Some(project_id)
+                && same_path(&active.worktree.path, root);
+            (direct_owner || shares_root).then_some((direct_owner, active.run.state))
+        }))
+    }
+
+    /// Done uses the same outcome the branch row projects, including a
+    /// terminal run whose workspace still exists.
     fn workspace_finished_after_merge(&self, workspace: &Workspace) -> bool {
-        if let Some(run_id) = self.workspace_conversation_owner(workspace) {
-            return self
-                .runs
-                .get(&run_id)
-                .is_some_and(|active| active.run.state == crate::run::RunState::Merged);
-        }
-        self.runs.iter().any(|(run_id, active)| {
-            self.projects.project_id_of(run_id) == Some(workspace.project_id.as_str())
-                && (run_id == &workspace.id || same_path(&active.worktree.path, &workspace.root))
-                && active.run.state == crate::run::RunState::Merged
-        })
+        self.preferred_workspace_run_state(
+            &workspace.project_id,
+            &workspace.root,
+            Some(&workspace.id),
+        ) == Some(crate::run::RunState::Merged)
     }
 
     /// What stands between this workspace and Done right now: an agent still

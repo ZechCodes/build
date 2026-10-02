@@ -6,6 +6,9 @@ use crate::tracker::{ReviewCommentAnchor, ReviewOpinion};
 use serde_json::Value;
 use std::path::{Component, Path};
 
+// The same four-KiB path bound used for a thread's viewing context.
+const MAX_ANCHOR_PATH_BYTES: usize = 4 * 1024;
+
 pub(super) struct CommentMetadata {
     pub anchor: Option<ReviewCommentAnchor>,
     pub reply_to: Option<String>,
@@ -49,10 +52,16 @@ impl CommentMetadata {
                     .iter()
                     .any(|directory| directory.id == anchor.directory_id)
                 {
-                    return Err(format!("unknown directory_id: {}", anchor.directory_id));
+                    return Err(format!(
+                        "invalid review anchor: directory_id is not in snapshot: {}",
+                        anchor.directory_id
+                    ));
                 }
-                if anchor.line == 0 || !safe_relative_path(&anchor.path) {
-                    return Err("invalid review anchor: path and line are required".into());
+                if anchor.line == 0
+                    || anchor.path.len() > MAX_ANCHOR_PATH_BYTES
+                    || !safe_relative_path(&anchor.path)
+                {
+                    return Err(format!("invalid review anchor: path must be relative and at most {MAX_ANCHOR_PATH_BYTES} bytes; line must be positive"));
                 }
             }
             if let Some(opinion) = &opinion {

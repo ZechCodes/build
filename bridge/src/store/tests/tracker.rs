@@ -53,6 +53,39 @@ fn comment(task: &Task, body: &str, at: &str) -> TaskComment {
     }
 }
 
+#[test]
+fn stored_review_comment_metadata_ignores_future_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let task = filed(&store, "forward compatible comments");
+    let said = comment(&task, "A review note", NOW);
+    store
+        .save_tracker_task_activity(&task, std::slice::from_ref(&said), &[])
+        .unwrap();
+    let mut record = serde_json::to_value(&said).unwrap();
+    record["anchor"] = serde_json::json!({
+        "snapshot_id": "snap-1", "directory_id": "dir-1", "path": "README.md",
+        "side": "new", "line": 1, "future_anchor_field": "later",
+    });
+    record["opinion"] = serde_json::json!({
+        "snapshot_id": "snap-1", "verdict": "approve", "future_opinion_field": "later",
+    });
+    store
+        .connection()
+        .execute(
+            "UPDATE tracker_comments SET record = ?1 WHERE id = ?2",
+            rusqlite::params![record.to_string(), said.id],
+        )
+        .unwrap();
+    let loaded = store.load_tracker_comment(&said.id).unwrap().unwrap();
+    assert_eq!(loaded.anchor.as_ref().unwrap().path, "README.md");
+    assert_eq!(loaded.opinion.as_ref().unwrap().snapshot_id, "snap-1");
+    let timeline = store.load_tracker_timeline(&task.id).unwrap();
+    assert!(timeline
+        .iter()
+        .any(|entry| matches!(entry, TimelineEntry::Comment(comment) if comment.id == said.id)));
+}
+
 /// The number is the tracker's own counter, per project, minted by the store
 /// because only the store can read the maximum and write past it atomically.
 #[test]

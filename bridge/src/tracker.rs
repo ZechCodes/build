@@ -512,13 +512,36 @@ pub struct TaskComment {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ReviewCommentAnchor {
     pub snapshot_id: String,
     pub directory_id: String,
     pub path: String,
     pub side: ReviewCommentSide,
     pub line: u64,
+}
+
+/// A comment request's strict shape. Stored comments use the corresponding
+/// permissive type above so an older bridge can still decode future fields.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewCommentAnchorInput {
+    pub snapshot_id: String,
+    pub directory_id: String,
+    pub path: String,
+    pub side: ReviewCommentSide,
+    pub line: u64,
+}
+
+impl From<ReviewCommentAnchorInput> for ReviewCommentAnchor {
+    fn from(input: ReviewCommentAnchorInput) -> Self {
+        Self {
+            snapshot_id: input.snapshot_id,
+            directory_id: input.directory_id,
+            path: input.path,
+            side: input.side,
+            line: input.line,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -529,10 +552,25 @@ pub enum ReviewCommentSide {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ReviewOpinion {
     pub snapshot_id: String,
     pub verdict: ReviewVerdict,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewOpinionInput {
+    pub snapshot_id: String,
+    pub verdict: ReviewVerdict,
+}
+
+impl From<ReviewOpinionInput> for ReviewOpinion {
+    fn from(input: ReviewOpinionInput) -> Self {
+        Self {
+            snapshot_id: input.snapshot_id,
+            verdict: input.verdict,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

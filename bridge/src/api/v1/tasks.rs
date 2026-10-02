@@ -199,11 +199,11 @@ pub struct TasksCommentParams {
     pub task_id: String,
     pub body: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub anchor: Option<crate::tracker::ReviewCommentAnchor>,
+    pub anchor: Option<crate::tracker::ReviewCommentAnchorInput>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub opinion: Option<crate::tracker::ReviewOpinion>,
+    pub opinion: Option<crate::tracker::ReviewOpinionInput>,
     /// Typed references, fenced by shape and then by what this task is about.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refs: Option<Vec<crate::thread::ThreadLink>>,

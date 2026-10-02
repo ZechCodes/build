@@ -2054,9 +2054,12 @@ fn comment_task_action(params: Option<&Value>) -> Result<BridgeAction, String> {
     let track = optional_flag(params, "track");
     let notify_user = optional_flag(params, "notify_user");
     let mention_user = optional_flag(params, "mention_user");
-    let anchor = optional_json_argument(params, "anchor")?;
+    let anchor =
+        optional_json_argument::<crate::tracker::ReviewCommentAnchorInput>(params, "anchor")?
+            .map(Into::into);
     let reply_to = optional_json_argument(params, "reply_to")?;
-    let opinion = optional_json_argument(params, "opinion")?;
+    let opinion = optional_json_argument::<crate::tracker::ReviewOpinionInput>(params, "opinion")?
+        .map(Into::into);
     if anchor.is_some() || reply_to.is_some() || opinion.is_some() {
         Ok(BridgeAction::TrackerReviewCommentTask {
             task_id,
@@ -2102,10 +2105,18 @@ fn optional_json_argument<T: serde::de::DeserializeOwned>(
     params
         .and_then(|params| params.get("arguments"))
         .and_then(|arguments| arguments.get(field))
-        .filter(|value| !value.is_null())
+        .filter(|value| match value {
+            Value::Null => false,
+            Value::String(text) => !text.trim().is_empty(),
+            Value::Object(fields) => !fields.is_empty(),
+            _ => true,
+        })
         .map(|value| {
-            serde_json::from_value(value.clone())
-                .map_err(|error| format!("invalid {field}: {error}"))
+            let normalized = match value {
+                Value::String(text) => Value::String(text.trim().to_string()),
+                _ => value.clone(),
+            };
+            serde_json::from_value(normalized).map_err(|error| format!("invalid {field}: {error}"))
         })
         .transpose()
 }
@@ -2892,6 +2903,44 @@ mod tests {
         let h = server().handle_message("{not json");
         let v = parse(&h.reply.unwrap());
         assert_eq!(v["error"]["code"], -32700);
+    }
+
+    #[test]
+    fn comment_task_ignores_empty_optional_review_fields_from_a_harness() {
+        for extras in [
+            json!({"reply_to": ""}),
+            json!({"reply_to": "  \t "}),
+            json!({"anchor": {}}),
+            json!({"opinion": {}}),
+            json!({"anchor": "  ", "opinion": ""}),
+        ] {
+            let mut arguments = json!({"task_id": "task-1", "body": "A comment"});
+            arguments
+                .as_object_mut()
+                .unwrap()
+                .extend(extras.as_object().unwrap().clone());
+            let params = json!({"arguments": arguments});
+            let action =
+                comment_task_action(Some(&params)).expect("empty optional fields are absent");
+            assert!(
+                matches!(action, BridgeAction::TrackerCommentTask { .. }),
+                "{params}"
+            );
+        }
+    }
+
+    #[test]
+    fn comment_task_rejects_unknown_nested_review_fields() {
+        for field in ["anchor", "opinion"] {
+            let mut arguments = json!({"task_id": "task-1", "body": "A comment"});
+            arguments[field] = if field == "anchor" {
+                json!({"snapshot_id":"snap-1", "directory_id":"dir-1", "path":"README.md", "side":"new", "line":1, "future":"unknown"})
+            } else {
+                json!({"snapshot_id":"snap-1", "verdict":"approve", "future":"unknown"})
+            };
+            let params = json!({"arguments": arguments});
+            assert!(comment_task_action(Some(&params)).is_err(), "{params}");
+        }
     }
 
     // ==== the router surface ================================================

@@ -88,6 +88,29 @@ fn review_comment_metadata_round_trips_and_rejects_foreign_context() {
         }),
     );
     assert_eq!(first["comment"]["anchor"], anchor);
+    let mut unknown_anchor = anchor.clone();
+    unknown_anchor["future"] = json!("unknown");
+    let strict_anchor = state.handle(req(
+        "tasks.comment",
+        json!({
+            "task_id": task_id, "body": "Unknown anchor field", "anchor": unknown_anchor,
+        }),
+    ));
+    assert_eq!(
+        strict_anchor["error_code"], "invalid_params",
+        "{strict_anchor}"
+    );
+    let strict_opinion = state.handle(req(
+        "tasks.comment",
+        json!({
+            "task_id": task_id, "body": "Unknown opinion field",
+            "opinion": {"snapshot_id": snapshot["id"], "verdict": "approve", "future": "unknown"},
+        }),
+    ));
+    assert_eq!(
+        strict_opinion["error_code"], "invalid_params",
+        "{strict_opinion}"
+    );
     let persisted = state
         .tracker_store()
         .unwrap()
@@ -111,6 +134,7 @@ fn review_comment_metadata_round_trips_and_rejects_foreign_context() {
         }),
     ));
     assert_eq!(invalid["ok"], false, "{invalid}");
+    assert_eq!(invalid["error_code"], "invalid_params", "{invalid}");
     let invalid_path = state.handle(req(
         "tasks.comment",
         json!({
@@ -121,6 +145,10 @@ fn review_comment_metadata_round_trips_and_rejects_foreign_context() {
         }),
     ));
     assert_eq!(invalid_path["ok"], false, "{invalid_path}");
+    assert_eq!(
+        invalid_path["error_code"], "invalid_params",
+        "{invalid_path}"
+    );
     let foreign_task = filed(&mut state, &project, "Another task");
     let foreign_reply = state.handle(req(
         "tasks.comment",
@@ -207,6 +235,42 @@ fn mcp_review_comment_uses_the_same_metadata_writer() {
     let result = state.agent_action(&owner, &agent, action).unwrap();
     assert_eq!(result["comment"]["opinion"]["verdict"], "approve");
     assert_eq!(result["comment"]["author"]["agent_id"], agent);
+}
+
+#[test]
+fn review_anchor_path_is_bounded_in_utf8_bytes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_repo, mut state, project) = tracked(tmp.path());
+    let workspace_id = workspace(&mut state, &project, "path bound");
+    let task = filed(&mut state, &project, "Review path bound");
+    let saved = review_call(
+        &mut state,
+        "tasks.review.snapshot",
+        json!({
+            "task_id": task["id"], "workspace_id": workspace_id, "expected_version": 0,
+        }),
+    );
+    let snapshot = &saved["review"]["snapshots"][0];
+    let anchor = |path: String| {
+        json!({
+            "snapshot_id": snapshot["id"], "directory_id": snapshot["directories"][0]["id"],
+            "path": path, "side": "new", "line": 1,
+        })
+    };
+    let at_limit = state.handle(req(
+        "tasks.comment",
+        json!({
+            "task_id": task["id"], "body": "At limit", "anchor": anchor("é".repeat(2048)),
+        }),
+    ));
+    assert_eq!(at_limit["ok"], true, "{at_limit}");
+    let over_limit = state.handle(req(
+        "tasks.comment",
+        json!({
+            "task_id": task["id"], "body": "Over limit", "anchor": anchor("é".repeat(2049)),
+        }),
+    ));
+    assert_eq!(over_limit["error_code"], "invalid_params", "{over_limit}");
 }
 
 #[test]

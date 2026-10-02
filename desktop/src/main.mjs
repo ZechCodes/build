@@ -5,10 +5,11 @@ import { app, BrowserWindow, dialog, Menu, net, session, shell } from "electron"
 
 import {
   APP_URL,
-  authorizeRequestHeaders,
   classifyNavigation,
   createPermissionPolicy,
   createWindowOptions,
+  installAuthorizationHeader,
+  installNavigationPolicy,
 } from "./security-policy.mjs";
 import {
   CLIENT_ID,
@@ -43,27 +44,6 @@ function loadInsideElectron(window, url) {
   });
 }
 
-function protectWebContents(window) {
-  const handleNavigation = (event, url) => {
-    const destination = classifyNavigation(url);
-    if (destination === "internal") return;
-
-    event.preventDefault();
-    if (destination === "external") openOutsideElectron(url);
-  };
-
-  window.webContents.on("will-navigate", handleNavigation);
-  window.webContents.on("will-redirect", handleNavigation);
-
-  window.webContents.on("will-attach-webview", (event) => event.preventDefault());
-  window.webContents.setWindowOpenHandler(({ url }) => {
-    const destination = classifyNavigation(url);
-    if (destination === "internal") loadInsideElectron(window, url);
-    if (destination === "external") openOutsideElectron(url);
-    return { action: "deny" };
-  });
-}
-
 function installPermissionPolicy() {
   const permissionAllowed = createPermissionPolicy();
 
@@ -74,21 +54,6 @@ function installPermissionPolicy() {
   session.defaultSession.setPermissionRequestHandler(
     (_webContents, permission, callback, details) =>
       callback(permissionAllowed(permission, details.requestingUrl)),
-  );
-}
-
-function installAuthorizationHeader() {
-  session.defaultSession.webRequest.onBeforeSendHeaders(
-    { urls: ["https://getbuild.ing/*"] },
-    (details, callback) => {
-      callback({
-        requestHeaders: authorizeRequestHeaders(
-          details.url,
-          details.requestHeaders,
-          accessToken,
-        ),
-      });
-    },
   );
 }
 
@@ -214,7 +179,10 @@ function createWindow() {
     title: "Build",
   });
 
-  protectWebContents(window);
+  installNavigationPolicy(window.webContents, {
+    openExternal: openOutsideElectron,
+    loadInternal: (url) => loadInsideElectron(window, url),
+  });
   window.once("ready-to-show", () => window.show());
   window.on("closed", () => {
     if (mainWindow === window) mainWindow = null;
@@ -249,7 +217,7 @@ if (!hasSingleInstanceLock) {
 
   app.whenReady().then(() => {
     installPermissionPolicy();
-    installAuthorizationHeader();
+    installAuthorizationHeader(session.defaultSession.webRequest, () => accessToken);
     installApplicationMenu();
     void beginAuthentication();
 

@@ -1061,6 +1061,7 @@ fn each_tool_posts_one_message_saying_what_the_agent_did() {
         vec!["created", "moved", "commented_on", "closed"],
         "one message per write, in the order they happened"
     );
+    assert_eq!(messages[1]["task_action"]["to"], "in_review");
 
     let first = &messages[0];
     assert_eq!(first["role"], "agent", "the agent's own words");

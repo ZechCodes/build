@@ -18,7 +18,7 @@
 
 import { esc } from "./text.js";
 import { hashFromRoute } from "./router.js";
-import { actionPhrase, actorName, columnName, quoted } from "./trackerLineWords.js";
+import { actionPhrase, actorName, columnName, quoted, shownName } from "./trackerLineWords.js";
 
 export const ACTION_LINE_CLASS = "thread-task-action";
 
@@ -51,30 +51,33 @@ export function actionHref(action, place) {
  * Three actions say more than the verb. A creation keeps the title, because
  * its news is the title — nothing else on the page has named the task yet:
  * "Created #X {title}". An assignment names WHO got it: "Assigned #52 to
- * tasks-spa · Agent 1". A move names the column it went to, quoted.
+ * Agent 1". A move names the column it went to, quoted.
  *
  * Whatever the record does not carry — an assignee or a column from an older
  * bridge — is left out rather than invented: "Assigned #52", "Moved #52".
  */
-const saidHtml = (words) => `<span class="thread-task-said">${esc(words)}</span>`;
+const part = (kind, text, hover = "") => ({ kind, text, hover });
 
 const ACTION_DETAILS = Object.freeze({
-  created: (action) => (action.title ? ` <span class="thread-task-title">${esc(action.title)}</span>` : ""),
+  created: (action) => (action.title ? [part("title", action.title)] : []),
   assigned: (action, reading) => {
     const who = actorName(action.assignee, reading);
-    return who ? ` ${saidHtml("to")} <span class="thread-task-who" title="${esc(who)}">${esc(who)}</span>` : "";
+    return who ? [part("said", "to"), part("who", shownName(who), who)] : [];
   },
-  moved: (action) => (action.to ? ` ${saidHtml(`to ${quoted(columnName(action.to))}`)}` : ""),
+  moved: (action) => (action.to ? [part("said", `to ${quoted(columnName(action.to))}`)] : []),
 });
 
 const capitalised = (text) => text.charAt(0).toUpperCase() + text.slice(1);
 
-function actionSpansHtml(action, reading) {
-  const number = `<span class="thread-task-number">#${esc(String(action.number ?? ""))}</span>`;
+/** One set of words supplies both the visible line and its full hover text. */
+function actionParts(action, reading) {
   const word = actionWord(action.action);
-  const detail = ACTION_DETAILS[word]?.(action, reading) ?? "";
-  return `${saidHtml(capitalised(word))} ${number}${detail}`;
+  return [part("said", capitalised(word)), part("number", `#${action.number ?? ""}`),
+    ...(ACTION_DETAILS[word]?.(action, reading) ?? [])];
 }
+
+const partHtml = ({ kind, text, hover }) =>
+  `<span class="thread-task-${kind}"${hover ? ` title="${esc(hover)}"` : ""}>${esc(text)}</span>`;
 
 /**
  * The line itself, or nothing for a message that carries no action.
@@ -89,13 +92,13 @@ export function taskActionLineHtml(action, { place = null, agentLabels = {}, pro
   // agent speaking in its own conversation, so "by …" would name the voice
   // already saying it. No title either — it was the longest part of the line
   // and the first to be cut off, and it is the heading of the page the link
-  // opens. Hover carries it, where length costs nothing.
-  //
-  // The spaces between the spans are for the reader, not for the layout: flex
-  // drops whitespace-only nodes and `gap` does the spacing, but they stay in
-  // the text a screen reader speaks and a copy takes.
-  const said = actionSpansHtml(action, { agentLabels, projectName });
-  const hover = action.title ? ` title="${esc(action.title)}"` : "";
+  // opens. Hover carries the full line and title, where length costs nothing.
+  const parts = actionParts(action, { agentLabels, projectName });
+  const said = parts.map(partHtml).join(" ");
+  const lineText = parts.map(({ text }) => text).filter(Boolean).join(" ");
+  // A creation already names the task title in its line.
+  const title = actionWord(action.action) === "created" ? "" : action.title;
+  const hover = ` title="${esc([lineText, title].filter(Boolean).join(" — "))}"`;
   const href = actionHref(action, place);
   return href
     ? `<a class="${ACTION_LINE_CLASS}" href="${esc(href)}"${hover} data-task-action="${esc(action.task_id)}">${said}</a>`

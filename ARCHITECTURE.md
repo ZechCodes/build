@@ -282,6 +282,8 @@ runtime that starts them.
   and `bridge.install_update` takes `replace_development_build`. See Update
   and install. The SPA reads the status field off the cached status, so an older bridge (no field) gets the
   install script command instead of an Install it would refuse.
+  It also adds `to` to a `moved` `task_action` on an agent's conversation
+  message (#323), naming the destination column. Older messages omit it.
   The SPA's adapter claims `>=2.0.0 <4.0.0`: it calls nothing a 2.x bridge
   lacks (what 2.x added after 2.0.0 is capability-gated), so the app can
   roll before the bridge.

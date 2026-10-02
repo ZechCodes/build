@@ -31,7 +31,7 @@
 
 import { esc } from "./text.js";
 import { hashFromRoute } from "./router.js";
-import { actionPhrase, actorName, columnName, quoted } from "./trackerLineWords.js";
+import { actionPhrase, actorName, columnName, quoted, shownName } from "./trackerLineWords.js";
 import { harnessIconHtml } from "./harnessIcon.js";
 import { projectInitial } from "./agentRailModel.js";
 import { actorHref } from "./trackerIdentity.js";
@@ -169,17 +169,6 @@ const actionParts = (did) => {
 const NOTICE_VERBS = Object.freeze({ "commented on": Object.freeze({ said: "comment", by: "from" }) });
 const noticeVerb = (verb) => NOTICE_VERBS[verb] || { said: verb, by: "by" };
 
-/** Every name on the line is mid-sentence: "by you", not "by You". */
-const midSentence = (name) => (name === "You" ? "you" : name);
-
-/**
- * The name a line shows for an agent: its own, without the workspace it
- * works in (#323, the maintainer: the workspace was a line of its own and the
- * agent's name is enough). The whole name stays as hover text.
- */
-const NAME_SEPARATOR = " · ";
-const shownName = (name) => midSentence(String(name).split(NAME_SEPARATOR).pop());
-
 /** Whom an assignment went to: a name, drawn as the actor's is. Anything
  *  else a verb points at — a column — is part of what happened. */
 const namesAnAssignee = (notice) => notice.action === "assigned" && Boolean(notice.assignee);
@@ -217,7 +206,7 @@ const nameHtml = (name, mark, href) => (href
 /** One name on the line — the assignee, who did it — with the word that
  *  introduces it ("to", "by", "from"). */
 const sectionHtml = (kind, word, name) =>
-  `<span class="thread-task-section thread-task-${kind}"><span class="thread-task-word">${word}</span> ${name}</span>`;
+  `<span class="thread-task-${kind}">${word} ${name}</span>`;
 
 /** What happened, with what it went to unless that is a name of its own:
  *  "moved to “Done”". */
@@ -293,7 +282,7 @@ export function taskNoticeLineHtml(notice, { place = null, agentLabels = {}, pro
   const reading = { agentLabels, projectName };
   const did = noticeAction(notice, reading);
   const who = actorName(notice.actor, reading);
-  const hover = notice.title ? ` title="${esc(notice.title)}"` : "";
+  const hover = ` title="${esc([noticeLineText(notice, reading), notice.title].filter(Boolean).join(" — "))}"`;
   const href = noticeHref(notice, place);
   const linkContext = noticeLinkContext(notice, place, workspaces);
   const splitNames = splitNoticeNames(notice, linkContext);

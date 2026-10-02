@@ -88,6 +88,13 @@ export const columnName = (slug) =>
  *  review”" reads as the column's name rather than as more of the sentence. */
 export const quoted = (text) => `“${text}”`;
 
+/** An agent's name on a task line, without its workspace; names are
+ *  mid-sentence, so the reader is "you". Full identities stay on hover. */
+export const shownName = (name) => {
+  const short = String(name).split(" · ").pop();
+  return short === "You" ? "you" : short;
+};
+
 /** What Build's own agent for a project is called, when nothing names the
  *  project. It is Build's agent either way; the project's name only makes it
  *  the right one of several. */

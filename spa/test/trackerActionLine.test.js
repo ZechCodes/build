@@ -97,7 +97,7 @@ describe("the line", () => {
     const text = (over, options) =>
       paintWith([acted(over)], options).textContent.replace(/\s+/g, " ").trim();
 
-    expect(text({ action: "assigned", assignee: { kind: "user" } })).toBe("Assigned #14 to You");
+    expect(text({ action: "assigned", assignee: { kind: "user" } })).toBe("Assigned #14 to you");
     expect(text({ action: "assigned", assignee: { kind: "project_agent" } }, { projectName: "Build" }))
       .toBe("Assigned #14 to Build");
     expect(
@@ -105,7 +105,7 @@ describe("the line", () => {
         { action: "assigned", assignee: { kind: "agent", agent_id: "agent-1" } },
         { agentLabels: { "agent-1": "tasks-spa · Rail scroll" } },
       ),
-    ).toBe("Assigned #14 to tasks-spa · Rail scroll");
+    ).toBe("Assigned #14 to Rail scroll");
 
     // Handing it back is its own word and names nobody.
     expect(text({ action: "unassigned" })).toBe("Unassigned #14");
@@ -116,6 +116,31 @@ describe("the line", () => {
   it("says an assignment with no assignee as itself", () => {
     expect(paint([acted({ action: "assigned" })]).textContent.replace(/\s+/g, " ").trim())
       .toBe("Assigned #14");
+  });
+
+  it("keeps the full line and task title readable on hover", () => {
+    for (const change of [
+      { action: "commented_on" },
+      { action: "moved", to: "in_review" },
+      { action: "assigned", assignee: { kind: "agent", agent_id: "agent-1" } },
+      { action: "linked" },
+    ]) {
+      const line = paintWith([acted(change)], { agentLabels: { "agent-1": "tasks-spa · Rail scroll" } });
+      expect(line.title).toBe(`${line.textContent} — ${action().title}`);
+    }
+    const created = paint([acted({ action: "created" })]);
+    expect(created.title).toBe(created.textContent);
+    expect(paint([acted({ action: "moved", title: "" })], null).title).toBe("Moved #14");
+  });
+
+  it("escapes the full hover text and retains the assignee's full identity", () => {
+    const title = 'Fix "hover" & <markup>';
+    const name = 'Rail "scroll" & <reader>';
+    const line = paintWith([acted({ action: "assigned", title, assignee: { kind: "agent", agent_id: "agent-1" } })],
+      { agentLabels: { "agent-1": `tasks-spa · ${name}` } });
+    expect(line.title).toBe(`Assigned #14 to ${name} — ${title}`);
+    expect(line.querySelector(".thread-task-who").title).toBe(`tasks-spa · ${name}`);
+    expect(line.querySelector("reader, markup")).toBeNull();
   });
 
   // A later verb should leave a legible line, not a blank one — and never one

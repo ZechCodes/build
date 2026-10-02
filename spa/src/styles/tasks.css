@@ -725,10 +725,9 @@ a.thread-task-action:hover, a.thread-task-notice:hover { color:var(--ink2); }
 a.thread-task-action:focus-visible, a.thread-task-notice:focus-visible {
   outline:2px solid var(--accent); outline-offset:2px; border-radius:4px;
 }
-/* Who did what. Fixed-size beside the title, so the title is what shrinks. */
-.thread-task-said { flex:0 0 auto; }
+/* Who did what. The title is the part that shrinks. */
 .thread-task-title { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.thread-task-number { flex:0 0 auto; color:var(--accent); font-weight:650; font-variant-numeric:tabular-nums; }
+.thread-task-number { color:var(--accent); font-weight:650; font-variant-numeric:tabular-nums; }
 /* A link here looks as the chat's other links do (.thread-from a): no line
    under it until it is pointed at, so a notice is not a row of underlines. */
 .thread-task-notice a { color:inherit; text-decoration:none; text-underline-offset:2px; border-radius:2px; }

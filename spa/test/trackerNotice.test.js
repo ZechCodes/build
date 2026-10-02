@@ -71,6 +71,32 @@ describe("the line, from the structured field", () => {
     expect(text(stated({ action: "moved to Done", to: "done" }))).toBe("#32 moved to “Done” by Agent 01M2");
   });
 
+  it("keeps the complete notice and task title readable on hover", () => {
+    for (const change of [
+      { action: "moved", to: "in_review" },
+      { action: "commented" },
+      { action: "assigned", assignee: { kind: "user" } },
+      { action: "linked", actor: "" },
+    ]) {
+      const line = html(stated(change));
+      expect(line.title).toBe(`${line.textContent} — Kanban drag does not persist`);
+    }
+    const untitled = stated({ action: "moved", actor: "" });
+    untitled.from_task.title = "";
+    expect(html(untitled, { place: null }).title).toBe("#32 moved");
+  });
+
+  it("escapes actor, column, and task text in the hover title", () => {
+    const actor = 'Agent "A" & <reader>';
+    const column = 'Review "B" & <queue>';
+    const title = 'Fix "hover" & <markup>';
+    const message = stated({ action: "moved", to: column });
+    message.from_task.title = title;
+    const line = html(message, { place: PLACE, agentLabels: { "agent-01M2XXGQ": `workspace · ${actor}` } });
+    expect(line.title).toBe(`#32 moved to “${column}” by ${actor} — ${title}`);
+    expect(line.querySelector("reader, queue, markup")).toBeNull();
+  });
+
   // Graceful when a part is missing: no column, no actor, or neither.
   it("leaves out what it does not know rather than leaving a gap", () => {
     expect(text(stated({ action: "moved" }))).toBe("#32 moved by Agent 01M2");
@@ -314,7 +340,7 @@ describe("the shape of the row", () => {
 
   it("keeps the title as hover text, so a number can still be identified", () => {
     const line = said(notice_()).querySelector("a, span");
-    expect(line.getAttribute("title")).toBe("Kanban drag does not persist");
+    expect(line.getAttribute("title")).toBe("#32 comment from Agent 01M2 — Kanban drag does not persist");
   });
 
   it("carries no indent of its own, so it starts where message text starts", () => {

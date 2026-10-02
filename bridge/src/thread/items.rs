@@ -184,7 +184,7 @@ pub struct TaskAction {
     pub assignee: Option<crate::tracker::Assignee>,
     /// The column a `moved` went to, as a slug — what lets the agent's own
     /// line say "Moved #13 to “In review”" (#323). Absent on every other
-    /// action, and from a bridge before wire 3.4.0.
+    /// action, and from a bridge before wire 3.5.0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to: Option<String>,
 }

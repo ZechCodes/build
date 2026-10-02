@@ -135,7 +135,7 @@ export function createWorkspaceReview({ scope, callRpc, cacheScope = null, navig
         // it on arrival is what a phone's first seconds went on. A bridge
         // that cannot is asked for the whole thing, exactly as before.
         ...(perFileDiffs() ? { patch: false } : {}),
-        ...(ifDiffKey && before?.value ? { if_diff_key: ifDiffKey } : {}),
+        ...(ifDiffKey && (!address || before?.value) ? { if_diff_key: ifDiffKey } : {}),
       });
       if (readLifetime !== lifetime) return null;
       if (!payload.unchanged) await keepUnpushed(cacheScope, scope, payload, before, () => readLifetime === lifetime);

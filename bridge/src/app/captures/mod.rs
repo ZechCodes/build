@@ -310,6 +310,7 @@ impl AppState {
             source: None,
             task_id: None,
             implementation_active: false,
+            implementation_merged: false,
             row,
         }
     }

@@ -394,6 +394,262 @@ fn merged_branch_finish_closes_the_tasks_that_link_its_workspace() {
     assert_eq!(why["payload"]["workspace_id"], ws.as_str());
 }
 
+/// When no live run owns an adopted workspace, its merged history must agree
+/// with the branch row and with whether Done closes the linked task.
+#[test]
+fn merged_then_abandoned_runs_show_merged_and_close_linked_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (mut state, project_id) = tracked_with_origin(&state_root);
+    let ws = workspace(&mut state, &project_id, "two finished runs");
+    let branch = state.handle(req("workspace.get", json!({ "workspace_id": ws })))["result"]
+        ["directories"][0]["branch"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let merged_id = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": ws }),
+    ))["result"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    state.runs.get_mut(&merged_id).unwrap().run.state = crate::run::RunState::Merged;
+    let abandoned_id = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": ws }),
+    ))["result"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(merged_id, abandoned_id);
+    state.runs.get_mut(&abandoned_id).unwrap().run.state = crate::run::RunState::Abandoned;
+    let workspace = state.workspaces.get(&ws).unwrap();
+    assert_eq!(state.workspace_conversation_owner(workspace), None);
+
+    let linked = task_id(&filed(&mut state, &project_id, "implemented here"));
+    let answer = link_task(&mut state, json!({ "task_id": linked, "workspace_id": ws }));
+    assert_eq!(answer["ok"], true, "{answer:?}");
+
+    let board = state.handle(req("board.list", json!({})));
+    assert_eq!(board["ok"], true, "{board:?}");
+    let rows = board["result"]["items"].as_array().unwrap();
+    let matching: Vec<&Value> = rows
+        .iter()
+        .filter(|row| row["run_id"] == merged_id || row["run_id"] == abandoned_id)
+        .collect();
+    assert_eq!(matching.len(), 1, "{board:?}");
+    assert_eq!(matching[0]["state"], "merged", "{board:?}");
+    assert_eq!(matching[0]["run_id"], merged_id, "{board:?}");
+
+    let finished = state.handle(req(
+        "branch.finish",
+        json!({ "project_id": project_id, "branch": branch, "action": "delete" }),
+    ));
+    assert_eq!(finished["ok"], true, "{finished:?}");
+    let read = state.handle(req("tasks.get", json!({ "task_id": linked })));
+    assert_eq!(read["result"]["task"]["state"], "closed", "{read:?}");
+    assert!(read["result"]["task"]["closed_at"].is_string());
+    assert!(event_kinds(&mut state, &linked).contains(&"closed".to_string()));
+}
+
+fn assert_workspace_run_row(
+    state: &mut AppState,
+    visible_run_id: &str,
+    other_run_id: &str,
+    expected_state: &str,
+) {
+    let direct_row = state
+        .branch_candidate_from_run(visible_run_id, &Value::Null)
+        .row;
+    assert_eq!(direct_row["state"], expected_state, "{direct_row:?}");
+    let board = state.handle(req("board.list", json!({})));
+    assert_eq!(board["ok"], true, "{board:?}");
+    let rows: Vec<&Value> = board["result"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["run_id"] == visible_run_id || row["run_id"] == other_run_id)
+        .collect();
+    assert_eq!(rows.len(), 1, "{board:?}");
+    assert_eq!(rows[0]["run_id"], visible_run_id, "{board:?}");
+    assert_eq!(rows[0]["state"], expected_state, "{board:?}");
+}
+
+fn assert_hidden_merged_run_agrees_with_finish(merged_first: bool) {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (mut state, project_id) = tracked_with_origin(&state_root);
+    let ws = workspace(&mut state, &project_id, "hidden merged run");
+    let branch = state.handle(req("workspace.get", json!({ "workspace_id": ws })))["result"]
+        ["directories"][0]["branch"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let mut run_ids = Vec::new();
+    for _ in 0..2 {
+        let run_id = state.handle(req(
+            "workspace.ensure_conversation",
+            json!({ "workspace_id": ws }),
+        ))["result"]["run_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(!run_ids.contains(&run_id));
+        let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
+        assert_eq!(added["ok"], true, "{added:?}");
+        let run_state = if run_ids.is_empty() == merged_first {
+            crate::run::RunState::Merged
+        } else {
+            crate::run::RunState::Abandoned
+        };
+        state.runs.get_mut(&run_id).unwrap().run.state = run_state;
+        if run_state == crate::run::RunState::Merged {
+            for agent in state.runs.get_mut(&run_id).unwrap().agents.iter_mut() {
+                agent.watched = false;
+            }
+        }
+        run_ids.push(run_id);
+    }
+    let merged_id = run_ids
+        .iter()
+        .find(|run_id| state.runs.get(*run_id).unwrap().run.state == crate::run::RunState::Merged)
+        .unwrap();
+    let abandoned_id = run_ids
+        .iter()
+        .find(|run_id| {
+            state.runs.get(*run_id).unwrap().run.state == crate::run::RunState::Abandoned
+        })
+        .unwrap();
+    let workspace = state.workspaces.get(&ws).unwrap();
+    assert_eq!(state.workspace_conversation_owner(workspace), None);
+    assert_eq!(
+        state.preferred_workspace_run_state(&project_id, &workspace.root, None),
+        Some(crate::run::RunState::Merged),
+        "the root/project fallback works before workspace registration"
+    );
+
+    let linked = task_id(&filed(&mut state, &project_id, "implemented here"));
+    let answer = link_task(&mut state, json!({ "task_id": linked, "workspace_id": ws }));
+    assert_eq!(answer["ok"], true, "{answer:?}");
+
+    assert_workspace_run_row(&mut state, abandoned_id, merged_id, "merged");
+
+    let finished = state.handle(req(
+        "branch.finish",
+        json!({ "project_id": project_id, "branch": branch, "action": "delete" }),
+    ));
+    assert_eq!(finished["ok"], true, "{finished:?}");
+    let read = state.handle(req("tasks.get", json!({ "task_id": linked })));
+    assert_eq!(read["result"]["task"]["state"], "closed", "{read:?}");
+}
+
+#[test]
+fn hidden_merged_run_and_visible_abandoned_run_agree_with_finish_in_both_orders() {
+    for merged_first in [true, false] {
+        assert_hidden_merged_run_agrees_with_finish(merged_first);
+    }
+}
+
+/// The workspace selector may see two states with the same finish outcome.
+/// Whichever one supplies the row must keep its own more specific state.
+fn assert_visible_run_state_with_hidden_peer(
+    state: &mut AppState,
+    ordered: &[String],
+    visible_index: usize,
+    visible_state: crate::run::RunState,
+    hidden_state: crate::run::RunState,
+    expected: &str,
+) {
+    let hidden_index = 1 - visible_index;
+    state
+        .runs
+        .get_mut(&ordered[visible_index])
+        .unwrap()
+        .run
+        .state = visible_state;
+    state
+        .runs
+        .get_mut(&ordered[hidden_index])
+        .unwrap()
+        .run
+        .state = hidden_state;
+    for (index, run_id) in ordered.iter().enumerate() {
+        for agent in state.runs.get_mut(run_id).unwrap().agents.iter_mut() {
+            agent.watched = index == visible_index;
+        }
+    }
+    assert_workspace_run_row(
+        state,
+        &ordered[visible_index],
+        &ordered[hidden_index],
+        expected,
+    );
+}
+
+#[test]
+fn a_run_row_keeps_its_state_when_workspace_outcome_ties() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (mut state, project_id) = tracked_with_origin(&state_root);
+    let ws = workspace(&mut state, &project_id, "same outcome class");
+    let first_id = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": ws }),
+    ))["result"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let added = state.handle(req("agent.add", json!({ "entity_id": first_id })));
+    assert_eq!(added["ok"], true, "{added:?}");
+    state.runs.get_mut(&first_id).unwrap().run.state = crate::run::RunState::Merged;
+    let second_id = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": ws }),
+    ))["result"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(first_id, second_id);
+    let added = state.handle(req("agent.add", json!({ "entity_id": second_id })));
+    assert_eq!(added["ok"], true, "{added:?}");
+
+    // Read the real HashMap iterator order, then place the visible run at
+    // both positions. The hidden peer must not rename the visible row.
+    let ordered: Vec<String> = state
+        .runs
+        .keys()
+        .filter(|id| **id == first_id || **id == second_id)
+        .cloned()
+        .collect();
+    assert_eq!(ordered.len(), 2);
+    for (visible, hidden, expected) in [
+        (
+            crate::run::RunState::Building,
+            crate::run::RunState::Review,
+            "building",
+        ),
+        (
+            crate::run::RunState::Abandoned,
+            crate::run::RunState::Archived,
+            "abandoned",
+        ),
+    ] {
+        for visible_index in [0, 1] {
+            assert_visible_run_state_with_hidden_peer(
+                &mut state,
+                &ordered,
+                visible_index,
+                visible,
+                hidden,
+                expected,
+            );
+        }
+    }
+}
+
 /// Finishing before merge removes the branch but keeps its linked tasks live.
 #[test]
 fn unmerged_branch_finish_leaves_linked_tasks_open() {
@@ -422,7 +678,21 @@ fn unmerged_branch_finish_leaves_linked_tasks_open() {
         .unwrap()
         .to_string();
     assert_ne!(run_id, earlier_run_id, "a new review owns this workspace");
+    let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
+    assert_eq!(added["ok"], true, "{added:?}");
     state.runs.get_mut(&run_id).unwrap().run.state = crate::run::RunState::Review;
+    assert_workspace_run_row(&mut state, &run_id, &earlier_run_id, "review");
+
+    for agent in state.runs.get_mut(&run_id).unwrap().agents.iter_mut() {
+        agent.watched = false;
+    }
+    let root = &state.workspaces.get(&ws).unwrap().root;
+    assert_eq!(
+        state.preferred_workspace_run_state(&project_id, root, None),
+        Some(crate::run::RunState::Review),
+    );
+
+    assert_workspace_run_row(&mut state, &earlier_run_id, &run_id, "review");
 
     let linked = ["first linked task", "second linked task"]
         .map(|title| task_id(&filed(&mut state, &project_id, title)));

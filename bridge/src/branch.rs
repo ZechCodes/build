@@ -8,7 +8,8 @@
 //!
 //! 1. **Folding.** Rows that share a key are the same work item seen twice; the
 //!    source that knows the most about it wins (a run over a bare external
-//!    worktree, and a live run over a terminal one).
+//!    worktree, a live run over a terminal one, and a merged run over another
+//!    terminal run).
 //! 2. **Dedup.** A task whose implementation is still in flight speaks as
 //!    that branch row alone — the branch row carries the `task_id` and the
 //!    task's own row is suppressed.
@@ -18,6 +19,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::run::RunState;
 use serde_json::Value;
 
 /// The kinds of work item, as they ship on the wire. Branch and task are the
@@ -107,7 +109,46 @@ pub struct WorkItemCandidate {
     /// Only a live implementation suppresses its task's row: once it is
     /// merged or abandoned, the task speaks for itself again.
     pub implementation_active: bool,
+    /// Whether a terminal run finished by merging, for ties with another
+    /// terminal run that describes the same branch.
+    pub implementation_merged: bool,
     pub row: Value,
+}
+
+/// Lower values win: live work first, then a merge among terminal runs.
+/// Both the feed fold and workspace Done use this order.
+pub(crate) fn implementation_priority(active: bool, merged: bool) -> (bool, bool) {
+    (!active, !merged)
+}
+
+/// A row keeps its run's specific state when the workspace selector chose
+/// another run in the same outcome class. A different class changes what Done
+/// will do, so the row shows the selected state instead.
+pub(crate) fn displayed_run_state(own: RunState, selected: RunState) -> RunState {
+    let priority =
+        |state: RunState| implementation_priority(!state.is_terminal(), state == RunState::Merged);
+    if priority(own) == priority(selected) {
+        own
+    } else {
+        selected
+    }
+}
+
+/// Pick the lifecycle outcome from every run on one workspace root. A run
+/// whose id is the workspace id retains its direct ownership; otherwise live
+/// work wins, then a merge among terminal runs.
+pub(crate) fn preferred_run_state(
+    candidates: impl IntoIterator<Item = (bool, RunState)>,
+) -> Option<RunState> {
+    candidates
+        .into_iter()
+        .min_by_key(|(direct_owner, state)| {
+            (
+                !direct_owner,
+                implementation_priority(!state.is_terminal(), *state == RunState::Merged),
+            )
+        })
+        .map(|(_, state)| state)
 }
 
 /// Fold the candidates into the feed's `items[]`.
@@ -119,11 +160,20 @@ pub fn fold_work_items(candidates: Vec<WorkItemCandidate>) -> Vec<Value> {
     for (index, candidate) in candidates.iter().enumerate() {
         match winner_of.get(&candidate.key) {
             Some(&held) => {
-                if candidate.source < candidates[held].source
-                    || (candidate.source == candidates[held].source
-                        && candidate.implementation_active
-                        && !candidates[held].implementation_active)
-                {
+                // Source wins before implementation priority.
+                if (
+                    candidate.source,
+                    implementation_priority(
+                        candidate.implementation_active,
+                        candidate.implementation_merged,
+                    ),
+                ) < (
+                    candidates[held].source,
+                    implementation_priority(
+                        candidates[held].implementation_active,
+                        candidates[held].implementation_merged,
+                    ),
+                ) {
                     winner_of.insert(candidate.key.clone(), index);
                 }
             }
@@ -360,6 +410,7 @@ mod tests {
             source: Some(source),
             task_id: None,
             implementation_active: false,
+            implementation_merged: false,
             row: json!({ "branch": branch, "from": label }),
         }
     }
@@ -373,6 +424,7 @@ mod tests {
             source: None,
             task_id: Some(task_id.to_string()),
             implementation_active: false,
+            implementation_merged: false,
             row: json!({ "task_id": task_id }),
         }
     }
@@ -414,6 +466,7 @@ mod tests {
     fn a_live_run_wins_the_branch_it_shares_with_a_terminal_run() {
         let mut merged = branch_candidate("p1", "build/thing", BranchSource::Run, "merged");
         merged.row["state"] = json!("merged");
+        merged.implementation_merged = true;
         let mut review = branch_candidate("p1", "build/thing", BranchSource::Run, "review");
         review.row["state"] = json!("review");
         review.implementation_active = true;
@@ -428,6 +481,79 @@ mod tests {
         }
     }
 
+    /// Two finished runs can describe the same branch. The merged outcome
+    /// must win regardless of the order the run map yields them.
+    #[test]
+    fn a_merged_run_wins_the_branch_it_shares_with_an_abandoned_run() {
+        let mut merged = branch_candidate("p1", "build/thing", BranchSource::Run, "merged");
+        merged.row["state"] = json!("merged");
+        merged.implementation_merged = true;
+        let mut abandoned = branch_candidate("p1", "build/thing", BranchSource::Run, "abandoned");
+        abandoned.row["state"] = json!("abandoned");
+
+        for candidates in [
+            vec![abandoned.clone(), merged.clone()],
+            vec![merged.clone(), abandoned.clone()],
+        ] {
+            let folded = fold_work_items(candidates);
+            assert_eq!(labels(&folded), vec!["merged"]);
+            assert_eq!(folded[0]["state"], "merged");
+        }
+    }
+
+    #[test]
+    fn workspace_run_outcome_ignores_candidate_order() {
+        for candidates in [
+            [(false, RunState::Merged), (false, RunState::Abandoned)],
+            [(false, RunState::Abandoned), (false, RunState::Merged)],
+        ] {
+            assert_eq!(preferred_run_state(candidates), Some(RunState::Merged));
+        }
+        for candidates in [
+            [(false, RunState::Merged), (false, RunState::Review)],
+            [(false, RunState::Review), (false, RunState::Merged)],
+        ] {
+            assert_eq!(preferred_run_state(candidates), Some(RunState::Review));
+        }
+        assert_eq!(
+            preferred_run_state([(false, RunState::Merged), (true, RunState::Abandoned)]),
+            Some(RunState::Abandoned),
+            "a run whose id is the workspace still owns it"
+        );
+    }
+
+    #[test]
+    fn a_run_keeps_its_state_when_another_run_has_the_same_outcome() {
+        for candidates in [
+            [(false, RunState::Review), (false, RunState::Building)],
+            [(false, RunState::Building), (false, RunState::Review)],
+        ] {
+            let selected = preferred_run_state(candidates).unwrap();
+            assert_eq!(
+                displayed_run_state(RunState::Building, selected),
+                RunState::Building
+            );
+        }
+        for candidates in [
+            [(false, RunState::Archived), (false, RunState::Abandoned)],
+            [(false, RunState::Abandoned), (false, RunState::Archived)],
+        ] {
+            let selected = preferred_run_state(candidates).unwrap();
+            assert_eq!(
+                displayed_run_state(RunState::Abandoned, selected),
+                RunState::Abandoned
+            );
+        }
+        assert_eq!(
+            displayed_run_state(RunState::Abandoned, RunState::Merged),
+            RunState::Merged,
+        );
+        assert_eq!(
+            displayed_run_state(RunState::Merged, RunState::Review),
+            RunState::Review,
+        );
+    }
+
     /// Every distinct key keeps its own row — including two projects on the
     /// same branch name and a detached checkout with no name to fold on.
     #[test]
@@ -440,6 +566,7 @@ mod tests {
             source: Some(BranchSource::ExternalWorktree),
             task_id: None,
             implementation_active: false,
+            implementation_merged: false,
             row: json!({ "from": "detached" }),
         };
         let folded = fold_work_items(vec![
@@ -519,6 +646,7 @@ mod tests {
             source: None,
             task_id: None,
             implementation_active: false,
+            implementation_merged: false,
             row: json!({ "from": "capture" }),
         };
         let mut implementation =

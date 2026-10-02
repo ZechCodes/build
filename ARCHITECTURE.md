@@ -504,6 +504,7 @@ A workspace brings together one checkout per project source. Its manifest is
 `bridge/src/app/workspaces/` and `bridge/src/lifecycle/`. Work branches are named
 `build/<slug>`. `bridge/src/watch.rs` runs one filesystem watcher per checkout,
 and those feed git and files changes into the `ChangeBus`.
+Workspace Done and branch rows share an outcome computed from all runs on the workspace root, including runs hidden from the inbox.
 
 **Reclaim** (#135) is a service, not a verb. `AppState::spawn_workspace_reclaim`
 (`bridge/src/app/workspaces/reclaim.rs`) sweeps every managed workspace two

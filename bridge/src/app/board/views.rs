@@ -283,7 +283,7 @@ impl AppState {
             .map(str::to_string)
     }
 
-    /// Every project's external worktrees, ride-along shape for `task.list`
+    /// Every project's external worktrees, carried by `board.list`
     /// (spec §5.3): scan order per project, projects concatenated in
     /// registration order. A per-project scan failure is already logged inside
     /// `external_worktrees`; it just contributes nothing here.

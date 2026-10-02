@@ -217,7 +217,7 @@ pub struct ProjectSetRemoteParams {
 
 /// One more directory on a project that already exists: a host path on this
 /// device, or a remote to clone into the project's own sources folder —
-/// exactly one of the two, the way `project.add`'s sources name themselves.
+/// exactly one of the two, the way `project.create`'s sources name themselves.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ProjectAddSourceParams {
     pub project_id: String,

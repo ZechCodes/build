@@ -75,7 +75,7 @@ impl AppState {
         ))
     }
 
-    /// `run.stage_diff`, with the task that asked for it when a task
+    /// A stage diff, with the task that asked for it when a task
     /// surface did.
     pub(in crate::app) fn plan_run_stage_diff(
         &mut self,

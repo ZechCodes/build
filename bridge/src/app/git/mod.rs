@@ -597,7 +597,7 @@ impl AppState {
 
     /// Drop the cached board summaries a scoped git mutation just invalidated —
     /// the task's diffstat + updated-at for task scope, the external-worktree
-    /// scan for worktree scope — so the next `task.list` / project poll
+    /// scan for worktree scope — so the next board / project poll
     /// recomputes instead of serving a stale summary for up to its TTL.
     pub(in crate::app) fn invalidate_git_scope_caches(&mut self, scope: &GitScope) {
         if let Some(run) = &scope.run {

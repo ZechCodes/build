@@ -1,11 +1,16 @@
 use super::*;
 
 #[test]
-fn capture_reroute_refuses_a_task_destination_without_mutating_the_capture() {
+fn capture_reroute_refuses_a_task_destination_without_mutating_the_capture_or_router() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let project_id = state.project_at(0).id.clone();
-    let (capture_id, _) = captured(&mut state, "keep this capture intact");
+    let (capture_id, agent_id) = captured(&mut state, "keep this capture intact");
+    let scratch = state.router_sessions[&capture_id]
+        .scratch_dir()
+        .to_path_buf();
+    let notes = scratch.join("routing-notes.txt");
+    std::fs::write(&notes, "still deciding").unwrap();
     let before = capture_record(&mut state, &capture_id);
 
     let refused = state.handle(req(
@@ -22,6 +27,15 @@ fn capture_reroute_refuses_a_task_destination_without_mutating_the_capture() {
     );
     assert!(state.plans.is_empty());
     assert_eq!(capture_record(&mut state, &capture_id), before);
+    assert_eq!(
+        state
+            .router_sessions
+            .get(&capture_id)
+            .map(|session| session.agent_id()),
+        Some(agent_id.as_str()),
+        "a refused destination must leave the original router in charge"
+    );
+    assert_eq!(std::fs::read_to_string(notes).unwrap(), "still deciding");
 }
 
 // ==== captures: durable before anything routes them ======================

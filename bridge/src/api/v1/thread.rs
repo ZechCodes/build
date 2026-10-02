@@ -448,7 +448,7 @@ pub struct OperationReceipt {
 
 /// The entity view a post answers with — the same plan/run detail the
 /// lifecycle family serves, repainted after the append. Carried as fields
-/// rather than typed here: the shape belongs to `task.get` / `run.get`, and
+/// rather than typed here: the shape belongs to the task and run views, and
 /// naming it twice would be two things to keep equal.
 pub type EntityView = BTreeMap<String, serde_json::Value>;
 

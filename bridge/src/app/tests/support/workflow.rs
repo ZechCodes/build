@@ -1,8 +1,6 @@
 use super::super::*;
 
-/// A QA state with a durable store — plans keep their canonical docs there
-/// and `run.create` reads/writes through it, so every lifecycle test needs
-/// one.
+/// A QA state with a durable store for plans, runs, and their conversations.
 pub(in crate::app::tests) fn qa_state(repo: &std::path::Path, dir: &std::path::Path) -> AppState {
     let context = HarnessContext::resolved(dir.join("test-mcp.sock"), dir.to_path_buf())
         .expect("resolve QA harness context");

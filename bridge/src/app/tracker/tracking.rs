@@ -56,7 +56,7 @@ impl AppState {
 
     /// `tasks.watch` — the user wants this task in their inbox.
     ///
-    /// Idempotent and quiet about it, like `tasks.track`: watching a second
+    /// Idempotent and quiet about it: watching a second
     /// time is not a second fact, and a timeline that said so would be
     /// claiming two.
     pub(crate) fn tasks_watch(&mut self, params: &Value) -> Result<Value, String> {

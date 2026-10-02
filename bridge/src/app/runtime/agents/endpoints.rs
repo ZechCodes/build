@@ -212,8 +212,8 @@ pub(in crate::app) fn agent_start(
             // The button means "give me an agent", not "go do something" — so a
             // start with nothing waiting says nothing, and the human drives from
             // there. But the reviewer's words are durable on the thread and an
-            // agent only learns of them by being TOLD to call
-            // `read_unread_messages`; a fresh harness has no reason to.
+            // agent only learns of them when they are included in a turn's
+            // prompt; a fresh harness has no reason to look for them.
             // Restarting after a crash with messages outstanding would silently
             // ignore every one of them. A hand-started agent has no context, so
             // what waits for it gets the cold form: the conversation protocol

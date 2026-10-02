@@ -207,7 +207,7 @@ pub struct WorkspaceRenameParams {
 
 /// The workspace, and the conversation slice its answer carries.
 ///
-/// The detail hands its whole params on to `run.get` once it has resolved the
+/// The detail hands its whole params to the run view once it has resolved the
 /// workspace's conversation owner, so the thread window a client sends for a
 /// run is the one it sends here — including the `agent_id` a workspace with
 /// no owner refuses by name.
@@ -354,7 +354,7 @@ pub struct WorkspaceDetail {
     /// The same id, under the name the run verbs take.
     pub run_id: Option<String>,
     pub agents: Vec<AgentDigest>,
-    /// The owner's conversation, exactly as `run.get` cut it.
+    /// The owner's conversation, exactly as the run view cut it.
     pub thread: ThreadPayload,
     /// The owner's whole run view.
     pub run: Option<Box<RunView>>,
@@ -763,7 +763,7 @@ mod tests {
         assert_eq!(refused.code(), "invalid_params");
     }
 
-    /// The detail hands its params on to `run.get`, so the thread window has
+    /// The detail hands its params on to the run view, so the thread window has
     /// to survive the typed params — a naive `{workspace_id}` would drop the
     /// cursor the rail sends and answer the whole conversation every poll.
     #[test]

@@ -258,7 +258,7 @@ pub enum WorktreeFinishStatus {
 }
 
 /// Durable intent and eventual history for an external worktree finished
-/// through `worktree.finish`. Project ids are intentionally absent because a
+/// through a branch finish. Project ids are intentionally absent because a
 /// `proj-N` id is not durable across boots; the canonical project path is the
 /// stable identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

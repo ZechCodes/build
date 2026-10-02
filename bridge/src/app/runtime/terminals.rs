@@ -286,7 +286,7 @@ pub(in crate::app) fn session_hello(
         // `watching`: the watch verbs, the read marks, and `tracker_task`
         // rows on the inbox. Stated beside `attachments` rather than left to
         // the minor, for the same reason — an inbox that offers a Done press
-        // against a bridge with no `tasks.dismiss` offers one that cannot
+        // against a bridge that cannot clear watched task rows offers one that cannot
         // work.
         "tasks": { "attachments": true, "watching": true },
         "thread_post_operations": {

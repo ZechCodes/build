@@ -272,7 +272,7 @@ pub(in crate::app) enum ReadSubject {
     /// `project.list` — immutable row inputs captured at request time, with
     /// repository and volume metadata read while the app mutex is released.
     ProjectList { projects: Vec<ProjectListRow> },
-    /// `project.diff` — the project repository's uncommitted work.
+    /// The project repository's uncommitted work.
     Project {
         project_id: String,
         repo_path: std::path::PathBuf,
@@ -293,7 +293,7 @@ pub(in crate::app) enum ReadSubject {
     /// destination does not have. What a workspace source's "All changes" is,
     /// and the only changeset whose base is a publication rather than a branch.
     Unpublished { repo_path: std::path::PathBuf },
-    /// `run.stage_diff` — one immutable stage boundary, sha to sha.
+    /// One immutable stage boundary, sha to sha.
     Stage {
         run_id: String,
         stage_id: String,

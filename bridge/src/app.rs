@@ -714,7 +714,7 @@ impl AppState {
     }
 
     /// Like [`AppState::new`] but with no default project: projects arrive only
-    /// through the UI (`project.add`/`project.clone`) and persisted config. This
+    /// through the UI (`project.create`) and persisted config. This
     /// is the end-user path — a default like `/repo` would register a phantom
     /// project on machines where that path never existed.
     pub fn new_unrooted(

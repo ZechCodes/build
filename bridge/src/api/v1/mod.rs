@@ -222,7 +222,7 @@ pub trait WireParams: Serialize {
 impl<T: Serialize> WireParams for T {}
 
 /// A verb that names nothing but itself — a read of what the account holds
-/// (`board.list`, `task.list`, `settings.get`, ...). One type for every
+/// (`board.list`, `project.list`, `settings.get`, ...). One type for every
 /// family, so "takes nothing" is spelled once.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct NoParams {}

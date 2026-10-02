@@ -215,7 +215,7 @@ impl PendingAgentTurn {
 /// `cold` carries the full run context, because an agent that was just started
 /// has none to read the words into; `warm` is the bare instruction, because a
 /// live agent is already in the conversation and everything said to it is
-/// already durable on the thread for `read_unread_messages` to pull.
+/// already durable on the thread and included in the delivered prompt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::app) struct TurnText {
     pub(in crate::app) cold: String,

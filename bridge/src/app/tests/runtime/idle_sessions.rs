@@ -6,8 +6,8 @@ use super::*;
 /// plan, so a test that needs a run driven by a PARTICULAR harness builds a
 /// plan on that harness's orchestrator first.
 /// A run of `plan` on a side orchestrator, prepared and opened the way
-/// `run.create` prepares and opens one — the fixture's twin of the two
-/// halves the verb runs on either side of the app mutex.
+/// implementation dispatch prepares and opens one — the fixture's twin of
+/// the two halves run on either side of the app mutex.
 pub(in crate::app::tests) fn dispatch_side_run(
     orch: &Orchestrator,
     store: &Store,
@@ -1132,7 +1132,7 @@ fn a_second_message_queues_a_follow_up_while_the_first_is_mid_delivery() {
 /// posted while it is on its way has to queue its own turn.
 ///
 /// The guard on a second turn assumes the harness already coming opens on
-/// a cold prompt that tells it to call `read_unread_messages`. A start with
+/// a cold prompt that includes the pending messages. A start with
 /// nothing unread carries no prompt at all: the harness opens and is sent
 /// nothing, and a message posted between the button and the harness would
 /// sit durable on the thread with nobody told about it. The spawn claim

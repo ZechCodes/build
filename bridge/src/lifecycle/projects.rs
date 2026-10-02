@@ -148,7 +148,7 @@ fn opened(
     })
 }
 
-/// `project.add` — register a repository where the user already keeps it.
+/// Open a repository where the user already keeps it for project registration.
 pub struct OpenRepo {
     pub path: PathBuf,
     pub requested_base: Option<String>,
@@ -161,7 +161,7 @@ impl WorktreeMutation for OpenRepo {
     }
 }
 
-/// `project.clone` — put a repository in the projects folder and register it,
+/// Clone a repository into the projects folder and register it,
 /// or register the one already standing there when it is the same repository.
 pub struct CloneRepo {
     pub url: String,

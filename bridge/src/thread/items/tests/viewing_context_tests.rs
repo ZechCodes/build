@@ -77,7 +77,7 @@ fn selection_line_end_requires_a_start() {
 }
 
 /// Forward compatibility: `viewing_context` rides v1 request paths
-/// (`thread.post`, `run.message`, `plan.message`, `task.send_notes`), and a
+/// (`thread.post`, `run.message`), and a
 /// v1 request never refuses a field this bridge predates — a newer SPA that
 /// names something here must still be able to talk to an older bridge.
 #[test]

@@ -38,15 +38,10 @@ pub(in crate::app) fn with_operation_error(mut value: Value, error: String) -> V
 }
 
 impl AppState {
-    /// Post a reviewer message to an entity's conversation WITHOUT dispatching
-    /// work — the review-surface write path. Resolves a plan OR a run (the
-    /// `thread.revision` idiom), appends the body as an unread user message,
-    /// and nudges the worktree's live agent in place through its PTY so it
-    /// calls `read_unread_messages` — whatever the entity is parked as, because
-    /// that agent is the one the human is looking at. Never ends or spawns a
-    /// session and never moves plan/run state — with no live agent the message
-    /// simply waits for the next session's catch-up. Refused only where no
-    /// conversation remains to post to: a terminal or unknown entity.
+    /// Post a reviewer message to a run's conversation. The message is durable
+    /// before delivery; the addressed agent receives its text in the turn's
+    /// prompt, whether that turn reaches a live PTY or opens a new session.
+    /// A parked run resumes on reply. A post to a retired plan is refused.
     pub(crate) fn thread_post(&mut self, params: &Value) -> Result<Value, String> {
         self.post_to_thread(params, PostOrigin::default())
     }

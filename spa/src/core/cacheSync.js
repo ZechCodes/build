@@ -1315,9 +1315,7 @@ async function applyItem(context, item) {
  *  moved. An entity that finished, was deleted, or was cleared away appears in
  *  `removed`, and everything it had goes at once — its data and its row. */
 async function applyBoard(context, state) {
-  for (const kind of ["projects", "workspaces"]) {
-    if (state[kind]) notePush(addressOf(context, "", kind));
-  }
+  notePushedLists(context, state);
   await prunePushedDrafts(context, state);
   // The harnesses out of usage there (#58): the pushed reading replaces the
   // device's record, and mounted surfaces repaint from its cache announcement.
@@ -1339,6 +1337,12 @@ async function applyBoard(context, state) {
     if (!context.active()) return;
     await writeSessionList(context, "workspaces", state.workspaces.map((workspace) =>
       stampWorkspace(workspace, context.deviceId, workspace.work_summary === undefined ? summaries : [])));
+  }
+}
+
+function notePushedLists(context, state) {
+  for (const kind of ["projects", "workspaces"]) {
+    if (state[kind]) notePush(addressOf(context, "", kind));
   }
 }
 

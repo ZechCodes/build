@@ -868,6 +868,21 @@ In practice:
   keeps `ui-*` records until they are carried. Both databases share the
   connection handling in `spa/src/core/idbDatabase.js` and the key, stamp and
   announcement helpers in `spa/src/core/idbRecords.js`.
+- **Draft ownership cleanup** (#209). `spa/src/core/uiDraftLifetime.js`
+  captures draft writes before a sync's list requests. Successful workspace
+  and project lists, their complete conversation rosters, and the board's
+  positive ownership evidence retire drafts for deleted owners. Workspace
+  settings and directory addresses identify their workspace directly; other
+  workspace drafts use previously cached ownership. A present conversation
+  anywhere wins, including on unwatched runs. Unknown, provisional and legacy
+  owners remain when the lists cannot establish deletion; no age cap touches
+  a live owner's draft. Pushed owner lists trigger a fresh three-list read
+  only when recognized draft candidates exist, since the push may predate a
+  newly created owner. Failed/incomplete reads, intervening ownership writes
+  and stopped sync leave drafts alone. Conditional deletion checks each
+  captured write inside the UI-store transaction, so another tab's newer
+  edit survives even at the same timestamp. Replica eviction still never
+  reaches drafts.
 - **A lost connection is weather, not a verdict** (#169). iOS drops a suspended
   page's IndexedDB connection, and the first opens after a resume fail with
   `UnknownError: Connection to Indexed Database server lost`. The cache reopens

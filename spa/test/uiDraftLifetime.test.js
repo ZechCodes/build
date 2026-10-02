@@ -125,6 +125,23 @@ describe("draft owners, independent of replica lifetime", () => {
     await expectKept([chat()]);
   });
 
+  it("preserves a live parent whose board row cannot answer its conversation roster", async () => {
+    await remember();
+    await seed([chat()]);
+    const view = lists([]);
+    view.runs = [{ run_id: "run-1" }];
+    await reconcile(view);
+    await expectKept([chat()]);
+  });
+
+  it("keeps separate workspaces whose ids share a prefix", async () => {
+    const live = [draft("ws-10", "workspace-settings:"), draft('workspace:["ws-10","src-1"]', "changes:inline-comments")];
+    await seed([settings, directory, ...live]);
+    await reconcile(lists([workspace({ id: "ws-10", entity_id: "run-10" })]));
+    await expectGone([settings, directory]);
+    await expectKept(live);
+  });
+
   it("preserves unknown, provisional, global, other-device and non-draft records", async () => {
     const addresses = [
       chat("conv-unknown", "run-archived"), draft("conv-1", "chat:draft:provisional"),

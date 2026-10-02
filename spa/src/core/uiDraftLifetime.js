@@ -22,15 +22,20 @@ function liveIds(view) {
   const ids = new Set();
   for (const kind of ["workspaces", "projects", "items", "runs"]) {
     if (!Array.isArray(view[kind])) continue;
-    for (const row of view[kind]) {
-      ids.add(listId.workspaces(row));
-      ids.add(listId.projects(row));
-      ids.add(entityId(row));
-      for (const conversation of conversations(row)) ids.add(conversation?.conversation_id);
-      if (Array.isArray(row?.agents)) for (const agent of row.agents) ids.add(agent?.conversation_id || agent?.id);
-    }
+    for (const row of view[kind]) addLiveRow(ids, row);
   }
   return ids;
+}
+
+function addLiveRow(ids, row) {
+  if (!row) return;
+  ids.add(listId.workspaces(row));
+  ids.add(listId.projects(row));
+  ids.add(entityId(row));
+  ids.add(row.worktree_id);
+  ids.add(row.task_id);
+  for (const conversation of conversations(row)) ids.add(conversation?.conversation_id);
+  if (Array.isArray(row.agents)) for (const agent of row.agents) ids.add(agent?.conversation_id || agent?.id);
 }
 
 /** A disappeared owner retires its previously observed entity and
@@ -89,6 +94,7 @@ function draftIsGone(address, state) {
 
 function chatIsGone(conversationId, parentId, state) {
   if (!state.completeConversations) return false;
+  if (state.live.has(parentId) && !state.rosters.has(parentId)) return false;
   if (state.gone.has(conversationId) || state.gone.has(parentId)) return true;
   const roster = state.rosters.get(parentId);
   // Older drafts used the parent entity where a conversation id belongs.

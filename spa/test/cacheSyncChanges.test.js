@@ -965,6 +965,27 @@ describe("the board item", () => {
     expect((await ui.readUiRecord(address)).value).toEqual({ text: "unsent" });
   });
 
+  it("keeps pushed-list cleanup inconclusive when a confirming read fails", async () => {
+    const ui = await import("../src/core/localUiStore.js");
+    await boot();
+    const address = { deviceId: "dev-1", entityId: "ws-1", kind: "ui-draft", sub: "workspace-settings:" };
+    await ui.writeUiRecord(address, { name: "keep me" });
+    script["workspace.list"] = () => { throw new Error("away"); };
+    await deliver([{ entity_id: "board", state: { workspaces: [] } }]);
+    expect((await ui.readUiRecord(address)).value).toEqual({ name: "keep me" });
+  });
+
+  it("does no confirming reads for pushed lists without recognized draft candidates", async () => {
+    const ui = await import("../src/core/localUiStore.js");
+    await boot();
+    await ui.writeUiRecord({ deviceId: "dev-1", entityId: "", kind: "ui-draft", sub: "compose:" }, { body: "keep me" });
+    bridge.call.mockClear();
+    await deliver([{ entity_id: "board", state: { workspaces: [], projects: [] } }]);
+    expect(calls("board.list")).toHaveLength(0);
+    expect(calls("workspace.list")).toHaveLength(0);
+    expect(calls("project.list")).toHaveLength(0);
+  });
+
   const feedWriters = [
     { name: "a local patch to A", act: async ({ rows, boardWatched }) => {
       await rows.patchFeedRow("dev-1", rows.feedRowTarget(branchItem()), { muted: boardWatched });

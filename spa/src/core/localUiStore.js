@@ -7,6 +7,8 @@
 // newer replica version deletes the whole replica database — and none of that
 // can reach this one. Nothing here is a copy of anything the bridge holds, so
 // nothing here may be dropped to be refilled.
+// Confirmed owner deletion is separate: core/uiDraftLifetime.js retires only
+// captured drafts whose workspace or conversation no longer exists.
 //
 // Builds before this store kept `ui-*` records in the replica store. They are
 // carried here, each only while it is newer than what this store holds, and

@@ -16,10 +16,12 @@ meaningful progress on it with `comment_task` as you go, rather than only
 reporting at the end — your conversation is yours, and the task is where the user and the other
 agents look.
 
-For an ordinary task, move it to In review with `move_task` when you report
-Complete. In review means the work is ready to be looked at. A task with a
-saved review has a separate finish: `complete_review` records what was done and
-moves it to Done. Any agent in the project may review and complete it.
+Move it to In review with `move_task` when you report Complete. In review means
+the work is ready to be looked at, not that it is accepted. A task with a saved
+review has a separate finish: `complete_review` records what was done and moves
+it to Done. Moving a task with an open review to Done with `move_task` also
+records the review as “Marked done”, attributed to whoever made that move. Any
+agent in the project may review and complete it.
 
 To offer committed workspace work for review, call `snapshot_review` with the
 task, workspace and version from `get_review` (0 for a new review). It saves

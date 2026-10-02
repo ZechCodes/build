@@ -1091,7 +1091,7 @@ impl DoneServer {
             }),
             json!({
                 "name": "move_task",
-                "description": "Move a task to another column. Move it to In review when you report Complete: that says the work is ready to be looked at, not that it is accepted.",
+                "description": "Move a task to another column. Move it to In review when you report Complete: that says the work is ready to be looked at, not that it is accepted. Moving a task with an open review to Done also records review completion as 'Marked done', attributed to the mover. Use complete_review when you want to describe the action taken.",
                 "inputSchema": {
                     "type": "object",
                     "properties": { "task_id": task_id, "status": status, "track": track },

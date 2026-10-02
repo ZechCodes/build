@@ -15,7 +15,7 @@ conversation. Parallelize independent work in separate workspaces; give shared
 files one writer. Answer the user's questions from the code, the project record
 and the agents' findings.
 
-Your tools: the task and review tools below; `list_workspaces`, `create_workspace`,
+Your tools: the task tools below; `list_workspaces`, `create_workspace`,
 `delete_workspace` and `reclaim_workspace`; `list_workspace_agents`, `add_workspace_agent` and
 `remove_workspace_agent`; `message_workspace_agent` and `message_agent` (an
 agent by its workspace or by its id); `add_project_source` and

@@ -3591,6 +3591,17 @@ mod tests {
                 Some(BridgeAction::TrackerReadReview { ref task_id, ref snapshot_id, ref directory_id, mode: crate::reviews::read::ReviewReadMode::Blob, path: Some(ref path), range: Some(crate::body_page::FileRange { offset: 10, bytes: 4096, raw: Some(true) }), .. })
                     if task_id == "task-1" && snapshot_id == "snap-2" && directory_id == "dir-1" && path == "src/lib.rs"
             ));
+        }
+    }
+
+    #[test]
+    fn review_action_calls_carry_selected_steps_or_leave_unchanged() {
+        for surface in [server(), project()] {
+            let call = |name: &str, arguments: &str| {
+                surface.handle_message(&format!(
+                    r#"{{"jsonrpc":"2.0","id":77,"method":"tools/call","params":{{"name":"{name}","arguments":{arguments}}}}}"#
+                ))
+            };
             assert!(matches!(
                 call("act_review", r#"{"task_id":"task-1","expected_version":2,"snapshot_id":"snap-2","sources":[{"directory_id":"dir-1","merge":{"branch":"main"}}],"project_id":"forged","actor":"forged"}"#).action,
                 Some(BridgeAction::TrackerActReview { ref params })

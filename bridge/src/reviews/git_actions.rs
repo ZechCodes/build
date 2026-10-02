@@ -782,11 +782,10 @@ mod tests {
         assert_eq!(result.head, oid(&source, "main"));
         assert_eq!(oid(&source, "main^2"), saved.head.unwrap());
         assert!(
-            git_command(&source, &["show-ref", "--verify", "refs/heads/feature"])
+            !git_command(&source, &["show-ref", "--verify", "refs/heads/feature"])
                 .status()
                 .unwrap()
                 .success()
-                == false
         );
     }
 

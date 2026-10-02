@@ -94,4 +94,37 @@ describe("snapshot Changes", () => {
     expect(callRpc).toHaveBeenCalledWith("tasks.review.diff", expect.objectContaining({ range: { offset: first.length, bytes: expect.any(Number) } }));
     pane.dispose();
   });
+
+  it("opens and highlights an initial old-side anchor", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const callRpc = vi.fn(async (_method, params) => params.paths ? { ...list, patch } : list);
+    const pane = mountTaskReviewChanges(host, { deviceId: "dev", projectId: "project", taskId: "task", snapshot, directory, callRpc,
+      anchor: { path: "src/a.js", side: "old", line: 1 } });
+    await settle();
+    expect(host.querySelector('[data-review-path="src/a.js"] [data-review-expand]').getAttribute("aria-expanded")).toBe("true");
+    expect(host.querySelector("tr.task-review-anchor").dataset.oldLine).toBe("1");
+    pane.dispose();
+  });
+
+  it("reveals a path beyond the truncated listing, but returns false for an unchanged path", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const short = { ...list, files: [], files_truncated: true };
+    const callRpc = vi.fn(async (_method, params) => params.paths ? { ...list, patch } : short);
+    const pane = mountTaskReviewChanges(host, { deviceId: "dev", projectId: "project", taskId: "task", snapshot, directory, callRpc });
+    await settle();
+    const revealed = await pane.reveal({ path: "src/a.js", side: "new", line: 1 });
+    expect(revealed).toBe(true);
+    expect(host.querySelector("tr.task-review-anchor").dataset.newLine).toBe("1");
+    pane.dispose();
+
+    const completeHost = document.createElement("div");
+    document.body.append(completeHost);
+    const complete = mountTaskReviewChanges(completeHost, { deviceId: "dev", projectId: "project", taskId: "other-task", snapshot, directory,
+      callRpc: async () => ({ ...list, files: [], files_truncated: false }) });
+    await settle();
+    expect(await complete.reveal({ path: "README.md", side: "new", line: 1 })).toBe(false);
+    complete.dispose();
+  });
 });

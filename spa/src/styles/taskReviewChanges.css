@@ -9,6 +9,7 @@
 .task-review-diff-scroll td { white-space: pre; vertical-align: top; }
 .task-review-diff-scroll td.ln { min-width: 3em; text-align: right; user-select: none; }
 .task-review-diff-scroll td.ln button { width: 100%; text-align: right; }
+.task-review-diff-scroll tr.task-review-anchor { outline: 2px solid var(--accent); outline-offset: -2px; background: var(--accent-soft); }
 .task-review-note, .task-review-limit, .task-review-error { padding: 10px; }
 .task-review-error { color: var(--danger, #c33); }
 .task-review-limit { color: var(--ink2); }

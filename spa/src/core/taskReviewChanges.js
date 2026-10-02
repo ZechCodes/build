@@ -11,6 +11,7 @@ import { langForPath } from "./highlight.js";
 import { isDotenvPath } from "./secrets.js";
 
 const FILE_LIMIT = 1_000;
+const MAX_REVEAL_PAGES = 32;
 const addressOf = (deviceId, projectId, kind, sub) => ({ deviceId, entityId: projectId, kind, sub: JSON.stringify(sub) });
 const baseParams = (taskId, snapshot, directory) => ({ task_id: taskId, snapshot_id: snapshot.id, directory_id: directory.id, mode: "changes" });
 const listSub = (taskId, snapshot, directory) => [taskId, snapshot.id, directory.id];
@@ -54,9 +55,19 @@ function fileHtml(file, body, viewed, commentable) {
   return `<section class="task-review-file" data-review-path="${path}">${header}${table}${more}</section>`;
 }
 
-function changesHtml(state, commentable, bodyOf) {
+function listingClipped(list) {
+  return Boolean(list?.files_truncated) || (list?.files?.length ?? 0) > FILE_LIMIT;
+}
+
+function shownFiles(state) {
   const files = (state.list?.files ?? []).slice(0, FILE_LIMIT);
-  const clipped = state.list?.files_truncated || (state.list?.files?.length ?? 0) > FILE_LIMIT;
+  const clipped = listingClipped(state.list);
+  const beyond = state.anchor && clipped && !files.some((file) => file.path === state.anchor.path);
+  return { files: beyond ? [...files, { path: state.anchor.path, status: "Modified" }] : files, clipped };
+}
+
+function changesHtml(state, commentable, bodyOf) {
+  const { files, clipped } = shownFiles(state);
   const limit = clipped ? `<p class="task-review-limit" role="status">Showing the first 1,000 changed files. This review has more files than the listing can show.</p>` : "";
   const error = state.error ? `<p class="task-review-error" role="alert">${esc(state.error)}</p>` : "";
   const empty = emptyMessage(state.list, files);
@@ -70,15 +81,40 @@ function emptyMessage(list, files) {
   return "";
 }
 
+function anchoredRow(host, anchor) {
+  const section = [...host.querySelectorAll("[data-review-path]")].find((row) => row.dataset.reviewPath === anchor.path);
+  const key = anchor.side === "old" ? "oldLine" : "newLine";
+  return [...(section?.querySelectorAll("tr[data-side]") || [])].find((row) => Number(row.dataset[key]) === anchor.line) || null;
+}
+
+function listedPath(list, path) {
+  const files = list?.files || [];
+  if (files.some((file) => file.path === path)) return true;
+  return Boolean(list?.files_truncated || files.length > FILE_LIMIT);
+}
+
+function validAnchor(target) {
+  return Boolean(target?.path) && ["old", "new"].includes(target.side) && Number(target.line) > 0;
+}
+
+async function seekAnchorPages(host, target, bodies) {
+  for (let page = 0; page < MAX_REVEAL_PAGES; page++) {
+    if (anchoredRow(host, target)) return true;
+    const pages = bodies.bodyOf(target.path)?.pages;
+    if (!pages || pages.complete || !(await bodies.more(target.path))) return false;
+  }
+  return Boolean(anchoredRow(host, target));
+}
+
 /** Mount one saved source's Changes tab. refresh() retries the listing. */
-export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snapshot, directory, callRpc, onOpenFile, onComment }) {
+export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snapshot, directory, callRpc, onOpenFile, onComment, anchor = null }) {
   const listAddress = addressOf(deviceId, projectId, "task-review-changes", listSub(taskId, snapshot, directory));
   const patchAddress = (path) => addressOf(deviceId, projectId, "task-review-patch", patchSub(taskId, snapshot, directory, path));
   const ui = uiAddress({ deviceId, entityId: projectId, view: "task-review-changes", kind: "review", sub: JSON.stringify(listSub(taskId, snapshot, directory)) });
-  const state = { list: null, error: "", viewed: new Set(), open: new Set(), loading: new Set() };
+  const state = { list: null, error: "", viewed: new Set(), open: new Set(), loading: new Set(), anchor: null, anchorScrolled: false };
   let alive = true;
   let generation = 0;
-  const contentKeyOf = (path) => state.list?.files?.find((file) => file.path === path)?.content_key;
+  const contentKeyOf = (path) => state.list?.files?.find((file) => file.path === path)?.content_key ?? `unlisted:${path}`;
   const bodies = createChangesetBodies({
     addressOf: patchAddress,
     fetchFiles: async (paths, { range } = {}) => {
@@ -94,6 +130,11 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
   const paint = () => {
     if (!alive) return;
     host.innerHTML = changesHtml(state, Boolean(onComment), (path) => ({ ...bodies.bodyOf(path), loading: state.loading.has(path) }));
+    const row = state.anchor && anchoredRow(host, state.anchor);
+    if (!row) return;
+    row.classList.add("task-review-anchor");
+    if (!state.anchorScrolled) row.scrollIntoView?.({ block: "center" });
+    state.anchorScrolled = true;
   };
   const readList = async () => {
     const record = await readCached(listAddress);
@@ -108,10 +149,12 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
       const answer = await callRpc("tasks.review.diff", { ...baseParams(taskId, snapshot, directory), patch: false });
       if (!alive || readGeneration !== generation) return;
       await writeCached(listAddress, answer);
+      await readList();
     } catch (error) {
       if (alive && readGeneration === generation) {
         const cached = (await readCached(listAddress))?.value || {};
         await writeCached(listAddress, { ...cached, read_error: displayError(error) });
+        await readList();
       }
     }
   };
@@ -176,10 +219,27 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
   };
   host.addEventListener("click", onClick);
   const unwatchList = subscribeCache(listAddress, () => void readList());
-  void readList().then(refresh);
+  const initialRead = readList();
+  void initialRead.then(refresh);
+  const reveal = async (target) => {
+    await initialRead;
+    if (!alive || !validAnchor(target)) return false;
+    if (!state.list) await refresh();
+    if (!listedPath(state.list, target.path)) return false;
+    state.anchor = { path: target.path, side: target.side, line: Number(target.line) };
+    state.anchorScrolled = false;
+    state.open.add(target.path);
+    paint();
+    await fetchPatch(target.path);
+    await seekAnchorPages(host, state.anchor, bodies);
+    paint();
+    return Boolean(anchoredRow(host, state.anchor));
+  };
+  if (anchor) void reveal(anchor);
   void uiState.ready;
   return {
     refresh,
+    reveal,
     dispose() {
       alive = false;
       generation += 1;

@@ -237,8 +237,8 @@ mod tests {
         let binary = fifo_dir.join("release/build-bridge");
         fs::create_dir_all(binary.parent().unwrap()).unwrap();
         fs::write(&binary, b"binary").unwrap();
-        let fifo = std::ffi::CString::new(fifo_dir.join("CACHEDIR.TAG").as_os_str().as_bytes())
-            .unwrap();
+        let fifo =
+            std::ffi::CString::new(fifo_dir.join("CACHEDIR.TAG").as_os_str().as_bytes()).unwrap();
         // SAFETY: a valid NUL-terminated path; mkfifo only creates the node.
         assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
         assert!(!probe_within_seconds(&binary));

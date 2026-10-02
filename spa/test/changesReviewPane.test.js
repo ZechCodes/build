@@ -360,8 +360,8 @@ describe("workspace comments", () => {
 
 // The plug over a workspace source reads the same uncovered checkout the pane
 // around it does: no sync pass writes that `diff` record, so the one held is
-// whatever this surface last read. It is painted at once — a tab switch back
-// is not a loading frame — and read through, because nothing else will.
+// whatever this surface last read. It is painted at once on a return;
+// missing or stale records and explicit invalidations still read the wire.
 describe("the aggregate over a checkout nothing walks", () => {
   const ENTITY = `workspace:${JSON.stringify(["w", "s"])}`;
 
@@ -394,11 +394,19 @@ describe("the aggregate over a checkout nothing walks", () => {
     return { container, pane, calls, answer };
   }
 
-  it("paints the record it holds, then reads the source anyway", async () => {
-    const { container, pane, calls, answer } = await mountWorkspaceReview({
+  it("paints the record it holds without reading the source again", async () => {
+    const { container, pane, calls } = await mountWorkspaceReview({
       held: { patch: PATCH.replace("+new", "+from the record"), commentable: true },
     });
     expect(container.textContent).toContain("from the record");
+    expect(calls.filter(({ method }) => method === "git.unpushed")).toHaveLength(0);
+    pane.dispose();
+  });
+
+  it("refreshes a stale source diff on mount", async () => {
+    const { container, pane, calls, answer } = await mountWorkspaceReview({
+      held: { patch: PATCH.replace("+new", "+from the record"), commentable: true, stale: true },
+    });
     expect(calls.filter(({ method }) => method === "git.unpushed")).toHaveLength(1);
     await answer();
     expect(container.textContent).toContain("off the wire");

@@ -7,7 +7,7 @@
 // stood in for; workspaceViewDom holds the cases that need the panes stood in
 // for.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 globalThis.indexedDB = new IDBFactory();
@@ -33,7 +33,7 @@ vi.mock("../src/core/taskFeed.js", () => ({
   joinFeed: () => {},
 }));
 
-import { App } from "../src/app.js";
+import { App, initRouter } from "../src/app.js";
 import { renderWorkspace } from "../src/views/workspaceView.js";
 import { adoptDeviceSession, resetDeviceContexts } from "../src/core/deviceContexts.js";
 import { standShell, stopShell } from "../src/core/shell.js";
@@ -95,10 +95,13 @@ const open = async (route) => {
   await flush();
 };
 
+beforeAll(() => initRouter());
+
 beforeEach(async () => {
   await wipeCache();
   document.body.innerHTML = '<div id="toolbar"><span id="tb-verb"></span></div><nav id="dir-rail"></nav><div id="root"></div><aside id="agent-rail"></aside><div id="console-region"></div>';
   App.viewDispose = null;
+  App.gated = false;
   App.viewingContext = createViewingContext({ enabled: false });
   App.devices = [{ id: "dev-1", name: "this machine", status: "online" }];
   asked.length = 0;
@@ -109,6 +112,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  App.gated = true;
   App.viewDispose?.();
   App.viewDispose = null;
   stopShell();
@@ -206,6 +210,29 @@ describe("a workspace with two directories, one not git", () => {
     expect(repoSurface.textContent).toContain("Seed the repository");
     expect(document.querySelector(".workspace-dirtab.current").textContent).toBe("Repository");
     expect(reads("repo")).toEqual([]);
+    expect(asked.filter(({ method }) => method.startsWith("git."))).toEqual([]);
+  });
+
+  it.each(["files", "tasks"])("returns from the %s rail to cached Changes without Git reads", async (tab) => {
+    await open({ name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes" });
+    const address = (kind) => ({ deviceId: "dev-1", entityId: 'workspace:["ws-1","repo"]', kind });
+    await vi.waitFor(async () => {
+      for (const kind of ["refs", "status", "log", "unpushed", "diff"]) {
+        expect((await readCached(address(kind)))?.value).toBeTruthy();
+      }
+      expect(document.querySelector(".gitpane")?.textContent).toContain("Seed the repository");
+    });
+    const firstPane = document.querySelector(".gitpane");
+    document.querySelector(`#dir-rail [data-tab="${tab}"]`).click();
+    await vi.waitFor(() => expect(App.route.tab).toBe(tab));
+    await vi.waitFor(() => expect(firstPane.isConnected).toBe(false));
+    asked.length = 0;
+
+    document.querySelector('#dir-rail [data-tab="changes"]').click();
+    await vi.waitFor(() => expect(document.querySelector(".gitpane")?.textContent).toContain("Seed the repository"));
+    await vi.waitFor(() => expect(document.querySelector(".workspace-reftrigger-name")?.textContent).toBe("main"));
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(App.route.tab).toBe("changes");
     expect(asked.filter(({ method }) => method.startsWith("git."))).toEqual([]);
   });
 

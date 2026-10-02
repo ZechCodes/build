@@ -595,9 +595,8 @@ describe("uncommitted viewing context", () => {
 });
 
 // A workspace source is on no board row, so no sync pass writes its records:
-// the ones the cache holds are the last mount's own work. They are painted —
-// the reader gets a full surface on the first frame — and then read anyway,
-// because nothing else is going to.
+// the ones the cache holds are the last mount's own work. Mounts reuse them;
+// a push or an explicit action asks for fresh records.
 describe("a pane over a checkout nothing walks", () => {
   const SOURCE = { workspace_id: "w-1", source_id: "s-1" };
   const ENTITY = `workspace:${JSON.stringify(["w-1", "s-1"])}`;
@@ -616,12 +615,22 @@ describe("a pane over a checkout nothing walks", () => {
     await cache.writeCached({ deviceId: "dev-1", entityId: ENTITY, kind: "log" }, log());
   };
 
-  it("paints what it holds and reads the checkout anyway", async () => {
+  it("paints held status and history without reading either again", async () => {
     await fill();
     const callRpc = sourceRpc();
     const { container, pane } = await mountPane(callRpc, { scope: SOURCE });
-    expect(callRpc.mock.calls.filter(([method]) => method === "git.status")).toHaveLength(1);
-    expect(container.textContent).toContain("landed since");
+    expect(callRpc.mock.calls.filter(([method]) => ["git.status", "git.log"].includes(method))).toHaveLength(0);
+    expect(container.textContent).toContain("earlier work");
+    pane.dispose();
+  });
+
+  it.each(["status", "log"])("reads only the missing %s record on mount", async (kind) => {
+    await fill();
+    await cache.deleteCached([{ deviceId: "dev-1", entityId: ENTITY, kind }]);
+    const callRpc = sourceRpc();
+    const { container, pane } = await mountPane(callRpc, { scope: SOURCE });
+    expect(callRpc.mock.calls.filter(([method]) => ["git.status", "git.log"].includes(method)).map(([method]) => method)).toEqual([`git.${kind}`]);
+    expect(container.querySelector(".crail-host")).not.toBeNull();
     pane.dispose();
   });
 
@@ -668,8 +677,8 @@ describe("a pane over a checkout nothing walks", () => {
 
   // The record is where the paged-in history lives, so that the next mount
   // opens on what the reader walked back to. A checkout this pane reads for
-  // itself reads its first page on every mount — and a first page put over the
-  // record wholesale would throw that history away every time.
+  // itself refreshes after a push — a first page put over the record wholesale
+  // would throw that history away every time.
   it("keeps the older history the reader paged in when it reads the checkout again", async () => {
     const older = { ...log().commits[0], hash: "b".repeat(40), short: "bbbbbbb", subject: "older still" };
     await cache.writeCached({ deviceId: "dev-1", entityId: ENTITY, kind: "status" }, status());
@@ -682,7 +691,11 @@ describe("a pane over a checkout nothing walks", () => {
       return sourceRpc()(method, params);
     });
     const { container, pane } = await mountPane(callRpc, { scope: SOURCE });
+    const { refetchEverything } = await import("../src/core/changeEvents.js");
+    refetchEverything();
     await settle();
+
+    expect(callRpc.mock.calls.filter(([method]) => method === "git.log")).toHaveLength(1);
 
     expect(container.textContent).toContain("older still");
     const record = await cache.readCached({ deviceId: "dev-1", entityId: ENTITY, kind: "log" });

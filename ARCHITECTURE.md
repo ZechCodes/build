@@ -676,8 +676,10 @@ adapters use distinct project-owned kinds and snapshot/directory/path subkeys;
 Git trees/blobs come from the saved head and plain folders use exact saved
 directory IDs with live filesystem reads. Body pages use the ordinary body
 cache, with the file-head writer accepting review kinds. Failed refreshes remain
-visible alongside held data. Selection, viewed marks and drafts use `build-ui`,
-scoped by task and snapshot, and survive replica eviction and reconnects.
+visible alongside held data. Selection, viewed marks and drafts use `build-ui`
+and survive replica eviction and reconnects. Drafts belong to a task/snapshot;
+viewed marks match task, directory, path and content key so unchanged files
+remain viewed across snapshots.
 
 ### Harnesses and the agents' slice
 

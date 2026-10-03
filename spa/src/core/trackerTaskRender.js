@@ -41,18 +41,22 @@ export const taskHeadHtml = (task, { watch = null } = {}) => `<header class="tas
 /** Markdown written on this task, read from where the page stands: the project
  *  a `#42` in it means, and every actor the task carries, departed ones too
  *  (#229). */
-const taskMarkdownHtml = (text, context) =>
+const taskMarkdownHtml = (text, context, taskItems = false, taskLabelScope) =>
   markdownHtml(text, {
     place: { deviceId: context.deviceId, projectId: context.projectId },
     identities: context.identities,
+    taskItems,
+    taskLabelScope,
   });
+
+const taskMarkdownScope = (context, kind, id) => JSON.stringify([context.deviceId, context.projectId, kind, id]);
 
 /** The body, as markdown. A task with an empty body says so rather than
  *  leaving a gap a reader has to interpret. */
 export const taskBodyHtml = (task, context = {}) =>
   task.body
     // markdownHtml escapes all input before adding its fixed safe tag set.
-    ? `<div class="task-page-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ taskMarkdownHtml(task.body, context)}</div>`
+    ? `<div class="task-page-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ taskMarkdownHtml(task.body, context, true, taskMarkdownScope(context, "body", task.id))}</div>`
     : `<p class="task-page-body empty">No description.</p>`;
 
 /**
@@ -103,7 +107,7 @@ const commentHtml = (row, context) => `<li class="task-entry task-comment${row.m
     <div class="task-comment-card">
       <div class="task-entry-head"><strong>${actorIdentityHtml(row.actor, context)}</strong>${whenHtml(row)}</div>
       ${reviewMetadataHtml(row, context)}
-      <div class="task-comment-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ taskMarkdownHtml(row.body, context)}</div>
+      <div class="task-comment-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ taskMarkdownHtml(row.body, context, false, taskMarkdownScope(context, "comment", row.key))}</div>
       ${attachmentListHtml(row.attachments, { className: "task-comment-attachments" })}
       ${row.anchor || row.opinion || row.replyTo ? `<button class="btn" type="button" data-review-reply="${esc(row.key)}">Reply</button>` : ""}
     </div>

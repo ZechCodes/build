@@ -8,7 +8,7 @@ protocol versions; see
 
 ## [0.2.8] - Unreleased
 
-Wire 3.9.0.
+Wire 3.10.0.
 
 ### Changed
 
@@ -26,6 +26,17 @@ Wire 3.9.0.
   retain the source, path and line. `fs.projectSources` (wire 3.9.0) lets
   `fs.tree`, `fs.read` and `fs.write` resolve a configured project source
   with the same containment checks as workspace files (#359).
+- Markdown checklists render as native checkboxes. Readers can tick or untick
+  task body items with a click or Space; each change saves the marker through
+  `tasks.update`, repaints from the cache and survives reopening. Comments and
+  other markdown surfaces display disabled checkboxes (#347).
+- Conditional task body writes: `tasks.update` accepts `expected_body_hash`
+  (SHA-256 of the exact saved UTF-8 body), announced by
+  `tasks.bodyPrecondition`. The hash requires `body`; sending it on a
+  status/priority/label-only update refuses with `invalid_params`.
+  A changed body refuses the whole update with
+  `stale_body`. Checklist ticks use this precondition and reload on refusal,
+  preserving body edits from other devices and agents (#347, wire 3.10.0).
 - Task reviews save the committed head and resolved base of every Git directory
   in a workspace, retain them with private refs, and keep non-Git and unavailable
   directories visible. `tasks.review.snapshot`, `tasks.review.get`,

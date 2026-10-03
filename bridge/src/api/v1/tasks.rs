@@ -183,6 +183,11 @@ pub struct TasksUpdateParams {
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
+    /// Since 3.10.0 (`tasks.bodyPrecondition`): refuse the entire update if
+    /// the saved body's SHA-256 differs. Lowercase hex of its exact UTF-8;
+    /// only meaningful alongside `body`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_body_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -544,6 +549,12 @@ const UNAVAILABLE: [&str; 1] = ["tasks need a durable store"];
 /// [`ApiError::classify`]: crate::api::ApiError::classify
 fn refine(error: ApiError) -> ApiError {
     let message = error.message().to_string();
+    if message.starts_with("stale_body:") {
+        return ApiError::StaleBody {
+            message,
+            details: None,
+        };
+    }
     if UNAVAILABLE.iter().any(|marker| message.contains(marker)) {
         return ApiError::unavailable(message);
     }

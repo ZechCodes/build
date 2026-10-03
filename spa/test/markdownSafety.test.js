@@ -23,11 +23,23 @@ import { holdReferenceSources } from "../src/core/referenceIndex.js";
 
 /// The tags the renderer may emit, and the attributes each may carry.
 const ALLOWED = {
-  P: [], BR: [], HR: ["class"], STRONG: [], CODE: ["class"], PRE: ["class"], UL: [], OL: ["start"], LI: [],
+  P: [], BR: [], HR: ["class"], STRONG: [], CODE: ["class"], PRE: ["class"], UL: [], OL: ["start"], LI: ["class"],
+  INPUT: ["type", "class", "disabled", "checked", "aria-label", "aria-labelledby", "data-task-index", "data-task-offset"],
   H1: ["id"], H2: ["id"], H3: ["id"], H4: ["id"], H5: ["id"], H6: ["id"],
   BLOCKQUOTE: ["class"], DIV: ["class"], TABLE: [], THEAD: [], TBODY: [], TR: [],
-  TH: ["style"], TD: ["style"], A: ["class", "href", "title", "target", "rel"], SPAN: ["class", "title"],
+  TH: ["style"], TD: ["style"], A: ["class", "href", "title", "target", "rel"], SPAN: ["class", "title", "id"],
 };
+
+const TASK_LABEL_ID = /^md-task-label:(?:[0-9a-f]+(?:-[0-9a-f]+)*)?:\d+$/;
+
+function checklistNameAllowed(input, host) {
+  const reference = input.getAttribute("aria-labelledby");
+  if (reference === null) return Boolean(input.getAttribute("aria-label")?.trim());
+  if (!TASK_LABEL_ID.test(reference) || input.hasAttribute("aria-label")) return false;
+  const labels = [...host.querySelectorAll("[id]")].filter((element) => element.id === reference);
+  return labels.length === 1 && labels[0].classList.contains("md-task-label")
+    && Boolean(labels[0].textContent.trim()) && !labels[0].querySelector("input");
+}
 
 /** A route anywhere, or a web link that opens outside with no opener. */
 const WEB_HREF = /^(?:https?:\/\/[^/\\]|mailto:)/i;
@@ -45,6 +57,12 @@ function violations(html) {
   for (const element of host.querySelectorAll("*")) {
     const allowed = ALLOWED[element.tagName];
     if (!allowed) found.push(`<${element.tagName.toLowerCase()}>`);
+    if (element.tagName === "LI" && element.hasAttribute("class") && element.className !== "task-item") found.push("invalid checklist item");
+    if (element.tagName === "SPAN" && element.hasAttribute("id") && (!TASK_LABEL_ID.test(element.id)
+      || !["md-task-label", "md-task-label sr-only"].includes(element.className))) found.push("invalid checklist label");
+    if (element.tagName === "INPUT" && (element.type !== "checkbox" || element.className !== "md-task-checkbox"
+      || !/^\d+$/.test(element.dataset.taskIndex || "") || !/^\d+$/.test(element.dataset.taskOffset || "")
+      || !checklistNameAllowed(element, host))) found.push("invalid checklist input");
     for (const { name, value } of element.attributes) {
       if (!allowed?.includes(name)) found.push(`${element.tagName.toLowerCase()}[${name}]`);
       if (name === "href" && !hrefAllowed(element, value)) found.push(`href=${value}`);
@@ -91,6 +109,8 @@ const CONTEXTS = [
   (payload) => `${payload}\n\n---\n\n${payload}\n***`,
   (payload) => `* ---\n> ${payload}\n> - - -`,
   (payload) => `- ${payload}`,
+  (payload) => `- [ ] ${payload}`,
+  (payload) => `> 2. [X] ${payload}`,
   (payload) => `1. ${payload}\n   > ${payload}`,
   (payload) => `> ${payload}\n>\n> - ${payload}`,
   (payload) => `| h |\n|---|\n| ${payload.replace(/\|/g, "\\|")} |`,
@@ -108,6 +128,8 @@ describe("hostile input through the one renderer", () => {
         const source = context(payload);
         expect([source, violations(markdownHtml(source))]).toEqual([source, []]);
         expect([source, violations(markdownHtml(source, { mode: "inline" }))]).toEqual([source, []]);
+        expect([source, violations(markdownHtml(source, { taskItems: true }))]).toEqual([source, []]);
+        expect([source, violations(markdownHtml(source, { taskItems: true, taskLabelScope: '\"><svg onload=alert(1)>' }))]).toEqual([source, []]);
       }
     }
   });
@@ -116,6 +138,27 @@ describe("hostile input through the one renderer", () => {
     const host = document.createElement("div");
     host.innerHTML = markdownHtml("> <script>alert(1)</script>");
     expect(host.textContent).toBe("<script>alert(1)</script>");
+  });
+
+  it("rejects inputs outside the fixed checklist vocabulary", () => {
+    expect(violations('<input type="text" class="md-task-checkbox" aria-label="x" data-task-index="0" data-task-offset="3">'))
+      .toEqual(["invalid checklist input"]);
+    expect(violations('<input type="checkbox" class="md-task-checkbox" aria-label="x" data-task-index="0&quot; onclick=x" data-task-offset="3">'))
+      .toEqual(["invalid checklist input"]);
+    expect(violations('<input type="checkbox" class="md-task-checkbox" aria-label="x" data-task-index="0" data-task-offset="3" onchange="evil()">'))
+      .toEqual(["input[onchange]"]);
+  });
+
+  it("requires a scoped name to reference one renderer-owned label", () => {
+    const input = '<input type="checkbox" class="md-task-checkbox" data-task-index="0" data-task-offset="3" aria-labelledby="md-task-label:61:0">';
+    const label = '<span class="md-task-label" id="md-task-label:61:0">Ship</span>';
+    expect(violations(input + label)).toEqual([]);
+    expect(violations(input)).toEqual(["invalid checklist input"]);
+    expect(violations(input + label + label)).toEqual(["invalid checklist input"]);
+    expect(violations(input + '<span id="md-task-label:61:0">Ship</span>'))
+      .toEqual(["invalid checklist input", "invalid checklist label"]);
+    expect(violations(input.replace('aria-labelledby=', 'aria-label="raw" aria-labelledby=') + label))
+      .toEqual(["invalid checklist input"]);
   });
 
   it("writes no link for a javascript:, data:, vbscript:, file: or protocol-relative URL", () => {

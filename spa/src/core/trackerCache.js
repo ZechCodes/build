@@ -127,8 +127,10 @@ export const writeTasksRecord = (deviceId, projectId, record) =>
  * accepted. Keep the accepted mark in the cached task while replacing its
  * other fields and timeline with the newest pull. The transaction makes two
  * tabs' writes obey the same floor. */
-export const writeTaskRecord = (deviceId, projectId, taskId, record) =>
+export const writeTaskRecord = (deviceId, projectId, taskId, record, { accept = () => true } = {}) =>
   mergeCachedAtomically(taskAddress(deviceId, projectId, taskId), (held) => {
+    // A writer can be superseded while waiting for the cache transaction.
+    if (!accept(held)) return null;
     const floor = latestTaskMark(held?.task?.read_through, record?.task?.read_through);
     if (!record?.task || !floor || floor === record.task.read_through) return record;
     return { ...record, task: { ...record.task, read_through: floor } };

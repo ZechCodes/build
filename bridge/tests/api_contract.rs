@@ -148,7 +148,7 @@ fn every_fixture_verb_has_an_advertised_capability() {
 #[test]
 fn media_page_features_are_announced_together() {
     let advertised: BTreeSet<&str> = capabilities(false).into_iter().collect();
-    assert_eq!(API_VERSION, "3.9.0");
+    assert_eq!(API_VERSION, "3.10.0");
     assert!(advertised.contains("thread.attachmentChunks"));
     assert!(advertised.contains("fs.mediaRawPages"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
@@ -188,6 +188,34 @@ fn review_snapshots_and_selected_git_actions_have_separate_capabilities() {
         blob["result"]["range"]["version"].as_str().unwrap().len(),
         40
     );
+}
+
+#[test]
+fn conditional_task_body_writes_have_a_named_capability_and_distinct_refusal() {
+    assert!(capabilities(false).contains(&"tasks.bodyPrecondition"));
+    let update = read_json(&fixtures_root().join("v1/tasks.update.json"));
+    assert_eq!(update["body_precondition"]["since"], "3.10.0");
+    assert_eq!(
+        update["body_precondition"]["capability"],
+        "tasks.bodyPrecondition"
+    );
+    assert_eq!(
+        update["body_precondition"]["params"],
+        serde_json::json!(["expected_body_hash"])
+    );
+    assert!(update["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|code| code == "stale_body"));
+    let handler = v1::methods()
+        .iter()
+        .find(|(method, _)| *method == "tasks.update")
+        .unwrap();
+    assert!(handler.1.parse_params(&update["params"]).is_ok());
+    let mut wrong = update["params"].clone();
+    wrong["expected_body_hash"] = serde_json::json!(7);
+    assert!(handler.1.parse_params(&wrong).is_err());
 }
 
 #[test]

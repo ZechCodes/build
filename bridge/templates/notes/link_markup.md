@@ -22,3 +22,8 @@ backticks they stay literal, which is how this note shows them to you.
 
 A bare number, a bare SHA and a plain `@name` are NOT references and never link:
 the prefix is what makes one, so ordinary writing stays ordinary.
+
+For a checklist, write one `- [ ] item` per line and `- [x] item` for a completed
+step. Task body checkboxes can be ticked by the reader and save back into the
+body. Comments and messages show the same checklist with read-only boxes.
+Put syntax examples inside backticks or a fenced code block to keep them literal.

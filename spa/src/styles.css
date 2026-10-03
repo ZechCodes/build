@@ -4,6 +4,7 @@
    the cascade order (shell/surfaces after the base) whichever path loads first. */
 @import "./styles/shell.css";
 @import "./styles/surfaces.css";
+@import "./styles/markdownTasks.css";
 
 /* ---- the connection icon ----------------------------------------------------
    How many machines are connected, and what is being done about one that is

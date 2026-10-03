@@ -307,6 +307,7 @@ impl AppState {
     pub(crate) fn tasks_update(&mut self, params: &Value) -> Result<Value, String> {
         let task_id = require_str(params, "task_id")?;
         let (project_id, task) = self.tracker_task(&task_id)?;
+        edits::check_body_precondition(&task.body, params)?;
         let now = crate::store::now_rfc3339();
         let mut write = TaskWrite::by(Actor::User, task);
         edits::apply_update(&mut write, params, &Actor::User, &now)?;

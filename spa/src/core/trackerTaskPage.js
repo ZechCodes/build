@@ -58,6 +58,8 @@ import { createUnreadMarker } from "./unreadAnchor.js";
 import { taskUnreadReading, taskUnreadRules, latestTaskMark } from "./trackerUnread.js";
 import { mountNewMessagesPill } from "./newMessagesPill.js";
 import { scrollWithin } from "./scrollWithin.js";
+import { createTaskChecklist } from "./taskChecklist.js";
+import { readTaskChecklistSupport, taskChecklistSupportAddress } from "./taskChecklistSupport.js";
 
 /** Whether one flush of `tasks` items says anything about this task. */
 const namesTask = (items, taskId) =>
@@ -90,11 +92,29 @@ export function mountTaskPage(host, options) {
     loaded: false,
     disposed: false,
     picker: null,
+    checklistSupported: false,
     // The tray's entries are the VIEW's draft, not the DOM's: a bridge that
     // gains attachments stands up a new box, and an upload started before
     // that has to settle into the tray after it.
     files: [],
   };
+  let checklistFocus = null;
+  const checklist = createTaskChecklist({
+    deviceId: state.deviceId, projectId: state.projectId, taskId: state.taskId,
+    call: (method, params) => state.callRpc(method, params),
+    refresh: () => refresh(),
+    onPending: (pending) => {
+      if (state.disposed) return;
+      if (pending) checklistFocus = checklistFieldSnapshot();
+      syncChecklist();
+      if (!pending) restoreChecklistFocus();
+    },
+    onFailure: (error) => {
+      if (state.disposed) return;
+      if (error?.code === "stale_body") notifyError("This task changed elsewhere; reloaded it.");
+      else notifyError("Could not save this checklist", messageOf(error));
+    },
+  });
   const commentDraft = watchUiState(uiAddress({
     deviceId: state.deviceId,
     entityId: state.taskId,
@@ -230,12 +250,17 @@ export function mountTaskPage(host, options) {
    *  stood up. The comment box is never redrawn under the reader. */
   const fieldSnapshot = () => {
     const active = document.activeElement;
+    if (active?.matches('.task-page-body input[data-task-index]') && host.contains(active)) {
+      return { element: active, checklistIndex: active.dataset.taskIndex };
+    }
     if (!active?.id || !host.contains(active)) return null;
     return { element: active, id: active.id, start: active.selectionStart, end: active.selectionEnd, scrollTop: active.scrollTop };
   };
   const restoreField = (snapshot) => {
     if (!snapshot || snapshot.element.isConnected) return;
-    const field = host.querySelector(`#${snapshot.id}`);
+    const field = snapshot.checklistIndex != null
+      ? host.querySelector(`.task-page-body input[data-task-index="${snapshot.checklistIndex}"]`)
+      : host.querySelector(`#${snapshot.id}`);
     if (!field) return;
     field.focus({ preventScroll: true });
     if (typeof snapshot.start === "number" && field.setSelectionRange) field.setSelectionRange(snapshot.start, snapshot.end);
@@ -379,12 +404,14 @@ export function mountTaskPage(host, options) {
   }
 
   async function paintFromCache() {
-    const [cached, list, at] = await Promise.all([
+    const [cached, list, at, checklistSupported] = await Promise.all([
       readTaskRecord(state.deviceId, state.projectId, state.taskId),
       readTasksRecord(state.deviceId, state.projectId),
       taskRecordAt(state.deviceId, state.projectId, state.taskId),
+      readTaskChecklistSupport(state.deviceId),
     ]);
     if (state.disposed) return;
+    state.checklistSupported = checklistSupported;
     state.columns = columnsOf(list?.columns);
     if (!cached?.task || state.task) return;
     take(cached, { live: false });
@@ -408,6 +435,13 @@ export function mountTaskPage(host, options) {
     take(cached, { keepDrafts: Boolean(state.task), live: true });
     reads.succeeded();
     paint();
+  });
+
+  const checklistSupportWatcher = subscribeCache(taskChecklistSupportAddress(state.deviceId), async () => {
+    const supported = await readTaskChecklistSupport(state.deviceId);
+    if (state.disposed) return;
+    state.checklistSupported = supported;
+    syncChecklist();
   });
 
   // Review metadata has its own cache record. Repaint only the timeline rows
@@ -438,10 +472,14 @@ export function mountTaskPage(host, options) {
   async function readTask() {
     if (state.disposed) return;
     try {
+      const checklistBasis = await checklist.readBasis();
+      if (state.disposed) return;
       const answer = await state.callRpc("tasks.get", { task_id: state.taskId });
       if (state.disposed) return;
       // The pull is a writer. The subscription above owns the read and paint.
-      await writeTaskRecord(state.deviceId, state.projectId, state.taskId, taskRecord(answer.task, answer.timeline));
+      await writeTaskRecord(state.deviceId, state.projectId, state.taskId, taskRecord(answer.task, answer.timeline), {
+        accept: (held) => !state.disposed && checklist.acceptsRead(checklistBasis, held),
+      });
     } catch (error) {
       if (state.disposed) return;
       // The wire going away is not news about this task. With the task on
@@ -628,7 +666,44 @@ export function mountTaskPage(host, options) {
     if (painted.has("composer")) wireComposer();
     if (painted.has("review")) wireReview();
     if (painted.has("timeline")) wireReviewComments();
+    if (painted.has("body")) wireChecklist();
     if (["body", "attachments", "timeline"].some((part) => painted.has(part))) wireAttachments();
+  }
+
+  function wireChecklist() {
+    host.querySelectorAll('.task-page-body input[data-task-index]').forEach((input) => {
+      input.onchange = async () => {
+        const source = state.task.body;
+        const checked = input.checked;
+        const saved = await checklist.press(Number(input.dataset.taskIndex), checked, source);
+        // A refusal before the optimistic cache write leaves this node in
+        // place. Restore its native tick too, without touching a newer body.
+        if (!saved && input.isConnected && state.task?.body === source) input.checked = !checked;
+      };
+    });
+    syncChecklist();
+  }
+
+  function syncChecklist() {
+    host.querySelectorAll('.task-page-body input[data-task-index]').forEach((input) => {
+      input.disabled = !state.checklistSupported || checklist.busy();
+    });
+  }
+
+  function checklistFieldSnapshot() {
+    const active = document.activeElement;
+    if (!active?.matches('.task-page-body input[data-task-index]') || !host.contains(active)) return null;
+    return { element: active, index: active.dataset.taskIndex };
+  }
+
+  function restoreChecklistFocus() {
+    const saved = checklistFocus;
+    checklistFocus = null;
+    if (!saved) return;
+    const active = document.activeElement;
+    // Keep a reader who moved into the comment box or another control there.
+    if (active !== document.body && active !== saved.element) return;
+    host.querySelector(`.task-page-body input[data-task-index="${saved.index}"]`)?.focus({ preventScroll: true });
   }
 
   function wireReview() {
@@ -689,6 +764,7 @@ export function mountTaskPage(host, options) {
     feedMoved() { paint(); reviewPage?.feedMoved(); },
     dispose() {
       state.disposed = true;
+      checklist.dispose();
       reviewPage?.dispose();
       commentDraft.dispose();
       host.removeEventListener("scroll", onScroll);
@@ -696,6 +772,7 @@ export function mountTaskPage(host, options) {
       watcher.dispose();
       stopGreeting();
       taskWatcher?.();
+      checklistSupportWatcher();
       reviewWatcher();
       referencesWatcher();
       reads.dispose();

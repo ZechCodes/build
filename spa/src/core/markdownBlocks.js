@@ -139,9 +139,14 @@ const QUOTE_MARK = /^ {0,3}> ?/;
  *  paragraphs, lists, tables and other quotes. */
 function readQuote(lines, at, context) {
   const inner = [];
+  const offsets = [];
   let next = at;
-  for (; next < lines.length && QUOTE.test(lines[next]); next += 1) inner.push(lines[next].replace(QUOTE_MARK, ""));
-  return { html: `<blockquote class="${QUOTE_CLASS}">${blocksOf(inner, deeper(context))}</blockquote>`, next };
+  for (; next < lines.length && QUOTE.test(lines[next]); next += 1) {
+    const removed = QUOTE_MARK.exec(lines[next])[0].length;
+    inner.push(lines[next].slice(removed));
+    offsets.push(context.offsets[next] + removed);
+  }
+  return { html: `<blockquote class="${QUOTE_CLASS}">${blocksOf(inner, { ...deeper(context), offsets })}</blockquote>`, next };
 }
 
 /// The class a quote wears, stamped by the renderer for the reason
@@ -200,10 +205,67 @@ function itemEnd(lines, from, first) {
  *  (`* ---`); more is a document, whose first paragraph sits on the item's
  *  line the way a tight list reads. */
 function itemHtml(item, body, context) {
-  if (!body.length && !THEMATIC_BREAK.test(item.content)) return `<li>${context.inline(item.content)}</li>`;
-  const lines = [item.content, ...body.map((line) => line.slice(Math.min(indentOf(line), item.contentAt)))];
-  return `<li>${blocksOf(lines, deeper(context)).replace(/^<p>([\s\S]*?)<\/p>/, "$1")}</li>`;
+  const task = taskItem(item.content, context.offsets[0] + item.contentAt, context);
+  const content = task ? item.content.slice(task.length) : item.content;
+  const opening = task ? `<li class="task-item">${task.html}` : "<li>";
+  if (!body.length && !THEMATIC_BREAK.test(content)) return `${opening}${taskContentsHtml(context.inline(content), task)}</li>`;
+  const margins = body.map((line) => Math.min(indentOf(line), item.contentAt));
+  const lines = [content, ...body.map((line, index) => line.slice(margins[index]))];
+  const offsets = [context.offsets[0] + item.contentAt + (task?.length || 0), ...margins.map((margin, index) => context.offsets[index + 1] + margin)];
+  return `${opening}${taskContentsHtml(blocksOf(lines, { ...deeper(context), offsets }), task, true)}</li>`;
 }
+
+/** A scoped checkbox names its first rendered paragraph, keeping child tasks
+ * and later details outside its accessible name. Block labels remain valid
+ * HTML; an empty label gets hidden text instead of naming its child list. */
+function taskContentsHtml(html, task, block = false) {
+  const paragraph = /^<p>([\s\S]*?)<\/p>/.exec(html);
+  const flat = paragraph ? paragraph[1] + html.slice(paragraph[0].length) : html;
+  if (!task?.labelId) return flat;
+  if (paragraph) return taskLabelSpan(task, paragraph[1]) + html.slice(paragraph[0].length);
+  if (!block) return taskLabelSpan(task, task.empty ? task.label : html, task.empty);
+  return blockTaskLabelHtml(html, task);
+}
+
+const taskLabelSpan = (task, html, hidden = false) =>
+  `<span class="md-task-label${hidden ? " sr-only" : ""}" id="${task.labelId}">${html}</span>`;
+
+/** Keep a heading's actual rendered words as the label. Other blocks use the
+ * item's own rendered inline name rather than enclosing subsequent children. */
+function blockTaskLabelHtml(html, task) {
+  const heading = /^(<h[1-6](?: [^>]*)?>)([\s\S]*?)(<\/h[1-6]>)/.exec(html);
+  if (heading) return heading[1] + taskLabelSpan(task, heading[2]) + heading[3] + html.slice(heading[0].length);
+  return taskLabelSpan(task, task.label, true) + html;
+}
+
+/** A checklist mark belongs only at the beginning of a list item's content.
+ * Every attribute is fixed, numeric, or escaped. The input stays native for
+ * keyboard and accessibility support. A caller's stable document scope keeps
+ * label ids separate across bodies and comments while leaving paints stable. */
+function taskItem(content, start, context) {
+  const match = /^\[([ xX])\](?:[ \t]+|$)/.exec(content);
+  if (!match) return null;
+  const index = context.taskMarkers.length;
+  const offset = start + 1;
+  context.taskMarkers.push(offset);
+  const raw = content.slice(match[0].length).trim();
+  const fallback = `Checklist item ${index + 1}`;
+  const labelId = context.taskLabelPrefix ? `${context.taskLabelPrefix}:${index}` : null;
+  // Inline output is already escaped; removing its fixed tags retains the
+  // escaped attribute text, including a reference's visible resolved label.
+  const renderedText = context.inline(raw).replace(/<[^>]*>/g, "").trim();
+  const label = renderedText || fallback;
+  const name = labelId ? `aria-labelledby="${labelId}"` : `aria-label="${label}"`;
+  const checked = match[1] === " " ? "" : " checked";
+  const disabled = context.taskItems ? "" : " disabled";
+  return { length: match[0].length, labelId, empty: !renderedText, label,
+    html: `<input class="md-task-checkbox" type="checkbox" data-task-index="${index}" data-task-offset="${offset}" ${name}${checked}${disabled}>` };
+}
+
+/** Code-point encoding is deterministic and injective. Unlike sanitizing or
+ * hashing caller scopes, distinct names cannot produce the same safe id. */
+const taskLabelPrefix = (scope) => scope == null ? null
+  : `md-task-label:${Array.from(String(scope), (character) => character.codePointAt(0).toString(16)).join("-")}`;
 
 /** A list: its items in a row, a blank line between two of them keeping them
  *  one list. It ends at a line that is neither an item of it nor indented
@@ -217,7 +279,7 @@ function readList(lines, at, context) {
   while (next < lines.length && sameList(lines[next], first)) {
     const item = itemAt(lines[next]);
     const end = itemEnd(lines, next + 1, first);
-    items += itemHtml(item, lines.slice(next + 1, end), context);
+    items += itemHtml(item, lines.slice(next + 1, end), { ...context, offsets: context.offsets.slice(next, end) });
     const filled = nextFilled(lines, end);
     next = sameList(lines[filled], first) ? filled : end;
   }
@@ -341,6 +403,15 @@ function blocksOf(lines, context) {
  * Markdown as blocks. `inline` renders one line of the inline vocabulary and
  * escapes everything it is given.
  */
-export function blocksHtml(markdown, inline) {
-  return blocksOf(String(markdown || "").split(/\r?\n/), { inline, idAttr: headingIds(), depth: 0 });
+export function blocksHtml(markdown, inline, { taskItems = false, taskMarkers, taskLabelScope } = {}) {
+  const source = String(markdown || "");
+  const lines = source.split(/\r?\n/);
+  let offset = 0;
+  const offsets = lines.map((line) => {
+    const start = offset;
+    offset += line.length;
+    offset += source[offset] === "\r" ? 2 : 1;
+    return start;
+  });
+  return blocksOf(lines, { inline, idAttr: headingIds(), depth: 0, offsets, taskItems, taskMarkers: taskMarkers || [], taskLabelPrefix: taskLabelPrefix(taskLabelScope) });
 }

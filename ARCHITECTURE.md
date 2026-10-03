@@ -221,7 +221,7 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.9.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.10.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
@@ -302,6 +302,13 @@ runtime that starts them.
   source of that project. The pair is exclusive with workspace, run and
   worktree selectors. Existing project-only and workspace scopes keep their
   behavior; all source reads and writes use the same path containment checks.
+  3.10.0 adds `tasks.bodyPrecondition` (#347): `tasks.update` accepts optional
+  `expected_body_hash` alongside `body`, the lowercase hexadecimal SHA-256 of
+  the exact UTF-8 bytes of the saved body. The bridge compares it under the
+  app lock before applying any field changes. A mismatch refuses the whole
+  update with nonretryable `stale_body`; the client rolls back its optimistic
+  tick and refreshes the task. Existing callers may still omit the hash. The
+  SPA sends it only to a machine whose cached greeting names the capability.
   The SPA's adapter claims `>=2.0.0 <4.0.0`: it calls nothing a 2.x bridge
   lacks (what 2.x added after 2.0.0 is capability-gated), so the app can
   roll before the bridge.
@@ -1107,6 +1114,22 @@ In practice:
   `diff`, the files root listing, and `terminals`.
 - **Optimistic writes** also go into the cache first, and the push that follows
   confirms them.
+  Task body checklist changes (#347, `spa/src/core/taskChecklist.js`) rewrite
+  only the checked character of a marker identified by the markdown renderer,
+  then save through `tasks.update` with the original body's SHA-256 digest as
+  `expected_body_hash`. The bridge checks the exact saved bytes under its app
+  lock and refuses a changed body with `stale_body`, preserving edits from
+  other devices and agents. The greeting's `tasks.bodyPrecondition` is cached
+  in `taskChecklistSupport.js`; body boxes enable only when that cached fact
+  says the bridge supports safe ticks. The device caller gates dispatch on the
+  current greeting too. Saves run one
+  at a time; a per-task Web Lock orders saves and the brief pre-read cache
+  snapshot across tabs, with a shared queue for mounts in the same tab when
+  Locks are unavailable. A refusal conditionally restores that body while retaining newer
+  fields and timeline entries. Reads begun before or during a save cannot undo
+  its optimistic copy, with authority and the pre-read body checked inside the cache transaction;
+  a read after the save or refusal confirms the current server body. A refusal
+  never retries the stale body. Checkboxes elsewhere are disabled.
 - **A reconnect keeps the route** (#170). The gate (`spa/src/views/gate.js`)
   hands the app back through `renderUnlessStanding()` in `spa/src/app.js`,
   which leaves the page in `#root` as it is (nodes, scroll, focus) when it was

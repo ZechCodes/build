@@ -39,7 +39,7 @@ const inlineHtml = (text, links) =>
  *  `plain` is text, not HTML: one line with the marks taken off and each
  *  reference read as its words (core/previewText.js), cut at `limit`. */
 const MODES = {
-  block: (text, links) => blocksHtml(text, (line) => inlineHtml(line, links)),
+  block: (text, links, limit, options) => blocksHtml(text, (line) => inlineHtml(line, links), options),
   inline: (text, links) => inlineHtml(text.trim().replace(/\s*\n\s*/g, " "), links),
   plain: (text, links, limit) => plainPreview(plainReferences(text, links), limit),
 };
@@ -52,11 +52,17 @@ const MODES = {
  * references that name something account-wide — a workspace, an agent, a
  * project — still resolve. `identities` is what the surface knows about agents
  * beyond the feed (a task carries every actor on it). `mode` is one of
- * `MODES`; `limit` caps a plain preview.
+ * `MODES`; `limit` caps a plain preview. List checklist inputs are disabled
+ * unless `taskItems` is true. `taskMarkers` collects their original source
+ * offsets for the source-edit helper; it follows the same block traversal.
+ * `taskLabelScope` is a stable, unique name for this rendered document. Task
+ * bodies and comments supply one to label checkboxes from their rendered text
+ * without changing ids during a cached repaint. Other callers keep stable,
+ * id-free markup with accessible names derived from the rendered inline text.
  *
  * Answers HTML for `block` and `inline`, and plain text for `plain`.
  */
-export function markdownHtml(text, { place = null, identities = null, mode = "block", limit = undefined } = {}) {
+export function markdownHtml(text, { place = null, identities = null, mode = "block", limit, taskItems = false, taskMarkers, taskLabelScope } = {}) {
   const links = referenceResolver({ place, identities: identities || {} });
-  return (MODES[mode] || MODES.block)(String(text || ""), links, limit);
+  return (MODES[mode] || MODES.block)(String(text || ""), links, limit, { taskItems, taskMarkers, taskLabelScope });
 }

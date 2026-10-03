@@ -16,6 +16,15 @@ recorded in `signatures/cla.json` on the `cla-signatures` branch.
 
 The project is published under the [license](LICENSE) (AGPL-3.0-only).
 
+## Before you write code
+
+Before implementing a change or submitting a pull request, open a
+[GitHub issue](https://github.com/ZechCodes/Build/issues) describing the problem
+or your proposal, and discuss it with the maintainers. Reference the issue in
+your pull request so reviewers can follow the discussion.
+
+Small typo fixes and obvious one-line bugs can go straight to a pull request.
+
 ## Getting started
 
 This takes you from a fresh clone to the whole system running on your

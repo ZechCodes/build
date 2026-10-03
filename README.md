@@ -6,6 +6,11 @@ You set a goal from any device. An agent on *your* hardware builds it on its
 own branch; you review the diff, comment and send it back, and when it is right
 you merge.
 
+> **Early alpha.** Build currently prioritizes validating features over code
+> quality. Much of the codebase is AI generated and has received minimal review.
+> Reviews and improvements are welcome; please read
+> [Before you write code](CONTRIBUTING.md#before-you-write-code) before contributing.
+
 ![The Build task board: tasks in Backlog, Ready, In progress, In review and Done, with the agents working on them](docs/images/task-board.png)
 
 > **Status: invite-only alpha.** Join the waitlist at
@@ -16,8 +21,6 @@ you merge.
 > OpenCode, self-updates for a bridge you built yourself, and any machine that
 > cannot be reached directly or through TURN (it is shown as blocked; there is
 > no relayed fallback).
-
-Contributing? Start at [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Install
 

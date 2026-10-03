@@ -1,5 +1,7 @@
 // Shared account and route state, independent of the app shell and transport.
 // Core device/cache modules read this without importing views or connection.js.
+// Tests that mock app.js must also mock appState.js with the same App object;
+// see spa/test/cacheSync.test.js for an example.
 
 import { createViewingContext } from "./core/viewingContext.js";
 

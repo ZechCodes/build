@@ -689,22 +689,29 @@ fn an_old_background_ask_cannot_replace_a_newer_fresh_answer() {
 
 struct ListedCli {
     response: Mutex<CliReading>,
+    asked: AtomicUsize,
 }
 
 impl ListedCli {
     fn leaked() -> &'static Self {
         Box::leak(Box::new(Self {
             response: Mutex::new(codex_listing("gpt-6.1-sol")),
+            asked: AtomicUsize::new(0),
         }))
     }
 
     fn set(&self, response: CliReading) {
         *self.response.lock().unwrap() = response;
     }
+
+    fn asked(&self) -> usize {
+        self.asked.load(Ordering::SeqCst)
+    }
 }
 
 impl CliProbe for ListedCli {
     fn read(&self, _binary: &str) -> CliReading {
+        self.asked.fetch_add(1, Ordering::SeqCst);
         self.response.lock().unwrap().clone()
     }
 }
@@ -760,6 +767,39 @@ fn failed_model_refreshes_keep_the_last_good_list_without_announcements() {
         2,
         "a changed usable catalog is news"
     );
+}
+
+#[test]
+fn repeated_session_version_hints_respect_failed_probe_backoff() {
+    for failure in [
+        CliReading::default(),
+        CliReading {
+            version: Some(version("0.161.0")),
+            listed: None,
+        },
+    ] {
+        let cli = ListedCli::leaked();
+        let clock = HandClock::leaked();
+        let readings = inline_standing_in(clock, cli);
+        let good = readings.reading("codex", &CODEX_MODEL_LIST).unwrap();
+        cli.set(failure);
+        readings.observe_version("codex", &CODEX_MODEL_LIST, &version("0.161.0"));
+        assert_eq!(cli.asked(), 2, "a new version hint asks at once");
+        for (index, delay) in [15, 30].into_iter().enumerate() {
+            clock.advance(Duration::from_secs(delay - 1));
+            readings.observe_version("codex", &CODEX_MODEL_LIST, &version("0.161.0"));
+            assert_eq!(cli.asked(), index + 2, "a repeated hint bypassed backoff");
+            clock.advance(Duration::from_secs(1));
+            readings.observe_version("codex", &CODEX_MODEL_LIST, &version("0.161.0"));
+            assert_eq!(cli.asked(), index + 3, "a repeated hint may retry when due");
+        }
+        readings.observe_version("codex", &CODEX_MODEL_LIST, &version("0.162.0"));
+        assert_eq!(cli.asked(), 5, "another new hint still asks at once");
+        readings.observe_version("codex", &CODEX_MODEL_LIST, &version("0.162.0"));
+        assert_eq!(cli.asked(), 5);
+        assert!(Arc::ptr_eq(&good, &readings.held("codex").unwrap()));
+        assert_eq!(*readings.changes().borrow(), 1);
+    }
 }
 
 #[test]

@@ -171,25 +171,38 @@ class BuildAuthController(AuthController):
         response = await AuthController.complete_primary_method_registration.fn(
             self, request, db_session, provider
         )
-        if response.status_code == HTTP_201_CREATED and await _redeem(
-            request, db_session, invite, signup.email, options["product_email_opt_in"]
-        ):
-            return Response({"ok": True, "redirect": APP_PATH}, status_code=HTTP_201_CREATED)
-        return response
+        if response.status_code != HTTP_201_CREATED or signup is None or options is None:
+            return response
+        claim = await _redeem(
+            request, db_session, invite, signup.email,
+            options.get("product_email_opt_in") is True,
+        )
+        if claim is None:
+            # Skrift is waiting for a second factor; it has not established a user
+            # session, so the invite and consent must wait as well.
+            return response
+        # Skrift committed the account before the claim. If another request spent the
+        # link meanwhile, keep Skrift's invite-link redirect so the browser sees that
+        # link's already-used page. The passkey script follows JSON redirects on 2xx.
+        redirect = APP_PATH if claim.ok else response.content["redirect"]
+        return Response(
+            {"ok": claim.ok, "redirect": redirect}, status_code=HTTP_201_CREATED
+        )
 
 
 async def _redeem(
     request: Request, db_session: AsyncSession, invite: Invite | None, email: str, opt_in: bool
-) -> bool:
+) -> invites.Redemption | None:
     """Spend the invite on the account Skrift just created and signed in. With a second
     factor still to pass there is no signed-in user yet; the invite link, where Skrift
     sends the person next, redeems it once they are through."""
     user_id = session_user_id(request)
     if user_id is None or invite is None:
-        return False
+        return None
     now = utc_now()
-    if not (await invites.claim_invite(db_session, invite, user_id, email, now)).ok:
-        return False
+    claim = await invites.claim_invite(db_session, invite, user_id, email, now)
+    if not claim.ok:
+        return claim
     record_signup_consent(db_session, user_id, opt_in, now)
     await db_session.commit()
-    return True
+    return claim

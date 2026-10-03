@@ -21,7 +21,7 @@ from sqlalchemy import func, select
 from buildapp import invites
 from buildapp.clock import utc_now
 from buildapp.db_test_support import add_account
-from buildapp.invite_pages import APP_PATH, INVITE_ONLY_HEADING, MISMATCH_HEADING, WAITLIST_PATH
+from buildapp.invite_pages import APP_PATH, INVITE_ONLY_HEADING, MISMATCH_HEADING, REDEEMED_HEADING, WAITLIST_PATH
 from buildapp.invites import InviteState, invite_path
 from buildapp.models import Invite
 from buildapp.skrift_app_test_support import DATABASE_FILE, SECURE_ORIGIN, on_database
@@ -549,6 +549,67 @@ def test_an_invite_revoked_mid_registration_leaves_an_account_outside_the_app(cl
     app = client.get(APP_PATH, follow_redirects=False)
     assert app.status_code == 403
     assert INVITE_ONLY_HEADING in app.text
+
+
+@pytest.mark.parametrize("open_link", [False, True], ids=["address-bound", "open-link"])
+def test_a_lost_claim_after_account_creation_opens_the_already_used_invite_page(
+    client, fake_authenticator, monkeypatch, open_link
+):
+    """The other request spends the link while Skrift finishes registration. Skrift has
+    already committed this account, but its JSON redirect must take the browser to the
+    invite outcome rather than report the loser as a member."""
+    import skrift.controllers.auth as skrift_auth
+    from buildapp.models import UserEmailPreference
+
+    verified = skrift_auth.complete_primary_passkey_registration
+
+    def spend_then_verify(*args, **kwargs):
+        with sqlite3.connect(DATABASE_FILE) as connection:
+            connection.execute(
+                "UPDATE invites SET email = CASE WHEN kind = 'open_link' "
+                "THEN 'winner@example.com' ELSE email END, redeemed_at = CURRENT_TIMESTAMP"
+            )
+        return verified(*args, **kwargs)
+
+    monkeypatch.setattr(skrift_auth, "complete_primary_passkey_registration", spend_then_verify)
+    raw = issue_open(client) if open_link else issue(client, INVITED)
+    client.get(open_invite(client, raw).headers["location"])
+
+    response = Page(client).create_account(INVITED, opt_in="on")
+
+    assert response.status_code == 201  # Skrift really did create the account.
+    assert response.json() == {"ok": False, "redirect": invite_path(raw)}
+    outcome = client.get(response.json()["redirect"], follow_redirects=False)
+    assert outcome.status_code == 200
+    assert REDEEMED_HEADING in outcome.text
+    assert account_count(client) == 1
+
+    async def preference_count(session):
+        return (await session.execute(select(func.count()).select_from(UserEmailPreference))).scalar_one()
+
+    assert on_database(client, preference_count) == 0
+
+
+def test_registration_waiting_for_a_second_factor_keeps_skrifts_redirect_without_consent(
+    client, fake_authenticator, monkeypatch
+):
+    """A second factor leaves no signed-in user for Build to claim yet."""
+    import buildapp.auth_controller as build_auth
+    from buildapp.models import UserEmailPreference
+
+    monkeypatch.setattr(build_auth, "session_user_id", lambda request: None)
+    open_invite(client, issue(client, INVITED))
+
+    response = Page(client).create_account(INVITED, opt_in="on")
+
+    assert response.status_code == 201
+    assert response.json()["ok"] is True
+    assert stored_invite(client, INVITED).redeemed_at is None
+
+    async def preference_count(session):
+        return (await session.execute(select(func.count()).select_from(UserEmailPreference))).scalar_one()
+
+    assert on_database(client, preference_count) == 0
 
 
 # --- no other route under the passkey-only config makes an account ------------------

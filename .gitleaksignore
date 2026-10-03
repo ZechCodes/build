@@ -44,3 +44,12 @@ planning/v1/session-8/04-security-testing.md:generic-api-key:508
 6af3fba5b267c2fd021c9a73175a8091668b05d8:fixtures/api/v1/run.diff.json:generic-api-key:10
 6af3fba5b267c2fd021c9a73175a8091668b05d8:fixtures/api/v1/worktree.diff.json:generic-api-key:7
 6af3fba5b267c2fd021c9a73175a8091668b05d8:fixtures/api/v1/worktree.diff.json:generic-api-key:32
+
+# Current-tree fingerprints for the same public content-hash fixtures. The
+# git.unpushed sample is also a sixteen-hex FNV content key, not a credential.
+# Keep these exact file/line exceptions instead of suppressing whole fixtures.
+fixtures/api/v1/run.diff.json:generic-api-key:6
+fixtures/api/v1/run.diff.json:generic-api-key:10
+fixtures/api/v1/worktree.diff.json:generic-api-key:7
+fixtures/api/v1/worktree.diff.json:generic-api-key:35
+fixtures/api/v1/git.unpushed.json:generic-api-key:6

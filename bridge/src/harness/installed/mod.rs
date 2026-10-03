@@ -9,8 +9,10 @@
 //!
 //! Nothing that answers a client waits on a CLI: [`Readings::reading`] answers
 //! from what it holds and asks again in the background once the answer is
-//! older than [`READING_TTL`], and a session that reports its own version
-//! ([`observe_version`]) asks again at once when it differs. Every change is
+//! older than [`READING_TTL`], sooner after a failed ask or an executable
+//! change. A periodic refresh keeps cached clients current, and a session
+//! that reports its own version ([`observe_version`]) asks again at once when
+//! it differs. Every change is
 //! counted on [`Readings::changes`], which the `models.changed` push follows.
 
 use std::collections::HashMap;
@@ -23,14 +25,21 @@ use tokio::sync::watch;
 use crate::harness::{harness_for, Harness};
 use crate::models::{AgentProvider, ModelChoice};
 
+mod executable;
 pub(crate) mod offer;
 pub(crate) mod probe;
+
+use executable::Executable;
 
 pub use offer::{ModelOffer, OfferedModel, UnavailableModel};
 pub use probe::{CliProbe, CODEX_MODEL_LIST, NO_PROBE, VERSION_FLAG};
 
 /// How long an answer stands before the next ask for it asks the CLI again.
 pub const READING_TTL: Duration = Duration::from_secs(10 * 60);
+
+/// Failed or incomplete answers are retried at this interval. Also how often
+/// the daemon checks for stale readings and executable changes without a read.
+const RETRY_BACKOFF: Duration = Duration::from_secs(15);
 
 /// How old an answer may be and still refuse a session on its own word. An
 /// older one is asked again first, so a CLI updated a minute ago is not
@@ -67,6 +76,44 @@ struct Entry {
     reading: Option<Arc<CliReading>>,
     read_at: Option<Instant>,
     asking: bool,
+    retry: bool,
+    executable: Option<Executable>,
+    probe: Option<&'static dyn CliProbe>,
+}
+
+/// Dropping a scheduled job (including failed thread creation) or unwinding
+/// out of a probe must release the claim and permit a later retry.
+struct PendingAsk {
+    readings: Arc<Readings>,
+    binary: &'static str,
+    executable: Option<Executable>,
+    completed: bool,
+}
+
+impl PendingAsk {
+    fn run(&mut self, probe: &'static dyn CliProbe) {
+        self.readings
+            .read_and_record(self.binary, probe, self.executable.clone(), true);
+        self.completed = true;
+    }
+}
+
+impl Drop for PendingAsk {
+    fn drop(&mut self) {
+        if !self.completed {
+            eprintln!(
+                "cli probe: {}: probe did not finish; will retry",
+                self.binary
+            );
+            self.readings.record(
+                self.binary,
+                CliReading::default(),
+                true,
+                self.executable.clone(),
+                true,
+            );
+        }
+    }
 }
 
 /// Every CLI's latest answer, by the binary that gave it.
@@ -148,16 +195,19 @@ impl Readings {
         binary: &'static str,
         probe: &'static dyn CliProbe,
     ) -> (Option<Arc<CliReading>>, Option<Duration>) {
+        let executable = executable::identify(binary);
         let stale = {
             let mut entries = self.entries.lock().unwrap();
             let entry = entries.entry(binary).or_default();
+            entry.probe = Some(probe);
+            let lifetime = if entry.retry { RETRY_BACKOFF } else { self.ttl };
             let expired = entry
                 .read_at
-                .is_none_or(|read_at| (self.now)().duration_since(read_at) >= self.ttl);
-            self.claim_ask(entry, expired)
+                .is_none_or(|read_at| (self.now)().duration_since(read_at) >= lifetime);
+            self.claim_ask(entry, expired || entry.executable != executable)
         };
         if stale {
-            self.ask(binary, probe);
+            self.ask(binary, probe, executable.clone());
         }
         let entries = self.entries.lock().unwrap();
         let Some(entry) = entries.get(binary) else {
@@ -165,6 +215,7 @@ impl Readings {
         };
         let age = entry
             .read_at
+            .filter(|_| entry.executable == executable)
             .map(|read_at| (self.now)().duration_since(read_at));
         (entry.reading.clone(), age)
     }
@@ -180,19 +231,19 @@ impl Readings {
         probe: &'static dyn CliProbe,
         fresh: Duration,
     ) -> Option<Arc<CliReading>> {
+        let executable = executable::identify(binary);
         let young = {
             let entries = self.entries.lock().unwrap();
             entries
                 .get(binary)
+                .filter(|entry| entry.executable == executable)
                 .and_then(|entry| entry.read_at)
                 .is_some_and(|read_at| (self.now)().duration_since(read_at) < fresh)
         };
         if young || self.schedule.is_none() {
             return self.held(binary);
         }
-        #[cfg(test)]
-        let probe = self.stand_in.unwrap_or(probe);
-        self.record(binary, probe.read(binary), false);
+        self.read_and_record(binary, probe, executable, false);
         self.held(binary)
     }
 
@@ -207,6 +258,7 @@ impl Readings {
         let differs = {
             let mut entries = self.entries.lock().unwrap();
             let entry = entries.entry(binary).or_default();
+            entry.probe = Some(probe);
             let held = entry
                 .reading
                 .as_ref()
@@ -214,7 +266,7 @@ impl Readings {
             self.claim_ask(entry, held != Some(version))
         };
         if differs {
-            self.ask(binary, probe);
+            self.ask(binary, probe, executable::identify(binary));
         }
     }
 
@@ -239,29 +291,96 @@ impl Readings {
         claimed
     }
 
-    fn ask(self: &Arc<Self>, binary: &'static str, probe: &'static dyn CliProbe) {
+    fn ask(
+        self: &Arc<Self>,
+        binary: &'static str,
+        probe: &'static dyn CliProbe,
+        executable: Option<Executable>,
+    ) {
         let Some(schedule) = &self.schedule else {
             return;
         };
+        let mut pending = PendingAsk {
+            readings: Arc::clone(self),
+            binary,
+            executable,
+            completed: false,
+        };
+        schedule(Box::new(move || pending.run(probe)));
+    }
+
+    fn read_and_record(
+        &self,
+        binary: &'static str,
+        probe: &'static dyn CliProbe,
+        executable: Option<Executable>,
+        ends_ask: bool,
+    ) {
         #[cfg(test)]
-        let probe = self.stand_in.unwrap_or(probe);
-        let readings = Arc::clone(self);
-        schedule(Box::new(move || {
-            let reading = probe.read(binary);
-            readings.record(binary, reading, true);
-        }));
+        let reader = self.stand_in.unwrap_or(probe);
+        #[cfg(not(test))]
+        let reader = probe;
+        self.entries
+            .lock()
+            .unwrap()
+            .entry(binary)
+            .or_default()
+            .probe = Some(probe);
+        let reading = reader.read(binary);
+        let retry = probe.needs_retry(&reading);
+        self.record(binary, reading, retry, executable, ends_ask);
+    }
+
+    /// Revisit previously requested CLIs even when every client uses its
+    /// cached catalog. The normal claim still permits only one ask per CLI.
+    fn refresh(self: &Arc<Self>) {
+        let probes: Vec<_> = self
+            .entries
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(binary, entry)| entry.probe.map(|probe| (*binary, probe)))
+            .collect();
+        for (binary, probe) in probes {
+            self.reading(binary, probe);
+        }
+    }
+
+    fn keep_fresh(self: &Arc<Self>) {
+        let readings = Arc::downgrade(self);
+        let spawned = std::thread::Builder::new()
+            .name("cli-refresh".into())
+            .spawn(move || loop {
+                std::thread::sleep(RETRY_BACKOFF);
+                let Some(readings) = readings.upgrade() else {
+                    break;
+                };
+                readings.refresh();
+            });
+        if let Err(error) = spawned {
+            eprintln!("cli probe: cannot start the refresh thread: {error}");
+        }
     }
 
     /// Keep what `binary` said. `ends_ask` for the answer to the ask
     /// [`Self::claim_ask`] claimed; an answer read in place leaves that ask
     /// running.
-    fn record(&self, binary: &'static str, reading: CliReading, ends_ask: bool) {
+    fn record(
+        &self,
+        binary: &'static str,
+        reading: CliReading,
+        retry: bool,
+        executable: Option<Executable>,
+        ends_ask: bool,
+    ) {
         let changed = {
             let mut entries = self.entries.lock().unwrap();
             let entry = entries.entry(binary).or_default();
             let changed = entry.reading.as_deref() != Some(&reading);
             entry.reading = Some(Arc::new(reading));
             entry.read_at = Some((self.now)());
+            entry.retry = retry;
+            entry.executable = executable;
             entry.asking &= !ends_ask;
             changed
         };
@@ -354,6 +473,8 @@ pub fn warm() {
         let harness = harness_for(provider);
         readings().reading(harness.binary(), harness.cli_probe());
     }
+    static REFRESHING: OnceLock<()> = OnceLock::new();
+    REFRESHING.get_or_init(|| readings().keep_fresh());
 }
 
 #[cfg(test)]

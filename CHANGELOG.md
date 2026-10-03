@@ -27,6 +27,15 @@ Wire 3.6.0.
   share one description limit. Snapshot updates use a version check; review tasks bypass the
   older automatic report/merged-workspace task transitions (#328).
 
+### Fixed
+
+- Installed CLI model probes retry failed or empty answers after 15 seconds,
+  refresh held catalogs in the background, and re-ask when the executable's
+  path, symlink target or modification time changes. Probe failures include
+  the bounded last stderr line, and abandoned probes release their claim, so
+  a Codex upgrade cannot leave new models hidden behind a ten-minute fallback
+  (#345).
+
 ## [0.2.7] - 2026-10-02
 
 Wire 3.5.0.

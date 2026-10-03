@@ -401,14 +401,20 @@ fn an_empty_answer_is_retried_after_a_short_backoff() {
     let cli = ScriptedCli::leaked("unreadable");
     let clock = HandClock::leaked();
     let readings = inline(clock);
-    assert_eq!(*readings.reading("claude", cli).unwrap(), CliReading::default());
+    assert_eq!(
+        *readings.reading("claude", cli).unwrap(),
+        CliReading::default()
+    );
 
     cli.set("2.1.284");
     clock.advance(Duration::from_secs(14));
     assert_eq!(readings.reading("claude", cli).unwrap().version, None);
     assert_eq!(cli.asked(), 1, "repeated reads respect the retry backoff");
     clock.advance(Duration::from_secs(1));
-    assert_eq!(readings.reading("claude", cli).unwrap().version, Some(version("2.1.284")));
+    assert_eq!(
+        readings.reading("claude", cli).unwrap().version,
+        Some(version("2.1.284"))
+    );
     assert_eq!(cli.asked(), 2);
 }
 
@@ -419,7 +425,9 @@ fn a_scheduler_that_drops_an_ask_does_not_wedge_the_cli() {
     let scheduled = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&scheduled);
     let readings = Readings::with(
-        Some(Arc::new(move |_ask| { counted.fetch_add(1, Ordering::SeqCst); })),
+        Some(Arc::new(move |_ask| {
+            counted.fetch_add(1, Ordering::SeqCst);
+        })),
         Arc::new(move || clock.now()),
         READING_TTL,
     );
@@ -444,9 +452,13 @@ fn replacing_an_executable_reasks_before_the_ttl() {
     readings.reading(binary, cli);
     cli.set("0.160.0");
     let file = std::fs::File::open(binary).unwrap();
-    file.set_modified(std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(345)).unwrap();
+    file.set_modified(std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(345))
+        .unwrap();
 
-    assert_eq!(readings.reading(binary, cli).unwrap().version, Some(version("0.160.0")));
+    assert_eq!(
+        readings.reading(binary, cli).unwrap().version,
+        Some(version("0.160.0"))
+    );
     assert_eq!(cli.asked(), 2);
 }
 
@@ -456,7 +468,10 @@ fn an_executable_symlink_retarget_reasks_even_with_the_same_mtime() {
     let old = tracked_cli(dir.path(), "codex-old");
     let new = tracked_cli(dir.path(), "codex-new");
     for path in [old, new] {
-        std::fs::File::open(path).unwrap().set_modified(std::time::SystemTime::UNIX_EPOCH).unwrap();
+        std::fs::File::open(path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap();
     }
     let link = dir.path().join("codex");
     std::os::unix::fs::symlink(old, &link).unwrap();
@@ -468,21 +483,34 @@ fn an_executable_symlink_retarget_reasks_even_with_the_same_mtime() {
     std::fs::remove_file(&link).unwrap();
     std::os::unix::fs::symlink(new, &link).unwrap();
 
-    assert_eq!(readings.reading(binary, cli).unwrap().version, Some(version("0.160.0")));
+    assert_eq!(
+        readings.reading(binary, cli).unwrap().version,
+        Some(version("0.160.0"))
+    );
     assert_eq!(cli.asked(), 2);
 }
 
 #[test]
 fn installing_a_previously_missing_executable_bypasses_backoff() {
     let dir = tempfile::tempdir().unwrap();
-    let binary = Box::leak(dir.path().join("codex").to_str().unwrap().to_string().into_boxed_str());
+    let binary = Box::leak(
+        dir.path()
+            .join("codex")
+            .to_str()
+            .unwrap()
+            .to_string()
+            .into_boxed_str(),
+    );
     let cli = ScriptedCli::leaked("unreadable");
     let readings = inline(HandClock::leaked());
     readings.reading(binary, cli);
     tracked_cli(dir.path(), "codex");
     cli.set("0.160.0");
 
-    assert_eq!(readings.reading(binary, cli).unwrap().version, Some(version("0.160.0")));
+    assert_eq!(
+        readings.reading(binary, cli).unwrap().version,
+        Some(version("0.160.0"))
+    );
     assert_eq!(cli.asked(), 2);
 }
 
@@ -494,7 +522,124 @@ fn a_fresh_refusal_also_reasks_a_replaced_executable() {
     let readings = inline(HandClock::leaked());
     readings.reading(binary, cli);
     cli.set("2.1.284");
-    std::fs::File::open(binary).unwrap().set_modified(std::time::SystemTime::UNIX_EPOCH).unwrap();
+    std::fs::File::open(binary)
+        .unwrap()
+        .set_modified(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap();
 
-    assert_eq!(readings.fresh_reading(binary, cli, REFUSAL_FRESHNESS).unwrap().version, Some(version("2.1.284")));
+    assert_eq!(
+        readings
+            .fresh_reading(binary, cli, REFUSAL_FRESHNESS)
+            .unwrap()
+            .version,
+        Some(version("2.1.284"))
+    );
+}
+
+#[test]
+fn a_periodic_refresh_recovers_an_empty_answer_without_a_catalog_read() {
+    let cli = ScriptedCli::leaked("unreadable");
+    let clock = HandClock::leaked();
+    let readings = inline(clock);
+    readings.reading("claude", cli);
+    cli.set("2.1.284");
+    clock.advance(RETRY_BACKOFF);
+
+    readings.refresh();
+
+    assert_eq!(
+        readings.held("claude").unwrap().version,
+        Some(version("2.1.284"))
+    );
+    assert_eq!(cli.asked(), 2);
+    assert_eq!(*readings.changes().borrow(), 2, "recovery is announced");
+}
+
+#[test]
+fn a_codex_version_without_a_model_list_is_retried_soon() {
+    let cli = ScriptedCli::leaked("0.160.0");
+    let clock = HandClock::leaked();
+    let readings = inline_standing_in(clock, cli);
+    readings.reading("codex", &CODEX_MODEL_LIST);
+    clock.advance(RETRY_BACKOFF);
+
+    readings.refresh();
+
+    assert_eq!(
+        cli.asked(),
+        2,
+        "the version alone is not a usable Codex answer"
+    );
+}
+
+#[test]
+fn a_periodic_refresh_keeps_a_successful_answer_for_the_whole_ttl() {
+    let cli = ScriptedCli::leaked("2.1.280");
+    let clock = HandClock::leaked();
+    let readings = inline(clock);
+    readings.reading("claude", cli);
+    cli.set("2.1.284");
+    clock.advance(READING_TTL - RETRY_BACKOFF);
+    readings.refresh();
+    assert_eq!(cli.asked(), 1);
+    clock.advance(RETRY_BACKOFF);
+    readings.refresh();
+    assert_eq!(
+        readings.held("claude").unwrap().version,
+        Some(version("2.1.284"))
+    );
+    assert_eq!(cli.asked(), 2);
+}
+
+#[test]
+fn a_panicking_probe_releases_its_claim() {
+    struct PanicsOnce(AtomicUsize);
+    impl CliProbe for PanicsOnce {
+        fn read(&self, _binary: &str) -> CliReading {
+            assert_ne!(self.0.fetch_add(1, Ordering::SeqCst), 0, "probe panicked");
+            claude_at("2.1.284")
+        }
+    }
+    let cli = Box::leak(Box::new(PanicsOnce(AtomicUsize::new(0))));
+    let clock = HandClock::leaked();
+    let readings = inline(clock);
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+        || readings.reading("claude", cli)
+    ))
+    .is_err());
+    clock.advance(RETRY_BACKOFF);
+
+    assert_eq!(
+        readings.reading("claude", cli).unwrap().version,
+        Some(version("2.1.284"))
+    );
+}
+
+#[test]
+fn a_changed_executable_does_not_give_its_old_answer_a_fresh_age() {
+    let dir = tempfile::tempdir().unwrap();
+    let binary = tracked_cli(dir.path(), "codex");
+    let cli = ScriptedCli::leaked("0.155.1");
+    let queued: &'static Mutex<Vec<Box<dyn FnOnce() + Send>>> =
+        Box::leak(Box::new(Mutex::new(Vec::new())));
+    let readings = Readings::with(
+        Some(Arc::new(|ask| queued.lock().unwrap().push(ask))),
+        Arc::new(Instant::now),
+        READING_TTL,
+    );
+    readings.reading(binary, cli);
+    queued.lock().unwrap().pop().unwrap()();
+    std::fs::File::open(binary)
+        .unwrap()
+        .set_modified(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap();
+
+    let (held, age) = readings.held_with_age(binary, cli);
+
+    assert_eq!(held.unwrap().version, Some(version("0.155.1")));
+    assert_eq!(
+        age, None,
+        "the old executable's answer cannot refuse a spawn"
+    );
+    assert_eq!(queued.lock().unwrap().len(), 1);
 }

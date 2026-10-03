@@ -764,13 +764,20 @@ catalog seen through what its installed CLI said, and that is what
 
 `Readings` holds each CLI's last answer. Nothing waits on a CLI: a read answers
 from what is held and asks again on a background thread once the answer is ten
-minutes old, and a session that reports another version (the adk init line's
-`claude_code_version`, codex's `initialize` `userAgent`) asks at once. The
-binary on `PATH` is a wrapper that never changes when mise updates what is
-behind it, so no file is watched. A CLI that is missing, hangs, or answers
-unreadably offers the whole catalog, as before. Each probe runs the program by
+minutes old. Failed or incomplete answers retry after 15 seconds; Codex's
+version alone is incomplete without a usable model list. The daemon revisits
+held readings every 15 seconds even when clients use their cached catalog.
+A change to the executable's path, symlink target or modification time bypasses
+the TTL, and a session that reports another version (the adk init line's
+`claude_code_version`, codex's `initialize` `userAgent`) asks at once. A stable
+wrapper whose underlying installation changes is covered by the periodic TTL
+refresh and session version hints. Dropped or panicking probe jobs release
+their claim and retry. A CLI that is missing, hangs, or answers unreadably
+offers the whole catalog, as before. Each probe runs the program by
 name with fixed arguments and no shell, from the home directory, with a 3 s
-deadline, bounded output and its process group killed afterwards, and with
+deadline, bounded output and its process group killed afterwards. Stderr is
+drained concurrently, keeping a 4 KiB tail of the last nonempty line and
+logging at most 512 sanitized characters with a failure. Probes run with
 `MISE_OFFLINE=1`, so a mise wrapper never starts an install that the deadline
 would cut off halfway (`probe/child.rs`; `planning/v2/Installed CLI Probe Security Checklist.md`). A
 changed answer is pushed as `models.changed` (`bridge/src/app/model_catalog.rs`).

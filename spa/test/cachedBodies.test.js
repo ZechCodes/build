@@ -52,6 +52,54 @@ describe("createCachedBodies", () => {
     expect((await cache.readCached(address("a.js"))).value).toEqual({ patch: "patch:a.js" });
   });
 
+  it("discards a response that arrives after its conversation reader is disposed", async () => {
+    let answer;
+    const fetched = vi.fn(() => new Promise((resolve) => { answer = resolve; }));
+    const onChange = vi.fn();
+    const bodies = createCachedBodies({
+      addressOf: address,
+      fetchMissing: fetched,
+      valueOf: (item) => ({ key: item.path, value: { patch: item.patch } }),
+      onChange,
+    });
+    const reading = bodies.ensure(["a.js"]);
+    await vi.waitFor(() => expect(fetched).toHaveBeenCalledOnce());
+    bodies.dispose();
+    await cache.deleteCached([address("a.js")]);
+    answer([{ path: "a.js", patch: "retired conversation" }]);
+
+    expect(await reading).toEqual([]);
+    expect(await cache.readCached(address("a.js"))).toBeUndefined();
+    expect(bodies.read("a.js")).toBeUndefined();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("checks disposal again inside the cache transaction, after a response was admitted", async () => {
+    const actualMerge = cache.mergeCachedRecordsTogether;
+    let bodies;
+    vi.spyOn(cache, "mergeCachedRecordsTogether").mockImplementation((addresses, merge) =>
+      actualMerge(addresses, (records) => {
+        bodies.dispose();
+        return merge(records);
+      }));
+    bodies = bodiesOver([]);
+
+    expect(await bodies.ensure(["a.js"])).toEqual([]);
+    expect(await cache.readCached(address("a.js"))).toBeUndefined();
+    expect(bodies.read("a.js")).toBeUndefined();
+  });
+
+  it("releases held bodies on disposal and never starts another fetch", async () => {
+    const fetches = [];
+    const bodies = bodiesOver(fetches);
+    await bodies.ensure(["a.js"]);
+    bodies.dispose();
+
+    expect(bodies.read("a.js")).toBeUndefined();
+    expect(await bodies.ensure(["b.js"])).toEqual([]);
+    expect(fetches).toEqual([["a.js"]]);
+  });
+
   it("takes a body from the local cache instead of the wire", async () => {
     await cache.writeCached(address("a.js"), { patch: "from disk" });
     const fetches = [];
@@ -164,6 +212,22 @@ describe("createCachedBodies with pages (#95)", () => {
           },
         },
       }));
+
+  it("keeps neither a head nor its pages when disposal happens inside the write transaction", async () => {
+    const actualMerge = cache.mergeCachedRecordsTogether;
+    let bodies;
+    vi.spyOn(cache, "mergeCachedRecordsTogether").mockImplementation((addresses, merge) =>
+      actualMerge(addresses, (records) => {
+        bodies.dispose();
+        return merge(records);
+      }));
+    bodies = await pagedOver([], []);
+
+    expect(await bodies.ensure(["big.txt"])).toEqual([]);
+    expect(await cache.readCached(address("big.txt"))).toBeUndefined();
+    expect(await cache.cachedSubKeys("dev-1", "run-1", "page")).toEqual([]);
+    expect(bodies.read("big.txt")).toBeUndefined();
+  });
 
   it("keeps a body it may not store whole as a head and the bridge's own pages, and paints it from them", async () => {
     const pages = await import("../src/core/bodyPages.js");

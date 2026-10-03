@@ -25,6 +25,8 @@ const DB_NAME = "build-ui";
 // migrates what is here; it never starts this store cold.
 const DB_VERSION = 1;
 const STORE = "records";
+const RETIRED_UI_KIND = "retired-conversation-ui";
+const retirementPrefix = "||retired-conversation-ui|";
 
 export const UI_STORE_DIAGNOSTIC = "local-ui-store";
 
@@ -37,6 +39,87 @@ const database = createIdbDatabase({
   name: DB_NAME, version: DB_VERSION, store: STORE, upgrade, diagnostic: UI_STORE_DIAGNOSTIC, label: "local UI store",
 });
 const { announce, subscribe } = createAnnouncer("build-ui");
+
+const oldOrLegacySub = (sub, legacy, threadId) => sub === legacy || sub === `${legacy}:${threadId}`;
+
+const conversationDraft = (address, scope) => address.deviceId === scope.deviceId
+  && address.entityId === scope.conversationId && address.kind === "ui-draft"
+  && oldOrLegacySub(address.sub, `chat:agent:${scope.entityId}:${scope.agentId}`, scope.threadId);
+
+const conversationRuns = (address, scope) => address.deviceId === scope.deviceId
+  && address.entityId === scope.entityId && address.kind === "ui-fold"
+  && oldOrLegacySub(address.sub, `thread:${scope.agentId}`, scope.threadId);
+
+const conversationMenu = (address, scope) => {
+  const owner = `${scope.entityId}:${scope.agentId}`;
+  if (address.deviceId !== "" && address.deviceId !== scope.deviceId) return false;
+  if (address.entityId !== owner && address.entityId !== `${owner}:${scope.threadId}`) return false;
+  return (address.kind === "ui-menu" && ["agent-surfaces:", "composer:model"].includes(address.sub))
+    || (address.kind === "ui-fold" && address.sub?.startsWith("surface-viewer:"));
+};
+
+/** Only transient records of the retired generation. Detail/filter preferences
+ * belong to the retained agent and survive a cleared conversation. */
+export const conversationUiRecordBelongsTo = (address, scope) => conversationDraft(address, scope)
+  || conversationRuns(address, scope) || conversationMenu(address, scope);
+
+const retirementAddress = (scope) => ({
+  deviceId: "", entityId: "", kind: RETIRED_UI_KIND, sub: JSON.stringify(scope),
+});
+
+/** The retirement check and write share a transaction. A late writer in another
+ * tab cannot race the notification and recreate a deleted draft. The markers
+ * contain identities only and leave with the account reset. */
+function unlessRetired(store, address, write, retired = () => {}) {
+  const request = store.openCursor(prefixRange(retirementPrefix));
+  request.onsuccess = () => {
+    const cursor = request.result;
+    if (!cursor) { write(); return; }
+    if (conversationUiRecordBelongsTo(address, cursor.value.value)) { retired(); return; }
+    cursor.continue();
+  };
+}
+
+export function conversationUiRecordIsRetired(address) {
+  let retired = false;
+  return database.read("readonly", (store) => {
+    retired = false;
+    unlessRetired(store, address, () => {}, () => { retired = true; });
+    return null;
+  }).then(() => retired);
+}
+
+/** A marker announcement identifies the retired scope; listeners retire their
+ * local writers and journals before any ordinary deletion announcement. */
+export function subscribeConversationUiRetirements(listener) {
+  return subscribe({ deviceId: "", entityId: "", kind: RETIRED_UI_KIND }, (address) => {
+    if (!address.sub) return;
+    try { listener(JSON.parse(address.sub)); } catch { /* Ignore an invalid announcement. */ }
+  });
+}
+
+export async function deleteConversationUiRecords(scope) {
+  const marker = retirementAddress(scope);
+  let removed = [];
+  const wrote = await database.write((store) => {
+    removed = [];
+    store.put({ ...writeStamp(), value: scope }, recordKey(marker));
+    const request = store.openCursor();
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) return;
+      if (conversationUiRecordBelongsTo(addressOfParts(partsOfKey(cursor.key)), scope)) {
+        cursor.delete();
+        removed.push(cursor.key);
+      }
+      cursor.continue();
+    };
+    return null;
+  });
+  if (!wrote) return;
+  announce(partsOfKey(recordKey(marker)));
+  for (const key of removed) announce(partsOfKey(key));
+}
 
 /** For tests: a faster recovery schedule. Answers the one it replaced. */
 export const setUiStoreRecoveryTiming = (next) => database.setRecoveryTiming(next);
@@ -77,7 +160,9 @@ function putNewer(entries, wipedAt) {
       const current = store.get(key);
       current.onsuccess = () => {
         if (!isNewer(record, current.result)) return;
-        if (putOrAbort(store, record, key)) put.push(key);
+        unlessRetired(store, address, () => {
+          if (putOrAbort(store, record, key)) put.push(key);
+        });
       };
     }
     return null;
@@ -181,7 +266,7 @@ export function writeUiRecord(address, value, { source, sequence } = {}) {
   const key = recordKey(address);
   const record = { ...writeStamp(), value, ...(source ? { source, sequence } : {}) };
   return database.write((store) => {
-    store.put(record, key);
+    unlessRetired(store, address, () => store.put(record, key));
     return null;
   }).then((wrote) => {
     if (wrote) announce(partsOfKey(key));
@@ -200,7 +285,7 @@ export function writeUiRecordIfUnwritten(address, captured, value) {
     const current = store.get(key);
     current.onsuccess = () => {
       if (recordWriteOf(current.result) !== recordWriteOf(captured)) return;
-      applied = putOrAbort(store, { ...writeStamp(), value }, key);
+      unlessRetired(store, address, () => { applied = putOrAbort(store, { ...writeStamp(), value }, key); });
     };
     return null;
   }).then((committed) => {
@@ -224,7 +309,9 @@ export function writeUiRecordIfNewer(address, value, { at, source, sequence }) {
     const current = store.get(key);
     current.onsuccess = () => {
       if (!isNewer({ at, source, sequence }, current.result)) return;
-      applied = putOrAbort(store, { ...writeStamp(), value, source, sequence }, key);
+      unlessRetired(store, address, () => {
+        applied = putOrAbort(store, { ...writeStamp(), value, source, sequence }, key);
+      });
     };
     return null;
   }).then((committed) => {

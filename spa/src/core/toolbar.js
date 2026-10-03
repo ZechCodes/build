@@ -39,7 +39,8 @@ import { deviceView } from "./feedMerge.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import { patchList } from "./patchList.js";
 import { toolbarHtml, unreadBadgeHtml } from "./toolbarRender.js";
-import { projectRoute, workspaceRoute } from "./projectModel.js";
+import { workspaceRoute } from "./projectModel.js";
+import { projectReturnRoute } from "./projectRailState.js";
 import { standsOnProjectCheckout, workspaceStatusText } from "./workspaceModel.js";
 import "../styles/shell.css";
 import { fieldTraits } from "./fieldTraits.js";
@@ -237,14 +238,15 @@ const shownIdentity = (standing) => ({
   label: standing.label,
 });
 
-/** Out of the workspaces to the scoped project's own page, on the machine that
- *  project is on: the same place the project's name in the inbox opens
- *  (core/projectModel.js mints both). It replaces the back chevron the bar used
- *  to carry before the picker. */
-function openProjectPage() {
+/** An explicit return restores the project's last face. Ordinary project
+ * links still open Tasks. A later navigation supersedes a pending UI read. */
+async function openProjectPage() {
   const project = scopedProject();
+  const standing = App.route;
   closeMenu();
-  if (project) go(projectRoute({ id: project.id, deviceId: project.deviceId }));
+  if (!project) return;
+  const route = await projectReturnRoute({ id: project.id, deviceId: project.deviceId });
+  if (App.route === standing) go(route);
 }
 
 // ---- the menu each selector opens -------------------------------------------

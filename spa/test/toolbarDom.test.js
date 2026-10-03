@@ -95,6 +95,7 @@ const { stampWorkspace } = await import("../src/core/feedMerge.js");
 const { writeCached, wipeCache } = await import("../src/core/localCache.js");
 const { readUiRecord, writeUiRecord, wipeUiRecords } = await import("../src/core/localUiStore.js");
 const { uiAddress } = await import("../src/core/localUiState.js");
+const { rememberProjectRailRoute } = await import("../src/core/projectRailState.js");
 
 /** What each machine answers. A workspace read the bar makes is made on the
  *  machine the project it is about lives on, so the two are told apart. */
@@ -149,6 +150,9 @@ const standOnWorkspace = async () => {
 
 beforeEach(async () => {
   if (!savedFeed) savedFeed = feed;
+  App.viewDispose?.();
+  App.viewDispose = null;
+  App.routeLeaveGuard = null;
   await stopToolbar();
   await wipeCache();
   await wipeUiRecords();
@@ -265,6 +269,16 @@ describe("the workspace picker", () => {
     // …which is the Tasks tab, the project's default (#46). The inbox's
     // project name writes this same link (core/projectModel.js mints both).
     expect(routeFromHash(location.hash)).toMatchObject({ name: "project", projectId: "p1", tab: "tasks" });
+  });
+
+  it("returns from a workspace to the remembered project Files face", async () => {
+    await rememberProjectRailRoute({ name: "project", deviceId: "dev-1", projectId: "p1", tab: "files", sourceId: "docs", file: "README.md" });
+    await standOnWorkspace();
+    (await openJump("workspace")).querySelector("[data-project-page]").click();
+    await waitMenuClosed();
+    await vi.waitFor(() => expect(routeFromHash(location.hash)).toMatchObject({
+      name: "project", deviceId: "dev-1", projectId: "p1", tab: "files", sourceId: "docs", file: "README.md",
+    }));
   });
 
   it("keeps the other routes' bars as they were", async () => {

@@ -26,6 +26,16 @@ def upgrade() -> None:
                 "kind", sa.String(20), nullable=False, server_default="email_bound"
             )
         )
+    # Downgrade retains blank-address open links after revoking them. On a later
+    # upgrade, the new column defaults every legacy row to email_bound; restore
+    # the kind of only those safely revoked, unclaimed blank-address rows before
+    # enforcing the address constraint. A live blank-address row remains invalid.
+    op.execute(
+        sa.text("""UPDATE invites SET kind = 'open_link'
+        WHERE email = '' AND revoked_at IS NOT NULL
+          AND redeemed_at IS NULL AND redeemed_by IS NULL""")
+    )
+    with op.batch_alter_table("invites") as batch:
         batch.create_check_constraint(
             "ck_invites_invite_kind", "kind IN ('email_bound', 'open_link')"
         )

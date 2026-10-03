@@ -167,3 +167,39 @@ def test_downgrade_revokes_only_unclaimed_open_links_before_dropping_kind():
         assert "kind" not in {
             column["name"] for column in sa.inspect(conn).get_columns("invites")
         }
+        with Operations.context(MigrationContext.configure(conn)):
+            load_migration(MIGRATION).upgrade()
+        kinds = dict(
+            conn.execute(sa.text("SELECT token_hash, kind FROM invites")).all()
+        )
+        assert kinds == {
+            "unclaimed": "open_link",
+            "revoked": "open_link",
+            "bound": "email_bound",
+            "redeemed": "email_bound",
+        }
+        round_trip_revocations = dict(
+            conn.execute(sa.text("SELECT token_hash, revoked_at FROM invites")).all()
+        )
+        assert round_trip_revocations["unclaimed"] == rows["unclaimed"].revoked_at
+        assert round_trip_revocations["revoked"] == previous_revocation
+
+
+def test_upgrade_rejects_a_live_legacy_blank_address_instead_of_classifying_it():
+    engine = sa.create_engine("sqlite://")
+    now = datetime(2026, 10, 3, 1, 0, tzinfo=timezone.utc)
+    with engine.begin() as conn:
+        sa.Table(
+            "users", sa.MetaData(), sa.Column("id", GUID(length=16), primary_key=True)
+        ).create(conn)
+        with Operations.context(MigrationContext.configure(conn)):
+            load_migration(ORIGINAL).upgrade()
+        conn.execute(
+            sa.text("""INSERT INTO invites
+                (id, token_hash, email, expires_at, created_at, updated_at)
+                VALUES (:id, 'unsafe-blank', '', :now, :now, :now)"""),
+            {"id": uuid4().bytes, "now": now},
+        )
+        with pytest.raises(sa.exc.IntegrityError):
+            with Operations.context(MigrationContext.configure(conn)):
+                load_migration(MIGRATION).upgrade()

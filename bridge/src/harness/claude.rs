@@ -254,6 +254,10 @@ impl Harness for ClaudeHarness {
             .collect())
     }
 
+    fn native_history_cwd(&self, cwd: &Path) -> PathBuf {
+        PathBuf::from(encode_project_dir(cwd))
+    }
+
     /// Its scheduler lock and durable task list, and the permissions it
     /// remembers for that directory.
     fn claude_files_where_it_stands(&self) -> &'static [&'static str] {

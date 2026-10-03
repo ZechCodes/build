@@ -328,6 +328,19 @@ pub trait Harness: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Native transcript storage shared by this provider's carriers. A clear
+    /// must preserve a transcript another conversation still owns, even when
+    /// that conversation uses a different carrier for the same CLI.
+    fn native_history_namespace(&self) -> &'static str {
+        self.provider().wire_id()
+    }
+
+    /// The provider's storage key for a recorded working directory. This is
+    /// compared alongside the native session id before deleting shared files.
+    fn native_history_cwd(&self, cwd: &Path) -> PathBuf {
+        cwd.to_path_buf()
+    }
+
     /// What this harness writes into the directory it is started in, whatever
     /// it was asked to do there, named from that directory's `.claude/`. Build
     /// keeps these out of `git status` where it starts an agent in a directory

@@ -453,3 +453,45 @@ fn a_stopped_pty_session_carries_only_its_exact_compaction_sidecar() {
     cleanup.commit().unwrap();
     assert!(!exact.exists());
 }
+
+#[test]
+fn native_history_keys_group_carriers_by_actual_transcript_storage() {
+    for providers in [
+        [AgentProvider::Claude, AgentProvider::ClaudeAdk],
+        [AgentProvider::Codex, AgentProvider::CodexAppServer],
+    ] {
+        assert_eq!(
+            harness_for(providers[0]).native_history_namespace(),
+            harness_for(providers[1]).native_history_namespace()
+        );
+    }
+    assert_ne!(
+        harness_for(AgentProvider::Claude).native_history_namespace(),
+        harness_for(AgentProvider::Codex).native_history_namespace()
+    );
+    assert_ne!(
+        harness_for(AgentProvider::Pi).native_history_namespace(),
+        harness_for(AgentProvider::Claude).native_history_namespace()
+    );
+}
+
+#[test]
+fn native_history_cwd_keys_find_codex_aliases_and_claude_encoded_collisions() {
+    let f = Fixture::new();
+    let alias = f.home.path().join("cwd-alias");
+    symlink(f.cwd.path(), &alias).unwrap();
+    for provider in [AgentProvider::Codex, AgentProvider::CodexAppServer] {
+        let harness = harness_for(provider);
+        assert_eq!(
+            harness.native_history_cwd(&alias),
+            harness.native_history_cwd(f.cwd.path())
+        );
+    }
+    for provider in [AgentProvider::Claude, AgentProvider::ClaudeAdk] {
+        let harness = harness_for(provider);
+        assert_eq!(
+            harness.native_history_cwd(Path::new("/projects/a-b")),
+            harness.native_history_cwd(Path::new("/projects/a/b"))
+        );
+    }
+}

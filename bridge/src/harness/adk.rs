@@ -13,7 +13,7 @@ use crate::pty::HarnessSpec;
 /// stream-json protocol. `compact_boundary` is the matching completion event.
 const COMPACTION_HOOK_SETTINGS: &str =
     r#"{"hooks":{"PreCompact":[{"hooks":[{"type":"command","command":"true"}]}]}}"#;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 mod activity;
@@ -195,6 +195,14 @@ impl Harness for AdkHarness {
         id: Option<&str>,
     ) -> Result<Vec<super::ConversationArtifact>, HarnessError> {
         ClaudeHarness.conversation_artifacts(home, state_root, agent_id, cwd, id)
+    }
+
+    fn native_history_namespace(&self) -> &'static str {
+        ClaudeHarness.native_history_namespace()
+    }
+
+    fn native_history_cwd(&self, cwd: &Path) -> PathBuf {
+        ClaudeHarness.native_history_cwd(cwd)
     }
 
     /// The same CLI, standing in the same directory.

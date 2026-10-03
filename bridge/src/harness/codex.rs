@@ -275,6 +275,10 @@ impl Harness for CodexHarness {
             )),
         }
     }
+
+    fn native_history_cwd(&self, cwd: &Path) -> PathBuf {
+        std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf())
+    }
 }
 
 fn cleanup_rollouts(root: &Path, cwd: &Path, id: &str) -> Result<Vec<PathBuf>, HarnessError> {

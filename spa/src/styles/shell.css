@@ -232,7 +232,8 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .compose-advanced { margin-top:10px;
   display:flex; flex-direction:column; gap:5px; }
 .compose-advanced label, .agent-choice-fields label { font-size:11px; color:var(--dim); }
-.compose-advanced select, .compose-advanced input, .agent-choice-fields select { width:100%; font-size:12px; }
+.compose-advanced select, .agent-choice-fields select { width:100%; }
+.compose-advanced input { width:100%; font-size:12px; }
 .compose-kinds { display:flex; gap:6px; }
 .compose-manual { align-self:flex-start; }
 .agent-choice { display:flex; flex-direction:column; gap:5px; }
@@ -281,7 +282,8 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .capture-option-label { font-weight:650; font-size:13.5px; }
 .capture-option-where { font-family:var(--mono); font-size:11.5px; color:var(--dim); }
 .capture-manual { display:flex; flex-direction:column; gap:5px; }
-.capture-manual select, .capture-manual input { width:100%; font-size:12.5px; }
+.capture-manual select { width:100%; }
+.capture-manual input { width:100%; font-size:12.5px; }
 .capture-manual label { font-size:11px; color:var(--dim); }
 .capture-freeform textarea { width:100%; resize:vertical; font-size:13px; margin-bottom:10px; }
 .capture-decide-foot { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
@@ -1158,7 +1160,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-harness-picker { display:flex; align-items:stretch; justify-content:center; gap:7px; width:100%; }
 .rail-harness-choice { display:flex; flex:1 1 0; min-width:0; align-items:center; justify-content:center; gap:7px;
   border:1px solid var(--line); border-radius:8px; background:var(--panel2); color:var(--ink2);
-  padding:8px 10px; font:inherit; font-size:12px; cursor:pointer;
+  padding:8px 10px; min-height:var(--select-height); font:inherit; font-size:12px; cursor:pointer;
   transition:border-color 120ms ease, background-color 120ms ease, color 120ms ease; }
 .rail-harness-choice:hover { border-color:var(--line2); color:var(--ink); }
 .rail-harness-choice.chosen { border-color:var(--accent); background:var(--accent-soft); color:var(--accent); }

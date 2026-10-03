@@ -241,9 +241,8 @@
 * { box-sizing:border-box; }
 ::selection { background:var(--sel); }
 html, body { overscroll-behavior:none; }
-/* The native controls this client does not restyle — checkboxes, the select
-   popup, scrollbars — take their cue from color-scheme on :root; the tick
-   itself takes the accent. */
+/* Native checkboxes and scrollbars take their cue from color-scheme on :root;
+   the tick itself takes the accent. Selects share the controls below. */
 input[type=checkbox] { accent-color:var(--accent); }
 /* The frame is viewport-locked: the PAGE never scrolls — standalone (PWA) has
    no browser chrome to hide, and body scroll there meant a third scrollbar on
@@ -255,6 +254,73 @@ body { margin:0; height:100vh; height:100dvh; display:flex; flex-direction:colum
   background:var(--bg); color:var(--ink); font:14px/1.55 var(--sans); -webkit-font-smoothing:antialiased; -webkit-text-size-adjust:100%; text-size-adjust:100%; }
 a { color:inherit; }
 .mono { font-family:var(--mono); }
+
+/* Shared select controls */
+/* Native semantics, one field in every surface. Supporting browsers also
+   expose the popup to CSS; older browsers keep their themed native picker. */
+:root {
+  --select-height:36px; --select-compact-height:28px;
+  --select-radius:8px; --select-menu-radius:10px;
+}
+select {
+  appearance:none; -webkit-appearance:none;
+  box-sizing:border-box; min-width:0; max-width:100%; height:var(--select-height);
+  font:14px/1.4 var(--sans); color:var(--ink);
+  background-color:var(--panel); border:1px solid var(--line); border-radius:var(--select-radius);
+  padding:0 32px 0 10px; cursor:pointer;
+  white-space:nowrap; text-overflow:ellipsis;
+  transition:border-color var(--motion-fast), box-shadow var(--motion-fast);
+}
+select.mini {
+  height:var(--select-compact-height); font-size:12px; max-width:min(180px, 100%);
+}
+select:hover:not(:disabled) { border-color:var(--line3); }
+select:focus-visible {
+  outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--focus-ring);
+}
+select:disabled { color:var(--dim); opacity:.7; cursor:not-allowed; }
+@supports not (appearance:base-select) {
+  select {
+    color-scheme:inherit;
+    background-image:linear-gradient(45deg, transparent 50%, var(--ink2) 50%),
+      linear-gradient(135deg, var(--ink2) 50%, transparent 50%);
+    background-position:right 14px center, right 10px center;
+    background-size:4px 4px; background-repeat:no-repeat;
+  }
+}
+@supports (appearance:base-select) {
+  select, select::picker(select) { appearance:base-select; }
+  select { padding-inline:10px; align-items:center; gap:10px; overflow:hidden; }
+  select::picker-icon {
+    content:""; flex:none; width:8px; height:8px; color:var(--ink2);
+    border-right:2px solid currentColor; border-bottom:2px solid currentColor;
+    transform:translateY(-2px) rotate(45deg);
+  }
+  select:disabled::picker-icon { color:var(--dim); }
+  select::picker(select) {
+    box-sizing:border-box; font:14px/1.4 var(--sans); color:var(--ink);
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--select-menu-radius);
+    box-shadow:0 10px 30px var(--shadow); padding:4px;
+    min-width:anchor-size(width); max-width:calc(100vw - 24px);
+    max-height:min(360px, 70dvh); overflow:auto; margin-block:6px;
+  }
+  select option {
+    display:flex; align-items:center; gap:10px; padding:9px 10px;
+    font:inherit; color:var(--ink); background:var(--panel); border:0; border-radius:6px;
+    white-space:normal; overflow-wrap:anywhere; cursor:pointer;
+  }
+  select option:hover, select option:focus-visible { background:var(--accent-soft); outline:none; }
+  select option:checked { font-weight:550; }
+  select option::checkmark { order:1; margin-inline-start:auto; color:var(--accent); }
+  select option:disabled { color:var(--dim); cursor:not-allowed; }
+  select optgroup { font:inherit; color:var(--dim); }
+}
+@media (max-width:720px) {
+  select, select::picker(select) { font-size:16px; }
+  select.mini { max-width:min(180px, 100%); }
+}
+@media (prefers-reduced-motion:reduce) { select { transition:none; } }
+/* End shared select controls */
 
 /* Dropdown and disclosure triangles share a legible size independently of the
    surrounding label's font. Keep their line box compact in dense toolbars. */
@@ -378,16 +444,17 @@ main { max-width:min(1180px, 100%); margin:0 auto;
 /* A panel title is the type scale's second step: weight carries it, and the
    room under it is what a rule used to be. */
 .panel h3 { margin:0 0 16px; font-size:15px; font-weight:650; letter-spacing:-.01em; display:flex; align-items:center; gap:8px; }
-.panel .field select, .panel .field input:not([type=checkbox]), .panel .field textarea {
+.panel .field select { width:100%; }
+.panel .field input:not([type=checkbox]), .panel .field textarea {
   width:100%; min-height:36px; padding:7px 10px; font:inherit; color:var(--ink);
   background:var(--bg); border:1px solid var(--line); border-radius:8px;
   transition:background var(--motion-fast), border-color var(--motion-fast), box-shadow var(--motion-fast); }
-.panel .field select:hover:not(:disabled), .panel .field input:not([type=checkbox]):hover:not(:disabled),
+.panel .field input:not([type=checkbox]):hover:not(:disabled),
 .panel .field textarea:hover:not(:disabled) { border-color:var(--line3); background:var(--panel); }
-.panel .field select:focus-visible, .panel .field input:not([type=checkbox]):focus-visible,
+.panel .field input:not([type=checkbox]):focus-visible,
 .panel .field textarea:focus-visible { outline:none; border-color:var(--accent); background:var(--panel);
   box-shadow:0 0 0 3px var(--focus-ring); }
-.panel .field select:disabled, .panel .field input:not([type=checkbox]):disabled,
+.panel .field input:not([type=checkbox]):disabled,
 .panel .field textarea:disabled { color:var(--dim); opacity:.7; cursor:not-allowed; }
 /* Rows are separated by their own breathing room, not by a rule between them.
    The horizontal inset stays zero: these rows carry no hover fill of their own,
@@ -784,9 +851,7 @@ main#root.surface { max-width:none;
 .comment-pop.cp-armed .cp-input { box-shadow:0 0 0 2px var(--pop-warn); }
 /* diff */
 .diffbar { display:flex; align-items:center; gap:14px; flex-wrap:wrap; font-family:var(--mono); font-size:12px; color:var(--ink2); margin-bottom:12px; }
-.diffsort { display:flex; align-items:center; gap:6px; margin-left:auto; color:var(--dim); font:11.5px var(--sans); }
-.diffsort-select { color:var(--ink2); background:var(--panel); border:1px solid var(--line); border-radius:6px;
-  padding:4px 24px 4px 7px; font:inherit; }
+.diffsort { display:flex; align-items:center; gap:6px; margin-left:auto; min-width:0; max-width:100%; color:var(--dim); font:11.5px var(--sans); }
 /* The code table scrolls horizontally inside .dscroll while the .file border
    clips the corners. overflow:clip preserves the outer vertical scroller as
    the sticky header's scroll container. */
@@ -1234,7 +1299,7 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
 textarea { width:100%; min-height:96px; background:var(--bg); color:var(--ink); border:1px solid var(--line); border-radius:10px; padding:11px 13px; font:inherit; resize:vertical; }
 .field { margin-top:12px; display:flex; flex-direction:column; gap:5px; }
 .field label { font-size:12px; color:var(--ink2); font-weight:600; }
-.sheet select { font:inherit; padding:9px 11px; border:1px solid var(--line); border-radius:9px; background:var(--bg); color:var(--ink); }
+.sheet .field select { width:100%; }
 .addproj { display:flex; gap:8px; margin-top:14px; }
 .addproj input { font:inherit; padding:8px 11px; border:1px solid var(--line); border-radius:9px; background:var(--bg); color:var(--ink); }
 .addproj input.path { flex:1; }
@@ -1255,7 +1320,6 @@ textarea { width:100%; min-height:96px; background:var(--bg); color:var(--ink); 
 #nrerr:empty { display:none; }
 .btn.mini { padding:4px 9px; font-size:12px; }
 .taskactions .btn { padding:4px 9px; font-size:12px; }
-select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--ink2); max-width:150px; }
 .projfolder { margin-top:14px; font-size:12.5px; color:var(--ink2); display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 .projfolder code { font-family:var(--mono); font-size:11.5px; background:var(--line2); padding:2px 6px; border-radius:5px; }
 .manualadd { margin-top:12px; } .manualadd summary { font-size:12px; color:var(--dim); cursor:pointer; }
@@ -1277,7 +1341,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .field input { width:100%; }
 .locrow { display:flex; gap:8px; align-items:center; }
 .locrow input { cursor:default; color:var(--ink2); }
-.sheet input:not([type=checkbox]):focus, .sheet select:focus, .sheet textarea:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+.sheet input:not([type=checkbox]):focus, .sheet textarea:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
 .projrow { display:flex; gap:12px; padding:10px 0; font-size:13px; align-items:baseline; }
 .projrow .pname { font-weight:600; min-width:120px; }
 .projrow .ppath { font-family:var(--mono); font-size:11.5px; color:var(--dim); }
@@ -1306,7 +1370,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 @media (max-width: 720px) {
   /* iOS Safari auto-zooms focused fields under 16px — every text entry and
      select must be at least 16px on small screens. */
-  input:not([type=checkbox]), select, textarea { font-size:16px !important; }
+  input:not([type=checkbox]), textarea { font-size:16px !important; }
   main { padding:16px 12px 96px; }
   .board-head { flex-wrap:wrap; gap:10px; }
   .board-head h1 { font-size:20px; }
@@ -1322,7 +1386,6 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
   .panel { padding:14px 12px; }
   .actionbar { flex-wrap:wrap; gap:8px; }
   .actionbar .right { flex-wrap:wrap; gap:8px; }
-  select.mini { max-width:44vw; }
   /* A project row and a device row are one line of facts about one thing, and
      that line is longer than a phone. Nowrap made it the widest thing on the
      Settings page, and the page took its width from it: the right of every

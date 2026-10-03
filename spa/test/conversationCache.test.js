@@ -243,7 +243,7 @@ describe("a message sent from this panel", () => {
     vi.resetModules();
     vi.doMock("../src/core/localCache.js", async () => ({
       ...(await vi.importActual("../src/core/localCache.js")),
-      mergeCached: () => Promise.reject(new Error("the cache is gone")),
+      mergeCachedAtomically: () => Promise.reject(new Error("the cache is gone")),
     }));
     const writes = await import("../src/core/conversationCache.js");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

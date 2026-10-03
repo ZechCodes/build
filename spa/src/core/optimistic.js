@@ -71,6 +71,7 @@ let storeCount = 0;
  */
 export function createOptimisticStore({ provisionalPrefix = null, resetProvisionalKeys = false } = {}) {
   const recordsByScope = new Map();
+  const retiredScopes = new Set();
   const listenersByScope = new Map();
   let provisionalCount = 0;
   const prefix = provisionalPrefix ?? `${PROVISIONAL_PREFIX}store-${++storeCount}-`;
@@ -87,6 +88,7 @@ export function createOptimisticStore({ provisionalPrefix = null, resetProvision
   const projectOptimistic = (scope, entries, { keyOf }) => projectPending(entries, pendingIn(scope), { keyOf });
 
   const writeScope = (scope, records) => {
+    if (retiredScopes.has(scope)) return;
     if (records.length) recordsByScope.set(scope, records);
     else recordsByScope.delete(scope);
   };
@@ -119,8 +121,18 @@ export function createOptimisticStore({ provisionalPrefix = null, resetProvision
 
   const reset = () => {
     recordsByScope.clear();
+    retiredScopes.clear();
     listenersByScope.clear();
     if (resetProvisionalKeys) provisionalCount = 0;
+  };
+
+  const retireScopes = (matches) => {
+    const touched = [...recordsByScope.keys()].filter(matches);
+    for (const scope of touched) {
+      recordsByScope.delete(scope);
+      retiredScopes.add(scope);
+    }
+    announce(touched);
   };
 
   const runOptimistic = async ({ scope, records, call, failureSummary, onRevert = null, notify = true }) => {
@@ -158,7 +170,7 @@ export function createOptimisticStore({ provisionalPrefix = null, resetProvision
         return true;
       },
       moveScope(fromScope, toScope) {
-        const moving = held.filter((entry) => entry.scope === fromScope);
+        const moving = held.filter((entry) => entry.scope === fromScope && !retiredScopes.has(entry.scope));
         if (!moving.length) return false;
         for (const entry of moving) {
           take(entry);
@@ -203,6 +215,7 @@ export function createOptimisticStore({ provisionalPrefix = null, resetProvision
     projectOptimistic,
     subscribeOptimistic,
     reconcileOptimistic,
+    retireScopes,
     reset,
     runOptimistic,
   };

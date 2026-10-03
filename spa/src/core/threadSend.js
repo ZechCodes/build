@@ -60,7 +60,7 @@ export const rekeyPostedMessage = (handle, messageKey, provisional, posted, subm
 export const conversationRecordAddress = (cacheScope, address) => {
   const scoped = address?.entityId ? cacheScope?.address({ entityId: address.entityId }) : null;
   if (!scoped) return null;
-  return threadCacheAddress({ ...scoped, agentId: address.agentId, conversationId: address.conversationId });
+  return threadCacheAddress({ ...scoped, agentId: address.agentId, conversationId: address.conversationId, threadId: address.threadId });
 };
 
 /** The post was taken: the message the reader is looking at gets the sequence

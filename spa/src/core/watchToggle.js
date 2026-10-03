@@ -35,9 +35,10 @@ export function watchTitle({ watching = false, watchers = 0 } = {}) {
  * than two copies of the logic — and the task form is the default, because
  * that is the shape the task page already imports.
  */
-function verbsFor({ taskId, entityId, agentId }) {
+function verbsFor({ taskId, entityId, agentId, threadId }) {
   if (entityId && agentId) {
-    return { watch: "conversation.watch", unwatch: "conversation.unwatch", params: { entity_id: entityId, agent_id: agentId } };
+    return { watch: "conversation.watch", unwatch: "conversation.unwatch", params: { entity_id: entityId, agent_id: agentId,
+      ...(threadId ? { thread_id: threadId } : {}) } };
   }
   return { watch: "tasks.watch", unwatch: "tasks.unwatch", params: { task_id: taskId } };
 }
@@ -64,6 +65,7 @@ export function createWatchToggle({
   taskId,
   entityId,
   agentId,
+  threadId,
   call,
   onChange = () => {},
   onFailure = () => {},
@@ -72,6 +74,7 @@ export function createWatchToggle({
     taskId,
     entityId: typeof entityId === "function" ? entityId() : entityId,
     agentId: typeof agentId === "function" ? agentId() : agentId,
+    threadId: typeof threadId === "function" ? threadId() : threadId,
   });
   let state = { watching: Boolean(watching), watchers: Number(watchers) || 0, pending: false };
   let requestVersion = 0;

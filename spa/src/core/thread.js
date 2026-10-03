@@ -344,7 +344,7 @@ export function createThreadCache() {
  *  payload holding nothing: an empty window is not worth a seed. */
 export function windowFromThreadPayload(threadPayload) {
   const items = (threadPayload && threadPayload.items) || [];
-  if (!items.length) return null;
+  if (!items.length && !threadPayload?.thread_id) return null;
   const deliveredSequence = items.reduce(
     (highest, item) => Math.max(highest, item.data?.sequence || 0, item.data?.updated_sequence || 0),
     0,
@@ -353,6 +353,7 @@ export function windowFromThreadPayload(threadPayload) {
     items,
     olderItemsRemain: threadPayload.has_more === true,
     deliveredSequence,
+    ...(threadPayload.thread_id ? { thread_id: threadPayload.thread_id, thread_generation_revision: threadPayload.thread_generation_revision || 0 } : {}),
     knownTotalItems: threadPayload.thread_total ?? null,
     activityDigests: mergeActivityDigests([], threadPayload),
   };
@@ -571,6 +572,7 @@ export function createThreadState({ ownerId = "" } = {}) {
       pendingChoices.clear();
       sendingChoices.clear();
       openSentMessages.clear();
+      openArrivals.clear();
     },
   });
 }
@@ -2478,7 +2480,7 @@ export function wireThreadAttachments(root, load, threadState = createThreadStat
   const openFrom = (preview) => {
     const list = preview.closest(".thread-attachments");
     const previews = list ? [...list.querySelectorAll("button.thread-attachment-preview")] : [preview];
-    openAttachmentLightbox(previews.map(lightboxItem), Math.max(0, previews.indexOf(preview)));
+    openAttachmentLightbox(previews.map(lightboxItem), Math.max(0, previews.indexOf(preview)), threadState.ownerId || {});
   };
   root.querySelectorAll("button.thread-attachment-preview").forEach((preview) => {
     preview.onclick = () => openFrom(preview);

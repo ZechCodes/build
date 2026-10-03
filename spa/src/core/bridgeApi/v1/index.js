@@ -158,7 +158,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
       listPaged: names.has("tasks.listPaged"),
       bodyPrecondition: names.has("tasks.bodyPrecondition"),
     },
-    conversations: { settings: names.has("conversations.settings") },
+    conversations: { settings: names.has("conversations.settings"), reset: names.has("conversation.reset") },
     github: { repos: names.has("github.repos") },
     messages: { context: names.has("messages.context") },
     threads: { postOperations: names.has("threads.postOperations"), attachmentChunks: names.has("thread.attachmentChunks") },

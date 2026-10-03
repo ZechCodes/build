@@ -30,12 +30,13 @@ let rowsByEntity = new Map();
  * attention-class events, so a merge the user triggered from this client would
  * otherwise badge its own entry. Whoever runs that verb calls this after it.
  */
-export async function markSeen(entityId, agentId, readFromSequence = null, readThroughSequence = null) {
+export async function markSeen(entityId, agentId, readFromSequence = null, readThroughSequence = null, threadId = "") {
   if (!entityId) return;
   try {
     await verbCall(rowHolding(entityId))("entity.seen", {
       entity_id: entityId,
       ...(agentId ? { agent_id: agentId } : {}),
+      ...(threadId ? { thread_id: threadId } : {}),
       ...(typeof readFromSequence === "number" ? { read_from_sequence: readFromSequence } : {}),
       ...(typeof readThroughSequence === "number" ? { read_through_sequence: readThroughSequence } : {}),
     });

@@ -5004,6 +5004,14 @@ describe("creating an agent, before the daemon has answered for it", () => {
 
   it("posts a message typed before the agent existed to the agent that now does", async () => {
     payload = agentless();
+    const answer = bridge.call;
+    let postedSequence = 6;
+    bridge.call = vi.fn(async (method, params) => {
+      if (method !== "thread.post") return answer(method, params);
+      const sequence = ++postedSequence;
+      await answer(method, params);
+      return { posted_sequence: sequence };
+    });
     await mount();
     const release = holdAgentAdd();
     await press("start here");

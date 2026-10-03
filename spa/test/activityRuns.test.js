@@ -63,6 +63,24 @@ describe("the runs a pane has open", () => {
 });
 
 describe("fetching what a run holds", () => {
+  it("refuses a held old generation body even while its offscreen reader remains live", async () => {
+    const threadAddress = { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "canonical" };
+    await cache.writeCached(threadAddress, { thread_id: "old-thread", items: [] });
+    let answer;
+    let asked = false;
+    const runs = runsOver([], [], { threadId: "old-thread", conversationId: "canonical", call: async () => {
+      asked = true; return new Promise((resolve) => { answer = resolve; });
+    } });
+    const opening = runs.open(DIGEST);
+    await vi.waitFor(() => expect(asked).toBe(true));
+    await cache.writeCached(threadAddress, { thread_id: "fresh-thread", items: [] });
+    answer(page([121, 122]));
+    await opening;
+    expect(await cache.readCached({ ...threadAddress, kind: "activity", sub: "ag-1:old-thread:120" })).toBeUndefined();
+    expect(runs.itemsOf(120)).toBeUndefined();
+    runs.dispose();
+  });
+
   it("asks thread.activity over the digest's span, and answers the items", async () => {
     const calls = [];
     const runs = runsOver([page([121, 122])], calls);

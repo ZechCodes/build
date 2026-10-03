@@ -7,9 +7,10 @@
 // reads there are: the page above the window a reader has scrolled to the top
 // of, and a task's own work item, which the board writes no row for.
 
-import { mergeCached } from "./localCache.js";
+import { mergeCachedAtomically } from "./localCache.js";
 import { mergeActivityDigests } from "./activityDigest.js";
 import { deviceKey } from "./deviceKey.js";
+import { differentThreadGeneration, threadGenerationParam } from "./threadSync.js";
 import { mergeThreadItems } from "./thread.js";
 
 /**
@@ -29,7 +30,8 @@ import { mergeThreadItems } from "./thread.js";
  */
 export function widenCachedThread(address, page, beforeSequence) {
   if (!address || !page) return Promise.resolve();
-  return mergeCached(address, (held) => {
+  return mergeCachedAtomically(address, (held) => {
+    if (differentThreadGeneration(held, page)) return null;
     const items = held?.items || [];
     if (!items.length || items[0].data?.sequence !== beforeSequence) return null;
     return {
@@ -46,10 +48,11 @@ export function widenCachedThread(address, page, beforeSequence) {
 /** The one read a rail makes: the page above the window, written where the
  *  panel reads it from. Shared by every kind of work item — a conversation is
  *  paged the same way whatever holds it. */
-async function olderThreadPage(call, { entityId, agentId, beforeSequence, address }) {
+async function olderThreadPage(call, { entityId, agentId, beforeSequence, address, threadId }) {
   const page = await call("thread.page", {
     entity_id: entityId,
     ...(agentId ? { agent_id: agentId } : {}),
+    ...threadGenerationParam(threadId),
     before_sequence: beforeSequence,
   });
   await widenCachedThread(address, page, beforeSequence);

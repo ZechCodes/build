@@ -69,6 +69,7 @@ import { modelsChangedOn } from "./modelCatalog.js";
 import { rememberNeedsYouRule } from "./needsYouRule.js";
 import { rememberBranchDelete } from "./branchDeleteSupport.js";
 import { NO_REVIEW_SUPPORT, rememberReviewSupport } from "./taskReviewSupport.js";
+import { rememberConversationResetSupport } from "./conversationReset.js";
 import { rememberAgentLineageSupport } from "./agentLineageSupport.js";
 import { rememberTaskChecklistSupport } from "./taskChecklistSupport.js";
 import { rememberSourceEditSupport } from "./sourceEditSupport.js";
@@ -93,7 +94,7 @@ const NO_CAPABILITIES = Object.freeze({
     attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false,
     listPaged: false, bodyPrecondition: false,
   }),
-  conversations: Object.freeze({ settings: false }),
+  conversations: Object.freeze({ settings: false, reset: false }),
   github: Object.freeze({ repos: false }),
   messages: Object.freeze({ context: false }),
   threads: Object.freeze({ postOperations: false, attachmentChunks: false }),
@@ -918,6 +919,7 @@ function publishGreeting(call, deviceId, greeting, adapter, onGreeting) {
   // And whether Done there deletes the branch (#87).
   void rememberBranchDelete(deviceId, state.adapter.capabilities);
   // And whether its agents name the agent that made them (#221).
+  void rememberConversationResetSupport(deviceId, state.adapter.capabilities);
   void rememberAgentLineageSupport(deviceId, state.adapter.capabilities);
   // And whether its sources can be edited in place (#228).
   void rememberSourceEditSupport(deviceId, state.adapter.capabilities);

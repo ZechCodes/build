@@ -121,6 +121,12 @@ async function menuBounds(page) {
 it.each(["bottom", "top"])("keeps a lifted menu inside its %s gutter when a cached Tasks row increases its height", async (edge) => {
   await withLayoutPage(async ({ page, basePath }) => {
     await openMenuOn(page, basePath, "desktop", { theme: "dark", bigCounts: false });
+    if (edge === "top") {
+      // Fixed left correction inside the glass header can change shrink-to-fit
+      // wrapping. Keep the actual shown width so both openings measure alike.
+      const width = await page.locator(".rail-surface-menu .splitmenu").evaluate((menu) => menu.getBoundingClientRect().width);
+      await page.addStyleTag({ content: `.rail-surface-menu .splitmenu { width: ${width}px }` });
+    }
     const menuHeight = await page.locator(".rail-surface-menu .splitmenu").evaluate((menu) => menu.getBoundingClientRect().height);
     await page.keyboard.press("Escape");
     await settled(page);
@@ -137,7 +143,10 @@ it.each(["bottom", "top"])("keeps a lifted menu inside its %s gutter when a cach
         // Moving the real header leaves four pixels of slack above an
         // upward-opening menu; its fixed-position containing block remains
         // the production glass header with its backdrop-filter.
-        document.querySelector(".rail-head").style.top = `${menuHeight + 18 - (caret.top - panelTop)}px`;
+        const button = document.querySelector(".rail-surface-menu .splitbtn").getBoundingClientRect();
+        const head = document.querySelector(".rail-head");
+        const buttonOffset = button.top - head.getBoundingClientRect().top;
+        head.style.top = `${menuHeight + 18 - panelTop - buttonOffset}px`;
       }
     }, { edge, menuHeight });
     await page.locator(".rail-surface-menu .caret").click();

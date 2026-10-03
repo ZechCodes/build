@@ -36,7 +36,7 @@ Wire 3.10.0.
   status/priority/label-only update refuses with `invalid_params`.
   A changed body refuses the whole update with
   `stale_body`. Checklist ticks use this precondition and reload on refusal,
-  preserving body edits from other devices and agents (#347, wire 3.9.0).
+  preserving body edits from other devices and agents (#347, wire 3.10.0).
 - Task reviews save the committed head and resolved base of every Git directory
   in a workspace, retain them with private refs, and keep non-Git and unavailable
   directories visible. `tasks.review.snapshot`, `tasks.review.get`,

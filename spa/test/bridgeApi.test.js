@@ -462,6 +462,8 @@ describe("workspace.measure_sizes", () => {
 
 // Body preconditions are a named feature, independent of the update verb.
 it("gates task body preconditions by capability name", () => {
-  expect(v1.capabilitiesOf({ api_version: "3.9.0", capabilities: ["tasks.bodyPrecondition"] }).tasks.bodyPrecondition).toBe(true);
-  expect(v1.capabilitiesOf({ api_version: "3.8.0", capabilities: ["tasks.update"] }).tasks.bodyPrecondition).toBe(false);
+  expect(v1.capabilitiesOf({ api_version: "3.10.0", capabilities: ["tasks.bodyPrecondition"] }).tasks.bodyPrecondition).toBe(true);
+  const previous = v1.capabilitiesOf({ api_version: "3.9.0", capabilities: ["tasks.update", "fs.projectSources"] });
+  expect(previous.tasks.bodyPrecondition).toBe(false);
+  expect(previous.fs.projectSources).toBe(true);
 });

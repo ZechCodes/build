@@ -5,7 +5,7 @@
 
 Task body checklist edits re-verified 2026-10-03 (#347): the SPA uses the existing
 authenticated `tasks.update` body write with optional `expected_body_hash`,
-announced by `tasks.bodyPrecondition` in wire 3.9.0. Every checklist tick sends
+announced by `tasks.bodyPrecondition` in wire 3.10.0. Every checklist tick sends
 the SHA-256 digest of the exact original body bytes. The bridge checks it under
 the app lock before any task field or timeline write; a mismatch refuses the
 whole update with nonretryable `stale_body`. This server check protects edits

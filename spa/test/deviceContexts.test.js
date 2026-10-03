@@ -58,7 +58,7 @@ describe("the device context registry", () => {
     const sent = context.rpc("tasks.update", params);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(session.call).not.toHaveBeenCalled();
-    adoptBridgeSelection(context, { version: "3.9.0", unsupported: null }, { capabilities: { tasks: { bodyPrecondition: true } } });
+    adoptBridgeSelection(context, { version: "3.10.0", unsupported: null }, { capabilities: { tasks: { bodyPrecondition: true } } });
     await sent;
     expect(session.call).toHaveBeenCalledWith("tasks.update", params);
   });
@@ -66,7 +66,7 @@ describe("the device context registry", () => {
   it("refuses body preconditions on an older current bridge while keeping ordinary updates", async () => {
     const session = fakeSession("dev-a");
     const context = adoptDeviceSession(session);
-    adoptBridgeSelection(context, { version: "3.8.0", unsupported: null }, { capabilities: { tasks: {} } });
+    adoptBridgeSelection(context, { version: "3.9.0", unsupported: null }, { capabilities: { tasks: {}, fs: { projectSources: true } } });
     await expect(context.rpc("tasks.update", { task_id: "task-347", body: "tick", expected_body_hash: "a".repeat(64) }))
       .rejects.toThrow("Update this device's bridge to tick task checklists.");
     expect(session.call).not.toHaveBeenCalled();

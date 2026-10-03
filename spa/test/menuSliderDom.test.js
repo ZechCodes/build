@@ -178,7 +178,7 @@ describe("the compaction slider in a split menu", () => {
     expect(host.querySelector(".splitmenu").hidden).toBe(true);
   });
 
-  it.each(["Enter", " "])("keeps slider focus after %s commits and a cache reply remounts it", (key) => {
+  it.each(["Enter", " "])("keeps the same focused slider and menu after %s commits and a cache reply patches it", async (key) => {
     const host = document.createElement("div");
     document.body.appendChild(host);
     const markup = (limit) => groupedMenuButtonMarkup("⋮", [compactionMenuGroup({ max_context_tokens: limit })]);
@@ -186,14 +186,118 @@ describe("the compaction slider in a split menu", () => {
     mountMenuIfChanged(host, markup(null), { onChoose });
     keydown(host.querySelector(".caret"), "ArrowUp");
     const slider = host.querySelector('[role="slider"]');
+    const menu = host.querySelector(".splitmenu");
+    await motionBeat();
+    const mutations = [];
+    const observer = new MutationObserver((records) => mutations.push(...records));
+    observer.observe(host, { subtree: true, childList: true, attributes: true, attributeOldValue: true });
+    const blur = vi.fn();
+    slider.addEventListener("blur", blur);
     preview(slider, 1);
     keydown(slider, key);
     mountMenuIfChanged(host, markup(150000), { onChoose });
+    await motionBeat();
+    observer.disconnect();
+    expect(host.querySelector(".splitmenu")).toBe(menu);
+    expect(host.querySelector('[role="slider"]')).toBe(slider);
+    expect(blur).not.toHaveBeenCalled();
+    expect(mutations.filter((record) => record.attributeName === "hidden")).toEqual([]);
+    expect(mutations.filter((record) => record.attributeName === "aria-expanded")).toEqual([]);
+    expect(mutations.some((record) => [...record.removedNodes].some((node) => node === menu || node.contains(menu)))).toBe(false);
     expect(onChoose).toHaveBeenCalledExactlyOnceWith("compact:150000");
     expect(host.querySelector(".caret").getAttribute("aria-expanded")).toBe("true");
     expect(host.querySelector(".splitmenu").hidden).toBe(false);
     expect(document.activeElement).toBe(host.querySelector('[role="slider"]'));
     expect(document.activeElement.getAttribute("aria-valuetext")).toBe("150k");
+  });
+
+  it("preserves a drag and its preview while another row is repainted", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const markup = (label) => groupedMenuButtonMarkup("⋮", [
+      { id: "detail", label: "Detail", options: [{ id: "detail:all", label }] },
+      compactionMenuGroup({ max_context_tokens: null, compact_at_tokens: 200000 }),
+    ]);
+    const onChoose = vi.fn();
+    mountMenuIfChanged(host, markup("All"), { onChoose });
+    keydown(host.querySelector(".caret"), "ArrowUp");
+    const slider = host.querySelector('[role="slider"]');
+    pointer(slider, "pointerdown");
+    preview(slider, 3);
+    mountMenuIfChanged(host, markup("All activity"), { onChoose });
+    expect(host.querySelector('[role="slider"]')).toBe(slider);
+    expect(slider.getAttribute("aria-valuetext")).toBe("300k");
+    pointer(slider, "pointerup");
+    expect(onChoose).toHaveBeenCalledExactlyOnceWith("compact:300000");
+  });
+
+  it("lets a changed cache win over a pending choice and its later refusal", async () => {
+    let refuse;
+    const onChoose = vi.fn(() => new Promise((resolve) => { refuse = () => resolve(false); }));
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const markup = (limit) => groupedMenuButtonMarkup("⋮", [compactionMenuGroup({ max_context_tokens: limit })]);
+    mountMenuIfChanged(host, markup(null), { onChoose });
+    keydown(host.querySelector(".caret"), "ArrowUp");
+    const slider = host.querySelector('[role="slider"]');
+    preview(slider, 1);
+    keydown(slider, "Enter");
+    mountMenuIfChanged(host, markup(300000), { onChoose });
+    expect(host.querySelector('[role="slider"]')).toBe(slider);
+    expect(slider.getAttribute("aria-valuetext")).toBe("300k");
+    refuse();
+    await motionBeat();
+    expect(slider.getAttribute("aria-valuetext")).toBe("300k");
+    keydown(slider, "Enter");
+    expect(onChoose).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a custom stop's slider node when a save removes its extra tick", async () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const markup = (limit) => groupedMenuButtonMarkup("⋮", [compactionMenuGroup({ max_context_tokens: limit })]);
+    const onChoose = vi.fn();
+    mountMenuIfChanged(host, markup(250000), { onChoose });
+    keydown(host.querySelector(".caret"), "ArrowUp");
+    const slider = host.querySelector('[role="slider"]');
+    preview(slider, 3);
+    keydown(slider, "Enter");
+    mountMenuIfChanged(host, markup(300000), { onChoose });
+    expect(host.querySelector('[role="slider"]')).toBe(slider);
+    expect(slider.max).toBe("4");
+    expect(host.querySelectorAll(".menu-slider-stops span")).toHaveLength(5);
+    await motionBeat();
+    preview(slider, 4);
+    pointer(slider, "pointerdown");
+    pointer(slider, "pointerup");
+    expect(onChoose).toHaveBeenLastCalledWith("compact:off");
+  });
+
+  it("keeps a detached save's refusal from repainting a replacement slider", async () => {
+    let refuse;
+    const onChoose = vi.fn(() => new Promise((resolve) => { refuse = () => resolve(false); }));
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const markup = (label) => groupedMenuButtonMarkup("⋮", [
+      { id: "detail", label, options: [{ id: "detail:all", label: "All" }] },
+      compactionMenuGroup({ max_context_tokens: null, compact_at_tokens: 200000 }),
+    ]);
+    const close = mountMenuIfChanged(host, markup("Detail"), { onChoose });
+    keydown(host.querySelector(".caret"), "ArrowUp");
+    const oldSlider = host.querySelector('[role="slider"]');
+    preview(oldSlider, 1);
+    keydown(oldSlider, "Enter");
+    close();
+    mountMenuIfChanged(host, markup("Activity detail"), { onChoose });
+    keydown(host.querySelector(".caret"), "ArrowUp");
+    const newSlider = host.querySelector('[role="slider"]');
+    preview(newSlider, 3);
+    refuse();
+    await motionBeat();
+    expect(newSlider).not.toBe(oldSlider);
+    expect(document.activeElement).toBe(newSlider);
+    expect(newSlider.getAttribute("aria-valuetext")).toBe("300k");
+    expect(host.querySelector('.menu-slider .mt').textContent).toBe("300k");
   });
 
   it("does not resend the standing stop with Enter", () => {

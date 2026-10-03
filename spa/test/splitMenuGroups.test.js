@@ -266,6 +266,64 @@ describe("mountMenuIfChanged", () => {
     ] },
   ], { title: "Conversation menu", icon: true });
 
+  it("patches selected marks and labels on the live rows without reopening or moving focus", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const onChoose = vi.fn();
+    const close = mountMenuIfChanged(container, markupAt("all"), { onChoose });
+    const caret = container.querySelector(".caret");
+    keydown(caret, "ArrowDown");
+    await motionBeat();
+    const menu = container.querySelector(".splitmenu");
+    const row = document.activeElement;
+    menu.scrollTop = 25;
+    const records = [];
+    const observer = new MutationObserver((mutations) => records.push(...mutations));
+    observer.observe(container, { attributes: true, subtree: true, childList: true });
+    const next = markupAt("agent").replace("Agent only", "Agent activity");
+    expect(mountMenuIfChanged(container, next, { onChoose })).toBe(close);
+    await motionBeat();
+    observer.disconnect();
+    expect(container.querySelector(".splitmenu")).toBe(menu);
+    expect(document.activeElement).toBe(row);
+    expect(menu.scrollTop).toBe(25);
+    expect(caret.getAttribute("aria-expanded")).toBe("true");
+    expect(records.filter((record) => ["hidden", "aria-expanded"].includes(record.attributeName))).toEqual([]);
+    expect(row.getAttribute("aria-checked")).toBe("false");
+    expect(row.classList.contains("on")).toBe(false);
+    const selected = container.querySelector('[data-action="detail:agent"]');
+    expect(selected.getAttribute("aria-checked")).toBe("true");
+    expect(selected.querySelector(".mt").textContent).toBe("Agent activity");
+    selected.click();
+    expect(onChoose).toHaveBeenCalledExactlyOnceWith("detail:agent");
+  });
+
+  it("replaces a closed menu and wires its new contents", () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const onChoose = vi.fn();
+    mountMenuIfChanged(container, markupAt("all"), { onChoose });
+    const menu = container.querySelector(".splitmenu");
+    mountMenuIfChanged(container, markupAt("agent"), { onChoose });
+    expect(container.querySelector(".splitmenu")).not.toBe(menu);
+    expect(container.querySelector(".splitmenu").hidden).toBe(true);
+    keydown(container.querySelector(".caret"), "ArrowDown");
+    container.querySelector('[data-action="detail:agent"]').click();
+    expect(onChoose).toHaveBeenCalledExactlyOnceWith("detail:agent");
+  });
+
+  it("replaces an open menu when its row structure changes", () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    mountMenuIfChanged(container, markupAt("all"), { onChoose: vi.fn() });
+    keydown(container.querySelector(".caret"), "ArrowDown");
+    const menu = container.querySelector(".splitmenu");
+    mountMenuIfChanged(container, menuButtonMarkup("⋮", [{ id: "new", label: "New choice" }]), { onChoose: vi.fn() });
+    expect(container.querySelector(".splitmenu")).not.toBe(menu);
+    expect(container.querySelector(".splitmenu").hidden).toBe(true);
+    expect(document.activeElement).toBe(container.querySelector(".caret"));
+  });
+
   it("hands focus to the new opener when the old one had it", () => {
     const container = document.createElement("div");
     document.body.appendChild(container);

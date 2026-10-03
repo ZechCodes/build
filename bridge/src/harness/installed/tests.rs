@@ -643,3 +643,46 @@ fn a_changed_executable_does_not_give_its_old_answer_a_fresh_age() {
     );
     assert_eq!(queued.lock().unwrap().len(), 1);
 }
+
+#[test]
+fn an_old_background_ask_cannot_replace_a_newer_fresh_answer() {
+    for complete_old_ask in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = tracked_cli(dir.path(), "codex");
+        let cli = ScriptedCli::leaked("0.155.1");
+        let clock = HandClock::leaked();
+        let queued: &'static Mutex<Vec<Box<dyn FnOnce() + Send>>> =
+            Box::leak(Box::new(Mutex::new(Vec::new())));
+        let readings = Readings::with(
+            Some(Arc::new(|ask| queued.lock().unwrap().push(ask))),
+            Arc::new(move || clock.now()),
+            READING_TTL,
+        );
+        readings.reading(binary, cli);
+        cli.set("0.160.0");
+        std::fs::File::open(binary)
+            .unwrap()
+            .set_modified(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap();
+        let fresh = readings
+            .fresh_reading(binary, cli, REFUSAL_FRESHNESS)
+            .unwrap();
+        assert_eq!(fresh.version, Some(version("0.160.0")));
+        cli.set("0.155.1");
+        let old = queued.lock().unwrap().pop().unwrap();
+        if complete_old_ask {
+            old();
+        } else {
+            drop(old);
+        }
+
+        assert_eq!(
+            readings.held(binary).unwrap().version,
+            Some(version("0.160.0")),
+            "old probe completed: {complete_old_ask}"
+        );
+        clock.advance(READING_TTL);
+        readings.reading(binary, cli);
+        assert_eq!(queued.lock().unwrap().len(), 1, "the old claim is released");
+    }
+}

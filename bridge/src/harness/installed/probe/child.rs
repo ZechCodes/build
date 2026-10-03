@@ -20,13 +20,14 @@ use crate::harness::{DAEMON_IDENTITY_VARS, INHERITED_AGENT_MARKERS};
 /// The longest line kept. A `model/list` page is about 10 KiB today.
 pub(super) const MAX_LINE: usize = 1024 * 1024;
 
-/// The most a probe child may say in all.
+/// The most stdout a probe child may say in all.
 pub(super) const MAX_OUTPUT: usize = 4 * MAX_LINE;
 
 /// Stderr is drained independently of stdout, keeping only a bounded tail
 /// of its last nonempty line. A noisy wrapper cannot fill its stderr pipe.
 const MAX_STDERR_BYTES: usize = 4096;
 const MAX_STDERR_TEXT: usize = 512;
+const MAX_STDERR_WAIT: Duration = Duration::from_millis(50);
 
 /// Why a probe child stopped being read.
 #[derive(Debug)]
@@ -39,7 +40,9 @@ pub(super) struct ProbeChild {
     child: Child,
     lines: Receiver<Result<String, Unread>>,
     stderr: Stderr,
+    /// Answers stop early enough to drain final stderr within the deadline.
     expiry: Instant,
+    hard_expiry: Instant,
     stopped: bool,
 }
 
@@ -59,6 +62,8 @@ impl ProbeChild {
         talks: bool,
         deadline: Duration,
     ) -> std::io::Result<Self> {
+        let hard_expiry = Instant::now() + deadline;
+        let diagnostic_reserve = MAX_STDERR_WAIT.min(deadline / 10);
         let mut child = command(binary, args, talks).spawn()?;
         let lines = read_lines(child.stdout.take());
         let stderr = Stderr::capture(child.stderr.take());
@@ -66,7 +71,8 @@ impl ProbeChild {
             child,
             lines,
             stderr,
-            expiry: Instant::now() + deadline,
+            expiry: hard_expiry - diagnostic_reserve,
+            hard_expiry,
             stopped: false,
         })
     }
@@ -116,8 +122,8 @@ impl ProbeChild {
     /// before the stderr reader has consumed the child's final error.
     pub(super) fn failure(&mut self, error: std::io::Error) -> std::io::Error {
         self.stop();
-        let left = self.expiry.saturating_duration_since(Instant::now());
-        let stderr = self.stderr.last(left.min(Duration::from_millis(50)));
+        let left = self.hard_expiry.saturating_duration_since(Instant::now());
+        let stderr = self.stderr.last(left.min(MAX_STDERR_WAIT));
         if stderr.is_empty() {
             return error;
         }
@@ -189,6 +195,8 @@ struct Stderr(Arc<StderrState>);
 struct StderrState {
     reading: Mutex<StderrReading>,
     finished: Condvar,
+    #[cfg(test)]
+    before_wait: Mutex<Option<std::sync::mpsc::Sender<Duration>>>,
 }
 
 impl Stderr {
@@ -229,6 +237,10 @@ impl Stderr {
 
     fn last(&self, wait: Duration) -> String {
         let reading = self.0.reading.lock().unwrap();
+        #[cfg(test)]
+        if let Some(started) = self.0.before_wait.lock().unwrap().take() {
+            let _ = started.send(wait);
+        }
         let (reading, _) = self
             .0
             .finished
@@ -298,4 +310,48 @@ fn read_lines(stdout: Option<ChildStdout>) -> Receiver<Result<String, Unread>> {
         }
     });
     received
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_timeout_leaves_time_for_a_delayed_stderr_collector() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = dir.path().join("hanging");
+        crate::isolation::test_fixture::write_executable(&cli, "#!/bin/sh\nsleep 60\n");
+        let mut child = ProbeChild::start_within(
+            cli.to_str().unwrap(),
+            &["--version"],
+            false,
+            Duration::from_millis(500),
+        )
+        .unwrap();
+
+        // Publish only when diagnostic collection starts, simulating a
+        // stderr reader still draining the child's last bytes after timeout.
+        let delayed = Stderr::default();
+        let (started, waiting) = std::sync::mpsc::channel();
+        *delayed.0.before_wait.lock().unwrap() = Some(started);
+        child.stderr = delayed.clone();
+        let collector = std::thread::spawn(move || {
+            let wait = waiting.recv().unwrap();
+            let mut line = VecDeque::from(b"late-timeout-reason".to_vec());
+            delayed.remember(&mut line);
+            delayed.finish();
+            wait
+        });
+
+        let timeout = child.next_line().unwrap_err();
+        assert_eq!(timeout.kind(), std::io::ErrorKind::TimedOut);
+        let error = child.failure(timeout);
+        let wait = collector.join().unwrap();
+        assert!(
+            !wait.is_zero(),
+            "timeout left no diagnostic collection time"
+        );
+        assert!(wait <= Duration::from_millis(50));
+        assert!(error.to_string().contains("late-timeout-reason"), "{error}");
+    }
 }

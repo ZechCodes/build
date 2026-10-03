@@ -772,12 +772,15 @@ the TTL, and a session that reports another version (the adk init line's
 `claude_code_version`, codex's `initialize` `userAgent`) asks at once. A stable
 wrapper whose underlying installation changes is covered by the periodic TTL
 refresh and session version hints. Dropped or panicking probe jobs release
-their claim and retry. A CLI that is missing, hangs, or answers unreadably
+their claim and retry. Attempts are ordered so an older background result or
+abandoned job cannot overwrite a newer spawn-gate reading; a spawn uses its
+own fresh answer. A CLI that is missing, hangs, or answers unreadably
 offers the whole catalog, as before. Each probe runs the program by
 name with fixed arguments and no shell, from the home directory, with a 3 s
 deadline, bounded output and its process group killed afterwards. Stderr is
 drained concurrently, keeping a 4 KiB tail of the last nonempty line and
-logging at most 512 sanitized characters with a failure. Probes run with
+logging at most 512 sanitized characters with a failure. Up to 50 ms of the
+same deadline is reserved for the final stderr drain. Probes run with
 `MISE_OFFLINE=1`, so a mise wrapper never starts an install that the deadline
 would cut off halfway (`probe/child.rs`; `planning/v2/Installed CLI Probe Security Checklist.md`). A
 changed answer is pushed as `models.changed` (`bridge/src/app/model_catalog.rs`).

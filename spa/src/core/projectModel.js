@@ -1,12 +1,10 @@
 import { directoryTab } from "./workspaceModel.js";
 
-/** Where a project itself opens: its own page — the workspaces it holds, and
- * the agent you talk to about it.
+/** Where an ordinary project link opens: its Tasks face and the agent you
+ * talk to about it. Explicit toolbar returns use projectRailState instead.
  *
- * A project is a template, never a place to work: its own checkout is the base
- * the workspaces are cut from, and no surface opens it. The page is about the
- * project, and the work is in the workspaces on it (core/router.js writes it as
- * `#/project/<id>`).
+ * The project page also offers its original sources in Files and the
+ * workspaces cut from them (core/router.js writes it as `#/project/<id>`).
  *
  * The route names the machine the project is on, since every machine mints a
  * `proj-1` of its own. A project the feed has not stamped — the answer to a

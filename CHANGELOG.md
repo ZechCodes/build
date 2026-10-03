@@ -32,7 +32,9 @@ Wire 3.10.0.
   other markdown surfaces display disabled checkboxes (#347).
 - Conditional task body writes: `tasks.update` accepts `expected_body_hash`
   (SHA-256 of the exact saved UTF-8 body), announced by
-  `tasks.bodyPrecondition`. A changed body refuses the whole update with
+  `tasks.bodyPrecondition`. The hash requires `body`; sending it on a
+  status/priority/label-only update refuses with `invalid_params`.
+  A changed body refuses the whole update with
   `stale_body`. Checklist ticks use this precondition and reload on refusal,
   preserving body edits from other devices and agents (#347, wire 3.9.0).
 - Task reviews save the committed head and resolved base of every Git directory

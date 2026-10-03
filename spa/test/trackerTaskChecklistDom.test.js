@@ -183,7 +183,7 @@ it("rolls back a tick refused by a newer server body, then refreshes that body",
     if (method !== "tasks.update") return Promise.resolve({});
     writes.push({ params });
     if (params.expected_body_hash !== hash(serverBody)) {
-      return Promise.reject(Object.assign(new Error("This task body changed. Reload it before saving."), { code: "stale_body" }));
+      return Promise.reject(Object.assign(new Error("stale_body: The task body changed. Refresh the task before editing it."), { code: "stale_body" }));
     }
     serverBody = params.body;
     return Promise.resolve({ task: wire(serverBody).task });
@@ -191,7 +191,7 @@ it("rolls back a tick refused by a newer server body, then refreshes that body",
   await mount();
   await vi.waitFor(() => expect(serverReads).toBe(1));
   box().click();
-  await vi.waitFor(() => expect(notifyError).toHaveBeenCalled());
+  await vi.waitFor(() => expect(notifyError).toHaveBeenCalledExactlyOnceWith("This task changed elsewhere; reloaded it."));
   expect(writes).toHaveLength(1);
   expect(writes[0].params.expected_body_hash).toBe(hash(BODY));
   expect(serverBody).toContain("An agent added this instruction.");

@@ -110,7 +110,9 @@ export function mountTaskPage(host, options) {
       if (!pending) restoreChecklistFocus();
     },
     onFailure: (error) => {
-      if (!state.disposed) notifyError("Could not save this checklist", messageOf(error));
+      if (state.disposed) return;
+      if (error?.code === "stale_body") notifyError("This task changed elsewhere; reloaded it.");
+      else notifyError("Could not save this checklist", messageOf(error));
     },
   });
   const commentDraft = watchUiState(uiAddress({

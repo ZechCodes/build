@@ -107,3 +107,56 @@ it("retains the focused menu and every surviving row when cached tasks appear an
     expect(await page.evaluate(() => window.__menuSettingsAsked)).toEqual([]);
   });
 });
+
+async function menuBounds(page) {
+  return page.evaluate(() => {
+    const menu = document.querySelector(".rail-surface-menu .splitmenu");
+    const box = menu.getBoundingClientRect();
+    const panel = document.querySelector("#rail-panel").getBoundingClientRect();
+    return { top: box.top, bottom: box.bottom, bottomBound: Math.min(window.innerHeight, panel.bottom),
+      position: menu.style.position, opensAbove: menu.style.top === "auto" };
+  });
+}
+
+it.each(["bottom", "top"])("keeps a lifted menu inside its %s gutter when a cached Tasks row increases its height", async (edge) => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await openMenuOn(page, basePath, "desktop", { theme: "dark", bigCounts: false });
+    const menuHeight = await page.locator(".rail-surface-menu .splitmenu").evaluate((menu) => menu.getBoundingClientRect().height);
+    await page.keyboard.press("Escape");
+    await settled(page);
+    await page.evaluate(({ edge, menuHeight }) => {
+      const panel = document.querySelector("#rail-panel");
+      const panelTop = panel.getBoundingClientRect().top;
+      const caret = document.querySelector(".rail-surface-menu .caret").getBoundingClientRect();
+      if (edge === "bottom") {
+        // The unchanged menu fits below its button with only four pixels
+        // beyond the required eight-pixel rail gutter.
+        panel.style.bottom = "auto";
+        panel.style.height = `${caret.bottom + 6 + menuHeight + 12 - panelTop}px`;
+      } else {
+        // Moving the real header leaves four pixels of slack above an
+        // upward-opening menu; its fixed-position containing block remains
+        // the production glass header with its backdrop-filter.
+        document.querySelector(".rail-head").style.top = `${menuHeight + 18 - (caret.top - panelTop)}px`;
+      }
+    }, { edge, menuHeight });
+    await page.locator(".rail-surface-menu .caret").click();
+    await settled(page);
+    await observeCompactionMenu(page);
+    const before = await menuBounds(page);
+    expect(before.position).toBe("fixed");
+    expect(before.opensAbove).toBe(edge === "top");
+    expect(before.top).toBeGreaterThanOrEqual(7.5);
+    expect(before.bottom).toBeLessThanOrEqual(before.bottomBound - 7.5);
+    await page.evaluate(() => window.__setMenuTasks([{
+      id: "menu-task", number: 366, title: "Keep the menu open", state: "open", status: "in_progress",
+      assignee: { kind: "agent", agent_id: "menu-agent" },
+    }]));
+    await page.locator('.rail-surface-menu [data-action="tasks"]').waitFor({ state: "attached" });
+    await settled(page);
+    expect(await compactionContinuity(page, { stop: true })).toEqual(uninterruptedMenu);
+    const after = await menuBounds(page);
+    expect(after.top).toBeGreaterThanOrEqual(7.5);
+    expect(after.bottom).toBeLessThanOrEqual(after.bottomBound - 7.5);
+  });
+});

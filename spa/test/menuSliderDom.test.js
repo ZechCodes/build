@@ -307,6 +307,51 @@ describe("the compaction slider in a split menu", () => {
     expect(onChoose).not.toHaveBeenCalled();
   });
 
+  const markupWithSlider = (included) => groupedMenuButtonMarkup("⋮", [
+    { id: "detail", label: "Detail", options: [{ id: "detail:all", label: "All", description: "" }] },
+    ...(included ? [compactionMenuGroup({ max_context_tokens: null, compact_at_tokens: 200000 })] : []),
+  ]);
+
+  it("mounts a slider inserted into an open menu and commits its pointer release", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const onChoose = vi.fn();
+    mountMenuIfChanged(host, markupWithSlider(false), { onChoose });
+    keydown(host.querySelector(".caret"), "ArrowDown");
+    const menu = host.querySelector(".splitmenu");
+    const row = document.activeElement;
+    mountMenuIfChanged(host, markupWithSlider(true), { onChoose });
+    expect(host.querySelector(".splitmenu")).toBe(menu);
+    expect(document.activeElement).toBe(row);
+    const slider = host.querySelector('[role="slider"]');
+    pointer(slider, "pointerdown");
+    preview(slider, 3);
+    pointer(slider, "pointerup");
+    expect(onChoose).toHaveBeenCalledExactlyOnceWith("compact:300000");
+    expect(document.activeElement).toBe(slider);
+    expect(menu.hidden).toBe(false);
+  });
+
+  it("retires a removed slider before focus moves, so blur and release cannot commit it", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const onChoose = vi.fn();
+    mountMenuIfChanged(host, markupWithSlider(true), { onChoose });
+    keydown(host.querySelector(".caret"), "ArrowUp");
+    const menu = host.querySelector(".splitmenu");
+    const slider = document.activeElement;
+    pointer(slider, "pointerdown");
+    preview(slider, 3);
+    mountMenuIfChanged(host, markupWithSlider(false), { onChoose });
+    expect(host.querySelector(".splitmenu")).toBe(menu);
+    expect(document.activeElement).toBe(host.querySelector('[data-action="detail:all"]'));
+    expect(slider.isConnected).toBe(false);
+    expect(menu.hidden).toBe(false);
+    pointer(slider, "pointerup");
+    slider.dispatchEvent(new Event("blur"));
+    expect(onChoose).not.toHaveBeenCalled();
+  });
+
   it("keeps one committed stop through further previews, Escape, blur and an outside press while saving", async () => {
     let refuse;
     const onChoose = vi.fn(() => new Promise((_resolve, reject) => { refuse = reject; }));

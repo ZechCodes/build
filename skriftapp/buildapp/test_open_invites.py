@@ -1,11 +1,12 @@
 """Open links bind on redemption, including competing requests holding stale rows."""
+import asyncio
 from datetime import timedelta
 from uuid import uuid4
 
 import pytest
 
 from buildapp import invites
-from buildapp.db_test_support import create_skrift_tables, engine_for, file_session_maker
+from buildapp.db_test_support import add_account, create_skrift_tables, engine_for, file_session_maker
 from buildapp.models import Invite
 from buildapp.test_invites import NOW, invite
 
@@ -83,3 +84,46 @@ async def test_claim_rechecks_database_state_before_binding(db, spoiled):
     await db.commit()
     assert not (await invites.claim_invite(db, row, uuid4(), "second@example.com", NOW)).ok
     assert row.email != "second@example.com"
+
+
+@pytest.mark.asyncio
+async def test_two_concurrent_links_cannot_grant_one_account_two_memberships(tmp_path, monkeypatch):
+    sessions = file_session_maker(tmp_path / "membership-race.db")
+    engine = engine_for(sessions)
+    await create_skrift_tables(engine)
+    checked = asyncio.Event()
+    checks = 0
+    holds_invite = invites.holds_a_redeemed_invite
+
+    async def both_check_before_claiming(session, user_id):
+        nonlocal checks
+        result = await holds_invite(session, user_id)
+        checks += 1
+        if checks == 2:
+            checked.set()
+        await asyncio.wait_for(checked.wait(), timeout=5)
+        return result
+
+    monkeypatch.setattr(invites, "holds_a_redeemed_invite", both_check_before_claiming)
+    try:
+        async with sessions() as setup:
+            user_id = await add_account(setup, "member@example.com")
+            first, _ = await invites.issue_open_invite(setup, None, NOW)
+            second, _ = await invites.issue_open_invite(setup, None, NOW)
+
+        async def claim(invite_id):
+            async with sessions() as session:
+                row = await session.get(Invite, invite_id)
+                result = await invites.claim_invite(session, row, user_id, "member@example.com", NOW)
+                await session.commit()
+                return result
+
+        results = await asyncio.gather(claim(first.id), claim(second.id))
+        assert sum(result.ok for result in results) == 1
+        assert [result.reason for result in results if not result.ok] == [invites.ALREADY_MEMBER]
+        async with sessions() as session:
+            rows = await invites.all_invites(session)
+            assert sum(row.redeemed_by == user_id for row in rows) == 1
+            assert sum(row.email == "" for row in rows) == 1
+    finally:
+        await engine.dispose()

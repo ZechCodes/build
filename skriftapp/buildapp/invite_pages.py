@@ -21,7 +21,7 @@ from litestar.status_codes import (
     HTTP_410_GONE,
 )
 
-from buildapp.invites import EMAIL_MISMATCH, InviteState, RedemptionRefusal
+from buildapp.invites import ALREADY_MEMBER, EMAIL_MISMATCH, InviteState, RedemptionRefusal
 from buildapp.landing_page import HOME_LINK, Link, render_panel_page
 
 ACTION_SEPARATOR = " "
@@ -50,7 +50,9 @@ EXPIRED_MESSAGE = "Invites last 14 days. Ask whoever invited you to send another
 
 REDEEMED_TITLE = "Invite already used — Build"
 REDEEMED_HEADING = "This invite has already been used."
-REDEEMED_MESSAGE = "If that was you, Build is waiting."
+REDEEMED_MESSAGE = (
+    "If that was you, Build is waiting. Otherwise, ask whoever invited you for another link."
+)
 
 MISMATCH_TITLE = "Wrong account — Build"
 MISMATCH_HEADING = "This invite is for a different address."
@@ -102,6 +104,13 @@ REQUEST_ACCESS_LINK = Link(label=REQUEST_ACCESS_LABEL, href=WAITLIST_PATH, prima
 #: Reason → page. The invite handler looks a reason up here and returns the response;
 #: adding a state means adding a row, never a branch.
 OUTCOMES: dict[RedemptionRefusal, PageOutcome] = {
+    ALREADY_MEMBER: PageOutcome(
+        status_code=HTTP_200_OK,
+        title="Already a member — Build",
+        heading="You already have access to Build.",
+        message="This invite is still unused. Open Build with your existing membership.",
+        links=(APP_LINK,),
+    ),
     InviteState.UNKNOWN: PageOutcome(
         status_code=HTTP_404_NOT_FOUND,
         title=UNKNOWN_TITLE,

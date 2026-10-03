@@ -25,6 +25,7 @@ from litestar.testing import TestClient
 from skrift.auth.guards import auth_guard
 
 from buildapp import email_message, invites
+from buildapp.alpha_membership import holds_a_redeemed_invite
 from buildapp.clock import utc_now
 from buildapp.db_test_support import (
     asgi_app,
@@ -62,12 +63,15 @@ def client(monkeypatch, email_backend) -> Iterator[TestClient]:
         yield test_client
 
 
-def issue(client: TestClient, *, email: str = INVITED, **edits) -> str:
+def issue(client: TestClient, *, email: str = INVITED, kind="email_bound", **edits) -> str:
     """Put one invite in the database and hand back its raw token."""
 
     async def create() -> str:
         async with client.app.state.make_session() as session:
-            invite, raw = await invites.issue_invite(session, email, uuid4(), utc_now())
+            if kind == "open_link":
+                invite, raw = await invites.issue_open_invite(session, uuid4(), utc_now())
+            else:
+                invite, raw = await invites.issue_invite(session, email, uuid4(), utc_now())
             for field, value in edits.items():
                 setattr(invite, field, value)
             await session.commit()
@@ -160,6 +164,37 @@ def test_a_second_visit_to_a_redeemed_link_is_the_already_used_page(client):
     again = client.get(invite_path(raw), follow_redirects=False)
     assert again.status_code == HTTP_200_OK
     assert OUTCOMES[InviteState.REDEEMED].heading in again.text
+    assert stored_invites(client)[0].redeemed_by == user_id
+
+
+@pytest.mark.parametrize("first_kind", ["email_bound", "open_link"])
+@pytest.mark.parametrize("next_kind", ["email_bound", "open_link"])
+def test_a_member_cannot_spend_another_link_and_escape_revocation(client, first_kind, next_kind):
+    first_raw = issue(client, kind=first_kind)
+    user_id = sign_in(client, INVITED)
+    assert client.get(invite_path(first_raw), follow_redirects=False).status_code == 302
+    extra_raw = issue(client, kind=next_kind)
+
+    response = client.get(invite_path(extra_raw), follow_redirects=False)
+
+    assert response.status_code == 200
+    assert "You already have access to Build." in response.text
+    assert 'href="/app/"' in response.text
+    assert response.headers["cache-control"] == "no-store"
+    extra, original = stored_invites(client)
+    assert extra.redeemed_by is None
+    assert extra.redeemed_at is None
+    assert extra.email == ("" if next_kind == "open_link" else INVITED)
+
+    async def revoke_original():
+        async with client.app.state.make_session() as session:
+            await invites.revoke_invite(session, original.id, utc_now())
+            assert not await holds_a_redeemed_invite(session, user_id)
+
+    with client.portal() as portal:
+        portal.call(revoke_original)
+    # A withdrawn membership does not prevent a later invitation to rejoin.
+    assert client.get(invite_path(extra_raw), follow_redirects=False).status_code == 302
     assert stored_invites(client)[0].redeemed_by == user_id
 
 

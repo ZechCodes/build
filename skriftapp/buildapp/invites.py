@@ -15,10 +15,12 @@ from datetime import datetime, timedelta
 from enum import Enum
 from uuid import UUID
 
+from skrift.db.models.user import User
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from buildapp.models import Invite
+from buildapp.alpha_membership import holds_a_redeemed_invite, redeemed_invites_for
 from buildapp.invite_kind import InviteKind
 from buildapp.token_hash import token_hash
 from buildapp.waitlist_address import canonical_address, normalize_waitlist_address
@@ -56,7 +58,14 @@ class EmailMismatch:
 
 EMAIL_MISMATCH = EmailMismatch()
 
-RedemptionRefusal = InviteState | EmailMismatch
+
+class AlreadyMember:
+    """The account holds an unrevoked membership; leave its extra link unused."""
+
+
+ALREADY_MEMBER = AlreadyMember()
+
+RedemptionRefusal = InviteState | EmailMismatch | AlreadyMember
 
 
 @dataclass(frozen=True)
@@ -129,6 +138,12 @@ async def claim_invite(
     outcome = redeem(candidate, user_id, user_email, now)
     if not outcome.ok:
         return outcome
+    # Different links must not grant the same account two memberships. PostgreSQL
+    # serializes these requests on the account row until the caller commits. SQLite
+    # serializes writers and rechecks the membership predicate in the update below.
+    await db_session.execute(select(User.id).where(User.id == user_id).with_for_update())
+    if await holds_a_redeemed_invite(db_session, user_id):
+        return Redemption(ok=False, reason=ALREADY_MEMBER)
     claimed = await db_session.execute(
         update(Invite)
         .where(
@@ -139,13 +154,15 @@ async def claim_invite(
             Invite.redeemed_by.is_(None),
             Invite.revoked_at.is_(None),
             Invite.expires_at > now,
+            ~redeemed_invites_for(user_id).exists(),
         )
         .values(email=candidate.email, redeemed_by=user_id, redeemed_at=now)
         .execution_options(synchronize_session=False)
     )
     await db_session.refresh(invite)
     if claimed.rowcount != 1:
-        return Redemption(ok=False, reason=invite_state(invite, now))
+        state = invite_state(invite, now)
+        return Redemption(ok=False, reason=ALREADY_MEMBER if state is InviteState.OPEN else state)
     return outcome
 
 

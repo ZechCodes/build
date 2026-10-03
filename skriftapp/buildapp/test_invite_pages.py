@@ -14,7 +14,7 @@ from buildapp.invite_pages import (
     OUTCOMES,
     invite_only_outcome,
 )
-from buildapp.invites import EMAIL_MISMATCH, InviteState
+from buildapp.invites import ALREADY_MEMBER, EMAIL_MISMATCH, InviteState
 from buildapp.landing_page import PANEL_NAME, read_landing_file
 from buildapp.test_root_landing import (
     FOOTER_ASSURANCE_COPY,
@@ -45,6 +45,7 @@ def test_every_refusal_reason_the_domain_can_return_has_a_row():
         InviteState.REDEEMED,
         InviteState.EXPIRED,
         EMAIL_MISMATCH,
+        ALREADY_MEMBER,
     }
 
 
@@ -54,6 +55,7 @@ def test_each_outcome_answers_with_the_status_code_its_state_deserves():
     assert OUTCOMES[InviteState.EXPIRED].status_code == 410
     assert OUTCOMES[InviteState.REDEEMED].status_code == 200
     assert OUTCOMES[EMAIL_MISMATCH].status_code == 403
+    assert OUTCOMES[ALREADY_MEMBER].status_code == 200
     assert invite_only_outcome(SIGNED_IN_ADDRESS).status_code == 403
 
 

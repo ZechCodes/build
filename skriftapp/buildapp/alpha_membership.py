@@ -17,7 +17,7 @@ from uuid import UUID
 
 from litestar.exceptions import PermissionDeniedException
 from skrift.auth.services import get_user_permissions
-from sqlalchemy import select
+from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from buildapp.models import Invite
@@ -28,12 +28,17 @@ ADMINISTRATOR_PERMISSION = "administrator"
 MembershipRule = Callable[[AsyncSession, UUID], Awaitable[bool]]
 
 
-async def holds_a_redeemed_invite(db_session: AsyncSession, user_id: UUID) -> bool:
-    result = await db_session.execute(
+def redeemed_invites_for(user_id: UUID) -> Select:
+    """The membership predicate, also used inside the atomic invite claim."""
+    return (
         select(Invite.id)
         .where(Invite.redeemed_by == user_id, Invite.revoked_at.is_(None))
-        .limit(1)
+        .correlate(None)
     )
+
+
+async def holds_a_redeemed_invite(db_session: AsyncSession, user_id: UUID) -> bool:
+    result = await db_session.execute(redeemed_invites_for(user_id).limit(1))
     return result.first() is not None
 
 

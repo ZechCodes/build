@@ -618,6 +618,8 @@ impl Thread {
         count_serialized_items(page.len());
         json!({
             "id": self.id,
+            "thread_id": self.id,
+            "thread_generation_revision": self.generation_revision,
             "agent": self.agent,
             "sessions": self.sessions,
             "items": page,

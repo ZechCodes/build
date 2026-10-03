@@ -817,3 +817,17 @@ a.thread-task-action:focus-visible, a.thread-task-notice:focus-visible {
    does not squeeze the name and the count into nothing while it is open. */
 .task-column-head { flex-wrap:wrap; }
 .task-column-head .task-column-note { flex-basis:100%; }
+
+.rail-reset-choice label { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; }
+.rail-reset-choice select { max-width: 65%; }
+.rail-reset-choice .row { flex-wrap: wrap; justify-content: center; }
+.rail-clearing .thread-composer textarea,
+.rail-clearing .composer-actions,
+.rail-clearing .composer-context,
+.rail-clearing .composer-tray,
+.rail-clearing .hint,
+.rail-clearing .rail-status-row,
+.rail-clearing .rail-observation,
+.rail-clearing .composer-context-gauge { display: none; }
+.rail-clearing .composer-bar { justify-content: center; }
+.rail-clearing .composer-choice-controls { flex-wrap: wrap; justify-content: center; }

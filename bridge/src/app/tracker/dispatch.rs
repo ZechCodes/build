@@ -608,9 +608,8 @@ pub(in crate::app) struct DispatchPlan {
     agent_name: Option<String>,
     note: Option<String>,
     actor: Actor,
-    /// The agent that asked, as its two ids — [`crate::app::AgentSender`]
-    /// borrows, and this has to outlive the call that built it.
-    sender: Option<(String, String)>,
+    /// The agent and generation that asked, retained across the workspace cut.
+    sender: Option<crate::app::mcp::McpConversationGeneration>,
 }
 
 /// `workspace.create`'s own git, with the rest of the dispatch hung off the
@@ -708,7 +707,8 @@ impl AppState {
             note,
             actor,
             sender: sender
-                .map(|sender| (sender.entity_id.to_string(), sender.agent_id.to_string())),
+                .map(|sender| self.mcp_conversation_generation(sender.entity_id, sender.agent_id))
+                .transpose()?,
         };
         self.hang_dispatch_off_the_workspace_cut(plan)?;
         Ok(json!({ "task_id": task.id, "workspace_id": workspace_id, "pending": true }))
@@ -737,6 +737,9 @@ impl AppState {
 
     /// The drain's half: the checkout exists, so make the agent and deliver.
     fn finish_new_workspace_dispatch(&mut self, plan: &DispatchPlan) -> Result<Value, String> {
+        if let Some(sender) = &plan.sender {
+            sender.guard(self)?;
+        }
         // Re-read the task rather than carrying it through the git: the mutex
         // was free for the whole cut, and somebody may have moved it.
         let task = self
@@ -752,13 +755,10 @@ impl AppState {
             plan.notify_user,
             plan.actor.agent_id(),
         )?;
-        let sender = plan
-            .sender
-            .as_ref()
-            .map(|(entity_id, agent_id)| crate::app::AgentSender {
-                entity_id,
-                agent_id,
-            });
+        let sender = plan.sender.as_ref().map(|sender| crate::app::AgentSender {
+            entity_id: &sender.entity_id,
+            agent_id: &sender.agent_id,
+        });
         let mut delivered =
             self.hand_over(&task, &entity_id, &agent_id, plan.note.as_deref(), sender)?;
         delivered.workspace_id = Some(plan.workspace_id.clone());

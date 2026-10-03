@@ -164,6 +164,7 @@ export function createChatChoiceController({ repository, identityOf, announce, i
     const answered = await intent.call("agent.choose", {
       entity_id: intent.address.entityId,
       agent_id: intent.address.agentId,
+      ...(intent.address.threadId ? { thread_id: intent.address.threadId } : {}),
       model: intent.model,
       effort: intent.effort,
       expected_choice_revision: state.revision,

@@ -13,6 +13,7 @@
 // land.
 
 import { createCachedBodies } from "./cachedBodies.js";
+import { threadGenerationParam } from "./threadSync.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 
 /** The local-cache kind one run's items are stored under. */
@@ -42,11 +43,11 @@ const runRecordSub = (agentId, fromSequence) => `${agentId || ""}:${fromSequence
  * record landing calls `onChange`; that announcement, rather than the pull's
  * return value, is what tells the pane to paint its new rows.
  */
-export function createActivityRuns({ deviceId, entityId, agentId, call, onChange = () => {} }) {
+export function createActivityRuns({ deviceId, entityId, agentId, conversationId, threadId, call, onChange = () => {} }) {
   const openRuns = new Set();
   let foldPaint = Promise.resolve();
   const folds = deviceId && entityId ? watchUiState(
-    uiAddress({ deviceId, entityId, view: "thread", kind: "fold", sub: agentId || "" }),
+    uiAddress({ deviceId, entityId, view: "thread", kind: "fold", sub: `${agentId || ""}${threadId ? `:${threadId}` : ""}` }),
     (saved) => {
       openRuns.clear();
       for (const key of saved?.openKeys || []) openRuns.add(String(key));
@@ -64,6 +65,7 @@ export function createActivityRuns({ deviceId, entityId, agentId, call, onChange
   const activityPage = (fromSequence, beforeSequence) =>
     call("thread.activity", {
       entity_id: entityId,
+      ...threadGenerationParam(threadId),
       ...(agentId ? { agent_id: agentId } : {}),
       from_sequence: fromSequence,
       through_sequence: spans.get(fromSequence),
@@ -88,9 +90,13 @@ export function createActivityRuns({ deviceId, entityId, agentId, call, onChange
   }
 
   const bodies = createCachedBodies({
+    guard: deviceId && entityId && threadId ? {
+      address: { deviceId, entityId, kind: "thread", sub: conversationId || agentId },
+      accepts: (thread) => thread?.thread_id === threadId,
+    } : null,
     addressOf: (key) =>
       deviceId && entityId
-        ? { deviceId, entityId, kind: ACTIVITY_RECORD_KIND, sub: runRecordSub(agentId, key) }
+        ? { deviceId, entityId, kind: ACTIVITY_RECORD_KIND, sub: runRecordSub(threadId ? `${agentId}:${threadId}` : agentId, key) }
         : null,
     fetchMissing: (keys) => Promise.all(keys.map((key) => fetchRun(Number(key)))),
     valueOf: (run) => ({ key: run.fromSequence, value: { items: run.items } }),

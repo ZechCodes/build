@@ -53,6 +53,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+mod conversation_reset;
 mod conversations;
 mod documents;
 mod entities;
@@ -198,7 +199,7 @@ pub enum StoreError {
 ///
 /// 12 adds task review metadata and append-only snapshot rows (#328).
 /// 13 adds persisted per-source review Git actions (#330).
-pub const SCHEMA_VERSION: i64 = 13;
+pub const SCHEMA_VERSION: i64 = 14;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.
@@ -394,3 +395,5 @@ pub fn now_rfc3339() -> String {
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) use conversations::SessionMessageTime;

@@ -7,7 +7,6 @@
 //! the queue and travels on the drain the session's return to waiting sets
 //! off, so it lands on the compacted context.
 
-use super::preflight::{record_command_activity, CommandSpeaker};
 use crate::app::{AppState, PendingAgentTurn, Spawned};
 use crate::harness::{harness_for, AgentSession, Turn};
 use crate::models::ModelChoice;
@@ -32,6 +31,7 @@ fn is_compaction(prompt: &str) -> bool {
 pub(in crate::app) struct CompactionSend {
     owner: String,
     agent_id: String,
+    thread_id: String,
     model_choice: ModelChoice,
     choice_revision: u64,
     session: Arc<dyn AgentSession>,
@@ -39,6 +39,13 @@ pub(in crate::app) struct CompactionSend {
 }
 
 impl AppState {
+    fn compaction_generation_is_current(&self, send: &CompactionSend) -> bool {
+        self.agent_conversation(&send.owner, Some(&send.agent_id))
+            .is_ok_and(|thread| thread.id == send.thread_id)
+            && self
+                .live_agent_session(&send.owner, &send.agent_id)
+                .is_some_and(|session| Arc::ptr_eq(&session, &send.session))
+    }
     /// Whether `turn`, about to be said as `prompt` to a session that was
     /// `spawned` for it, should wait for a compaction first. See
     /// [`compaction_before`](Self::compaction_before).
@@ -113,6 +120,11 @@ impl AppState {
             self.compactions.withdraw(&turn.owner, &turn.agent_id);
         }
         Some(CompactionSend {
+            thread_id: self
+                .agent_conversation(&turn.owner, Some(&turn.agent_id))
+                .ok()?
+                .id
+                .clone(),
             owner: turn.owner.clone(),
             agent_id: turn.agent_id.clone(),
             model_choice: turn.model_choice.clone(),
@@ -215,7 +227,13 @@ pub(in crate::app) fn send_compaction(
 ) -> bool {
     let command =
         harness_for(send.model_choice.provider).compaction_command(send.instructions.as_deref());
-    let sent = timer.lock(state).compaction_about_to_send(send, &command);
+    let sent = {
+        let mut app = timer.lock(state);
+        if !app.compaction_generation_is_current(send) {
+            return false;
+        }
+        app.compaction_about_to_send(send, &command)
+    };
     let compaction = Turn::with_choice(
         command.as_str(),
         send.model_choice.clone(),
@@ -225,13 +243,18 @@ pub(in crate::app) fn send_compaction(
         eprintln!("compact {}/{}: {refused}", send.owner, send.agent_id);
         return false;
     }
-    let speaker = CommandSpeaker {
-        owner: &send.owner,
-        agent_id: &send.agent_id,
-        provider: send.model_choice.provider,
-    };
-    record_command_activity(state, timer, &speaker, send.session.as_ref(), &command);
     let mut app = timer.lock(state);
+    if !app.compaction_generation_is_current(send) {
+        return false;
+    }
+    if send.session.terminal().is_some() {
+        app.record_agent_activity(
+            &send.owner,
+            &send.agent_id,
+            &crate::harness::AgentActivity::Compaction { completed: false },
+            None,
+        );
+    }
     app.forget_agent_context(&send.owner, &send.agent_id);
     app.compactions.sent(&send.owner, &send.agent_id, sent);
     true

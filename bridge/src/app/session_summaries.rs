@@ -72,6 +72,14 @@ impl AppState {
         let rows = store
             .session_message_times()
             .map_err(|error| format!("session rebuild: {error}"))?;
+        self.replace_session_summaries(rows);
+        Ok(())
+    }
+
+    pub(in crate::app) fn replace_session_summaries(
+        &mut self,
+        rows: Vec<crate::store::SessionMessageTime>,
+    ) {
         self.session_summaries.clear();
         self.session_seen.clear();
         for (owner, retained_project_id, agent, sequence, ts) in rows {
@@ -89,7 +97,6 @@ impl AppState {
                     .or_insert_with(|| SessionSummary::default().updated(ts));
             }
         }
-        Ok(())
     }
 
     /// The user did something, now. Only the verbs that are the user acting

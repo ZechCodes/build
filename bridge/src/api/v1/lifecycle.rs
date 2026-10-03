@@ -185,6 +185,8 @@ pub struct StageRefParams {
 /// The human has read one entry as it stands.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct EntitySeenParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
     pub entity_id: String,
     /// One bubble read through; the whole entry when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -476,7 +478,7 @@ fn entity_seen(
     app: &mut AppState,
     params: EntitySeenParams,
 ) -> Result<Answer<Acknowledged>, ApiError> {
-    answer(app.entity_seen(&params.wire()))
+    answer(app.entity_seen(&params.wire())).map_err(super::thread::refine)
 }
 
 fn entity_mute(

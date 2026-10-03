@@ -4,7 +4,10 @@
 // decides how to paint it. The helper never hands a proposed value straight
 // to the painter.
 
-import { readUiRecord, subscribeUiRecords, writeUiRecord, writeUiRecordIfNewer } from "./localUiStore.js";
+import {
+  conversationUiRecordBelongsTo, conversationUiRecordIsRetired, deleteConversationUiRecords,
+  readUiRecord, subscribeConversationUiRetirements, subscribeUiRecords, writeUiRecord, writeUiRecordIfNewer,
+} from "./localUiStore.js";
 
 // IndexedDB cannot finish a new transaction once the document is torn down.
 // A page exit puts only its unfinished draft in this tab's synchronous journal;
@@ -102,6 +105,38 @@ const releasePending = (address) => {
   try { globalThis.sessionStorage?.removeItem(pendingKey(address)); } catch { /* Storage may be refused. */ }
 };
 
+const liveWriters = new Set();
+const pendingAddress = (key) => {
+  try {
+    const [deviceId, entityId, kind, sub] = JSON.parse(key.slice(PENDING_PREFIX.length));
+    return { deviceId, entityId, kind, sub };
+  } catch { return null; }
+};
+
+const retireConversationWriters = (scope) => {
+  for (const writer of [...liveWriters]) {
+    if (conversationUiRecordBelongsTo(writer.address, scope)) writer.discard();
+  }
+  try {
+    const storage = globalThis.sessionStorage;
+    for (const key of pendingEntries(storage)) {
+      const address = pendingAddress(key);
+      if (address && conversationUiRecordBelongsTo(address, scope)) storage.removeItem(key);
+    }
+  } catch { /* Storage may be refused. */ }
+};
+subscribeConversationUiRetirements(retireConversationWriters);
+
+/** Called after an authoritative conversation generation switch. Retire local
+ * writers immediately, then delete the old records and persist the cross-tab
+ * write fence. The agent's display preferences stay with its identity. */
+export async function purgeConversationUiRecords(scope) {
+  if (![scope?.deviceId, scope?.entityId, scope?.agentId, scope?.conversationId, scope?.threadId]
+    .every((value) => typeof value === "string" && value.length > 0)) return;
+  retireConversationWriters(scope);
+  await deleteConversationUiRecords(scope);
+}
+
 export const uiAddress = ({ deviceId = "", entityId = "", view, kind, sub = "" }) => ({
   deviceId,
   entityId,
@@ -115,6 +150,7 @@ export const uiAddress = ({ deviceId = "", entityId = "", view, kind, sub = "" }
 export function watchUiState(address, paint, { debounceMs = 0 } = {}) {
   const source = uiWriterId();
   let disposed = false;
+  let discarded = false;
   let pending;
   let pendingAt;
   let timer;
@@ -138,13 +174,16 @@ export function watchUiState(address, paint, { debounceMs = 0 } = {}) {
   const journaled = pendingFor(address, debounceMs);
 
   const commit = (value, editAt = Date.now()) => {
+    if (discarded) return Promise.resolve();
     revision += 1;
     dirty = true;
     unresolved = value;
     unresolvedAt = editAt;
     const committedRevision = revision;
     const next = writes.then(async () => {
+      if (discarded) return;
       await writeUiRecord(address, value, { source, sequence: committedRevision });
+      if (discarded) return;
       await reads;
       // Announcements from earlier writes can arrive after a newer local edit.
       // Only the newest committed value may repaint the active control.
@@ -178,6 +217,7 @@ export function watchUiState(address, paint, { debounceMs = 0 } = {}) {
     return commit(value, editAt);
   };
   const schedule = (value) => {
+    if (discarded) return;
     pending = value;
     pendingAt = Date.now();
     revision += 1; // an in-flight mount read must not erase active typing
@@ -198,10 +238,35 @@ export function watchUiState(address, paint, { debounceMs = 0 } = {}) {
     globalThis.addEventListener?.("pagehide", flushOnPageExit);
     globalThis.document?.addEventListener?.("visibilitychange", flushWhenHidden);
   }
-  const ready = journaled === undefined ? read() : (async () => {
-    await writeUiRecordIfNewer(address, journaled.value, journaled);
-    releasePending(address);
-    return read();
+  const dispose = ({ flushPending = true } = {}) => {
+    if (debounceMs > 0) {
+      globalThis.removeEventListener?.("pagehide", flushOnPageExit);
+      globalThis.document?.removeEventListener?.("visibilitychange", flushWhenHidden);
+    }
+    if (flushPending) void flush();
+    else {
+      discarded = true;
+      pending = undefined;
+      unresolved = undefined;
+      if (timer) clearTimeout(timer);
+      releasePending(address);
+    }
+    disposed = true;
+    unwatch();
+    liveWriters.delete(writer);
+  };
+  const writer = { address, discard: () => dispose({ flushPending: false }) };
+  liveWriters.add(writer);
+  const ready = (async () => {
+    if (await conversationUiRecordIsRetired(address)) {
+      writer.discard();
+      return undefined;
+    }
+    if (journaled !== undefined && !discarded) {
+      await writeUiRecordIfNewer(address, journaled.value, journaled);
+      releasePending(address);
+    }
+    return discarded ? undefined : read();
   })();
 
   return {
@@ -216,15 +281,6 @@ export function watchUiState(address, paint, { debounceMs = 0 } = {}) {
     schedule,
     flush,
     settled: () => reads,
-    dispose({ flushPending = true } = {}) {
-      if (debounceMs > 0) {
-        globalThis.removeEventListener?.("pagehide", flushOnPageExit);
-        globalThis.document?.removeEventListener?.("visibilitychange", flushWhenHidden);
-      }
-      if (flushPending) void flush();
-      else if (timer) clearTimeout(timer);
-      disposed = true;
-      unwatch();
-    },
+    dispose,
   };
 }

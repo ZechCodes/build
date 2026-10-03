@@ -47,8 +47,10 @@ import { cachedRouteEntityId } from "./cachedRows.js";
 import { entityIdOf } from "./entityId.js";
 import { FEED_COLLECTIONS, liveFeedSnapshot, stampProject, stampRow, stampWorkspace, workspaceSummaries } from "./feedMerge.js";
 import { THREAD_RECORD_KIND } from "./thread.js";
+import { reconcileConversationGeneration, reconcileConversationGenerations, resetAliasesInRow } from "./conversationReset.js";
+import { writeConversationFeed } from "./conversationFeedReset.js";
 import { syncThreadWindow, threadWindow } from "./threadSync.js";
-import { replaceSessionList, updateSessionSummary } from "./sessionListCache.js";
+import { replaceSessionList, sessionListObservation, updateSessionSummary } from "./sessionListCache.js";
 import {
   cachedAddresses,
   cachedEntityIds,
@@ -56,6 +58,8 @@ import {
   deleteCached,
   evictEntity,
   mergeCached,
+  mergeCachedAtomically,
+  mergeCachedTogether,
   readCached,
   updateCachedFeed,
   writeCached,
@@ -428,6 +432,9 @@ const whileOnBoard = (context, entityId, fence) => ({
  *  any workspace has been read. A device whose bridge does not serve
  *  workspaces still has a board. */
 async function readLists(context, fence) {
+  const observations = await Promise.all(["projects", "workspaces"].map((kind) =>
+    sessionListObservation(addressOf(context, "", kind), kind)));
+  const reading = { ...context, sessionListObservations: Object.fromEntries(["projects", "workspaces"].map((kind, index) => [kind, observations[index]])) };
   const [board, projects, workspaces] = await askOwnershipLists(context);
   if (!board || !projects || !context.active()) return null;
   await writeUsageLimits(context.deviceId, board.usage_limits);
@@ -435,7 +442,7 @@ async function readLists(context, fence) {
   // The compatibility fallback above paints a board without workspace
   // support. It is never evidence that an unsent draft's owner was deleted.
   const before = {};
-  await writeLists(context, view, fence, before);
+  await writeLists(reading, view, fence, before);
   return { view, before, ownership: { ...view, workspaces: workspaces?.workspaces, projects: projects.projects } };
 }
 
@@ -460,8 +467,10 @@ async function writeLists(context, view, fence, before) {
   // Inside the feed's own transaction, so a push landing while it waits is
   // still seen: the rows a push wrote since the fence are not this read's
   // observation, and their own records paint over the board's older copy.
-  await updateCachedFeed(addressOf(context, "", "feed"), () => withoutPushedRemovals(context, view, fence), {
-    observedFeedRows: true,
+  await writeConversationFeed(addressOf(context, "", "feed"), view, {
+    active: context.active,
+    rewriteRow: resetAliasesInRow,
+    pruneView: (current) => withoutPushedRemovals(context, current, fence),
     supersededFeedRow: (row) => Boolean(entityIdOf(row) && pushedSince(addressOf(context, entityIdOf(row), "row"), fence)),
   });
   for (const kind of ["projects", "workspaces"]) {
@@ -479,8 +488,25 @@ async function writeLists(context, view, fence, before) {
 async function writeListedRow(context, row, fence) {
   const entityId = entityIdOf(row);
   if (!entityId || pushedSince(addressOf(context, entityId, "row"), fence)) return;
-  await writeCached(addressOf(context, entityId, "row"), row);
-  await writeSurfaces(context, entityId, row.agents);
+  const reading = { ...context, active: () => context.active() && !pushedSince(addressOf(context, entityId, "row"), fence) };
+  if (!(await reconcileConversationGenerations(reading, entityId, row.agents))) return;
+  await writeConversationRow(reading, entityId, row);
+  await writeSurfaces(reading, entityId, row.agents);
+}
+
+const agentThreadAddress = (context, entityId, agent) =>
+  addressOf(context, entityId, THREAD_RECORD_KIND, agent.conversation_id || agent.id);
+
+const currentAgentGeneration = (thread, agent) => !agent.thread_id || thread?.thread_id === agent.thread_id;
+
+/** A row and the generation it names must be admitted together: another tab
+ * can clear the shared thread after reconciliation and before this write. */
+function writeConversationRow(context, entityId, row) {
+  const agents = (row.agents || []).filter((agent) => agent.thread_id);
+  const addresses = [addressOf(context, entityId, "row"), ...agents.map((agent) => agentThreadAddress(context, entityId, agent))];
+  return mergeCachedTogether(addresses, ([, ...threads]) =>
+    context.active() && agents.every((agent, index) => currentAgentGeneration(threads[index], agent))
+      ? [row, ...agents.map(() => null)] : null);
 }
 
 /** The snapshot without the entities a push said left after it was asked for:
@@ -539,7 +565,9 @@ async function writeAgentSurfaces(context, entityId, agent) {
   const address = surfacesCacheAddress({ deviceId: context.deviceId, entityId, agentId: agent.id });
   const held = (await readCached(address))?.value;
   if (!context.active() || seen.fingerprint === heldSurfaces(held)) return;
-  await writeCached(address, surfacesRecord(seen.observed, seen.generation));
+  await mergeCachedTogether([agentThreadAddress(context, entityId, agent), address], ([thread, current]) =>
+    context.active() && currentAgentGeneration(thread, agent) && seen.fingerprint !== heldSurfaces(current)
+      ? [null, surfacesRecord(seen.observed, seen.generation)] : null);
 }
 
 /** The conversation each project holds, as `project.list` names it. A project
@@ -1129,6 +1157,7 @@ async function syncThread(context, entityId, agent, priority) {
     entityId,
     agentId: agent.id,
     conversationId: agent.conversation_id,
+    threadId: agent.thread_id,
     priority,
   });
 }
@@ -1286,7 +1315,7 @@ const validSession = (record) => Number.isSafeInteger(record?.session_started_ms
 async function writeSessionList(context, kind, incoming, before) {
   await replaceSessionList(addressOf(context, "", kind), kind, incoming, (held) => {
     if (before) before[kind] = held;
-  });
+  }, context.sessionListObservations?.[kind]);
 }
 
 /** A record as a push carries it, marked so a read that was already out when
@@ -1442,7 +1471,9 @@ const isFeedRow = (state) => typeof state?.kind === "string" && state.kind !== "
  *  is over takes the workspace's data with it — nobody is coming back to it. */
 async function applyState(context, entityId, state) {
   if (!isFeedRow(state)) return;
-  await writePushed(addressOf(context, entityId, "row"), stampRow(state, context.deviceId));
+  if (!(await reconcileConversationGenerations(context, entityId, state.agents))) return;
+  notePush(addressOf(context, entityId, "row"));
+  await writeConversationRow(context, entityId, stampRow(state, context.deviceId));
   if (!context.active()) return;
   await writeSurfaces(context, entityId, state.agents);
   if (!context.active()) return;
@@ -1476,21 +1507,29 @@ const tipRunsOnFromRecord = (tip, held) =>
 
 /** A thread tip carries the summaries changed by its message. Project agent
  * tips update only the project; workspace tips update both owning records. */
-async function applySessionTip(context, tip) {
+async function applySessionTip(context, entityId, tip) {
+  const options = {
+    threadAddress: agentThreadAddress(context, entityId, { id: tip.agent_id, conversation_id: tip.conversation_id }),
+    threadId: tip.thread_id, conversationId: tipKey(tip), threadGenerationRevision: tip.thread_generation_revision,
+    active: context.active,
+  };
   for (const [kind, id, session] of [
     ["workspaces", tip.workspace_id, tip.workspace_session],
     ["projects", tip.project_id, tip.project_session],
   ]) {
     if (!context.active()) return;
-    if (!id || !validSession(session)) continue;
-    await updateSessionSummary(addressOf(context, "", kind), kind, id, session);
+    if (!id) continue;
+    if (options.threadGenerationRevision) notePush(addressOf(context, "", kind));
+    await updateSessionSummary(addressOf(context, "", kind), kind, id, session, options);
   }
 }
 
 async function applyThreadTip(context, entityId, tip) {
   const sub = tipKey(tip);
   if (!sub) return;
-  await applySessionTip(context, tip);
+  await reconcileConversationGeneration({ deviceId: context.deviceId, entityId, active: context.active,
+    agent: { id: tip.agent_id, conversation_id: tip.conversation_id, thread_id: tip.thread_id, thread_generation_revision: tip.thread_generation_revision }, forceReset: tip.reset === true });
+  await applySessionTip(context, entityId, tip);
   if (!context.active()) return;
   const address = addressOf(context, entityId, THREAD_RECORD_KIND, sub);
   const held = (await readCached(address))?.value;
@@ -1501,11 +1540,11 @@ async function applyThreadTip(context, entityId, tip) {
   // is the read this layer would have made anyway.
   const items = held && tipRunsOnFromRecord(tip, held) ? (tip.items || []) : [];
   if (!items.length) {
-    await syncThread(context, entityId, { id: tip.agent_id, conversation_id: tip.conversation_id }, "background");
+    await syncThread(context, entityId, { id: tip.agent_id, conversation_id: tip.conversation_id, thread_id: tip.thread_id }, "background");
     return;
   }
-  await mergeCached(address, (current) => context.active() ? threadWindow(current, {
-    items, thread_total: tip.thread_total,
+  await mergeCachedAtomically(address, (current) => context.active() ? threadWindow(current, {
+    items, thread_total: tip.thread_total, ...(tip.thread_id ? { thread_id: tip.thread_id } : {}),
   }) : null);
 }
 

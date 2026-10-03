@@ -369,11 +369,13 @@ impl AppState {
         self.release_due_usage_limits();
         let pending_rows = &self.pending_rows;
         let reserved = &self.reclaim_reserved;
+        let resetting = &self.resetting_conversations;
         // A turn for an agent inside a workspace the reclaim service or
         // `workspace.reclaim` has reserved waits for the reservation to end.
         let mut ready = self.delivery_queue.take_ready(|turn| {
             pending_rows.iter().any(|row| row.entity_id == turn.owner)
                 || reserved_holds(reserved, &turn.root)
+                || resetting.contains(&turn.conversation_id)
         });
         for turn in &mut ready {
             self.forget_agent_start_error(&turn.owner, &turn.agent_id);

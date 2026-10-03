@@ -16,6 +16,17 @@ pub(in crate::app) struct OperationLedger {
 }
 
 impl OperationLedger {
+    pub(in crate::app) fn forget_conversation(&mut self, conversation_id: &str) {
+        self.receipts
+            .retain(|_, receipt| receipt.conversation_id != conversation_id);
+        if self
+            .pending_acceptance
+            .as_ref()
+            .is_some_and(|pending| pending.receipt.conversation_id == conversation_id)
+        {
+            self.pending_acceptance = None;
+        }
+    }
     /// Preserve the current single slot: staging replaces its prior value.
     pub(in crate::app) fn stage_acceptance(
         &mut self,

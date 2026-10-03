@@ -82,6 +82,12 @@ describe("semver", () => {
 describe("adapter selection", () => {
   const v3 = { major: 3, range: ">=3.0.0 <4.0.0", create: () => ({}) };
 
+  it("only enables conversation reset when the bridge advertises its named capability", () => {
+    const capabilities = (named) => selectAdapter(greetingV1({ capabilities: named })).create(vi.fn()).capabilities;
+    expect(capabilities(["conversation.reset"]).conversations.reset).toBe(true);
+    expect(capabilities(["conversations.settings"]).conversations.reset).toBe(false);
+  });
+
   it("a 2.0 bridge greeting this SPA: each capability it names is on", () => {
     const selected = selectAdapter(greetingV1());
     expect(selected.major).toBe(3);
@@ -97,7 +103,7 @@ describe("adapter selection", () => {
       bodies: { pages: false, mediaRawPages: false },
       reviews: { get: false, snapshot: false, diff: false, complete: false, act: false, comments: false },
       tasks: { attachments: true, watching: true, context: true, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, bodyPrecondition: false },
-      conversations: { settings: true },
+      conversations: { settings: true, reset: false },
       github: { repos: false },
       messages: { context: false },
       threads: { postOperations: false, attachmentChunks: false },
@@ -179,7 +185,7 @@ describe("adapter selection", () => {
         bodies: { pages: false, mediaRawPages: false },
         reviews: { get: false, snapshot: false, diff: false, complete: false, act: false, comments: false },
         tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, bodyPrecondition: false },
-        conversations: { settings: false },
+        conversations: { settings: false, reset: false },
         github: { repos: false },
         messages: { context: false },
         threads: { postOperations: false, attachmentChunks: false },

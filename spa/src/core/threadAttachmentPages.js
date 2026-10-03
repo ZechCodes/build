@@ -1,4 +1,5 @@
 import { bytesOfBase64 } from "./bodyPages.js";
+import { threadGenerationParam } from "./threadSync.js";
 import { requestPriorityFields } from "./readRequests.js";
 
 // One mebibyte keeps the JSON/base64 reply comfortably below the 8 MiB
@@ -33,9 +34,10 @@ export async function readThreadAttachment(load, path, canPage) {
   return { ...first, pages };
 }
 
-export function fetchThreadAttachment(call, entityId, path, canPage) {
+export function fetchThreadAttachment(call, entityId, path, canPage, identity = {}) {
   return readThreadAttachment((name, offset, length) => call("thread.attachment", {
-    entity_id: entityId, path: name,
+    entity_id: entityId, path: name, ...threadGenerationParam(identity.threadId),
+    ...(identity.agentId ? { agent_id: identity.agentId, conversation_id: identity.conversationId } : {}),
     ...(offset === undefined ? {} : { offset, length }),
   }, requestPriorityFields("background")), path, canPage);
 }

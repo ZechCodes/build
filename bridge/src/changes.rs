@@ -551,6 +551,12 @@ pub struct ThreadTip {
     /// when an implementation agent continues a task agent's conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_generation_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub choice_revision: Option<u64>,
     pub last_sequence: u64,
     /// The inbox row this conversation belongs to, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]

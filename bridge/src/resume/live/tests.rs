@@ -13,6 +13,7 @@ fn working_on(entity_id: &str, agent_id: &str) -> ResumingAgent {
         entity_id: entity_id.to_string(),
         agent_id: agent_id.to_string(),
         conversation_id: agent_id.to_string(),
+        thread_id: None,
         resume_session_id: Some(format!("sess-{agent_id}")),
         was_working: true,
     }

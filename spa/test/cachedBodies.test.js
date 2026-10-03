@@ -8,6 +8,8 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 let createCachedBodies, cache;
 
 const address = (key) => ({ deviceId: "dev-1", entityId: "run-1", kind: "filediff", sub: key });
+const threadAddress = { deviceId: "dev-1", entityId: "owner-1", kind: "thread", sub: "conversation-1" };
+const threadGuard = { address: threadAddress, accepts: (value) => value?.thread_id === "old-thread" };
 
 beforeEach(async () => {
   vi.resetModules();
@@ -19,7 +21,7 @@ beforeEach(async () => {
 
 /** Bodies over a scripted wire: every fetch is recorded, and the answer is one
  *  item per key, in the config's own shape. */
-const bodiesOver = (fetches, { addressOf = address, onChange } = {}) =>
+const bodiesOver = (fetches, { addressOf = address, guard, onChange } = {}) =>
   createCachedBodies({
     addressOf,
     fetchMissing: async (keys) => {
@@ -27,6 +29,7 @@ const bodiesOver = (fetches, { addressOf = address, onChange } = {}) =>
       return keys.map((key) => ({ path: key, patch: `patch:${key}` }));
     },
     valueOf: (item) => ({ key: item.path, value: { patch: item.patch } }),
+    guard,
     onChange,
   });
 
@@ -50,6 +53,83 @@ describe("createCachedBodies", () => {
     const bodies = bodiesOver([]);
     await bodies.ensure(["a.js"]);
     expect((await cache.readCached(address("a.js"))).value).toEqual({ patch: "patch:a.js" });
+  });
+
+  it("discards a response that arrives after its conversation reader is disposed", async () => {
+    let answer;
+    const fetched = vi.fn(() => new Promise((resolve) => { answer = resolve; }));
+    const onChange = vi.fn();
+    const bodies = createCachedBodies({
+      addressOf: address,
+      fetchMissing: fetched,
+      valueOf: (item) => ({ key: item.path, value: { patch: item.patch } }),
+      onChange,
+    });
+    const reading = bodies.ensure(["a.js"]);
+    await vi.waitFor(() => expect(fetched).toHaveBeenCalledOnce());
+    bodies.dispose();
+    await cache.deleteCached([address("a.js")]);
+    answer([{ path: "a.js", patch: "retired conversation" }]);
+
+    expect(await reading).toEqual([]);
+    expect(await cache.readCached(address("a.js"))).toBeUndefined();
+    expect(bodies.read("a.js")).toBeUndefined();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("checks disposal again inside the cache transaction, after a response was admitted", async () => {
+    const actualMerge = cache.mergeCachedRecordsTogether;
+    let bodies;
+    vi.spyOn(cache, "mergeCachedRecordsTogether").mockImplementation((addresses, merge) =>
+      actualMerge(addresses, (records) => {
+        bodies.dispose();
+        return merge(records);
+      }));
+    bodies = bodiesOver([]);
+
+    expect(await bodies.ensure(["a.js"])).toEqual([]);
+    expect(await cache.readCached(address("a.js"))).toBeUndefined();
+    expect(bodies.read("a.js")).toBeUndefined();
+  });
+
+  it("refuses a held fetch after its thread generation changes while the reader remains alive", async () => {
+    await cache.writeCached(threadAddress, { thread_id: "old-thread" });
+    let answer;
+    const fetched = vi.fn(() => new Promise((resolve) => { answer = resolve; }));
+    const bodies = createCachedBodies({
+      addressOf: address,
+      fetchMissing: fetched,
+      valueOf: (item) => ({ key: item.path, value: { patch: item.patch } }),
+      guard: threadGuard,
+    });
+    const reading = bodies.ensure(["a.js"]);
+    await vi.waitFor(() => expect(fetched).toHaveBeenCalledOnce());
+    await cache.writeCached(threadAddress, { thread_id: "fresh-thread" });
+    answer([{ path: "a.js", patch: "retired conversation" }]);
+    await reading;
+
+    expect(await cache.readCached(address("a.js"))).toBeUndefined();
+    expect(bodies.read("a.js")).toBeUndefined();
+    bodies.dispose();
+  });
+
+  it("admits a guarded body while its thread generation remains current", async () => {
+    await cache.writeCached(threadAddress, { thread_id: "old-thread" });
+    const bodies = bodiesOver([], { guard: threadGuard });
+    expect(await bodies.ensure(["a.js"])).toEqual(["a.js"]);
+    expect((await cache.readCached(address("a.js"))).value).toEqual({ patch: "patch:a.js" });
+    bodies.dispose();
+  });
+
+  it("releases held bodies on disposal and never starts another fetch", async () => {
+    const fetches = [];
+    const bodies = bodiesOver(fetches);
+    await bodies.ensure(["a.js"]);
+    bodies.dispose();
+
+    expect(bodies.read("a.js")).toBeUndefined();
+    expect(await bodies.ensure(["b.js"])).toEqual([]);
+    expect(fetches).toEqual([["a.js"]]);
   });
 
   it("takes a body from the local cache instead of the wire", async () => {
@@ -144,7 +224,7 @@ describe("createCachedBodies with pages (#95)", () => {
 
   /** A wire whose whole answer is cut at `cutAt` characters, and whose pages
    *  are cut from the whole patch by offset, named by `version()`. */
-  const pagedOver = (fetches, pageReads, { canPage = true, cutAt = 1000, version = () => "v1" } = {}) =>
+  const pagedOver = (fetches, pageReads, { canPage = true, cutAt = 1000, version = () => "v1", guard } = {}) =>
     import("../src/core/bodyPages.js").then((pages) =>
       createCachedBodies({
         addressOf: address,
@@ -154,6 +234,7 @@ describe("createCachedBodies with pages (#95)", () => {
         },
         valueOf: (item) => ({ key: item.path, value: { content_key: item.content_key, patch: item.patch, truncated: item.truncated } }),
         cacheable: (value) => !value.truncated,
+        guard,
         pages: {
           field: "patch",
           split: (value, of) => pages.textPagesOf(value.patch, { of, cut: value.truncated, bytes: 512 }),
@@ -164,6 +245,56 @@ describe("createCachedBodies with pages (#95)", () => {
           },
         },
       }));
+
+  it("keeps neither a head nor its pages when disposal happens inside the write transaction", async () => {
+    const actualMerge = cache.mergeCachedRecordsTogether;
+    let bodies;
+    vi.spyOn(cache, "mergeCachedRecordsTogether").mockImplementation((addresses, merge) =>
+      actualMerge(addresses, (records) => {
+        bodies.dispose();
+        return merge(records);
+      }));
+    bodies = await pagedOver([], []);
+
+    expect(await bodies.ensure(["big.txt"])).toEqual([]);
+    expect(await cache.readCached(address("big.txt"))).toBeUndefined();
+    expect(await cache.cachedSubKeys("dev-1", "run-1", "page")).toEqual([]);
+    expect(bodies.read("big.txt")).toBeUndefined();
+  });
+
+  it("admits neither a paged head nor its pages after the transaction sees a newer thread generation", async () => {
+    await cache.writeCached(threadAddress, { thread_id: "old-thread" });
+    const actualMerge = cache.mergeCachedRecordsTogether;
+    vi.spyOn(cache, "mergeCachedRecordsTogether").mockImplementation(async (addresses, merge) => {
+      await cache.writeCached(threadAddress, { thread_id: "fresh-thread" });
+      return actualMerge(addresses, merge);
+    });
+    const bodies = await pagedOver([], [], { guard: threadGuard });
+    await bodies.ensure(["big.txt"]);
+
+    expect(await cache.readCached(address("big.txt"))).toBeUndefined();
+    expect(await cache.cachedSubKeys("dev-1", "run-1", "page")).toEqual([]);
+    expect(bodies.read("big.txt")).toBeUndefined();
+    bodies.dispose();
+  });
+
+  it("does not append a page once its thread generation changes inside the transaction", async () => {
+    const pages = await import("../src/core/bodyPages.js");
+    await cache.writeCached(threadAddress, { thread_id: "old-thread" });
+    const bodies = await pagedOver([], [], { guard: threadGuard });
+    await bodies.ensure(["big.txt"]);
+    const before = bodies.read("big.txt").pages.end;
+    const actualMerge = cache.mergeCachedRecordsTogether;
+    vi.spyOn(cache, "mergeCachedRecordsTogether").mockImplementation(async (addresses, merge) => {
+      await cache.writeCached(threadAddress, { thread_id: "fresh-thread" });
+      return actualMerge(addresses, merge);
+    });
+
+    expect(await bodies.more("big.txt")).toBe(false);
+    expect(bodies.read("big.txt").pages.end).toBe(before);
+    expect(await cache.cachedSubKeys("dev-1", "run-1", pages.PAGE_RECORD_KIND)).toEqual(["filediff:big.txt@0"]);
+    bodies.dispose();
+  });
 
   it("keeps a body it may not store whole as a head and the bridge's own pages, and paints it from them", async () => {
     const pages = await import("../src/core/bodyPages.js");

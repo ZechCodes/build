@@ -349,6 +349,12 @@ pub trait AgentSession: Send + Sync {
     /// restarts.
     fn end(&self);
 
+    /// Build-owned artifacts carried by this exact process, eligible for
+    /// removal only after it has ended and been reaped.
+    fn conversation_artifacts(&self) -> Vec<std::path::PathBuf> {
+        Vec::new()
+    }
+
     /// The session's last words, once it has ended. `None` for a session that
     /// left none worth repeating.
     ///

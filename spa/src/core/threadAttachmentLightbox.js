@@ -15,6 +15,19 @@
 import { modalDialogHtml, openModal } from "./modal.js";
 import { ICON_CHEVRON_LEFT, ICON_CHEVRON_RIGHT } from "./icons.js";
 import { attachMediaSource, releaseMediaSource } from "./mediaBlob.js";
+import { matchesConversationContent } from "./conversationContentScope.js";
+
+const conversationLightboxes = new Map();
+
+/** A reset immediately removes previews, including pending media reads. */
+export function closeConversationAttachmentLightboxes(ownership) {
+  for (const [modal, held] of conversationLightboxes) {
+    if (matchesConversationContent(held.scope, ownership)) {
+      held.retire();
+      conversationLightboxes.delete(modal);
+    }
+  }
+}
 
 /** How far a finger has to travel sideways, in px, for a swipe to count. */
 const SWIPE_MIN_PX = 48;
@@ -103,7 +116,7 @@ function wireSwipe(stage, step) {
  * `kind` is "image" or "video", and `source()` answers `{body, mime}` or
  * `{pages, mime}`. A shared body lets the tile and lightbox use one Blob.
  */
-export function openAttachmentLightbox(items, index = 0) {
+export function openAttachmentLightbox(items, index = 0, ownership = {}) {
   let current = Math.max(0, Math.min(index, items.length - 1));
   let showing = 0; // which show() is the latest, so a slow source cannot land late
   let closed = false;
@@ -116,6 +129,7 @@ export function openAttachmentLightbox(items, index = 0) {
   const modal = openModal({
     dialogHtml: lightboxHtml(items.length),
     onClose: () => {
+      conversationLightboxes.delete(modal);
       closed = true;
       showing += 1;
       clearStage();
@@ -125,6 +139,16 @@ export function openAttachmentLightbox(items, index = 0) {
   });
   const dialog = modal.body;
   stage = dialog.querySelector(".thread-lightbox-stage");
+  const retire = () => {
+    closed = true;
+    showing += 1;
+    clearStage();
+    stage.replaceChildren();
+    doc.removeEventListener("keydown", onKeydown);
+    modal.setVisible(false);
+    void modal.close();
+  };
+  conversationLightboxes.set(modal, { scope: { ...ownership }, retire });
   const count = dialog.querySelector(".thread-lightbox-count");
 
   const land = (item, turn, src) => {

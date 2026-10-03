@@ -11,6 +11,7 @@
 // is written with, and nothing here stands down, fails, or is unavailable.
 
 const records = new Map(); // key → { at, value }
+let writeCount = 0;
 const listeners = new Set(); // { parts, listener }
 
 export const DEVICES_ADDRESS = Object.freeze({ deviceId: "", entityId: "", kind: "devices" });
@@ -66,10 +67,17 @@ export function subscribeCache(prefixAddress, listener) {
 export const readCached = async (address) => records.get(recordKey(address));
 
 export const readCachedMany = async (addresses) => addresses.map((address) => records.get(recordKey(address)));
+export const cachedWriteOf = (record) => record?.write;
+
+export async function captureCachedRecord(address) {
+  const key = recordKey(address);
+  if (!records.has(key)) records.set(key, { at: Date.now(), write: `memory:${++writeCount}`, value: null });
+  return records.get(key);
+}
 
 export async function writeCached(address, value) {
   const key = recordKey(address);
-  records.set(key, { at: Date.now(), value });
+  records.set(key, { at: Date.now(), write: `memory:${++writeCount}`, value });
   announce(partsOfKey(key));
 }
 
@@ -104,7 +112,8 @@ export async function takeCachedCount(address, floor = 0) {
 
 // The feed's own write path. The rows' observation stamps it keeps are the
 // real cache's business (core/cacheFreshness.js); this double keeps none.
-export async function updateCachedFeed(address, update) {
+export async function updateCachedFeed(address, update, { unchanged = [] } = {}) {
+  if (unchanged.some((guard) => cachedWriteOf(records.get(recordKey(guard.address))) !== guard.written)) return false;
   const held = records.get(recordKey(address));
   const next = update(held?.value, held);
   if (next === undefined || next === null) return false;

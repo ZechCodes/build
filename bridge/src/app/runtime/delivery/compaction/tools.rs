@@ -106,7 +106,11 @@ impl AppState {
     }
 
     /// The running session of one agent, wherever its tab is keyed.
-    fn live_agent_session(&self, owner: &str, agent_id: &str) -> Option<Arc<dyn AgentSession>> {
+    pub(super) fn live_agent_session(
+        &self,
+        owner: &str,
+        agent_id: &str,
+    ) -> Option<Arc<dyn AgentSession>> {
         self.session_registry
             .live_agent_snapshots()
             .into_iter()
@@ -154,6 +158,11 @@ impl AppState {
         let instructions = self.compactions.withdraw(owner, agent_id)?;
         let session = self.live_agent_session(owner, agent_id)?;
         Some(CompactionSend {
+            thread_id: self
+                .agent_conversation(owner, Some(agent_id))
+                .ok()?
+                .id
+                .clone(),
             owner: owner.to_string(),
             agent_id: agent_id.to_string(),
             model_choice,

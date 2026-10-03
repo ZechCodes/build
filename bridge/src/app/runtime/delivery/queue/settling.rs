@@ -44,6 +44,23 @@ pub(super) struct SettlingTurns {
 }
 
 impl SettlingTurns {
+    pub(super) fn take_conversation(&mut self, conversation_id: &str) -> Self {
+        let (taken, remaining) = std::mem::take(&mut self.waiting)
+            .into_iter()
+            .partition(|waiting: &WaitingTurn| waiting.turn.conversation_id == conversation_id);
+        self.waiting = remaining;
+        Self {
+            waiting: taken,
+            wake_asked_for: None,
+        }
+    }
+
+    pub(super) fn restore(&mut self, mut held: Self) {
+        for waiting in &mut held.waiting {
+            waiting.turn.survives_refusal = true;
+        }
+        self.waiting.append(&mut held.waiting);
+    }
     /// Wait `turn` until `until`, or for the next delivery when `None`.
     pub(super) fn add(&mut self, turn: PendingAgentTurn, until: Option<Instant>) {
         if let Some(joined) = self

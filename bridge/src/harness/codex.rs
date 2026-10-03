@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use crate::harness::{
-    installed, Harness, HarnessContext, SessionLocator, DAEMON_IDENTITY_VARS,
+    installed, Harness, HarnessContext, HarnessError, SessionLocator, DAEMON_IDENTITY_VARS,
     INHERITED_AGENT_MARKERS, REAL_TUI_SETTLE, REAL_TUI_SUBMIT_DELAY,
 };
 use crate::models::{AgentProvider, ModelChoice, ModelOption};
@@ -238,6 +238,83 @@ impl Harness for CodexHarness {
         });
         held
     }
+
+    fn conversation_artifacts(
+        &self,
+        home: &Path,
+        _state_root: &Path,
+        _agent_id: &str,
+        cwd: Option<&Path>,
+        id: Option<&str>,
+    ) -> Result<Vec<super::ConversationArtifact>, HarnessError> {
+        let Some(id) = id else {
+            return Ok(Vec::new());
+        };
+        super::cleanup::validate_id(id)?;
+        let Some(cwd) = cwd else {
+            return Ok(Vec::new());
+        };
+        let Some(root) = super::cleanup::checked_directory(home, Path::new(".codex/sessions"))?
+        else {
+            return Ok(Vec::new());
+        };
+        let wanted = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+        let candidates = cleanup_rollouts(&root, &wanted, id)?;
+        match candidates.as_slice() {
+            [] => Ok(Vec::new()),
+            [only] => {
+                let relative = only
+                    .strip_prefix(&root)
+                    .expect("rollout beneath validated root");
+                Ok(super::ConversationArtifact::file(&root, relative)?
+                    .into_iter()
+                    .collect())
+            }
+            _ => Err(HarnessError::Setup(
+                "multiple Codex rollouts claim the same conversation".into(),
+            )),
+        }
+    }
+
+    fn native_history_cwd(&self, cwd: &Path) -> PathBuf {
+        std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf())
+    }
+}
+
+fn cleanup_rollouts(root: &Path, cwd: &Path, id: &str) -> Result<Vec<PathBuf>, HarnessError> {
+    let suffix = format!("-{id}.jsonl");
+    let mut directories = vec![root.to_path_buf()];
+    let mut candidates = Vec::new();
+    while let Some(directory) = directories.pop() {
+        for entry in std::fs::read_dir(directory)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            if kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
+                directories.push(entry.path());
+            } else if kind.is_file()
+                && entry.file_name().to_string_lossy().ends_with(&suffix)
+                && verified_cleanup_rollout(&entry.path(), cwd, id)?
+            {
+                candidates.push(entry.path());
+            }
+        }
+    }
+    Ok(candidates)
+}
+
+fn verified_cleanup_rollout(path: &Path, cwd: &Path, id: &str) -> Result<bool, HarnessError> {
+    use std::io::BufRead;
+    let mut first = String::new();
+    std::io::BufReader::new(std::fs::File::open(path)?).read_line(&mut first)?;
+    let Ok(header) = serde_json::from_str::<serde_json::Value>(&first) else {
+        return Ok(false);
+    };
+    Ok(header["type"].as_str() == Some("session_meta")
+        && rollout_id(&header).as_deref() == Some(id)
+        && rollout_cwd(&header).as_deref() == Some(cwd))
 }
 
 /// The `--config` override that marks `cwd` trusted in codex's project

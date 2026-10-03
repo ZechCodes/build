@@ -61,6 +61,36 @@ fn provider_of(state: &AppState, run_id: &str, agent_id: &str) -> crate::models:
 }
 
 #[test]
+fn internal_wake_retries_a_new_usage_limit_after_clear() {
+    let mut standing = standing();
+    let (state, _, owner, agent) = standing.parts();
+    super::resume::clear_conversation(state, &owner, &agent);
+    let resets_at = an_hour_from_now();
+    let mut observation = Default::default();
+    state.record_usage_limit(&owner, &agent, &limited(Some(resets_at)), &mut observation);
+    state.release_usage_limits_due_at(resets_at);
+    assert_eq!(build_notices(state, &owner, &agent, "Retrying").len(), 1);
+    assert_eq!(state.delivery_queue.queued_len(), 1);
+}
+
+#[test]
+fn internal_wake_does_not_retry_a_usage_limit_observed_before_clear() {
+    let mut standing = standing();
+    let (state, _, owner, agent) = standing.parts();
+    let resets_at = an_hour_from_now();
+    let mut observation = Default::default();
+    state.record_usage_limit(&owner, &agent, &limited(Some(resets_at)), &mut observation);
+    super::resume::clear_conversation(state, &owner, &agent);
+    state.release_usage_limits_due_at(resets_at);
+    assert!(state
+        .agent_conversation(&owner, Some(&agent))
+        .unwrap()
+        .items
+        .is_empty());
+    assert!(state.delivery_queue.queued_is_empty());
+}
+
+#[test]
 fn a_turn_that_stopped_at_the_limit_puts_the_harness_on_the_board() {
     let mut standing = standing();
     let (state, _root, run_id, agent_id) = standing.parts();

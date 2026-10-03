@@ -1019,16 +1019,20 @@ describe("the branch surface on the cache alone", () => {
   it("repaints when the row's own record moves", async () => {
     bridge.call = boardWith([finishableRow({ run_id: "run-1", can_finish: false })]);
     await readTheBoard();
+    const { readCached, writeCached } = await import("../src/core/localCache.js");
+    const address = { deviceId: "dev-1", entityId: "run-1", kind: "row" };
+    // The pass writes its feed before its rows. Wait for the fixture's row
+    // commit so it cannot overwrite the change this case is about to make.
+    await vi.waitFor(async () => expect((await readCached(address))?.value?.can_finish).toBe(false), { timeout: 5000 });
     await openBranch();
     await flush();
     expect(document.querySelector("#tb-verb .btn")).toBeNull();
 
-    const { writeCached } = await import("../src/core/localCache.js");
     await writeCached(
-      { deviceId: "dev-1", entityId: "run-1", kind: "row" },
+      address,
       { ...finishableRow({ run_id: "run-1" }), deviceId: "dev-1", projectKey: "dev-1/p1" },
     );
-    await vi.waitFor(() => expect(document.querySelector("#tb-verb .btn")).toBeTruthy());
+    await vi.waitFor(() => expect(document.querySelector("#tb-verb .btn")).toBeTruthy(), { timeout: 5000 });
   });
 
   it("says so when the cache names no checkout on this branch", async () => {

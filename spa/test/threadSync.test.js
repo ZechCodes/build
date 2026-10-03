@@ -32,11 +32,11 @@ describe("a thread page overtaken by connection restoration", () => {
     let active = true;
     let resolveMergeRead;
     const mergeReadStarted = new Promise((resolve) => { resolveMergeRead = resolve; });
-    let readTransactions = 0;
+    let writeTransactions = 0;
     const originalTransaction = IDBDatabase.prototype.transaction;
     const transaction = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (...args) {
       const opened = originalTransaction.apply(this, args);
-      if (args[1] === "readonly" && ++readTransactions === 2) resolveMergeRead();
+      if (args[1] === "readwrite" && ++writeTransactions === 2) resolveMergeRead();
       return opened;
     });
     try {

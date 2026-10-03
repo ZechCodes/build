@@ -75,6 +75,10 @@ pub(in crate::app) struct UsageLimits {
 }
 
 impl UsageLimits {
+    pub(in crate::app) fn forget_agent(&mut self, owner: &str, agent_id: &str) {
+        self.stopped
+            .remove(&(owner.to_string(), agent_id.to_string()));
+    }
     /// An agent's session reported that its turn stopped at a limit. True when
     /// the device's record moved, which is when the board item has news.
     pub(in crate::app) fn observe(
@@ -352,10 +356,9 @@ impl AppState {
     }
 
     fn resume_one_after_usage_limit(&mut self, resume: &Resume) -> Result<bool, String> {
-        let addressed = self.addressed_agent(&json!({
-            "id": resume.owner,
-            "agent_id": resume.agent_id,
-        }))?;
+        // Reset forgets stopped agents; extracting this retry and accepting it
+        // both happen under the same app lock.
+        let addressed = self.current_service_agent(&resume.owner, &resume.agent_id)?;
         let notice = resume_notice(resume.harness, &resume.said);
         let now = crate::store::now_rfc3339();
         self.edit_agent_conversation(&resume.owner, &resume.agent_id, |thread, _| {

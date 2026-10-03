@@ -105,6 +105,23 @@ impl Harness for PiHarness {
     fn holds_conversation(&self, _home: &Path, _cwd: &Path, _id: &str) -> bool {
         false
     }
+
+    fn conversation_artifacts(
+        &self,
+        _home: &Path,
+        state_root: &Path,
+        agent_id: &str,
+        _cwd: Option<&Path>,
+        _id: Option<&str>,
+    ) -> Result<Vec<super::ConversationArtifact>, HarnessError> {
+        super::cleanup::validate_id(agent_id)?;
+        let relative = PathBuf::from("harness/pi/sessions").join(agent_id);
+        Ok(
+            super::ConversationArtifact::directory(state_root, &relative)?
+                .into_iter()
+                .collect(),
+        )
+    }
 }
 
 fn ensure_pi_root_outside_checkout(state_root: &Path, cwd: &Path) -> Result<(), HarnessError> {

@@ -20,7 +20,7 @@
 // pass stood down under it, a reload.
 
 import { LATEST_THREAD_ITEMS, REPAIRED_THREAD_ITEMS } from "./cacheThresholds.js";
-import { mergeCached, readCached } from "./localCache.js";
+import { mergeCachedAtomically, readCached } from "./localCache.js";
 import { requestPriorityFields } from "./readRequests.js";
 import {
   THREAD_RECORD_KIND,
@@ -61,12 +61,12 @@ export async function syncThreadWindow(request) {
   const target = threadTarget(request);
   const held = (await readCached(target))?.value;
   const after = Number(held?.deliveredSequence || 0);
-  const page = await requestThreadPage(request, threadPageParams(request.entityId, request.agentId || "", after));
+  const page = await requestThreadPage(request, { ...threadPageParams(request.entityId, request.agentId || "", after), ...threadGenerationParam(threadIdFor(request, held)) });
   if (!page) return false;
   if (!requestIsActive(request)) return false;
   const owed = changedUnderCursor(page, after) ? Number(page.thread_last_sequence) : 0;
-  await mergeCached(target, (current) =>
-    requestIsActive(request) ? owingRepair(current, threadWindow(current, page, { newest: after > 0 }), owed) : null);
+  await mergeCachedAtomically(target, (current) =>
+    mergedThreadPage(request, current, page, after, owed));
   await repairRecentItems(request, target);
   return true;
 }
@@ -119,11 +119,12 @@ async function repairRecentItems(request, target) {
   const page = await requestThreadPage(request, {
     entity_id: request.entityId,
     ...(request.agentId ? { agent_id: request.agentId } : {}),
+    ...threadGenerationParam(request.threadId || held.thread_id),
     after_sequence: floor,
     limit: REPAIRED_THREAD_ITEMS,
   });
   if (!page || !requestIsActive(request)) return;
-  await mergeCached(target, (current) => requestIsActive(request) ? repairedThreadWindow(current, page) : null);
+  await mergeCachedAtomically(target, (current) => requestIsActive(request) ? repairedThreadWindow(current, page) : null);
 }
 
 /** The sequence just under the newest items the record holds from the wire,
@@ -137,7 +138,7 @@ function repairFloor(held) {
 /** The window with the items a repair page carries newer copies of, and its
  *  debt paid where the page was read at or past it — or null where neither. */
 export function repairedThreadWindow(held, page) {
-  if (!holdsAWindow(held)) return null;
+  if (!holdsAWindow(held) || differentThreadGeneration(held, page)) return null;
   const newer = newerCopies(held.items, page?.items);
   const paid = repaidBy(held, page);
   if (!newer.length && !paid) return null;
@@ -184,6 +185,7 @@ const holdsAWindow = (held) => Number(held?.deliveredSequence || 0) > 0;
  * the returned tip, leaving that gap behind the ordinary load-older path.
  */
 export function threadWindow(held, page, { newest = false } = {}) {
+  if (differentThreadGeneration(held, page)) return null;
   const arrived = windowFromThreadPayload(page);
   if (!held) return arrived;
   if (!arrived) return null; // nothing new: the record stands
@@ -224,3 +226,12 @@ const newestThreadWindow = (held, arrived, page) => {
 
 const highestCreationSequence = (items) =>
   (items || []).reduce((highest, item) => Math.max(highest, Number(item?.data?.sequence || 0)), 0);
+
+export const threadGenerationParam = (threadId) => threadId ? { thread_id: threadId } : {};
+export const differentThreadGeneration = (held, page) => Boolean(held?.thread_id && page?.thread_id !== held.thread_id);
+
+const threadIdFor = (request, held) => request.threadId || held?.thread_id;
+function mergedThreadPage(request, current, page, after, owed) {
+  if (!requestIsActive(request) || differentThreadGeneration(current, page)) return null;
+  return owingRepair(current, threadWindow(current, page, { newest: after > 0 }), owed);
+}

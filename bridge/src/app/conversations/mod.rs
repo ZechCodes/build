@@ -9,6 +9,8 @@ mod native_delivery;
 pub(in crate::app) mod operation_ledger;
 mod post;
 mod read;
+mod reset;
+mod reset_files;
 mod senders;
 
 pub(in crate::app) use agent_to_agent::AgentSender;
@@ -105,7 +107,83 @@ impl AppState {
                 ));
             }
         }
+        self.guard_thread_id(&address, params.get("thread_id"))?;
         Ok(address)
+    }
+
+    pub(crate) fn guard_conversation_mutation_params(
+        &self,
+        owner: &str,
+        params: &Value,
+    ) -> Result<(), String> {
+        let address = self.resolve_conversation_params(owner, params)?;
+        self.guard_mutation_thread_id(&address, params.get("thread_id"))
+    }
+
+    pub(in crate::app) fn guard_mutation_thread_id(
+        &self,
+        address: &ConversationAddress,
+        expected: Option<&Value>,
+    ) -> Result<(), String> {
+        self.guard_conversation_reservation(address)?;
+        self.guard_thread_id(address, expected)?;
+        if expected.is_none() && self.conversation_at(address)?.generation_revision > 0 {
+            return Err(
+                "stale unversioned mutation: cleared conversation requires current thread_id"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
+    pub(in crate::app) fn guard_conversation_reservation(
+        &self,
+        address: &ConversationAddress,
+    ) -> Result<(), String> {
+        if self
+            .resetting_conversations
+            .contains(&address.conversation_id)
+        {
+            return Err(
+                "conversation.reset: conversation is being cleared; try again shortly".into(),
+            );
+        }
+        Ok(())
+    }
+
+    /// A newly accepted internal task/agent handoff addresses the current
+    /// generation deliberately. External reviewer payloads must name it.
+    pub(in crate::app) fn current_thread_params(&self, params: &Value) -> Result<Value, String> {
+        let owner = params
+            .get("entity_id")
+            .and_then(Value::as_str)
+            .ok_or("missing entity_id")?;
+        let address = self.resolve_conversation_params(owner, params)?;
+        self.guard_conversation_reservation(&address)?;
+        let mut current = params.clone();
+        current["thread_id"] = Value::String(self.conversation_at(&address)?.id.clone());
+        Ok(current)
+    }
+
+    pub(in crate::app) fn guard_thread_id(
+        &self,
+        address: &ConversationAddress,
+        expected: Option<&Value>,
+    ) -> Result<(), String> {
+        let Some(expected) = expected else {
+            return Ok(());
+        };
+        let expected = expected
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .ok_or("invalid thread_id: expected a non-empty string")?;
+        let current = &self.conversation_at(address)?.id;
+        if expected != current {
+            return Err(format!(
+                "stale thread_id {expected}; current thread is {current}"
+            ));
+        }
+        Ok(())
     }
 
     pub(in crate::app) fn conversation_at(

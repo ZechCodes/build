@@ -12,7 +12,7 @@
 // its reader's own message in another would have to merge them on every paint,
 // and would still show the two out of order.
 
-import { mergeCached, readCached } from "./localCache.js";
+import { mergeCachedAtomically, readCached } from "./localCache.js";
 import {
   THREAD_RECORD_KIND,
   acknowledgeProvisionalItem,
@@ -26,8 +26,9 @@ import {
   surfaceSessionGeneration,
 } from "./surfacesCache.js";
 
-export const threadCacheAddress = ({ deviceId, entityId, agentId, conversationId }) => ({
+export const threadCacheAddress = ({ deviceId, entityId, agentId, conversationId, threadId }) => ({
   deviceId,
+  ...(threadId ? { threadId } : {}),
   // The workspace is the entity a transcript is stored under, always: that
   // prefix is what Done, Delete and the 72 h expiry sweep, and a record
   // addressed outside it would outlive the workspace it belongs to for ever.
@@ -78,20 +79,21 @@ const sendTimeWrite = (merging) =>
  *  operation carrying it. Merged under the address, because the sync layer is
  *  writing the same record from the other side. */
 export const writeProvisionalMessage = (address, operationId, message) =>
-  sendTimeWrite(mergeCached(address, (held) =>
-    withItems(held, mergeThreadItems(held?.items || [], [provisionalThreadItem({ operationId, message })]))));
+  sendTimeWrite(mergeCachedAtomically(address, (held) =>
+    acceptsProvisionalWrite(address, held)
+      ? withItems(held, mergeThreadItems(held?.items || [], [provisionalThreadItem({ operationId, message })])) : null));
 
 /** The post was taken: stamp the sequence it was written at onto the message
  *  waiting for it, so it sits where the conversation will put it. */
 export const acknowledgeProvisionalMessage = (address, operationId, sequence, deliveryStatus) =>
-  sendTimeWrite(mergeCached(address, (held) => {
+  sendTimeWrite(mergeCachedAtomically(address, (held) => {
     const items = acknowledgeProvisionalItem(held?.items || [], operationId, sequence, deliveryStatus);
     return held && items !== held.items ? withItems(held, items) : null;
   }));
 
 /** The post was refused: take the message back out. */
 export const withdrawProvisionalMessage = (address, operationId) =>
-  sendTimeWrite(mergeCached(address, (held) => {
+  sendTimeWrite(mergeCachedAtomically(address, (held) => {
     const items = withoutProvisionalItem(held?.items || [], operationId);
     return held && items !== held.items ? withItems(held, items) : null;
   }));
@@ -99,12 +101,14 @@ export const withdrawProvisionalMessage = (address, operationId) =>
 export function createConversationCache({ addressOf, threadCache, onThreadSeeded, onSurfacesSeeded }) {
   let opened = false;
   let surfacesSeeded = false;
+  let windowRead = 0;
 
   /** Whether the panel is still on the conversation a read was made for. A
    *  window opened under the reader after they pressed another bubble would
    *  draw one agent's words under another's name. */
   const sameConversation = (captured, current) =>
-    !!current && current.entityId === captured.entityId && current.agentId === captured.agentId;
+    !!current && current.entityId === captured.entityId && current.agentId === captured.agentId
+    && current.threadId === captured.threadId;
 
   const sameSurfaceIdentity = (captured, current) =>
     sameConversation(captured, current)
@@ -130,7 +134,7 @@ export function createConversationCache({ addressOf, threadCache, onThreadSeeded
     // turns an ordinary sync into a visible painted -> empty -> painted wipe.
     // A stored record whose value is empty remains authoritative; only the
     // absence of a record leaves the last opened window standing.
-    if (!record) return false;
+    if (!record || wrongWindowGeneration(record.value, identity)) return false;
     opened = true;
     threadCache.seedWindow(record.value || null);
     onThreadSeeded(identity.agentId);
@@ -150,12 +154,13 @@ export function createConversationCache({ addressOf, threadCache, onThreadSeeded
       const identity = addressOf();
       if (!identity || opened) return false;
       opened = true;
+      const capturedRead = ++windowRead;
       const [thread, surfaces] = await Promise.all([
         readCached(threadCacheAddress(identity)),
         readCached(surfacesCacheAddress(identity)),
       ]);
       const stillOpen = addressOf();
-      if (!sameConversation(identity, stillOpen)) return false;
+      if (capturedRead !== windowRead || !sameConversation(identity, stillOpen)) return false;
       if (sameSurfaceIdentity(identity, stillOpen)) seedSurfaces(surfaces, identity);
       return openWindow(thread, identity);
     },
@@ -164,15 +169,22 @@ export function createConversationCache({ addressOf, threadCache, onThreadSeeded
     async reread() {
       const identity = addressOf();
       if (!identity) return;
+      const capturedRead = ++windowRead;
       const thread = await readCached(threadCacheAddress(identity));
-      if (!sameConversation(identity, addressOf())) return;
+      if (capturedRead !== windowRead || !sameConversation(identity, addressOf())) return;
       openWindow(thread, identity);
     },
 
     reset() {
+      windowRead += 1;
       threadCache.reset();
       opened = false;
       surfacesSeeded = false;
     },
   };
 }
+
+const acceptsProvisionalWrite = (address, held) => !address.threadId || !held?.thread_id || address.threadId === held.thread_id;
+
+const wrongWindowGeneration = (window, identity) => identity.threadId && window?.thread_id !== identity.threadId
+  && !(window?.thread_id && window.retired_thread_ids?.includes(identity.threadId));

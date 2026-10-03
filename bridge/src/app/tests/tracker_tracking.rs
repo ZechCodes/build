@@ -663,6 +663,56 @@ fn reminders(state: &mut AppState, entity_id: &str, agent_id: &str) -> Vec<Strin
         .collect()
 }
 
+#[test]
+fn internal_wake_delivers_new_task_notices_after_clear() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_home, mut state, project_id) = tracked(tmp.path());
+    let (owner, watcher) = coding_agent(&mut state, &project_id, "watcher");
+    let task = task_id(&filed(&mut state, &project_id, "Still tracked"));
+    assert_eq!(
+        set_task_tracking(&mut state, &task, &watcher, true)["ok"],
+        true
+    );
+    super::resume::clear_conversation(&mut state, &owner, &watcher);
+    let moved = state.handle(req(
+        "tasks.update",
+        json!({"task_id": task, "status": "in_review"}),
+    ));
+    assert_eq!(moved["ok"], true, "{moved:?}");
+    let told = notices(&mut state, &owner, &watcher);
+    assert_eq!(
+        told.len(),
+        1,
+        "a new change reaches its retained tracker: {told:?}"
+    );
+    assert_eq!(told[0]["from_task"]["task_id"], task);
+    assert!(
+        state.delivery_queue.settle_wake_due().is_some(),
+        "the notice queues a wake"
+    );
+}
+
+#[test]
+fn internal_wake_delivers_open_task_reminders_after_clear() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_home, mut state, project_id) = tracked(tmp.path());
+    let (owner, agent) = reported(
+        &mut state,
+        &project_id,
+        DoneStatus::Completed,
+        &[("unfinished", "in_progress"), ("finished", "in_progress")],
+    );
+    super::resume::clear_conversation(&mut state, &owner, &agent);
+    state.remind_of_open_tasks(&owner, &agent);
+    let told = reminders(&mut state, &owner, &agent);
+    assert_eq!(
+        told.len(),
+        1,
+        "retained assignments can still remind the fresh agent: {told:?}"
+    );
+    assert!(told[0].contains("unfinished"));
+}
+
 /// An agent, holding `titles`, that has just reported `status`.
 fn reported(
     state: &mut AppState,

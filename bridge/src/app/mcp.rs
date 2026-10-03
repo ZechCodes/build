@@ -17,12 +17,28 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::app) enum AddressedSession {
     /// An agent working a plan or a run.
-    Coding { entity_id: String, agent_id: String },
+    Coding(McpConversationGeneration),
     /// A router deciding where one capture goes.
     Router {
         capture_id: String,
         agent_id: String,
     },
+}
+
+/// The conversation generation authenticated before a frame waits for its
+/// mutation lock. Never resolve it again after crossing an async boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::app) struct McpConversationGeneration {
+    pub entity_id: String,
+    pub agent_id: String,
+    pub thread_id: String,
+}
+
+impl McpConversationGeneration {
+    pub(in crate::app) fn guard(&self, state: &AppState) -> Result<(), String> {
+        let address = state.resolve_conversation_address(&self.entity_id, Some(&self.agent_id))?;
+        state.guard_mutation_thread_id(&address, Some(&Value::String(self.thread_id.clone())))
+    }
 }
 
 /// What a frame off the daemon's control socket — an agent's `done` report or
@@ -308,10 +324,9 @@ pub(in crate::app) async fn handle_authenticated_mcp_frame(
         Some(AddressedSession::Router { capture_id, .. }) => {
             handle_router_mcp_frame(state, frame, &capture_id, timer, turn).await
         }
-        Some(AddressedSession::Coding {
-            entity_id,
-            agent_id,
-        }) => handle_coding_mcp_frame(state, frame, &entity_id, &agent_id, timer, turn).await,
+        Some(AddressedSession::Coding(generation)) => {
+            handle_coding_mcp_frame(state, frame, &generation, timer, turn).await
+        }
         None => Some(json!({ "ok": false, "error": "unauthorized MCP session" })),
     }
 }
@@ -345,20 +360,23 @@ pub(in crate::app) async fn handle_router_mcp_frame(
 pub(in crate::app) async fn handle_coding_mcp_frame(
     state: &Arc<Mutex<AppState>>,
     frame: &Value,
-    entity_id: &str,
-    agent_id: &str,
+    generation: &McpConversationGeneration,
     timer: &FrameTimer,
     turn: &mut Turn,
 ) -> Option<Value> {
     if let Ok(report) =
         serde_json::from_value::<DoneReport>(frame.get("report").cloned().unwrap_or(Value::Null))
     {
-        let deferred = timer
-            .lock(state)
-            .done_deferring_for_agent(entity_id, agent_id, report);
+        let deferred = {
+            let mut app = timer.lock(state);
+            if let Err(error) = generation.guard(&app) {
+                return Some(mcp_action_response(Err(error)));
+            }
+            app.done_deferring_for_agent(&generation.entity_id, &generation.agent_id, report)
+        };
         if let Some(deferred) = deferred {
             if let Err(error) = apply_off_the_socket(state, timer, turn, deferred).await {
-                eprintln!("done report {entity_id}: {error}");
+                eprintln!("done report {}: {error}", generation.entity_id);
             }
         }
         DeliveryRunner::drain(state, timer);
@@ -368,9 +386,13 @@ pub(in crate::app) async fn handle_coding_mcp_frame(
         frame.get("request").cloned().unwrap_or(Value::Null),
     )
     .ok()?;
-    let (answered, deferred) = timer
-        .lock(state)
-        .agent_action_deferring(entity_id, agent_id, action);
+    let (answered, deferred) = {
+        let mut app = timer.lock(state);
+        if let Err(error) = generation.guard(&app) {
+            return Some(mcp_action_response(Err(error)));
+        }
+        app.agent_action_deferring(&generation.entity_id, &generation.agent_id, action)
+    };
     let result = match deferred {
         Some(deferred) => apply_off_the_socket(state, timer, turn, deferred).await,
         None => answered,
@@ -387,6 +409,19 @@ pub(in crate::app) fn mcp_action_response(result: Result<Value, String>) -> Valu
 }
 
 impl AppState {
+    pub(in crate::app) fn mcp_conversation_generation(
+        &self,
+        entity_id: &str,
+        agent_id: &str,
+    ) -> Result<McpConversationGeneration, String> {
+        let address = self.resolve_conversation_address(entity_id, Some(agent_id))?;
+        Ok(McpConversationGeneration {
+            entity_id: entity_id.into(),
+            agent_id: agent_id.into(),
+            thread_id: self.conversation_at(&address)?.id.clone(),
+        })
+    }
+
     /// Listen on the daemon control socket for `done` reports forwarded by the
     /// per-task `build-bridge mcp` servers, and route each to its task's `on_done`.
     pub fn spawn_done_socket(state: Arc<Mutex<AppState>>, path: String) {

@@ -214,6 +214,7 @@ mod github;
 mod harness_models;
 mod installed_models;
 mod lifecycle_compat;
+mod mcp_generation;
 mod merge_regressions;
 mod project_agent;
 mod project_agent_base;

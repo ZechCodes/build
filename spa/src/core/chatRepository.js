@@ -1,3 +1,6 @@
+import { readCached, subscribeCache } from "./localCache.js";
+import { forgetConversationRevisionBodies } from "./revisionBodies.js";
+import { closeConversationAttachmentLightboxes } from "./threadAttachmentLightbox.js";
 import { createThreadCache, createThreadState } from "./thread.js";
 import { createOptimisticStore } from "./optimistic.js";
 import { createChatChoiceController } from "./chatChoiceController.js";
@@ -88,8 +91,8 @@ const controllerKey = ({ entityId = "", agentId = "", draftId = "" }) =>
 // A promoted controller keeps its draft id as lineage, but reloads address it
 // by the durable entity/agent pair. Storage therefore prefers that pair once
 // it exists, unlike the live controller map while promotion is in progress.
-const storedControllerKey = ({ entityId = "", agentId = "", draftId = "" }) =>
-  agentId ? `agent:${entityId}:${agentId}` : `draft:${draftId}`;
+const storedControllerKey = ({ entityId = "", agentId = "", draftId = "", threadId = "" }) =>
+  agentId ? `agent:${entityId}:${agentId}${threadId ? `:${threadId}` : ""}` : `draft:${draftId}`;
 
 const storageOrNull = (provided) => {
   if (provided !== undefined) return provided;
@@ -125,6 +128,8 @@ const publicIdentity = (identity) => Object.freeze({
   agentId: identity.agentId || "",
   conversationId: identity.conversationId || "",
   draftId: identity.draftId || "",
+  ...(identity.threadId ? { threadId: identity.threadId } : {}),
+  ...(identity.threadGenerationRevision !== undefined ? { threadGenerationRevision: identity.threadGenerationRevision } : {}),
 });
 
 const draftSnapshot = (draft) => ({
@@ -236,7 +241,7 @@ class ChatController {
     };
     this.#failures = [];
     this.#listeners = new Set();
-    this.#threadState = repository.history(identity.conversationId)?.threadState || createThreadState();
+    this.#threadState = repository.history(identity.conversationId, identity)?.threadState || createThreadState();
     this.#choices = createChatChoiceController({
       repository,
       identityOf: () => publicIdentity(this.#identity),
@@ -284,7 +289,7 @@ class ChatController {
   }
 
   get history() {
-    return this.#repository.history(this.#identity.conversationId);
+    return this.#repository.history(this.#identity.conversationId, this.#identity);
   }
 
   get threadState() {
@@ -335,6 +340,7 @@ class ChatController {
 
   captureSubmission(message = this.#draft) {
     this.#repository.assertActive();
+    if (!this.#repository.isCurrentConversation(this.#identity)) throw new Error("Conversation was cleared");
     assertAddress(this.#identity);
     const operationId = this.#repository.createOperationId();
     const captured = messageSnapshot(this.#repository.contextualize(message));
@@ -424,7 +430,7 @@ class ChatController {
   }
 
   async postWithCall(call, submission, extra) {
-    const { entityId, agentId, conversationId } = submission.address;
+    const { entityId, agentId, conversationId, threadId } = submission.address;
     const tracked = this.#operations.get(submission.operationId);
     if (tracked) tracked.extra = { ...extra };
     let receipt;
@@ -435,6 +441,7 @@ class ChatController {
         entity_id: entityId,
         agent_id: agentId,
         conversation_id: conversationId,
+        ...(threadId ? { thread_id: threadId } : {}),
         choice_revision: submission.choiceRevision,
         operation_id: submission.operationId,
       });
@@ -614,6 +621,7 @@ class ChatController {
   }
 
   restoreRejected(submission, error) {
+    if (!this.#repository.isCurrentConversation(submission.address)) return "retired";
     this.#repository.assertSubmissionActive(submission);
     const noNewerDraft = this.#draft.revision === submission.clearedDraftRevision;
     if (noNewerDraft) {
@@ -678,8 +686,13 @@ class ChatController {
     for (const listener of [...this.#listeners]) listener(this);
   }
 
-  dispose() {
-    this.#cacheDraft?.dispose();
+  dispose({ discardDraft = false } = {}) {
+    this.#cacheDraft?.dispose({ flushPending: !discardDraft });
+    if (discardDraft) {
+      this.#draft = { ...EMPTY_DRAFT, attachments: [], revision: this.#draft.revision + 1, attachmentRevision: this.#draft.attachmentRevision + 1 };
+      this.#operations.clear();
+      this.#failures = [];
+    }
     this.#listeners.clear();
   }
 
@@ -735,6 +748,9 @@ export function createChatRepository({
   };
   const controllers = new Map();
   const histories = new Map();
+  const generations = new Map();
+  const retiredGenerations = new Map();
+  const generationRevisions = new Map();
   const railViews = new Map();
   let provisionalSequence = 0;
   let epoch = 1;
@@ -742,6 +758,33 @@ export function createChatRepository({
   let threadPostOperations = null;
   let messageContext = false;
   const optimisticStore = createOptimisticStore();
+  const stopThreadGenerations = scope?.deviceId ? subscribeCache({ deviceId: scope.deviceId }, (address) => {
+    if (address.kind !== "thread" || !address.sub) return;
+    void readCached(address).then((record) => {
+      if (active && record?.value?.thread_id) repository.observeThreadGeneration(address.sub, record.value.thread_id, record.value.thread_generation_revision);
+    });
+  }) : () => {};
+
+  const identityAtCurrentGeneration = (identity) => {
+    const current = generations.get(identity.conversationId);
+    if (!current) return identity;
+    const retired = retiredGenerations.get(identity.conversationId)?.has(identity.threadId);
+    const revision = generationRevisions.get(identity.conversationId) || 0;
+    const older = revision > (identity.threadGenerationRevision || 0);
+    if (identity.threadId && !retired && !older) return identity;
+    return { ...identity, threadId: current, threadGenerationRevision: revision };
+  };
+
+  const obsoleteRepositoryGeneration = (conversationId, threadId, revision) => !threadId
+    || generations.get(conversationId) === threadId || retiredGenerations.get(conversationId)?.has(threadId)
+    || (generationRevisions.get(conversationId) || 0) > revision;
+
+  const rememberRetiredGeneration = (conversationId, current) => {
+    if (!current) return;
+    const retired = retiredGenerations.get(conversationId) || new Set();
+    retired.add(current);
+    retiredGenerations.set(conversationId, retired);
+  };
 
   const repository = {
     cacheDrafts: providedStorage === undefined,
@@ -812,9 +855,17 @@ export function createChatRepository({
       if (!active) throw new Error("Chat repository scope is no longer active");
     },
 
+    isCurrentConversation(address) {
+      const generation = address && generations.get(address.conversationId);
+      return !generation || address.threadId === generation;
+    },
+
     assertSubmissionActive(submission) {
       repository.assertActive();
       if (submission.scopeEpoch !== epoch) throw new Error("Chat repository scope is no longer active");
+      const address = submission.address;
+      const generation = address && generations.get(address.conversationId);
+      if (generation && address.threadId !== generation) throw new Error("Conversation was cleared; this submission belongs to an older generation");
     },
 
     currentCall() {
@@ -857,6 +908,8 @@ export function createChatRepository({
       repository.assertActive();
       assertAddress(identity);
       const key = controllerKey(identity);
+      identity = identityAtCurrentGeneration(identity);
+      if (identity.threadId) repository.observeThreadGeneration(identity.conversationId, identity.threadId, identity.threadGenerationRevision);
       const held = controllers.get(key);
       if (held) {
         if (held.identity.conversationId !== identity.conversationId) {
@@ -867,6 +920,27 @@ export function createChatRepository({
       const controller = new ChatController(repository, identity);
       controllers.set(key, controller);
       return controller;
+    },
+
+    observeThreadGeneration(conversationId, threadId, revision = 0) {
+      const current = generations.get(conversationId);
+      if (obsoleteRepositoryGeneration(conversationId, threadId, revision)) return;
+      rememberRetiredGeneration(conversationId, current);
+      generations.set(conversationId, threadId);
+      generationRevisions.set(conversationId, revision);
+      for (const [key, controller] of controllers) {
+        if (controller.identity.conversationId !== conversationId || controller.identity.threadId === threadId) continue;
+        const ownership = { deviceId: scope?.deviceId, ...controller.identity };
+        optimisticStore.retireScopes((candidate) => candidate.startsWith(`${scopeKey}:thread:`)
+          && (candidate.endsWith(`:${ownership.threadId}`) || candidate.endsWith(`:${ownership.agentId}`)));
+        forgetConversationRevisionBodies(ownership);
+        closeConversationAttachmentLightboxes(ownership);
+        controller.dispose({ discardDraft: true });
+        const oldKey = storedControllerKey(controller.identity);
+        mutateStoredState((fresh) => { delete fresh.controllers[oldKey]; });
+        controllers.delete(key);
+      }
+      repository.releaseHistory(conversationId);
     },
 
     createProvisional({ entityId = "", conversationId = "" } = {}) {
@@ -912,8 +986,9 @@ export function createChatRepository({
       // submission prove which provisional owner was resolved.
       const provisionalConversationId = controller.identity.conversationId;
       controller.bindIdentity(identity);
+      repository.observeThreadGeneration(identity.conversationId, identity.threadId, identity.threadGenerationRevision);
       repository.releaseHistory(provisionalConversationId);
-      controller.adoptThreadState(repository.history(identity.conversationId).threadState);
+      controller.adoptThreadState(repository.history(identity.conversationId, identity).threadState);
       controllers.set(controllerKey(identity), controller);
       return controller;
     },
@@ -923,12 +998,12 @@ export function createChatRepository({
       return history ? history.identity : null;
     },
 
-    history(conversationId) {
+    history(conversationId, ownership = {}) {
       repository.assertActive();
       if (!conversationId) return null;
       let history = histories.get(conversationId);
       if (!history) {
-        const identity = Object.freeze({ scopeKey, conversationId });
+        const identity = Object.freeze({ scopeKey, conversationId, ...ownership, deviceId: scope?.deviceId });
         history = Object.freeze({
           identity,
           threadCache: createThreadCache(),
@@ -943,6 +1018,7 @@ export function createChatRepository({
       const history = histories.get(conversationId);
       if (!history) return;
       history.threadState.dispose();
+      history.threadCache.reset();
       histories.delete(conversationId);
     },
 
@@ -1042,6 +1118,7 @@ export function createChatRepository({
       active = false;
       epoch += 1;
       currentCall = null;
+      stopThreadGenerations();
       for (const listener of [...retirementListeners]) listener();
       retirementListeners.clear();
       for (const controller of controllers.values()) controller.dispose();

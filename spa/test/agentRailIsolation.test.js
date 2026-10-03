@@ -41,7 +41,7 @@ const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agent
 const { resetChangeEvents } = await import("../src/core/changeEvents.js");
 const { resetOptimistic } = await import("../src/core/optimistic.js");
 const { wipeCache } = await import("../src/core/localCache.js");
-const { writeRailWorkItem } = await import("./railCacheFixture.js");
+const { pushRailThreadItems, writeRailWorkItem } = await import("./railCacheFixture.js");
 
 const CATALOG = {
   default_provider: "claude_adk",
@@ -143,12 +143,23 @@ beforeEach(async () => {
   notifyError.mockClear();
   payload = branchPayload();
   calls = [];
+  const postedSequences = new Map();
+  const postReceipts = new Map();
   call = vi.fn(async (method, params = {}) => {
     calls.push({ method, params });
     if (method === "models.list") return CATALOG;
     if (method === "branch.get") return payload;
     if (method === "task.get") return payload;
-    if (method === "thread.post") return { posted_sequence: 7 };
+    if (method === "thread.post") {
+      const conversation = params.conversation_id || params.agent_id;
+      const operation = `${conversation}:${params.operation_id}`;
+      if (!postReceipts.has(operation)) {
+        const sequence = (postedSequences.get(conversation) ?? 6) + 1;
+        postedSequences.set(conversation, sequence);
+        postReceipts.set(operation, { posted_sequence: sequence });
+      }
+      return postReceipts.get(operation);
+    }
     if (method === "agent.choose") {
       return {
         entity_id: params.entity_id,
@@ -381,6 +392,39 @@ describe("agent rail chat ownership", () => {
       "create this agent",
       "send this when ready",
     ]);
+    const messages = [...host().querySelectorAll(".thread-message")].map((node) => node.textContent);
+    expect(messages.filter((text) => text.includes("create this agent"))).toHaveLength(1);
+    expect(messages.filter((text) => text.includes("send this when ready"))).toHaveLength(1);
+  });
+
+  it("draws a creation message once when its cached echo arrives before its receipt", async () => {
+    payload = { ...branchPayload(), agents: [] };
+    let resolvePost;
+    const baseCall = call;
+    call = vi.fn(async (method, params = {}) => {
+      if (method === "agent.add") return { entity_id: "run-1", agent: agent("created-agent", 1) };
+      if (method !== "thread.post") return baseCall(method, params);
+      calls.push({ method, params });
+      return new Promise((resolve) => { resolvePost = resolve; });
+    });
+    bridgeAnswersWith(call);
+    await mountBranch();
+    writeDraft("create this agent");
+    host().querySelector("#railsend").click();
+    await vi.waitFor(() => expect(resolvePost).toBeTypeOf("function"));
+    const operationId = calls.find((entry) => entry.method === "thread.post").params.operation_id;
+    await pushRailThreadItems("run-1", "conversation-created-agent", [{
+      type: "message",
+      data: { sequence: 7, role: "user", body: "create this agent", operation_id: operationId },
+    }], { deviceId: DEVICE_ID });
+    await flush();
+    const creationRows = () => [...host().querySelectorAll(".thread-message")]
+      .filter((node) => node.textContent.includes("create this agent"));
+    expect(creationRows()).toHaveLength(1);
+
+    resolvePost({ posted_sequence: 7 });
+    await flush();
+    expect(creationRows()).toHaveLength(1);
   });
 
   it("leaves the selected agent composer alone when another agent finishes creation", async () => {

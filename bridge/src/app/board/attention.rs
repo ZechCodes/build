@@ -743,11 +743,21 @@ impl AppState {
         // A named agent reads one bubble through; no agent reads the whole
         // entry, which is what opening the entry means.
         let named = named_agent_id(params)?;
-        let agent_id = if named.is_some() || params.get("conversation_id").is_some() {
-            Some(
-                self.resolve_conversation_params(&entity_id, params)?
-                    .agent_id,
-            )
+        if named.is_none()
+            && self
+                .entity_agents(&entity_id)
+                .is_ok_and(|roster| roster.primary().is_some())
+        {
+            let primary = self.resolve_conversation_address(&entity_id, None)?;
+            self.guard_mutation_thread_id(&primary, params.get("thread_id"))?;
+        }
+        let agent_id = if named.is_some()
+            || params.get("conversation_id").is_some()
+            || params.get("thread_id").is_some()
+        {
+            let address = self.resolve_conversation_params(&entity_id, params)?;
+            self.guard_mutation_thread_id(&address, params.get("thread_id"))?;
+            Some(address.agent_id)
         } else {
             None
         };

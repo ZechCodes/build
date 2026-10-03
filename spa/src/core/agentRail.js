@@ -64,7 +64,7 @@ import { railStatusLeadClass, railStatusLeadHtml, railWhoHtml } from "./agentRai
 import { createGitStatusTicker } from "./gitStatusTicker.js";
 import { createAgentSelection } from "./agentSelection.js";
 import { NO_AGENT_CHOICE, activeModelLabel, chosenProviderId, reconcileAgentChoice } from "./agentChoice.js";
-import { confirmActionAt } from "./confirm.js";
+import { confirmAction, confirmActionAt } from "./confirm.js";
 import {
   insertRecord,
   isProvisionalKey,
@@ -85,9 +85,11 @@ import { notifyError } from "./notify.js";
 import { deviceFeedView } from "./deviceContexts.js";
 import { deviceCatalog, followDeviceCatalog } from "./inboxDevices.js";
 import { createConversationCache, withdrawProvisionalMessage, writeProvisionalMessage } from "./conversationCache.js";
-import { syncThreadWindow } from "./threadSync.js";
+import { applyConversationReset, conversationResetSupportAddress, cachedConversationThreadId } from "./conversationReset.js";
+import { syncThreadWindow, threadGenerationParam } from "./threadSync.js";
 import {
   conversationRecordAddress,
+  creationMessageHasArrived,
   postSubmission,
   provisionalMessageEntry,
   rekeyPostedMessage,
@@ -166,6 +168,7 @@ import { WATCH_BUTTON_SELECTOR, createWatchToggle, syncWatchButton, watchButtonH
 import {
   compactionLimitOfOptionId,
   compactionMenuGroup,
+  compactionMenuOptions,
   createCompactionChoice,
 } from "./conversationCompaction.js";
 import { notifyCommandFailure } from "./commandRefusal.js";
@@ -286,7 +289,21 @@ const chatRecoveryHtml = (controller) => controller.recoveries().map((recovery) 
   </div>`,
 ).join("");
 
+const harnessChoicesHtml = (providers, chosen) => providers.map((provider) =>
+  `<button class="rail-harness-choice${provider.id === chosen ? " chosen" : ""}" type="button"
+    data-provider="${esc(provider.id)}" aria-pressed="${provider.id === chosen}">
+    ${harnessIconHtml(provider.id)}<span>${esc(provider.label)}</span>
+  </button>`,
+).join("");
+
 const conversationIdOf = (agent) => agent?.conversation_id || agent?.id || "";
+const conversationResetParams = (reset, context, entity) => ({
+  project_id: context.projectId || entity.projectId,
+  entity_id: reset.identity.entityId, agent_id: reset.identity.agentId,
+  conversation_id: reset.identity.conversationId, expected_thread_id: reset.threadId,
+  provider: reset.choice.provider, model: reset.choice.model || "", effort: reset.choice.effort || "",
+  max_context_tokens: reset.maxContextTokens,
+});
 
 /** What the rail talks through: the cache and the conversations of the machine
  *  the surface above it is standing on, both handed down by that surface. A
@@ -355,9 +372,11 @@ function createRailChatOwnership(repository, key, entityOf) {
         entityId: execution.entity_id,
         agentId: execution.agent_id,
         conversationId: execution.conversation_id,
+        threadId: execution.agent?.thread_id || agent.thread_id,
+        threadGenerationRevision: execution.agent?.thread_generation_revision || agent.thread_generation_revision,
       };
     }
-    return { entityId: entity.entityId, agentId: agent.id, conversationId: conversationIdOf(agent) };
+    return { entityId: entity.entityId, agentId: agent.id, conversationId: conversationIdOf(agent), threadId: agent.thread_id, threadGenerationRevision: agent.thread_generation_revision };
   };
   return {
     controllerFor(agent) {
@@ -413,7 +432,7 @@ function addressedCacheIdentity({ cacheScope, context, railEntityId, selectedId,
   if (!entityId) return null;
   const agentId = cacheAgentId(identity, selectedId);
   const conversationId = cacheConversationId(identity, selectedId);
-  return cacheScope.address({ entityId, agentId, conversationId });
+  return cacheScope.address({ entityId, agentId, conversationId, threadId: identity?.threadId });
 }
 
 const computedStyleOf = (element) =>
@@ -1001,6 +1020,7 @@ function mountRailOnContext(host, context, swap) {
     ...watchState,
     entityId: () => context.entityId || entity.entityId || records.entityId(),
     agentId: () => selectedId,
+    threadId: () => controllerForAgent(agentOf(selectedId))?.identity.threadId,
     call: callWatch,
     onChange: (next, addressed) => {
       if (!standing() || addressed.agent_id !== selectedId) return;
@@ -1104,6 +1124,17 @@ function mountRailOnContext(host, context, swap) {
   let selectedKind = openingKind(context, pageView);
   pageView.chooseKind(selectedKind);
   const addingAgent = () => selectedKind === "add";
+  let resettingConversation = null;
+  let resetSupported = false;
+  const resetSupportAddress = conversationResetSupportAddress(context.deviceId);
+  const readResetSupport = async () => {
+    const record = await readCached(resetSupportAddress);
+    if (!standing()) return;
+    resetSupported = record?.value?.supported === true;
+    paintSurfaceMenu();
+  };
+  const unwatchResetSupport = subscribeCache(resetSupportAddress, () => void readResetSupport());
+  void readResetSupport();
   let threadAgentId = null; // whose conversation the cache holds
   let loadingOlderItems = false; // a page of history is in flight
   let olderItemsAwaitingPaint = false;
@@ -1185,6 +1216,8 @@ function mountRailOnContext(host, context, swap) {
     const wantedThreadCache = controller?.history.threadCache || transientThreadCache;
     if (conversationCache && threadCache === wantedThreadCache) return conversationCache;
     threadCache = wantedThreadCache;
+    threadAgentId = null;
+    paintedChat = null;
     conversationCache = createBoundConversationCache();
     seededSurfaces = null;
     return conversationCache;
@@ -1254,7 +1287,8 @@ function mountRailOnContext(host, context, swap) {
     threadAgentId = null;
   };
   const pendingAgentsScope = () => `${chatRepository.scopeKey}:agents:${key}`;
-  const pendingThreadScope = (agentId) => `${chatRepository.scopeKey}:thread:${key}:${agentId || ""}`;
+  const pendingThreadScope = (agentId, threadId = controllerForAgent(agentOf(agentId))?.identity.threadId) =>
+    `${chatRepository.scopeKey}:thread:${key}:${agentId || ""}${threadId ? `:${threadId}` : ""}`;
   const visibleAgents = () => projectOptimistic(pendingAgentsScope(), entity.agents, { keyOf: agentIdOf });
 
   const agentOf = (id) => visibleAgents().find((agent) => agent.id === id) || null;
@@ -1296,7 +1330,7 @@ function mountRailOnContext(host, context, swap) {
   };
   const controllerInFocus = () => controllerForAgent(agentInFocus()) || provisionalController();
   const conversationKey = (controller = controllerInFocus()) => {
-    return `${controller.identity.entityId || key}:${controller.identity.agentId || controller.identity.draftId || AGENT_NOT_YET_BORN}`;
+    return `${controller.identity.entityId || key}:${controller.identity.agentId || controller.identity.draftId || AGENT_NOT_YET_BORN}${controller.identity.threadId ? `:${controller.identity.threadId}` : ""}`;
   };
 
   /** What a detail level is remembered against: the conversation's own id, or —
@@ -1348,7 +1382,14 @@ function mountRailOnContext(host, context, swap) {
   /** The two agents this view offers, with the account's answer folded in: one
    *  of them IS the account's default harness (`models.list`'s
    *  `default_provider`), so the carrier question is never asked here. */
-  const creatable = () => creatableCatalog(catalog || {});
+  const creatable = () => {
+    const offered = creatableCatalog(catalog || {});
+    if (!resettingConversation) return offered;
+    const provider = resettingConversation.agent.provider;
+    if (offered.providers.some((entry) => entry.id === provider)) return offered;
+    const savedProvider = catalog?.providers?.find((entry) => entry.id === provider);
+    return { ...offered, providers: [...offered.providers, savedProvider || { id: provider, label: provider }] };
+  };
 
   /** What the first send on this work item will create: whatever the human has
    *  said here, over the account's default harness until a card is pressed —
@@ -1357,13 +1398,20 @@ function mountRailOnContext(host, context, swap) {
    *  Resolved once, so the cards, the composer's menu and the `agent.add`
    *  params cannot disagree. */
   const newAgentChoice = () => {
+    if (resettingConversation) return resettingConversation.choice;
     const held = provisionalController().choice();
     const said = held.provider
       ? { provider: held.provider, model: held.requestedModel, effort: held.effort }
       : NO_AGENT_CHOICE;
     return { ...said, provider: chosenProviderId(creatable(), said) };
   };
-  const writeNewAgentChoice = (next) => provisionalController().setProvisionalChoice(next);
+  const writeNewAgentChoice = (next) => {
+    if (resettingConversation) {
+      resettingConversation.choice = next;
+      syncComposer();
+    }
+    else provisionalController().setProvisionalChoice(next);
+  };
 
   /** The account-wide name of the workspace this rail stands in, or null
    *  outside one: a workspace's own agent defaults (core/workspaceDefaults.js)
@@ -2111,7 +2159,7 @@ function mountRailOnContext(host, context, swap) {
 
   const dismissOnOutsidePointer = (event) => {
     if (pinned || !panelVisible || host.contains(event.target)) return;
-    if (event.target.closest?.(".confirm-popover")) return;
+    if (event.target.closest?.(".confirm-popover, #confirm-scrim")) return;
     dismissPopover();
   };
 
@@ -2124,11 +2172,12 @@ function mountRailOnContext(host, context, swap) {
     !visibleAgents().length && (!selectedId || isProvisionalKey(selectedId));
 
   const panelBodyIdentity = () => {
+    if (resettingConversation) return "reset";
     if (addingAgent()) return "new";
     // Every existing agent uses the same mounted conversation frame. Moving
     // between bubbles changes what the shared thread painter reconciles into
     // that frame; it is not a reason to tear the whole panel down first.
-    return "conversation";
+    return `conversation${agentInFocus()?.thread_id ? `:${agentInFocus().thread_id}` : ""}`;
   };
 
   const wantedPanelBody = () => `${shownPanelMode()}:${panelBodyIdentity()}`;
@@ -2162,7 +2211,7 @@ function mountRailOnContext(host, context, swap) {
     const panel = host.querySelector("#rail-panel");
     if (!panel) return;
     panel.dataset.body = controller
-      ? `${shownPanelMode()}:conversation`
+      ? `${shownPanelMode()}:${panelBodyIdentity()}`
       : wantedPanelBody();
     if (controller) panel.dataset.conversation = conversationKey(controller);
   };
@@ -2362,8 +2411,8 @@ function mountRailOnContext(host, context, swap) {
   /// controller that owns it, since every conversation keeps its own window
   /// across a remount (core/chatRepository.js).
   const threadWindow = () => {
+    bindConversationCache();
     if (threadAgentId !== selectedId) {
-      resetConversationCache();
       threadAgentId = selectedId;
       // Fire and forget: the seed paints when it lands, and until it does the
       // panel shows the conversation it is already holding rather than a gap.
@@ -2376,26 +2425,30 @@ function mountRailOnContext(host, context, swap) {
   /// Open the record this conversation is held in, and hear it move. Every
   /// write to it — a page the sync layer pulled, a push it applied, a message
   /// this panel just sent — is a repaint from the record and nothing else.
+  const conversationGenerationKey = (address) => `${threadAddressKey(address)}:${cacheIdentity()?.threadId || ""}`;
+
   const watchConversation = async () => {
     const conversation = bindConversationCache();
     const address = conversation.address();
-    if (watchedThreadKey !== threadAddressKey(address)) {
+    const generationKey = conversationGenerationKey(address);
+    if (watchedThreadKey !== generationKey) {
       unwatchThread?.();
       unwatchThread = null;
-      watchedThreadKey = threadAddressKey(address);
+      watchedThreadKey = generationKey;
       if (address) unwatchThread = subscribeCache(address, () => void conversation.reread());
     }
     if (await conversation.seed()) return;
     const identity = cacheIdentity();
-    const askedKey = threadAddressKey(address);
+    const askedKey = conversationGenerationKey(address);
     if (!identity || !address || !askedKey) return;
     await syncThreadWindow({
       deviceId: identity.deviceId,
       call: chatRepository.currentCall(),
-      active: () => standing() && askedKey === threadAddressKey(conversation.address()),
+      active: () => standing() && askedKey === conversationGenerationKey(conversation.address()),
       entityId: identity.entityId,
       agentId: identity.agentId,
       conversationId: identity.conversationId,
+      threadId: identity.threadId,
       address,
       priority: "foreground",
     });
@@ -2438,6 +2491,7 @@ function mountRailOnContext(host, context, swap) {
       return await railContext.olderPage(call, {
         entityId: addressed?.identity.entityId || entity.entityId,
         agentId: addressed?.identity.agentId || asked,
+        threadId: addressed?.identity.threadId,
         beforeSequence: seek.before_sequence,
         address,
       });
@@ -2521,12 +2575,7 @@ function mountRailOnContext(host, context, swap) {
   const paintNewAgent = (body) => {
     const chosen = newAgentChoice().provider;
     if (body.dataset.newAgent === chosen) return;
-    const choices = creatable().providers.map((provider) =>
-      `<button class="rail-harness-choice${provider.id === chosen ? " chosen" : ""}" type="button"
-        data-provider="${esc(provider.id)}" aria-pressed="${provider.id === chosen}">
-        ${harnessIconHtml(provider.id)}<span>${esc(provider.label)}</span>
-      </button>`,
-    ).join("");
+    const choices = harnessChoicesHtml(creatable().providers, chosen);
     body.innerHTML = `<div class="rail-newagent">
       <p>Start a new conversation</p>
       <div class="rail-harness-picker" role="group" aria-label="Agent harness">${choices}</div>
@@ -2575,7 +2624,11 @@ function mountRailOnContext(host, context, swap) {
       preview();
     };
     preview();
-    body.querySelector(".rail-newagent").onclick = (event) => {
+    wireHarnessChooser(body);
+  };
+
+  const wireHarnessChooser = (body) => {
+    body.querySelector(".rail-harness-picker").onclick = (event) => {
       const card = event.target.closest(".rail-harness-choice");
       if (!card) return;
       if (card.dataset.provider === newAgentChoice().provider) {
@@ -2598,7 +2651,7 @@ function mountRailOnContext(host, context, swap) {
   /// the one they left do not follow them into the next.
   const conversationRuns = () => {
     const identity = controllerInFocus().identity;
-    const runsFor = `${identity.entityId || ""}:${identity.agentId || ""}:${identity.conversationId || ""}`;
+    const runsFor = `${identity.entityId || ""}:${identity.agentId || ""}:${identity.conversationId || ""}:${identity.threadId || ""}`;
     if (!activityRuns || activityRunsFor !== runsFor) {
       activityRuns?.dispose();
       activityRunsFor = runsFor;
@@ -2606,6 +2659,8 @@ function mountRailOnContext(host, context, swap) {
         deviceId: cacheScope?.deviceId,
         entityId: identity.entityId,
         agentId: identity.agentId,
+        conversationId: identity.conversationId,
+        threadId: identity.threadId,
         call: (method, params) => chatRepository.currentCall()(method, params),
         onChange: () => {
           if (!standing() || activityRunsFor !== runsFor) return;
@@ -2797,6 +2852,11 @@ function mountRailOnContext(host, context, swap) {
       body.innerHTML = '<div class="rail-chat-loading">This workspace does not have an agent conversation yet.</div>';
       return;
     }
+    if (resettingConversation) {
+      paintResetChooser(body);
+      syncComposer();
+      return;
+    }
     if (conversationIsUnselected() || addingAgent()) {
       paintNewAgent(body);
       syncComposer();
@@ -2864,7 +2924,7 @@ function mountRailOnContext(host, context, swap) {
   /// things around the text (#138). The gauge reads out over the room the box
   /// keeps for it beside the paperclip.
   const composerRowHtml = () =>
-    `<div class="rail-footer" id="rail-footer">
+    `<div class="rail-footer${resettingConversation ? " rail-clearing" : ""}" id="rail-footer">
       ${railViewerHostHtml()}
       ${railObservationHostHtml()}
       ${railStatusRowHtml()}
@@ -2900,6 +2960,7 @@ function mountRailOnContext(host, context, swap) {
   };
 
   const composerDisplayChoice = (agent, settled) => {
+    if (resettingConversation || !agent) return newAgentChoice();
     if (!settled) return newAgentChoice();
     return {
       provider: settled.provider || agent?.provider || chosenProviderId(creatable(), NO_AGENT_CHOICE),
@@ -2995,11 +3056,12 @@ function mountRailOnContext(host, context, swap) {
         controller.identity.entityId,
         path,
         bridgeCapabilities(context.deviceId)?.threads?.attachmentChunks === true,
+        controller.identity,
       ),
       controller.threadState,
     );
     wireThreadRevisionLinks(body, (revisionId) =>
-      revisionContents(controller.identity.entityId, revisionId, chatRepository.currentCall()));
+      revisionContents(controller.identity.entityId, revisionId, chatRepository.currentCall(), { deviceId: context.deviceId, ...controller.identity }));
     wireThreadLinks(body, openLink);
     wireThreadSentMessages(body, controller.threadState);
     wireThreadArrivals(body, controller.threadState);
@@ -3047,9 +3109,11 @@ function mountRailOnContext(host, context, swap) {
       // does: choosing a file for a message is the same intent, one keystroke
       // earlier.
       upload: async (file, contentBase64) => {
+        if (resettingConversation) throw new Error("Choose the fresh conversation before attaching files");
         const call = chatRepository.currentCall();
         const entityId = await ensureEntity(call);
-        return call("thread.attach", { entity_id: entityId, filename: file.name, content_b64: contentBase64 });
+        return call("thread.attach", { entity_id: entityId, agent_id: controller.identity.agentId,
+          ...threadGenerationParam(controller.identity.threadId), filename: file.name, content_b64: contentBase64 });
       },
       onSubmit: (message, attachments, options) => sendFrom(controller, message, attachments, options),
       onInterrupt: () => {
@@ -3058,6 +3122,7 @@ function mountRailOnContext(host, context, swap) {
           entity_id: entityId,
           agent_id: agentId,
           conversation_id: conversationId,
+          ...threadGenerationParam(controller.identity.threadId),
         });
       },
       onError: (error) => notifyError("Message failed", error.message),
@@ -3138,7 +3203,91 @@ function mountRailOnContext(host, context, swap) {
     surfaceMenuGroup(surfacesWithTasks(surfacesSeen().surfaces)),
     detailLevelMenuGroup(detailLevel()),
     compactionMenuGroupInFocus(),
+    clearConversationMenuGroup(),
   ].filter(Boolean);
+
+  const clearConversationMenuGroup = () => {
+    if (!resetSupported || !settledAgentInFocus() || !entity.entityId || resettingConversation) return null;
+    return { id: "clear", label: "Conversation", options: [{
+      id: "conversation:clear", label: "Clear conversation", description: "Delete everything and start fresh", danger: true,
+    }] };
+  };
+
+  const beginConversationReset = async () => {
+    const agent = settledAgentInFocus();
+    if (!agent || resettingConversation) return;
+    const controller = controllerForAgent(agent);
+    const identity = controller.identity;
+    const confirmed = await confirmAction({
+      title: "Clear this conversation?", danger: true, confirmLabel: "Choose fresh conversation",
+      intro: "Everything in it is removed and a new one starts.",
+      warnings: ["This cannot be undone."],
+      actions: ["Stop the current agent and remove everything in this conversation.", "Choose the harness and settings for its replacement."],
+    });
+    if (!confirmed || !standing() || selectedId !== agent.id) return;
+    const threadId = identity.threadId || await cachedConversationThreadId(bindConversationCache().address());
+    resettingConversation = { agent, identity, threadId, level: detailLevel(),
+      maxContextTokens: agent.max_context_tokens ?? null, choice: {
+        provider: agent.provider, model: controller.choice().requestedModel || "", effort: controller.choice().effort || "",
+      } };
+    selectKind("add");
+    paintPanel();
+  };
+
+  const cancelConversationReset = () => {
+    if (!resettingConversation) return;
+    const agentId = resettingConversation.agent.id;
+    resettingConversation = null;
+    selectKind("agent");
+    chooseAgent(agentId);
+    paintedChat = null;
+    paintPanel();
+  };
+
+  const completeConversationReset = async (button) => {
+    const reset = resettingConversation;
+    if (!reset || button.disabled) return;
+    button.disabled = true;
+    try {
+      const answer = await chatRepository.currentCall()("conversation.reset", conversationResetParams(reset, context, entity));
+      await applyConversationReset({ deviceId: context.deviceId, active: cacheScope?.active || standing }, answer);
+      if (!standing()) return;
+      await detailRecord(reset.identity.conversationId).write({ level: reset.level });
+      cancelConversationReset();
+      await refresh();
+    } catch (error) {
+      if (standing()) notifyCommandFailure(error, "Could not clear the conversation", "Update this computer's Build bridge to clear conversations.");
+    } finally {
+      if (button.isConnected) button.disabled = false;
+    }
+  };
+
+  const paintResetChooser = (body) => {
+    const reset = resettingConversation;
+    const chosen = newAgentChoice().provider;
+    if (body.dataset.resetProvider === chosen) return;
+    body.innerHTML = `<div class="rail-newagent rail-reset-choice">
+      <p>Choose the fresh conversation</p>
+      <div class="rail-harness-picker" role="group" aria-label="Agent harness">${harnessChoicesHtml(creatable().providers, chosen)}</div>
+      <label>Detail <select data-clear-detail aria-label="Fresh conversation detail">
+        ${["all", "messages", "agent"].map((level) => `<option value="${level}"${level === reset.level ? " selected" : ""}>${level === "all" ? "All" : level === "messages" ? "Messages" : "Agent replies"}</option>`).join("")}
+      </select></label>
+      <label>Compact at <select data-clear-compact aria-label="Fresh conversation compact at">
+        ${compactionMenuOptions({ ...reset.agent, max_context_tokens: reset.maxContextTokens }).map((option) => `<option value="${esc(option.id)}"${option.selected ? " selected" : ""}>${esc(option.label)}</option>`).join("")}
+      </select></label>
+      <p class="dim">Model and effort are selected below.</p>
+      <div class="row"><button class="btn" data-clear-cancel>Cancel</button>
+        <button class="btn primary danger" data-clear-start>Clear and start fresh</button></div>
+    </div>`;
+    body.dataset.resetProvider = chosen;
+    body.querySelector("[data-clear-detail]").onchange = (event) => { reset.level = event.target.value; };
+    body.querySelector("[data-clear-compact]").onchange = (event) => {
+      reset.maxContextTokens = compactionLimitOfOptionId(event.target.value).maxContextTokens;
+    };
+    body.querySelector("[data-clear-cancel]").onclick = cancelConversationReset;
+    body.querySelector("[data-clear-start]").onclick = (event) => void completeConversationReset(event.target);
+    wireHarnessChooser(body);
+  };
 
   /** The compaction group for a settled agent with a conversation to set.
    *  Its selected row comes from the digest, including before greeting. */
@@ -3257,7 +3406,8 @@ function mountRailOnContext(host, context, swap) {
   const chooseFromSurfaceMenu = (optionId) => {
     const level = detailLevelOfOptionId(optionId);
     const compaction = compactionLimitOfOptionId(optionId);
-    if (level) chooseDetailLevel(level);
+    if (optionId === "conversation:clear") void beginConversationReset();
+    else if (level) chooseDetailLevel(level);
     else if (compaction) chooseCompaction(compaction.maxContextTokens);
     else openSurfaceOverlayForKind(optionId);
   };
@@ -3352,7 +3502,7 @@ function mountRailOnContext(host, context, swap) {
     if (!readingIsNews(read, floor)) return;
     reportedRead = read;
     reportedFloor = floor;
-    markSeen(controller.identity.entityId, controller.identity.agentId, floor, read).then(refreshFeed);
+    markSeen(controller.identity.entityId, controller.identity.agentId, floor, read, controller.identity.threadId).then(refreshFeed);
   };
 
   /// Whether a read report says anything the last one did not.
@@ -3425,7 +3575,7 @@ function mountRailOnContext(host, context, swap) {
    *  there instead. */
   const wakeAgent = async (submission) => {
     const { entityId, agentId } = submission.address;
-    const started = await replyOrNothing(submission.call("agent.start", { id: entityId, agent_id: agentId }));
+    const started = await replyOrNothing(submission.call("agent.start", { id: entityId, agent_id: agentId, ...threadGenerationParam(submission.address.threadId) }));
     if (started && started.agent_id && started.agent_id !== agentId) {
       throw new Error("agent.start answered for a different agent");
     }
@@ -3456,7 +3606,7 @@ function mountRailOnContext(host, context, swap) {
       working: false,
       has_terminal: false,
     };
-    const provisionalMessage = provisionalMessageEntry(provisionalMessageKey, submission.message);
+    const provisionalMessage = provisionalMessageEntry(provisionalMessageKey, submission.message, submission.operationId);
     selectKind("agent");
     openConversation(provisionalAgentId);
     adoptPanelBody();
@@ -3477,11 +3627,13 @@ function mountRailOnContext(host, context, swap) {
         entityId,
         agentId: createdAgent.id,
         conversationId: conversationIdOf(createdAgent),
+        threadId: createdAgent.thread_id,
+        threadGenerationRevision: createdAgent.thread_generation_revision,
       };
       chatOwnership.resolve(controller, resolvedIdentity);
       controller.absorbAgent(createdAgent);
       controller.clearOperationKind(submission);
-      handle.moveScope(pendingThreadScope(provisionalAgentId), pendingThreadScope(createdAgent.id));
+      handle.moveScope(pendingThreadScope(provisionalAgentId), pendingThreadScope(createdAgent.id, createdAgent.thread_id));
       renameAgentIdentity(provisionalAgentId, createdAgent.id, controller);
       handle.rekey(provisionalAgentId, createdAgent.id, { ...provisionalAgent, ...createdAgent, id: createdAgent.id });
       const addressedSubmission = controller.addressSubmission(submission, creationCall);
@@ -3526,6 +3678,7 @@ function mountRailOnContext(host, context, swap) {
         insertRecord(provisionalAgentId, provisionalAgent),
         insertRecord(provisionalMessageKey, provisionalMessage, {
           scope: pendingThreadScope(provisionalAgentId),
+          clearedBy: creationMessageHasArrived,
         }),
       ],
       call,
@@ -3616,6 +3769,7 @@ function mountRailOnContext(host, context, swap) {
    *  and a second round trip is a window in which the agent starts a fresh turn
    *  or finishes. One send path, one flag. */
   const sendFrom = (controller, body, attachments, { interrupt = false } = {}) => {
+    if (resettingConversation) return undefined;
     const message = stamped({ body, attachments, ...(interrupt ? { interrupt: true } : {}) });
     if (!controller.identity.agentId) {
       const submission = controller.captureProvisionalSubmission(message, newAgentChoice());
@@ -3840,6 +3994,7 @@ function mountRailOnContext(host, context, swap) {
    *  the pane that would paint a refusal over a session coming up. */
   const startAgent = async () => {
     const agent = agentOf(selectedId);
+    const threadId = controllerForAgent(agent)?.identity.threadId;
     const call = chatRepository.currentCall();
     let started = null;
     let refusal = null;
@@ -3852,6 +4007,7 @@ function mountRailOnContext(host, context, swap) {
           call("agent.start", {
             id: entityId,
             ...(agent ? { agent_id: agent.id } : {}),
+            ...threadGenerationParam(threadId),
           }),
         );
       },
@@ -4022,6 +4178,7 @@ function mountRailOnContext(host, context, swap) {
       document.removeEventListener("pointerdown", dismissOnOutsidePointer);
       window.removeEventListener("hashchange", dismissPopover);
       window.removeEventListener("resize", cancelPanelMotion);
+      unwatchResetSupport();
       if (ownsChatRepository) chatRepository.dispose();
       host.classList.remove(POPOVER_CLASS, COLLAPSED_CLASS, "rail-unpinned");
       host.innerHTML = "";

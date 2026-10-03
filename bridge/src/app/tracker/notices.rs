@@ -22,11 +22,27 @@
 //!    not turn a landed change into a refused one.
 
 use super::TaskWrite;
+use crate::app::runtime::agents::endpoints::AddressedAgent;
 use crate::app::{AppState, PendingAgentTurn, TurnText, NEW_THREAD_MESSAGES_PROMPT};
 use crate::thread::{TaskEnvelope, TaskNotice};
 use crate::tracker::{Actor, Task, TaskEventKind};
 
 impl AppState {
+    /// A service accepting new work under the app lock addresses the current
+    /// generation. Observations carried across an unlocked stage must retain
+    /// their original generation instead.
+    pub(in crate::app) fn current_service_agent(
+        &mut self,
+        entity_id: &str,
+        agent_id: &str,
+    ) -> Result<AddressedAgent, String> {
+        let mut params = self.current_thread_params(&serde_json::json!({
+            "entity_id": entity_id, "agent_id": agent_id,
+        }))?;
+        params["id"] = entity_id.into();
+        self.addressed_agent(&params)
+    }
+
     /// Tell everyone watching, except whoever did it.
     pub(in crate::app) fn notify_trackers(&mut self, write: &TaskWrite) {
         let told = write.task.trackers_to_notify(&write.actor);
@@ -166,10 +182,7 @@ impl AppState {
         phase: &'static str,
         write: impl FnOnce(&mut crate::thread::Thread, &str),
     ) -> Result<(), String> {
-        let addressed = self.addressed_agent(&serde_json::json!({
-            "id": entity_id,
-            "agent_id": agent_id,
-        }))?;
+        let addressed = self.current_service_agent(entity_id, agent_id)?;
         let now = crate::store::now_rfc3339();
         self.edit_agent_conversation(entity_id, agent_id, |thread, _| {
             write(thread, &now);

@@ -4,6 +4,143 @@
 use super::*;
 use crate::harness::{SessionStatusSnapshot, TurnContext};
 
+#[test]
+fn conversation_reset_stops_a_running_delivery_before_advancing_its_generation() {
+    let fixture = CompactingAgent::new();
+    let (sending, send_handle) = OffLockGate::new();
+    let (stopping, stop_handle) = OffLockGate::new();
+    let turn = fixture.turn(false);
+    let (old, params, turns) = {
+        let mut state = fixture.state.lock().unwrap();
+        insert_agent_tab(
+            &mut state,
+            &fixture.root,
+            RUN,
+            &fixture.agent_id,
+            ResetBlockedTurn { sending, stopping },
+        );
+        state
+            .runs
+            .get_mut(RUN)
+            .unwrap()
+            .agents
+            .primary_mut()
+            .unwrap()
+            .thread
+            .post_user("erased history", None, "2026-10-03T00:00:00Z");
+        let old = state.agent_conversation(RUN, None).unwrap().clone();
+        let params = json!({ "project_id": state.projects.project_id_of(RUN).unwrap(), "entity_id": RUN, "agent_id": fixture.agent_id, "conversation_id": fixture.agent_id, "expected_thread_id": old.id });
+        state.delivery_queue.enqueue(turn);
+        (old, params, state.take_pending_turns())
+    };
+    let sending_state = Arc::clone(&fixture.state);
+    let delivery = std::thread::spawn(move || DeliveryRunner::run(&sending_state, turns));
+    send_handle.wait_for_arrival();
+    let reset = frame_on_a_thread(
+        &fixture.state,
+        "reset-running-client",
+        "conversation.reset",
+        params,
+    );
+    assert!(
+        matches!(
+            reset.recv_timeout(Duration::from_millis(100)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ),
+        "reset must wait for the established session, rather than refuse its running turn"
+    );
+    stop_handle.wait_for_arrival();
+    assert_retiring_delivery_cannot_spawn(&fixture);
+    assert_eq!(fixture.agent().thread.id, old.id);
+    assert!(fixture.state.try_lock().is_ok());
+    stop_handle.release();
+    assert!(
+        matches!(
+            reset.recv_timeout(Duration::from_millis(100)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ),
+        "reaping alone must not let old delivery callbacks cross the reset commit"
+    );
+    send_handle.release();
+    delivery.join().unwrap();
+    let reply = reset.recv_timeout(Duration::from_secs(30)).unwrap();
+    assert_eq!(reply["ok"], true, "{reply:?}");
+    let agent = fixture.agent();
+    assert_ne!(agent.thread.id, old.id);
+    assert!(agent.thread.items.is_empty());
+    assert_eq!(agent.start_error, None);
+    assert_eq!(fixture.state.lock().unwrap().runs[RUN].last_error, None);
+    assert_eq!(fixture.still_queued(), 0);
+}
+
+fn assert_retiring_delivery_cannot_spawn(fixture: &CompactingAgent) {
+    let turn = fixture.turn(false);
+    let mut state = fixture.state.lock().unwrap();
+    assert!(!state.queued_agent_target_exists(&turn));
+    // A captured delivery can defer while retirement runs. Its requeued turn
+    // waits behind the reservation, and successful reset discards it.
+    state.delivery_queue.requeue(turn);
+    assert!(state.take_pending_turns().is_empty());
+}
+
+struct ResetBlockedTurn {
+    sending: OffLockGate,
+    stopping: OffLockGate,
+}
+
+impl AgentSession for ResetBlockedTurn {
+    fn send_turn(&self, _turn: &Turn) -> Result<(), HarnessError> {
+        self.sending.arrive();
+        Err(HarnessError::Unsupported(
+            "stopped delivery completed late".into(),
+        ))
+    }
+    fn status(&self) -> AgentStatus {
+        AgentStatus::Working
+    }
+    fn quiet_for(&self) -> Duration {
+        Duration::ZERO
+    }
+    fn exited_within(&self, _timeout: Duration) -> bool {
+        true
+    }
+    fn end(&self) {
+        self.stopping.arrive();
+    }
+    fn backdate_last_output(&self, _ago: Duration) {}
+}
+
+#[test]
+fn conversation_reset_retires_live_session_and_rejects_captured_compaction() {
+    let fixture = CompactingAgent::new().with_context(200_000);
+    let send = {
+        let mut state = fixture.state.lock().unwrap();
+        state
+            .compactions
+            .request(RUN, &fixture.agent_id, "old instructions", false);
+        state.take_ready_compactions().pop().unwrap()
+    };
+    let reply = {
+        let mut state = fixture.state.lock().unwrap();
+        let thread = state
+            .agent_conversation(RUN, Some(&fixture.agent_id))
+            .unwrap();
+        let params = json!({ "project_id": state.projects.project_id_of(RUN).unwrap(), "entity_id": RUN, "agent_id": fixture.agent_id, "conversation_id": fixture.agent_id, "expected_thread_id": thread.id });
+        state.handle(req("conversation.reset", params))
+    };
+    assert_eq!(reply["ok"], true, "{reply:?}");
+    assert!(fixture.log.ended());
+    let timer = a_frame(&fixture.state);
+    assert!(!crate::app::runtime::delivery::compaction::send_compaction(
+        &fixture.state,
+        &timer,
+        &send
+    ));
+    assert!(fixture.log.turns().is_empty());
+    assert!(fixture.agent().thread.items.is_empty());
+    assert_eq!(fixture.agent().last_context_tokens, None);
+}
+
 pub(super) const RUN: &str = "run-compact";
 
 /// A run whose agent talks to the Codex app server — a harness that compacts

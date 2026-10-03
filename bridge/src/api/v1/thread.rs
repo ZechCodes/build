@@ -85,6 +85,12 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             ConversationWatch
         ),
         v1_method!(
+            "conversation.reset",
+            conversation_reset,
+            ConversationResetParams,
+            ConversationReset
+        ),
+        v1_method!(
             "conversation.settings",
             conversation_settings,
             ConversationSettingsParams,
@@ -127,6 +133,8 @@ pub struct ConversationOwner {
 /// the request crossed the network is refused rather than followed.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct ConversationAddress {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -246,14 +254,16 @@ pub struct ThreadPostParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ThreadOperationParams {
     pub entity_id: String,
+    #[serde(flatten)]
+    pub address: ConversationAddress,
     pub operation_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ThreadAttachParams {
     pub entity_id: String,
+    #[serde(flatten)]
+    pub address: ConversationAddress,
     pub filename: String,
     pub content_b64: String,
 }
@@ -261,6 +271,8 @@ pub struct ThreadAttachParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ThreadAttachmentParams {
     pub entity_id: String,
+    #[serde(flatten)]
+    pub address: ConversationAddress,
     pub path: String,
     /// Where the piece starts (1.30). Absent is the start of the file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -335,6 +347,8 @@ pub struct AgentChooseParams {
 pub struct AgentRemoveParams {
     pub entity_id: String,
     pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
 }
 
 /// `conversation.settings`. `max_context_tokens` must be named: a number of
@@ -343,12 +357,44 @@ pub struct AgentRemoveParams {
 pub struct ConversationSettingsParams {
     pub entity_id: String,
     pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
     #[serde(
         default,
         deserialize_with = "super::board::named",
         skip_serializing_if = "Option::is_none"
     )]
     pub max_context_tokens: super::board::Named<u64>,
+}
+
+/// Clear one exact generation, keeping the durable agent and owner identity.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ConversationResetParams {
+    pub project_id: String,
+    pub entity_id: String,
+    pub agent_id: String,
+    pub conversation_id: String,
+    pub expected_thread_id: String,
+    #[serde(flatten)]
+    pub choice: ModelChoiceParams,
+    #[serde(
+        default,
+        deserialize_with = "super::board::named",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_context_tokens: super::board::Named<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ConversationReset {
+    pub entity_id: String,
+    pub agent_id: String,
+    pub conversation_id: String,
+    pub previous_thread_id: String,
+    pub thread_id: String,
+    pub thread_generation_revision: u64,
+    pub agent: AgentDigest,
+    pub thread: ThreadPage,
 }
 
 // --------------------------------------------------------------- results ---
@@ -392,7 +438,11 @@ pub struct RevisionSummary {
 /// One page of a conversation, walking backward.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ThreadPage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_generation_revision: Option<u64>,
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
     pub agent: AgentIdentity,
     pub sessions: Vec<SessionLineage>,
     pub items: Vec<ThreadItem>,
@@ -518,6 +568,10 @@ pub type AgentSurfaces = BTreeMap<String, serde_json::Value>;
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AgentDigest {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_generation_revision: Option<u64>,
     pub conversation_id: String,
     /// 1-based, stable for the agent's life.
     pub ordinal: u64,
@@ -673,6 +727,7 @@ fn names_nothing(message: &str) -> bool {
 /// Whether a refusal is about the request itself rather than the state it met.
 fn names_bad_input(message: &str) -> bool {
     message.starts_with("invalid ")
+        || message.contains("invalid max_context_tokens")
         || message.contains("operation_id exceeds")
         || message.contains("operation_id contains")
         || message.contains("creation_id is too long")
@@ -684,11 +739,17 @@ fn names_bad_input(message: &str) -> bool {
 /// Name the code a thread refusal deserves, where the message makes it
 /// obvious. Everything [`ApiError::classify`] already named correctly is left
 /// alone, so this only sees what came back as `internal`.
-fn refine(error: ApiError) -> ApiError {
+pub(super) fn refine(error: ApiError) -> ApiError {
     if !matches!(error, ApiError::Internal { .. }) {
         return error;
     }
     let message = error.message().to_string();
+    if message.contains("session delivery is in progress") {
+        return ApiError::busy(message);
+    }
+    if message.contains("conversation does not belong to project") {
+        return ApiError::invalid_params(message);
+    }
     if message.contains("stale ") {
         let details = stale_current(&message).map(|current| match current.parse::<u64>() {
             Ok(revision) => serde_json::json!({ "current": revision }),
@@ -706,6 +767,13 @@ fn refine(error: ApiError) -> ApiError {
 }
 
 // -------------------------------------------------------------- handlers ---
+
+fn conversation_reset(
+    app: &mut AppState,
+    params: ConversationResetParams,
+) -> Result<Answer<ConversationReset>, ApiError> {
+    answer(app.conversation_reset(&params.wire())).map_err(refine)
+}
 
 fn thread_page(
     app: &mut AppState,
@@ -767,10 +835,21 @@ fn agent_choose(
     answer(app.agent_choose(&params.wire())).map_err(refine)
 }
 
+fn guard_conversation_mutation<P: WireParams>(
+    app: &AppState,
+    owner: &str,
+    params: &P,
+) -> Result<(), ApiError> {
+    app.guard_conversation_mutation_params(owner, &params.wire())
+        .map_err(ApiError::classify)
+        .map_err(refine)
+}
+
 fn conversation_watch(
     app: &mut AppState,
     params: AgentRemoveParams,
 ) -> Result<Answer<ConversationWatch>, ApiError> {
+    guard_conversation_mutation(app, &params.entity_id, &params)?;
     answer(app.set_conversation_watched(&params.entity_id, &params.agent_id, true)).map_err(refine)
 }
 
@@ -778,6 +857,7 @@ fn conversation_unwatch(
     app: &mut AppState,
     params: AgentRemoveParams,
 ) -> Result<Answer<ConversationWatch>, ApiError> {
+    guard_conversation_mutation(app, &params.entity_id, &params)?;
     answer(app.set_conversation_watched(&params.entity_id, &params.agent_id, false)).map_err(refine)
 }
 
@@ -785,6 +865,7 @@ fn conversation_settings(
     app: &mut AppState,
     params: ConversationSettingsParams,
 ) -> Result<Answer<ConversationSettings>, ApiError> {
+    guard_conversation_mutation(app, &params.entity_id, &params)?;
     let Some(max_context_tokens) = params.max_context_tokens else {
         return Err(ApiError::invalid_params(
             "missing required param: max_context_tokens (a number of tokens, or null for the device's)",
@@ -973,5 +1054,25 @@ mod tests {
             refine(ApiError::internal("thread.post: run is done")).code(),
             "internal"
         );
+    }
+
+    #[test]
+    fn labelled_invalid_reset_context_is_a_client_error() {
+        let error = refine(ApiError::internal(
+            "conversation.reset: invalid max_context_tokens: expected a nonnegative integer or null",
+        ));
+        assert_eq!(error.code(), "invalid_params");
+        assert!(!error.retryable());
+    }
+
+    #[test]
+    fn deferred_reset_delivery_timeout_is_retryable_busy() {
+        // Deferred settlements pass through the generic classifier after the
+        // original typed handler has released the app lock.
+        let error = ApiError::classify(
+            "conversation.reset: session delivery is in progress; try again shortly".into(),
+        );
+        assert_eq!(error.code(), "busy");
+        assert!(error.retryable());
     }
 }

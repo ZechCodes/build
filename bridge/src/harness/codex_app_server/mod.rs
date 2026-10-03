@@ -209,6 +209,25 @@ impl Harness for CodexAppServerHarness {
     fn holds_conversation(&self, home: &Path, cwd: &Path, id: &str) -> bool {
         CodexHarness.holds_conversation(home, cwd, id)
     }
+
+    fn conversation_artifacts(
+        &self,
+        home: &Path,
+        state_root: &Path,
+        agent_id: &str,
+        cwd: Option<&Path>,
+        id: Option<&str>,
+    ) -> Result<Vec<super::ConversationArtifact>, HarnessError> {
+        CodexHarness.conversation_artifacts(home, state_root, agent_id, cwd, id)
+    }
+
+    fn native_history_namespace(&self) -> &'static str {
+        CodexHarness.native_history_namespace()
+    }
+
+    fn native_history_cwd(&self, cwd: &Path) -> PathBuf {
+        CodexHarness.native_history_cwd(cwd)
+    }
 }
 
 #[cfg(test)]

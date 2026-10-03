@@ -285,6 +285,8 @@ impl AppState {
     /// never point at an upload that failed halfway.
     pub(crate) fn thread_attach(&mut self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
+        let address = self.resolve_conversation_params(&entity_id, params)?;
+        self.guard_mutation_thread_id(&address, params.get("thread_id"))?;
         let filename = require_str(params, "filename")?;
         let content = b64decode(&require_str(params, "content_b64")?)?;
         if content.len() as u64 > ATTACHMENT_MAX_BYTES {
@@ -332,6 +334,15 @@ impl AppState {
             }
             None => homes.local.join(&stored).display().to_string(),
         };
+        if let Some(store) = self.store.as_ref() {
+            store
+                .register_conversation_attachment(
+                    &address.conversation_id,
+                    &self.conversation_at(&address)?.id,
+                    &wire_path,
+                )
+                .map_err(|error| format!("attachment store: {error}"))?;
+        }
         let head = &content[..content.len().min(8192)];
         Ok(json!({
             "name": name,
@@ -346,6 +357,7 @@ impl AppState {
     /// caller has to know (or can get wrong) which checkout the file landed in.
     pub(crate) fn thread_attachment(&self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
+        self.resolve_conversation_params(&entity_id, params)?;
         let path = require_str(params, "path")?;
         let target = self.resolve_attachment(&entity_id, &path)?;
         let offset = params.get("offset").and_then(Value::as_u64).unwrap_or(0);

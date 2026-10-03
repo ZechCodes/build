@@ -3,7 +3,7 @@
   "since": "1.0.0",
   "params": {},
   "result": {
-    "api_version": "3.10.0",
+    "api_version": "3.11.0",
     "capabilities": [
       "agent.add",
       "agent.attach",
@@ -35,6 +35,7 @@
       "changes.subscribe",
       "changes.subscriptions",
       "changes.unsubscribe",
+      "conversation.reset",
       "conversation.settings",
       "conversation.unwatch",
       "conversation.watch",

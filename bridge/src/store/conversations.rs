@@ -497,7 +497,7 @@ pub(super) fn stored_conversation_summary(
     Ok(summary)
 }
 
-type SessionMessageTime = (Option<String>, Option<String>, String, u64, i64);
+pub(crate) type SessionMessageTime = (Option<String>, Option<String>, String, u64, i64);
 
 impl Store {
     /// Every user/agent message timestamp and its stored owner. The partial

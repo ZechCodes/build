@@ -108,8 +108,8 @@ export function compactionLimitOfOptionId(optionId) {
 }
 
 /** `conversation.settings`'s params, in the fixture's shape. */
-export function compactionSettingsParams(entityId, agentId, maxContextTokens) {
-  return { entity_id: entityId, agent_id: agentId, max_context_tokens: maxContextTokens };
+export function compactionSettingsParams(entityId, agentId, maxContextTokens, threadId) {
+  return { entity_id: entityId, agent_id: agentId, max_context_tokens: maxContextTokens, ...(threadId ? { thread_id: threadId } : {}) };
 }
 
 /**
@@ -142,9 +142,9 @@ export function compactionSettingsParams(entityId, agentId, maxContextTokens) {
 export function createCompactionChoice({ call, capture, write, onFailure = () => {} }) {
   let pending = false;
 
-  const ask = async (entityId, agentId, maxContextTokens) => {
+  const ask = async (entityId, agent, maxContextTokens) => {
     try {
-      return await call("conversation.settings", compactionSettingsParams(entityId, agentId, maxContextTokens));
+      return await call("conversation.settings", compactionSettingsParams(entityId, agent.id, maxContextTokens, agent.thread_id));
     } catch (error) {
       onFailure(error);
       return null;
@@ -157,7 +157,7 @@ export function createCompactionChoice({ call, capture, write, onFailure = () =>
       pending = true;
       try {
         const captured = await capture(entityId).catch(() => null);
-        const reply = await ask(entityId, agent.id, maxContextTokens);
+        const reply = await ask(entityId, agent, maxContextTokens);
         if (!reply || !captured) return;
         const fields = answeredFields(reply);
         // The bridge has it once it answers: a cache that cannot take the

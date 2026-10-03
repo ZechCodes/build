@@ -35,16 +35,17 @@
 // Each page is a record of its own, and `read` answers the value with the
 // held pages joined into `field` and `pages: { end, total, complete }`.
 // `more(key)` reads the next page. Nothing is ever painted from an answer.
+// An optional `guard: { address, accepts(value) }` admits writes only while
+// its record still belongs to this reader, checked with the bodies atomically.
 
-import { deleteCached, readCached, recordWriteOf, subscribeCache, writeCached } from "./localCache.js";
+import { deleteCached, mergeCachedRecordsTogether, readCached, recordWriteOf, subscribeCache } from "./localCache.js";
 import {
+  bodyPagePut,
   dropBodyPages,
   joinedText,
   pageFollows,
   readBodyPages,
   subscribeBodyPages,
-  writeBodyPage,
-  writeBodyPages,
 } from "./bodyPages.js";
 
 /** What the pages of an answer split here are of: an answer read whole names
@@ -58,6 +59,7 @@ export function createCachedBodies({
   valueOf,
   cacheable = () => true,
   pages = null,
+  guard = null,
   onChange = () => {},
 }) {
   const held = new Map(); // key → body
@@ -81,7 +83,7 @@ export function createCachedBodies({
     const found = await readBodyPages(at, record.value.of, known?.found);
     const onward = known && found.pages.length >= known.found.pages.length && join === joinedText;
     const text = onward ? known.text + joinedText(found.pages.slice(known.found.pages.length)) : join(found.pages);
-    joined.set(key, { headWrite: recordWriteOf(record), found, text });
+    if (!disposed) joined.set(key, { headWrite: recordWriteOf(record), found, text });
     return { found, text };
   };
 
@@ -145,6 +147,7 @@ export function createCachedBodies({
     const fresh = keys.filter((key) => !consulted.has(key));
     fresh.forEach(watch);
     const stored = await Promise.all(fresh.map(storedRecord));
+    if (disposed) return [];
     const filled = [];
     fresh.forEach((key, index) => {
       consulted.add(key);
@@ -160,6 +163,7 @@ export function createCachedBodies({
     const stringKey = String(key);
     const at = addressOf(stringKey);
     const current = at ? await readCached(at) : undefined;
+    if (disposed) return null;
     if (at && recordWriteOf(current) !== startedFrom.get(stringKey)) {
       await reread(stringKey);
       return stringKey;
@@ -171,7 +175,21 @@ export function createCachedBodies({
     }
     const stored = await storeFetched(stringKey, at, value, recordWriteOf(current));
     await reread(stringKey, !stored);
-    return stringKey;
+    return disposed ? null : stringKey;
+  };
+
+  const writeAddresses = (addresses) => guard ? [...addresses, guard.address] : addresses;
+  const writeAllowed = (records, startedFrom, guardIndex) =>
+    !disposed && recordWriteOf(records[0]) === startedFrom && (!guard || guard.accepts(records[guardIndex]?.value));
+
+  /** Admit the answer and all its pages together, checking this reader's
+   * lifetime and owning generation inside the transaction. */
+  const keepFetched = (at, value, startedFrom, bodyPages = []) => {
+    const puts = [{ address: at, value }, ...bodyPages.map((page) => bodyPagePut(at, page))];
+    return mergeCachedRecordsTogether(writeAddresses(puts.map((put) => put.address)), (records) =>
+      writeAllowed(records, startedFrom, puts.length)
+        ? records.map((_record, index) => puts[index]?.value ?? null)
+        : records.map(() => null));
   };
 
   /** Keep one answer: whole when it fits, in pages when it does not, and not
@@ -183,8 +201,7 @@ export function createCachedBodies({
   const storeFetched = async (key, at, value, startedFrom) => {
     if (cacheable(value)) {
       if (pages) await dropBodyPages(at);
-      await writeCached(at, value);
-      return true;
+      return keepFetched(at, value, startedFrom);
     }
     if (!pages) {
       await deleteCached([at]);
@@ -194,11 +211,9 @@ export function createCachedBodies({
     if (disposed || recordWriteOf(await readCached(at)) !== startedFrom) return false;
     await dropBodyPages(at);
     const stored = first ? [first] : pages.split(value, WHOLE_ANSWER);
-    await writeBodyPages(at, stored);
     const head = { ...value, paged: true, of: stored[0].of };
     delete head[pages.field];
-    await writeCached(at, head);
-    return true;
+    return keepFetched(at, head, startedFrom, stored);
   };
 
   /** The bridge's own first page of a body, where it can page. */
@@ -206,13 +221,6 @@ export function createCachedBodies({
     if (!pages.readPage) return null;
     const page = await pages.readPage(key, 0, value).catch(() => null);
     return page && page.offset === 0 && page.of ? page : null;
-  };
-
-  /** Whether `key`'s record is still the paged head of `of`: a page that lands
-   *  after the head was dropped or replaced is not kept without one. */
-  const stillHeadOf = async (at, of) => {
-    const record = await readCached(at);
-    return Boolean(record?.value?.paged) && record.value.of === of;
   };
 
   /** Read the page after the last one held of `key`'s body, and keep it.
@@ -235,15 +243,29 @@ export function createCachedBodies({
   /** Whether a held body has a page after its last that can be read. */
   const readsOn = (at, value) => Boolean(pages?.readPage && at && value?.pages && !value.pages.complete);
 
+  const aliveHeadOf = (record, of) => !disposed && Boolean(record?.value?.paged) && record.value.of === of;
+
+  const readKeptPage = async (key, from) => {
+    if (disposed) return false;
+    await reread(key, false);
+    if (disposed) return false;
+    onChange(key);
+    return (held.get(key)?.pages?.end ?? from) > from;
+  };
+
   /** Keep a page read at `from`, when it carries the body on and the body is
    *  still the cache's; answers whether the held pages moved on. */
   const keepPage = async (key, at, page, from) => {
-    const of = held.get(key).of;
-    if (!pageFollows(page, from, of) || !(await stillHeadOf(at, of))) return false;
-    await writeBodyPage(at, page);
-    await reread(key, false);
-    onChange(key);
-    return (held.get(key)?.pages?.end ?? from) > from;
+    const of = held.get(key)?.of;
+    if (!pageFollows(page, from, of)) return false;
+    const current = await readCached(at);
+    if (!aliveHeadOf(current, of)) return false;
+    const put = bodyPagePut(at, page);
+    const written = await mergeCachedRecordsTogether(writeAddresses([at, put.address]), (records) =>
+      writeAllowed(records, recordWriteOf(current), 2)
+        ? records.map((_record, index) => index === 1 ? put.value : null)
+        : records.map(() => null));
+    return written ? readKeptPage(key, from) : false;
   };
   /** One page read of a body at a time. An ask that lands while one is out —
    *  the paint of the page it brought, or of the body read again from the top,
@@ -273,10 +295,11 @@ export function createCachedBodies({
 
   /** The wire, then the write-through. Batching belongs to the caller. */
   async function fetchBodies(keys) {
-    if (!keys.length) return [];
+    if (disposed || !keys.length) return [];
     const startedFrom = new Map(keys.map((key) => [String(key), observedWrite.get(String(key)) ?? null]));
     const filled = [];
     for (const item of await fetchMissing(keys)) {
+      if (disposed) break;
       const accepted = await acceptFetched(item, startedFrom);
       if (accepted) filled.push(accepted);
     }
@@ -290,10 +313,10 @@ export function createCachedBodies({
    *  caller replaces a body it has decided is stale. */
   async function ensure(keys) {
     const wanted = [...new Set(keys.map(String))];
-    if (!wanted.length) return [];
+    if (disposed || !wanted.length) return [];
     const hydrated = new Set(await hydrate(wanted));
     const fetched = await fetchBodies(wanted.filter((key) => !hydrated.has(key)));
-    return [...hydrated, ...fetched];
+    return disposed ? [] : [...hydrated, ...fetched];
   }
 
   /** Release a large body's joined pages without evicting its IndexedDB
@@ -319,6 +342,10 @@ export function createCachedBodies({
       disposed = true;
       for (const unwatch of unwatches.values()) unwatch();
       unwatches.clear();
+      held.clear();
+      joined.clear();
+      consulted.clear();
+      observedWrite.clear();
     },
   };
 }

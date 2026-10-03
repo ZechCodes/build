@@ -100,7 +100,8 @@ const runningAboveWhatFinished = (kind, renderRow) => ({
 
 /** The Agents viewer (#216): the sub-agents as every running-above-finished
  *  kind draws them, their history folded inside their own group, then the
- *  Build agents this agent made. Each group shows only while it has rows. */
+ *  Build agents this agent made. A closed external history leaves no visible
+ *  sub-agent content, so it hides that group's heading. */
 const subagentLists = runningAboveWhatFinished(AGENT_ENTRY_KIND, agentRowHtml).lists;
 
 const AGENTS_VIEWER_PLAN = {
@@ -110,10 +111,14 @@ const AGENTS_VIEWER_PLAN = {
     ...subagentLists(paintContext),
     { selector: SURFACE_SELECTOR.buildAgents, rows: buildAgentRows(paintContext.surfaces, paintContext.reading), render: buildAgentRowHtml },
   ],
-  groups: ({ surfaces, reading }) => [
-    { selector: SURFACE_SELECTOR.subagentsGroup, shown: surfaceRows(AGENT_ENTRY_KIND, surfaces, reading).length > 0 },
-    { selector: SURFACE_SELECTOR.buildAgentsGroup, shown: buildAgentRows(surfaces, reading).length > 0 },
-  ],
+  groups: ({ surfaces, reading, historyOpen, historyControl }) => {
+    const { running, completed } = runningAndCompletedRows(surfaceRows(AGENT_ENTRY_KIND, surfaces, reading));
+    return [
+      { selector: SURFACE_SELECTOR.subagentsGroup,
+        shown: running.length > 0 || (completed.length > 0 && (!historyControl || historyOpen)) },
+      { selector: SURFACE_SELECTOR.buildAgentsGroup, shown: buildAgentRows(surfaces, reading).length > 0 },
+    ];
+  },
 };
 
 const openNewlyRunningPhase = (opened, section, phase) => {
@@ -211,6 +216,8 @@ export function mountSurfaceViewer(host, kind, {
   let foldPainted = false;
   let autoHistoryPending = false;
 
+  const syncGroupVisibility = () => paintGroups(host, plan, { surfaces, historyOpen, historyControl });
+
   const foldKey = (element) => {
     if (element.matches(COMPLETED_FOLD_SELECTOR)) return "history";
     if (element.matches(".surface-agent[data-key]")) return `agent:${element.dataset.key}`;
@@ -246,6 +253,7 @@ export function mountSurfaceViewer(host, kind, {
       completed.open = false;
     }
     syncHistoryControl();
+    syncGroupVisibility();
   };
   const applyCachedFolds = () => {
     if (!foldRecord) return;
@@ -398,10 +406,10 @@ export function mountSurfaceViewer(host, kind, {
         if (!container) continue;
         paintList(container, list);
       }
-      paintGroups(host, plan, paintContext);
     }
     syncHistoryControl();
     applyCachedFolds();
+    syncGroupVisibility();
     tickWhileAnyRowIsRunning();
   };
 

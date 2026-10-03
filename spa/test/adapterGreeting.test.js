@@ -16,7 +16,7 @@ const NONE = {
   bodies: { pages: false, mediaRawPages: false },
   reviews: { get: false, snapshot: false, diff: false, complete: false, act: false, comments: false },
   tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, bodyPrecondition: false },
-  conversations: { settings: false },
+  conversations: { settings: false, reset: false },
   github: { repos: false },
   messages: { context: false },
   threads: { postOperations: false, attachmentChunks: false },
@@ -75,7 +75,7 @@ describe("the adapter a greeting selects", () => {
   reviews: { get: false, snapshot: false, diff: false, complete: false, act: false, comments: false },
       // A greeting that names no task feature carries none of them.
       tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, bodyPrecondition: false },
-      conversations: { settings: false },
+      conversations: { settings: false, reset: false },
       github: { repos: false },
       messages: { context: false },
       threads: { postOperations: false, attachmentChunks: false },

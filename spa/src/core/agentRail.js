@@ -2412,7 +2412,6 @@ function mountRailOnContext(host, context, swap) {
   const threadWindow = () => {
     bindConversationCache();
     if (threadAgentId !== selectedId) {
-      resetConversationCache();
       threadAgentId = selectedId;
       // Fire and forget: the seed paints when it lands, and until it does the
       // panel shows the conversation it is already holding rather than a gap.

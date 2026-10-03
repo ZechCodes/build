@@ -593,7 +593,7 @@ describe("the unpinned panel's popover", () => {
     bubbles()[0].click();
     await flush();
     expect(history.textContent).toContain("three");
-    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 1, 3);
+    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 1, 3, undefined);
   });
 
   it("takes its listeners with it when the rail goes", async () => {
@@ -3049,7 +3049,7 @@ describe("the conversation panel", () => {
     // The floor is the oldest message the panel holds, and 12 is the newest its
     // viewport reached — which over a conversation that arrived whole is all of
     // it.
-    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 11, 12);
+    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 11, 12, undefined);
   });
 
   // A desktop left showing a chat overnight: visible, nobody at it. A mark
@@ -3074,7 +3074,7 @@ describe("the conversation panel", () => {
 
       focused.mockReturnValue(true);
       window.dispatchEvent(new Event("focus"));
-      await vi.waitFor(() => expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 1, 2));
+      await vi.waitFor(() => expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 1, 2, undefined));
     } finally {
       focused.mockRestore();
     }
@@ -3300,7 +3300,7 @@ describe("reading back past the top of a paged conversation", () => {
     pagedConversation(true, true, [agent({ unread_count: 1, unread_reason: "agent_message" })]);
     await mount();
 
-    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 98, 99);
+    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 98, 99, undefined);
   });
 
   it("moves the floor it reports down as the reader scrolls back", async () => {
@@ -3314,7 +3314,7 @@ describe("reading back past the top of a paged conversation", () => {
     railBody().dispatchEvent(new Event("scroll"));
     await flush();
 
-    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 96, 99);
+    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 96, 99, undefined);
   });
 
   it("asks once for a page, however many scroll events the gesture fires", async () => {

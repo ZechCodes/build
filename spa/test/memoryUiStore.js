@@ -11,6 +11,13 @@ export const writeUiRecord = (address, value) => writeCached(address, value);
 export const subscribeUiRecords = subscribeCache;
 export const wipeUiRecords = wipeCache;
 export const adoptCachedUiRecords = async () => 0;
+// These view suites own no reset generations. The real retirement markers,
+// write fences and broadcasts are exercised against IndexedDB in the purge
+// suites; their absence here means no interaction record has been retired.
+export const conversationUiRecordIsRetired = async () => false;
+export const conversationUiRecordBelongsTo = () => false;
+export const deleteConversationUiRecords = async () => 0;
+export const subscribeConversationUiRetirements = () => () => {};
 
 export async function uiDraftRecords(deviceId) {
   const addresses = (await cachedAddresses({ deviceId })).filter((address) => address.kind === "ui-draft");

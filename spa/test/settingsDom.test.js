@@ -39,6 +39,7 @@ const call = vi.fn(async (method) => {
   return {};
 });
 
+vi.mock("../src/appState.js", async () => ({ App: (await import("../src/app.js")).App }));
 vi.mock("../src/app.js", () => ({ App, go: vi.fn() }));
 vi.mock("../src/connection.js", () => ({
   syncDeviceRecoveryPresence: () => {},

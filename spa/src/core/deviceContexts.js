@@ -4,10 +4,10 @@
 // A context is created the first time a session for that device is adopted and
 // lives until the device is retired: reconnects only replace its transport, so
 // the drafts, controllers and cached reads captured against it survive. The App
-// module is read lazily inside these functions — app.js imports this module, so
-// reading it at load time would read a half-built module.
+// state lives in appState.js, so this registry never imports the app shell
+// or the connection layer that consumes it.
 
-import { App } from "../app.js";
+import { App } from "../appState.js";
 import { releaseScope, scopeFor } from "./cacheScope.js";
 import { creationDeviceId, homeDeviceId } from "./devicePolicy.js";
 import { createChatRepository } from "./chatRepository.js";

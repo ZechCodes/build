@@ -21,7 +21,7 @@
 //
 // The merge is pure and lives in core/feedMerge.js.
 
-import { App } from "../app.js";
+import { App } from "../appState.js";
 import { liveContexts } from "./deviceContexts.js";
 import { cachedFeedView } from "./cachedRows.js";
 import { entityIdOf } from "./entityId.js";

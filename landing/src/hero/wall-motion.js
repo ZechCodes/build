@@ -51,10 +51,11 @@ function selectedCard(document, note, position, slot, request, field) {
 }
 
 export function createWallMotion(field) {
+  let root = field;
   const { width, height } = field.getBoundingClientRect();
   const document = field.ownerDocument;
   const layout = createWall({ width, height });
-  const routine = field.querySelector('[data-wall-routine]');
+  let routine = field.querySelector('[data-wall-routine]');
   // Swap the static first paint for the measured, independently timed wall.
   routine.replaceChildren();
   const timed = [];
@@ -80,5 +81,25 @@ export function createWallMotion(field) {
     });
     routine.append(position);
   });
-  return { requests, update: seekAll(timed), dispose: () => timed.forEach(([animation]) => animation.cancel()) };
+  const update = seekAll(timed);
+  let disposed = false;
+  return {
+    requests,
+    update,
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      for (const [animation] of timed) {
+        animation.cancel();
+        animation.effect = null;
+      }
+      update.dispose();
+      timed.length = 0;
+      requests.length = 0;
+      routine.replaceChildren();
+      root.replaceChildren();
+      routine = null;
+      root = null;
+    },
+  };
 }

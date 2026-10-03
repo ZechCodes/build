@@ -2,7 +2,6 @@
 // replay button and a scrubber over the entrance's timeline, with the phase
 // under the playhead, for tuning the transition. Touching the scrubber holds
 // the entrance at its end instead of letting it clean up.
-import { PLAYED_KEY } from "./entrance.js";
 import { phaseAt } from "./timing.js";
 
 const STYLE = [
@@ -12,11 +11,6 @@ const STYLE = [
 ].join(";");
 
 function replay() {
-  try {
-    sessionStorage.removeItem(PLAYED_KEY);
-  } catch {
-    // Nothing to forget.
-  }
   const url = new URL(location.href);
   url.searchParams.set("hero", "play");
   location.replace(url);

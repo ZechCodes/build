@@ -12,8 +12,16 @@
 // request is the first pill after its lane's anchor, in a lane that runs
 // right and holds still, so it starts exactly where it should be read.
 
-import { ATTENTION, HARNESS_NAMES, ROUTINE_EVENTS, SUPPORTED_HARNESSES, random } from "../../hero/notifications.js";
-export { ATTENTION, HARNESS_NAMES, ROUTINE_EVENTS, SUPPORTED_HARNESSES, random };
+import { ATTENTION as REQUESTS, HARNESS_NAMES, ROUTINE_EVENTS, SUPPORTED_HARNESSES, random } from "../../hero/notifications.js";
+export { HARNESS_NAMES, ROUTINE_EVENTS, SUPPORTED_HARNESSES, random };
+
+// The former hero's three held lanes survive only in this lab.
+const REQUEST_LANES = Object.freeze({
+  review: Object.freeze({ lane: 10, anchor: 0.5, narrowAnchor: 0.34 }),
+  approval: Object.freeze({ lane: 14, anchor: 0.58, narrowAnchor: 0.2 }),
+  question: Object.freeze({ lane: 18, anchor: 0.4, narrowAnchor: 0.4 }),
+});
+export const ATTENTION = Object.freeze(REQUESTS.map((request) => Object.freeze({ ...request, ...REQUEST_LANES[request.id] })));
 
 // Fast faint lanes behind, slower sharper ones in front. `drift` is vw over
 // DRIFT_SECONDS; `gap` is the px between pills on a 1440px window, and

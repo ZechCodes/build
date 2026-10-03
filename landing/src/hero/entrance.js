@@ -8,11 +8,6 @@ import { requestFlight, revealEase } from "./timing.js";
 import { homographyFromQuad, matrix3d, projectPoint } from "../stage/overlay.js";
 
 const NARROW_QUERY = "(max-width: 767px)";
-export const PLAYED_KEY = "build.hero.played";
-
-function rememberPlayed() {
-  try { sessionStorage.setItem(PLAYED_KEY, "1"); } catch { /* Storage may be unavailable. */ }
-}
 
 function query(root, selector) {
   const element = root.querySelector(selector);
@@ -118,7 +113,7 @@ function buildTimeline({ hero, field, laptop, glows, copy }) {
   // Render after every child has updated, including the laptop reveal.
   // Otherwise a large seek would aim at the previous laptop pose.
   tl.eventCallback("onUpdate", () => requests.forEach(draw => draw(tl.time())));
-  return { tl, timing, start: 0, motion };
+  return { tl, timing, start: 0, motion, release: () => { requests.length = 0; } };
 }
 
 // Hold the copy and the laptop out of sight before the CSS that has been
@@ -187,9 +182,8 @@ export function restHero(root = document.documentElement) {
 export function startHeroEntrance({ root = document.documentElement } = {}) {
   if (root.dataset.hero !== "entrance") return rest(root, document.querySelector("[data-hero-field]"));
   const hero = query(document, "#act-1");
-  const field = hero.querySelector("[data-hero-field]");
+  let field = hero.querySelector("[data-hero-field]");
   if (!field || scrollY > 8 || matchMedia("(prefers-reduced-motion: reduce)").matches || fallbackBegun(field)) return rest(root, field);
-  rememberPlayed();
   const narrow = matchMedia(NARROW_QUERY).matches;
   const device = query(hero, "[data-hero-device]");
   const laptop = createHeroLaptop({ hero, device, frame: query(device, "[data-hero-frame]"), narrow });
@@ -206,16 +200,27 @@ export function startHeroEntrance({ root = document.documentElement } = {}) {
     if (done) return;
     done = true;
     unlisten();
+    unlisten = () => {};
     tl.progress(1);
-    tl.kill();
     laptop.settle();
     built.motion.dispose();
+    built.motion = null;
+    built.release();
+    tl.eventCallback("onUpdate", null);
+    tl.clear();
+    tl.kill();
     field.remove();
     gsap.set(glows, { clearProps: "all" });
     gsap.set(copy.all, { clearProps: "opacity,visibility,transform" });
     delete root.dataset.hero;
     entrance.reason = reason;
-    for (const callback of settled.splice(0)) callback();
+    const callbacks = settled.splice(0);
+    glows.length = 0;
+    copy.items.length = 0;
+    copy.all.length = 0;
+    copy.headline = null;
+    field = null;
+    for (const callback of callbacks) callback();
   }
 
   tl.call(() => { if (!held) finish(); }, null, timing.settle[1]);

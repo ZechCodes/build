@@ -51,6 +51,35 @@ async function holdAt(page, time) {
   await page.waitForTimeout(80);
 }
 
+async function rememberCleanupHandles(page, label) {
+  const count = await page.evaluate(() => {
+    const field = document.querySelector("[data-hero-field]");
+    const animations = [...field.querySelectorAll(".wall-note[data-note]")].flatMap(card => card.getAnimations());
+    window.__wallCleanup = { field, animations };
+    return animations.length;
+  });
+  assert.ok(count > 0, `${label}: routine cards hold browser animations before finish`);
+}
+
+async function assertCleanup(page, label) {
+  const retained = await page.evaluate(() => {
+    const { field, animations } = window.__wallCleanup;
+    const timeline = window.BuildHero.timeline;
+    return {
+      connected: field.isConnected,
+      fieldChildren: field.childElementCount,
+      activeEffects: animations.filter(animation => animation.effect !== null).length,
+      activeAnimations: animations.filter(animation => animation.playState !== "idle").length,
+      timelineChildren: timeline.getChildren(true, true, true).length,
+      timelineUpdate: Boolean(timeline.eventCallback("onUpdate")),
+    };
+  });
+  assert.deepEqual(retained, {
+    connected: false, fieldChildren: 0, activeEffects: 0,
+    activeAnimations: 0, timelineChildren: 0, timelineUpdate: false,
+  }, `${label}: finish releases the held field, animations and timeline callbacks`);
+}
+
 // Paint white through the routine layer's real mask over black. The requests
 // live outside this layer so their flights cannot be clipped by its edges.
 async function sampleMask(page, label) {
@@ -155,7 +184,8 @@ function motionFailures(frames, label) {
     if (firstHigh >= 0 && observations.slice(firstHigh + 1).some(card => card.opacity < 0.3)) left[quadrant] += 1;
   }
   if (held < Math.max(8, perCard.size * 0.08)) failures.push(`${label}: too few cards hold still (${held}/${perCard.size})`);
-  if (entered.some(value => value < 2) || left.some(value => value < 2)) failures.push(`${label}: repeated replacements miss a quadrant (in ${entered}, out ${left})`);
+  // The shortest 3s field (390×667) still yielded at least ten in/out per quadrant.
+  if (entered.some(value => value < 3) || left.some(value => value < 3)) failures.push(`${label}: repeated replacements miss a quadrant (in ${entered}, out ${left})`);
   return failures;
 }
 
@@ -318,7 +348,9 @@ async function checkField(browser, width, height, mode) {
   await fs.writeFile(path.join(output, `${label}.json`), JSON.stringify({ masks, frames, failures }, null, 2));
   assert.deepEqual(failures, [], `${label}: field composition`);
   assert.equal(await currentMode(), mode, `${label}: requested mode remains active`);
+  await rememberCleanupHandles(page, label);
   await page.evaluate(() => window.BuildHero.finish());
+  await assertCleanup(page, label);
   assert.deepEqual(await page.locator("#act-1").boundingBox(), boxBefore, `${label}: no hero layout shift`);
   assert.equal(await page.locator("[data-hero-field]").count(), 0, `${label}: opening clears before copy`);
   const clickable = await page.locator("#act-1 .cta").evaluate(element => {
@@ -338,9 +370,11 @@ async function checkHeightResize(browser) {
     await page.goto(`${base}${heroPath}?hero=play&film=0`, { waitUntil: "load" });
     await page.waitForFunction(() => window.BuildHero !== undefined);
     assert.ok(await page.evaluate(() => Boolean(window.BuildHero)), "resize: opening runs");
+    await rememberCleanupHandles(page, "height-only resize");
     await page.setViewportSize({ width: 390, height: 667 });
     await page.waitForFunction(() => window.BuildHero.done);
     assert.equal(await page.evaluate(() => window.BuildHero.reason), "resize", "height-only resize settles the entrance");
+    await assertCleanup(page, "height-only resize");
     assert.equal(await page.locator("[data-hero-field]").count(), 0, "height-only resize removes the old field geometry");
     console.log("Notifications: height-only resize settles the wall");
   } finally {

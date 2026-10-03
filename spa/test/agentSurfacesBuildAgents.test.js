@@ -57,6 +57,24 @@ describe("the Agents viewer's groups", () => {
     expect(group(BUILD_AGENTS_KEY).hidden).toBe(false);
   });
 
+  it("hides the Sub-agents heading while its only rows are in closed history", () => {
+    const historyControl = document.createElement("button");
+    mount({ historyControl }).set({
+      subagents: [subagent("s1", "done")],
+      [BUILD_AGENTS_KEY]: [buildAgent("b1", "running")],
+    });
+    expect(group("subagents").querySelector(".surface-running .surface-agent")).toBe(null);
+    expect(group("subagents").querySelector(".surface-completed").open).toBe(false);
+    expect(group("subagents").hidden).toBe(true);
+    expect(group(BUILD_AGENTS_KEY).hidden).toBe(false);
+
+    historyControl.click();
+    expect(group("subagents").hidden).toBe(false);
+    expect(group("subagents").querySelector(".surface-completed").open).toBe(true);
+    historyControl.click();
+    expect(group("subagents").hidden).toBe(true);
+  });
+
   it("keeps a finished sub-agent's history inside the Sub-agents group", () => {
     mount().set({
       subagents: [subagent("s1", "done")],

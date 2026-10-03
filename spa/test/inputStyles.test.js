@@ -10,19 +10,21 @@ const end = "/* End shared text controls */";
 const sharedBlock = () => styles.slice(styles.indexOf(start), styles.indexOf(end) + end.length);
 const paint = /(?:^|;)\s*(?:appearance|-webkit-appearance|color|background(?:-[\w-]+)?|border(?:-[\w-]+)?|box-shadow|outline(?:-[\w-]+)?|font(?:-[\w-]+)?|padding(?:-[\w-]+)?)\s*:/;
 const fieldSelector = /(?:^|[^\w-])(?:input|textarea)(?:[^\w-]|$)|\.(?:cp-input|csinput|file-editor|fmenu-search|task-compose-title|workspace-refsearch|tb-filter)(?![\w-])/;
+const inputSelector = /(?:^|[^\w-])input(?:[^\w-]|$)|\.(?:fmenu-search|task-compose-title|workspace-refsearch|tb-filter)(?![\w-])/;
+const verticalSize = /(?:^|;)\s*(?:min-|max-)?height\s*:/;
 const nonTextSelector = /input\[type\s*=\s*["']?(?:checkbox|radio|range|file|hidden|button|submit|reset|color|image)["']?\]|\.menu-slider\b/;
 
 function violations(file, source) {
   const outside = file === "styles.css" ? source.replace(sharedBlock(), "") : source;
   if (file.endsWith(".css")) {
     return [...outside.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g)]
-      .filter(([, selectors, declarations]) => selectors.trim() !== ":where(button, input, select, textarea, [tabindex]):focus-visible" && paint.test(declarations) && selectors.split(",").some((selector) =>
-        fieldSelector.test(selector) && !nonTextSelector.test(selector) &&
+      .filter(([, selectors, declarations]) => selectors.trim() !== ":where(button, input, select, textarea, [tabindex]):focus-visible" && selectors.split(",").some((selector) =>
+        (paint.test(declarations) && fieldSelector.test(selector) || verticalSize.test(declarations) && inputSelector.test(selector)) && !nonTextSelector.test(selector) &&
         !selector.includes(":where(button, input") && !selector.includes(".rail-clearing")))
       .map(([, selector]) => `${file}: ${selector.trim()}`);
   }
   return [...source.matchAll(/<(?:input|textarea)\b[^>]*\bstyle\s*=\s*["']([^"']*)["']/g)]
-    .filter(([tag, inline]) => !/type=["'](?:checkbox|radio|range|file|hidden|button|submit|reset|color|image)["']/.test(tag) && paint.test(inline))
+    .filter(([tag, inline]) => !/type=["'](?:checkbox|radio|range|file|hidden|button|submit|reset|color|image)["']/.test(tag) && (paint.test(inline) || tag.startsWith("<input") && verticalSize.test(inline)))
     .map(([tag]) => `${file}: ${tag}`);
 }
 
@@ -49,6 +51,14 @@ describe("shared text field styling", () => {
     }
     for (const tag of ["input", "textarea"]) expect(violations("core/surface.js", `<${tag} style="${declaration}">`)).toHaveLength(1);
     expect(violations("styles.css", `${styles}\ninput { ${declaration}; }`)).toContain("styles.css: input");
+  });
+
+  it.each(["height:20px", "min-height:16px", "max-height:28px"])("rejects a second single-line vertical metric adding %s", (declaration) => {
+    for (const selector of [".surface input", ".tb-filter", ".workspace-refsearch", ".task-compose-title"]) {
+      expect(violations("styles/surface.css", `${selector} { ${declaration}; }`)).toHaveLength(1);
+    }
+    expect(violations("core/surface.js", `<input style="${declaration}">`)).toHaveLength(1);
+    expect(violations("core/surface.js", `<textarea style="${declaration}">`)).toEqual([]);
   });
 
   it("allows layout, autosizing, and separate non-text controls", () => {

@@ -25,11 +25,12 @@ def test_revision_chains_from_the_transport_sessions_migration():
     assert migration.down_revision == "20bec806d0e5"
 
 
-def test_upgrade_creates_invites_with_the_model_columns_in_order():
+def test_upgrade_creates_the_original_invite_columns_in_order():
     table_name, elements = table_elements(_MIGRATION_PATH)
     assert table_name == "invites"
     column_names = [e.name for e in elements if isinstance(e, sa.Column)]
-    assert column_names == list(Invite.__table__.columns.keys())
+    # The later open-links revision appends kind; this revision remains frozen.
+    assert column_names == [name for name in Invite.__table__.columns.keys() if name != "kind"]
 
 
 def test_upgrade_names_the_primary_key_the_token_uniqueness_and_both_user_keys():

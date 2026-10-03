@@ -15,10 +15,11 @@ from datetime import datetime, timedelta
 from enum import Enum
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from buildapp.models import Invite
+from buildapp.invite_kind import InviteKind
 from buildapp.token_hash import token_hash
 from buildapp.waitlist_address import canonical_address, normalize_waitlist_address
 
@@ -73,7 +74,7 @@ def invite_url(public_base_url: str, token: str) -> str:
 
 
 def mint_invite_token() -> str:
-    """A fresh raw token. Shown once, in the email; the row keeps only its hash."""
+    """A fresh raw token. Shown once to its sender; the row keeps only its hash."""
     return f"{TOKEN_PREFIX}{secrets.token_urlsafe(TOKEN_BYTES)}"
 
 
@@ -100,11 +101,52 @@ def redeem(
     # Identity, not deliverability: the stored address is already normalized, and a
     # seeded invite for an address the waitlist would refuse (the dev stack's
     # qa@localhost) must still be redeemable by that account.
-    if canonical_address(user_email) != canonical_address(invite.email):
+    address = canonical_address(user_email)
+    if not address or (
+        invite.kind != InviteKind.OPEN_LINK and address != canonical_address(invite.email)
+    ):
         return Redemption(ok=False, reason=EMAIL_MISMATCH)
+    if invite.kind == InviteKind.OPEN_LINK:
+        invite.email = address
     invite.redeemed_by = user_id
     invite.redeemed_at = now
     return Redemption(ok=True, reason=state)
+
+
+async def claim_invite(
+    db_session: AsyncSession, invite: Invite, user_id: UUID, user_email: str, now: datetime
+) -> Redemption:
+    """Atomically spend a link, even when another request read the same OPEN row.
+
+    The caller commits this claim with its other registration writes. A stale reader
+    cannot overwrite a winner, a revoke or an expiry. Keep the domain's pure refusal
+    rule, but run it on a detached candidate so no ORM autoflush can bypass the CAS.
+    """
+    candidate = Invite(
+        kind=invite.kind, email=invite.email, expires_at=invite.expires_at,
+        redeemed_at=invite.redeemed_at, revoked_at=invite.revoked_at,
+    )
+    outcome = redeem(candidate, user_id, user_email, now)
+    if not outcome.ok:
+        return outcome
+    claimed = await db_session.execute(
+        update(Invite)
+        .where(
+            Invite.id == invite.id,
+            Invite.kind == invite.kind,
+            Invite.email == invite.email,
+            Invite.redeemed_at.is_(None),
+            Invite.redeemed_by.is_(None),
+            Invite.revoked_at.is_(None),
+            Invite.expires_at > now,
+        )
+        .values(email=candidate.email, redeemed_by=user_id, redeemed_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    await db_session.refresh(invite)
+    if claimed.rowcount != 1:
+        return Redemption(ok=False, reason=invite_state(invite, now))
+    return outcome
 
 
 async def issue_invite(
@@ -123,6 +165,20 @@ async def issue_invite(
         email=normalized,
         invited_by=invited_by,
         expires_at=now + INVITE_TTL,
+    )
+    db_session.add(invite)
+    await db_session.commit()
+    return invite, raw
+
+
+async def issue_open_invite(
+    db_session: AsyncSession, invited_by: UUID | None, now: datetime
+) -> tuple[Invite, str]:
+    """An address-free, one-use link. The first redemption binds its address."""
+    raw = mint_invite_token()
+    invite = Invite(
+        kind=InviteKind.OPEN_LINK, token_hash=token_hash(raw), email="",
+        invited_by=invited_by, expires_at=now + INVITE_TTL,
     )
     db_session.add(invite)
     await db_session.commit()

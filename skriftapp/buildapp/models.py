@@ -14,11 +14,12 @@ from datetime import datetime
 from uuid import UUID
 
 from advanced_alchemy.types import GUID, DateTimeUTC
-from sqlalchemy import Boolean, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Integer, String, UniqueConstraint, false
 from sqlalchemy.orm import Mapped, mapped_column
 
 from skrift.db.base import Base
 
+from buildapp.invite_kind import InviteKind
 from buildapp.waitlist_address import MAX_WAITLIST_ADDRESS_LENGTH
 
 
@@ -113,6 +114,13 @@ class Invite(Base):
     """
 
     __tablename__ = "invites"
+    __table_args__ = (
+        CheckConstraint("kind IN ('email_bound', 'open_link')", name="invite_kind"),
+        CheckConstraint(
+            "email <> '' OR (kind = 'open_link' AND redeemed_at IS NULL AND redeemed_by IS NULL)",
+            name="invite_address",
+        ),
+    )
 
     token_hash: Mapped[str] = mapped_column(
         String(64), unique=True, index=True, nullable=False
@@ -137,6 +145,30 @@ class Invite(Base):
         DateTimeUTC(timezone=True), nullable=True
     )
     revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTimeUTC(timezone=True), nullable=True
+    )
+    kind: Mapped[str] = mapped_column(
+        String(20), default=InviteKind.EMAIL_BOUND, server_default=InviteKind.EMAIL_BOUND,
+        nullable=False,
+    )
+
+
+class UserEmailPreference(Base):
+    """Build's one-to-one extension of a Skrift user: explicit product-mail consent.
+
+    Missing rows mean no consent, including all accounts that predate this feature.
+    Transactional waitlist and invite messages do not read this preference.
+    """
+
+    __tablename__ = "user_email_preferences"
+
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False
+    )
+    product_email_opt_in: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False
+    )
+    product_email_opted_in_at: Mapped[datetime | None] = mapped_column(
         DateTimeUTC(timezone=True), nullable=True
     )
 

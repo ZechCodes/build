@@ -33,7 +33,7 @@ Unsubscribe must work for a member even when they never joined the waitlist.
 | 7 | Redemption conditionally updates a still-unused, unrevoked, unexpired row and records one user/address; another stale request cannot overwrite it. Revocation remains the membership removal mechanism for both kinds. | [x] | `claim_invite`; `test_only_one_stale_request_can_claim_an_invite` for both kinds using independent database sessions; spoiled-state tests; existing membership/revoke suites; headless open-link revoke returns 410. |
 | 8 | Both signup forms show an unchecked, optional product-email checkbox. Only successful CSRF-checked registration options can record it; successful claim stores the boolean and UTC timestamp on a unique per-user preference. | [x] | Both-kind template and parameterized registration-consent tests in `test_invite_signup`; `passkey-signin.test.mjs` pins checkbox submission; headless Chromium checks default state, registration and returning passkey sign-in for both kinds. |
 | 9 | Product-mail recipients require an active user, explicit true consent and its timestamp. Missing rows or unchecked boxes exclude the account. Transactional waitlist/invite mail does not create consent. | [x] | `email_consent.consenting_product_email_addresses` and `test_email_consent`; both-kind false/absent/forged consent tests. There is no campaign sender today; this is the required recipient query for a future sender. |
-| 10 | Existing signed unsubscribe tokens clear product consent and the waitlist row by canonical email, including accounts without a waitlist entry. GET is read-only; invalid tokens change nothing; repeated POSTs are safe. | [x] | `test_waitlist_unsubscribe_routes` covers member-only opt-out, confirmation GET, invalid tokens and repeats; `test_unsubscribe_revokes_member_consent_by_canonical_address`. |
+| 10 | Existing signed unsubscribe tokens clear product consent and the waitlist row by canonical email, including accounts without a waitlist entry. GET is read-only; invalid tokens change nothing; repeated POSTs are safe. | [x] | `test_product_unsubscribe_http` exercises the real app and database with and without a waitlist row, confirmation GET, invalid tokens and repeated POSTs; route unit tests pin response copy, and `test_unsubscribe_revokes_member_consent_by_canonical_address` covers casing. |
 
 ## Accepted
 
@@ -50,6 +50,9 @@ Unsubscribe must work for a member even when they never joined the waitlist.
 - Product-mail eligibility is checked when querying recipients. A future sender
   must recheck consent before delivery and include the existing signed
   unsubscribe URL. This change creates no campaign scheduler or outbound send.
+- Optional Logfire observability is disabled in the shipped configuration. Its
+  direct exception capture bypasses Python logging filters; enabling it requires
+  equivalent invite URL and exception redaction first.
 - Manual browser evidence uses an isolated SQLite app and real WebAuthn via a
   headless Chromium virtual authenticator. Its authenticated app shell is a
   local fixture; no bridge is paired and no production endpoint is touched.

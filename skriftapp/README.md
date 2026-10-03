@@ -173,6 +173,8 @@ Only token hashes are stored. Token responses and invite/auth pages use
 log filters redact invite credentials even on errors; the shipped server has
 access logging disabled. A proxy that adds request logging must likewise redact
 `/invite/…` and invite-bearing `next` queries and must not log response bodies.
+Optional Logfire observability remains disabled; its direct exception capture
+requires equivalent redaction before enabling it.
 
 **/admin/waitlist** lists every waitlist signup, newest first, with the state of
 the newest invite sent to that address and one button per row: **Invite** for an

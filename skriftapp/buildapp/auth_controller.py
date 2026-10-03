@@ -52,7 +52,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from buildapp import invites
 from buildapp.clock import utc_now
 from buildapp.email_consent import record_signup_consent
-from buildapp.invite_pages import APP_PATH
+from buildapp.invite_pages import APP_PATH, claim_outcome_path
 from buildapp.invite_kind import InviteKind
 from buildapp.models import Invite
 from buildapp.session_auth import session_user_id
@@ -181,10 +181,10 @@ class BuildAuthController(AuthController):
             # Skrift is waiting for a second factor; it has not established a user
             # session, so the invite and consent must wait as well.
             return response
-        # Skrift committed the account before the claim. If another request spent the
-        # link meanwhile, keep Skrift's invite-link redirect so the browser sees that
-        # link's already-used page. The passkey script follows JSON redirects on 2xx.
-        redirect = APP_PATH if claim.ok else response.content["redirect"]
+        # Skrift committed the account before the claim. A refusal needs a fixed
+        # outcome destination: Skrift's optional `next` could be / or another page.
+        # The passkey script follows JSON redirects on 2xx.
+        redirect = APP_PATH if claim.ok else claim_outcome_path(claim.reason)
         return Response(
             {"ok": claim.ok, "redirect": redirect}, status_code=HTTP_201_CREATED
         )

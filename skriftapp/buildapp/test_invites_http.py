@@ -37,7 +37,7 @@ from buildapp.db_test_support import (
 from buildapp.email_test_support import email_settings
 from buildapp.invite_mail import INVITE_SUBJECT
 from buildapp.invite_pages import OUTCOMES
-from buildapp.invites import EMAIL_FIELD, EMAIL_MISMATCH, InviteState, invite_path
+from buildapp.invites import ALREADY_MEMBER, EMAIL_FIELD, EMAIL_MISMATCH, InviteState, invite_path
 from buildapp.invites_controller import (
     INVITE_ROUTE_PATH,
     INVITES_API_PATH,
@@ -105,6 +105,31 @@ def test_public_invite_outcomes_and_redirects_do_not_cache_or_send_referrers(cli
     for response in (unknown, redirect, gone, expired, used, mismatch, redeemed):
         assert response.headers["cache-control"] == "no-store"
         assert response.headers["referrer-policy"] == "no-referrer"
+
+
+@pytest.mark.parametrize(
+    ("slug", "reason"),
+    [
+        ("redeemed", InviteState.REDEEMED),
+        ("revoked", InviteState.REVOKED),
+        ("expired", InviteState.EXPIRED),
+        ("wrong-account", EMAIL_MISMATCH),
+        ("already-member", ALREADY_MEMBER),
+    ],
+)
+def test_fixed_claim_outcome_url_renders_the_allowlisted_invite_page(client, slug, reason):
+    response = client.get(f"/invite/outcome/{slug}", follow_redirects=False)
+    assert response.status_code == OUTCOMES[reason].status_code
+    assert OUTCOMES[reason].heading in response.text
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["referrer-policy"] == "no-referrer"
+
+
+def test_unknown_claim_outcome_slug_is_the_generic_invalid_page(client):
+    response = client.get("/invite/outcome/<script>", follow_redirects=False)
+    assert response.status_code == HTTP_404_NOT_FOUND
+    assert OUTCOMES[InviteState.UNKNOWN].heading in response.text
+    assert "<script>" not in response.text
 
 
 def test_a_revoked_invite_is_gone(client):

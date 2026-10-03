@@ -551,9 +551,10 @@ def test_an_invite_revoked_mid_registration_leaves_an_account_outside_the_app(cl
     assert INVITE_ONLY_HEADING in app.text
 
 
+@pytest.mark.parametrize("next_url", [None, "/docs"], ids=["no-next", "unrelated-next"])
 @pytest.mark.parametrize("open_link", [False, True], ids=["address-bound", "open-link"])
 def test_a_lost_claim_after_account_creation_opens_the_already_used_invite_page(
-    client, fake_authenticator, monkeypatch, open_link
+    client, fake_authenticator, monkeypatch, open_link, next_url
 ):
     """The other request spends the link while Skrift finishes registration. Skrift has
     already committed this account, but its JSON redirect must take the browser to the
@@ -573,12 +574,14 @@ def test_a_lost_claim_after_account_creation_opens_the_already_used_invite_page(
 
     monkeypatch.setattr(skrift_auth, "complete_primary_passkey_registration", spend_then_verify)
     raw = issue_open(client) if open_link else issue(client, INVITED)
-    client.get(open_invite(client, raw).headers["location"])
+    open_invite(client, raw)
+    if next_url is not None:
+        client.get(f"{LOGIN_PATH}?next={next_url}")
 
     response = Page(client).create_account(INVITED, opt_in="on")
 
     assert response.status_code == 201  # Skrift really did create the account.
-    assert response.json() == {"ok": False, "redirect": invite_path(raw)}
+    assert response.json() == {"ok": False, "redirect": "/invite/outcome/redeemed"}
     outcome = client.get(response.json()["redirect"], follow_redirects=False)
     assert outcome.status_code == 200
     assert REDEEMED_HEADING in outcome.text
@@ -597,14 +600,22 @@ def test_registration_waiting_for_a_second_factor_keeps_skrifts_redirect_without
     import buildapp.auth_controller as build_auth
     from buildapp.models import UserEmailPreference
 
-    monkeypatch.setattr(build_auth, "session_user_id", lambda request: None)
-    open_invite(client, issue(client, INVITED))
-
-    response = Page(client).create_account(INVITED, opt_in="on")
+    raw = issue(client, INVITED)
+    open_invite(client, raw)
+    with monkeypatch.context() as patcher:
+        patcher.setattr(build_auth, "session_user_id", lambda request: None)
+        response = Page(client).create_account(INVITED, opt_in="on")
 
     assert response.status_code == 201
     assert response.json()["ok"] is True
     assert stored_invite(client, INVITED).redeemed_at is None
+
+    # Once the second factor establishes a user session, Skrift's original invite
+    # link redeems the seat. Build must not infer the signup checkbox from that GET.
+    continued = client.get(invite_path(raw), follow_redirects=False)
+    assert continued.status_code == 302
+    assert continued.headers["location"] == APP_PATH
+    assert stored_invite(client, INVITED).redeemed_at is not None
 
     async def preference_count(session):
         return (await session.execute(select(func.count()).select_from(UserEmailPreference))).scalar_one()

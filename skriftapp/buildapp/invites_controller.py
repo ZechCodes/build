@@ -26,7 +26,7 @@ from buildapp.email_message import provide_email_backend, provide_public_base_ur
 from buildapp.invite_mail import invite_email_task
 from buildapp.invite_log_privacy import install_invite_log_redaction
 from buildapp.invite_kind import InviteKind
-from buildapp.invite_pages import APP_PATH, OUTCOMES
+from buildapp.invite_pages import APP_PATH, CLAIM_OUTCOME_PATH_PREFIX, OUTCOMES, claim_outcome_for_slug
 from buildapp.invites import (
     EMAIL_FIELD,
     INVITE_PATH_PREFIX,
@@ -38,6 +38,7 @@ from buildapp.request_body import read_json_object
 from buildapp.session_auth import login_redirect, session_user_id
 
 INVITE_ROUTE_PATH = f"{INVITE_PATH_PREFIX}{{token:str}}"
+CLAIM_OUTCOME_ROUTE_PATH = f"{CLAIM_OUTCOME_PATH_PREFIX}{{reason:str}}"
 INVITES_API_PATH = "/api/invites"
 
 install_invite_log_redaction()
@@ -55,6 +56,11 @@ class InvitesController(Controller):
         "email_backend": Provide(provide_email_backend, sync_to_thread=False),
         "public_base_url": Provide(provide_public_base_url, sync_to_thread=False),
     }
+
+    @get(CLAIM_OUTCOME_ROUTE_PATH, response_headers=INVITE_RESPONSE_HEADERS)
+    async def claim_outcome(self, reason: str) -> Response:
+        """The fixed, token-free destination for a signup that lost its invite claim."""
+        return claim_outcome_for_slug(reason).response()
 
     @get(INVITE_ROUTE_PATH, response_headers=INVITE_RESPONSE_HEADERS)
     async def open_invite(

@@ -9,9 +9,13 @@ from pathlib import Path
 
 from buildapp import invite_pages
 from buildapp.invite_pages import (
+    CLAIM_OUTCOME_PATH_PREFIX,
+    CLAIM_OUTCOME_SLUGS,
     INVITE_ONLY_HEADING,
     INVITE_ONLY_TITLE,
     OUTCOMES,
+    claim_outcome_for_slug,
+    claim_outcome_path,
     invite_only_outcome,
 )
 from buildapp.invites import ALREADY_MEMBER, EMAIL_MISMATCH, InviteState
@@ -47,6 +51,17 @@ def test_every_refusal_reason_the_domain_can_return_has_a_row():
         EMAIL_MISMATCH,
         ALREADY_MEMBER,
     }
+
+
+def test_every_refusal_page_has_one_fixed_token_free_outcome_path():
+    assert set(CLAIM_OUTCOME_SLUGS) == set(OUTCOMES)
+    assert len(set(CLAIM_OUTCOME_SLUGS.values())) == len(CLAIM_OUTCOME_SLUGS)
+    for reason, outcome in OUTCOMES.items():
+        path = claim_outcome_path(reason)
+        assert path.startswith(CLAIM_OUTCOME_PATH_PREFIX)
+        assert claim_outcome_for_slug(path.removeprefix(CLAIM_OUTCOME_PATH_PREFIX)) is outcome
+    assert claim_outcome_path(InviteState.OPEN) == f"{CLAIM_OUTCOME_PATH_PREFIX}unknown"
+    assert claim_outcome_for_slug("<script>") is OUTCOMES[InviteState.UNKNOWN]
 
 
 def test_each_outcome_answers_with_the_status_code_its_state_deserves():

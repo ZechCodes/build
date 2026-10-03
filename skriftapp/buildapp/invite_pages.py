@@ -148,6 +148,30 @@ OUTCOMES: dict[RedemptionRefusal, PageOutcome] = {
     ),
 }
 
+# A registration can lose the invite after Skrift has committed its account. The
+# browser needs a fixed local destination for the refusal, independent of Skrift's
+# optional `next` redirect and without putting the raw invite token in another URL.
+CLAIM_OUTCOME_PATH_PREFIX = "/invite/outcome/"
+CLAIM_OUTCOME_SLUGS: dict[RedemptionRefusal, str] = {
+    InviteState.UNKNOWN: "unknown",
+    InviteState.REVOKED: "revoked",
+    InviteState.EXPIRED: "expired",
+    InviteState.REDEEMED: "redeemed",
+    EMAIL_MISMATCH: "wrong-account",
+    ALREADY_MEMBER: "already-member",
+}
+CLAIM_OUTCOME_REASONS = {slug: reason for reason, slug in CLAIM_OUTCOME_SLUGS.items()}
+
+
+def claim_outcome_path(reason: RedemptionRefusal) -> str:
+    """A token-free URL for the exact claim refusal; unknown reasons are generic."""
+    return f"{CLAIM_OUTCOME_PATH_PREFIX}{CLAIM_OUTCOME_SLUGS.get(reason, 'unknown')}"
+
+
+def claim_outcome_for_slug(slug: str) -> PageOutcome:
+    """Only static, allowlisted outcome pages may be selected from a URL segment."""
+    return OUTCOMES[CLAIM_OUTCOME_REASONS.get(slug, InviteState.UNKNOWN)]
+
 
 def invite_only_outcome(email: str) -> PageOutcome:
     """What /app/ shows an account with no invite. A row like every other — the 403 is

@@ -58,6 +58,9 @@ log = "0.4"
 # same version `webrtc` resolves, with the same (default) features, so one
 # `rtc` is compiled into the binary and its types are the engine's own.
 rtc = "0.20.4"
+# Explicit multicast egress and per-interface membership for browser mDNS.
+# This is already the socket2 version rtc resolves; `all` exposes reuse-port.
+socket2 = { version = "0.6", features = ["all"] }
 jiff = { version = "0.2.37", features = ["tzdb-bundle-always"] }
 flate2 = "1"
 tar = "0.4"

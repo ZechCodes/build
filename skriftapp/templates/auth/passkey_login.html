@@ -12,7 +12,7 @@
 {% block content %}
     {#- One view at a time (#315): page_view is "signup" only for a visitor carrying an
         open invite who did not ask for sign-in (buildapp/auth_controller.py). -#}
-    {%- set signup = page_view == "signup" and invite_email %}
+    {%- set signup = page_view == "signup" and (invite_email or open_invite) %}
     {% if signup %}
     <p class="signin-kicker">Your invite</p>
     <h1>Create your Build account</h1>
@@ -37,7 +37,12 @@
         {{ csrf_field() }}
         <label for="signup-email">Email</label>
         <input id="signup-email" class="signin-input" type="email" name="email"
-               value="{{ invite_email }}" autocomplete="username" readonly>
+               value="{{ invite_email }}" autocomplete="username" required
+               {% if not open_invite %}readonly{% endif %}>
+        <label class="signin-opt-in" for="product-email-opt-in">
+            <input id="product-email-opt-in" type="checkbox" name="product_email_opt_in" value="on">
+            <span>Email me occasional Build product updates. I can unsubscribe anytime.</span>
+        </label>
         <button class="signin-button" type="submit">Create account</button>
         <p id="signup-status" class="signin-status" role="status" aria-live="polite"></p>
     </form>
@@ -48,7 +53,9 @@
         <button class="signin-button" type="submit">Sign in with a passkey</button>
         <p id="signin-status" class="signin-status" role="status" aria-live="polite"></p>
     </form>
-    {% if invite_email %}
+    {% if open_invite %}
+    <p class="signin-hint signin-aside">Have an invite? <a href="/auth/login">Create your account</a></p>
+    {% elif invite_email %}
     <p class="signin-hint signin-aside">Have an invite for {{ invite_email }}? <a href="/auth/login">Create your account</a></p>
     {% else %}
     <p class="signin-hint signin-aside">Build is invite-only. <a href="/#waitlist">Join the waitlist</a></p>

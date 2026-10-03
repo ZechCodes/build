@@ -42,7 +42,7 @@ from litestar import Request, get, post
 from litestar.params import Parameter
 from litestar.response import Redirect, Response
 from litestar.response import Template as TemplateResponse
-from litestar.status_codes import HTTP_201_CREATED, HTTP_403_FORBIDDEN
+from litestar.status_codes import HTTP_200_OK, HTTP_201_CREATED, HTTP_403_FORBIDDEN
 from skrift.auth.second_factors.passkey_service import get_primary_passkey_registration_state
 from skrift.config import get_settings
 from skrift.controllers.auth import AuthController
@@ -51,16 +51,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from buildapp import invites
 from buildapp.clock import utc_now
+from buildapp.email_consent import record_signup_consent
 from buildapp.invite_pages import APP_PATH
+from buildapp.invite_kind import InviteKind
 from buildapp.models import Invite
 from buildapp.session_auth import session_user_id
-from buildapp.signup_invite import admits, carried_invite
+from buildapp.signup_invite import admitted_address, carried_invite, options_for, remember_options
 
 INVITE_REQUIRED = "invite_required"
 #: The sign-in page's name for the address it offers an account for.
 INVITE_EMAIL_CONTEXT = "invite_email"
 #: The view the sign-in page draws: ``signup`` or ``signin``.
 PAGE_VIEW_CONTEXT = "page_view"
+OPEN_INVITE_CONTEXT = "open_invite"
 SIGNUP_VIEW = "signup"
 SIGNIN_VIEW = "signin"
 
@@ -101,7 +104,10 @@ async def with_page_view(
     if isinstance(response, TemplateResponse):
         invite = await carried_invite(request, db_session, utc_now())
         response.context[INVITE_EMAIL_CONTEXT] = invite.email if invite else None
+        response.context[OPEN_INVITE_CONTEXT] = bool(invite and invite.kind == InviteKind.OPEN_LINK.value)
         response.context[PAGE_VIEW_CONTEXT] = page_view(invite, requested)
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Referrer-Policy"] = "no-referrer"
     return response
 
 
@@ -133,14 +139,21 @@ class BuildAuthController(AuthController):
     async def begin_primary_method_registration(
         self, request: Request, db_session: AsyncSession, provider: str
     ) -> Response:
-        email = str((await request.form()).get("email", ""))
-        if await skrift_would_proceed(request, provider) and not admits(
-            await carried_invite(request, db_session, utc_now()), email
-        ):
-            return invite_required(request)
-        return await AuthController.begin_primary_method_registration.fn(
+        form = await request.form()
+        email = str(form.get("email", ""))
+        invite = None
+        if await skrift_would_proceed(request, provider):
+            invite = await carried_invite(request, db_session, utc_now())
+            if admitted_address(invite, email) is None:
+                return invite_required(request)
+        response = await AuthController.begin_primary_method_registration.fn(
             self, request, db_session, provider
         )
+        if response.status_code in (None, HTTP_200_OK) and invite is not None:
+            remember_options(
+                request, invite, email, form.get("product_email_opt_in") == "on"
+            )
+        return response
 
     @post("/{provider:str}/register/complete")
     async def complete_primary_method_registration(
@@ -148,32 +161,35 @@ class BuildAuthController(AuthController):
     ) -> Response:
         signup = get_primary_passkey_registration_state(request)
         invite = None
+        options = None
         # No registration under way is Skrift's refusal to give, in its own words.
         if await skrift_would_proceed(request, provider) and signup is not None:
             invite = await carried_invite(request, db_session, utc_now())
-            if not admits(invite, signup.email):
+            options = options_for(request, invite, signup.email)
+            if options is None:
                 return invite_required(request)
         response = await AuthController.complete_primary_method_registration.fn(
             self, request, db_session, provider
         )
         if response.status_code == HTTP_201_CREATED and await _redeem(
-            request, db_session, invite, signup.email
+            request, db_session, invite, signup.email, options["product_email_opt_in"]
         ):
             return Response({"ok": True, "redirect": APP_PATH}, status_code=HTTP_201_CREATED)
         return response
 
 
 async def _redeem(
-    request: Request, db_session: AsyncSession, invite: Invite, email: str
+    request: Request, db_session: AsyncSession, invite: Invite | None, email: str, opt_in: bool
 ) -> bool:
     """Spend the invite on the account Skrift just created and signed in. With a second
     factor still to pass there is no signed-in user yet; the invite link, where Skrift
     sends the person next, redeems it once they are through."""
     user_id = session_user_id(request)
-    if user_id is None:
+    if user_id is None or invite is None:
         return False
-    await db_session.refresh(invite)
-    if not invites.redeem(invite, user_id, email, utc_now()).ok:
+    now = utc_now()
+    if not (await invites.claim_invite(db_session, invite, user_id, email, now)).ok:
         return False
+    record_signup_consent(db_session, user_id, opt_in, now)
     await db_session.commit()
     return True

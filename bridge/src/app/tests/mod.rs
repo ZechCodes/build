@@ -201,7 +201,6 @@ use support::*;
 
 mod agent_creators;
 mod agent_messages;
-mod mcp_generation;
 mod agent_names;
 mod agent_roles;
 mod api_facade;
@@ -215,6 +214,7 @@ mod github;
 mod harness_models;
 mod installed_models;
 mod lifecycle_compat;
+mod mcp_generation;
 mod merge_regressions;
 mod project_agent;
 mod project_agent_base;

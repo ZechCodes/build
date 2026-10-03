@@ -494,10 +494,8 @@ impl AppState {
             });
         }
         self.entity_of_agent(&agent_id)
-            .map(|entity_id| AddressedSession::Coding {
-                entity_id,
-                agent_id,
-            })
+            .and_then(|entity_id| self.mcp_conversation_generation(&entity_id, &agent_id).ok())
+            .map(AddressedSession::Coding)
     }
 
     /// Which entity owns an agent id. The MCP control plane authenticates an

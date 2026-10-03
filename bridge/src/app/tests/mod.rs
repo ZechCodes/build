@@ -201,6 +201,7 @@ use support::*;
 
 mod agent_creators;
 mod agent_messages;
+mod mcp_generation;
 mod agent_names;
 mod agent_roles;
 mod api_facade;

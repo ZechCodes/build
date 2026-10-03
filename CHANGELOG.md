@@ -25,8 +25,10 @@ Wire 3.11.0.
   previous settings. `conversation.reset` stops the old session and removes
   its history and artifacts while retaining the agent's identity, workspace
   membership and task links. Thread generations prevent stale requests and
-  cached pages from restoring cleared content. Project agents receive their
-  standing instructions again on the fresh start (#358, wire 3.11.0).
+  cached pages from restoring cleared content, including MCP calls and task
+  handoffs admitted before the clear. Established turns are stopped before
+  history is replaced. Project agents receive their standing instructions
+  again on the fresh start (#358, wire 3.11.0).
 - The project rail has a Files section with the workspace's shared explorer:
   one collapsible root per project source, persistent open tabs, keyboard
   navigation, previews, selection and guarded file edits. Project Files links

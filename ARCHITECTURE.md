@@ -852,9 +852,16 @@ the same agent address and the replacement's sequence counter starts at zero.
 Reset removes the old transcript, session lineage, revisions, operation
 payloads, attachments, readings, compaction state and conversation summaries.
 It stops every process bound to that conversation and retires their queued
-work and MCP capabilities. A late callback or a request carrying the old
-generation cannot restore the cleared content. A new project-agent session
-uses the ordinary fresh-start scaffolding and standing instruction templates.
+work and MCP capabilities. An established running turn is stopped and reaped;
+already admitted sends settle outside the app lock before history is replaced.
+An unadopted spawn or delivery handoff is refused retryably. Reads remain
+available during retirement, while conversation mutations are refused.
+MCP authentication captures the source thread generation, and done reports
+and agent actions validate it under the same lock as their writes. Deferred
+task handoffs retain that source generation until settlement. A late callback
+or a request carrying the old generation cannot restore the cleared content.
+A new project-agent session uses the ordinary fresh-start scaffolding and
+standing instruction templates.
 After the first reset, conversation mutations require the current `thread_id`;
 an older client that omits it receives a refusal rather than recreating a
 retired payload. Initial-generation omissions and ordinary reads retain their

@@ -165,7 +165,11 @@ async function seedInputSurface({ name, theme }) {
     },
     reroute() {
       const entry = { key: "capture:input", captureId: "input", captureState: "routed", name: "Restyle inputs", text: "Restyle inputs", state: "open" };
-      root.innerHTML = m.inbox.captureRowHtml(entry, { rerouteKey: entry.key, projects: [project], rerouteBranchProject: project.id, rerouteBranches: ["main"] });
+      document.body.classList.add("inbox-collapsed", "inbox-popover-open");
+      const rail = document.createElement("aside");
+      rail.id = "inbox-rail";
+      rail.innerHTML = `<div id="inbox-list">${m.inbox.captureRowHtml(entry, { activeKey: entry.key, rerouteKey: entry.key, projects: [project], rerouteBranchProject: project.id, rerouteBranches: ["main"] })}</div>`;
+      document.querySelector("#shell").prepend(rail);
     },
     "task composer"() {
       const composer = m.taskComposer.openTaskComposer(root, { ...scope, projectName: project.name, columns: [{ id: "backlog", name: "Backlog" }], labels: ["ui"], options, callRpc });
@@ -195,6 +199,7 @@ async function mountExtraSurface(page, basePath, name, theme) {
   await mountLayout(page, '<div id="shell"><div id="view"><div id="toolbar"></div><main id="root" class="surface"></main></div></div><div id="scrim" class="scrim"><div id="sheet" class="sheet"></div></div>', {
     basePath, styles: '#root{padding:16px;overflow:auto;min-width:0} #view{min-width:0}',
   });
+  page.setDefaultTimeout(15_000);
   await loadBrowserModules(page, { app: modules.app }, basePath);
   await page.evaluate(() => { delete window.__layoutModules; delete window.__layoutModuleError; });
   await loadBrowserModules(page, modules, basePath);
@@ -228,6 +233,8 @@ export async function mountInputSurface(page, basePath, name, theme) {
   await openInputDisclosures(page);
   for (const selector of surface.selectors) await page.waitForSelector(selector, { state: "attached" });
   await settled(page);
+  // Let renderer lazy imports finish before the next surface navigates away.
+  await page.waitForLoadState("networkidle");
 }
 
 export async function openInputDisclosures(page) {

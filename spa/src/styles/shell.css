@@ -250,7 +250,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 @keyframes capture-spin { to { transform:rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .capture-spinner { animation:none; } }
 .capture-chip { cursor:pointer; }
-.reroute-menu { top:calc(100% + 4px); right:0; left:auto; bottom:auto; min-width:220px; padding:6px; }
+.reroute-menu { top:calc(100% + 4px); right:0; left:auto; bottom:auto; width:min(280px, calc(100vw - 48px)); min-width:0; padding:6px; }
 .reroute-project { display:flex; align-items:center; gap:8px; padding:4px 6px; }
 .reroute-project .mt { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; font-size:12px; }
 .reroute-kinds { flex:none; display:flex; gap:4px; }

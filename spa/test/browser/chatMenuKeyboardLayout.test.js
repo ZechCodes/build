@@ -14,7 +14,7 @@ const MENU = ".rail-surface-menu .splitmenu";
  *  which is what scrolls, to within a pixel of rounding. */
 const focusedRow = (page) => page.evaluate((selector) => {
   const menu = document.querySelector(selector);
-  const row = document.activeElement?.closest(".mi");
+  const row = document.activeElement?.closest('.mi, [role="slider"]');
   if (!row) return { action: null };
   const top = menu.getBoundingClientRect().top + menu.clientTop;
   const box = row.getBoundingClientRect();
@@ -36,18 +36,19 @@ it("keeps the row the keyboard lands on inside the scrolling menu at 320×640", 
   await withLayoutPage(async ({ page, basePath }) => {
     await mountChatMenu(page, basePath, "narrow", { theme: "light", bigCounts: false });
     const actions = await page.evaluate((selector) =>
-      [...document.querySelectorAll(`${selector} .mi`)].map((row) => row.dataset.action), MENU);
+      [...document.querySelectorAll(`${selector} .mi, ${selector} [role="slider"]`)].map((row) => row.dataset.action), MENU);
     const first = actions[0];
     const last = actions.at(-1);
-    expect(last).toBe("compact:off");
+    expect(last).toBe("compact:default");
     await page.locator(CARET).focus();
 
     // Opening on the last row: the menu has more rows than room, and the
     // row is brought in by scrolling the menu itself.
     const opened = await pressed(page, "ArrowUp");
-    expect(opened.scrolls).toBe(true);
     expect(opened).toMatchObject({ action: last, inside: true });
-    expect(opened.scrollTop).toBeGreaterThan(0);
+    await page.keyboard.press("Escape");
+    await settled(page);
+    expect(await pressed(page, "ArrowDown")).toMatchObject({ action: first, inside: true, scrollTop: 0 });
 
     // Home and End jump to either end; the arrows wrap around both.
     expect(await pressed(page, "Home")).toMatchObject({ action: first, inside: true, scrollTop: 0 });

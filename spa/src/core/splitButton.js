@@ -5,6 +5,7 @@
 
 import { hide, motionSettled, reveal } from "./motion.js";
 import { esc } from "./text.js";
+import { adjustsMenuSlider, commitMenuSliders, menuSliderMarkup, MENU_SLIDER_SELECTOR, mountMenuSliders, resetMenuSliders } from "./menuSlider.js";
 
 const MENU_MOVE = { axis: "height" };
 
@@ -12,6 +13,7 @@ export const SPLIT_BUTTON_SELECTOR = ".splitbtn";
 const CARET_SELECTOR = ".caret";
 const SPLIT_MENU_SELECTOR = ".splitmenu";
 const MENU_ITEM_SELECTOR = ".mi";
+const MENU_FOCUS_SELECTOR = `${MENU_ITEM_SELECTOR}, ${MENU_SLIDER_SELECTOR}`;
 const MENU_NOTE_SELECTOR = ".menu-note";
 
 /** The app's button vocabulary a split button can be painted in: the accent
@@ -57,10 +59,12 @@ function menuGroupsHtml(groups) {
   return groups
     .map(
       (group) =>
-        `<div class="menu-group" role="group" aria-label="${esc(group.label)}" data-group="${esc(group.id)}"><div class="menu-group-title" aria-hidden="true">${esc(group.label)}</div>${menuItemsHtml(group.options)}</div>`,
+        `<div class="menu-group" role="group" aria-label="${esc(group.label)}" data-group="${esc(group.id)}"><div class="menu-group-title" aria-hidden="true">${esc(group.label)}</div>${menuGroupControl(group)}</div>`,
     )
     .join("");
 }
+
+const menuGroupControl = (group) => group.control === "slider" ? menuSliderMarkup(group) : menuItemsHtml(group.options);
 
 /** A line of text at the menu's foot that is not a choice: no action, out of
  *  the keyboard's walk (which moves between `.mi` rows only), and read to
@@ -325,9 +329,12 @@ function sightTopOf(menu, row) {
  *  once motion has settled. The menu's note is pinned over its foot
  *  (`menuNoteHtml`), so what is in sight stops at the note. */
 function scrollRowIntoMenu(menu, row) {
-  const above = sightTopOf(menu, row) - menu.scrollTop;
+  // The thumb takes focus, but the setting's selected word and description
+  // below it must be in sight too. Its wrapper also brings the group heading.
+  const box = row.matches(MENU_SLIDER_SELECTOR) ? row.closest(".menu-slider") : row;
+  const above = sightTopOf(menu, box) - menu.scrollTop;
   const sightHeight = menu.clientHeight - (menu.querySelector(MENU_NOTE_SELECTOR)?.offsetHeight || 0);
-  const below = rowTopWithin(menu, row) + row.offsetHeight - menu.scrollTop - sightHeight;
+  const below = rowTopWithin(menu, box) + box.offsetHeight - menu.scrollTop - sightHeight;
   if (above < 0) menu.scrollTop += above;
   else if (below > 0) menu.scrollTop += below;
 }
@@ -343,7 +350,7 @@ function scrollRowIntoMenu(menu, row) {
  *  at once, and again once the menu's motion has settled, for a key pressed
  *  while the reveal is still playing. */
 function menuKeyboard({ caret, menu, isOpen, openMenu, closeMenu, choose }) {
-  const rows = () => [...menu.querySelectorAll(MENU_ITEM_SELECTOR)];
+  const rows = () => [...menu.querySelectorAll(MENU_FOCUS_SELECTOR)];
   const focusedRow = () => rows().find((each) => each === document.activeElement);
   const showFocusedRow = () => {
     const row = focusedRow();
@@ -389,6 +396,7 @@ function menuKeyboard({ caret, menu, isOpen, openMenu, closeMenu, choose }) {
   // A key the menu does not answer — or Escape with nothing open — is left to
   // whatever else is listening.
   const handling = (keys) => (event) => {
+    if (adjustsMenuSlider(event)) return;
     if (!Object.hasOwn(keys, event.key) || keys[event.key]() === false) return;
     event.preventDefault();
     event.stopPropagation();
@@ -428,6 +436,7 @@ export function mountSplitMenu(container, { onChoose, onOpenChange = null, keepW
   const sayExpanded = () => caret?.setAttribute("aria-expanded", String(menuIsOpen));
   const closeMenu = (announce = true) => {
     if (!menu) return Promise.resolve();
+    resetMenuSliders(menu);
     const wasOpen = menuIsOpen;
     menuIsOpen = false;
     sayExpanded();
@@ -456,6 +465,7 @@ export function mountSplitMenu(container, { onChoose, onOpenChange = null, keepW
     if (stopWatchingOutsidePress) return;
     const onOutsidePress = (event) => {
       if (container.querySelector(SPLIT_BUTTON_SELECTOR)?.contains(event.target)) return;
+      commitMenuSliders(menu);
       closeMenu();
     };
     document.addEventListener("pointerdown", onOutsidePress);
@@ -469,9 +479,10 @@ export function mountSplitMenu(container, { onChoose, onOpenChange = null, keepW
   // keyboard that is where the reader was; from a pointer it keeps focus
   // from falling to the body when the row it was on is hidden.
   const choose = (row) => {
+    const optionId = row.dataset.action;
     closeMenu();
     caret.focus({ preventScroll: true });
-    onChoose(row.dataset.action);
+    onChoose(optionId);
   };
 
   if (caret && menu) {
@@ -488,24 +499,48 @@ export function mountSplitMenu(container, { onChoose, onOpenChange = null, keepW
       if (menuIsOpen && !container.contains(event.relatedTarget)) closeMenu();
     });
     menu.querySelectorAll(MENU_ITEM_SELECTOR).forEach((mi) => (mi.onclick = () => choose(mi)));
+    mountMenuSliders(menu, { choose, onCommit: onChoose });
   }
   return { closeMenu, openMenu };
 }
 
 const menuMountedInContainer = new WeakMap();
 
+/** A blur save can update the cached slider while focus is on another menu
+ * row. Keep that destination and the open menu through its cache repaint. */
+function focusedSliderMenu(container) {
+  const menu = container.querySelector(`${SPLIT_MENU_SELECTOR}:not([hidden])`);
+  const row = document.activeElement;
+  if (!menu?.contains(row) || !menu.querySelector(MENU_SLIDER_SELECTOR)) return null;
+  return { action: row.dataset.action, slider: row.matches(MENU_SLIDER_SELECTOR) };
+}
+
+function restoreSliderMenuFocus(container, state, openMenu) {
+  const menu = container.querySelector(SPLIT_MENU_SELECTOR);
+  const row = state.slider ? menu.querySelector(MENU_SLIDER_SELECTOR)
+    : [...menu.querySelectorAll(MENU_ITEM_SELECTOR)].find((each) => each.dataset.action === state.action);
+  if (!row) return;
+  openMenu();
+  menu.hidden = false;
+  row.focus({ preventScroll: true });
+  scrollRowIntoMenu(menu, row);
+  motionSettled().then(() => { if (!menu.hidden) scrollRowIntoMenu(menu, row); });
+}
+
 export function mountMenuIfChanged(container, markup, { onChoose, keepWithin = null }) {
   const mounted = menuMountedInContainer.get(container);
   if (mounted && mounted.markup === markup) return mounted.closeMenu;
+  const focus = focusedSliderMenu(container);
   if (mounted) mounted.closeMenu();
   // A remount under the reader's focus — the mark moved after a choice made
   // from the keyboard — hands focus to the new opener rather than dropping
   // it on the body.
   const hadFocus = container.contains(document.activeElement);
   container.innerHTML = markup;
-  const { closeMenu } = mountSplitMenu(container, { onChoose, keepWithin });
+  const { closeMenu, openMenu } = mountSplitMenu(container, { onChoose, keepWithin });
   menuMountedInContainer.set(container, { markup, closeMenu });
   if (hadFocus) container.querySelector(CARET_SELECTOR)?.focus({ preventScroll: true });
+  if (focus) restoreSliderMenuFocus(container, focus, openMenu);
   return closeMenu;
 }
 

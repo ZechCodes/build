@@ -186,7 +186,8 @@ describe("the sections of the conversation's menu", () => {
       ["checklist", "Checklist", "1/2 completed"],
     ]);
     expect(rowsOf(groupNamed("Detail")).map(rowLabel)).toEqual(["All", "All messages", "Agent only"]);
-    expect(rowsOf(groupNamed("Compact at")).map(rowLabel)).toEqual(["Default (200k)", "150k", "200k", "300k", "Off"]);
+    expect(rowsOf(groupNamed("Compact at"))).toEqual([]);
+    expect([...groupNamed("Compact at").querySelectorAll(".mt")].map((each) => each.textContent)).toEqual(["Default (200k)"]);
   });
 
   it("reads a surface as a thing to open and a setting as one answer of a set", async () => {
@@ -194,9 +195,9 @@ describe("the sections of the conversation's menu", () => {
 
     expect(rowsOf(groupNamed("Show")).every((each) => each.getAttribute("role") === "menuitem")).toBe(true);
     expect(rowsOf(groupNamed("Detail")).every((each) => each.getAttribute("role") === "menuitemradio")).toBe(true);
-    expect(rowsOf(groupNamed("Compact at")).every((each) => each.getAttribute("role") === "menuitemradio")).toBe(true);
+    expect(groupNamed("Compact at").querySelectorAll('[role="slider"]')).toHaveLength(1);
     expect(checkedIn(groupNamed("Detail"))).toEqual(["detail:all"]);
-    expect(checkedIn(groupNamed("Compact at"))).toEqual(["compact:default"]);
+    expect(groupNamed("Compact at").querySelector('[role="slider"]').dataset.action).toBe("compact:default");
   });
 
   it("leaves the Show group out when the agent has opened nothing, and keeps the settings", async () => {
@@ -232,15 +233,20 @@ describe("a pick on the sectioned menu", () => {
     expect(overlay().querySelector("h3").textContent).toBe("Shells");
   });
 
-  it("sends the limit when it is a compaction row", async () => {
+  it("sends the limit when the compaction slider changes", async () => {
     await mountWorkspaceRail();
 
     menuCaret().click();
-    row("compact:150000").click();
+    const slider = groupNamed("Compact at").querySelector('[role="slider"]');
+    slider.value = "1";
+    slider.dispatchEvent(new Event("input", { bubbles: true }));
+    slider.dispatchEvent(new Event("change", { bubbles: true }));
+    slider.focus();
+    keydown(slider, "Enter");
     await flush();
 
     expect(settingsAsked).toEqual([{ entity_id: WORKSPACE_OWNER, agent_id: "wa-1", max_context_tokens: 150000 }]);
-    await vi.waitFor(() => expect(checkedIn(groupNamed("Compact at"))).toEqual(["compact:150000"]));
+    await vi.waitFor(() => expect(groupNamed("Compact at").querySelector('[role="slider"]').dataset.action).toBe("compact:150000"));
   });
 
   it("can be made from the keyboard, opener to row to overlay", async () => {

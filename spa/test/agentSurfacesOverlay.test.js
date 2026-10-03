@@ -344,8 +344,8 @@ describe("the conversation header's menu", () => {
     expect(surfaceMenuItems()).toEqual([]);
     expect(menuItems().map((item) => item.dataset.action)).toEqual([
       "detail:all", "detail:messages", "detail:agent",
-      "compact:default", "compact:150000", "compact:200000", "compact:300000", "compact:off",
     ]);
+    expect(panel().querySelector('.rail-surface-menu [role="slider"]').getAttribute("aria-valuetext")).toBe("Default");
     // The group of things to open is absent, not empty.
     expect(panel().querySelector('.rail-surface-menu [data-group="show"]')).toBe(null);
   });

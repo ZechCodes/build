@@ -10,6 +10,14 @@ protocol versions; see
 
 Wire 3.6.0.
 
+### Changed
+
+- The conversation menu's Compact at setting is a slider with discrete stops
+  for the existing limits, showing only the selected value and description.
+  Touch release commits a stop; Left/Right preview it until Enter or blur,
+  Escape cancels the preview, and Up/Down still walk the menu. The conversation
+  setting and cache update behavior are preserved (#357).
+
 ### Added
 
 - Task reviews save the committed head and resolved base of every Git directory

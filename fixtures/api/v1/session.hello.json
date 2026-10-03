@@ -3,7 +3,7 @@
   "since": "1.0.0",
   "params": {},
   "result": {
-    "api_version": "3.9.0",
+    "api_version": "3.10.0",
     "capabilities": [
       "agent.add",
       "agent.attach",
@@ -118,6 +118,7 @@
       "tasks.attachment",
       "tasks.attachmentChunks",
       "tasks.attachments",
+      "tasks.bodyPrecondition",
       "tasks.close",
       "tasks.columns",
       "tasks.comment",

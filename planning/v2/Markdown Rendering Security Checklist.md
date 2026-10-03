@@ -5,13 +5,18 @@
 
 Checklist rendering re-verified 2026-10-03 (#347): checklist list items have the
 fixed `task-item` class and a native input with only fixed checkbox type/class,
-boolean checked/disabled attributes, an escaped accessible name and numeric
-source/index metadata. Other markup in an item remains escape-first. Checkboxes
+boolean checked/disabled attributes and numeric source/index metadata. Task
+bodies and comments use `aria-labelledby` references to their rendered label
+text, with stable document-scoped IDs encoded into a fixed safe vocabulary.
+Unscoped read-only surfaces derive escaped accessible names from rendered inline
+text. Other markup in an item remains escape-first. Checkboxes
 are disabled by default; only task bodies enable saving. The edit helper calls
 the same `markdownHtml` entry point to identify a marker and replaces only its
 checked character, preserving the source, CRLF, code literals and nesting bound.
-`markdownTasks.test.js` verifies nested source mapping; `markdownSafety.test.js`
-includes hostile checklist payloads and rejects extra input attributes.
+`markdownTasks.test.js` verifies nested source mapping and paragraph marker
+lookalikes; `markdownTaskLabels.test.js` verifies rendered names and stable,
+distinct scopes. `markdownSafety.test.js` includes hostile checklist payloads,
+checks every label reference and rejects extra input attributes.
 
 This checklist covers the SPA's markdown renderer, an XSS boundary: everything an agent or a person writes (chat messages, task bodies, comments, plan docs, `.md` file previews, one-line previews) reaches the page through `spa/src/core/markdown.js` `markdownHtml` as `innerHTML`. The renderer is escape-first: every character of the input is HTML-escaped, and the only markup that comes out is the renderer's own fixed tags.
 

@@ -96,7 +96,7 @@ describe("adapter selection", () => {
       diffs: { perFile: true },
       bodies: { pages: false, mediaRawPages: false },
       reviews: { get: false, snapshot: false, diff: false, complete: false, act: false, comments: false },
-      tasks: { attachments: true, watching: true, context: true, doneSinceLeft: false, commentUserNotifies: false, listPaged: false },
+      tasks: { attachments: true, watching: true, context: true, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, bodyPrecondition: false },
       conversations: { settings: true },
       github: { repos: false },
       messages: { context: false },
@@ -178,7 +178,7 @@ describe("adapter selection", () => {
         diffs: { perFile: false },
         bodies: { pages: false, mediaRawPages: false },
         reviews: { get: false, snapshot: false, diff: false, complete: false, act: false, comments: false },
-        tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false },
+        tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, bodyPrecondition: false },
         conversations: { settings: false },
         github: { repos: false },
         messages: { context: false },
@@ -254,7 +254,7 @@ describe("named capabilities", () => {
     expect(flags({
       ...namedGreeting(features),
       changes: { subscriptions: false }, requests: { priority: false },
-      errors: { codes: false }, tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false },
+      errors: { codes: false }, tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, bodyPrecondition: false },
     })).toEqual(features);
   });
 
@@ -458,4 +458,10 @@ describe("workspace.measure_sizes", () => {
     expect(v1.capabilitiesOf({ api_version: "3.4.0", capabilities: [] }).workspaces.measureSizes).toBe(false);
     expect(v1.capabilitiesOf({ api_version: "3.4.0" }).workspaces.measureSizes).toBe(false);
   });
+});
+
+// Body preconditions are a named feature, independent of the update verb.
+it("gates task body preconditions by capability name", () => {
+  expect(v1.capabilitiesOf({ api_version: "3.9.0", capabilities: ["tasks.bodyPrecondition"] }).tasks.bodyPrecondition).toBe(true);
+  expect(v1.capabilitiesOf({ api_version: "3.8.0", capabilities: ["tasks.update"] }).tasks.bodyPrecondition).toBe(false);
 });

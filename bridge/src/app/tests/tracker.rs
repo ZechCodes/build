@@ -182,6 +182,98 @@ fn an_update_writes_events_for_the_moves_and_not_for_the_wording() {
     );
 }
 
+/// A checkbox edit is based on the body the browser rendered. An intervening
+/// edit on the bridge must survive even before a push reaches that browser.
+#[test]
+fn a_task_body_precondition_refuses_an_edit_based_on_an_older_body() {
+    use sha2::{Digest, Sha256};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let id = task_id(&filed(&mut state, &project_id, "Checklist"));
+    let cached_body = "- [ ] Verify";
+    let expected_body_hash = format!("{:x}", Sha256::digest(cached_body.as_bytes()));
+    let newer_body = "- [ ] Verify\n\nAn edit from another device.";
+    let changed = state.handle(req(
+        "tasks.update",
+        json!({ "task_id": id, "body": newer_body }),
+    ));
+    assert_eq!(changed["ok"], true, "{changed:?}");
+    let before = state.handle(req("tasks.get", json!({ "task_id": id })));
+
+    let refused = state.handle(req(
+        "tasks.update",
+        json!({ "task_id": id, "body": "- [x] Verify",
+                "expected_body_hash": expected_body_hash, "status": "in_review" }),
+    ));
+    assert_eq!(refused["ok"], false, "{refused:?}");
+    assert_eq!(refused["error_code"], "stale_body", "{refused:?}");
+    assert_eq!(refused["retryable"], false, "{refused:?}");
+    let after = state.handle(req("tasks.get", json!({ "task_id": id })));
+    assert_eq!(
+        after["result"], before["result"],
+        "the refusal writes nothing"
+    );
+    assert_eq!(after["result"]["task"]["body"], newer_body);
+}
+
+#[test]
+fn a_task_body_precondition_hashes_the_exact_saved_utf8_body() {
+    use sha2::{Digest, Sha256};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let id = task_id(&filed(&mut state, &project_id, "Checklist"));
+    let body = "Release 🍊\r\n\r\n- [ ] Verify";
+    let saved = state.handle(req("tasks.update", json!({ "task_id": id, "body": body })));
+    assert_eq!(saved["ok"], true, "{saved:?}");
+
+    // Normalizing line endings would falsely refuse a body that is current.
+    let expected_body_hash = format!("{:x}", Sha256::digest(body.as_bytes()));
+    let checked = "Release 🍊\r\n\r\n- [x] Verify";
+    let answered = state.handle(req(
+        "tasks.update",
+        json!({ "task_id": id, "body": checked, "expected_body_hash": expected_body_hash }),
+    ));
+    assert_eq!(answered["ok"], true, "{answered:?}");
+    assert_eq!(answered["result"]["task"]["body"], checked);
+}
+
+#[test]
+fn a_task_body_precondition_requires_a_body_and_a_lowercase_sha256_hash() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let id = task_id(&filed(&mut state, &project_id, "Checklist"));
+    let before = state.handle(req("tasks.get", json!({ "task_id": id })));
+
+    for expected in [
+        json!(""),
+        json!("x".repeat(64)),
+        json!("a".repeat(63)),
+        json!("A".repeat(64)),
+        json!(7),
+    ] {
+        let answered = state.handle(req(
+            "tasks.update",
+            json!({ "task_id": id, "body": "- [x] Verify", "expected_body_hash": expected }),
+        ));
+        assert_eq!(answered["error_code"], "invalid_params", "{answered:?}");
+    }
+    let without_body = state.handle(req(
+        "tasks.update",
+        json!({ "task_id": id, "title": "No body", "expected_body_hash": "a".repeat(64) }),
+    ));
+    assert_eq!(
+        without_body["error_code"], "invalid_params",
+        "{without_body:?}"
+    );
+    let after = state.handle(req("tasks.get", json!({ "task_id": id })));
+    assert_eq!(after["result"], before["result"]);
+}
+
 /// Closing and the Done column are independent: one says where the card is,
 /// the other whether anyone is still expected to act.
 #[test]

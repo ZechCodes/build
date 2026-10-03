@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { createHash, webcrypto } from "node:crypto";
 import { columns, comment, task } from "./trackerWireFixture.js";
 
 let watchers = [];
@@ -24,6 +25,7 @@ const PROJECT = "proj-1";
 const TASK = "task-347";
 const BODY = "Release\r\n\r\n- [ ] **Verify**\r\n- [X] Publish\r\n\r\n```md\r\n- [ ] Example\r\n```";
 const AFTER = BODY.replace("[ ] **Verify**", "[x] **Verify**");
+const hash = (body) => createHash("sha256").update(body).digest("hex");
 let host, page, cache, call, saved, reads, writes;
 const box = (index = 0) => host.querySelector(`.task-page-body input[data-task-index="${index}"]`);
 const cached = () => cache.readTaskRecord(DEVICE, PROJECT, TASK);
@@ -50,6 +52,7 @@ beforeEach(async () => {
   vi.resetModules();
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
+  vi.stubGlobal("crypto", webcrypto);
   watchers = [];
   notifyError.mockClear();
   reads = [];
@@ -60,6 +63,8 @@ beforeEach(async () => {
   saved = wire();
   await cache.writeTaskRecord(DEVICE, PROJECT, TASK, saved);
   await cache.writeTasksRecord(DEVICE, PROJECT, cache.tasksRecord([saved.task], columns()));
+  const { rememberTaskChecklistSupport } = await import("../src/core/taskChecklistSupport.js");
+  await rememberTaskChecklistSupport(DEVICE, { tasks: { bodyPrecondition: true } });
   call = vi.fn((method, params) => {
     const pending = deferred();
     if (method === "tasks.get") { reads.push(pending); return pending.promise; }
@@ -68,7 +73,7 @@ beforeEach(async () => {
   });
 });
 
-afterEach(() => page?.dispose());
+afterEach(() => { page?.dispose(); vi.unstubAllGlobals(); });
 
 it("offers cached body boxes before a greeting, and shows disabled boxes in comments", async () => {
   await mount();
@@ -88,7 +93,7 @@ it("writes only the chosen marker to cache before saving, then survives a remoun
   box().focus();
   box().click();
   await vi.waitFor(() => expect(writes).toHaveLength(1));
-  expect(writes[0].params).toEqual({ task_id: TASK, body: AFTER });
+  expect(writes[0].params).toEqual({ task_id: TASK, body: AFTER, expected_body_hash: hash(BODY) });
   expect((await cached()).task.body).toBe(AFTER);
   expect(box().checked).toBe(true);
   expect(host.querySelector("#task-comment")).toBe(field);
@@ -163,6 +168,51 @@ it("serializes saves and builds the next tick from the updated cached body", asy
   box(1).click();
   await vi.waitFor(() => expect(writes).toHaveLength(2));
   expect(writes[1].params.body).toBe(AFTER.replace("[X] Publish", "[ ] Publish"));
+  expect(writes[1].params.expected_body_hash).toBe(hash(AFTER));
+});
+
+it("rolls back a tick refused by a newer server body, then refreshes that body", async () => {
+  let serverBody = BODY + "\r\n\r\nAn agent added this instruction.";
+  const pendingRead = deferred();
+  let serverReads = 0;
+  call.mockImplementation((method, params) => {
+    if (method === "tasks.get") {
+      serverReads += 1;
+      return serverReads === 1 ? pendingRead.promise : Promise.resolve(wire(serverBody));
+    }
+    if (method !== "tasks.update") return Promise.resolve({});
+    writes.push({ params });
+    if (params.expected_body_hash !== hash(serverBody)) {
+      return Promise.reject(Object.assign(new Error("This task body changed. Reload it before saving."), { code: "stale_body" }));
+    }
+    serverBody = params.body;
+    return Promise.resolve({ task: wire(serverBody).task });
+  });
+  await mount();
+  await vi.waitFor(() => expect(serverReads).toBe(1));
+  box().click();
+  await vi.waitFor(() => expect(notifyError).toHaveBeenCalled());
+  expect(writes).toHaveLength(1);
+  expect(writes[0].params.expected_body_hash).toBe(hash(BODY));
+  expect(serverBody).toContain("An agent added this instruction.");
+  expect((await cached()).task.body).toBe(BODY);
+  expect(box().checked).toBe(false);
+  pendingRead.resolve(wire());
+  await vi.waitFor(async () => expect((await cached()).task.body).toBe(serverBody));
+  expect(serverReads).toBe(2);
+  expect(writes).toHaveLength(1);
+  expect(host.querySelector(".task-page-body").textContent).toContain("An agent added this instruction.");
+});
+
+it("keeps cached checklists disabled until safe body writes are advertised", async () => {
+  const { rememberTaskChecklistSupport } = await import("../src/core/taskChecklistSupport.js");
+  await rememberTaskChecklistSupport(DEVICE, { tasks: {} });
+  await mount();
+  expect(box().disabled).toBe(true);
+  box().click();
+  expect(writes).toHaveLength(0);
+  await rememberTaskChecklistSupport(DEVICE, { tasks: { bodyPrecondition: true } });
+  await vi.waitFor(() => expect(box().disabled).toBe(false));
 });
 
 it("keeps checkbox focus after an immediate save and its later cache repaint", async () => {
@@ -201,6 +251,7 @@ it("restores checkbox availability if the browser refuses its write lock", async
   try {
     box().click();
     await vi.waitFor(() => expect(notifyError).toHaveBeenCalledWith("Could not save this checklist", "Storage access refused"));
+    await vi.waitFor(() => expect(box().checked).toBe(false));
     expect(box().disabled).toBe(false);
     expect(writes).toHaveLength(0);
     expect((await cached()).task.body).toBe(BODY);

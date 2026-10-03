@@ -55,10 +55,14 @@ const MODES = {
  * `MODES`; `limit` caps a plain preview. List checklist inputs are disabled
  * unless `taskItems` is true. `taskMarkers` collects their original source
  * offsets for the source-edit helper; it follows the same block traversal.
+ * `taskLabelScope` is a stable, unique name for this rendered document. Task
+ * bodies and comments supply one to label checkboxes from their rendered text
+ * without changing ids during a cached repaint. Other callers keep stable,
+ * id-free markup with accessible names derived from the rendered inline text.
  *
  * Answers HTML for `block` and `inline`, and plain text for `plain`.
  */
-export function markdownHtml(text, { place = null, identities = null, mode = "block", limit, taskItems = false, taskMarkers } = {}) {
+export function markdownHtml(text, { place = null, identities = null, mode = "block", limit, taskItems = false, taskMarkers, taskLabelScope } = {}) {
   const links = referenceResolver({ place, identities: identities || {} });
-  return (MODES[mode] || MODES.block)(String(text || ""), links, limit, { taskItems, taskMarkers });
+  return (MODES[mode] || MODES.block)(String(text || ""), links, limit, { taskItems, taskMarkers, taskLabelScope });
 }

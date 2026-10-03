@@ -70,6 +70,7 @@ import { rememberNeedsYouRule } from "./needsYouRule.js";
 import { rememberBranchDelete } from "./branchDeleteSupport.js";
 import { NO_REVIEW_SUPPORT, rememberReviewSupport } from "./taskReviewSupport.js";
 import { rememberAgentLineageSupport } from "./agentLineageSupport.js";
+import { rememberTaskChecklistSupport } from "./taskChecklistSupport.js";
 import { rememberSourceEditSupport } from "./sourceEditSupport.js";
 import { rememberProjectFilesSupport } from "./projectFilesSupport.js";
 import { rememberWorkspaceSizeSupport } from "./workspaceSizeSupport.js";
@@ -90,7 +91,7 @@ const NO_CAPABILITIES = Object.freeze({
   reviews: NO_REVIEW_SUPPORT,
   tasks: Object.freeze({
     attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false,
-    listPaged: false,
+    listPaged: false, bodyPrecondition: false,
   }),
   conversations: Object.freeze({ settings: false }),
   github: Object.freeze({ repos: false }),
@@ -923,6 +924,8 @@ function publishGreeting(call, deviceId, greeting, adapter, onGreeting) {
   // And whether it measures its workspaces' sizes when asked (#273).
   void rememberWorkspaceSizeSupport(deviceId, state.adapter.capabilities);
   void rememberProjectFilesSupport(deviceId, state.adapter.capabilities);
+  // And whether task body writes compare their original hash (#347).
+  void rememberTaskChecklistSupport(deviceId, state.adapter.capabilities, () => bridgeFor(deviceId)?.adapter === adapter);
   onGreeting(greeting);
   armChangeEvents(greeting, deviceId);
   adoptGreetedSession(state, call);

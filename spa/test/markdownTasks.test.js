@@ -33,6 +33,16 @@ describe("markdown checklist items", () => {
     expect(markdownHtml("- [ ] Ship", { mode: "plain", taskItems: true })).not.toContain("<input");
   });
 
+  it("leaves paragraph lines beginning with [ ] inside an item as prose", () => {
+    const source = "- [ ] Actual\n  [ ] Continuation\n\n  [ ] Later paragraph\n  - [x] Child";
+    const inputs = checkboxes(source, { taskItems: true });
+    expect(inputs).toHaveLength(2);
+    expect(inputs[0].closest("li").textContent).toContain("[ ] Continuation");
+    expect(inputs[0].closest("li").querySelector("p").textContent).toBe("[ ] Later paragraph");
+    expect(setMarkdownTaskChecked(source, 1, false)).toBe(source.replace("[x] Child", "[ ] Child"));
+    expect(setMarkdownTaskChecked(source, 2, true)).toBeNull();
+  });
+
   it("supports empty items and tab-separated labels without duplicate ids", () => {
     const inputs = checkboxes("- [ ]\n- [x]\tDone", { taskItems: true });
     expect(inputs).toHaveLength(2);

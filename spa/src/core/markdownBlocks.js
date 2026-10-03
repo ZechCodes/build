@@ -208,27 +208,64 @@ function itemHtml(item, body, context) {
   const task = taskItem(item.content, context.offsets[0] + item.contentAt, context);
   const content = task ? item.content.slice(task.length) : item.content;
   const opening = task ? `<li class="task-item">${task.html}` : "<li>";
-  if (!body.length && !THEMATIC_BREAK.test(content)) return `${opening}${context.inline(content)}</li>`;
+  if (!body.length && !THEMATIC_BREAK.test(content)) return `${opening}${taskContentsHtml(context.inline(content), task)}</li>`;
   const margins = body.map((line) => Math.min(indentOf(line), item.contentAt));
   const lines = [content, ...body.map((line, index) => line.slice(margins[index]))];
   const offsets = [context.offsets[0] + item.contentAt + (task?.length || 0), ...margins.map((margin, index) => context.offsets[index + 1] + margin)];
-  return `${opening}${blocksOf(lines, { ...deeper(context), offsets }).replace(/^<p>([\s\S]*?)<\/p>/, "$1")}</li>`;
+  return `${opening}${taskContentsHtml(blocksOf(lines, { ...deeper(context), offsets }), task, true)}</li>`;
+}
+
+/** A scoped checkbox names its first rendered paragraph, keeping child tasks
+ * and later details outside its accessible name. Block labels remain valid
+ * HTML; an empty label gets hidden text instead of naming its child list. */
+function taskContentsHtml(html, task, block = false) {
+  const paragraph = /^<p>([\s\S]*?)<\/p>/.exec(html);
+  const flat = paragraph ? paragraph[1] + html.slice(paragraph[0].length) : html;
+  if (!task?.labelId) return flat;
+  if (paragraph) return taskLabelSpan(task, paragraph[1]) + html.slice(paragraph[0].length);
+  if (!block) return taskLabelSpan(task, task.empty ? task.label : html, task.empty);
+  return blockTaskLabelHtml(html, task);
+}
+
+const taskLabelSpan = (task, html, hidden = false) =>
+  `<span class="md-task-label${hidden ? " sr-only" : ""}" id="${task.labelId}">${html}</span>`;
+
+/** Keep a heading's actual rendered words as the label. Other blocks use the
+ * item's own rendered inline name rather than enclosing subsequent children. */
+function blockTaskLabelHtml(html, task) {
+  const heading = /^(<h[1-6](?: [^>]*)?>)([\s\S]*?)(<\/h[1-6]>)/.exec(html);
+  if (heading) return heading[1] + taskLabelSpan(task, heading[2]) + heading[3] + html.slice(heading[0].length);
+  return taskLabelSpan(task, task.label, true) + html;
 }
 
 /** A checklist mark belongs only at the beginning of a list item's content.
  * Every attribute is fixed, numeric, or escaped. The input stays native for
- * keyboard and accessibility support, with no document-wide ids to collide. */
+ * keyboard and accessibility support. A caller's stable document scope keeps
+ * label ids separate across bodies and comments while leaving paints stable. */
 function taskItem(content, start, context) {
   const match = /^\[([ xX])\](?:[ \t]+|$)/.exec(content);
   if (!match) return null;
   const index = context.taskMarkers.length;
   const offset = start + 1;
   context.taskMarkers.push(offset);
-  const label = content.slice(match[0].length).trim() || `Checklist item ${index + 1}`;
+  const raw = content.slice(match[0].length).trim();
+  const fallback = `Checklist item ${index + 1}`;
+  const labelId = context.taskLabelPrefix ? `${context.taskLabelPrefix}:${index}` : null;
+  // Inline output is already escaped; removing its fixed tags retains the
+  // escaped attribute text, including a reference's visible resolved label.
+  const renderedText = context.inline(raw).replace(/<[^>]*>/g, "").trim();
+  const label = renderedText || fallback;
+  const name = labelId ? `aria-labelledby="${labelId}"` : `aria-label="${label}"`;
   const checked = match[1] === " " ? "" : " checked";
   const disabled = context.taskItems ? "" : " disabled";
-  return { length: match[0].length, html: `<input class="md-task-checkbox" type="checkbox" data-task-index="${index}" data-task-offset="${offset}" aria-label="${esc(label)}"${checked}${disabled}>` };
+  return { length: match[0].length, labelId, empty: !renderedText, label,
+    html: `<input class="md-task-checkbox" type="checkbox" data-task-index="${index}" data-task-offset="${offset}" ${name}${checked}${disabled}>` };
 }
+
+/** Code-point encoding is deterministic and injective. Unlike sanitizing or
+ * hashing caller scopes, distinct names cannot produce the same safe id. */
+const taskLabelPrefix = (scope) => scope == null ? null
+  : `md-task-label:${Array.from(String(scope), (character) => character.codePointAt(0).toString(16)).join("-")}`;
 
 /** A list: its items in a row, a blank line between two of them keeping them
  *  one list. It ends at a line that is neither an item of it nor indented
@@ -366,7 +403,7 @@ function blocksOf(lines, context) {
  * Markdown as blocks. `inline` renders one line of the inline vocabulary and
  * escapes everything it is given.
  */
-export function blocksHtml(markdown, inline, { taskItems = false, taskMarkers } = {}) {
+export function blocksHtml(markdown, inline, { taskItems = false, taskMarkers, taskLabelScope } = {}) {
   const source = String(markdown || "");
   const lines = source.split(/\r?\n/);
   let offset = 0;
@@ -376,5 +413,5 @@ export function blocksHtml(markdown, inline, { taskItems = false, taskMarkers } 
     offset += source[offset] === "\r" ? 2 : 1;
     return start;
   });
-  return blocksOf(lines, { inline, idAttr: headingIds(), depth: 0, offsets, taskItems, taskMarkers: taskMarkers || [] });
+  return blocksOf(lines, { inline, idAttr: headingIds(), depth: 0, offsets, taskItems, taskMarkers: taskMarkers || [], taskLabelPrefix: taskLabelPrefix(taskLabelScope) });
 }

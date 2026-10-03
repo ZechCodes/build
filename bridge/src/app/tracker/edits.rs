@@ -11,6 +11,34 @@ use crate::tracker::{
     TaskPriority, TaskState, DONE_STATUS, MAX_BODY_BYTES, MAX_TITLE_BYTES,
 };
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+
+/// The app lock holds both this read and the following task write. A tick
+/// based on an older body refuses the whole update before any field changes.
+pub(super) fn check_body_precondition(body: &str, params: &Value) -> Result<(), String> {
+    let expected = match params.get("expected_body_hash") {
+        None | Some(Value::Null) => return Ok(()),
+        Some(Value::String(hash)) => hash,
+        Some(_) => return Err("expected_body_hash must be a string".into()),
+    };
+    if params.get("body").and_then(Value::as_str).is_none() {
+        return Err("expected_body_hash must accompany body".into());
+    }
+    if expected.len() != 64
+        || !expected
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("expected_body_hash must be a lowercase SHA-256 hex digest".into());
+    }
+    let current = format!("{:x}", Sha256::digest(body.as_bytes()));
+    if *expected != current {
+        return Err(
+            "stale_body: The task body changed. Refresh the task before editing it.".into(),
+        );
+    }
+    Ok(())
+}
 
 /// A required string param, trimmed, non-empty, and under its cap.
 pub(super) fn required_text(params: &Value, key: &str, cap: usize) -> Result<String, String> {

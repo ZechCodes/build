@@ -11,7 +11,8 @@
     ],
     "priority": "high",
     "status": "in_review",
-    "state": "open"
+    "state": "open",
+    "expected_body_hash": "44632f5c288359da8e88028dc9d2cbf69501c1561e87841f081f3f9976f0d374"
   },
   "result": {
     "task": {
@@ -63,7 +64,24 @@
     "not_found",
     "invalid_params",
     "conflict",
+    "stale_body",
     "unavailable",
     "internal"
-  ]
+  ],
+  "body_precondition": {
+    "since": "3.10.0",
+    "capability": "tasks.bodyPrecondition",
+    "params": [
+      "expected_body_hash"
+    ],
+    "algorithm": "SHA-256 of the exact UTF-8 bytes of the saved body, encoded as 64 lowercase hexadecimal characters. No trimming or line-ending normalization.",
+    "requires": [
+      "body"
+    ],
+    "refusal": {
+      "error_code": "stale_body",
+      "retryable": false,
+      "writes": false
+    }
+  }
 }

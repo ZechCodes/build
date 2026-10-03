@@ -59,6 +59,7 @@ import { taskUnreadReading, taskUnreadRules, latestTaskMark } from "./trackerUnr
 import { mountNewMessagesPill } from "./newMessagesPill.js";
 import { scrollWithin } from "./scrollWithin.js";
 import { createTaskChecklist } from "./taskChecklist.js";
+import { readTaskChecklistSupport, taskChecklistSupportAddress } from "./taskChecklistSupport.js";
 
 /** Whether one flush of `tasks` items says anything about this task. */
 const namesTask = (items, taskId) =>
@@ -91,6 +92,7 @@ export function mountTaskPage(host, options) {
     loaded: false,
     disposed: false,
     picker: null,
+    checklistSupported: false,
     // The tray's entries are the VIEW's draft, not the DOM's: a bridge that
     // gains attachments stands up a new box, and an upload started before
     // that has to settle into the tray after it.
@@ -400,12 +402,14 @@ export function mountTaskPage(host, options) {
   }
 
   async function paintFromCache() {
-    const [cached, list, at] = await Promise.all([
+    const [cached, list, at, checklistSupported] = await Promise.all([
       readTaskRecord(state.deviceId, state.projectId, state.taskId),
       readTasksRecord(state.deviceId, state.projectId),
       taskRecordAt(state.deviceId, state.projectId, state.taskId),
+      readTaskChecklistSupport(state.deviceId),
     ]);
     if (state.disposed) return;
+    state.checklistSupported = checklistSupported;
     state.columns = columnsOf(list?.columns);
     if (!cached?.task || state.task) return;
     take(cached, { live: false });
@@ -429,6 +433,13 @@ export function mountTaskPage(host, options) {
     take(cached, { keepDrafts: Boolean(state.task), live: true });
     reads.succeeded();
     paint();
+  });
+
+  const checklistSupportWatcher = subscribeCache(taskChecklistSupportAddress(state.deviceId), async () => {
+    const supported = await readTaskChecklistSupport(state.deviceId);
+    if (state.disposed) return;
+    state.checklistSupported = supported;
+    syncChecklist();
   });
 
   // Review metadata has its own cache record. Repaint only the timeline rows
@@ -659,14 +670,21 @@ export function mountTaskPage(host, options) {
 
   function wireChecklist() {
     host.querySelectorAll('.task-page-body input[data-task-index]').forEach((input) => {
-      input.onchange = () => void checklist.press(Number(input.dataset.taskIndex), input.checked, state.task.body);
+      input.onchange = async () => {
+        const source = state.task.body;
+        const checked = input.checked;
+        const saved = await checklist.press(Number(input.dataset.taskIndex), checked, source);
+        // A refusal before the optimistic cache write leaves this node in
+        // place. Restore its native tick too, without touching a newer body.
+        if (!saved && input.isConnected && state.task?.body === source) input.checked = !checked;
+      };
     });
     syncChecklist();
   }
 
   function syncChecklist() {
     host.querySelectorAll('.task-page-body input[data-task-index]').forEach((input) => {
-      input.disabled = checklist.busy();
+      input.disabled = !state.checklistSupported || checklist.busy();
     });
   }
 
@@ -752,6 +770,7 @@ export function mountTaskPage(host, options) {
       watcher.dispose();
       stopGreeting();
       taskWatcher?.();
+      checklistSupportWatcher();
       reviewWatcher();
       referencesWatcher();
       reads.dispose();

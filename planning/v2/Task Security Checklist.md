@@ -4,11 +4,19 @@
 **Verified:** 2026-07-30
 
 Task body checklist edits re-verified 2026-10-03 (#347): the SPA uses the existing
-authenticated `tasks.update` body write, adding no wire params, capabilities,
-or bridge authorization paths. The markdown parser identifies the exact source
-marker, and the edit only replaces its checked character. Optimistic writes and
-conditional rollback pass through the task cache; tests cover stale reads,
-newer cache writes, comment immutability and the keyboard save path. The existing
+authenticated `tasks.update` body write with optional `expected_body_hash`,
+announced by `tasks.bodyPrecondition` in wire 3.9.0. Every checklist tick sends
+the SHA-256 digest of the exact original body bytes. The bridge checks it under
+the app lock before any task field or timeline write; a mismatch refuses the
+whole update with nonretryable `stale_body`. This server check protects edits
+made by another device or MCP agent, independently of the SPA's local cache
+guards. A refusal conditionally rolls back only the optimistic cached body and
+refreshes the task; it never retries the old body. The cached capability controls
+availability, and the current greeting gates dispatch of the new parameter.
+Bridge tests verify server divergence, no partial writes and exact UTF-8/CRLF
+hashing. SPA tests separately cover server/cache divergence and refresh, local
+stale reads, newer cache writes, comment immutability and keyboard saving. The
+markdown edit replaces only the parsed marker's checked character. Existing
 body size and task ownership checks continue to apply.
 
 This checklist covers the security boundary changed by the Task final-repair work. Product/lifecycle completeness is tracked separately from this security score.

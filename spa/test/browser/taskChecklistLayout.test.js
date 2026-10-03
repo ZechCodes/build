@@ -8,11 +8,11 @@ for (const theme of ["light", "dark"]) {
       await mountLayout(page, `<link rel="stylesheet" href="${basePath}src/styles/tasks.css"><div id="pane"></div>`,
         { basePath, styles: "body { padding:16px; } .task-page { display:block; } .task-rail { display:none; }" });
       await loadBrowserModules(page, {
-        cache: "src/core/trackerCache.js", taskPage: "src/core/trackerTaskPage.js",
+        support: "src/core/taskChecklistSupport.js", cache: "src/core/trackerCache.js", taskPage: "src/core/trackerTaskPage.js",
       }, basePath);
       await page.evaluate(async (theme) => {
         document.documentElement.dataset.theme = theme;
-        const { cache, taskPage } = window.__layoutModules;
+        const { cache, taskPage, support } = window.__layoutModules;
         window.__checklistSaved = { task: {
           id: "task-347", project_id: "proj-1", number: 347, title: "Release checklist",
           body: "- [ ] Verify the release on desktop and phone\n  - [x] Read the changelog\n- [ ] Publish",
@@ -20,6 +20,7 @@ for (const theme of ["light", "dark"]) {
           links: {}, created_by: { kind: "user" }, updated_at: "2026-10-03T12:00:00Z",
         }, timeline: [] };
         window.__checklistUpdates = [];
+        await support.rememberTaskChecklistSupport("dev-347", { tasks: { bodyPrecondition: true } });
         await cache.writeTaskRecord("dev-347", "proj-1", "task-347", window.__checklistSaved);
         window.__mountChecklist = () => taskPage.mountTaskPage(document.querySelector("#pane"), {
           deviceId: "dev-347", projectId: "proj-1", projectKey: "dev-347|proj-1", taskId: "task-347",
@@ -99,12 +100,13 @@ it("holds another tab's read until a pending checklist save settles", async () =
     await page.goto(initialPage.url());
     const mount = async (tab, seed) => {
       await mountLayout(tab, '<div id="pane"></div>', { basePath });
-      await loadBrowserModules(tab, { cache: "src/core/trackerCache.js", taskPage: "src/core/trackerTaskPage.js" }, basePath);
+      await loadBrowserModules(tab, { support: "src/core/taskChecklistSupport.js", cache: "src/core/trackerCache.js", taskPage: "src/core/trackerTaskPage.js" }, basePath);
       await tab.evaluate(async (seed) => {
-        const { cache, taskPage } = window.__layoutModules;
+        const { cache, taskPage, support } = window.__layoutModules;
         window.__tabTask = { id: "task-tabs", number: 347, title: "Release", body: "- [ ] Verify\n- [ ] Publish",
           state: "open", status: "in_progress", labels: [], links: {}, assignee: null, priority: "none" };
         window.__tabReads = 0;
+        await support.rememberTaskChecklistSupport("device", { tasks: { bodyPrecondition: true } });
         if (seed) await cache.writeTaskRecord("device", "project", "task-tabs", { task: window.__tabTask, timeline: [] });
         window.__tabPage = taskPage.mountTaskPage(document.querySelector("#pane"), {
           deviceId: "device", projectId: "project", projectKey: "device|project", taskId: "task-tabs",

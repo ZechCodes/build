@@ -192,8 +192,10 @@ async fn the_greeting_announces_push_events() {
     // (#267); 3.4.0 measures workspace sizes when asked (#273); 3.5.0 lets
     // a confirmed install replace a development build (#322) and names a moved
     // task's destination in the agent's own line (#323); 3.6.0 adds saved
-    // workspace reviews (#328).
-    assert_eq!(hello["result"]["api_version"], "3.9.0", "{hello:?}");
+    // workspace reviews (#328); 3.7.0 adds anchored task comments (#329);
+    // 3.8.0 adds saved review Git actions (#330); 3.9.0 adds configured project
+    // source file scopes (#359); 3.10.0 adds conditional task body writes (#347).
+    assert_eq!(hello["result"]["api_version"], "3.10.0", "{hello:?}");
     assert!(
         hello["result"]["coalesce_window_ms"]
             .as_u64()

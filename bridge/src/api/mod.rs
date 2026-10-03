@@ -39,7 +39,8 @@ use std::collections::BTreeSet;
 /// 3.7.0 adds anchored task comments, replies and snapshot opinions.
 /// 3.8.0 adds selected review Git actions and persisted action results.
 /// 3.9.0 adds configured project source scopes for file browsing and editing.
-pub const API_VERSION: &str = "3.9.0";
+/// 3.10.0 adds conditional task body writes (`tasks.bodyPrecondition`, #347).
+pub const API_VERSION: &str = "3.10.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -85,6 +86,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "tasks.agentIdentities",
     "tasks.attachmentChunks",
     "tasks.attachments",
+    "tasks.bodyPrecondition", // Since 3.10.0: expected_body_hash on tasks.update (#347).
     "tasks.commentUserMentions",
     "tasks.commentUserNotifies",
     "tasks.reviewComments", // Since 3.7.0: anchor, reply_to and opinion on task comments.
@@ -159,6 +161,11 @@ pub enum ApiError {
         message: String,
         details: Option<Value>,
     },
+    /// A task body changed after the caller read it. Refetch before editing.
+    StaleBody {
+        message: String,
+        details: Option<Value>,
+    },
     /// A backend this verb needs is not available (isolation, harness).
     Unavailable {
         message: String,
@@ -183,12 +190,13 @@ pub enum ApiError {
 
 impl ApiError {
     /// Every code, as a fixture may cite it.
-    pub const CODES: [&'static str; 9] = [
+    pub const CODES: [&'static str; 10] = [
         "unknown_method",
         "invalid_params",
         "not_found",
         "conflict",
         "stale_version",
+        "stale_body",
         "unavailable",
         "busy",
         "unsupported_version",
@@ -259,6 +267,7 @@ impl ApiError {
             ApiError::NotFound { .. } => "not_found",
             ApiError::Conflict { .. } => "conflict",
             ApiError::StaleVersion { .. } => "stale_version",
+            ApiError::StaleBody { .. } => "stale_body",
             ApiError::Unavailable { .. } => "unavailable",
             ApiError::Busy { .. } => "busy",
             ApiError::UnsupportedVersion { .. } => "unsupported_version",
@@ -278,6 +287,7 @@ impl ApiError {
             | ApiError::NotFound { message, details }
             | ApiError::Conflict { message, details }
             | ApiError::StaleVersion { message, details }
+            | ApiError::StaleBody { message, details }
             | ApiError::Unavailable { message, details }
             | ApiError::Busy { message, details }
             | ApiError::UnsupportedVersion { message, details }
@@ -424,6 +434,10 @@ mod tests {
             ApiError::not_found("m"),
             ApiError::conflict("m", None),
             ApiError::StaleVersion {
+                message: "m".into(),
+                details: None,
+            },
+            ApiError::StaleBody {
                 message: "m".into(),
                 details: None,
             },

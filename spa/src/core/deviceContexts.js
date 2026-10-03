@@ -74,8 +74,24 @@ export const announceDeviceTransport = () => announceDeviceState();
 const ownerRequests = new Set(["project.ensure_conversation", "workspace.ensure_conversation"]);
 const asking = (context, transport) => (...asked) => {
   if (ownerRequests.has(asked[0])) return askOwner(context, transport, asked);
+  if (asked[0] === "tasks.update" && Object.hasOwn(asked[1] || {}, "expected_body_hash")) {
+    return askTaskBodyUpdate(context, transport, asked);
+  }
   return canAnswer(context) ? transport()(...asked) : Promise.reject(new Error(deviceAwayMark(context)));
 };
+
+// A cached capability can outlive the bridge that announced it. Guard this
+// new param at dispatch too, on the current session's compatible greeting.
+async function askTaskBodyUpdate(context, transport, asked) {
+  const request = await whenGreeted(context, () => {
+    if (context.adapter?.capabilities?.tasks?.bodyPrecondition !== true) {
+      throw new Error("Update this device's bridge to tick task checklists.");
+    }
+    return transport()(...asked);
+  });
+  if (!request) throw new Error(deviceAwayMark(context));
+  return request.sent;
+}
 
 /** Owner creation also comes from rail actions, through a captured repository
  * caller. Every path must send on its own session's latest compatible hello. */

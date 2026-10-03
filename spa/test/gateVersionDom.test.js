@@ -61,6 +61,7 @@ vi.mock("../src/connection.js", () => ({
   securityStopText: () => "",
 }));
 vi.mock("../src/core/platform.js", () => ({ currentPlatformKey: () => "macos-arm64" }));
+vi.mock("../src/appState.js", async () => ({ App: (await import("../src/app.js")).App }));
 vi.mock("../src/app.js", () => ({
   App,
   render: (...args) => render(...args),

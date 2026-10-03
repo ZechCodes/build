@@ -52,6 +52,7 @@ const bridge = { call: null };
 /** Where the reader is standing. The routed workspace leads every pass and is
  *  the only one read in front of the foreground. */
 const App = { route: { name: "inbox" }, devices: [{ id: "dev-1" }] };
+vi.mock("../src/appState.js", async () => ({ App: (await import("../src/app.js")).App }));
 vi.mock("../src/app.js", () => ({ App }));
 
 let registeredWatchers = [];

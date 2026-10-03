@@ -38,7 +38,7 @@
 // was asked, or under an entity a push took away since (core/pushFence.js).
 
 import { trailingRead } from "./trailingRead.js";
-import { App } from "../app.js";
+import { App } from "../appState.js";
 import { contextFor, liveContexts, onDeviceStateChanged } from "./deviceContexts.js";
 import { bridgeCapabilities, onSubscriptionHeld, subscriptionsSettledFor, watchChanges } from "./changeEvents.js";
 import { forgetPushes, notePush, pushFence, pushedSince, removedSince } from "./pushFence.js";

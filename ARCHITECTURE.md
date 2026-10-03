@@ -962,7 +962,8 @@ a sibling `build-secure-transport` checkout (`spa/package.json`).
 | Path | What it holds |
 | --- | --- |
 | `spa/src/main.js` | entry: fonts, CSS, theme, the bridge's approve link (`spa/src/core/pairLink.js`, before the router), router, device picker, then `boot()` from `spa/src/views/gate.js` |
-| `spa/src/app.js` | the `App` object, route handling (`go`, `initRouter`), the `VIEWS` table, `render` |
+| `spa/src/app.js` | re-exports `App`, route handling (`go`, `initRouter`), the `VIEWS` table, `render` |
+| `spa/src/appState.js` | shared account and route state (`App`, re-exported by `app.js`); device contexts, feed and cache sync import this without loading the app shell or connection layer |
 | `spa/src/connection.js` | per-device session lifecycle |
 | `spa/src/api.js` | the product API calls to skriftapp (`/api/devices`, `/api/gateway-token`, `/api/rtc/ice-servers`, push); the served-version check in `spa/src/core/version.js` is the other plain-HTTP read |
 | `spa/src/devices.js` | device list, presence poll, device picker |

@@ -23,6 +23,7 @@ vi.mock("@build/secure-transport", () => ({
   },
 }));
 
+vi.mock("../src/appState.js", async () => ({ App: (await import("../src/app.js")).App }));
 vi.mock("../src/app.js", () => ({
   App: {
     route: { name: "branch", deviceId: "dev-a", projectId: "project-a" },

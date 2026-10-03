@@ -16,6 +16,7 @@ const sockets = vi.hoisted(() => []);
 const contexts = vi.hoisted(() => new Map());
 
 vi.mock("@build/secure-transport", () => ({ ready: async () => {} }));
+vi.mock("../src/appState.js", async () => ({ App: (await import("../src/app.js")).App }));
 vi.mock("../src/app.js", () => ({ App: { route: { name: "inbox" }, devices: [], selectedDeviceId: null } }));
 // The registry is stood in for; what counts as a machine that can answer is
 // not — that question has one answer, and this file reads the real one.

@@ -54,6 +54,11 @@ Wire 3.10.0.
 
 ### Fixed
 
+- The web client loads safely when device contexts are imported before the
+  connection layer, including Inbox review captures. Shared app state lives
+  outside the shell so device contexts, feed and cache sync cannot import
+  their connection consumer; the security-stop export keeps its live binding
+  without reading it during module initialization (#361).
 - Installed CLI model probes keep their last usable catalog through failed
   or abandoned refreshes. Retries start at 15 seconds, double up to the
   ten-minute TTL, and reset after recovery. Background refresh keeps cached

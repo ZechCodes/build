@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 const App = { route: { name: "inbox" }, devices: [{ id: "dev-1" }] };
+vi.mock("../src/appState.js", async () => ({ App: (await import("../src/app.js")).App }));
 vi.mock("../src/app.js", () => ({ App }));
 
 vi.mock("../src/core/changeEvents.js", () => ({

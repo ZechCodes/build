@@ -40,7 +40,6 @@ import {
   contextFor,
   deviceContextEra,
   deviceContextIdentity,
-  deviceSecurityStopText,
   existingDeviceLifecycle,
   greetingInFlight,
   homeContext,
@@ -618,7 +617,7 @@ export function retireDevice(deviceId) {
  *  every machine is merely unreachable. A stop is the one connection failure a
  *  reader can act on and the only one that never resolves itself, so the
  *  screen holding the app says it out loud. */
-export const securityStopText = deviceSecurityStopText;
+export { deviceSecurityStopText as securityStopText } from "./core/deviceContexts.js";
 
 /** Let go of every bar (sign-out, teardown): they are this account's, and the
  *  next account's machines have not been refused anything. */

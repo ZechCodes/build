@@ -7,6 +7,7 @@
 // leaves the reader exactly where they were standing.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 const { App, go } = vi.hoisted(() => ({ App: {}, go: vi.fn() }));
+vi.mock("../src/appState.js", async () => ({ App: (await import("../src/app.js")).App }));
 vi.mock("../src/app.js", () => ({ App, go, DEVICE_FILTER_KEY: "build.deviceFilter" }));
 vi.mock("../src/api.js", () => ({ fetchDevices: vi.fn() }));
 vi.mock("../src/core/localCache.js", () => import("./memoryCache.js"));

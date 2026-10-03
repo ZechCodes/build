@@ -29,9 +29,16 @@ async function record(page, act) {
     writes.push(session.send("Page.screencastFrameAck", { sessionId }));
   });
   await session.send("Page.startScreencast", { format: "jpeg", quality: 95, everyNthFrame: 1 });
+  // A brief DOM update can fall between compositor screencast frames. Insert
+  // an explicit screenshot at the same wall-clock time for that review step.
+  const captureFrame = async (data) => {
+    const path = join(frames, `${String(captures.length).padStart(6, "0")}-manual.jpg`);
+    captures.push({ path, timestamp: Date.now() / 1000 });
+    await writeFile(path, data);
+  };
   let failure;
   try {
-    await act();
+    await act(captureFrame);
   } catch (error) {
     failure = error;
   } finally {
@@ -40,6 +47,7 @@ async function record(page, act) {
     await session.detach();
   }
   if (!captures.length) throw new Error("Chromium produced no screencast frames");
+  captures.sort((left, right) => left.timestamp - right.timestamp);
   const list = captures.map((frame, index) => {
     const duration = Math.max(1 / 60, (captures[index + 1]?.timestamp ?? frame.timestamp + 0.5) - frame.timestamp);
     return `file '${frame.path}'\nduration ${duration}`;
@@ -57,7 +65,7 @@ try {
   await withLayoutPage(async ({ page, basePath }) => {
     await openMenuOn(page, basePath, "desktop", { theme: "dark", bigCounts: false, settingsDelayMs: 300 });
     await observeCompactionMenu(page);
-    await record(page, async () => {
+    await record(page, async (captureFrame) => {
       await page.waitForTimeout(400);
       const slider = page.locator('.rail-surface-menu [role="slider"]');
       const box = await slider.boundingBox();
@@ -81,6 +89,7 @@ try {
           assignee: { kind: "agent", agent_id: "menu-agent" },
         }]));
         await page.locator('.rail-surface-menu [data-action="tasks"]').waitFor({ state: "attached" });
+        await captureFrame(await page.screenshot({ type: "jpeg", path: join(output, `${name}-tasks-visible.jpg`) }));
         await page.waitForTimeout(100);
         await page.evaluate(() => window.__setMenuTasks([]));
         await page.locator('.rail-surface-menu [data-action="tasks"]').waitFor({ state: "detached" });

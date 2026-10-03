@@ -489,6 +489,7 @@ export function mountSplitMenu(container, { onChoose, onOpenChange = null, keepW
     caret.focus({ preventScroll: true });
     onChoose(optionId);
   };
+  const refreshControls = () => mountMenuSliders(menu, { choose, onCommit: onChoose });
 
   if (caret && menu) {
     const keys = menuKeyboard({ caret, menu, isOpen: () => menuIsOpen, openMenu, closeMenu, choose });
@@ -503,10 +504,14 @@ export function mountSplitMenu(container, { onChoose, onOpenChange = null, keepW
     watchFocusLeaving(container, (event) => {
       if (menuIsOpen && !container.contains(event.relatedTarget)) closeMenu();
     });
-    menu.querySelectorAll(MENU_ITEM_SELECTOR).forEach((mi) => (mi.onclick = () => choose(mi)));
-    mountMenuSliders(menu, { choose, onCommit: onChoose });
+    // Cache updates can add rows while this same menu stays mounted.
+    menu.onclick = (event) => {
+      const row = event.target.closest(MENU_ITEM_SELECTOR);
+      if (row && menu.contains(row)) choose(row);
+    };
+    refreshControls();
   }
-  return { closeMenu, openMenu, isOpen: () => menuIsOpen };
+  return { closeMenu, openMenu, isOpen: () => menuIsOpen, refreshControls };
 }
 
 const menuMountedInContainer = new WeakMap();
@@ -514,7 +519,9 @@ const menuMountedInContainer = new WeakMap();
 export function mountMenuIfChanged(container, markup, { onChoose, keepWithin = null }) {
   const mounted = menuMountedInContainer.get(container);
   if (mounted && mounted.markup === markup) return mounted.closeMenu;
-  if (mounted?.isOpen() && patchSplitMenu(container, mounted.markup, markup)) {
+  if (mounted?.isOpen()) {
+    patchSplitMenu(container, mounted.markup, markup);
+    mounted.refreshControls();
     mounted.markup = markup;
     return mounted.closeMenu;
   }
@@ -524,8 +531,8 @@ export function mountMenuIfChanged(container, markup, { onChoose, keepWithin = n
   // it on the body.
   const hadFocus = container.contains(document.activeElement);
   container.innerHTML = markup;
-  const { closeMenu, isOpen } = mountSplitMenu(container, { onChoose, keepWithin });
-  menuMountedInContainer.set(container, { markup, closeMenu, isOpen });
+  const { closeMenu, isOpen, refreshControls } = mountSplitMenu(container, { onChoose, keepWithin });
+  menuMountedInContainer.set(container, { markup, closeMenu, isOpen, refreshControls });
   if (hadFocus) container.querySelector(CARET_SELECTOR)?.focus({ preventScroll: true });
   return closeMenu;
 }

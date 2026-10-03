@@ -100,14 +100,16 @@ function mountSlider(slider, { choose, onCommit }) {
 }
 
 export function mountMenuSliders(menu, callbacks) {
-  menu.querySelectorAll(MENU_SLIDER_SELECTOR).forEach((slider) => mountSlider(slider, callbacks));
+  menu.querySelectorAll(MENU_SLIDER_SELECTOR).forEach((slider) => {
+    if (!controls.has(slider)) mountSlider(slider, callbacks);
+  });
 }
 
 function updateSliderMarkup(host, nextHost) {
   host.dataset.options = nextHost.dataset.options;
   const slider = host.querySelector('[role="slider"]');
   const nextSlider = nextHost.querySelector('[role="slider"]');
-  for (const name of ["min", "max", "step", "value", "aria-label"]) {
+  for (const name of ["min", "max", "step", "aria-label"]) {
     const value = nextSlider.getAttribute(name);
     if (slider.getAttribute(name) !== value) slider.setAttribute(name, value);
   }

@@ -160,3 +160,48 @@ it.each(["bottom", "top"])("keeps a lifted menu inside its %s gutter when a cach
     expect(after.bottom).toBeLessThanOrEqual(after.bottomBound - 7.5);
   });
 });
+
+it("keeps the same focused menu inside its bound when Tasks arrive during its opening reveal", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await openMenuOn(page, basePath, "desktop", { theme: "dark", bigCounts: false });
+    const menuHeight = await page.locator(".rail-surface-menu .splitmenu").evaluate((menu) => menu.getBoundingClientRect().height);
+    await page.keyboard.press("Escape");
+    await settled(page);
+    await page.evaluate((menuHeight) => {
+      const panel = document.querySelector("#rail-panel");
+      const caret = document.querySelector(".rail-surface-menu .caret").getBoundingClientRect();
+      panel.style.bottom = "auto";
+      panel.style.height = `${caret.bottom + 6 + menuHeight + 12 - panel.getBoundingClientRect().top}px`;
+    }, menuHeight);
+    const opening = await page.evaluate(async () => {
+      document.querySelector(".rail-surface-menu .caret").click();
+      await new Promise(requestAnimationFrame);
+      const menu = document.querySelector(".rail-surface-menu .splitmenu");
+      const animation = menu.getAnimations().find((animation) => animation.effect.target === menu);
+      if (!animation) throw new Error("The production opening reveal must be running");
+      animation.pause();
+      animation.currentTime = animation.effect.getTiming().duration / 3;
+      window.__openingAnimation = animation;
+      menu.querySelector('[role="slider"]').focus({ preventScroll: true });
+      return { height: menu.getBoundingClientRect().height, paused: animation.playState === "paused" };
+    });
+    expect(opening.paused).toBe(true);
+    expect(opening.height).toBeGreaterThan(0);
+    expect(opening.height).toBeLessThan(menuHeight);
+    // The original reveal began before this observer. Any further animation,
+    // close, replacement, or focus loss from the cache update is a violation.
+    await observeCompactionMenu(page);
+    await page.evaluate(() => window.__setMenuTasks([{
+      id: "menu-task", number: 366, title: "Keep the menu open", state: "open", status: "in_progress",
+      assignee: { kind: "agent", agent_id: "menu-agent" },
+    }]));
+    await page.locator('.rail-surface-menu [data-action="tasks"]').waitFor({ state: "attached" });
+    expect(await compactionContinuity(page)).toEqual(uninterruptedMenu);
+    await page.evaluate(() => window.__openingAnimation.play());
+    await settled(page);
+    expect(await compactionContinuity(page, { stop: true })).toEqual(uninterruptedMenu);
+    const after = await menuBounds(page);
+    expect(after.top).toBeGreaterThanOrEqual(7.5);
+    expect(after.bottom).toBeLessThanOrEqual(after.bottomBound - 7.5);
+  });
+});

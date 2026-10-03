@@ -1022,10 +1022,10 @@ describe("the directory rail", () => {
     for (const rule of rulesFor("#dir-rail")) {
       expect(enclosingAtRule(rule.at)).toBeNull();
     }
-    // The seam with the work is a step in tone, not a line: the rail carries
-    // --panel2 beside the work's --panel and draws no border at all.
+    // The icon rail continues the toolbar's fill down the left edge, with no
+    // border between them or the work.
     expect(declaration(rail.body, "border")).toBe("0");
-    expect(declaration(rail.body, "background")).toContain("var(--panel2)");
+    expect(declaration(rail.body, "background")).toBe(declaration(baseRule("#toolbar").body, "background"));
   });
 
   it("keeps its cells at the head of the column, clear of the phone's bubble strip", () => {

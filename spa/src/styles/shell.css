@@ -591,14 +591,11 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    sidebar toggle — is drawn only where the list column is a column, never where
    it is a drawer (see .dirtoggle below). */
 #dir-rail:empty { display:none; }
-/* The seam between the rail and the work is a step in tone, not a line:
-   a step BELOW --panel2, beside the work's --panel. The work's own leftmost
-   column is often a --panel2 rail (.crail-host, .ftree), and two --panel2
-   columns touching are one slab — so the directory rail takes --panel2 mixed
-   back toward the page, far enough off its neighbour to read as a seam and
-   still plainly off --panel. */
+/* Continue the toolbar's fill down the icon rail so the chrome is one surface.
+   The work's leftmost column (.crail-host, .ftree) still takes the --panel2
+   step beside it. */
 #dir-rail { width:var(--dir-rail); min-height:0; border:0;
-  background:color-mix(in srgb, var(--panel2) 65%, var(--bg));
+  background:var(--panel);
   border-radius:0 0 0 10px;
   padding:6px 4px; display:flex; flex-direction:column;
   align-items:center; justify-content:flex-start; gap:4px; }

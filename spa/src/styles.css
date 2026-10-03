@@ -263,6 +263,9 @@ a { color:inherit; }
   --select-radius:8px; --select-menu-radius:10px;
 }
 select {
+  --select-chevron-color:var(--ink2);
+  --select-chevron:linear-gradient(45deg, transparent 50%, var(--select-chevron-color) 50%),
+    linear-gradient(135deg, var(--select-chevron-color) 50%, transparent 50%);
   appearance:none; -webkit-appearance:none;
   box-sizing:border-box; min-width:0; max-width:100%; height:var(--select-height);
   font:14px/1.4 var(--sans); color:var(--ink);
@@ -278,23 +281,26 @@ select:hover:not(:disabled) { border-color:var(--line3); }
 select:focus-visible {
   outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--focus-ring);
 }
-select:disabled { color:var(--dim); opacity:.7; cursor:not-allowed; }
+select:disabled { --select-chevron-color:var(--dim); color:var(--dim); opacity:.7; cursor:not-allowed; }
 @supports not (appearance:base-select) {
   select {
     color-scheme:inherit;
-    background-image:linear-gradient(45deg, transparent 50%, var(--ink2) 50%),
-      linear-gradient(135deg, var(--ink2) 50%, transparent 50%);
+    background-image:var(--select-chevron);
     background-position:right 14px center, right 10px center;
     background-size:4px 4px; background-repeat:no-repeat;
   }
 }
 @supports (appearance:base-select) {
   select, select::picker(select) { appearance:base-select; }
-  select { padding-inline:10px; align-items:center; gap:10px; overflow:hidden; }
+  select { position:relative; align-items:center; overflow:hidden; }
+  /* Chromium's implicit selected text does not shrink as a flex item. Reserve
+     the end of the field for the arrow, even when a model/branch label is long. */
   select::picker-icon {
-    content:""; flex:none; width:8px; height:8px; color:var(--ink2);
-    border-right:2px solid currentColor; border-bottom:2px solid currentColor;
-    transform:translateY(-2px) rotate(45deg);
+    content:""; position:absolute; inset-block:0; inset-inline-end:0;
+    width:30px; color:var(--ink2); background-color:var(--panel);
+    background-image:var(--select-chevron);
+    background-position:right 14px center, right 10px center;
+    background-size:4px 4px; background-repeat:no-repeat; pointer-events:none;
   }
   select:disabled::picker-icon { color:var(--dim); }
   select::picker(select) {
@@ -316,7 +322,8 @@ select:disabled { color:var(--dim); opacity:.7; cursor:not-allowed; }
   select optgroup { font:inherit; color:var(--dim); }
 }
 @media (max-width:720px) {
-  select, select::picker(select) { font-size:16px; }
+  select, select.mini { font-size:16px; }
+  select::picker(select) { font-size:16px; }
   select.mini { max-width:min(180px, 100%); }
 }
 @media (prefers-reduced-motion:reduce) { select { transition:none; } }
@@ -456,6 +463,26 @@ main { max-width:min(1180px, 100%); margin:0 auto;
   box-shadow:0 0 0 3px var(--focus-ring); }
 .panel .field input:not([type=checkbox]):disabled,
 .panel .field textarea:disabled { color:var(--dim); opacity:.7; cursor:not-allowed; }
+/* The settings role matrix keeps its labels with each control on a phone. */
+.aroles-grid { width:100%; border-collapse:collapse; }
+.aroles-grid th { text-align:left; font-weight:550; overflow-wrap:anywhere; }
+.aroles-grid th, .aroles-grid td { padding:6px 4px; }
+.aroles-role-label { display:none; }
+.aroles-capability-label { display:none; }
+.aroles-order { white-space:nowrap; }
+.aroles-add { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+.aroles-add input { flex:1; min-width:0; }
+@media (max-width:720px) {
+  .aroles-grid, .aroles-grid tbody { display:block; }
+  .aroles-grid thead { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); }
+  .aroles-grid tr { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:6px; }
+  .aroles-grid tr > th, .aroles-capability, .aroles-order { grid-column:1 / -1; min-width:0; }
+  .aroles-grid tbody tr + tr { margin-top:12px; padding-top:12px; border-top:1px solid var(--line); }
+  .aroles-role { display:flex; flex-direction:column; align-items:center; gap:4px; }
+  .aroles-role-label { display:block; font-size:11px; }
+  .aroles-capability-label { display:block; font-size:12px; margin-bottom:4px; }
+  .aroles-capability select { width:100%; }
+}
 /* Rows are separated by their own breathing room, not by a rule between them.
    The horizontal inset stays zero: these rows carry no hover fill of their own,
    and the panel's padding already puts their text on its text column. */

@@ -817,6 +817,9 @@ a.thread-task-action:focus-visible, a.thread-task-notice:focus-visible {
 
 .rail-reset-choice label { display:grid; grid-template-columns:max-content minmax(0, 1fr); align-items:center; gap:12px; width:100%; }
 .rail-reset-choice select { width:100%; }
+.rail-reset-choice .rail-harness-choice { height:var(--select-height); padding:0 6px; gap:4px; white-space:nowrap; }
+.rail-reset-choice .rail-harness-choice span { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.rail-reset-choice .rail-harness-icon { flex:none; }
 .rail-reset-choice .row { flex-wrap: wrap; justify-content: center; }
 @media (max-width:400px) {
   .rail-reset-choice label { grid-template-columns:minmax(0, 1fr); gap:4px; text-align:left; }

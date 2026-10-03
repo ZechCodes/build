@@ -32,7 +32,7 @@ export function agentRolesPanelHtml() {
         <th scope="col">Model</th>
         ${AGENT_ROLES.map((role) => `<th scope="col" title="${esc(role.describes)}">${esc(role.label)}</th>`).join("")}
         <th scope="col">Direction needed</th>
-        <th scope="col"><span class="visually-hidden">Order</span></th>
+        <th scope="col"><span class="sr-only">Order</span></th>
       </tr></thead><tbody data-aroles-rows></tbody></table>
       <form class="aroles-add" data-aroles-add>
         <input type="text" name="model" ${fieldTraits("identifier", "go")} placeholder="claude-opus-5" aria-label="Model id" required>
@@ -46,10 +46,10 @@ export function agentRolesPanelHtml() {
 const rowHtml = (row, index, last) => `<tr data-row="${index}" title="${esc(rowSummary(row))}">
     <th scope="row">${esc(row.model)}${row.provider ? ` <span class="dim">${esc(row.provider)}</span>` : ""}</th>
     ${AGENT_ROLES.map(
-      (role) => `<td><label class="visually-hidden" for="arole-${index}-${esc(role.id)}">${esc(role.label)}</label>
+      (role) => `<td class="aroles-role"><label class="aroles-role-label" for="arole-${index}-${esc(role.id)}">${esc(role.label)}</label>
         <input type="checkbox" id="arole-${index}-${esc(role.id)}" data-role="${esc(role.id)}"${(row.roles || []).includes(role.id) ? " checked" : ""}></td>`,
     ).join("")}
-    <td><select data-capability aria-label="Direction ${esc(row.model)} needs">
+    <td class="aroles-capability"><span class="aroles-capability-label">Direction needed</span><select data-capability aria-label="Direction ${esc(row.model)} needs">
       ${AGENT_CAPABILITIES.map(
         (entry) =>
           `<option value="${esc(entry.id)}"${entry.id === row.capability ? " selected" : ""}>${esc(entry.label)}</option>`,

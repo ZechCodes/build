@@ -25,6 +25,49 @@ beforeEach(async () => {
 const read = async (kind) => (await cache.readCached(address(kind)))?.value;
 
 describe("all session list writers", () => {
+  it("a reset replaces only its owner's summary even when the new summary is empty", async () => {
+    const threadAddress = { deviceId: "dev-1", entityId: "run-A", kind: "thread", sub: "conversation-A" };
+    await cache.writeCached(threadAddress, { thread_id: "fresh-thread", thread_generation_revision: 1 });
+    await cache.writeCached(address("workspaces"), [row("workspaces", "A", fresh), row("workspaces", "B", old)]);
+    await lists.updateSessionSummary(address("workspaces"), "workspaces", "A", { session_started_ms: null, last_activity_ms: null }, {
+      threadAddress, threadId: "fresh-thread", conversationId: "conversation-A", threadGenerationRevision: 1,
+    });
+    expect((await read("workspaces"))[0]).toMatchObject({ session_started_ms: null, last_activity_ms: null });
+    expect((await read("workspaces"))[1]).toEqual(row("workspaces", "B", old));
+  });
+
+  it("uses the recomputed pooled summary on reset and refuses a retired tip inside the transaction", async () => {
+    const threadAddress = { deviceId: "dev-1", entityId: "run-A", kind: "thread", sub: "conversation-A" };
+    await cache.writeCached(threadAddress, { thread_id: "fresh-thread", thread_generation_revision: 1 });
+    await cache.writeCached(address("projects"), [row("projects", "A", fresh)]);
+    const ownership = { threadAddress, threadId: "fresh-thread", conversationId: "conversation-A", threadGenerationRevision: 1 };
+    await lists.updateSessionSummary(address("projects"), "projects", "A", old, ownership);
+    expect((await read("projects"))[0]).toMatchObject(old);
+    await lists.updateSessionSummary(address("projects"), "projects", "A", fresh, { ...ownership, threadId: "retired-thread", threadGenerationRevision: 0 });
+    expect((await read("projects"))[0]).toMatchObject(old);
+    await lists.updateSessionSummary(address("projects"), "projects", "A", fresh, ownership);
+    expect((await read("projects"))[0]).toMatchObject(fresh);
+  });
+
+  it("rejects the session part of a list read that began before another tab reset it", async () => {
+    const threadAddress = { deviceId: "dev-1", entityId: "run-A", kind: "thread", sub: "conversation-A" };
+    await cache.writeCached(address("workspaces"), [row("workspaces", "A", fresh), row("workspaces", "B", old)]);
+    const observation = await lists.sessionListObservation(address("workspaces"), "workspaces");
+    vi.resetModules();
+    const otherTab = await import("../src/core/sessionListCache.js");
+    await cache.writeCached(threadAddress, { thread_id: "fresh-thread", thread_generation_revision: 1 });
+    await otherTab.updateSessionSummary(address("workspaces"), "workspaces", "A", { session_started_ms: null, last_activity_ms: null }, {
+      threadAddress, threadId: "fresh-thread", conversationId: "conversation-A", threadGenerationRevision: 1,
+    });
+    await lists.replaceSessionList(address("workspaces"), "workspaces", [row("workspaces", "A", fresh), row("workspaces", "B", fresh)], undefined, observation);
+    expect((await read("workspaces"))[0]).toMatchObject({ session_started_ms: null, last_activity_ms: null });
+    expect((await read("workspaces"))[1]).toEqual(row("workspaces", "B", fresh));
+
+    const current = await lists.sessionListObservation(address("workspaces"), "workspaces");
+    await lists.replaceSessionList(address("workspaces"), "workspaces", [row("workspaces", "A", fresh), row("workspaces", "B", fresh)], undefined, current);
+    expect((await read("workspaces"))[0]).toMatchObject(fresh);
+  });
+
   it.each([
     ["project list", "projects", "replace"],
     ["workspace list", "workspaces", "replace"],

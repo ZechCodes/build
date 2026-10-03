@@ -34,12 +34,25 @@ fn conversation_reset_keeps_identity_and_settings_but_replaces_every_history_fie
     let reply = state.handle(req("conversation.reset", reset_params(&state, &owner)));
     assert_eq!(reply["ok"], true, "{reply:?}");
     let agent = state.entity_agents(&owner).unwrap().by_id(&id).unwrap();
+    assert_retained_identity_and_settings(agent, &old);
+    assert_cleared_history_and_process_fields(agent, &old);
+    assert_eq!(reply["result"]["thread"]["items"], json!([]));
+    assert_eq!(reply["result"]["agent"]["thread_id"], agent.thread.id);
+}
+
+fn assert_retained_identity_and_settings(agent: &crate::agent::Agent, old: &crate::agent::Agent) {
     assert_eq!(agent.id, old.id);
     assert_eq!(agent.name, old.name);
     assert_eq!(agent.choice, old.choice);
     assert_eq!(agent.conversation_id(), old.conversation_id());
     assert_eq!(agent.max_context_tokens, Some(150_000));
     assert_eq!(agent.choice_revision, old.choice_revision + 1);
+}
+
+fn assert_cleared_history_and_process_fields(
+    agent: &crate::agent::Agent,
+    old: &crate::agent::Agent,
+) {
     assert_ne!(agent.thread.id, old.thread.id);
     assert!(agent.thread.items.is_empty());
     assert!(agent.thread.sessions.is_empty());
@@ -49,8 +62,6 @@ fn conversation_reset_keeps_identity_and_settings_but_replaces_every_history_fie
     assert_eq!(agent.resume_session_id, None);
     assert_eq!(agent.last_context_tokens, None);
     assert_eq!(agent.session_cache_read_tokens, None);
-    assert_eq!(reply["result"]["thread"]["items"], json!([]));
-    assert_eq!(reply["result"]["agent"]["thread_id"], agent.thread.id);
 }
 
 #[test]

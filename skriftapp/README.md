@@ -158,6 +158,12 @@ permission. There are two explicit kinds, both single-use and valid for 14 days:
   never saved in a flash/session or recoverable from the table. An unclaimed row
   has an empty, non-null email. Its first redemption records the account's
   canonical address and user ID; the table then shows who joined.
+  By design, this proves nothing about ownership of the entered email address.
+
+An account that already holds a redeemed, unrevoked invite cannot spend another
+link. It sees an already-member page and the link stays unused. Claims for one
+account serialize so concurrent links cannot grant two memberships. After the
+old membership is revoked, the account can redeem a fresh invite to rejoin.
 
 `POST /api/invites` supports scripts under the same administrator guard. Send
 `{"kind":"open_link"}` to create an open link, or `{"email":"person@example.com"}`
@@ -202,8 +208,14 @@ Completion atomically claims the invite with a conditional database update, so
 competing requests cannot spend it twice or overwrite the winner's address.
 Skrift still commits account creation before Build's claim: a race lost at that
 boundary can leave an account without membership, which all membership gates
-refuse. Skrift clears the binding when it rotates the session; existing accounts
+refuse. A failed claim sends the browser to the matching invite outcome page,
+including “already used” with guidance to ask for another link after a lost race.
+This destination does not depend on a saved `next` URL. Skrift clears the binding
+when it rotates the session; existing accounts
 signing in from a link return to it to redeem.
+If signup requires a second factor, redemption likewise happens at the link
+after that factor succeeds. This path records no product-email consent, even
+if the signup checkbox was checked.
 
 The account creation form has an **unchecked** optional product-email checkbox
 for both kinds. The choice comes only from the successful, CSRF-checked options
@@ -224,8 +236,9 @@ waitlist does not restore product consent.
 
 Apply migration `e2a4b6c8d0f1` before running this version. It adds the constrained
 invite kind and user preference table without granting consent to old users.
-Downgrading keeps invite rows, but unclaimed open links cannot be used by the
-older email-bound-only app. See
+Downgrading keeps invite rows and revokes unclaimed open links before removing
+their kind, so the older email-bound-only app cannot redeem their blank address.
+Upgrading again recognizes those retained revoked rows as open links. See
 [Invite Security Checklist](../planning/v2/Invite%20Security%20Checklist.md).
 
 Local browser check (throwaway database, passkey auth, the local origin as

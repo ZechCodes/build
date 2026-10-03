@@ -46,8 +46,9 @@ export async function textControlStyles(page) {
         background: style.backgroundColor, expectedBackground: rail ? "rgba(0, 0, 0, 0)" : token(editor ? "--code-bg" : field.matches(".panel .field :is(input, textarea), .sheet :is(input, textarea), .composer textarea") ? "--bg" : "--panel"),
         border: style.borderColor, expectedBorder: token("--line"), borderWidth: style.borderWidth,
         radius: style.borderRadius, expectedRadius: token("--select-radius", "borderRadius"),
-        height: style.height, expectedHeight: token("--select-height", "height"),
-        color: style.color, expectedColor: token(field.disabled ? "--dim" : "--ink"),
+        height: style.height, expectedHeight: token(field.classList.contains("mini") ? "--select-compact-height" : "--select-height", "height"),
+        compact: field.classList.contains("mini"), compactContext: field.matches(".tb-filter, .fmenu-search, .reroute-branch input, .workspace-refsearch"),
+        color: style.color, expectedColor: token(field.disabled ? "--dim" : field.readOnly ? "--ink2" : "--ink"),
         opacity: style.opacity, disabled: field.disabled, rail, editor, resize: style.resize, minHeight: style.minHeight, maxHeight: style.maxHeight,
         visible: rect.width > 0 && rect.height > 0, left: rect.left, right: rect.right, viewport: innerWidth,
       };
@@ -82,7 +83,12 @@ async function assertTextControls(page, surface) {
         expect(parseFloat(field.maxHeight), label).toBe(await page.evaluate(() => innerHeight * 0.4));
       }
     }
-    if (field.tag === "INPUT") expect(field.height, label).toBe(field.expectedHeight);
+    if (field.tag === "INPUT") {
+      expect(field.height, label).toBe(field.expectedHeight);
+      expect(["28px", "36px"], label).toContain(field.height);
+      if (field.compactContext) expect(field.compact, label).toBe(true);
+      expect(field.fontSize, label).toBe(field.viewport <= 720 ? 16 : field.compact ? 12 : 14);
+    }
     if (field.disabled) expect(field.opacity, label).toBe("0.7");
     if (field.visible) {
       expect(field.left, label).toBeGreaterThanOrEqual(-1);
@@ -102,9 +108,9 @@ for (const width of [320, 1280]) {
           try {
             await page.goto(`${origin}${basePath}src/styles.css`);
             await mountInputSurface(page, basePath, surface.name, theme);
+            await page.waitForSelector(surface.selectors[0], { state: "visible" });
             await assertTextControls(page, surface.name);
             await page.evaluate(() => window.__inputDispose?.());
-            await page.waitForLoadState("networkidle");
           } catch (error) { failures.push(`${surface.name}: ${error.message}`); }
         }
         expect(failures).toEqual([]);
@@ -118,7 +124,7 @@ it("styles text-like types and focus/disabled states while retaining native edit
     // Compare settled paint, independently of the field transition clock.
     await page.emulateMedia({ reducedMotion: "reduce" });
     const types = ["text", "search", "url", "email", "password", "tel", "number"];
-    await mountLayout(page, `<main style="padding:16px"><select><option>Main</option></select>${types.map((type) => `<input id="field-${type}" type="${type}" value="${type === "number" ? "2" : "main"}">`).join("")}<textarea id="prose">Two lines\nof prose</textarea><textarea id="disabled-prose" disabled>Paused prose</textarea><input id="readonly" readonly value="Saved"><input id="disabled" disabled value="Paused"><input type="checkbox"><input type="radio"><input type="range"><input type="file" hidden></main>`, { basePath });
+    await mountLayout(page, `<main style="padding:16px"><select><option>Main</option></select>${types.map((type) => `<input id="field-${type}" type="${type}" value="${type === "number" ? "2" : "main"}">`).join("")}<textarea id="prose">Two lines\nof prose</textarea><textarea id="readonly-prose" readonly>Saved prose</textarea><textarea id="disabled-prose" disabled>Paused prose</textarea><input id="readonly" readonly value="Saved"><input id="disabled" disabled value="Paused"><input id="toggle" type="checkbox"><input type="radio"><input type="range"><input type="file" hidden></main>`, { basePath });
     for (const theme of ["light", "dark"]) {
       await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, theme);
       await assertTextControls(page, "all native types");
@@ -126,6 +132,15 @@ it("styles text-like types and focus/disabled states while retaining native edit
         const style = getComputedStyle(field);
         return { border: style.borderColor, background: style.backgroundColor, shadow: style.boxShadow, outline: style.outlineStyle };
       };
+      for (const selector of ["#readonly", "#readonly-prose"]) {
+        await page.mouse.move(0, 0);
+        const beforeHover = await page.locator(selector).evaluate(paintOf);
+        await page.locator(selector).hover();
+        expect(await page.locator(selector).evaluate(paintOf)).toEqual(beforeHover);
+        expect(await page.locator(selector).evaluate((field) => getComputedStyle(field).cursor)).toBe("default");
+      }
+      expect(await page.locator("#disabled").evaluate((field) => getComputedStyle(field).cursor)).toBe("not-allowed");
+      expect(await page.locator("#toggle").evaluate((field) => getComputedStyle(field).cursor)).not.toBe("default");
       await page.locator("select").hover();
       const hover = await page.locator("select").evaluate(paintOf);
       await page.locator("#field-text").hover();

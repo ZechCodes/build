@@ -105,13 +105,15 @@ for (const width of [320, 1280]) {
         const origin = new URL(page.url()).origin;
         const failures = [];
         for (const surface of INPUT_SURFACES) {
+          // Mount failures stop here, with their original stack, rather than
+          // navigating away while the renderer's module graph is still loading.
+          await page.goto(`${origin}${basePath}src/styles.css`);
+          await mountInputSurface(page, basePath, surface.name, theme);
+          await page.waitForSelector(surface.selectors[0], { state: "visible" });
           try {
-            await page.goto(`${origin}${basePath}src/styles.css`);
-            await mountInputSurface(page, basePath, surface.name, theme);
-            await page.waitForSelector(surface.selectors[0], { state: "visible" });
             await assertTextControls(page, surface.name);
-            await page.evaluate(() => window.__inputDispose?.());
           } catch (error) { failures.push(`${surface.name}: ${error.message}`); }
+          finally { await page.evaluate(() => window.__inputDispose?.()); }
         }
         expect(failures).toEqual([]);
       }, { width, height: 900 });

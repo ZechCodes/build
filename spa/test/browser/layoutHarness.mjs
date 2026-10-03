@@ -127,7 +127,9 @@ export async function loadBrowserModules(page, modules, basePath = "/app/static/
         .then((loaded) => { window.__layoutModules = Object.fromEntries(${JSON.stringify(names)}.map((name, index) => [name, loaded[index]])); })
         .catch((error) => { window.__layoutModuleError = String(error); });
     ` });
-    await page.waitForFunction(() => window.__layoutModules || window.__layoutModuleError);
+    // A full renderer graph needs its own bound, independent of field/action
+    // timeouts when several browser suites compile modules on the same host.
+    await page.waitForFunction(() => window.__layoutModules || window.__layoutModuleError, null, { timeout: 15_000 });
     const error = await page.evaluate(() => window.__layoutModuleError);
     if (error) throw new Error(`${error}; network: ${(await Promise.all(failures)).join(" | ") || "no failed requests"}`);
   } finally {

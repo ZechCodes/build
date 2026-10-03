@@ -51,6 +51,20 @@ beforeEach(async () => {
 });
 
 describe("the device context registry", () => {
+  it("dispatches composer and captured repository mutations before the adopted session greets", async () => {
+    const session = fakeSession("dev-a");
+    const context = adoptDeviceSession(session);
+    expect(context.adapter).toBe(null);
+    expect(canAnswer(context)).toBe(true);
+    let greeted = false;
+    context.greeted.then(() => { greeted = true; });
+    const params = { entity_id: "entity", agent_id: "agent", thread_id: "cleared-generation" };
+    await context.rpc("thread.attach", params);
+    await context.chatRepository.currentCall()("thread.post", params);
+    expect(greeted).toBe(false);
+    expect(session.call.mock.calls).toEqual([["thread.attach", params], ["thread.post", params]]);
+  });
+
   it("waits for a capable greeting before sending a task body precondition", async () => {
     const session = fakeSession("dev-a");
     const context = adoptDeviceSession(session);

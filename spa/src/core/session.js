@@ -20,6 +20,8 @@ import { createSessionSwitch, isSignaling } from "./sessionSwitch.js";
 import { createPathProbe, PATH_PROBE_EVENT, PING_TIMEOUT_MS } from "./pathProbe.js";
 import { peerHeardAt } from "./pathLiveness.js";
 import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
+import { legacyThreadParams } from "./bridgeApi/v1/threadParams.js";
+import { readConversationResetSupport } from "./conversationResetSupport.js";
 
 export { DEFAULT_RPC_TIMEOUT_MS };
 
@@ -101,6 +103,7 @@ export async function openSession({
   /** The API adapter the last greeting selected (wire spec step 2.5), or
    *  null before one has, and for a bridge no adapter here speaks to. */
   let adapter = null;
+  let greeted = false;
   /** This session's lease on the rendezvous, while one is open. */
   let signaling = null;
   /** Asks the wire whether it is there (core/pathProbe.js). Stood up below,
@@ -212,14 +215,28 @@ export async function openSession({
     });
   };
 
+  // A cached composer can act as soon as the carrier opens. Until this session
+  // greets, retain the generation fields its device already advertised. A
+  // greeting that settles during the cache read takes precedence at dispatch.
+  const callBeforeGreeting = async (method, params, options, legacy) => {
+    const supported = await readConversationResetSupport(deviceId);
+    if (adapter) return adapter.call(method, params, options);
+    return rawCall(method, !greeted && supported ? params : legacy, options);
+  };
+  const call = (method, params = {}, options = {}) => {
+    if (adapter) return adapter.call(method, params, options);
+    const legacy = legacyThreadParams(method, params);
+    if (greeted || legacy === params) return rawCall(method, legacy, options);
+    return callBeforeGreeting(method, params, options, legacy);
+  };
+
   return {
     deviceId,
     sessionId: minted.sessionId,
     /** The raw rpc through the installed adapter, when there is one: every
      *  refusal a caller sees is then an `ApiError` with a code, whichever
-     *  1.x bridge answered. Before a greeting, the raw rpc. */
-    call: (method, params = {}, options = {}) =>
-      adapter ? adapter.call(method, params, options) : rawCall(method, params, options),
+     *  bridge answered. Before a greeting, use its device's cached capability. */
+    call,
     /**
      * Install what `selectAdapter` picked for this session's bridge. The
      * adapter is bound to the raw rpc, never to `call`, so its normalisation
@@ -227,6 +244,7 @@ export async function openSession({
      * installs nothing. Returns the adapter now installed, or null.
      */
     installAdapter: (selection) => {
+      greeted = true;
       adapter = selection && !selection.unsupported ? selection.create(rawCall) : null;
       return adapter;
     },

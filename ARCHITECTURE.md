@@ -319,7 +319,8 @@ runtime that starts them.
   SPA sends it only to a machine whose cached greeting names the capability.
   3.11.0 adds `conversation.reset` (#358) and thread generations on conversation
   digests and responses. Generation-aware requests refuse a cleared thread;
-  the reset capability gates the menu and its generation-aware cache handling.
+  the reset capability gates the menu, its generation-aware cache handling,
+  and the added request parameters on existing conversation verbs.
   The SPA's adapter claims `>=2.0.0 <4.0.0`: it calls nothing a 2.x bridge
   lacks (what 2.x added after 2.0.0 is capability-gated), so the app can
   roll before the bridge.
@@ -1364,6 +1365,15 @@ refuses when that device cannot answer.
   get a name.
 - Surfaces read the flags with `bridgeCapabilities(deviceId)`
   (`spa/src/core/changeEvents.js`), which falls back to `NO_CAPABILITIES`.
+- `conversation.reset` also gates the generation fields added to existing
+  conversation requests in wire 3.11. The adapter restores their old shapes
+  with `spa/src/core/bridgeApi/v1/threadParams.js` when the greeting lacks the
+  capability, retaining established selectors and paging parameters. Sessions
+  read their device's cached reset capability from `conversationResetSupport.js`
+  before hello: a cleared conversation keeps its required generation fields on
+  reconnect, and a device without cached support uses legacy shapes. A greeting
+  that settles during that read takes precedence at dispatch. Revision reads
+  retain `agent_id` and `conversation_id`, which older bridges already accept.
 - The task and conversation watch switches, task attachment buttons, and
   conversation compaction settings are available before a greeting (#182).
   Their values come from cached task and agent records. A late greeting does

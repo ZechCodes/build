@@ -289,6 +289,66 @@ describe("named capabilities", () => {
 });
 
 describe("the adapter", () => {
+  // The complete set of existing request shapes widened by #358. Keep the
+  // legacy fields explicit: revision addresses already selected an agent.
+  const generationRequests = [
+    ["thread.attach", { entity_id: "entity", filename: "paste.png", content_b64: "aW1hZ2U=" }, { agent_id: "agent", thread_id: "generation" }],
+    ["thread.attachment", { entity_id: "entity", path: "paste.png", offset: 0, length: 1024 }, { agent_id: "agent", conversation_id: "conversation", thread_id: "generation" }],
+    ["thread.revision", { entity_id: "entity", revision_id: "revision", agent_id: "non-primary-agent", conversation_id: "conversation" }, { thread_id: "generation" }],
+    ["thread.page", { entity_id: "entity", agent_id: "agent", after_sequence: 12, limit: 50 }, { thread_id: "generation" }],
+    ["thread.activity", { entity_id: "entity", agent_id: "agent", from_sequence: 1, through_sequence: 12, limit: 200 }, { thread_id: "generation" }],
+    ["thread.post", { entity_id: "entity", agent_id: "agent", conversation_id: "conversation", body: "Hello", attachments: [], choice_revision: 2, operation_id: "operation" }, { thread_id: "generation" }],
+    ["agent.start", { id: "entity", agent_id: "agent" }, { thread_id: "generation" }],
+    ["agent.interrupt", { entity_id: "entity", agent_id: "agent", conversation_id: "conversation" }, { thread_id: "generation" }],
+    ["agent.choose", { entity_id: "entity", agent_id: "agent", model: "model", effort: "high", expected_choice_revision: 2 }, { thread_id: "generation" }],
+    ["entity.seen", { entity_id: "entity", agent_id: "agent", read_from_sequence: 1, read_through_sequence: 12 }, { thread_id: "generation" }],
+    ["conversation.settings", { entity_id: "entity", agent_id: "agent", max_context_tokens: 100000 }, { thread_id: "generation" }],
+    ["conversation.watch", { entity_id: "entity", agent_id: "agent" }, { thread_id: "generation" }],
+    ["conversation.unwatch", { entity_id: "entity", agent_id: "agent" }, { thread_id: "generation" }],
+  ];
+
+  it.each(generationRequests)("a 3.10 bridge greeting keeps the pre-3.11 %s params", async (method, legacy, added) => {
+    const call = vi.fn(async () => ({}));
+    const adapter = selectAdapter(greetingV1({ api_version: "3.10.0" })).create(call);
+    const params = Object.freeze({ ...legacy, ...added });
+    const options = { priority: "background", timeoutMs: 12345 };
+    await adapter.call(method, params, options);
+    expect(call).toHaveBeenCalledExactlyOnceWith(method, legacy, options);
+    expect(params).toEqual({ ...legacy, ...added });
+  });
+
+  it.each(generationRequests)("a reset-capable greeting preserves generation-aware %s params", async (method, legacy, added) => {
+    const call = vi.fn(async () => ({}));
+    const adapter = selectAdapter(greetingV1({ api_version: "3.11.0", capabilities: ["conversation.reset"] })).create(call);
+    const params = Object.freeze({ ...legacy, ...added });
+    await adapter.call(method, params);
+    expect(call).toHaveBeenCalledExactlyOnceWith(method, params);
+    expect(call.mock.calls[0][1]).toBe(params);
+  });
+
+  it.each([
+    null,
+    greetingV1(),
+    { api_version: "3.11.0" },
+    { api_version: "3.11.0", capabilities: "conversation.reset" },
+    { capabilities: ["conversation.reset"] },
+  ])("requires an advertised reset capability even with a newer or missing greeting (%j)", async (greeting) => {
+    const call = vi.fn(async () => ({}));
+    const adapter = selectAdapter(greeting).create(call);
+    await adapter.call("thread.attach", { entity_id: "entity", agent_id: "agent", filename: "paste.png", content_b64: "aW1hZ2U=" });
+    expect(call).toHaveBeenCalledExactlyOnceWith("thread.attach", { entity_id: "entity", filename: "paste.png", content_b64: "aW1hZ2U=" });
+  });
+
+  it("preserves unrelated params and call arity on older bridges", async () => {
+    const call = vi.fn(async () => ({}));
+    const adapter = selectAdapter(greetingV1({ api_version: "3.10.0" })).create(call);
+    const params = { thread_id: "belongs-to-another-verb", agent_id: "agent" };
+    await adapter.call("future.method", params);
+    await adapter.call("thread.attach");
+    expect(call.mock.calls).toEqual([["future.method", params], ["thread.attach"]]);
+    expect(call.mock.calls[0][1]).toBe(params);
+  });
+
   it("declares major 3 and still admits 2.x, whose verbs it shares (#207)", () => {
     expect(v1.major).toBe(3);
     expect(v1.range).toBe(">=2.0.0 <4.0.0");

@@ -30,6 +30,7 @@ use crate::pty::{HarnessSpec, PtySession};
 
 pub(crate) mod adk;
 pub(crate) mod claude;
+mod cleanup;
 pub(crate) mod codex;
 pub(crate) mod codex_app_server;
 #[cfg(test)]
@@ -44,6 +45,7 @@ pub mod surfaces;
 pub(crate) mod transcript_activity;
 pub(crate) mod usage_limit;
 
+pub use cleanup::{ConversationArtifact, HarnessConversationCleanup};
 pub(crate) use session::publish_context;
 pub use session::{
     ActivityReport, AgentActivity, AgentSession, AgentStatus, FrozenTurnChoice, HarnessError,
@@ -310,6 +312,20 @@ pub trait Harness: Send + Sync {
     fn holds_conversation(&self, home: &Path, cwd: &Path, id: &str) -> bool {
         let _ = (home, cwd, id);
         true
+    }
+
+    /// Exact artifacts owned by a recorded provider session. An absent cwd or
+    /// id never permits a provider to guess which native transcript to clear.
+    /// Build-private providers may instead own a directory by agent identity.
+    fn conversation_artifacts(
+        &self,
+        _home: &Path,
+        _state_root: &Path,
+        _agent_id: &str,
+        _cwd: Option<&Path>,
+        _id: Option<&str>,
+    ) -> Result<Vec<ConversationArtifact>, HarnessError> {
+        Ok(Vec::new())
     }
 
     /// What this harness writes into the directory it is started in, whatever

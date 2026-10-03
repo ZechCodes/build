@@ -13,8 +13,8 @@ use std::sync::Mutex;
 use serde_json::{json, Value};
 
 use crate::harness::{
-    installed, is_a_filename, Harness, HarnessContext, SessionLocator, DAEMON_IDENTITY_VARS,
-    INHERITED_AGENT_MARKERS, REAL_TUI_SETTLE, REAL_TUI_SUBMIT_DELAY,
+    installed, is_a_filename, Harness, HarnessContext, HarnessError, SessionLocator,
+    DAEMON_IDENTITY_VARS, INHERITED_AGENT_MARKERS, REAL_TUI_SETTLE, REAL_TUI_SUBMIT_DELAY,
 };
 use crate::models::{AgentProvider, ModelChoice, ModelOption};
 use crate::orchestrator::SpawnOptions;
@@ -229,6 +229,29 @@ impl Harness for ClaudeHarness {
             && project_dir(&home.join(".claude/projects"), cwd)
                 .join(format!("{id}.jsonl"))
                 .is_file()
+    }
+
+    fn conversation_artifacts(
+        &self,
+        home: &Path,
+        _state_root: &Path,
+        _agent_id: &str,
+        cwd: Option<&Path>,
+        id: Option<&str>,
+    ) -> Result<Vec<super::ConversationArtifact>, HarnessError> {
+        let Some(id) = id else {
+            return Ok(Vec::new());
+        };
+        super::cleanup::validate_id(id)?;
+        let Some(cwd) = cwd else {
+            return Ok(Vec::new());
+        };
+        let relative = PathBuf::from(".claude/projects")
+            .join(encode_project_dir(cwd))
+            .join(format!("{id}.jsonl"));
+        Ok(super::ConversationArtifact::file(home, &relative)?
+            .into_iter()
+            .collect())
     }
 
     /// Its scheduler lock and durable task list, and the permissions it

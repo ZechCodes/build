@@ -186,6 +186,17 @@ impl Harness for AdkHarness {
         ClaudeHarness.holds_conversation(home, cwd, id)
     }
 
+    fn conversation_artifacts(
+        &self,
+        home: &Path,
+        state_root: &Path,
+        agent_id: &str,
+        cwd: Option<&Path>,
+        id: Option<&str>,
+    ) -> Result<Vec<super::ConversationArtifact>, HarnessError> {
+        ClaudeHarness.conversation_artifacts(home, state_root, agent_id, cwd, id)
+    }
+
     /// The same CLI, standing in the same directory.
     fn claude_files_where_it_stands(&self) -> &'static [&'static str] {
         ClaudeHarness.claude_files_where_it_stands()

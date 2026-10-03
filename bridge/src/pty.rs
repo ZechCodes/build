@@ -649,6 +649,10 @@ impl AgentSession for PtySession {
         self.kill_and_reap();
     }
 
+    fn conversation_artifacts(&self) -> Vec<PathBuf> {
+        self.compaction_sidecar.iter().cloned().collect()
+    }
+
     /// Always, for a CLI wrapper: it is opaque, so the human needs a way in.
     fn terminal(&self) -> Option<&dyn TerminalView> {
         Some(self)

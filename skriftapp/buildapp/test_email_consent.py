@@ -55,3 +55,33 @@ def test_unsubscribe_revokes_member_consent_by_canonical_address():
             await engine.dispose()
 
     asyncio.run(work())
+
+
+def test_product_recipients_exclude_missing_timestamp_and_inactive_accounts():
+    from skrift.db.models.user import User
+    from sqlalchemy import select
+    from buildapp.models import UserEmailPreference
+
+    async def work():
+        maker = in_memory_session_maker()
+        engine = engine_for(maker)
+        try:
+            await create_skrift_tables(engine)
+            async with maker() as session:
+                unstamped = await add_account(session, "unstamped@example.com")
+                inactive = await add_account(session, "inactive@example.com")
+                record_signup_consent(session, unstamped, True, utc_now())
+                record_signup_consent(session, inactive, True, utc_now())
+                await session.commit()
+                preference = (await session.execute(select(UserEmailPreference).where(
+                    UserEmailPreference.user_id == unstamped
+                ))).scalar_one()
+                preference.product_email_opted_in_at = None
+                (await session.get(User, inactive)).is_active = False
+                await session.commit()
+                assert await consenting_product_email_addresses(session) == []
+                assert await consent_by_user_id(session, (unstamped,)) == {unstamped: False}
+        finally:
+            await engine.dispose()
+
+    asyncio.run(work())

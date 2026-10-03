@@ -41,12 +41,12 @@ BRIDGE_API_URL=http://127.0.0.1:8090 BRIDGE_WEB_URL=http://127.0.0.1:8090 \
 
 Build is **invite-only**: `/app/`, the whole browser API (device approval included)
 and `/app/downloads` all require a redeemed invite, and everyone else gets a 403
-"invite only" page. Give yourself one before step 2 by seeding an open invite:
+"invite only" page. Give yourself one before step 2 by seeding a local `open_link` invite:
 
 ```bash
-sqlite3 ./app.db "INSERT INTO invites (id,token_hash,email,invited_by,expires_at,\
+sqlite3 ./app.db "INSERT INTO invites (id,token_hash,email,kind,invited_by,expires_at,\
   redeemed_by,redeemed_at,revoked_at,created_at,updated_at) VALUES (randomblob(16),\
-  '$(printf %s DEV-INVITE | shasum -a 256 | cut -d" " -f1)','you@example.com',NULL,\
+  '$(printf %s DEV-INVITE | shasum -a 256 | cut -d" " -f1)','','open_link',NULL,\
   datetime('now','+14 days'),NULL,NULL,NULL,datetime('now'),datetime('now'));"
 ```
 
@@ -56,7 +56,7 @@ pair the bridge with the pairing code it printed → write a goal → review the
 approve → watch the diff.
 
 (The compose dev stack does this for you: `deploy/app-dev-entrypoint.sh` seeds one
-open invite for `qa@localhost` with the raw token in `BUILD_DEV_INVITE_TOKEN`,
+unused email-bound invite for `qa@localhost` with the raw token in `BUILD_DEV_INVITE_TOKEN`,
 default `COMPOSE-INVITE`, and `web/pair.mjs` redeems it before it pairs.)
 
 Automated end-to-end (from `../web/`):
@@ -147,11 +147,32 @@ The one-time setup is normally the Skrift web wizard (a fresh deploy serves
 
 ### Invites
 
-An operator sends invites from **/admin/invites** (Skrift admin nav, behind the
-`administrator` permission): an address in, an email out, and a table of every
-invite with its state — open, redeemed, expired, revoked. `POST /api/invites`
-does the same thing as JSON for scripts. An invite is bound to the address it was
-sent to, works once, and expires after 14 days.
+An operator creates invites from **/admin/invites**, behind the `administrator`
+permission. There are two explicit kinds, both single-use and valid for 14 days:
+
+- **`email_bound`**: the existing **Send invite** form takes an address and mails a
+  link that only that address can redeem. Existing rows and API requests that omit
+  `kind` keep this behavior.
+- **`open_link`**: **Create one-off link** needs no address or waitlist entry and
+  sends no email. Copy the URL from the immediate response: it is shown only once,
+  never saved in a flash/session or recoverable from the table. An unclaimed row
+  has an empty, non-null email. Its first redemption records the account's
+  canonical address and user ID; the table then shows who joined.
+
+`POST /api/invites` supports scripts under the same administrator guard. Send
+`{"kind":"open_link"}` to create an open link, or `{"email":"person@example.com"}`
+(optionally `"kind":"email_bound"`) to send an addressed invite. An open-link
+request must omit `email`; unknown kinds are refused. Both return `invite_id`,
+`kind`, `email`, `expires_at`, and the one-time `url`. Creation is limited to
+20/minute and 300/day per IP, matching the waitlist invite-send budget. Admin
+forms additionally require CSRF. Both kinds can be revoked from the table,
+including after redemption to remove membership.
+
+Only token hashes are stored. Token responses and invite/auth pages use
+`Cache-Control: no-store` and `Referrer-Policy: no-referrer`. The framework/server
+log filters redact invite credentials even on errors; the shipped server has
+access logging disabled. A proxy that adds request logging must likewise redact
+`/invite/…` and invite-bearing `next` queries and must not log response bodies.
 
 **/admin/waitlist** lists every waitlist signup, newest first, with the state of
 the newest invite sent to that address and one button per row: **Invite** for an
@@ -162,21 +183,61 @@ live link exists. The send route is rate limited in `app.yaml`
 (`waitlist_invite_send`).
 
 **Accounts exist only through an invite** (`buildapp/signup_invite.py`,
-`buildapp/auth_controller.py`). Opening an open invite link signed out binds the
-invite's id to the session and sends the visitor to `/auth/login`. The page shows one
-view: with a bound invite, account creation for the invite's address, shown read-only,
-with a link to `/auth/login?view=signin` (sign-in, with a link back); without one,
-sign-in only and a line linking to the waitlist. `view` is allow-listed and never
-echoed, and cannot show account creation without a bound invite; Skrift keeps `next`
-in the session, so switching views keeps it. `BuildAuthController` is Skrift's
-`AuthController` with four handlers replaced by name: the two login pages add the
-bound address and the view to the template, and passkey `register/options` and
-`register/complete` refuse any other address (`invite_required`, 403) whatever the
-form posts. A completed registration redeems the invite in the same request and
-answers with `/app/`. Skrift rotates the session at sign-in, which drops the binding;
-an existing account signing in from an invite link still redeems at the link (or
-gets the wrong-account page). Sign-in itself asks for nothing: one passkey button,
-no autofill field.
+`buildapp/auth_controller.py`). Opening an unused link signed out binds its ID to
+the encrypted session and redirects to `/auth/login`. The account creation view
+shows a read-only address for `email_bound`, or an empty, editable email field
+for `open_link`. Newly entered addresses must pass the existing waitlist address
+validator. The sign-in view remains at `/auth/login?view=signin`, with a link back
+to account creation while the invite is usable. `view` is allow-listed; without
+an invite it cannot reveal account creation.
+
+`BuildAuthController` wraps Skrift's four existing handlers. Both registration
+steps recheck the carried invite. The options step records the invite ID,
+canonical account email, and explicit consent choice in the encrypted session;
+completion refuses a different invite or email, or an expired/revoked/spent
+invite. `signup_invite.admits` retains the original bound-address comparison.
+Completion atomically claims the invite with a conditional database update, so
+competing requests cannot spend it twice or overwrite the winner's address.
+Skrift still commits account creation before Build's claim: a race lost at that
+boundary can leave an account without membership, which all membership gates
+refuse. Skrift clears the binding when it rotates the session; existing accounts
+signing in from a link return to it to redeem.
+
+The account creation form has an **unchecked** optional product-email checkbox
+for both kinds. The choice comes only from the successful, CSRF-checked options
+request and is saved with successful redemption. `user_email_preferences` is
+Build's one-to-one extension of the Skrift user (`user_id` unique, cascading on
+user deletion): `product_email_opt_in` plus UTC `product_email_opted_in_at`, null
+when not opted in. Missing rows (including existing users) mean no consent.
+The admin invite row shows **Email opt-in: Yes/No** after redemption.
+
+Waitlist confirmations and invitation emails remain transactional. There is no
+product-mail campaign sender today; any future one must obtain recipients from
+`email_consent.consenting_product_email_addresses`, which requires an active
+user, explicit consent, and its timestamp. Use the existing signed unsubscribe
+URL from `waitlist_unsubscribe_token` for product messages as well. A confirmed
+or one-click unsubscribe clears the user's consent and removes their waitlist
+entry; merely viewing the confirmation page changes neither. Rejoining the
+waitlist does not restore product consent.
+
+Apply migration `e2a4b6c8d0f1` before running this version. It adds the constrained
+invite kind and user preference table without granting consent to old users.
+Downgrading keeps invite rows, but unclaimed open links cannot be used by the
+older email-bound-only app. See
+[Invite Security Checklist](../planning/v2/Invite%20Security%20Checklist.md).
+
+Local browser check (throwaway database, passkey auth, the local origin as
+`auth.redirect_base_url`, no bridge needed):
+
+```bash
+SIGNIN_URL=http://localhost:8391 INVITE_TOKEN=<local-raw-token> \
+  SIGNUP_EMAIL=browser@example.com CHROMIUM_PATH=/usr/bin/chromium \
+  nice -n 10 node ../web/passkey-signin-check.mjs
+```
+
+Run once with each invite kind; the check creates an account and spends the
+invite. Never point it at production. `SCREENSHOT_DIR` records the sign-in and
+signup states.
 
 Alpha membership has one definition, in `buildapp/alpha_membership.py`: a
 redeemed invite that has not been revoked. There is no members table — revoking
@@ -185,8 +246,8 @@ someone's redeemed invite from /admin/invites is how they lose access.
 Two rules as built differ from the design contract the streams branched from,
 and this is the text to read instead:
 
-- **Redemption.** An invite redeems only when its state is OPEN **and**
-  `canonical_address(user_email) == canonical_address(invite.email)` — casing and
+- **Redemption.** Both kinds require state OPEN. An `email_bound` invite also
+  requires `canonical_address(user_email) == canonical_address(invite.email)` — casing and
   whitespace, nothing more (`buildapp/waitlist_address.py`). Issuing an invite
   still applies the waitlist's deliverability rule, so the stored address is
   already normalized; *matching* one must not, or a dev or QA account at an

@@ -106,9 +106,9 @@ class WaitlistSignup(Base):
 
 
 class Invite(Base):
-    """One invitation to the alpha. The token is held as a hash (raw shown once, in the
-    email); the address it was sent to binds it, so a redemption proves the account and
-    the invite are the same person. ``redeemed_by`` with no ``revoked_at`` IS the alpha
+    """One invitation to the alpha. Only the token hash is retained. Email-bound
+    invites name their account address at issue; an open link has an empty address
+    until its first redemption binds it. ``redeemed_by`` with no ``revoked_at`` IS the alpha
     membership marker — there is no separate members table, and revoking a redeemed
     invite is the operator's "remove member" action (``buildapp.alpha_membership``).
     """

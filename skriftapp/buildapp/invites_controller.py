@@ -24,6 +24,7 @@ from buildapp.accounts import account_email
 from buildapp.clock import utc_now
 from buildapp.email_message import provide_email_backend, provide_public_base_url
 from buildapp.invite_mail import invite_email_task
+from buildapp.invite_log_privacy import install_invite_log_redaction
 from buildapp.invite_kind import InviteKind
 from buildapp.invite_pages import APP_PATH, OUTCOMES
 from buildapp.invites import (
@@ -38,6 +39,8 @@ from buildapp.session_auth import login_redirect, session_user_id
 
 INVITE_ROUTE_PATH = f"{INVITE_PATH_PREFIX}{{token:str}}"
 INVITES_API_PATH = "/api/invites"
+
+install_invite_log_redaction()
 INVALID_INVITE_KIND_MESSAGE = "invalid invite kind"
 OPEN_LINK_EMAIL_MESSAGE = "open links must not include an email address"
 INVITE_RESPONSE_HEADERS = {

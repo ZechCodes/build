@@ -3,10 +3,9 @@ from datetime import timedelta
 from uuid import uuid4
 
 import pytest
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from buildapp import invites
-from buildapp.db_test_support import create_skrift_tables
+from buildapp.db_test_support import create_skrift_tables, engine_for, file_session_maker
 from buildapp.models import Invite
 from buildapp.test_invites import NOW, invite
 
@@ -48,9 +47,9 @@ async def test_existing_invites_default_to_email_bound(db):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["email_bound", "open_link"])
 async def test_only_one_stale_request_can_claim_an_invite(tmp_path, kind):
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'race.db'}")
+    sessions = file_session_maker(tmp_path / "race.db")
+    engine = engine_for(sessions)
     await create_skrift_tables(engine)
-    sessions = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with sessions() as first, sessions() as second:
             if kind == "open_link":

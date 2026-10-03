@@ -53,6 +53,12 @@ def in_memory_session_maker() -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(engine, expire_on_commit=False)
 
 
+def file_session_maker(database: Path) -> async_sessionmaker[AsyncSession]:
+    """Independent connections to one throwaway file, for competing transactions."""
+    engine = _new_engine(f"sqlite+aiosqlite:///{database}")
+    return async_sessionmaker(engine, expire_on_commit=False)
+
+
 def _new_engine(url: str, **options) -> AsyncEngine:
     """The one place a test database engine is built."""
     return create_async_engine(url, **options)

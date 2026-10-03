@@ -1064,6 +1064,23 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 .splitmenu .menu-note { position:sticky; bottom:0; margin:0; padding:8px 13px 10px; background:var(--panel); border-top:1px solid var(--line2); cursor:default; line-height:1.35; }
 .splitmenu .menu-group-title { padding:9px 13px 2px; font-size:10.5px; font-weight:600;
   letter-spacing:.06em; text-transform:uppercase; color:var(--dim); }
+/* A discrete setting uses the same words as its radio rows, but only the
+   selected stop is shown. The whole range is a 44px touch target. */
+.splitmenu .menu-slider { padding:0 13px 12px; }
+.menu-slider input { display:block; width:100%; height:44px; margin:0; padding:0;
+  appearance:none; background:transparent; cursor:pointer; touch-action:none; }
+.menu-slider input::-webkit-slider-runnable-track { height:4px; border-radius:2px; background:var(--line3); }
+.menu-slider input::-moz-range-track { height:4px; border-radius:2px; background:var(--line3); }
+.menu-slider input::-webkit-slider-thumb { appearance:none; width:20px; height:20px; margin-top:-8px;
+  border:2px solid var(--panel); border-radius:50%; background:var(--accent); }
+.menu-slider input::-moz-range-thumb { width:16px; height:16px; border:2px solid var(--panel);
+  border-radius:50%; background:var(--accent); }
+.menu-slider input:focus-visible { outline:2px solid var(--accent); outline-offset:1px; border-radius:4px; }
+.menu-slider-stops { display:flex; justify-content:space-between; margin-top:-9px; padding:0 9px; pointer-events:none; }
+.menu-slider-stops span { width:2px; height:4px; background:var(--line3); }
+.menu-slider-copy { display:flex; flex-direction:column; gap:1px; margin-top:8px; }
+.menu-slider-copy .mt { color:var(--accent); font-weight:550; font-size:13px; }
+.menu-slider-copy .md { color:var(--dim); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 /* A setting's rows are one radio set, and wear it: a ring before each value,
    filled for the one standing, so a setting reads as a setting beside the
    things to open above it. Only in a sectioned menu — a flat selection (the

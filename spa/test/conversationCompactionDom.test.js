@@ -99,9 +99,9 @@ const flush = async () => {
 const host = () => document.querySelector("#agent-rail");
 const panel = () => host().querySelector("#rail-panel");
 const menuCaret = () => panel().querySelector(".rail-surface-menu .caret");
-const compactionRows = () => [...panel().querySelectorAll('.rail-surface-menu .mi[data-action^="compact:"]')];
-const markedRow = () => compactionRows().find((row) => row.classList.contains("on"));
-const rowLabel = (row) => row?.querySelector(".mt").textContent;
+const slider = () => panel().querySelector('.rail-surface-menu [role="slider"]');
+const compactionStops = () => JSON.parse(slider().closest(".menu-slider").dataset.options);
+const selectedWord = () => slider().getAttribute("aria-valuetext");
 const cachedAgent = async () =>
   (await readCached({ deviceId: DEVICE_ID, entityId: WORKSPACE_OWNER, kind: "row", sub: "" }))?.value.agents[0];
 const errorNotices = () => [...document.querySelectorAll("#notices .notice")].map((notice) => notice.textContent);
@@ -133,7 +133,10 @@ const mountWorkspaceRail = async (capabilities = SETTINGS_CAPABILITIES) => {
 
 const choose = async (optionId) => {
   menuCaret().click();
-  panel().querySelector(`.rail-surface-menu .mi[data-action="${optionId}"]`).click();
+  const control = slider();
+  control.value = String(compactionStops().findIndex((option) => option.id === optionId));
+  control.dispatchEvent(new Event("input", { bubbles: true }));
+  control.dispatchEvent(new Event("change", { bubbles: true }));
   await flush();
 };
 
@@ -215,31 +218,33 @@ describe("compaction on the conversation's menu", () => {
   it("shows the device default the digest names, with its threshold", async () => {
     await mountWorkspaceRail();
 
-    expect(compactionRows().map((row) => row.dataset.action)).toEqual([
+    expect(compactionStops().map((option) => option.id)).toEqual([
       "compact:default",
       "compact:150000",
       "compact:200000",
       "compact:300000",
       "compact:off",
     ]);
-    expect(rowLabel(markedRow())).toBe("Default (200k)");
-    // The group says what the setting is; the rows are its values.
-    expect(compactionRows()[0].closest('[role="group"]').getAttribute("aria-label")).toBe("Compact at");
-    expect(compactionRows().every((row) => row.getAttribute("role") === "menuitemradio")).toBe(true);
+    expect(selectedWord()).toBe("Default (200k)");
+    // The group names the setting; the slider offers only its discrete stops.
+    expect(slider().closest('[role="group"]').getAttribute("aria-label")).toBe("Compact at");
+    expect(slider().getAttribute("role")).toBe("slider");
+    expect([slider().min, slider().max, slider().step]).toEqual(["0", "4", "1"]);
+    expect(panel().querySelectorAll('[data-group="compact"] .mt')).toHaveLength(1);
   });
 
   it("shows the conversation's own limit when the digest carries one", async () => {
     digestCompaction = { max_context_tokens: 300000, compact_at_tokens: 300000 };
     await mountWorkspaceRail();
 
-    expect(markedRow().dataset.action).toBe("compact:300000");
+    expect(slider().dataset.action).toBe("compact:300000");
   });
 
-  it("checks a limit set elsewhere on a row of its own, with its value", async () => {
+  it("shows a limit set elsewhere on a stop of its own, with its value", async () => {
     digestCompaction = { max_context_tokens: 250000, compact_at_tokens: 250000 };
     await mountWorkspaceRail();
 
-    expect(compactionRows().map((row) => row.dataset.action)).toEqual([
+    expect(compactionStops().map((option) => option.id)).toEqual([
       "compact:default",
       "compact:150000",
       "compact:200000",
@@ -247,12 +252,12 @@ describe("compaction on the conversation's menu", () => {
       "compact:250000",
       "compact:off",
     ]);
-    expect(compactionRows().filter((row) => row.getAttribute("aria-checked") === "true")).toEqual([markedRow()]);
-    expect(markedRow().dataset.action).toBe("compact:250000");
-    expect(rowLabel(markedRow())).toBe("Custom (250k)");
+    expect([slider().value, slider().max]).toEqual(["4", "5"]);
+    expect(slider().dataset.action).toBe("compact:250000");
+    expect(selectedWord()).toBe("Custom (250k)");
   });
 
-  it("sends nothing for the custom row already standing, and leaves it for an offered size", async () => {
+  it("sends nothing for the custom stop already standing, and leaves it for an offered size", async () => {
     digestCompaction = { max_context_tokens: 250000, compact_at_tokens: 250000 };
     await mountWorkspaceRail();
 
@@ -263,22 +268,22 @@ describe("compaction on the conversation's menu", () => {
 
     await choose("compact:150000");
     expect(settingsAsked).toEqual([{ entity_id: WORKSPACE_OWNER, agent_id: "wa-1", max_context_tokens: 150000 }]);
-    expect(markedRow().dataset.action).toBe("compact:150000");
-    expect(compactionRows().map((row) => row.dataset.action)).not.toContain("compact:250000");
+    expect(slider().dataset.action).toBe("compact:150000");
+    expect(compactionStops().map((option) => option.id)).not.toContain("compact:250000");
   });
 
   it("shows the digest's compaction choice before greeting", async () => {
     digestCompaction = { max_context_tokens: 300000, compact_at_tokens: 300000 };
     await mountWorkspaceRail(null);
 
-    expect(markedRow().dataset.action).toBe("compact:300000");
+    expect(slider().dataset.action).toBe("compact:300000");
   });
 
-  it("keeps the compaction rows when a bridge's greeting does not name conversations.settings", async () => {
+  it("keeps the compaction stops when a bridge's greeting does not name conversations.settings", async () => {
     await mountWorkspaceRail([]);
 
     expect(menuCaret()).not.toBe(null);
-    expect(compactionRows()).toHaveLength(5);
+    expect(compactionStops()).toHaveLength(5);
   });
 
   it.each([
@@ -301,7 +306,7 @@ describe("compaction on the conversation's menu", () => {
     await choose("compact:default");
 
     expect(settingsAsked).toEqual([{ entity_id: WORKSPACE_OWNER, agent_id: "wa-1", max_context_tokens: null }]);
-    expect(rowLabel(markedRow())).toBe("Default (200k)");
+    expect(selectedWord()).toBe("Default (200k)");
   });
 
   it("marks what the bridge answered", async () => {
@@ -309,7 +314,7 @@ describe("compaction on the conversation's menu", () => {
 
     await choose("compact:off");
 
-    expect(markedRow().dataset.action).toBe("compact:off");
+    expect(slider().dataset.action).toBe("compact:off");
   });
 
   it("writes the answer into the cached row, which is what the tick is painted from", async () => {
@@ -321,7 +326,7 @@ describe("compaction on the conversation's menu", () => {
     // The bridge answered 300k for a 150k ask: the tick follows the cache the
     // answer was written to, not the row that was pressed.
     expect(await cachedAgent()).toMatchObject({ id: "wa-1", max_context_tokens: 300000, compact_at_tokens: 300000 });
-    expect(markedRow().dataset.action).toBe("compact:300000");
+    expect(slider().dataset.action).toBe("compact:300000");
   });
 
   it.each(["answer", "refusal"])("ignores a late compaction %s after the device retires", async (outcome) => {
@@ -357,12 +362,12 @@ describe("compaction on the conversation's menu", () => {
 
     await writeRailWorkItem(workspacePayload(), { deviceId: DEVICE_ID });
     await flush();
-    expect(markedRow().dataset.action).toBe("compact:default");
+    expect(slider().dataset.action).toBe("compact:default");
 
     digestCompaction = { max_context_tokens: 0, compact_at_tokens: 0 };
     await writeRailWorkItem(workspacePayload(), { deviceId: DEVICE_ID });
     await flush();
-    expect(markedRow().dataset.action).toBe("compact:off");
+    expect(slider().dataset.action).toBe("compact:off");
   });
 
   it("shows a change made elsewhere after the answer, with no echo of the answer first", async () => {
@@ -374,7 +379,7 @@ describe("compaction on the conversation's menu", () => {
     await flush();
 
     expect(await cachedAgent()).toMatchObject({ max_context_tokens: 150000 });
-    expect(markedRow().dataset.action).toBe("compact:150000");
+    expect(slider().dataset.action).toBe("compact:150000");
   });
 
   it("leaves a row a push wrote while the verb was in flight to that push", async () => {
@@ -388,7 +393,7 @@ describe("compaction on the conversation's menu", () => {
     await choose("compact:off");
 
     expect(await cachedAgent()).toMatchObject({ max_context_tokens: null, last_context_tokens: 130000 });
-    expect(markedRow().dataset.action).toBe("compact:default");
+    expect(slider().dataset.action).toBe("compact:default");
   });
 
   it("says a refusal in a sentence and leaves the choice where it was", async () => {
@@ -400,7 +405,7 @@ describe("compaction on the conversation's menu", () => {
     await choose("compact:150000");
 
     expect(errorNotices().some((text) => text.includes("Build could not change when this chat compacts."))).toBe(true);
-    expect(markedRow().dataset.action).toBe("compact:default");
+    expect(slider().dataset.action).toBe("compact:default");
   });
 
   it("says an unsupported compaction command plainly and keeps the cached choice", async () => {
@@ -414,6 +419,6 @@ describe("compaction on the conversation's menu", () => {
     expect(settingsAsked).toEqual([{ entity_id: WORKSPACE_OWNER, agent_id: "wa-1", max_context_tokens: 150000 }]);
     expect(errorNotices()).toEqual(["This device does not support changing when this chat compacts.×"]);
     expect((await cachedAgent()).max_context_tokens).toBe(null);
-    expect(markedRow().dataset.action).toBe("compact:default");
+    expect(slider().dataset.action).toBe("compact:default");
   });
 });

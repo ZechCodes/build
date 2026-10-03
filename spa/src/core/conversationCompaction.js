@@ -81,10 +81,10 @@ export function compactionMenuOptions(agent) {
   });
 }
 
-/** The menu's group: the limits as a radio set under the setting's name
+/** The menu's group: discrete stops under the setting's name
  *  (core/splitButton.js `groupedMenuButtonMarkup`). */
 export function compactionMenuGroup(agent) {
-  return { id: "compact", label: "Compact at", options: compactionMenuOptions(agent) };
+  return { id: "compact", label: "Compact at", control: "slider", options: compactionMenuOptions(agent) };
 }
 
 /** The limit a custom row's id stands for, or null for any other id. Read

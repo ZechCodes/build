@@ -68,12 +68,19 @@ export async function seedChatMenu({ theme, bigCounts }) {
     { id: "menu-workspace", project_id: projectId, entity_id: "menu-run", name: "chat-menu-groups" },
   ].map((workspace) => stampWorkspace(workspace, deviceId)));
   await startFeed();
+  window.__menuSettingsAsked = [];
   window.__menuRail = mountAgentRail(document.querySelector("#agent-rail"), {
     kind: "workspace", deviceId, projectId, workspaceId: "menu-workspace", entityId: "menu-run",
     openAgentId: agent.id, panelOpen: true,
-    call: async (method) => method === "models.list"
-      ? { default_provider: "claude_adk", providers: [{ id: "claude_adk", label: "Claude Code", models: [], efforts: [] }] }
-      : { items: [] },
+    call: async (method, params) => {
+      if (method === "conversation.settings") {
+        window.__menuSettingsAsked.push(params);
+        return { agent_id: params.agent_id, max_context_tokens: params.max_context_tokens, compact_at_tokens: params.max_context_tokens ?? 200000 };
+      }
+      return method === "models.list"
+        ? { default_provider: "claude_adk", providers: [{ id: "claude_adk", label: "Claude Code", models: [], efforts: [] }] }
+        : { items: [] };
+    },
   });
 }
 
@@ -95,7 +102,7 @@ export async function mountChatMenu(page, basePath, label, seed) {
   await page.evaluate(() => { window.__layoutModules.app = window.__appModule; });
   await page.evaluate(seedChatMenu, seed);
   await page.waitForSelector(".rail-surface-menu .caret", { timeout: 8000 });
-  await page.waitForFunction(() => document.querySelectorAll('.rail-surface-menu .mi[data-action^="compact:"]').length > 0, null, { timeout: 8000 });
+  await page.waitForSelector('.rail-surface-menu [role="slider"]', { state: "attached", timeout: 8000 });
   await settled(page);
 }
 

@@ -359,8 +359,9 @@ describe("what a session's calls carry", () => {
       [{ api_version: "3.10.0", capabilities: [] }, legacy],
     ]) {
       if (greeting) session.installAdapter(selectAdapter(greeting));
+      const sentCount = peer.sent.length;
       const reply = session.call("thread.attach", params);
-      await tick();
+      await vi.waitFor(() => expect(peer.sent).toHaveLength(sentCount + 1), { timeout: 5000 });
       expect(replyTo(peer).params).toEqual(expected);
       answer(peer, { path: "paste.png" });
       await expect(reply).resolves.toEqual({ path: "paste.png" });
@@ -400,7 +401,7 @@ describe("what a session's calls carry", () => {
     const { session, peer } = await carrying();
     const legacy = { entity_id: "entity", filename: "paste.png", content_b64: "aW1hZ2U=" };
     const request = session.call("thread.attach", { ...legacy, agent_id: "agent", thread_id: "cached-generation" });
-    await vi.waitFor(() => expect(replyTo(peer).method).toBe("thread.attach"));
+    await vi.waitFor(() => expect(peer.sent.some((frame) => frame.frameFields.payload.method === "thread.attach")).toBe(true));
     expect(replyTo(peer).params).toEqual(legacy);
     answer(peer, {});
     await request;
@@ -418,7 +419,7 @@ describe("what a session's calls carry", () => {
     const params = { ...legacy, agent_id: "agent", thread_id: "cached-generation" };
     const request = session.call("thread.attach", params);
     session.installAdapter(selectAdapter(greeting));
-    await vi.waitFor(() => expect(replyTo(peer).method).toBe("thread.attach"));
+    await vi.waitFor(() => expect(peer.sent.some((frame) => frame.frameFields.payload.method === "thread.attach")).toBe(true));
     expect(replyTo(peer).params).toEqual(supported ? params : legacy);
     answer(peer, {});
     await request;

@@ -864,8 +864,11 @@ A new project-agent session uses the ordinary fresh-start scaffolding and
 standing instruction templates.
 After the first reset, conversation mutations require the current `thread_id`;
 an older client that omits it receives a refusal rather than recreating a
-retired payload. Initial-generation omissions and ordinary reads retain their
-existing compatibility behavior.
+retired payload. Internal service wake-ups capture the current generation
+when new work is accepted under the app lock. Restart rosters retain the
+canonical generation observed before disk and filesystem checks, so an old
+roster cannot wake a cleared conversation. Initial-generation omissions and
+ordinary reads retain their existing compatibility behavior.
 
 The browser's conversation menu offers **Clear conversation** only when the
 cached capability says that device supports `conversation.reset`. The

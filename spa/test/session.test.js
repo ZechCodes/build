@@ -1,13 +1,20 @@
 // One E2EE session with one device: minted over a rendezvous, carried by the
 // peer connection and by nothing else (spec rules 1 and 2).
 
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { CARRY_CONFIRM_MS, DEFAULT_RPC_TIMEOUT_MS, openSession, replyOrNothing } from "../src/core/session.js";
 import { ANSWER_TIMEOUT_MS } from "../src/core/sessionRpc.js";
 import { PING_TIMEOUT_MS } from "../src/core/pathLiveness.js";
 import { PATH_PROBE_EVENT } from "../src/core/pathProbe.js";
 import { clearConnectionDiagnosticHistory, connectionDiagnosticHistory } from "../src/core/connectionDiagnostics.js";
 import { ApiError, selectAdapter } from "../src/core/bridgeApi/index.js";
+import { rememberConversationResetSupport } from "../src/core/conversationReset.js";
+import { wipeCache } from "../src/core/localCache.js";
+
+globalThis.indexedDB = new IDBFactory();
+globalThis.IDBKeyRange = IDBKeyRange;
+beforeEach(wipeCache);
 
 // ---- fakes -------------------------------------------------------------------
 
@@ -339,12 +346,13 @@ describe("what a session's calls carry", () => {
     expect(session.adapter()).toBe(null);
   });
 
-  it("sends generation fields only on the current reset-capable greeting, including before hello and after a downgrade", async () => {
+  it("uses the cached 3.11 capability before hello, then the current greeting after a downgrade", async () => {
+    await rememberConversationResetSupport("dev-a", { conversations: { reset: true } });
     const { session, peer } = await carrying();
     const legacy = { entity_id: "entity", filename: "paste.png", content_b64: "aW1hZ2U=" };
     const params = { ...legacy, agent_id: "agent", thread_id: "cached-generation" };
     for (const [greeting, expected] of [
-      [null, legacy],
+      [null, params],
       [{ api_version: "3.10.0", capabilities: ["params.strict"] }, legacy],
       [{ api_version: "3.11.0", capabilities: ["conversation.reset"] }, params],
       [{ api_version: "3.11.0", capabilities: [] }, legacy],
@@ -357,6 +365,63 @@ describe("what a session's calls carry", () => {
       answer(peer, { path: "paste.png" });
       await expect(reply).resolves.toEqual({ path: "paste.png" });
     }
+    session.close();
+  });
+
+  it.each([
+    ["thread.attach", { entity_id: "entity", agent_id: "agent", filename: "paste.png", content_b64: "aW1hZ2U=" }],
+    ["thread.post", { entity_id: "entity", agent_id: "agent", conversation_id: "conversation", body: "Hello", choice_revision: 2, operation_id: "operation" }],
+    ["agent.start", { id: "entity", agent_id: "agent" }],
+    ["agent.interrupt", { entity_id: "entity", agent_id: "agent", conversation_id: "conversation" }],
+  ])("a cached 3.11 greeting keeps thread_id on %s while hello is pending", async (method, legacy) => {
+    await rememberConversationResetSupport("dev-a", { conversations: { reset: true } });
+    const { session, peer } = await carrying();
+    const hello = session.call("session.hello", { api_range: ">=2.0.0 <4.0.0" });
+    hello.catch(() => {});
+    const params = { ...legacy, thread_id: "cleared-generation" };
+    const request = session.call(method, params);
+    request.catch(() => {});
+    try {
+      await vi.waitFor(() => expect(peer.sent.some((frame) => frame.frameFields.payload.method === method)).toBe(true));
+      const sent = peer.sent.map((frame) => frame.frameFields.payload).find((payload) => payload.method === method);
+      expect(session.adapter()).toBe(null);
+      expect(sent.params).toEqual(params);
+      peer.reply({ id: sent.id, ok: true, result: {} });
+      await expect(request).resolves.toEqual({});
+    } finally {
+      session.close();
+      await Promise.allSettled([hello, request]);
+    }
+  });
+
+  it.each([false, undefined])("keeps legacy pre-hello params with cached reset support %s, without borrowing another device's capability", async (supported) => {
+    await rememberConversationResetSupport("other-device", { conversations: { reset: true } });
+    if (supported !== undefined) await rememberConversationResetSupport("dev-a", { conversations: { reset: supported } });
+    const { session, peer } = await carrying();
+    const legacy = { entity_id: "entity", filename: "paste.png", content_b64: "aW1hZ2U=" };
+    const request = session.call("thread.attach", { ...legacy, agent_id: "agent", thread_id: "cached-generation" });
+    await vi.waitFor(() => expect(replyTo(peer).method).toBe("thread.attach"));
+    expect(replyTo(peer).params).toEqual(legacy);
+    answer(peer, {});
+    await request;
+    session.close();
+  });
+
+  it.each([
+    [true, { api_version: "3.10.0", capabilities: [] }, false],
+    [false, { api_version: "3.11.0", capabilities: ["conversation.reset"] }, true],
+    [true, { api_version: "4.0.0", capabilities: ["conversation.reset"] }, false],
+  ])("prefers a new greeting over cached support %s while dispatch reads it (%j)", async (cached, greeting, supported) => {
+    await rememberConversationResetSupport("dev-a", { conversations: { reset: cached } });
+    const { session, peer } = await carrying();
+    const legacy = { entity_id: "entity", filename: "paste.png", content_b64: "aW1hZ2U=" };
+    const params = { ...legacy, agent_id: "agent", thread_id: "cached-generation" };
+    const request = session.call("thread.attach", params);
+    session.installAdapter(selectAdapter(greeting));
+    await vi.waitFor(() => expect(replyTo(peer).method).toBe("thread.attach"));
+    expect(replyTo(peer).params).toEqual(supported ? params : legacy);
+    answer(peer, {});
+    await request;
     session.close();
   });
 

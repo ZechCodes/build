@@ -290,11 +290,11 @@ describe("named capabilities", () => {
 
 describe("the adapter", () => {
   // The complete set of existing request shapes widened by #358. Keep the
-  // legacy fields explicit: dropping an established selector breaks routing.
+  // legacy fields explicit: revision addresses already selected an agent.
   const generationRequests = [
     ["thread.attach", { entity_id: "entity", filename: "paste.png", content_b64: "aW1hZ2U=" }, { agent_id: "agent", thread_id: "generation" }],
     ["thread.attachment", { entity_id: "entity", path: "paste.png", offset: 0, length: 1024 }, { agent_id: "agent", conversation_id: "conversation", thread_id: "generation" }],
-    ["thread.revision", { entity_id: "entity", revision_id: "revision" }, { agent_id: "agent", conversation_id: "conversation", thread_id: "generation" }],
+    ["thread.revision", { entity_id: "entity", revision_id: "revision", agent_id: "non-primary-agent", conversation_id: "conversation" }, { thread_id: "generation" }],
     ["thread.page", { entity_id: "entity", agent_id: "agent", after_sequence: 12, limit: 50 }, { thread_id: "generation" }],
     ["thread.activity", { entity_id: "entity", agent_id: "agent", from_sequence: 1, through_sequence: 12, limit: 200 }, { thread_id: "generation" }],
     ["thread.post", { entity_id: "entity", agent_id: "agent", conversation_id: "conversation", body: "Hello", attachments: [], choice_revision: 2, operation_id: "operation" }, { thread_id: "generation" }],

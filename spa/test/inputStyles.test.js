@@ -8,7 +8,7 @@ const styles = readFileSync(`${root}styles.css`, "utf8");
 const start = "/* Shared text controls */";
 const end = "/* End shared text controls */";
 const sharedBlock = () => styles.slice(styles.indexOf(start), styles.indexOf(end) + end.length);
-const paint = /(?:^|;)\s*(?:appearance|-webkit-appearance|color|background(?:-[\w-]+)?|border(?:-[\w-]+)?|box-shadow|outline(?:-[\w-]+)?|font(?:-[\w-]+)?|padding(?:-[\w-]+)?)\s*:/;
+const paint = /(?:^|;)\s*(?:appearance|-webkit-appearance|color|caret-color|line-height|background(?:-[\w-]+)?|border(?:-[\w-]+)?|box-shadow|outline(?:-[\w-]+)?|font(?:-[\w-]+)?|padding(?:-[\w-]+)?)\s*:/;
 const fieldSelector = /(?:^|[^\w-])(?:input|textarea)(?:[^\w-]|$)|\.(?:cp-input|csinput|file-editor|fmenu-search|task-compose-title|workspace-refsearch|tb-filter)(?![\w-])/;
 const inputSelector = /(?:^|[^\w-])input(?:[^\w-]|$)|\.(?:fmenu-search|task-compose-title|workspace-refsearch|tb-filter)(?![\w-])/;
 const verticalSize = /(?:^|;)\s*(?:min-|max-)?height\s*:/;
@@ -44,7 +44,7 @@ describe("shared text field styling", () => {
     expect(files.flatMap((file) => violations(file, readFileSync(`${root}${file}`, "utf8")))).toEqual([]);
   });
 
-  it.each(["color:red", "background:transparent", "border:0", "border-radius:3px", "font:12px monospace", "font-size:11px", "padding:0", "box-shadow:none", "outline:none"])("rejects a second field style adding %s", (declaration) => {
+  it.each(["color:red", "background:transparent", "border:0", "border-radius:3px", "font:12px monospace", "font-size:11px", "padding:0", "box-shadow:none", "outline:none", "caret-color:red", "line-height:1"])("rejects a second field style adding %s", (declaration) => {
     for (const selector of [".surface input", ".surface textarea", ".tb-filter", ".file-editor"]) {
       expect(violations("styles/surface.css", `${selector} { ${declaration}; }`)).toHaveLength(1);
     }

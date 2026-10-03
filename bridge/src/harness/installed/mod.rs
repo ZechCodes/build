@@ -37,8 +37,8 @@ pub use probe::{CliProbe, CODEX_MODEL_LIST, NO_PROBE, VERSION_FLAG};
 /// How long an answer stands before the next ask for it asks the CLI again.
 pub const READING_TTL: Duration = Duration::from_secs(10 * 60);
 
-/// Failed or incomplete answers are retried at this interval. Also how often
-/// the daemon checks for stale readings and executable changes without a read.
+/// Initial retry delay after a failed or incomplete answer, doubled after
+/// each further failure up to the TTL. Also the periodic refresh interval.
 const RETRY_BACKOFF: Duration = Duration::from_secs(15);
 
 /// How old an answer may be and still refuse a session on its own word. An
@@ -74,12 +74,55 @@ type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
 #[derive(Default)]
 struct Entry {
     reading: Option<Arc<CliReading>>,
+    reading_usable: bool,
+    /// When the latest attempt finished, even if its answer was not kept.
     read_at: Option<Instant>,
     asking: Option<u64>,
     generation: u64,
     retry: bool,
+    retry_delay: Duration,
+    /// The executable that gave the held reading.
     executable: Option<Executable>,
+    /// The latest attempt's executable, so a failed replacement does not
+    /// bypass its retry delay on every catalog read or refresh.
+    attempted_executable: Option<Executable>,
+    /// A repeated session hint must not bypass a failed probe's backoff just
+    /// because the retained usable reading still has an older version.
+    observed_version: Option<Version>,
     probe: Option<&'static dyn CliProbe>,
+}
+
+impl Entry {
+    fn record_attempt(
+        &mut self,
+        reading: Arc<CliReading>,
+        retry: bool,
+        executable: Option<Executable>,
+        now: Instant,
+        ttl: Duration,
+    ) -> bool {
+        self.retry_delay = if retry {
+            let delay = if self.retry && self.attempted_executable == executable {
+                self.retry_delay.saturating_mul(2)
+            } else {
+                RETRY_BACKOFF
+            };
+            delay.min(ttl)
+        } else {
+            Duration::ZERO
+        };
+        self.retry = retry;
+        self.read_at = Some(now);
+        self.attempted_executable = executable.clone();
+        if retry && self.reading_usable {
+            return false;
+        }
+        let changed = self.reading.as_deref() != Some(reading.as_ref());
+        self.reading = Some(reading);
+        self.reading_usable = !retry;
+        self.executable = executable;
+        changed
+    }
 }
 
 /// Dropping a scheduled job (including failed thread creation) or unwinding
@@ -126,7 +169,7 @@ impl Drop for PendingAsk {
     }
 }
 
-/// Every CLI's latest answer, by the binary that gave it.
+/// Every CLI's last usable answer, or its latest answer until one succeeds.
 pub struct Readings {
     entries: Mutex<HashMap<&'static str, Entry>>,
     ttl: Duration,
@@ -210,11 +253,15 @@ impl Readings {
             let mut entries = self.entries.lock().unwrap();
             let entry = entries.entry(binary).or_default();
             entry.probe = Some(probe);
-            let lifetime = if entry.retry { RETRY_BACKOFF } else { self.ttl };
+            let lifetime = if entry.retry {
+                entry.retry_delay
+            } else {
+                self.ttl
+            };
             let expired = entry
                 .read_at
                 .is_none_or(|read_at| (self.now)().duration_since(read_at) >= lifetime);
-            self.claim_ask(entry, expired || entry.executable != executable)
+            self.claim_ask(entry, expired || entry.attempted_executable != executable)
         };
         if let Some(generation) = stale {
             self.ask(binary, probe, executable.clone(), generation);
@@ -225,7 +272,7 @@ impl Readings {
         };
         let age = entry
             .read_at
-            .filter(|_| entry.executable == executable)
+            .filter(|_| !entry.retry && entry.executable == executable)
             .map(|read_at| (self.now)().duration_since(read_at));
         (entry.reading.clone(), age)
     }
@@ -247,7 +294,7 @@ impl Readings {
             let entry = entries.entry(binary).or_default();
             let young = entry
                 .read_at
-                .filter(|_| entry.executable == executable)
+                .filter(|_| !entry.retry && entry.executable == executable)
                 .is_some_and(|read_at| (self.now)().duration_since(read_at) < fresh);
             if young || self.schedule.is_none() {
                 return entry.reading.clone();
@@ -260,8 +307,8 @@ impl Readings {
         Some(self.read_and_record(binary, probe, executable, generation, false))
     }
 
-    /// A session of `binary` says it runs `version`: when that is not what the
-    /// reading holds, the CLI changed under it and is asked again now.
+    /// A session of `binary` says it runs `version`: a new hint differing from
+    /// the held reading asks again now; repeats honor a failed ask's backoff.
     pub fn observe_version(
         self: &Arc<Self>,
         binary: &'static str,
@@ -272,11 +319,17 @@ impl Readings {
             let mut entries = self.entries.lock().unwrap();
             let entry = entries.entry(binary).or_default();
             entry.probe = Some(probe);
+            let new_hint = entry.observed_version.as_ref() != Some(version);
+            entry.observed_version = Some(version.clone());
+            let retry_due = entry
+                .read_at
+                .is_none_or(|read_at| (self.now)().duration_since(read_at) >= entry.retry_delay);
             let held = entry
                 .reading
                 .as_ref()
                 .and_then(|reading| reading.version.as_ref());
-            self.claim_ask(entry, held != Some(version))
+            let wanted = held != Some(version) && (new_hint || !entry.retry || retry_due);
+            self.claim_ask(entry, wanted)
         };
         if let Some(generation) = differs {
             self.ask(binary, probe, executable::identify(binary), generation);
@@ -388,8 +441,9 @@ impl Readings {
         }
     }
 
-    /// Keep the newest attempt's answer. An older background job still
-    /// releases its own claim, but cannot overwrite a newer spawn-gate read.
+    /// Record the newest attempt, keeping a usable answer through failures.
+    /// An older background job still releases its own claim, but cannot
+    /// overwrite a newer spawn-gate read.
     fn record(
         &self,
         binary: &'static str,
@@ -408,12 +462,7 @@ impl Readings {
             if entry.generation != generation {
                 return false;
             }
-            let changed = entry.reading.as_deref() != Some(reading.as_ref());
-            entry.reading = Some(reading);
-            entry.read_at = Some((self.now)());
-            entry.retry = retry;
-            entry.executable = executable;
-            changed
+            entry.record_attempt(reading, retry, executable, (self.now)(), self.ttl)
         };
         if changed {
             self.changed.send_modify(|count| *count += 1);

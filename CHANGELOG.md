@@ -29,13 +29,15 @@ Wire 3.6.0.
 
 ### Fixed
 
-- Installed CLI model probes retry failed or empty answers after 15 seconds,
-  refresh held catalogs in the background, and re-ask when the executable's
-  path, symlink target or modification time changes. Probe failures include
-  the bounded last stderr line within the original deadline. Abandoned probes
-  release their claim and older results cannot overwrite a fresh reading, so
-  a Codex upgrade cannot leave new models hidden behind a ten-minute fallback
-  (#345).
+- Installed CLI model probes keep their last usable catalog through failed
+  or abandoned refreshes. Retries start at 15 seconds, double up to the
+  ten-minute TTL, and reset after recovery. Background refresh keeps cached
+  catalogs current. Direct installs and symlinks are re-asked when their PATH
+  hit, target or modification time changes; underlying updates behind unchanged
+  mise shims or wrappers rely on periodic refresh or session version hints.
+  Failures include bounded stderr within the original deadline, abandoned
+  probes release their claim, and older results cannot overwrite a fresh
+  reading (#345).
 
 ## [0.2.7] - 2026-10-02
 

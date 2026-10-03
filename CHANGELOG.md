@@ -65,8 +65,10 @@ Wire 3.11.0.
 
 - The web client keeps pre-3.11 conversation request shapes on older bridges,
   including image paste and attachment reads. Generation fields and new
-  attachment selectors are sent only when the current greeting advertises
-  `conversation.reset`; calls before a greeting keep the legacy shapes (#363).
+  attachment selectors follow the greeting's `conversation.reset` capability,
+  using its per-device cached value until hello answers on a reconnect. Cleared
+  conversations retain required generation fields before hello, and revision
+  reads keep their already-supported agent and conversation selectors (#363).
 - The web client loads safely when device contexts are imported before the
   connection layer, including Inbox review captures. Shared app state lives
   outside the shell so device contexts, feed and cache sync cannot import

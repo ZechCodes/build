@@ -7,13 +7,7 @@ import { closeConversationAttachmentLightboxes } from "./threadAttachmentLightbo
 import { retireConversationFeed } from "./conversationFeedReset.js";
 import { notePush } from "./pushFence.js";
 
-export const conversationResetSupportAddress = (deviceId) => ({ deviceId, entityId: "", kind: "conversation-reset-support", sub: "" });
-export const rememberConversationResetSupport = (deviceId, capabilities) => {
-  if (!deviceId) return Promise.resolve(false);
-  const supported = capabilities?.conversations?.reset === true;
-  return mergeCachedAtomically(conversationResetSupportAddress(deviceId), (held) =>
-    held?.supported === supported ? null : { supported });
-};
+export { conversationResetSupportAddress, rememberConversationResetSupport } from "./conversationResetSupport.js";
 
 export const emptyConversationWindow = (threadId, revision = 0) => ({
   thread_id: threadId, thread_generation_revision: revision, items: [], deliveredSequence: 0, olderItemsRemain: false,

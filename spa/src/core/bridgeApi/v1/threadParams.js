@@ -4,7 +4,7 @@
 const generationFields = new Map([
   ["thread.attach", ["agent_id", "thread_id"]],
   ["thread.attachment", ["agent_id", "conversation_id", "thread_id"]],
-  ["thread.revision", ["agent_id", "conversation_id", "thread_id"]],
+  ["thread.revision", ["thread_id"]],
   ["thread.page", ["thread_id"]],
   ["thread.activity", ["thread_id"]],
   ["thread.post", ["thread_id"]],

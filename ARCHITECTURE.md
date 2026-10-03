@@ -1369,7 +1369,11 @@ refuses when that device cannot answer.
   conversation requests in wire 3.11. The adapter restores their old shapes
   with `spa/src/core/bridgeApi/v1/threadParams.js` when the greeting lacks the
   capability, retaining established selectors and paging parameters. Sessions
-  use the same legacy shapes before a greeting, even with newer cached identities.
+  read their device's cached reset capability from `conversationResetSupport.js`
+  before hello: a cleared conversation keeps its required generation fields on
+  reconnect, and a device without cached support uses legacy shapes. A greeting
+  that settles during that read takes precedence at dispatch. Revision reads
+  retain `agent_id` and `conversation_id`, which older bridges already accept.
 - The task and conversation watch switches, task attachment buttons, and
   conversation compaction settings are available before a greeting (#182).
   Their values come from cached task and agent records. A late greeting does

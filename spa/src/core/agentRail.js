@@ -89,6 +89,7 @@ import { applyConversationReset, conversationResetSupportAddress, cachedConversa
 import { syncThreadWindow, threadGenerationParam } from "./threadSync.js";
 import {
   conversationRecordAddress,
+  creationMessageHasArrived,
   postSubmission,
   provisionalMessageEntry,
   rekeyPostedMessage,
@@ -3605,7 +3606,7 @@ function mountRailOnContext(host, context, swap) {
       working: false,
       has_terminal: false,
     };
-    const provisionalMessage = provisionalMessageEntry(provisionalMessageKey, submission.message);
+    const provisionalMessage = provisionalMessageEntry(provisionalMessageKey, submission.message, submission.operationId);
     selectKind("agent");
     openConversation(provisionalAgentId);
     adoptPanelBody();
@@ -3677,6 +3678,7 @@ function mountRailOnContext(host, context, swap) {
         insertRecord(provisionalAgentId, provisionalAgent),
         insertRecord(provisionalMessageKey, provisionalMessage, {
           scope: pendingThreadScope(provisionalAgentId),
+          clearedBy: creationMessageHasArrived,
         }),
       ],
       call,

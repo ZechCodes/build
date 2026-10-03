@@ -31,17 +31,28 @@ const provisionalDeliveryStatus = (submission, posted) => {
 /** The agent that does not exist yet has no record to write to: its first
  *  message is drawn over the window until `agent.add` answers and the
  *  conversation it is in is a real one. */
-export const provisionalMessageEntry = (messageKey, message) => ({
+export const provisionalMessageEntry = (messageKey, message, operationId) => ({
   type: "message",
   data: {
     role: "user",
     sequence: messageKey,
+    ...(operationId ? { operation_id: operationId } : {}),
     body: message.body || "",
     attachments: message.attachments || [],
     created_at: new Date().toISOString(),
     delivery_status: "queued",
   },
 });
+
+/** A creation's overlay and the cached echo may have different keys while a
+ *  receipt is arriving. The operation identifies an early echo; the receipt's
+ *  sequence also identifies echoes from bridges that omit operation ids. */
+export const creationMessageHasArrived = (entry, provisional) => {
+  const operationId = provisional.data.operation_id;
+  if (operationId && entry?.data?.operation_id) return entry.data.operation_id === operationId;
+  const sequence = provisional.data.sequence;
+  return typeof sequence === "number" && entry?.data?.sequence === sequence;
+};
 
 /** That drawn-over message, under the sequence the post was written at — or
  *  gone, where no receipt said one. */

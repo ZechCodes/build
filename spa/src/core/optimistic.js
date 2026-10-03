@@ -4,8 +4,8 @@ export const PENDING_GRACE_MS = 30000;
 
 const PROVISIONAL_PREFIX = "pending-";
 
-export function insertRecord(key, entry, { scope = null } = {}) {
-  return { kind: "insert", key: String(key), entry, scope, settledAt: null };
+export function insertRecord(key, entry, { scope = null, clearedBy = null } = {}) {
+  return { kind: "insert", key: String(key), entry, scope, settledAt: null, ...(clearedBy ? { clearedBy } : {}) };
 }
 
 export function removeRecord(key, { scope = null } = {}) {
@@ -29,12 +29,15 @@ export function patchRecord(key, fields, { scope = null, clearedBy = entryCarrie
   return { kind: "patch", key: String(key), fields, scope, clearedBy, settledAt: null };
 }
 
+const insertAlreadyHeld = (record, entries, keyOf) =>
+  entries.some((entry) => String(keyOf(entry)) === record.key || record.clearedBy?.(entry, record.entry));
+
 export function projectPending(entries, records, { keyOf }) {
   const named = (entry) => String(keyOf(entry));
   return records.reduce((projected, record) => {
     if (record.kind === "remove") return projected.filter((entry) => named(entry) !== record.key);
     if (record.kind === "insert") {
-      if (projected.some((entry) => named(entry) === record.key)) return projected;
+      if (insertAlreadyHeld(record, projected, keyOf)) return projected;
       return [...projected, record.entry];
     }
     return projected.map((entry) => (named(entry) === record.key ? { ...entry, ...record.fields } : entry));
@@ -47,7 +50,7 @@ export function retirePending(records, entries, { keyOf, nowMs }) {
     if (!record.settledAt) return true;
     if (nowMs - record.settledAt > PENDING_GRACE_MS) return false;
     if (record.kind === "remove") return held.has(record.key);
-    if (record.kind === "insert") return !held.has(record.key);
+    if (record.kind === "insert") return !insertAlreadyHeld(record, entries, keyOf);
     const entry = held.get(record.key);
     return Boolean(entry) && !record.clearedBy(entry, record.fields);
   });

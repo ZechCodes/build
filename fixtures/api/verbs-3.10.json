@@ -1,6 +1,6 @@
 {
-  "api_version": "3.9.0",
-  "commit": "b2d5474b",
+  "api_version": "3.10.0",
+  "commit": "cad6ed45",
   "generated_by": "scripts/api-verbs-manifest.mjs",
   "verbs": [
     "agent.add",
@@ -234,6 +234,7 @@
     "tasks.attachment",
     "tasks.attachmentChunks",
     "tasks.attachments",
+    "tasks.bodyPrecondition",
     "tasks.close",
     "tasks.columns",
     "tasks.comment",

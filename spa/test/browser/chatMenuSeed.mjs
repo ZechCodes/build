@@ -100,9 +100,8 @@ export async function seedChatMenu({ theme, bigCounts, resetCapable = false }) {
 export const settled = (page) => page.waitForFunction(() => document.getAnimations()
   .every((animation) => animation.effect?.getTiming().iterations === Infinity), null, { timeout: 5000 });
 
-/** The rail on the page, its menu's rows all painted and its motion settled.
- *  The app is loaded first, and alone: its module graph has a cycle that only
- *  resolves when the app is the entry. */
+/** The rail on the page, its menu's controls painted and its motion settled.
+ *  Keep the app module handle while the fixture loads the remaining modules. */
 export async function mountChatMenu(page, basePath, label, seed) {
   await mountLayout(page, shellHtml(label), { basePath, styles: SHELL_STYLES });
   await loadBrowserModules(page, { app: "src/app.js" }, basePath);

@@ -207,6 +207,9 @@ describe("clear conversation on the shared rail", () => {
   it("offers Clear conversation last only when cached support permits it", async () => {
     await writeCached({ deviceId: DEVICE_ID, entityId: "", kind: "conversation-reset-support", sub: "" }, { supported: true });
     await mountWorkspaceRail();
+    expect(panel().querySelector('[data-group="compact"] [role="slider"]')).toBeTruthy();
+    expect([...panel().querySelectorAll(".rail-surface-menu .menu-group")].map((group) => group.dataset.group).slice(-2))
+      .toEqual(["compact", "clear"]);
     expect(menuItems().at(-1)?.textContent).toContain("Clear conversation");
     expect(menuItems().at(-1)?.classList.contains("danger")).toBe(true);
   });

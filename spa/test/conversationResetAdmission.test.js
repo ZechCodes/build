@@ -5,6 +5,7 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 const App = { route: { name: "inbox" }, devices: [{ id: "reset-device" }] };
 const contexts = new Map();
 const watchers = [];
+vi.mock("../src/appState.js", async () => ({ App: (await import("../src/app.js")).App }));
 vi.mock("../src/app.js", () => ({ App }));
 vi.mock("../src/core/deviceContexts.js", () => ({
   contextFor: (id) => contexts.get(id), liveContexts: () => [...contexts.values()], onDeviceStateChanged: () => () => {},
@@ -41,6 +42,7 @@ beforeEach(async () => {
   contexts.set("reset-device", context);
   cache = await import("../src/core/localCache.js");
   sync = await import("../src/core/cacheSync.js");
+  expect((await import("../src/appState.js")).App).toBe(App);
   sync.startCacheSync();
   await vi.waitFor(() => expect(watchers.some((watcher) => watcher.id === "s-inbox")).toBe(true));
   for (let i = 0; i < 10; i += 1) await nextTurn();

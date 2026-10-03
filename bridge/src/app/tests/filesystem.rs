@@ -719,3 +719,203 @@ fn fs_read_rejects_lexical_and_symlink_escapes() {
         "{dir_escape:?}"
     );
 }
+
+/// Distinct configured sources, including a plain folder, with the same leaf
+/// name so resolving the wrong root cannot silently satisfy a file request.
+fn project_files_fixture() -> (tempfile::TempDir, AppState, String, PathBuf, PathBuf) {
+    let (directory, repo) = init_repo();
+    let plain = directory.path().join("plain");
+    std::fs::create_dir(&plain).unwrap();
+    std::fs::write(repo.join("notes.md"), "git source\n").unwrap();
+    std::fs::write(plain.join("notes.md"), "plain source\n").unwrap();
+    let mut state = AppState::new(
+        repo.clone(),
+        directory.path().join("wt"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    );
+    let project_id = state.project_at(0).id.clone();
+    let mut sources = state.project_at(0).sources.clone();
+    sources.push(crate::app::projects::ProjectSource::added(
+        "source-2".into(),
+        "Plain folder".into(),
+        "plain".into(),
+        plain.clone(),
+        false,
+        "main".into(),
+    ));
+    assert!(state.projects.set_sources(&project_id, sources));
+    (directory, state, project_id, repo, plain)
+}
+
+fn project_file_params(project_id: &str, source_id: &str, path: &str) -> Value {
+    json!({
+        "project_id": project_id, "source_id": source_id, "path": path,
+        "content_b64": b64encode(b"after\n"),
+        "expected_revision": sha256_hex(b"plain source\n"),
+    })
+}
+
+#[test]
+fn project_source_files_tree_read_and_write_use_the_selected_configured_root() {
+    let (_directory, mut state, project_id, repo, plain) = project_files_fixture();
+    for (source_id, contents) in [("source-1", "git source\n"), ("source-2", "plain source\n")] {
+        let tree = state.handle(req(
+            "fs.tree",
+            json!({
+                "project_id": project_id, "source_id": source_id,
+            }),
+        ));
+        assert_eq!(tree["ok"], true, "{tree}");
+        assert!(tree["result"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["name"] == "notes.md"));
+        let read = state.handle(req(
+            "fs.read",
+            json!({
+                "project_id": project_id, "source_id": source_id, "path": "notes.md",
+            }),
+        ));
+        assert_eq!(read["ok"], true, "{read}");
+        assert_eq!(
+            read["result"]["content_b64"],
+            b64encode(contents.as_bytes())
+        );
+        assert_eq!(read["result"]["editable"], true);
+    }
+    let params = project_file_params(&project_id, "source-2", "notes.md");
+    let write = state.handle(req("fs.write", params.clone()));
+    assert_eq!(write["ok"], true, "{write}");
+    assert_eq!(write["result"]["revision"], sha256_hex(b"after\n"));
+    assert_eq!(
+        std::fs::read_to_string(plain.join("notes.md")).unwrap(),
+        "after\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.join("notes.md")).unwrap(),
+        "git source\n"
+    );
+    let stale = state.handle(req("fs.write", params));
+    assert_eq!(stale["ok"], false, "{stale}");
+    assert!(
+        stale["error"]
+            .as_str()
+            .unwrap()
+            .contains("revision conflict"),
+        "{stale}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(plain.join("notes.md")).unwrap(),
+        "after\n"
+    );
+}
+
+#[test]
+fn project_source_files_refuse_unknown_cross_project_and_mixed_scope_ids() {
+    let (directory, mut state, project_id, _repo, _plain) = project_files_fixture();
+    let other = directory.path().join("other-project");
+    std::fs::create_dir(&other).unwrap();
+    std::fs::write(other.join("notes.md"), "other project's source\n").unwrap();
+    let other_id = state.add_project(other, "main".into());
+    // Source ids are project-local: both source-1 rows must select their own root.
+    let other_read = state.handle(req(
+        "fs.read",
+        json!({
+            "project_id": other_id, "source_id": "source-1", "path": "notes.md",
+        }),
+    ));
+    assert_eq!(other_read["ok"], true, "{other_read}");
+    assert_eq!(
+        other_read["result"]["content_b64"],
+        b64encode(b"other project's source\n")
+    );
+    // source-2 exists in the first project but never belonged to this one.
+    for params in [
+        json!({ "project_id": other_id, "source_id": "source-2" }),
+        json!({ "project_id": project_id, "source_id": "missing" }),
+        json!({ "project_id": "missing", "source_id": "source-2" }),
+    ] {
+        for method in ["fs.tree", "fs.read", "fs.write"] {
+            let mut params = params.clone();
+            params["path"] = json!("notes.md");
+            params["expected_revision"] = json!("stale");
+            params["content_b64"] = json!("YQ==");
+            let error = match method {
+                "fs.tree" => state.fs_tree(&params),
+                "fs.read" => state.fs_read(&params),
+                _ => state.fs_write(&params),
+            }
+            .unwrap_err();
+            assert!(error.starts_with("unknown "), "{method}: {error}");
+        }
+    }
+    for field in ["workspace_id", "run_id", "worktree_id"] {
+        let mut params = project_file_params(&project_id, "source-2", "notes.md");
+        params[field] = json!("other-scope");
+        for call in [AppState::fs_tree, AppState::fs_read, AppState::fs_write] {
+            let error = call(&mut state, &params).unwrap_err();
+            assert!(error.contains("scope"), "{error}");
+        }
+    }
+}
+
+#[test]
+fn project_source_files_refuse_host_paths_and_traversal_without_writing() {
+    let (directory, mut state, project_id, _repo, plain) = project_files_fixture();
+    let outside = directory.path().join("outside.md");
+    std::fs::write(&outside, "outside\n").unwrap();
+    for path in [
+        outside.to_str().unwrap(),
+        "../outside.md",
+        "plain/../../outside.md",
+    ] {
+        let params = project_file_params(&project_id, "source-2", path);
+        for call in [AppState::fs_tree, AppState::fs_read, AppState::fs_write] {
+            assert_eq!(
+                call(&mut state, &params).unwrap_err(),
+                "path escapes the worktree"
+            );
+        }
+    }
+    let forged = state.handle(req(
+        "fs.tree",
+        json!({
+            "project_id": project_id, "source_id": "source-2", "root": directory.path(),
+        }),
+    ));
+    assert_eq!(forged["error_code"], "invalid_params", "{forged}");
+    assert_eq!(std::fs::read_to_string(&outside).unwrap(), "outside\n");
+    assert_eq!(
+        std::fs::read_to_string(plain.join("notes.md")).unwrap(),
+        "plain source\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn project_source_files_refuse_symlink_escape_without_writing() {
+    use std::os::unix::fs::symlink;
+    let (_directory, mut state, project_id, repo, plain) = project_files_fixture();
+    symlink(&repo, plain.join("escape")).unwrap();
+    symlink(repo.join("notes.md"), plain.join("leaf.md")).unwrap();
+    for path in ["escape/notes.md", "leaf.md"] {
+        let params = project_file_params(&project_id, "source-2", path);
+        for call in [AppState::fs_tree, AppState::fs_read, AppState::fs_write] {
+            assert_eq!(
+                call(&mut state, &params).unwrap_err(),
+                "path escapes the worktree"
+            );
+        }
+    }
+    let tree = state.fs_tree(&json!({
+        "project_id": project_id, "source_id": "source-2", "path": "escape",
+    }));
+    assert_eq!(tree.unwrap_err(), "path escapes the worktree");
+    assert_eq!(
+        std::fs::read_to_string(repo.join("notes.md")).unwrap(),
+        "git source\n"
+    );
+}

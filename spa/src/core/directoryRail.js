@@ -30,9 +30,8 @@
 // the column — where the column is a drawer, that rule is not in force and the
 // toggle is not drawn.
 //
-// A project stands on the same rail (#274): Workspaces and Tasks, its Settings
-// at the foot, and no toggle, because a project's page has no list column to
-// fold away.
+// A project stands on the same rail: Tasks, Files and Workspaces, with its
+// Settings at the foot. Files alone has a list column to fold away.
 
 import {
   ICON_FOLDER,
@@ -66,9 +65,9 @@ const TASKS_TAB = { id: "tasks", label: tasksTabLabel, icon: ICON_SQUARE_CHECK, 
 export const WORKSPACE_TABS = [...DIRECTORY_TABS, TASKS_TAB];
 
 /** A project's faces (#274): its tracker, first because it is the page a
- *  project opens on (#46), then the workspaces cut from it. The tracker wears
+ *  project opens on (#46), then its source files and the workspaces cut from it. The tracker wears
  *  the project's watched unread (core/projectRail.js fills it). */
-export const PROJECT_TABS = [TASKS_TAB, { id: "workspaces", label: workspacesTabLabel, icon: ICON_FOLDERS }];
+export const PROJECT_TABS = [TASKS_TAB, DIRECTORY_TABS.find((tab) => tab.id === "files"), { id: "workspaces", label: workspacesTabLabel, icon: ICON_FOLDERS }];
 
 /** Where an arrow takes the highlight, as steps along the rail. Home and End
  *  are the same question asked absolutely, so they answer from one table too. */

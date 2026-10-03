@@ -221,7 +221,7 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.8.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.9.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
@@ -297,6 +297,11 @@ runtime that starts them.
   saved commits. `tasks.review.get` also returns available destinations and
   persisted action results. The action capability is independent of review
   reads, comments and explicit completion.
+  3.9.0 adds `fs.projectSources` (#359): `fs.tree`, `fs.read` and
+  `fs.write` accept `project_id` plus `source_id`, resolving one configured
+  source of that project. The pair is exclusive with workspace, run and
+  worktree selectors. Existing project-only and workspace scopes keep their
+  behavior; all source reads and writes use the same path containment checks.
   The SPA's adapter claims `>=2.0.0 <4.0.0`: it calls nothing a 2.x bridge
   lacks (what 2.x added after 2.0.0 is capability-gated), so the app can
   roll before the bridge.
@@ -424,6 +429,17 @@ runs `git init` without the user asking.
 A repository with no commits yet is a Git project too: `open_repo`
 (`bridge/src/lifecycle/projects.rs`) takes its base from the unborn HEAD, or
 the one given, and does not resolve it until something needs a commit.
+The project's Files face (`#/project/<id>/files`) browses those original
+sources directly, one collapsible root per source, using the workspace's
+shared explorer. Files, tabs and folded roots have project-scoped records,
+and each source has a separate directory cache. `fs.projectSources` gates
+the explicit project/source selector; an older bridge can still browse the
+first source through its legacy project-only scope.
+An explicit toolbar return restores the project's last face from local UI
+state (`spa/src/core/projectRailState.js`); ordinary project links still open
+Tasks. Moving a source changes its Files cache namespace. An open draft stays
+visible, but its captured source location must still match before any read or
+save is dispatched, so moving a folder cannot redirect that draft's save.
 `project.update_source` (`bridge/src/app/projects/source_update.rs`, git in
 `bridge/src/lifecycle/source_update.rs`) edits a source in place:
 - A new base branch must be a branch the checkout has.
@@ -1290,7 +1306,10 @@ refuses when that device cannot answer.
   whether that machine's agents name their makers in
   `spa/src/core/agentLineageSupport.js`, read by the lineage reader with the
   rows, so the Agents panel lists Build agents only for a bridge that
-  announced them. What the cache says draws the
+  announced them; `fs.projectSources` is remembered in
+  `spa/src/core/projectFilesSupport.js` for the project's Files notice.
+  Project-source requests check the current greeting at dispatch through
+  `spa/src/core/projectFilesRpc.js`. What the cache says draws the
   confirmation; the deletion itself is sent through `whenGreeted`, on the
   adapter the current session's greeting installed.
 - A session is adopted before it is greeted, so `canAnswer` is true before the
@@ -1379,6 +1398,7 @@ whose ratchet count is pinned by `spa/test/complexityRatchet.test.js`.
 | Add a push event | emit through `ChangeBus` (`bridge/src/changes.rs`); on the SPA side add it to `EVENT_TYPES` (`spa/src/core/bridgeApi/v1/index.js`) and its dispatcher in `spa/src/core/changeEvents.js`; example in `fixtures/api/v1/events.json` |
 | Bump the wire version | `API_VERSION` in `bridge/src/api/mod.rs`, `"current"` in `fixtures/api/versions.json`, `fixtures/api/v1/session.hello.json`, and the new fixtures' `since`. A named feature goes in `FEATURE_CAPABILITIES` (same file). Then `node scripts/api-verbs-manifest.mjs` writes `fixtures/api/verbs-<previous minor>.json` (delete the old one; for a new major, pass the commit the previous release shipped from, and for a later patch of that major's first minor, the commit its `.0` shipped from): the contract tests hold every verb and capability absent from it to the new `since`, and only a new major's `.0.0` may drop one |
 | Add a view | a route in `spa/src/core/router.js`; `spa/src/views/<name>.js`; register it in `VIEWS` in `spa/src/app.js`; rail or console via `spa/src/core/shell.js`; styles in `spa/src/styles/`; tests in `spa/test/` |
+| Change the Files explorer | `spa/src/views/files.js` shares previews, edits and file tabs; `spa/src/core/filesRoots.js` provides project/workspace roots; `fileRoots.js` and `fileTree.js` mount their trees; `directoryScope.js` separates directory records from layout state |
 | Add an MCP tool | a `BridgeAction` variant with its `tool_name()` and `surfaces()` arms and a schema in the right `*_tools()` list in `bridge/src/mcp.rs`; handle it in `bridge/src/app/mcp.rs` (or `bridge/src/app/conversations/` for thread actions) |
 | Add a harness | a `Harness` impl in `bridge/src/harness/`, an `AgentProvider` variant in `bridge/src/models.rs`, and its arm in `harness_for()` |
 | Change what an agent runs under | `bridge/src/priority.rs`, `bridge/src/service/systemd.rs` |

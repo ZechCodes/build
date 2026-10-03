@@ -253,3 +253,26 @@ describe("a file over one record in a root", () => {
     expect(ranged().at(-1)).toEqual({ workspace_id: "ws-1", source_id: "assets", path: "big.log", range: { offset: first.end, bytes: BODY_PAGE_BYTES } });
   });
 });
+
+
+it("handles an empty root list even when an obsolete deep link names a file", async () => {
+  const { host } = mountRoots({ roots: [], openAt: { rootId: "removed", path: "index.js", line: 1 } });
+  await vi.waitFor(() => expect(host.querySelector(".fpdoc").textContent).toContain("No file open"));
+  expect(heads(host)).toHaveLength(0);
+  expect(answer).not.toHaveBeenCalled();
+});
+
+it("keeps a warm cached project listing when an offline refresh refuses it", async () => {
+  const scope = { project_id: "p", source_id: "docs" };
+  const address = { deviceId: "dev-1", entityId: directoryCacheId(scope), kind: "tree", sub: "" };
+  await writeCached(address, { path: "", entries: [{ name: "README.md", kind: "file", size: 20 }] });
+  let failRefresh;
+  const rpc = vi.fn(() => new Promise((_resolve, reject) => { failRefresh = reject; }));
+  const { host } = mountRoots({ roots: [{ id: "docs", label: "Docs", scope }], callRpc: rpc });
+  await vi.waitFor(() => expect(rowFor(host, "docs", "README.md")).toBeTruthy());
+  await vi.waitFor(() => expect(failRefresh).toBeTypeOf("function"));
+  failRefresh(new Error("This machine is unavailable."));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(rowFor(host, "docs", "README.md")).toBeTruthy();
+  expect(host.textContent).not.toContain("This machine is unavailable.");
+});

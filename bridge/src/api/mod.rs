@@ -38,7 +38,8 @@ use std::collections::BTreeSet;
 /// 3.6.0 adds committed workspace review snapshots and explicit completion.
 /// 3.7.0 adds anchored task comments, replies and snapshot opinions.
 /// 3.8.0 adds selected review Git actions and persisted action results.
-pub const API_VERSION: &str = "3.8.0";
+/// 3.9.0 adds configured project source scopes for file browsing and editing.
+pub const API_VERSION: &str = "3.9.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -80,6 +81,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "diffs.perFile",
     "errors.codes",
     "fs.mediaRawPages", // Since 1.30.0: exact binary ranges for Blob media reads, through 64 MiB.
+    "fs.projectSources", // Since 3.9.0: project_id + source_id on fs.tree/read/write (#359).
     "tasks.agentIdentities",
     "tasks.attachmentChunks",
     "tasks.attachments",

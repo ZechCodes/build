@@ -27,5 +27,40 @@
     "not_found",
     "invalid_params",
     "internal"
+  ],
+  "project_sources": {
+    "since": "3.9.0",
+    "capability": "fs.projectSources",
+    "params": [
+      "project_id",
+      "source_id"
+    ]
+  },
+  "examples": [
+    {
+      "params": {
+        "path": "src",
+        "project_id": "proj-1",
+        "source_id": "source-2"
+      },
+      "result": {
+        "path": "src",
+        "entries": [
+          {
+            "name": "api",
+            "kind": "dir"
+          },
+          {
+            "name": "main.rs",
+            "kind": "file",
+            "size": 1024
+          },
+          {
+            "name": "link",
+            "kind": "symlink"
+          }
+        ]
+      }
+    }
   ]
 }

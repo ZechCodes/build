@@ -1,6 +1,6 @@
 {
-  "api_version": "3.7.0",
-  "commit": "e0cb7885",
+  "api_version": "3.8.0",
+  "commit": "c559db43",
   "generated_by": "scripts/api-verbs-manifest.mjs",
   "verbs": [
     "agent.add",
@@ -88,6 +88,7 @@
     "tasks.list",
     "tasks.read_through",
     "tasks.reopen",
+    "tasks.review.act",
     "tasks.review.complete",
     "tasks.review.diff",
     "tasks.review.get",
@@ -246,6 +247,7 @@
     "tasks.listPaged",
     "tasks.read_through",
     "tasks.reopen",
+    "tasks.review.act",
     "tasks.review.complete",
     "tasks.review.diff",
     "tasks.review.get",

@@ -83,9 +83,11 @@ inspect or move it aside before retrying; it never overwrites uncertain work.
 
 ## Source selection and Git views
 
-Directory tabs follow the workspace menu, collapsing into one menu on phones. The selected
-tab determines which directory the Files, Changes, and commit views display.
-It does not select a terminal or alter another source's repository state.
+Directory tabs follow the workspace menu, collapsing into one menu on phones.
+The selected tab determines which directory Changes and commit views display.
+Files shows every directory as a collapsible root in one shared explorer,
+with open-file tabs across the roots. Choosing a directory does not select a
+terminal or alter another source's repository state.
 
 A Git source exposes a searchable selector above its commit list, with separate
 Branches and Tags tabs, remote branches, and indicators for available pulls.
@@ -161,9 +163,17 @@ adopted checkout the way Delete does.
 
 A project has a surface of its own: `#/project/<project_id>`, and
 `#/device/<device_id>/project/<project_id>` where the machine is named. It is
-about the project, never about the project's checkout — that checkout is what
-workspaces are cut from and has no surface at all — so every URL that used to
-open it lands here instead.
+about the project's tasks, sources and workspaces. The navigation rail has
+Tasks, Files and Workspaces, with project Settings at its foot. Tasks is the
+default. Files (`#/project/<project_id>/files`) opens the same explorer as a
+workspace, with one collapsible root per configured original source, and
+remembers open tabs, expanded directories and root folds for that project.
+Its source, file and line can be named in a link. Editing uses the same
+revision checks and unsaved-change guards as workspace Files.
+Returning through the toolbar restores the project's last selected face;
+ordinary project links continue to open Tasks. If a source folder moves while
+Files holds unsaved edits, those edits remain visible and cannot be saved to
+the replacement folder.
 
 The main pane is the project's workspaces: the same rows the landing rail groups
 into that project's block, in the same order, each opening its own workspace.
@@ -172,9 +182,9 @@ is doing. A project nobody has cut a workspace in yet is named and empty, which
 is the ordinary first state of a project rather than a missing one; the empty
 state points at the + that makes the first workspace.
 
-The toolbar names the project and carries the page's two verbs: the + and the
-cog that opens project settings. The rail is the project's own agent, mounted on
-the owner `project.ensure_conversation` answers with.
+The toolbar names the project and carries the + that makes a workspace.
+The agent rail is the project's own agent, mounted on the owner
+`project.ensure_conversation` answers with.
 
 A project belongs to one machine, and every machine mints a `proj-1`, so a
 project URL that names no device is a question: it parks on the same resolve hop

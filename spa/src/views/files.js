@@ -139,9 +139,9 @@ const rootedCheckout = (roots) => ({
  * the view, and a mount without one saves nothing. No polling — fetches only on
  * navigation/selection. Returns { dispose() }.
  *
- * A workspace passes `roots` ([{ id, label, scope }], its directories in order)
+ * A project or workspace passes `roots` ([{ id, label, scope }], its directories in order)
  * instead of one `scope`, and `layoutEntityId`, the cache entity its
- * workspace-wide UI state (open tabs, folded roots) is filed under. `openAt`
+ * explorer-wide UI state (open tabs, folded roots) is filed under. `openAt`
  * then names its root too ({ rootId, path, line }), and `onFileOpen(path,
  * rootId)` hears which root the opened file is in.
  */
@@ -282,7 +282,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
   // The local cache's address for one of a root's records. A project-scoped
   // checkout names no entity and takes no part.
   const rootAddress = (root, kind, sub) => {
-    const entityId = directoryCacheId(root.scope);
+    const entityId = root.cacheEntityId || directoryCacheId(root.scope);
     return entityId ? cacheScope?.address({ entityId, kind, sub }) || null : null;
   };
 
@@ -829,6 +829,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     listingAddress: (dir) => rootAddress(root, "tree", dir),
     stateAddress: rootAddress(root, "ui-files", "tree"),
     readsForItself: () => rootReadsForItself(root),
+    keepHeldOnError: Boolean(root.scope?.project_id),
     listDirectory: (dir) => callRpc("fs.tree", { ...root.scope, path: dir }),
     finePointer,
   });
@@ -889,7 +890,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
 function openedKey(checkout, openAt) {
   if (!openAt?.path) return null;
   const root = checkout.roots.find((candidate) => candidate.id === openAt.rootId) || checkout.roots[0];
-  return checkout.keyOf(root, openAt.path);
+  return root ? checkout.keyOf(root, openAt.path) : null;
 }
 
 export { FS_READ_MAX_BYTES };

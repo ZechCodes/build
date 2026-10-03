@@ -36,6 +36,14 @@ beforeEach(async () => {
 afterEach(() => rail.dispose());
 
 describe("the project rail, wired", () => {
+  it("offers Files between Tasks and Workspaces and the Files sidebar toggle", () => {
+    rail.paint("files");
+    expect([...host().querySelectorAll("[data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["tasks", "files", "workspaces"]);
+    expect(host().querySelector("[data-tab=files]").getAttribute("aria-selected")).toBe("true");
+    expect(host().querySelector("[data-sidebar-toggle]")).not.toBeNull();
+    rail.paint("tasks");
+    expect(host().querySelector("[data-sidebar-toggle]")).toBeNull();
+  });
   it("counts the project's watched unread on the Tasks icon, across repaints and record moves", async () => {
     await writeTasksRecord("dev-1", "p-1", {
       tasks: [
@@ -87,12 +95,12 @@ describe("the project rail, wired", () => {
     rail.paint("tasks");
     host().querySelector("[data-tab=tasks]").focus();
     document.activeElement.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-    expect(next).toBe("workspaces");
+    expect(next).toBe("files");
 
     rail.dispose();
     rail = mountProjectRail(host(), { route, context, onSelect: (tab) => selected.push(tab), navigate: vi.fn() });
     rail.paint(next);
-    expect(document.activeElement).toBe(host().querySelector("[data-tab=workspaces]"));
+    expect(document.activeElement).toBe(host().querySelector("[data-tab=files]"));
   });
 
   it("hands the column back empty when the keyboard was on it and nothing stands up after", async () => {

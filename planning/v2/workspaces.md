@@ -170,6 +170,10 @@ workspace, with one collapsible root per configured original source, and
 remembers open tabs, expanded directories and root folds for that project.
 Its source, file and line can be named in a link. Editing uses the same
 revision checks and unsaved-change guards as workspace Files.
+Returning through the toolbar restores the project's last selected face;
+ordinary project links continue to open Tasks. If a source folder moves while
+Files holds unsaved edits, those edits remain visible and cannot be saved to
+the replacement folder.
 
 The main pane is the project's workspaces: the same rows the landing rail groups
 into that project's block, in the same order, each opening its own workspace.

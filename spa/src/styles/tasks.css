@@ -407,7 +407,7 @@
    overflow, so a surface that did not scroll itself could not be scrolled at
    all — on a phone, not even by touch. */
 .task-surface {
-  height:100%; box-sizing:border-box; overflow:auto;
+  height:100%; box-sizing:border-box; overflow:auto; container-type:size;
   padding:var(--pane-top) var(--pane-gutter) var(--pane-bottom);
 }
 .task-page { display:grid; grid-template-columns:minmax(0,1fr) 260px; gap:24px; align-items:start; }
@@ -542,8 +542,14 @@
 .task-comment-box .composer-bar { padding:4px 2px 0; }
 .task-composer .composer-tray:not([hidden]) { display:flex; flex-wrap:wrap; gap:6px; }
 
-.task-rail { display:flex; flex-direction:column; gap:16px; }
+/* Bound the sticky rail to its own scroll surface, which can be shorter than
+   the viewport under the toolbar or inside a workspace tab. Long link lists
+   then scroll inside the rail and leave the Close action reachable. */
+.task-rail { position:sticky; top:var(--pane-top); display:flex; flex-direction:column; gap:16px;
+  max-height:calc(100cqh - var(--pane-top) - var(--pane-bottom)); overflow-y:auto; }
 .task-rail-section { display:flex; flex-direction:column; gap:6px; }
+.task-rail-action { display:flex; }
+.task-rail-action .btn { width:100%; }
 .task-rail-section h2 {
   margin:0; font-size:10px; font-weight:700; letter-spacing:.06em;
   text-transform:uppercase; color:var(--dim);
@@ -619,8 +625,10 @@
 @media (max-width: 760px) {
   .task-page { grid-template-columns:minmax(0,1fr); gap:18px; }
   .task-page-head { margin-right:calc(0px - var(--pane-gutter)); padding-right:var(--pane-gutter); }
-  .task-rail { flex-direction:row; flex-wrap:wrap; gap:14px 20px; }
+  .task-rail { position:static; flex-direction:row; flex-wrap:wrap; gap:14px 20px;
+    max-height:none; overflow-y:visible; }
   .task-rail-section { flex:1 1 150px; }
+  .task-rail-action { flex:1 1 100%; }
   .task-board {
     margin:0 calc(var(--pane-gutter) * -1);
     padding:0 var(--pane-gutter) 10px;

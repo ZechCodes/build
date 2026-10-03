@@ -1,11 +1,9 @@
 // The task page, as HTML: the task, its timeline, the composer, and the rail
 // of everything about it that can be changed.
 //
-// The rail's ordering is the ordering of how often a thing is touched, not of
-// how important it sounds: state, then the column, then the labels and the
-// priority, then who holds it, then what it is linked to. Assigning sits low
-// because it is the one press that starts an agent, and a control that starts
-// work should not be the first thing under a thumb.
+// The rail starts with editable details and links; the close or reopen action
+// sits at the bottom. Assigning sits low because it starts an agent, and a
+// control that starts work should not be the first thing under a thumb.
 //
 // Pure: HTML in, no DOM, no app imports. core/trackerTaskPage.js mounts it.
 
@@ -227,14 +225,14 @@ const railSection = (title, inner) => `<section class="task-rail-section"><h2>${
 /** Close and reopen, and nothing else on this control. Closing a task stops
  *  nothing and starts nothing — it says the work is over — so the button says
  *  only that. */
-const stateControlHtml = (task, busy) => railSection(
-  "State",
-  `<button class="btn" type="button" data-task-state${busy ? " disabled" : ""}>${task.state === "closed" ? "Reopen task" : "Close task"}</button>
-   <p class="sub">${task.state === "closed" ? "Closed tasks keep their column." : "Closing does not move it to Done."}</p>`,
-);
+const stateControlHtml = (task, busy) => `<div class="task-rail-action">
+  <button class="btn" type="button" data-task-state${busy ? " disabled" : ""}>${task.state === "closed" ? "Reopen task" : "Close task"}</button>
+</div>`;
 
-const selectRow = (id, label, optionsHtml, busy) => `<label class="create-label" for="${esc(id)}">${esc(label)}</label>
-  <select id="${esc(id)}"${busy ? " disabled" : ""}>${optionsHtml}</select>`;
+const selectSection = (id, title, optionsHtml, busy) => `<section class="task-rail-section">
+  <h2 id="${esc(id)}-label">${esc(title)}</h2>
+  <select id="${esc(id)}" aria-labelledby="${esc(id)}-label"${busy ? " disabled" : ""}>${optionsHtml}</select>
+</section>`;
 
 const columnOptionsHtml = (columns, status) =>
   columnsOf(columns)
@@ -268,16 +266,15 @@ export function taskRailHtml(task, context) {
   const { columns, links, labelsDraft, busy } = context;
   const assigneeLink = task.assignee && actorHref(task.assignee, context);
   return `<aside class="task-rail" aria-label="About this task">
-    ${stateControlHtml(task, busy)}
-    ${railSection("Column", selectRow("task-status", "Column", columnOptionsHtml(columns, task.status), busy))}
+    ${selectSection("task-status", "Status", columnOptionsHtml(columns, task.status), busy)}
     ${railSection("Labels", `<input id="task-labels" type="text" ${fieldTraits("identifier")} placeholder="bug, ui" value="${esc(labelsDraft)}"${busy ? " disabled" : ""} />
-      <p class="sub">Comma separated. Enter saves.</p>`)}
-    ${railSection("Priority", selectRow("task-priority", "Priority", priorityOptionsHtml(task.priority), busy))}
+      <p class="sub">Comma separated.</p>`)}
+    ${selectSection("task-priority", "Priority", priorityOptionsHtml(task.priority), busy)}
     ${railSection("Assignee", `${assigneeLink
       ? `<div class="task-assignee-current">${actorIdentityHtml(task.assignee, context, { icon: true })}</div>` : ""}
-      <button class="btn task-assign-open" type="button" data-task-assign="${esc(task.id)}"${busy ? " disabled" : ""}>${assigneeLink ? "Change assignee" : assigneeHtml(task.assignee, context)}</button>
-      <p class="sub">Assigning hands the task to an agent and starts it.</p>`)}
+      <button class="btn task-assign-open" type="button" data-task-assign="${esc(task.id)}"${busy ? " disabled" : ""}>${assigneeLink ? "Change assignee" : assigneeHtml(task.assignee, context)}</button>`)}
     ${railSection("Links", linksHtml(links))}
+    ${stateControlHtml(task, busy)}
   </aside>`;
 }
 

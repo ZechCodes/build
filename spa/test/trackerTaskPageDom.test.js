@@ -814,11 +814,22 @@ describe("the rail", () => {
     expect(listed("tasks.reopen")[0][1]).toEqual({ task_id: "task-1" });
   });
 
-  // Closing does not move it to Done and Done does not close it; the rail says
-  // so rather than leaving the reader to find out.
-  it("says that closing does not move it to Done", async () => {
+  it("shows one label per select, concise hints, and the state action after Links", async () => {
     await mount();
-    expect(host.querySelector(".task-rail").textContent).toContain("Closing does not move it to Done.");
+    const rail = host.querySelector(".task-rail");
+    const headings = [...rail.querySelectorAll(".task-rail-section h2")];
+    expect(headings.map((heading) => heading.textContent)).toEqual(["Status", "Labels", "Priority", "Assignee", "Links"]);
+    for (const [id, label] of [["task-status", "Status"], ["task-priority", "Priority"]]) {
+      const select = rail.querySelector(`#${id}`);
+      expect(rail.querySelector(`#${select.getAttribute("aria-labelledby")}`)?.textContent).toBe(label);
+      expect([...rail.querySelectorAll("h2, label")].filter((node) => node.textContent === label)).toHaveLength(1);
+    }
+    expect(rail.querySelector("#task-labels + .sub").textContent).toBe("Comma separated.");
+    expect(rail.lastElementChild.querySelector("[data-task-state]")).not.toBeNull();
+    expect(rail.textContent).not.toContain("State");
+    expect(rail.textContent).not.toContain("Closing does not move it to Done.");
+    expect(rail.textContent).not.toContain("Enter saves.");
+    expect(rail.textContent).not.toContain("Assigning hands the task to an agent and starts it.");
   });
 
   it("moves the task through the column select, sending only that field", async () => {
@@ -857,9 +868,12 @@ describe("the rail", () => {
     expect(openAssigneePicker.mock.calls[0][0].current).toBe("agent:agent-1");
   });
 
-  it("says that assigning starts an agent, before it is pressed", async () => {
+  it("keeps the reopened action last without a state hint", async () => {
+    call = vi.fn(async () => answerFor({ state: "closed" }));
     await mount();
-    expect(host.querySelector(".task-rail").textContent).toContain("Assigning hands the task to an agent and starts it.");
+    const rail = host.querySelector(".task-rail");
+    expect(rail.lastElementChild.querySelector("[data-task-state]")?.textContent).toBe("Reopen task");
+    expect(rail.textContent).not.toContain("Closed tasks keep their column.");
   });
 });
 

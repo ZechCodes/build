@@ -141,6 +141,7 @@ it("saves a clicked stop with slider focus, then saves a preview while walking d
     await page.waitForFunction(() => window.__menuSettingsAsked.length === 1);
     await savedMenuOpen(page);
     expect(await word(page)).toBe("200k");
+    await captureLayout(page, "compaction-after-click-with-clear.png");
     await page.keyboard.press("ArrowRight");
     expect(await word(page)).toBe("300k");
     await page.keyboard.press("ArrowDown");

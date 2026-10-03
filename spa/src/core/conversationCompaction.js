@@ -132,10 +132,10 @@ export function compactionSettingsParams(entityId, agentId, maxContextTokens, th
  * agentId, rewrite)` lays `rewrite(agent)` over the agent while the row still
  * holds that write, and `rewrite` answers null to leave it alone.
  *
- * Not optimistic, unlike the watch switch (core/watchToggle.js): the menu has
- * shut by the time a choice is sent, so there is no control under the finger
- * to move early. A choice while one is in flight is ignored, as a second press
- * of the switch is. `choose` resolves when the answer has been offered to the
+ * Not optimistic, unlike the watch switch (core/watchToggle.js): the open
+ * menu follows the cached threshold until the answer is written. A choice
+ * while one is in flight is ignored, as a second press of the switch is.
+ * `choose` resolves when the answer has been offered to the
  * cache or the verb has been refused, and never rejects — a refusal is
  * `onFailure`'s.
  */

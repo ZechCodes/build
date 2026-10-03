@@ -1081,7 +1081,6 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 .menu-slider-stops span { width:2px; height:4px; background:var(--line3); }
 .menu-slider-copy { display:flex; flex-direction:column; gap:1px; margin-top:8px; }
 .menu-slider-copy .mt { color:var(--accent); font-weight:550; font-size:13px; }
-.menu-slider-copy .md { color:var(--dim); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 /* A setting's rows are one radio set, and wear it: a ring before each value,
    filled for the one standing, so a setting reads as a setting beside the
    things to open above it. Only in a sectioned menu — a flat selection (the

@@ -13,7 +13,7 @@ export function menuSliderMarkup({ label, options }) {
     <input type="range" role="slider" min="0" max="${options.length - 1}" step="1" value="${index}" tabindex="0"
       aria-label="${esc(label)}" aria-valuetext="${esc(option.label)}" data-action="${esc(option.id)}">
     <div class="menu-slider-stops" aria-hidden="true">${options.map(() => "<span></span>").join("")}</div>
-    <div class="menu-slider-copy"><span class="mt">${esc(option.label)}</span><span class="md">${esc(option.description)}</span></div>
+    <div class="menu-slider-copy"><span class="mt">${esc(option.label)}</span></div>
   </div>`;
 }
 
@@ -22,24 +22,17 @@ export const adjustsMenuSlider = (event) =>
   event.target.matches(MENU_SLIDER_SELECTOR) && adjustmentKeys.has(event.key);
 
 const controls = new WeakMap();
-let descriptionCount = 0;
 
 function mountSlider(slider, { choose, onCommit }) {
   const host = slider.closest(".menu-slider");
   const options = JSON.parse(host.dataset.options);
   const word = host.querySelector(".mt");
-  const description = host.querySelector(".md");
-  // Allocate when mounting rather than rendering, so unchanged cached markup
-  // keeps the open menu and the control under the pointer intact.
-  description.id = `menu-slider-description-${(descriptionCount += 1)}`;
-  slider.setAttribute("aria-describedby", description.id);
   let pointerId = null;
   const paint = () => {
     const option = options[Number(slider.value)];
     slider.dataset.action = option.id;
     slider.setAttribute("aria-valuetext", option.label);
     word.textContent = option.label;
-    description.textContent = option.description;
   };
   const reset = () => {
     pointerId = null;

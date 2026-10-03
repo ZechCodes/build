@@ -329,8 +329,8 @@ function sightTopOf(menu, row) {
  *  once motion has settled. The menu's note is pinned over its foot
  *  (`menuNoteHtml`), so what is in sight stops at the note. */
 function scrollRowIntoMenu(menu, row) {
-  // The thumb takes focus, but the setting's selected word and description
-  // below it must be in sight too. Its wrapper also brings the group heading.
+  // The thumb takes focus, but the setting's selected word below it must be
+  // in sight too. Its wrapper also brings the group heading.
   const box = row.matches(MENU_SLIDER_SELECTOR) ? row.closest(".menu-slider") : row;
   const above = sightTopOf(menu, box) - menu.scrollTop;
   const sightHeight = menu.clientHeight - (menu.querySelector(MENU_NOTE_SELECTOR)?.offsetHeight || 0);
@@ -475,13 +475,14 @@ export function mountSplitMenu(container, { onChoose, onOpenChange = null, keepW
     };
   };
 
-  // A choice shuts the menu and puts focus back on the opener — from the
-  // keyboard that is where the reader was; from a pointer it keeps focus
-  // from falling to the body when the row it was on is hidden.
+  // Slider saves keep the menu and thumb focused through the cache repaint.
+  // Other choices shut the menu and return focus to its opener.
   const choose = (row) => {
     const optionId = row.dataset.action;
-    closeMenu();
-    caret.focus({ preventScroll: true });
+    const slider = row.matches(MENU_SLIDER_SELECTOR);
+    if (slider) resetMenuSliders(menu);
+    else closeMenu();
+    (slider ? row : caret).focus({ preventScroll: true });
     onChoose(optionId);
   };
 

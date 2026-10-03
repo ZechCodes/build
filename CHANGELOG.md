@@ -12,6 +12,10 @@ Wire 3.11.0.
 
 ### Changed
 
+- Setting the conversation menu's Compact at slider keeps the menu open and
+  focus on the slider. Its explanation line is removed; the selected value,
+  stop ticks and accessible name remain. Escape cancels a preview and closes
+  the menu, and an outside click saves it and closes (#364).
 - The conversation menu's Compact at setting is a slider with discrete stops
   for the existing limits, showing only the selected value and description.
   Touch release commits a stop; Left/Right preview it until Enter or blur,

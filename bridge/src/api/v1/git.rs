@@ -87,7 +87,8 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
 /// `project_id` alone is the project's repository, `run_id` is a run's
 /// worktree, `project_id` + `worktree_id` is one of the project's external
 /// worktrees, and `workspace_id` + `source_id` is one directory of a
-/// multi-source workspace.
+/// multi-source workspace. `fs.*` also accepts `project_id` + `source_id`
+/// for an original configured source, announced by `fs.projectSources`.
 ///
 /// The workspace pair is exclusive with the three legacy ids — the
 /// implementation refuses a request naming both — and, for a `git.*` verb,
@@ -103,7 +104,8 @@ pub struct ScopeParams {
     /// A multi-source workspace. Requires `source_id` beside it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
-    /// One directory of that workspace. Requires `workspace_id` beside it.
+    /// One directory of that workspace, or for `fs.*`, one configured source
+    /// of `project_id`. Requires the workspace or project id beside it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_id: Option<String>,
     /// The conversation the client files this directory under: the SPA sends

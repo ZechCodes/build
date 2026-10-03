@@ -11,13 +11,17 @@ use super::{b64encode, fenced_scope_path, media_mime_hint, require_str, AppState
 
 /// The directory whose files an `fs.*` call may reach.
 ///
-/// Workspace browsing names one configured source explicitly. The legacy
+/// Workspace and project browsing name one configured source explicitly. The legacy
 /// worktree-backed shapes remain valid for clients that have not learned
 /// workspace sources yet; they continue to resolve through `TermScope`.
 #[derive(Debug, Clone)]
 enum FileScope {
     WorkspaceSource {
         workspace_id: String,
+        source_id: String,
+    },
+    ProjectSource {
+        project_id: String,
         source_id: String,
     },
     Legacy(TermScope),
@@ -27,6 +31,11 @@ impl FileScope {
     fn parse(params: &Value) -> Result<Self, String> {
         let workspace_id = scope_field(params, "workspace_id")?;
         let source_id = scope_field(params, "source_id")?;
+        if workspace_id.is_none() && params.get("project_id").is_some() {
+            if let Some(source_id) = source_id {
+                return Self::project_source(params, source_id);
+            }
+        }
         let has_legacy_scope = ["run_id", "project_id", "worktree_id"]
             .iter()
             .any(|name| params.get(*name).is_some_and(|value| !value.is_null()));
@@ -46,12 +55,46 @@ impl FileScope {
         }
     }
 
+    fn project_source(params: &Value, source_id: String) -> Result<Self, String> {
+        if ["run_id", "worktree_id"]
+            .iter()
+            .any(|name| params.get(*name).is_some_and(|value| !value.is_null()))
+        {
+            return Err(
+                "project source scope cannot be combined with run or worktree scope ids".into(),
+            );
+        }
+        let project_id = scope_field(params, "project_id")?
+            .ok_or_else(|| "missing required param: project_id".to_string())?;
+        Ok(Self::ProjectSource {
+            project_id,
+            source_id,
+        })
+    }
+
     fn resolve_root(&self, state: &mut AppState) -> Result<std::path::PathBuf, String> {
         match self {
             Self::WorkspaceSource {
                 workspace_id,
                 source_id,
             } => state.resolve_workspace_source(workspace_id, source_id),
+            Self::ProjectSource {
+                project_id,
+                source_id,
+            } => {
+                let project = state
+                    .projects
+                    .get(project_id)
+                    .ok_or_else(|| format!("unknown project_id: {project_id}"))?;
+                let source = project
+                    .sources
+                    .iter()
+                    .find(|source| &source.id == source_id)
+                    .ok_or_else(|| {
+                        format!("unknown source_id {source_id} in project {project_id}")
+                    })?;
+                Ok(source.path.clone())
+            }
             Self::Legacy(scope) => scope.resolve_root(state),
         }
     }
@@ -194,7 +237,7 @@ impl AppState {
         Ok(json!({ "path": path.display().to_string() }))
     }
 
-    /// One directory level of a worktree-backed scope (spec §4.2): server-side
+    /// One directory level of a source or worktree scope (spec §4.2): server-side
     /// scope resolution, the shared fence, `.git` skipped, dirs before
     /// files+symlinks, each group case-insensitive.
     pub(crate) fn fs_tree(&mut self, params: &Value) -> Result<Value, String> {
@@ -208,7 +251,7 @@ impl AppState {
         directory_listing(&root, &path)
     }
 
-    /// Read one file from a worktree-backed scope, base64 always, capped at the
+    /// Read one file from a source or worktree scope, base64 always, capped at the
     /// source limit or the larger bounded media limit server-side.
     pub(crate) fn fs_read(&mut self, params: &Value) -> Result<Value, String> {
         let scope = FileScope::parse(params)?;
@@ -289,7 +332,7 @@ impl AppState {
 
     fn invalidate_file_scope(&mut self, scope: &FileScope) {
         match scope {
-            FileScope::WorkspaceSource { .. } => {}
+            FileScope::WorkspaceSource { .. } | FileScope::ProjectSource { .. } => {}
             FileScope::Legacy(TermScope::Run { run_id }) => {
                 self.invalidate_run_stat(run_id);
                 self.note_entity_changed(run_id);

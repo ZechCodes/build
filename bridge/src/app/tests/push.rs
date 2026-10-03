@@ -193,7 +193,7 @@ async fn the_greeting_announces_push_events() {
     // a confirmed install replace a development build (#322) and names a moved
     // task's destination in the agent's own line (#323); 3.6.0 adds saved
     // workspace reviews (#328).
-    assert_eq!(hello["result"]["api_version"], "3.8.0", "{hello:?}");
+    assert_eq!(hello["result"]["api_version"], "3.9.0", "{hello:?}");
     assert!(
         hello["result"]["coalesce_window_ms"]
             .as_u64()

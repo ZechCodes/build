@@ -5,6 +5,9 @@ git or writes into a project (#228): `project.create`, `project.add_source`,
 `project.update_source`, `project.set_remote` and `workspace.add_directory`;
 and the fetch and fast-forward that keep a source's base branch in step with
 its remote (#267: the service, a workspace cut, `project.sync_source`).
+Project file browsing and editing (#359: `fs.tree`, `fs.read`, `fs.write` with
+`project_id` + `source_id`) are also in scope: their roots come only from the
+requested project's registered sources, never a client-supplied host path.
 A remote reaches git as a process argument, never through a shell, so the
 threat is git reading the text as something other than a location.
 
@@ -35,3 +38,7 @@ threat is git reading the text as something other than a location.
 | A base sync fetches what the base follows, not a branch assumed from its name: `branch.<base>.remote` and `branch.<base>.merge`, and never `remote.pushDefault`. | `a_base_that_tracks_a_differently_named_branch_follows_that_branch`, `a_base_that_tracks_another_remote_follows_that_remote`, `a_push_default_is_not_what_the_base_follows` (`bridge/src/source_sync/tests/upstream.rs`). |
 | Credentials git echoes in a url are taken out of every sync reason before it is stored, sent or shown. | `credentials_in_a_url_are_taken_out_of_what_git_said`. |
 | A sync's reason is escaped when the SPA paints it. | `escapes what a sync's reason carries` (`spa/test/projectSettings.test.js`). |
+| A file scope selects a source only from the requested project's registered membership. Unknown projects and sources, including a source belonging only to another project, are refused. Git and plain folders use the same boundary. | `project_source_files_tree_read_and_write_use_the_selected_configured_root`, `project_source_files_refuse_unknown_cross_project_and_mixed_scope_ids` (`bridge/src/app/tests/filesystem.rs`). |
+| Project/source selectors cannot be mixed with workspace, run or external worktree selectors, and host roots cannot be supplied to file RPCs. Legacy primary-project, run and workspace selectors remain available. | `project_source_files_refuse_unknown_cross_project_and_mixed_scope_ids`, `project_source_files_refuse_host_paths_and_traversal_without_writing`; existing `scope_tests` and filesystem/workspace tests. |
+| Project file reads and writes use the shared relative-path and canonical containment fence, refusing traversal, absolute paths and leaf or ancestor symlinks outside the selected source. Refused saves leave both the selected source and outside files untouched. | `project_source_files_refuse_host_paths_and_traversal_without_writing`, `project_source_files_refuse_symlink_escape_without_writing`. |
+| Project saves retain the existing UTF-8/size limits, revision check, no-follow file opens and descriptor-relative atomic replacement, so stale saves and ancestor symlink swaps cannot redirect or overwrite edits. | `project_source_files_tree_read_and_write_use_the_selected_configured_root`, existing `fs_write_*` and `scoped_file` tests; `bridge/src/scoped_file.rs` is reused unchanged. |

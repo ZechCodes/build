@@ -148,7 +148,7 @@ fn every_fixture_verb_has_an_advertised_capability() {
 #[test]
 fn media_page_features_are_announced_together() {
     let advertised: BTreeSet<&str> = capabilities(false).into_iter().collect();
-    assert_eq!(API_VERSION, "3.8.0");
+    assert_eq!(API_VERSION, "3.9.0");
     assert!(advertised.contains("thread.attachmentChunks"));
     assert!(advertised.contains("fs.mediaRawPages"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
@@ -668,5 +668,35 @@ fn every_push_the_bridge_sends_has_an_example() {
     ]);
     for kind in sent {
         assert!(seen.contains(kind), "{kind}: no example in events.json");
+    }
+}
+
+#[test]
+fn project_file_sources_are_announced_with_scoped_contract_examples() {
+    assert!(capabilities(false).contains(&"fs.projectSources"));
+    for method in ["fs.tree", "fs.read", "fs.write"] {
+        let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
+        assert_eq!(fixture["project_sources"]["since"], "3.9.0");
+        assert_eq!(
+            fixture["project_sources"]["capability"],
+            "fs.projectSources"
+        );
+        let example = fixture["examples"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|example| example["params"]["project_id"] == "proj-1")
+            .unwrap();
+        assert_eq!(example["params"]["source_id"], "source-2");
+        let handler = &v1::methods()
+            .iter()
+            .find(|(name, _)| *name == method)
+            .unwrap()
+            .1;
+        handler.parse_params(&example["params"]).unwrap();
+        assert_eq!(
+            handler.round_trip_result(&example["result"]).unwrap(),
+            example["result"]
+        );
     }
 }

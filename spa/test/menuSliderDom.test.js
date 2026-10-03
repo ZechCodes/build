@@ -27,7 +27,7 @@ function mount(agent = { max_context_tokens: null, compact_at_tokens: 200000 }) 
 afterEach(() => { document.body.innerHTML = ""; });
 
 describe("the compaction slider in a split menu", () => {
-  it("shows only the cached stop's word and description, with discrete accessible values", () => {
+  it("shows only the cached stop's word and ticks, with discrete accessible values", () => {
     const { host, slider } = mount();
     expect(slider).not.toBeNull();
     expect(slider.type).toBe("range");
@@ -38,12 +38,13 @@ describe("the compaction slider in a split menu", () => {
     const group = host.querySelector('[data-group="compact"]');
     expect(group.querySelectorAll(".mt")).toHaveLength(1);
     expect(group.querySelector(".mt").textContent).toBe("Default (200k)");
-    expect(group.querySelector(".md").textContent).toBe("This device's setting");
+    expect(group.querySelector(".md")).toBeNull();
+    expect(group.querySelectorAll(".menu-slider-stops span")).toHaveLength(5);
     expect(group.querySelectorAll('[role="menuitemradio"]')).toHaveLength(0);
-    expect(document.getElementById(slider.getAttribute("aria-describedby")).textContent).toBe("This device's setting");
+    expect(slider.hasAttribute("aria-describedby")).toBe(false);
   });
 
-  it("previews only whole stops while dragging and commits once on release", () => {
+  it("previews only whole stops while dragging and commits once on release without closing", async () => {
     const { host, slider, caret, onChoose } = mount();
     caret.click();
     pointer(slider, "pointerdown");
@@ -59,7 +60,12 @@ describe("the compaction slider in a split menu", () => {
     expect(onChoose).not.toHaveBeenCalled();
     pointer(slider, "pointerup");
     expect(onChoose).toHaveBeenCalledExactlyOnceWith("compact:off");
-    expect(document.activeElement).toBe(caret);
+    await motionBeat();
+    expect(document.activeElement).toBe(slider);
+    expect(caret.getAttribute("aria-expanded")).toBe("true");
+    expect(host.querySelector(".splitmenu").hidden).toBe(false);
+    keydown(slider, "Escape");
+    expect(onChoose).toHaveBeenCalledTimes(1);
   });
 
   it("keeps a custom cached limit as its own stop ahead of Off", () => {
@@ -103,6 +109,12 @@ describe("the compaction slider in a split menu", () => {
     preview(slider, 4);
     keydown(slider, "Enter");
     expect(onChoose).toHaveBeenCalledExactlyOnceWith("compact:off");
+    await motionBeat();
+    expect(document.activeElement).toBe(slider);
+    expect(host.querySelector(".splitmenu").hidden).toBe(false);
+    expect(caret.getAttribute("aria-expanded")).toBe("true");
+    keydown(slider, "Escape");
+    expect(onChoose).toHaveBeenCalledTimes(1);
   });
 
   it("commits on thumb blur without stealing the menu navigation destination", () => {
@@ -167,6 +179,24 @@ describe("the compaction slider in a split menu", () => {
     expect(host.querySelector(".splitmenu").hidden).toBe(true);
   });
 
+  it.each(["Enter", " "])("keeps slider focus after %s commits and a cache reply remounts it", (key) => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const markup = (limit) => groupedMenuButtonMarkup("⋮", [compactionMenuGroup({ max_context_tokens: limit })]);
+    const onChoose = vi.fn();
+    mountMenuIfChanged(host, markup(null), { onChoose });
+    keydown(host.querySelector(".caret"), "ArrowUp");
+    const slider = host.querySelector('[role="slider"]');
+    preview(slider, 1);
+    keydown(slider, key);
+    mountMenuIfChanged(host, markup(150000), { onChoose });
+    expect(onChoose).toHaveBeenCalledExactlyOnceWith("compact:150000");
+    expect(host.querySelector(".caret").getAttribute("aria-expanded")).toBe("true");
+    expect(host.querySelector(".splitmenu").hidden).toBe(false);
+    expect(document.activeElement).toBe(host.querySelector('[role="slider"]'));
+    expect(document.activeElement.getAttribute("aria-valuetext")).toBe("150k");
+  });
+
   it("can commit the standing stop with Enter", () => {
     const { caret, slider, onChoose } = mount();
     keydown(caret, "ArrowUp");
@@ -183,7 +213,7 @@ describe("the compaction slider in a split menu", () => {
       slider.dispatchEvent(new Event("input", { bubbles: true }));
       keydown(slider, event);
       await motionBeat();
-      caret.click();
+      if (event === "Escape") caret.click();
       expect(slider.getAttribute("aria-valuetext")).toBe("Default (200k)");
       expect(slider.value).toBe("0");
       keydown(slider, "Escape");

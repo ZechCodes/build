@@ -132,7 +132,7 @@ const mountWorkspaceRail = async (capabilities = SETTINGS_CAPABILITIES) => {
 };
 
 const choose = async (optionId) => {
-  menuCaret().click();
+  if (menuCaret().getAttribute("aria-expanded") !== "true") menuCaret().click();
   const control = slider();
   control.value = String(compactionStops().findIndex((option) => option.id === optionId));
   control.dispatchEvent(new Event("input", { bubbles: true }));

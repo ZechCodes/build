@@ -630,15 +630,23 @@ describe("what the ⋯ leaves on the document", () => {
     watching.stop();
   });
 
-  it("takes it with it when a read changes what the menu offers", async () => {
+  it("keeps one outside-press watch through an open menu update, then removes it on close", async () => {
     await mount();
     const watching = watchDocumentListeners("pointerdown");
-    menuCaret().click();
+    const caret = menuCaret();
+    caret.click();
+    const menu = caret.parentElement.querySelector(".splitmenu");
 
     const gained = branchRow();
     gained.agents[0].surfaces.checklist = [{ id: "c1", subject: "Land the fold", state: "in_progress" }];
     await poll(gained);
 
+    expect(menuCaret()).toBe(caret);
+    expect(caret.parentElement.querySelector(".splitmenu")).toBe(menu);
+    expect(menu.hidden).toBe(false);
+    expect(caret.getAttribute("aria-expanded")).toBe("true");
+    expect(watching.count()).toBe(1);
+    caret.click();
     expect(watching.count()).toBe(0);
     watching.stop();
   });

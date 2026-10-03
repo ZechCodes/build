@@ -16,11 +16,11 @@ export const SHELL_STYLES = "#toolbar{padding:12px 20px} #root{padding:24px} #ro
 
 /** Runs in the page: `page.evaluate(seedChatMenu, { theme, bigCounts })`.
  *  `bigCounts` puts four-digit counts on the surface rows (the wrap check). */
-export async function seedChatMenu({ theme, bigCounts, resetCapable = false, holdSettings = false }) {
+export async function seedChatMenu({ theme, bigCounts, resetCapable = false, holdSettings = false, settingsDelayMs = 0 }) {
   document.documentElement.dataset.theme = theme;
   const { App } = window.__layoutModules.app;
   const { mountAgentRail } = window.__layoutModules.rail;
-  const { writeCached } = window.__layoutModules.cache;
+  const { readCached, writeCached } = window.__layoutModules.cache;
   const { startFeed } = window.__layoutModules.feed;
   const { stampWorkspace } = window.__layoutModules.merge;
   const { greetBridge } = window.__layoutModules.events;
@@ -71,7 +71,14 @@ export async function seedChatMenu({ theme, bigCounts, resetCapable = false, hol
   ].map((workspace) => stampWorkspace(workspace, deviceId)));
   await startFeed();
   window.__menuSettingsAsked = [];
+  window.__menuSettingsAnswered = [];
   window.__conversationResetCalls = [];
+  window.__setMenuTasks = (tasks) => writeCached({ deviceId, entityId: projectId, kind: "tracker-tasks" }, { tasks, columns: [] });
+  window.__repaintMenuAgent = async (patch) => {
+    const address = { deviceId, entityId: "menu-run", kind: "row", sub: "" };
+    const row = (await readCached(address)).value;
+    await writeCached(address, { ...row, agents: row.agents.map((held) => held.id === agent.id ? { ...held, ...patch } : held) });
+  };
   window.__menuRail = mountAgentRail(document.querySelector("#agent-rail"), {
     kind: "workspace", deviceId, projectId, workspaceId: "menu-workspace", entityId: "menu-run",
     openAgentId: agent.id, panelOpen: true,
@@ -82,6 +89,8 @@ export async function seedChatMenu({ theme, bigCounts, resetCapable = false, hol
           window.__releaseMenuSettings = resolve;
           window.__refuseMenuSettings = () => reject(new Error("settings refused"));
         });
+        if (settingsDelayMs) await new Promise((resolve) => setTimeout(resolve, settingsDelayMs));
+        window.__menuSettingsAnswered.push(params);
         return { agent_id: params.agent_id, max_context_tokens: params.max_context_tokens, compact_at_tokens: params.max_context_tokens ?? 200000 };
       }
       if (method === "models.list") return { default_provider: "claude_adk", providers: [{ id: "claude_adk", label: "Claude Code", models: [], efforts: [] }] };

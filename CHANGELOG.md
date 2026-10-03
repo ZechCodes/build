@@ -19,6 +19,12 @@ Wire 3.11.0.
   sizing and native editing behaviour. Branch routing menus stay inside narrow
   screens, and short task rails keep their Close action fully in view (#368).
 
+- Saving the conversation menu's Compact at threshold updates the open menu
+  in place. Its menu, thumb, focus and active drag survive cache repaints
+  without closing, reopening or replaying animations. Surface rows can appear
+  or disappear while the menu stays open; removing the focused row moves focus
+  to the nearest remaining row. Lifted menus remain inside their bounds as
+  rows change, and removed sliders cannot commit a retired preview (#366).
 - Every select shares Build's field styling, chevron and focus ring in both
   themes. Chromium's native picker uses the same panel, rows and selection
   marks as Build menus; other browsers retain a themed native popup. Compact

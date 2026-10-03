@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import { captureLayout, withLayoutPage } from "./layoutHarness.mjs";
 import { openMenuOn, settled } from "./chatMenuSeed.mjs";
+import { compactionContinuity, observeCompactionMenu, uninterruptedMenu } from "./compactionMenuContinuity.mjs";
 
 const SLIDER = '.rail-surface-menu [role="slider"]';
 const CARET = ".rail-surface-menu .caret";
@@ -33,6 +34,7 @@ it.each(["pointer", "Enter"])("keeps the chosen stop visible while a %s save is 
   await withLayoutPage(async ({ page, basePath }) => {
     await openMenuOn(page, basePath, "desktop", { theme: "dark", bigCounts: false, resetCapable: true, holdSettings: true });
     const slider = page.locator(SLIDER);
+    await observeCompactionMenu(page);
     if (gesture === "pointer") {
       const box = await slider.boundingBox();
       await page.mouse.click(box.x + box.width * 0.68, box.y + box.height / 2);
@@ -48,6 +50,7 @@ it.each(["pointer", "Enter"])("keeps the chosen stop visible while a %s save is 
     expect(await page.locator(CARET).getAttribute("aria-expanded")).toBe("true");
     await captureLayout(page, `compaction-300k-pending-${gesture.toLowerCase()}.png`);
     if (gesture === "pointer") {
+      expect(await compactionContinuity(page, { stop: true })).toEqual(uninterruptedMenu);
       await page.keyboard.press("Escape");
       await page.evaluate(() => window.__releaseMenuSettings());
       await page.waitForFunction(() => document.querySelector('.rail-surface-menu [role="slider"]')?.dataset.action === "compact:300000");
@@ -56,6 +59,7 @@ it.each(["pointer", "Enter"])("keeps the chosen stop visible while a %s save is 
       await page.waitForFunction(() => document.querySelector('.rail-surface-menu [role="slider"]')?.getAttribute("aria-valuetext") === "Default (200k)");
       expect(await slider.evaluate((element) => document.activeElement === element)).toBe(true);
       expect(await page.locator('[data-group="compact"] .mt').textContent()).toBe("Default (200k)");
+      expect(await compactionContinuity(page, { stop: true })).toEqual(uninterruptedMenu);
       await page.keyboard.press("Escape");
     }
     await settled(page);
@@ -69,6 +73,7 @@ it("snaps pointer drags to stops on release, saves once, and shows one value at 
     await openMenuOn(page, basePath, "narrow", { theme: "dark", bigCounts: false });
     const slider = page.locator(SLIDER);
     expect(await slider.count()).toBe(1);
+    await observeCompactionMenu(page);
     const box = await slider.boundingBox();
     const y = box.y + box.height / 2;
     await page.mouse.move(box.x + 10, y);
@@ -82,6 +87,7 @@ it("snaps pointer drags to stops on release, saves once, and shows one value at 
       { entity_id: "menu-run", agent_id: "menu-agent", max_context_tokens: 300000 },
     ]);
     await savedMenuOpen(page);
+    expect(await compactionContinuity(page, { stop: true })).toEqual(uninterruptedMenu);
     expect(await word(page)).toBe("300k");
     expect(await page.locator('[data-group="compact"] .mt').allTextContents()).toEqual(["300k"]);
     expect(await page.locator('[data-group="compact"] .md').count()).toBe(0);
@@ -114,7 +120,7 @@ it("previews every stop in one open menu, writes once on Enter, and cancels on E
     expect(await page.evaluate(() => window.__menuSettingsAsked)).toEqual([]);
     await reopen(page);
     expect(await word(page)).toBe("Default (200k)");
-    await slider.focus();
+    await observeCompactionMenu(page);
     for (let stop = 0; stop < 4; stop += 1) await page.keyboard.press("ArrowRight");
     await page.keyboard.press("Enter");
     await page.waitForFunction(() => window.__menuSettingsAsked.length === 1);
@@ -122,6 +128,7 @@ it("previews every stop in one open menu, writes once on Enter, and cancels on E
       { entity_id: "menu-run", agent_id: "menu-agent", max_context_tokens: 0 },
     ]);
     await savedMenuOpen(page);
+    expect(await compactionContinuity(page, { stop: true })).toEqual(uninterruptedMenu);
     expect(await word(page)).toBe("Off");
     await captureLayout(page, "compaction-after-enter.png");
     await slider.focus();
@@ -171,10 +178,12 @@ it("saves a clicked stop with slider focus, then saves a preview while walking d
   await withLayoutPage(async ({ page, basePath }) => {
     await openMenuOn(page, basePath, "desktop", { theme: "dark", bigCounts: false, resetCapable: true });
     const slider = page.locator(SLIDER);
+    await observeCompactionMenu(page);
     const box = await slider.boundingBox();
     await page.mouse.click(box.x + box.width * 0.39, box.y + box.height / 2);
     await page.waitForFunction(() => window.__menuSettingsAsked.length === 1);
     await savedMenuOpen(page);
+    expect(await compactionContinuity(page, { stop: true })).toEqual(uninterruptedMenu);
     expect(await word(page)).toBe("200k");
     await captureLayout(page, "compaction-after-click-with-clear.png");
     await page.keyboard.press("ArrowRight");

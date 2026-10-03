@@ -8,10 +8,16 @@ protocol versions; see
 
 ## [0.2.8] - Unreleased
 
-Wire 3.6.0.
+Wire 3.9.0.
 
 ### Added
 
+- The project rail has a Files section with the workspace's shared explorer:
+  one collapsible root per project source, persistent open tabs, keyboard
+  navigation, previews, selection and guarded file edits. Project Files links
+  retain the source, path and line. `fs.projectSources` (wire 3.9.0) lets
+  `fs.tree`, `fs.read` and `fs.write` resolve a configured project source
+  with the same containment checks as workspace files (#359).
 - Task reviews save the committed head and resolved base of every Git directory
   in a workspace, retain them with private refs, and keep non-Git and unavailable
   directories visible. `tasks.review.snapshot`, `tasks.review.get`,

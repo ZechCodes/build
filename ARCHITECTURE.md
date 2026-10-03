@@ -221,7 +221,7 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.8.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.9.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
@@ -297,6 +297,11 @@ runtime that starts them.
   saved commits. `tasks.review.get` also returns available destinations and
   persisted action results. The action capability is independent of review
   reads, comments and explicit completion.
+  3.9.0 adds `fs.projectSources` (#359): `fs.tree`, `fs.read` and
+  `fs.write` accept `project_id` plus `source_id`, resolving one configured
+  source of that project. The pair is exclusive with workspace, run and
+  worktree selectors. Existing project-only and workspace scopes keep their
+  behavior; all source reads and writes use the same path containment checks.
   The SPA's adapter claims `>=2.0.0 <4.0.0`: it calls nothing a 2.x bridge
   lacks (what 2.x added after 2.0.0 is capability-gated), so the app can
   roll before the bridge.
@@ -424,6 +429,12 @@ runs `git init` without the user asking.
 A repository with no commits yet is a Git project too: `open_repo`
 (`bridge/src/lifecycle/projects.rs`) takes its base from the unborn HEAD, or
 the one given, and does not resolve it until something needs a commit.
+The project's Files face (`#/project/<id>/files`) browses those original
+sources directly, one collapsible root per source, using the workspace's
+shared explorer. Files, tabs and folded roots have project-scoped records,
+and each source has a separate directory cache. `fs.projectSources` gates
+the explicit project/source selector; an older bridge can still browse the
+first source through its legacy project-only scope.
 `project.update_source` (`bridge/src/app/projects/source_update.rs`, git in
 `bridge/src/lifecycle/source_update.rs`) edits a source in place:
 - A new base branch must be a branch the checkout has.

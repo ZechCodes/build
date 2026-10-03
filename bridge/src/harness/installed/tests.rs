@@ -72,7 +72,7 @@ fn inline(clock: &'static HandClock) -> Arc<Readings> {
 
 /// [`inline`] readings that ask `cli` whichever CLI is meant, as a spawn
 /// does, by the harness's own probe.
-fn inline_standing_in(clock: &'static HandClock, cli: &'static ScriptedCli) -> Arc<Readings> {
+fn inline_standing_in(clock: &'static HandClock, cli: &'static dyn CliProbe) -> Arc<Readings> {
     let mut readings = inline(clock);
     Arc::get_mut(&mut readings).expect("just made").stand_in = Some(cli);
     readings
@@ -685,4 +685,235 @@ fn an_old_background_ask_cannot_replace_a_newer_fresh_answer() {
         readings.reading(binary, cli);
         assert_eq!(queued.lock().unwrap().len(), 1, "the old claim is released");
     }
+}
+
+struct ListedCli {
+    response: Mutex<CliReading>,
+}
+
+impl ListedCli {
+    fn leaked() -> &'static Self {
+        Box::leak(Box::new(Self {
+            response: Mutex::new(codex_listing("gpt-6.1-sol")),
+        }))
+    }
+
+    fn set(&self, response: CliReading) {
+        *self.response.lock().unwrap() = response;
+    }
+}
+
+impl CliProbe for ListedCli {
+    fn read(&self, _binary: &str) -> CliReading {
+        self.response.lock().unwrap().clone()
+    }
+}
+
+fn codex_listing(model: &str) -> CliReading {
+    CliReading {
+        version: Some(version("0.160.0")),
+        listed: Some(vec![ListedModel {
+            id: model.into(),
+            label: model.into(),
+            hidden: false,
+            efforts: vec!["high".into()],
+        }]),
+    }
+}
+
+#[test]
+fn failed_model_refreshes_keep_the_last_good_list_without_announcements() {
+    let cli = ListedCli::leaked();
+    let clock = HandClock::leaked();
+    let readings = inline_standing_in(clock, cli);
+    let original = readings.reading("codex", &CODEX_MODEL_LIST).unwrap();
+    for wait in [READING_TTL, RETRY_BACKOFF] {
+        cli.set(CliReading {
+            version: Some(version("0.160.0")),
+            listed: None,
+        });
+        clock.advance(wait);
+        let held = readings.reading("codex", &CODEX_MODEL_LIST).unwrap();
+        assert!(
+            Arc::ptr_eq(&original, &held),
+            "an incomplete list erased the catalog"
+        );
+        assert_eq!(
+            *readings.changes().borrow(),
+            1,
+            "a failed refresh is not model news"
+        );
+    }
+    cli.set(codex_listing("gpt-6.1-sol"));
+    clock.advance(READING_TTL);
+    readings.refresh();
+    assert_eq!(
+        *readings.changes().borrow(),
+        1,
+        "the same catalog recovering is not news"
+    );
+    cli.set(codex_listing("gpt-next"));
+    clock.advance(READING_TTL);
+    readings.refresh();
+    assert_eq!(
+        *readings.changes().borrow(),
+        2,
+        "a changed usable catalog is news"
+    );
+}
+
+#[test]
+fn a_failed_first_model_probe_still_offers_the_fallback() {
+    let cli = ListedCli::leaked();
+    cli.set(CliReading {
+        version: Some(version("0.160.0")),
+        listed: None,
+    });
+    let readings = inline_standing_in(HandClock::leaked(), cli);
+    let reading = readings.reading("codex", &CODEX_MODEL_LIST).unwrap();
+    assert_eq!(reading.listed, None);
+    let offer = model_offer_from(&readings, AgentProvider::CodexAppServer);
+    assert!(offer.models.iter().any(|model| model.id == "gpt-5.2"));
+    assert!(offer.refusal("gpt-6.1-sol", "Codex").is_none());
+}
+
+#[test]
+fn dropping_a_latest_ask_preserves_the_good_catalog_and_retries() {
+    let cli = ListedCli::leaked();
+    let clock = HandClock::leaked();
+    let queued: &'static Mutex<Vec<Box<dyn FnOnce() + Send>>> =
+        Box::leak(Box::new(Mutex::new(Vec::new())));
+    let mut readings = Readings::with(
+        Some(Arc::new(|ask| queued.lock().unwrap().push(ask))),
+        Arc::new(move || clock.now()),
+        READING_TTL,
+    );
+    Arc::get_mut(&mut readings).unwrap().stand_in = Some(cli);
+    readings.reading("codex", &CODEX_MODEL_LIST);
+    let first = queued.lock().unwrap().pop().unwrap();
+    first();
+    let original = readings.held("codex").unwrap();
+    clock.advance(READING_TTL);
+    readings.refresh();
+    let dropped = queued.lock().unwrap().pop().unwrap();
+    drop(dropped);
+    assert!(Arc::ptr_eq(&original, &readings.held("codex").unwrap()));
+    assert_eq!(*readings.changes().borrow(), 1);
+    clock.advance(RETRY_BACKOFF - Duration::from_secs(1));
+    readings.refresh();
+    assert!(queued.lock().unwrap().is_empty());
+    clock.advance(Duration::from_secs(1));
+    readings.refresh();
+    assert_eq!(queued.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn persistent_probe_failures_back_off_exponentially_to_the_ttl() {
+    let cli = ScriptedCli::leaked("unreadable");
+    let clock = HandClock::leaked();
+    let readings = inline(clock);
+    readings.reading("claude", cli);
+    for (index, delay) in [15, 30, 60, 120, 240, 480, 600, 600]
+        .into_iter()
+        .enumerate()
+    {
+        clock.advance(Duration::from_secs(delay - 1));
+        readings.refresh();
+        assert_eq!(cli.asked(), index + 1, "probed before the {delay}s backoff");
+        clock.advance(Duration::from_secs(1));
+        readings.refresh();
+        assert_eq!(cli.asked(), index + 2, "did not probe after {delay}s");
+    }
+}
+
+#[test]
+fn a_successful_probe_resets_the_retry_backoff() {
+    let cli = ScriptedCli::leaked("unreadable");
+    let clock = HandClock::leaked();
+    let readings = inline(clock);
+    readings.reading("claude", cli);
+    clock.advance(READING_TTL);
+    readings.refresh();
+    cli.set("2.1.284");
+    clock.advance(READING_TTL);
+    readings.refresh();
+    cli.set("unreadable");
+    clock.advance(READING_TTL - Duration::from_secs(1));
+    readings.refresh();
+    assert_eq!(cli.asked(), 3, "a good answer has the normal TTL");
+    clock.advance(Duration::from_secs(1));
+    readings.refresh();
+    assert_eq!(cli.asked(), 4);
+    clock.advance(RETRY_BACKOFF);
+    readings.refresh();
+    assert_eq!(cli.asked(), 5, "failure after recovery starts again at 15s");
+    clock.advance(RETRY_BACKOFF);
+    readings.refresh();
+    assert_eq!(cli.asked(), 5, "the second failure waits 30s");
+}
+
+#[test]
+fn a_changed_executable_restarts_backoff_once_without_discarding_good_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let binary = tracked_cli(dir.path(), "claude");
+    let cli = ScriptedCli::leaked("2.1.284");
+    let clock = HandClock::leaked();
+    let readings = inline(clock);
+    let good = readings.reading(binary, cli).unwrap();
+    cli.set("unreadable");
+    for _ in 0..8 {
+        clock.advance(READING_TTL);
+        readings.refresh();
+    }
+    std::fs::File::open(binary)
+        .unwrap()
+        .set_modified(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap();
+    let before = cli.asked();
+    readings.refresh();
+    assert_eq!(
+        cli.asked(),
+        before + 1,
+        "replacement bypasses capped backoff"
+    );
+    assert!(Arc::ptr_eq(&good, &readings.held(binary).unwrap()));
+    clock.advance(RETRY_BACKOFF - Duration::from_secs(1));
+    readings.refresh();
+    assert_eq!(
+        cli.asked(),
+        before + 1,
+        "one replacement must not keep bypassing backoff"
+    );
+    clock.advance(Duration::from_secs(1));
+    readings.refresh();
+    assert_eq!(cli.asked(), before + 2, "replacement starts again at 15s");
+}
+
+#[test]
+fn a_failed_refresh_does_not_give_retained_data_a_fresh_refusal() {
+    let cli = ScriptedCli::leaked("2.1.280");
+    let clock = HandClock::leaked();
+    let readings = inline_standing_in(clock, cli);
+    let sonnet = choice(AgentProvider::ClaudeAdk, Some("claude-sonnet-5-5"));
+    let original = readings.reading("claude", cli).unwrap();
+    cli.set("unreadable");
+    clock.advance(READING_TTL);
+    readings.refresh();
+    assert!(Arc::ptr_eq(&original, &readings.held("claude").unwrap()));
+    assert!(
+        held_refusal(&readings, &sonnet).is_none(),
+        "retained data is not fresh"
+    );
+    assert_eq!(
+        refuse_unrunnable(&readings, &sonnet),
+        Ok(()),
+        "a spawn judges its own failed probe"
+    );
+    assert_eq!(
+        cli.asked(),
+        3,
+        "the spawn must ask rather than trust retained data"
+    );
+    assert!(Arc::ptr_eq(&original, &readings.held("claude").unwrap()));
+    assert_eq!(*readings.changes().borrow(), 1);
 }

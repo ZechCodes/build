@@ -43,3 +43,8 @@ describe("a run or a bare checkout", () => {
     expect(syncWalksCheckout({ project_id: "project-1" })).toBe(false);
   });
 });
+
+it("keeps project sources and project explorer layout apart", () => {
+  expect(directoryCacheId({ project_id: "p", source_id: "a" })).toBe('project:["p","a"]');
+  expect(directoryCacheId({ project_id: "p", source_id: "b" })).toBe('project:["p","b"]');
+});

@@ -12,6 +12,12 @@ const workRoute = (hash) => {
 };
 
 describe("routeFromHash", () => {
+  it("round-trips project Files source, path, line and conversation", () => {
+    const route = { name: "project", deviceId: "d1", projectId: "p", tab: "files", sourceId: "docs", file: "src/a b.js", line: 7, agent: "a1" };
+    expect(hashFromRoute(route)).toBe("#/device/d1/project/p/files?agent=a1&source=docs&path=src%2Fa+b.js&line=7");
+    expect(routeFromHash(hashFromRoute(route))).toEqual(route);
+    expect(workRoute("#/project/p/files?source=docs")).toEqual({ name: "project", projectId: "p", tab: "files", sourceId: "docs" });
+  });
   it("round-trips a workspace request to create an agent", () => {
     const route = { name: "workspace", deviceId: "d1", projectId: "p", workspaceId: "ws", tab: "changes", newAgent: true };
     expect(routeFromHash(hashFromRoute(route))).toEqual(route);
@@ -251,7 +257,7 @@ describe("legacy routes canonicalize to the nearest new route", () => {
   // in the rail. Its base checkout has no surface — that is what workspaces are
   // cut from — so every URL that used to open the checkout opens the page.
   it("lands every base-project URL on the project's own page", () => {
-    for (const hash of ["#/project/p", "#/project/p/files", "#/project/p/changes", "#/project/p/bogus"]) {
+    for (const hash of ["#/project/p", "#/project/p/changes", "#/project/p/bogus"]) {
       expect([hash, workRoute(hash)]).toEqual([hash, { name: "project", projectId: "p", tab: "tasks" }]);
     }
     // A collection under a project with nothing named in it says the project and

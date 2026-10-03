@@ -1,30 +1,25 @@
 // The project's own surface: what the project holds, and who you talk to about
 // it.
 //
-// A project is a template — its checkout is the base every workspace is cut
-// FROM, and nothing opens it — so this page is about the project itself. The
-// main pane is the project's workspaces, each row opening its own surface; the
-// rail is the project's agent, whose conversation the bridge keeps in a scratch
-// directory of its own (planning/v2/workspaces.md).
-//
-// The page's verb sits in the toolbar's verb slot beside the project's name:
-// the + that makes the first workspace, named for the project the bar names.
-//
-// Two tabs, because a project holds two kinds of thing: the workspaces the work
-// happens in, and the tasks that say what the work IS. They are the faces of
-// the project's rail (core/projectRail.js, #274), with the project's Settings at
-// its foot, the way a workspace's rail carries its own. The Tasks tab is its
-// own surface (core/trackerTasksPane.js) mounted into this page's body, and it
-// keeps its own URL — `#/project/<p>/tasks` — so a link to a board opens one.
+// Tasks, Files and Workspaces share the project's rail. Files mounts the same
+// explorer as the workspace surface, over the source directories workspaces
+// are cut from. Each face rewrites its URL without remounting the agent rail.
+// The toolbar's + creates a workspace; Settings remains at the rail's foot.
 
 import { $ } from "../dom.js";
-import { App, go } from "../app.js";
+import { App, go, markRoute } from "../app.js";
 import { esc } from "../core/text.js";
 import { collapseChatOverPage, shellSelection } from "../core/shell.js";
 import { surfaceContext } from "../core/surfaceContext.js";
 import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
 import { clearToolbarVerb, setToolbarVerb } from "../core/toolbar.js";
 import { openCreateWork } from "../core/createWork.js";
+import { renderFilesTab } from "./files.js";
+import { rememberProjectRailRoute } from "../core/projectRailState.js";
+import { projectFilesRoots } from "../core/filesRoots.js";
+import { projectLayoutCacheId } from "../core/directoryScope.js";
+import { projectFilesRpc } from "../core/projectFilesRpc.js";
+import { readProjectFilesSupport, PROJECT_FILES_SUPPORT_KIND } from "../core/projectFilesSupport.js";
 import { mountProjectRail } from "../core/projectRail.js";
 import {
   ALL_WORKSPACES,
@@ -43,12 +38,12 @@ import { hashFromRoute } from "../core/router.js";
 import "../styles/tasks.css";
 import "../styles/surfaces.css";
 
-/** The two tabs, and which one a route stands on. Workspaces is the page
- *  itself, so a route that names no tab names that one. */
+/** The project's faces, with Tasks as the default. */
 const WORKSPACES_TAB = "workspaces";
 const TASKS_TAB = "tasks";
+const FILES_TAB = "files";
 /// Tasks is the default, so a route that names no tab is on it (#46).
-const tabOf = (route) => (route.tab === WORKSPACES_TAB ? WORKSPACES_TAB : TASKS_TAB);
+const tabOf = (route) => ([FILES_TAB, WORKSPACES_TAB].includes(route.tab) ? route.tab : TASKS_TAB);
 
 /** Line two of a workspace row: what it is standing on, what its checkout is
  *  doing when that is not simply "ready", and what the work weighs. The same
@@ -190,6 +185,10 @@ function paint(state) {
     state.tasks?.feedMoved();
     return;
   }
+  if (state.tab === FILES_TAB) {
+    paintFiles(state, pane);
+    return;
+  }
   const shown = JSON.stringify([state.page.rows, state.filter, [...state.reclaiming], [...state.reclaimErrors]]);
   if (pane.dataset.rows !== shown) {
     pane.dataset.rows = shown;
@@ -198,15 +197,27 @@ function paint(state) {
 }
 
 /**
- * Open one of the two tabs.
+ * Open one project face.
  *
  * Each owns the body outright — the workspaces list paints into it and the
  * Tasks pane mounts into it — so the one leaving is torn down before the one
  * arriving is built. The URL is rewritten rather than navigated: the page is
  * the same page, and a navigation would remount the rail beside it.
  */
-function openTab(state, tab) {
-  if (state.tab === tab) return;
+async function openTab(state, tab) {
+  if (state.tab === tab || state.switching) return;
+  state.switching = true;
+  try {
+    if (state.files && !await state.files.canLeave()) return;
+    if (state.disposed) return;
+    switchTab(state, tab);
+  } finally {
+    state.switching = false;
+  }
+}
+
+function switchTab(state, tab) {
+  disposeFiles(state);
   state.tasks?.dispose();
   state.tasks = null;
   state.tab = tab;
@@ -214,6 +225,7 @@ function openTab(state, tab) {
   state.rail.paint(tab);
   const pane = $("#project-pane");
   pane.innerHTML = "";
+  pane.className = tab === FILES_TAB ? "project-files-page" : "project-page";
   delete pane.dataset.rows;
   if (tab === TASKS_TAB) mountTasks(state, pane);
   else paint(state);
@@ -228,7 +240,74 @@ function writeTabHash(state) {
   const route = { ...state.route, tab: state.tab, view: state.view };
   App.route = route;
   state.route = route;
+  void rememberProjectRailRoute(route);
   history.replaceState(null, "", hashFromRoute(route));
+}
+
+/** The cached project's folders, always narrowed to the route's machine. */
+function projectRecord(state) {
+  return state.feed?.projects?.find((project) =>
+    project.deviceId === state.context.deviceId && (project.project_id || project.id) === state.route.projectId) || null;
+}
+
+function disposeFiles(state) {
+  if (App.routeLeaveGuard === state.files?.canLeave) App.routeLeaveGuard = null;
+  state.files?.dispose();
+  state.files = null;
+  state.filesSignature = null;
+}
+
+function markFile(state, path, sourceId) {
+  const same = state.route.file === path && (!state.route.sourceId || state.route.sourceId === sourceId);
+  state.route = { ...state.route, tab: FILES_TAB, file: path, sourceId,
+    line: same ? state.route.line : undefined };
+  markRoute(state.route);
+  void rememberProjectRailRoute(state.route);
+}
+
+function paintFilesSupport(state, pane, roots, moved) {
+  const note = pane.querySelector("[data-project-files-support]");
+  if (!note) return;
+  note.textContent = moved ? "A project folder moved. Copy or discard your edits before reopening Files." : "Update the bridge to browse additional project folders.";
+  note.hidden = !moved && (state.projectSources || roots.length < 2);
+}
+
+/** A feed repaint keeps the explorer, including its editor and keyboard. A
+ * changed source roster is picked up once it holds no unsaved file draft. */
+function paintFiles(state, pane) {
+  const project = projectRecord(state);
+  const roots = projectFilesRoots(project, state.route.projectId);
+  const signature = JSON.stringify(roots);
+  if (signature !== state.filesSignature && !state.files?.hasUnsavedChanges()) {
+    disposeFiles(state);
+    pane.className = "project-files-page";
+    pane.innerHTML = '<p class="dim project-files-support" data-project-files-support>Update the bridge to browse additional project folders.</p><div class="project-files-body"></div>';
+    state.filesSignature = signature;
+    state.files = renderFilesTab(pane.querySelector(".project-files-body"), {
+      roots,
+      layoutEntityId: projectLayoutCacheId(state.route.projectId),
+      callRpc: projectFilesRpc(state.context, roots[0]?.id, { project, currentProject: () => projectRecord(state) }),
+      cacheScope: state.context.cacheScope,
+      openAt: state.route.file ? { rootId: state.route.sourceId, path: state.route.file, line: state.route.line || null } : null,
+      onFileOpen: (path, sourceId) => markFile(state, path, sourceId),
+      viewingContext: App.viewingContext,
+    });
+    App.routeLeaveGuard = state.files.canLeave;
+  }
+  paintFilesSupport(state, pane, roots, signature !== state.filesSignature);
+}
+
+function watchProjectFilesSupport(state) {
+  const read = async () => {
+    const support = await readProjectFilesSupport(state.context.deviceId);
+    if (state.disposed || support === state.projectSources) return;
+    state.projectSources = support;
+    paint(state);
+  };
+  void read();
+  return subscribeCache({ deviceId: state.context.deviceId }, (address) => {
+    if (address?.kind === PROJECT_FILES_SUPPORT_KIND) void read();
+  });
 }
 
 function mountTasks(state, pane) {
@@ -329,24 +408,28 @@ export async function renderProject() {
   const root = $("#root");
   const route = App.route;
   const context = surfaceContext(route);
-  root.className = "surface";
+  void rememberProjectRailRoute(route);
   // The surface paints what the records hold of this machine whether or not it
   // can answer. Only a machine nothing here has ever held has nothing to paint:
   // the notice names it, waits for it, and hands the link back when it lands.
   if (!context) {
+    root.className = "surface";
     mountDeviceNotice(root, route.deviceId);
     return;
   }
+  const projectSources = await readProjectFilesSupport(context.deviceId);
+  if (App.route !== route || !context.active()) return;
+  root.className = "surface";
   const state = {
     route, context, disposed: false, selection: shellSelection(),
     page: projectPageModel(null, route), verb: null,
     tab: tabOf(route), view: route.view || "dashboard", feed: null, tasks: null, rail: null,
     reclaiming: new Set(), reclaimErrors: new Map(), filter: ALL_WORKSPACES,
-    measuresSizes: false, sizeAsk: null,
+    measuresSizes: false, sizeAsk: null, files: null, filesSignature: null, switching: false, projectSources,
   };
   state.verb = (host) => paintProjectVerbs(host, state);
   root.innerHTML = `<div id="tabbody" class="flush"><div id="project-pane" class="project-page"></div></div>`;
-  // The two tabs are the rail's faces. A press switches in place rather than
+  // The three tabs are the rail's faces. A press switches in place rather than
   // navigating, because a navigation would remount the agent rail beside the
   // page; the shell's route rule never sees it (#62), so where the chat lies
   // over the page the press puts it away itself.
@@ -356,7 +439,7 @@ export async function renderProject() {
     navigate: go,
     onSelect: (tab) => {
       collapseChatOverPage();
-      openTab(state, tab === WORKSPACES_TAB ? WORKSPACES_TAB : TASKS_TAB);
+      void openTab(state, tab);
     },
   });
   state.rail.paint(state.tab);
@@ -369,6 +452,7 @@ export async function renderProject() {
     paint(state);
   });
   const unwatchSizeSupport = watchSizeSupport(state);
+  const unwatchFilesSupport = watchProjectFilesSupport(state);
   askForSizesWhileOpen(state);
   if (state.tab === TASKS_TAB) mountTasks(state, $("#project-pane"));
   paint(state);
@@ -376,6 +460,8 @@ export async function renderProject() {
     state.disposed = true;
     unsubscribe();
     unwatchSizeSupport();
+    unwatchFilesSupport();
+    disposeFiles(state);
     state.sizeAsk?.stop();
     deviceStrip();
     state.tasks?.dispose();

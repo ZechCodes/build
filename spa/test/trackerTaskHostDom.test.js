@@ -150,7 +150,7 @@ describe("the task route", () => {
     await flush();
     const rail = document.querySelector("#dir-rail");
     const faces = [...rail.querySelectorAll("[data-tab]")].map((cell) => [cell.dataset.tab, cell.getAttribute("aria-selected")]);
-    expect(faces).toEqual([["tasks", "true"], ["workspaces", "false"]]);
+    expect(faces).toEqual([["tasks", "true"], ["files", "false"], ["workspaces", "false"]]);
     expect(rail.querySelector("[data-rail-settings]")).not.toBeNull();
     rail.querySelector("[data-tab=workspaces]").click();
     expect(location.hash).toBe("#/device/dev-1/project/proj-1/workspaces");

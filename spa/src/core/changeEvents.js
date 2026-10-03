@@ -71,6 +71,7 @@ import { rememberBranchDelete } from "./branchDeleteSupport.js";
 import { NO_REVIEW_SUPPORT, rememberReviewSupport } from "./taskReviewSupport.js";
 import { rememberAgentLineageSupport } from "./agentLineageSupport.js";
 import { rememberSourceEditSupport } from "./sourceEditSupport.js";
+import { rememberProjectFilesSupport } from "./projectFilesSupport.js";
 import { rememberWorkspaceSizeSupport } from "./workspaceSizeSupport.js";
 
 /** The wire API majors this build of the SPA speaks, declared in every
@@ -81,6 +82,7 @@ export { SPA_API_RANGE };
  *  a greeting, and about a bridge nobody here speaks to. */
 const NO_CAPABILITIES = Object.freeze({
   changes: Object.freeze({ subscriptions: false, kinds: Object.freeze([]) }),
+  fs: Object.freeze({ projectSources: false }),
   requests: Object.freeze({ priority: false }),
   errors: Object.freeze({ codes: false }),
   diffs: Object.freeze({ perFile: false }),
@@ -920,6 +922,7 @@ function publishGreeting(call, deviceId, greeting, adapter, onGreeting) {
   void rememberSourceEditSupport(deviceId, state.adapter.capabilities);
   // And whether it measures its workspaces' sizes when asked (#273).
   void rememberWorkspaceSizeSupport(deviceId, state.adapter.capabilities);
+  void rememberProjectFilesSupport(deviceId, state.adapter.capabilities);
   onGreeting(greeting);
   armChangeEvents(greeting, deviceId);
   adoptGreetedSession(state, call);

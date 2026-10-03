@@ -383,11 +383,11 @@ describe("the project's rail", () => {
   };
 
   it("lists Tasks and Workspaces and nothing of a checkout's", () => {
-    expect(PROJECT_TABS.map((tab) => tab.id)).toEqual(["tasks", "workspaces"]);
+    expect(PROJECT_TABS.map((tab) => tab.id)).toEqual(["tasks", "files", "workspaces"]);
     const { tabs } = mountProject();
-    expect(tabs().map((tab) => tab.getAttribute("aria-label"))).toEqual(["Tasks", "Workspaces"]);
+    expect(tabs().map((tab) => tab.getAttribute("aria-label"))).toEqual(["Tasks", "Files", "Workspaces"]);
     expect(tabs()[0].querySelector(".badge.dirtab-count")).not.toBeNull();
-    expect(tabs()[1].innerHTML).toContain("lucide-folders");
+    expect(tabs()[2].innerHTML).toContain("lucide-folders");
   });
 
   it("names its own settings at the foot, and draws no sidebar toggle", () => {

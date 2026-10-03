@@ -11,6 +11,7 @@ import { esc } from "../core/text.js";
 import { mountWorkspaceRail } from "../core/workspaceRail.js";
 import { shellSelection } from "../core/shell.js";
 import { renderFilesTab } from "./files.js";
+import { workspaceFilesRoots } from "../core/filesRoots.js";
 import { directoryId, selectedDirectory, workspaceDirectoryModel, workspaceScope } from "../core/workspaceModel.js";
 import { workspaceLayoutCacheId } from "../core/directoryScope.js";
 import { mountWorkspaceChanges } from "./workspaceChanges.js";
@@ -228,19 +229,11 @@ function mountTasksTab(body, { canonical, callRpc, context, feed, agentSelection
   });
 }
 
-/** The workspace's directories as the Files tree's roots, in its own order. */
-const filesRoots = (workspace, workspaceId) =>
-  workspaceDirectoryModel(workspace).map((directory) => ({
-    id: directory.sourceId,
-    label: directory.label,
-    scope: workspaceScope(workspaceId, directory.sourceId, workspace),
-  }));
-
 /** Files over every directory of the workspace, one root each (#174). The
  *  route's `sourceId` is the opened file's root and its `file` a path in that
  *  root's directory; with no file open it is the first root. */
 function mountFilesPane(body, { canonical, workspace, callRpc, cacheScope }) {
-  const roots = filesRoots(workspace, canonical.workspaceId);
+  const roots = workspaceFilesRoots(workspace, canonical.workspaceId);
   const openAt = canonical.file ? { rootId: canonical.sourceId, path: canonical.file, line: canonical.line || null } : null;
   return renderFilesTab(body, {
     roots,
@@ -248,7 +241,7 @@ function mountFilesPane(body, { canonical, workspace, callRpc, cacheScope }) {
     callRpc,
     cacheScope,
     openAt,
-    onFileOpen: (path, rootId) => markRoute({ ...canonical, sourceId: path ? rootId : roots[0].id, file: path }),
+    onFileOpen: (path, rootId) => markRoute({ ...canonical, sourceId: path ? rootId : roots[0]?.id, file: path }),
     viewingContext: App.viewingContext,
   });
 }

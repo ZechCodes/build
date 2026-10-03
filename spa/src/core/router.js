@@ -205,7 +205,7 @@ function projectSurface(projectId, tabSegment) {
   if (!projectId) return inbox();
   const cluster = clusterRoute(tabSegment);
   if (cluster) return cluster.name === "inbox" ? inboxIn(projectId) : cluster;
-  return projectPage(projectId);
+  return projectPage(projectId, tabSegment === "files" ? "files" : TASKS_TAB);
 }
 
 /** A legacy entity URL whose branch this module cannot know. `kind` says what
@@ -249,7 +249,7 @@ function tabPlace(query) {
 
 // The surfaces whose Files tab stands in a file: both are a checkout with a
 // tree, and both carry the file as a query rather than a path segment.
-const FILE_TAB_SURFACES = new Set(["branch", "workspace"]);
+const FILE_TAB_SURFACES = new Set(["branch", "workspace", "project"]);
 
 // The surfaces whose rail can be opened on a named conversation: the two pages
 // an agent belongs to. Which agent the rail stands on is not part of the
@@ -289,8 +289,14 @@ function placeInSurface(route, query) {
   // Both surfaces that HAVE a tasks tab read it: the project's own, and a
   // workspace's (#29). They are the same tracker laid out the same two ways.
   const view = TASKS_SURFACES.has(route.name) && route.tab === TASKS_TAB ? tasksView(query, route) : null;
-  const position = { ...place, ...agent, ...view, ...commit };
+  const position = { ...place, ...agent, ...view, ...commit, ...projectSourcePlace(route, query) };
   return Object.keys(position).length ? position : null;
+}
+
+function projectSourcePlace(route, query) {
+  if (route.name !== "project" || route.tab !== "files") return null;
+  const sourceId = new URLSearchParams(query || "").get("source");
+  return sourceId ? { sourceId } : null;
 }
 
 function commitPlace(route, query) {
@@ -450,7 +456,7 @@ const tasksViewPairs = (route, standing = TASKS_TAB) => {
 /// Which of the project page's two tabs a route stands on. Tasks is the
 /// default (#46), so it writes nothing and a bare project link opens it;
 /// Workspaces is the one that has to name itself.
-const projectTabPath = (route) => (route.tab === WORKSPACES_TAB ? `/${WORKSPACES_TAB}` : "");
+const projectTabPath = (route) => ([WORKSPACES_TAB, "files"].includes(route.tab) ? `/${route.tab}` : "");
 
 /// Everything a work URL says before the branch or the task: the machine the
 /// project is on, when the route names one, and the project itself. A route
@@ -487,7 +493,7 @@ const HASH_WRITERS = Object.freeze({
   // not the workspaces it opens on, and the query each of those two reads.
   project: (route) =>
     route.projectId
-      ? `${projectPrefix(route)}${projectTabPath(route)}${hashQuery([...railAgentPairs(route), ...tasksViewPairs(route)])}`
+      ? `${projectPrefix(route)}${projectTabPath(route)}${hashQuery([...railAgentPairs(route), ...tasksViewPairs(route), ...(route.tab === "files" ? [["source", route.sourceId || ""], ...tabPlacePairs(route, route.tab)] : [])])}`
       : null,
   // One task of the tracker, under the project it belongs to and never moves
   // between.

@@ -20,6 +20,14 @@ vi.mock("../src/sheets/projectSettings.js", () => ({ openProjectSettings: (...ar
 // The Tasks tab is its own surface with its own reads and its own push; this
 // file is about the page that holds it, so it is mocked to the handle the page
 // keeps.
+const readProjectFilesSupport = vi.fn(async () => false);
+vi.mock("../src/core/projectFilesSupport.js", async (importOriginal) => ({
+  ...await importOriginal(), readProjectFilesSupport: (...args) => readProjectFilesSupport(...args),
+}));
+
+const renderFilesTab = vi.fn(() => ({ dispose: vi.fn(), canLeave: vi.fn(async () => true), hasUnsavedChanges: () => false }));
+vi.mock("../src/views/files.js", () => ({ renderFilesTab: (...args) => renderFilesTab(...args) }));
+
 const mountTasksPane = vi.fn(() => ({ feedMoved: vi.fn(), dispose: vi.fn() }));
 vi.mock("../src/core/trackerTasksPane.js", () => ({ mountTasksPane: (...args) => mountTasksPane(...args) }));
 
@@ -102,6 +110,8 @@ beforeEach(() => {
   mountAgentRail.mockClear();
   collapseChat.mockClear();
   mountTasksPane.mockClear();
+  renderFilesTab.mockClear();
+  readProjectFilesSupport.mockReset().mockResolvedValue(false);
   openCreateWork.mockClear();
   openProjectSettings.mockClear();
   subscribers = [];
@@ -347,20 +357,20 @@ describe("the project's rail", () => {
   it("stands Tasks, Workspaces and Settings on the shell's rail, and nothing else", async () => {
     await openProject();
     await flush();
-    expect(faces()).toEqual([["tasks", "true"], ["workspaces", "false"]]);
-    expect(rail().querySelectorAll("button")).toHaveLength(3);
+    expect(faces()).toEqual([["tasks", "true"], ["files", "false"], ["workspaces", "false"]]);
+    expect(rail().querySelectorAll("button")).toHaveLength(4);
     expect(rail().querySelector("[data-rail-settings]").getAttribute("aria-label")).toBe("Project settings");
-    expect(rail().querySelector("[data-tab=changes], [data-tab=files], [data-sidebar-toggle]")).toBeNull();
+    expect(rail().querySelector("[data-tab=changes], [data-sidebar-toggle]")).toBeNull();
   });
 
   it("marks the face the route stands on, and follows a press", async () => {
     App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "workspaces" };
     await openProject();
     await flush();
-    expect(faces()).toEqual([["tasks", "false"], ["workspaces", "true"]]);
+    expect(faces()).toEqual([["tasks", "false"], ["files", "false"], ["workspaces", "true"]]);
     pressProjectTab("tasks");
     await flush();
-    expect(faces()).toEqual([["tasks", "true"], ["workspaces", "false"]]);
+    expect(faces()).toEqual([["tasks", "true"], ["files", "false"], ["workspaces", "false"]]);
     expect(location.hash).toBe("#/device/dev-1/project/proj-1");
   });
 
@@ -593,5 +603,87 @@ describe("the Reclaimable filter and the size column", () => {
     expect(rows()).toEqual([]);
     expect(document.querySelector(".project-filter-empty").textContent)
       .toBe("No workspace can be reclaimed right now.");
+  });
+});
+
+
+describe("project Files", () => {
+  it("does not overwrite a newer surface when the cold support read finishes", async () => {
+    let finishRead;
+    readProjectFilesSupport.mockImplementationOnce(() => new Promise((resolve) => { finishRead = resolve; }));
+    const pending = renderProject();
+    const nextDispose = vi.fn();
+    App.route = { name: "inbox" };
+    App.viewDispose = nextDispose;
+    document.querySelector("#root").innerHTML = '<div class="newer-surface">Inbox</div>';
+    finishRead(false);
+    await pending;
+    expect(document.querySelector(".newer-surface").textContent).toBe("Inbox");
+    expect(App.viewDispose).toBe(nextDispose);
+    expect(renderFilesTab).not.toHaveBeenCalled();
+  });
+  it("keeps dirty drafts and warns when a source folder moves, and remounts clean folders", async () => {
+    snapshot = { ...snapshot, projects: [{ ...project, sources: [{ id: "docs", name: "Docs", path: "/old" }] }] };
+    App.route = { ...App.route, tab: "files" };
+    await openProject();
+    const explorer = renderFilesTab.mock.results[0].value;
+    explorer.hasUnsavedChanges = () => true;
+    snapshot = { ...snapshot, projects: [{ ...project, sources: [{ id: "docs", name: "Docs", path: "/new" }] }] };
+    deliver();
+    expect(renderFilesTab).toHaveBeenCalledTimes(1);
+    expect(explorer.dispose).not.toHaveBeenCalled();
+    expect(document.querySelector("[data-project-files-support]").textContent).toContain("folder moved");
+    expect(document.querySelector("[data-project-files-support]").hidden).toBe(false);
+    explorer.hasUnsavedChanges = () => false;
+    deliver();
+    expect(explorer.dispose).toHaveBeenCalledTimes(1);
+    expect(renderFilesTab).toHaveBeenCalledTimes(2);
+    expect(renderFilesTab.mock.calls[1][1].roots[0].cacheEntityId).toBe('project:["proj-1","docs","/new"]');
+  });
+  beforeEach(() => {
+    snapshot = { ...snapshot, projects: [{ ...project, sources: [{ id: "code", name: "Code" }, { id: "docs", name: "Docs" }] }] };
+  });
+
+  it("mounts the shared explorer on project source roots and restores its deep link", async () => {
+    App.route = { ...App.route, tab: "files", sourceId: "docs", file: "README.md", line: 7, agent: "a1" };
+    await openProject();
+    expect(renderFilesTab).toHaveBeenCalledTimes(1);
+    const options = renderFilesTab.mock.calls[0][1];
+    expect(options.roots.map((root) => root.scope)).toEqual([{ project_id: "proj-1", source_id: "code" }, { project_id: "proj-1", source_id: "docs" }]);
+    expect(options.openAt).toEqual({ rootId: "docs", path: "README.md", line: 7 });
+    options.onFileOpen("a.js", "code");
+    expect(location.hash).toBe("#/device/dev-1/project/proj-1/files?agent=a1&source=code&path=a.js");
+    pressProjectTab("tasks");
+    await flush();
+    pressProjectTab("files");
+    await flush();
+    expect(renderFilesTab.mock.calls[1][1].openAt).toEqual({ rootId: "code", path: "a.js", line: null });
+  });
+
+  it("keeps the explorer and its unsaved editor when unrelated feed records repaint", async () => {
+    App.route = { ...App.route, tab: "files" };
+    await openProject();
+    const explorer = renderFilesTab.mock.results[0].value;
+    snapshot = { ...snapshot, workspaces: [workspace("another")] };
+    deliver();
+    expect(renderFilesTab).toHaveBeenCalledTimes(1);
+    expect(explorer.dispose).not.toHaveBeenCalled();
+  });
+
+  it("honors Files' leave guard on tab presses and clears its route guard on teardown", async () => {
+    App.route = { ...App.route, tab: "files" };
+    await openProject();
+    const explorer = renderFilesTab.mock.results[0].value;
+    explorer.canLeave.mockResolvedValue(false);
+    expect(App.routeLeaveGuard).toBe(explorer.canLeave);
+    pressProjectTab("workspaces");
+    await flush();
+    expect(explorer.dispose).not.toHaveBeenCalled();
+    expect(App.route.tab).toBe("files");
+    explorer.canLeave.mockResolvedValue(true);
+    pressProjectTab("workspaces");
+    await flush();
+    expect(explorer.dispose).toHaveBeenCalledTimes(1);
+    expect(App.routeLeaveGuard).toBeNull();
   });
 });

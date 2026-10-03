@@ -16,7 +16,7 @@ function violations(file, source) {
   const outside = file === "styles.css" ? source.replace(sharedBlock(), "") : source;
   if (file.endsWith(".css")) {
     return [...outside.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g)]
-      .filter(([, selectors, declarations]) => paint.test(declarations) && selectors.split(",").some((selector) =>
+      .filter(([, selectors, declarations]) => selectors.trim() !== ":where(button, input, select, textarea, [tabindex]):focus-visible" && paint.test(declarations) && selectors.split(",").some((selector) =>
         fieldSelector.test(selector) && !nonTextSelector.test(selector) &&
         !selector.includes(":where(button, input") && !selector.includes(".rail-clearing")))
       .map(([, selector]) => `${file}: ${selector.trim()}`);

@@ -105,6 +105,14 @@ export function mountMenuSliders(menu, callbacks) {
   });
 }
 
+/** Retire handlers before removing a row or handing its focus elsewhere. */
+export function disposeMenuSlider(slider) {
+  controls.delete(slider);
+  for (const handler of ["oninput", "onchange", "onblur", "onpointerdown", "onpointerup", "onpointercancel"]) {
+    slider[handler] = null;
+  }
+}
+
 function updateSliderMarkup(host, nextHost) {
   host.dataset.options = nextHost.dataset.options;
   const slider = host.querySelector('[role="slider"]');

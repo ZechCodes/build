@@ -219,16 +219,21 @@ function placeMenuFromButtonBox(menu, buttonBox, { width: menuWidth, height: men
   return { left, edge: "top", top };
 }
 
-function menuSizeWhenShown(menu) {
+function measureShownMenu(menu) {
   const wasHidden = menu.hidden;
-  menu.hidden = false;
-  const rendered = menu.getBoundingClientRect();
-  const size = {
-    width: rendered.width || menu.offsetWidth,
-    height: rendered.height || menu.offsetHeight,
+  if (wasHidden) menu.hidden = false;
+  const geometry = {
+    box: menu.getBoundingClientRect(),
+    width: menu.offsetWidth,
+    height: menu.offsetHeight,
   };
-  menu.hidden = wasHidden;
-  return size;
+  if (wasHidden) menu.hidden = true;
+  return geometry;
+}
+
+function menuSizeWhenShown(menu) {
+  const { box, width, height } = measureShownMenu(menu);
+  return { width: box.width || width, height: box.height || height };
 }
 
 /** `position:fixed` is viewport-relative until an ancestor has transform,
@@ -236,16 +241,10 @@ function menuSizeWhenShown(menu) {
  * coordinates relative to the header and sending a nominally open menu past
  * the viewport. Measure where the browser actually put it and compensate. */
 function correctFixedMenuOffset(menu, wanted) {
-  const wasHidden = menu.hidden;
-  menu.hidden = false;
-  const placed = menu.getBoundingClientRect();
-  if (!placed.width || !placed.height) {
-    menu.hidden = wasHidden;
-    return;
-  }
-  const scaleX = placed.width / menu.offsetWidth || 1;
-  const scaleY = placed.height / menu.offsetHeight || 1;
-  menu.hidden = wasHidden;
+  const { box: placed, width, height } = measureShownMenu(menu);
+  if (!placed.width || !placed.height) return;
+  const scaleX = placed.width / width || 1;
+  const scaleY = placed.height / height || 1;
   menu.style.left = `${Number.parseFloat(menu.style.left) + (wanted.left - placed.left) / scaleX}px`;
   if (wanted.edge === "top") {
     menu.style.top = `${Number.parseFloat(menu.style.top) + (wanted.top - placed.top) / scaleY}px`;
@@ -254,7 +253,7 @@ function correctFixedMenuOffset(menu, wanted) {
   }
 }
 
-function liftMenuOutOfScroll(container, menu, closeMenu, region) {
+function placeLiftedMenu(container, menu, region) {
   const buttonBox = container.querySelector(SPLIT_BUTTON_SELECTOR).getBoundingClientRect();
   const bound = bottomBoundOf(region);
   // Taller than the room there is, the menu scrolls inside it (`.splitmenu`
@@ -262,6 +261,10 @@ function liftMenuOutOfScroll(container, menu, closeMenu, region) {
   menu.style.maxHeight = `${bound - 2 * VIEWPORT_GAP_PX}px`;
   const wanted = placeMenuFromButtonBox(menu, buttonBox, menuSizeWhenShown(menu), bound);
   correctFixedMenuOffset(menu, wanted);
+}
+
+function liftMenuOutOfScroll(container, menu, closeMenu, region) {
+  placeLiftedMenu(container, menu, region);
   // A scroll inside the menu itself is the reader reading it, not the page
   // moving out from under the menu.
   const onViewportMoved = (event) => {
@@ -489,7 +492,11 @@ export function mountSplitMenu(container, { onChoose, onOpenChange = null, keepW
     caret.focus({ preventScroll: true });
     onChoose(optionId);
   };
-  const refreshControls = () => mountMenuSliders(menu, { choose, onCommit: onChoose });
+  const refreshMenu = () => {
+    mountMenuSliders(menu, { choose, onCommit: onChoose });
+    // Growth must stay inside the same bounds without replaying the reveal.
+    if (menuIsOpen && settleLiftedMenu) placeLiftedMenu(container, menu, keepWithin ? keepWithin() : null);
+  };
 
   if (caret && menu) {
     const keys = menuKeyboard({ caret, menu, isOpen: () => menuIsOpen, openMenu, closeMenu, choose });
@@ -509,9 +516,9 @@ export function mountSplitMenu(container, { onChoose, onOpenChange = null, keepW
       const row = event.target.closest(MENU_ITEM_SELECTOR);
       if (row && menu.contains(row)) choose(row);
     };
-    refreshControls();
+    refreshMenu();
   }
-  return { closeMenu, openMenu, isOpen: () => menuIsOpen, refreshControls };
+  return { closeMenu, openMenu, isOpen: () => menuIsOpen, refreshMenu };
 }
 
 const menuMountedInContainer = new WeakMap();
@@ -521,7 +528,7 @@ export function mountMenuIfChanged(container, markup, { onChoose, keepWithin = n
   if (mounted && mounted.markup === markup) return mounted.closeMenu;
   if (mounted?.isOpen()) {
     patchSplitMenu(container, mounted.markup, markup);
-    mounted.refreshControls();
+    mounted.refreshMenu();
     mounted.markup = markup;
     return mounted.closeMenu;
   }
@@ -531,8 +538,8 @@ export function mountMenuIfChanged(container, markup, { onChoose, keepWithin = n
   // it on the body.
   const hadFocus = container.contains(document.activeElement);
   container.innerHTML = markup;
-  const { closeMenu, isOpen, refreshControls } = mountSplitMenu(container, { onChoose, keepWithin });
-  menuMountedInContainer.set(container, { markup, closeMenu, isOpen, refreshControls });
+  const { closeMenu, isOpen, refreshMenu } = mountSplitMenu(container, { onChoose, keepWithin });
+  menuMountedInContainer.set(container, { markup, closeMenu, isOpen, refreshMenu });
   if (hadFocus) container.querySelector(CARET_SELECTOR)?.focus({ preventScroll: true });
   return closeMenu;
 }

@@ -16,7 +16,8 @@ Wire 3.11.0.
   in place. Its menu, thumb, focus and active drag survive cache repaints
   without closing, reopening or replaying animations. Surface rows can appear
   or disappear while the menu stays open; removing the focused row moves focus
-  to the nearest remaining row (#366).
+  to the nearest remaining row. Lifted menus remain inside their bounds as
+  rows change, and removed sliders cannot commit a retired preview (#366).
 - Setting the conversation menu's Compact at slider keeps the menu open and
   focus on the slider. Its explanation line is removed; the selected value,
   stop ticks and accessible name remain. A saved stop stays visible while its

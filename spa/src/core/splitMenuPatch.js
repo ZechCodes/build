@@ -1,7 +1,7 @@
 // Cache repaints of an open menu keep its nodes, focus, motion and listeners.
 // Compare the two renderings so runtime attributes (expanded, lifted styles)
 // and slider previews are never mistaken for stale markup.
-import { MENU_SLIDER_SELECTOR, updateMenuSlider } from "./menuSlider.js";
+import { MENU_SLIDER_SELECTOR, disposeMenuSlider, updateMenuSlider } from "./menuSlider.js";
 
 const FOCUS_ROWS = `.mi, ${MENU_SLIDER_SELECTOR}`;
 
@@ -124,6 +124,12 @@ function keepFocusBeforeRemoval(container, beforeRows, removed) {
   destination?.focus({ preventScroll: true });
 }
 
+function retireMenuSliders(node) {
+  if (node.nodeType !== Node.ELEMENT_NODE) return;
+  if (node.matches(MENU_SLIDER_SELECTOR)) disposeMenuSlider(node);
+  node.querySelectorAll(MENU_SLIDER_SELECTOR).forEach(disposeMenuSlider);
+}
+
 /** Reconcile keyed groups and rows, including insertions and removals. Only
  * retired rows leave the DOM; the open menu and surviving focus stay put. */
 export function patchSplitMenu(container, beforeMarkup, afterMarkup) {
@@ -132,6 +138,7 @@ export function patchSplitMenu(container, beforeMarkup, afterMarkup) {
   const beforeRows = [...container.querySelectorAll(FOCUS_ROWS)];
   const removed = [];
   patchChildren(container, before, after, removed);
+  removed.forEach(retireMenuSliders);
   // Insert destinations first, then hand focus across before retiring a row.
   keepFocusBeforeRemoval(container, beforeRows, removed);
   removed.forEach((node) => node.remove());

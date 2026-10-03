@@ -168,7 +168,10 @@ async function seedInputSurface({ name, theme }) {
       document.body.classList.add("inbox-collapsed", "inbox-popover-open");
       const rail = document.createElement("aside");
       rail.id = "inbox-rail";
-      rail.innerHTML = `<div id="inbox-list">${m.inbox.captureRowHtml(entry, { activeKey: entry.key, rerouteKey: entry.key, projects: [project], rerouteBranchProject: project.id, rerouteBranches: ["main"] })}</div>`;
+      // Real sibling rows give the popup room inside the list's scroll surface.
+      const entries = [entry, ...Array.from({ length: 4 }, (_, index) => ({ ...entry, key: `capture:next-${index}`, captureId: `next-${index}`, name: `Queued work ${index + 1}`, text: `Queued work ${index + 1}` }))];
+      const ui = { activeKey: entry.key, rerouteKey: entry.key, projects: [project], rerouteBranchProject: project.id, rerouteBranches: ["main"] };
+      rail.innerHTML = `<div id="inbox-list">${entries.map((row) => m.inbox.captureRowHtml(row, ui)).join("")}</div>`;
       document.querySelector("#shell").prepend(rail);
     },
     "task composer"() {

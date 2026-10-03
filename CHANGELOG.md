@@ -13,11 +13,13 @@ Wire 3.11.0.
 ### Changed
 
 - Text inputs and textareas share token-based field styling in both themes,
-  with the same height, radius, border, background and focus ring as adjacent
-  selects. Task review bases, capture branches and workspace labels now match
-  the rest of the forms; embedded composers and the source editor retain their
-  sizing and native editing behaviour. Branch routing menus stay inside narrow
-  screens, and short task rails keep their Close action fully in view (#368).
+  with the same standard or compact height, radius, border, background and
+  focus ring as adjacent selects. Read-only fields retain muted text and a
+  stable hover border. Task review bases, capture branches and workspace labels
+  now match the rest of the forms; embedded composers and the source editor
+  retain their sizing and native editing behaviour. Branch routing menus stay
+  inside narrow screens, and short task rails keep their Close action fully
+  in view (#368).
 
 - Saving the conversation menu's Compact at threshold updates the open menu
   in place. Its menu, thumb, focus and active drag survive cache repaints

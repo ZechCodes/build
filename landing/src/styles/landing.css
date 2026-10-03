@@ -85,7 +85,6 @@ html:not([data-mode="film"]) body {
   z-index: 20;
   height: var(--nav-height);
   background: var(--page);
-  border-bottom: 1px solid var(--line);
 }
 
 .site-nav__inner {
@@ -673,7 +672,6 @@ pre .line-you {
 }
 
 .landing-footer {
-  border-top: 1px solid var(--line);
   padding-block: 2.5rem;
 }
 

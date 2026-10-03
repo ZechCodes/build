@@ -263,6 +263,7 @@ a { color:inherit; }
   --select-radius:8px; --select-menu-radius:10px;
 }
 select {
+  --select-field-bg:var(--panel);
   --select-chevron-color:var(--ink2);
   --select-chevron:linear-gradient(45deg, transparent calc(50% - 1px),
       var(--select-chevron-color) calc(50% - 1px) calc(50% + 1px), transparent calc(50% + 1px)),
@@ -271,11 +272,12 @@ select {
   appearance:none; -webkit-appearance:none;
   box-sizing:border-box; min-width:0; max-width:100%; height:var(--select-height);
   font:14px/1.4 var(--sans); color:var(--ink);
-  background-color:var(--panel); border:1px solid var(--line); border-radius:var(--select-radius);
+  background-color:var(--select-field-bg); border:1px solid var(--line); border-radius:var(--select-radius);
   padding:0 32px 0 10px; cursor:pointer;
   white-space:nowrap; text-overflow:ellipsis;
   transition:border-color var(--motion-fast), box-shadow var(--motion-fast);
 }
+:where(.panel .field, .sheet) select { --select-field-bg:var(--bg); }
 select.mini {
   height:var(--select-compact-height); font-size:12px; max-width:min(180px, 100%);
 }
@@ -295,11 +297,15 @@ select:disabled { --select-chevron-color:var(--dim); color:var(--dim); opacity:.
 @supports (appearance:base-select) {
   select, select::picker(select) { appearance:base-select; }
   select { position:relative; align-items:center; overflow:hidden; }
-  /* Chromium's implicit selected text does not shrink as a flex item. Reserve
-     the end of the field for the arrow, even when a model/branch label is long. */
+  /* Chromium's implicit selected text cannot be targeted for ellipsis. Fade
+     its last few pixels into the field before the reserved arrow space. */
+  select::after {
+    content:""; position:absolute; inset-block:0; inset-inline-end:30px; width:16px;
+    background:linear-gradient(to right, transparent, var(--select-field-bg)); pointer-events:none;
+  }
   select::picker-icon {
     content:""; position:absolute; inset-block:0; inset-inline-end:0;
-    width:30px; color:var(--ink2); background-color:var(--panel);
+    width:30px; color:var(--ink2); background-color:var(--select-field-bg);
     background-image:var(--select-chevron);
     background-position:right 16px center, right 10px center;
     background-size:6px 6px; background-repeat:no-repeat; pointer-events:none;
@@ -309,17 +315,36 @@ select:disabled { --select-chevron-color:var(--dim); color:var(--dim); opacity:.
     box-sizing:border-box; font:14px/1.4 var(--sans); color:var(--ink);
     background:var(--panel); border:1px solid var(--line); border-radius:var(--select-menu-radius);
     box-shadow:0 10px 30px var(--shadow); padding:4px;
-    min-width:anchor-size(width); max-width:calc(100vw - 24px);
-    max-height:min(360px, 70dvh); overflow:auto; margin-block:6px;
+    width:max-content; min-width:min(anchor-size(width), calc(100vw - 24px)); max-width:calc(100vw - 24px);
+    max-height:min(360px, 70dvh); overflow:auto;
+    inset:auto; position-area:block-end span-all; inset-inline-start:max(12px, anchor(left));
+    align-self:start; justify-self:start; margin-block:6px 12px; margin-inline:0 12px;
+    position-try-order:normal;
+    position-try-fallbacks:--select-inward, flip-block, --select-inward flip-block,
+      --select-above-scroll, --select-above-scroll-inward;
+  }
+  /* Keep a wider menu inside the viewport before trying above its field. */
+  @position-try --select-inward {
+    position-area:block-end span-all; inset-inline-start:auto; justify-self:end; margin-inline:12px;
+  }
+  /* If the full list fits on neither side, scroll above without covering the
+     field. Percentage height uses that side's available anchor area. */
+  @position-try --select-above-scroll {
+    position-area:block-start span-all; align-self:end; margin-block:12px 6px;
+    max-height:min(360px, 70dvh, calc(100% - 18px));
+  }
+  @position-try --select-above-scroll-inward {
+    position-area:block-start span-all; inset-inline-start:auto; align-self:end; justify-self:end;
+    margin:12px 12px 6px; max-height:min(360px, 70dvh, calc(100% - 18px));
   }
   select option {
-    display:flex; align-items:center; gap:10px; padding:9px 10px;
+    display:block; position:relative; min-width:0; padding:9px 32px 9px 10px;
     font:inherit; color:var(--ink); background:var(--panel); border:0; border-radius:6px;
-    white-space:normal; overflow-wrap:anywhere; cursor:pointer;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:pointer;
   }
   select option:hover, select option:focus-visible { background:var(--accent-soft); outline:none; }
   select option:checked { font-weight:550; }
-  select option::checkmark { order:1; margin-inline-start:auto; color:var(--accent); }
+  select option::checkmark { position:absolute; inset-inline-end:10px; color:var(--accent); }
   select option:disabled { color:var(--dim); cursor:not-allowed; }
   select optgroup { font:inherit; color:var(--dim); }
 }

@@ -23,7 +23,8 @@ import { holdReferenceSources } from "../src/core/referenceIndex.js";
 
 /// The tags the renderer may emit, and the attributes each may carry.
 const ALLOWED = {
-  P: [], BR: [], HR: ["class"], STRONG: [], CODE: ["class"], PRE: ["class"], UL: [], OL: ["start"], LI: [],
+  P: [], BR: [], HR: ["class"], STRONG: [], CODE: ["class"], PRE: ["class"], UL: [], OL: ["start"], LI: ["class"],
+  INPUT: ["type", "class", "disabled", "checked", "aria-label", "data-task-index", "data-task-offset"],
   H1: ["id"], H2: ["id"], H3: ["id"], H4: ["id"], H5: ["id"], H6: ["id"],
   BLOCKQUOTE: ["class"], DIV: ["class"], TABLE: [], THEAD: [], TBODY: [], TR: [],
   TH: ["style"], TD: ["style"], A: ["class", "href", "title", "target", "rel"], SPAN: ["class", "title"],
@@ -45,6 +46,10 @@ function violations(html) {
   for (const element of host.querySelectorAll("*")) {
     const allowed = ALLOWED[element.tagName];
     if (!allowed) found.push(`<${element.tagName.toLowerCase()}>`);
+    if (element.tagName === "LI" && element.hasAttribute("class") && element.className !== "task-item") found.push("invalid checklist item");
+    if (element.tagName === "INPUT" && (element.type !== "checkbox" || element.className !== "md-task-checkbox"
+      || !/^\d+$/.test(element.dataset.taskIndex || "") || !/^\d+$/.test(element.dataset.taskOffset || "")
+      || !element.getAttribute("aria-label"))) found.push("invalid checklist input");
     for (const { name, value } of element.attributes) {
       if (!allowed?.includes(name)) found.push(`${element.tagName.toLowerCase()}[${name}]`);
       if (name === "href" && !hrefAllowed(element, value)) found.push(`href=${value}`);
@@ -91,6 +96,8 @@ const CONTEXTS = [
   (payload) => `${payload}\n\n---\n\n${payload}\n***`,
   (payload) => `* ---\n> ${payload}\n> - - -`,
   (payload) => `- ${payload}`,
+  (payload) => `- [ ] ${payload}`,
+  (payload) => `> 2. [X] ${payload}`,
   (payload) => `1. ${payload}\n   > ${payload}`,
   (payload) => `> ${payload}\n>\n> - ${payload}`,
   (payload) => `| h |\n|---|\n| ${payload.replace(/\|/g, "\\|")} |`,
@@ -108,6 +115,7 @@ describe("hostile input through the one renderer", () => {
         const source = context(payload);
         expect([source, violations(markdownHtml(source))]).toEqual([source, []]);
         expect([source, violations(markdownHtml(source, { mode: "inline" }))]).toEqual([source, []]);
+        expect([source, violations(markdownHtml(source, { taskItems: true }))]).toEqual([source, []]);
       }
     }
   });
@@ -116,6 +124,15 @@ describe("hostile input through the one renderer", () => {
     const host = document.createElement("div");
     host.innerHTML = markdownHtml("> <script>alert(1)</script>");
     expect(host.textContent).toBe("<script>alert(1)</script>");
+  });
+
+  it("rejects inputs outside the fixed checklist vocabulary", () => {
+    expect(violations('<input type="text" class="md-task-checkbox" aria-label="x" data-task-index="0" data-task-offset="3">'))
+      .toEqual(["invalid checklist input"]);
+    expect(violations('<input type="checkbox" class="md-task-checkbox" aria-label="x" data-task-index="0&quot; onclick=x" data-task-offset="3">'))
+      .toEqual(["invalid checklist input"]);
+    expect(violations('<input type="checkbox" class="md-task-checkbox" aria-label="x" data-task-index="0" data-task-offset="3" onchange="evil()">'))
+      .toEqual(["input[onchange]"]);
   });
 
   it("writes no link for a javascript:, data:, vbscript:, file: or protocol-relative URL", () => {

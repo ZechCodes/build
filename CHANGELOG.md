@@ -26,6 +26,10 @@ Wire 3.9.0.
   retain the source, path and line. `fs.projectSources` (wire 3.9.0) lets
   `fs.tree`, `fs.read` and `fs.write` resolve a configured project source
   with the same containment checks as workspace files (#359).
+- Markdown checklists render as native checkboxes. Readers can tick or untick
+  task body items with a click or Space; each change saves the marker through
+  `tasks.update`, repaints from the cache and survives reopening. Comments and
+  other markdown surfaces display disabled checkboxes (#347).
 - Task reviews save the committed head and resolved base of every Git directory
   in a workspace, retain them with private refs, and keep non-Git and unavailable
   directories visible. `tasks.review.snapshot`, `tasks.review.get`,

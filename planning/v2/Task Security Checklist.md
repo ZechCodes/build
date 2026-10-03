@@ -3,6 +3,14 @@
 **Status:** 100/100 (10/10 controls verified)
 **Verified:** 2026-07-30
 
+Task body checklist edits re-verified 2026-10-03 (#347): the SPA uses the existing
+authenticated `tasks.update` body write, adding no wire params, capabilities,
+or bridge authorization paths. The markdown parser identifies the exact source
+marker, and the edit only replaces its checked character. Optimistic writes and
+conditional rollback pass through the task cache; tests cover stale reads,
+newer cache writes, comment immutability and the keyboard save path. The existing
+body size and task ownership checks continue to apply.
+
 This checklist covers the security boundary changed by the Task final-repair work. Product/lifecycle completeness is tracked separately from this security score.
 
 | # | Control | Score | Verification |

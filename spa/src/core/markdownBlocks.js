@@ -139,9 +139,14 @@ const QUOTE_MARK = /^ {0,3}> ?/;
  *  paragraphs, lists, tables and other quotes. */
 function readQuote(lines, at, context) {
   const inner = [];
+  const offsets = [];
   let next = at;
-  for (; next < lines.length && QUOTE.test(lines[next]); next += 1) inner.push(lines[next].replace(QUOTE_MARK, ""));
-  return { html: `<blockquote class="${QUOTE_CLASS}">${blocksOf(inner, deeper(context))}</blockquote>`, next };
+  for (; next < lines.length && QUOTE.test(lines[next]); next += 1) {
+    const removed = QUOTE_MARK.exec(lines[next])[0].length;
+    inner.push(lines[next].slice(removed));
+    offsets.push(context.offsets[next] + removed);
+  }
+  return { html: `<blockquote class="${QUOTE_CLASS}">${blocksOf(inner, { ...deeper(context), offsets })}</blockquote>`, next };
 }
 
 /// The class a quote wears, stamped by the renderer for the reason
@@ -200,9 +205,29 @@ function itemEnd(lines, from, first) {
  *  (`* ---`); more is a document, whose first paragraph sits on the item's
  *  line the way a tight list reads. */
 function itemHtml(item, body, context) {
-  if (!body.length && !THEMATIC_BREAK.test(item.content)) return `<li>${context.inline(item.content)}</li>`;
-  const lines = [item.content, ...body.map((line) => line.slice(Math.min(indentOf(line), item.contentAt)))];
-  return `<li>${blocksOf(lines, deeper(context)).replace(/^<p>([\s\S]*?)<\/p>/, "$1")}</li>`;
+  const task = taskItem(item.content, context.offsets[0] + item.contentAt, context);
+  const content = task ? item.content.slice(task.length) : item.content;
+  const opening = task ? `<li class="task-item">${task.html}` : "<li>";
+  if (!body.length && !THEMATIC_BREAK.test(content)) return `${opening}${context.inline(content)}</li>`;
+  const margins = body.map((line) => Math.min(indentOf(line), item.contentAt));
+  const lines = [content, ...body.map((line, index) => line.slice(margins[index]))];
+  const offsets = [context.offsets[0] + item.contentAt + (task?.length || 0), ...margins.map((margin, index) => context.offsets[index + 1] + margin)];
+  return `${opening}${blocksOf(lines, { ...deeper(context), offsets }).replace(/^<p>([\s\S]*?)<\/p>/, "$1")}</li>`;
+}
+
+/** A checklist mark belongs only at the beginning of a list item's content.
+ * Every attribute is fixed, numeric, or escaped. The input stays native for
+ * keyboard and accessibility support, with no document-wide ids to collide. */
+function taskItem(content, start, context) {
+  const match = /^\[([ xX])\](?:[ \t]+|$)/.exec(content);
+  if (!match) return null;
+  const index = context.taskMarkers.length;
+  const offset = start + 1;
+  context.taskMarkers.push(offset);
+  const label = content.slice(match[0].length).trim() || `Checklist item ${index + 1}`;
+  const checked = match[1] === " " ? "" : " checked";
+  const disabled = context.taskItems ? "" : " disabled";
+  return { length: match[0].length, html: `<input class="md-task-checkbox" type="checkbox" data-task-index="${index}" data-task-offset="${offset}" aria-label="${esc(label)}"${checked}${disabled}>` };
 }
 
 /** A list: its items in a row, a blank line between two of them keeping them
@@ -217,7 +242,7 @@ function readList(lines, at, context) {
   while (next < lines.length && sameList(lines[next], first)) {
     const item = itemAt(lines[next]);
     const end = itemEnd(lines, next + 1, first);
-    items += itemHtml(item, lines.slice(next + 1, end), context);
+    items += itemHtml(item, lines.slice(next + 1, end), { ...context, offsets: context.offsets.slice(next, end) });
     const filled = nextFilled(lines, end);
     next = sameList(lines[filled], first) ? filled : end;
   }
@@ -341,6 +366,15 @@ function blocksOf(lines, context) {
  * Markdown as blocks. `inline` renders one line of the inline vocabulary and
  * escapes everything it is given.
  */
-export function blocksHtml(markdown, inline) {
-  return blocksOf(String(markdown || "").split(/\r?\n/), { inline, idAttr: headingIds(), depth: 0 });
+export function blocksHtml(markdown, inline, { taskItems = false, taskMarkers } = {}) {
+  const source = String(markdown || "");
+  const lines = source.split(/\r?\n/);
+  let offset = 0;
+  const offsets = lines.map((line) => {
+    const start = offset;
+    offset += line.length;
+    offset += source[offset] === "\r" ? 2 : 1;
+    return start;
+  });
+  return blocksOf(lines, { inline, idAttr: headingIds(), depth: 0, offsets, taskItems, taskMarkers: taskMarkers || [] });
 }

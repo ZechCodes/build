@@ -1107,6 +1107,15 @@ In practice:
   `diff`, the files root listing, and `terminals`.
 - **Optimistic writes** also go into the cache first, and the push that follows
   confirms them.
+  Task body checklist changes (#347, `spa/src/core/taskChecklist.js`) rewrite
+  only the checked character of a marker identified by the markdown renderer,
+  then save through the existing `tasks.update` body parameter. Saves run one
+  at a time; a per-task Web Lock orders saves and the brief pre-read cache
+  snapshot across tabs, with a shared queue for mounts in the same tab when
+  Locks are unavailable. A refusal conditionally restores that body while retaining newer
+  fields and timeline entries. Reads begun before or during a save cannot undo
+  its optimistic copy, with authority and the pre-read body checked inside the cache transaction;
+  a read after the save confirms it. Checkboxes elsewhere are disabled.
 - **A reconnect keeps the route** (#170). The gate (`spa/src/views/gate.js`)
   hands the app back through `renderUnlessStanding()` in `spa/src/app.js`,
   which leaves the page in `#root` as it is (nodes, scroll, focus) when it was

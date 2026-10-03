@@ -50,14 +50,12 @@
 .wall-slot[data-depth="normal"] { opacity: .94; }
 .wall-slot[data-depth="near"] .wall-note { color: #d4ded7; border-color: #496452; }
 .wall-request {
-  inset: auto;
   z-index: 2;
   opacity: 0;
-  font-size: 15px;
   transform-origin: center;
-  box-shadow: 0 8px 28px #0005;
 }
-.wall-note--mint {
+.wall-note--mint,
+.wall-slot[data-depth] .wall-note--mint {
   opacity: 0;
   border: 0;
   border-radius: 10px;
@@ -71,11 +69,10 @@
 .wall-note--mint .wall-note__mark { background: #81f4b7; }
 /* Same failsafe as home, with enough time for this longer wall beat. */
 [data-hero="entrance"] #act-1 .act__copy > *,
-[data-hero="entrance"] .hero-device { animation-delay: 6s; }
-[data-hero="entrance"] .notification-wall { animation-delay: 5.8s; }
+[data-hero="entrance"] .hero-device { animation-delay: 8.4s; }
+[data-hero="entrance"] .notification-wall { animation-delay: 8.2s; }
 @media (max-width: 767px) {
   .wall-note { padding: 8px 10px; gap: 6px; font-size: 12px; border-radius: 9px; }
-  .wall-request { font-size: 14px; }
-  .wall-note--mint { padding: 10px 13px; font-size: inherit; border-radius: 10px; }
+  .wall-note--mint { padding: 8px 10px; font-size: inherit; border-radius: 9px; }
   .wall-note__agent { font-size: 9px; }
 }

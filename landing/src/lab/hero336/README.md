@@ -18,12 +18,14 @@ home page's played marker. Reduced motion, `?hero=0`, and links to later acts
 keep their usual behavior. This is Step 1 only; acceptance would require a
 separate decision to replace the default hero.
 
-The field starts at staggered ages so it is full immediately. A notification
-slides 24px into its own place in 0.32s, holds for about two seconds, and
-fades in 0.4s. Positions never scroll. Alternating row offsets pack the
-cards across the visible hero; two intersecting masks soften all four edges.
-Three final requests arrive at 2.18 / 2.36 / 2.54s, become mint, then fly
-into their existing laptop rows. The full entrance settles at 5.05s.
+The field starts at staggered ages so it is full immediately. Every card
+slides 56px from right to left in 0.32s, holds for 0.72–0.88s, and fades
+in 0.28s. The wall runs for 4.8s with nearly twice the previous turnover.
+Three ordinary positions already containing requests are selected at
+4.8 / 4.94 / 5.08s. Those same cards hold their size and position, become
+mint while their neighbors fade, then fly into the laptop's existing rows.
+The full entrance settles at 7.45s. Request elements move out of the masked
+wall only for their flights; backward seeking restores their original slot.
 
 `web/landing-notifications-check.mjs` checks this page at 390×667,
 390×844, 768×1024, 1280×900, 1920×1080 and 2560×1440, including both

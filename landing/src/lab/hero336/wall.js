@@ -4,40 +4,49 @@ import { ATTENTION, HARNESS_NAMES, ROUTINE_EVENTS, SUPPORTED_HARNESSES, random }
 export { ATTENTION, HARNESS_NAMES };
 
 export const WALL_TIMING = Object.freeze({
-  field: [0, 2.4], ripple: [2.4, 3.35], laptop: [2.8, 4.35],
-  converge: [3.2, 4.21], message: [4.05, 4.6], settle: [4.6, 5.05],
-  flight: .65, landings: [3.85, 4.03, 4.21],
+  field: [0, 4.8], ripple: [4.8, 5.75], laptop: [5.2, 6.75],
+  converge: [5.6, 6.61], message: [6.45, 7], settle: [7, 7.45],
+  flight: .65, landings: [6.25, 6.43, 6.61],
 });
-export const REQUEST_APPEAR = [2.18, 2.36, 2.54];
+export const REQUEST_SELECT = [4.8, 4.94, 5.08];
 const clamp = value => Math.min(1, Math.max(0, value));
 
-export function requestPositions({ width, height }) {
-  const narrow = width < 768;
-  const points = narrow ? [[.46, .30], [.53, .46], [.47, .62]] : [[.29, .35], [.51, .50], [.73, .65]];
-  const cardWidth = narrow ? 242 : 260;
-  return points.map(([x, y]) => ({ x: Math.max(cardWidth / 2 + 16, Math.min(width - cardWidth / 2 - 16, x * width)), y: y * height, width: cardWidth, height: 66 }));
+function pickRequests(slots, { width, height }) {
+  const points = width < 768 ? [[.46, .30], [.53, .46], [.47, .62]] : [[.29, .35], [.51, .50], [.73, .65]];
+  const picked = [];
+  return ATTENTION.map((entry, index) => {
+    const [x, y] = points[index].map((value, axis) => value * [width, height][axis]);
+    const candidates = slots.filter(slot => slot.x - slot.width / 2 >= 16 && slot.x + slot.width / 2 <= width - 16 && !picked.includes(slot));
+    const slot = candidates.reduce((best, candidate) => Math.hypot(candidate.x - x, candidate.y - y) < Math.hypot(best.x - x, best.y - y) ? candidate : best);
+    picked.push(slot);
+    // Pick a turn already settled well before selection. Its earlier turns
+    // remain ordinary churn, and this exact final card survives the fade.
+    const turn = slot.turns.filter(turn => turn.start + turn.enter <= WALL_TIMING.field[1] - 1).at(-1);
+    slot.turns = slot.turns.slice(0, slot.turns.indexOf(turn) + 1);
+    Object.assign(turn, { attention: entry.id, text: entry.text, harness: entry.harness,
+      hold: WALL_TIMING.landings[index] - WALL_TIMING.flight - turn.start - turn.enter });
+    return { ...slot, slotIndex: slots.indexOf(slot), turn };
+  });
 }
 
-function clearance(slot, requests, { width, height }) {
-  const request = requests.findIndex(point => Math.abs(point.x - slot.x) < (point.width + slot.width) / 2 + 12 && Math.abs(point.y - slot.y) < (point.height + slot.height) / 2 + 10);
-  if (request !== -1) return REQUEST_APPEAR[request] - .12;
+function clearance(slot, { width, height }) {
   const distance = Math.hypot((slot.x / width - .5) * 1.3, slot.y / height - .5);
-  return 2.55 + Math.min(.65, distance * .9);
+  return WALL_TIMING.field[1] + .15 + Math.min(.65, distance * .9);
 }
 
 function turnsFor(index, next, clearAt) {
   const enter = .32;
-  const hold = 1.85 + next() * .20;
-  const fade = .40;
-  const period = enter + hold + fade + .04;
+  const hold = .72 + next() * .16;
+  const fade = .28;
+  const period = enter + hold + fade + .025;
   // An irrational phase step scatters ages without row-sized waves.
   const phase = ((index * .61803398875 + .17) % 1) * period;
   const turns = [];
-  for (let start = -phase, turn = 0; start < 2.4; start += period, turn += 1) {
+  for (let start = -phase, turn = 0; start < WALL_TIMING.field[1]; start += period, turn += 1) {
     const outAt = Math.min(start + enter + hold, clearAt - fade);
     if (outAt <= start + enter) continue;
     const event = (index * 7 + turn * 13) % ROUTINE_EVENTS.length;
-    turns.push({ start, enter, hold: outAt - start - enter, fade, from: [index % 3 === 0 ? -24 : 24, 8], text: ROUTINE_EVENTS[event], harness: SUPPORTED_HARNESSES[(index + turn) % 3] });
+    turns.push({ start, enter, hold: outAt - start - enter, fade, from: [56, 0], text: ROUTINE_EVENTS[event], harness: SUPPORTED_HARNESSES[(index + turn) % 3] });
   }
   return turns;
 }
@@ -50,7 +59,6 @@ export function createWall({ width, height }) {
   const pitchY = narrow ? 64 : 78 * scale;
   const rows = Math.ceil(height / pitchY) + 1;
   const columns = Math.ceil(width / pitchX) + 1;
-  const requests = requestPositions({ width, height });
   const slots = [];
   for (let row = 0; row < rows; row += 1) {
     for (let column = 0; column < columns; column += 1) {
@@ -61,11 +69,11 @@ export function createWall({ width, height }) {
         height: (narrow ? 54 : 62) * scale,
         depth: ['quiet', 'normal', 'normal', 'near'][(row * 3 + column) % 4],
       };
-      slot.turns = turnsFor(slots.length, next, clearance(slot, requests, { width, height }));
+      slot.turns = turnsFor(slots.length, next, clearance(slot, { width, height }));
       slots.push(slot);
     }
   }
-  return { slots, requests };
+  return { slots, requests: pickRequests(slots, { width, height }) };
 }
 
 // Used by the browser keyframes and the plan tests. During the hold both

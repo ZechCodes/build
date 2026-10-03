@@ -538,7 +538,8 @@ main { max-width:min(1180px, 100%); margin:0 auto;
    room under it is what a rule used to be. */
 .panel h3 { margin:0 0 16px; font-size:15px; font-weight:650; letter-spacing:-.01em; display:flex; align-items:center; gap:8px; }
 .panel .field select { width:100%; }
-.panel .field input:not([type=checkbox]), .panel .field textarea { width:100%; min-height:36px; }
+.panel .field input:not([type=checkbox]) { width:100%; }
+.panel .field textarea { width:100%; min-height:36px; }
 /* The settings role matrix keeps its labels with each control on a phone. */
 .aroles-grid { width:100%; border-collapse:collapse; }
 .aroles-grid th { text-align:left; font-weight:550; overflow-wrap:anywhere; }

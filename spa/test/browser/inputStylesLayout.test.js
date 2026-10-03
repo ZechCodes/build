@@ -103,11 +103,16 @@ for (const width of [320, 1280]) {
     it(`matches every mounted input and textarea to shared field tokens at ${width}px in ${theme}`, async () => {
       await withLayoutPage(async ({ page, basePath }) => {
         const origin = new URL(page.url()).origin;
+        let navigations = 0;
+        let appRequests = 0;
+        page.on("framenavigated", (frame) => { if (frame === page.mainFrame()) navigations += 1; });
+        page.on("request", (request) => { if (new URL(request.url()).pathname === `${basePath}src/app.js`) appRequests += 1; });
         const failures = [];
         for (const surface of INPUT_SURFACES) {
           // Mount failures stop here, with their original stack, rather than
           // navigating away while the renderer's module graph is still loading.
           await page.goto(`${origin}${basePath}src/styles.css`);
+          expect(navigations, `${surface.name}: reuse the document and imported app graph`).toBe(0);
           await mountInputSurface(page, basePath, surface.name, theme);
           await page.waitForSelector(surface.selectors[0], { state: "visible" });
           try {
@@ -116,6 +121,7 @@ for (const width of [320, 1280]) {
           finally { await page.evaluate(() => window.__inputDispose?.()); }
         }
         expect(failures).toEqual([]);
+        expect(appRequests, "one app graph per viewport/theme").toBe(1);
       }, { width, height: 900 });
     }, 240_000);
   }

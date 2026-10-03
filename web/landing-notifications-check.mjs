@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { chromium } from "playwright";
-import { REQUEST_APPEAR } from "../landing/src/lab/hero336/wall.js";
+import { REQUEST_SELECT } from "../landing/src/lab/hero336/wall.js";
 
 const sizes = [[390, 667], [390, 844], [768, 1024], [1280, 900], [1920, 1080], [2560, 1440]];
 const base = process.env.LANDING_URL || "http://127.0.0.1:4173";
@@ -19,7 +19,7 @@ function measureField() {
   const field = document.querySelector("[data-hero-field]");
   const routine = field.querySelector("[data-wall-routine]");
   const bounds = field.getBoundingClientRect();
-  const cards = [...routine.querySelectorAll(".wall-note")].map((card, index) => {
+  const cards = [...routine.querySelectorAll(".wall-note[data-note]")].map((card, index) => {
     const box = card.getBoundingClientRect();
     return {
       index, key: card.dataset.note, opacity: Number(getComputedStyle(card).opacity),
@@ -139,7 +139,7 @@ function motionFailures(frames, label) {
       Math.max(...visible.map(card => card.x)) - Math.min(...visible.map(card => card.x)),
       Math.max(...visible.map(card => card.y)) - Math.min(...visible.map(card => card.y)),
     );
-    if (spread > 42) failures.push(`${label}: ${observations[0].key} travels ${spread.toFixed(1)}px within its slot`);
+    if (spread > 64) failures.push(`${label}: ${observations[0].key} travels ${spread.toFixed(1)}px within its slot`);
     const steady = observations.some((card, index) => {
       const next = observations[index + 1];
       return next && card.opacity > 0.78 && next.opacity > 0.78 && next.time - card.time >= 0.09
@@ -155,19 +155,68 @@ function motionFailures(frames, label) {
     if (firstHigh >= 0 && observations.slice(firstHigh + 1).some(card => card.opacity < 0.3)) left[quadrant] += 1;
   }
   if (held < Math.max(8, perCard.size * 0.08)) failures.push(`${label}: too few cards hold still (${held}/${perCard.size})`);
-  if (entered.some(value => value < 1) || left.some(value => value < 1)) failures.push(`${label}: replacements miss a quadrant (in ${entered}, out ${left})`);
+  if (entered.some(value => value < 3) || left.some(value => value < 3)) failures.push(`${label}: repeated replacements miss a quadrant (in ${entered}, out ${left})`);
   return failures;
+}
+
+async function entryDirectionFailures(page, label) {
+  const inspected = await page.locator("[data-wall-routine]").evaluate(routine => {
+    const cards = [...routine.querySelectorAll(".wall-note[data-note]")];
+    const entries = cards.map(card => {
+      const animation = card.getAnimations().find(item => item.effect?.getKeyframes);
+      const frames = animation?.effect.getKeyframes() || [];
+      return frames.map(frame => ({
+        x: Number(frame.transform?.match(/^translate3d\(([-\d.]+)px,/)?.[1]),
+        opacity: Number(frame.opacity),
+      })).filter(frame => Number.isFinite(frame.x));
+    });
+    return { total: cards.length, entries };
+  });
+  const failures = [];
+  const arrivals = inspected.entries.filter(frames => frames.some(frame => frame.x >= 50));
+  if (arrivals.length < inspected.total * 0.25) failures.push(`${label}: too few rendered cards have a visible right-side start (${arrivals.length}/${inspected.total})`);
+  for (const frames of arrivals) {
+    if (frames.some(frame => frame.x < -1)) failures.push(`${label}: a routine card enters from the left`);
+    const start = frames.findIndex(frame => frame.x >= 50);
+    if (!frames.slice(start + 1).some(frame => Math.abs(frame.x) <= 1 && frame.opacity >= 0.65)) {
+      failures.push(`${label}: a right-side arrival never settles in its slot`);
+    }
+  }
+  return [...new Set(failures)];
 }
 
 const ROWS = { review: "task-82", approval: "task-85", question: "task-86" };
 
 async function requestFailures(page, label, timing) {
   const failures = [];
+  await holdAt(page, 3.9);
+  const baseline = await page.evaluate(() => {
+    window.__wallSelectedCards = Object.fromEntries(["review", "approval", "question"].map(id =>
+      [id, document.querySelector(`.wall-request[data-attention="${id}"]`)]));
+    return Object.fromEntries(Object.entries(window.__wallSelectedCards).map(([id, card]) => {
+      const box = card.getBoundingClientRect();
+      return [id, {
+        key: card.dataset.note, text: card.querySelector(":scope > .wall-note__text").textContent,
+        opacity: Number(getComputedStyle(card).opacity),
+        mint: Number(getComputedStyle(card.querySelector(".wall-note--mint")).opacity),
+        inRoutine: Boolean(card.closest("[data-wall-routine]")),
+        x: box.left + box.width / 2, y: box.top + box.height / 2,
+        width: box.width, height: box.height,
+      }];
+    }));
+  });
+  for (const [id, card] of Object.entries(baseline)) {
+    if (!card.key || !card.text || card.opacity < 0.8 || card.mint > 0.05 || !card.inRoutine) {
+      failures.push(`${label}: ${id} is not an ordinary visible wall card at 3.9s (${JSON.stringify(card)})`);
+    }
+  }
   const phases = Object.keys(ROWS).flatMap((id, index) => {
     const landing = timing.landings[index];
+    const takeOff = landing - timing.flight;
     return [
-      { id, phase: "neutral", time: REQUEST_APPEAR[index] + 0.12 },
-      { id, phase: "mint", time: REQUEST_APPEAR[index] + 0.56 },
+      { id, phase: "neutral", time: REQUEST_SELECT[index] - 0.04 },
+      { id, phase: "mint", time: REQUEST_SELECT[index] + 0.3 },
+      { id, phase: "flight", time: takeOff + 0.15 },
       { id, phase: "row", time: landing - 0.02 },
       { id, phase: "gone", time: landing + 0.04 },
     ];
@@ -183,24 +232,40 @@ async function requestFailures(page, label, timing) {
       const x = pill.left + pill.width / 2;
       const y = pill.top + pill.height / 2;
       return {
+        same: request === window.__wallSelectedCards[attention],
+        key: request.dataset.note,
+        text: request.querySelector(":scope > .wall-note__text").textContent,
         opacity: Number(getComputedStyle(request).opacity),
         mint: Number(getComputedStyle(green).opacity),
+        inRoutine: Boolean(request.closest("[data-wall-routine]")),
         inside: x >= target.left - 4 && x <= target.right + 4 && y >= target.top - 4 && y <= target.bottom + 4,
-        x, y, target: target.toJSON(),
+        x, y, width: pill.width, height: pill.height, target: target.toJSON(),
       };
     }, { attention: id, rowId: ROWS[id] });
-    if (phase === "neutral" && (state.opacity < 0.4 || state.mint > 0.25)) failures.push(`${label}: ${id} does not first appear neutral (${JSON.stringify(state)})`);
-    if (phase === "mint" && (state.opacity < 0.5 || state.mint < 0.8)) failures.push(`${label}: ${id} does not turn visibly mint (${JSON.stringify(state)})`);
+    const first = baseline[id];
+    if (!state.same || state.key !== first.key || state.text !== first.text) failures.push(`${label}: ${id} was replaced instead of selected (${JSON.stringify(state)})`);
+    if (phase === "neutral" || phase === "mint") {
+      const shift = Math.hypot(state.x - first.x, state.y - first.y);
+      if (shift > 2 || Math.abs(state.width - first.width) > 2 || Math.abs(state.height - first.height) > 2) {
+        failures.push(`${label}: ${id} pops or moves before flight (${JSON.stringify(state)})`);
+      }
+      if (!state.inRoutine || state.opacity < 0.8) failures.push(`${label}: ${id} leaves the wall before its flight (${JSON.stringify(state)})`);
+    }
+    if (phase === "neutral" && state.mint > 0.05) failures.push(`${label}: ${id} is mint before selection (${JSON.stringify(state)})`);
+    if (phase === "mint" && state.mint < 0.95) failures.push(`${label}: ${id} does not turn visibly mint (${JSON.stringify(state)})`);
+    if (phase === "flight" && state.inRoutine) failures.push(`${label}: ${id} remains under the edge mask during flight`);
     if (phase === "row" && !state.inside) failures.push(`${label}: ${id} misses its Needs you row (${JSON.stringify(state)})`);
     if (phase === "gone" && state.opacity > 0.06) failures.push(`${label}: ${id} remains visible after landing (${state.opacity})`);
   }
-  await holdAt(page, REQUEST_APPEAR[0] + 0.12);
+  await holdAt(page, 3.9);
   const rewound = await page.locator('.wall-request[data-attention="review"]').evaluate(request => ({
+    same: request === window.__wallSelectedCards.review,
     opacity: Number(getComputedStyle(request).opacity),
     mint: Number(getComputedStyle(request.querySelector(".wall-note--mint")).opacity),
+    inRoutine: Boolean(request.closest("[data-wall-routine]")),
     visibility: getComputedStyle(request).visibility,
   }));
-  if (rewound.opacity < 0.4 || rewound.mint > 0.25 || rewound.visibility !== "visible") {
+  if (!rewound.same || rewound.opacity < 0.8 || rewound.mint > 0.05 || !rewound.inRoutine || rewound.visibility !== "visible") {
     failures.push(`${label}: backward scrub does not restore the neutral review request (${JSON.stringify(rewound)})`);
   }
   return failures;
@@ -223,6 +288,7 @@ async function checkField(browser, width, height, mode) {
   assert.equal(await currentMode(), mode, `${label}: requested mode starts`);
   const boxBefore = await page.locator("#act-1").boundingBox();
   const timing = await page.evaluate(() => window.BuildHero.timing);
+  assert.equal(timing.field[1], 4.8, `${label}: the wall holds the longer 4.8s field beat`);
   const masks = [];
   const failures = [];
   for (const time of [0.05, timing.field[1] - 0.05]) {
@@ -237,9 +303,10 @@ async function checkField(browser, width, height, mode) {
     await holdAt(page, time);
     const state = await page.evaluate(measureField);
     frames.push({ time, ...state });
-    failures.push(...frameFailures(state, `${label} at ${time.toFixed(2)}s`, height, time <= 1.7));
+    failures.push(...frameFailures(state, `${label} at ${time.toFixed(2)}s`, height, time <= 4.2));
   }
   failures.push(...motionFailures(frames, label));
+  failures.push(...await entryDirectionFailures(page, label));
   failures.push(...await requestFailures(page, label, timing));
   for (const [name, time] of [["field", 0.7], ["ripple", (timing.ripple[0] + timing.ripple[1]) / 2], ["mint", timing.landings[1] - timing.flight / 2]]) {
     await holdAt(page, time);

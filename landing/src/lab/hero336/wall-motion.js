@@ -1,4 +1,4 @@
-import { createWall, HARNESS_NAMES, notePose, ATTENTION, WALL_TIMING } from './wall.js';
+import { createWall, HARNESS_NAMES, notePose, WALL_TIMING } from './wall.js';
 import { seekAll } from '../../hero/seeker.js';
 
 function element(document, tag, className, text = '') {
@@ -35,6 +35,21 @@ function frames(turn) {
   });
 }
 
+function selectedCard(document, note, position, slot, request, field) {
+  note.classList.add('wall-request');
+  note.dataset.attention = request.turn.attention;
+  const green = card(document, request.turn, 'wall-note wall-note--mint');
+  green.querySelector('.wall-note__time').textContent = 'needs you';
+  note.append(green);
+  const layer = flying => {
+    const parent = flying ? field : position;
+    if (note.parentElement === parent) return;
+    parent.append(note);
+    place(note, flying ? slot : { ...slot, x: slot.width / 2, y: slot.height / 2 });
+  };
+  return { element: note, green, position, layer, ...request };
+}
+
 export function createWallMotion(field) {
   const { width, height } = field.getBoundingClientRect();
   const document = field.ownerDocument;
@@ -43,6 +58,7 @@ export function createWallMotion(field) {
   // Swap the static first paint for the measured, independently timed wall.
   routine.replaceChildren();
   const timed = [];
+  const requests = [];
   layout.slots.forEach((slot, index) => {
     const position = element(document, 'div', 'wall-slot');
     position.dataset.depth = slot.depth;
@@ -52,21 +68,16 @@ export function createWallMotion(field) {
       note.dataset.note = `${index}-${turnIndex}`;
       note.dataset.slot = String(index);
       position.append(note);
+      if (turn.attention) {
+        const requestIndex = layout.requests.findIndex(request => request.slotIndex === index);
+        requests[requestIndex] = selectedCard(document, note, position, slot, layout.requests[requestIndex], field);
+        return;
+      }
       const animation = note.animate(frames(turn), { duration: WALL_TIMING.ripple[1] * 1000, fill: 'both', easing: 'linear' });
       animation.pause();
       timed.push([animation, WALL_TIMING.ripple[1] * 1000]);
     });
     routine.append(position);
-  });
-  const requests = ATTENTION.map((entry, index) => {
-    const node = card(document, entry, 'wall-request');
-    node.dataset.attention = entry.id;
-    place(node, layout.requests[index]);
-    const green = card(document, entry, 'wall-note wall-note--mint');
-    green.querySelector('.wall-note__time').textContent = 'needs you';
-    node.append(green);
-    field.append(node);
-    return { element: node, green, ...layout.requests[index] };
   });
   return { requests, update: seekAll(timed), dispose: () => timed.forEach(([animation]) => animation.cancel()) };
 }

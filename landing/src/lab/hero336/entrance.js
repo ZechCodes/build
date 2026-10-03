@@ -1,7 +1,7 @@
 // Preview-only entrance: the notification wall resolves into the existing
 // laptop and copy. Home retains its independent runtime and memory.
 import gsap from "gsap";
-import { ATTENTION, WALL_TIMING, REQUEST_APPEAR } from "./wall.js";
+import { ATTENTION, WALL_TIMING, REQUEST_SELECT, notePose } from "./wall.js";
 import { HERO_ROW_REGIONS, LANDING_POINT } from "../../hero/anchors.js";
 import { createHeroLaptop } from "../../hero/laptop.js";
 import { createWallMotion } from "./wall-motion.js";
@@ -32,14 +32,15 @@ function moveField(tl, motion, timing) {
 // A single writer owns the card from its arrival through landing. Sampling
 // the same clock also makes backward seeks restore visibility and position.
 function requestRenderer(pill, row, { laptop, timing, index }) {
-  const appear = REQUEST_APPEAR[index];
+  const selected = REQUEST_SELECT[index];
   const takeOff = timing.landings[index] - timing.flight;
   const easeFlight = gsap.parseEase("power2.inOut");
   const clamp = value => Math.max(0, Math.min(1, value));
   const draw = time => {
-    const entered = 1 - (1 - clamp((time - appear) / .32)) ** 4;
-    let transform = `translateY(${16 * (1 - entered)}px) scale(${.96 + .04 * entered})`;
-    let opacity = entered;
+    const pose = notePose(pill.turn, time);
+    let transform = `translate(${pose.x}px, ${pose.y}px)`;
+    let opacity = pose.opacity;
+    pill.layer(time >= takeOff);
     if (time >= takeOff) {
       const to = pointOnRow(laptop.quads().rows[row], LANDING_POINT);
       const flight = requestFlight(easeFlight(clamp((time - takeOff) / timing.flight)), { base: [0, 0], from: [pill.x, pill.y], to });
@@ -49,8 +50,10 @@ function requestRenderer(pill, row, { laptop, timing, index }) {
     pill.element.style.transform = transform;
     pill.element.style.opacity = String(opacity);
     pill.element.style.visibility = opacity === 0 ? "hidden" : "";
-    const mint = clamp((time - appear - .22) / .25);
+    const mint = clamp((time - selected) / .25);
     pill.green.style.opacity = String(1 - (1 - mint) ** 3);
+    const baseOpacity = { quiet: .72, normal: .94, near: 1 }[pill.depth];
+    pill.position.style.opacity = String(baseOpacity + (1 - baseOpacity) * mint);
   };
   return draw;
 }

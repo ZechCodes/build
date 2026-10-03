@@ -459,13 +459,17 @@ export function mountSplitMenu(container, { onChoose, onOpenChange = null, keepW
     if (settleLiftedMenu || !scrollingAncestorOf(menu)) return;
     settleLiftedMenu = liftMenuOutOfScroll(container, menu, closeMenu, keepWithin ? keepWithin() : null);
   };
+  const refreshPlacement = () => {
+    if (menuIsOpen && settleLiftedMenu && !menu.hidden) placeLiftedMenu(container, menu, keepWithin ? keepWithin() : null);
+  };
   const openMenu = (announce = true) => {
     if (!menu || menuIsOpen) return;
     menuIsOpen = true;
     sayExpanded();
     if (announce) onOpenChange?.(true);
     liftIfScrolling();
-    reveal(menu, MENU_MOVE);
+    // A cache repaint during reveal changes the final, unanimated height.
+    reveal(menu, MENU_MOVE).then(refreshPlacement);
     if (stopWatchingOutsidePress) return;
     const onOutsidePress = (event) => {
       if (container.querySelector(SPLIT_BUTTON_SELECTOR)?.contains(event.target)) return;
@@ -495,7 +499,7 @@ export function mountSplitMenu(container, { onChoose, onOpenChange = null, keepW
   const refreshMenu = () => {
     mountMenuSliders(menu, { choose, onCommit: onChoose });
     // Growth must stay inside the same bounds without replaying the reveal.
-    if (menuIsOpen && settleLiftedMenu) placeLiftedMenu(container, menu, keepWithin ? keepWithin() : null);
+    refreshPlacement();
   };
 
   if (caret && menu) {

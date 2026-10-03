@@ -13,4 +13,3 @@ export function rememberProjectFilesSupport(deviceId, capabilities) {
 export async function readProjectFilesSupport(deviceId) {
   return deviceId ? (await readCached(address(deviceId)))?.value?.projectSources === true : false;
 }
-

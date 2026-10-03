@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as revisions from "../src/core/revisionBodies.js";
 import * as lightboxes from "../src/core/threadAttachmentLightbox.js";
 
-const ownership = { deviceId: "device-1", entityId: "run-1", conversationId: "agent-1", threadId: "old-thread" };
+const ownership = { deviceId: "device-1", entityId: "run-1", agentId: "secondary-agent", conversationId: "agent-1", threadId: "old-thread" };
 const other = { ...ownership, deviceId: "device-2" };
 const deferred = () => {
   let resolve;
@@ -59,7 +59,7 @@ describe("cleared conversation content", () => {
     const call = vi.fn(async () => ({ contents: "revision" }));
     await revisions.revisionContents("run-1", "rev-1", call, ownership);
     expect(call).toHaveBeenCalledWith("thread.revision", {
-      entity_id: "run-1", revision_id: "rev-1", conversation_id: "agent-1", thread_id: "old-thread",
+      entity_id: "run-1", revision_id: "rev-1", agent_id: "secondary-agent", conversation_id: "agent-1", thread_id: "old-thread",
     });
   });
 

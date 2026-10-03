@@ -24,6 +24,7 @@ export function revisionContents(entityId, revisionId, call, ownership = {}) {
   const held = revisions.get(key);
   if (held) return held.reading;
   const params = { entity_id: entityId, revision_id: revisionId,
+    ...(scope.agentId ? { agent_id: scope.agentId } : {}),
     ...(scope.conversationId ? { conversation_id: scope.conversationId } : {}),
     ...(scope.threadId ? { thread_id: scope.threadId } : {}),
   };

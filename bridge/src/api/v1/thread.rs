@@ -834,12 +834,12 @@ fn agent_choose(
     answer(app.agent_choose(&params.wire())).map_err(refine)
 }
 
-fn guard_conversation_mutation(
+fn guard_conversation_mutation<P: WireParams>(
     app: &AppState,
     owner: &str,
-    params: &serde_json::Value,
+    params: &P,
 ) -> Result<(), ApiError> {
-    app.guard_conversation_mutation_params(owner, params)
+    app.guard_conversation_mutation_params(owner, &params.wire())
         .map_err(ApiError::classify)
         .map_err(refine)
 }
@@ -848,7 +848,7 @@ fn conversation_watch(
     app: &mut AppState,
     params: AgentRemoveParams,
 ) -> Result<Answer<ConversationWatch>, ApiError> {
-    guard_conversation_mutation(app, &params.entity_id, &params.wire())?;
+    guard_conversation_mutation(app, &params.entity_id, &params)?;
     answer(app.set_conversation_watched(&params.entity_id, &params.agent_id, true)).map_err(refine)
 }
 
@@ -856,7 +856,7 @@ fn conversation_unwatch(
     app: &mut AppState,
     params: AgentRemoveParams,
 ) -> Result<Answer<ConversationWatch>, ApiError> {
-    guard_conversation_mutation(app, &params.entity_id, &params.wire())?;
+    guard_conversation_mutation(app, &params.entity_id, &params)?;
     answer(app.set_conversation_watched(&params.entity_id, &params.agent_id, false)).map_err(refine)
 }
 
@@ -864,7 +864,7 @@ fn conversation_settings(
     app: &mut AppState,
     params: ConversationSettingsParams,
 ) -> Result<Answer<ConversationSettings>, ApiError> {
-    guard_conversation_mutation(app, &params.entity_id, &params.wire())?;
+    guard_conversation_mutation(app, &params.entity_id, &params)?;
     let Some(max_context_tokens) = params.max_context_tokens else {
         return Err(ApiError::invalid_params(
             "missing required param: max_context_tokens (a number of tokens, or null for the device's)",

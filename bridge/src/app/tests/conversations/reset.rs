@@ -374,6 +374,11 @@ fn conversation_reset_preserves_native_history_referenced_by_equivalent_survivin
         .resolve_conversation_address(&owner, Some(&primary))
         .unwrap();
     assert!(state.native_history_is_shared(&address, &native));
+    state.edit_agent_record("unresolved historical cwd", &owner, &sibling, |agent| {
+        agent.thread.sessions.last_mut().unwrap().cwd =
+            Some(dir.path().join("vanished-checkout").display().to_string());
+    });
+    assert!(state.native_history_is_shared(&address, &native));
     state.edit_agent_record("current native", &owner, &sibling, |agent| {
         agent.thread.sessions.clear();
         agent.choose(ModelChoice {

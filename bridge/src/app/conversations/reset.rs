@@ -647,6 +647,11 @@ fn native_lineages_share(one: &SessionLineage, other: &SessionLineage) -> bool {
     let (Some(one_cwd), Some(other_cwd)) = (one.stood_in(), other.stood_in()) else {
         return true;
     };
+    // A removed checkout cannot prove that these references name different
+    // provider artifacts. Preserve the exact native id while ownership is uncertain.
+    if std::fs::canonicalize(one_cwd).is_err() || std::fs::canonicalize(other_cwd).is_err() {
+        return true;
+    }
     one_harness.native_history_cwd(std::path::Path::new(one_cwd))
         == other_harness.native_history_cwd(std::path::Path::new(other_cwd))
 }

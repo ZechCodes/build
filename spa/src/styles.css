@@ -397,12 +397,13 @@ select:disabled { --select-chevron-color:var(--dim); color:var(--dim); opacity:.
   background:transparent; box-shadow:none;
 }
 .rail-composer .composer textarea:focus { outline:none; border-color:transparent; box-shadow:none; }
+.csbox .csinput { line-height:1.45; }
 .comment-pop.cp-armed .cp-input { box-shadow:0 0 0 2px var(--pop-warn); }
 /* The source editor is a document canvas, with its existing monospace type
    and unframed surface. Keeping it here prevents surface sheets repainting it. */
 .file-editor {
   border:0; border-radius:0; padding:16px 18px;
-  background:var(--code-bg); color:var(--ink); font:12.5px/1.6 var(--mono);
+  background:var(--code-bg); color:var(--ink); font:12.5px/1.6 var(--mono); caret-color:var(--accent);
 }
 .file-editor:focus { outline:none; border-color:transparent; box-shadow:none; }
 @media (max-width:720px) {
@@ -995,7 +996,7 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 .csbox-row { display:flex; align-items:flex-end; gap:8px; }
 /* `min-height` is overridden deliberately: the page's textareas stand 96px tall
    by default, and this one opens as ONE line and earns every row after it. */
-.csbox .csinput { flex:1; min-width:0; display:block; resize:none; overflow-y:auto; line-height:1.45; min-height:0; max-height:240px; }
+.csbox .csinput { flex:1; min-width:0; display:block; resize:none; overflow-y:auto; min-height:0; max-height:240px; }
 .csbox-actions { flex:none; }
 .csbox .githint:empty { display:none; }
 .csbox .githint { display:block; padding-bottom:6px; }

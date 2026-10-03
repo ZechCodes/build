@@ -18,6 +18,13 @@ Wire 3.11.0.
   or disappear while the menu stays open; removing the focused row moves focus
   to the nearest remaining row. Lifted menus remain inside their bounds as
   rows change, and removed sliders cannot commit a retired preview (#366).
+- Every select shares Build's field styling, chevron and focus ring in both
+  themes. Chromium's native picker uses the same panel, rows and selection
+  marks as Build menus; other browsers retain a themed native popup. Compact
+  diff sorting and narrow conversation reset fields stay within their rows.
+  Pickers open below their field and flip above when needed, keep single-line
+  options within the viewport, and fade long selected labels. Settings and sheet
+  selects match neighbouring input backgrounds (#367).
 - Setting the conversation menu's Compact at slider keeps the menu open and
   focus on the slider. Its explanation line is removed; the selected value,
   stop ticks and accessible name remain. A saved stop stays visible while its

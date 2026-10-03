@@ -17,7 +17,7 @@ Wire 3.11.0.
   selects. Task review bases, capture branches and workspace labels now match
   the rest of the forms; embedded composers and the source editor retain their
   sizing and native editing behaviour. Branch routing menus stay inside narrow
-  screens (#368).
+  screens, and short task rails keep their Close action fully in view (#368).
 
 - Every select shares Build's field styling, chevron and focus ring in both
   themes. Chromium's native picker uses the same panel, rows and selection

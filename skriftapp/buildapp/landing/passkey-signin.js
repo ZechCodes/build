@@ -276,7 +276,12 @@ const CEREMONIES = {
   signup: {
     busyText: "Creating your passkey…",
     doneText: "Account created. Opening Build…",
-    run: (flow, form) => flow.signUp({ email: String(new FormData(form).get("email") || "") }),
+    run: (flow, form) => {
+      const data = new FormData(form);
+      const fields = { email: String(data.get("email") || "") };
+      if (data.get("product_email_opt_in") === "on") fields.product_email_opt_in = "on";
+      return flow.signUp(fields);
+    },
   },
 };
 

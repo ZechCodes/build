@@ -11,7 +11,8 @@
 //
 // It checks that the page opens no WebAuthn request on its own, that without an invite
 // it offers no account, that an invite visitor sees account creation alone and can switch
-// to sign-in and back (#315), that the invite's address is the one prefilled and read-only,
+// to sign-in and back (#315), that an addressed invite locks its address or an open
+// link asks for one, and that the email opt-in starts unchecked,
 // that creating the account lands in /app/ as a member, and that the new passkey signs
 // in. SCREENSHOT_DIR, when set, gets one PNG per state. Exit 0 when all of that holds
 // and the page asks nothing of another origin. Never point it at production: it creates
@@ -109,13 +110,21 @@ try {
   );
   await shoot("signin-no-invite");
 
-  // The invite link: its address, prefilled and read-only.
+  // The invite link: an addressed one locks its address; an open link asks for one.
   await page.goto(`${base}/invite/${encodeURIComponent(inviteToken)}`);
   await page.waitForURL((url) => url.pathname === "/auth/login", { timeout: 10_000 });
   const field = page.locator("#signup-email");
-  const email = await field.inputValue();
-  check(Boolean(email), "invite: no address prefilled");
-  check(await field.evaluate((input) => input.readOnly), "invite: the address can be edited");
+  const readonly = await field.evaluate((input) => input.readOnly);
+  const signupEmail = process.env.SIGNUP_EMAIL || `browser-${Date.now()}@example.com`;
+  if (readonly) {
+    check(Boolean(await field.inputValue()), "addressed invite: no address prefilled");
+  } else {
+    check((await field.inputValue()) === "", "open link: the address is already filled");
+    await field.fill(signupEmail);
+  }
+  const optIn = page.locator('#signup-form [name="product_email_opt_in"]');
+  check((await optIn.count()) === 1, "invite: no optional email checkbox");
+  check(!(await optIn.isChecked()), "invite: the email checkbox starts checked");
   check((await page.locator('#signup-form [name="name"]').count()) === 0, "invite: a name field is offered");
   check((await page.locator("#signin-form").count()) === 0, "invite: the sign-in form is shown beside signup");
   await shoot("signup-invite");
@@ -128,6 +137,8 @@ try {
   await shoot("signin-invite");
   await page.locator('a[href="/auth/login"]').click();
   await page.waitForSelector("#signup-form", { timeout: 10_000 });
+  if (!readonly) await page.locator("#signup-email").fill(signupEmail);
+  await page.locator('#signup-form [name="product_email_opt_in"]').check();
 
   await page.locator('#signup-form button[type="submit"]').click();
   if (await signedIn("create account", "#signup-status")) {

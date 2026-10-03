@@ -6,11 +6,14 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
+import re
 from uuid import uuid4
 
 import pytest
 from litestar.handlers import HTTPRouteHandler
 from litestar.testing import TestClient
+from litestar.plugins.jinja import JinjaTemplateEngine
+from litestar.template import TemplateConfig
 from skrift.admin.navigation import ADMIN_NAV_TAG
 from skrift.auth.guards import auth_guard
 from skrift.auth.session_keys import SESSION_USER_ID
@@ -24,6 +27,7 @@ from buildapp.db_test_support import (
     session_backend_config,
     sign_in,
     stored_invites,
+    TEMPLATES_DIR,
 )
 from buildapp.email_test_support import FailingEmailBackend, email_settings
 from buildapp.invites import EMAIL_FIELD, INVITE_TTL, InviteState
@@ -34,11 +38,14 @@ from buildapp.invites_admin import (
     INVITE_SENT_MESSAGE,
     INVITES_ADMIN_PATH,
     INVITES_PAGE_ROUTE_PATH,
+    OPEN_LINK_PATH,
+    OPEN_LINK_ROUTE_PATH,
     REVOKE_LABEL,
     REVOKE_PATH,
     REVOKE_ROUTE_PATH,
     REVOKE_SUFFIX,
     SEND_INVITE_LABEL,
+    CREATE_OPEN_LINK_LABEL,
     TEMPLATE_NAME,
     InvitesAdminController,
     build_invites_dashboard,
@@ -69,11 +76,12 @@ def invite(**fields) -> Invite:
     return Invite(**defaults)
 
 
-def render_page(rows) -> str:
+def render_page(rows, **extra) -> str:
     """The real template, with admin/base.html stubbed and csrf_field() a fake — the
     same environment every admin template test renders through."""
     return admin_template_environment().get_template(TEMPLATE_NAME).render(
         **invites_page_context(rows),
+        **extra,
         site_name=lambda: "Build",
         csrf_field=lambda: f'<input type="hidden" name="{CSRF_FIELD_NAME}" value="t">',
     )
@@ -101,7 +109,7 @@ def test_every_route_on_the_page_requires_the_administrator_permission():
         for handler in vars(InvitesAdminController).values()
         if isinstance(handler, HTTPRouteHandler)
     ]
-    assert len(handlers) == 3  # the page, send, revoke
+    assert len(handlers) == 4  # the page, email send, open link, revoke
     for handler in handlers:
         assert any(
             getattr(guard, "permission", None) == "administrator"
@@ -133,6 +141,33 @@ def test_a_redeemed_row_names_the_account_that_redeemed_it():
     assert rows[0]["status"].state is InviteState.REDEEMED
     assert rows[0]["redeemed_by"] == INVITED
     assert rows[0]["redeemed_at"] == NOW
+
+
+def test_open_link_rows_explain_the_missing_address_and_show_consent_only_after_redemption():
+    redeemer = uuid4()
+    rows = build_invites_dashboard(
+        [invite(kind="open_link", email=""), invite(kind="open_link", email="", redeemed_by=redeemer, redeemed_at=NOW)],
+        {redeemer: INVITED},
+        NOW,
+        {redeemer: True},
+    )
+    assert rows[0]["kind"] == "Open link"
+    assert rows[0]["email"] == "No email bound"
+    assert rows[0]["email_opt_in"] is None
+    assert rows[1]["email_opt_in"] == "Yes"
+    html = render_page(rows)
+    assert "No email bound" in html
+    assert "Open link" in html
+    assert "Yes" in html
+
+
+def test_a_redeemed_account_without_consent_displays_no():
+    redeemer = uuid4()
+    rows = build_invites_dashboard(
+        [invite(redeemed_by=redeemer, redeemed_at=NOW)],
+        {redeemer: INVITED}, NOW, {},
+    )
+    assert rows[0]["email_opt_in"] == "No"
 
 
 def test_each_state_gets_its_word():
@@ -181,6 +216,17 @@ def test_the_template_carries_a_send_form_with_a_csrf_field():
     assert CSRF_FIELD_NAME in html
 
 
+def test_the_template_has_a_separate_open_link_form_with_no_address():
+    html = render_page([])
+    assert f'action="{OPEN_LINK_PATH}"' in html
+    assert CREATE_OPEN_LINK_LABEL in html
+    assert html.count(f'action="{OPEN_LINK_PATH}"') == 1
+    assert OPEN_LINK_ROUTE_PATH in [
+        path for handler in vars(InvitesAdminController).values()
+        if isinstance(handler, HTTPRouteHandler) for path in handler.paths
+    ]
+
+
 def test_the_page_takes_its_path_field_name_and_both_button_labels_from_the_module():
     """The template renders what the module says, so the constants the tests read are
     the strings an operator clicks — not two copies that happen to agree. The field
@@ -227,6 +273,12 @@ def admin_client(monkeypatch, email_backend) -> Iterator[TestClient]:
         [InvitesAdminController],
         session_maker=in_memory_session_maker(),
         session_config=session_config,
+        template_config=TemplateConfig(directory=TEMPLATES_DIR, engine=JinjaTemplateEngine),
+    )
+    app.template_engine.engine.loader = admin_template_environment().loader
+    app.template_engine.engine.globals.update(
+        site_name=lambda: "Build",
+        csrf_field=lambda: f'<input type="hidden" name="{CSRF_FIELD_NAME}" value="t">',
     )
     app.state.email_backend = email_backend
     with TestClient(app=app, session_config=session_config) as test_client:
@@ -250,6 +302,31 @@ def test_the_send_form_issues_an_invite_and_mails_it(admin_client, email_backend
     assert response.headers["location"] == INVITES_ADMIN_PATH
     assert [row.email for row in stored_invites(admin_client)] == [INVITED]
     assert [sent.to for sent in email_backend.sent] == [INVITED]
+
+
+def test_open_link_form_returns_raw_url_once_without_email_or_session_copy(admin_client, email_backend):
+    response = admin_client.post(OPEN_LINK_PATH, data=CSRF_BODY, follow_redirects=False)
+    assert response.status_code == 200, response.text
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    (created,) = stored_invites(admin_client)
+    assert created.kind == "open_link"
+    assert created.email == ""
+    assert email_backend.sent == []
+    raw_url = re.search(r'id="new-open-link-url"[^>]*value="([^"]+)"', response.text).group(1)
+    assert raw_url.startswith("https://getbuild.ing/invite/inv_")
+    assert response.text.count(raw_url) == 1
+    assert raw_url not in str(admin_client.get_session_data())
+    later = admin_client.get(INVITES_ADMIN_PATH)
+    assert later.status_code == 200
+    assert raw_url not in later.text
+
+
+def test_open_link_form_requires_csrf(admin_client, email_backend):
+    response = admin_client.post(OPEN_LINK_PATH, data={}, follow_redirects=False)
+    assert response.headers["location"] == INVITES_ADMIN_PATH
+    assert stored_invites(admin_client) == []
+    assert email_backend.sent == []
 
 
 def test_a_send_without_the_csrf_field_stores_and_sends_nothing(

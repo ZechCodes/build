@@ -2,8 +2,8 @@
 back by the unsubscribe routes; it carries the normalised address so removal needs no
 column and no session. It lasts five years because an unsubscribe link must still work
 whenever someone digs the email out, and it is safe to hand out for that long: it grants
-nothing beyond deleting the one row it names, and revocation is that row already being
-gone."""
+nothing beyond removing that address from the waitlist and withdrawing its account
+product-email consent. Repeated use has no additional effect."""
 
 from __future__ import annotations
 

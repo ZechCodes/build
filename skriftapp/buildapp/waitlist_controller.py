@@ -19,6 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from buildapp.email_message import provide_email_backend
+from buildapp.email_consent import revoke_consent_for_email
 from buildapp.models import WaitlistSignup
 from buildapp.request_body import read_json_object
 from buildapp.unsubscribe_pages import (
@@ -122,6 +123,7 @@ class WaitlistController(Controller):
         await db_session.execute(
             delete(WaitlistSignup).where(WaitlistSignup.email == email)
         )
+        await revoke_consent_for_email(db_session, email)
         await db_session.commit()
         return Response(
             await asyncio.to_thread(render_removed_page), media_type=MediaType.HTML

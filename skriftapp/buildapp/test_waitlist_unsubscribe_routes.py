@@ -81,11 +81,12 @@ def test_get_with_bad_token_renders_the_invalid_page_with_404():
     assert INVALID_HEADING in response.content
 
 
-def test_post_with_valid_token_deletes_the_exact_normalised_address_and_commits():
+def test_post_with_valid_token_deletes_the_exact_normalised_address_and_revokes_consent():
     session = _StubSession()
     response = _remove(_valid_token("  Alice@Example.COM "), session)
-    assert len(session.executed) == 1
+    assert len(session.executed) == 2
     assert _bound_parameters(session.executed[0]) == [SIGNER_ADDRESS]
+    assert SIGNER_ADDRESS in _bound_parameters(session.executed[1])
     assert session.committed is True
     assert REMOVED_HEADING in response.content
 

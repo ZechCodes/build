@@ -182,6 +182,21 @@ test("creating an account is one modal create() for the address it was given", a
   assert.deepEqual(sent[0], ["register/options", { email: "invitee@example.com" }]);
 });
 
+test("signup sends an explicit email opt-in only with the options request", async () => {
+  const sent = [];
+  const server = fakeServer();
+  const { flow } = page({
+    server: { post: (path, fields) => (sent.push([path, fields]), server.post(path, fields)) },
+  });
+
+  assert.deepEqual(
+    await flow.signUp({ email: "invitee@example.com", product_email_opt_in: "on" }),
+    { redirect: "/app/" },
+  );
+  assert.deepEqual(sent[0], ["register/options", { email: "invitee@example.com", product_email_opt_in: "on" }]);
+  assert.deepEqual(Object.keys(sent[1][1]), ["credential"]);
+});
+
 test("the page opens no WebAuthn request until a button is pressed", async () => {
   globalThis.FormData = FakeFormData;
   const credentials = new SafariCredentials();
@@ -207,6 +222,20 @@ test("the create-account button posts the invite's address and nothing else", as
   const [url, fields] = posted[0];
   assert.equal(url, "/auth/passkey/register/options");
   assert.deepEqual(fields, { _csrf: "token", email: "invitee@example.com" });
+});
+
+test("the checked email option reaches registration options through the form", async () => {
+  globalThis.FormData = FakeFormData;
+  const posted = [];
+  const document = fakeDocument();
+  document.elements["signup-form"].fields.product_email_opt_in = "on";
+  bindSigninPage(document, fakeWindow(new SafariCredentials(), posted));
+
+  document.elements["signup-form"].submit();
+  for (let i = 0; i < 50 && posted.length < 2; i += 1) await later();
+
+  assert.deepEqual(posted[0][1], { _csrf: "token", email: "invitee@example.com", product_email_opt_in: "on" });
+  assert.equal("product_email_opt_in" in posted[1][1], false);
 });
 
 test("a page with no invite binds its sign-in button alone", async () => {

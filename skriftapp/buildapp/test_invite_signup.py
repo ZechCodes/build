@@ -21,7 +21,7 @@ from sqlalchemy import func, select
 from buildapp import invites
 from buildapp.clock import utc_now
 from buildapp.db_test_support import add_account
-from buildapp.invite_pages import APP_PATH, INVITE_ONLY_HEADING, MISMATCH_HEADING, WAITLIST_PATH
+from buildapp.invite_pages import APP_PATH, INVITE_ONLY_HEADING, MISMATCH_HEADING, REDEEMED_HEADING, WAITLIST_PATH
 from buildapp.invites import InviteState, invite_path
 from buildapp.models import Invite
 from buildapp.skrift_app_test_support import DATABASE_FILE, SECURE_ORIGIN, on_database
@@ -72,6 +72,14 @@ def issue(client: TestClient, email: str, *, expires_in: timedelta | None = None
     return on_database(client, work)
 
 
+def issue_open(client: TestClient) -> str:
+    async def work(session):
+        _, raw = await invites.issue_open_invite(session, None, utc_now())
+        return raw
+
+    return on_database(client, work)
+
+
 def stored_invite(client: TestClient, email: str) -> Invite:
     async def work(session):
         return (await session.execute(select(Invite).where(Invite.email == email))).scalar_one()
@@ -112,8 +120,11 @@ class Page:
         self.csrf = response.json().get("csrf_token") or self.csrf
         return response
 
-    def create_account(self, email: str):
-        options = self.post(REGISTER_OPTIONS, email=email)
+    def create_account(self, email: str, *, opt_in: str | None = None):
+        fields = {"email": email}
+        if opt_in is not None:
+            fields["product_email_opt_in"] = opt_in
+        options = self.post(REGISTER_OPTIONS, **fields)
         if not options.is_success:
             return options
         return self.post(REGISTER_COMPLETE, credential=json.dumps({"id": "credential-1"}))
@@ -180,6 +191,14 @@ def test_the_passkey_login_route_shows_the_same_views(client):
     assert forms(client.get("/auth/passkey/login?view=signin").text) == ["signin-form"]
 
 
+@pytest.mark.parametrize("path", [LOGIN_PATH, "/auth/passkey/login"])
+def test_auth_pages_do_not_cache_or_refer_an_invite_token(client, path):
+    open_invite(client, issue(client, INVITED))
+    response = client.get(path)
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["referrer-policy"] == "no-referrer"
+
+
 def test_an_unknown_view_is_the_default_and_never_reflected(client):
     open_invite(client, issue(client, INVITED))
     html = client.get(f"{LOGIN_PATH}?view=zz%3Cview%3Ezz").text
@@ -195,6 +214,23 @@ def test_opening_an_invite_shows_its_address_prefilled_and_locked(client):
     field = signup_email_input(html)
     assert field and f'value="{INVITED}"' in field and "readonly" in field
     assert 'name="name"' not in html
+
+
+def test_open_link_offers_an_editable_address_and_unchecked_email_opt_in(client):
+    open_invite(client, issue_open(client))
+    html = Page(client).html
+    field = signup_email_input(html)
+    assert forms(html) == ["signup-form"]
+    assert field and 'readonly' not in field and 'value=""' in field
+    assert 'name="product_email_opt_in"' in html
+    assert 'checked' not in re.search(r'<input[^>]+name="product_email_opt_in"[^>]*>', html).group(0)
+
+
+def test_address_bound_invite_also_offers_unchecked_email_opt_in(client):
+    open_invite(client, issue(client, INVITED))
+    html = Page(client).html
+    assert 'name="product_email_opt_in"' in html
+    assert 'checked' not in re.search(r'<input[^>]+name="product_email_opt_in"[^>]*>', html).group(0)
 
 
 @pytest.mark.parametrize(
@@ -294,6 +330,85 @@ def test_creating_the_account_redeems_the_invite_and_opens_build(client, fake_au
     invite = stored_invite(client, INVITED)
     assert invites.invite_state(invite, utc_now()) is InviteState.REDEEMED
     assert invite.redeemed_by is not None
+
+
+def test_open_link_claims_the_address_the_new_account_uses(client, fake_authenticator):
+    raw = issue_open(client)
+    open_invite(client, raw)
+    response = Page(client).create_account(INVITED)
+    assert response.status_code == 201
+    assert response.json()["redirect"] == APP_PATH
+
+    async def work(session):
+        return (await session.execute(select(Invite).where(Invite.redeemed_at.is_not(None)))).scalar_one()
+
+    invite = on_database(client, work)
+    assert invite.email == INVITED
+    assert invite.redeemed_by is not None
+
+
+def test_open_link_refuses_empty_address_before_passkey_prompt(client):
+    open_invite(client, issue_open(client))
+    response = Page(client).post(REGISTER_OPTIONS, email="  ")
+    assert response.status_code == 403
+    assert response.json()["error"] == INVITE_REQUIRED
+
+
+@pytest.mark.parametrize("address", ["not-an-address", "qa@localhost", "a" * 245 + "@example.com"])
+def test_open_link_refuses_addresses_the_waitlist_cannot_accept(client, address):
+    open_invite(client, issue_open(client))
+    response = Page(client).post(REGISTER_OPTIONS, email=address)
+    assert response.status_code == 403
+    assert response.json()["error"] == INVITE_REQUIRED
+
+
+def test_open_link_options_cannot_be_completed_after_another_link_was_opened(client, fake_authenticator):
+    open_invite(client, issue_open(client))
+    page = Page(client)
+    assert page.post(REGISTER_OPTIONS, email=INVITED).is_success
+    open_invite(client, issue_open(client))
+    response = page.post(REGISTER_COMPLETE, credential=json.dumps({"id": "credential-1"}))
+    assert response.status_code == 403
+    assert account_count(client) == 0
+
+
+@pytest.mark.parametrize("open_link", [False, True], ids=["address-bound", "open-link"])
+@pytest.mark.parametrize("opt_in", [None, "on"], ids=["no-consent", "consent"])
+def test_signup_persists_explicit_email_consent_for_either_invite_kind(
+    client, fake_authenticator, open_link, opt_in
+):
+    from buildapp.models import UserEmailPreference
+
+    open_invite(client, issue_open(client) if open_link else issue(client, INVITED))
+    assert Page(client).create_account(INVITED, opt_in=opt_in).status_code == 201
+
+    async def work(session):
+        return (await session.execute(select(UserEmailPreference))).scalar_one()
+
+    preference = on_database(client, work)
+    assert preference.product_email_opt_in is (opt_in == "on")
+    assert (preference.product_email_opted_in_at is not None) is (opt_in == "on")
+
+
+def test_signup_ignores_consent_forged_only_on_completion(client, fake_authenticator):
+    from buildapp.models import UserEmailPreference
+
+    open_invite(client, issue(client, INVITED))
+    page = Page(client)
+    assert page.post(REGISTER_OPTIONS, email=INVITED).is_success
+    response = page.post(
+        REGISTER_COMPLETE,
+        credential=json.dumps({"id": "credential-1"}),
+        product_email_opt_in="on",
+    )
+    assert response.status_code == 201
+
+    async def work(session):
+        return (await session.execute(select(UserEmailPreference))).scalar_one()
+
+    preference = on_database(client, work)
+    assert preference.product_email_opt_in is False
+    assert preference.product_email_opted_in_at is None
 
 
 def test_the_new_account_has_no_name_to_think_about(client, fake_authenticator):
@@ -434,6 +549,78 @@ def test_an_invite_revoked_mid_registration_leaves_an_account_outside_the_app(cl
     app = client.get(APP_PATH, follow_redirects=False)
     assert app.status_code == 403
     assert INVITE_ONLY_HEADING in app.text
+
+
+@pytest.mark.parametrize("next_url", [None, "/docs"], ids=["no-next", "unrelated-next"])
+@pytest.mark.parametrize("open_link", [False, True], ids=["address-bound", "open-link"])
+def test_a_lost_claim_after_account_creation_opens_the_already_used_invite_page(
+    client, fake_authenticator, monkeypatch, open_link, next_url
+):
+    """The other request spends the link while Skrift finishes registration. Skrift has
+    already committed this account, but its JSON redirect must take the browser to the
+    invite outcome rather than report the loser as a member."""
+    import skrift.controllers.auth as skrift_auth
+    from buildapp.models import UserEmailPreference
+
+    verified = skrift_auth.complete_primary_passkey_registration
+
+    def spend_then_verify(*args, **kwargs):
+        with sqlite3.connect(DATABASE_FILE) as connection:
+            connection.execute(
+                "UPDATE invites SET email = CASE WHEN kind = 'open_link' "
+                "THEN 'winner@example.com' ELSE email END, redeemed_at = CURRENT_TIMESTAMP"
+            )
+        return verified(*args, **kwargs)
+
+    monkeypatch.setattr(skrift_auth, "complete_primary_passkey_registration", spend_then_verify)
+    raw = issue_open(client) if open_link else issue(client, INVITED)
+    open_invite(client, raw)
+    if next_url is not None:
+        client.get(f"{LOGIN_PATH}?next={next_url}")
+
+    response = Page(client).create_account(INVITED, opt_in="on")
+
+    assert response.status_code == 201  # Skrift really did create the account.
+    assert response.json() == {"ok": False, "redirect": "/invite/outcome/redeemed"}
+    outcome = client.get(response.json()["redirect"], follow_redirects=False)
+    assert outcome.status_code == 200
+    assert REDEEMED_HEADING in outcome.text
+    assert account_count(client) == 1
+
+    async def preference_count(session):
+        return (await session.execute(select(func.count()).select_from(UserEmailPreference))).scalar_one()
+
+    assert on_database(client, preference_count) == 0
+
+
+def test_registration_waiting_for_a_second_factor_keeps_skrifts_redirect_without_consent(
+    client, fake_authenticator, monkeypatch
+):
+    """A second factor leaves no signed-in user for Build to claim yet."""
+    import buildapp.auth_controller as build_auth
+    from buildapp.models import UserEmailPreference
+
+    raw = issue(client, INVITED)
+    open_invite(client, raw)
+    with monkeypatch.context() as patcher:
+        patcher.setattr(build_auth, "session_user_id", lambda request: None)
+        response = Page(client).create_account(INVITED, opt_in="on")
+
+    assert response.status_code == 201
+    assert response.json()["ok"] is True
+    assert stored_invite(client, INVITED).redeemed_at is None
+
+    # Once the second factor establishes a user session, Skrift's original invite
+    # link redeems the seat. Build must not infer the signup checkbox from that GET.
+    continued = client.get(invite_path(raw), follow_redirects=False)
+    assert continued.status_code == 302
+    assert continued.headers["location"] == APP_PATH
+    assert stored_invite(client, INVITED).redeemed_at is not None
+
+    async def preference_count(session):
+        return (await session.execute(select(func.count()).select_from(UserEmailPreference))).scalar_one()
+
+    assert on_database(client, preference_count) == 0
 
 
 # --- no other route under the passkey-only config makes an account ------------------

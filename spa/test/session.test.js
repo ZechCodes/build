@@ -339,6 +339,27 @@ describe("what a session's calls carry", () => {
     expect(session.adapter()).toBe(null);
   });
 
+  it("sends generation fields only on the current reset-capable greeting, including before hello and after a downgrade", async () => {
+    const { session, peer } = await carrying();
+    const legacy = { entity_id: "entity", filename: "paste.png", content_b64: "aW1hZ2U=" };
+    const params = { ...legacy, agent_id: "agent", thread_id: "cached-generation" };
+    for (const [greeting, expected] of [
+      [null, legacy],
+      [{ api_version: "3.10.0", capabilities: ["params.strict"] }, legacy],
+      [{ api_version: "3.11.0", capabilities: ["conversation.reset"] }, params],
+      [{ api_version: "3.11.0", capabilities: [] }, legacy],
+      [{ api_version: "3.10.0", capabilities: [] }, legacy],
+    ]) {
+      if (greeting) session.installAdapter(selectAdapter(greeting));
+      const reply = session.call("thread.attach", params);
+      await tick();
+      expect(replyTo(peer).params).toEqual(expected);
+      answer(peer, { path: "paste.png" });
+      await expect(reply).resolves.toEqual({ path: "paste.png" });
+    }
+    session.close();
+  });
+
   it("hands the bridge's unsolicited pushes to onPush, and its replies to nobody else", async () => {
     const { session, peer, events } = await carrying();
     const reply = session.call("ping", {});

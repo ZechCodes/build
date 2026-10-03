@@ -62,11 +62,11 @@ async function remoteReset() {
 function pauseAdmission(kind) {
   let release;
   const pause = (run) => new Promise((resolve, reject) => { release = () => run().then(resolve, reject); });
-  for (const name of ["mergeCachedAtomically", "mergeCachedTogether", "writeCached"]) {
+  for (const name of ["mergeCachedAtomically", "mergeCachedTogether", "mergeCachedRecordsTogether", "updateCachedFeed", "writeCached"]) {
     const original = cache[name];
     vi.spyOn(cache, name).mockImplementation((at, ...args) => {
       const target = Array.isArray(at) ? at : [at];
-      if (!release && target.some((held) => held.entityId === "run-1" && held.kind === kind)) return pause(() => original(at, ...args));
+      if (!release && target.some((held) => held.kind === kind && (kind === "feed" || held.entityId === "run-1"))) return pause(() => original(at, ...args));
       return original(at, ...args);
     });
   }
@@ -79,6 +79,20 @@ function pauseAdmission(kind) {
 const pushed = (state) => watchers.find((watcher) => watcher.id === "s-inbox").onChanges([{ entity_id: "run-1", state }]);
 
 describe("conversation generation admission across clients", () => {
+  it("scrubs a delayed board feed against the current thread while keeping unrelated rows", async () => {
+    const stale = { ...row([agent("thread:ag-1", 0, { topic: "old secret topic" })]), summary: "old secret summary" };
+    const sibling = { ...row([]), run_id: "run-2", summary: "keep sibling" };
+    board = [stale, sibling];
+    const paused = pauseAdmission("feed");
+    const reading = sync.syncDevice("reset-device");
+    await vi.waitFor(() => expect(paused.waiting()).toBe(true));
+    await remoteReset(); paused.resume(); await reading;
+    const feed = (await cache.readCached({ ...address("feed"), entityId: "" })).value;
+    expect(JSON.stringify(feed)).not.toContain("old secret");
+    expect(feed.items.find((held) => held.run_id === "run-2").summary).toBe("keep sibling");
+    expect(feed.items.find((held) => held.run_id === "run-1").agents[0].thread_id).toBe("thread:ag-1:fresh");
+  });
+
   it("refuses an old listed row when reset commits after reconciliation", async () => {
     board = [row([agent("thread:ag-1", 0)])];
     const paused = pauseAdmission("row");

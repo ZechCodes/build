@@ -161,7 +161,9 @@ describe("the page, on top of that gate", () => {
     expect(host.querySelector(".rail-watch")?.getAttribute("aria-pressed")).toBe("false");
     expect(host.querySelector(".composer-attach")).not.toBeNull();
     expect(listed("tasks.read_through")).toHaveLength(0);
-    expect(listed("tasks.get")).toHaveLength(1);
+    // The cached frame can paint before the read has acquired its task lock
+    // and cache snapshot. Await the request itself before testing the greeting.
+    await vi.waitFor(() => expect(listed("tasks.get")).toHaveLength(1));
 
     await greet(WATCHING);
     await vi.waitFor(() => expect(listed("tasks.read_through")).toHaveLength(1));

@@ -46,6 +46,7 @@ describe("clearing one conversation's local UI records", () => {
     const old = [
       DRAFT,
       { ...DRAFT, sub: "chat:agent:workspace-1:agent-1" },
+      { ...DRAFT, sub: "chat:agent:workspace-alias:agent-alias:thread:old" },
       { deviceId: "dev-1", entityId: "workspace-1", kind: "ui-fold", sub: "thread:agent-1:thread:old" },
       { deviceId: "dev-1", entityId: "workspace-1", kind: "ui-fold", sub: "thread:agent-1" },
       { deviceId: "", entityId: "workspace-1:agent-1:thread:old", kind: "ui-menu", sub: "agent-surfaces:" },
@@ -54,6 +55,7 @@ describe("clearing one conversation's local UI records", () => {
     ];
     const kept = [
       { ...DRAFT, sub: "chat:agent:workspace-1:agent-1:thread:new" },
+      { ...DRAFT, sub: "chat:agent:workspace-alias:agent-alias:thread:new" },
       { ...DRAFT, deviceId: "dev-2" },
       { ...DRAFT, entityId: "agent-2", sub: "chat:agent:workspace-1:agent-2:thread:old" },
       { deviceId: "dev-1", entityId: "workspace-1", kind: "ui-filter", sub: "thread:agent-1" },

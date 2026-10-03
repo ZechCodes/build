@@ -44,7 +44,8 @@ const oldOrLegacySub = (sub, legacy, threadId) => sub === legacy || sub === `${l
 
 const conversationDraft = (address, scope) => address.deviceId === scope.deviceId
   && address.entityId === scope.conversationId && address.kind === "ui-draft"
-  && oldOrLegacySub(address.sub, `chat:agent:${scope.entityId}:${scope.agentId}`, scope.threadId);
+  && (address.sub === `chat:agent:${scope.entityId}:${scope.agentId}`
+    || (address.sub?.startsWith("chat:agent:") && address.sub.endsWith(`:${scope.threadId}`)));
 
 const conversationRuns = (address, scope) => address.deviceId === scope.deviceId
   && address.entityId === scope.entityId && address.kind === "ui-fold"

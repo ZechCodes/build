@@ -102,18 +102,24 @@ for (const width of [320, 1280]) {
   for (const theme of ["light", "dark"]) {
     it(`matches every mounted input and textarea to shared field tokens at ${width}px in ${theme}`, async () => {
       await withLayoutPage(async ({ page, basePath }) => {
-        const origin = new URL(page.url()).origin;
         let navigations = 0;
         let appRequests = 0;
         page.on("framenavigated", (frame) => { if (frame === page.mainFrame()) navigations += 1; });
         page.on("request", (request) => { if (new URL(request.url()).pathname === `${basePath}src/app.js`) appRequests += 1; });
+        await page.evaluate(() => {
+          window.__inputMountEvents = 0;
+          document.addEventListener("input-surface-mounted", () => { window.__inputMountEvents += 1; });
+        });
         const failures = [];
         for (const surface of INPUT_SURFACES) {
-          // Mount failures stop here, with their original stack, rather than
-          // navigating away while the renderer's module graph is still loading.
-          await page.goto(`${origin}${basePath}src/styles.css`);
-          expect(navigations, `${surface.name}: reuse the document and imported app graph`).toBe(0);
+          // Replace the DOM in place. Browser ES modules stay cached for all
+          // surfaces in this viewport/theme, instead of reloading the app graph.
           await mountInputSurface(page, basePath, surface.name, theme);
+          expect(navigations, `${surface.name}: reuse the document and imported app graph`).toBe(0);
+          expect(await page.evaluate(() => {
+            document.dispatchEvent(new Event("input-surface-mounted"));
+            return window.__inputMountEvents;
+          }), `${surface.name}: retain document listeners between mounts`).toBe(INPUT_SURFACES.indexOf(surface) + 1);
           await page.waitForSelector(surface.selectors[0], { state: "visible" });
           try {
             await assertTextControls(page, surface.name);

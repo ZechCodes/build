@@ -87,3 +87,23 @@ it("keeps pointer capture and preview through a cache repaint in the middle of a
     expect(await page.evaluate(() => window.__menuSettingsAsked.map((asked) => asked.max_context_tokens))).toEqual([300000]);
   });
 });
+
+it("retains the focused menu and every surviving row when cached tasks appear and disappear", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await openMenuOn(page, basePath, "desktop", { theme: "dark", bigCounts: false });
+    await observeCompactionMenu(page);
+    expect(await page.locator('.rail-surface-menu [data-action="tasks"]').count()).toBe(0);
+    await page.evaluate(() => window.__setMenuTasks([{
+      id: "menu-task", number: 366, title: "Keep the menu open", state: "open", status: "in_progress",
+      assignee: { kind: "agent", agent_id: "menu-agent" },
+    }]));
+    await page.locator('.rail-surface-menu [data-action="tasks"]').waitFor({ state: "attached" });
+    await settled(page);
+    expect(await compactionContinuity(page)).toEqual(uninterruptedMenu);
+    await page.evaluate(() => window.__setMenuTasks([]));
+    await page.locator('.rail-surface-menu [data-action="tasks"]').waitFor({ state: "detached" });
+    await settled(page);
+    expect(await compactionContinuity(page, { stop: true })).toEqual(uninterruptedMenu);
+    expect(await page.evaluate(() => window.__menuSettingsAsked)).toEqual([]);
+  });
+});

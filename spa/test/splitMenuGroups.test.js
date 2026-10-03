@@ -316,16 +316,86 @@ describe("mountMenuIfChanged", () => {
     expect(onChoose).toHaveBeenCalledExactlyOnceWith("detail:agent");
   });
 
-  it("replaces an open menu when its row structure changes", () => {
+  const structuralMarkup = (actions) => groupedMenuButtonMarkup("⋮", [
+    { id: "show", label: "Show", options: actions.map((id) => ({ id, label: id, description: "" })) },
+  ]);
+
+  async function openRows(actions, focusIndex = 0) {
     const container = document.createElement("div");
     document.body.appendChild(container);
-    mountMenuIfChanged(container, markupAt("all"), { onChoose: vi.fn() });
+    const onChoose = vi.fn();
+    mountMenuIfChanged(container, structuralMarkup(actions), { onChoose });
     keydown(container.querySelector(".caret"), "ArrowDown");
+    for (let index = 0; index < focusIndex; index += 1) keydown(document.activeElement, "ArrowDown");
+    await motionBeat();
     const menu = container.querySelector(".splitmenu");
-    mountMenuIfChanged(container, menuButtonMarkup("⋮", [{ id: "new", label: "New choice" }]), { onChoose: vi.fn() });
-    expect(container.querySelector(".splitmenu")).not.toBe(menu);
-    expect(container.querySelector(".splitmenu").hidden).toBe(true);
-    expect(document.activeElement).toBe(container.querySelector(".caret"));
+    const group = menu.querySelector(".menu-group");
+    const rows = [...menu.querySelectorAll(".mi")];
+    const records = [];
+    const observer = new MutationObserver((mutations) => records.push(...mutations));
+    observer.observe(container, { subtree: true, attributes: true, childList: true });
+    return { container, onChoose, menu, group, rows, records, observer };
+  }
+
+  async function expectStillOpen({ container, menu, group, records, observer }) {
+    await motionBeat();
+    observer.disconnect();
+    expect(container.querySelector(".splitmenu")).toBe(menu);
+    expect(container.querySelector(".menu-group")).toBe(group);
+    expect(menu.hidden).toBe(false);
+    expect(container.querySelector(".caret").getAttribute("aria-expanded")).toBe("true");
+    expect(records.filter((record) => ["hidden", "aria-expanded"].includes(record.attributeName))).toEqual([]);
+    expect(records.some((record) => [...record.removedNodes].some((node) => node === menu || node.contains(menu)))).toBe(false);
+  }
+
+  it("inserts only a new row in an open menu and wires its click", async () => {
+    const mounted = await openRows(["shells", "agents"], 1);
+    const { container, onChoose, rows } = mounted;
+    const blur = vi.fn();
+    rows[1].addEventListener("blur", blur);
+    mountMenuIfChanged(container, structuralMarkup(["shells", "tasks", "agents"]), { onChoose });
+    await expectStillOpen(mounted);
+    const updated = [...container.querySelectorAll(".mi")];
+    expect(updated[0]).toBe(rows[0]);
+    expect(updated[2]).toBe(rows[1]);
+    expect(document.activeElement).toBe(rows[1]);
+    expect(blur).not.toHaveBeenCalled();
+    updated[1].click();
+    expect(onChoose).toHaveBeenCalledExactlyOnceWith("tasks");
+  });
+
+  it("removes only a retired row without disturbing the focused surviving row", async () => {
+    const mounted = await openRows(["shells", "tasks", "agents"], 2);
+    const { container, onChoose, rows } = mounted;
+    mountMenuIfChanged(container, structuralMarkup(["shells", "agents"]), { onChoose });
+    await expectStillOpen(mounted);
+    expect([...container.querySelectorAll(".mi")]).toEqual([rows[0], rows[2]]);
+    expect(rows[1].isConnected).toBe(false);
+    expect(document.activeElement).toBe(rows[2]);
+  });
+
+  it("moves focus to the nearest surviving row when the focused row is removed", async () => {
+    const mounted = await openRows(["shells", "tasks", "agents"], 1);
+    const { container, onChoose, rows } = mounted;
+    mountMenuIfChanged(container, structuralMarkup(["shells", "agents"]), { onChoose });
+    await expectStillOpen(mounted);
+    expect([...container.querySelectorAll(".mi")]).toEqual([rows[0], rows[2]]);
+    expect(document.activeElement).toBe(rows[2]);
+    expect(onChoose).not.toHaveBeenCalled();
+    keydown(rows[2], "Enter");
+    expect(onChoose).toHaveBeenCalledExactlyOnceWith("agents");
+  });
+
+  it("reorders surviving rows around the focused node without a focus hop", async () => {
+    const mounted = await openRows(["shells", "tasks", "agents"], 1);
+    const { container, onChoose, rows } = mounted;
+    const blur = vi.fn();
+    rows[1].addEventListener("blur", blur);
+    mountMenuIfChanged(container, structuralMarkup(["tasks", "agents", "shells"]), { onChoose });
+    await expectStillOpen(mounted);
+    expect([...container.querySelectorAll(".mi")]).toEqual([rows[1], rows[2], rows[0]]);
+    expect(document.activeElement).toBe(rows[1]);
+    expect(blur).not.toHaveBeenCalled();
   });
 
   it("hands focus to the new opener when the old one had it", () => {

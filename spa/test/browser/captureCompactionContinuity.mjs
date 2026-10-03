@@ -1,5 +1,5 @@
 // Review artifact for #366. From spa/:
-// node test/browser/captureCompactionContinuity.mjs /tmp/compaction-review [drag|click|Enter]
+// node test/browser/captureCompactionContinuity.mjs /tmp/compaction-review [drag|click|Enter] [--tasks]
 // Uses Chromium CDP frames and the system ffmpeg; no Playwright ffmpeg install.
 import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -11,8 +11,9 @@ import { compactionContinuity, observeCompactionMenu } from "./compactionMenuCon
 
 const output = resolve(process.argv[2] || "/tmp/compaction-review");
 const gesture = process.argv[3] || "drag";
+const changingTasks = process.argv.includes("--tasks");
 if (!["drag", "click", "Enter"].includes(gesture)) throw new Error("Gesture must be drag, click, or Enter");
-const name = `compaction-${gesture.toLowerCase()}-300ms`;
+const name = `compaction-${gesture.toLowerCase()}-300ms${changingTasks ? "-tasks" : ""}`;
 const frames = await mkdtemp(join(tmpdir(), "build-compaction-frames-"));
 await mkdir(output, { recursive: true });
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("BRIDGE_")));
@@ -28,8 +29,11 @@ async function record(page, act) {
     writes.push(session.send("Page.screencastFrameAck", { sessionId }));
   });
   await session.send("Page.startScreencast", { format: "jpeg", quality: 95, everyNthFrame: 1 });
+  let failure;
   try {
     await act();
+  } catch (error) {
+    failure = error;
   } finally {
     await session.send("Page.stopScreencast");
     await Promise.all(writes);
@@ -46,6 +50,7 @@ async function record(page, act) {
     "-f", "concat", "-safe", "0", "-i", input, "-fps_mode", "vfr", "-c:v", "libvpx-vp9", "-pix_fmt", "yuv420p",
     join(output, `${name}.webm`)], { env, encoding: "utf8" });
   if (result.error || result.status !== 0) throw new Error(`ffmpeg failed: ${result.error || result.stderr}`);
+  if (failure) throw failure;
 }
 
 try {
@@ -69,6 +74,20 @@ try {
         await page.waitForTimeout(200);
         await page.mouse.up();
       }
+      if (changingTasks) {
+        await page.waitForFunction(() => window.__menuSettingsAsked.length === 1);
+        await page.evaluate(() => window.__setMenuTasks([{
+          id: "menu-task", number: 366, title: "Keep the menu open", state: "open", status: "in_progress",
+          assignee: { kind: "agent", agent_id: "menu-agent" },
+        }]));
+        await page.locator('.rail-surface-menu [data-action="tasks"]').waitFor({ state: "attached" });
+        await page.waitForTimeout(100);
+        await page.evaluate(() => window.__setMenuTasks([]));
+        await page.locator('.rail-surface-menu [data-action="tasks"]').waitFor({ state: "detached" });
+        if (await page.evaluate(() => window.__menuSettingsAnswered.length)) {
+          throw new Error("Task structure changes must complete during the 300ms pending reply");
+        }
+      }
       await page.waitForFunction(() => window.__menuSettingsAnswered.length === 1);
       await page.waitForFunction(() => JSON.parse(document.querySelector('[data-group="compact"] .menu-slider').dataset.options)
         .some((option) => option.id === "compact:300000" && option.selected));
@@ -76,7 +95,11 @@ try {
       await page.waitForTimeout(600);
       await page.screenshot({ path: join(output, `${name}.png`) });
       const observation = await compactionContinuity(page, { stop: true });
-      await writeFile(join(output, `${name}.json`), `${JSON.stringify({ settingsDelayMs: 300, gesture, ...observation }, null, 2)}\n`);
+      await writeFile(join(output, `${name}.json`), `${JSON.stringify({ settingsDelayMs: 300, gesture, changingTasks, ...observation }, null, 2)}\n`);
+      if (observation.violations.length || observation.motionEvents.length || !observation.sameMenu
+        || !observation.sameSlider || !observation.sliderFocused) {
+        throw new Error(`Menu continuity failed: ${JSON.stringify(observation)}`);
+      }
     });
   }, { width: 1180, height: 840 });
 } finally {

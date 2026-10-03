@@ -73,6 +73,7 @@ export async function seedChatMenu({ theme, bigCounts, resetCapable = false, hol
   window.__menuSettingsAsked = [];
   window.__menuSettingsAnswered = [];
   window.__conversationResetCalls = [];
+  window.__setMenuTasks = (tasks) => writeCached({ deviceId, entityId: projectId, kind: "tracker-tasks" }, { tasks, columns: [] });
   window.__repaintMenuAgent = async (patch) => {
     const address = { deviceId, entityId: "menu-run", kind: "row", sub: "" };
     const row = (await readCached(address)).value;

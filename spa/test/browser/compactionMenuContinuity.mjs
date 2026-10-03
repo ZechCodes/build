@@ -8,6 +8,7 @@ export async function observeCompactionMenu(page) {
     const slider = menu.querySelector('[role="slider"]');
     const caret = region.querySelector(".caret");
     const violations = new Set();
+    const rows = new Map();
     const events = [];
     const originalAnimate = Element.prototype.animate;
     const observeAnimate = function (...args) {
@@ -16,6 +17,17 @@ export async function observeCompactionMenu(page) {
     };
     Element.prototype.animate = observeAnimate;
     const note = (reason) => violations.add(reason);
+    const checkRows = () => {
+      const present = new Set();
+      for (const element of menu.querySelectorAll("[data-group], [data-action]")) {
+        const key = element.hasAttribute("data-group") ? `group:${element.dataset.group}`
+          : `action:${element.closest("[data-group]")?.dataset.group}:${element.dataset.action}`;
+        if (rows.has(key) && rows.get(key) !== element) note(`surviving row replaced: ${key}`);
+        rows.set(key, element);
+        present.add(key);
+      }
+      for (const key of rows.keys()) if (!present.has(key)) rows.delete(key);
+    };
     const checkStanding = () => {
       if (document.querySelector(".rail-surface-menu .splitmenu") !== menu) note("menu replaced");
       if (document.querySelector('.rail-surface-menu [role="slider"]') !== slider) note("slider replaced");
@@ -23,6 +35,7 @@ export async function observeCompactionMenu(page) {
       if (document.activeElement !== slider) note("slider lost focus");
       if (menu.hidden || getComputedStyle(menu).display === "none") note("menu hidden");
       if (caret.getAttribute("aria-expanded") !== "true") note("caret collapsed");
+      checkRows();
     };
     const consume = (records) => {
       for (const record of records) {

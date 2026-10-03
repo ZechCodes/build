@@ -216,7 +216,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .compose-prompt:hover { border-color:var(--line2); color:var(--ink2); }
 .compose-box { background:var(--panel2); border:0; border-radius:9px;
   padding:8px; display:flex; flex-direction:column; gap:6px; }
-.compose-box textarea { width:100%; resize:vertical; font-size:12.5px; }
+.compose-box textarea { width:100%; resize:vertical; }
 .compose-row { display:flex; align-items:center; gap:6px; }
 .compose-row .btn { flex:none; }
 .compose-row .compose-disclose { margin-right:auto; }
@@ -233,7 +233,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   display:flex; flex-direction:column; gap:5px; }
 .compose-advanced label, .agent-choice-fields label { font-size:11px; color:var(--dim); }
 .compose-advanced select, .agent-choice-fields select { width:100%; }
-.compose-advanced input { width:100%; font-size:12px; }
+.compose-advanced input { width:100%; }
 .compose-kinds { display:flex; gap:6px; }
 .compose-manual { align-self:flex-start; }
 .agent-choice { display:flex; flex-direction:column; gap:5px; }
@@ -255,7 +255,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .reroute-project .mt { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; font-size:12px; }
 .reroute-kinds { flex:none; display:flex; gap:4px; }
 .reroute-branch { display:flex; align-items:center; gap:4px; padding:0 6px 6px; }
-.reroute-branch input { flex:1; min-width:0; font-size:12px; }
+.reroute-branch input { flex:1; min-width:0; }
 
 /* ---- the capture decision page ----
    What to do with a capture, on one page: what was said, what the router asked,
@@ -283,9 +283,9 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .capture-option-where { font-family:var(--mono); font-size:11.5px; color:var(--dim); }
 .capture-manual { display:flex; flex-direction:column; gap:5px; }
 .capture-manual select { width:100%; }
-.capture-manual input { width:100%; font-size:12.5px; }
+.capture-manual input { width:100%; }
 .capture-manual label { font-size:11px; color:var(--dim); }
-.capture-freeform textarea { width:100%; resize:vertical; font-size:13px; margin-bottom:10px; }
+.capture-freeform textarea { width:100%; resize:vertical; margin-bottom:10px; }
 .capture-decide-foot { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
   margin-top:18px; font-size:11.5px; }
 .capture-decide-error { display:block; margin-top:12px; font-size:12.5px; }
@@ -752,9 +752,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .tbmenu .mi-line .mt { flex:1 1 auto; min-width:0; }
 .tbmenu .mi-line .badge { flex:none; }
 .tbmenu-list { flex:1 1 auto; min-height:0; overflow-y:auto; }
-.tb-filter { flex:none; width:100%; margin-bottom:4px; padding:6px 8px;
-  font:inherit; font-size:12.5px; color:var(--ink);
-  background:var(--bg); border:1px solid var(--line); border-radius:6px; }
+.tb-filter { flex:none; width:100%; margin-bottom:4px; }
 .tb-group { font-size:10.5px; letter-spacing:.06em; text-transform:uppercase;
   color:var(--dim); padding:8px 8px 3px; }
 /* The work list names the project whose work it is, and carries the way back to
@@ -1194,9 +1192,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-composer .composer > .composer-dropmask { position:absolute; inset:0; z-index:2; }
 .rail-composer .composer:focus-within { border-color:var(--accent);
   box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
-.rail-composer .composer textarea { flex:1 1 auto; min-height:36px; max-height:40vh; overflow-y:auto;
-  border:0; border-radius:12px 12px 0 0; padding:9px 11px 1px; background:transparent; box-shadow:none; }
-.rail-composer .composer textarea:focus { border-color:transparent; box-shadow:none; }
+.rail-composer .composer textarea { flex:1 1 auto; min-height:36px; max-height:40vh; overflow-y:auto; }
 .rail-composer .composer-bar { flex:none; padding:2px 5px 5px; }
 .rail-composer .composer-send,.rail-composer .composer-attach { width:30px; height:30px; }
 /* The context gauge ticks as the agent works, so it lives in the footer, out of

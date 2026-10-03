@@ -9,6 +9,7 @@ export async function textControlStyles(page) {
   return page.evaluate((excluded) => {
     const token = (name, property = "color") => {
       const probe = document.createElement("i");
+      probe.style.position = "fixed";
       probe.style[property] = `var(${name})`;
       document.body.appendChild(probe);
       const value = getComputedStyle(probe)[property];

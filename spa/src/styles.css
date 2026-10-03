@@ -356,6 +356,65 @@ select:disabled { --select-chevron-color:var(--dim); color:var(--dim); opacity:.
 @media (prefers-reduced-motion:reduce) { select { transition:none; } }
 /* End shared select controls */
 
+/* Shared text controls */
+/* Text entry uses the same field metrics and theme tokens as selects. Native
+   checkbox, radio, file and slider controls keep their own presentation. */
+:where(input:not([type=checkbox], [type=radio], [type=file], [type=hidden],
+    [type=button], [type=submit], [type=reset], [type=range], [type=color], [type=image]), textarea) {
+  --input-field-bg:var(--panel);
+  box-sizing:border-box; min-width:0; max-width:100%;
+  font:14px/1.4 var(--sans); color:var(--ink);
+  background:var(--input-field-bg); border:1px solid var(--line); border-radius:var(--select-radius);
+  padding:7px 10px;
+  transition:border-color var(--motion-fast), box-shadow var(--motion-fast);
+}
+:where(input:not([type=checkbox], [type=radio], [type=file], [type=hidden],
+    [type=button], [type=submit], [type=reset], [type=range], [type=color], [type=image])) {
+  height:var(--select-height);
+}
+:where(textarea) { width:100%; min-height:96px; resize:vertical; }
+:where(.panel .field, .sheet) :where(input, textarea) { --input-field-bg:var(--bg); }
+:where(input, textarea)::placeholder { color:var(--dim); opacity:1; }
+:where(input:not([type=checkbox], [type=radio], [type=file], [type=hidden],
+    [type=button], [type=submit], [type=reset], [type=range], [type=color], [type=image]), textarea):hover:not(:disabled) {
+  border-color:var(--line3);
+}
+:where(input:not([type=checkbox], [type=radio], [type=file], [type=hidden],
+    [type=button], [type=submit], [type=reset], [type=range], [type=color], [type=image]), textarea):focus-visible {
+  outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--focus-ring);
+}
+:where(input:not([type=checkbox], [type=radio], [type=file], [type=hidden],
+    [type=button], [type=submit], [type=reset], [type=range], [type=color], [type=image]), textarea):disabled {
+  color:var(--dim); opacity:.7; cursor:not-allowed;
+}
+.task-compose-title { font-weight:550; }
+.task-compose-title::placeholder { font-weight:400; }
+/* A message field can grow as before, while its ordinary frame now matches
+   other fields. Only the rail's glass composer wears its frame on the parent. */
+.composer textarea { --input-field-bg:var(--bg); padding:13px 14px; }
+.rail-composer .composer textarea {
+  border:0; border-radius:12px 12px 0 0; padding:9px 11px 1px;
+  background:transparent; box-shadow:none;
+}
+.rail-composer .composer textarea:focus { outline:none; border-color:transparent; box-shadow:none; }
+.comment-pop.cp-armed .cp-input { box-shadow:0 0 0 2px var(--pop-warn); }
+/* The source editor is a document canvas, with its existing monospace type
+   and unframed surface. Keeping it here prevents surface sheets repainting it. */
+.file-editor {
+  border:0; border-radius:0; padding:16px 18px;
+  background:var(--code-bg); color:var(--ink); font:12.5px/1.6 var(--mono);
+}
+.file-editor:focus { outline:none; border-color:transparent; box-shadow:none; }
+@media (max-width:720px) {
+  /* iOS avoids zooming a focused field when its type is at least 16px. */
+  :where(input:not([type=checkbox], [type=radio], [type=file], [type=hidden],
+      [type=button], [type=submit], [type=reset], [type=range], [type=color], [type=image]), textarea) {
+    font-size:16px !important;
+  }
+}
+@media (prefers-reduced-motion:reduce) { :where(input, textarea) { transition:none; } }
+/* End shared text controls */
+
 /* Dropdown and disclosure triangles share a legible size independently of the
    surrounding label's font. Keep their line box compact in dense toolbars. */
 .disclosure-caret,
@@ -479,17 +538,7 @@ main { max-width:min(1180px, 100%); margin:0 auto;
    room under it is what a rule used to be. */
 .panel h3 { margin:0 0 16px; font-size:15px; font-weight:650; letter-spacing:-.01em; display:flex; align-items:center; gap:8px; }
 .panel .field select { width:100%; }
-.panel .field input:not([type=checkbox]), .panel .field textarea {
-  width:100%; min-height:36px; padding:7px 10px; font:inherit; color:var(--ink);
-  background:var(--bg); border:1px solid var(--line); border-radius:8px;
-  transition:background var(--motion-fast), border-color var(--motion-fast), box-shadow var(--motion-fast); }
-.panel .field input:not([type=checkbox]):hover:not(:disabled),
-.panel .field textarea:hover:not(:disabled) { border-color:var(--line3); background:var(--panel); }
-.panel .field input:not([type=checkbox]):focus-visible,
-.panel .field textarea:focus-visible { outline:none; border-color:var(--accent); background:var(--panel);
-  box-shadow:0 0 0 3px var(--focus-ring); }
-.panel .field input:not([type=checkbox]):disabled,
-.panel .field textarea:disabled { color:var(--dim); opacity:.7; cursor:not-allowed; }
+.panel .field input:not([type=checkbox]), .panel .field textarea { width:100%; min-height:36px; }
 /* The settings role matrix keeps its labels with each control on a phone. */
 .aroles-grid { width:100%; border-collapse:collapse; }
 .aroles-grid th { text-align:left; font-weight:550; overflow-wrap:anywhere; }
@@ -900,9 +949,8 @@ main#root.surface { max-width:none;
 .comment-pop button { font:inherit; background:var(--accent-fill); color:var(--accent-ink); border:none; border-radius:6px; padding:5px 10px; cursor:pointer; font-weight:600; font-size:12px; }
 /* The popover is a dark chip in both themes, so the field states its own page
    colours rather than inheriting the UA's white against dark ink. */
-.cp-input { font:inherit; border:none; border-radius:6px; padding:6px 9px; min-width:240px; max-width:min(90vw, 360px); resize:none; background:var(--bg); color:var(--ink); }
+.cp-input { min-width:240px; max-width:min(90vw, 360px); resize:none; }
 .cp-keep { flex-basis:100%; font-size:10.5px; color:var(--pop-warn); display:block; margin-top:4px; }
-.comment-pop.cp-armed .cp-input { box-shadow:0 0 0 2px var(--pop-warn); }
 /* diff */
 .diffbar { display:flex; align-items:center; gap:14px; flex-wrap:wrap; font-family:var(--mono); font-size:12px; color:var(--ink2); margin-bottom:12px; }
 .diffsort { display:flex; align-items:center; gap:6px; margin-left:auto; min-width:0; max-width:100%; color:var(--dim); font:11.5px var(--sans); }
@@ -946,11 +994,7 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 .csbox-row { display:flex; align-items:flex-end; gap:8px; }
 /* `min-height` is overridden deliberately: the page's textareas stand 96px tall
    by default, and this one opens as ONE line and earns every row after it. */
-.csbox .csinput { flex:1; min-width:0; display:block; resize:none; overflow-y:auto;
-  font:inherit; font-size:13px; line-height:1.45; padding:9px 11px;
-  border:1px solid var(--line); border-radius:10px; background:var(--panel2); color:var(--ink);
-  min-height:0; max-height:240px; }
-.csbox .csinput:focus { outline:none; border-color:var(--accent); }
+.csbox .csinput { flex:1; min-width:0; display:block; resize:none; overflow-y:auto; line-height:1.45; min-height:0; max-height:240px; }
 .csbox-actions { flex:none; }
 .csbox .githint:empty { display:none; }
 .csbox .githint { display:block; padding-bottom:6px; }
@@ -1350,12 +1394,10 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
   max-height:100%; overflow-y:auto; overscroll-behavior:contain;
   padding:22px 24px calc(22px + env(safe-area-inset-bottom, 0px)); }
 .sheet h3 { margin:0 0 3px; font-size:17px; } .sheet .sub { color:var(--ink2); font-size:13px; margin-bottom:14px; }
-textarea { width:100%; min-height:96px; background:var(--bg); color:var(--ink); border:1px solid var(--line); border-radius:10px; padding:11px 13px; font:inherit; resize:vertical; }
 .field { margin-top:12px; display:flex; flex-direction:column; gap:5px; }
 .field label { font-size:12px; color:var(--ink2); font-weight:600; }
 .sheet .field select { width:100%; }
 .addproj { display:flex; gap:8px; margin-top:14px; }
-.addproj input { font:inherit; padding:8px 11px; border:1px solid var(--line); border-radius:9px; background:var(--bg); color:var(--ink); }
 .addproj input.path { flex:1; }
 .adderr { color:var(--red); font-size:12px; margin-top:8px; min-height:14px; }
 /* A caution before acting, not a failure: amber, on its own tint (#320). */
@@ -1390,12 +1432,9 @@ textarea { width:100%; min-height:96px; background:var(--bg); color:var(--ink); 
 .browse-row .bgit { font-size:9px; font-weight:700; color:var(--accent); background:var(--accent-soft); padding:1px 5px; border-radius:4px; }
 .browse-create { flex-wrap:wrap; }
 .browse-create input { flex:1 1 180px; min-width:0; }
-/* text inputs in modals/sheets */
-.sheet input:not([type=checkbox]) { font:inherit; padding:9px 11px; border:1px solid var(--line); border-radius:9px; background:var(--bg); color:var(--ink); }
 .field input { width:100%; }
 .locrow { display:flex; gap:8px; align-items:center; }
-.locrow input { cursor:default; color:var(--ink2); }
-.sheet input:not([type=checkbox]):focus, .sheet textarea:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
+.locrow input { cursor:default; }
 .projrow { display:flex; gap:12px; padding:10px 0; font-size:13px; align-items:baseline; }
 .projrow .pname { font-weight:600; min-width:120px; }
 .projrow .ppath { font-family:var(--mono); font-size:11.5px; color:var(--dim); }
@@ -1421,10 +1460,9 @@ textarea { width:100%; min-height:96px; background:var(--bg); color:var(--ink); 
 .device-away .live-claim::after { content:"last known state"; font-size:12px; color:var(--dim); }
 
 /* ---- mobile (design brief: every surface usable from a phone) ---- */
-@media (max-width: 720px) {
-  /* iOS Safari auto-zooms focused fields under 16px — every text entry and
+@media (max-width: 720px) {/* iOS Safari auto-zooms focused fields under 16px — every text entry and
      select must be at least 16px on small screens. */
-  input:not([type=checkbox]), textarea { font-size:16px !important; }
+
   main { padding:16px 12px 96px; }
   .board-head { flex-wrap:wrap; gap:10px; }
   .board-head h1 { font-size:20px; }
@@ -1746,7 +1784,7 @@ textarea { width:100%; min-height:96px; background:var(--bg); color:var(--ink); 
 .modal-create .create-tabs { margin:12px 0 10px; }
 .modal-create .create-hint { margin-bottom:8px; }
 .modal-create .create-label { display:block; font-size:11px; color:var(--dim); margin-bottom:4px; }
-.modal-create input, .modal-create textarea { width:100%; font:inherit; font-size:13px; }
+.modal-create input, .modal-create textarea { width:100%; }
 .modal-create textarea { resize:vertical; }
 .modal-create .agent-choice { margin-top:8px; }
 .modal-create .create-error { display:block; margin-top:8px; font-size:12px; }
@@ -2005,10 +2043,7 @@ a.md-link::after { content:"\2197" / ""; margin-left:.12em; font-size:.8em; opac
   background:var(--bg); transition:border-color .12s ease, box-shadow .12s ease; }
 .composer:focus-within { border-color:var(--accent);
   box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
-.composer textarea { display:block; width:100%; min-height:40px; max-height:320px;
-  resize:none; border:0; border-radius:12px 12px 0 0; padding:11px 12px 4px;
-  background:transparent; color:var(--ink); font:13px/1.5 var(--sans); }
-.composer textarea:focus { outline:none; }
+.composer textarea { display:block; width:100%; min-height:40px; max-height:320px; resize:none; }
 .composer-bar { display:flex; flex-wrap:nowrap; align-items:center; gap:6px 10px; padding:6px 8px 7px 8px; }
 .composer-bar .hint { flex:1 1 auto; min-width:0; color:var(--dim); font-size:11.5px;
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -2373,10 +2408,7 @@ a.md-link::after { content:"\2197" / ""; margin-left:.12em; font-size:.8em; opac
 .thread-revision-view, .thread-composer { margin-left:0; }
 .composer { border:0; border-radius:0; background:transparent; }
 .composer:focus-within { border-color:transparent; box-shadow:none; }
-.composer textarea { min-height:72px; border:1px solid var(--line); border-radius:11px;
-  padding:13px 14px; background:var(--bg); font-size:13.5px; }
-.composer textarea:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--focus-ring,
-  color-mix(in srgb, var(--accent) 18%, transparent)); }
+.composer textarea { min-height:72px; }
 .composer-bar { padding:7px 8px 8px; }
 .composer-send { width:34px; height:34px; border-radius:8px; }
 .composer-attach { width:34px; height:34px; }

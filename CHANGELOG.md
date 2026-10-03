@@ -12,6 +12,12 @@ Wire 3.11.0.
 
 ### Changed
 
+- Text inputs and textareas share token-based field styling in both themes,
+  with the same height, radius, border, background and focus ring as adjacent
+  selects. Task review bases, capture branches and workspace labels now match
+  the rest of the forms; embedded composers and the source editor retain their
+  sizing and native editing behaviour (#368).
+
 - Every select shares Build's field styling, chevron and focus ring in both
   themes. Chromium's native picker uses the same panel, rows and selection
   marks as Build menus; other browsers retain a themed native popup. Compact

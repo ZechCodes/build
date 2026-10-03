@@ -9,7 +9,7 @@ const start = "/* Shared text controls */";
 const end = "/* End shared text controls */";
 const sharedBlock = () => styles.slice(styles.indexOf(start), styles.indexOf(end) + end.length);
 const paint = /(?:^|;)\s*(?:appearance|-webkit-appearance|color|background(?:-[\w-]+)?|border(?:-[\w-]+)?|box-shadow|outline(?:-[\w-]+)?|font(?:-[\w-]+)?|padding(?:-[\w-]+)?)\s*:/;
-const fieldSelector = /(?:^|[^\w-])(?:input|textarea)(?:[^\w-]|$)|\.(?:cp-input|csinput|file-editor|fmenu-search|task-compose-title|workspace-refsearch|tb-filter)\b/;
+const fieldSelector = /(?:^|[^\w-])(?:input|textarea)(?:[^\w-]|$)|\.(?:cp-input|csinput|file-editor|fmenu-search|task-compose-title|workspace-refsearch|tb-filter)(?![\w-])/;
 const nonTextSelector = /input\[type\s*=\s*["']?(?:checkbox|radio|range|file|hidden|button|submit|reset|color|image)["']?\]|\.menu-slider\b/;
 
 function violations(file, source) {

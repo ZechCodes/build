@@ -187,7 +187,7 @@
 .workspace-reftabs { display:grid; grid-template-columns:1fr 1fr; gap:3px; padding:2px; background:var(--panel2); border-radius:7px; }
 .workspace-reftabs button { border:0; border-radius:5px; padding:5px; color:var(--ink2); background:transparent; cursor:pointer; font:inherit; font-size:11px; }
 .workspace-reftabs button[aria-selected=true] { color:var(--ink); background:var(--panel); box-shadow:0 1px 3px var(--shadow-soft); }
-.workspace-refsearch { box-sizing:border-box; width:100%; margin:7px 0 5px; padding:7px 8px; border:1px solid var(--line); border-radius:7px; color:var(--ink); background:var(--bg); font:inherit; font-size:12px; }
+.workspace-refsearch { box-sizing:border-box; width:100%; margin:7px 0 5px; }
 .workspace-refrows { max-height:min(310px, 48vh); overflow:auto; }
 .workspace-refrow { width:100%; min-width:0; display:flex; align-items:center; gap:6px; border:0; border-radius:6px; padding:7px 8px; color:var(--ink); background:transparent; cursor:pointer; text-align:left; }
 .workspace-refrow:hover, .workspace-refrow:focus-visible { background:var(--accent-soft); color:var(--accent); outline:none; }

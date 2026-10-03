@@ -10,6 +10,8 @@ impl Thread {
         count_serialized_items(self.items.len());
         json!({
             "id": self.id,
+            "thread_id": self.id,
+            "thread_generation_revision": self.generation_revision,
             "agent": self.agent,
             "sessions": self.sessions,
             "items": self.items,
@@ -43,6 +45,8 @@ impl Thread {
         });
         json!({
             "id": self.id,
+            "thread_id": self.id,
+            "thread_generation_revision": self.generation_revision,
             "agent": self.agent,
             "item_count": self.total_item_count(),
             "last_sequence": self.last_sequence(),
@@ -90,6 +94,8 @@ impl Thread {
         count_serialized_items(delta.len());
         json!({
             "id": self.id,
+            "thread_id": self.id,
+            "thread_generation_revision": self.generation_revision,
             "agent": self.agent,
             "sessions": self.sessions,
             "items": delta,

@@ -1389,3 +1389,68 @@ fn request_changes_lands_on_the_named_agents_conversation() {
         "{unknown:?}"
     );
 }
+
+#[tokio::test]
+async fn conversation_reset_kills_and_reaps_live_process_and_ignores_its_late_end() {
+    let (dir, repo) = init_repo();
+    let (state, handler) = shared_state_and_handler(&repo, dir.path());
+    let owner = "run-reset-live";
+    let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), owner);
+    let id = primary_agent_id(&state.lock().unwrap(), owner);
+    let sibling = call(&handler, "agent.add", json!({ "entity_id": owner }))["result"]["agent"]
+        ["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for agent in [&id, &sibling] {
+        let reply = call(
+            &handler,
+            "agent.start",
+            json!({ "id": owner, "agent_id": agent }),
+        );
+        assert_eq!(reply["ok"], true, "{reply:?}");
+    }
+    wait_for_deliveries(&state).await;
+    let key = TabKey::agent(&root, &id);
+    let (pid, session, screen, instance, params) = {
+        let locked = state.lock().unwrap();
+        let tab = locked.session_registry.test_tab(&key).unwrap();
+        let agent = locked.entity_agents(owner).unwrap().by_id(&id).unwrap();
+        (
+            agent_pid(tab).unwrap(),
+            Arc::clone(&tab.session),
+            screen_of(tab).clone(),
+            tab.session_instance.clone().unwrap(),
+            json!({
+                "project_id": locked.projects.project_id_of(owner).unwrap(),
+                "entity_id": owner, "agent_id": id, "conversation_id": agent.conversation_id(), "expected_thread_id": agent.thread.id,
+            }),
+        )
+    };
+    let reply = call(&handler, "conversation.reset", params);
+    assert_eq!(reply["ok"], true, "{reply:?}");
+    assert!(process_reaped(pid));
+    end_of_session(&state, &key, &session, Some(&instance), &screen);
+    let mut locked = state.lock().unwrap();
+    assert!(!locked.session_registry.contains(&key));
+    assert!(locked
+        .session_registry
+        .contains(&TabKey::agent(&root, &sibling)));
+    assert!(locked.session_registry.test_token(&id).is_none());
+    assert!(locked.session_registry.test_token(&sibling).is_some());
+    locked.record_agent_session_end(owner, &id, &instance);
+    assert!(locked
+        .agent_conversation(owner, Some(&id))
+        .unwrap()
+        .items
+        .is_empty());
+    assert_eq!(
+        locked
+            .entity_agents(owner)
+            .unwrap()
+            .by_id(&id)
+            .unwrap()
+            .resume_session_id,
+        None
+    );
+}

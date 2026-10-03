@@ -616,6 +616,8 @@ impl AppState {
                 ));
             }
         }
+        let address = self.resolve_conversation_address(&entity_id, Some(&agent_id))?;
+        self.guard_mutation_thread_id(&address, params.get("thread_id"))?;
         if !roster_is_empty && has_agent_choice(params) {
             let locked = self
                 .entity_agents(&entity_id)?
@@ -1175,6 +1177,8 @@ impl AppState {
             .entity_agents(&entity_id)?
             .resolve(requested_agent.as_deref())?;
         let agent_id = agent.id.clone();
+        let address = self.resolve_conversation_params(&entity_id, params)?;
+        self.guard_mutation_thread_id(&address, params.get("thread_id"))?;
         let locked = agent.choice.provider;
         if let Some(expected) = optional_nonempty_string(params, "conversation_id")? {
             if expected != agent.conversation_id() {
@@ -1299,6 +1303,7 @@ impl AppState {
         if !self.runs.contains_key(&entity_id) {
             return Err(format!("agent.remove: unknown entity {entity_id}"));
         }
+        self.resolve_conversation_params(&entity_id, params)?;
         let root = self.entity_agent_root(&entity_id)?;
         // A harness being spawned right now cannot be killed: the tab it will
         // land in does not exist yet, so the reservation is the only handle on
@@ -1472,6 +1477,8 @@ impl AppState {
             "id": agent.id,
             "watched": agent.watched,
             "conversation_id": agent.conversation_id(),
+            "thread_id": thread.id,
+            "thread_generation_revision": thread.generation_revision,
             "ordinal": agent.ordinal,
             "provider": agent.choice.provider,
             "model": next_start.model.clone().unwrap_or_default(),

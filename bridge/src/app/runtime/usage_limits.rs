@@ -75,6 +75,10 @@ pub(in crate::app) struct UsageLimits {
 }
 
 impl UsageLimits {
+    pub(in crate::app) fn forget_agent(&mut self, owner: &str, agent_id: &str) {
+        self.stopped
+            .remove(&(owner.to_string(), agent_id.to_string()));
+    }
     /// An agent's session reported that its turn stopped at a limit. True when
     /// the device's record moved, which is when the board item has news.
     pub(in crate::app) fn observe(

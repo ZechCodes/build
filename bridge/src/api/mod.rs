@@ -40,7 +40,8 @@ use std::collections::BTreeSet;
 /// 3.8.0 adds selected review Git actions and persisted action results.
 /// 3.9.0 adds configured project source scopes for file browsing and editing.
 /// 3.10.0 adds conditional task body writes (`tasks.bodyPrecondition`, #347).
-pub const API_VERSION: &str = "3.10.0";
+/// 3.11.0 adds generation-guarded conversation reset (#358).
+pub const API_VERSION: &str = "3.11.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -351,7 +352,17 @@ impl ApiError {
         if sentence.starts_with(crate::reclaim::REFUSAL) {
             return ApiError::conflict(message, None);
         }
-        if sentence == crate::reclaim::BUSY || sentence == crate::reclaim::RESERVED {
+        if sentence.starts_with("stale thread_id")
+            || sentence.starts_with("stale unversioned mutation")
+        {
+            return ApiError::conflict(message, None);
+        }
+        if sentence.contains("conversation is being cleared")
+            || sentence.contains("process is still stopping")
+            || sentence.contains("native history became shared")
+            || sentence == crate::reclaim::BUSY
+            || sentence == crate::reclaim::RESERVED
+        {
             return ApiError::busy(message);
         }
         ApiError::internal(message)

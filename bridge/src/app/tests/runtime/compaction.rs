@@ -4,6 +4,37 @@
 use super::*;
 use crate::harness::{SessionStatusSnapshot, TurnContext};
 
+#[test]
+fn conversation_reset_retires_live_session_and_rejects_captured_compaction() {
+    let fixture = CompactingAgent::new().with_context(200_000);
+    let send = {
+        let mut state = fixture.state.lock().unwrap();
+        state
+            .compactions
+            .request(RUN, &fixture.agent_id, "old instructions", false);
+        state.take_ready_compactions().pop().unwrap()
+    };
+    let reply = {
+        let mut state = fixture.state.lock().unwrap();
+        let thread = state
+            .agent_conversation(RUN, Some(&fixture.agent_id))
+            .unwrap();
+        let params = json!({ "project_id": state.projects.project_id_of(RUN).unwrap(), "entity_id": RUN, "agent_id": fixture.agent_id, "conversation_id": fixture.agent_id, "expected_thread_id": thread.id });
+        state.handle(req("conversation.reset", params))
+    };
+    assert_eq!(reply["ok"], true, "{reply:?}");
+    assert!(fixture.log.ended());
+    let timer = a_frame(&fixture.state);
+    assert!(!crate::app::runtime::delivery::compaction::send_compaction(
+        &fixture.state,
+        &timer,
+        &send
+    ));
+    assert!(fixture.log.turns().is_empty());
+    assert!(fixture.agent().thread.items.is_empty());
+    assert_eq!(fixture.agent().last_context_tokens, None);
+}
+
 pub(super) const RUN: &str = "run-compact";
 
 /// A run whose agent talks to the Codex app server — a harness that compacts

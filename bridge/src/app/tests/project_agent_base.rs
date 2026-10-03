@@ -642,6 +642,7 @@ fn post_native_with(
             "entity_id": project.owner,
             "agent_id": project.agent_id,
             "operation_id": operation_id,
+            "thread_id": state.agent_conversation(&project.owner, Some(&project.agent_id)).unwrap().id,
             "body": body,
             "attachments": attachments,
         }),
@@ -1368,5 +1369,61 @@ async fn an_idle_project_agent_moved_into_its_base_is_caught_up_by_a_native_post
     assert!(
         received[packet..].contains("ship the parser plan"),
         "{received}"
+    );
+}
+
+#[test]
+fn conversation_reset_project_agent_starts_with_fresh_standing_instructions() {
+    let (_repo_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut state = configured(tmp.path());
+    let project = a_project_agent(&mut state, &repo);
+    post_native(
+        &mut state,
+        &project,
+        "op-old-generation",
+        "private words to erase",
+    );
+    drained(&mut state);
+    let thread = state
+        .agent_conversation(&project.owner, Some(&project.agent_id))
+        .unwrap();
+    let old_thread_id = thread.id.clone();
+    let reply = state.handle(req(
+        "conversation.reset",
+        json!({
+            "project_id": state.projects.project_id_of(&project.owner).unwrap(),
+            "entity_id": project.owner, "agent_id": project.agent_id,
+            "conversation_id": project.agent_id, "expected_thread_id": old_thread_id,
+            "provider": "codex_app_server", "model": "gpt-5.4", "effort": "high",
+        }),
+    ));
+    assert_eq!(reply["ok"], true, "{reply:?}");
+    post_native(&mut state, &project, "op-fresh-generation", "fresh words");
+    let said = the_turn_of(&drained(&mut state), "op-fresh-generation");
+    let cold = one_line(&said.cold);
+    assert!(cold.contains("fresh words"), "{cold}");
+    assert!(
+        cold.contains(&format!(
+            "You stand in the project's base, {}:",
+            repo.display()
+        )),
+        "{cold}"
+    );
+    assert!(
+        cold.contains("Every change goes through a workspace"),
+        "{cold}"
+    );
+    assert!(!cold.contains("private words to erase"), "{cold}");
+    assert!(!cold.contains("op-old-generation"), "{cold}");
+    assert_eq!(
+        state
+            .entity_agents(&project.owner)
+            .unwrap()
+            .by_id(&project.agent_id)
+            .unwrap()
+            .resume_session_id,
+        None
     );
 }

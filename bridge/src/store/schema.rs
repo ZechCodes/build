@@ -38,6 +38,15 @@ CREATE TABLE IF NOT EXISTS agents (
 );
 CREATE INDEX IF NOT EXISTS agents_by_owner ON agents(owner_id, ordinal);
 
+-- Draft uploads belong to the generation that accepted them, even before
+-- a message references them. Content-addressed bytes may be shared.
+CREATE TABLE IF NOT EXISTS conversation_attachment_uploads (
+    conversation_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    PRIMARY KEY (conversation_id, thread_id, path)
+);
+
 -- User/agent message times from a workspace removed by Done. Its run and
 -- conversation are intentionally deleted, but the project's inbox session
 -- must still include those messages after a bridge restart.

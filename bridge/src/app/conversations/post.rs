@@ -57,7 +57,8 @@ impl AppState {
         requester: OperationRequester,
     ) -> Result<Value, String> {
         let sender = self.sender_identity(&requester.entity_id, &requester.agent_id);
-        self.post_to_thread(params, PostOrigin::asked_by(requester, sender))
+        let params = self.current_thread_params(params)?;
+        self.post_to_thread(&params, PostOrigin::asked_by(requester, sender))
     }
 
     /// `thread.post`, carrying the task that assigning one handed over.
@@ -81,7 +82,8 @@ impl AppState {
             }
             None => PostOrigin::handing_over(task, None),
         };
-        self.post_to_thread(params, origin)
+        let params = self.current_thread_params(params)?;
+        self.post_to_thread(&params, origin)
     }
 
     fn post_to_thread(&mut self, params: &Value, origin: PostOrigin) -> Result<Value, String> {
@@ -106,6 +108,7 @@ impl AppState {
             self.ensure_primary_agent(&entity_id)?;
         }
         let address = self.resolve_conversation_params(&entity_id, params)?;
+        self.guard_mutation_thread_id(&address, params.get("thread_id"))?;
         if let Some(retry) =
             self.retry_thread_post(params, origin.operation_id.as_deref(), &address)?
         {
@@ -674,6 +677,7 @@ impl AppState {
 
     pub(crate) fn thread_operation(&self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
+        self.resolve_conversation_params(&entity_id, params)?;
         let operation_id = required_operation_id(params)?;
         let receipt = self
             .operation_receipt(&operation_id)?

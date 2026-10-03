@@ -612,6 +612,7 @@ impl AppState {
         agent_id: &str,
         watching: bool,
     ) -> Result<serde_json::Value, String> {
+        self.resolve_conversation_address(owner, Some(agent_id))?;
         let mut found = false;
         self.edit_agent_record("set_conversation_watched", owner, agent_id, |agent| {
             found = true;
@@ -632,6 +633,7 @@ impl AppState {
         agent_id: &str,
         max_context_tokens: Option<u64>,
     ) -> Result<serde_json::Value, String> {
+        self.resolve_conversation_address(owner, Some(agent_id))?;
         let device_threshold = self.compact_above_tokens;
         let mut compact_at_tokens = None;
         self.edit_agent_record("set_conversation_context_limit", owner, agent_id, |agent| {

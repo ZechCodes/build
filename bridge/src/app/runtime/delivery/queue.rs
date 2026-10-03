@@ -21,6 +21,14 @@ pub(in crate::app) struct DeliveryQueue {
     settling: settling::SettlingTurns,
     owners_in_flight: HashMap<String, usize>,
     agents_in_flight: HashMap<TabKey, usize>,
+    /// Includes silent starts: reset must not pass a drained start that has
+    /// not yet acquired its process-spawn claim.
+    executions_in_flight: HashMap<TabKey, usize>,
+}
+
+pub(in crate::app) struct HeldConversationTurns {
+    queued: Vec<PendingAgentTurn>,
+    settling: settling::SettlingTurns,
 }
 
 #[derive(Clone, Copy)]
@@ -37,9 +45,34 @@ pub(in crate::app) struct DeliveryCheckpoint {
 pub(in crate::app) struct DeliveryTicket {
     owner: String,
     told_agent: Option<TabKey>,
+    execution: TabKey,
 }
 
 impl DeliveryQueue {
+    pub(in crate::app) fn take_conversation(
+        &mut self,
+        conversation_id: &str,
+    ) -> HeldConversationTurns {
+        let (queued, remaining) = std::mem::take(&mut self.queued)
+            .into_iter()
+            .partition(|turn: &PendingAgentTurn| turn.conversation_id == conversation_id);
+        self.queued = remaining;
+        HeldConversationTurns {
+            queued,
+            settling: self.settling.take_conversation(conversation_id),
+        }
+    }
+
+    pub(in crate::app) fn restore_conversation(&mut self, mut held: HeldConversationTurns) {
+        // The deferred settlement's refusal checkpoint was taken while these
+        // earlier turns were held out of the queue. They still speak for a
+        // previously durable mutation, even if this reset is refused.
+        for turn in &mut held.queued {
+            turn.survives_refusal = true;
+        }
+        self.queued.append(&mut held.queued);
+        self.settling.restore(held.settling);
+    }
     pub(in crate::app) fn enqueue(&mut self, turn: PendingAgentTurn) {
         self.queued.push(turn);
     }
@@ -119,7 +152,12 @@ impl DeliveryQueue {
         let ticket = DeliveryTicket {
             owner: turn.owner.clone(),
             told_agent: turn.says_something().then(|| turn.tab_key()),
+            execution: turn.tab_key(),
         };
+        *self
+            .executions_in_flight
+            .entry(ticket.execution.clone())
+            .or_default() += 1;
         *self
             .owners_in_flight
             .entry(ticket.owner.clone())
@@ -131,6 +169,7 @@ impl DeliveryQueue {
     }
 
     pub(in crate::app) fn settle(&mut self, ticket: DeliveryTicket) {
+        Self::drop_one(&mut self.executions_in_flight, &ticket.execution);
         Self::drop_one(&mut self.owners_in_flight, &ticket.owner);
         if let Some(agent) = &ticket.told_agent {
             Self::drop_one(&mut self.agents_in_flight, agent);
@@ -153,6 +192,10 @@ impl DeliveryQueue {
                 .queued
                 .iter()
                 .any(|turn| turn.says_something() && turn.tab_key() == *key)
+    }
+
+    pub(in crate::app) fn agent_in_flight(&self, key: &TabKey) -> bool {
+        self.executions_in_flight.contains_key(key)
     }
 
     pub(in crate::app) fn has_in_flight_at_root(&self, root: &std::path::Path) -> bool {

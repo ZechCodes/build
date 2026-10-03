@@ -431,6 +431,7 @@ pub struct AppState {
     /// Build sent and has not yet measured. See
     /// [`CompactionLedger`](self::runtime::delivery::compaction::CompactionLedger).
     compactions: self::runtime::delivery::compaction::CompactionLedger,
+    resetting_conversations: std::collections::HashSet<String>,
     /// The task each agent's CURRENT turn was dispatched under (spec: Tasks
     /// → Automatic activity).
     ///
@@ -672,6 +673,7 @@ impl AppState {
             watch_agent_filed_tasks: false,
             compact_above_tokens: crate::agent::DEFAULT_COMPACT_ABOVE_TOKENS,
             compactions: Default::default(),
+            resetting_conversations: Default::default(),
             dispatched_task: HashMap::new(),
             reminded_holdings: HashMap::new(),
             workspace_lifecycle: HashMap::new(),

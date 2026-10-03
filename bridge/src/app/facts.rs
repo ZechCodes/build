@@ -517,6 +517,9 @@ impl AppState {
                 ThreadTip {
                     agent_id: agent.id.clone(),
                     conversation_id: Some(agent.conversation_id().to_string()),
+                    thread_id: Some(thread.id.clone()),
+                    thread_generation_revision: Some(thread.generation_revision),
+                    choice_revision: Some(agent.choice_revision),
                     last_sequence: thread.last_sequence(),
                     workspace_session: workspace_id
                         .as_deref()

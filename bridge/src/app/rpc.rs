@@ -194,7 +194,7 @@ pub(in crate::app) fn dispatch_frame(
                 // reserved: try again in a moment.
                 ApiError::busy(error)
             } else {
-                ApiError::from(error)
+                conversation_session_refusal(error)
             }
         }),
         // The caller is named for the frame: the `changes.*` verbs push to
@@ -204,6 +204,17 @@ pub(in crate::app) fn dispatch_frame(
         }),
     };
     api::reply(id, result)
+}
+
+fn conversation_session_refusal(error: String) -> ApiError {
+    if error.starts_with("stale thread_id")
+        || error.starts_with("stale unversioned mutation")
+        || error.contains("conversation is being cleared")
+    {
+        ApiError::classify(error)
+    } else {
+        ApiError::from(error)
+    }
 }
 
 /// Resume, Stop and a new terminal are answered by [`session_scoped`] and
@@ -595,7 +606,7 @@ impl AppState {
             return answered;
         }
         match self.route_legacy(method, params) {
-            Some(outcome) => outcome.map_err(ApiError::from),
+            Some(outcome) => outcome.map_err(conversation_session_refusal),
             None => Err(ApiError::unknown_method(method)),
         }
     }

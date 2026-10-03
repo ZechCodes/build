@@ -47,6 +47,10 @@ pub(in crate::app) struct CompactionLedger {
 }
 
 impl CompactionLedger {
+    pub(in crate::app) fn forget(&mut self, owner: &str, agent_id: &str) {
+        self.requested.remove(&key(owner, agent_id));
+        self.sent.remove(&key(owner, agent_id));
+    }
     /// Ask for one agent's compaction, replacing whatever it had asked for.
     pub(in crate::app) fn request(
         &mut self,

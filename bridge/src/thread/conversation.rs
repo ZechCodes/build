@@ -114,6 +114,9 @@ pub struct CompletionReport {
 pub struct Thread {
     #[serde(default)]
     pub id: String,
+    /// Monotonic generation of this canonical history, independent of model choices.
+    #[serde(default)]
+    pub generation_revision: u64,
     #[serde(default = "empty_agent")]
     pub agent: AgentIdentity,
     #[serde(default)]
@@ -207,7 +210,9 @@ impl Thread {
     /// a reload does to an agent-keyed one — so it must be idempotent: a thread
     /// already keyed to this agent comes out unchanged.
     pub fn rekey_to_agent(&mut self, agent_id: &str) {
-        self.id = format!("thread:{agent_id}");
+        if self.agent.id != agent_id || self.id.is_empty() {
+            self.id = format!("thread:{agent_id}");
+        }
         self.agent = AgentIdentity::new(agent_id.to_string());
         self.normalize(agent_id);
     }

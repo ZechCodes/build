@@ -5,7 +5,7 @@
 
 import { hide, motionSettled, reveal } from "./motion.js";
 import { esc } from "./text.js";
-import { adjustsMenuSlider, commitMenuSliders, menuSliderMarkup, MENU_SLIDER_SELECTOR, mountMenuSliders, resetMenuSliders } from "./menuSlider.js";
+import { adjustsMenuSlider, commitMenuSlider, commitMenuSliders, menuSliderMarkup, menuSliderStates, MENU_SLIDER_SELECTOR, mountMenuSliders, resetMenuSliders } from "./menuSlider.js";
 
 const MENU_MOVE = { axis: "height" };
 
@@ -329,8 +329,8 @@ function sightTopOf(menu, row) {
  *  once motion has settled. The menu's note is pinned over its foot
  *  (`menuNoteHtml`), so what is in sight stops at the note. */
 function scrollRowIntoMenu(menu, row) {
-  // The thumb takes focus, but the setting's selected word and description
-  // below it must be in sight too. Its wrapper also brings the group heading.
+  // The thumb takes focus, but the setting's selected word below it must be
+  // in sight too. Its wrapper also brings the group heading.
   const box = row.matches(MENU_SLIDER_SELECTOR) ? row.closest(".menu-slider") : row;
   const above = sightTopOf(menu, box) - menu.scrollTop;
   const sightHeight = menu.clientHeight - (menu.querySelector(MENU_NOTE_SELECTOR)?.offsetHeight || 0);
@@ -420,7 +420,7 @@ function menuKeyboard({ caret, menu, isOpen, openMenu, closeMenu, choose }) {
  *  button whose press is NOT a single-flight action with a busy label: it is a
  *  submit that restores its own button, and re-rendering it under the poll is
  *  the composer's business. What both share is the menu. */
-export function mountSplitMenu(container, { onChoose, onOpenChange = null, keepWithin = null }) {
+export function mountSplitMenu(container, { onChoose, onOpenChange = null, keepWithin = null, sliderStates }) {
   const caret = container.querySelector(CARET_SELECTOR);
   const menu = container.querySelector(SPLIT_MENU_SELECTOR);
 
@@ -475,10 +475,14 @@ export function mountSplitMenu(container, { onChoose, onOpenChange = null, keepW
     };
   };
 
-  // A choice shuts the menu and puts focus back on the opener — from the
-  // keyboard that is where the reader was; from a pointer it keeps focus
-  // from falling to the body when the row it was on is hidden.
+  // Slider saves keep the menu and thumb focused through the cache repaint.
+  // Other choices shut the menu and return focus to its opener.
   const choose = (row) => {
+    if (row.matches(MENU_SLIDER_SELECTOR)) {
+      row.focus({ preventScroll: true });
+      void commitMenuSlider(row);
+      return;
+    }
     const optionId = row.dataset.action;
     closeMenu();
     caret.focus({ preventScroll: true });
@@ -499,7 +503,7 @@ export function mountSplitMenu(container, { onChoose, onOpenChange = null, keepW
       if (menuIsOpen && !container.contains(event.relatedTarget)) closeMenu();
     });
     menu.querySelectorAll(MENU_ITEM_SELECTOR).forEach((mi) => (mi.onclick = () => choose(mi)));
-    mountMenuSliders(menu, { choose, onCommit: onChoose });
+    mountMenuSliders(menu, { choose, onCommit: onChoose }, sliderStates);
   }
   return { closeMenu, openMenu };
 }
@@ -512,7 +516,7 @@ function focusedSliderMenu(container) {
   const menu = container.querySelector(`${SPLIT_MENU_SELECTOR}:not([hidden])`);
   const row = document.activeElement;
   if (!menu?.contains(row) || !menu.querySelector(MENU_SLIDER_SELECTOR)) return null;
-  return { action: row.dataset.action, slider: row.matches(MENU_SLIDER_SELECTOR) };
+  return { action: row.dataset.action, slider: row.matches(MENU_SLIDER_SELECTOR), sliderStates: menuSliderStates(menu) };
 }
 
 function restoreSliderMenuFocus(container, state, openMenu) {
@@ -537,7 +541,7 @@ export function mountMenuIfChanged(container, markup, { onChoose, keepWithin = n
   // it on the body.
   const hadFocus = container.contains(document.activeElement);
   container.innerHTML = markup;
-  const { closeMenu, openMenu } = mountSplitMenu(container, { onChoose, keepWithin });
+  const { closeMenu, openMenu } = mountSplitMenu(container, { onChoose, keepWithin, sliderStates: focus?.sliderStates });
   menuMountedInContainer.set(container, { markup, closeMenu });
   if (hadFocus) container.querySelector(CARET_SELECTOR)?.focus({ preventScroll: true });
   if (focus) restoreSliderMenuFocus(container, focus, openMenu);

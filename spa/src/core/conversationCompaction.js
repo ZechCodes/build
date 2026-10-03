@@ -46,16 +46,12 @@ function defaultRowLabel(agent) {
   return `Default (${thresholdWord(threshold)})`;
 }
 
-const ROW_COPY = {
-  default: (agent) => ({ word: defaultRowLabel(agent), description: "This device's setting" }),
-  off: () => ({ word: "Off", description: "Never compact this chat" }),
-  size: (_agent, limit) => ({ word: thresholdWord(limit), description: sizeDescription(limit) }),
-  custom: (_agent, limit) => ({ word: `Custom (${thresholdWord(limit)})`, description: sizeDescription(limit) }),
+const ROW_LABEL = {
+  default: defaultRowLabel,
+  off: () => "Off",
+  size: (_agent, limit) => thresholdWord(limit),
+  custom: (_agent, limit) => `Custom (${thresholdWord(limit)})`,
 };
-
-function sizeDescription(limit) {
-  return `Compact once a turn fills ${thresholdWord(limit)} tokens of context`;
-}
 
 function copyKindOf(limit) {
   if (limit === null) return "default";
@@ -76,8 +72,8 @@ function limitsFor(agent) {
 export function compactionMenuOptions(agent) {
   const standing = ownLimitOf(agent);
   return limitsFor(agent).map((limit) => {
-    const { word, description } = ROW_COPY[copyKindOf(limit)](agent, limit);
-    return { id: optionIdOf(limit), label: word, description, selected: limit === standing };
+    const label = ROW_LABEL[copyKindOf(limit)](agent, limit);
+    return { id: optionIdOf(limit), label, selected: limit === standing };
   });
 }
 
@@ -132,12 +128,13 @@ export function compactionSettingsParams(entityId, agentId, maxContextTokens, th
  * agentId, rewrite)` lays `rewrite(agent)` over the agent while the row still
  * holds that write, and `rewrite` answers null to leave it alone.
  *
- * Not optimistic, unlike the watch switch (core/watchToggle.js): the menu has
- * shut by the time a choice is sent, so there is no control under the finger
- * to move early. A choice while one is in flight is ignored, as a second press
- * of the switch is. `choose` resolves when the answer has been offered to the
+ * The slider holds its committed value until the cache confirms or changes
+ * the threshold. The cache changes only when the bridge answers or pushes.
+ * A choice while one is in flight is ignored, as a second press of the switch is.
+ * `choose` resolves when the answer has been offered to the
  * cache or the verb has been refused, and never rejects — a refusal is
- * `onFailure`'s.
+ * `onFailure`'s. It resolves true for an accepted choice, false for a refusal
+ * or an ignored choice during another save, so the slider can roll back.
  */
 export function createCompactionChoice({ call, capture, write, onFailure = () => {} }) {
   let pending = false;
@@ -153,17 +150,20 @@ export function createCompactionChoice({ call, capture, write, onFailure = () =>
 
   return {
     async choose({ entityId, agent, maxContextTokens }) {
-      if (pending || ownLimitOf(agent) === maxContextTokens) return;
+      if (pending) return false;
+      if (ownLimitOf(agent) === maxContextTokens) return true;
       pending = true;
       try {
         const captured = await capture(entityId).catch(() => null);
         const reply = await ask(entityId, agent, maxContextTokens);
-        if (!reply || !captured) return;
+        if (!reply) return false;
+        if (!captured) return true;
         const fields = answeredFields(reply);
         // The bridge has it once it answers: a cache that cannot take the
         // answer is not a refusal, and the push brings the same word.
         await write(captured, agent.id, (held) => (sameCompaction(held, fields) ? null : { ...held, ...fields }))
           .catch(() => {});
+        return true;
       } finally {
         pending = false;
       }

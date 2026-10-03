@@ -3408,14 +3408,14 @@ function mountRailOnContext(host, context, swap) {
     const compaction = compactionLimitOfOptionId(optionId);
     if (optionId === "conversation:clear") void beginConversationReset();
     else if (level) chooseDetailLevel(level);
-    else if (compaction) chooseCompaction(compaction.maxContextTokens);
+    else if (compaction) return chooseCompaction(compaction.maxContextTokens);
     else openSurfaceOverlayForKind(optionId);
   };
 
   const chooseCompaction = (maxContextTokens) => {
     const agent = settledAgentInFocus();
-    if (!agent || !entity.entityId) return;
-    void compactionChoice.choose({ entityId: entity.entityId, agent, maxContextTokens });
+    if (!agent || !entity.entityId) return false;
+    return compactionChoice.choose({ entityId: entity.entityId, agent, maxContextTokens });
   };
 
   /** Read this conversation at a different level: remembered for it alone, and

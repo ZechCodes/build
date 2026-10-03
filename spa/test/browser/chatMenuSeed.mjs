@@ -16,7 +16,7 @@ export const SHELL_STYLES = "#toolbar{padding:12px 20px} #root{padding:24px} #ro
 
 /** Runs in the page: `page.evaluate(seedChatMenu, { theme, bigCounts })`.
  *  `bigCounts` puts four-digit counts on the surface rows (the wrap check). */
-export async function seedChatMenu({ theme, bigCounts, resetCapable = false }) {
+export async function seedChatMenu({ theme, bigCounts, resetCapable = false, holdSettings = false }) {
   document.documentElement.dataset.theme = theme;
   const { App } = window.__layoutModules.app;
   const { mountAgentRail } = window.__layoutModules.rail;
@@ -78,6 +78,10 @@ export async function seedChatMenu({ theme, bigCounts, resetCapable = false }) {
     call: async (method, params) => {
       if (method === "conversation.settings") {
         window.__menuSettingsAsked.push(params);
+        if (holdSettings) await new Promise((resolve, reject) => {
+          window.__releaseMenuSettings = resolve;
+          window.__refuseMenuSettings = () => reject(new Error("settings refused"));
+        });
         return { agent_id: params.agent_id, max_context_tokens: params.max_context_tokens, compact_at_tokens: params.max_context_tokens ?? 200000 };
       }
       if (method === "models.list") return { default_provider: "claude_adk", providers: [{ id: "claude_adk", label: "Claude Code", models: [], efforts: [] }] };

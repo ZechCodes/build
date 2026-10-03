@@ -34,12 +34,13 @@ const pressed = async (page, key) => {
 
 it("keeps the row the keyboard lands on inside the scrolling menu at 320×640", async () => {
   await withLayoutPage(async ({ page, basePath }) => {
-    await mountChatMenu(page, basePath, "narrow", { theme: "light", bigCounts: false });
+    await mountChatMenu(page, basePath, "narrow", { theme: "light", bigCounts: false, resetCapable: true });
     const actions = await page.evaluate((selector) =>
       [...document.querySelectorAll(`${selector} .mi, ${selector} [role="slider"]`)].map((row) => row.dataset.action), MENU);
     const first = actions[0];
     const last = actions.at(-1);
-    expect(last).toBe("compact:default");
+    expect(actions.at(-2)).toBe("compact:default");
+    expect(last).toBe("conversation:clear");
     await page.locator(CARET).focus();
 
     // Opening on the last row: the menu has more rows than room, and the

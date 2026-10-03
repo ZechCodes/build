@@ -132,7 +132,7 @@ const mountWorkspaceRail = async (capabilities = SETTINGS_CAPABILITIES) => {
 };
 
 const choose = async (optionId) => {
-  menuCaret().click();
+  if (menuCaret().getAttribute("aria-expanded") !== "true") menuCaret().click();
   const control = slider();
   control.value = String(compactionStops().findIndex((option) => option.id === optionId));
   control.dispatchEvent(new Event("input", { bubbles: true }));
@@ -217,6 +217,66 @@ describe("the context gauge beside the paperclip", () => {
 });
 
 describe("compaction on the conversation's menu", () => {
+  it.each(["Enter", "pointer release", "menu blur"])("keeps the chosen stop while %s's reply is held and never resends it on close", async (gesture) => {
+    let release;
+    digestCompaction = { max_context_tokens: 150000, compact_at_tokens: 150000 };
+    answerSettings = (params) => new Promise((resolve) => {
+      release = () => resolve({ ...params, compact_at_tokens: params.max_context_tokens });
+    });
+    await mountWorkspaceRail();
+    menuCaret().click();
+    const control = slider();
+    control.focus();
+    const pointer = (target, type) => target.dispatchEvent(Object.assign(new Event(type, { bubbles: true }), { pointerId: 1 }));
+    if (gesture === "pointer release") pointer(control, "pointerdown");
+    control.value = "3";
+    control.dispatchEvent(new Event("input", { bubbles: true }));
+    if (gesture === "pointer release") pointer(control, "pointerup");
+    else if (gesture === "menu blur") panel().querySelector('.mi[data-action="detail:agent"]').focus();
+    else control.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await flush();
+    expect(settingsAsked).toHaveLength(1);
+    expect(selectedWord()).toBe("300k");
+    expect(panel().querySelector('[data-group="compact"] .mt').textContent).toBe("300k");
+    expect(slider().value).toBe("3");
+    expect((await cachedAgent()).max_context_tokens).toBe(150000);
+    expect(menuCaret().getAttribute("aria-expanded")).toBe("true");
+    control.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    pointer(document.body, "pointerdown");
+    control.blur();
+    await flush();
+    expect(settingsAsked).toHaveLength(1);
+    release();
+    await flush();
+    expect((await cachedAgent()).max_context_tokens).toBe(300000);
+    expect(selectedWord()).toBe("300k");
+    expect(menuCaret().getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("restores the cached stop only after a held save fails and allows a retry", async () => {
+    let refuse;
+    digestCompaction = { max_context_tokens: 150000, compact_at_tokens: 150000 };
+    answerSettings = () => new Promise((_resolve, reject) => {
+      refuse = () => reject(new Error("settings refused"));
+    });
+    await mountWorkspaceRail();
+    await choose("compact:300000");
+    expect(selectedWord()).toBe("300k");
+    expect(panel().querySelector('[data-group="compact"] .mt').textContent).toBe("300k");
+    refuse();
+    await flush();
+    expect(selectedWord()).toBe("150k");
+    expect(panel().querySelector('[data-group="compact"] .mt').textContent).toBe("150k");
+    expect(document.activeElement).toBe(slider());
+    expect(menuCaret().getAttribute("aria-expanded")).toBe("true");
+    expect((await cachedAgent()).max_context_tokens).toBe(150000);
+    answerSettings = (params) => ({ ...params, compact_at_tokens: params.max_context_tokens });
+    await choose("compact:300000");
+    expect(settingsAsked).toHaveLength(2);
+    expect(selectedWord()).toBe("300k");
+    expect((await cachedAgent()).max_context_tokens).toBe(300000);
+  });
+
   it("shows the device default the digest names, with its threshold", async () => {
     await mountWorkspaceRail();
 
@@ -384,7 +444,7 @@ describe("compaction on the conversation's menu", () => {
     expect(slider().dataset.action).toBe("compact:150000");
   });
 
-  it("leaves a row a push wrote while the verb was in flight to that push", async () => {
+  it("leaves a pushed row untouched while holding the accepted stop until its cache push", async () => {
     answerSettings = async ({ agent_id, max_context_tokens }) => {
       digestCompaction = { ...digestCompaction, last_context_tokens: 130000 };
       await writeRailWorkItem(workspacePayload(), { deviceId: DEVICE_ID });
@@ -395,7 +455,12 @@ describe("compaction on the conversation's menu", () => {
     await choose("compact:off");
 
     expect(await cachedAgent()).toMatchObject({ max_context_tokens: null, last_context_tokens: 130000 });
-    expect(slider().dataset.action).toBe("compact:default");
+    expect(slider().dataset.action).toBe("compact:off");
+    digestCompaction = { ...digestCompaction, max_context_tokens: 0, compact_at_tokens: 0 };
+    await writeRailWorkItem(workspacePayload(), { deviceId: DEVICE_ID });
+    await flush();
+    expect(await cachedAgent()).toMatchObject({ max_context_tokens: 0, last_context_tokens: 130000 });
+    expect(slider().dataset.action).toBe("compact:off");
   });
 
   it("says a refusal in a sentence and leaves the choice where it was", async () => {

@@ -444,7 +444,7 @@ describe("compaction on the conversation's menu", () => {
     expect(slider().dataset.action).toBe("compact:150000");
   });
 
-  it("leaves a row a push wrote while the verb was in flight to that push", async () => {
+  it("leaves a pushed row untouched while holding the accepted stop until its cache push", async () => {
     answerSettings = async ({ agent_id, max_context_tokens }) => {
       digestCompaction = { ...digestCompaction, last_context_tokens: 130000 };
       await writeRailWorkItem(workspacePayload(), { deviceId: DEVICE_ID });
@@ -455,7 +455,12 @@ describe("compaction on the conversation's menu", () => {
     await choose("compact:off");
 
     expect(await cachedAgent()).toMatchObject({ max_context_tokens: null, last_context_tokens: 130000 });
-    expect(slider().dataset.action).toBe("compact:default");
+    expect(slider().dataset.action).toBe("compact:off");
+    digestCompaction = { ...digestCompaction, max_context_tokens: 0, compact_at_tokens: 0 };
+    await writeRailWorkItem(workspacePayload(), { deviceId: DEVICE_ID });
+    await flush();
+    expect(await cachedAgent()).toMatchObject({ max_context_tokens: 0, last_context_tokens: 130000 });
+    expect(slider().dataset.action).toBe("compact:off");
   });
 
   it("says a refusal in a sentence and leaves the choice where it was", async () => {

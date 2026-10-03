@@ -22,11 +22,15 @@ export const adjustsMenuSlider = (event) =>
   event.target.matches(MENU_SLIDER_SELECTOR) && adjustmentKeys.has(event.key);
 
 const controls = new WeakMap();
+const sliderKey = (slider) => slider.closest("[data-group]")?.dataset.group || slider.getAttribute("aria-label");
 
-function mountSlider(slider, { choose, onCommit }) {
+function mountSlider(slider, { choose, onCommit }, held) {
   const host = slider.closest(".menu-slider");
   const options = JSON.parse(host.dataset.options);
   const word = host.querySelector(".mt");
+  const cachedAction = options[selectedIndex(options)].id;
+  const state = held?.cachedAction === cachedAction ? held
+    : { cachedAction, committedAction: cachedAction, pending: false };
   let pointerId = null;
   const paint = () => {
     const option = options[Number(slider.value)];
@@ -36,19 +40,35 @@ function mountSlider(slider, { choose, onCommit }) {
   };
   const reset = () => {
     pointerId = null;
-    slider.value = String(selectedIndex(options));
+    slider.value = String(Math.max(0, options.findIndex((option) => option.id === state.committedAction)));
     paint();
   };
-  const commit = () => {
-    if (slider.value === String(selectedIndex(options))) return;
-    paint();
-    const optionId = slider.dataset.action;
-    // Clear the preview before saving: focus changes and cache remounts can
-    // cause another blur, and Escape resets before moving focus as well.
-    reset();
-    onCommit(optionId);
+  const rollback = () => {
+    state.committedAction = state.cachedAction;
+    state.repaint();
   };
-  controls.set(slider, { reset, commit });
+  const commit = async () => {
+    paint();
+    if (state.pending || slider.dataset.action === state.committedAction) {
+      reset();
+      return;
+    }
+    // A committed value belongs to this slider until the cache answers. Later
+    // blur/close events cancel only a newer preview and cannot resend it.
+    state.committedAction = slider.dataset.action;
+    state.pending = true;
+    pointerId = null;
+    try {
+      if (await onCommit(state.committedAction) === false) rollback();
+    } catch {
+      rollback();
+    } finally {
+      state.pending = false;
+    }
+  };
+  state.repaint = reset;
+  reset();
+  controls.set(slider, { reset, commit, state });
   slider.oninput = paint;
   // Native keyboard and assistive-tech changes are previews. Only an actual
   // pointer release chooses immediately; Enter is handled by the menu.
@@ -67,18 +87,25 @@ function mountSlider(slider, { choose, onCommit }) {
   slider.onpointercancel = reset;
 }
 
-export function mountMenuSliders(menu, callbacks) {
-  menu.querySelectorAll(MENU_SLIDER_SELECTOR).forEach((slider) => mountSlider(slider, callbacks));
+export function mountMenuSliders(menu, callbacks, states = new Map()) {
+  menu.querySelectorAll(MENU_SLIDER_SELECTOR).forEach((slider) => mountSlider(slider, callbacks, states.get(sliderKey(slider))));
 }
 
-/** Outside pointerdown precedes blur, so save its preview before the menu
- * closes and restores the cached stop. */
+/** Keep a pending choice through a menu repaint with the same cached stop.
+ * A genuinely changed cache value creates a fresh control state instead. */
+export function menuSliderStates(menu) {
+  return new Map([...menu.querySelectorAll(MENU_SLIDER_SELECTOR)]
+    .map((slider) => [sliderKey(slider), controls.get(slider)?.state]));
+}
+
+export const commitMenuSlider = (slider) => controls.get(slider)?.commit();
+
+/** Outside pointerdown precedes blur, so save its preview before closing. */
 export function commitMenuSliders(menu) {
-  menu.querySelectorAll(MENU_SLIDER_SELECTOR).forEach((slider) => controls.get(slider)?.commit());
+  menu.querySelectorAll(MENU_SLIDER_SELECTOR).forEach(commitMenuSlider);
 }
 
-/** A preview is local to the gesture. After closing, only the cached choice
- * stands, including when the settings write fails or is still in flight. */
+/** Cancel uncommitted previews, keeping any save already in flight. */
 export function resetMenuSliders(menu) {
   menu.querySelectorAll(MENU_SLIDER_SELECTOR).forEach((slider) => controls.get(slider)?.reset());
 }

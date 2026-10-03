@@ -29,6 +29,41 @@ async function word(page) {
   return page.locator(SLIDER).getAttribute("aria-valuetext");
 }
 
+it.each(["pointer", "Enter"])("keeps the chosen stop visible while a %s save is held, then handles a late answer without resending", async (gesture) => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await openMenuOn(page, basePath, "desktop", { theme: "dark", bigCounts: false, resetCapable: true, holdSettings: true });
+    const slider = page.locator(SLIDER);
+    if (gesture === "pointer") {
+      const box = await slider.boundingBox();
+      await page.mouse.click(box.x + box.width * 0.68, box.y + box.height / 2);
+    } else {
+      await slider.focus();
+      for (let stop = 0; stop < 3; stop += 1) await page.keyboard.press("ArrowRight");
+      await page.keyboard.press("Enter");
+    }
+    await page.waitForFunction(() => window.__menuSettingsAsked.length === 1);
+    expect(await word(page)).toBe("300k");
+    expect(await page.locator('[data-group="compact"] .mt').textContent()).toBe("300k");
+    expect(await slider.evaluate((element) => document.activeElement === element)).toBe(true);
+    expect(await page.locator(CARET).getAttribute("aria-expanded")).toBe("true");
+    await captureLayout(page, `compaction-300k-pending-${gesture.toLowerCase()}.png`);
+    if (gesture === "pointer") {
+      await page.keyboard.press("Escape");
+      await page.evaluate(() => window.__releaseMenuSettings());
+      await page.waitForFunction(() => document.querySelector('.rail-surface-menu [role="slider"]')?.dataset.action === "compact:300000");
+    } else {
+      await page.evaluate(() => window.__refuseMenuSettings());
+      await page.waitForFunction(() => document.querySelector('.rail-surface-menu [role="slider"]')?.getAttribute("aria-valuetext") === "Default (200k)");
+      expect(await slider.evaluate((element) => document.activeElement === element)).toBe(true);
+      expect(await page.locator('[data-group="compact"] .mt').textContent()).toBe("Default (200k)");
+      await page.keyboard.press("Escape");
+    }
+    await settled(page);
+    expect(await page.locator(CARET).getAttribute("aria-expanded")).toBe("false");
+    expect(await page.evaluate(() => window.__menuSettingsAsked)).toHaveLength(1);
+  });
+});
+
 it("snaps pointer drags to stops on release, saves once, and shows one value at 320px", async () => {
   await withLayoutPage(async ({ page, basePath }) => {
     await openMenuOn(page, basePath, "narrow", { theme: "dark", bigCounts: false });

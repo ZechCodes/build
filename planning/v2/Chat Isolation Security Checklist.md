@@ -88,3 +88,52 @@ Gitleaks found no leaks in the 29.16 MB current tree or in the two-head
 
 **Follow-up score: 100/100.** The toolbar-only follow-up introduced no change to
 the previously verified Bridge isolation controls.
+
+## Conversation reset — #358
+
+This extension covers `conversation.reset` and retirement of the preceding
+thread generation. The existing authenticated device/E2EE boundary still
+authorizes bridge RPCs. A required `project_id` additionally checks that both
+the addressed owner and the canonical conversation belong to that exact
+project; it is not a new project-scoped authentication credential.
+
+| # | Reset control | Evidence |
+|---|---|---|
+| 1 | Validate the project, entity, agent, canonical conversation and expected generation before changing history or processes. | Foreign-project/agent and stale-generation reset regressions; typed API contract and capability fixtures. |
+| 2 | Preserve agent identity, names, membership, task assignments and trackers while replacing history for every bound alias. | Identity/settings and assigned/tracked-task reset regressions; shared aliases expose the same canonical generation revision. |
+| 3 | Reserve the conversation, stop and reap only its processes outside the app lock, and revoke their queued work and MCP authority. | In-flight-delivery refusal, off-lock reset reservation and live-session retirement regressions; existing late-session callback isolation tests. |
+| 4 | Remove exact provider artifacts and compaction sidecars without deleting another conversation's lineage. | Seventeen native-cleanup tests cover Claude/ADK, Codex/app-server, Pi, canonical/encoded checkout keys, carrier families, symlink refusal, stopped PTYs and reversible staging. |
+| 5 | Commit history, operation receipts, upload ownership and readings together; a pre-commit failure restores staged files and queued delivery. | Persisted-history/restart and store-refusal rollback reset regressions. Post-commit cleanup never restores retired artifacts. |
+| 6 | Delete exclusively owned attachments, including unsent uploads, while preserving surviving conversation/task references. | Draft-upload/shared-sibling reset regression and reference checks repeated at commit. |
+| 7 | Prevent retired pages, activity bodies, drafts, journals, revision bodies and attachment previews from becoming readable or writable again. | Generation, cross-tab UI purge, cached-body lifetime and content-reset suites, including late reads and delayed writes. |
+| 8 | Admit rows, surfaces and pooled summaries with their canonical generation in the same cache transaction; scrub embedded feed copies. | Cross-client admission, session-list and feed-reset suites, including alias choice-revision independence, an old pending list reply and legacy embedded transcript copies. |
+| 9 | Gate the menu from cached capabilities and preserve the old settings until the final reset action; a fresh project agent gets its standing instructions. | DOM picker/cancellation/refusal tests, Chromium harness-switch/reset flow and fresh project scaffolding regression. |
+| 10 | Verify the completed change with the bridge/SPA gates and security scans. | Final gate evidence recorded below. |
+
+### Reset gate evidence
+
+- Bridge: `cargo test`, `cargo clippy --all-targets -- -D warnings` and
+  `cargo fmt --check` passed. The full test gate passed 3,949 tests with zero
+  failures. Eleven opt-in tests remained ignored: five real-provider turns,
+  one fixture recorder, one installed-CLI probe, two timing checks and two
+  real-store migration fixtures.
+- SPA: `npm run lint`, `npm test` (534 files / 8,499 tests, zero failures or
+  unhandled errors) and `npm run build` passed. Chromium checks cover the
+  keyboard/phone menu, confirmation and picker cancellation, harness switch,
+  cleared transcript/readings and empty composer in place. The four review
+  screenshots were visually checked. The build retained its existing
+  libsodium/module and bundle-size advisories.
+- Semgrep: `--config auto --error` ran 200 rules on all 48 changed tracked
+  JavaScript, MJS and CSS targets, with zero findings and approximately 100%
+  parsed lines.
+- Gitleaks: the task history (`main..HEAD`) and an archive of the complete
+  tracked tree passed with zero findings. Five exact current-tree fingerprints
+  now recognize the existing public `diff_key`/`if_diff_key` fixture values;
+  these name content rather than granting access, like their already recorded
+  history fingerprints. `git diff --check main..HEAD` also passed.
+- Every gate ran under `nice -n 10` with all inherited `BRIDGE_*` variables
+  removed. No serving or pairing bridge process was started for this work.
+
+**Reset score: 100/100.** All ten reset controls are verified by the completed
+gates above. The existing authentication boundary and the explicit opt-in test
+and scanner scopes remain as described here.

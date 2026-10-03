@@ -71,7 +71,8 @@ export async function withLayoutPage(check, { width = 1180, height = 840, plugin
     // No response mocks or retries: Vite errors still reach the browser.
     await page.context().route(`http://127.0.0.1:${port}/**`, async (route) => {
       const response = await route.fetch({ maxRetries: 0 });
-      await route.fulfill({ response });
+      try { await route.fulfill({ response }); }
+      finally { await response.dispose(); }
     });
     // A CSS URL gives the page Vite's origin without booting the SPA. That lets
     // a test mount just the production renderer it needs into a stable shell.
@@ -122,6 +123,8 @@ export async function loadBrowserModules(page, modules, basePath = "/app/static/
   page.on("requestfailed", requestFailed);
   page.on("response", badResponse);
   try {
+    // A preceding load must not satisfy readiness for this module set.
+    await page.evaluate(() => { delete window.__layoutModules; delete window.__layoutModuleError; });
     await page.addScriptTag({ type: "module", content: `
       Promise.all(${JSON.stringify(paths)}.map((path) => import(path)))
         .then((loaded) => { window.__layoutModules = Object.fromEntries(${JSON.stringify(names)}.map((name, index) => [name, loaded[index]])); })

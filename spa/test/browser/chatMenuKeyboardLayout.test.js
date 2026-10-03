@@ -53,11 +53,8 @@ it("keeps the row the keyboard lands on inside the scrolling menu at 320×640", 
     // Home and End jump to either end; the arrows wrap around both.
     expect(await pressed(page, "Home")).toMatchObject({ action: first, inside: true, scrollTop: 0 });
     expect(await pressed(page, "End")).toMatchObject({ action: last, inside: true });
-    // Adjustment keys belong to the thumb once focus reaches it. Escape
-    // returns to the opener, from which the menu walk can start again.
-    await page.keyboard.press("Escape");
-    await settled(page);
-    await pressed(page, "ArrowDown");
+    expect(await pressed(page, "ArrowDown")).toMatchObject({ action: first, inside: true, scrollTop: 0 });
+    expect(await pressed(page, "ArrowUp")).toMatchObject({ action: last, inside: true });
 
     // Every row from the top, one arrow at a time, comes into sight in turn.
     await pressed(page, "Home");
@@ -65,9 +62,6 @@ it("keeps the row the keyboard lands on inside the scrolling menu at 320×640", 
       expect(await pressed(page, "ArrowDown")).toMatchObject({ action, inside: true });
     }
 
-    await page.keyboard.press("Escape");
-    await settled(page);
-    await pressed(page, "ArrowDown");
     // Home after the reader scrolled the menu by hand with the first row focused.
     await pressed(page, "Home");
     await page.evaluate((selector) => { document.querySelector(selector).scrollTop = 158; }, MENU);

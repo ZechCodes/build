@@ -5,7 +5,7 @@
 
 import { hide, motionSettled, reveal } from "./motion.js";
 import { esc } from "./text.js";
-import { adjustsMenuSlider, menuSliderMarkup, MENU_SLIDER_SELECTOR, mountMenuSliders, resetMenuSliders } from "./menuSlider.js";
+import { adjustsMenuSlider, commitMenuSliders, menuSliderMarkup, MENU_SLIDER_SELECTOR, mountMenuSliders, resetMenuSliders } from "./menuSlider.js";
 
 const MENU_MOVE = { axis: "height" };
 
@@ -465,6 +465,7 @@ export function mountSplitMenu(container, { onChoose, onOpenChange = null, keepW
     if (stopWatchingOutsidePress) return;
     const onOutsidePress = (event) => {
       if (container.querySelector(SPLIT_BUTTON_SELECTOR)?.contains(event.target)) return;
+      commitMenuSliders(menu);
       closeMenu();
     };
     document.addEventListener("pointerdown", onOutsidePress);
@@ -498,25 +499,48 @@ export function mountSplitMenu(container, { onChoose, onOpenChange = null, keepW
       if (menuIsOpen && !container.contains(event.relatedTarget)) closeMenu();
     });
     menu.querySelectorAll(MENU_ITEM_SELECTOR).forEach((mi) => (mi.onclick = () => choose(mi)));
-    mountMenuSliders(menu, choose);
+    mountMenuSliders(menu, { choose, onCommit: onChoose });
   }
   return { closeMenu, openMenu };
 }
 
 const menuMountedInContainer = new WeakMap();
 
+/** A blur save can update the cached slider while focus is on another menu
+ * row. Keep that destination and the open menu through its cache repaint. */
+function focusedSliderMenu(container) {
+  const menu = container.querySelector(`${SPLIT_MENU_SELECTOR}:not([hidden])`);
+  const row = document.activeElement;
+  if (!menu?.contains(row) || !menu.querySelector(MENU_SLIDER_SELECTOR)) return null;
+  return { action: row.dataset.action, slider: row.matches(MENU_SLIDER_SELECTOR) };
+}
+
+function restoreSliderMenuFocus(container, state, openMenu) {
+  const menu = container.querySelector(SPLIT_MENU_SELECTOR);
+  const row = state.slider ? menu.querySelector(MENU_SLIDER_SELECTOR)
+    : [...menu.querySelectorAll(MENU_ITEM_SELECTOR)].find((each) => each.dataset.action === state.action);
+  if (!row) return;
+  openMenu();
+  menu.hidden = false;
+  row.focus({ preventScroll: true });
+  scrollRowIntoMenu(menu, row);
+  motionSettled().then(() => { if (!menu.hidden) scrollRowIntoMenu(menu, row); });
+}
+
 export function mountMenuIfChanged(container, markup, { onChoose, keepWithin = null }) {
   const mounted = menuMountedInContainer.get(container);
   if (mounted && mounted.markup === markup) return mounted.closeMenu;
+  const focus = focusedSliderMenu(container);
   if (mounted) mounted.closeMenu();
   // A remount under the reader's focus — the mark moved after a choice made
   // from the keyboard — hands focus to the new opener rather than dropping
   // it on the body.
   const hadFocus = container.contains(document.activeElement);
   container.innerHTML = markup;
-  const { closeMenu } = mountSplitMenu(container, { onChoose, keepWithin });
+  const { closeMenu, openMenu } = mountSplitMenu(container, { onChoose, keepWithin });
   menuMountedInContainer.set(container, { markup, closeMenu });
   if (hadFocus) container.querySelector(CARET_SELECTOR)?.focus({ preventScroll: true });
+  if (focus) restoreSliderMenuFocus(container, focus, openMenu);
   return closeMenu;
 }
 

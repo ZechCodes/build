@@ -1,10 +1,16 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { compactionMenuGroup } from "../src/core/conversationCompaction.js";
-import { groupedMenuButtonMarkup, mountSplitMenu } from "../src/core/splitButton.js";
+import { groupedMenuButtonMarkup, mountMenuIfChanged, mountSplitMenu } from "../src/core/splitButton.js";
 import { motionBeat } from "./motionRecorder.js";
 
 const keydown = (target, key) => target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+const pointer = (target, type) => target.dispatchEvent(Object.assign(new Event(type, { bubbles: true }), { pointerId: 1 }));
+const preview = (slider, index) => {
+  slider.value = String(index);
+  slider.dispatchEvent(new Event("input", { bubbles: true }));
+  slider.dispatchEvent(new Event("change", { bubbles: true }));
+};
 
 function mount(agent = { max_context_tokens: null, compact_at_tokens: 200000 }) {
   const host = document.createElement("div");
@@ -37,10 +43,10 @@ describe("the compaction slider in a split menu", () => {
     expect(document.getElementById(slider.getAttribute("aria-describedby")).textContent).toBe("This device's setting");
   });
 
-  it("previews only whole stops while dragging and commits once on change", () => {
+  it("previews only whole stops while dragging and commits once on release", () => {
     const { host, slider, caret, onChoose } = mount();
     caret.click();
-    slider.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    pointer(slider, "pointerdown");
     slider.value = "2";
     slider.dispatchEvent(new Event("input", { bubbles: true }));
     expect(onChoose).not.toHaveBeenCalled();
@@ -50,6 +56,8 @@ describe("the compaction slider in a split menu", () => {
     slider.value = "4";
     slider.dispatchEvent(new Event("input", { bubbles: true }));
     slider.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(onChoose).not.toHaveBeenCalled();
+    pointer(slider, "pointerup");
     expect(onChoose).toHaveBeenCalledExactlyOnceWith("compact:off");
     expect(document.activeElement).toBe(caret);
   });
@@ -66,7 +74,7 @@ describe("the compaction slider in a split menu", () => {
     caret.focus();
     keydown(caret, "ArrowUp");
     expect(document.activeElement).toBe(slider);
-    for (const key of ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"]) {
+    for (const key of ["ArrowLeft", "ArrowRight"]) {
       expect(keydown(slider, key)).toBe(true);
       expect(document.activeElement).toBe(slider);
     }
@@ -75,6 +83,88 @@ describe("the compaction slider in a split menu", () => {
     await motionBeat();
     expect(host.querySelector(".splitmenu").hidden).toBe(true);
     expect(document.activeElement).toBe(caret);
+  });
+
+  it("previews keyboard changes until Enter and cancels them on Escape", async () => {
+    const { caret, slider, host, onChoose } = mount();
+    keydown(caret, "ArrowUp");
+    for (const index of [1, 2, 3, 4]) {
+      keydown(slider, "ArrowRight");
+      preview(slider, index);
+      expect(onChoose).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(slider);
+      expect(host.querySelector(".splitmenu").hidden).toBe(false);
+    }
+    keydown(slider, "Escape");
+    await motionBeat();
+    expect(onChoose).not.toHaveBeenCalled();
+    expect(slider.value).toBe("0");
+    keydown(caret, "ArrowUp");
+    preview(slider, 4);
+    keydown(slider, "Enter");
+    expect(onChoose).toHaveBeenCalledExactlyOnceWith("compact:off");
+  });
+
+  it("commits on thumb blur without stealing the menu navigation destination", () => {
+    const { caret, slider, host, onChoose } = mount();
+    keydown(caret, "ArrowUp");
+    preview(slider, 3);
+    keydown(slider, "ArrowUp");
+    expect(onChoose).toHaveBeenCalledExactlyOnceWith("compact:300000");
+    expect(document.activeElement.dataset.action).toBe("detail:all");
+    expect(host.querySelector(".splitmenu").hidden).toBe(false);
+    expect(slider.value).toBe("0");
+  });
+
+  it("commits on Tab blur once and keeps focus outside the menu", async () => {
+    const { caret, slider, host, onChoose } = mount();
+    const elsewhere = document.createElement("button");
+    document.body.appendChild(elsewhere);
+    keydown(caret, "ArrowUp");
+    preview(slider, 2);
+    elsewhere.focus();
+    await motionBeat();
+    expect(onChoose).toHaveBeenCalledExactlyOnceWith("compact:200000");
+    expect(document.activeElement).toBe(elsewhere);
+    expect(host.querySelector(".splitmenu").hidden).toBe(true);
+  });
+
+  it("commits a keyboard preview before an outside pointer press closes the menu", () => {
+    const { caret, slider, onChoose } = mount();
+    keydown(caret, "ArrowUp");
+    preview(slider, 1);
+    const elsewhere = document.createElement("button");
+    document.body.appendChild(elsewhere);
+    pointer(elsewhere, "pointerdown");
+    elsewhere.focus();
+    expect(onChoose).toHaveBeenCalledExactlyOnceWith("compact:150000");
+    expect(document.activeElement).toBe(elsewhere);
+  });
+
+  it("walks and wraps the menu with Up/Down/Home/End from the thumb", () => {
+    const { caret, slider, onChoose } = mount();
+    keydown(caret, "ArrowUp");
+    keydown(slider, "ArrowDown");
+    expect(document.activeElement.dataset.action).toBe("detail:all");
+    keydown(document.activeElement, "ArrowUp");
+    expect(document.activeElement).toBe(slider);
+    keydown(slider, "Home");
+    expect(document.activeElement.dataset.action).toBe("detail:all");
+    keydown(document.activeElement, "End");
+    expect(document.activeElement).toBe(slider);
+    expect(onChoose).not.toHaveBeenCalled();
+  });
+
+  it("does not reopen a closing slider menu when a cache reply repaints it", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const markup = (limit) => groupedMenuButtonMarkup("⋮", [compactionMenuGroup({ max_context_tokens: limit })]);
+    const close = mountMenuIfChanged(host, markup(null), { onChoose: vi.fn() });
+    keydown(host.querySelector(".caret"), "ArrowUp");
+    close();
+    mountMenuIfChanged(host, markup(150000), { onChoose: vi.fn() });
+    expect(host.querySelector(".caret").getAttribute("aria-expanded")).toBe("false");
+    expect(host.querySelector(".splitmenu").hidden).toBe(true);
   });
 
   it("can commit the standing stop with Enter", () => {
@@ -86,13 +176,12 @@ describe("the compaction slider in a split menu", () => {
 
   it("restores the cached value when a preview is cancelled or a write is refused", async () => {
     const { caret, slider, host, onChoose } = mount();
-    for (const event of ["Escape", "change"]) {
+    for (const event of ["Escape", "Enter"]) {
       caret.click();
       slider.focus();
       slider.value = "3";
       slider.dispatchEvent(new Event("input", { bubbles: true }));
-      if (event === "Escape") keydown(slider, event);
-      else slider.dispatchEvent(new Event(event, { bubbles: true }));
+      keydown(slider, event);
       await motionBeat();
       caret.click();
       expect(slider.getAttribute("aria-valuetext")).toBe("Default (200k)");

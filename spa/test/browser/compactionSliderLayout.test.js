@@ -55,24 +55,73 @@ it("snaps pointer drags to stops on release, saves once, and shows one value at 
   }, { width: 320, height: 640 });
 });
 
-it("moves one hard stop per arrow key, bounds the ends, and restores focus after choosing", async () => {
+it("previews every stop in one open menu, writes once on Enter, and cancels on Escape", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await openMenuOn(page, basePath, "desktop", { theme: "light", bigCounts: false });
+    const slider = page.locator(SLIDER);
+    await slider.focus();
+    await page.keyboard.press("ArrowLeft");
+    expect(await word(page)).toBe("Default (200k)");
+    for (const expected of ["150k", "200k", "300k", "Off", "Off"]) {
+      await page.keyboard.press("ArrowRight");
+      expect(await word(page)).toBe(expected);
+      expect(await slider.evaluate((element) => document.activeElement === element)).toBe(true);
+      expect(await page.locator(CARET).getAttribute("aria-expanded")).toBe("true");
+      expect(await page.evaluate(() => window.__menuSettingsAsked)).toEqual([]);
+    }
+    await page.keyboard.press("Escape");
+    await settled(page);
+    expect(await page.evaluate(() => window.__menuSettingsAsked)).toEqual([]);
+    await reopen(page);
+    expect(await word(page)).toBe("Default (200k)");
+    await slider.focus();
+    for (let stop = 0; stop < 4; stop += 1) await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => window.__menuSettingsAsked.length === 1);
+    expect(await page.evaluate(() => window.__menuSettingsAsked)).toEqual([
+      { entity_id: "menu-run", agent_id: "menu-agent", max_context_tokens: 0 },
+    ]);
+    await reopen(page);
+    expect(await word(page)).toBe("Off");
+    await slider.focus();
+    await page.keyboard.press("ArrowLeft");
+    expect(await word(page)).toBe("300k");
+    await page.keyboard.press("Escape");
+    await settled(page);
+    expect(await page.evaluate(() => window.__menuSettingsAsked)).toHaveLength(1);
+  });
+});
+
+it("commits a keyboard preview on Tab and preserves the destination focus through the cache reply", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await openMenuOn(page, basePath, "desktop", { theme: "light", bigCounts: false });
+    await page.evaluate(() => {
+      const button = document.createElement("button");
+      button.id = "after-menu";
+      button.textContent = "After menu";
+      document.querySelector(".rail-surface-menu").insertAdjacentElement("afterend", button);
+    });
+    await page.locator(SLIDER).focus();
+    await page.keyboard.press("ArrowRight");
+    expect(await page.evaluate(() => window.__menuSettingsAsked)).toEqual([]);
+    await page.keyboard.press("Tab");
+    await page.waitForFunction(() => window.__menuSettingsAsked.length === 1);
+    await page.waitForFunction(() => document.querySelector('.rail-surface-menu [role="slider"]')?.dataset.action === "compact:150000");
+    expect(await page.evaluate(() => document.activeElement?.id)).toBe("after-menu");
+  });
+});
+
+it("keeps the menu navigation destination after a keyboard blur saves its preview", async () => {
   await withLayoutPage(async ({ page, basePath }) => {
     await openMenuOn(page, basePath, "desktop", { theme: "light", bigCounts: false });
     await page.locator(SLIDER).focus();
-    await page.keyboard.press("ArrowLeft");
-    expect(await word(page)).toBe("Default (200k)");
-    expect(await page.evaluate(() => window.__menuSettingsAsked)).toEqual([]);
-    for (const [key, expected] of [["ArrowRight", "150k"], ["ArrowUp", "200k"], ["ArrowDown", "150k"], ["End", "Off"], ["Home", "Default (200k)"]]) {
-      await page.locator(SLIDER).focus();
-      await page.keyboard.press(key);
-      await page.waitForFunction(() => document.activeElement?.matches(".rail-surface-menu .caret"));
-      await reopen(page);
-      expect(await word(page)).toBe(expected);
-    }
-    await page.locator(SLIDER).focus();
-    await page.keyboard.press("Escape");
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("ArrowUp");
+    await page.waitForFunction(() => window.__menuSettingsAsked.length === 1);
+    await page.waitForFunction(() => document.querySelector('.rail-surface-menu [role="slider"]')?.dataset.action === "compact:150000");
     await settled(page);
-    expect(await page.locator(CARET).getAttribute("aria-expanded")).toBe("false");
+    expect(await page.evaluate(() => document.activeElement?.dataset.action)).toBe("detail:agent");
+    expect(await page.locator(CARET).getAttribute("aria-expanded")).toBe("true");
   });
 });
 

@@ -241,6 +241,8 @@ describe("a pick on the sectioned menu", () => {
     slider.value = "1";
     slider.dispatchEvent(new Event("input", { bubbles: true }));
     slider.dispatchEvent(new Event("change", { bubbles: true }));
+    slider.focus();
+    keydown(slider, "Enter");
     await flush();
 
     expect(settingsAsked).toEqual([{ entity_id: WORKSPACE_OWNER, agent_id: "wa-1", max_context_tokens: 150000 }]);

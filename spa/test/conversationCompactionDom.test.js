@@ -137,6 +137,8 @@ const choose = async (optionId) => {
   control.value = String(compactionStops().findIndex((option) => option.id === optionId));
   control.dispatchEvent(new Event("input", { bubbles: true }));
   control.dispatchEvent(new Event("change", { bubbles: true }));
+  control.focus();
+  control.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
   await flush();
 };
 

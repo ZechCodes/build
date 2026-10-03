@@ -14,8 +14,9 @@ Wire 3.6.0.
 
 - The conversation menu's Compact at setting is a slider with discrete stops
   for the existing limits, showing only the selected value and description.
-  Touch release and keyboard arrows keep the same conversation setting and
-  cache update behavior (#357).
+  Touch release commits a stop; Left/Right preview it until Enter or blur,
+  Escape cancels the preview, and Up/Down still walk the menu. The conversation
+  setting and cache update behavior are preserved (#357).
 
 ### Added
 

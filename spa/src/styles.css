@@ -264,8 +264,10 @@ a { color:inherit; }
 }
 select {
   --select-chevron-color:var(--ink2);
-  --select-chevron:linear-gradient(45deg, transparent 50%, var(--select-chevron-color) 50%),
-    linear-gradient(135deg, var(--select-chevron-color) 50%, transparent 50%);
+  --select-chevron:linear-gradient(45deg, transparent calc(50% - 1px),
+      var(--select-chevron-color) calc(50% - 1px) calc(50% + 1px), transparent calc(50% + 1px)),
+    linear-gradient(135deg, transparent calc(50% - 1px),
+      var(--select-chevron-color) calc(50% - 1px) calc(50% + 1px), transparent calc(50% + 1px));
   appearance:none; -webkit-appearance:none;
   box-sizing:border-box; min-width:0; max-width:100%; height:var(--select-height);
   font:14px/1.4 var(--sans); color:var(--ink);
@@ -286,8 +288,8 @@ select:disabled { --select-chevron-color:var(--dim); color:var(--dim); opacity:.
   select {
     color-scheme:inherit;
     background-image:var(--select-chevron);
-    background-position:right 14px center, right 10px center;
-    background-size:4px 4px; background-repeat:no-repeat;
+    background-position:right 16px center, right 10px center;
+    background-size:6px 6px; background-repeat:no-repeat;
   }
 }
 @supports (appearance:base-select) {
@@ -299,8 +301,8 @@ select:disabled { --select-chevron-color:var(--dim); color:var(--dim); opacity:.
     content:""; position:absolute; inset-block:0; inset-inline-end:0;
     width:30px; color:var(--ink2); background-color:var(--panel);
     background-image:var(--select-chevron);
-    background-position:right 14px center, right 10px center;
-    background-size:4px 4px; background-repeat:no-repeat; pointer-events:none;
+    background-position:right 16px center, right 10px center;
+    background-size:6px 6px; background-repeat:no-repeat; pointer-events:none;
   }
   select:disabled::picker-icon { color:var(--dim); }
   select::picker(select) {

@@ -124,6 +124,39 @@ fn list_harnesses_answers_the_same_offer() {
     assert_eq!(claude["unavailable"][0]["requires_cli"], "2.1.284");
 }
 
+/// Run the bridge's list_harnesses handler against a real installed Codex by
+/// hand, with an empty environment, scratch HOME/identity and Codex on PATH.
+#[test]
+#[ignore = "asks the Codex installed on this machine"]
+fn list_harnesses_with_the_installed_codex() {
+    struct InstalledCodex;
+    impl CliProbe for InstalledCodex {
+        fn read(&self, binary: &str) -> CliReading {
+            if binary == "codex" {
+                crate::harness::installed::CODEX_MODEL_LIST.read(binary)
+            } else {
+                CliReading::default()
+            }
+        }
+    }
+    let (dir, repo) = init_repo();
+    let state = AppState::new(repo, dir.path().join("wt"), "main", true, "/tmp/m.sock")
+        .with_cli_readings(Readings::answering_inline(&InstalledCodex));
+
+    let table = state.harness_table();
+    println!("list_harnesses: {table}");
+    for id in ["codex", "codex_app_server"] {
+        let codex = table["harnesses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|harness| harness["id"] == id)
+            .unwrap();
+        assert!(codex["cli_version"].is_string(), "{codex}");
+        assert!(!model_ids(codex).is_empty(), "{codex}");
+    }
+}
+
 async fn next_models_changed(
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
     key: &str,

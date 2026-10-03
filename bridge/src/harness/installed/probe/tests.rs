@@ -366,3 +366,125 @@ fn the_installed_clis_answer() {
     assert!(codex.version.is_some());
     assert!(codex.listed.is_some_and(|listed| !listed.is_empty()));
 }
+
+#[test]
+fn a_failed_version_probe_keeps_the_last_stderr_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let cli = fake_cli(
+        dir.path(),
+        "failing",
+        "echo first-error >&2; echo final-error >&2; exit 1",
+    );
+    let error = run_version_flag(cli.to_str().unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("final-error"), "{error}");
+    assert!(
+        !error.contains("first-error"),
+        "only the last line: {error}"
+    );
+}
+
+#[test]
+fn an_unreadable_version_probe_reports_why() {
+    let dir = tempfile::tempdir().unwrap();
+    let cli = fake_cli(
+        dir.path(),
+        "garbled",
+        "echo unreadable; echo wrapper-warning >&2",
+    );
+    let error = run_version_flag(cli.to_str().unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("wrapper-warning"), "{error}");
+}
+
+#[test]
+fn noisy_stderr_is_drained_and_its_last_line_is_bounded() {
+    let dir = tempfile::tempdir().unwrap();
+    let cli = fake_cli(
+        dir.path(),
+        "noisy",
+        "head -c 8000000 /dev/zero | tr '\\0' x >&2; printf ' final-error\\n\\n' >&2; exit 1",
+    );
+    let error =
+        run_version_flag_within(cli.to_str().unwrap(), Duration::from_secs(60)).unwrap_err();
+    assert_ne!(error.kind(), std::io::ErrorKind::TimedOut, "{error}");
+    let text = error.to_string();
+    assert!(text.contains("final-error"), "{text}");
+    assert!(text.len() < 2048, "stderr diagnostic was not bounded");
+}
+
+#[test]
+fn partial_invalid_stderr_is_kept_without_control_characters() {
+    let dir = tempfile::tempdir().unwrap();
+    let cli = fake_cli(
+        dir.path(),
+        "partial",
+        "printf '\\377\\033partial-error\\007' >&2; exit 1",
+    );
+    let error = run_version_flag(cli.to_str().unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("partial-error"), "{error}");
+    assert!(!error.chars().any(char::is_control), "{error:?}");
+}
+
+#[test]
+fn a_timed_out_probe_keeps_its_stderr_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let cli = fake_cli(dir.path(), "timeout", "echo timeout-reason >&2; sleep 60");
+    let error =
+        run_version_flag_within(cli.to_str().unwrap(), Duration::from_millis(500)).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    assert!(error.to_string().contains("timeout-reason"), "{error}");
+}
+
+#[test]
+fn a_codex_startup_failure_keeps_the_last_stderr_line() {
+    let dir = tempfile::tempdir().unwrap();
+    for (name, answer) in [
+        ("eof", "printf '{invalid partial output'"),
+        (
+            "refused",
+            "echo '{\"id\":1,\"error\":{\"message\":\"initialize failed\"}}'",
+        ),
+    ] {
+        let cli = fake_cli(
+            dir.path(),
+            name,
+            &format!(
+                "read -r line; echo old-warning >&2; echo startup-reason >&2; {answer}; exit 1"
+            ),
+        );
+        let error = codex_list::AppServer::start(cli.to_str().unwrap())
+            .unwrap()
+            .read()
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("startup-reason"), "{name}: {error}");
+        assert!(!error.contains("old-warning"), "{name}: {error}");
+    }
+}
+
+#[test]
+fn a_codex_list_failure_or_empty_list_keeps_stderr() {
+    let dir = tempfile::tempdir().unwrap();
+    for (name, answer) in [
+        ("refused", r#"{"id":2,"error":{"message":"list failed"}}"#),
+        ("empty", r#"{"id":2,"result":{"data":[]}}"#),
+        ("unreadable", r#"{"id":2,"result":{"data":17}}"#),
+    ] {
+        let cli = fake_cli(
+            dir.path(),
+            name,
+            &format!("read -r line; echo list-reason >&2; echo '{answer}'; sleep 60"),
+        );
+        let error = codex_list::AppServer::start(cli.to_str().unwrap())
+            .unwrap()
+            .list()
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("list-reason"), "{name}: {error}");
+    }
+}

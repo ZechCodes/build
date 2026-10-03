@@ -40,21 +40,38 @@ impl CliProbe for CodexModelList {
             }
         }
     }
+
+    fn needs_retry(&self, reading: &CliReading) -> bool {
+        reading.listed.as_ref().is_none_or(Vec::is_empty)
+    }
 }
 
 /// One short-lived `codex app-server`, ended whatever it answered.
-struct AppServer {
+pub(super) struct AppServer {
     child: ProbeChild,
 }
 
 impl AppServer {
-    fn start(binary: &str) -> std::io::Result<Self> {
+    pub(super) fn start(binary: &str) -> std::io::Result<Self> {
         Ok(Self {
             child: ProbeChild::start(binary, &["app-server"], true)?,
         })
     }
 
-    fn read(mut self) -> std::io::Result<CliReading> {
+    pub(super) fn read(mut self) -> std::io::Result<CliReading> {
+        let initialized = self.initialize();
+        let initialized = initialized.map_err(|why| self.child.failure(why))?;
+        let version = initialized["userAgent"].as_str().and_then(version_in);
+        // A list with nothing Build could start on says nothing about what
+        // codex runs; taken as the truth, it would refuse every session.
+        let listed = self
+            .list()
+            .map_err(|why| eprintln!("cli probe: codex model/list: {why}"))
+            .ok();
+        Ok(CliReading { version, listed })
+    }
+
+    fn initialize(&mut self) -> std::io::Result<Value> {
         self.send(&json!({
             "id": INITIALIZE_ID,
             "method": "initialize",
@@ -64,21 +81,25 @@ impl AppServer {
             },
         }))?;
         self.send(&json!({ "method": "initialized" }))?;
-        let initialized = self.answer(INITIALIZE_ID)?;
-        let version = initialized["userAgent"].as_str().and_then(version_in);
-        // A list with nothing Build could start on says nothing about what
-        // codex runs; taken as the truth, it would refuse every session.
-        let listed = self
-            .list()
-            .map_err(|why| eprintln!("cli probe: codex model/list: {why}"))
-            .ok()
-            .filter(|listed| !listed.is_empty());
-        Ok(CliReading { version, listed })
+        self.answer(INITIALIZE_ID)
     }
 
     /// Every page of `model/list`, hidden models included, less any entry
     /// that could not be a model id.
-    fn list(&mut self) -> std::io::Result<Vec<ListedModel>> {
+    pub(super) fn list(&mut self) -> std::io::Result<Vec<ListedModel>> {
+        let answer = self.list_pages().and_then(|listed| {
+            if listed.is_empty() {
+                Err(std::io::Error::other(
+                    "model/list returned no usable models",
+                ))
+            } else {
+                Ok(listed)
+            }
+        });
+        answer.map_err(|why| self.child.failure(why))
+    }
+
+    fn list_pages(&mut self) -> std::io::Result<Vec<ListedModel>> {
         let mut listed = Vec::new();
         let mut cursor: Option<String> = None;
         for page in 0..MAX_PAGES {

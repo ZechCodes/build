@@ -20,6 +20,12 @@ pub trait CliProbe: Send + Sync {
     /// Whatever `binary` says. Never an error: a CLI that cannot be asked, or
     /// answers in words Build cannot read, reads as knowing nothing.
     fn read(&self, binary: &str) -> CliReading;
+
+    /// Whether this answer failed to learn what the probe asks for and
+    /// should be asked again sooner than a successful answer.
+    fn needs_retry(&self, reading: &CliReading) -> bool {
+        reading == &CliReading::default()
+    }
 }
 
 /// A CLI nobody asks: its harness offers its catalog whole.
@@ -30,6 +36,10 @@ pub static NO_PROBE: NoProbe = NoProbe;
 impl CliProbe for NoProbe {
     fn read(&self, _binary: &str) -> CliReading {
         CliReading::default()
+    }
+
+    fn needs_retry(&self, _reading: &CliReading) -> bool {
+        false
     }
 }
 
@@ -57,14 +67,23 @@ fn run_version_flag(binary: &str) -> std::io::Result<String> {
 
 fn run_version_flag_within(binary: &str, deadline: std::time::Duration) -> std::io::Result<String> {
     let mut child = ProbeChild::start_within(binary, &["--version"], false, deadline)?;
-    let mut said = Vec::new();
+    let answer = read_version_answer(&mut child);
+    answer.map_err(|why| child.failure(why))
+}
+
+fn read_version_answer(child: &mut ProbeChild) -> std::io::Result<String> {
+    let mut lines = Vec::new();
     while let Some(line) = child.next_line()? {
-        said.push(line);
+        lines.push(line);
     }
     if !child.succeeded()? {
         return Err(std::io::Error::other("exited unsuccessfully"));
     }
-    Ok(said.join("\n"))
+    let said = lines.join("\n");
+    if version_in(&said).is_none() {
+        return Err(std::io::Error::other("unreadable version answer"));
+    }
+    Ok(said)
 }
 
 /// The first whitespace-separated word of `said` that is a version, or the

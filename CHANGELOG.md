@@ -27,6 +27,18 @@ Wire 3.6.0.
   share one description limit. Snapshot updates use a version check; review tasks bypass the
   older automatic report/merged-workspace task transitions (#328).
 
+### Fixed
+
+- Installed CLI model probes keep their last usable catalog through failed
+  or abandoned refreshes. Retries start at 15 seconds, double up to the
+  ten-minute TTL, and reset after recovery. Background refresh keeps cached
+  catalogs current. Direct installs and symlinks are re-asked when their PATH
+  hit, target or modification time changes; underlying updates behind unchanged
+  mise shims or wrappers rely on periodic refresh or session version hints.
+  Failures include bounded stderr within the original deadline, abandoned
+  probes release their claim, and older results cannot overwrite a fresh
+  reading (#345).
+
 ## [0.2.7] - 2026-10-02
 
 Wire 3.5.0.

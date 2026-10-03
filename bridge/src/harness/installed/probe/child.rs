@@ -7,9 +7,11 @@
 //! answered: the CLIs sit behind wrapper scripts that start children of their
 //! own.
 
+use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use super::PROBE_DEADLINE;
@@ -18,8 +20,14 @@ use crate::harness::{DAEMON_IDENTITY_VARS, INHERITED_AGENT_MARKERS};
 /// The longest line kept. A `model/list` page is about 10 KiB today.
 pub(super) const MAX_LINE: usize = 1024 * 1024;
 
-/// The most a probe child may say in all.
+/// The most stdout a probe child may say in all.
 pub(super) const MAX_OUTPUT: usize = 4 * MAX_LINE;
+
+/// Stderr is drained independently of stdout, keeping only a bounded tail
+/// of its last nonempty line. A noisy wrapper cannot fill its stderr pipe.
+const MAX_STDERR_BYTES: usize = 4096;
+const MAX_STDERR_TEXT: usize = 512;
+const MAX_STDERR_WAIT: Duration = Duration::from_millis(50);
 
 /// Why a probe child stopped being read.
 #[derive(Debug)]
@@ -31,7 +39,11 @@ enum Unread {
 pub(super) struct ProbeChild {
     child: Child,
     lines: Receiver<Result<String, Unread>>,
+    stderr: Stderr,
+    /// Answers stop early enough to drain final stderr within the deadline.
     expiry: Instant,
+    hard_expiry: Instant,
+    stopped: bool,
 }
 
 impl ProbeChild {
@@ -50,12 +62,18 @@ impl ProbeChild {
         talks: bool,
         deadline: Duration,
     ) -> std::io::Result<Self> {
+        let hard_expiry = Instant::now() + deadline;
+        let diagnostic_reserve = MAX_STDERR_WAIT.min(deadline / 10);
         let mut child = command(binary, args, talks).spawn()?;
         let lines = read_lines(child.stdout.take());
+        let stderr = Stderr::capture(child.stderr.take());
         Ok(Self {
             child,
             lines,
-            expiry: Instant::now() + deadline,
+            stderr,
+            expiry: hard_expiry - diagnostic_reserve,
+            hard_expiry,
+            stopped: false,
         })
     }
 
@@ -99,6 +117,33 @@ impl ProbeChild {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
+
+    /// Stop before collecting the diagnostic: EOF on stdout may arrive
+    /// before the stderr reader has consumed the child's final error.
+    pub(super) fn failure(&mut self, error: std::io::Error) -> std::io::Error {
+        self.stop();
+        let left = self.hard_expiry.saturating_duration_since(Instant::now());
+        let stderr = self.stderr.last(left.min(MAX_STDERR_WAIT));
+        if stderr.is_empty() {
+            return error;
+        }
+        std::io::Error::new(error.kind(), format!("{error}; stderr: {stderr}"))
+    }
+
+    fn stop(&mut self) {
+        if self.stopped {
+            return;
+        }
+        self.stopped = true;
+        #[cfg(unix)]
+        // SAFETY: a negative pid signals the process group this child leads,
+        // which `process_group(0)` made it the leader of.
+        unsafe {
+            libc::kill(-(self.child.id() as i32), libc::SIGKILL);
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 /// The command a probe runs. Offline to mise: a wrapper on `PATH` that runs
@@ -126,22 +171,111 @@ pub(super) fn command(binary: &str, args: &[&str], talks: bool) -> Command {
         .args(args)
         .stdin(if talks { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .current_dir(home.unwrap_or_else(std::env::temp_dir));
     command
 }
 
 impl Drop for ProbeChild {
     fn drop(&mut self) {
-        #[cfg(unix)]
-        // SAFETY: a negative pid signals the process group this child leads,
-        // which `process_group(0)` made it the leader of.
-        unsafe {
-            libc::kill(-(self.child.id() as i32), libc::SIGKILL);
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.stop();
     }
+}
+
+#[derive(Default)]
+struct StderrReading {
+    last: String,
+    finished: bool,
+}
+
+#[derive(Clone, Default)]
+struct Stderr(Arc<StderrState>);
+
+#[derive(Default)]
+struct StderrState {
+    reading: Mutex<StderrReading>,
+    finished: Condvar,
+    #[cfg(test)]
+    before_wait: Mutex<Option<std::sync::mpsc::Sender<Duration>>>,
+}
+
+impl Stderr {
+    fn capture(stderr: Option<ChildStderr>) -> Self {
+        let saved = Self::default();
+        let Some(stderr) = stderr else {
+            saved.finish();
+            return saved;
+        };
+        let reading = saved.clone();
+        std::thread::spawn(move || {
+            drain_stderr(stderr, &reading);
+            reading.finish();
+        });
+        saved
+    }
+
+    fn remember(&self, line: &mut VecDeque<u8>) {
+        let text = String::from_utf8_lossy(line.make_contiguous());
+        let mut chars: Vec<_> = text
+            .chars()
+            .rev()
+            .filter(|c| !c.is_control())
+            .take(MAX_STDERR_TEXT)
+            .collect();
+        chars.reverse();
+        let text: String = chars.into_iter().collect();
+        let text = text.trim();
+        if !text.is_empty() {
+            self.0.reading.lock().unwrap().last = text.to_owned();
+        }
+    }
+
+    fn finish(&self) {
+        self.0.reading.lock().unwrap().finished = true;
+        self.0.finished.notify_all();
+    }
+
+    fn last(&self, wait: Duration) -> String {
+        let reading = self.0.reading.lock().unwrap();
+        #[cfg(test)]
+        if let Some(started) = self.0.before_wait.lock().unwrap().take() {
+            let _ = started.send(wait);
+        }
+        let (reading, _) = self
+            .0
+            .finished
+            .wait_timeout_while(reading, wait, |reading| !reading.finished)
+            .unwrap();
+        reading.last.clone()
+    }
+}
+
+fn drain_stderr(mut stderr: ChildStderr, saved: &Stderr) {
+    let mut bytes = [0; MAX_STDERR_BYTES];
+    let mut line = VecDeque::with_capacity(MAX_STDERR_BYTES);
+    while let Ok(read) = stderr.read(&mut bytes) {
+        if read == 0 {
+            break;
+        }
+        remember_stderr_chunk(&mut line, &bytes[..read], saved);
+    }
+    saved.remember(&mut line);
+}
+
+fn remember_stderr_chunk(line: &mut VecDeque<u8>, bytes: &[u8], saved: &Stderr) {
+    for &byte in bytes {
+        if byte == b'\n' {
+            saved.remember(line);
+            line.clear();
+        } else {
+            if line.len() == MAX_STDERR_BYTES {
+                line.pop_front();
+            }
+            line.push_back(byte);
+        }
+    }
+    // Keep a partial line too, so a deadline still has the latest reason.
+    saved.remember(line);
 }
 
 /// Every line the child writes, each at most [`MAX_LINE`] and all of them at
@@ -176,4 +310,48 @@ fn read_lines(stdout: Option<ChildStdout>) -> Receiver<Result<String, Unread>> {
         }
     });
     received
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_timeout_leaves_time_for_a_delayed_stderr_collector() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = dir.path().join("hanging");
+        crate::isolation::test_fixture::write_executable(&cli, "#!/bin/sh\nsleep 60\n");
+        let mut child = ProbeChild::start_within(
+            cli.to_str().unwrap(),
+            &["--version"],
+            false,
+            Duration::from_millis(500),
+        )
+        .unwrap();
+
+        // Publish only when diagnostic collection starts, simulating a
+        // stderr reader still draining the child's last bytes after timeout.
+        let delayed = Stderr::default();
+        let (started, waiting) = std::sync::mpsc::channel();
+        *delayed.0.before_wait.lock().unwrap() = Some(started);
+        child.stderr = delayed.clone();
+        let collector = std::thread::spawn(move || {
+            let wait = waiting.recv().unwrap();
+            let mut line = VecDeque::from(b"late-timeout-reason".to_vec());
+            delayed.remember(&mut line);
+            delayed.finish();
+            wait
+        });
+
+        let timeout = child.next_line().unwrap_err();
+        assert_eq!(timeout.kind(), std::io::ErrorKind::TimedOut);
+        let error = child.failure(timeout);
+        let wait = collector.join().unwrap();
+        assert!(
+            !wait.is_zero(),
+            "timeout left no diagnostic collection time"
+        );
+        assert!(wait <= Duration::from_millis(50));
+        assert!(error.to_string().contains("late-timeout-reason"), "{error}");
+    }
 }

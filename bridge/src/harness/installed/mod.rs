@@ -9,8 +9,10 @@
 //!
 //! Nothing that answers a client waits on a CLI: [`Readings::reading`] answers
 //! from what it holds and asks again in the background once the answer is
-//! older than [`READING_TTL`], and a session that reports its own version
-//! ([`observe_version`]) asks again at once when it differs. Every change is
+//! older than [`READING_TTL`], sooner after a failed ask or an executable
+//! change. A periodic refresh keeps cached clients current, and a session
+//! that reports its own version ([`observe_version`]) asks again at once when
+//! it differs. Every change is
 //! counted on [`Readings::changes`], which the `models.changed` push follows.
 
 use std::collections::HashMap;
@@ -23,14 +25,21 @@ use tokio::sync::watch;
 use crate::harness::{harness_for, Harness};
 use crate::models::{AgentProvider, ModelChoice};
 
+mod executable;
 pub(crate) mod offer;
 pub(crate) mod probe;
+
+use executable::Executable;
 
 pub use offer::{ModelOffer, OfferedModel, UnavailableModel};
 pub use probe::{CliProbe, CODEX_MODEL_LIST, NO_PROBE, VERSION_FLAG};
 
 /// How long an answer stands before the next ask for it asks the CLI again.
 pub const READING_TTL: Duration = Duration::from_secs(10 * 60);
+
+/// Initial retry delay after a failed or incomplete answer, doubled after
+/// each further failure up to the TTL. Also the periodic refresh interval.
+const RETRY_BACKOFF: Duration = Duration::from_secs(15);
 
 /// How old an answer may be and still refuse a session on its own word. An
 /// older one is asked again first, so a CLI updated a minute ago is not
@@ -65,11 +74,102 @@ type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
 #[derive(Default)]
 struct Entry {
     reading: Option<Arc<CliReading>>,
+    reading_usable: bool,
+    /// When the latest attempt finished, even if its answer was not kept.
     read_at: Option<Instant>,
-    asking: bool,
+    asking: Option<u64>,
+    generation: u64,
+    retry: bool,
+    retry_delay: Duration,
+    /// The executable that gave the held reading.
+    executable: Option<Executable>,
+    /// The latest attempt's executable, so a failed replacement does not
+    /// bypass its retry delay on every catalog read or refresh.
+    attempted_executable: Option<Executable>,
+    /// A repeated session hint must not bypass a failed probe's backoff just
+    /// because the retained usable reading still has an older version.
+    observed_version: Option<Version>,
+    probe: Option<&'static dyn CliProbe>,
 }
 
-/// Every CLI's latest answer, by the binary that gave it.
+impl Entry {
+    fn record_attempt(
+        &mut self,
+        reading: Arc<CliReading>,
+        retry: bool,
+        executable: Option<Executable>,
+        now: Instant,
+        ttl: Duration,
+    ) -> bool {
+        self.retry_delay = if retry {
+            let delay = if self.retry && self.attempted_executable == executable {
+                self.retry_delay.saturating_mul(2)
+            } else {
+                RETRY_BACKOFF
+            };
+            delay.min(ttl)
+        } else {
+            Duration::ZERO
+        };
+        self.retry = retry;
+        self.read_at = Some(now);
+        self.attempted_executable = executable.clone();
+        if retry && self.reading_usable {
+            return false;
+        }
+        let changed = self.reading.as_deref() != Some(reading.as_ref());
+        self.reading = Some(reading);
+        self.reading_usable = !retry;
+        self.executable = executable;
+        changed
+    }
+}
+
+/// Dropping a scheduled job (including failed thread creation) or unwinding
+/// out of a probe must release the claim and permit a later retry.
+struct PendingAsk {
+    readings: Arc<Readings>,
+    binary: &'static str,
+    executable: Option<Executable>,
+    generation: u64,
+    completed: bool,
+}
+
+impl PendingAsk {
+    fn run(&mut self, probe: &'static dyn CliProbe) {
+        self.readings.read_and_record(
+            self.binary,
+            probe,
+            self.executable.clone(),
+            self.generation,
+            true,
+        );
+        self.completed = true;
+    }
+}
+
+impl Drop for PendingAsk {
+    fn drop(&mut self) {
+        if !self.completed {
+            let recorded = self.readings.record(
+                self.binary,
+                Arc::new(CliReading::default()),
+                true,
+                self.executable.clone(),
+                self.generation,
+                true,
+            );
+            if recorded {
+                eprintln!(
+                    "cli probe: {}: probe did not finish; will retry",
+                    self.binary
+                );
+            }
+        }
+    }
+}
+
+/// Every CLI's last usable answer, or its latest answer until one succeeds.
 pub struct Readings {
     entries: Mutex<HashMap<&'static str, Entry>>,
     ttl: Duration,
@@ -148,16 +248,23 @@ impl Readings {
         binary: &'static str,
         probe: &'static dyn CliProbe,
     ) -> (Option<Arc<CliReading>>, Option<Duration>) {
+        let executable = executable::identify(binary);
         let stale = {
             let mut entries = self.entries.lock().unwrap();
             let entry = entries.entry(binary).or_default();
+            entry.probe = Some(probe);
+            let lifetime = if entry.retry {
+                entry.retry_delay
+            } else {
+                self.ttl
+            };
             let expired = entry
                 .read_at
-                .is_none_or(|read_at| (self.now)().duration_since(read_at) >= self.ttl);
-            self.claim_ask(entry, expired)
+                .is_none_or(|read_at| (self.now)().duration_since(read_at) >= lifetime);
+            self.claim_ask(entry, expired || entry.attempted_executable != executable)
         };
-        if stale {
-            self.ask(binary, probe);
+        if let Some(generation) = stale {
+            self.ask(binary, probe, executable.clone(), generation);
         }
         let entries = self.entries.lock().unwrap();
         let Some(entry) = entries.get(binary) else {
@@ -165,6 +272,7 @@ impl Readings {
         };
         let age = entry
             .read_at
+            .filter(|_| !entry.retry && entry.executable == executable)
             .map(|read_at| (self.now)().duration_since(read_at));
         (entry.reading.clone(), age)
     }
@@ -180,24 +288,27 @@ impl Readings {
         probe: &'static dyn CliProbe,
         fresh: Duration,
     ) -> Option<Arc<CliReading>> {
-        let young = {
-            let entries = self.entries.lock().unwrap();
-            entries
-                .get(binary)
-                .and_then(|entry| entry.read_at)
-                .is_some_and(|read_at| (self.now)().duration_since(read_at) < fresh)
+        let executable = executable::identify(binary);
+        let generation = {
+            let mut entries = self.entries.lock().unwrap();
+            let entry = entries.entry(binary).or_default();
+            let young = entry
+                .read_at
+                .filter(|_| !entry.retry && entry.executable == executable)
+                .is_some_and(|read_at| (self.now)().duration_since(read_at) < fresh);
+            if young || self.schedule.is_none() {
+                return entry.reading.clone();
+            }
+            entry.generation += 1;
+            entry.generation
         };
-        if young || self.schedule.is_none() {
-            return self.held(binary);
-        }
-        #[cfg(test)]
-        let probe = self.stand_in.unwrap_or(probe);
-        self.record(binary, probe.read(binary), false);
-        self.held(binary)
+        // The spawn verdict uses this probe's own answer, even if another
+        // caller updates the cache before this call returns.
+        Some(self.read_and_record(binary, probe, executable, generation, false))
     }
 
-    /// A session of `binary` says it runs `version`: when that is not what the
-    /// reading holds, the CLI changed under it and is asked again now.
+    /// A session of `binary` says it runs `version`: a new hint differing from
+    /// the held reading asks again now; repeats honor a failed ask's backoff.
     pub fn observe_version(
         self: &Arc<Self>,
         binary: &'static str,
@@ -207,14 +318,21 @@ impl Readings {
         let differs = {
             let mut entries = self.entries.lock().unwrap();
             let entry = entries.entry(binary).or_default();
+            entry.probe = Some(probe);
+            let new_hint = entry.observed_version.as_ref() != Some(version);
+            entry.observed_version = Some(version.clone());
+            let retry_due = entry
+                .read_at
+                .is_none_or(|read_at| (self.now)().duration_since(read_at) >= entry.retry_delay);
             let held = entry
                 .reading
                 .as_ref()
                 .and_then(|reading| reading.version.as_ref());
-            self.claim_ask(entry, held != Some(version))
+            let wanted = held != Some(version) && (new_hint || !entry.retry || retry_due);
+            self.claim_ask(entry, wanted)
         };
-        if differs {
-            self.ask(binary, probe);
+        if let Some(generation) = differs {
+            self.ask(binary, probe, executable::identify(binary), generation);
         }
     }
 
@@ -224,6 +342,7 @@ impl Readings {
         self.changed.subscribe()
     }
 
+    #[cfg(test)]
     fn held(&self, binary: &'static str) -> Option<Arc<CliReading>> {
         let entries = self.entries.lock().unwrap();
         entries.get(binary).and_then(|entry| entry.reading.clone())
@@ -231,43 +350,124 @@ impl Readings {
 
     /// Whether this caller is the one to ask: the entry wants asking, no ask
     /// is already under way, and these readings ask at all.
-    fn claim_ask(&self, entry: &mut Entry, wanted: bool) -> bool {
-        let claimed = wanted && !entry.asking && self.schedule.is_some();
-        if claimed {
-            entry.asking = true;
+    fn claim_ask(&self, entry: &mut Entry, wanted: bool) -> Option<u64> {
+        if wanted && entry.asking.is_none() && self.schedule.is_some() {
+            entry.generation += 1;
+            entry.asking = Some(entry.generation);
+            return entry.asking;
         }
-        claimed
+        None
     }
 
-    fn ask(self: &Arc<Self>, binary: &'static str, probe: &'static dyn CliProbe) {
+    fn ask(
+        self: &Arc<Self>,
+        binary: &'static str,
+        probe: &'static dyn CliProbe,
+        executable: Option<Executable>,
+        generation: u64,
+    ) {
         let Some(schedule) = &self.schedule else {
             return;
         };
-        #[cfg(test)]
-        let probe = self.stand_in.unwrap_or(probe);
-        let readings = Arc::clone(self);
-        schedule(Box::new(move || {
-            let reading = probe.read(binary);
-            readings.record(binary, reading, true);
-        }));
+        let mut pending = PendingAsk {
+            readings: Arc::clone(self),
+            binary,
+            executable,
+            generation,
+            completed: false,
+        };
+        schedule(Box::new(move || pending.run(probe)));
     }
 
-    /// Keep what `binary` said. `ends_ask` for the answer to the ask
-    /// [`Self::claim_ask`] claimed; an answer read in place leaves that ask
-    /// running.
-    fn record(&self, binary: &'static str, reading: CliReading, ends_ask: bool) {
+    fn read_and_record(
+        &self,
+        binary: &'static str,
+        probe: &'static dyn CliProbe,
+        executable: Option<Executable>,
+        generation: u64,
+        ends_ask: bool,
+    ) -> Arc<CliReading> {
+        #[cfg(test)]
+        let reader = self.stand_in.unwrap_or(probe);
+        #[cfg(not(test))]
+        let reader = probe;
+        self.entries
+            .lock()
+            .unwrap()
+            .entry(binary)
+            .or_default()
+            .probe = Some(probe);
+        let reading = Arc::new(reader.read(binary));
+        let retry = probe.needs_retry(&reading);
+        self.record(
+            binary,
+            Arc::clone(&reading),
+            retry,
+            executable,
+            generation,
+            ends_ask,
+        );
+        reading
+    }
+
+    /// Revisit previously requested CLIs even when every client uses its
+    /// cached catalog. The normal claim still permits only one ask per CLI.
+    fn refresh(self: &Arc<Self>) {
+        let probes: Vec<_> = self
+            .entries
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(binary, entry)| entry.probe.map(|probe| (*binary, probe)))
+            .collect();
+        for (binary, probe) in probes {
+            self.reading(binary, probe);
+        }
+    }
+
+    fn keep_fresh(self: &Arc<Self>) {
+        let readings = Arc::downgrade(self);
+        let spawned = std::thread::Builder::new()
+            .name("cli-refresh".into())
+            .spawn(move || loop {
+                std::thread::sleep(RETRY_BACKOFF);
+                let Some(readings) = readings.upgrade() else {
+                    break;
+                };
+                readings.refresh();
+            });
+        if let Err(error) = spawned {
+            eprintln!("cli probe: cannot start the refresh thread: {error}");
+        }
+    }
+
+    /// Record the newest attempt, keeping a usable answer through failures.
+    /// An older background job still releases its own claim, but cannot
+    /// overwrite a newer spawn-gate read.
+    fn record(
+        &self,
+        binary: &'static str,
+        reading: Arc<CliReading>,
+        retry: bool,
+        executable: Option<Executable>,
+        generation: u64,
+        ends_ask: bool,
+    ) -> bool {
         let changed = {
             let mut entries = self.entries.lock().unwrap();
             let entry = entries.entry(binary).or_default();
-            let changed = entry.reading.as_deref() != Some(&reading);
-            entry.reading = Some(Arc::new(reading));
-            entry.read_at = Some((self.now)());
-            entry.asking &= !ends_ask;
-            changed
+            if ends_ask && entry.asking == Some(generation) {
+                entry.asking = None;
+            }
+            if entry.generation != generation {
+                return false;
+            }
+            entry.record_attempt(reading, retry, executable, (self.now)(), self.ttl)
         };
         if changed {
             self.changed.send_modify(|count| *count += 1);
         }
+        true
     }
 }
 
@@ -354,6 +554,8 @@ pub fn warm() {
         let harness = harness_for(provider);
         readings().reading(harness.binary(), harness.cli_probe());
     }
+    static REFRESHING: OnceLock<()> = OnceLock::new();
+    REFRESHING.get_or_init(|| readings().keep_fresh());
 }
 
 #[cfg(test)]

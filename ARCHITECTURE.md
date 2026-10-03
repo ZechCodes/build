@@ -762,15 +762,31 @@ catalog seen through what its installed CLI said, and that is what
   start.
 - Pi is not asked, and offers its catalog whole.
 
-`Readings` holds each CLI's last answer. Nothing waits on a CLI: a read answers
-from what is held and asks again on a background thread once the answer is ten
-minutes old, and a session that reports another version (the adk init line's
-`claude_code_version`, codex's `initialize` `userAgent`) asks at once. The
-binary on `PATH` is a wrapper that never changes when mise updates what is
-behind it, so no file is watched. A CLI that is missing, hangs, or answers
-unreadably offers the whole catalog, as before. Each probe runs the program by
-name with fixed arguments and no shell, from the home directory, with a 3 s
-deadline, bounded output and its process group killed afterwards, and with
+`Readings` holds each CLI's last usable answer. A failed or abandoned refresh
+keeps that answer without announcing a catalog change. Until a probe succeeds,
+the curated catalog is the fallback. Catalog reads answer from what is held
+and ask again on a background thread once a successful answer is ten minutes
+old. Failed or incomplete answers retry from 15 seconds, doubling after each
+failure up to the ten-minute TTL; success resets the backoff. Codex's version
+alone is incomplete without a usable model list. The daemon checks held
+readings every 15 seconds even when clients use their cached catalog, honoring
+each CLI's retry delay. For direct installs and symlinks, a change to the PATH
+hit's path, target or modification time bypasses the delay and starts retries
+again at 15 seconds. Underlying updates behind unchanged mise shims or wrapper
+scripts change none of those observed properties; they rely on periodic
+refresh and session version hints. A session that reports a new version
+differing from the held reading (the adk init line's `claude_code_version`,
+codex's `initialize` `userAgent`) asks at once; repeated hints honor the retry
+backoff. Dropped or panicking probe jobs release their claim. Attempts
+are ordered so an older background result or abandoned job cannot overwrite a
+newer spawn-gate reading; a spawn uses its own fresh answer. A retained answer
+after a failed refresh cannot refuse a spawn on its own word. Each probe runs
+the program by name with fixed arguments and no shell, from the home directory,
+with a 3 s deadline, bounded output and its process group killed afterwards.
+Stderr is
+drained concurrently, keeping a 4 KiB tail of the last nonempty line and
+logging at most 512 sanitized characters with a failure. Up to 50 ms of the
+same deadline is reserved for the final stderr drain. Probes run with
 `MISE_OFFLINE=1`, so a mise wrapper never starts an install that the deadline
 would cut off halfway (`probe/child.rs`; `planning/v2/Installed CLI Probe Security Checklist.md`). A
 changed answer is pushed as `models.changed` (`bridge/src/app/model_catalog.rs`).

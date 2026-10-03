@@ -372,11 +372,14 @@ select:disabled { --select-chevron-color:var(--dim); color:var(--dim); opacity:.
     [type=button], [type=submit], [type=reset], [type=range], [type=color], [type=image])) {
   height:var(--select-height);
 }
+input.mini {
+  height:var(--select-compact-height); font-size:12px; padding-block:0;
+}
 :where(textarea) { width:100%; min-height:96px; resize:vertical; }
 :where(.panel .field, .sheet) :where(input, textarea) { --input-field-bg:var(--bg); }
 :where(input, textarea)::placeholder { color:var(--dim); opacity:1; }
 :where(input:not([type=checkbox], [type=radio], [type=file], [type=hidden],
-    [type=button], [type=submit], [type=reset], [type=range], [type=color], [type=image]), textarea):hover:not(:disabled) {
+    [type=button], [type=submit], [type=reset], [type=range], [type=color], [type=image]), textarea):hover:not(:disabled, :read-only) {
   border-color:var(--line3);
 }
 :where(input:not([type=checkbox], [type=radio], [type=file], [type=hidden],
@@ -386,6 +389,10 @@ select:disabled { --select-chevron-color:var(--dim); color:var(--dim); opacity:.
 :where(input:not([type=checkbox], [type=radio], [type=file], [type=hidden],
     [type=button], [type=submit], [type=reset], [type=range], [type=color], [type=image]), textarea):disabled {
   color:var(--dim); opacity:.7; cursor:not-allowed;
+}
+:where(input:not([type=checkbox], [type=radio], [type=file], [type=hidden],
+    [type=button], [type=submit], [type=reset], [type=range], [type=color], [type=image]), textarea):read-only:not(:disabled) {
+  color:var(--ink2); cursor:default;
 }
 .task-compose-title { font-weight:550; }
 .task-compose-title::placeholder { font-weight:400; }
@@ -1436,7 +1443,6 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
 .browse-create input { flex:1 1 180px; min-width:0; }
 .field input { width:100%; }
 .locrow { display:flex; gap:8px; align-items:center; }
-.locrow input { cursor:default; }
 .projrow { display:flex; gap:12px; padding:10px 0; font-size:13px; align-items:baseline; }
 .projrow .pname { font-weight:600; min-width:120px; }
 .projrow .ppath { font-family:var(--mono); font-size:11.5px; color:var(--dim); }
@@ -1462,9 +1468,7 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
 .device-away .live-claim::after { content:"last known state"; font-size:12px; color:var(--dim); }
 
 /* ---- mobile (design brief: every surface usable from a phone) ---- */
-@media (max-width: 720px) {/* iOS Safari auto-zooms focused fields under 16px — every text entry and
-     select must be at least 16px on small screens. */
-
+@media (max-width: 720px) {
   main { padding:16px 12px 96px; }
   .board-head { flex-wrap:wrap; gap:10px; }
   .board-head h1 { font-size:20px; }

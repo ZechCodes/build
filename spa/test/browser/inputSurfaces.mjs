@@ -233,8 +233,6 @@ export async function mountInputSurface(page, basePath, name, theme) {
   await openInputDisclosures(page);
   for (const selector of surface.selectors) await page.waitForSelector(selector, { state: "attached" });
   await settled(page);
-  // Let renderer lazy imports finish before the next surface navigates away.
-  await page.waitForLoadState("networkidle");
 }
 
 export async function openInputDisclosures(page) {

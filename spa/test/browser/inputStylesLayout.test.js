@@ -140,7 +140,9 @@ it("styles text-like types and focus/disabled states while retaining native edit
         expect(await page.locator(selector).evaluate((field) => getComputedStyle(field).cursor)).toBe("default");
       }
       expect(await page.locator("#disabled").evaluate((field) => getComputedStyle(field).cursor)).toBe("not-allowed");
-      expect(await page.locator("#toggle").evaluate((field) => getComputedStyle(field).cursor)).not.toBe("default");
+      const mutedInk = await page.locator("#readonly").evaluate((field) => getComputedStyle(field).color);
+      const nativeInk = await page.locator('input[type="checkbox"], input[type="radio"], input[type="range"], input[type="file"]').evaluateAll((fields) => fields.map((field) => getComputedStyle(field).color));
+      for (const color of nativeInk) expect(color).not.toBe(mutedInk);
       await page.locator("select").hover();
       const hover = await page.locator("select").evaluate(paintOf);
       await page.locator("#field-text").hover();

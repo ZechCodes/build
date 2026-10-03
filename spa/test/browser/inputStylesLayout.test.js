@@ -115,15 +115,30 @@ for (const width of [320, 1280]) {
 
 it("styles text-like types and focus/disabled states while retaining native editing and selection", async () => {
   await withLayoutPage(async ({ page, basePath }) => {
+    // Compare settled paint, independently of the field transition clock.
+    await page.emulateMedia({ reducedMotion: "reduce" });
     const types = ["text", "search", "url", "email", "password", "tel", "number"];
-    await mountLayout(page, `<main style="padding:16px"><select><option>Main</option></select>${types.map((type) => `<input id="field-${type}" type="${type}" value="${type === "number" ? "2" : "main"}">`).join("")}<textarea id="prose">Two lines\nof prose</textarea><input id="readonly" readonly value="Saved"><input id="disabled" disabled value="Paused"><input type="checkbox"><input type="radio"><input type="range"><input type="file" hidden></main>`, { basePath });
+    await mountLayout(page, `<main style="padding:16px"><select><option>Main</option></select>${types.map((type) => `<input id="field-${type}" type="${type}" value="${type === "number" ? "2" : "main"}">`).join("")}<textarea id="prose">Two lines\nof prose</textarea><textarea id="disabled-prose" disabled>Paused prose</textarea><input id="readonly" readonly value="Saved"><input id="disabled" disabled value="Paused"><input type="checkbox"><input type="radio"><input type="range"><input type="file" hidden></main>`, { basePath });
     for (const theme of ["light", "dark"]) {
       await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, theme);
       await assertTextControls(page, "all native types");
+      const paintOf = (field) => {
+        const style = getComputedStyle(field);
+        return { border: style.borderColor, background: style.backgroundColor, shadow: style.boxShadow, outline: style.outlineStyle };
+      };
+      await page.locator("select").hover();
+      const hover = await page.locator("select").evaluate(paintOf);
+      await page.locator("#field-text").hover();
+      expect(await page.locator("#field-text").evaluate(paintOf)).toEqual(hover);
+      await page.mouse.move(0, 0);
       await page.keyboard.press("Tab");
-      await page.locator("#field-text").focus();
-      expect(await page.locator("#field-text").evaluate((field) => ({ shadow: getComputedStyle(field).boxShadow, outline: getComputedStyle(field).outlineStyle }))).toMatchObject({ outline: "none" });
-      expect(await page.locator("#field-text").evaluate((field) => getComputedStyle(field).boxShadow)).not.toBe("none");
+      await page.locator("select").focus();
+      const focus = await page.locator("select").evaluate(paintOf);
+      expect(focus.shadow).not.toBe("none");
+      for (const selector of ["#field-text", "#prose"]) {
+        await page.locator(selector).focus();
+        expect(await page.locator(selector).evaluate(paintOf)).toEqual(focus);
+      }
       expect(await page.locator("#disabled").isEnabled()).toBe(false);
       expect(await page.locator("#readonly").getAttribute("readonly")).toBe("");
     }

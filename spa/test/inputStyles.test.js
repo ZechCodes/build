@@ -19,8 +19,7 @@ function violations(file, source) {
   if (file.endsWith(".css")) {
     return [...outside.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g)]
       .filter(([, selectors, declarations]) => selectors.trim() !== ":where(button, input, select, textarea, [tabindex]):focus-visible" && selectors.split(",").some((selector) =>
-        (paint.test(declarations) && fieldSelector.test(selector) || verticalSize.test(declarations) && inputSelector.test(selector)) && !nonTextSelector.test(selector) &&
-        !selector.includes(":where(button, input") && !selector.includes(".rail-clearing")))
+        (paint.test(declarations) && fieldSelector.test(selector) || verticalSize.test(declarations) && inputSelector.test(selector)) && !nonTextSelector.test(selector)))
       .map(([, selector]) => `${file}: ${selector.trim()}`);
   }
   return [...source.matchAll(/<(?:input|textarea)\b[^>]*\bstyle\s*=\s*["']([^"']*)["']/g)]

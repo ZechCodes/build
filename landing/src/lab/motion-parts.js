@@ -2,8 +2,8 @@
 // pill answers a passing wave, an arrival and the moment Build takes over,
 // and the requests' way to their rows. Pure: each answers a part of a pose
 // (posed.js) for a moment.
-import { ATTENTION, random } from "../hero/field.js";
-import { power2InOut, rippleHit, rippleReach } from "../hero/timing.js";
+import { ATTENTION, random } from "./legacy/field.js";
+import { power2InOut, rippleHit, rippleReach } from "./legacy/timing.js";
 
 export const clamp01 = (value) => Math.min(1, Math.max(0, value));
 export const easeOutCubic = (p) => 1 - (1 - clamp01(p)) ** 3;

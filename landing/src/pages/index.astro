@@ -5,7 +5,7 @@ import "../styles/film.css";
 import "../styles/hero.css";
 import Film from "../components/Film.astro";
 import HeroField from "../components/HeroField.astro";
-import { ATTENTION } from "../hero/field.js";
+import { ATTENTION } from "../hero/notifications.js";
 import { HERO_POSTER } from "../hero/poster-anchors.js";
 
 // The document skriftapp serves at "/". Astro emits the whole thing — head,
@@ -108,7 +108,7 @@ const reviewComment = "Match the label the sidebar uses.";
       <canvas class="stage" data-stage aria-hidden="true"></canvas>
       <Film />
       <!-- Act 1: the hero. Its entrance (src/hero/) runs once per tab: the
-           notification field resolves into the laptop's Needs you, then the
+           notification wall resolves into the laptop's Needs you, then the
            copy. The laptop picture is a capture of the live stage at the
            hero's resting pose (web/capture-hero-laptop.mjs); the film hands
            over from it to the stage, and the document keeps it. -->

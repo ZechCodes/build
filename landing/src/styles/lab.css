@@ -9,7 +9,8 @@
 @import "./fonts.css";
 @import "./landing.css";
 @import "./hero.css";
-@import "./wall.css";
+@import "../lab/legacy/hero.css";
+@import "./legacy-wall.css";
 
 html[data-lab] body {
   padding-top: 0;

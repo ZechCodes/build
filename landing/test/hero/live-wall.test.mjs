@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createWall, notePose, WALL_TIMING, REQUEST_SELECT } from '../../src/lab/hero336/wall.js';
+import { createWall, notePose, WALL_TIMING, REQUEST_SELECT } from '../../src/hero/wall.js';
 
 const sizes = [[390, 603], [390, 780], [768, 960], [1280, 836], [1920, 1016], [2560, 1376]];
 for (const [width, height] of sizes) {
@@ -9,7 +9,7 @@ for (const [width, height] of sizes) {
     assert.deepEqual(wall, createWall({ width, height }), 'deterministic placement and timing');
     assert.ok(wall.slots.some(slot => slot.x < slot.width / 2), 'cards reach the left fade');
     assert.ok(wall.slots.some(slot => slot.x > width - slot.width / 2), 'cards reach the right fade');
-    for (const time of [0, 0.3, 0.7, 1.2, 1.7, 2.4, 3.1, 3.8, 4.4]) {
+    for (const time of [0, 0.3, 0.7, 1.2, 1.7, 2.4, 2.85]) {
       const inside = wall.slots.filter(slot => slot.x > width * .16 && slot.x < width * .84 && slot.y > height * .16 && slot.y < height * .84);
       const readable = inside.filter(slot => slot.turns.some(turn => notePose(turn, time).opacity > .35));
       assert.ok(readable.length / inside.length >= .62, `${time}s: interior stays at least 62% occupied`);
@@ -59,11 +59,15 @@ test('each notification slides in, holds, then fades without drifting across the
 });
 
 
-test('the longer wall turns over at least twice as quickly', () => {
-  assert.equal(WALL_TIMING.field[1], 4.8);
+test('the home wall fills three seconds, then gives the laptop a 2.325-second reveal', () => {
+  assert.deepEqual(WALL_TIMING.field, [0, 3]);
+  assert.deepEqual(WALL_TIMING.laptop, [3.4, 5.725]);
+  assert.ok(Math.abs(WALL_TIMING.laptop[1] - WALL_TIMING.laptop[0] - 2.325) < 1e-9);
+  assert.equal(WALL_TIMING.settle[1], 6.425);
+  assert.ok(REQUEST_SELECT.every((time, index) => time >= WALL_TIMING.field[1] && time < WALL_TIMING.ripple[1] && (index === 0 || time > REQUEST_SELECT[index - 1])));
   const wall = createWall({ width: 1280, height: 836 });
   const routine = wall.slots.flatMap(slot => slot.turns).filter(turn => !turn.attention);
-  const arrivals = routine.filter(turn => turn.start > 0 && turn.start < 4.4);
-  assert.ok(arrivals.length / wall.slots.length >= 2.5, 'at least 2.5 fresh arrivals per wall position');
+  const arrivals = routine.filter(turn => turn.start > 0 && turn.start < 2.85);
+  assert.ok(arrivals.length / wall.slots.length >= 1.5, 'the field replaces its cards during the three-second beat');
   assert.ok(routine.every(turn => turn.hold <= 1), 'shorter still holds keep the wall busy');
 });

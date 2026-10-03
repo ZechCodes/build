@@ -2,7 +2,6 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "astro/config";
-import { heroPreviewBuild } from "./src/lab/hero336/build.mjs";
 
 const LAB_DIR = fileURLToPath(new URL("./src/lab/", import.meta.url));
 const HERO_DIR = fileURLToPath(new URL("./src/hero/", import.meta.url));
@@ -48,7 +47,6 @@ function labOwnCopy() {
 // CSP would drop them.
 export default defineConfig({
   output: "static",
-  integrations: [heroPreviewBuild()],
   outDir: "../skriftapp/buildapp/landing/generated",
   build: {
     assetsPrefix: "/landing/generated",

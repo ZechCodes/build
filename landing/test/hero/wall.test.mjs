@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   NOTE_STATES, WALL_EASE, noteAt, noteFrames, planSlot, requestSlots, slotCycles, wallShape, wallSlots,
-} from "../../src/hero/wall.js";
+} from "../../src/lab/legacy/wall.js";
 
 const SIZES = {
   phone: { width: 390, height: 844, narrow: true, clear: 127 },

@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { fakeDocument } from "./fake-dom.mjs";
-import { ATTENTION } from "../../src/hero/field.js";
+import { ATTENTION } from "../../src/hero/notifications.js";
 import { stageFor } from "../../src/lab/stage.js";
 import { wallFlood } from "../../src/lab/wall-variant.js";
 

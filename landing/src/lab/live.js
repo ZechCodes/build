@@ -1,10 +1,11 @@
-// Variant A, the live hero's flood, on the lab's clock. flood.js moves the
+// Variant A, the former home hero's flood, on the lab's clock. flood.js moves the
 // field exactly as it does on the home page; there is no laptop here, so
 // each request flies to where its Needs you row would be (stage.rows).
 // liveEndless is its endless form: the lanes drift on and never resolve.
-import { ATTENTION } from "../hero/field.js";
-import { createFieldMotion, seek } from "../hero/flood.js";
-import { power2InOut, requestFlight, rippleReach } from "../hero/timing.js";
+import { ATTENTION } from "./legacy/field.js";
+import { createFieldMotion } from "./legacy/flood.js";
+import { seek } from "../hero/seeker.js";
+import { power2InOut, requestFlight, rippleReach } from "./legacy/timing.js";
 import { laneLoop, pillLoop } from "./loop.js";
 
 const clamp = (value) => Math.min(1, Math.max(0, value));

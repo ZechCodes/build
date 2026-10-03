@@ -5,7 +5,6 @@
 import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
@@ -18,7 +17,6 @@ const LAB_PATH = "/lab/notifications-133c027df9b5/";
 const labPage = `${landingDir}generated${LAB_PATH}index.html`;
 const PREVIEW_PATH = "/lab/wall-646fe5bc6ee6/";
 const previewPage = `${landingDir}generated${PREVIEW_PATH}index.html`;
-const baselineManifest = fileURLToPath(new URL("./fixtures/generated-main.sha256", import.meta.url));
 
 let html = "";
 let lab = "";
@@ -113,57 +111,23 @@ describe("the notifications lab", () => {
   });
 });
 
-describe("the generated preview", () => {
-  it("keeps every byte of the existing home, notifications lab, and their built assets", () => {
-    const entries = readFileSync(baselineManifest, "utf8").trim().split("\n");
-    assert.equal(entries.length, 10, "the clean main build has ten generated files");
-    for (const entry of entries) {
-      const [, expected, path] = entry.match(/^([a-f0-9]{64})  (.+)$/) ?? [];
-      assert.ok(path, `invalid baseline entry: ${entry}`);
-      const file = `${landingDir}generated/${path}`;
-      assert.ok(existsSync(file), `missing baseline file: ${path}`);
-      const actual = createHash("sha256").update(readFileSync(file)).digest("hex");
-      assert.equal(actual, expected, `baseline bytes changed: ${path}`);
-    }
+describe("the generated landing document", () => {
+  it("renders the notification wall on the first home paint", () => {
+    assert.match(html, /<div class="hero-field notification-wall" data-hero-field aria-hidden="true"/);
+    const field = html.slice(html.indexOf("data-hero-field"), html.indexOf('class="content-container act__inner"', html.indexOf("data-hero-field")));
+    assert.ok((field.match(/data-wall-first-note/g) ?? []).length >= 240, "a full wall is present before JavaScript");
+    assert.ok(field.includes('class="wall-note__text">Reading auth.ts</span>'), "cards carry actual activity");
+    assert.ok(field.includes('class="wall-note__agent">Claude Code</span>'), "cards identify agents");
   });
 
-  it("builds an unlisted, complete document with noindex and nofollow", () => {
-    const preview = readFileSync(previewPage, "utf8");
-    assert.match(preview, /^<!DOCTYPE html>/i);
-    assert.match(preview, /<html[^>]*data-field="full"/);
-    assert.ok(preview.includes('<meta name="robots" content="noindex, nofollow">'));
-    for (let act = 1; act <= 8; act += 1) {
-      assert.ok(preview.includes(`id="act-${act}"`), `the full landing story keeps act ${act}`);
-    }
-    assert.ok(preview.includes("data-hero-field"), "the wall is present before the preview script runs");
-    const firstFrame = preview.match(/data-wall-first-note/g) ?? [];
-    assert.ok(firstFrame.length >= 240, `the first paint has a full wall of cards, not an empty shell (${firstFrame.length})`);
-    assert.ok(preview.includes('class="wall-note__text">Reading auth.ts</span>'), "the static cards contain actual notification text");
-    assert.ok(preview.includes('class="wall-note__agent">Claude Code</span>'), "the static cards identify a running agent");
+  it("removes the temporary preview route, boot, and independent bundle", () => {
+    assert.ok(!existsSync(previewPage));
+    assert.ok(!existsSync(`${landingDir}generated/hero336-boot.js`));
+    assert.ok(!existsSync(`${landingDir}generated/hero336/preview.js`));
     assert.ok(!html.includes(PREVIEW_PATH));
     assert.ok(!lab.includes(PREVIEW_PATH));
   });
 
-  it("loads its preview runtime and replay boot through external same-origin scripts", () => {
-    const preview = readFileSync(previewPage, "utf8");
-    const tags = preview.match(/<script\b[^>]*>(?:[\s\S]*?<\/script>)?/g) ?? [];
-    assert.ok(tags.length > 0);
-    for (const tag of tags) {
-      const [, source] = tag.match(/\bsrc="([^"]+)"/) ?? [];
-      assert.ok(source?.startsWith("/landing/generated/"), tag);
-      assert.ok(existsSync(`${landingDir}${source.slice("/landing/".length)}`), source);
-      assert.ok(!tag.replace(/<script\b[^>]*>/, "").replace(/<\/script>$/, "").trim(), "inline script body");
-    }
-    assert.ok(!preview.includes("<style"));
-    assert.ok(preview.includes('src="/landing/generated/hero336-boot.js"'));
-    assert.ok(preview.includes('src="/landing/generated/hero336/preview.js"'));
-    assert.ok(!preview.includes("hero333"));
-    assert.ok(!preview.includes("hero-7c92e4b1a630"));
-  });
-
-});
-
-describe("the generated landing document", () => {
   it("is a complete HTML document", () => {
     assert.match(html, /^<!DOCTYPE html>/i);
     assert.ok(html.includes("<head>") && html.includes("</html>"));
@@ -247,63 +211,47 @@ describe("the generated landing document", () => {
     assert.ok(!/download/i.test(html));
   });
 
-  it("draws the hero's notification field for no one but the eye", () => {
+  it("draws the hero's notification wall for no one but the eye", () => {
     const field = html.slice(html.indexOf("data-hero-field"), html.indexOf('class="content-container act__inner"', html.indexOf("data-hero-field")));
-    assert.match(html, /<div class="hero-field" data-hero-field aria-hidden="true"/);
-    assert.equal([...field.matchAll(/data-attention="(\w+)"/g)].length, 3);
+    assert.match(html, /<div class="hero-field notification-wall" data-hero-field aria-hidden="true"/);
+    assert.ok(field.includes("data-wall-routine"));
     assert.ok(!/<(a|button|input)\b/.test(field), "nothing in the field takes focus");
     assert.ok(!/(OpenCode|Gemini|Cursor|opencode|gemini|cursor)/.test(field), "only supported harnesses");
   });
 
-  it("marks each pill with its harness from the stylesheet, one element a pill", () => {
+  it("marks first-frame cards with their supported harnesses", () => {
     const field = html.slice(html.indexOf("data-hero-field"), html.indexOf('class="content-container act__inner"', html.indexOf("data-hero-field")));
-    assert.ok(!/<svg\b|<use\b/.test(field), "no SVG per pill");
-    const pills = [...field.matchAll(/<span class="hero-pill"[^>]*>/g)].map(([tag]) => tag);
-    assert.ok(pills.length > 0);
-    for (const tag of pills) assert.match(tag, /data-harness="(claude|codex|pi)"/);
+    assert.ok(!/<svg\b|<use\b/.test(field), "no SVG per card");
+    const cards = [...field.matchAll(/<div class="wall-first-note"[^>]*>/g)].map(([tag]) => tag);
+    assert.ok(cards.length >= 240);
+    for (const tag of cards) assert.match(tag, /data-harness="(claude|codex|pi)"/);
     for (const id of ["claude", "codex", "pi"]) assert.ok(field.slice(0, field.indexOf(">")).includes(`--mark-${id}:url(data:image/svg+xml,`), id);
   });
 
-  it("jostles every routine lane and holds still the three lanes that carry a request", () => {
-    const field = html.slice(html.indexOf("data-hero-field"), html.indexOf('class="content-container act__inner"', html.indexOf("data-hero-field")));
-    const lanes = field.split('<div class="hero-lane ').slice(1);
-    assert.ok(lanes.length >= 22, `${lanes.length} lanes`);
-    for (const lane of lanes) {
-      const swaying = /^[^>]*data-sway/.test(lane);
-      assert.equal(swaying, !lane.includes("data-attention="), lane.slice(0, 120));
-      assert.match(lane, /^[^>]*--size:[\d.]+;/);
-    }
-  });
-
-  it("animates the field's motion on transform alone, so the compositor can run it", () => {
+  it("keeps the legacy lane motion out of the home stylesheet", () => {
     const css = linkedCss(html);
-    for (const name of ["hero-drift", "hero-sway"]) {
-      const start = css.indexOf(`@keyframes ${name}`);
-      assert.ok(start >= 0, name);
-      let depth = 0;
-      let end = css.indexOf("{", start);
-      do {
-        if (css[end] === "{") depth += 1;
-        if (css[end] === "}") depth -= 1;
-        end += 1;
-      } while (depth > 0);
-      // A keyframe may set its own ease; nothing but transform moves.
-      const properties = [...css.slice(start, end).matchAll(/([\w-]+)\s*:/g)].map(([, property]) => property);
-      assert.deepEqual([...new Set(properties)].filter((property) => property !== "animation-timing-function"), ["transform"], name);
-    }
+    assert.ok(css.includes(".wall-routine"), "the home stylesheet carries the new field");
+    assert.ok(!css.includes("@keyframes hero-drift"));
+    assert.ok(!css.includes("@keyframes hero-sway"));
   });
 
   it("paints the harness marks through a mask older WebKit and Chromium read too", () => {
     const css = linkedCss(html).replace(/\s+/g, "");
     const masks = [...css.matchAll(/(?<![\w-])mask-([a-z]+):([^;}]+)/g)];
     assert.ok(masks.length >= 6, `${masks.length} mask declarations`);
-    for (const [, property, value] of masks) assert.ok(css.includes(`-webkit-mask-${property}:${value}`), `-webkit-mask-${property}:${value}`);
+    for (const [, property, value] of masks) {
+      // The old WebKit compositing keyword for the standard "intersect" is
+      // "source-in"; all other mask longhands use the same value.
+      const prefixed = property === "composite" && value === "intersect" ? "source-in" : value;
+      assert.ok(css.includes(`-webkit-mask-${property}:${prefixed}`), `-webkit-mask-${property}:${prefixed}`);
+    }
   });
 
-  it("runs a phone's lanes faster, where a pill is a larger share of the width", () => {
+  it("packs narrower first-frame cards on a phone", () => {
     const css = linkedCss(html).replace(/\s+/g, "");
-    assert.match(css, /\.hero-lane\{--drift-scale:1;/);
-    assert.match(css, /@media\(width<=767px\)\{[^@]*\.hero-lane\{--drift-scale:2;/);
+    assert.ok(css.includes(".wall-first-frame"));
+    assert.match(css, /--pitch-x:176px/);
+    assert.match(css, /--card-width:164px/);
   });
 
   it("decides the entrance in the head, before the page's script", () => {

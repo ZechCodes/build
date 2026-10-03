@@ -111,7 +111,7 @@ html:not([data-mode="film"]) #act-1 {
   opacity: 0;
 }
 
-/* --- the notification field -------------------------------------------- */
+/* --- the notification wall --------------------------------------------- */
 
 .hero-field {
   display: none;
@@ -119,7 +119,6 @@ html:not([data-mode="film"]) #act-1 {
 
 [data-hero="entrance"] .hero-field,
 [data-hero="playing"] .hero-field {
-  --pill-height: clamp(34px, 2.36vw, 42px);
   display: block;
   position: absolute;
   inset: 0;
@@ -127,246 +126,6 @@ html:not([data-mode="film"]) #act-1 {
   overflow: hidden;
   pointer-events: none;
   contain: strict;
-}
-
-.hero-lane {
-  /* A phone's pills are a larger share of its width, so its lanes run
-     faster to look as fast; entrance.js reads this to take them over. */
-  --drift-scale: 1;
-  --lane-height: calc(var(--pill-height) * var(--size));
-  position: absolute;
-  left: 0;
-  right: 0;
-  height: var(--lane-height);
-  top: calc((var(--row) + 0.5) / var(--lanes) * 100% - var(--lane-height) / 2 + var(--nudge));
-}
-
-/* Depth: the lanes sit closer together than a pill is tall, so the near
-   ones cover the far ones, and a lane carrying a request covers them all. */
-.hero-lane--far {
-  z-index: 1;
-}
-
-.hero-lane--mid {
-  z-index: 2;
-}
-
-.hero-lane--near {
-  z-index: 3;
-}
-
-.hero-lane[data-request] {
-  z-index: 4;
-}
-
-.hero-lane__body {
-  position: absolute;
-  inset: 0;
-}
-
-/* Every lane is moving from the first paint; entrance.js takes the drift
-   over from wherever this has got to. The routine lanes jostle inside their
-   drift on CSS until the field goes; the lanes carrying a request hold
-   still, so each lands where it was aimed. Both are composited while they
-   run; GSAP's drift needs the hint. */
-[data-hero="entrance"] .hero-lane {
-  animation: hero-drift 6s linear both;
-}
-
-[data-hero="playing"] .hero-lane {
-  will-change: transform;
-}
-
-[data-hero="entrance"] .hero-lane[data-sway] > .hero-lane__body,
-[data-hero="playing"] .hero-lane[data-sway] > .hero-lane__body {
-  animation: hero-sway var(--sway-time) ease-in-out var(--sway-delay) infinite alternate both;
-}
-
-/* `--drift` is how far a lane would go in 6s at its speed. It keeps that
-   speed for the first 2.4s (40%), then brakes to rest at 55% of it
-   (DRIFT_REACH in hero/field.js): the ease starts at 4 times its average
-   speed, which is the lane's own, so there is no jolt. Only a hero whose
-   script never comes sees the brake, before its field fades. */
-@keyframes hero-drift {
-  40% {
-    transform: translateX(calc(var(--drift) * var(--drift-scale) * 0.4));
-    animation-timing-function: cubic-bezier(0.1, 0.4, 0.4, 1);
-  }
-
-  to {
-    transform: translateX(calc(var(--drift) * var(--drift-scale) * 0.55));
-  }
-}
-
-@keyframes hero-sway {
-  from {
-    transform: translateY(calc(var(--sway) * -1px));
-  }
-
-  to {
-    transform: translateY(calc(var(--sway) * 1px));
-  }
-}
-
-.hero-track {
-  position: absolute;
-  top: 0;
-  display: flex;
-  height: 100%;
-}
-
-.hero-track--before {
-  right: calc((1 - var(--anchor)) * 100%);
-  flex-direction: row-reverse;
-}
-
-.hero-track--after {
-  left: calc(var(--anchor) * 100%);
-}
-
-.hero-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5em;
-  flex: none;
-  height: 100%;
-  padding: 0 0.95em 0 0.8em;
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  border-radius: 999px;
-  background: #0c100f;
-  color: var(--ink-dim);
-  font-family: var(--text);
-  font-size: calc(clamp(13px, 0.9vw, 16px) * var(--size));
-  line-height: 1;
-  white-space: nowrap;
-  opacity: var(--tier-opacity, 1);
-}
-
-/* Gaps and type grow with a wide window, so the field holds about as many
-   pills at 1920 as at 1440. Type grows with its lane's size. */
-.hero-track--before .hero-pill {
-  margin-right: calc(var(--gap) * 100vw / 1440);
-}
-
-.hero-track--after .hero-pill {
-  margin-left: calc(var(--gap) * 100vw / 1440);
-}
-
-/* The harness's mark, painted through its mask (HeroField.astro sets one
-   per harness on the field). A harness joins the field with a line here. */
-.hero-pill::before {
-  content: "";
-  width: 1.1em;
-  height: 1.1em;
-  flex: none;
-  background: var(--ink-faint);
-  -webkit-mask-position: center;
-  mask-position: center;
-  -webkit-mask-size: contain;
-  mask-size: contain;
-  -webkit-mask-repeat: no-repeat;
-  mask-repeat: no-repeat;
-}
-
-.hero-pill[data-harness="claude"]::before {
-  -webkit-mask-image: var(--mark-claude);
-  mask-image: var(--mark-claude);
-}
-
-.hero-pill[data-harness="codex"]::before {
-  -webkit-mask-image: var(--mark-codex);
-  mask-image: var(--mark-codex);
-}
-
-.hero-pill[data-harness="pi"]::before {
-  -webkit-mask-image: var(--mark-pi);
-  mask-image: var(--mark-pi);
-}
-
-/* Depth: the far lanes are small and faint, the near ones sharp. */
-.hero-lane--far {
-  --tier-opacity: 0.38;
-}
-
-.hero-lane--far .hero-pill {
-  font-size: calc(clamp(12px, 0.84vw, 15px) * var(--size));
-  height: 84%;
-  margin-top: 3px;
-}
-
-.hero-lane--mid {
-  --tier-opacity: 0.6;
-}
-
-.hero-lane--near {
-  --tier-opacity: 0.85;
-}
-
-.hero-lane--near .hero-pill {
-  font-size: calc(clamp(14px, 0.97vw, 17px) * var(--size));
-  color: var(--ink);
-  border-color: rgba(255, 255, 255, 0.14);
-}
-
-/* The three requests that need a person: brighter, a restrained mint. */
-.hero-pill[data-attention] {
-  --tier-opacity: 1;
-  color: var(--ink);
-  border-color: rgba(81, 255, 180, 0.6);
-  background: #08150f;
-  font-weight: 500;
-}
-
-.hero-pill[data-attention]::before {
-  background: var(--accent);
-}
-
-/* A phone keeps fewer lanes, as close as on a desktop, and smaller type. */
-@media (max-width: 767px) {
-  [data-hero="entrance"] .hero-field,
-  [data-hero="playing"] .hero-field {
-    --pill-height: 30px;
-  }
-
-  .hero-lane:not([data-narrow]) {
-    display: none;
-  }
-
-  /* Down the whole field below the bar: the lanes overlap as they do on a
-     desktop, and settle to nothing before the copy comes in. */
-  .hero-lane {
-    --drift-scale: 2;
-    top: calc(3% + (var(--narrow-row) + 0.5) / var(--narrow-lanes) * 94% - var(--lane-height) / 2 + var(--nudge));
-  }
-
-  .hero-pill,
-  .hero-lane--far .hero-pill {
-    font-size: calc(12px * var(--size));
-  }
-
-  .hero-lane--near .hero-pill {
-    font-size: calc(13px * var(--size));
-  }
-
-  .hero-track--before {
-    right: calc((1 - var(--narrow-anchor)) * 100%);
-  }
-
-  .hero-track--after {
-    left: calc(var(--narrow-anchor) * 100%);
-  }
-
-  .hero-track--before .hero-pill {
-    margin-right: calc(var(--gap) * 0.25px);
-  }
-
-  .hero-track--after .hero-pill {
-    margin-left: calc(var(--gap) * 0.25px);
-  }
-
-  .hero-pill {
-    padding: 0 0.8em 0 0.65em;
-  }
 }
 
 /* --- before the entrance takes over -------------------------------------- */
@@ -448,4 +207,134 @@ html:not([data-mode="film"]) #act-1 {
     opacity: 1 !important;
     animation: none !important;
   }
+}
+
+/* The routine wall fills the visible hero, including a short phone. The
+   request flights sit outside its mask so their laptop destinations stay lit. */
+[data-hero] .notification-wall {
+  bottom: auto;
+  height: min(100%, calc(100svh - var(--nav-height)));
+}
+[data-mode="film"][data-hero] .notification-wall { top: var(--nav-height); }
+.wall-routine {
+  position: absolute;
+  inset: 0;
+  --wall-fade-x: linear-gradient(90deg, transparent, #000 18%, #000 82%, transparent);
+  --wall-fade-y: linear-gradient(0deg, transparent, #000 18%, #000 82%, transparent);
+  -webkit-mask-image: var(--wall-fade-x), var(--wall-fade-y);
+  mask-image: var(--wall-fade-x), var(--wall-fade-y);
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
+}
+.wall-slot { position: absolute; }
+.wall-note, .wall-request {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 7px;
+  padding: 10px 13px;
+  border: 1px solid #34453b;
+  border-radius: 11px;
+  background: linear-gradient(115deg, #1b2720, #121c16);
+  color: #c6d3ca;
+  font: 13px/1.1 var(--text);
+  overflow: hidden;
+}
+.wall-note__header { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.wall-note__agent { font-size: 10px; letter-spacing: .01em; color: #94a79b; }
+.wall-note__time { margin-left: auto; color: #6f8175; font-size: 9px; white-space: nowrap; }
+.wall-note__text { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 450; }
+.wall-note__mark {
+  width: 12px;
+  height: 12px;
+  background: #899b90;
+  flex: none;
+  -webkit-mask-image: var(--wall-mark);
+  mask-image: var(--wall-mark);
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+}
+[data-harness="claude"] { --wall-mark: var(--mark-claude); }
+[data-harness="codex"] { --wall-mark: var(--mark-codex); }
+[data-harness="pi"] { --wall-mark: var(--mark-pi); }
+.wall-slot[data-depth="quiet"] { opacity: .72; }
+.wall-slot[data-depth="normal"] { opacity: .94; }
+.wall-slot[data-depth="near"] .wall-note { color: #d4ded7; border-color: #496452; }
+.wall-request {
+  z-index: 2;
+  opacity: 0;
+  transform-origin: center;
+}
+.wall-note--mint,
+.wall-slot[data-depth] .wall-note--mint {
+  opacity: 0;
+  border: 0;
+  border-radius: 10px;
+  background: #142b20;
+  color: #c4ffdf;
+  font-size: inherit;
+  box-shadow: inset 0 0 0 1px #65d99c;
+}
+.wall-note--mint .wall-note__agent { color: #95c7ab; }
+.wall-note--mint .wall-note__time { color: #6de9a6; }
+.wall-note--mint .wall-note__mark { background: #81f4b7; }
+/* Fallback if the entrance script arrives after its window. */
+[data-hero="entrance"] #act-1 .act__copy > *,
+[data-hero="entrance"] .hero-device { animation-delay: 7.4s; }
+[data-hero="entrance"] .notification-wall { animation-delay: 7.2s; }
+@media (max-width: 767px) {
+  .wall-note { padding: 8px 10px; gap: 6px; font-size: 12px; border-radius: 9px; }
+  .wall-note--mint { padding: 8px 10px; font-size: inherit; border-radius: 9px; }
+  .wall-note__agent { font-size: 9px; }
+}
+
+/* First paint while the home module loads. The runtime swaps
+   this entire layer for live cards before starting their shared clock. */
+.wall-first-frame {
+  position: absolute;
+  inset: 0;
+  --pitch-x: clamp(224px, 11.667vw, 264px);
+  --pitch-y: clamp(78px, 4.063vw, 92px);
+  --card-width: clamp(208px, 10.833vw, 245px);
+  --card-height: clamp(62px, 3.23vw, 73px);
+}
+
+.wall-first-note {
+  position: absolute;
+  left: calc(var(--x) * var(--pitch-x) - var(--card-width) / 2);
+  top: calc(var(--y) * var(--pitch-y) - var(--card-height) / 2);
+  width: var(--card-width);
+  height: var(--card-height);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 7px;
+  padding: 10px 13px;
+  border: 1px solid #34453b;
+  border-radius: 11px;
+  background: linear-gradient(115deg, #1b2720, #121c16);
+  color: #c6d3ca;
+  font: 13px/1.1 var(--text);
+  overflow: hidden;
+}
+
+.wall-first-note[data-depth="quiet"] { opacity: .72; }
+.wall-first-note[data-depth="normal"] { opacity: .94; }
+.wall-first-note[data-depth="near"] { color: #d4ded7; border-color: #496452; }
+
+@media (max-width: 767px) {
+  .wall-first-frame {
+    --pitch-x: 176px;
+    --pitch-y: 64px;
+    --card-width: 164px;
+    --card-height: 54px;
+  }
+
+  .wall-first-note { padding: 8px 10px; gap: 6px; font-size: 12px; border-radius: 9px; }
 }

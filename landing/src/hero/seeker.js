@@ -2,7 +2,20 @@
 // moment as flood.js's seek does, but an animation that has run out and
 // holds its end is left alone until the clock goes back, so a held field
 // is not restyled pill by pill on every tick.
-import { seek } from "./flood.js";
+const SLACK = 50;
+export function seek(animation, ms, playing, duration, rate = 1) {
+  if (animation.playbackRate !== rate) animation.playbackRate = rate;
+  if (!playing || ms >= duration) {
+    animation.pause();
+    animation.currentTime = Math.min(ms, duration);
+  } else if (animation.playState !== "running") {
+    animation.currentTime = ms;
+    animation.play();
+  } else if (Math.abs(animation.currentTime - ms) > SLACK) {
+    animation.currentTime = ms;
+  }
+}
+
 
 /** `timed`: [animation, ms it runs before it holds (Infinity: never)]. */
 export function seekAll(timed) {

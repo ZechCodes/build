@@ -9,8 +9,7 @@
 
 import { restHero, startHeroEntrance } from "../hero/entrance.js";
 
-// The hero's entrance first, from wherever its field's CSS drift has got
-// to. If it cannot play, the hero simply rests.
+// Start the wall entrance before the film. If it cannot play, the hero rests.
 let hero = null;
 try {
   hero = startHeroEntrance();

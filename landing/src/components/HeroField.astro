@@ -1,50 +1,32 @@
 ---
-// The hero's notification field, drawn at build time from the seeded data
-// in hero/field.js, so it is full on the first frame and the same on every
-// load. Each lane drifts on CSS from the first paint (hero.css), and the
-// routine ones jostle inside it; hero/entrance.js takes the drift over from
-// there and leaves the jostle to the CSS. Decorative: hidden from
-// assistive technology, and it takes no pointer.
-//
-// The harness marks are the app's own (spa/src/assets/harnesses, sources in
-// SOURCES.md there), drawn in one colour: each is a mask over the pill's
-// ::before (hero.css), so a pill is one element and no SVG of its own. The
-// field carries each mark as a data URL in a custom property, so the page
-// fetches nothing for them and they are there on the first frame.
-import claudeMark from "../../../spa/src/assets/harnesses/claude.svg?raw";
-import codexMark from "../../../spa/src/assets/harnesses/codex.svg?raw";
-import piMark from "../../../spa/src/assets/harnesses/pi.svg?raw";
-import { createField } from "../hero/field.js";
-
-const MARKS: Record<string, string> = { claude: claudeMark, codex: codexMark, pi: piMark };
-
-// A mark as a CSS url(), unquoted, so it sits in a style attribute as is.
-function markUrl(id: string, svg: string) {
-  if (!/^<svg\b[^>]*viewBox="[^"]+"/.test(svg.trim())) throw new Error(`The ${id} mark is not an SVG this field can use.`);
-  const encoded = encodeURIComponent(svg.trim()).replace(/[()']/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
-  return `url(data:image/svg+xml,${encoded})`;
-}
-
-const field = createField();
-const harnesses = [...new Set(field.lanes.flatMap((lane) => [...lane.before, ...lane.after].map((pill) => pill.harness)))];
-const marks = harnesses.map((id) => `--mark-${id}:${markUrl(id, MARKS[id])}`).join(";");
-const laneStyle = (lane: (typeof field.lanes)[number]) =>
-  `--size:${lane.size};--row:${lane.index};--narrow-row:${lane.narrowRow ?? 0};--anchor:${lane.anchor};--narrow-anchor:${lane.narrowAnchor};` +
-  `--drift:${lane.drift}vw;--nudge:${lane.nudge}px;--sway:${lane.sway};--sway-time:${lane.swaySeconds}s;--sway-delay:${lane.swayDelay}s`;
+import claudeMark from '../../../spa/src/assets/harnesses/claude.svg?raw';
+import codexMark from '../../../spa/src/assets/harnesses/codex.svg?raw';
+import piMark from '../../../spa/src/assets/harnesses/pi.svg?raw';
+import { HARNESS_NAMES, ROUTINE_EVENTS, SUPPORTED_HARNESSES } from '../hero/notifications.js';
+const marks = Object.entries({ claude: claudeMark, codex: codexMark, pi: piMark }).map(([name, svg]) => `--mark-${name}:url(data:image/svg+xml,${encodeURIComponent(svg.trim()).replace(/[()']/g, character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)})`).join(';');
+// Fill the first paint while the entrance bundle loads. Its measured wall
+// replaces these decorative cards before the shared clock starts.
+const notes = Array.from({ length: 24 * 12 }, (_, index) => {
+  const row = Math.floor(index / 12);
+  const column = index % 12;
+  return {
+    x: column + .12 + (row % 2) * .48,
+    y: row + .12,
+    depth: ['quiet', 'normal', 'normal', 'near'][(row * 3 + column) % 4],
+    harness: SUPPORTED_HARNESSES[(row + column) % SUPPORTED_HARNESSES.length],
+    text: ROUTINE_EVENTS[(row * 7 + column * 13) % ROUTINE_EVENTS.length],
+  };
+});
 ---
-
-<div class="hero-field" data-hero-field aria-hidden="true" style={`--lanes:${field.lanes.length};--narrow-lanes:${field.narrowLanes};${marks}`}>
-  {field.lanes.map((lane) => (
-    <div class={`hero-lane hero-lane--${lane.tier}`} data-lane={lane.index} data-drift={lane.drift} data-narrow={lane.narrow ? "" : undefined} data-sway={lane.sway ? "" : undefined} data-request={lane.after[0]?.attention ? "" : undefined} style={laneStyle(lane)}>
-      <div class="hero-lane__body">
-        {[["before", lane.before], ["after", lane.after]].map(([side, pills]) => (
-          <div class={`hero-track hero-track--${side}`}>
-            {(pills as typeof lane.before).map((pill) => (
-              <span class="hero-pill" data-pill={pill.key} data-harness={pill.harness} data-attention={pill.attention} style={`--gap:${pill.gap}`}>{pill.text}</span>
-            ))}
-          </div>
-        ))}
-      </div>
+<div class="hero-field notification-wall" data-hero-field aria-hidden="true" style={marks}>
+  <div class="wall-routine" data-wall-routine>
+    <div class="wall-first-frame">
+      {notes.map((note) => (
+        <div class="wall-first-note" data-wall-first-note data-depth={note.depth} data-harness={note.harness} style={`--x:${note.x};--y:${note.y}`}>
+          <span class="wall-note__header"><i class="wall-note__mark"></i><span class="wall-note__agent">{HARNESS_NAMES[note.harness]}</span><span class="wall-note__time">now</span></span>
+          <span class="wall-note__text">{note.text}</span>
+        </div>
+      ))}
     </div>
-  ))}
+  </div>
 </div>

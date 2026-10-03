@@ -1,7 +1,7 @@
 // The lab's controls: small, in a corner, and big enough for a thumb. The
 // markup is the page's (lab/notifications-*.astro); this binds it to the
 // lab and shows the state it is given.
-import { phaseAt } from "../hero/timing.js";
+import { phaseAt } from "./legacy/timing.js";
 import { ENDLESS_LAST, SCRUB_STEP, scrubberAt } from "./clock.js";
 
 function part(panel, name) {

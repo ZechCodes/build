@@ -2,7 +2,7 @@
 // laptop screen and Needs you rows stand at rest, as shares of the field.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { HERO_TIMING, NARROW_TIMING } from "../../src/hero/timing.js";
+import { HERO_TIMING, NARROW_TIMING } from "../../src/lab/legacy/timing.js";
 import { stageFor } from "../../src/lab/stage.js";
 
 describe("the lab's stage", () => {

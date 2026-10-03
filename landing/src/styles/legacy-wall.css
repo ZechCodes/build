@@ -1,4 +1,4 @@
-/* The notification wall (#316, hero/wall-motion.js): pills in fixed slots
+/* The lab's notification wall (#316, lab/legacy/wall-motion.js): pills in fixed slots
    over the field, each placed by its centre and moved only by its own
    animations. Only the lab imports this until the wall moves to the home
    hero, when the home page's sheet takes it as it is. */

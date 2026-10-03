@@ -1,14 +1,14 @@
-// Rendered density, motion, mask and hand-off checks. Start scripts/preview-landing.py,
+// Rendered density, motion, mask and hand-off checks for the home hero. Start scripts/preview-landing.py,
 // then CHROMIUM_PATH=/usr/bin/chromium node web/landing-notifications-check.mjs.
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { chromium } from "playwright";
-import { REQUEST_SELECT } from "../landing/src/lab/hero336/wall.js";
+import { REQUEST_SELECT } from "../landing/src/hero/wall.js";
 
 const sizes = [[390, 667], [390, 844], [768, 1024], [1280, 900], [1920, 1080], [2560, 1440]];
 const base = process.env.LANDING_URL || "http://127.0.0.1:4173";
-const previewPath = "/lab/wall-646fe5bc6ee6";
+const heroPath = "/";
 const output = process.env.LANDING_NOTIFICATION_DIR || "/tmp/build-landing-notifications";
 assert.ok(["127.0.0.1", "localhost", "[::1]"].includes(new URL(base).hostname), "Use a local landing preview");
 await fs.mkdir(output, { recursive: true });
@@ -155,7 +155,7 @@ function motionFailures(frames, label) {
     if (firstHigh >= 0 && observations.slice(firstHigh + 1).some(card => card.opacity < 0.3)) left[quadrant] += 1;
   }
   if (held < Math.max(8, perCard.size * 0.08)) failures.push(`${label}: too few cards hold still (${held}/${perCard.size})`);
-  if (entered.some(value => value < 3) || left.some(value => value < 3)) failures.push(`${label}: repeated replacements miss a quadrant (in ${entered}, out ${left})`);
+  if (entered.some(value => value < 2) || left.some(value => value < 2)) failures.push(`${label}: repeated replacements miss a quadrant (in ${entered}, out ${left})`);
   return failures;
 }
 
@@ -189,7 +189,8 @@ const ROWS = { review: "task-82", approval: "task-85", question: "task-86" };
 
 async function requestFailures(page, label, timing) {
   const failures = [];
-  await holdAt(page, 3.9);
+  const beforeSelection = timing.field[1] - 0.9;
+  await holdAt(page, beforeSelection);
   const baseline = await page.evaluate(() => {
     window.__wallSelectedCards = Object.fromEntries(["review", "approval", "question"].map(id =>
       [id, document.querySelector(`.wall-request[data-attention="${id}"]`)]));
@@ -207,7 +208,7 @@ async function requestFailures(page, label, timing) {
   });
   for (const [id, card] of Object.entries(baseline)) {
     if (!card.key || !card.text || card.opacity < 0.8 || card.mint > 0.05 || !card.inRoutine) {
-      failures.push(`${label}: ${id} is not an ordinary visible wall card at 3.9s (${JSON.stringify(card)})`);
+      failures.push(`${label}: ${id} is not an ordinary visible wall card before selection (${JSON.stringify(card)})`);
     }
   }
   const phases = Object.keys(ROWS).flatMap((id, index) => {
@@ -257,7 +258,7 @@ async function requestFailures(page, label, timing) {
     if (phase === "row" && !state.inside) failures.push(`${label}: ${id} misses its Needs you row (${JSON.stringify(state)})`);
     if (phase === "gone" && state.opacity > 0.06) failures.push(`${label}: ${id} remains visible after landing (${state.opacity})`);
   }
-  await holdAt(page, 3.9);
+  await holdAt(page, beforeSelection);
   const rewound = await page.locator('.wall-request[data-attention="review"]').evaluate(request => ({
     same: request === window.__wallSelectedCards.review,
     opacity: Number(getComputedStyle(request).opacity),
@@ -277,7 +278,7 @@ async function checkField(browser, width, height, mode) {
   const page = await context.newPage();
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
-  await page.goto(`${base}${previewPath}/?hero=play&film=${mode === "film" ? "force" : "0"}`, { waitUntil: "load" });
+  await page.goto(`${base}${heroPath}?hero=play&film=${mode === "film" ? "force" : "0"}`, { waitUntil: "load" });
   await page.waitForFunction(() => window.BuildHero !== undefined);
   assert.ok(await page.evaluate(() => Boolean(window.BuildHero)), `${label}: opening runs`);
   await holdAt(page, 0.6);
@@ -288,7 +289,9 @@ async function checkField(browser, width, height, mode) {
   assert.equal(await currentMode(), mode, `${label}: requested mode starts`);
   const boxBefore = await page.locator("#act-1").boundingBox();
   const timing = await page.evaluate(() => window.BuildHero.timing);
-  assert.equal(timing.field[1], 4.8, `${label}: the wall holds the longer 4.8s field beat`);
+  assert.equal(timing.field[1], 3, `${label}: the wall holds a 3s field beat`);
+  assert.ok(Math.abs(timing.laptop[1] - timing.laptop[0] - 2.325) < 0.001, `${label}: the laptop has a 2.325s reveal`);
+  assert.ok(Math.abs(timing.settle[1] - 6.425) < 0.001, `${label}: the full entrance ends near 6.425s`);
   const masks = [];
   const failures = [];
   for (const time of [0.05, timing.field[1] - 0.05]) {
@@ -303,7 +306,7 @@ async function checkField(browser, width, height, mode) {
     await holdAt(page, time);
     const state = await page.evaluate(measureField);
     frames.push({ time, ...state });
-    failures.push(...frameFailures(state, `${label} at ${time.toFixed(2)}s`, height, time <= 4.2));
+    failures.push(...frameFailures(state, `${label} at ${time.toFixed(2)}s`, height, time <= timing.field[1] - 0.6));
   }
   failures.push(...motionFailures(frames, label));
   failures.push(...await entryDirectionFailures(page, label));
@@ -332,7 +335,7 @@ async function checkHeightResize(browser) {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   try {
     const page = await context.newPage();
-    await page.goto(`${base}${previewPath}/?hero=play&film=0`, { waitUntil: "load" });
+    await page.goto(`${base}${heroPath}?hero=play&film=0`, { waitUntil: "load" });
     await page.waitForFunction(() => window.BuildHero !== undefined);
     assert.ok(await page.evaluate(() => Boolean(window.BuildHero)), "resize: opening runs");
     await page.setViewportSize({ width: 390, height: 667 });

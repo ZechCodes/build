@@ -10,9 +10,9 @@
 //
 // The paths themselves are timing.js's; nothing here reads layout.
 import { pillPath, reachesField } from "./timing.js";
+import { seek } from "../../hero/seeker.js";
 
 // How far an animation may drift from the clock before it is caught up, ms.
-const SLACK = 50;
 // Points sampled along a pill's brake; the animation runs straight between
 // them.
 const STEPS = 8;
@@ -23,23 +23,6 @@ const translate = ([x, y]) => `translate(${px(x)}, ${px(y)})`;
 // A lane drifts on until the ripple has passed, then holds: every pill it
 // carries has faded or stopped by then.
 const laneShift = (lane, time, { timing, start }) => lane.speed * (Math.min(time, timing.ripple[1]) - start);
-
-// Past its end an animation is held there, paused: play() on one at its end
-// would rewind it to the start. It runs at the clock's rate, so a clock
-// slowed for tuning (the lab page) is not caught up every frame. An endless
-// one (the lab's) has an Infinity duration.
-export function seek(animation, ms, playing, duration, rate = 1) {
-  if (animation.playbackRate !== rate) animation.playbackRate = rate;
-  if (!playing || ms >= duration) {
-    animation.pause();
-    animation.currentTime = Math.min(ms, duration);
-  } else if (animation.playState !== "running") {
-    animation.currentTime = ms;
-    animation.play();
-  } else if (Math.abs(animation.currentTime - ms) > SLACK) {
-    animation.currentTime = ms;
-  }
-}
 
 function setStyle(element, [transform, opacity]) {
   element.style.transform = transform;

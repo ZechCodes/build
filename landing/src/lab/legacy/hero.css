@@ -1,0 +1,244 @@
+/* Legacy notification lanes for the notifications lab only. */
+.hero-field {
+  --pill-height: clamp(34px, 2.36vw, 42px);
+}
+
+.hero-lane {
+  /* A phone's pills are a larger share of its width, so its lanes run
+     faster to look as fast; entrance.js reads this to take them over. */
+  --drift-scale: 1;
+  --lane-height: calc(var(--pill-height) * var(--size));
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: var(--lane-height);
+  top: calc((var(--row) + 0.5) / var(--lanes) * 100% - var(--lane-height) / 2 + var(--nudge));
+}
+
+/* Depth: the lanes sit closer together than a pill is tall, so the near
+   ones cover the far ones, and a lane carrying a request covers them all. */
+.hero-lane--far {
+  z-index: 1;
+}
+
+.hero-lane--mid {
+  z-index: 2;
+}
+
+.hero-lane--near {
+  z-index: 3;
+}
+
+.hero-lane[data-request] {
+  z-index: 4;
+}
+
+.hero-lane__body {
+  position: absolute;
+  inset: 0;
+}
+
+/* Every lane is moving from the first paint; entrance.js takes the drift
+   over from wherever this has got to. The routine lanes jostle inside their
+   drift on CSS until the field goes; the lanes carrying a request hold
+   still, so each lands where it was aimed. Both are composited while they
+   run; GSAP's drift needs the hint. */
+[data-hero="entrance"] .hero-lane {
+  animation: hero-drift 6s linear both;
+}
+
+[data-hero="playing"] .hero-lane {
+  will-change: transform;
+}
+
+[data-hero="entrance"] .hero-lane[data-sway] > .hero-lane__body,
+[data-hero="playing"] .hero-lane[data-sway] > .hero-lane__body {
+  animation: hero-sway var(--sway-time) ease-in-out var(--sway-delay) infinite alternate both;
+}
+
+/* `--drift` is how far a lane would go in 6s at its speed. It keeps that
+   speed for the first 2.4s (40%), then brakes to rest at 55% of it
+   (DRIFT_REACH in lab/legacy/field.js): the ease starts at 4 times its average
+   speed, which is the lane's own, so there is no jolt. Only a hero whose
+   script never comes sees the brake, before its field fades. */
+@keyframes hero-drift {
+  40% {
+    transform: translateX(calc(var(--drift) * var(--drift-scale) * 0.4));
+    animation-timing-function: cubic-bezier(0.1, 0.4, 0.4, 1);
+  }
+
+  to {
+    transform: translateX(calc(var(--drift) * var(--drift-scale) * 0.55));
+  }
+}
+
+@keyframes hero-sway {
+  from {
+    transform: translateY(calc(var(--sway) * -1px));
+  }
+
+  to {
+    transform: translateY(calc(var(--sway) * 1px));
+  }
+}
+
+.hero-track {
+  position: absolute;
+  top: 0;
+  display: flex;
+  height: 100%;
+}
+
+.hero-track--before {
+  right: calc((1 - var(--anchor)) * 100%);
+  flex-direction: row-reverse;
+}
+
+.hero-track--after {
+  left: calc(var(--anchor) * 100%);
+}
+
+.hero-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5em;
+  flex: none;
+  height: 100%;
+  padding: 0 0.95em 0 0.8em;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 999px;
+  background: #0c100f;
+  color: var(--ink-dim);
+  font-family: var(--text);
+  font-size: calc(clamp(13px, 0.9vw, 16px) * var(--size));
+  line-height: 1;
+  white-space: nowrap;
+  opacity: var(--tier-opacity, 1);
+}
+
+/* Gaps and type grow with a wide window, so the field holds about as many
+   pills at 1920 as at 1440. Type grows with its lane's size. */
+.hero-track--before .hero-pill {
+  margin-right: calc(var(--gap) * 100vw / 1440);
+}
+
+.hero-track--after .hero-pill {
+  margin-left: calc(var(--gap) * 100vw / 1440);
+}
+
+/* The harness's mark, painted through its mask (HeroField.astro sets one
+   per harness on the field). A harness joins the field with a line here. */
+.hero-pill::before {
+  content: "";
+  width: 1.1em;
+  height: 1.1em;
+  flex: none;
+  background: var(--ink-faint);
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+}
+
+.hero-pill[data-harness="claude"]::before {
+  -webkit-mask-image: var(--mark-claude);
+  mask-image: var(--mark-claude);
+}
+
+.hero-pill[data-harness="codex"]::before {
+  -webkit-mask-image: var(--mark-codex);
+  mask-image: var(--mark-codex);
+}
+
+.hero-pill[data-harness="pi"]::before {
+  -webkit-mask-image: var(--mark-pi);
+  mask-image: var(--mark-pi);
+}
+
+/* Depth: the far lanes are small and faint, the near ones sharp. */
+.hero-lane--far {
+  --tier-opacity: 0.38;
+}
+
+.hero-lane--far .hero-pill {
+  font-size: calc(clamp(12px, 0.84vw, 15px) * var(--size));
+  height: 84%;
+  margin-top: 3px;
+}
+
+.hero-lane--mid {
+  --tier-opacity: 0.6;
+}
+
+.hero-lane--near {
+  --tier-opacity: 0.85;
+}
+
+.hero-lane--near .hero-pill {
+  font-size: calc(clamp(14px, 0.97vw, 17px) * var(--size));
+  color: var(--ink);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+/* The three requests that need a person: brighter, a restrained mint. */
+.hero-pill[data-attention] {
+  --tier-opacity: 1;
+  color: var(--ink);
+  border-color: rgba(81, 255, 180, 0.6);
+  background: #08150f;
+  font-weight: 500;
+}
+
+.hero-pill[data-attention]::before {
+  background: var(--accent);
+}
+
+/* A phone keeps fewer lanes, as close as on a desktop, and smaller type. */
+@media (max-width: 767px) {
+  [data-hero="entrance"] .hero-field,
+  [data-hero="playing"] .hero-field {
+    --pill-height: 30px;
+  }
+
+  .hero-lane:not([data-narrow]) {
+    display: none;
+  }
+
+  /* Down the whole field below the bar: the lanes overlap as they do on a
+     desktop, and settle to nothing before the copy comes in. */
+  .hero-lane {
+    --drift-scale: 2;
+    top: calc(3% + (var(--narrow-row) + 0.5) / var(--narrow-lanes) * 94% - var(--lane-height) / 2 + var(--nudge));
+  }
+
+  .hero-pill,
+  .hero-lane--far .hero-pill {
+    font-size: calc(12px * var(--size));
+  }
+
+  .hero-lane--near .hero-pill {
+    font-size: calc(13px * var(--size));
+  }
+
+  .hero-track--before {
+    right: calc((1 - var(--narrow-anchor)) * 100%);
+  }
+
+  .hero-track--after {
+    left: calc(var(--narrow-anchor) * 100%);
+  }
+
+  .hero-track--before .hero-pill {
+    margin-right: calc(var(--gap) * 0.25px);
+  }
+
+  .hero-track--after .hero-pill {
+    margin-left: calc(var(--gap) * 0.25px);
+  }
+
+  .hero-pill {
+    padding: 0 0.8em 0 0.65em;
+  }
+}

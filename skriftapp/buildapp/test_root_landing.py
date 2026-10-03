@@ -55,7 +55,9 @@ CANONICAL_REPOSITORY_URL = "https://github.com/ZechCodes/build"
 # so these checks run on a tree that has never run `npm run build`.
 GENERATED_DOCUMENT = (
     "<!doctype html><html lang=\"en\"><head><title>Build</title></head>"
-    "<body><main>Your agents. Your machine. Your call.</main>"
+    '<body><main><div class="hero-field notification-wall" data-hero-field aria-hidden="true">'
+    '<div data-wall-routine><div data-wall-first-note>Reading auth.ts</div></div>'
+    "</div>Your agents. Your machine. Your call.</main>"
     '<div class="practical">{{activity_section}}</div>'
     '<footer><a href="{{repository_url}}">GitHub</a></footer>'
     "</body></html>\n"
@@ -148,6 +150,8 @@ def test_root_serves_the_generated_document_with_only_its_two_slots_filled(built
     assert response.content == GENERATED_DOCUMENT.replace(
         "{{activity_section}}", slots["activity_section"]
     ).replace("{{repository_url}}", slots["repository_url"])
+    assert 'class="hero-field notification-wall" data-hero-field aria-hidden="true"' in response.content
+    assert "data-wall-first-note>Reading auth.ts" in response.content
     assert "{{" not in response.content
 
 

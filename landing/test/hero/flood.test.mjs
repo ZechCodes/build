@@ -3,9 +3,9 @@
 // drive it with stand-ins for the elements, as the clock would.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { createFieldMotion } from "../../src/hero/flood.js";
+import { createFieldMotion } from "../../src/lab/legacy/flood.js";
 import { element } from "./fake-animation.mjs";
-import { HERO_TIMING, rippleReach } from "../../src/hero/timing.js";
+import { HERO_TIMING, rippleReach } from "../../src/lab/legacy/timing.js";
 
 const box = { width: 1440, height: 900 };
 const origin = [900, 450];

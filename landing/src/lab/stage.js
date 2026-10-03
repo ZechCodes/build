@@ -6,7 +6,7 @@
 // laptop's screen there, [left, top, right, bottom]; `clear` the higher of
 // their tops, above which the wall's dome stays (#316). They change if the
 // hero's layout does.
-import { HERO_TIMING, NARROW_TIMING } from "../hero/timing.js";
+import { HERO_TIMING, NARROW_TIMING } from "./legacy/timing.js";
 
 export const NARROW_QUERY = "(max-width: 767px)";
 

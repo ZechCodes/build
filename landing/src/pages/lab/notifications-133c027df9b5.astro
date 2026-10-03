@@ -5,13 +5,11 @@
 // header too). The name is a random slug so it is not found by guessing;
 // the source is public, so it keeps out strangers, not the determined.
 //
-// The field is the home page's own (HeroField.astro, hero.css, hero/), so
-// what is tuned here is what ships. Variant A is the live flood; E, the
-// wall (#316), draws its own pills over the field (hero/wall.js), in the
-// shape and with the blur the last two switches choose.
-// lab.css brings the home page's sheets with it (see there).
+// This lab keeps the earlier lane field and its variants under lab/legacy.
+// Variant E draws its original wall over that field. lab.css supplies the
+// legacy lane and wall styles beside the shared landing layout.
 import "../../styles/lab.css";
-import HeroField from "../../components/HeroField.astro";
+import HeroField from "../../lab/legacy/HeroField.astro";
 import { BLURS, SHAPES, SPEEDS } from "../../lab/state.js";
 import { VARIANTS } from "../../lab/variants.js";
 

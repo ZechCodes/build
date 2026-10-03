@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { ATTENTION } from "../../src/hero/field.js";
+import { ATTENTION } from "../../src/hero/notifications.js";
 import { HERO_ROW_REGIONS, HERO_SCREEN } from "../../src/hero/anchors.js";
 import { HERO_POSTER } from "../../src/hero/poster-anchors.js";
 import { SCREEN_CUES } from "../../src/film/acts.js";

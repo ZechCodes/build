@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { element } from "../hero/fake-animation.mjs";
-import { HERO_TIMING } from "../../src/hero/timing.js";
+import { HERO_TIMING } from "../../src/lab/legacy/timing.js";
 import { liveEndless, liveFlood } from "../../src/lab/live.js";
 
 const stage = { origin: [1000, 400], rows: [[1080, 350], [1080, 370], [1080, 390]], nudge: 10, timing: HERO_TIMING };

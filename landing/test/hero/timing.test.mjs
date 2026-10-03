@@ -16,7 +16,7 @@ import {
   reachesField,
   rippleHit,
   rippleReach,
-} from "../../src/hero/timing.js";
+} from "../../src/lab/legacy/timing.js";
 
 const FINAL = { x: 68, y: 54, w: 56, yaw: -6, pitch: 4, roll: 0, opacity: 1, lidOpen: 1, faceCamera: 1 };
 
@@ -167,7 +167,7 @@ describe("the laptop's entrance", () => {
 
 describe("the laptop's ease", () => {
   it("runs 0 to 1, gathering speed and then braking, without a jump in speed", async () => {
-    const { revealEase } = await import("../../src/hero/timing.js");
+    const { revealEase } = await import("../../src/lab/legacy/timing.js");
     assert.equal(revealEase(0), 0);
     assert.equal(revealEase(1), 1);
     const speed = (p) => (revealEase(p + 1e-6) - revealEase(p - 1e-6)) / 2e-6;

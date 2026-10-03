@@ -12,7 +12,7 @@ import {
   DRIFT_REACH,
   createField,
   pillWidthVw,
-} from "../../src/hero/field.js";
+} from "../../src/lab/legacy/field.js";
 
 const pillsOf = (field) => field.lanes.flatMap((lane) => [...lane.before, ...lane.after]);
 
@@ -100,7 +100,7 @@ describe("the notification field", () => {
   });
 
   it("brings its drift to rest where hero.css does, after the entrance has taken it over", () => {
-    const css = readFileSync(new URL("../../src/styles/hero.css", import.meta.url), "utf8");
+    const css = readFileSync(new URL("../../src/lab/legacy/hero.css", import.meta.url), "utf8");
     const keyframes = css.slice(css.indexOf("@keyframes hero-drift"), css.indexOf("@keyframes hero-sway"));
     const [last] = [...keyframes.matchAll(/to\s*\{\s*transform:\s*translateX\(calc\(var\(--drift\) \* var\(--drift-scale\) \* ([\d.]+)\)\)/g)].map((match) => Number(match[1]));
     assert.equal(last, DRIFT_REACH, "the lanes come to rest at DRIFT_REACH of their drift");

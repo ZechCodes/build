@@ -1,6 +1,6 @@
 // Variant E, the wall (#316): the field as a wall of notifications sliding
-// in, showing and blurring out everywhere at once (hero/wall.js and
-// hero/wall-motion.js, the parts the home hero would take over). At the
+// in, showing and blurring out everywhere at once (legacy/wall.js and
+// legacy/wall-motion.js preserve this experiment for the lab). At the
 // end, a wave from the laptop's screen blurs the wall out for good while
 // the three requests pop up fresh where it was, turn green and fly to their
 // rows. Endless, the wall only cycles.
@@ -8,10 +8,10 @@
 // The lab has no headline or laptop, so it outlines where they stand on
 // the home page: the dome must stay above them, and the requests land in
 // the laptop's.
-import { ATTENTION } from "../hero/field.js";
-import { rippleHit, rippleReach } from "../hero/timing.js";
-import { planSlot, requestSlots, wallShape, wallSlots } from "../hero/wall.js";
-import { createWallMotion } from "../hero/wall-motion.js";
+import { ATTENTION } from "./legacy/field.js";
+import { rippleHit, rippleReach } from "./legacy/timing.js";
+import { planSlot, requestSlots, wallShape, wallSlots } from "./legacy/wall.js";
+import { createWallMotion } from "./legacy/wall-motion.js";
 import { clamp01, requestPose } from "./motion-parts.js";
 import { posedMotion } from "./posed.js";
 import { NARROW_QUERY } from "./stage.js";

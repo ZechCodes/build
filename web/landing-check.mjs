@@ -421,8 +421,8 @@ const delayModules = (page, ms) => page.route(/\/_astro\/.*\.js$/, async (route)
   await route.continue();
 });
 
-// The page's modules slow to arrive. The field is full and moving before
-// any of them (it drifts on CSS), the bar's call takes the pointer,
+// The page's modules slow to arrive. The static first-paint wall fills the
+// hero before them, the bar's call takes the pointer,
 // nothing of the film's covers the hero meanwhile, and the entrance still
 // plays once they come. A link to an act opened while the film is on its
 // way lands there once the film starts, and skips the entrance.
@@ -433,17 +433,26 @@ async function checkSlowModule(width, height, label) {
   await delayModules(slowPage, 3500);
   await slowPage.goto(`${base}/?film=${gpu ? "1" : "force"}`, { waitUntil: "commit" });
   await slowPage.waitForFunction(() => document.documentElement.dataset.mode === "film", null, { timeout: 10_000 });
-  await slowPage.waitForSelector(".hero-pill");
-  const lane = () => slowPage.evaluate(() => new DOMMatrixReadOnly(getComputedStyle(document.querySelector(".hero-lane--far")).transform).m41);
-  const first = await lane();
+  await slowPage.waitForSelector("[data-wall-first-note]");
+  const first = await slowPage.locator("[data-wall-first-note]").first().boundingBox();
   await slowPage.waitForTimeout(300);
   const pending = await slowPage.evaluate(() => ({
     stage: document.documentElement.dataset.stage,
     hero: document.documentElement.dataset.hero,
     panels: [...document.querySelectorAll("[data-panel]")].filter((panel) => getComputedStyle(panel).visibility !== "hidden").map((panel) => panel.dataset.panel),
   }));
-  // Either way: some lanes run left (#310).
-  assert.ok(Math.abs(await lane() - first) > 1, `${label}: the field moves before any script but the boot's`);
+  const fallback = await slowPage.evaluate(() => {
+    const field = document.querySelector("[data-hero-field]");
+    const bounds = field.getBoundingClientRect();
+    const cards = [...field.querySelectorAll("[data-wall-first-note]")];
+    return {
+      count: cards.length,
+      left: cards.some(card => card.getBoundingClientRect().right > bounds.left && card.getBoundingClientRect().left < bounds.left + bounds.width / 3),
+      right: cards.some(card => card.getBoundingClientRect().left < bounds.right && card.getBoundingClientRect().right > bounds.right - bounds.width / 3),
+    };
+  });
+  assert.ok(fallback.count >= 30 && fallback.left && fallback.right, `${label}: the static first-paint wall fills the hero (${JSON.stringify(fallback)})`);
+  assert.deepEqual(await slowPage.locator("[data-wall-first-note]").first().boundingBox(), first, `${label}: the first-paint wall stays still until the module arrives`);
   assert.equal(pending.stage, "pending", `${label}: the module is still on its way`);
   assert.equal(pending.hero, "entrance", `${label}: the entrance is waiting for its module`);
   assert.deepEqual(pending.panels, [], `${label}: no close-up shows before the film places it`);
@@ -494,7 +503,7 @@ const watchHeroCopy = (page) => page.addInitScript(() => {
 // headline and the call stay shown once they are, and the hero stays at
 // rest instead of playing the entrance over them. The modules are held
 // until the copy has been shown, not for a fixed time: the CSS shows it
-// about 5.6s after the first style, and a loaded machine let a timed module
+// about 8.4s after the first style, and a loaded machine let a timed module
 // in first (#310).
 async function checkLateModule(width, height, label) {
   const context = await browser.newContext({ viewport: { width, height } });
@@ -584,7 +593,7 @@ async function checkFailedHardware(width, height, label) {
 // --- the hero's entrance ---------------------------------------------------
 
 // GSAP's clock slows on a loaded software renderer; wait for the entrance
-// to say it is done, not for four seconds. Then nothing of it is left: no
+// to say it is done, not for its nominal 6.425 seconds. Then nothing of it is left: no
 // field, no attribute, no inline style on the copy, no running animation.
 async function waitForEntrance(page, label, { scrolled = false } = {}) {
   await page.waitForFunction(() => window.BuildHero === null || window.BuildHero?.done, null, { timeout: gpu ? 15_000 : 120_000 });
@@ -624,13 +633,14 @@ async function holdAt(page, time) {
   await page.waitForTimeout(150);
 }
 
-// How many pills are in the window below the bar, faint ones included.
-function visiblePills(page) {
+// How many routine cards are in the window below the bar, faint ones included.
+function visibleWallCards(page) {
   return page.evaluate(() => {
     const below = document.querySelector(".site-nav").getBoundingClientRect().bottom;
-    return [...document.querySelectorAll(".hero-pill")].filter((pill) => {
-      const box = pill.getBoundingClientRect();
-      return box.width > 0 && box.right > 0 && box.left < innerWidth && box.bottom > below && box.top < innerHeight;
+    return [...document.querySelectorAll("[data-wall-routine] .wall-note[data-note]")].filter((card) => {
+      const box = card.getBoundingClientRect();
+      return Number(getComputedStyle(card).opacity) > 0.1 && box.width > 0
+        && box.right > 0 && box.left < innerWidth && box.bottom > below && box.top < innerHeight;
     }).length;
   });
 }
@@ -653,13 +663,16 @@ async function checkLanding(page, label, id, at) {
 // first frame, the ripple, the laptop, each request landing on its row, the
 // copy, stillness. The bar's call takes the pointer throughout.
 async function checkEntrancePhases(page, label, { narrow }) {
-  // A flood (#310): the window full of notifications, layered in depth.
-  const [low, high] = narrow ? [55, 110] : [170, 280];
-  const count = await visiblePills(page);
-  assert.ok(count >= low && count <= high, `${label}: ${count} pills in the first frame`);
+  // The seeded wall is full before its shorter entrance resolves into the laptop.
   const timing = await page.evaluate(() => window.BuildHero.timing);
+  await holdAt(page, 0.05);
+  const [low, high] = narrow ? [12, 100] : [35, 260];
+  const count = await visibleWallCards(page);
+  assert.ok(count >= low && count <= high, `${label}: ${count} cards in the first frame`);
+  assert.equal(timing.field[1], 3, `${label}: the wall holds for 3 seconds`);
+  assert.ok(Math.abs(timing.laptop[1] - timing.laptop[0] - 2.325) < 0.001, `${label}: the laptop turns for 2.325 seconds`);
   const shots = [
-    ["1-field", 0.6],
+    ["1-field", timing.field[1] / 2],
     ["2-ripple", (timing.ripple[0] + timing.ripple[1]) / 2],
     ["3-laptop", timing.converge[0] - 0.05],
     ["4-landing", timing.landings[1]],

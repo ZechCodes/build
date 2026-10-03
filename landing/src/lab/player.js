@@ -1,6 +1,6 @@
 // The lab's field on a chosen variant: puts the field back as HeroField drew
 // it, measures it as the entrance does, and hands it to the variant.
-import { measureField } from "../hero/measure.js";
+import { measureField } from "./legacy/measure.js";
 import { NARROW_QUERY, stageFor } from "./stage.js";
 import { VARIANTS } from "./variants.js";
 

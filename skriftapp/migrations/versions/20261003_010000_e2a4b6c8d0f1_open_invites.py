@@ -9,6 +9,8 @@ invite rows and revokes unclaimed open links before the older app loses the
 kind distinction.
 """
 
+from datetime import datetime, timezone
+
 import sqlalchemy as sa
 from advanced_alchemy.types import GUID, DateTimeUTC
 from alembic import op
@@ -74,11 +76,12 @@ def downgrade() -> None:
     # The previous app matches invite.email directly. Revoke only unclaimed
     # open links before dropping their kind; leave redeemed and previously
     # revoked rows untouched.
-    op.execute(
+    op.get_bind().execute(
         sa.text("""UPDATE invites
-        SET revoked_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+        SET revoked_at = :now, updated_at = :now
         WHERE kind = 'open_link'
-          AND redeemed_at IS NULL AND redeemed_by IS NULL AND revoked_at IS NULL""")
+          AND redeemed_at IS NULL AND redeemed_by IS NULL AND revoked_at IS NULL"""),
+        {"now": datetime.now(timezone.utc)},
     )
     op.drop_table("user_email_preferences")
     with op.batch_alter_table("invites") as batch:

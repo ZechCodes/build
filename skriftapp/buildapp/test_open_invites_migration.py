@@ -1,6 +1,6 @@
 """Execute the additive invite-kind/consent migration against legacy SQLite rows."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -183,6 +183,9 @@ def test_downgrade_revokes_only_unclaimed_open_links_before_dropping_kind():
         )
         assert round_trip_revocations["unclaimed"] == rows["unclaimed"].revoked_at
         assert round_trip_revocations["revoked"] == previous_revocation
+        revoked_at = datetime.fromisoformat(round_trip_revocations["unclaimed"])
+        assert revoked_at.tzinfo is not None
+        assert revoked_at.utcoffset() == timedelta(0)
 
 
 def test_upgrade_rejects_a_live_legacy_blank_address_instead_of_classifying_it():

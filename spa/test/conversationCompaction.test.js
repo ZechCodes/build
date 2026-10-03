@@ -41,7 +41,7 @@ describe("the compaction rows", () => {
 
     expect(labels(custom)).toEqual(["Default", "150k", "200k", "300k", "Custom (250k)", "Off"]);
     expect(marked(custom)).toEqual(["compact:250000"]);
-    expect(compactionMenuOptions(custom)[4].description).toBe("Compact once a turn fills 250k tokens of context");
+    expect(compactionMenuOptions(custom)[4]).toEqual({ id: "compact:250000", label: "Custom (250k)", selected: true });
   });
 
   // The wire's limit is a u64; 2^53 is the first one Number.isSafeInteger

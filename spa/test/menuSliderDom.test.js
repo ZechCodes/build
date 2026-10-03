@@ -12,14 +12,13 @@ const preview = (slider, index) => {
   slider.dispatchEvent(new Event("change", { bubbles: true }));
 };
 
-function mount(agent = { max_context_tokens: null, compact_at_tokens: 200000 }) {
+function mount(agent = { max_context_tokens: null, compact_at_tokens: 200000 }, onChoose = vi.fn()) {
   const host = document.createElement("div");
   host.innerHTML = groupedMenuButtonMarkup("⋮", [
     { id: "detail", label: "Detail", options: [{ id: "detail:all", label: "All", description: "Everything", selected: true }] },
     compactionMenuGroup(agent),
   ], { title: "Conversation menu", icon: true });
   document.body.appendChild(host);
-  const onChoose = vi.fn();
   const menu = mountSplitMenu(host, { onChoose });
   return { host, onChoose, menu, caret: host.querySelector(".caret"), slider: host.querySelector('[role="slider"]') };
 }
@@ -125,7 +124,7 @@ describe("the compaction slider in a split menu", () => {
     expect(onChoose).toHaveBeenCalledExactlyOnceWith("compact:300000");
     expect(document.activeElement.dataset.action).toBe("detail:all");
     expect(host.querySelector(".splitmenu").hidden).toBe(false);
-    expect(slider.value).toBe("0");
+    expect(slider.value).toBe("3");
   });
 
   it("commits on Tab blur once and keeps focus outside the menu", async () => {
@@ -197,15 +196,62 @@ describe("the compaction slider in a split menu", () => {
     expect(document.activeElement.getAttribute("aria-valuetext")).toBe("150k");
   });
 
-  it("can commit the standing stop with Enter", () => {
+  it("does not resend the standing stop with Enter", () => {
     const { caret, slider, onChoose } = mount();
     keydown(caret, "ArrowUp");
     keydown(slider, "Enter");
-    expect(onChoose).toHaveBeenCalledExactlyOnceWith("compact:default");
+    expect(onChoose).not.toHaveBeenCalled();
+  });
+
+  it("keeps one committed stop through further previews, Escape, blur and an outside press while saving", async () => {
+    let refuse;
+    const onChoose = vi.fn(() => new Promise((_resolve, reject) => { refuse = reject; }));
+    const { caret, slider, host } = mount(undefined, onChoose);
+    keydown(caret, "ArrowUp");
+    preview(slider, 1);
+    keydown(slider, "Enter");
+    expect(slider.getAttribute("aria-valuetext")).toBe("150k");
+    preview(slider, 3);
+    keydown(slider, "Enter");
+    expect(slider.getAttribute("aria-valuetext")).toBe("150k");
+    preview(slider, 4);
+    keydown(slider, "Escape");
+    slider.blur();
+    pointer(document.body, "pointerdown");
+    expect(onChoose).toHaveBeenCalledExactlyOnceWith("compact:150000");
+    refuse(new Error("refused"));
+    await motionBeat();
+    expect(slider.getAttribute("aria-valuetext")).toBe("Default (200k)");
+    expect(host.querySelector(".splitmenu").hidden).toBe(true);
+  });
+
+  it("keeps a pending save across an unrelated menu repaint and rolls back the current thumb on refusal", async () => {
+    let refuse;
+    const onChoose = vi.fn(() => new Promise((resolve) => { refuse = () => resolve(false); }));
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const markup = (label) => groupedMenuButtonMarkup("⋮", [
+      { id: "detail", label: "Detail", options: [{ id: "detail:all", label }] },
+      compactionMenuGroup({ max_context_tokens: null, compact_at_tokens: 200000 }),
+    ]);
+    mountMenuIfChanged(host, markup("All"), { onChoose });
+    keydown(host.querySelector(".caret"), "ArrowUp");
+    preview(host.querySelector('[role="slider"]'), 1);
+    keydown(document.activeElement, "Enter");
+    mountMenuIfChanged(host, markup("All activity"), { onChoose });
+    expect(document.activeElement.getAttribute("aria-valuetext")).toBe("150k");
+    expect(host.querySelector('.menu-slider .mt').textContent).toBe("150k");
+    keydown(document.activeElement, "Enter");
+    expect(onChoose).toHaveBeenCalledExactlyOnceWith("compact:150000");
+    refuse();
+    await motionBeat();
+    expect(document.activeElement.getAttribute("aria-valuetext")).toBe("Default (200k)");
+    expect(host.querySelector('.menu-slider .mt').textContent).toBe("Default (200k)");
+    expect(host.querySelector(".caret").getAttribute("aria-expanded")).toBe("true");
   });
 
   it("restores the cached value when a preview is cancelled or a write is refused", async () => {
-    const { caret, slider, host, onChoose } = mount();
+    const { caret, slider, host, onChoose } = mount(undefined, vi.fn(async () => false));
     for (const event of ["Escape", "Enter"]) {
       caret.click();
       slider.focus();

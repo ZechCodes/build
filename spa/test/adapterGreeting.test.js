@@ -9,6 +9,7 @@ let bridgeAdapter, bridgeCapabilities, changeEventsArmed, greetBridge, resetChan
 
 const NONE = {
   changes: { subscriptions: false, kinds: [] },
+  fs: { projectSources: false },
   requests: { priority: false },
   errors: { codes: false },
   diffs: { perFile: false },
@@ -66,6 +67,7 @@ describe("the adapter a greeting selects", () => {
       // The kinds ride through as the greeting states them, so a caller can ask
       // whether this bridge carries the one it is about to subscribe to.
       changes: { subscriptions: true, kinds: ["state", "thread", "git", "files"] },
+      fs: { projectSources: false },
       requests: { priority: true },
       errors: { codes: true },
       diffs: { perFile: false },

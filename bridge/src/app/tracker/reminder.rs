@@ -100,10 +100,7 @@ impl AppState {
         agent_id: &str,
         held: &[Task],
     ) -> Result<(), String> {
-        let addressed = self.addressed_agent(&serde_json::json!({
-            "id": entity_id,
-            "agent_id": agent_id,
-        }))?;
+        let addressed = self.current_service_agent(entity_id, agent_id)?;
         let body = reminder_body(held);
         let now = crate::store::now_rfc3339();
         self.edit_agent_conversation(entity_id, agent_id, |thread, _| {

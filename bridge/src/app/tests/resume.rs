@@ -113,6 +113,121 @@ fn build_said(state: &mut AppState, run_id: &str, agent_id: &str) -> Option<Valu
         .map(|item| item["data"].clone())
 }
 
+pub(super) fn clear_conversation(state: &mut AppState, owner: &str, agent: &str) {
+    let thread_id = state
+        .agent_conversation(owner, Some(agent))
+        .unwrap()
+        .id
+        .clone();
+    let conversation_id = state
+        .entity_agents(owner)
+        .unwrap()
+        .by_id(agent)
+        .unwrap()
+        .conversation_id()
+        .to_string();
+    let cleared = state.handle(req(
+        "conversation.reset",
+        json!({
+            "project_id": state.projects.project_id_of(owner).unwrap(),
+            "entity_id": owner, "agent_id": agent, "conversation_id": conversation_id,
+            "expected_thread_id": thread_id,
+        }),
+    ));
+    assert_eq!(cleared["ok"], true, "{cleared:?}");
+}
+
+#[test]
+fn internal_wake_resumes_a_fresh_roster_after_clear() {
+    let mut standing = standing();
+    let (state, state_root, owner, agent) = standing.parts();
+    clear_conversation(state, &owner, &agent);
+    set_state(state, &owner, &agent, AgentLifecycle::Live, true);
+    let roster = state.resume_roster("before-restart");
+    roster.save(&state_root).unwrap();
+    let roster = ResumeRoster::take(&state_root).unwrap();
+    assert_eq!(
+        state.resume_recorded_agents(&roster, "after-restart"),
+        vec![agent.clone()]
+    );
+    assert!(build_said(state, &owner, &agent).is_some());
+    assert_eq!(state.delivery_queue.queued_len(), 1);
+}
+
+#[test]
+fn internal_wake_refuses_a_roster_observed_before_clear() {
+    let mut standing = standing();
+    let (state, _, owner, agent) = standing.parts();
+    set_state(state, &owner, &agent, AgentLifecycle::Live, true);
+    let roster = state.resume_roster("before-restart");
+    clear_conversation(state, &owner, &agent);
+    assert!(state
+        .resume_recorded_agents(&roster, "after-restart")
+        .is_empty());
+    let mut legacy = roster;
+    legacy.agents[0].thread_id = None;
+    assert!(
+        state
+            .resume_recorded_agents(&legacy, "after-restart")
+            .is_empty(),
+        "an unversioned roster cannot resume a cleared conversation"
+    );
+    assert!(state
+        .agent_conversation(&owner, Some(&agent))
+        .unwrap()
+        .items
+        .is_empty());
+    assert!(state.delivery_queue.queued_is_empty());
+}
+
+#[test]
+fn internal_wake_resumes_a_legacy_roster_before_any_clear() {
+    let mut standing = standing();
+    let (state, state_root, owner, agent) = standing.parts();
+    set_state(state, &owner, &agent, AgentLifecycle::Live, true);
+    let mut legacy = state.resume_roster("older-bridge");
+    legacy.agents[0].thread_id = None;
+    legacy.save(&state_root).unwrap();
+    let legacy = ResumeRoster::take(&state_root).unwrap();
+    assert_eq!(
+        state.resume_recorded_agents(&legacy, "newer-bridge"),
+        vec![agent]
+    );
+}
+
+#[test]
+fn internal_wake_records_and_resumes_an_alias_canonical_generation() {
+    let mut standing = standing();
+    let (state, _, owner, primary) = standing.parts();
+    let added = state.handle(req("agent.add", json!({"entity_id": owner})));
+    let alias = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+    state
+        .runs
+        .get_mut(&owner)
+        .unwrap()
+        .agents
+        .by_id_mut(&alias)
+        .unwrap()
+        .bind_conversation(primary.clone());
+    clear_conversation(state, &owner, &primary);
+    set_state(state, &owner, &alias, AgentLifecycle::Live, true);
+    let roster = state.resume_roster("before-restart");
+    assert_eq!(
+        roster.agents[0].thread_id.as_deref(),
+        Some(
+            state
+                .agent_conversation(&owner, Some(&primary))
+                .unwrap()
+                .id
+                .as_str()
+        )
+    );
+    assert_eq!(
+        state.resume_recorded_agents(&roster, "after-restart"),
+        vec![alias]
+    );
+}
+
 /// Shutdown: an agent that was mid-turn is written down, with what a respawn
 /// needs beside it.
 #[test]
@@ -290,6 +405,7 @@ fn a_stale_roster_line_is_skipped_and_the_rest_still_come_back() {
             entity_id: "run-that-is-gone".to_string(),
             agent_id: "agent-that-is-gone".to_string(),
             conversation_id: "agent-that-is-gone".to_string(),
+            thread_id: None,
             resume_session_id: None,
             was_working: true,
         },
@@ -468,6 +584,15 @@ fn the_live_roster_holds_ids_and_never_what_the_conversation_said() {
         match key.as_str() {
             "entity_id" => assert_eq!(value, &json!(run_id)),
             "agent_id" => assert_eq!(value, &json!(agent_id)),
+            "thread_id" => assert_eq!(
+                value,
+                &json!(
+                    state
+                        .agent_conversation(&run_id, Some(&agent_id))
+                        .unwrap()
+                        .id
+                )
+            ),
             "conversation_id" | "resume_session_id" => {
                 assert!(value.is_string() || value.is_null(), "{key}: {value}")
             }

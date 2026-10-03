@@ -29,7 +29,7 @@ impl AppState {
     /// working now.
     pub fn with_live_roster(mut self, live: LiveRoster) -> Self {
         for (entity_id, roster) in self.resumable_rosters() {
-            live.set_entity(entity_id, agents_to_resume_on(entity_id, roster));
+            live.set_entity(entity_id, agents_to_resume_on(&self, entity_id, roster));
         }
         self.live_roster = Some(live);
         self
@@ -47,7 +47,7 @@ impl AppState {
             return;
         };
         match self.entity_agents(entity_id) {
-            Ok(roster) => live.set_entity(entity_id, agents_to_resume_on(entity_id, roster)),
+            Ok(roster) => live.set_entity(entity_id, agents_to_resume_on(self, entity_id, roster)),
             Err(_) => live.forget_entity(entity_id),
         }
     }
@@ -144,7 +144,7 @@ impl AppState {
     pub(crate) fn resume_roster(&self, version: &str) -> ResumeRoster {
         let mut agents: Vec<ResumingAgent> = self
             .resumable_rosters()
-            .flat_map(|(entity_id, roster)| agents_to_resume_on(entity_id, roster))
+            .flat_map(|(entity_id, roster)| agents_to_resume_on(self, entity_id, roster))
             .collect();
         agents.sort_by(|a, b| (&a.entity_id, &a.agent_id).cmp(&(&b.entity_id, &b.agent_id)));
         ResumeRoster {
@@ -215,10 +215,17 @@ impl AppState {
         went_down_at: &str,
         version: &str,
     ) -> Result<(), String> {
-        let addressed = self.addressed_agent(&serde_json::json!({
+        let mut params = serde_json::json!({
             "id": entry.entity_id,
             "agent_id": entry.agent_id,
-        }))?;
+            "conversation_id": entry.conversation_id,
+        });
+        if let Some(thread_id) = &entry.thread_id {
+            params["thread_id"] = thread_id.as_str().into();
+        }
+        // The roster was observed before an unlocked filesystem check. Its
+        // generation is retained, never replaced with the one now at this id.
+        let addressed = self.addressed_agent(&params)?;
         let tasks_renamed = self
             .store
             .as_ref()
@@ -267,7 +274,11 @@ impl AppState {
 ///
 /// In roster order, so an unchanged entity compares equal and costs the live
 /// roster no write.
-fn agents_to_resume_on(entity_id: &str, roster: &crate::agent::AgentRoster) -> Vec<ResumingAgent> {
+fn agents_to_resume_on(
+    state: &AppState,
+    entity_id: &str,
+    roster: &crate::agent::AgentRoster,
+) -> Vec<ResumingAgent> {
     roster
         .iter()
         .filter(|agent| {
@@ -280,6 +291,10 @@ fn agents_to_resume_on(entity_id: &str, roster: &crate::agent::AgentRoster) -> V
                 .conversation_id
                 .clone()
                 .unwrap_or_else(|| agent.id.clone()),
+            thread_id: state
+                .agent_conversation(entity_id, Some(&agent.id))
+                .ok()
+                .map(|thread| thread.id.clone()),
             resume_session_id: agent.resume_session_id.clone(),
             was_working: agent.working_since.is_some(),
         })

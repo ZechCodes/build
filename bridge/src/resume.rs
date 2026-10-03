@@ -69,6 +69,10 @@ pub struct ResumingAgent {
     pub entity_id: String,
     pub agent_id: String,
     pub conversation_id: String,
+    /// The generation observed before shutdown or the boot's filesystem
+    /// checks. Legacy rosters omit this and can resume only an uncleared thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_session_id: Option<String>,
     /// Whether the agent was mid-turn rather than merely live. Both are
@@ -263,6 +267,7 @@ mod tests {
                 entity_id: "run-1".to_string(),
                 agent_id: "agent-1".to_string(),
                 conversation_id: "agent-1".to_string(),
+                thread_id: None,
                 resume_session_id: Some("sess-1".to_string()),
                 was_working: true,
             }],

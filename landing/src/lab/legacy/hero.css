@@ -1,4 +1,8 @@
 /* Legacy notification lanes for the notifications lab only. */
+.hero-field {
+  --pill-height: clamp(34px, 2.36vw, 42px);
+}
+
 .hero-lane {
   /* A phone's pills are a larger share of its width, so its lanes run
      faster to look as fast; entrance.js reads this to take them over. */

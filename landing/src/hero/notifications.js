@@ -45,4 +45,3 @@ export function random(seed) {
     return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
   };
 }
-

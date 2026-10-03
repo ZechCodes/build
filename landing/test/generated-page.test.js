@@ -88,13 +88,17 @@ describe("the notifications lab", () => {
     assert.ok(!html.includes("notifications-133c027df9b5"));
   });
 
-  it("carries the home page's own field and no inline script or style element", () => {
+  it("preserves the original lane field with no inline script or style element", () => {
     assert.ok(lab.includes("data-hero-field"));
     assert.ok(lab.includes('data-hero="playing"'));
     const scripts = lab.match(/<script[^>]*>/g) ?? [];
     assert.equal(scripts.length, 1);
     assert.match(scripts[0], /\ssrc="\/landing\/generated\/_astro\/[^"]+\.js"/);
     assert.ok(!lab.includes("<style"));
+  });
+
+  it("keeps a desktop height for the preserved lane cards", () => {
+    assert.match(linkedCss(lab), /--pill-height:\s*clamp\(34px,\s*2\.36vw,\s*42px\)/);
   });
 
   it("has every control the brief asks for", () => {

@@ -190,6 +190,19 @@ describe("createRelayHold", () => {
     expect(delivered).toEqual(["host", "host", "relay"]);
   });
 
+  it("lets a signaling lease wait until held relay candidates have been delivered", async () => {
+    const { hold, delivered, elapse } = stand();
+    hold.offer(local("host"));
+    hold.offer(local("relay"));
+    let finished = false;
+    const waited = hold.whenReleased().then(() => { finished = true; });
+    await Promise.resolve();
+    expect(finished).toBe(false);
+    elapse();
+    await waited;
+    expect(delivered).toEqual(["host", "relay"]);
+  });
+
   it("drops stale held candidates and requires new direct evidence after a reset", () => {
     const { hold, delivered, armed } = stand();
     hold.offer(local("host"));

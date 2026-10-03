@@ -105,6 +105,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
    *  watcher and the direct-pair attempt can both want one. */
   let renegotiating = false;
   let negotiationGeneration = 0;
+  let renegotiationDeadline = 0;
   /** Whether a failed path is being put right in place: the restart the
    *  failure watcher runs, and the carry check after it. Not the optional
    *  direct-pair attempt, whose path works throughout. What the ring reads to
@@ -113,10 +114,11 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   let restoring = false;
   /** A caller that cannot ask its session is taken at ICE's word, as before. */
   const carried = async () => (confirmCarried ? confirmCarried() : true);
-  // One optional restart per peer link, but monitor viability until evidence
-  // arrives: late mDNS resolution can happen after TURN won the initial race.
+  // One optional restart per peer link. Preserve LAN resolution for this ICE
+  // generation regardless of event ordering; consult it only on a steady TURN
+  // path. Gathering and nomination can precede the browser's connected event.
   let upgradeAsked = false;
-  let lateMdnsResolved = false;
+  let mdnsResolvedInGeneration = false;
   let bridgeCandidateReason = null;
   let lastNoTryReason = null;
   const observed = [];
@@ -139,6 +141,8 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
       peer.addIceCandidate(candidate).catch(() => diagnostic("candidate-failed", { direction: "remote" }));
     },
   });
+  const pendingOutboundCandidates = new Set();
+  const outboundCandidatesDelivered = () => Promise.all([...pendingOutboundCandidates]);
   const holdOutbound = createRelayHold({
     deliver: (gathered) => {
       if (torn) return;
@@ -146,10 +150,11 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
       // reads — and serialised only on the way out, because `toJSON` does not
       // carry it.
       const candidate = gathered.toJSON ? gathered.toJSON() : gathered;
-      signal("rtc.ice", { candidate }).catch((error) => {
+      const delivery = signal("rtc.ice", { candidate }).catch((error) => {
         const reason = safeCandidateReason(error?.details?.reason);
         diagnostic("candidate-failed", { direction: "local", ...(reason ? { reason } : {}) });
-      });
+      }).finally(() => pendingOutboundCandidates.delete(delivery));
+      pendingOutboundCandidates.add(delivery);
     },
   });
   const receiveCandidateDiagnostic = (push) => {
@@ -159,8 +164,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     // The bridge stops nonselected-pair checks after nomination. A newly
     // resolved LAN address therefore needs fresh ICE checks even if the old
     // browser report can never show that pair as succeeded.
-    if (detail.phase === "mdns-resolved" && detail.candidates.mdns_resolved > 0
-      && frames.connected && transportPath !== "direct") lateMdnsResolved = true;
+    if (detail.phase === "mdns-resolved" && detail.candidates.mdns_resolved > 0) mdnsResolvedInGeneration = true;
     diagnostic("candidate-diagnostics", detail);
   };
   const pushHandlers = new Map([
@@ -239,7 +243,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     // negotiation; a stale checklist must not create a concurrent offer.
     if (!mayTryDirectPair() || generation !== negotiationGeneration) return null;
     if (status.worthTrying) return status.reason;
-    if (lateMdnsResolved) return "mdns-resolved";
+    if (mdnsResolvedInGeneration) return "mdns-resolved";
     const reason = directPairNoTryReason(status.reason, bridgeCandidateReason);
     if (reason !== lastNoTryReason) diagnostic("direct-pair", { state: "none-to-try", reason });
     lastNoTryReason = reason;
@@ -268,6 +272,14 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
    *  attempt would keep a relay socket open for the life of the session, which
    *  rule 1 does not allow. */
   const directPairFinished = async () => {
+    if (!torn) {
+      holdInbound.stopHolding();
+      holdOutbound.stopHolding();
+      try {
+        await withinDeadline(Math.max(1, renegotiationDeadline - Date.now()), outboundCandidatesDelivered,
+          (cancel) => (cancelWait = cancel));
+      } catch { /* the existing restart deadline also bounds lease cleanup */ }
+    }
     renegotiating = false;
     if (torn) return;
     recovery.end();
@@ -333,25 +345,45 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
    */
   const renegotiate = async (phase) => {
     negotiationGeneration += 1;
+    renegotiationDeadline = Date.now() + openTimeoutMs;
+    let cancelActivity = () => {};
+    let negotiationActive = true;
+    const ensureNegotiationActive = () => {
+      ensureActive();
+      if (!negotiationActive) throw blockedBy("failed", "the ICE negotiation ended");
+    };
     holdInbound.reset();
     holdOutbound.reset();
     if (phase !== "direct-pair") {
       holdInbound.stopHolding();
       holdOutbound.stopHolding();
     }
-    lateMdnsResolved = false;
+    mdnsResolvedInGeneration = false;
     bridgeCandidateReason = null;
     lastNoTryReason = null;
-    await withinDeadline(openTimeoutMs, async (remaining) => {
-      await onFailed();
-      if (torn) return;
-      diagnostic("restarting", { phase });
-      const freshServers = await fetchIceServers();
-      ensureActive();
-      peer.setConfiguration?.({ iceServers: freshServers });
-      await offer(peer, signal, freshServers, { iceRestart: true }, ensureActive);
-      await usable(peer, channels, remaining(), diagnostic, (cancel) => (cancelWait = cancel), ensureActive);
-    }, (cancel) => (cancelWait = cancel));
+    try {
+      await withinDeadline(openTimeoutMs, async (remaining) => {
+        await onFailed();
+        ensureNegotiationActive();
+        diagnostic("restarting", { phase });
+        const freshServers = await fetchIceServers();
+        ensureNegotiationActive();
+        peer.setConfiguration?.({ iceServers: freshServers });
+        await offer(peer, signal, freshServers, { iceRestart: true }, ensureNegotiationActive);
+        if (phase === "direct-pair") {
+          await gatheringComplete(peer, (cancel) => (cancelActivity = cancel), ensureNegotiationActive);
+          ensureNegotiationActive();
+          await Promise.all([holdInbound.whenReleased(), holdOutbound.whenReleased()]);
+          ensureNegotiationActive();
+          await outboundCandidatesDelivered();
+          ensureNegotiationActive();
+        }
+        await usable(peer, channels, remaining(), diagnostic, (cancel) => (cancelActivity = cancel), ensureNegotiationActive);
+      }, (cancel) => (cancelWait = () => { cancelActivity(); cancel(); }));
+    } finally {
+      negotiationActive = false;
+      cancelActivity();
+    }
   };
 
   stopWatching = watchForFailure(peer, diagnostic, async () => {
@@ -429,6 +461,30 @@ async function offer(peer, signal, iceServers, options, ensureActive) {
   ensureActive();
   await peer.setRemoteDescription({ type: "answer", sdp: answer.sdp });
   ensureActive();
+}
+
+/** ICE can stay connected on the old nominated pair during a restart. New
+ *  candidates must finish gathering and signaling before its lease is closed. */
+function gatheringComplete(peer, registerCancel, ensureActive) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const settle = (answer) => {
+      if (settled) return;
+      settled = true;
+      peer.removeEventListener("icegatheringstatechange", changed);
+      peer.removeEventListener("icecandidate", candidate);
+      answer();
+    };
+    const changed = () => {
+      try { ensureActive(); } catch (error) { settle(() => reject(error)); return; }
+      if (peer.iceGatheringState === "complete") settle(resolve);
+    };
+    const candidate = (event) => { if (!event.candidate) settle(resolve); };
+    registerCancel(() => settle(() => reject(blockedBy("failed", "the peer connection closed"))));
+    peer.addEventListener("icegatheringstatechange", changed);
+    peer.addEventListener("icecandidate", candidate);
+    changed();
+  });
 }
 
 function usable(peer, channels, timeoutMs, diagnostic, registerCancel, ensureActive, failFast = false) {

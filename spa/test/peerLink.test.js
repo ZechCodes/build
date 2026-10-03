@@ -57,6 +57,7 @@ class FakePeerConnection extends FakeEventTarget {
     this.remoteDescriptions = [];
     this.remoteCandidates = [];
     this.connectionState = "new";
+    this.iceGatheringState = "complete";
     this.closed = false;
     this.autoConnect = true;
     this.localCandidateType = "host";
@@ -163,8 +164,8 @@ const pairEntries = (id, { localType, remoteType, state = "succeeded", nominated
  *  which the relay pair merely beat to nomination. */
 const asReport = (entries) => new Map(entries.map((entry) => [entry.id, entry]));
 
-async function landed({ report, path }) {
-  const stood = stand();
+async function landed({ report, path, ...options }) {
+  const stood = stand(options);
   await vi.advanceTimersByTimeAsync(0);
   const peer = stood.peer();
   peer.getStats = report;
@@ -181,8 +182,9 @@ async function landed({ report, path }) {
 /** A session that landed on TURN, over a check list the case chooses. The
  *  interesting one is the maintainer's: a direct pair that ALSO succeeded,
  *  which the relay pair merely beat to nomination. */
-const landedOnRelay = ({ alsoDirect = "succeeded" } = {}) =>
+const landedOnRelay = ({ alsoDirect = "succeeded", ...options } = {}) =>
   landed({
+    ...options,
     path: "turn",
     report: async () =>
       asReport([
@@ -790,7 +792,7 @@ describe("a session that landed on a relayed pair", () => {
     resolved.close();
   });
 
-  it("does not speculate on mDNS resolution seen before the initial connection lands", async () => {
+  it("keeps current-generation LAN resolution evidence even before the initial connection lands", async () => {
     const stood = stand();
     await vi.advanceTimersByTimeAsync(0);
     const peer = stood.peer();
@@ -802,7 +804,7 @@ describe("a session that landed on a relayed pair", () => {
     peer.emit("connectionstatechange");
     const resolved = await stood.link;
     await vi.advanceTimersByTimeAsync(60000);
-    expect(offers(stood.signalled)).toBe(1);
+    expect(offers(stood.signalled)).toBe(2);
     resolved.close();
   });
 
@@ -877,6 +879,7 @@ describe("a session that landed on a relayed pair", () => {
   it("holds relay candidates behind hosts again during an optional direct restart", async () => {
     const { peer, resolved, signalled, candidateSinks } = await landedOnRelay();
     peer.autoConnect = false;
+    peer.iceGatheringState = "gathering";
     await vi.advanceTimersByTimeAsync(20000);
     const host = { type: "host", candidate: "candidate:1 1 udp 1 10.0.0.2 5000 typ host" };
     const relay = { type: "relay", candidate: "candidate:2 1 udp 1 203.0.113.9 5000 typ relay" };
@@ -890,6 +893,115 @@ describe("a session that landed on a relayed pair", () => {
     await vi.advanceTimersByTimeAsync(1500);
     expect(signalled.filter(([method]) => method === "rtc.ice").map(([, params]) => params.candidate.type)).toEqual(["host", "relay"]);
     expect(peer.remoteCandidates).toEqual([host, relay]);
+    resolved.close();
+  });
+
+  it("keeps the signaling lease through fresh gathering, relay hold release and outbound candidate replies", async () => {
+    const order = [];
+    const finishCandidate = {};
+    const stood = stand({
+      onConnected: () => order.push("released-lease"),
+      signalImpl: async (method, params) => {
+        if (method === "rtc.offer") return { sdp: "v=0 answer" };
+        if (method !== "rtc.ice") return {};
+        const type = params.candidate.type;
+        order.push(`sent-${type}`);
+        await new Promise((resolve) => { finishCandidate[type] = resolve; });
+        order.push(`replied-${type}`);
+        return {};
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const peer = stood.peer();
+    peer.getStats = async () => asReport([
+      ...pairEntries("relayed", { localType: "relay", remoteType: "host", nominated: true }),
+      ...pairEntries("direct", { localType: "host", remoteType: "host" }),
+    ]);
+    peer.channels.get("app").open();
+    peer.channels.get("term").open();
+    peer.connectionState = "connected";
+    peer.emit("connectionstatechange");
+    const resolved = await stood.link;
+    peer.iceGatheringState = "gathering";
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(order).toEqual([]);
+    peer.gather({ type: "host", candidate: "candidate:1 1 udp 1 10.0.0.2 5000 typ host" });
+    peer.gather({ type: "relay", candidate: "candidate:2 1 udp 1 203.0.113.9 5000 typ relay" });
+    peer.iceGatheringState = "complete";
+    peer.emit("icegatheringstatechange");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(order).toEqual(["sent-host"]);
+    finishCandidate.host();
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(order).toEqual(["sent-host", "replied-host", "sent-relay"]);
+    finishCandidate.relay();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(order).toEqual(["sent-host", "replied-host", "sent-relay", "replied-relay", "released-lease"]);
+    resolved.close();
+  });
+
+  it("bounds a stalled gathering round and cancels its listeners when the optional attempt ends", async () => {
+    const released = vi.fn();
+    const stood = stand({ onConnected: released });
+    await vi.advanceTimersByTimeAsync(0);
+    const peer = stood.peer();
+    peer.getStats = async () => asReport([
+      ...pairEntries("relayed", { localType: "relay", remoteType: "host", nominated: true }),
+      ...pairEntries("direct", { localType: "host", remoteType: "host" }),
+    ]);
+    peer.channels.get("app").open();
+    peer.channels.get("term").open();
+    peer.connectionState = "connected";
+    peer.emit("connectionstatechange");
+    const resolved = await stood.link;
+    peer.iceGatheringState = "gathering";
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(released).not.toHaveBeenCalled();
+    expect(peer.listenerCount("icegatheringstatechange")).toBe(1);
+    await vi.advanceTimersByTimeAsync(15001);
+    expect(released).toHaveBeenCalledTimes(1);
+    expect(peer.listenerCount("icegatheringstatechange")).toBe(0);
+    expect(peer.closed).toBe(false);
+    resolved.close();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("rejects late fresh-server results after the optional restart timed out without closing TURN", async () => {
+    const { peer, resolved, fetchIceServers, signalled } = await landedOnRelay();
+    let finishFetch;
+    fetchIceServers.mockImplementationOnce(() => new Promise((resolve) => { finishFetch = resolve; }));
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(finishFetch).toBeTypeOf("function");
+    await vi.advanceTimersByTimeAsync(15001);
+    expect(resolved.recovery.snapshot().recovering).toBe(false);
+    finishFetch(SERVERS);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(offers(signalled)).toBe(1);
+    expect(peer.remoteDescriptions).toHaveLength(1);
+    expect(peer.closed).toBe(false);
+    expect(resolved.transportPath()).toBe("turn");
+    resolved.close();
+  });
+
+  it("rejects an offer reply arriving after its optional restart timed out without touching the live description", async () => {
+    let asked = 0;
+    let finishOffer;
+    const { peer, resolved, signalled } = await landedOnRelay({
+      signalImpl: async (method) => {
+        if (method !== "rtc.offer") return {};
+        if (++asked === 1) return { sdp: "v=0 answer" };
+        return new Promise((resolve) => { finishOffer = resolve; });
+      },
+    });
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(offers(signalled)).toBe(2);
+    await vi.advanceTimersByTimeAsync(15001);
+    expect(resolved.recovery.snapshot().recovering).toBe(false);
+    finishOffer({ sdp: "v=0 stale answer" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(peer.remoteDescriptions).toEqual([{ type: "answer", sdp: "v=0 answer" }]);
+    expect(peer.closed).toBe(false);
+    expect(resolved.transportPath()).toBe("turn");
     resolved.close();
   });
 

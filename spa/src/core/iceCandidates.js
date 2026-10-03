@@ -108,6 +108,7 @@ export function createRelayHold({
   clearTimer = (timer) => clearTimeout(timer),
 }) {
   const held = [];
+  const releaseWaiters = new Set();
   let timer = null;
   let holding = true;
   let closed = false;
@@ -115,6 +116,11 @@ export function createRelayHold({
    *  direct pair for a relay candidate to beat, so there is nothing to hold it
    *  for. */
   let sawDirect = false;
+
+  const notifyReleased = () => {
+    for (const resolve of releaseWaiters) resolve();
+    releaseWaiters.clear();
+  };
 
   /** The window is over: everything held goes now, and nothing is held again. */
   const release = () => {
@@ -125,6 +131,7 @@ export function createRelayHold({
     holding = false;
     if (closed) return;
     for (const candidate of held.splice(0)) deliver(candidate);
+    notifyReleased();
   };
 
   return {
@@ -144,6 +151,13 @@ export function createRelayHold({
       if (timer === null) timer = setTimer(release, delayMs);
     },
 
+    /** Once gathering completes, signaling can wait for the final held
+     *  candidates before releasing its rendezvous lease. */
+    whenReleased() {
+      if (!held.length) return Promise.resolve();
+      return new Promise((resolve) => releaseWaiters.add(resolve));
+    },
+
     /** Fresh ICE credentials start another nomination race. Stale held
      *  candidates belong to the previous round and must not enter this one. */
     reset() {
@@ -153,6 +167,7 @@ export function createRelayHold({
       held.length = 0;
       holding = true;
       sawDirect = false;
+      notifyReleased();
     },
 
     /** Stop holding: something has already connected, so the race this was
@@ -169,6 +184,7 @@ export function createRelayHold({
         timer = null;
       }
       holding = false;
+      notifyReleased();
     },
   };
 }

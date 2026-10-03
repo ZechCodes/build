@@ -22,15 +22,14 @@ export const adjustsMenuSlider = (event) =>
   event.target.matches(MENU_SLIDER_SELECTOR) && adjustmentKeys.has(event.key);
 
 const controls = new WeakMap();
-const sliderKey = (slider) => slider.closest("[data-group]")?.dataset.group || slider.getAttribute("aria-label");
+const indexOfAction = (options, action) => Math.max(0, options.findIndex((option) => option.id === action));
 
-function mountSlider(slider, { choose, onCommit }, held) {
+function mountSlider(slider, { choose, onCommit }) {
   const host = slider.closest(".menu-slider");
-  const options = JSON.parse(host.dataset.options);
+  let options = JSON.parse(host.dataset.options);
   const word = host.querySelector(".mt");
   const cachedAction = options[selectedIndex(options)].id;
-  const state = held?.cachedAction === cachedAction ? held
-    : { cachedAction, committedAction: cachedAction, pending: false };
+  const state = { cachedAction, committedAction: cachedAction, pending: false };
   let pointerId = null;
   const paint = () => {
     const option = options[Number(slider.value)];
@@ -40,12 +39,12 @@ function mountSlider(slider, { choose, onCommit }, held) {
   };
   const reset = () => {
     pointerId = null;
-    slider.value = String(Math.max(0, options.findIndex((option) => option.id === state.committedAction)));
+    slider.value = String(indexOfAction(options, state.committedAction));
     paint();
   };
   const rollback = () => {
     state.committedAction = state.cachedAction;
-    state.repaint();
+    reset();
   };
   const commit = async () => {
     paint();
@@ -66,9 +65,22 @@ function mountSlider(slider, { choose, onCommit }, held) {
       state.pending = false;
     }
   };
-  state.repaint = reset;
+  const update = (nextHost) => {
+    const previewAction = slider.dataset.action;
+    const nextOptions = JSON.parse(nextHost.dataset.options);
+    const nextAction = nextOptions[selectedIndex(nextOptions)].id;
+    const cacheChanged = state.cachedAction !== nextAction;
+    options = nextOptions;
+    state.cachedAction = nextAction;
+    if (cacheChanged) state.committedAction = nextAction;
+    updateSliderMarkup(host, nextHost);
+    // A repaint must not release pointer capture or cancel an active drag.
+    const action = cacheChanged && pointerId === null ? state.committedAction : previewAction;
+    slider.value = String(indexOfAction(options, action));
+    paint();
+  };
   reset();
-  controls.set(slider, { reset, commit, state });
+  controls.set(slider, { reset, commit, update });
   slider.oninput = paint;
   // Native keyboard and assistive-tech changes are previews. Only an actual
   // pointer release chooses immediately; Enter is handled by the menu.
@@ -87,16 +99,26 @@ function mountSlider(slider, { choose, onCommit }, held) {
   slider.onpointercancel = reset;
 }
 
-export function mountMenuSliders(menu, callbacks, states = new Map()) {
-  menu.querySelectorAll(MENU_SLIDER_SELECTOR).forEach((slider) => mountSlider(slider, callbacks, states.get(sliderKey(slider))));
+export function mountMenuSliders(menu, callbacks) {
+  menu.querySelectorAll(MENU_SLIDER_SELECTOR).forEach((slider) => mountSlider(slider, callbacks));
 }
 
-/** Keep a pending choice through a menu repaint with the same cached stop.
- * A genuinely changed cache value creates a fresh control state instead. */
-export function menuSliderStates(menu) {
-  return new Map([...menu.querySelectorAll(MENU_SLIDER_SELECTOR)]
-    .map((slider) => [sliderKey(slider), controls.get(slider)?.state]));
+function updateSliderMarkup(host, nextHost) {
+  host.dataset.options = nextHost.dataset.options;
+  const slider = host.querySelector('[role="slider"]');
+  const nextSlider = nextHost.querySelector('[role="slider"]');
+  for (const name of ["min", "max", "step", "value", "aria-label"]) {
+    const value = nextSlider.getAttribute(name);
+    if (slider.getAttribute(name) !== value) slider.setAttribute(name, value);
+  }
+  const stops = host.querySelector(".menu-slider-stops");
+  const count = nextHost.querySelector(".menu-slider-stops").childElementCount;
+  while (stops.childElementCount > count) stops.lastElementChild.remove();
+  while (stops.childElementCount < count) stops.appendChild(document.createElement("span"));
 }
+
+/** Refresh options and cached selection on the existing input and controller. */
+export const updateMenuSlider = (host, nextHost) => controls.get(host.querySelector('[role="slider"]'))?.update(nextHost);
 
 export const commitMenuSlider = (slider) => controls.get(slider)?.commit();
 

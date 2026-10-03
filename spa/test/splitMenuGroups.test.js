@@ -280,7 +280,9 @@ describe("mountMenuIfChanged", () => {
     const records = [];
     const observer = new MutationObserver((mutations) => records.push(...mutations));
     observer.observe(container, { attributes: true, subtree: true, childList: true });
-    const next = markupAt("agent").replace("Agent only", "Agent activity");
+    const next = markupAt("agent").replace("Agent only", "Agent activity")
+      .replace('<span class="md"></span>', '<span class="md">All events</span>')
+      .replace('aria-haspopup="menu"', 'disabled aria-haspopup="menu"');
     expect(mountMenuIfChanged(container, next, { onChoose })).toBe(close);
     await motionBeat();
     observer.disconnect();
@@ -291,6 +293,8 @@ describe("mountMenuIfChanged", () => {
     expect(records.filter((record) => ["hidden", "aria-expanded"].includes(record.attributeName))).toEqual([]);
     expect(row.getAttribute("aria-checked")).toBe("false");
     expect(row.classList.contains("on")).toBe(false);
+    expect(row.querySelector(".md").textContent).toBe("All events");
+    expect(caret.disabled).toBe(true);
     const selected = container.querySelector('[data-action="detail:agent"]');
     expect(selected.getAttribute("aria-checked")).toBe("true");
     expect(selected.querySelector(".mt").textContent).toBe("Agent activity");

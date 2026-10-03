@@ -1,0 +1,85 @@
+// Review artifact for #366. From spa/:
+// node test/browser/captureCompactionContinuity.mjs /tmp/compaction-review [drag|click|Enter]
+// Uses Chromium CDP frames and the system ffmpeg; no Playwright ffmpeg install.
+import { spawnSync } from "node:child_process";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { withLayoutPage } from "./layoutHarness.mjs";
+import { openMenuOn, settled } from "./chatMenuSeed.mjs";
+import { compactionContinuity, observeCompactionMenu } from "./compactionMenuContinuity.mjs";
+
+const output = resolve(process.argv[2] || "/tmp/compaction-review");
+const gesture = process.argv[3] || "drag";
+if (!["drag", "click", "Enter"].includes(gesture)) throw new Error("Gesture must be drag, click, or Enter");
+const name = `compaction-${gesture.toLowerCase()}-300ms`;
+const frames = await mkdtemp(join(tmpdir(), "build-compaction-frames-"));
+await mkdir(output, { recursive: true });
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("BRIDGE_")));
+
+async function record(page, act) {
+  const session = await page.context().newCDPSession(page);
+  const captures = [];
+  const writes = [];
+  session.on("Page.screencastFrame", ({ data, sessionId, metadata }) => {
+    const path = join(frames, `${String(captures.length).padStart(6, "0")}.jpg`);
+    captures.push({ path, timestamp: metadata.timestamp });
+    writes.push(writeFile(path, Buffer.from(data, "base64")));
+    writes.push(session.send("Page.screencastFrameAck", { sessionId }));
+  });
+  await session.send("Page.startScreencast", { format: "jpeg", quality: 95, everyNthFrame: 1 });
+  try {
+    await act();
+  } finally {
+    await session.send("Page.stopScreencast");
+    await Promise.all(writes);
+    await session.detach();
+  }
+  if (!captures.length) throw new Error("Chromium produced no screencast frames");
+  const list = captures.map((frame, index) => {
+    const duration = Math.max(1 / 60, (captures[index + 1]?.timestamp ?? frame.timestamp + 0.5) - frame.timestamp);
+    return `file '${frame.path}'\nduration ${duration}`;
+  }).join("\n");
+  const input = join(frames, "frames.ffconcat");
+  await writeFile(input, `${list}\nfile '${captures.at(-1).path}'\n`);
+  const result = spawnSync("nice", ["-n", "10", "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+    "-f", "concat", "-safe", "0", "-i", input, "-fps_mode", "vfr", "-c:v", "libvpx-vp9", "-pix_fmt", "yuv420p",
+    join(output, `${name}.webm`)], { env, encoding: "utf8" });
+  if (result.error || result.status !== 0) throw new Error(`ffmpeg failed: ${result.error || result.stderr}`);
+}
+
+try {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await openMenuOn(page, basePath, "desktop", { theme: "dark", bigCounts: false, settingsDelayMs: 300 });
+    await observeCompactionMenu(page);
+    await record(page, async () => {
+      await page.waitForTimeout(400);
+      const slider = page.locator('.rail-surface-menu [role="slider"]');
+      const box = await slider.boundingBox();
+      const y = box.y + box.height / 2;
+      if (gesture === "Enter") {
+        for (let stop = 0; stop < 3; stop += 1) await page.keyboard.press("ArrowRight");
+        await page.keyboard.press("Enter");
+      } else if (gesture === "click") {
+        await page.mouse.click(box.x + box.width * 0.68, y);
+      } else {
+        await page.mouse.move(box.x + 10, y);
+        await page.mouse.down();
+        await page.mouse.move(box.x + box.width * 0.68, y, { steps: 20 });
+        await page.waitForTimeout(200);
+        await page.mouse.up();
+      }
+      await page.waitForFunction(() => window.__menuSettingsAnswered.length === 1);
+      await page.waitForFunction(() => JSON.parse(document.querySelector('[data-group="compact"] .menu-slider').dataset.options)
+        .some((option) => option.id === "compact:300000" && option.selected));
+      await settled(page);
+      await page.waitForTimeout(600);
+      await page.screenshot({ path: join(output, `${name}.png`) });
+      const observation = await compactionContinuity(page, { stop: true });
+      await writeFile(join(output, `${name}.json`), `${JSON.stringify({ settingsDelayMs: 300, gesture, ...observation }, null, 2)}\n`);
+    });
+  }, { width: 1180, height: 840 });
+} finally {
+  await rm(frames, { recursive: true, force: true });
+}
+console.log(`Wrote ${join(output, name)}.{webm,png,json}`);

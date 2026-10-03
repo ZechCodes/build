@@ -12,6 +12,9 @@ Wire 3.11.0.
 
 ### Changed
 
+- Saving the conversation menu's Compact at threshold updates the open menu
+  in place. Its menu, thumb, focus and active drag survive cache repaints
+  without closing, reopening or replaying animations (#366).
 - Setting the conversation menu's Compact at slider keeps the menu open and
   focus on the slider. Its explanation line is removed; the selected value,
   stop ticks and accessible name remain. A saved stop stays visible while its

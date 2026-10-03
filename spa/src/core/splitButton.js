@@ -5,7 +5,8 @@
 
 import { hide, motionSettled, reveal } from "./motion.js";
 import { esc } from "./text.js";
-import { adjustsMenuSlider, commitMenuSlider, commitMenuSliders, menuSliderMarkup, menuSliderStates, MENU_SLIDER_SELECTOR, mountMenuSliders, resetMenuSliders } from "./menuSlider.js";
+import { adjustsMenuSlider, commitMenuSlider, commitMenuSliders, menuSliderMarkup, MENU_SLIDER_SELECTOR, mountMenuSliders, resetMenuSliders } from "./menuSlider.js";
+import { patchSplitMenu } from "./splitMenuPatch.js";
 
 const MENU_MOVE = { axis: "height" };
 
@@ -218,16 +219,21 @@ function placeMenuFromButtonBox(menu, buttonBox, { width: menuWidth, height: men
   return { left, edge: "top", top };
 }
 
-function menuSizeWhenShown(menu) {
+function measureShownMenu(menu) {
   const wasHidden = menu.hidden;
-  menu.hidden = false;
-  const rendered = menu.getBoundingClientRect();
-  const size = {
-    width: rendered.width || menu.offsetWidth,
-    height: rendered.height || menu.offsetHeight,
+  if (wasHidden) menu.hidden = false;
+  const geometry = {
+    box: menu.getBoundingClientRect(),
+    width: menu.offsetWidth,
+    height: menu.offsetHeight,
   };
-  menu.hidden = wasHidden;
-  return size;
+  if (wasHidden) menu.hidden = true;
+  return geometry;
+}
+
+function menuSizeWhenShown(menu) {
+  const { box, width, height } = measureShownMenu(menu);
+  return { width: box.width || width, height: box.height || height };
 }
 
 /** `position:fixed` is viewport-relative until an ancestor has transform,
@@ -235,16 +241,10 @@ function menuSizeWhenShown(menu) {
  * coordinates relative to the header and sending a nominally open menu past
  * the viewport. Measure where the browser actually put it and compensate. */
 function correctFixedMenuOffset(menu, wanted) {
-  const wasHidden = menu.hidden;
-  menu.hidden = false;
-  const placed = menu.getBoundingClientRect();
-  if (!placed.width || !placed.height) {
-    menu.hidden = wasHidden;
-    return;
-  }
-  const scaleX = placed.width / menu.offsetWidth || 1;
-  const scaleY = placed.height / menu.offsetHeight || 1;
-  menu.hidden = wasHidden;
+  const { box: placed, width, height } = measureShownMenu(menu);
+  if (!placed.width || !placed.height) return;
+  const scaleX = placed.width / width || 1;
+  const scaleY = placed.height / height || 1;
   menu.style.left = `${Number.parseFloat(menu.style.left) + (wanted.left - placed.left) / scaleX}px`;
   if (wanted.edge === "top") {
     menu.style.top = `${Number.parseFloat(menu.style.top) + (wanted.top - placed.top) / scaleY}px`;
@@ -253,7 +253,7 @@ function correctFixedMenuOffset(menu, wanted) {
   }
 }
 
-function liftMenuOutOfScroll(container, menu, closeMenu, region) {
+function placeLiftedMenu(container, menu, region) {
   const buttonBox = container.querySelector(SPLIT_BUTTON_SELECTOR).getBoundingClientRect();
   const bound = bottomBoundOf(region);
   // Taller than the room there is, the menu scrolls inside it (`.splitmenu`
@@ -261,6 +261,10 @@ function liftMenuOutOfScroll(container, menu, closeMenu, region) {
   menu.style.maxHeight = `${bound - 2 * VIEWPORT_GAP_PX}px`;
   const wanted = placeMenuFromButtonBox(menu, buttonBox, menuSizeWhenShown(menu), bound);
   correctFixedMenuOffset(menu, wanted);
+}
+
+function liftMenuOutOfScroll(container, menu, closeMenu, region) {
+  placeLiftedMenu(container, menu, region);
   // A scroll inside the menu itself is the reader reading it, not the page
   // moving out from under the menu.
   const onViewportMoved = (event) => {
@@ -420,7 +424,7 @@ function menuKeyboard({ caret, menu, isOpen, openMenu, closeMenu, choose }) {
  *  button whose press is NOT a single-flight action with a busy label: it is a
  *  submit that restores its own button, and re-rendering it under the poll is
  *  the composer's business. What both share is the menu. */
-export function mountSplitMenu(container, { onChoose, onOpenChange = null, keepWithin = null, sliderStates }) {
+export function mountSplitMenu(container, { onChoose, onOpenChange = null, keepWithin = null }) {
   const caret = container.querySelector(CARET_SELECTOR);
   const menu = container.querySelector(SPLIT_MENU_SELECTOR);
 
@@ -455,13 +459,17 @@ export function mountSplitMenu(container, { onChoose, onOpenChange = null, keepW
     if (settleLiftedMenu || !scrollingAncestorOf(menu)) return;
     settleLiftedMenu = liftMenuOutOfScroll(container, menu, closeMenu, keepWithin ? keepWithin() : null);
   };
+  const refreshPlacement = () => {
+    if (menuIsOpen && settleLiftedMenu && !menu.hidden) placeLiftedMenu(container, menu, keepWithin ? keepWithin() : null);
+  };
   const openMenu = (announce = true) => {
     if (!menu || menuIsOpen) return;
     menuIsOpen = true;
     sayExpanded();
     if (announce) onOpenChange?.(true);
     liftIfScrolling();
-    reveal(menu, MENU_MOVE);
+    // A cache repaint during reveal changes the final, unanimated height.
+    reveal(menu, MENU_MOVE).then(refreshPlacement);
     if (stopWatchingOutsidePress) return;
     const onOutsidePress = (event) => {
       if (container.querySelector(SPLIT_BUTTON_SELECTOR)?.contains(event.target)) return;
@@ -488,6 +496,11 @@ export function mountSplitMenu(container, { onChoose, onOpenChange = null, keepW
     caret.focus({ preventScroll: true });
     onChoose(optionId);
   };
+  const refreshMenu = () => {
+    mountMenuSliders(menu, { choose, onCommit: onChoose });
+    // Growth must stay inside the same bounds without replaying the reveal.
+    refreshPlacement();
+  };
 
   if (caret && menu) {
     const keys = menuKeyboard({ caret, menu, isOpen: () => menuIsOpen, openMenu, closeMenu, choose });
@@ -502,49 +515,36 @@ export function mountSplitMenu(container, { onChoose, onOpenChange = null, keepW
     watchFocusLeaving(container, (event) => {
       if (menuIsOpen && !container.contains(event.relatedTarget)) closeMenu();
     });
-    menu.querySelectorAll(MENU_ITEM_SELECTOR).forEach((mi) => (mi.onclick = () => choose(mi)));
-    mountMenuSliders(menu, { choose, onCommit: onChoose }, sliderStates);
+    // Cache updates can add rows while this same menu stays mounted.
+    menu.onclick = (event) => {
+      const row = event.target.closest(MENU_ITEM_SELECTOR);
+      if (row && menu.contains(row)) choose(row);
+    };
+    refreshMenu();
   }
-  return { closeMenu, openMenu };
+  return { closeMenu, openMenu, isOpen: () => menuIsOpen, refreshMenu };
 }
 
 const menuMountedInContainer = new WeakMap();
 
-/** A blur save can update the cached slider while focus is on another menu
- * row. Keep that destination and the open menu through its cache repaint. */
-function focusedSliderMenu(container) {
-  const menu = container.querySelector(`${SPLIT_MENU_SELECTOR}:not([hidden])`);
-  const row = document.activeElement;
-  if (!menu?.contains(row) || !menu.querySelector(MENU_SLIDER_SELECTOR)) return null;
-  return { action: row.dataset.action, slider: row.matches(MENU_SLIDER_SELECTOR), sliderStates: menuSliderStates(menu) };
-}
-
-function restoreSliderMenuFocus(container, state, openMenu) {
-  const menu = container.querySelector(SPLIT_MENU_SELECTOR);
-  const row = state.slider ? menu.querySelector(MENU_SLIDER_SELECTOR)
-    : [...menu.querySelectorAll(MENU_ITEM_SELECTOR)].find((each) => each.dataset.action === state.action);
-  if (!row) return;
-  openMenu();
-  menu.hidden = false;
-  row.focus({ preventScroll: true });
-  scrollRowIntoMenu(menu, row);
-  motionSettled().then(() => { if (!menu.hidden) scrollRowIntoMenu(menu, row); });
-}
-
 export function mountMenuIfChanged(container, markup, { onChoose, keepWithin = null }) {
   const mounted = menuMountedInContainer.get(container);
   if (mounted && mounted.markup === markup) return mounted.closeMenu;
-  const focus = focusedSliderMenu(container);
+  if (mounted?.isOpen()) {
+    patchSplitMenu(container, mounted.markup, markup);
+    mounted.refreshMenu();
+    mounted.markup = markup;
+    return mounted.closeMenu;
+  }
   if (mounted) mounted.closeMenu();
   // A remount under the reader's focus — the mark moved after a choice made
   // from the keyboard — hands focus to the new opener rather than dropping
   // it on the body.
   const hadFocus = container.contains(document.activeElement);
   container.innerHTML = markup;
-  const { closeMenu, openMenu } = mountSplitMenu(container, { onChoose, keepWithin, sliderStates: focus?.sliderStates });
-  menuMountedInContainer.set(container, { markup, closeMenu });
+  const { closeMenu, isOpen, refreshMenu } = mountSplitMenu(container, { onChoose, keepWithin });
+  menuMountedInContainer.set(container, { markup, closeMenu, isOpen, refreshMenu });
   if (hadFocus) container.querySelector(CARET_SELECTOR)?.focus({ preventScroll: true });
-  if (focus) restoreSliderMenuFocus(container, focus, openMenu);
   return closeMenu;
 }
 

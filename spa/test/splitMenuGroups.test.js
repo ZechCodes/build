@@ -6,7 +6,7 @@
 // groups: each headed by what it holds, a setting's rows a radio set. And a
 // menu a screen reader can tell apart is a menu the keyboard has to reach.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { groupedMenuButtonMarkup, menuButtonMarkup, mountMenuIfChanged, mountSplitMenu } from "../src/core/splitButton.js";
+import { groupedMenuButtonMarkup, menuButtonMarkup, mountMenuIfChanged, mountSplitMenu, splitButtonMarkup } from "../src/core/splitButton.js";
 import { motionBeat } from "./motionRecorder.js";
 
 const SHELLS = { id: "shells", label: "Shells", description: "1 running" };
@@ -265,6 +265,182 @@ describe("mountMenuIfChanged", () => {
       { id: "detail:agent", label: "Agent only", description: "", selected: level === "agent" },
     ] },
   ], { title: "Conversation menu", icon: true });
+
+  it("patches selected marks and labels on the live rows without reopening or moving focus", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const onChoose = vi.fn();
+    const close = mountMenuIfChanged(container, markupAt("all"), { onChoose });
+    const caret = container.querySelector(".caret");
+    keydown(caret, "ArrowDown");
+    await motionBeat();
+    const menu = container.querySelector(".splitmenu");
+    const row = document.activeElement;
+    menu.scrollTop = 25;
+    const records = [];
+    const observer = new MutationObserver((mutations) => records.push(...mutations));
+    observer.observe(container, { attributes: true, subtree: true, childList: true });
+    const next = markupAt("agent").replace("Agent only", "Agent activity")
+      .replace('<span class="md"></span>', '<span class="md">All events</span>')
+      .replace('aria-haspopup="menu"', 'disabled aria-haspopup="menu"');
+    expect(mountMenuIfChanged(container, next, { onChoose })).toBe(close);
+    await motionBeat();
+    observer.disconnect();
+    expect(container.querySelector(".splitmenu")).toBe(menu);
+    expect(document.activeElement).toBe(row);
+    expect(menu.scrollTop).toBe(25);
+    expect(caret.getAttribute("aria-expanded")).toBe("true");
+    expect(records.filter((record) => ["hidden", "aria-expanded"].includes(record.attributeName))).toEqual([]);
+    expect(row.getAttribute("aria-checked")).toBe("false");
+    expect(row.classList.contains("on")).toBe(false);
+    expect(row.querySelector(".md").textContent).toBe("All events");
+    expect(caret.disabled).toBe(true);
+    const selected = container.querySelector('[data-action="detail:agent"]');
+    expect(selected.getAttribute("aria-checked")).toBe("true");
+    expect(selected.querySelector(".mt").textContent).toBe("Agent activity");
+    selected.click();
+    expect(onChoose).toHaveBeenCalledExactlyOnceWith("detail:agent");
+  });
+
+  it("replaces a closed menu and wires its new contents", () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const onChoose = vi.fn();
+    mountMenuIfChanged(container, markupAt("all"), { onChoose });
+    const menu = container.querySelector(".splitmenu");
+    mountMenuIfChanged(container, markupAt("agent"), { onChoose });
+    expect(container.querySelector(".splitmenu")).not.toBe(menu);
+    expect(container.querySelector(".splitmenu").hidden).toBe(true);
+    keydown(container.querySelector(".caret"), "ArrowDown");
+    container.querySelector('[data-action="detail:agent"]').click();
+    expect(onChoose).toHaveBeenCalledExactlyOnceWith("detail:agent");
+  });
+
+  const structuralMarkup = (actions) => groupedMenuButtonMarkup("⋮", [
+    { id: "show", label: "Show", options: actions.map((id) => ({ id, label: id, description: "" })) },
+  ]);
+
+  async function openRows(actions, focusIndex = 0) {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const onChoose = vi.fn();
+    mountMenuIfChanged(container, structuralMarkup(actions), { onChoose });
+    keydown(container.querySelector(".caret"), "ArrowDown");
+    for (let index = 0; index < focusIndex; index += 1) keydown(document.activeElement, "ArrowDown");
+    await motionBeat();
+    const menu = container.querySelector(".splitmenu");
+    const group = menu.querySelector(".menu-group");
+    const rows = [...menu.querySelectorAll(".mi")];
+    const records = [];
+    const observer = new MutationObserver((mutations) => records.push(...mutations));
+    observer.observe(container, { subtree: true, attributes: true, childList: true });
+    return { container, onChoose, menu, group, rows, records, observer };
+  }
+
+  async function expectStillOpen({ container, menu, group, records, observer }) {
+    await motionBeat();
+    observer.disconnect();
+    expect(container.querySelector(".splitmenu")).toBe(menu);
+    expect(container.querySelector(".menu-group")).toBe(group);
+    expect(menu.hidden).toBe(false);
+    expect(container.querySelector(".caret").getAttribute("aria-expanded")).toBe("true");
+    expect(records.filter((record) => ["hidden", "aria-expanded"].includes(record.attributeName))).toEqual([]);
+    expect(records.some((record) => [...record.removedNodes].some((node) => node === menu || node.contains(menu)))).toBe(false);
+  }
+
+  it("inserts only a new row in an open menu and wires its click", async () => {
+    const mounted = await openRows(["shells", "agents"], 1);
+    const { container, onChoose, rows } = mounted;
+    const blur = vi.fn();
+    rows[1].addEventListener("blur", blur);
+    mountMenuIfChanged(container, structuralMarkup(["shells", "tasks", "agents"]), { onChoose });
+    await expectStillOpen(mounted);
+    const updated = [...container.querySelectorAll(".mi")];
+    expect(updated[0]).toBe(rows[0]);
+    expect(updated[2]).toBe(rows[1]);
+    expect(document.activeElement).toBe(rows[1]);
+    expect(blur).not.toHaveBeenCalled();
+    updated[1].click();
+    expect(onChoose).toHaveBeenCalledExactlyOnceWith("tasks");
+  });
+
+  it("removes only a retired row without disturbing the focused surviving row", async () => {
+    const mounted = await openRows(["shells", "tasks", "agents"], 2);
+    const { container, onChoose, rows } = mounted;
+    mountMenuIfChanged(container, structuralMarkup(["shells", "agents"]), { onChoose });
+    await expectStillOpen(mounted);
+    expect([...container.querySelectorAll(".mi")]).toEqual([rows[0], rows[2]]);
+    expect(rows[1].isConnected).toBe(false);
+    expect(document.activeElement).toBe(rows[2]);
+    const removedRows = mounted.records.flatMap((record) => [...record.removedNodes]).filter((node) => rows.includes(node));
+    expect(removedRows).toEqual([rows[1]]);
+  });
+
+  it("moves focus to the nearest surviving row when the focused row is removed", async () => {
+    const mounted = await openRows(["shells", "tasks", "agents"], 1);
+    const { container, onChoose, rows } = mounted;
+    mountMenuIfChanged(container, structuralMarkup(["shells", "agents"]), { onChoose });
+    await expectStillOpen(mounted);
+    expect([...container.querySelectorAll(".mi")]).toEqual([rows[0], rows[2]]);
+    expect(document.activeElement).toBe(rows[2]);
+    expect(onChoose).not.toHaveBeenCalled();
+    keydown(rows[2], "Enter");
+    expect(onChoose).toHaveBeenCalledExactlyOnceWith("agents");
+  });
+
+  it("reorders surviving rows around the focused node without a focus hop", async () => {
+    const mounted = await openRows(["shells", "tasks", "agents"], 1);
+    const { container, onChoose, rows } = mounted;
+    const blur = vi.fn();
+    rows[1].addEventListener("blur", blur);
+    mountMenuIfChanged(container, structuralMarkup(["tasks", "agents", "shells"]), { onChoose });
+    await expectStillOpen(mounted);
+    expect([...container.querySelectorAll(".mi")]).toEqual([rows[1], rows[2], rows[0]]);
+    expect(document.activeElement).toBe(rows[1]);
+    expect(blur).not.toHaveBeenCalled();
+  });
+
+  it("keeps the primary button and caret distinct when a split button is patched", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const markup = (label) => splitButtonMarkup([{ id: "a", label }, { id: "b", label: "B" }]);
+    const onChoose = vi.fn();
+    mountMenuIfChanged(container, markup("A"), { onChoose });
+    const primary = container.querySelector('[data-action="a"]');
+    const caret = container.querySelector(".caret");
+    keydown(caret, "ArrowDown");
+    const menu = container.querySelector(".splitmenu");
+    const row = document.activeElement;
+    await motionBeat();
+    mountMenuIfChanged(container, markup("A new"), { onChoose });
+    expect(container.querySelectorAll("button")).toHaveLength(2);
+    expect(container.querySelector('[data-action="a"]')).toBe(primary);
+    expect(primary.textContent).toBe("A new");
+    expect(container.querySelector(".caret")).toBe(caret);
+    expect(caret.getAttribute("aria-expanded")).toBe("true");
+    expect(container.querySelector(".splitmenu")).toBe(menu);
+    expect(document.activeElement).toBe(row);
+    caret.click();
+    expect(caret.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("keeps all nodes when repeated row keys appear in legacy markup", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const markup = (description) => menuButtonMarkup("Menu", [
+      { id: "same", label: "First", description }, { id: "same", label: "Second", description },
+    ]);
+    const onChoose = vi.fn();
+    mountMenuIfChanged(container, markup("Before"), { onChoose });
+    keydown(container.querySelector(".caret"), "ArrowDown");
+    const rows = [...container.querySelectorAll(".mi")];
+    await motionBeat();
+    mountMenuIfChanged(container, markup("After"), { onChoose });
+    expect([...container.querySelectorAll(".mi")]).toEqual(rows);
+    expect(rows.map((row) => row.querySelector(".mt").textContent)).toEqual(["First", "Second"]);
+    expect(rows.map((row) => row.querySelector(".md").textContent)).toEqual(["After", "After"]);
+    expect(document.activeElement).toBe(rows[0]);
+  });
 
   it("hands focus to the new opener when the old one had it", () => {
     const container = document.createElement("div");

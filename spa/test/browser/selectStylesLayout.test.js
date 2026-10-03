@@ -33,7 +33,7 @@ async function selectStyles(page) {
         label: select.id || select.getAttribute("aria-label") || select.outerHTML.slice(0, 140),
         appearance: style.appearance, font: style.fontFamily, bodyFont,
         fontSize: parseFloat(style.fontSize),
-        background: style.backgroundColor, expectedBackground: token("--panel"),
+        background: style.backgroundColor, expectedBackground: token(select.matches(".panel .field select, .sheet select") ? "--bg" : "--panel"),
         color: style.color, expectedColor: token(select.disabled ? "--dim" : "--ink"),
         border: style.borderColor, expectedBorder: token("--line"), borderWidth: style.borderWidth,
         radius: style.borderRadius, expectedRadius: token("--select-radius", "borderRadius"),

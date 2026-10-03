@@ -24,7 +24,8 @@
 // hand the remote ones to `addIceCandidate`. So relay candidates are held back a
 // short window at both doors, and a viable direct pair gets that long to win.
 //
-// Nothing is dropped, ever. A held candidate is delivered late, not discarded:
+// Within one ICE generation a held candidate is delivered late, not discarded.
+// A restart clears stale held candidates before starting its new round.
 // TURN is the fallback that makes a symmetric NAT reachable at all, and a
 // browser that withheld it would turn a billed connection into no connection.
 //
@@ -143,6 +144,17 @@ export function createRelayHold({
       if (timer === null) timer = setTimer(release, delayMs);
     },
 
+    /** Fresh ICE credentials start another nomination race. Stale held
+     *  candidates belong to the previous round and must not enter this one. */
+    reset() {
+      if (closed) return;
+      clearTimer(timer);
+      timer = null;
+      held.length = 0;
+      holding = true;
+      sawDirect = false;
+    },
+
     /** Stop holding: something has already connected, so the race this was
      *  protecting is decided and a relay candidate costs nothing now. */
     stopHolding: release,
@@ -187,23 +199,29 @@ function entriesOf(stats) {
  * read all answer false. Disturbing a working relay path on a guess is worse
  * than paying for it.
  */
-export function directPairWorthTrying(stats) {
+export const directPairWorthTrying = (stats) => directPairStatus(stats).worthTrying;
+
+/** What a checklist proves, and why no direct pair can be retried yet. Missing
+ *  host candidates describe LAN discovery, while pending and failed describe
+ *  checks; neither is evidence for disturbing a working TURN connection. */
+export function directPairStatus(stats) {
   const entries = entriesOf(stats);
-  const typeById = new Map(
-    entries
-      .filter((entry) => entry.type === "local-candidate" || entry.type === "remote-candidate")
-      .map((entry) => [entry.id, entry.candidateType]),
-  );
-  const directEnd = (id) => {
-    const type = typeById.get(id);
-    return Boolean(type) && type !== RELAY;
-  };
-  return entries.some(
-    (entry) =>
-      entry.type === "candidate-pair"
-      && entry.state === "succeeded"
-      && !entry.nominated
-      && directEnd(entry.localCandidateId)
-      && directEnd(entry.remoteCandidateId),
-  );
+  if (!entries.length) return { worthTrying: false, reason: "stats-unavailable" };
+  const candidates = entries.filter((entry) => ["local-candidate", "remote-candidate"].includes(entry.type));
+  const typeById = new Map(candidates.map((entry) => [entry.id, entry.candidateType]));
+  const directEnd = (id) => Boolean(typeById.get(id)) && typeById.get(id) !== RELAY;
+  const directPairs = entries.filter((entry) => entry.type === "candidate-pair"
+    && directEnd(entry.localCandidateId) && directEnd(entry.remoteCandidateId));
+  if (directPairs.some((pair) => pair.state === "succeeded" && !pair.nominated)) {
+    return { worthTrying: true, reason: "direct-pair-succeeded" };
+  }
+  return { worthTrying: false, reason: missingDirectPairReason(candidates, directPairs) };
+}
+
+function missingDirectPairReason(candidates, pairs) {
+  if (pairs.some((pair) => ["waiting", "in-progress", "frozen"].includes(pair.state))) return "direct-checks-pending";
+  if (pairs.some((pair) => pair.state === "failed")) return "direct-checks-failed";
+  const hasHost = (side) => candidates.some((candidate) => candidate.type === side && candidate.candidateType === "host");
+  if (!hasHost("local-candidate") || !hasHost("remote-candidate")) return "no-host-candidates";
+  return "no-direct-pairs";
 }

@@ -692,6 +692,235 @@ describe("a session that landed on a relayed pair", () => {
     vi.useRealTimers();
   });
 
+  it("upgrades when direct checks succeed after the first 20-second sample", async () => {
+    const { peer, resolved, signalled } = await landedOnRelay({ alsoDirect: null });
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(offers(signalled)).toBe(1);
+    expect(diagnosticsOf("direct-pair")).toEqual(["none-to-try"]);
+
+    let asked = 0;
+    peer.getStats = async () => asReport([
+      ...pairEntries("direct", { localType: "host", remoteType: "host", nominated: ++asked > 1 }),
+      ...(asked === 1 ? pairEntries("relayed", { localType: "relay", remoteType: "host", nominated: true }) : []),
+    ]);
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(offers(signalled)).toBe(2);
+    expect(resolved.transportPath()).toBe("direct");
+    expect(diagnosticsOf("direct-pair")).toEqual(["none-to-try", "trying", "renominated"]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("watches a recovery that changes an initially direct session to TURN", async () => {
+    const { peer, resolved, signalled } = await landedDirect();
+    peer.getStats = async () => asReport([
+      ...pairEntries("relayed", { localType: "relay", remoteType: "host", nominated: true }),
+      ...pairEntries("direct", { localType: "host", remoteType: "host" }),
+    ]);
+    peer.fail();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(resolved.transportPath()).toBe("turn");
+    expect(offers(signalled)).toBe(2);
+
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(offers(signalled)).toBe(3);
+    expect(diagnosticsOf("direct-pair")).toContain("trying");
+  });
+
+  it("rechecks ICE for mDNS resolved after TURN nomination even when old direct checks never succeeded", async () => {
+    const { resolved, signalled, candidateSinks } = await landedOnRelay({ alsoDirect: null });
+    candidateSinks[0]({ type: "rtc.diagnostics", event: "mdns-resolved", reason: "direct-checks-no-success", candidates: { mdns_resolved: 1 } });
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(offers(signalled)).toBe(2);
+    expect(connectionDiagnosticHistory().find((entry) => entry.event === "direct-pair"))
+      .toMatchObject({ state: "trying", reason: "mdns-resolved" });
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(offers(signalled)).toBe(2);
+    expect(resolved.transportPath()).toBe("turn");
+  });
+
+  it("keeps resolution evidence arriving between ICE connected and its carrying-path sample", async () => {
+    const stood = stand();
+    await vi.advanceTimersByTimeAsync(0);
+    const peer = stood.peer();
+    let finishInitialStats;
+    const relay = asReport(pairEntries("relay", { localType: "relay", remoteType: "host", nominated: true }));
+    peer.getStats = () => new Promise((resolve) => { finishInitialStats = resolve; });
+    peer.channels.get("app").open();
+    peer.channels.get("term").open();
+    peer.connectionState = "connected";
+    peer.emit("connectionstatechange");
+    await vi.advanceTimersByTimeAsync(0);
+    stood.candidateSinks[0]({ type: "rtc.diagnostics", event: "mdns-resolved", reason: "direct-checks-no-success", candidates: { mdns_resolved: 1 } });
+    finishInitialStats(relay);
+    const resolved = await stood.link;
+    peer.getStats = async () => relay;
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(offers(stood.signalled)).toBe(2);
+    resolved.close();
+  });
+
+  it("keeps resolution evidence after ICE nomination while DTLS is still connecting", async () => {
+    const stood = stand();
+    await vi.advanceTimersByTimeAsync(0);
+    const peer = stood.peer();
+    peer.localCandidateType = "relay";
+    peer.iceConnectionState = "connected";
+    peer.connectionState = "connecting";
+    peer.emit("iceconnectionstatechange");
+    stood.candidateSinks[0]({ type: "rtc.diagnostics", event: "mdns-resolved", reason: "direct-checks-no-success", candidates: { mdns_resolved: 1 } });
+    peer.channels.get("app").open();
+    peer.channels.get("term").open();
+    peer.connectionState = "connected";
+    peer.emit("connectionstatechange");
+    const resolved = await stood.link;
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(offers(stood.signalled)).toBe(2);
+    resolved.close();
+  });
+
+  it("does not reuse pre-recovery mDNS evidence to disturb a fresh relayed path", async () => {
+    const { peer, resolved, signalled, candidateSinks } = await landedOnRelay({ alsoDirect: null });
+    candidateSinks[0]({ type: "rtc.diagnostics", event: "mdns-resolved", reason: "direct-checks-no-success", candidates: { mdns_resolved: 1 } });
+    peer.fail();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(offers(signalled)).toBe(2);
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(offers(signalled)).toBe(2);
+    resolved.close();
+  });
+
+  it("does not speculate on mDNS resolution seen before the initial connection lands", async () => {
+    const stood = stand();
+    await vi.advanceTimersByTimeAsync(0);
+    const peer = stood.peer();
+    stood.candidateSinks[0]({ type: "rtc.diagnostics", event: "mdns-resolved", reason: "direct-checks-no-success", candidates: { mdns_resolved: 1 } });
+    peer.localCandidateType = "relay";
+    peer.channels.get("app").open();
+    peer.channels.get("term").open();
+    peer.connectionState = "connected";
+    peer.emit("connectionstatechange");
+    const resolved = await stood.link;
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(offers(stood.signalled)).toBe(1);
+    resolved.close();
+  });
+
+  it("records safe bridge candidate diagnostics and explains unresolved mDNS", async () => {
+    const { candidateSinks, signalled } = await landedOnRelay({ alsoDirect: null });
+    candidateSinks[0]({
+      type: "rtc.diagnostics", reason: "mdns-unresolved", hostname: "private.local",
+      candidates: { host_mdns: 1, mdns_unresolved: 1, extra: "192.168.1.2", relay: -1 },
+    });
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(offers(signalled)).toBe(1);
+    expect(connectionDiagnosticHistory().find((entry) => entry.event === "candidate-diagnostics"))
+      .toMatchObject({ reason: "mdns-unresolved", candidates: { host_mdns: 1, mdns_unresolved: 1 } });
+    expect(connectionDiagnosticHistory().find((entry) => entry.event === "direct-pair"))
+      .toMatchObject({ state: "none-to-try", reason: "mdns-unresolved" });
+    expect(JSON.stringify(connectionDiagnosticHistory())).not.toMatch(/private.local|192.168.1.2/);
+  });
+
+  it("keeps repeated negative samples quiet and drops the monitor when closed", async () => {
+    const { resolved, signalled } = await landedOnRelay({ alsoDirect: "failed" });
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(diagnosticsOf("direct-pair")).toEqual(["none-to-try"]);
+    expect(connectionDiagnosticHistory().find((entry) => entry.event === "direct-pair"))
+      .toMatchObject({ reason: "direct-checks-failed" });
+    resolved.close();
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(offers(signalled)).toBe(1);
+  });
+
+  it("does not race a recovery negotiation with a late stats response", async () => {
+    const { peer, resolved, signalled } = await landedOnRelay({ alsoDirect: null });
+    let finishStats;
+    peer.getStats = () => new Promise((resolve) => { finishStats = resolve; });
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(finishStats).toBeTypeOf("function");
+    const pendingStats = finishStats;
+    peer.autoConnect = false;
+    peer.fail();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(offers(signalled)).toBe(2);
+    pendingStats(asReport([
+      ...pairEntries("relayed", { localType: "relay", remoteType: "host", nominated: true }),
+      ...pairEntries("direct", { localType: "host", remoteType: "host" }),
+    ]));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(offers(signalled)).toBe(2);
+    expect(diagnosticsOf("direct-pair")).not.toContain("trying");
+    resolved.close();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("discards viability stats from the previous ICE generation after recovery finishes", async () => {
+    const { peer, resolved, signalled } = await landedOnRelay({ alsoDirect: null });
+    let finishStats;
+    peer.getStats = () => new Promise((resolve) => { finishStats = resolve; });
+    await vi.advanceTimersByTimeAsync(20000);
+    const pendingStats = finishStats;
+    peer.getStats = async () => asReport(pairEntries("relayed", { localType: "relay", remoteType: "host", nominated: true }));
+    peer.fail();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(offers(signalled)).toBe(2);
+    expect(resolved.recovery.snapshot().recovering).toBe(false);
+    pendingStats(asReport(pairEntries("old-direct", { localType: "host", remoteType: "host" })));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(offers(signalled)).toBe(2);
+    expect(diagnosticsOf("direct-pair")).not.toContain("trying");
+    resolved.close();
+  });
+
+  it("holds relay candidates behind hosts again during an optional direct restart", async () => {
+    const { peer, resolved, signalled, candidateSinks } = await landedOnRelay();
+    peer.autoConnect = false;
+    await vi.advanceTimersByTimeAsync(20000);
+    const host = { type: "host", candidate: "candidate:1 1 udp 1 10.0.0.2 5000 typ host" };
+    const relay = { type: "relay", candidate: "candidate:2 1 udp 1 203.0.113.9 5000 typ relay" };
+    peer.gather(host);
+    peer.gather(relay);
+    candidateSinks[0]({ type: "rtc.ice", candidate: host });
+    candidateSinks[0]({ type: "rtc.ice", candidate: relay });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(signalled.filter(([method]) => method === "rtc.ice").map(([, params]) => params.candidate.type)).toEqual(["host"]);
+    expect(peer.remoteCandidates).toEqual([host]);
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(signalled.filter(([method]) => method === "rtc.ice").map(([, params]) => params.candidate.type)).toEqual(["host", "relay"]);
+    expect(peer.remoteCandidates).toEqual([host, relay]);
+    resolved.close();
+  });
+
+  it("reports a direct nomination that settles after the restart first sampled the old relay path", async () => {
+    const { peer, resolved, signalled } = await landedOnRelay();
+    const moves = [];
+    resolved.onPathChanged((path) => moves.push(path));
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(resolved.transportPath()).toBe("turn");
+    expect(offers(signalled)).toBe(2);
+    peer.getStats = async () => asReport(pairEntries("direct", { localType: "host", remoteType: "host", nominated: true }));
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(resolved.transportPath()).toBe("direct");
+    expect(moves).toEqual(["direct"]);
+    expect(offers(signalled)).toBe(2);
+    expect(diagnosticsOf("direct-pair")).toEqual(["trying", "stayed-relayed", "renominated"]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not act on a stats response arriving after the link closes", async () => {
+    const { peer, resolved, signalled } = await landedOnRelay({ alsoDirect: null });
+    let finishStats;
+    peer.getStats = () => new Promise((resolve) => { finishStats = resolve; });
+    await vi.advanceTimersByTimeAsync(20000);
+    resolved.close();
+    finishStats(asReport(pairEntries("direct", { localType: "host", remoteType: "host" })));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(offers(signalled)).toBe(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("tries once for a direct pair, after it has been steady, and says what it landed on", async () => {
     const { peer, signalled, resolved } = await landedOnRelay();
     const before = offers(signalled);

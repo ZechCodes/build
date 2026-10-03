@@ -18,6 +18,7 @@ import {
   candidateTypeOf,
   createRelayHold,
   directPairWorthTrying,
+  directPairStatus,
   isRelayCandidate,
 } from "../src/core/iceCandidates.js";
 
@@ -177,6 +178,28 @@ describe("createRelayHold", () => {
     expect(armed()).toBe(false);
   });
 
+  it("protects a new optional nomination race after the previous one settled", () => {
+    const { hold, delivered, elapse } = stand();
+    hold.offer(local("host"));
+    hold.stopHolding();
+    hold.reset();
+    hold.offer(local("host"));
+    hold.offer(local("relay"));
+    expect(delivered).toEqual(["host", "host"]);
+    elapse();
+    expect(delivered).toEqual(["host", "host", "relay"]);
+  });
+
+  it("drops stale held candidates and requires new direct evidence after a reset", () => {
+    const { hold, delivered, armed } = stand();
+    hold.offer(local("host"));
+    hold.offer(local("relay"));
+    hold.reset();
+    expect(armed()).toBe(false);
+    hold.offer(local("relay"));
+    expect(delivered).toEqual(["host", "relay"]);
+  });
+
   it("drops what it is holding when the connection goes, and delivers nothing after", () => {
     const { hold, delivered, elapse } = stand();
 
@@ -267,5 +290,36 @@ describe("directPairWorthTrying", () => {
     expect(directPairWorthTrying(null)).toBe(false);
     expect(directPairWorthTrying([])).toBe(false);
     expect(directPairWorthTrying([pair("direct")])).toBe(false); // no candidates to read
+  });
+});
+
+
+describe("directPairStatus", () => {
+  const candidates = [
+    { id: "local", type: "local-candidate", candidateType: "host" },
+    { id: "remote", type: "remote-candidate", candidateType: "host" },
+  ];
+  const direct = (state) => ({ type: "candidate-pair", state, localCandidateId: "local", remoteCandidateId: "remote" });
+
+  it("explains a missing LAN candidate without guessing that a restart could help", () => {
+    expect(directPairStatus([{ id: "relay", type: "local-candidate", candidateType: "relay" }]))
+      .toEqual({ worthTrying: false, reason: "no-host-candidates" });
+  });
+
+  it("distinguishes waiting checks, failed checks and a check list with no direct pair", () => {
+    expect(directPairStatus([...candidates, direct("in-progress")]))
+      .toEqual({ worthTrying: false, reason: "direct-checks-pending" });
+    expect(directPairStatus([...candidates, direct("failed")]))
+      .toEqual({ worthTrying: false, reason: "direct-checks-failed" });
+    expect(directPairStatus(candidates)).toEqual({ worthTrying: false, reason: "no-direct-pairs" });
+  });
+
+  it("does not mistake an unknown report for failed connectivity", () => {
+    expect(directPairStatus(null)).toEqual({ worthTrying: false, reason: "stats-unavailable" });
+  });
+
+  it("requires succeeded checks on both non-relay ends", () => {
+    expect(directPairStatus([...candidates, direct("succeeded")]))
+      .toEqual({ worthTrying: true, reason: "direct-pair-succeeded" });
   });
 });

@@ -5,6 +5,7 @@ import test from "node:test";
 import vm from "node:vm";
 
 const source = readFileSync(new URL("../../public/hero-boot.js", import.meta.url), "utf8");
+const entranceSource = readFileSync(new URL("../../src/hero/entrance.js", import.meta.url), "utf8");
 
 function boot({ reducedMotion = false, search = "", hash = "", played = false, storage = "ok" } = {}) {
   const dataset = {};
@@ -28,8 +29,13 @@ test("a first visit plays the entrance", () => {
   assert.equal(boot(), "entrance");
 });
 
-test("a second visit in the same tab shows the hero at rest", () => {
-  assert.equal(boot({ played: true }), undefined);
+test("a reload plays the entrance even with an old played marker", () => {
+  assert.equal(boot({ played: true }), "entrance");
+});
+
+test("the entrance never reads or writes session memory", () => {
+  assert.doesNotMatch(source, /sessionStorage/);
+  assert.doesNotMatch(entranceSource, /sessionStorage/);
 });
 
 test("storage that refuses plays the entrance rather than failing", () => {

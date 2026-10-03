@@ -11,21 +11,62 @@ export const WALL_TIMING = Object.freeze({
 export const REQUEST_SELECT = [3, 3.14, 3.28];
 const clamp = value => Math.min(1, Math.max(0, value));
 
-function pickRequests(slots, { width, height }) {
-  const points = width < 768 ? [[.46, .30], [.53, .46], [.47, .62]] : [[.29, .35], [.51, .50], [.73, .65]];
-  const picked = [];
+const REQUEST_POINTS = Object.freeze({
+  narrow: [[.46, .30], [.53, .46], [.47, .62]],
+  wide: [[.29, .35], [.51, .50], [.73, .65]],
+});
+
+function targetFor(index, { width, height }) {
+  const [x, y] = REQUEST_POINTS[width < 768 ? 'narrow' : 'wide'][index];
+  return [x * width, y * height];
+}
+
+function nearestSlot(slots, picked, [x, y], width) {
+  const unused = slots.filter(slot => !picked.has(slot));
+  const inside = unused.filter(slot => slot.x - slot.width / 2 >= 16 && slot.x + slot.width / 2 <= width - 16);
+  const candidates = inside.length ? inside : unused;
+  if (!candidates.length) throw new Error('The wall needs a distinct slot for each request.');
+  let nearest = candidates[0];
+  let distance = Math.hypot(nearest.x - x, nearest.y - y);
+  for (const candidate of candidates.slice(1)) {
+    const next = Math.hypot(candidate.x - x, candidate.y - y);
+    if (next < distance) {
+      nearest = candidate;
+      distance = next;
+    }
+  }
+  return nearest;
+}
+
+function requestTurn(slot, selection) {
+  const cutoff = WALL_TIMING.field[1] - 1;
+  // A settled card is already part of the ordinary wall. If none was ready
+  // by the preferred cutoff, use the latest one settled by selection.
+  const settled = time => slot.turns.findLast(turn => turn.start + turn.enter <= time);
+  const turn = settled(cutoff) ?? settled(selection);
+  if (turn) return turn;
+  const fallback = { start: cutoff - .32, enter: .32, hold: .72, fade: .28,
+    from: [56, 0], text: ROUTINE_EVENTS[0], harness: SUPPORTED_HARNESSES[0] };
+  // No card has arrived in time. Replace future turns with one already
+  // settled; otherwise its extended hold could be negative at takeoff.
+  slot.turns = [fallback];
+  return fallback;
+}
+
+function selectRequest(slot, slotIndex, entry, index) {
+  const turn = requestTurn(slot, REQUEST_SELECT[index]);
+  slot.turns = slot.turns.slice(0, slot.turns.indexOf(turn) + 1);
+  Object.assign(turn, { attention: entry.id, text: entry.text, harness: entry.harness,
+    hold: WALL_TIMING.landings[index] - WALL_TIMING.flight - turn.start - turn.enter });
+  return { ...slot, slotIndex, turn };
+}
+
+export function selectRequests(slots, size) {
+  const picked = new Set();
   return ATTENTION.map((entry, index) => {
-    const [x, y] = points[index].map((value, axis) => value * [width, height][axis]);
-    const candidates = slots.filter(slot => slot.x - slot.width / 2 >= 16 && slot.x + slot.width / 2 <= width - 16 && !picked.includes(slot));
-    const slot = candidates.reduce((best, candidate) => Math.hypot(candidate.x - x, candidate.y - y) < Math.hypot(best.x - x, best.y - y) ? candidate : best);
-    picked.push(slot);
-    // Pick a turn already settled well before selection. Its earlier turns
-    // remain ordinary churn, and this exact final card survives the fade.
-    const turn = slot.turns.filter(turn => turn.start + turn.enter <= WALL_TIMING.field[1] - 1).at(-1);
-    slot.turns = slot.turns.slice(0, slot.turns.indexOf(turn) + 1);
-    Object.assign(turn, { attention: entry.id, text: entry.text, harness: entry.harness,
-      hold: WALL_TIMING.landings[index] - WALL_TIMING.flight - turn.start - turn.enter });
-    return { ...slot, slotIndex: slots.indexOf(slot), turn };
+    const slot = nearestSlot(slots, picked, targetFor(index, size), size.width);
+    picked.add(slot);
+    return selectRequest(slot, slots.indexOf(slot), entry, index);
   });
 }
 
@@ -73,7 +114,7 @@ export function createWall({ width, height }) {
       slots.push(slot);
     }
   }
-  return { slots, requests: pickRequests(slots, { width, height }) };
+  return { slots, requests: selectRequests(slots, { width, height }) };
 }
 
 // Used by the browser keyframes and the plan tests. During the hold both

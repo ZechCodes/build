@@ -20,7 +20,9 @@ export function seek(animation, ms, playing, duration, rate = 1) {
 /** `timed`: [animation, ms it runs before it holds (Infinity: never)]. */
 export function seekAll(timed) {
   const held = new Set();
-  return function update(time, playing, rate) {
+  let disposed = false;
+  function update(time, playing, rate) {
+    if (disposed) return;
     const ms = time * 1000;
     for (const [animation, runs] of timed) {
       if (ms >= runs && (held.has(animation) || animation.playState === "finished")) {
@@ -35,5 +37,10 @@ export function seekAll(timed) {
       if (ms >= runs) held.add(animation);
       else held.delete(animation);
     }
+  }
+  update.dispose = () => {
+    disposed = true;
+    held.clear();
   };
+  return update;
 }

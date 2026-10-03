@@ -14,12 +14,11 @@ export const HARNESS_NAMES = Object.freeze({
 });
 
 // The three requests that need a person. `row` is the Needs you row each
-// lands on (anchors.js); `lane` and `anchor` place it in the field, and
-// `narrowAnchor` on a phone, where a pill is a larger share of the width.
+// lands on (anchors.js). The legacy lab owns its separate lane placement.
 export const ATTENTION = Object.freeze([
-  Object.freeze({ id: "review", text: "Review ready", harness: "codex", row: "task-82", lane: 10, anchor: 0.5, narrowAnchor: 0.34 }),
-  Object.freeze({ id: "approval", text: "Needs your approval", harness: "claude", row: "task-85", lane: 14, anchor: 0.58, narrowAnchor: 0.2 }),
-  Object.freeze({ id: "question", text: "Which approach?", harness: "pi", row: "task-86", lane: 18, anchor: 0.4, narrowAnchor: 0.4 }),
+  Object.freeze({ id: "review", text: "Review ready", harness: "codex", row: "task-82" }),
+  Object.freeze({ id: "approval", text: "Needs your approval", harness: "claude", row: "task-85" }),
+  Object.freeze({ id: "question", text: "Which approach?", harness: "pi", row: "task-86" }),
 ]);
 
 export const ROUTINE_EVENTS = Object.freeze([

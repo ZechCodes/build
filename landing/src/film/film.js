@@ -92,7 +92,7 @@ function copyTimeline(tl, acts) {
 // BEAT_SECONDS whatever its storyboard length, so every act slows into its
 // conclusion the same way. Acts 2-7 are their scenes; act 8's is its two
 // copy beats, the second bringing the form. The hero has its own entrance
-// (src/hero/), once per tab and on its own clock, so its beat here is
+// (src/hero/), on each full load and on its own clock, so its beat here is
 // empty. `offsets` is where a scene starts inside its beat, for sceneSeek.
 function createBeats({ scenes, act8 }) {
   const beats = { ...scenes };

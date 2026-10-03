@@ -691,10 +691,13 @@ async function checkEntrancePhases(page, label, { narrow }) {
   }
 }
 
-async function openEntrance(width, height) {
+async function openEntrance(width, height, { stalePlayedMarker = false } = {}) {
   const context = await browser.newContext({ viewport: { width, height } });
   const page = await context.newPage();
   const errors = watchErrors(page);
+  if (stalePlayedMarker) {
+    await page.addInitScript(() => sessionStorage.setItem("build.hero.played", "1"));
+  }
   await page.goto(`${base}/?film=${gpu ? "1" : "force"}`, { waitUntil: "load" });
   await page.waitForFunction(() => window.BuildHero !== undefined, null, { timeout: 30_000 });
   assert.ok(await page.evaluate(() => Boolean(window.BuildHero)), "the entrance plays on a first visit");
@@ -703,7 +706,8 @@ async function openEntrance(width, height) {
 
 // The whole entrance at a size, then the same tab again.
 async function checkFullEntrance(width, height, label, narrow) {
-  const { context, page, errors } = await openEntrance(width, height);
+  const { context, page, errors } = await openEntrance(width, height, { stalePlayedMarker: true });
+  assert.equal(await page.evaluate(() => sessionStorage.getItem("build.hero.played")), "1", `${label}: the old played marker is present on the first load`);
   const during = await windowListeners(page);
   await checkEntrancePhases(page, label, { narrow });
   await page.evaluate(() => window.BuildHero.finish());
@@ -711,9 +715,19 @@ async function checkFullEntrance(width, height, label, narrow) {
   assert.equal(await windowListeners(page), during - 2, `${label}: the entrance's scroll and resize listeners are gone`);
   await checkHeroPointerPath(page, label);
   await page.reload({ waitUntil: "commit" });
-  await page.waitForSelector("#act-1-title", { state: "attached" });
-  const repeat = await page.evaluate(() => ({ hero: document.documentElement.dataset.hero ?? null, title: getComputedStyle(document.querySelector("#act-1-title")).opacity }));
-  assert.deepEqual(repeat, { hero: null, title: "1" }, `${label}: a repeat visit shows the hero at rest`);
+  await page.waitForFunction(() => window.BuildHero !== undefined, null, { timeout: 30_000 });
+  assert.ok(await page.evaluate(() => Boolean(window.BuildHero) && !window.BuildHero.done), `${label}: a reload starts the entrance despite the old played marker`);
+  await page.waitForFunction(() => window.BuildHero?.timeline.isActive(), null, { timeout: 10_000 });
+  assert.ok(await page.evaluate(() => window.BuildHero.timeline.isActive()), `${label}: the reloaded entrance plays automatically`);
+  await holdAt(page, 0.1);
+  const first = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll("[data-wall-routine] .wall-note[data-note]")].map(card =>
+    [card.dataset.note, Number(getComputedStyle(card).opacity)])));
+  await holdAt(page, 1.1);
+  const changed = await page.evaluate(before => [...document.querySelectorAll("[data-wall-routine] .wall-note[data-note]")].filter(card =>
+    Math.abs(Number(getComputedStyle(card).opacity) - before[card.dataset.note]) >= 0.45).length, first);
+  assert.ok(changed >= 10, `${label}: a reload animates the wall (${changed} cards change opacity)`);
+  await page.evaluate(() => window.BuildHero.finish());
+  await waitForEntrance(page, `${label} reload`);
   assert.deepEqual(errors, [], `${label}: browser errors`);
   await context.close();
 }

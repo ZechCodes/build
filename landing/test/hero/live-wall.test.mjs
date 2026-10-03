@@ -1,8 +1,52 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createWall, notePose, WALL_TIMING, REQUEST_SELECT } from '../../src/hero/wall.js';
+import { createWall, notePose, selectRequests, WALL_TIMING, REQUEST_SELECT } from '../../src/hero/wall.js';
+import { ATTENTION } from '../../src/hero/notifications.js';
 
 const sizes = [[390, 603], [390, 780], [768, 960], [1280, 836], [1920, 1016], [2560, 1376]];
+
+test('home requests carry no legacy lane placement', () => {
+  for (const entry of ATTENTION) assert.deepEqual(Object.keys(entry).sort(), ['harness', 'id', 'row', 'text']);
+});
+
+test('request selection keeps an existing turn when none settled by the preferred cutoff', () => {
+  const slots = [140, 300, 460].map((x, index) => ({
+    x, y: 140 + index * 60, width: 100, height: 54,
+    turns: [{ start: 2.15 + index * .07, enter: .32, hold: .72, fade: .28, from: [56, 0], text: 'Routine', harness: 'pi' }],
+  }));
+  const requests = selectRequests(slots, { width: 600, height: 400 });
+  assert.equal(requests.length, ATTENTION.length);
+  requests.forEach((request, index) => {
+    assert.ok(slots[request.slotIndex].turns.includes(request.turn));
+    assert.equal(request.turn.attention, ATTENTION[index].id);
+    assert.equal(request.turn.text, ATTENTION[index].text);
+    assert.ok(request.turn.hold > 0);
+  });
+});
+
+test('request selection supplies a settled card if a sparse slot has no turns', () => {
+  const slots = [140, 300, 460].map((x, index) => ({ x, y: 140 + index * 60, width: 100, height: 54, turns: [] }));
+  const requests = selectRequests(slots, { width: 600, height: 400 });
+  requests.forEach((request, index) => {
+    assert.equal(request.turn, slots[request.slotIndex].turns[0]);
+    assert.equal(request.turn.attention, ATTENTION[index].id);
+    assert.ok(request.turn.start + request.turn.enter <= WALL_TIMING.field[1] - 1);
+  });
+});
+
+test('request selection replaces turns that arrive after selection and takeoff', () => {
+  const slots = [140, 300, 460].map((x, index) => ({
+    x, y: 140 + index * 60, width: 100, height: 54,
+    turns: [{ start: 5.8, enter: .32, hold: .72, fade: .28, from: [56, 0], text: 'Too late', harness: 'pi' }],
+  }));
+  const requests = selectRequests(slots, { width: 600, height: 400 });
+  requests.forEach((request, index) => {
+    assert.deepEqual(slots[request.slotIndex].turns, [request.turn]);
+    assert.equal(request.turn.attention, ATTENTION[index].id);
+    assert.ok(request.turn.hold > 0);
+    assert.equal(notePose(request.turn, REQUEST_SELECT[index]).opacity, 1);
+  });
+});
 for (const [width, height] of sizes) {
   test(`wall stays populated and locally still at ${width}×${height}`, () => {
     const wall = createWall({ width, height });

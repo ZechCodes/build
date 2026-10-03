@@ -1,9 +1,9 @@
 /* The hero: a split layout at rest (copy left, laptop right; stacked on a
    phone), and the entrance that resolves into it. hero-boot.js sets
-   html[data-hero="entrance"] before the first paint when this tab has not
-   seen the entrance; entrance.js turns it to "playing" as it takes over and
+   html[data-hero="entrance"] before the first paint on each full load;
+   entrance.js turns it to "playing" as it takes over and
    removes it when the hero is still. Without either, the hero is simply at
-   rest: repeat visits, reduced motion, no JavaScript. */
+   rest: reduced motion, skipped entrances, no JavaScript. */
 
 #act-1 {
   overflow: hidden;

@@ -16,6 +16,7 @@
 // `error.code` whatever it is talking to.
 
 import { satisfies } from "../semver.js";
+import { legacyThreadParams } from "./threadParams.js";
 
 /** The range of bridge versions this adapter claims. */
 export const range = ">=2.0.0 <4.0.0";
@@ -186,9 +187,11 @@ function eventsOf(greeting) {
 export function create(call, greeting) {
   const reported = greeting?.api_version;
   const version = typeof reported === "string" && reported ? reported : "0.0.0";
-  // Forwarded verbatim, arity and all: the session's own `call` reads an
-  // options argument only when one was passed.
+  const capabilities = capabilitiesOf(greeting, version);
+  // Keep arity and options intact: only the params added with conversation
+  // reset need adapting when this greeting does not advertise it.
   const wrapped = async (...args) => {
+    if (!capabilities.conversations.reset && args.length > 1) args[1] = legacyThreadParams(args[0], args[1]);
     let reply;
     try {
       reply = await call(...args);
@@ -203,7 +206,7 @@ export function create(call, greeting) {
     range,
     version,
     call: wrapped,
-    capabilities: capabilitiesOf(greeting, version),
+    capabilities,
     events: eventsOf(greeting),
     parseResult,
     parseEvent,

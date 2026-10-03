@@ -20,6 +20,7 @@ import { createSessionSwitch, isSignaling } from "./sessionSwitch.js";
 import { createPathProbe, PATH_PROBE_EVENT, PING_TIMEOUT_MS } from "./pathProbe.js";
 import { peerHeardAt } from "./pathLiveness.js";
 import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
+import { legacyThreadParams } from "./bridgeApi/v1/threadParams.js";
 
 export { DEFAULT_RPC_TIMEOUT_MS };
 
@@ -217,9 +218,9 @@ export async function openSession({
     sessionId: minted.sessionId,
     /** The raw rpc through the installed adapter, when there is one: every
      *  refusal a caller sees is then an `ApiError` with a code, whichever
-     *  1.x bridge answered. Before a greeting, the raw rpc. */
+     *  bridge answered. Before a greeting, keep the legacy request shape. */
     call: (method, params = {}, options = {}) =>
-      adapter ? adapter.call(method, params, options) : rawCall(method, params, options),
+      adapter ? adapter.call(method, params, options) : rawCall(method, legacyThreadParams(method, params), options),
     /**
      * Install what `selectAdapter` picked for this session's bridge. The
      * adapter is bound to the raw rpc, never to `call`, so its normalisation

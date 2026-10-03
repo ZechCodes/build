@@ -8,7 +8,7 @@ protocol versions; see
 
 ## [0.2.8] - Unreleased
 
-Wire 3.10.0.
+Wire 3.11.0.
 
 ### Changed
 
@@ -20,6 +20,13 @@ Wire 3.10.0.
 
 ### Added
 
+- **Clear conversation** at the bottom of every agent conversation's menu
+  confirms removal and opens the harness, model and effort chooser with the
+  previous settings. `conversation.reset` stops the old session and removes
+  its history and artifacts while retaining the agent's identity, workspace
+  membership and task links. Thread generations prevent stale requests and
+  cached pages from restoring cleared content. Project agents receive their
+  standing instructions again on the fresh start (#358, wire 3.11.0).
 - The project rail has a Files section with the workspace's shared explorer:
   one collapsible root per project source, persistent open tabs, keyboard
   navigation, previews, selection and guarded file edits. Project Files links

@@ -161,6 +161,14 @@ names the verb, its handler and its typed params and result. Handler signatures
 never take `serde_json::Value`; a test in that module enforces it. Slow git work
 is deferred and runs with the lock released.
 
+`conversation.reset` belongs to the typed thread family. It reserves one exact
+conversation, stops its processes and stages files outside the app lock, then
+commits the replacement under the lock. Cleanup does not depend on a browser
+staying connected. It takes the
+project, entity, agent, canonical conversation and expected thread generation
+along with an optional replacement harness/model/effort choice. A mismatched
+address or stale generation is refused before any history or process changes.
+
 **Push events.** `ChangeBus` in `bridge/src/changes.rs` collects changes.
 `ChangeBus::run` flushes the first change on an idle bus at once, then holds a
 250 ms window (`DEFAULT_COALESCE_WINDOW`) open before the next flush. Changes
@@ -221,7 +229,7 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.10.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.11.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
@@ -309,6 +317,9 @@ runtime that starts them.
   update with nonretryable `stale_body`; the client rolls back its optimistic
   tick and refreshes the task. Existing callers may still omit the hash. The
   SPA sends it only to a machine whose cached greeting names the capability.
+  3.11.0 adds `conversation.reset` (#358) and thread generations on conversation
+  digests and responses. Generation-aware requests refuse a cleared thread;
+  the reset capability gates the menu and its generation-aware cache handling.
   The SPA's adapter claims `>=2.0.0 <4.0.0`: it calls nothing a 2.x bridge
   lacks (what 2.x added after 2.0.0 is capability-gated), so the app can
   roll before the bridge.
@@ -825,6 +836,36 @@ CLI. A role (`role_models`) or the
 project-agent setting that names such a model is a default rather than a pick:
 the role passes to the next declared model, and the project agent starts on
 the harness's own default.
+
+### Conversation resets
+
+An agent is a durable identity; its harness process and transcript are
+replaceable. `conversation.reset` keeps the agent ID, canonical conversation
+binding, name, roster position, workspace membership, task assignments and
+trackers. It gives the conversation a new `Thread.id`, exposed as `thread_id`
+on the agent digest and thread responses, and advances the canonical thread's
+`thread_generation_revision`. Aliases share that revision; their independent
+model-choice revisions do not order conversation generations. The generation
+separates a fresh empty conversation from its predecessor even when both have
+the same agent address and the replacement's sequence counter starts at zero.
+
+Reset removes the old transcript, session lineage, revisions, operation
+payloads, attachments, readings, compaction state and conversation summaries.
+It stops every process bound to that conversation and retires their queued
+work and MCP capabilities. A late callback or a request carrying the old
+generation cannot restore the cleared content. A new project-agent session
+uses the ordinary fresh-start scaffolding and standing instruction templates.
+After the first reset, conversation mutations require the current `thread_id`;
+an older client that omits it receives a refusal rather than recreating a
+retired payload. Initial-generation omissions and ordinary reads retain their
+existing compatibility behavior.
+
+The browser's conversation menu offers **Clear conversation** only when the
+cached capability says that device supports `conversation.reset`. The
+confirmation leads to the existing harness/model/effort chooser, prefilled
+with the agent's settings. The final **Clear and start fresh** action sends
+one reset; cancelling the chooser keeps the conversation. Detail and compact
+settings are retained, and the empty conversation opens in the same place.
 
 ### MCP tools
 

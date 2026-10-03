@@ -16,6 +16,8 @@ from skrift.ratelimit import RateLimiter
 
 from buildapp.devices_controller import HEARTBEAT_ROUTE_PATH
 from buildapp.invites import INVITE_PATH_PREFIX
+from buildapp.invites_admin import INVITES_ADMIN_PATH, OPEN_LINK_PATH
+from buildapp.invites_controller import INVITES_API_PATH
 from buildapp.push_controller import NOTIFY_ROUTE_PATH
 from buildapp.rtc_controller import ICE_SERVERS_ROUTE_PATH
 from buildapp.transport_controller import REPORT_ROUTE_PATH
@@ -32,6 +34,7 @@ PAGE_RATE_LIMIT_WINDOWS = [(300, 60.0)]
 APP_STATIC_RATE_LIMIT_WINDOWS = [(1200, 60.0)]
 SPA_API_RATE_LIMIT_WINDOWS = [(600, 60.0)]
 WAITLIST_INVITE_SEND_RATE_LIMIT_WINDOWS = [(20, 60.0), (300, 86400.0)]
+INVITE_CREATE_RATE_LIMIT_WINDOWS = [(20, 60.0), (300, 86400.0)]
 # A bridge beats twice a minute, and a beat refused in passing is tried again
 # after about 5, 10 and 20 s (bridge/src/presence.rs): fifty bridges behind one
 # address all redialing through an api deploy (#173).
@@ -327,3 +330,13 @@ def test_the_waitlist_invite_send_is_rate_limited_but_the_page_is_not():
     assert rate_limit.resolve(WAITLIST_ADMIN_PATH, "GET").limits == [
         rate_limit.effective_default().pair
     ]
+
+
+@pytest.mark.parametrize("path", [INVITES_ADMIN_PATH, OPEN_LINK_PATH, INVITES_API_PATH])
+def test_each_invite_creation_route_has_the_send_budget(path):
+    rate_limit = RateLimitConfig(**load_config("app.yaml")["rate_limit"])
+    policy = rate_limit.resolve(path, "POST")
+    assert policy.name == "invite_create"
+    assert policy.key == "ip"
+    assert policy.limits == INVITE_CREATE_RATE_LIMIT_WINDOWS
+    assert rate_limit.resolve(path, "GET").name != "invite_create"

@@ -28,17 +28,33 @@
 </section>
 
 <section class="sk-panel">
+    <div class="sk-panel-head"><h2>Create a one-off link</h2></div>
+    <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+    <form method="post" action="{{ open_link_path }}">
+        {{ csrf_field() }}
+        <button class="sk-btn" type="submit">{{ open_link_label }}</button>
+    </form>
+    <p class="sk-muted">One person can use this link within 14 days. Their account address binds to it when they redeem it.</p>
+    {% if new_open_link_url %}
+    <label for="new-open-link-url">Copy this link now; it will not be shown again</label>
+    <input id="new-open-link-url" type="text" readonly value="{{ new_open_link_url }}">
+    {% endif %}
+</section>
+
+<section class="sk-panel">
     <div class="sk-panel-head"><h2>All invites</h2></div>
     <div class="sk-table-scroll">
         <table class="sk-admin-table">
             <thead>
                 <tr>
                     <th>Address</th>
+                    <th>Kind</th>
                     <th>State</th>
                     <th>Invited by</th>
-                    <th>Sent</th>
+                    <th>Created</th>
                     <th>Expires</th>
                     <th>Redeemed</th>
+                    <th>Email opt-in</th>
                     <th></th>
                 </tr>
             </thead>
@@ -46,6 +62,7 @@
                 {% for invite in invites %}
                 <tr>
                     <td>{{ invite.email }}</td>
+                    <td>{{ invite.kind }}</td>
                     <td>{{ invite_status(invite.status) }}</td>
                     <td>{{ invite.invited_by }}</td>
                     <td>{{ invite.created_at.strftime('%Y-%m-%d %H:%M') if invite.created_at else '' }}</td>
@@ -55,6 +72,7 @@
                         {{ invite.redeemed_by }} · {{ invite.redeemed_at.strftime('%Y-%m-%d %H:%M') }}
                         {% else %}—{% endif %}
                     </td>
+                    <td>{{ invite.email_opt_in if invite.email_opt_in is not none else '—' }}</td>
                     <td>
                         {% if invite.revocable %}
                         <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
@@ -66,7 +84,7 @@
                     </td>
                 </tr>
                 {% else %}
-                <tr><td colspan="7">No invites yet.</td></tr>
+                <tr><td colspan="9">No invites yet.</td></tr>
                 {% endfor %}
             </tbody>
         </table>

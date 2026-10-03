@@ -19,6 +19,7 @@ from litestar import Litestar
 from litestar.di import Provide
 from litestar.middleware.session.client_side import CookieBackendConfig
 from litestar.testing import TestClient
+from litestar.template import TemplateConfig
 from skrift.auth.services import invalidate_user_permissions_cache
 from skrift.auth.session_keys import SESSION_USER_ID
 from skrift.db.base import Base
@@ -111,6 +112,7 @@ def asgi_app(
     session_maker: async_sessionmaker[AsyncSession],
     session_config: CookieBackendConfig | None = None,
     seed: Callable[[AsyncSession], Awaitable[None]] | None = None,
+    template_config: TemplateConfig | None = None,
 ) -> Litestar:
     """The stack every route the tests drive over HTTP needs: a ``db_session``
     dependency over ``session_maker``, the whole schema built on startup, an optional
@@ -139,6 +141,7 @@ def asgi_app(
         middleware=[session_config.middleware] if session_config else [],
         on_startup=[create_tables],
         on_shutdown=[dispose_engine],
+        template_config=template_config,
     )
     app.state.make_session = session_maker
     app.state.session_maker_class = session_maker

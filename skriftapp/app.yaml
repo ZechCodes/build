@@ -198,6 +198,38 @@ rate_limit:
           per: minute
         - limit: 300
           per: day
+    # Both administrator creation forms and the JSON API mint invitation tokens.
+    # Keep their shared budget at the same 20/minute and 300/day as waitlist sends.
+    - name: invite_create
+      match:
+        path: /admin/invites
+        method: POST
+      key: ip
+      limits:
+        - limit: 20
+          per: minute
+        - limit: 300
+          per: day
+    - name: invite_create
+      match:
+        path: /admin/invites/open-link
+        method: POST
+      key: ip
+      limits:
+        - limit: 20
+          per: minute
+        - limit: 300
+          per: day
+    - name: invite_create
+      match:
+        path: /api/invites
+        method: POST
+      key: ip
+      limits:
+        - limit: 20
+          per: minute
+        - limit: 300
+          per: day
 email:
   backend: skrift.lib.email_backends:SMTPEmailBackend
   from_address: $SMTP_FROM_ADDRESS

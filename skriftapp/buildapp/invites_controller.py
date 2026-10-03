@@ -1,5 +1,5 @@
 """The two invite endpoints: the public link a guest opens, and the admin JSON route
-that mints one and mails it.
+that mints either invite kind and mails addressed invites.
 
 Both parse, authorize and delegate — the rules are ``invites``', the copy and the status
 codes are ``invite_pages``', and the mail is ``invite_mail``'s. The link handler never
@@ -24,6 +24,7 @@ from buildapp.accounts import account_email
 from buildapp.clock import utc_now
 from buildapp.email_message import provide_email_backend, provide_public_base_url
 from buildapp.invite_mail import invite_email_task
+from buildapp.invite_kind import InviteKind
 from buildapp.invite_pages import APP_PATH, OUTCOMES
 from buildapp.invites import (
     EMAIL_FIELD,
@@ -37,6 +38,12 @@ from buildapp.session_auth import login_redirect, session_user_id
 
 INVITE_ROUTE_PATH = f"{INVITE_PATH_PREFIX}{{token:str}}"
 INVITES_API_PATH = "/api/invites"
+INVALID_INVITE_KIND_MESSAGE = "invalid invite kind"
+OPEN_LINK_EMAIL_MESSAGE = "open links must not include an email address"
+INVITE_RESPONSE_HEADERS = {
+    "Cache-Control": "no-store",
+    "Referrer-Policy": "no-referrer",
+}
 
 
 class InvitesController(Controller):
@@ -46,7 +53,7 @@ class InvitesController(Controller):
         "public_base_url": Provide(provide_public_base_url, sync_to_thread=False),
     }
 
-    @get(INVITE_ROUTE_PATH)
+    @get(INVITE_ROUTE_PATH, response_headers=INVITE_RESPONSE_HEADERS)
     async def open_invite(
         self, request: Request, token: str, db_session: AsyncSession
     ) -> Response | Redirect:
@@ -69,7 +76,7 @@ class InvitesController(Controller):
         db_session: AsyncSession, invite: Invite, user_id, now: datetime
     ) -> Response | Redirect:
         email = await account_email(db_session, user_id)
-        redemption = invites.redeem(invite, user_id, email, now)
+        redemption = await invites.claim_invite(db_session, invite, user_id, email, now)
         if not redemption.ok:
             return OUTCOMES[redemption.reason].response()
         await db_session.commit()
@@ -87,24 +94,40 @@ class InvitesController(Controller):
         email_backend: EmailBackend,
         public_base_url: str,
     ) -> Response:
-        """Admin. Answers with the link so the operator can pass it on by hand; the
-        email goes out in the background, fail-soft."""
+        """Admin. Answers with the link; addressed invites also mail it in the
+        background, fail-soft."""
         body = await read_json_object(request)
         try:
-            invite, raw = await invites.issue_invite(
-                db_session, str(body.get(EMAIL_FIELD, "")), session_user_id(request), utc_now()
+            kind = InviteKind(body.get("kind", InviteKind.EMAIL_BOUND))
+        except (TypeError, ValueError) as bad_kind:
+            raise ClientException(INVALID_INVITE_KIND_MESSAGE) from bad_kind
+        if kind is InviteKind.OPEN_LINK:
+            if EMAIL_FIELD in body:
+                raise ClientException(OPEN_LINK_EMAIL_MESSAGE)
+            invite, raw = await invites.issue_open_invite(
+                db_session, session_user_id(request), utc_now()
             )
-        except ValueError as bad_address:
-            raise ClientException(invites.INVALID_ADDRESS_MESSAGE) from bad_address
+            background = None
+        else:
+            try:
+                invite, raw = await invites.issue_invite(
+                    db_session, str(body.get(EMAIL_FIELD, "")),
+                    session_user_id(request), utc_now()
+                )
+            except ValueError as bad_address:
+                raise ClientException(invites.INVALID_ADDRESS_MESSAGE) from bad_address
+            background = invite_email_task(
+                email_backend, invite.email,
+                invites.invite_url(public_base_url, raw), public_base_url
+            )
         url = invites.invite_url(public_base_url, raw)
         return Response(
             {
                 "invite_id": str(invite.id),
+                "kind": kind.value,
                 "email": invite.email,
                 "expires_at": invite.expires_at.isoformat(),
                 "url": url,
             },
-            background=invite_email_task(
-                email_backend, invite.email, url, public_base_url
-            ),
+            background=background,
         )

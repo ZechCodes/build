@@ -83,6 +83,26 @@ def test_a_token_that_was_never_issued_is_not_found(client):
     assert OUTCOMES[InviteState.UNKNOWN].heading in response.text
 
 
+def test_public_invite_outcomes_and_redirects_do_not_cache_or_send_referrers(client):
+    unknown = client.get(invite_path("inv_never-issued"), follow_redirects=False)
+    open_token = issue(client)
+    redirect = client.get(invite_path(open_token), follow_redirects=False)
+    revoked_token = issue(client, revoked_at=utc_now())
+    gone = client.get(invite_path(revoked_token), follow_redirects=False)
+    expired_token = issue(client, expires_at=utc_now() - timedelta(seconds=1))
+    expired = client.get(invite_path(expired_token), follow_redirects=False)
+    used_token = issue(client, redeemed_by=uuid4(), redeemed_at=utc_now())
+    used = client.get(invite_path(used_token), follow_redirects=False)
+    sign_in(client, OTHER_ADDRESS)
+    mismatch = client.get(invite_path(open_token), follow_redirects=False)
+    matching_token = issue(client)
+    sign_in(client, INVITED)
+    redeemed = client.get(invite_path(matching_token), follow_redirects=False)
+    for response in (unknown, redirect, gone, expired, used, mismatch, redeemed):
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["referrer-policy"] == "no-referrer"
+
+
 def test_a_revoked_invite_is_gone(client):
     raw = issue(client, revoked_at=utc_now())
     response = client.get(invite_path(raw))
@@ -167,6 +187,44 @@ def test_the_admin_route_creates_one_invite_and_mails_the_normalized_address(
     assert email_backend.sent[0].subject == INVITE_SUBJECT
     assert body["url"] in email_backend.sent[0].text_body
     assert stored_invites(client)[0].invited_by == inviter
+
+
+def test_admin_json_can_create_an_open_link_without_mailing_an_address(client, email_backend):
+    inviter = sign_in_as_admin(client)
+    response = client.post(INVITES_API_PATH, json={"kind": "open_link"})
+    assert response.status_code == HTTP_201_CREATED
+    body = response.json()
+    assert body["kind"] == "open_link"
+    assert body["email"] == ""
+    assert body["url"].startswith("https://getbuild.ing/invite/inv_")
+    (created,) = stored_invites(client)
+    assert created.kind == "open_link"
+    assert created.email == ""
+    assert created.invited_by == inviter
+    assert email_backend.sent == []
+
+
+@pytest.mark.parametrize("payload", [
+    {"kind": "unknown", "email": INVITED},
+    {"kind": None, "email": INVITED},
+    {"kind": "open_link", "email": INVITED},
+    {"kind": "open_link", "email": ""},
+])
+def test_admin_json_refuses_invalid_kind_or_address_combination(client, email_backend, payload):
+    sign_in_as_admin(client)
+    response = client.post(INVITES_API_PATH, json=payload)
+    assert response.status_code == HTTP_400_BAD_REQUEST
+    assert stored_invites(client) == []
+    assert email_backend.sent == []
+
+
+def test_explicit_email_bound_kind_preserves_the_email_flow(client, email_backend):
+    sign_in_as_admin(client)
+    response = client.post(INVITES_API_PATH, json={"kind": "email_bound", "email": INVITED})
+    assert response.status_code == HTTP_201_CREATED
+    assert response.json()["kind"] == "email_bound"
+    assert stored_invites(client)[0].kind == "email_bound"
+    assert [sent.to for sent in email_backend.sent] == [INVITED]
 
 
 def test_the_invite_the_admin_route_returns_is_the_one_a_visitor_can_redeem(client):

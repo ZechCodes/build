@@ -1,5 +1,5 @@
-"""The admin invites page: who has been invited, what became of each invite, and the
-two forms that send one and take one back.
+"""The admin invites page: issue addressed and open-link invites, list them, and
+take them back.
 
 Both forms call the same ``invites.issue_invite`` / ``invites.revoke_invite`` the JSON
 route calls — the page is another audience for one service, not a second implementation.
@@ -28,10 +28,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from buildapp import invites
 from buildapp.accounts import addresses_by_id
 from buildapp.clock import utc_now
+from buildapp.email_consent import consent_by_user_id
 from buildapp.email_message import provide_email_backend, provide_public_base_url
 from buildapp.invite_mail import send_invite_email
 from buildapp.invite_status import invite_status
 from buildapp.invites import EMAIL_FIELD, InviteState, invite_state
+from buildapp.invite_kind import InviteKind
 from buildapp.models import Invite
 from buildapp.session_auth import session_user_id
 
@@ -41,11 +43,14 @@ ADMIN_PREFIX = "/admin"
 INVITES_PAGE_ROUTE_PATH = "/invites"
 REVOKE_SUFFIX = "/revoke"
 REVOKE_ROUTE_PATH = f"{INVITES_PAGE_ROUTE_PATH}/{{invite_id:uuid}}{REVOKE_SUFFIX}"
+OPEN_LINK_ROUTE_PATH = f"{INVITES_PAGE_ROUTE_PATH}/open-link"
 INVITES_ADMIN_PATH = f"{ADMIN_PREFIX}{INVITES_PAGE_ROUTE_PATH}"
+OPEN_LINK_PATH = f"{ADMIN_PREFIX}{OPEN_LINK_ROUTE_PATH}"
 REVOKE_PATH = f"{INVITES_ADMIN_PATH}/{{invite_id}}{REVOKE_SUFFIX}"
 TEMPLATE_NAME = "admin/invites.html"
 
 SEND_INVITE_LABEL = "Send invite"
+CREATE_OPEN_LINK_LABEL = "Create one-off link"
 REVOKE_LABEL = "Revoke"
 NO_ONE = "—"
 
@@ -64,17 +69,24 @@ CSRF_REFUSED_MESSAGE = "That form expired. Try again."
 
 
 def build_invites_dashboard(
-    rows: Iterable[Invite], addresses: Mapping[UUID, str], now: datetime
+    rows: Iterable[Invite], addresses: Mapping[UUID, str], now: datetime,
+    consent: Mapping[UUID, bool] | None = None,
 ) -> list[dict[str, Any]]:
     """Everything the template shows, pure over its inputs — so the template test
     needs no database and no clock."""
     dashboard = []
+    consent = consent or {}
     for invite in rows:
         state = invite_state(invite, now)
+        kind = invite.kind or InviteKind.EMAIL_BOUND
         dashboard.append(
             {
                 "invite_id": str(invite.id),
-                "email": invite.email,
+                "kind": "Open link" if kind == InviteKind.OPEN_LINK else "Email bound",
+                "email": invite.email or "No email bound",
+                "email_opt_in": (
+                    "Yes" if consent.get(invite.redeemed_by, False) else "No"
+                ) if invite.redeemed_by is not None else None,
                 "status": invite_status(invite, now),
                 "invited_by": addresses.get(invite.invited_by) or NO_ONE,
                 "redeemed_by": addresses.get(invite.redeemed_by) or NO_ONE,
@@ -98,12 +110,14 @@ def invites_page_context(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "send_path": INVITES_ADMIN_PATH,
         "email_field": EMAIL_FIELD,
         "send_label": SEND_INVITE_LABEL,
+        "open_link_path": OPEN_LINK_PATH,
+        "open_link_label": CREATE_OPEN_LINK_LABEL,
         "revoke_label": REVOKE_LABEL,
     }
 
 
 class InvitesAdminController(Controller):
-    """Send an invite, watch it land, take it back."""
+    """Issue an invite, watch it land or be redeemed, take it back."""
 
     path = ADMIN_PREFIX
     guards = [auth_guard]
@@ -123,17 +137,25 @@ class InvitesAdminController(Controller):
     ) -> TemplateResponse:
         ctx = await get_admin_context(request, db_session)
         rows = await invites.all_invites(db_session)
-        return TemplateResponse(
-            TEMPLATE_NAME,
-            context={
-                "flash_messages": get_flash_messages(request),
-                **invites_page_context(
-                    build_invites_dashboard(
-                        rows, await addresses_by_id(db_session), utc_now()
-                    )
-                ),
-                **ctx,
-            },
+        return await _invites_response(request, db_session, rows, ctx)
+
+    @post(OPEN_LINK_ROUTE_PATH, guards=[auth_guard, Permission("administrator")])
+    async def create_open_link(
+        self, request: Request, db_session: AsyncSession, public_base_url: str
+    ) -> TemplateResponse | Redirect:
+        """Render the new raw URL in this response only, after a CSRF-checked POST.
+        No redirect, flash, session value or later GET can recover the token."""
+        if not await verify_csrf(request):
+            return _flashed(request, CSRF_REFUSED_MESSAGE, ok=False)
+        _, raw = await invites.issue_open_invite(
+            db_session, session_user_id(request), utc_now()
+        )
+        return await _invites_response(
+            request,
+            db_session,
+            await invites.all_invites(db_session),
+            await get_admin_context(request, db_session),
+            new_open_link_url=invites.invite_url(public_base_url, raw),
         )
 
     @post(INVITES_PAGE_ROUTE_PATH, guards=[auth_guard, Permission("administrator")])
@@ -187,3 +209,26 @@ def sent_message(email: str, mailed: bool) -> str:
 def _flashed(request: Request, message: str, *, ok: bool) -> Redirect:
     (flash_success if ok else flash_error)(request, message)
     return Redirect(INVITES_ADMIN_PATH)
+
+
+async def _invites_response(
+    request: Request, db_session: AsyncSession, rows: list[Invite],
+    admin_context: Mapping[str, Any], *, new_open_link_url: str | None = None,
+) -> TemplateResponse:
+    consent = await consent_by_user_id(
+        db_session, [row.redeemed_by for row in rows if row.redeemed_by is not None]
+    )
+    return TemplateResponse(
+        TEMPLATE_NAME,
+        context={
+            "flash_messages": get_flash_messages(request),
+            **invites_page_context(
+                build_invites_dashboard(
+                    rows, await addresses_by_id(db_session), utc_now(), consent
+                )
+            ),
+            "new_open_link_url": new_open_link_url,
+            **admin_context,
+        },
+        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+    )

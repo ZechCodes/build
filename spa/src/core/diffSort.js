@@ -36,7 +36,7 @@ export function sortDiffFiles(files, order) {
 
 export function diffSortHtml(order) {
   const selected = order === DIFF_SORT_ALPHABETICAL ? DIFF_SORT_ALPHABETICAL : DIFF_SORT_LATEST;
-  return `<label class="diffsort"><span>Sort</span><select class="diffsort-select" aria-label="Sort changed files">
+  return `<label class="diffsort"><span>Sort</span><select class="diffsort-select mini" aria-label="Sort changed files">
     <option value="latest"${selected === DIFF_SORT_LATEST ? " selected" : ""}>Latest changes</option>
     <option value="alphabetical"${selected === DIFF_SORT_ALPHABETICAL ? " selected" : ""}>Alphabetical</option>
   </select></label>`;

@@ -142,12 +142,7 @@
 /* The assignee keeps its own control (five kinds, two of which open forms), so
    it cannot be a filter menu — but it can read like one. */
 .task-compose-assignee .create-label { display:block; font-size:11px; color:var(--dim); margin-bottom:3px; }
-.task-compose-assignee select {
-  font:inherit; font-size:12px; color:var(--ink2);
-  background:var(--panel); border:1px solid var(--line2); border-radius:7px;
-  padding:4px 8px; width:100%; max-width:340px;
-}
-.task-compose-assignee select:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+.task-compose-assignee select { width:100%; max-width:340px; }
 .task-compose-assignee .task-assignee-hint { font-size:11px; margin:3px 0 0; }
 .task-compose-error[hidden], .task-compose-waiting[hidden] { display:none; }
 .task-compose-error { margin:0; font-size:12px; }
@@ -555,7 +550,8 @@
   text-transform:uppercase; color:var(--dim);
 }
 .task-rail-section .sub { margin:0; font-size:11px; color:var(--dim); }
-.task-rail select, .task-rail input[type="text"] {
+.task-rail select { width:100%; }
+.task-rail input[type="text"] {
   font:inherit; font-size:13px; width:100%;
   background:var(--panel); color:var(--ink);
   border:1px solid var(--line); border-radius:8px; padding:6px 9px;
@@ -569,7 +565,8 @@
 /* ---- the assignee control ------------------------------------------------ */
 
 .task-assignee-control { display:flex; flex-direction:column; gap:4px; margin-top:4px; }
-.task-assignee-control select, .task-assignee-control input[type="text"] {
+.task-assignee-control select { width:100%; }
+.task-assignee-control input[type="text"] {
   font:inherit; width:100%;
   background:var(--panel); color:var(--ink);
   border:1px solid var(--line); border-radius:8px; padding:7px 10px;
@@ -818,9 +815,15 @@ a.thread-task-action:focus-visible, a.thread-task-notice:focus-visible {
 .task-column-head { flex-wrap:wrap; }
 .task-column-head .task-column-note { flex-basis:100%; }
 
-.rail-reset-choice label { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; }
-.rail-reset-choice select { max-width: 65%; }
+.rail-reset-choice label { display:grid; grid-template-columns:max-content minmax(0, 1fr); align-items:center; gap:12px; width:100%; }
+.rail-reset-choice select { width:100%; }
+.rail-reset-choice .rail-harness-choice { height:var(--select-height); padding:0 6px; gap:4px; white-space:nowrap; }
+.rail-reset-choice .rail-harness-choice span { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.rail-reset-choice .rail-harness-icon { flex:none; }
 .rail-reset-choice .row { flex-wrap: wrap; justify-content: center; }
+@media (max-width:400px) {
+  .rail-reset-choice label { grid-template-columns:minmax(0, 1fr); gap:4px; text-align:left; }
+}
 .rail-clearing .thread-composer textarea,
 .rail-clearing .composer-actions,
 .rail-clearing .composer-context,

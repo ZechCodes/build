@@ -35,6 +35,8 @@
 // Each page is a record of its own, and `read` answers the value with the
 // held pages joined into `field` and `pages: { end, total, complete }`.
 // `more(key)` reads the next page. Nothing is ever painted from an answer.
+// An optional `guard: { address, accepts(value) }` admits writes only while
+// its record still belongs to this reader, checked with the bodies atomically.
 
 import { deleteCached, mergeCachedRecordsTogether, readCached, recordWriteOf, subscribeCache } from "./localCache.js";
 import {
@@ -57,6 +59,7 @@ export function createCachedBodies({
   valueOf,
   cacheable = () => true,
   pages = null,
+  guard = null,
   onChange = () => {},
 }) {
   const held = new Map(); // key → body
@@ -175,14 +178,18 @@ export function createCachedBodies({
     return disposed ? null : stringKey;
   };
 
+  const writeAddresses = (addresses) => guard ? [...addresses, guard.address] : addresses;
+  const writeAllowed = (records, startedFrom, guardIndex) =>
+    !disposed && recordWriteOf(records[0]) === startedFrom && (!guard || guard.accepts(records[guardIndex]?.value));
+
   /** Admit the answer and all its pages together, checking this reader's
-   * lifetime inside the transaction as well as after its async reads. */
+   * lifetime and owning generation inside the transaction. */
   const keepFetched = (at, value, startedFrom, bodyPages = []) => {
     const puts = [{ address: at, value }, ...bodyPages.map((page) => bodyPagePut(at, page))];
-    return mergeCachedRecordsTogether(puts.map((put) => put.address), (records) =>
-      disposed || recordWriteOf(records[0]) !== startedFrom
-        ? records.map(() => null)
-        : puts.map((put) => put.value));
+    return mergeCachedRecordsTogether(writeAddresses(puts.map((put) => put.address)), (records) =>
+      writeAllowed(records, startedFrom, puts.length)
+        ? records.map((_record, index) => puts[index]?.value ?? null)
+        : records.map(() => null));
   };
 
   /** Keep one answer: whole when it fits, in pages when it does not, and not
@@ -254,8 +261,10 @@ export function createCachedBodies({
     const current = await readCached(at);
     if (!aliveHeadOf(current, of)) return false;
     const put = bodyPagePut(at, page);
-    const written = await mergeCachedRecordsTogether([at, put.address], (records) =>
-      disposed || recordWriteOf(records[0]) !== recordWriteOf(current) ? [null, null] : [null, put.value]);
+    const written = await mergeCachedRecordsTogether(writeAddresses([at, put.address]), (records) =>
+      writeAllowed(records, recordWriteOf(current), 2)
+        ? records.map((_record, index) => index === 1 ? put.value : null)
+        : records.map(() => null));
     return written ? readKeptPage(key, from) : false;
   };
   /** One page read of a body at a time. An ask that lands while one is out —

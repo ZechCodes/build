@@ -359,6 +359,7 @@ impl ApiError {
         }
         if sentence.contains("conversation is being cleared")
             || sentence.contains("process is still stopping")
+            || sentence.contains("session delivery is in progress")
             || sentence.contains("native history became shared")
             || sentence == crate::reclaim::BUSY
             || sentence == crate::reclaim::RESERVED

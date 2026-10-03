@@ -401,6 +401,7 @@ impl AppState {
             return false;
         };
         address.conversation_id == conversation_id
+            && self.guard_conversation_reservation(&address).is_ok()
             && self
                 .entity_agent_root(owner)
                 .is_ok_and(|actual| Self::canonical_root(&actual) == root)
@@ -612,7 +613,8 @@ impl AppState {
         agent_id: &str,
         watching: bool,
     ) -> Result<serde_json::Value, String> {
-        self.resolve_conversation_address(owner, Some(agent_id))?;
+        let address = self.resolve_conversation_address(owner, Some(agent_id))?;
+        self.guard_conversation_reservation(&address)?;
         let mut found = false;
         self.edit_agent_record("set_conversation_watched", owner, agent_id, |agent| {
             found = true;
@@ -633,7 +635,8 @@ impl AppState {
         agent_id: &str,
         max_context_tokens: Option<u64>,
     ) -> Result<serde_json::Value, String> {
-        self.resolve_conversation_address(owner, Some(agent_id))?;
+        let address = self.resolve_conversation_address(owner, Some(agent_id))?;
+        self.guard_conversation_reservation(&address)?;
         let device_threshold = self.compact_above_tokens;
         let mut compact_at_tokens = None;
         self.edit_agent_record("set_conversation_context_limit", owner, agent_id, |agent| {
@@ -881,6 +884,7 @@ impl AppState {
         edit: impl FnOnce(&mut crate::thread::Thread, crate::thread::ArtifactKind) -> Result<T, String>,
     ) -> Result<T, String> {
         let address = self.resolve_conversation_address(entity_id, Some(agent_id))?;
+        self.guard_conversation_reservation(&address)?;
         if self.plans.contains_key(&address.conversation_entity_id) {
             let mut active = self.take_plan(&address.conversation_entity_id)?;
             let result = active

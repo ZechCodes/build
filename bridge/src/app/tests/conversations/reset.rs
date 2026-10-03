@@ -303,6 +303,10 @@ fn conversation_reset_waits_with_lock_free_and_reserves_its_aliases() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let (_, owner) = planned_run_in_review(&mut state, "off lock reset");
+    let upload = state.handle(req("thread.attach", json!({ "entity_id": owner, "filename": "read-during-reset.txt", "content_b64": b64encode(b"still readable") })));
+    assert_eq!(upload["ok"], true, "{upload:?}");
+    let posted = state.handle(req("thread.post", json!({ "entity_id": owner, "operation_id": "reset-readable-operation", "body": "read this while reset waits" })));
+    assert_eq!(posted["ok"], true, "{posted:?}");
     let params = reset_params(&state, &owner);
     let agent_id = primary_agent_id(&state, &owner);
     let (gate, gate_handle) = OffLockGate::new();
@@ -314,6 +318,13 @@ fn conversation_reset_waits_with_lock_free_and_reserves_its_aliases() {
         .recv_timeout(Duration::from_secs(10))
         .unwrap();
     assert_eq!(board["ok"], true, "{board:?}");
+    assert_reset_reads_available(
+        &state,
+        &owner,
+        &agent_id,
+        &params["expected_thread_id"],
+        &upload["result"]["path"],
+    );
     let refused = frame_on_a_thread(
         &state,
         "watch-client",
@@ -346,6 +357,77 @@ fn conversation_reset_waits_with_lock_free_and_reserves_its_aliases() {
     drop(locked);
     let stale_seen = state.lock().unwrap().handle(req("entity.seen", json!({ "entity_id": owner, "agent_id": agent_id, "thread_id": params["expected_thread_id"], "read_through_sequence": 999 })));
     assert_eq!(stale_seen["error_code"], "conflict", "{stale_seen:?}");
+}
+
+fn assert_reset_reads_available(
+    state: &Arc<Mutex<AppState>>,
+    owner: &str,
+    agent_id: &str,
+    thread_id: &Value,
+    attachment: &Value,
+) {
+    let params = json!({ "entity_id": owner, "agent_id": agent_id, "thread_id": thread_id });
+    let mut activity = params.clone();
+    activity["from_sequence"] = json!(1);
+    activity["through_sequence"] = json!(1);
+    let mut operation = params.clone();
+    operation["operation_id"] = json!("reset-readable-operation");
+    let mut attachment_params = params.clone();
+    attachment_params["path"] = attachment.clone();
+    for (method, params) in [
+        ("thread.page", params),
+        ("thread.activity", activity),
+        ("thread.operation", operation),
+        ("thread.attachment", attachment_params),
+    ] {
+        let reply = frame_on_a_thread(state, method, method, params)
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(reply["ok"], true, "{reply:?}");
+    }
+}
+
+#[test]
+fn conversation_reset_rechecks_dispatch_handoff_after_reserving() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let (_, owner) = planned_run_in_review(&mut state, "reservation handoff race");
+    let address = state.resolve_conversation_address(&owner, None).unwrap();
+    let agents = state
+        .entity_agents(&owner)
+        .unwrap()
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    let ready = state.delivery_queue.take_ready(|_| false);
+    let turn = ready.into_iter().find(|turn| turn.owner == owner).unwrap();
+    let old = state.conversation_at(&address).unwrap().clone();
+    // Admission passed, but a previously drained turn claims execution before
+    // the lifecycle closure reserves the conversation.
+    state.refuse_reset_in_flight(&address, &agents).unwrap();
+    let ticket = state.delivery_queue.start(&turn);
+    let held = state.reserve_reset_turns(&address, &agents);
+    assert!(held.is_err());
+    assert!(!state
+        .resetting_conversations
+        .contains(&address.conversation_id));
+    assert_eq!(*state.conversation_at(&address).unwrap(), old);
+    state.delivery_queue.settle(ticket);
+}
+
+#[test]
+fn conversation_reset_invalid_context_limits_are_client_errors() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let (_, owner) = planned_run_in_review(&mut state, "invalid reset settings");
+    let old = state.agent_conversation(&owner, None).unwrap().clone();
+    for invalid in [json!(-1), json!(1.5), json!("bad"), json!({})] {
+        let mut params = reset_params(&state, &owner);
+        params["max_context_tokens"] = invalid;
+        let reply = state.handle(req("conversation.reset", params));
+        assert_eq!(reply["error_code"], "invalid_params", "{reply:?}");
+    }
+    assert_eq!(*state.agent_conversation(&owner, None).unwrap(), old);
 }
 
 #[test]

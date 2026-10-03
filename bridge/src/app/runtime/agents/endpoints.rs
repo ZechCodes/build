@@ -254,6 +254,7 @@ pub(in crate::app) fn agent_interrupt(
             return Err(crate::app::tasks::TASKS_RETIRED_ERROR.to_string());
         }
         let address = s.resolve_conversation_address(&entity_id, Some(&agent_id))?;
+        s.guard_mutation_thread_id(&address, params.get("thread_id"))?;
         if address.conversation_id != conversation_id {
             return Err(format!(
                 "agent.interrupt: stale conversation_id {conversation_id}; agent {agent_id} is bound to {}",
@@ -1301,7 +1302,8 @@ impl AppState {
         if !self.runs.contains_key(&entity_id) {
             return Err(format!("agent.remove: unknown entity {entity_id}"));
         }
-        self.resolve_conversation_params(&entity_id, params)?;
+        let address = self.resolve_conversation_params(&entity_id, params)?;
+        self.guard_conversation_reservation(&address)?;
         let root = self.entity_agent_root(&entity_id)?;
         // A harness being spawned right now cannot be killed: the tab it will
         // land in does not exist yet, so the reservation is the only handle on

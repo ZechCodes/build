@@ -2,6 +2,8 @@
 //! preparation and the per-turn SettlingHandle guard remain in the runtime adapter.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 use std::time::Instant;
 
 use super::types::PendingAgentTurn;
@@ -23,7 +25,38 @@ pub(in crate::app) struct DeliveryQueue {
     agents_in_flight: HashMap<TabKey, usize>,
     /// Includes silent starts: reset must not pass a drained start that has
     /// not yet acquired its process-spawn claim.
-    executions_in_flight: HashMap<TabKey, usize>,
+    executions_in_flight: HashMap<TabKey, DeliveryCompletion>,
+}
+
+/// A snapshot of an agent's accepted executions. Reset waits for their final
+/// callbacks off the app lock before discarding the generation they belong to.
+#[derive(Clone, Default)]
+pub(in crate::app) struct DeliveryCompletion(Arc<(Mutex<usize>, Condvar)>);
+
+impl DeliveryCompletion {
+    fn start(&self) {
+        let (count, _) = &*self.0;
+        *count.lock().unwrap() += 1;
+    }
+
+    fn settle(&self) -> bool {
+        let (count, waiting) = &*self.0;
+        let mut count = count.lock().unwrap();
+        *count -= 1;
+        let complete = *count == 0;
+        if complete {
+            waiting.notify_all();
+        }
+        complete
+    }
+
+    pub(in crate::app) fn wait(&self, timeout: Duration) -> bool {
+        let (count, waiting) = &*self.0;
+        let (count, _) = waiting
+            .wait_timeout_while(count.lock().unwrap(), timeout, |count| *count > 0)
+            .unwrap();
+        *count == 0
+    }
 }
 
 pub(in crate::app) struct HeldConversationTurns {
@@ -154,10 +187,10 @@ impl DeliveryQueue {
             told_agent: turn.says_something().then(|| turn.tab_key()),
             execution: turn.tab_key(),
         };
-        *self
-            .executions_in_flight
+        self.executions_in_flight
             .entry(ticket.execution.clone())
-            .or_default() += 1;
+            .or_default()
+            .start();
         *self
             .owners_in_flight
             .entry(ticket.owner.clone())
@@ -169,7 +202,13 @@ impl DeliveryQueue {
     }
 
     pub(in crate::app) fn settle(&mut self, ticket: DeliveryTicket) {
-        Self::drop_one(&mut self.executions_in_flight, &ticket.execution);
+        if self
+            .executions_in_flight
+            .get(&ticket.execution)
+            .is_some_and(DeliveryCompletion::settle)
+        {
+            self.executions_in_flight.remove(&ticket.execution);
+        }
         Self::drop_one(&mut self.owners_in_flight, &ticket.owner);
         if let Some(agent) = &ticket.told_agent {
             Self::drop_one(&mut self.agents_in_flight, agent);
@@ -196,6 +235,10 @@ impl DeliveryQueue {
 
     pub(in crate::app) fn agent_in_flight(&self, key: &TabKey) -> bool {
         self.executions_in_flight.contains_key(key)
+    }
+
+    pub(in crate::app) fn execution_completion(&self, key: &TabKey) -> Option<DeliveryCompletion> {
+        self.executions_in_flight.get(key).cloned()
     }
 
     pub(in crate::app) fn has_in_flight_at_root(&self, root: &std::path::Path) -> bool {

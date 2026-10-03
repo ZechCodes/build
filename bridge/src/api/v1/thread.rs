@@ -727,6 +727,7 @@ fn names_nothing(message: &str) -> bool {
 /// Whether a refusal is about the request itself rather than the state it met.
 fn names_bad_input(message: &str) -> bool {
     message.starts_with("invalid ")
+        || message.contains("invalid max_context_tokens")
         || message.contains("operation_id exceeds")
         || message.contains("operation_id contains")
         || message.contains("creation_id is too long")
@@ -1053,5 +1054,25 @@ mod tests {
             refine(ApiError::internal("thread.post: run is done")).code(),
             "internal"
         );
+    }
+
+    #[test]
+    fn labelled_invalid_reset_context_is_a_client_error() {
+        let error = refine(ApiError::internal(
+            "conversation.reset: invalid max_context_tokens: expected a nonnegative integer or null",
+        ));
+        assert_eq!(error.code(), "invalid_params");
+        assert!(!error.retryable());
+    }
+
+    #[test]
+    fn deferred_reset_delivery_timeout_is_retryable_busy() {
+        // Deferred settlements pass through the generic classifier after the
+        // original typed handler has released the app lock.
+        let error = ApiError::classify(
+            "conversation.reset: session delivery is in progress; try again shortly".into(),
+        );
+        assert_eq!(error.code(), "busy");
+        assert!(error.retryable());
     }
 }

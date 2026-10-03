@@ -68,11 +68,6 @@ impl AppState {
         let roster = self.entity_agents(entity_id)?;
         let agent = roster.resolve(agent_id)?;
         let conversation_id = agent.conversation_id().to_string();
-        if self.resetting_conversations.contains(&conversation_id) {
-            return Err(
-                "conversation.reset: conversation is being cleared; try again shortly".into(),
-            );
-        }
         let conversation_entity_id = self.entity_of_agent(&conversation_id).ok_or_else(|| {
             format!(
                 "agent {} is bound to missing conversation {}",
@@ -130,11 +125,27 @@ impl AppState {
         address: &ConversationAddress,
         expected: Option<&Value>,
     ) -> Result<(), String> {
+        self.guard_conversation_reservation(address)?;
         self.guard_thread_id(address, expected)?;
         if expected.is_none() && self.conversation_at(address)?.generation_revision > 0 {
             return Err(
                 "stale unversioned mutation: cleared conversation requires current thread_id"
                     .into(),
+            );
+        }
+        Ok(())
+    }
+
+    pub(in crate::app) fn guard_conversation_reservation(
+        &self,
+        address: &ConversationAddress,
+    ) -> Result<(), String> {
+        if self
+            .resetting_conversations
+            .contains(&address.conversation_id)
+        {
+            return Err(
+                "conversation.reset: conversation is being cleared; try again shortly".into(),
             );
         }
         Ok(())
@@ -148,6 +159,7 @@ impl AppState {
             .and_then(Value::as_str)
             .ok_or("missing entity_id")?;
         let address = self.resolve_conversation_params(owner, params)?;
+        self.guard_conversation_reservation(&address)?;
         let mut current = params.clone();
         current["thread_id"] = Value::String(self.conversation_at(&address)?.id.clone());
         Ok(current)

@@ -1,5 +1,6 @@
 use super::{reset_files::ResetFiles, AppState, ConversationAddress};
 use crate::agent::{Agent, AgentLifecycle};
+use crate::app::runtime::delivery::queue::{DeliveryCompletion, HeldConversationTurns};
 use crate::app::{model_choice_from, require_str, DigestScope, TabKey};
 use crate::harness::{AgentSession, HarnessConversationCleanup};
 use crate::lifecycle::{PendingRow, PendingState, Performed, WorktreeChange, WorktreeMutation};
@@ -9,7 +10,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 impl AppState {
     /// Replace history, keeping every durable identity and ownership link.
@@ -20,6 +21,7 @@ impl AppState {
         require_str(params, "conversation_id")?;
         let expected = require_str(params, "expected_thread_id")?;
         let address = self.resolve_conversation_params(&entity_id, params)?;
+        self.guard_conversation_reservation(&address)?;
         self.validate_reset_project(&address, &project_id)?;
         self.guard_thread_id(&address, Some(&Value::String(expected.clone())))?;
         let addressed = self
@@ -45,30 +47,25 @@ impl AppState {
             .map(PathBuf::from)
             .ok_or("conversation.reset: HOME is unavailable")?;
         self.defer_lifecycle_holding(row, move |state| {
-            state
-                .resetting_conversations
-                .insert(address.conversation_id.clone());
-            let held = state
-                .delivery_queue
-                .take_conversation(&address.conversation_id);
-            let native = native
-                .into_iter()
-                .map(|mut input| {
-                    let root = state
-                        .entity_agent_root(&input.agent.owner_id)
-                        .expect("validated agent root");
-                    input.retirement = state
-                        .retire_tab(&TabKey::agent(&root, &input.agent.id), "conversation_reset");
-                    state.retire_agent(&root, &input.agent.id);
-                    input
-                })
-                .collect();
+            // The claim and this recheck share the app lock. A dispatch that
+            // drained after initial validation cannot spawn from old resume data.
+            let held = state.reserve_reset_turns(&address, &agents);
+            let refusal = held.as_ref().err().cloned();
+            let held = held.ok();
+            let completions = state.reset_delivery_completions(&agents);
+            let native = if refusal.is_none() {
+                state.retire_reset_sessions(native)
+            } else {
+                Vec::new()
+            };
             let work = ResetConversationWork {
                 state_root,
                 home,
                 native,
                 homes,
                 leaves,
+                completions,
+                refusal,
             };
             let settle = move |state: &mut AppState, outcome: Result<ResetArtifacts, String>| {
                 state
@@ -88,7 +85,9 @@ impl AppState {
                         .conversation_at(&address)
                         .is_ok_and(|thread| thread.id == expected)
                 {
-                    state.delivery_queue.restore_conversation(held);
+                    if let Some(held) = held {
+                        state.delivery_queue.restore_conversation(held);
+                    }
                 }
                 outcome
             };
@@ -144,6 +143,11 @@ impl AppState {
         // history. Finalize every guard, retaining an unlink error until the
         // replacement generation has been published.
         let cleanup_result = artifacts.commit();
+        // A retiring delivery may have deferred/requeued before its ticket
+        // settled. Its captured callbacks are finished now, and its old turn
+        // must leave with the history rather than run on the replacement.
+        self.delivery_queue
+            .take_conversation(&address.conversation_id);
         self.operation_ledger
             .forget_conversation(&address.conversation_id);
         self.board.attention_mut().replace_entries(attention);
@@ -271,7 +275,12 @@ impl AppState {
                 if agent.id == address.agent_id {
                     agent.choose(choice.clone());
                     if let Some(limit) = params.get("max_context_tokens") {
-                        agent.max_context_tokens = match limit { Value::Null => None, _ => Some(limit.as_u64().ok_or("invalid max_context_tokens: expected a nonnegative integer or null")?) };
+                        agent.max_context_tokens = match limit {
+                            Value::Null => None,
+                            _ => Some(limit.as_u64().ok_or(
+                                "invalid max_context_tokens: expected a nonnegative integer or null",
+                            )?),
+                        };
                     }
                 } else {
                     agent.choose(agent.choice.clone());
@@ -282,7 +291,7 @@ impl AppState {
         Ok(agents)
     }
 
-    fn refuse_reset_in_flight(
+    pub(in crate::app) fn refuse_reset_in_flight(
         &self,
         address: &ConversationAddress,
         agents: &[Agent],
@@ -296,7 +305,8 @@ impl AppState {
             let root = self.entity_agent_root(&agent.owner_id)?;
             let key = TabKey::agent(&root, &agent.id);
             if self.session_registry.claim_is_held(&key)
-                || self.delivery_queue.agent_in_flight(&key)
+                || (self.delivery_queue.agent_in_flight(&key)
+                    && !self.reset_session_is_established(&key, address, agent))
             {
                 return Err(
                     "conversation.reset: session delivery is in progress; try again shortly".into(),
@@ -304,6 +314,70 @@ impl AppState {
             }
         }
         Ok(())
+    }
+
+    pub(in crate::app) fn reserve_reset_turns(
+        &mut self,
+        address: &ConversationAddress,
+        agents: &[Agent],
+    ) -> Result<HeldConversationTurns, String> {
+        self.guard_conversation_reservation(address)?;
+        self.resetting_conversations
+            .insert(address.conversation_id.clone());
+        if let Err(error) = self.refuse_reset_in_flight(address, agents) {
+            self.resetting_conversations
+                .remove(&address.conversation_id);
+            return Err(error);
+        }
+        Ok(self
+            .delivery_queue
+            .take_conversation(&address.conversation_id))
+    }
+
+    fn reset_session_is_established(
+        &self,
+        key: &TabKey,
+        address: &ConversationAddress,
+        agent: &Agent,
+    ) -> bool {
+        self.session_registry
+            .agent_snapshot(key)
+            .is_some_and(|tab| {
+                tab.live
+                    && tab.role.agent() == Some((agent.owner_id.as_str(), agent.id.as_str()))
+                    && tab.instance.as_ref().is_some_and(|instance| {
+                        instance.entity_id == agent.owner_id
+                            && instance.agent_id == agent.id
+                            && instance.conversation_id == address.conversation_id
+                            && instance.checkout == key.root.display().to_string()
+                    })
+            })
+    }
+
+    fn reset_delivery_completions(&self, agents: &[Agent]) -> Vec<DeliveryCompletion> {
+        agents
+            .iter()
+            .filter_map(|agent| {
+                let root = self.entity_agent_root(&agent.owner_id).ok()?;
+                self.delivery_queue
+                    .execution_completion(&TabKey::agent(&root, &agent.id))
+            })
+            .collect()
+    }
+
+    fn retire_reset_sessions(&mut self, native: Vec<ResetNativeAgent>) -> Vec<ResetNativeAgent> {
+        native
+            .into_iter()
+            .map(|mut input| {
+                let root = self
+                    .entity_agent_root(&input.agent.owner_id)
+                    .expect("validated agent root");
+                input.retirement =
+                    self.retire_tab(&TabKey::agent(&root, &input.agent.id), "conversation_reset");
+                self.retire_agent(&root, &input.agent.id);
+                input
+            })
+            .collect()
     }
 
     fn reset_attention(&self, agents: &[Agent]) -> HashMap<String, crate::attention::Attention> {
@@ -554,6 +628,31 @@ struct ResetConversationWork {
     native: Vec<ResetNativeAgent>,
     homes: Vec<PathBuf>,
     leaves: HashSet<String>,
+    completions: Vec<DeliveryCompletion>,
+    refusal: Option<String>,
+}
+
+impl ResetConversationWork {
+    fn wait_for_retirement(&mut self) -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        for input in &mut self.native {
+            if input.retirement.take().is_some_and(|retired| {
+                !retired.wait(deadline.saturating_duration_since(Instant::now()))
+            }) {
+                return Err(
+                    "conversation.reset: process is still stopping; try again shortly".into(),
+                );
+            }
+        }
+        for completion in &self.completions {
+            if !completion.wait(deadline.saturating_duration_since(Instant::now())) {
+                return Err(
+                    "conversation.reset: session delivery is in progress; try again shortly".into(),
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 struct ResetArtifacts {
@@ -584,19 +683,14 @@ impl ResetArtifacts {
 impl WorktreeMutation for ResetConversationWork {
     type Output = ResetArtifacts;
 
-    fn perform(self) -> Result<Performed<Self::Output>, String> {
+    fn perform(mut self) -> Result<Performed<Self::Output>, String> {
+        if let Some(refusal) = self.refusal.take() {
+            return Err(refusal);
+        }
+        self.wait_for_retirement()?;
         let mut cleanups = Vec::new();
         let mut lineages = Vec::new();
         for mut input in self.native {
-            if input
-                .retirement
-                .take()
-                .is_some_and(|retired| !retired.wait(Duration::from_secs(10)))
-            {
-                return Err(
-                    "conversation.reset: process is still stopping; try again shortly".into(),
-                );
-            }
             input.refresh_native_id()?;
             let mut cleanup = HarnessConversationCleanup::prepare(
                 &self.home,

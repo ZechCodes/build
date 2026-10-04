@@ -17,10 +17,12 @@ const server = await createServer({
   configFile: false,
   server: { host: "127.0.0.1", port: 9001, strictPort: true, hmr: false, watch: null,
     fs: { allow: [path.resolve(here, "../../..")] } },
-  plugins: [{ name: "lan-fixture", configureServer(vite) {
+  plugins: [{ name: "lan-fixture", resolveId(id) {
+    if (id === "/__lan_fixture__.mjs") return path.join(here, "browser.mjs");
+  }, configureServer(vite) {
     vite.middlewares.use("/fixture", async (_request, response) => {
       response.setHeader("Content-Type", "text/html");
-      response.end(`<script type="module" src="/@fs/${here}/browser.mjs"></script>`);
+      response.end('<script type="module" src="/__lan_fixture__.mjs"></script>');
     });
   } }],
 });

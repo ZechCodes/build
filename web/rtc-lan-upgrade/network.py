@@ -10,6 +10,7 @@ import sys
 import time
 
 from turn import COOKIE, Turn
+from isolation import require_private_namespace
 
 
 def save_report(artifacts, report):
@@ -91,6 +92,7 @@ async def capture(report, artifacts):
 
 
 async def main(artifacts):
+    require_private_namespace()
     report = {"queries": [], "host_checks": [], "released": False}
     loop = asyncio.get_running_loop()
     await loop.create_datagram_endpoint(Turn, local_addr=("10.72.0.2", 3478))

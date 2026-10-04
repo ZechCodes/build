@@ -8,6 +8,8 @@ import subprocess
 import sys
 import time
 
+from isolation import require_private_namespace
+
 HERE = Path(__file__).resolve().parent
 
 
@@ -28,9 +30,7 @@ def namespace_command(pid, *arguments):
 
 
 def inside(binary, artifacts):
-    mapping = Path("/proc/self/uid_map").read_text().split()
-    assert os.geteuid() == 0 and mapping[0] == "0" and mapping[2] == "1", \
-        "firewall fixture requires its disposable single-user namespace"
+    require_private_namespace()
     artifacts.mkdir(parents=True, exist_ok=True)
     environment = {"PATH": os.environ["PATH"], "HOME": str(artifacts / "home"),
                    "LANG": "C.UTF-8", "BRIDGE_IDENTITY_FILE": str(artifacts / "identity.json"),

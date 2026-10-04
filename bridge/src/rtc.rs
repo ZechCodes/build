@@ -48,6 +48,10 @@ pub(crate) fn diagnostic(session_id: &str, event: &str) {
     eprintln!("rtc: timestamp_ms={timestamp} session={session_id:?} {event}");
 }
 
+pub(crate) fn diagnostic_debug(session_id: &str, event: &str) {
+    log::debug!(target: "build_bridge::rtc", "session={session_id:?} {event}");
+}
+
 pub(crate) mod chunk;
 mod mdns;
 mod policy;
@@ -492,7 +496,7 @@ impl SessionPeerFactory for WebrtcPeerFactory {
             session_id.to_string(),
             self.policy.interfaces.clone(),
             Arc::new(move |payload| {
-                diagnostic(&remote_session, &format!("remote_candidates {payload}"));
+                diagnostic_debug(&remote_session, &format!("remote_candidates {payload}"));
                 output.diagnostics(payload);
             }),
         );
@@ -567,12 +571,11 @@ impl SessionPeer for WebrtcPeer {
                 connection
             }
         };
-        self.remote.begin().await;
         let allowed_offer = self.policy.allowed_offer(offer_sdp);
         let (offer, deferred) = remote::without_mdns(&allowed_offer);
-        connection
-            .set_remote_description(RTCSessionDescription::offer(offer)?)
-            .await?;
+        let offer = RTCSessionDescription::offer(offer)?;
+        self.remote.begin(&allowed_offer).await;
+        connection.set_remote_description(offer).await?;
         self.remote.observe_offer(&allowed_offer).await;
         let answer = connection.create_answer(None).await?;
         let sdp = answer.sdp.clone();
@@ -612,6 +615,7 @@ impl SessionPeer for WebrtcPeer {
     async fn close(&self) {
         let mut negotiation = self.negotiation.lock().await;
         self.remote.close().await;
+        self.signaling.close();
         let Some(open) = negotiation.take() else {
             return;
         };
@@ -689,6 +693,11 @@ struct Trickling {
 }
 
 impl Trickling {
+    fn close(&self) {
+        self.diagnostic_channels.lock().unwrap().clear();
+        *self.signaling.lock().unwrap() = None;
+        *self.bundle_mid.lock().unwrap() = None;
+    }
     fn hold(&self, signaling: SessionSender) {
         *self.signaling.lock().unwrap() = Some(signaling);
     }
@@ -1914,6 +1923,30 @@ mod trickle_tests {
             None,
             "an SDP with no mid at all places nothing"
         );
+    }
+
+    #[tokio::test]
+    async fn closing_a_peer_releases_its_diagnostic_channel_handles() {
+        let (handler, _) = crate::carrier::testing::reporting_handler();
+        let intake = FrameIntake::new(handler, crate::transport::generate_transport_keypair());
+        let signaling = Arc::new(Trickling::default());
+        let (channel, outgoing) = CarrierHandle::open_channel();
+        signaling.diagnostic_channel(intake.clone(), channel);
+        let peer = WebrtcPeer {
+            session_id: "closed-peer".into(),
+            intake,
+            policy: Arc::new(IcePolicy::default()),
+            signaling: signaling.clone(),
+            remote: remote::RemoteCandidates::new("closed-peer".into(), None, Arc::new(|_| {})),
+            negotiation: tokio::sync::Mutex::new(None),
+        };
+        assert!(!outgoing.is_closed());
+        peer.close().await;
+        assert!(
+            outgoing.is_closed(),
+            "closing the peer drops retained outbound senders"
+        );
+        assert!(signaling.diagnostic_channels.lock().unwrap().is_empty());
     }
 
     #[test]

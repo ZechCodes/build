@@ -91,26 +91,90 @@ impl CandidateCounts {
 struct State {
     generation: u64,
     closed: bool,
+    credentials: Option<Vec<IceCredentials>>,
     counts: CandidateCounts,
     seen: HashSet<String>,
-    jobs: Vec<JoinHandle<()>>,
+    jobs: HashMap<String, JoinHandle<()>>,
     resolved: HashMap<String, (Instant, Vec<IpAddr>)>,
+    last_reason: Option<&'static str>,
+    resolution_reported: bool,
+    reported_failures: HashSet<&'static str>,
+    failures: HashMap<&'static str, usize>,
 }
 
 impl State {
     fn cancel(&mut self) {
-        for job in self.jobs.drain(..) {
+        for (_, job) in self.jobs.drain() {
             job.abort();
         }
         self.generation += 1;
         self.seen.clear();
         self.counts = CandidateCounts::default();
+        self.last_reason = None;
+        self.resolution_reported = false;
+        self.reported_failures.clear();
+        self.failures.clear();
         self.resolved
             .retain(|_, (at, _)| at.elapsed() < RESOLVED_CACHE_TTL);
     }
+
+    fn failed(&mut self, failure: &'static str) {
+        self.counts.mdns_unresolved += 1;
+        *self.failures.entry(failure).or_default() += 1;
+    }
+
+    fn cached(&self, name: &str) -> Option<Vec<IpAddr>> {
+        self.resolved
+            .get(name)
+            .filter(|(at, _)| at.elapsed() < RESOLVED_CACHE_TTL)
+            .map(|(_, addresses)| addresses.clone())
+    }
+}
+
+#[derive(Clone, Default, PartialEq, Eq)]
+struct IceCredentials {
+    ufrag: Option<String>,
+    password: Option<String>,
+}
+
+impl IceCredentials {
+    fn observe(&mut self, line: &str) {
+        if let Some(ufrag) = line.strip_prefix("a=ice-ufrag:") {
+            self.ufrag = Some(ufrag.to_string());
+        }
+        if let Some(password) = line.strip_prefix("a=ice-pwd:") {
+            self.password = Some(password.to_string());
+        }
+    }
+}
+
+/// Media-level credentials override session-level credentials. Other SDP
+/// changes leave the ICE generation, and its pending discovery, intact.
+fn ice_credentials(offer: &str) -> Vec<IceCredentials> {
+    let mut session = IceCredentials::default();
+    let mut current = None;
+    let mut media = Vec::new();
+    for line in offer.lines() {
+        if line.starts_with("m=") {
+            if let Some(previous) = current.take() {
+                media.push(previous);
+            }
+            current = Some(session.clone());
+        } else {
+            current.as_mut().unwrap_or(&mut session).observe(line);
+        }
+    }
+    if let Some(last) = current {
+        media.push(last);
+    }
+    if media.is_empty() {
+        media.push(session);
+    }
+    media
 }
 
 pub(super) struct RemoteCandidates {
+    session_id: String,
     state: Mutex<State>,
     resolver: Arc<dyn Resolver>,
     emit: Arc<dyn Fn(Value) + Send + Sync>,
@@ -124,35 +188,70 @@ impl RemoteCandidates {
     ) -> Arc<Self> {
         Self::with_resolver(
             Arc::new(LanResolver {
-                session_id,
+                session_id: session_id.clone(),
                 interfaces,
             }),
             emit,
+            session_id,
         )
     }
     fn with_resolver(
         resolver: Arc<dyn Resolver>,
         emit: Arc<dyn Fn(Value) + Send + Sync>,
+        session_id: String,
     ) -> Arc<Self> {
         Arc::new(Self {
+            session_id,
             state: Mutex::new(State::default()),
             resolver,
             emit,
         })
     }
-    pub(super) async fn begin(&self) {
+    pub(super) async fn begin(&self, offer: &str) {
         let mut state = self.state.lock().await;
+        let credentials = ice_credentials(offer);
+        if !state.closed && state.credentials.as_ref() == Some(&credentials) {
+            return;
+        }
+        self.summarize(&state, "restart");
         state.cancel();
         state.closed = false;
-        self.report(&state, "generation", None);
+        state.credentials = Some(credentials);
+        self.report(&mut state, "generation", None);
     }
     pub(super) async fn close(&self) {
         let mut state = self.state.lock().await;
+        self.summarize(&state, "close");
         state.cancel();
         state.closed = true;
+        state.credentials = None;
         state.resolved.clear();
     }
-    fn report(&self, state: &State, event: &str, detail: Option<&str>) {
+    fn summarize(&self, state: &State, ended: &str) {
+        if state.credentials.is_some() && !state.closed {
+            super::diagnostic(
+                &self.session_id,
+                &format!(
+                    "remote_candidates {}",
+                    json!({"generation": state.generation,
+                    "ended": ended, "reason": state.counts.reason(),
+                    "candidates": state.counts, "failures": state.failures})
+                ),
+            );
+        }
+    }
+    fn report(&self, state: &mut State, event: &str, detail: Option<&'static str>) {
+        let first_failure = detail.is_some_and(|failure| state.reported_failures.insert(failure));
+        let first_resolution = event == "mdns-resolved" && !state.resolution_reported;
+        if event != "generation"
+            && state.last_reason == Some(state.counts.reason())
+            && !first_resolution
+            && !first_failure
+        {
+            return;
+        }
+        state.last_reason = Some(state.counts.reason());
+        state.resolution_reported |= first_resolution;
         (self.emit)(json!({ "type": "rtc.diagnostics", "event": event,
             "reason": state.counts.reason(), "candidates": state.counts,
             "detail": detail }));
@@ -170,7 +269,7 @@ impl RemoteCandidates {
                 state.counts.received(kind);
             }
         }
-        self.report(&state, "remote-candidate", None);
+        self.report(&mut state, "remote-candidate", None);
     }
 
     pub(super) async fn add(
@@ -188,37 +287,57 @@ impl RemoteCandidates {
         let kind = candidate_kind(&candidate.candidate);
         state.counts.received(kind);
         if kind != "host-mdns" {
-            self.report(&state, "remote-candidate", None);
+            self.report(&mut state, "remote-candidate", None);
             return target.add(candidate).await;
         }
-        let name = candidate
-            .candidate
-            .split_whitespace()
-            .nth(4)
-            .unwrap()
-            .to_ascii_lowercase();
-        if let Some((at, addresses)) = state.resolved.get(&name) {
-            if at.elapsed() < RESOLVED_CACHE_TTL {
-                let addresses = addresses.clone();
-                add_resolved(&*target, &candidate, &addresses).await?;
-                state.counts.mdns_resolved += 1;
-                self.report(&state, "mdns-resolved", Some("cached"));
+        let supplied_name = candidate.candidate.split_whitespace().nth(4).unwrap();
+        let name = match mdns::normalized_name(supplied_name) {
+            Ok(name) => name,
+            Err(_) => {
+                self.rejected(&mut state, "mdns-invalid-name");
                 return Ok(());
             }
-        }
-        if state.jobs.len() >= MAX_DISCOVERIES {
-            state.counts.mdns_unresolved += 1;
-            self.report(&state, "mdns-unresolved", Some("mdns-capacity"));
+        };
+        if let Some(addresses) = state.cached(&name) {
+            add_resolved(&*target, &candidate, &addresses).await?;
+            state.counts.mdns_resolved += 1;
+            self.report(&mut state, "mdns-resolved", None);
             return Ok(());
         }
+        self.start_discovery(&mut state, target, candidate, name);
+        Ok(())
+    }
+
+    fn rejected(&self, state: &mut State, failure: &'static str) {
+        state.failed(failure);
+        self.report(state, "mdns-unresolved", Some(failure));
+    }
+
+    fn start_discovery(
+        self: &Arc<Self>,
+        state: &mut State,
+        target: Arc<dyn CandidateTarget>,
+        candidate: RTCIceCandidateInit,
+        name: String,
+    ) {
+        if state.jobs.len() >= MAX_DISCOVERIES {
+            self.rejected(state, "mdns-capacity");
+            return;
+        }
         state.counts.mdns_pending += 1;
-        self.report(&state, "remote-candidate", None);
+        self.report(state, "remote-candidate", None);
         let generation = state.generation;
         let remote = self.clone();
-        state.jobs.push(tokio::spawn(async move {
+        let key = candidate.candidate.clone();
+        let job_key = key.clone();
+        let job = tokio::spawn(async move {
             remote.discover(generation, target, candidate, name).await;
-        }));
-        Ok(())
+            let mut state = remote.state.lock().await;
+            if state.generation == generation {
+                state.jobs.remove(&job_key);
+            }
+        });
+        state.jobs.insert(key, job);
     }
 
     async fn discover(
@@ -246,7 +365,7 @@ impl RemoteCandidates {
             }
             state.counts.mdns_unresolved -= 1;
             state.counts.mdns_pending += 1;
-            self.report(&state, "remote-candidate", Some("mdns-retry"));
+            self.report(&mut state, "remote-candidate", None);
         }
     }
 
@@ -273,18 +392,34 @@ impl RemoteCandidates {
                             .resolved
                             .insert(name.to_string(), (Instant::now(), addresses));
                         state.counts.mdns_resolved += 1;
-                        self.report(&state, "mdns-resolved", None);
+                        self.report(&mut state, "mdns-resolved", None);
                         return true;
                     }
-                    Err(_) => "mdns-candidate-rejected".to_string(),
+                    Err(_) => "mdns-candidate-rejected",
                 }
             }
-            Ok(_) => "mdns-unresolved".to_string(),
-            Err(failure) => failure,
+            Ok(_) => "mdns-unresolved",
+            Err(failure) => failure_code(&failure),
         };
-        state.counts.mdns_unresolved += 1;
-        self.report(&state, "mdns-unresolved", Some(&failure));
-        false
+        self.rejected(&mut state, failure);
+        matches!(
+            failure,
+            "mdns-invalid-name"
+                | "mdns-no-lan-interfaces"
+                | "mdns-answer-rejected"
+                | "mdns-candidate-rejected"
+        )
+    }
+}
+
+fn failure_code(failure: &str) -> &'static str {
+    match failure {
+        "mdns-invalid-name" => "mdns-invalid-name",
+        "mdns-interfaces-unavailable" => "mdns-interfaces-unavailable",
+        "mdns-no-lan-interfaces" => "mdns-no-lan-interfaces",
+        "mdns-socket-unavailable" => "mdns-socket-unavailable",
+        "mdns-answer-rejected" => "mdns-answer-rejected",
+        _ => "mdns-unresolved",
     }
 }
 
@@ -388,13 +523,15 @@ mod tests {
 
     struct FakeResolver {
         ready: Semaphore,
-        answer: Result<Vec<IpAddr>, String>,
+        answer: Mutex<Result<Vec<IpAddr>, String>>,
+        calls: std::sync::atomic::AtomicUsize,
     }
     #[async_trait]
     impl Resolver for FakeResolver {
         async fn resolve(&self, _: &str) -> Result<Vec<IpAddr>, String> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.ready.acquire().await.unwrap().forget();
-            self.answer.clone()
+            self.answer.lock().unwrap().clone()
         }
     }
     #[derive(Default)]
@@ -422,13 +559,15 @@ mod tests {
     fn fixture(answer: Result<Vec<IpAddr>, String>) -> Fixture {
         let resolver = Arc::new(FakeResolver {
             ready: Semaphore::new(0),
-            answer,
+            answer: Mutex::new(answer),
+            calls: std::sync::atomic::AtomicUsize::new(0),
         });
         let events = Arc::new(Mutex::new(vec![]));
         let emit = events.clone();
         let remote = RemoteCandidates::with_resolver(
             resolver.clone(),
             Arc::new(move |event| emit.lock().unwrap().push(event)),
+            "test".into(),
         );
         (remote, resolver, Arc::new(Target::default()), events)
     }
@@ -438,12 +577,280 @@ mod tests {
         }
     }
 
+    fn offer(ufrag: &str, password: &str) -> String {
+        format!("v=0\r\na=ice-ufrag:{ufrag}\r\na=ice-pwd:{password}\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:0\r\n")
+    }
+
+    fn calls(resolver: &FakeResolver) -> usize {
+        resolver.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn completed_discoveries_release_capacity_for_a_later_valid_host() {
+        let (remote, resolver, target, _) = fixture(Err("mdns-no-lan-interfaces".into()));
+        remote.begin(&offer("first", "password")).await;
+        resolver.ready.add_permits(200);
+        for index in 1..=MAX_DISCOVERIES {
+            let name = format!("{}.local", uuid::Uuid::from_u128(index as u128));
+            remote
+                .add(target.clone(), candidate(&name, "host"))
+                .await
+                .unwrap();
+        }
+        settled().await;
+        tokio::time::advance(Duration::from_secs(120)).await;
+        settled().await;
+        tokio::time::advance(Duration::from_secs(120)).await;
+        settled().await;
+        let previous = calls(&resolver);
+        *resolver.answer.lock().unwrap() = Ok(vec!["192.168.68.30".parse().unwrap()]);
+        remote
+            .add(
+                target.clone(),
+                candidate("73af967b-f3ee-4e8d-b0bd-213da4ec5901.local", "host"),
+            )
+            .await
+            .unwrap();
+        settled().await;
+        assert_eq!(
+            calls(&resolver),
+            previous + 1,
+            "completed jobs cannot consume the live discovery limit"
+        );
+        assert_eq!(target.0.lock().unwrap().len(), 1);
+        assert!(remote.state.lock().await.jobs.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn invalid_names_never_spawn_a_resolver_or_retry() {
+        let (remote, resolver, target, events) = fixture(Err("mdns-unresolved".into()));
+        remote.begin(&offer("first", "password")).await;
+        resolver.ready.add_permits(200);
+        remote
+            .add(target.clone(), candidate("printer.local", "host"))
+            .await
+            .unwrap();
+        settled().await;
+        tokio::time::advance(Duration::from_secs(120)).await;
+        settled().await;
+        assert_eq!(calls(&resolver), 0);
+        assert!(remote.state.lock().await.jobs.is_empty());
+        assert_eq!(
+            events.lock().unwrap().last().unwrap()["detail"],
+            "mdns-invalid-name"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn permanent_resolution_failures_do_not_retry() {
+        for failure in [
+            "mdns-invalid-name",
+            "mdns-no-lan-interfaces",
+            "mdns-answer-rejected",
+        ] {
+            let (remote, resolver, target, _) = fixture(Err(failure.into()));
+            remote.begin(&offer("first", "password")).await;
+            resolver.ready.add_permits(200);
+            remote
+                .add(
+                    target.clone(),
+                    candidate("73af967b-f3ee-4e8d-b0bd-213da4ec5901.local", "host"),
+                )
+                .await
+                .unwrap();
+            settled().await;
+            tokio::time::advance(Duration::from_secs(120)).await;
+            settled().await;
+            assert_eq!(
+                calls(&resolver),
+                1,
+                "{failure} is terminal for this candidate"
+            );
+            assert!(remote.state.lock().await.jobs.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn the_same_effective_ice_credentials_preserve_pending_discovery() {
+        let (remote, resolver, target, events) =
+            fixture(Ok(vec!["192.168.68.30".parse().unwrap()]));
+        let first = offer("first", "password");
+        remote.begin(&first).await;
+        remote
+            .add(
+                target.clone(),
+                candidate("73af967b-f3ee-4e8d-b0bd-213da4ec5901.local", "host"),
+            )
+            .await
+            .unwrap();
+        settled().await;
+        let same = "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:0\r\na=ice-ufrag:first\r\na=ice-pwd:password\r\n";
+        remote.begin(same).await;
+        resolver.ready.add_permits(1);
+        settled().await;
+        assert_eq!(
+            target.0.lock().unwrap().len(),
+            1,
+            "ordinary renegotiation keeps the pending LAN query"
+        );
+        assert_eq!(
+            events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|event| event["event"] == "generation")
+                .count(),
+            1
+        );
+        remote.begin(&offer("first", "new-password")).await;
+        assert_eq!(
+            remote.state.lock().await.generation,
+            2,
+            "a password change starts a new ICE generation"
+        );
+        remote.begin(&offer("second", "new-password")).await;
+        let mut fresh = candidate("73af967b-f3ee-4e8d-b0bd-213da4ec5901.local", "host");
+        fresh.username_fragment = Some("second".into());
+        fresh.candidate = fresh.candidate.replace("48861", "48862");
+        remote.add(target.clone(), fresh).await.unwrap();
+        let added = target.0.lock().unwrap();
+        assert_eq!(
+            added.len(),
+            2,
+            "the resolved LAN address is reused across ICE restart"
+        );
+        assert!(added[1].candidate.contains("192.168.68.30 48862"));
+        assert_eq!(added[1].username_fragment.as_deref(), Some("second"));
+        assert_eq!(
+            calls(&resolver),
+            1,
+            "cache reuse does not begin another query"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn transient_unresolved_names_retry_twice_then_release_their_slot() {
+        let (remote, resolver, target, _) = fixture(Err("mdns-unresolved".into()));
+        remote.begin(&offer("first", "password")).await;
+        resolver.ready.add_permits(3);
+        remote
+            .add(
+                target.clone(),
+                candidate("73af967b-f3ee-4e8d-b0bd-213da4ec5901.local", "host"),
+            )
+            .await
+            .unwrap();
+        settled().await;
+        assert_eq!(calls(&resolver), 1);
+        tokio::time::advance(Duration::from_secs(15)).await;
+        settled().await;
+        assert_eq!(calls(&resolver), 2);
+        tokio::time::advance(Duration::from_secs(40)).await;
+        settled().await;
+        assert_eq!(calls(&resolver), 3);
+        assert!(remote.state.lock().await.jobs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn distinct_failure_categories_are_reported_once_without_private_error_text() {
+        let (remote, resolver, target, events) = fixture(Err("mdns-answer-rejected".into()));
+        remote.begin(&offer("first", "password")).await;
+        remote
+            .add(target.clone(), candidate("192.168.68.30", "host"))
+            .await
+            .unwrap();
+        for name in ["printer.local", "other-printer.local"] {
+            remote
+                .add(target.clone(), candidate(name, "host"))
+                .await
+                .unwrap();
+        }
+        resolver.ready.add_permits(2);
+        remote
+            .add(
+                target.clone(),
+                candidate("73af967b-f3ee-4e8d-b0bd-213da4ec5901.local", "host"),
+            )
+            .await
+            .unwrap();
+        settled().await;
+        let rejected = events.lock().unwrap().last().unwrap().clone();
+        assert_eq!(rejected["reason"], "direct-checks-no-success");
+        assert_eq!(
+            rejected["detail"], "mdns-answer-rejected",
+            "a new failure category stays visible despite an unchanged coarse reason"
+        );
+        assert_eq!(
+            events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|event| event["detail"] == "mdns-invalid-name")
+                .count(),
+            1
+        );
+        *resolver.answer.lock().unwrap() = Err("private.local 192.168.1.99".into());
+        remote
+            .add(
+                target.clone(),
+                candidate("8c14a372-9db5-4faa-bbf1-d93583114e89.local", "host"),
+            )
+            .await
+            .unwrap();
+        settled().await;
+        assert!(!serde_json::to_string(&*events.lock().unwrap())
+            .unwrap()
+            .contains("private.local"));
+        assert_eq!(
+            remote.state.lock().await.failures.get("mdns-unresolved"),
+            Some(&1)
+        );
+        remote.close().await;
+    }
+
+    #[tokio::test]
+    async fn diagnostics_coalesce_candidate_counts_but_keep_first_resolution_evidence() {
+        let (remote, resolver, target, events) =
+            fixture(Ok(vec!["192.168.68.30".parse().unwrap()]));
+        remote.begin(&offer("first", "password")).await;
+        for suffix in 1..=100 {
+            remote
+                .add(
+                    target.clone(),
+                    candidate(&format!("192.168.68.{suffix}"), "host"),
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            events.lock().unwrap().len(),
+            2,
+            "counts do not push once per candidate"
+        );
+        resolver.ready.add_permits(2);
+        for index in 1..=2 {
+            let name = format!("{}.local", uuid::Uuid::from_u128(index));
+            remote
+                .add(target.clone(), candidate(&name, "host"))
+                .await
+                .unwrap();
+            settled().await;
+        }
+        let events = events.lock().unwrap();
+        assert_eq!(
+            events.len(),
+            3,
+            "one resolution event remains necessary even when the reason is unchanged"
+        );
+        assert_eq!(events.last().unwrap()["event"], "mdns-resolved");
+    }
+
     #[tokio::test]
     async fn unresolved_host_does_not_hold_relay_and_late_resolution_preserves_candidate_metadata()
     {
         let (remote, resolver, target, events) =
             fixture(Ok(vec!["192.168.68.30".parse().unwrap()]));
-        remote.begin().await;
+        remote.begin(&offer("first", "password")).await;
         let original = candidate("73af967b-f3ee-4e8d-b0bd-213da4ec5901.local", "host");
         remote.add(target.clone(), original.clone()).await.unwrap();
         remote
@@ -475,7 +882,7 @@ mod tests {
     #[tokio::test]
     async fn failed_resolution_says_why_no_host_pair_is_available() {
         let (remote, resolver, target, events) = fixture(Err("mdns-unresolved".into()));
-        remote.begin().await;
+        remote.begin(&offer("first", "password")).await;
         remote
             .add(
                 target.clone(),
@@ -499,7 +906,7 @@ mod tests {
     #[tokio::test]
     async fn restart_and_close_cancel_discovery_from_the_previous_generation() {
         let (remote, resolver, target, _) = fixture(Ok(vec!["192.168.68.30".parse().unwrap()]));
-        remote.begin().await;
+        remote.begin(&offer("first", "password")).await;
         remote
             .add(
                 target.clone(),
@@ -508,7 +915,7 @@ mod tests {
             .await
             .unwrap();
         settled().await;
-        remote.begin().await;
+        remote.begin(&offer("second", "new-password")).await;
         resolver.ready.add_permits(1);
         settled().await;
         assert!(target.0.lock().unwrap().is_empty());
@@ -540,7 +947,7 @@ mod tests {
     async fn absolute_mdns_names_are_resolved_instead_of_forwarded_as_ip_candidates() {
         let (remote, resolver, target, events) =
             fixture(Ok(vec!["192.168.68.30".parse().unwrap()]));
-        remote.begin().await;
+        remote.begin(&offer("first", "password")).await;
         remote
             .add(
                 target.clone(),

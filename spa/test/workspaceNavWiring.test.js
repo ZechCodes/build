@@ -236,12 +236,13 @@ describe("a workspace with two directories, one not git", () => {
     document.querySelector('#dir-rail [data-tab="changes"]').click();
     await vi.waitFor(() => expect(document.querySelector(".gitpane")?.textContent).toContain("Seed the repository"));
     await vi.waitFor(() => expect(document.querySelector(".workspace-reftrigger-name")?.textContent).toBe("main"));
-    await new Promise((resolve) => setTimeout(resolve, 60));
-    expect(App.route.tab).toBe("changes");
-    expect(asked.filter(({ method }) => method.startsWith("git.")).sort((a, b) => a.method.localeCompare(b.method))).toEqual([
-      { method: "git.status", params: { workspace_id: "ws-1", source_id: "repo", if_status_key: "status-1" } },
-      { method: "git.unpushed", params: { workspace_id: "ws-1", source_id: "repo", if_diff_key: "review-1" } },
-    ]);
+    await vi.waitFor(() => {
+      expect(App.route.tab).toBe("changes");
+      expect(asked.filter(({ method }) => method.startsWith("git.")).sort((a, b) => a.method.localeCompare(b.method))).toEqual([
+        { method: "git.status", params: { workspace_id: "ws-1", source_id: "repo", if_status_key: "status-1" } },
+        { method: "git.unpushed", params: { workspace_id: "ws-1", source_id: "repo", if_diff_key: "review-1" } },
+      ]);
+    }, { timeout: 5000 });
   });
 
   // A comment being written floats over the page, outside the surface it was

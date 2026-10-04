@@ -18,11 +18,22 @@ export function createDirectPairMonitor({
   let closed = false;
   let nextIntervalMs = intervalMs;
   let observationDeadline = null;
+  let requestedStartAt = null;
   const schedule = (delayMs) => {
     const remainingMs = observationDeadline === null ? Infinity : observationDeadline - now();
     if (closed || running || !canCheck() || remainingMs <= 0) return;
     clearTimer(timer);
     timer = setTimer(sample, Math.min(delayMs, remainingMs));
+  };
+  const scheduleNextSample = () => {
+    if (requestedStartAt !== null) {
+      const delayMs = Math.max(0, requestedStartAt - now());
+      requestedStartAt = null;
+      schedule(delayMs);
+      return;
+    }
+    schedule(nextIntervalMs);
+    nextIntervalMs = Math.min(maxIntervalMs, nextIntervalMs * 2);
   };
   const sample = async () => {
     timer = null;
@@ -39,13 +50,17 @@ export function createDirectPairMonitor({
         observationDeadline = now() + observationWindowMs;
         nextIntervalMs = intervalMs;
       }
-      schedule(nextIntervalMs);
-      nextIntervalMs = Math.min(maxIntervalMs, nextIntervalMs * 2);
+      scheduleNextSample();
     }
   };
   return {
     start() {
       if (!hasAttempted()) nextIntervalMs = intervalMs;
+      // Recovery can finish while the previous getStats is still awaited.
+      // Keep its settling deadline until that sample returns.
+      requestedStartAt = now() + initialDelayMs;
+      if (running) return;
+      requestedStartAt = null;
       schedule(initialDelayMs);
     },
     close() {

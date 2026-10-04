@@ -56,6 +56,49 @@ describe("direct-pair observation budget", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("preserves a recovery's settling deadline when start arrives during an awaited sample", async () => {
+    let finish;
+    const sampled = [];
+    const check = vi.fn(() => {
+      sampled.push(Date.now());
+      if (sampled.length === 1) return new Promise((resolve) => { finish = resolve; });
+    });
+    const monitor = createDirectPairMonitor({ check, canCheck: () => true });
+    monitor.start();
+    await vi.advanceTimersByTimeAsync(23000);
+    monitor.start();
+    await vi.advanceTimersByTimeAsync(7000);
+    finish();
+    await vi.advanceTimersByTimeAsync(12999);
+    expect(sampled).toEqual([20000]);
+    await vi.advanceTimersByTimeAsync(5001);
+    expect(sampled).toEqual([20000, 43000, 48000]);
+    monitor.close();
+  });
+
+  it("preserves a pending start without renewing the spent attempt's observation deadline", async () => {
+    let finish;
+    let attempted = false;
+    const sampled = [];
+    const check = vi.fn(() => {
+      sampled.push(Date.now());
+      attempted = true;
+      if (sampled.length === 2) return new Promise((resolve) => { finish = resolve; });
+    });
+    const monitor = createDirectPairMonitor({ check, canCheck: () => true, hasAttempted: () => attempted });
+    monitor.start();
+    await vi.advanceTimersByTimeAsync(35000);
+    monitor.start();
+    finish();
+    await vi.advanceTimersByTimeAsync(120000);
+    expect(sampled).toEqual([20000, 25000, 55000, 65000, 85000, 125000, 140000]);
+    expect(vi.getTimerCount()).toBe(0);
+    monitor.start();
+    await vi.advanceTimersByTimeAsync(600000);
+    expect(sampled).toHaveLength(7);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("skips an observation whose timer fires after the bounded window elapsed", async () => {
     let wallClock = 0;
     const check = vi.fn();

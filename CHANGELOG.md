@@ -21,10 +21,15 @@ Wire 3.12.0.
   absent browser host candidates from candidates lost during signaling.
   Path diagnostics prefer the current transport selection when browsers retain
   old nominated relay pairs after an upgrade.
-- LAN discovery uses QM queries from port 5353. A capability-gated random hint
-  per paired bridge permits one additional query to a previously validated LAN
-  address, held only in a bounded expiring memory cache; every fresh name still
-  needs a fully validated reply (#372).
+- LAN discovery uses QM queries from port 5353. A capability-gated client-held
+  UUIDv4 bearer hint (122 random bits), stored per paired bridge and sent inside
+  encrypted offers, keys a memory-only 64-entry LRU cache with one-hour expiry.
+  The first hint binds the session through ICE restarts. This is not an
+  authenticated client identity: a holder of another client's hint can cause
+  one extra query to its already-validated LAN address or replace the entry
+  through their own validated LAN resolution. The hint cannot supply an address
+  or skip fresh reply validation; hints and cached addresses stay out of logs,
+  pushes and diagnostics (#372).
 
 ## [0.2.8] - 2026-10-03
 

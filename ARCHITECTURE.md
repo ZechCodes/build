@@ -940,9 +940,18 @@ The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
   stores it separately per device and pinned transport key, and removes it on
   unpair or account replacement. Invalid or noncanonical 36-character UUIDs
   are treated as absent. An existing peer may bind its first valid hint on a
-  post-greeting offer, but later offers cannot change that binding. This partitions an optimization; it grants no identity
-  or authorization. A bridge keeps at most 64 previously validated IPv4 LAN
-  addresses, one per hint, for at most an hour in memory. For a new name the
+  post-greeting offer, but later offers and ICE restarts cannot change that
+  binding. The hint is an unguessable client-held bearer value: UUIDv4 has 122
+  random bits, is held in that paired browser's storage and sent only inside
+  encrypted offers. It is not an authenticated client identity. Anyone who can
+  read it already has access to that browser's pairing; a holder can cause one
+  extra query to its already-validated address or replace the entry with their
+  own freshly validated LAN address. The hint cannot supply an address or skip
+  reply validation. A bridge keeps at most 64 previously validated IPv4 LAN
+  addresses, one per hint, in a memory-only LRU cache. Entries expire one hour
+  after validation; using an entry refreshes eviction recency but not expiry.
+  First-wins session binding means each additional cache entry needs another
+  session and a validated resolution. For a new name the
   first lookup sends one extra query to that address on its matching interface;
   retries remain multicast only. Every query is QM from port 5353. A fresh
   reply must pass the existing name, arrival-interface/subnet, private-address,

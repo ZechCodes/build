@@ -571,6 +571,33 @@ mod tests {
     use std::sync::Mutex;
     use tokio::sync::{mpsc, oneshot, Semaphore};
 
+    #[tokio::test]
+    async fn a_sessions_first_hint_survives_later_offers_and_ice_restarts() {
+        let first = uuid::Uuid::new_v4();
+        for initial in [None, Some(first)] {
+            let resolver = Arc::new(LanResolver {
+                session_id: "hint-binding".into(),
+                interfaces: None,
+                lan_addresses: Arc::new(mdns::LanAddressCache::new()),
+                client_hint: super::super::client_hint::Binding::new(initial),
+            });
+            let remote = RemoteCandidates::with_resolver(
+                resolver.clone(),
+                Arc::new(|_| {}),
+                "hint-binding".into(),
+            );
+            remote.begin(&offer("initial", "initial-password")).await;
+            remote.bind_client_hint(first);
+            remote.bind_client_hint(uuid::Uuid::new_v4());
+            remote.begin(&offer("initial", "initial-password")).await;
+            remote.bind_client_hint(uuid::Uuid::new_v4());
+            remote.begin(&offer("restart", "restart-password")).await;
+            remote.bind_client_hint(uuid::Uuid::new_v4());
+            assert_eq!(resolver.client_hint.get(), Some(first));
+            remote.close().await;
+        }
+    }
+
     struct FakeResolver {
         ready: Semaphore,
         answer: Mutex<Result<Vec<IpAddr>, String>>,

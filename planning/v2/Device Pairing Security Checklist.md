@@ -41,15 +41,19 @@ plainly what approving does and when to do it (control 9).
 
 ## Paired LAN discovery hint (#372)
 
-The optional hint is not an authentication credential. Even an invented hint
-can request only one additional DNS query to a previously validated private
-LAN address; it cannot supply an address or bypass answer validation.
+The optional hint is an unguessable client-held bearer value, not an
+authenticated client identity. The SPA's UUIDv4 has 122 random bits, resides in
+the paired browser's storage and travels only inside encrypted offers. Anyone
+who can read it already has access to that browser's pairing. A holder of
+another client's hint can cause one extra query to its already-validated LAN
+address or replace the entry with their own freshly validated LAN address. It
+cannot supply an address or bypass answer validation.
 
 | # | Control | Status | Required evidence |
 | --- | --- | --- | --- |
 | 10 | `client_id` has the exact canonical 36-character UUID shape; malformed values are absent and never refuse the offer. The SPA sends it only to a bridge advertising `rtc.clientLanCache`. | [x] | `rtc::client_hint` parser regression; `rtcClientHint.test.js` and `peerLink.test.js` capability gating. |
-| 11 | `crypto.randomUUID` creates a hint per paired device and pinned key; unpair and account replacement discard it. | [x] | `rtcClientHint.test.js`; pairing cleanup in `connection.js`. |
-| 12 | The bridge cache is memory-only, bounded to 64 entries and one validated IPv4 address per hint, expiring after one hour. Hints and cached addresses never enter logs, pushes or diagnostic exports. | [x] | `rtc/mdns/cache.rs` bound/expiry/isolation tests; review of hint plumbing and safe diagnostic sanitizer. |
+| 11 | `crypto.randomUUID` creates a client-held UUIDv4 bearer hint with 122 random bits per paired bridge and pinned key. Only encrypted offers carry it; unpair and account replacement discard it. The first valid hint binds the session through later offers and ICE restarts, so another cache entry requires another session and a validated LAN resolution. This is not authenticated client isolation. | [x] | `rtcClientHint.test.js`; pairing cleanup in `connection.js`; `rtc::client_hint` first-wins test and `a_sessions_first_hint_survives_later_offers_and_ice_restarts`. |
+| 12 | The bridge cache is keyed solely by that bearer hint, memory-only, bounded to 64 LRU entries and one validated IPv4 address per hint, expiring one hour after validation even if used. A holder of another hint can query its already-validated address once or replace it with their own fully validated resolution; they cannot inject an address or skip validation. Hints and cached addresses never enter logs, pushes or diagnostic exports. | [x] | `rtc/mdns/cache.rs` bounds, LRU, expiry and separate-hint tests; mDNS validated-replacement regressions; review of hint plumbing and safe diagnostic sanitizer. |
 | 13 | A hint permits at most one extra unicast query in the initial lookup, never on retry. All queries use QM, source port 5353 and the chosen LAN interface. | [x] | mDNS query wire-byte, initial-probe, retry and Linux source-egress regressions. |
 | 14 | Cache hits never resolve a new name by themselves. Fresh replies still require matching name, valid arrival interface/subnet, private and not-self address, and live DNS TTL. Invalid answers cannot refresh the cache. | [x] | mDNS rotated-name, invalid-answer and stale-TTL regressions. |
 

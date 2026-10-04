@@ -1,9 +1,15 @@
-//! A client hint partitions LAN discovery; it never authenticates a client.
+//! LAN discovery is keyed by a client-held bearer hint, not an authenticated
+//! client identity. The SPA's UUIDv4 has 122 random bits and travels only in
+//! encrypted offers. A holder can query the remembered validated address or
+//! replace it through fresh validated discovery, never supply an address or
+//! bypass reply validation. Neither hints nor cached addresses are logged.
 
 use serde_json::Value;
 use uuid::Uuid;
 
-/// A peer may learn its hint after the first greeting, but cannot change it.
+/// A session may learn its hint after the first greeting. The first valid hint
+/// wins for the peer's lifetime, including ICE restarts, so one session cannot
+/// rotate hints to fill the shared cache.
 #[derive(Default)]
 pub(super) struct Binding(std::sync::OnceLock<Uuid>);
 

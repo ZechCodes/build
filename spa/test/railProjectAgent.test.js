@@ -500,17 +500,15 @@ describe("a rail mounted on the agent a URL named", () => {
 
     await mountWorkspaceRail({ openAgentId: "pa-1" });
 
-    await vi.waitFor(() => {
-      expect(headWho()).toBe("Sort the workspaces");
-      expect(projectBubble().classList.contains("active")).toBe(true);
-      expect(panelIsOpen()).toBe(true);
-      // Nothing was minted to get there: the project already had its
-      // conversation, and the URL only said which one to open.
-      expect(callsTo("project.ensure_conversation")).toHaveLength(0);
-      // The workspace's own agents are still under the rule, + and all.
-      expect(agentBubble("wa-1")).toBeTruthy();
-      expect(addBubble()).toBeTruthy();
-    }, { timeout: 5000 });
+    expect(headWho()).toBe("Sort the workspaces");
+    expect(projectBubble().classList.contains("active")).toBe(true);
+    expect(panelIsOpen()).toBe(true);
+    // Nothing was minted to get there: the project already had its
+    // conversation, and the URL only said which one to open.
+    expect(callsTo("project.ensure_conversation")).toHaveLength(0);
+    // The workspace's own agents are still under the rule, + and all.
+    expect(agentBubble("wa-1")).toBeTruthy();
+    expect(addBubble()).toBeTruthy();
   });
 
   it("leaves the rail on the workspace when the id names no conversation it can reach", async () => {

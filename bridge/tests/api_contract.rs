@@ -716,6 +716,17 @@ fn candidate_diagnostics_are_announced_without_exposing_peer_addresses() {
 }
 
 #[test]
+fn candidate_diagnostics_use_the_existing_wire_fixture_envelopes() {
+    for name in ["session.hello", "events"] {
+        let fixture = read_json(&fixtures_root().join("v1").join(format!("{name}.json")));
+        assert!(
+            fixture.get("candidate_diagnostics").is_none(),
+            "feature version documentation belongs with the capability, not as a wire fixture field"
+        );
+    }
+}
+
+#[test]
 fn project_file_sources_are_announced_with_scoped_contract_examples() {
     assert!(capabilities(false).contains(&"fs.projectSources"));
     for method in ["fs.tree", "fs.read", "fs.write"] {

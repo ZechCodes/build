@@ -8,8 +8,9 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use rtc::mdns::{Mdns, MdnsConfig, MdnsEvent, MDNS_DEST_ADDR, MDNS_MULTICAST_IPV4, MDNS_PORT};
+use rtc::mdns::{Mdns, MdnsConfig, MDNS_DEST_ADDR, MDNS_MULTICAST_IPV4, MDNS_PORT};
 use rtc::sansio::Protocol;
+#[cfg(test)]
 use rtc::shared::{TaggedBytesMut, TransportContext, TransportProtocol};
 
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -592,28 +593,129 @@ fn answer_from(name: &str, packet: &[u8], source: SocketAddr) -> Option<IpAddr> 
         .filter(|address| matches!(address, IpAddr::V4(address) if usable_ipv4(*address)))
 }
 
-fn decoded_answer(name: &str, packet: &[u8], source: SocketAddr) -> Option<IpAddr> {
-    // A fresh protocol accepts the matching answer from each interface, even
-    // after another interface has answered. Its parser handles compressed DNS.
-    let mut protocol = Mdns::new(MdnsConfig::default());
-    let query = protocol.query(name);
-    protocol
-        .handle_read(TaggedBytesMut {
-            now: std::time::Instant::now(),
-            transport: TransportContext {
-                local_addr: SocketAddr::from((Ipv4Addr::UNSPECIFIED, MDNS_PORT)),
-                peer_addr: source,
-                transport_protocol: TransportProtocol::UDP,
-                ecn: None,
-            },
-            message: packet.into(),
-        })
-        .ok()?;
-    while let Some(event) = protocol.poll_event() {
-        if let MdnsEvent::QueryAnswered(id, IpAddr::V4(address)) = event {
-            if id == query {
-                return Some(address.into());
+fn decoded_answer(name: &str, packet: &[u8], _: SocketAddr) -> Option<IpAddr> {
+    // The upstream private decoder reports an AAAA record as its IPv4 sender.
+    // Read only IN/A RDATA here; a sender address is never an advertised answer.
+    let mut cursor = DnsCursor { packet, offset: 0 };
+    let header = cursor.take(12)?;
+    let flags = u16::from_be_bytes([header[2], header[3]]);
+    if flags & 0xf80f != 0x8000 {
+        return None; // response, standard opcode, successful result
+    }
+    let questions = u16::from_be_bytes([header[4], header[5]]);
+    let answers = u16::from_be_bytes([header[6], header[7]]);
+    for _ in 0..questions {
+        cursor.name()?;
+        cursor.take(4)?;
+    }
+    for _ in 0..answers {
+        let answer = cursor.answer()?;
+        if answer.kind == 1
+            && answer.class & 0x7fff == 1
+            && answer.name.eq_ignore_ascii_case(name.as_bytes())
+        {
+            if let Ok(octets) = <[u8; 4]>::try_from(answer.data) {
+                return Some(Ipv4Addr::from(octets).into());
             }
+        }
+    }
+    None
+}
+
+struct DnsCursor<'a> {
+    packet: &'a [u8],
+    offset: usize,
+}
+
+struct DnsAnswer<'a> {
+    name: Vec<u8>,
+    kind: u16,
+    class: u16,
+    data: &'a [u8],
+}
+
+impl<'a> DnsCursor<'a> {
+    fn take(&mut self, length: usize) -> Option<&'a [u8]> {
+        let end = self.offset.checked_add(length)?;
+        let bytes = self.packet.get(self.offset..end)?;
+        self.offset = end;
+        Some(bytes)
+    }
+
+    fn word(&mut self) -> Option<u16> {
+        let bytes = self.take(2)?;
+        Some(u16::from_be_bytes([bytes[0], bytes[1]]))
+    }
+
+    fn name(&mut self) -> Option<Vec<u8>> {
+        let (name, end) = dns_name(self.packet, self.offset)?;
+        self.offset = end;
+        Some(name)
+    }
+
+    fn answer(&mut self) -> Option<DnsAnswer<'a>> {
+        let name = self.name()?;
+        let kind = self.word()?;
+        let class = self.word()?;
+        self.take(4)?; // TTL
+        let length = usize::from(self.word()?);
+        let data = self.take(length)?;
+        Some(DnsAnswer {
+            name,
+            kind,
+            class,
+            data,
+        })
+    }
+}
+
+enum NamePart<'a> {
+    Label(&'a [u8], usize),
+    Pointer(usize, usize),
+    End(usize),
+}
+
+fn name_part(packet: &[u8], offset: usize) -> Option<NamePart<'_>> {
+    let first = *packet.get(offset)?;
+    match first {
+        0 => Some(NamePart::End(offset + 1)),
+        1..=63 => {
+            let end = offset.checked_add(1 + usize::from(first))?;
+            Some(NamePart::Label(packet.get(offset + 1..end)?, end))
+        }
+        192..=255 => {
+            let second = *packet.get(offset + 1)?;
+            let target = usize::from(u16::from_be_bytes([first & 0x3f, second]));
+            (target < offset && target >= 12).then_some(NamePart::Pointer(target, offset + 2))
+        }
+        _ => None,
+    }
+}
+
+fn dns_name(packet: &[u8], mut offset: usize) -> Option<(Vec<u8>, usize)> {
+    let mut name = Vec::new();
+    let mut end = None;
+    // Both decoded name length and compression traversal are bounded.
+    for _ in 0..128 {
+        match name_part(packet, offset)? {
+            NamePart::Label(label, next) => {
+                if label.contains(&b'.') {
+                    return None; // a dot inside one label cannot match UUID.local
+                }
+                if !name.is_empty() {
+                    name.push(b'.');
+                }
+                name.extend_from_slice(label);
+                if name.len() > 253 {
+                    return None;
+                }
+                offset = next;
+            }
+            NamePart::Pointer(target, next) => {
+                end.get_or_insert(next);
+                offset = target;
+            }
+            NamePart::End(next) => return Some((name, end.unwrap_or(next))),
         }
     }
     None
@@ -1128,6 +1230,9 @@ mod tests {
 
     /// Generate fixtures through the same upstream DNS encoder used in ICE.
     fn response(name: &str, address: &str) -> Vec<u8> {
+        if address.parse::<IpAddr>().unwrap().is_ipv6() {
+            return response_records(&[(name, address)]);
+        }
         let mut server = Mdns::new(
             MdnsConfig::default()
                 .with_local_names(vec![name.to_string()])
@@ -1142,6 +1247,154 @@ mod tests {
         server.poll_write().unwrap().message.to_vec()
     }
 
+    fn response_records(records: &[(&str, &str)]) -> Vec<u8> {
+        let mut packet = vec![0, 0, 0x84, 0, 0, 0];
+        packet.extend_from_slice(&(records.len() as u16).to_be_bytes());
+        packet.extend_from_slice(&[0; 4]);
+        for (index, (name, address)) in records.iter().enumerate() {
+            if index > 0 && *name == records[0].0 {
+                packet.extend_from_slice(&[0xc0, 0x0c]); // first answer's name
+            } else {
+                for label in name.split('.') {
+                    packet.push(label.len() as u8);
+                    packet.extend_from_slice(label.as_bytes());
+                }
+                packet.push(0);
+            }
+            let (kind, data): (u16, Vec<u8>) = match address.parse::<IpAddr>().unwrap() {
+                IpAddr::V4(address) => (1, address.octets().to_vec()),
+                IpAddr::V6(address) => (28, address.octets().to_vec()),
+            };
+            packet.extend_from_slice(&kind.to_be_bytes());
+            packet.extend_from_slice(&1u16.to_be_bytes());
+            packet.extend_from_slice(&120u32.to_be_bytes());
+            packet.extend_from_slice(&(data.len() as u16).to_be_bytes());
+            packet.extend_from_slice(&data);
+        }
+        packet
+    }
+
+    #[test]
+    fn an_aaaa_answer_does_not_invent_an_ipv4_candidate_from_its_sender() {
+        let interfaces = vec![interface("eth0", "192.168.1.10")];
+        assert_eq!(
+            validated_answer(
+                NAME,
+                &response(NAME, "fd00::123"),
+                "192.168.1.50:5353".parse().unwrap(),
+                Some(1),
+                &interfaces
+            ),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn a_compressed_a_answer_after_an_aaaa_answer_uses_its_actual_rdata() {
+        let interfaces = vec![interface("eth0", "192.168.1.10")];
+        let packet = response_records(&[(NAME, "fd00::123"), (NAME, "192.168.1.60")]);
+        assert_eq!(
+            validated_answer(
+                NAME,
+                &packet,
+                "192.168.1.50:5353".parse().unwrap(),
+                Some(1),
+                &interfaces
+            ),
+            Ok(Some("192.168.1.60".parse().unwrap()))
+        );
+    }
+
+    #[test]
+    fn truncated_or_malformed_a_records_do_not_produce_candidates() {
+        let packet = response_records(&[(NAME, "192.168.1.60")]);
+        let source = "192.168.1.50:5353".parse().unwrap();
+        for length in 0..packet.len() {
+            assert_eq!(
+                decoded_answer(NAME, &packet[..length], source),
+                None,
+                "length={length}"
+            );
+        }
+        let record = 12 + NAME.len() + 2;
+        for (length, data) in [(3u16, vec![192, 168, 1]), (5, vec![192, 168, 1, 60, 0])] {
+            let mut invalid = packet[..record + 8].to_vec();
+            invalid.extend_from_slice(&length.to_be_bytes());
+            invalid.extend_from_slice(&data);
+            assert_eq!(decoded_answer(NAME, &invalid, source), None);
+        }
+        for (offset, value) in [
+            (record, 2u16),
+            (record, 28),
+            (record + 2, 3),
+            (2, 0x8800),
+            (2, 0x8403),
+        ] {
+            let mut invalid = packet.clone();
+            invalid[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
+            assert_eq!(
+                decoded_answer(NAME, &invalid, source),
+                None,
+                "offset={offset} value={value}"
+            );
+        }
+        let mut cache_flush = packet.clone();
+        cache_flush[record + 2..record + 4].copy_from_slice(&0x8001u16.to_be_bytes());
+        assert_eq!(
+            decoded_answer(NAME, &cache_flush, source),
+            Some("192.168.1.60".parse().unwrap())
+        );
+        assert_eq!(decoded_answer(NAME, &query_bytes(NAME), source), None);
+        assert_eq!(
+            decoded_answer(
+                NAME,
+                &response_records(&[("other.local", "192.168.1.60")]),
+                source
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn malformed_compression_pointers_do_not_produce_candidates() {
+        let packet = response_records(&[(NAME, "192.168.1.60")]);
+        let record = 12 + NAME.len() + 2;
+        let source = "192.168.1.50:5353".parse().unwrap();
+        for encoded_name in [
+            vec![0xc0, 0x0c],          // points to itself
+            vec![0xc0, 0xff],          // outside packet
+            vec![0xc0, 0x20],          // forward pointer
+            vec![1, b'a', 0xc0, 0x0c], // label and backwards pointer cycle
+            vec![0xc0],                // truncated pointer
+        ] {
+            let mut invalid = packet[..12].to_vec();
+            invalid.extend_from_slice(&encoded_name);
+            invalid.extend_from_slice(&packet[record..]);
+            assert_eq!(
+                decoded_answer(NAME, &invalid, source),
+                None,
+                "name={encoded_name:?}"
+            );
+        }
+        assert_eq!(dns_name(&[0; 12], usize::MAX), None);
+        assert_eq!(dns_name(&[0; 12], 12), None);
+    }
+
+    #[test]
+    fn one_dns_label_cannot_impersonate_the_two_browser_name_labels() {
+        let packet = response_records(&[(NAME, "192.168.1.60")]);
+        let record = 12 + NAME.len() + 2;
+        let mut invalid = packet[..12].to_vec();
+        invalid.push(NAME.len() as u8);
+        invalid.extend_from_slice(NAME.as_bytes());
+        invalid.push(0);
+        invalid.extend_from_slice(&packet[record..]);
+        assert_eq!(
+            decoded_answer(NAME, &invalid, "192.168.1.50:5353".parse().unwrap()),
+            None
+        );
+    }
+
     struct FakeTransport {
         joined: Mutex<Vec<Ipv4Addr>>,
         sent: Mutex<Vec<Ipv4Addr>>,
@@ -1153,6 +1406,22 @@ mod tests {
         reply_sources: HashMap<Ipv4Addr, SocketAddr>,
         sender: tokio::sync::mpsc::UnboundedSender<Datagram>,
         receiver: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<Datagram>>,
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_aaaa_only_round_never_reports_resolution_to_its_ipv4_sender() {
+        let interfaces = vec![interface("eth0", "192.168.1.10")];
+        let mut transport = FakeTransport::new(HashMap::from([(
+            interfaces[0].address,
+            response(NAME, "fd00::123"),
+        )]));
+        transport
+            .reply_sources
+            .insert(interfaces[0].address, "192.168.1.50:5353".parse().unwrap());
+        assert_eq!(
+            resolve_with(NAME, &interfaces, &transport, RESOLVE_TIMEOUT, "test").await,
+            Err(ResolveFailure::Unresolved)
+        );
     }
 
     impl FakeTransport {

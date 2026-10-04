@@ -19,6 +19,8 @@ Wire 3.12.0.
   candidates have been delivered, without delaying application readiness.
   Recovery retains signaling through delivery too, and diagnostics distinguish
   absent browser host candidates from candidates lost during signaling.
+  Path diagnostics prefer the current transport selection when browsers retain
+  old nominated relay pairs after an upgrade.
 - LAN discovery uses QM queries from port 5353. A capability-gated random hint
   per paired bridge permits one additional query to a previously validated LAN
   address, held only in a bounded expiring memory cache; every fresh name still

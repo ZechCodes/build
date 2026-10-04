@@ -972,7 +972,9 @@ The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
   Local diagnostics separately count gathered, delivered and failed candidates
   per generation. Completed native gathering with no host in its events, local
   SDP or stats reports `browser-no-host-candidates` and keeps TURN instead of
-  taking the mDNS upgrade fallback.
+  taking the mDNS upgrade fallback. Path classification uses the transport's
+  current `selectedCandidatePairId` before nomination flags, since browsers may
+  retain nominated pairs from earlier ICE generations.
 
 **The browser↔relay contract.** The relay is authentication and rendezvous and
 nothing else

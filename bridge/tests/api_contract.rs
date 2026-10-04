@@ -662,6 +662,7 @@ fn every_event_example_is_what_the_bridge_serialises() {
             "term.reset" => check_untyped_push(event, &["term_id", "data", "cursor"]),
             "term.closed" => check_untyped_push(event, &["term_id", "reason"]),
             "rtc.ice" => check_untyped_push(event, &["candidate"]),
+            "rtc.diagnostics" => check_untyped_push(event, &["event", "reason", "candidates"]),
             "bridge.update_status" => {
                 let mut status = event.clone();
                 status.as_object_mut().unwrap().remove("type");
@@ -697,6 +698,21 @@ fn every_push_the_bridge_sends_has_an_example() {
     for kind in sent {
         assert!(seen.contains(kind), "{kind}: no example in events.json");
     }
+}
+
+#[test]
+fn candidate_diagnostics_are_announced_without_exposing_peer_addresses() {
+    assert!(capabilities(false).contains(&"rtc.candidateDiagnostics"));
+    assert!(changes::ANNOUNCED_EVENTS.contains(&"rtc.diagnostics"));
+    let diagnostics = event_examples()
+        .into_iter()
+        .find(|event| event["type"] == "rtc.diagnostics")
+        .expect("candidate diagnostics fixture");
+    assert_eq!(diagnostics["reason"], "mdns-unresolved");
+    assert_eq!(diagnostics["candidates"]["host_mdns"], 1);
+    assert_eq!(diagnostics["candidates"]["mdns_unresolved"], 1);
+    assert!(diagnostics.get("address").is_none());
+    assert!(diagnostics.get("candidate").is_none());
 }
 
 #[test]

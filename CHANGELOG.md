@@ -12,6 +12,14 @@ Wire 3.11.0.
 
 ### Changed
 
+- Same-LAN browser mDNS candidates are resolved on every eligible LAN interface,
+  with explicit multicast membership and egress, shared reply handling and
+  retries that leave TURN available. Relayed sessions keep checking for direct
+  viability and may restart ICE once when a direct pair succeeds or mDNS host
+  discovery completes. Optional restarts give direct candidates a head start
+  while retaining fallback signaling. Connection diagnostics now say why no
+  direct pair was attempted and report remote candidate and resolution counts
+  without peer addresses (`rtc.candidateDiagnostics`, wire 3.11.0, #369).
 - Saving the conversation menu's Compact at threshold updates the open menu
   in place. Its menu, thumb, focus and active drag survive cache repaints
   without closing, reopening or replaying animations. Surface rows can appear

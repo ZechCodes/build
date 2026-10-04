@@ -116,8 +116,12 @@ pub const CHANGES_EVENT: &str = "changes";
 /// The change events a browser session can be told about, announced in the
 /// `session.hello` greeting so a client knows what it may hear. `changes` is
 /// what a subscription delivers.
-pub const ANNOUNCED_EVENTS: [&str; 3] =
-    [CHANGES_EVENT, "bridge.update_status", MODELS_CHANGED_EVENT];
+pub const ANNOUNCED_EVENTS: [&str; 4] = [
+    CHANGES_EVENT,
+    "bridge.update_status",
+    MODELS_CHANGED_EVENT,
+    "rtc.diagnostics",
+];
 
 /// A CLI on this machine changed what it runs, so `models.list` would answer
 /// differently now (#203). Carries nothing else: the catalog is asked again.

@@ -346,6 +346,25 @@
         "sdpMid": "0",
         "sdpMLineIndex": 0
       }
+    },
+    {
+      "type": "rtc.diagnostics",
+      "event": "mdns-unresolved",
+      "reason": "mdns-unresolved",
+      "candidates": {
+        "host_mdns": 1,
+        "host_ip": 0,
+        "srflx": 1,
+        "relay": 1,
+        "mdns_pending": 0,
+        "mdns_resolved": 0,
+        "mdns_unresolved": 1
+      },
+      "detail": "mdns-unresolved"
     }
-  ]
+  ],
+  "candidate_diagnostics": {
+    "since": "3.11.0",
+    "capability": "rtc.candidateDiagnostics"
+  }
 }

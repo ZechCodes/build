@@ -317,6 +317,9 @@ runtime that starts them.
   update with nonretryable `stale_body`; the client rolls back its optimistic
   tick and refreshes the task. Existing callers may still omit the hash. The
   SPA sends it only to a machine whose cached greeting names the capability.
+  3.11.0 also adds `rtc.candidateDiagnostics` and the `rtc.diagnostics` push
+  (#369), reporting remote host/mDNS/srflx/relay counts and resolution reasons
+  without addresses. These are additive changes in the same unreleased minor.
   3.11.0 adds `conversation.reset` (#358) and thread generations on conversation
   digests and responses. Generation-aware requests refuse a cleared thread;
   the reset capability gates the menu, its generation-aware cache handling,
@@ -909,6 +912,20 @@ The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
   browser's offer and carries the `app` and `term` channels. `carrier.rs` puts
   both carriers behind one `FrameIntake`/`SessionSender` boundary, so handlers
   never know which one a frame came in on.
+- **LAN discovery**: `bridge/src/rtc/mdns.rs` resolves browser UUID `.local`
+  candidates on each addressed LAN interface, selecting multicast egress and
+  membership explicitly and skipping Docker bridges, veth and loopback. A
+  shared wildcard receiver dispatches multicast and unicast replies to concurrent
+  queries. `rtc/remote.rs` defers names from offers and trickle without holding
+  negotiation, retries unresolved names twice, and cancels work on ICE restart or
+  close. A session keeps resolved addresses for 60 seconds across ICE restarts;
+  fresh ICE credentials and ports still determine whether a cached address works.
+- **Candidate diagnostics**: `rtc.diagnostics` reports remote candidate type
+  counts and discovery reasons without names, addresses or credentials. It uses
+  an authenticated data channel (app preferred), and the rendezvous before
+  that. Older clients ignore the new push; older bridges
+  provide browser-stat-only diagnostics. The greeting advertises
+  `rtc.candidateDiagnostics` (wire 3.11.0).
 
 **The browser↔relay contract.** The relay is authentication and rendezvous and
 nothing else
@@ -1330,7 +1347,13 @@ through the same device's rendezvous (`mintTerminalSession`), and it rides the
 - **Peer**: `openPeerLink` (`spa/src/core/peerLink.js`) opens the `app` and
   `term` channels. It times out after 15 s, and it tries to move a session that
   has sat on TURN for 20 s onto a direct pair. `spa/src/core/transportPath.js`
-  classifies the path.
+  classifies the path. After that settling delay, relayed links sample every
+  five seconds until direct. One optional ICE restart is permitted when an
+  alternate direct pair succeeds or a browser mDNS name resolves for the current
+  generation. The bridge stops alternative checks after nomination, so a late
+  resolved address requires new checks. That restart holds relay candidates behind
+  host candidates again and retains its rendezvous lease until gathering and
+  delayed candidate signaling finish; relay remains available as fallback.
 - **Session**: `openSession` (`spa/src/core/session.js`) combines
   `spa/src/core/sessionRpc.js` (encryption, pending calls, receipts, pushes)
   with `spa/src/core/sessionSwitch.js`, which sends `rtc.*` over the rendezvous

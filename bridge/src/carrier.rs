@@ -462,6 +462,26 @@ impl Default for SessionRegistry {
 }
 
 impl SessionRegistry {
+    fn channel_sender(
+        &self,
+        opening: &SessionSender,
+        carrier: &CarrierHandle,
+    ) -> Option<SessionSender> {
+        let sessions = self.sessions.lock().unwrap();
+        let open = sessions.get(opening.session_id())?;
+        if !Arc::ptr_eq(&open.still_open, &opening.still_open)
+            || open.carriers.get(&carrier.id) != Some(&CarrierKind::Channel)
+        {
+            return None;
+        }
+        Some(SessionSender::keyed(
+            opening.session_id(),
+            open.key.clone(),
+            carrier.out.clone(),
+            open.still_open.clone(),
+        ))
+    }
+
     fn with_ledger(ledger: Arc<dyn TransportLedger>) -> Self {
         SessionRegistry {
             sessions: Mutex::new(HashMap::new()),
@@ -656,6 +676,17 @@ pub struct FrameIntake {
 }
 
 impl FrameIntake {
+    /// Candidate discovery diagnostics can outlive rendezvous. Select only a
+    /// channel authenticated by this same opening; signaling candidates still
+    /// use the carrier on which their offer arrived.
+    pub(crate) fn diagnostic_sender(
+        &self,
+        opening: &SessionSender,
+        channel: &CarrierHandle,
+    ) -> Option<SessionSender> {
+        self.registry.channel_sender(opening, channel)
+    }
+
     /// An intake whose ledger is the daemon's stderr.
     pub fn new(handler: FrameHandler, transport: KeyPairB64) -> Arc<Self> {
         Self::with_ledger(handler, transport, Arc::new(StderrLedger))
@@ -1402,6 +1433,44 @@ mod registry_tests {
         assert_eq!(
             SessionSender::decrypt_push(&key, &outbound),
             json!({ "id": 1, "ok": true })
+        );
+    }
+
+    #[test]
+    fn late_diagnostics_follow_a_bound_channel_and_never_another_opening() {
+        let registry = SessionRegistry::default();
+        let (relay, _out) = CarrierHandle::open();
+        let (channel, mut received) = CarrierHandle::open_channel();
+        let key = transport::generate_session_key();
+        registry.open("s-1", key.clone(), &relay).unwrap();
+        let (_, signaling) = registry
+            .admit(&client_envelope(&key, "s-1", "data"), &relay)
+            .unwrap();
+        assert!(
+            registry.channel_sender(&signaling, &channel).is_none(),
+            "only an authenticated bound channel may carry diagnostics"
+        );
+        registry
+            .admit(&client_envelope(&key, "s-1", "data"), &channel)
+            .unwrap();
+        registry.release_session("s-1", &relay);
+        let sender = registry
+            .channel_sender(&signaling, &channel)
+            .expect("late diagnostics use the live channel after rendezvous closes");
+        assert!(sender.push(json!({"type": "rtc.diagnostics", "reason": "mdns-unresolved"})));
+        assert_eq!(
+            SessionSender::decrypt_push(&key, &received.try_recv().unwrap())["reason"],
+            "mdns-unresolved"
+        );
+        registry.end("s-1");
+        let next_key = transport::generate_session_key();
+        registry.open("s-1", next_key.clone(), &channel).unwrap();
+        registry
+            .admit(&client_envelope(&next_key, "s-1", "data"), &channel)
+            .unwrap();
+        assert!(
+            registry.channel_sender(&signaling, &channel).is_none(),
+            "old discovery cannot push into the next opening of a reused id"
         );
     }
 }

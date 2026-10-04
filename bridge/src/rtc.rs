@@ -49,7 +49,9 @@ pub(crate) fn diagnostic(session_id: &str, event: &str) {
 }
 
 pub(crate) mod chunk;
+mod mdns;
 mod policy;
+mod remote;
 
 pub use policy::{IceMode, IcePolicy, ICE_INTERFACES_ENV, ICE_POLICY_ENV, ICE_RELAY_MIN_WAIT_ENV};
 
@@ -483,11 +485,23 @@ impl WebrtcPeerFactory {
 
 impl SessionPeerFactory for WebrtcPeerFactory {
     fn open(&self, session_id: &str) -> Result<Arc<dyn SessionPeer>, RtcError> {
+        let signaling = Arc::new(Trickling::default());
+        let output = signaling.clone();
+        let remote_session = session_id.to_string();
+        let remote = remote::RemoteCandidates::new(
+            session_id.to_string(),
+            self.policy.interfaces.clone(),
+            Arc::new(move |payload| {
+                diagnostic(&remote_session, &format!("remote_candidates {payload}"));
+                output.diagnostics(payload);
+            }),
+        );
         Ok(Arc::new(WebrtcPeer {
             session_id: session_id.to_string(),
             intake: self.intake.clone(),
             policy: self.policy.clone(),
-            signaling: Arc::new(Trickling::default()),
+            signaling,
+            remote,
             negotiation: tokio::sync::Mutex::new(None),
         }))
     }
@@ -498,6 +512,7 @@ struct WebrtcPeer {
     intake: Arc<FrameIntake>,
     policy: Arc<IcePolicy>,
     signaling: Arc<Trickling>,
+    remote: Arc<remote::RemoteCandidates>,
     negotiation: tokio::sync::Mutex<Option<Negotiation>>,
 }
 
@@ -552,15 +567,23 @@ impl SessionPeer for WebrtcPeer {
                 connection
             }
         };
-        let offer =
-            RTCSessionDescription::offer(self.policy.allowed_offer(offer_sdp).into_owned())?;
-        connection.set_remote_description(offer).await?;
+        self.remote.begin().await;
+        let allowed_offer = self.policy.allowed_offer(offer_sdp);
+        let (offer, deferred) = remote::without_mdns(&allowed_offer);
+        connection
+            .set_remote_description(RTCSessionDescription::offer(offer)?)
+            .await?;
+        self.remote.observe_offer(&allowed_offer).await;
         let answer = connection.create_answer(None).await?;
         let sdp = answer.sdp.clone();
         connection.set_local_description(answer).await?;
         // Before the answer goes back, because the browser may trickle — and
         // this peer may gather — the moment it lands.
         self.signaling.answered(&sdp);
+        let target = Arc::new(remote::PeerTarget(connection));
+        for candidate in deferred {
+            self.remote.add(target.clone(), candidate).await?;
+        }
         Ok(sdp)
     }
 
@@ -578,12 +601,18 @@ impl SessionPeer for WebrtcPeer {
         let open = negotiation
             .as_ref()
             .ok_or_else(|| RtcError::NoPeer(self.session_id.clone()))?;
-        open.connection.add_ice_candidate(trickled).await?;
-        Ok(())
+        self.remote
+            .add(
+                Arc::new(remote::PeerTarget(open.connection.clone())),
+                trickled,
+            )
+            .await
     }
 
     async fn close(&self) {
-        let Some(open) = self.negotiation.lock().await.take() else {
+        let mut negotiation = self.negotiation.lock().await;
+        self.remote.close().await;
+        let Some(open) = negotiation.take() else {
             return;
         };
         if let Err(e) = open.connection.close().await {
@@ -605,25 +634,19 @@ impl WebrtcPeer {
             gathered: Mutex::new(GatheredTypes::default()),
         });
         let udp_addrs = self.policy.gather_from()?;
+        // Browser mDNS names are resolved by our interface-explicit resolver;
+        // the crate's one OS-selected multicast socket is disabled.
         let connection: Arc<dyn PeerConnection> = Arc::new(
-            built_or_without_mdns(&self.session_id, |multicast_dns| {
-                let attempt = PeerConnectionBuilder::new()
-                    .with_configuration(configuration.clone())
-                    .with_setting_engine(self.policy.setting_engine(multicast_dns))
-                    .with_data_channel_send_buffer_limit(DC_BUFFERED_HIGH)
-                    .with_handler(events.clone())
-                    .with_udp_addrs(udp_addrs.clone())
-                    // The driver — the UDP sockets, ICE's checks and consent,
-                    // DTLS, SCTP's timers — on the crate's own reactor
-                    // threads, off every runtime the daemon parks (task
-                    // #128). Handlers are the callbacks above: a line to
-                    // stderr and a candidate encrypted and queued, nothing
-                    // that blocks.
-                    .with_dedicated_reactor_thread(true)
-                    .with_reactor_pool_size(REACTOR_THREADS);
-                async move { attempt.build().await }
-            })
-            .await?,
+            PeerConnectionBuilder::new()
+                .with_configuration(configuration)
+                .with_setting_engine(self.policy.setting_engine(MulticastDnsMode::Disabled))
+                .with_data_channel_send_buffer_limit(DC_BUFFERED_HIGH)
+                .with_handler(events)
+                .with_udp_addrs(udp_addrs)
+                .with_dedicated_reactor_thread(true)
+                .with_reactor_pool_size(REACTOR_THREADS)
+                .build()
+                .await?,
         );
         let path_report = tokio::spawn(report_negotiated_path(
             self.session_id.clone(),
@@ -642,49 +665,14 @@ impl WebrtcPeer {
                 self.session_id.clone(),
                 label,
             ));
+            self.signaling
+                .diagnostic_channel(self.intake.clone(), carriers.last().unwrap().handle.clone());
         }
         Ok(Negotiation {
             connection,
             carriers,
             path_report,
         })
-    }
-}
-
-/// Build one peer connection under rule 8's ICE agent, and — if that fails —
-/// once more without mDNS.
-///
-/// mDNS is not a knob the crate applies lazily: `MulticastDnsMode::QueryOnly`
-/// makes it bind 224.0.0.251:5353 and join the group on every interface inside
-/// `bind_transports`, and that error is returned from `build()`. On a host or
-/// container where the join is refused — no multicast route, a locked-down
-/// network namespace — every `rtc.offer` would be refused and every device
-/// would go blocked (rule 3), where the same bridge connected over STUN/TURN
-/// before rule 8 landed. Resolving a browser's `<uuid>.local` host candidates
-/// is worth a great deal on a LAN and nothing at all on a host that cannot ask,
-/// so this trades it away rather than the connection. Said once per run: on
-/// such a host every session would say the same thing.
-async fn built_or_without_mdns<T, E, Attempt>(
-    session_id: &str,
-    mut build: impl FnMut(MulticastDnsMode) -> Attempt,
-) -> Result<T, E>
-where
-    E: std::fmt::Display,
-    Attempt: std::future::Future<Output = Result<T, E>>,
-{
-    match build(MulticastDnsMode::QueryOnly).await {
-        Ok(built) => Ok(built),
-        Err(refused) => {
-            static SAID: std::sync::Once = std::sync::Once::new();
-            SAID.call_once(|| {
-                eprintln!(
-                    "rtc: session {session_id} could not build a peer connection with mDNS \
-                     ({refused}); building without it, so a browser that offers only \
-                     `<uuid>.local` candidates cannot be reached on a LAN"
-                );
-            });
-            build(MulticastDnsMode::Disabled).await
-        }
     }
 }
 
@@ -697,6 +685,7 @@ where
 struct Trickling {
     signaling: Mutex<Option<SessionSender>>,
     bundle_mid: Mutex<Option<String>>,
+    diagnostic_channels: Mutex<Vec<(Arc<FrameIntake>, CarrierHandle)>>,
 }
 
 impl Trickling {
@@ -708,6 +697,25 @@ impl Trickling {
     /// belong to and the only statement of what that section is called.
     fn answered(&self, answer_sdp: &str) {
         *self.bundle_mid.lock().unwrap() = bundle_mid_of(answer_sdp);
+    }
+
+    fn diagnostics(&self, payload: Value) {
+        if let Some(signaling) = self.signaling.lock().unwrap().clone() {
+            for (intake, channel) in self.diagnostic_channels.lock().unwrap().iter() {
+                if let Some(sender) = intake.diagnostic_sender(&signaling, channel) {
+                    sender.push(payload);
+                    return;
+                }
+            }
+            signaling.push(payload);
+        }
+    }
+
+    fn diagnostic_channel(&self, intake: Arc<FrameIntake>, channel: CarrierHandle) {
+        self.diagnostic_channels
+            .lock()
+            .unwrap()
+            .push((intake, channel));
     }
 
     fn trickle(&self, candidate: Value) {
@@ -1075,6 +1083,7 @@ fn field_or_empty(offered: &Value, field: &str) -> String {
 /// terminals over the channel, and the frames it does that with are what bind
 /// the session to this carrier.
 struct DataChannelCarrier {
+    handle: CarrierHandle,
     writer: tokio::task::JoinHandle<()>,
     reader: tokio::task::JoinHandle<()>,
     /// The stall watch, on the channel that gets one (task #30). The term
@@ -1094,6 +1103,7 @@ impl DataChannelCarrier {
         let (carrier, envelopes) = CarrierHandle::open_channel();
         let send = Arc::new(ChannelSend::default());
         DataChannelCarrier {
+            handle: carrier.clone(),
             writer: tokio::spawn(write_envelopes(
                 channel.clone(),
                 envelopes,
@@ -1839,64 +1849,6 @@ mod channel_writer_tests {
             wire["envelope"],
             serde_json::to_value(envelope("s-1")).unwrap()
         );
-    }
-}
-
-#[cfg(test)]
-mod peer_build_tests {
-    use super::*;
-
-    /// mDNS is rule 8's, and the crate makes it a hard dependency of the whole
-    /// connection: the multicast join happens inside `bind_transports` and its
-    /// error comes back out of `build()`. On a host that cannot join the group
-    /// — no multicast route, a locked-down namespace — every offer would be
-    /// refused and every device blocked, where the same bridge used to connect
-    /// over STUN/TURN. Resolving a browser's `<uuid>.local` candidates is worth
-    /// a great deal on a LAN and nothing at all on a host that cannot ask, so
-    /// the build is tried once more without it.
-    #[tokio::test]
-    async fn a_peer_that_cannot_join_the_multicast_group_is_built_without_mdns() {
-        let asked = Arc::new(Mutex::new(Vec::new()));
-        let attempts = asked.clone();
-
-        let built = built_or_without_mdns("s-mdns", |mode| {
-            attempts.lock().unwrap().push(mode);
-            async move {
-                match mode {
-                    MulticastDnsMode::QueryOnly => Err("the multicast join was refused"),
-                    _ => Ok("a peer connection"),
-                }
-            }
-        })
-        .await;
-
-        assert_eq!(built, Ok("a peer connection"));
-        assert_eq!(
-            *asked.lock().unwrap(),
-            vec![MulticastDnsMode::QueryOnly, MulticastDnsMode::Disabled],
-            "rule 8's agent first, and only then the one without it"
-        );
-    }
-
-    /// The fallback is a fallback: a host that can join the group never gives
-    /// up mDNS, and a build that fails for some other reason still fails.
-    #[tokio::test]
-    async fn an_ordinary_host_keeps_mdns_and_a_peer_that_cannot_build_still_refuses() {
-        let asked = Arc::new(Mutex::new(Vec::new()));
-        let attempts = asked.clone();
-        let built = built_or_without_mdns("s-ok", |mode| {
-            attempts.lock().unwrap().push(mode);
-            async move { Ok::<&str, &str>("a peer connection") }
-        })
-        .await;
-        assert_eq!(built, Ok("a peer connection"));
-        assert_eq!(*asked.lock().unwrap(), vec![MulticastDnsMode::QueryOnly]);
-
-        let refused = built_or_without_mdns("s-no", |_| async {
-            Err::<&str, &str>("no udp_sockets or tcp_listeners available")
-        })
-        .await;
-        assert_eq!(refused, Err("no udp_sockets or tcp_listeners available"));
     }
 }
 

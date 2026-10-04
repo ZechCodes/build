@@ -82,7 +82,8 @@ Stated once each. Every stage's review checks them.
    plugs into: a bridge-local listener becomes a second rendezvous implementation on
    both ends with no relay involved. It is not built in this plan.
 8. **Prefer direct.** The bridge's ICE agent resolves browser mDNS host candidates
-   (`MulticastDnsMode::QueryOnly`), gathers over UDP4/UDP6 on every non-loopback
+   on every eligible real LAN interface (`rtc/mdns.rs`; the core receives
+   resolved IPs with its own multicast socket disabled), gathers over UDP4/UDP6 on every non-loopback
    interface, and waits `BRIDGE_ICE_RELAY_MIN_WAIT_MS` (default 1500) before accepting
    a relay pair so a slower direct pair can win. `BRIDGE_ICE_POLICY=direct-only` strips
    TURN servers from the offered list and drops relay candidates (for LAN/Tailscale

@@ -9,6 +9,11 @@ describe("candidate diagnostic privacy", () => {
     })).toEqual({ reason: "mdns-unresolved", phase: "mdns-unresolved", candidates: { host_mdns: 1, host_ip: 0, mdns_unresolved: 1 } });
   });
 
+  it("recognizes the ordered generation marker without copying raw generation fields", () => {
+    expect(candidateDiagnostic({ reason: "no-host-candidates", event: "generation", generation: "private.local", candidates: { mdns_resolved: 0 } }))
+      .toEqual({ reason: "no-host-candidates", phase: "generation", candidates: { mdns_resolved: 0 } });
+  });
+
   it("rejects unknown reasons and never copies unknown event text", () => {
     expect(candidateDiagnostic({ reason: "192.168.1.2 failed" })).toBeNull();
     expect(candidateDiagnostic({ reason: "mdns-pending", event: "private.local" }))

@@ -792,6 +792,24 @@ describe("a session that landed on a relayed pair", () => {
     resolved.close();
   });
 
+  it("clears queued old resolution evidence at the bridge's ordered new-generation marker", async () => {
+    const { peer, resolved, signalled, candidateSinks } = await landedOnRelay({ alsoDirect: null });
+    peer.autoConnect = false;
+    peer.fail();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(offers(signalled)).toBe(2);
+    candidateSinks[0]({ type: "rtc.diagnostics", event: "mdns-resolved", reason: "direct-checks-no-success", candidates: { mdns_resolved: 1 } });
+    candidateSinks[0]({ type: "rtc.diagnostics", event: "generation", reason: "no-host-candidates", candidates: { mdns_resolved: 0 } });
+    candidateSinks[0]({ type: "rtc.diagnostics", event: "remote-candidate", reason: "no-host-candidates", candidates: { relay: 1 } });
+    peer.connectionState = "connected";
+    peer.emit("connectionstatechange");
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(offers(signalled)).toBe(2);
+    expect(connectionDiagnosticHistory().filter((entry) => entry.event === "direct-pair").at(-1))
+      .toMatchObject({ state: "none-to-try", reason: "no-host-candidates" });
+    resolved.close();
+  });
+
   it("keeps current-generation LAN resolution evidence even before the initial connection lands", async () => {
     const stood = stand();
     await vi.advanceTimersByTimeAsync(0);

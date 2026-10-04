@@ -160,7 +160,13 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   const receiveCandidateDiagnostic = (push) => {
     const detail = candidateDiagnostic(push);
     if (!detail) return;
-    bridgeCandidateReason = detail.reason;
+    // Ordered on the bound channel before this ICE generation's candidates.
+    // It clears any old resolver result queued while recovery was starting.
+    if (detail.phase === "generation") {
+      mdnsResolvedInGeneration = false;
+      lastNoTryReason = null;
+    }
+    bridgeCandidateReason = detail.phase === "generation" ? null : detail.reason;
     // The bridge stops nonselected-pair checks after nomination. A newly
     // resolved LAN address therefore needs fresh ICE checks even if the old
     // browser report can never show that pair as succeeded.

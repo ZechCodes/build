@@ -1,6 +1,6 @@
 // Only content-free reason names and counters can enter a shareable report.
 const REASONS = new Set(["mdns-pending", "mdns-unresolved", "no-host-candidates", "direct-checks-no-success"]);
-const EVENTS = new Set(["remote-candidate", "mdns-resolved", "mdns-unresolved"]);
+const EVENTS = new Set(["generation", "remote-candidate", "mdns-resolved", "mdns-unresolved"]);
 const COUNTERS = new Set(["host_mdns", "host_ip", "srflx", "relay", "mdns_pending", "mdns_resolved", "mdns_unresolved"]);
 
 export const safeCandidateReason = (reason) => REASONS.has(reason) ? reason : null;

@@ -914,16 +914,25 @@ The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
   never know which one a frame came in on.
 - **LAN discovery**: `bridge/src/rtc/mdns.rs` resolves browser UUID `.local`
   candidates on each addressed LAN interface, selecting multicast egress and
-  membership explicitly and skipping Docker bridges, veth and loopback. A
-  shared wildcard receiver dispatches multicast and unicast replies to concurrent
+  membership explicitly and skipping container bridges, veth, loopback and
+  VPN/tunnel or point-to-point interfaces. Answers must match the receiving
+  LAN's subnet: Linux uses packet arrival metadata; other supported hosts use
+  a conservative source/subnet check for private, link-local or CGNAT addresses.
+  A shared wildcard receiver dispatches multicast and unicast replies to concurrent
   queries. `rtc/remote.rs` defers names from offers and trickle without holding
-  negotiation, retries unresolved names twice, and cancels work on ICE restart or
-  close. A session keeps resolved addresses for 60 seconds across ICE restarts;
-  fresh ICE credentials and ports still determine whether a cached address works.
+  negotiation, validates names before starting discovery, and retries transient
+  failures twice. Only live lookups count toward the discovery limit. Work is
+  cancelled when remote ICE credentials change or the peer closes; same-credential
+  offers preserve it. A session keeps resolved addresses for 60 seconds across
+  ICE restarts; fresh ICE credentials and ports still determine whether a cached
+  address works.
 - **Candidate diagnostics**: `rtc.diagnostics` reports remote candidate type
-  counts and discovery reasons without names, addresses or credentials. It uses
-  an authenticated data channel (app preferred), and the rendezvous before
-  that. Older clients ignore the new push; older bridges
+  counts and discovery reasons without names, addresses or credentials. Reports
+  are coalesced by generation/reason; resolution evidence is also delivered when
+  needed for an upgrade. Normal logs contain one discovery summary per generation,
+  while query detail is debug-level. It uses an authenticated data channel
+  (app preferred), and the rendezvous before that. Older clients ignore the new
+  push; older bridges
   provide browser-stat-only diagnostics. The greeting advertises
   `rtc.candidateDiagnostics` (wire 3.11.0).
 
@@ -1345,15 +1354,22 @@ through the same device's rendezvous (`mintTerminalSession`), and it rides the
   the relay socket, mints the session (`session_init` / `session_accept`) and
   carries `rtc.*`. Its lifetime is managed by `spa/src/core/rendezvousLifecycle.js`.
 - **Peer**: `openPeerLink` (`spa/src/core/peerLink.js`) opens the `app` and
-  `term` channels. It times out after 15 s, and it tries to move a session that
-  has sat on TURN for 20 s onto a direct pair. `spa/src/core/transportPath.js`
-  classifies the path. After that settling delay, relayed links sample every
-  five seconds until direct. One optional ICE restart is permitted when an
-  alternate direct pair succeeds or a browser mDNS name resolves for the current
-  generation. The bridge stops alternative checks after nomination, so a late
-  resolved address requires new checks. That restart holds relay candidates behind
-  host candidates again and retains its rendezvous lease until gathering and
-  delayed candidate signaling finish; relay remains available as fallback.
+  `term` channels and times out after 15 s. A relayed link settles for 20 s,
+  then samples direct viability with a 5/10/20/40/60-second backoff, remaining
+  at one minute while waiting for evidence. It permits one optional ICE restart
+  for the peer link's entire lifetime when an alternate direct pair succeeds or
+  a browser mDNS name resolves for the current generation; recovery restarts do
+  not renew that optional budget. The bridge stops alternative checks after
+  nomination, so a newly resolved address requires fresh checks. That restart
+  holds relay candidates
+  behind host candidates again and retains its rendezvous lease through gathering
+  and delayed candidate signaling. A gathering timeout on a still-carried path
+  reports pending because native ICE may still nominate later. After the attempt
+  finishes, path observations stop within 120 s; this allows slow nomination
+  without continuing stats work for the session's lifetime. Moving traffic to a
+  direct pair does not close the browser's TURN allocation. Retiring that
+  allocation is a follow-up: browser capabilities and ICE reconfiguration risks
+  need investigation. `spa/src/core/transportPath.js` classifies the carrying path.
 - **Session**: `openSession` (`spa/src/core/session.js`) combines
   `spa/src/core/sessionRpc.js` (encryption, pending calls, receipts, pushes)
   with `spa/src/core/sessionSwitch.js`, which sends `rtc.*` over the rendezvous

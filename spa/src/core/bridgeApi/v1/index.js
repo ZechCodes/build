@@ -142,6 +142,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
     },
     fs: { projectSources: names.has("fs.projectSources") },
     requests: { priority: names.has("requests.priority") },
+    rtc: { clientLanCache: names.has("rtc.clientLanCache") },
     errors: { codes: names.has("errors.codes") },
     diffs: { perFile: names.has("diffs.perFile") },
     bodies: { pages: names.has("bodies.pages"), mediaRawPages: names.has("fs.mediaRawPages") },

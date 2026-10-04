@@ -208,6 +208,26 @@ const diagnosticsOf = (event) =>
   connectionDiagnosticHistory().filter((entry) => entry.event === event).map((entry) => entry.state);
 
 describe("openPeerLink", () => {
+  it("omits the optional client hint before its capability is known", async () => {
+    const { resolved, signalled } = await upgrade({ clientId: () => null });
+    expect(signalled.find(([method]) => method === "rtc.offer")[1]).not.toHaveProperty("client_id");
+    resolved.close();
+  });
+
+  it("reads the client hint again for a restart after the greeting establishes support", async () => {
+    let hint = null;
+    const { resolved, peer, signalled } = await upgrade({ clientId: () => hint, confirmCarried: async () => true });
+    const clientId = "773d4f16-a915-43cb-a067-c31bf8dfe1aa";
+    hint = clientId;
+    peer.fail();
+    for (let index = 0; index < 6; index += 1) await tick();
+    const offers = signalled.filter(([method]) => method === "rtc.offer");
+    expect(offers).toHaveLength(2);
+    expect(offers[0][1]).not.toHaveProperty("client_id");
+    expect(offers[1][1]).toHaveProperty("client_id", clientId);
+    expect(JSON.stringify(connectionDiagnosticHistory())).not.toContain(clientId);
+    resolved.close();
+  });
   it("offers two negotiated channels with the ICE servers it fetched, and settles when both open", async () => {
     const { peer, signalled, resolved, fetchIceServers } = await upgrade();
     expect(fetchIceServers).toHaveBeenCalledTimes(1);
@@ -235,6 +255,182 @@ describe("openPeerLink", () => {
     candidateSinks[0]({ type: "rtc.ice", candidate: fromTheBridge });
     await tick();
     expect(peer.remoteCandidates).toEqual([fromTheBridge]);
+  });
+
+  it("finishes initial signaling after late host gathering and its candidate reply without delaying the ready link", async () => {
+    let answerCandidate;
+    const stood = stand({ signalImpl: async (method) => {
+      if (method === "rtc.offer") {
+        FakePeerConnection.instances.at(-1).iceGatheringState = "gathering";
+        return { sdp: "v=0 answer" };
+      }
+      if (method === "rtc.ice") return new Promise((resolve) => { answerCandidate = resolve; });
+      return {};
+    } });
+    await tick();
+    const peer = stood.peer();
+    peer.iceGatheringState = "gathering";
+    peer.channels.get("app").open();
+    peer.channels.get("term").open();
+    peer.connectionState = "connected";
+    peer.emit("connectionstatechange");
+    const resolved = await stood.link;
+    try {
+      expect(peer.iceGatheringState).toBe("gathering");
+      expect(resolved.whenInitialSignalingComplete).toBeTypeOf("function");
+      let finished = false;
+      const completion = resolved.whenInitialSignalingComplete().then(() => { finished = true; });
+      const candidate = {
+        candidate: "candidate:1 1 udp 1 12345678-1234-4234-8234-123456789abc.local 5000 typ host",
+        sdpMid: "0", sdpMLineIndex: 0,
+      };
+      peer.gather({ type: "host", ...candidate, toJSON: () => candidate });
+      await tick();
+      expect(stood.signalled.filter(([method]) => method === "rtc.ice")).toEqual([["rtc.ice", { candidate }]]);
+      peer.iceGatheringState = "complete";
+      peer.gather(null);
+      peer.emit("icegatheringstatechange");
+      await tick();
+      expect(finished).toBe(false);
+
+      answerCandidate({});
+      await completion;
+      expect(finished).toBe(true);
+    } finally {
+      resolved.close();
+    }
+  });
+
+  it("keeps initial signaling through held relay candidate replies when gathering ends before the channels open", async () => {
+    let answerCandidate;
+    const stood = stand({ signalImpl: async (method, params) => {
+      if (method === "rtc.offer") {
+        FakePeerConnection.instances.at(-1).iceGatheringState = "gathering";
+        return { sdp: "v=0 answer" };
+      }
+      if (method === "rtc.ice" && params.candidate.type === "relay") return new Promise((resolve) => { answerCandidate = resolve; });
+      return {};
+    } });
+    await tick();
+    const peer = stood.peer();
+    peer.gather({ type: "host", candidate: "candidate:0 1 udp 1 host.local 5000 typ host" });
+    await tick();
+    peer.gather({ type: "relay", candidate: "candidate:1 1 udp 1 203.0.113.1 5000 typ relay" });
+    peer.iceGatheringState = "complete";
+    peer.emit("icegatheringstatechange");
+    peer.gather(null);
+    await tick();
+    peer.channels.get("app").open();
+    peer.channels.get("term").open();
+    peer.connectionState = "connected";
+    peer.emit("connectionstatechange");
+    const link = await stood.link;
+    try {
+      let settled = false;
+      const complete = link.whenInitialSignalingComplete();
+      void complete.then(() => { settled = true; });
+      await tick();
+      expect(answerCandidate).toBeTypeOf("function");
+      expect(settled).toBe(false);
+      answerCandidate({});
+      await complete;
+      expect(settled).toBe(true);
+    } finally { link.close(); }
+  });
+
+  it("reports native host gathering separately from successful candidate signaling without copying candidate contents", async () => {
+    clearConnectionDiagnosticHistory();
+    let answerCandidate;
+    const stood = stand({ signalImpl: async (method) => {
+      if (method === "rtc.offer") {
+        FakePeerConnection.instances.at(-1).iceGatheringState = "gathering";
+        return { sdp: "v=0 answer" };
+      }
+      if (method === "rtc.ice") return new Promise((resolve) => { answerCandidate = resolve; });
+      return {};
+    } });
+    await tick();
+    const peer = stood.peer();
+    peer.iceGatheringState = "gathering";
+    peer.channels.get("app").open();
+    peer.channels.get("term").open();
+    peer.connectionState = "connected";
+    peer.emit("connectionstatechange");
+    const resolved = await stood.link;
+    try {
+      peer.gather({ type: "host", candidate: "candidate:1 1 udp 1 private-name.local 5000 typ host ufrag private-token" });
+      await tick();
+      peer.iceGatheringState = "complete";
+      peer.gather(null);
+      peer.emit("icegatheringstatechange");
+      await tick();
+      const gathered = connectionDiagnosticHistory().filter(({ event }) => event === "local-candidates").at(-1);
+      expect(gathered).toMatchObject({ generation: 0, gathered: { host: 1 }, delivered: { host: 0 } });
+
+      answerCandidate({});
+      await tick();
+      const delivered = connectionDiagnosticHistory().filter(({ event }) => event === "local-candidates").at(-1);
+      expect(delivered).toMatchObject({ generation: 0, gathered: { host: 1 }, delivered: { host: 1 } });
+      expect(JSON.stringify([gathered, delivered])).not.toMatch(/private-name|5000|private-token/);
+    } finally {
+      resolved.close();
+    }
+  });
+
+  it("bounds initial signaling and removes gathering listeners while the ready connection keeps carrying", async () => {
+    vi.useFakeTimers();
+    const stood = stand({ openTimeoutMs: 100, signalImpl: async (method) => {
+      if (method !== "rtc.offer") return {};
+      FakePeerConnection.instances.at(-1).iceGatheringState = "gathering";
+      return { sdp: "v=0 answer" };
+    } });
+    await vi.advanceTimersByTimeAsync(0);
+    const peer = stood.peer();
+    peer.iceGatheringState = "gathering";
+    peer.channels.get("app").open();
+    peer.channels.get("term").open();
+    peer.connectionState = "connected";
+    peer.emit("connectionstatechange");
+    const resolved = await stood.link;
+    try {
+      expect(resolved.whenInitialSignalingComplete).toBeTypeOf("function");
+      let finished = false;
+      const completion = resolved.whenInitialSignalingComplete().then(() => { finished = true; });
+      await vi.advanceTimersByTimeAsync(99);
+      expect(finished).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await completion;
+      expect(peer.listenerCount("icegatheringstatechange")).toBe(0);
+      expect(peer.closed).toBe(false);
+    } finally {
+      resolved.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("settles initial signaling and removes its gathering listeners when the link closes", async () => {
+    const stood = stand({ signalImpl: async (method) => {
+      if (method !== "rtc.offer") return {};
+      FakePeerConnection.instances.at(-1).iceGatheringState = "gathering";
+      return { sdp: "v=0 answer" };
+    } });
+    await tick();
+    const peer = stood.peer();
+    peer.iceGatheringState = "gathering";
+    peer.channels.get("app").open();
+    peer.channels.get("term").open();
+    peer.connectionState = "connected";
+    peer.emit("connectionstatechange");
+    const resolved = await stood.link;
+    try {
+      expect(resolved.whenInitialSignalingComplete).toBeTypeOf("function");
+      const completion = resolved.whenInitialSignalingComplete();
+      resolved.close();
+      await completion;
+      expect(peer.listenerCount("icegatheringstatechange")).toBe(0);
+    } finally {
+      resolved.close();
+    }
   });
 
   // #31: a relay pair should not win the race on the same network. ICE nominates
@@ -405,6 +601,104 @@ describe("openPeerLink", () => {
     expect(offers).toHaveLength(2);
     expect(offers[1][1].sdp).toContain("restart");
     expect(peer.closed).toBe(false); // the same channels keep carrying
+  });
+
+  it("keeps recovery signaling for late host gathering after the restored app is ready", async () => {
+    let offers = 0;
+    let answerCandidate;
+    const onConnected = vi.fn();
+    const { peer, resolved } = await upgrade({
+      onConnected, confirmCarried: async () => true,
+      signalImpl: async (method) => {
+        if (method === "rtc.offer") {
+          offers += 1;
+          if (offers > 1) FakePeerConnection.instances.at(-1).iceGatheringState = "gathering";
+          return { sdp: "v=0 answer" };
+        }
+        if (method === "rtc.ice") return new Promise((resolve) => { answerCandidate = resolve; });
+        return {};
+      },
+    });
+    const restored = vi.fn();
+    resolved.onRestored(restored);
+    peer.fail();
+    for (let index = 0; index < 4; index += 1) await tick();
+    expect(restored).toHaveBeenCalledOnce();
+    expect(resolved.recovery.snapshot().recovering).toBe(false);
+    const complete = onConnected.mock.calls.at(-1)[0];
+    expect(complete).toBeInstanceOf(Promise);
+    let settled = false;
+    void complete.then(() => { settled = true; });
+    peer.gather({ type: "host", candidate: "candidate:1 1 udp 1 late.local 5000 typ host" });
+    peer.iceGatheringState = "complete";
+    peer.emit("icegatheringstatechange");
+    await tick();
+    expect(settled).toBe(false);
+    answerCandidate({});
+    await complete;
+    expect(settled).toBe(true);
+    expect(peer.listenerCount("icegatheringstatechange")).toBe(0);
+    expect(peer.closed).toBe(false);
+    resolved.close();
+  });
+
+  it("bounds recovery gathering cleanup without delaying restoration or closing the carried path", async () => {
+    let offers = 0;
+    const connected = vi.fn();
+    const { peer, resolved } = await upgrade({
+      openTimeoutMs: 100, onConnected: connected, confirmCarried: async () => true,
+      signalImpl: async (method) => {
+        if (method === "rtc.offer") {
+          offers += 1;
+          if (offers > 1) FakePeerConnection.instances.at(-1).iceGatheringState = "gathering";
+          return { sdp: "v=0 answer" };
+        }
+        return {};
+      },
+    });
+    vi.useFakeTimers();
+    try {
+      const restored = vi.fn();
+      resolved.onRestored(restored);
+      peer.fail();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(restored).toHaveBeenCalledOnce();
+      const complete = connected.mock.calls.at(-1)[0];
+      let settled = false;
+      void complete.then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(99);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await complete;
+      expect(settled).toBe(true);
+      expect(peer.listenerCount("icegatheringstatechange")).toBe(0);
+      expect(peer.closed).toBe(false);
+    } finally {
+      resolved.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("settles recovery gathering cleanup when the carried link closes", async () => {
+    let offers = 0;
+    const connected = vi.fn();
+    const { peer, resolved } = await upgrade({
+      onConnected: connected, confirmCarried: async () => true,
+      signalImpl: async (method) => {
+        if (method === "rtc.offer") {
+          offers += 1;
+          if (offers > 1) FakePeerConnection.instances.at(-1).iceGatheringState = "gathering";
+          return { sdp: "v=0 answer" };
+        }
+        return {};
+      },
+    });
+    peer.fail();
+    for (let index = 0; index < 4; index += 1) await tick();
+    const complete = connected.mock.calls.at(-1)[0];
+    resolved.close();
+    await complete;
+    expect(peer.listenerCount("icegatheringstatechange")).toBe(0);
   });
 
   it("publishes bounded recovery epochs around an in-place ICE restart", async () => {

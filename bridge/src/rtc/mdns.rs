@@ -109,6 +109,7 @@ impl UdpTransport {
         socket.set_reuse_port(true)?;
         socket.set_nonblocking(true)?;
         socket.set_multicast_ttl_v4(255)?;
+        socket.set_ttl_v4(255)?;
         enable_packet_info(&socket)?;
         // Linux's upstream group-address bind misses unicast mDNS responses.
         socket.bind(&SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)).into())?;
@@ -2394,6 +2395,7 @@ mod tests {
         let socket = socket2::SockRef::from(&transport.socket);
         assert!(socket.reuse_address().unwrap());
         assert_eq!(socket.multicast_ttl_v4().unwrap(), 255);
+        assert_eq!(socket.ttl_v4().unwrap(), 255);
         let sender = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
         transport
             .send_on(

@@ -88,6 +88,7 @@ const { holdAppWhileNoDeviceAnswers } = await import("../src/views/gate.js");
 const { mountConnectionStatus, unmountConnectionStatus } = await import("../src/connectionStatus.js");
 const { deviceWatch } = await import("../src/core/deviceReconnect.js");
 const { createReadRetry } = await import("../src/core/transientRead.js");
+const { rememberRtcClientSupport, rtcClientId } = await import("../src/core/rtcClientHint.js");
 
 const flush = () => vi.advanceTimersByTimeAsync(0);
 const reachNextRecoveryAttempt = async () => {
@@ -402,6 +403,40 @@ async function loseTheLink(deviceId) {
 }
 
 describe("per-device connections", () => {
+  it("makes a paired client hint available after hello without sending it to an unknown bridge", async () => {
+    const pinnedKey = "pinned-dev-a-key";
+    App.devices.find((device) => device.id === "dev-a").transport_public_key_b64 = pinnedKey;
+    greetings.set("dev-a", async () => ({ api_version: "3.12.0", capabilities: ["rtc.clientLanCache"] }));
+    let firstHint;
+    wire.openPeerLink.mockImplementationOnce(async (options) => {
+      firstHint = options.clientId();
+      return fakePeerLink("dev-a");
+    });
+    await connectDevice("dev-a");
+    expect(firstHint).toBeNull();
+    const { clientId } = wire.openPeerLink.mock.calls.at(-1)[0];
+    expect(clientId()).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(clientId()).toBe(rtcClientId("dev-a", pinnedKey));
+  });
+
+  it("drops the paired client hint when the device is unpaired", async () => {
+    const pinnedKey = "pinned-dev-a-key";
+    App.devices.find((device) => device.id === "dev-a").transport_public_key_b64 = pinnedKey;
+    rememberRtcClientSupport("dev-a", pinnedKey, { api_version: "3.12.0", capabilities: ["rtc.clientLanCache"] });
+    const beforeUnpair = rtcClientId("dev-a", pinnedKey);
+    expect(beforeUnpair).toMatch(/^[0-9a-f-]{36}$/i);
+    retireDevice("dev-a");
+    expect(rtcClientId("dev-a", pinnedKey)).toBeNull();
+    rememberRtcClientSupport("dev-a", pinnedKey, { api_version: "3.12.0", capabilities: ["rtc.clientLanCache"] });
+    expect(rtcClientId("dev-a", pinnedKey)).not.toBe(beforeUnpair);
+  });
+
+  it("forgets every paired client hint when the account is replaced", () => {
+    rememberRtcClientSupport("dev-a", "key-a", { api_version: "3.12.0", capabilities: ["rtc.clientLanCache"] });
+    expect(rtcClientId("dev-a", "key-a")).toMatch(/^[0-9a-f-]{36}$/i);
+    resetApplication();
+    expect(rtcClientId("dev-a", "key-a")).toBeNull();
+  });
   // The greeting is what says which API major this bridge speaks. A read issued
   // before it lands is a read whose answer this tab may not be able to make
   // sense of — and on a bridge the greeting then calls unsupported, it is a
@@ -620,6 +655,45 @@ describe("per-device connections", () => {
     expect(mints.provided).toBeTypeOf("function");
     await mints.provided("dev-a");
     expect(rendezvousFor.get("dev-a").mint).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps initial signaling open for late host candidates while the greeted app is usable", async () => {
+    let finishGathering;
+    const gathering = new Promise((resolve) => { finishGathering = resolve; });
+    wire.openPeerLink.mockImplementation(async ({ signal }) => {
+      const { deviceId } = await signal("rtc.offer", { sdp: "v=0" });
+      const link = fakePeerLink(deviceId);
+      link.whenInitialSignalingComplete = () => gathering;
+      return link;
+    });
+
+    const context = await connectDevice("dev-a");
+    expect(canAnswer(context)).toBe(true);
+    expect(lastSession("dev-a").call.mock.calls.map(([method]) => method)).toContain("session.hello");
+    expect(rendezvousFor.get("dev-a").close).not.toHaveBeenCalled();
+
+    finishGathering();
+    await flush();
+    expect(rendezvousFor.get("dev-a").close).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps recovery signaling open for late host candidates while the restored app is usable", async () => {
+    const context = await connectDevice("dev-a");
+    const options = wire.openPeerLink.mock.calls.at(-1)[0];
+    const rendezvous = rendezvousFor.get("dev-a");
+    expect(rendezvous.close).toHaveBeenCalledTimes(1);
+    await options.onFailed();
+    let finishGathering;
+    const gathering = new Promise((resolve) => { finishGathering = resolve; });
+    await options.onConnected(gathering);
+    linksFor.get("dev-a").restore();
+    await flush();
+    expect(canAnswer(context)).toBe(true);
+    expect(lastSession("dev-a").call.mock.calls.filter(([method]) => method === "session.hello")).toHaveLength(2);
+    expect(rendezvous.close).toHaveBeenCalledTimes(1);
+    finishGathering();
+    await flush();
+    expect(rendezvous.close).toHaveBeenCalledTimes(2);
   });
 
   it("keeps a lost device known and blocked while another device answers", async () => {

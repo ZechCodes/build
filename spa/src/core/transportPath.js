@@ -30,19 +30,16 @@ function entriesOf(stats) {
 
 /** The pair the connection is running on.
  *
- *  The nominated succeeded pair is the answer where there is one. Where there
- *  is not — Safari has reported a transport's selection without marking the
- *  pair — the transport's own `selectedCandidatePairId` names it, which is the
- *  second reading the spec allows. */
+ *  The transport's `selectedCandidatePairId` is authoritative: a browser can
+ *  retain old nominated pairs after an ICE restart. Nomination is the fallback
+ *  when no transport points to a pair present in this report. */
 function selectedPair(entries) {
   const pairs = entries.filter((entry) => entry.type === "candidate-pair");
-  const nominated = pairs.find((pair) => pair.state === "succeeded" && pair.nominated);
-  if (nominated) return nominated;
-  const selectedId = entries
+  const selected = entries
     .filter((entry) => entry.type === "transport")
-    .map((transport) => transport.selectedCandidatePairId)
+    .map((transport) => pairs.find((pair) => transport.selectedCandidatePairId && pair.id === transport.selectedCandidatePairId))
     .find(Boolean);
-  return pairs.find((pair) => pair.id === selectedId) || null;
+  return selected || pairs.find((pair) => pair.state === "succeeded" && pair.nominated) || null;
 }
 
 const candidateById = (entries, id) =>

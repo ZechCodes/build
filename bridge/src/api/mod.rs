@@ -41,7 +41,8 @@ use std::collections::BTreeSet;
 /// 3.9.0 adds configured project source scopes for file browsing and editing.
 /// 3.10.0 adds conditional task body writes (`tasks.bodyPrecondition`, #347).
 /// 3.11.0 adds generation-guarded conversation reset (#358).
-pub const API_VERSION: &str = "3.11.0";
+/// 3.12.0 adds a bounded per-paired-client LAN discovery hint (#372).
+pub const API_VERSION: &str = "3.12.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -105,6 +106,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "requests.priority",
     "requests.receipts",
     "rtc.candidateDiagnostics", // Since 3.11.0: content-free candidate discovery diagnostics (#369).
+    "rtc.clientLanCache",       // Since 3.12.0: optional client_id on rtc.offer (#372).
     "settings.projectAgent",
     "settings.roleModels",
     "settings.workspaceLifecycle",

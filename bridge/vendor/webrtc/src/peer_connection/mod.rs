@@ -50,6 +50,8 @@
 //! ```
 
 pub(crate) mod driver;
+#[cfg(test)]
+mod late_direct_tests;
 pub(crate) mod transports;
 
 use log::error;

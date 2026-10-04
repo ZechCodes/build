@@ -279,7 +279,7 @@
                 "harness": "claude_adk",
                 "since": "2026-09-20T21:30:47Z",
                 "resets_at": "2026-09-20T22:20:00Z",
-                "said": "You've hit your session limit · resets 6:20pm (America/New_York)"
+                "said": "You've hit your session limit \u00b7 resets 6:20pm (America/New_York)"
               }
             ]
           }
@@ -361,6 +361,28 @@
         "mdns_unresolved": 1
       },
       "detail": "mdns-unresolved"
+    },
+    {
+      "type": "rtc.diagnostics",
+      "event": "direct-checks",
+      "reason": "direct-checks-no-reply",
+      "candidates": {
+        "host_mdns": 1,
+        "host_ip": 0,
+        "srflx": 1,
+        "relay": 1,
+        "mdns_pending": 0,
+        "mdns_resolved": 1,
+        "mdns_unresolved": 0
+      },
+      "hosts": [
+        {
+          "ordinal": 1,
+          "requests_sent": 8,
+          "responses_received": 0,
+          "succeeded": false
+        }
+      ]
     }
   ]
 }

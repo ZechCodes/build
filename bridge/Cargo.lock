@@ -285,7 +285,7 @@ dependencies = [
 
 [[package]]
 name = "build-bridge"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -2692,8 +2692,6 @@ dependencies = [
 [[package]]
 name = "rtc-ice"
 version = "0.20.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c06eeabd250a7693e1e8b28222b78c4a81a7c6ca7fe3cb99bbdff2f6c0ff0ab"
 dependencies = [
  "bytes",
  "crc",

@@ -52,7 +52,9 @@ pub(crate) fn diagnostic_debug(session_id: &str, event: &str) {
     log::debug!(target: "build_bridge::rtc", "session={session_id:?} {event}");
 }
 
+mod checks;
 pub(crate) mod chunk;
+pub(crate) mod client_hint;
 mod mdns;
 mod policy;
 mod remote;
@@ -81,6 +83,8 @@ pub enum RtcError {
 /// One live peer connection — one per E2EE session, always the answerer.
 #[async_trait]
 pub trait SessionPeer: Send + Sync {
+    fn bind_client_hint(&self, _hint: Option<uuid::Uuid>) {}
+
     /// Answer the browser's offer.
     ///
     /// The ICE servers ride with every offer and nothing else carries them: the
@@ -108,6 +112,14 @@ pub trait SessionPeer: Send + Sync {
 /// The only place a peer implementation is chosen and built.
 pub trait SessionPeerFactory: Send + Sync {
     fn open(&self, session_id: &str) -> Result<Arc<dyn SessionPeer>, RtcError>;
+
+    fn open_for_client(
+        &self,
+        session_id: &str,
+        _client_hint: Option<uuid::Uuid>,
+    ) -> Result<Arc<dyn SessionPeer>, RtcError> {
+        self.open(session_id)
+    }
 }
 
 /// A session's peer and the opening of the session it was registered for.
@@ -206,12 +218,25 @@ impl SessionPeers {
         ice_servers: &[Value],
         signaling: SessionSender,
     ) -> Result<String, RtcError> {
+        self.offer_with_client(offer_sdp, ice_servers, signaling, None)
+    }
+
+    pub fn offer_with_client(
+        &self,
+        offer_sdp: &str,
+        ice_servers: &[Value],
+        signaling: SessionSender,
+        client_hint: Option<uuid::Uuid>,
+    ) -> Result<String, RtcError> {
         let session_id = signaling.session_id().to_string();
         let opening = signaling.opening();
         if !opening.is_open() {
             return Err(RtcError::Ended(session_id));
         }
-        let (peer, opened_by_this_offer) = self.riding_or_opened(&session_id, &opening)?;
+        let client_hint = opening.bind_client_hint(client_hint);
+        let (peer, opened_by_this_offer) =
+            self.riding_or_opened(&session_id, &opening, client_hint)?;
+        peer.bind_client_hint(client_hint);
         match self.awaited(peer.answer(offer_sdp, ice_servers, signaling)) {
             Ok(answer) => Ok(answer),
             Err(refused) => {
@@ -296,13 +321,14 @@ impl SessionPeers {
         &self,
         session_id: &str,
         opening: &Opening,
+        client_hint: Option<uuid::Uuid>,
     ) -> Result<(Arc<dyn SessionPeer>, bool), RtcError> {
         if let Some((riding, peer)) = self.peers.lock().unwrap().get(session_id) {
             if riding.is(opening) {
                 return Ok((peer.clone(), false));
             }
         }
-        let opened = self.factory.open(session_id)?;
+        let opened = self.factory.open_for_client(session_id, client_hint)?;
         let registered = {
             let mut peers = self.peers.lock().unwrap();
             if !opening.is_open() {
@@ -471,6 +497,8 @@ impl From<webrtc::error::Error> for RtcError {
 pub struct WebrtcPeerFactory {
     intake: Arc<FrameIntake>,
     policy: Arc<IcePolicy>,
+    lan_addresses: Arc<mdns::LanAddressCache>,
+    check_pending_direct_pairs: bool,
 }
 
 impl WebrtcPeerFactory {
@@ -479,16 +507,39 @@ impl WebrtcPeerFactory {
     /// them gathers under — resolved once at startup, so every session of a
     /// run reaches its browser the same way.
     pub fn new(intake: Arc<FrameIntake>, policy: IcePolicy) -> Arc<Self> {
+        Self::configured(intake, policy, true)
+    }
+
+    #[cfg(any(test, feature = "testing"))]
+    pub fn with_pending_direct_pair_checks(
+        intake: Arc<FrameIntake>,
+        policy: IcePolicy,
+        enabled: bool,
+    ) -> Arc<Self> {
+        Self::configured(intake, policy, enabled)
+    }
+
+    fn configured(intake: Arc<FrameIntake>, policy: IcePolicy, enabled: bool) -> Arc<Self> {
         install_gatherer_log();
         Arc::new(WebrtcPeerFactory {
             intake,
             policy: Arc::new(policy),
+            lan_addresses: Arc::new(mdns::LanAddressCache::new()),
+            check_pending_direct_pairs: enabled,
         })
     }
 }
 
 impl SessionPeerFactory for WebrtcPeerFactory {
     fn open(&self, session_id: &str) -> Result<Arc<dyn SessionPeer>, RtcError> {
+        self.open_for_client(session_id, None)
+    }
+
+    fn open_for_client(
+        &self,
+        session_id: &str,
+        client_hint: Option<uuid::Uuid>,
+    ) -> Result<Arc<dyn SessionPeer>, RtcError> {
         let signaling = Arc::new(Trickling::default());
         let output = signaling.clone();
         let remote_session = session_id.to_string();
@@ -499,6 +550,8 @@ impl SessionPeerFactory for WebrtcPeerFactory {
                 diagnostic_debug(&remote_session, &format!("remote_candidates {payload}"));
                 output.diagnostics(payload);
             }),
+            self.lan_addresses.clone(),
+            client_hint,
         );
         Ok(Arc::new(WebrtcPeer {
             session_id: session_id.to_string(),
@@ -506,6 +559,7 @@ impl SessionPeerFactory for WebrtcPeerFactory {
             policy: self.policy.clone(),
             signaling,
             remote,
+            check_pending_direct_pairs: self.check_pending_direct_pairs,
             negotiation: tokio::sync::Mutex::new(None),
         }))
     }
@@ -517,6 +571,7 @@ struct WebrtcPeer {
     policy: Arc<IcePolicy>,
     signaling: Arc<Trickling>,
     remote: Arc<remote::RemoteCandidates>,
+    check_pending_direct_pairs: bool,
     negotiation: tokio::sync::Mutex<Option<Negotiation>>,
 }
 
@@ -538,6 +593,12 @@ impl Drop for Negotiation {
 
 #[async_trait]
 impl SessionPeer for WebrtcPeer {
+    fn bind_client_hint(&self, hint: Option<uuid::Uuid>) {
+        if let Some(hint) = hint {
+            self.remote.bind_client_hint(hint);
+        }
+    }
+
     async fn answer(
         &self,
         offer_sdp: &str,
@@ -574,7 +635,12 @@ impl SessionPeer for WebrtcPeer {
         let allowed_offer = self.policy.allowed_offer(offer_sdp);
         let (offer, deferred) = remote::without_mdns(&allowed_offer);
         let offer = RTCSessionDescription::offer(offer)?;
-        self.remote.begin(&allowed_offer).await;
+        let previous_stats = connection
+            .get_stats(std::time::Instant::now(), StatsSelector::None)
+            .await;
+        self.remote
+            .begin_with_stats(&allowed_offer, Some(&previous_stats))
+            .await;
         connection.set_remote_description(offer).await?;
         self.remote.observe_offer(&allowed_offer).await;
         let answer = connection.create_answer(None).await?;
@@ -614,7 +680,15 @@ impl SessionPeer for WebrtcPeer {
 
     async fn close(&self) {
         let mut negotiation = self.negotiation.lock().await;
-        self.remote.close().await;
+        let stats = match negotiation.as_ref() {
+            Some(open) => Some(
+                open.connection
+                    .get_stats(std::time::Instant::now(), StatsSelector::None)
+                    .await,
+            ),
+            None => None,
+        };
+        self.remote.close_with_stats(stats.as_ref()).await;
         self.signaling.close();
         let Some(open) = negotiation.take() else {
             return;
@@ -638,12 +712,14 @@ impl WebrtcPeer {
             gathered: Mutex::new(GatheredTypes::default()),
         });
         let udp_addrs = self.policy.gather_from()?;
+        let mut engine = self.policy.setting_engine(MulticastDnsMode::Disabled);
+        engine.set_check_pending_direct_pairs(self.check_pending_direct_pairs);
         // Browser mDNS names are resolved by our interface-explicit resolver;
         // the crate's one OS-selected multicast socket is disabled.
         let connection: Arc<dyn PeerConnection> = Arc::new(
             PeerConnectionBuilder::new()
                 .with_configuration(configuration)
-                .with_setting_engine(self.policy.setting_engine(MulticastDnsMode::Disabled))
+                .with_setting_engine(engine)
                 .with_data_channel_send_buffer_limit(DC_BUFFERED_HIGH)
                 .with_handler(events)
                 .with_udp_addrs(udp_addrs)
@@ -1562,6 +1638,7 @@ pub mod recording {
     #[derive(Default)]
     pub struct RecordingPeerFactory {
         opened: Mutex<HashMap<String, Arc<RecordingPeer>>>,
+        offered_hints: Mutex<Vec<Option<uuid::Uuid>>>,
         opens: AtomicUsize,
         gate: Mutex<Option<Arc<AnswerGate>>>,
         refuse_offers: AtomicBool,
@@ -1604,9 +1681,22 @@ pub mod recording {
         pub fn opened_count(&self) -> usize {
             self.opens.load(Ordering::SeqCst)
         }
+
+        pub fn offered_hints(&self) -> Vec<Option<uuid::Uuid>> {
+            self.offered_hints.lock().unwrap().clone()
+        }
     }
 
     impl SessionPeerFactory for RecordingPeerFactory {
+        fn open_for_client(
+            &self,
+            session_id: &str,
+            client_hint: Option<uuid::Uuid>,
+        ) -> Result<Arc<dyn SessionPeer>, RtcError> {
+            self.offered_hints.lock().unwrap().push(client_hint);
+            self.open(session_id)
+        }
+
         fn open(&self, session_id: &str) -> Result<Arc<dyn SessionPeer>, RtcError> {
             let hook = self.on_open.lock().unwrap().clone();
             if let Some(hook) = hook {
@@ -1645,6 +1735,34 @@ mod opening_fence_tests {
     /// way a handler on the blocking pool does, so they run there.
     async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
         tokio::task::spawn_blocking(work).await.unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn closing_a_peer_does_not_let_its_session_rotate_or_forget_the_hint() {
+        let (peers, factory) = peers();
+        let sender = SessionSender::detached("hint-session");
+        let first = uuid::Uuid::new_v4();
+        let next = uuid::Uuid::new_v4();
+        for hint in [None, Some(first), Some(next), None] {
+            let peers = peers.clone();
+            let sender = sender.clone();
+            blocking(move || {
+                peers
+                    .offer_with_client("v=0", &[], sender.clone(), hint)
+                    .unwrap();
+                peers.close(&sender).unwrap();
+            })
+            .await;
+        }
+        sender.opening_ended();
+        let replacement = SessionSender::detached("hint-session");
+        blocking(move || peers.offer_with_client("v=0", &[], replacement, Some(next)))
+            .await
+            .unwrap();
+        assert_eq!(
+            factory.offered_hints().as_slice(),
+            &[None, Some(first), Some(first), Some(first), Some(next)]
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1937,7 +2055,14 @@ mod trickle_tests {
             intake,
             policy: Arc::new(IcePolicy::default()),
             signaling: signaling.clone(),
-            remote: remote::RemoteCandidates::new("closed-peer".into(), None, Arc::new(|_| {})),
+            remote: remote::RemoteCandidates::new(
+                "closed-peer".into(),
+                None,
+                Arc::new(|_| {}),
+                Arc::new(mdns::LanAddressCache::new()),
+                None,
+            ),
+            check_pending_direct_pairs: true,
             negotiation: tokio::sync::Mutex::new(None),
         };
         assert!(!outgoing.is_closed());

@@ -4,8 +4,9 @@
 //
 // The browser is live only over the DataChannels (spec rule 2). A device's
 // rendezvous is how that device is found and its sessions minted
-// (core/rendezvous.js); it carries `rtc.*` and nothing else, and closes the
-// moment both channels are open (rule 4). There is no relay underneath, so a
+// (core/rendezvous.js); it carries `rtc.*` and nothing else, and closes after
+// channels open and bounded candidate gathering finishes. There is no relay
+// underneath, so a
 // device whose connection cannot be made is blocked by name, with a reason
 // (rule 3): its rows stay in the rail, greyed, its scope and drafts survive,
 // its calls are refused in those words, and recovery runs the sequence again
@@ -66,6 +67,7 @@ import { dispatchChangeEvent, greetBridge } from "./core/changeEvents.js";
 import { refreshBridgeUpdateStatus } from "./core/bridgeUpdates.js";
 import { deliverFeed, joinFeed } from "./core/taskFeed.js";
 import { syncRestoredDevice } from "./core/cacheSync.js";
+import { forgetRtcClientHints, rememberRtcClientSupport, rtcClientId } from "./core/rtcClientHint.js";
 
 // ---- one rendezvous per device (spec rules 4, 5 and 7) -----------------------
 
@@ -182,6 +184,7 @@ export function forgetRendezvousSockets() {
   connectionAttempts.clear();
   resetDeviceContexts();
   rendezvousLifecycle.clear();
+  forgetRtcClientHints();
 }
 
 // ---- the connect sequence (spec rules 2 and 3) -------------------------------
@@ -236,20 +239,25 @@ async function mintAppSession(deviceId, rendezvous, authority) {
  *
  * `rtc.*` rides the rendezvous — the session's own routing rule — and the two
  * cues below are what keeps the relay open only while something is negotiating:
- * the channels opening let it go, and a connection that failed asks for it back
+ * bounded gathering completion lets it go, and a connection that failed asks
+ * for it back
  * before it offers the restart.
  */
 function openDirectLink(deviceId, session, sessionLease, authority) {
   let restartLease = null;
   return openPeerLink({
+    clientId: () => rtcClientId(deviceId, pairedTransportKey(deviceId)),
     signal: (method, params) => failingAs("refused", session.call(method, params)),
     fetchIceServers: () => failingAs("ice-servers", fetchIceServers()),
     onPush: session.onPush,
     confirmCarried: () => session.confirmCarried(),
     diagnosticId: `${deviceId}:${session.sessionId}`,
-    onConnected: () => {
-      restartLease?.release();
+    onConnected: (signalingComplete) => {
+      const lease = restartLease;
       restartLease = null;
+      // Recovery restores the app immediately; its fresh native gathering
+      // still owns this lease until candidates land or the budget expires.
+      void Promise.resolve(signalingComplete).then(() => lease?.release());
     },
     onFailed: async () => {
       if (!authority.current()) throw new Error(`stale rendezvous restart for ${deviceId}`);
@@ -266,6 +274,8 @@ function openDirectLink(deviceId, session, sessionLease, authority) {
     },
   });
 }
+
+const pairedTransportKey = (deviceId) => App.devices.find((device) => device.id === deviceId)?.transport_public_key_b64 || null;
 
 // Intentionally content-free and bounded; support can ask a user to run this
 // after a failure without requiring the console to have been open beforehand.
@@ -338,7 +348,8 @@ async function connectOverChannels(deviceId, attempt) {
     attempt.release(lifetime);
     return landed.context;
   } finally {
-    sessionLease.release();
+    // A landed link owns the lease until its initial signaling settles.
+    if (!lifetime?.current()) sessionLease.release();
   }
 }
 
@@ -610,6 +621,7 @@ export function retireDevice(deviceId) {
   // Closed first: this machine is not lost, it is gone, and nothing is to be
   // blocked on the way out.
   rendezvousLifecycle.retire(deviceId);
+  forgetRtcClientHints(deviceId);
   return retireDeviceContext(deviceId);
 }
 
@@ -690,7 +702,10 @@ export function greetLiveBridge(context, {
     // Session identity alone is insufficient: restoration can issue another
     // greeting on this same session before the first hello answers.
     isCurrent,
-    onGreeting: (greeting) => repository?.configureCapabilities(greeting),
+    onGreeting: (greeting) => {
+      repository?.configureCapabilities(greeting);
+      rememberRtcClientSupport(session.deviceId, pairedTransportKey(session.deviceId), greeting);
+    },
     // The session first, so a gate that lets the app back in finds it there;
     // then the device's context, which is where every surface reads what this
     // machine's bridge speaks (core/deviceContexts.js).
@@ -808,7 +823,9 @@ async function landSession(session, link, releaseInitialLease, attempt, authorit
   if (!attempt.isCurrent() || !authority.current()) {
     throw new Error(`connection attempt for ${session.deviceId} was cancelled`);
   }
-  releaseInitialLease();
+  // The greeting makes the app usable; native ICE may still be registering a
+  // host's mDNS name. Its bounded completion keeps signaling alive meanwhile.
+  void Promise.resolve(link.whenInitialSignalingComplete?.()).then(releaseInitialLease);
   // A device the feed is not polling yet — the account's first session, one a
   // late device just opened — gets its own board watcher and reads it as soon
   // as its greeting is in.

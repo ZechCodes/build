@@ -18,7 +18,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -98,11 +98,36 @@ pub(crate) fn session_accept_message(session_id: &str, envelope: &Envelope) -> V
 /// candidate from an opening that has ended must not act on the id's next
 /// one. Two tokens are the same opening when they are the same allocation.
 #[derive(Clone)]
-pub struct Opening(Arc<AtomicBool>);
+pub struct Opening(Arc<OpeningState>);
+
+/// Session lifetime and its optional discovery bearer hint share one allocation.
+/// Closing a WebRTC peer or reattaching a carrier cannot rotate the hint. This
+/// does not authenticate a browser identity or partition the cross-session cache.
+struct OpeningState {
+    is_open: AtomicBool,
+    client_hint: OnceLock<uuid::Uuid>,
+}
+
+impl OpeningState {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            is_open: AtomicBool::new(true),
+            client_hint: OnceLock::new(),
+        })
+    }
+}
 
 impl Opening {
     pub fn is_open(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
+        self.0.is_open.load(Ordering::SeqCst)
+    }
+
+    /// The first valid hint wins, even when later offers omit or change it.
+    pub(crate) fn bind_client_hint(&self, offered: Option<uuid::Uuid>) -> Option<uuid::Uuid> {
+        if let Some(hint) = offered {
+            let _ = self.0.client_hint.set(hint);
+        }
+        self.0.client_hint.get().copied()
     }
 
     /// Whether `other` is this same opening.
@@ -121,7 +146,7 @@ pub struct SessionSender {
     out: mpsc::UnboundedSender<OutboundEnvelope>,
     /// Whether the opening this sender was built for is still open — see
     /// [`OpenSession::still_open`].
-    still_open: Arc<AtomicBool>,
+    still_open: Arc<OpeningState>,
 }
 
 impl SessionSender {
@@ -133,7 +158,7 @@ impl SessionSender {
     /// fence every handler runs behind (`dispatch::run_handler`), and the
     /// fence the frames answered off the queue run behind too.
     pub(crate) fn session_is_open(&self) -> bool {
-        self.still_open.load(Ordering::SeqCst)
+        self.still_open.is_open.load(Ordering::SeqCst)
     }
 
     /// The opening this sender belongs to, as a token.
@@ -145,14 +170,14 @@ impl SessionSender {
     /// ended.
     #[cfg(test)]
     pub(crate) fn opening_ended(&self) {
-        self.still_open.store(false, Ordering::SeqCst);
+        self.still_open.is_open.store(false, Ordering::SeqCst);
     }
 
     fn keyed(
         session_id: &str,
         session_key: String,
         out: mpsc::UnboundedSender<OutboundEnvelope>,
-        still_open: Arc<AtomicBool>,
+        still_open: Arc<OpeningState>,
     ) -> Self {
         SessionSender {
             session_id: session_id.to_string(),
@@ -167,12 +192,7 @@ impl SessionSender {
     /// against nothing, fails, and reports `false`.
     pub fn detached(session_id: impl Into<String>) -> Self {
         let (out, _rx) = mpsc::unbounded_channel();
-        SessionSender::keyed(
-            &session_id.into(),
-            String::new(),
-            out,
-            Arc::new(AtomicBool::new(true)),
-        )
+        SessionSender::keyed(&session_id.into(), String::new(), out, OpeningState::new())
     }
 
     /// Test-only: a sender with a real session key and a captured channel, so
@@ -189,7 +209,7 @@ impl SessionSender {
                 &session_id.into(),
                 session_key.clone(),
                 out,
-                Arc::new(AtomicBool::new(true)),
+                OpeningState::new(),
             ),
             rx,
             session_key,
@@ -407,7 +427,7 @@ struct OpenSession {
     /// every sender built for it: a frame admitted before the end and run
     /// after it is told apart from the same id's next opening, so its handler
     /// never runs (`dispatch::run_handler`).
-    still_open: Arc<AtomicBool>,
+    still_open: Arc<OpeningState>,
 }
 
 impl OpenSession {
@@ -422,7 +442,7 @@ impl OpenSession {
     /// for it from here on, and the end is stamped with this opening's
     /// generation.
     fn end(&self, session_id: &str) -> SessionEnd {
-        self.still_open.store(false, Ordering::SeqCst);
+        self.still_open.is_open.store(false, Ordering::SeqCst);
         SessionEnd {
             session_id: session_id.to_string(),
             generation: self.generation,
@@ -534,7 +554,7 @@ impl SessionRegistry {
                         key: session_key,
                         generation: self.minted.fetch_add(1, Ordering::Relaxed) + 1,
                         carriers: HashMap::from([(carrier.id, carrier.kind)]),
-                        still_open: Arc::new(AtomicBool::new(true)),
+                        still_open: OpeningState::new(),
                     },
                 );
                 self.ledger.record(session_id, TransportEvent::Minted);
@@ -1084,6 +1104,84 @@ mod registry_tests {
 
     pub(super) fn ended_ids(ended: Vec<SessionEnd>) -> Vec<String> {
         ended.into_iter().map(|end| end.session_id).collect()
+    }
+
+    #[test]
+    fn a_session_hint_survives_authenticated_carrier_reattachment_but_not_a_new_opening() {
+        let registry = SessionRegistry::default();
+        let (first_carrier, _first_out) = CarrierHandle::open();
+        let (second_carrier, _second_out) = CarrierHandle::open();
+        let key = transport::generate_session_key();
+        registry
+            .open("hint-session", key.clone(), &first_carrier)
+            .unwrap();
+        let (_, first_sender) = registry
+            .admit(
+                &client_envelope(&key, "hint-session", "data"),
+                &first_carrier,
+            )
+            .unwrap();
+        let first = uuid::Uuid::new_v4();
+        let next = uuid::Uuid::new_v4();
+        assert_eq!(
+            first_sender.opening().bind_client_hint(Some(first)),
+            Some(first)
+        );
+        registry
+            .open("hint-session", key.clone(), &second_carrier)
+            .unwrap();
+        let (_, reattached) = registry
+            .admit(
+                &client_envelope(&key, "hint-session", "data"),
+                &second_carrier,
+            )
+            .unwrap();
+        assert!(reattached.opening().is(&first_sender.opening()));
+        assert_eq!(
+            reattached.opening().bind_client_hint(Some(next)),
+            Some(first)
+        );
+        assert_eq!(reattached.opening().bind_client_hint(None), Some(first));
+        registry.end("hint-session");
+        let next_key = transport::generate_session_key();
+        registry
+            .open("hint-session", next_key.clone(), &second_carrier)
+            .unwrap();
+        let (_, replacement) = registry
+            .admit(
+                &client_envelope(&next_key, "hint-session", "data"),
+                &second_carrier,
+            )
+            .unwrap();
+        assert!(!replacement.opening().is(&first_sender.opening()));
+        assert_eq!(
+            replacement.opening().bind_client_hint(Some(next)),
+            Some(next)
+        );
+    }
+
+    #[test]
+    fn concurrent_first_hints_choose_one_value_for_the_session_opening() {
+        let opening = SessionSender::detached("concurrent-hint").opening();
+        let barrier = std::sync::Barrier::new(2);
+        let first = uuid::Uuid::new_v4();
+        let second = uuid::Uuid::new_v4();
+        let results = std::thread::scope(|threads| {
+            let submit = |hint| {
+                let barrier = &barrier;
+                let opening = &opening;
+                threads.spawn(move || {
+                    barrier.wait();
+                    opening.bind_client_hint(Some(hint))
+                })
+            };
+            let left = submit(first);
+            let right = submit(second);
+            (left.join().unwrap(), right.join().unwrap())
+        });
+        assert_eq!(results.0, results.1);
+        assert!(matches!(results.0, Some(hint) if hint == first || hint == second));
+        assert_eq!(opening.bind_client_hint(None), results.0);
     }
 
     #[test]

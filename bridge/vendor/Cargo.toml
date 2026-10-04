@@ -2,13 +2,15 @@
 # bridge does not build through this file: bridge/Cargo.toml reaches the
 # crates with [patch.crates-io] path entries, and its gates stop at the
 # bridge's own package. Here the patched webrtc is tested on a lockfile of its
-# own, on the patched rtc as in the bridge. rtc is not a member: its tests'
+# own, on the patched rtc and rtc-ice as in the bridge. rtc-ice's own unit
+# tests run here too. rtc is not a member: its tests'
 # dev-dependencies (webrtc 0.14 and a web stack) are not ours to build.
 [workspace]
-members = ["webrtc"]
+members = ["webrtc", "rtc-ice"]
 # The bridge's resolver (edition 2021), so features unify the way they do in
 # the daemon.
 resolver = "2"
 
 [patch.crates-io]
 rtc = { path = "rtc" }
+rtc-ice = { path = "rtc-ice" }

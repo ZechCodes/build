@@ -1,6 +1,6 @@
 import { openCarrier, peerFrames } from "./carrier.js";
 import { classifyTransportPath, TURN } from "./transportPath.js";
-import { createRelayHold, directPairStatus } from "./iceCandidates.js";
+import { candidateTypeOf, createRelayHold, directPairStatus, hasLocalHostCandidate, offerHasHostCandidate } from "./iceCandidates.js";
 import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
 import { createDirectPairMonitor } from "./directPairMonitor.js";
 import { candidateDiagnostic, directPairNoTryReason, safeCandidateReason } from "./rtcDiagnostics.js";
@@ -11,6 +11,13 @@ const OPEN_TIMEOUT_MS = 15000;
 const blockedBy = (reason, message) => Object.assign(new Error(message), { blockedReason: reason });
 const safeState = (state) => (["new", "connecting", "connected", "disconnected", "failed", "closed"].includes(state) ? state : "unknown");
 const safeIceState = (state) => (["new", "checking", "connected", "completed", "disconnected", "failed", "closed"].includes(state) ? state : "unknown");
+const candidateCounts = () => ({ host: 0, srflx: 0, prflx: 0, relay: 0, unknown: 0 });
+const countedCandidateType = (candidate) => {
+  const type = candidateTypeOf(candidate);
+  return ["host", "srflx", "prflx", "relay"].includes(type) ? type : "unknown";
+};
+const nativeGatheringHasNoHosts = (round) => round.completed && round.gathered.host === 0 && !round.embeddedHost;
+const browserOffersNoHosts = (round, stats) => nativeGatheringHasNoHosts(round) && !hasLocalHostCandidate(stats);
 
 function createRecoveryStatus() {
   const listeners = new Set();
@@ -42,7 +49,7 @@ const restartFailure = (error) =>
  * answer that crossed the channels proves they reach the process holding it.
  */
 export async function openPeerLink({ signal, fetchIceServers, onPush, onConnected = () => {}, onFailed = () => {},
-  confirmCarried,
+  confirmCarried, clientId,
   RTCPeerConnectionImpl = globalThis.RTCPeerConnection, openTimeoutMs = OPEN_TIMEOUT_MS, diagnosticId = "peer" }) {
   const diagnostic = (event, detail = {}) => recordConnectionDiagnostic(diagnosticId, event, detail);
   const iceServers = await withinDeadline(openTimeoutMs, () => fetchIceServers());
@@ -106,6 +113,23 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   let renegotiating = false;
   let negotiationGeneration = 0;
   let renegotiationDeadline = 0;
+  let cancelSignaling = () => {};
+  let initialSignalingComplete = Promise.resolve();
+  let currentSignalingComplete = initialSignalingComplete;
+  const newLocalCandidates = () => ({
+    generation: negotiationGeneration, gathered: candidateCounts(), delivered: candidateCounts(), failed: candidateCounts(), pending: new Set(),
+    completed: false, embeddedHost: false,
+  });
+  let localCandidates = newLocalCandidates();
+  const rememberLocalOffer = (sdp) => { localCandidates.embeddedHost ||= offerHasHostCandidate(sdp); };
+  const reportLocalCandidates = async (phase, round = localCandidates) => {
+    const stats = nativeGatheringHasNoHosts(round) ? await peerStats() : null;
+    const absence = browserOffersNoHosts(round, stats) ? { reason: "browser-no-host-candidates" } : {};
+    diagnostic("local-candidates", {
+      generation: round.generation, phase,
+      gathered: { ...round.gathered }, delivered: { ...round.delivered }, failed: { ...round.failed }, ...absence,
+    });
+  };
   /** Whether a failed path is being put right in place: the restart the
    *  failure watcher runs, and the carry check after it. Not the optional
    *  direct-pair attempt, whose path works throughout. What the ring reads to
@@ -141,8 +165,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
       peer.addIceCandidate(candidate).catch(() => diagnostic("candidate-failed", { direction: "remote" }));
     },
   });
-  const pendingOutboundCandidates = new Set();
-  const outboundCandidatesDelivered = () => Promise.all([...pendingOutboundCandidates]);
+  const outboundCandidatesDelivered = (round = localCandidates) => Promise.all([...round.pending]);
   const holdOutbound = createRelayHold({
     deliver: (gathered) => {
       if (torn) return;
@@ -150,11 +173,19 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
       // reads — and serialised only on the way out, because `toJSON` does not
       // carry it.
       const candidate = gathered.toJSON ? gathered.toJSON() : gathered;
-      const delivery = signal("rtc.ice", { candidate }).catch((error) => {
+      const round = localCandidates;
+      const type = countedCandidateType(gathered);
+      const delivery = signal("rtc.ice", { candidate }).then(() => {
+        round.delivered[type] += 1;
+      }).catch((error) => {
+        round.failed[type] += 1;
         const reason = safeCandidateReason(error?.details?.reason);
         diagnostic("candidate-failed", { direction: "local", ...(reason ? { reason } : {}) });
-      }).finally(() => pendingOutboundCandidates.delete(delivery));
-      pendingOutboundCandidates.add(delivery);
+      }).finally(() => {
+        round.pending.delete(delivery);
+        if (peer.iceGatheringState === "complete") reportLocalCandidates("candidate-delivered", round);
+      });
+      round.pending.add(delivery);
     },
   });
   const receiveCandidateDiagnostic = (push) => {
@@ -167,9 +198,8 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
       lastNoTryReason = null;
     }
     bridgeCandidateReason = detail.phase === "generation" ? null : detail.reason;
-    // The bridge stops nonselected-pair checks after nomination. A newly
-    // resolved LAN address therefore needs fresh ICE checks even if the old
-    // browser report can never show that pair as succeeded.
+    // A newly resolved LAN address warrants fresh browser nomination even
+    // when the old browser checklist cannot show that pair as succeeded.
     if (detail.phase === "mdns-resolved" && detail.candidates.mdns_resolved > 0) mdnsResolvedInGeneration = true;
     diagnostic("candidate-diagnostics", detail);
   };
@@ -182,7 +212,13 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     pushHandlers.get(push.type)?.(push);
   });
   const outgoingCandidate = (event) => {
-    if (!event.candidate || torn) return;
+    if (torn) return;
+    if (!event.candidate) {
+      localCandidates.completed = true;
+      void reportLocalCandidates("gathering-complete");
+      return;
+    }
+    localCandidates.gathered[countedCandidateType(event.candidate)] += 1;
     holdOutbound.offer(event.candidate);
   };
   peer.addEventListener("icecandidate", outgoingCandidate);
@@ -216,6 +252,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     if (torn) return;
     torn = true;
     tornBecause = reason;
+    cancelSignaling();
     cancelWait();
     stopWatching();
     directPairMonitor.close();
@@ -236,8 +273,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
 
   /** After TURN has been steady for 20 s, keep watching for direct evidence.
    *  A succeeded alternative pair warrants one re-nomination attempt. Late
-   *  mDNS resolution also warrants fresh checks: the bridge stops checking
-   *  nonselected pairs after nomination, so those old checks cannot succeed.
+   *  mDNS resolution also warrants fresh browser checks and nomination.
    *  With neither evidence, the working TURN path is left alone. */
   // One optional upgrade attempt for this peer link's entire lifetime.
   // Recovery reuses the peer and does not renew that budget.
@@ -246,13 +282,15 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   const directPairIsWorthTrying = async () => {
     if (!mayTryDirectPair()) return null;
     const generation = negotiationGeneration;
-    const status = directPairStatus(await peerStats());
+    const stats = await peerStats();
+    const status = directPairStatus(stats);
     // Recovery may have started while getStats was pending. It owns this
     // negotiation; a stale checklist must not create a concurrent offer.
     if (!mayTryDirectPair() || generation !== negotiationGeneration) return null;
     if (status.worthTrying) return status.reason;
-    if (mdnsResolvedInGeneration) return "mdns-resolved";
-    const reason = directPairNoTryReason(status.reason, bridgeCandidateReason);
+    const noBrowserHosts = browserOffersNoHosts(localCandidates, stats);
+    if (mdnsResolvedInGeneration && !noBrowserHosts) return "mdns-resolved";
+    const reason = noBrowserHosts ? "browser-no-host-candidates" : directPairNoTryReason(status.reason, bridgeCandidateReason);
     if (reason !== lastNoTryReason) diagnostic("direct-pair", { state: "none-to-try", reason });
     lastNoTryReason = reason;
     return null;
@@ -287,7 +325,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
       holdInbound.stopHolding();
       holdOutbound.stopHolding();
       try {
-        await withinDeadline(Math.max(1, renegotiationDeadline - Date.now()), outboundCandidatesDelivered,
+        await withinDeadline(Math.max(1, renegotiationDeadline - Date.now()), () => outboundCandidatesDelivered(),
           (cancel) => (cancelWait = cancel));
       } catch { /* the existing restart deadline also bounds lease cleanup */ }
     }
@@ -327,10 +365,37 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     check: monitorDirectPair, canCheck: mayMonitorDirectPair, hasAttempted: () => upgradeAsked,
   });
 
+  // Keep signaling while native gathering finishes, independently of app
+  // readiness. A late mDNS host candidate otherwise queues behind a closed
+  // rendezvous and the bridge can only report that it received no hosts.
+  const finishSignaling = async (deadline) => {
+    let cancelGathering = () => {};
+    let cancelDeadline = () => {};
+    const cancel = () => { cancelGathering(); cancelDeadline(); };
+    cancelSignaling = cancel;
+    const round = localCandidates;
+    try {
+      await withinDeadline(Math.max(1, deadline - Date.now()), async () => {
+        await gatheringComplete(peer, (cancel) => (cancelGathering = cancel), ensureActive);
+        await holdOutbound.whenReleased();
+        await outboundCandidatesDelivered(round);
+      }, (cancel) => (cancelDeadline = cancel));
+      reportLocalCandidates("signaling-complete", round);
+    } catch (error) {
+      reportLocalCandidates(error?.blockedReason === "timeout" ? "timeout" : "cancelled", round);
+    } finally {
+      cancelGathering();
+      if (cancelSignaling === cancel) cancelSignaling = () => {};
+    }
+  };
+
   try {
     diagnostic("negotiating", { phase: "initial" });
+    const initialDeadline = Date.now() + openTimeoutMs;
     await withinDeadline(openTimeoutMs, async (remaining) => {
-      await offer(peer, signal, iceServers, {}, ensureActive);
+      await offer(peer, signal, iceServers, {}, ensureActive, clientId, rememberLocalOffer);
+      initialSignalingComplete = finishSignaling(initialDeadline);
+      currentSignalingComplete = initialSignalingComplete;
       await usable(peer, channels, remaining(), diagnostic, (cancel) => (cancelWait = cancel), ensureActive, true);
     }, (cancel) => (cancelWait = cancel));
     readIceState();
@@ -357,7 +422,9 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
    * negotiates and reports, and the caller decides.
    */
   const renegotiate = async (phase) => {
+    cancelSignaling();
     negotiationGeneration += 1;
+    localCandidates = newLocalCandidates();
     renegotiationDeadline = Date.now() + openTimeoutMs;
     let cancelActivity = () => {};
     let negotiationActive = true;
@@ -382,7 +449,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
         const freshServers = await fetchIceServers();
         ensureNegotiationActive();
         peer.setConfiguration?.({ iceServers: freshServers });
-        await offer(peer, signal, freshServers, { iceRestart: true }, ensureNegotiationActive);
+        await offer(peer, signal, freshServers, { iceRestart: true }, ensureNegotiationActive, clientId, rememberLocalOffer);
         if (phase === "direct-pair") {
           await gatheringComplete(peer, (cancel) => (cancelActivity = cancel), ensureNegotiationActive);
           ensureNegotiationActive();
@@ -390,6 +457,8 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
           ensureNegotiationActive();
           await outboundCandidatesDelivered();
           ensureNegotiationActive();
+        } else {
+          currentSignalingComplete = finishSignaling(renegotiationDeadline);
         }
         await usable(peer, channels, remaining(), diagnostic, (cancel) => (cancelActivity = cancel), ensureNegotiationActive);
       }, (cancel) => (cancelWait = () => { cancelActivity(); cancel(); }));
@@ -427,7 +496,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
       await sampleTransportPath();
       restoring = false;
       recovery.end();
-      await onConnected();
+      await onConnected(currentSignalingComplete);
       for (const listener of [...restoredListeners]) listener();
     } catch (error) {
       restoring = false;
@@ -444,6 +513,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   return {
     app,
     term,
+    whenInitialSignalingComplete: () => initialSignalingComplete,
     recovery,
     restoring: () => restoring,
     transportPath: () => transportPath,
@@ -465,15 +535,21 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   };
 }
 
-async function offer(peer, signal, iceServers, options, ensureActive) {
+const reportLocalOffer = (peer, local, remember) => remember?.(peer.localDescription?.sdp || local.sdp);
+
+async function offer(peer, signal, iceServers, options, ensureActive, clientId, rememberLocalOffer) {
   const local = await peer.createOffer(options);
   ensureActive();
+  rememberLocalOffer?.(local.sdp);
   await peer.setLocalDescription(local);
   ensureActive();
-  const answer = await signal("rtc.offer", { sdp: local.sdp, ice_servers: iceServers });
+  reportLocalOffer(peer, local, rememberLocalOffer);
+  const hint = clientId?.();
+  const answer = await signal("rtc.offer", { sdp: local.sdp, ice_servers: iceServers, ...(hint ? { client_id: hint } : {}) });
   ensureActive();
   await peer.setRemoteDescription({ type: "answer", sdp: answer.sdp });
   ensureActive();
+  reportLocalOffer(peer, local, rememberLocalOffer);
 }
 
 /** ICE can stay connected on the old nominated pair during a restart. New

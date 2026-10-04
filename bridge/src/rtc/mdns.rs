@@ -13,6 +13,10 @@ use rtc::sansio::Protocol;
 #[cfg(test)]
 use rtc::shared::{TaggedBytesMut, TransportContext, TransportProtocol};
 
+mod cache;
+mod egress;
+pub(super) use cache::LanAddressCache;
+
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
 const RETRY_INTERVAL: Duration = Duration::from_secs(1);
 const ANSWER_GRACE: Duration = Duration::from_millis(100);
@@ -79,6 +83,12 @@ impl ResolveFailure {
 trait Transport: Send + Sync {
     fn join(&self, interface: &LanInterface) -> io::Result<()>;
     async fn send(&self, interface: &LanInterface, query: &[u8]) -> io::Result<()>;
+    async fn send_to_peer(&self, _: &LanInterface, _: &[u8], _: Ipv4Addr) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "explicit unicast egress unavailable",
+        ))
+    }
     async fn receive(&self) -> io::Result<Datagram>;
 }
 
@@ -99,6 +109,7 @@ impl UdpTransport {
         socket.set_reuse_port(true)?;
         socket.set_nonblocking(true)?;
         socket.set_multicast_ttl_v4(255)?;
+        socket.set_ttl_v4(255)?;
         enable_packet_info(&socket)?;
         // Linux's upstream group-address bind misses unicast mDNS responses.
         socket.bind(&SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)).into())?;
@@ -115,8 +126,7 @@ impl UdpTransport {
         destination: SocketAddr,
     ) -> io::Result<()> {
         socket2::SockRef::from(&self.socket).set_multicast_if_v4(&interface.address)?;
-        self.socket.send_to(query, destination).await?;
-        Ok(())
+        egress::send_on(&self.socket, interface, query, destination).await
     }
 }
 
@@ -129,6 +139,17 @@ impl Transport for UdpTransport {
 
     async fn send(&self, interface: &LanInterface, query: &[u8]) -> io::Result<()> {
         self.send_on(interface, query, self.destination).await
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn send_to_peer(
+        &self,
+        interface: &LanInterface,
+        query: &[u8],
+        peer: Ipv4Addr,
+    ) -> io::Result<()> {
+        self.send_on(interface, query, SocketAddr::from((peer, MDNS_PORT)))
+            .await
     }
 
     async fn receive(&self) -> io::Result<Datagram> {
@@ -245,6 +266,19 @@ impl Transport for SharedTransport {
                 _ => return Err(socket_gone_error()),
             }
         }
+    }
+
+    async fn send_to_peer(
+        &self,
+        interface: &LanInterface,
+        query: &[u8],
+        peer: Ipv4Addr,
+    ) -> io::Result<()> {
+        let _sending = self.socket.send_lock.lock().await;
+        self.socket
+            .transport
+            .send_to_peer(interface, query, peer)
+            .await
     }
 }
 
@@ -445,6 +479,9 @@ pub(crate) async fn resolve(
     name: &str,
     allowlist: Option<&[String]>,
     session_id: &str,
+    cache: &LanAddressCache,
+    client_token: Option<uuid::Uuid>,
+    use_remembered: bool,
 ) -> Result<Vec<IpAddr>, ResolveFailure> {
     let name = normalized_name(name)?;
     let point_to_point =
@@ -477,7 +514,46 @@ pub(crate) async fn resolve(
     }
     let shared = SharedSocket::acquire().map_err(|_| ResolveFailure::SocketUnavailable)?;
     let transport = shared.subscribe();
-    resolve_with(&name, &interfaces, &transport, RESOLVE_TIMEOUT, session_id).await
+    let context = CacheContext {
+        cache,
+        client_token,
+        use_remembered,
+    };
+    resolve_cached_with(
+        &name,
+        &interfaces,
+        &transport,
+        RESOLVE_TIMEOUT,
+        session_id,
+        &context,
+    )
+    .await
+}
+
+struct CacheContext<'a> {
+    cache: &'a LanAddressCache,
+    client_token: Option<uuid::Uuid>,
+    use_remembered: bool,
+}
+
+async fn resolve_cached_with(
+    name: &str,
+    interfaces: &[LanInterface],
+    transport: &impl Transport,
+    timeout: Duration,
+    session_id: &str,
+    context: &CacheContext<'_>,
+) -> Result<Vec<IpAddr>, ResolveFailure> {
+    let remembered = context
+        .client_token
+        .filter(|_| context.use_remembered)
+        .and_then(|token| context.cache.remembered(token));
+    let result =
+        resolve_remembered_with(name, interfaces, transport, timeout, session_id, remembered).await;
+    if let (Ok(addresses), Some(token)) = (&result, context.client_token) {
+        context.cache.remember_validated(token, addresses);
+    }
+    result
 }
 
 fn selected_interfaces(
@@ -791,12 +867,24 @@ fn validated_answer_for_platform(
     Ok(Some(address.into()))
 }
 
+#[cfg(test)]
 async fn resolve_with(
     name: &str,
     interfaces: &[LanInterface],
     transport: &impl Transport,
     timeout: Duration,
     session_id: &str,
+) -> Result<Vec<IpAddr>, ResolveFailure> {
+    resolve_remembered_with(name, interfaces, transport, timeout, session_id, None).await
+}
+
+async fn resolve_remembered_with(
+    name: &str,
+    interfaces: &[LanInterface],
+    transport: &impl Transport,
+    timeout: Duration,
+    session_id: &str,
+    remembered: Option<Ipv4Addr>,
 ) -> Result<Vec<IpAddr>, ResolveFailure> {
     let deadline = tokio::time::Instant::now() + timeout;
     if interfaces.is_empty() {
@@ -819,7 +907,7 @@ async fn resolve_with(
     if joined.is_empty() {
         return Err(ResolveFailure::SocketUnavailable);
     }
-    query_round(name, &joined, transport, session_id, deadline).await
+    query_round(name, &joined, transport, session_id, deadline, remembered).await
 }
 
 async fn send_queries(
@@ -846,9 +934,12 @@ async fn query_round(
     transport: &impl Transport,
     session_id: &str,
     deadline: tokio::time::Instant,
+    remembered: Option<Ipv4Addr>,
 ) -> Result<Vec<IpAddr>, ResolveFailure> {
     let query = query_bytes(name);
     let successes = send_queries(interfaces, transport, &query, deadline).await;
+    let direct_sent =
+        send_remembered_query(interfaces, transport, &query, deadline, remembered).await;
     super::diagnostic_debug(
         session_id,
         &format!(
@@ -856,10 +947,34 @@ async fn query_round(
             interfaces.len() - successes
         ),
     );
-    if successes == 0 {
+    if successes == 0 && !direct_sent {
         return Err(ResolveFailure::SocketUnavailable);
     }
     receive_answers(name, interfaces, transport, &query, deadline, session_id).await
+}
+
+async fn send_remembered_query(
+    interfaces: &[LanInterface],
+    transport: &impl Transport,
+    query: &[u8],
+    deadline: tokio::time::Instant,
+    remembered: Option<Ipv4Addr>,
+) -> bool {
+    let Some(peer) = remembered.filter(|peer| local_ipv4(*peer) && usable_ipv4(*peer)) else {
+        return false;
+    };
+    if interfaces.iter().any(|interface| interface.address == peer) {
+        return false;
+    }
+    let Some(interface) = interfaces.iter().find(|interface| interface.contains(peer)) else {
+        return false;
+    };
+    // The remembered address is only a destination for this fresh UUID.local
+    // question. It never enters the answer path, and retries remain multicast.
+    matches!(
+        tokio::time::timeout_at(deadline, transport.send_to_peer(interface, query, peer)).await,
+        Ok(Ok(()))
+    )
 }
 
 async fn receive_answers(
@@ -1528,8 +1643,11 @@ mod tests {
     }
 
     struct FakeTransport {
+        name: String,
         joined: Mutex<Vec<Ipv4Addr>>,
         sent: Mutex<Vec<Ipv4Addr>>,
+        direct_sent: Mutex<Vec<(Ipv4Addr, Ipv4Addr)>>,
+        direct_reply: Option<Datagram>,
         failed_join: Option<Ipv4Addr>,
         failed_send: Option<Ipv4Addr>,
         reply_delay: Duration,
@@ -1560,8 +1678,11 @@ mod tests {
         fn new(replies: HashMap<Ipv4Addr, Vec<u8>>) -> Self {
             let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
             Self {
+                name: NAME.to_string(),
                 joined: Mutex::new(Vec::new()),
                 sent: Mutex::new(Vec::new()),
+                direct_sent: Mutex::default(),
+                direct_reply: None,
                 failed_join: None,
                 failed_send: None,
                 reply_delay: Duration::ZERO,
@@ -1586,7 +1707,7 @@ mod tests {
 
         async fn send(&self, interface: &LanInterface, query: &[u8]) -> io::Result<()> {
             self.sent.lock().unwrap().push(interface.address);
-            assert_eq!(query, query_bytes(NAME));
+            assert_eq!(query, query_bytes(&self.name));
             if self.failed_send == Some(interface.address) {
                 return Err(io::Error::other("synthetic egress failure"));
             }
@@ -1599,8 +1720,12 @@ mod tests {
                         .copied()
                         .unwrap_or_else(|| {
                             SocketAddr::new(
-                                answer_from(NAME, reply, "192.168.1.50:5353".parse().unwrap())
-                                    .unwrap(),
+                                answer_from(
+                                    &self.name,
+                                    reply,
+                                    "192.168.1.50:5353".parse().unwrap(),
+                                )
+                                .unwrap(),
                                 MDNS_PORT,
                             )
                         }),
@@ -1630,6 +1755,297 @@ mod tests {
                 .recv()
                 .await
                 .ok_or_else(|| io::Error::other("synthetic receiver closed"))
+        }
+
+        async fn send_to_peer(
+            &self,
+            interface: &LanInterface,
+            query: &[u8],
+            peer: Ipv4Addr,
+        ) -> io::Result<()> {
+            assert_eq!(query, query_bytes(&self.name));
+            self.direct_sent
+                .lock()
+                .unwrap()
+                .push((interface.address, peer));
+            if let Some(reply) = &self.direct_reply {
+                self.sender.send(reply.clone()).unwrap();
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn queries_are_full_mdns_qm_questions_without_the_unicast_response_bit() {
+        let mut expected = vec![0; 12];
+        expected[5] = 1;
+        expected.push(36);
+        expected.extend_from_slice(b"4c14a372-9db5-4faa-bbf1-d93583114e89");
+        expected.extend_from_slice(b"\x05local\x00\x00\x01\x00\x01");
+        assert_eq!(query_bytes(NAME), expected);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_remembered_peer_gets_only_one_extra_query_on_its_current_lan() {
+        let interfaces = vec![
+            interface("eth0", "192.168.1.10"),
+            interface("wlan0", "192.168.68.2"),
+        ];
+        let transport = FakeTransport::new(HashMap::new());
+        let remembered = "192.168.68.50".parse().unwrap();
+        assert_eq!(
+            resolve_remembered_with(
+                NAME,
+                &interfaces,
+                &transport,
+                RESOLVE_TIMEOUT,
+                "test",
+                Some(remembered)
+            )
+            .await,
+            Err(ResolveFailure::Unresolved)
+        );
+        assert_eq!(
+            *transport.direct_sent.lock().unwrap(),
+            vec![(interfaces[1].address, remembered)]
+        );
+        assert!(
+            transport.sent.lock().unwrap().len() > interfaces.len(),
+            "multicast still retries"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn remembered_addresses_never_become_answers_or_expand_the_current_lans() {
+        let interfaces = vec![
+            interface("eth0", "192.168.1.10"),
+            interface("eth0:1", "192.168.1.50"),
+        ];
+        for remembered in [
+            "192.168.68.50",
+            "192.168.1.50",
+            "192.168.1.0",
+            "192.168.1.255",
+            "8.8.8.8",
+        ] {
+            let transport = FakeTransport::new(HashMap::new());
+            assert_eq!(
+                resolve_remembered_with(
+                    NAME,
+                    &interfaces,
+                    &transport,
+                    RESOLVE_TIMEOUT,
+                    "test",
+                    Some(remembered.parse().unwrap())
+                )
+                .await,
+                Err(ResolveFailure::Unresolved)
+            );
+            assert!(
+                transport.direct_sent.lock().unwrap().is_empty(),
+                "{remembered}"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn only_validated_answers_seed_the_client_cache_across_rotated_names() {
+        let interfaces = vec![interface("eth0", "192.168.1.10")];
+        let cache = LanAddressCache::new();
+        let token = uuid::Uuid::new_v4();
+        let context = CacheContext {
+            cache: &cache,
+            client_token: Some(token),
+            use_remembered: true,
+        };
+        let initial = FakeTransport::new(HashMap::from([(
+            interfaces[0].address,
+            response(NAME, "192.168.1.50"),
+        )]));
+        resolve_cached_with(
+            NAME,
+            &interfaces,
+            &initial,
+            RESOLVE_TIMEOUT,
+            "test",
+            &context,
+        )
+        .await
+        .unwrap();
+        assert!(initial.direct_sent.lock().unwrap().is_empty());
+        const ROTATED: &str = "8c14a372-9db5-4faa-bbf1-d93583114e89.local";
+        let mut next = FakeTransport::new(HashMap::new());
+        next.name = ROTATED.to_string();
+        next.direct_reply = Some(Datagram {
+            packet: response(ROTATED, "192.168.1.50"),
+            source: "192.168.1.50:5353".parse().unwrap(),
+            arrival: Some(1),
+        });
+        assert_eq!(
+            resolve_cached_with(
+                ROTATED,
+                &interfaces,
+                &next,
+                RESOLVE_TIMEOUT,
+                "test",
+                &context
+            )
+            .await
+            .unwrap(),
+            vec!["192.168.1.50".parse::<IpAddr>().unwrap()]
+        );
+        assert_eq!(next.direct_sent.lock().unwrap().len(), 1);
+        let wrong_client = CacheContext {
+            cache: &cache,
+            client_token: Some(uuid::Uuid::new_v4()),
+            use_remembered: true,
+        };
+        let unrelated = FakeTransport::new(HashMap::new());
+        assert_eq!(
+            resolve_cached_with(
+                NAME,
+                &interfaces,
+                &unrelated,
+                RESOLVE_TIMEOUT,
+                "test",
+                &wrong_client
+            )
+            .await,
+            Err(ResolveFailure::Unresolved)
+        );
+        assert!(unrelated.direct_sent.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rejected_answers_never_seed_an_empty_cache() {
+        let interfaces = vec![interface("eth0", "192.168.1.10")];
+        let cache = LanAddressCache::new();
+        let token = uuid::Uuid::new_v4();
+        let context = CacheContext {
+            cache: &cache,
+            client_token: Some(token),
+            use_remembered: true,
+        };
+        let mut transport = FakeTransport::new(HashMap::from([(
+            interfaces[0].address,
+            response(NAME, "8.8.8.8"),
+        )]));
+        transport
+            .reply_sources
+            .insert(interfaces[0].address, "192.168.1.50:5353".parse().unwrap());
+        assert_eq!(
+            resolve_cached_with(
+                NAME,
+                &interfaces,
+                &transport,
+                RESOLVE_TIMEOUT,
+                "test",
+                &context
+            )
+            .await,
+            Err(ResolveFailure::AnswerRejected)
+        );
+        assert!(cache.remembered(token).is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn expired_or_disabled_remembered_queries_never_send_a_probe() {
+        let interfaces = vec![interface("eth0", "192.168.1.10")];
+        let cache = LanAddressCache::new();
+        let token = uuid::Uuid::new_v4();
+        cache.remember_validated(token, &["192.168.1.50".parse().unwrap()]);
+        for context in [
+            CacheContext {
+                cache: &cache,
+                client_token: Some(token),
+                use_remembered: false,
+            },
+            CacheContext {
+                cache: &cache,
+                client_token: None,
+                use_remembered: true,
+            },
+        ] {
+            let transport = FakeTransport::new(HashMap::new());
+            assert_eq!(
+                resolve_cached_with(
+                    NAME,
+                    &interfaces,
+                    &transport,
+                    RESOLVE_TIMEOUT,
+                    "test",
+                    &context
+                )
+                .await,
+                Err(ResolveFailure::Unresolved)
+            );
+            assert!(transport.direct_sent.lock().unwrap().is_empty());
+        }
+        tokio::time::advance(Duration::from_secs(3600)).await;
+        let context = CacheContext {
+            cache: &cache,
+            client_token: Some(token),
+            use_remembered: true,
+        };
+        let transport = FakeTransport::new(HashMap::new());
+        assert_eq!(
+            resolve_cached_with(
+                NAME,
+                &interfaces,
+                &transport,
+                RESOLVE_TIMEOUT,
+                "test",
+                &context
+            )
+            .await,
+            Err(ResolveFailure::Unresolved)
+        );
+        assert!(transport.direct_sent.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cached_destination_cannot_make_invalid_replies_pass_validation() {
+        let interfaces = vec![interface("eth0", "192.168.1.10")];
+        for (answer, source, arrival) in [
+            ("192.168.68.50", "192.168.1.50:5353", Some(1)),
+            ("192.168.1.50", "192.168.1.50:5353", Some(9)),
+            ("192.168.1.10", "192.168.1.50:5353", Some(1)),
+            ("192.168.1.50", "192.168.1.50:5353", None),
+        ] {
+            if arrival.is_none() && !cfg!(target_os = "linux") {
+                continue;
+            }
+            let cache = LanAddressCache::new();
+            let token = uuid::Uuid::new_v4();
+            let context = CacheContext {
+                cache: &cache,
+                client_token: Some(token),
+                use_remembered: true,
+            };
+            cache.remember_validated(token, &["192.168.1.50".parse().unwrap()]);
+            let mut transport = FakeTransport::new(HashMap::new());
+            transport.direct_reply = Some(Datagram {
+                packet: response(NAME, answer),
+                source: source.parse().unwrap(),
+                arrival,
+            });
+            assert_eq!(
+                resolve_cached_with(
+                    NAME,
+                    &interfaces,
+                    &transport,
+                    RESOLVE_TIMEOUT,
+                    "test",
+                    &context
+                )
+                .await,
+                Err(ResolveFailure::AnswerRejected)
+            );
+            tokio::time::advance(Duration::from_secs(3600)).await;
+            assert!(
+                cache.remembered(token).is_none(),
+                "invalid answer must not refresh the cache"
+            );
         }
     }
 
@@ -1979,6 +2395,7 @@ mod tests {
         let socket = socket2::SockRef::from(&transport.socket);
         assert!(socket.reuse_address().unwrap());
         assert_eq!(socket.multicast_ttl_v4().unwrap(), 255);
+        assert_eq!(socket.ttl_v4().unwrap(), 255);
         let sender = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
         transport
             .send_on(
@@ -2009,6 +2426,23 @@ mod tests {
             received.arrival.is_some(),
             "Linux carries the kernel arrival interface"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn explicit_unicast_egress_uses_the_selected_lan_source_address() {
+        let transport = UdpTransport::bound(0).unwrap();
+        let receiver = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let mut selected = interface("test-lan", "127.0.0.2");
+        selected.index = interface_index("lo");
+        transport
+            .send_on(&selected, b"query", receiver.local_addr().unwrap())
+            .await
+            .unwrap();
+        let mut packet = [0; 32];
+        let (_, source) = receiver.recv_from(&mut packet).await.unwrap();
+        assert_eq!(source.ip(), IpAddr::V4(selected.address));
+        assert_eq!(source.port(), transport.socket.local_addr().unwrap().port());
     }
 
     #[tokio::test]

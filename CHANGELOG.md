@@ -6,6 +6,32 @@ Notable changes to the bridge (`build-bridge`). The format follows
 protocol versions; see
 [Wire versioning and capabilities](ARCHITECTURE.md#wire-versioning-and-capabilities).
 
+## [0.2.9] - Unreleased
+
+Wire 3.12.0.
+
+### Fixed
+
+- Relayed sessions now send bounded connectivity checks on late direct pairs
+  while retaining the selected TURN path. Candidate diagnostics report actual
+  per-host request and reply counts instead of inferring failed checks from
+  candidate counts. Initial signaling remains available until late browser
+  candidates have been delivered, without delaying application readiness.
+  Recovery retains signaling through delivery too, and diagnostics distinguish
+  absent browser host candidates from candidates lost during signaling.
+  Path diagnostics prefer the current transport selection when browsers retain
+  old nominated relay pairs after an upgrade.
+- LAN discovery uses QM queries from port 5353. A capability-gated client-held
+  UUIDv4 bearer hint (122 random bits), stored per paired bridge and sent inside
+  encrypted offers, keys a memory-only 64-entry LRU cache with one-hour expiry.
+  The first hint binds the encrypted session through ICE restarts and peer
+  recreation. This is not an
+  authenticated client identity: a holder of another client's hint can cause
+  one extra query to its already-validated LAN address or replace the entry
+  through their own validated LAN resolution. The hint cannot supply an address
+  or skip fresh reply validation; hints and cached addresses stay out of logs,
+  pushes and diagnostics (#372).
+
 ## [0.2.8] - 2026-10-03
 
 Wire 3.11.0.

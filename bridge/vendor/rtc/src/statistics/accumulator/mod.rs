@@ -734,6 +734,8 @@ impl RTCStatsAccumulator {
         pair.consent_requests_sent = cp_stats.consent_requests_sent;
         pair.total_round_trip_time = cp_stats.total_round_trip_time;
         pair.current_round_trip_time = cp_stats.current_round_trip_time;
+        pair.state = cp_stats.state.into();
+        pair.nominated = cp_stats.nominated;
     }
 
     // ========================================================================

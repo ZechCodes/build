@@ -86,6 +86,7 @@ const NO_CAPABILITIES = Object.freeze({
   changes: Object.freeze({ subscriptions: false, kinds: Object.freeze([]) }),
   fs: Object.freeze({ projectSources: false }),
   requests: Object.freeze({ priority: false }),
+  rtc: Object.freeze({ clientLanCache: false }),
   errors: Object.freeze({ codes: false }),
   diffs: Object.freeze({ perFile: false }),
   bodies: Object.freeze({ pages: false, mediaRawPages: false }),

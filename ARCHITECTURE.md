@@ -939,9 +939,11 @@ The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
   that paired bridge advertised the capability. It uses `crypto.randomUUID`,
   stores it separately per device and pinned transport key, and removes it on
   unpair or account replacement. Invalid or noncanonical 36-character UUIDs
-  are treated as absent. An existing peer may bind its first valid hint on a
-  post-greeting offer, but later offers and ICE restarts cannot change that
-  binding. The hint is an unguessable client-held bearer value: UUIDv4 has 122
+  are treated as absent. The encrypted session's Opening binds its first valid
+  hint, including a post-greeting offer; later offers, ICE restarts and
+  `rtc.close` followed by peer recreation cannot change that binding. Carrier
+  reattachment retains it; a new session opening may bind a new value. The hint
+  is an unguessable client-held bearer value: UUIDv4 has 122
   random bits, is held in that paired browser's storage and sent only inside
   encrypted offers. It is not an authenticated client identity. Anyone who can
   read it already has access to that browser's pairing; a holder can cause one

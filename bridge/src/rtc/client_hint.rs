@@ -7,9 +7,9 @@
 use serde_json::Value;
 use uuid::Uuid;
 
-/// A session may learn its hint after the first greeting. The first valid hint
-/// wins for the peer's lifetime, including ICE restarts, so one session cannot
-/// rotate hints to fill the shared cache.
+/// A resolver may learn its hint after the first greeting, but cannot change it.
+/// The session Opening also binds the first hint for the entire E2EE lifetime,
+/// so closing and recreating a peer cannot rotate hints to fill the cache.
 #[derive(Default)]
 pub(super) struct Binding(std::sync::OnceLock<Uuid>);
 

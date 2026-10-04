@@ -233,6 +233,7 @@ impl SessionPeers {
         if !opening.is_open() {
             return Err(RtcError::Ended(session_id));
         }
+        let client_hint = opening.bind_client_hint(client_hint);
         let (peer, opened_by_this_offer) =
             self.riding_or_opened(&session_id, &opening, client_hint)?;
         peer.bind_client_hint(client_hint);
@@ -1637,6 +1638,7 @@ pub mod recording {
     #[derive(Default)]
     pub struct RecordingPeerFactory {
         opened: Mutex<HashMap<String, Arc<RecordingPeer>>>,
+        offered_hints: Mutex<Vec<Option<uuid::Uuid>>>,
         opens: AtomicUsize,
         gate: Mutex<Option<Arc<AnswerGate>>>,
         refuse_offers: AtomicBool,
@@ -1679,9 +1681,22 @@ pub mod recording {
         pub fn opened_count(&self) -> usize {
             self.opens.load(Ordering::SeqCst)
         }
+
+        pub fn offered_hints(&self) -> Vec<Option<uuid::Uuid>> {
+            self.offered_hints.lock().unwrap().clone()
+        }
     }
 
     impl SessionPeerFactory for RecordingPeerFactory {
+        fn open_for_client(
+            &self,
+            session_id: &str,
+            client_hint: Option<uuid::Uuid>,
+        ) -> Result<Arc<dyn SessionPeer>, RtcError> {
+            self.offered_hints.lock().unwrap().push(client_hint);
+            self.open(session_id)
+        }
+
         fn open(&self, session_id: &str) -> Result<Arc<dyn SessionPeer>, RtcError> {
             let hook = self.on_open.lock().unwrap().clone();
             if let Some(hook) = hook {
@@ -1720,6 +1735,34 @@ mod opening_fence_tests {
     /// way a handler on the blocking pool does, so they run there.
     async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
         tokio::task::spawn_blocking(work).await.unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn closing_a_peer_does_not_let_its_session_rotate_or_forget_the_hint() {
+        let (peers, factory) = peers();
+        let sender = SessionSender::detached("hint-session");
+        let first = uuid::Uuid::new_v4();
+        let next = uuid::Uuid::new_v4();
+        for hint in [None, Some(first), Some(next), None] {
+            let peers = peers.clone();
+            let sender = sender.clone();
+            blocking(move || {
+                peers
+                    .offer_with_client("v=0", &[], sender.clone(), hint)
+                    .unwrap();
+                peers.close(&sender).unwrap();
+            })
+            .await;
+        }
+        sender.opening_ended();
+        let replacement = SessionSender::detached("hint-session");
+        blocking(move || peers.offer_with_client("v=0", &[], replacement, Some(next)))
+            .await
+            .unwrap();
+        assert_eq!(
+            factory.offered_hints().as_slice(),
+            &[None, Some(first), Some(first), Some(first), Some(next)]
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

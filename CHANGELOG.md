@@ -24,7 +24,8 @@ Wire 3.12.0.
 - LAN discovery uses QM queries from port 5353. A capability-gated client-held
   UUIDv4 bearer hint (122 random bits), stored per paired bridge and sent inside
   encrypted offers, keys a memory-only 64-entry LRU cache with one-hour expiry.
-  The first hint binds the session through ICE restarts. This is not an
+  The first hint binds the encrypted session through ICE restarts and peer
+  recreation. This is not an
   authenticated client identity: a holder of another client's hint can cause
   one extra query to its already-validated LAN address or replace the entry
   through their own validated LAN resolution. The hint cannot supply an address

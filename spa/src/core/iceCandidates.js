@@ -201,6 +201,14 @@ function entriesOf(stats) {
   return Object.values(stats);
 }
 
+export const hasLocalHostCandidate = (stats) => entriesOf(stats)
+  .some((entry) => entry.type === "local-candidate" && entry.candidateType === "host");
+
+/** A host may already be in a local SDP before this observer sees native
+ * events. Read only its type so diagnostics never need candidate contents. */
+export const offerHasHostCandidate = (sdp) => typeof sdp === "string" && sdp.split("\n")
+  .some((line) => line.startsWith("a=candidate:") && candidateTypeOf({ candidate: line.slice(2) }) === "host");
+
 /**
  * Is there a direct pair worth restarting ICE for?
  *

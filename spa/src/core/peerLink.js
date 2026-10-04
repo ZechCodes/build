@@ -1,6 +1,6 @@
 import { openCarrier, peerFrames } from "./carrier.js";
 import { classifyTransportPath, TURN } from "./transportPath.js";
-import { candidateTypeOf, createRelayHold, directPairStatus } from "./iceCandidates.js";
+import { candidateTypeOf, createRelayHold, directPairStatus, hasLocalHostCandidate, offerHasHostCandidate } from "./iceCandidates.js";
 import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
 import { createDirectPairMonitor } from "./directPairMonitor.js";
 import { candidateDiagnostic, directPairNoTryReason, safeCandidateReason } from "./rtcDiagnostics.js";
@@ -16,6 +16,8 @@ const countedCandidateType = (candidate) => {
   const type = candidateTypeOf(candidate);
   return ["host", "srflx", "prflx", "relay"].includes(type) ? type : "unknown";
 };
+const nativeGatheringHasNoHosts = (round) => round.completed && round.gathered.host === 0 && !round.embeddedHost;
+const browserOffersNoHosts = (round, stats) => nativeGatheringHasNoHosts(round) && !hasLocalHostCandidate(stats);
 
 function createRecoveryStatus() {
   const listeners = new Set();
@@ -116,12 +118,18 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   let currentSignalingComplete = initialSignalingComplete;
   const newLocalCandidates = () => ({
     generation: negotiationGeneration, gathered: candidateCounts(), delivered: candidateCounts(), failed: candidateCounts(), pending: new Set(),
+    completed: false, embeddedHost: false,
   });
   let localCandidates = newLocalCandidates();
-  const reportLocalCandidates = (phase, round = localCandidates) => diagnostic("local-candidates", {
-    generation: round.generation, phase,
-    gathered: { ...round.gathered }, delivered: { ...round.delivered }, failed: { ...round.failed },
-  });
+  const rememberLocalOffer = (sdp) => { localCandidates.embeddedHost ||= offerHasHostCandidate(sdp); };
+  const reportLocalCandidates = async (phase, round = localCandidates) => {
+    const stats = nativeGatheringHasNoHosts(round) ? await peerStats() : null;
+    const absence = browserOffersNoHosts(round, stats) ? { reason: "browser-no-host-candidates" } : {};
+    diagnostic("local-candidates", {
+      generation: round.generation, phase,
+      gathered: { ...round.gathered }, delivered: { ...round.delivered }, failed: { ...round.failed }, ...absence,
+    });
+  };
   /** Whether a failed path is being put right in place: the restart the
    *  failure watcher runs, and the carry check after it. Not the optional
    *  direct-pair attempt, whose path works throughout. What the ring reads to
@@ -205,7 +213,11 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   });
   const outgoingCandidate = (event) => {
     if (torn) return;
-    if (!event.candidate) { reportLocalCandidates("gathering-complete"); return; }
+    if (!event.candidate) {
+      localCandidates.completed = true;
+      void reportLocalCandidates("gathering-complete");
+      return;
+    }
     localCandidates.gathered[countedCandidateType(event.candidate)] += 1;
     holdOutbound.offer(event.candidate);
   };
@@ -270,13 +282,15 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   const directPairIsWorthTrying = async () => {
     if (!mayTryDirectPair()) return null;
     const generation = negotiationGeneration;
-    const status = directPairStatus(await peerStats());
+    const stats = await peerStats();
+    const status = directPairStatus(stats);
     // Recovery may have started while getStats was pending. It owns this
     // negotiation; a stale checklist must not create a concurrent offer.
     if (!mayTryDirectPair() || generation !== negotiationGeneration) return null;
     if (status.worthTrying) return status.reason;
-    if (mdnsResolvedInGeneration) return "mdns-resolved";
-    const reason = directPairNoTryReason(status.reason, bridgeCandidateReason);
+    const noBrowserHosts = browserOffersNoHosts(localCandidates, stats);
+    if (mdnsResolvedInGeneration && !noBrowserHosts) return "mdns-resolved";
+    const reason = noBrowserHosts ? "browser-no-host-candidates" : directPairNoTryReason(status.reason, bridgeCandidateReason);
     if (reason !== lastNoTryReason) diagnostic("direct-pair", { state: "none-to-try", reason });
     lastNoTryReason = reason;
     return null;
@@ -379,7 +393,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     diagnostic("negotiating", { phase: "initial" });
     const initialDeadline = Date.now() + openTimeoutMs;
     await withinDeadline(openTimeoutMs, async (remaining) => {
-      await offer(peer, signal, iceServers, {}, ensureActive, clientId);
+      await offer(peer, signal, iceServers, {}, ensureActive, clientId, rememberLocalOffer);
       initialSignalingComplete = finishSignaling(initialDeadline);
       currentSignalingComplete = initialSignalingComplete;
       await usable(peer, channels, remaining(), diagnostic, (cancel) => (cancelWait = cancel), ensureActive, true);
@@ -435,7 +449,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
         const freshServers = await fetchIceServers();
         ensureNegotiationActive();
         peer.setConfiguration?.({ iceServers: freshServers });
-        await offer(peer, signal, freshServers, { iceRestart: true }, ensureNegotiationActive, clientId);
+        await offer(peer, signal, freshServers, { iceRestart: true }, ensureNegotiationActive, clientId, rememberLocalOffer);
         if (phase === "direct-pair") {
           await gatheringComplete(peer, (cancel) => (cancelActivity = cancel), ensureNegotiationActive);
           ensureNegotiationActive();
@@ -521,16 +535,21 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   };
 }
 
-async function offer(peer, signal, iceServers, options, ensureActive, clientId) {
+const reportLocalOffer = (peer, local, remember) => remember?.(peer.localDescription?.sdp || local.sdp);
+
+async function offer(peer, signal, iceServers, options, ensureActive, clientId, rememberLocalOffer) {
   const local = await peer.createOffer(options);
   ensureActive();
+  rememberLocalOffer?.(local.sdp);
   await peer.setLocalDescription(local);
   ensureActive();
+  reportLocalOffer(peer, local, rememberLocalOffer);
   const hint = clientId?.();
   const answer = await signal("rtc.offer", { sdp: local.sdp, ice_servers: iceServers, ...(hint ? { client_id: hint } : {}) });
   ensureActive();
   await peer.setRemoteDescription({ type: "answer", sdp: answer.sdp });
   ensureActive();
+  reportLocalOffer(peer, local, rememberLocalOffer);
 }
 
 /** ICE can stay connected on the old nominated pair during a restart. New

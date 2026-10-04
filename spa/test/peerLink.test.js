@@ -980,6 +980,48 @@ describe("openPeerLink", () => {
 // it is worth the disturbance only where the browser has already PROVED a direct
 // pair carries.
 describe("a session that landed on a relayed pair", () => {
+  it("reports browser-no-host-candidates and keeps TURN when native gathering finishes without a local host", async () => {
+    const { peer, resolved, candidateSinks, signalled } = await landedOnRelay({ alsoDirect: null });
+    peer.gather({ type: "relay", candidate: "candidate:1 1 udp 1 203.0.113.1 5000 typ relay" });
+    peer.iceGatheringState = "complete";
+    peer.emit("icegatheringstatechange");
+    peer.gather(null);
+    candidateSinks[0]({ type: "rtc.diagnostics", event: "mdns-resolved", reason: "direct-checks-succeeded", candidates: { mdns_resolved: 1 }, hostname: "private.local" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(connectionDiagnosticHistory().filter((entry) => entry.event === "local-candidates").at(-1))
+      .toMatchObject({ reason: "browser-no-host-candidates", gathered: { host: 0 } });
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(offers(signalled)).toBe(1);
+    expect(resolved.transportPath()).toBe("turn");
+    expect(peer.closed).toBe(false);
+    expect(JSON.stringify(connectionDiagnosticHistory())).not.toMatch(/private.local|203\.0\.113\.1|5000/);
+    resolved.close();
+  });
+
+  it("does not report absent browser hosts when the local offer already contains a host candidate", async () => {
+    const { peer, resolved, candidateSinks, signalled } = await landedOnRelay({
+      alsoDirect: null,
+      signalImpl: async (method) => {
+        if (method === "rtc.offer") {
+          const peer = FakePeerConnection.instances.at(-1);
+          peer.localDescription = { type: "offer", sdp: "v=0\na=candidate:1 1 udp 1 preexisting.local 5000 typ host\n" };
+          return { sdp: "v=0 answer" };
+        }
+        return {};
+      },
+    });
+    peer.iceGatheringState = "complete";
+    peer.emit("icegatheringstatechange");
+    peer.gather(null);
+    candidateSinks[0]({ type: "rtc.diagnostics", event: "mdns-resolved", reason: "direct-checks-succeeded", candidates: { mdns_resolved: 1 } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(connectionDiagnosticHistory().filter((entry) => entry.event === "local-candidates"))
+      .not.toContainEqual(expect.objectContaining({ reason: "browser-no-host-candidates" }));
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(offers(signalled)).toBe(2);
+    expect(JSON.stringify(connectionDiagnosticHistory())).not.toMatch(/preexisting.local|5000/);
+    resolved.close();
+  });
   beforeEach(() => {
     vi.useFakeTimers();
     clearConnectionDiagnosticHistory();

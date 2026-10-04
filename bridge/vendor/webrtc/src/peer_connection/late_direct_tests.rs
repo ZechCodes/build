@@ -237,6 +237,59 @@ fn rtc_stats_remove_previous_generation_pairs_on_restart() {
 }
 
 #[test]
+fn rtc_stats_retire_remote_candidate_metadata_on_each_ice_restart() {
+    let (mut bridge, _browser, now) = selected_turn(true);
+    let initial = bridge.get_stats(now, StatsSelector::None);
+    assert!(
+        initial
+            .iter()
+            .filter(|entry| matches!(entry, RTCStatsReportEntry::RemoteCandidate(_)))
+            .count()
+            >= 2,
+        "the fixture must expose remote candidates before restarting"
+    );
+
+    for generation in 0..3 {
+        bridge
+            .create_offer(Some(rtc::peer_connection::configuration::RTCOfferOptions {
+                ice_restart: true,
+            }))
+            .unwrap();
+        let retired = bridge.get_stats(now, StatsSelector::None);
+        assert_eq!(
+            retired
+                .iter()
+                .filter(|entry| matches!(entry, RTCStatsReportEntry::RemoteCandidate(_)))
+                .count(),
+            0,
+            "a restarted ICE generation must retire its remote candidate metadata"
+        );
+
+        let address = format!("192.0.2.{}", generation + 10);
+        bridge
+            .add_remote_candidate(candidate(&format!(
+                "candidate:next 1 udp 2130706431 {address} 5001 typ host"
+            )))
+            .unwrap();
+        let current = bridge.get_stats(now, StatsSelector::None);
+        let remotes: Vec<_> = current
+            .iter()
+            .filter_map(|entry| match entry {
+                RTCStatsReportEntry::RemoteCandidate(remote) => Some(remote),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(remotes.len(), 1);
+        assert_eq!(remotes[0].address.as_deref(), Some(address.as_str()));
+        let pair = current.candidate_pairs().next().unwrap();
+        assert!(matches!(
+            current.get(&format!("RTCRemoteIceCandidate_{}", pair.remote_candidate_id)),
+            Some(RTCStatsReportEntry::RemoteCandidate(remote)) if remote.address.as_deref() == Some(address.as_str())
+        ));
+    }
+}
+
+#[test]
 fn rtc_stats_register_the_actual_candidate_ids_received_inside_an_offer() {
     let mut browser = core(false);
     browser.create_data_channel("app", None).unwrap();

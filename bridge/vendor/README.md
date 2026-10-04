@@ -166,7 +166,8 @@ restart still makes the direct pair carrying.
 all active pair counters, states and nomination flags into RTC stats, preserving
 the application byte counters. Candidate metadata is backfilled from the exact
 accepted ICE candidates, including candidates embedded in SDP and candidates
-discovered by checks. Earlier-generation pair accumulators are removed.
+discovered by checks. Earlier-generation pair accumulators and remote candidate
+metadata are removed when the ICE agent no longer holds them.
 Previously only the selected pair's counters were exposed, so a resolved host
 could not be distinguished from an address that actually received checks.
 
@@ -176,7 +177,8 @@ exclusion. `webrtc-late-direct-tests.patch` drives two real sans-I/O cores throu
 TURN nomination before adding a host and verifies Waiting, InProgress, Succeeded
 and Failed counters plus generation retirement through public RTC stats.
 An SDP-only regression verifies that each checked pair references metadata with
-the actual accepted remote candidate ID.
+the actual accepted remote candidate ID. A repeated-restart regression verifies
+that only the current generation's remote candidate metadata survives.
 
 ## Tests
 

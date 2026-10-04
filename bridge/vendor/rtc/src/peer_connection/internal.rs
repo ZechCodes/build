@@ -1363,13 +1363,19 @@ where
             .collect();
         // SDP and peer-reflexive discovery can add directly to the ICE agent,
         // bypassing add_ice_remote_candidate's statistics registration.
+        let mut active_candidates = std::collections::HashSet::new();
         for (id, candidate) in candidates {
+            active_candidates.insert(id.clone());
             self.pipeline_context
                 .stats
                 .remote_candidates
                 .entry(id)
                 .or_insert(candidate);
         }
+        self.pipeline_context
+            .stats
+            .remote_candidates
+            .retain(|id, _| active_candidates.contains(id));
     }
 
     /// Update codec stats from transceivers to the stats accumulator.

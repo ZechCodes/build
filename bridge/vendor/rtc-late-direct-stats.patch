@@ -34,7 +34,7 @@
              host_acceptance_min_wait: setting_engine.timeout.ice_host_acceptance_min_wait,
              srflx_acceptance_min_wait: setting_engine.timeout.ice_srflx_acceptance_min_wait,
              prflx_acceptance_min_wait: setting_engine.timeout.ice_prflx_acceptance_min_wait,
-@@ -1320,37 +1321,54 @@
+@@ -1320,38 +1321,61 @@
      /// This is called automatically by `get_stats()` to ensure ICE candidate pair
      /// statistics (RTT, requests/responses sent/received) are up to date.
      pub(super) fn update_ice_agent_stats(&mut self) {
@@ -73,6 +73,7 @@
 -                    break;
 -                }
 -            }
+-        }
 +            active_pairs.insert(format!(
 +                "RTCIceCandidatePair_{}_{}",
 +                cp_stats.local_candidate_id, cp_stats.remote_candidate_id
@@ -106,15 +107,22 @@
 +            .collect();
 +        // SDP and peer-reflexive discovery can add directly to the ICE agent,
 +        // bypassing add_ice_remote_candidate's statistics registration.
++        let mut active_candidates = std::collections::HashSet::new();
 +        for (id, candidate) in candidates {
++            active_candidates.insert(id.clone());
 +            self.pipeline_context
 +                .stats
 +                .remote_candidates
 +                .entry(id)
 +                .or_insert(candidate);
-         }
++        }
++        self.pipeline_context
++            .stats
++            .remote_candidates
++            .retain(|id, _| active_candidates.contains(id));
      }
  
+     /// Update codec stats from transceivers to the stats accumulator.
 --- a/rtc/src/statistics/accumulator/mod.rs
 +++ b/rtc/src/statistics/accumulator/mod.rs
 @@ -734,6 +734,8 @@

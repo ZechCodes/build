@@ -115,8 +115,8 @@ export const settled = (page) => page.waitForFunction(() => document.getAnimatio
 
 /** The rail on the page, its menu's controls painted and its motion settled.
  *  Keep the app module handle while the fixture loads the remaining modules. */
-export async function mountChatMenu(page, basePath, label, seed) {
-  await mountLayout(page, shellHtml(label), { basePath, styles: SHELL_STYLES });
+export async function mountChatMenu(page, basePath, label, seed, { preserveDocument = false } = {}) {
+  await mountLayout(page, shellHtml(label), { basePath, preserveDocument, styles: SHELL_STYLES });
   await loadBrowserModules(page, { app: "src/app.js" }, basePath);
   await page.evaluate(() => { window.__appModule = window.__layoutModules.app; delete window.__layoutModules; });
   await loadBrowserModules(page, {

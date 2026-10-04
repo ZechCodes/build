@@ -11,6 +11,14 @@ const spaRoot = fileURLToPath(new URL("../../", import.meta.url));
 const pinnedFonts = fileURLToPath(new URL("./fonts.conf", import.meta.url));
 const chromiumNames = ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"];
 
+function moduleRequestUrl(requestUrl, basePath) {
+  const url = new URL(requestUrl);
+  const path = url.pathname.startsWith(basePath) ? `/${url.pathname.slice(basePath.length)}` : url.pathname;
+  const normalized = decodeURI(`${path}${url.search}`).replace("__x00__", "\0")
+    .replace(/(\?|&)import=?(?=&|$)/, "$1").replace(/[?&]$/, "");
+  return normalized.startsWith("/@id/") ? normalized.slice(5) : normalized;
+}
+
 async function chromiumExecutable() {
   const configured = process.env.CHROMIUM_PATH;
   if (configured) {
@@ -65,14 +73,18 @@ export async function withLayoutPage(check, { width = 1180, height = 840, plugin
       env: { ...process.env, FONTCONFIG_FILE: pinnedFonts },
     });
     const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor });
-    // Chromium can cancel loopback imports with ERR_NETWORK_CHANGED when the
-    // host's network changes. Fetch this server's real responses through the
-    // driver so host network notifications cannot abort the module graph.
-    // No response mocks or retries: Vite errors still reach the browser.
-    await page.context().route(`http://127.0.0.1:${port}/**`, async (route) => {
-      const response = await route.fetch({ maxRetries: 0 });
-      try { await route.fulfill({ response }); }
-      finally { await response.dispose(); }
+    // Serve real Vite-transformed modules through the driver, without an HTTP
+    // proxy or retained APIResponse bodies. Host network notifications can
+    // cancel Chromium's loopback module graph even when the server is healthy.
+    await page.route(`http://127.0.0.1:${port}/**`, async (route) => {
+      if (route.request().resourceType() !== "script") return route.continue();
+      let result;
+      try {
+        result = await server.environments.client.transformRequest(moduleRequestUrl(route.request().url(), basePath));
+      } catch (error) {
+        return route.fulfill({ status: 500, contentType: "text/plain", body: String(error) });
+      }
+      return route.fulfill({ status: result ? 200 : 404, contentType: "text/javascript", body: result?.code || "Module not found" });
     });
     // A CSS URL gives the page Vite's origin without booting the SPA. That lets
     // a test mount just the production renderer it needs into a stable shell.
@@ -91,10 +103,42 @@ export async function withLayoutPage(check, { width = 1180, height = 840, plugin
   }
 }
 
-export async function mountLayout(page, markup, { styles = "", basePath = "/app/static/" } = {}) {
-  await page.setContent(`<html><head><link rel="stylesheet" href="${basePath}src/styles.css">
-    <link rel="stylesheet" href="${basePath}src/styles/shell.css">
-    <style>${styles}</style></head><body>${markup}</body></html>`, { waitUntil: "load" });
+async function replaceLayoutBody(page, markup, styles, basePath) {
+  await page.evaluate(async ({ markup, styles, basePath }) => {
+    // Retain imported modules' injected styles and mount-once document
+    // listeners. Only this fixture's body and custom styles are replaced.
+    const loaded = ["src/styles.css", "src/styles/shell.css"].map((path) => {
+      const href = `${basePath}${path}`;
+      if (document.head.querySelector(`link[href="${href}"]`)) return Promise.resolve();
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = href;
+      const ready = new Promise((resolve, reject) => {
+        link.onload = resolve;
+        link.onerror = () => reject(new Error(`Failed to load layout stylesheet ${href}`));
+      });
+      document.head.appendChild(link);
+      return ready;
+    });
+    document.querySelector("#layout-fixture-styles")?.remove();
+    const fixtureStyles = document.createElement("style");
+    fixtureStyles.id = "layout-fixture-styles";
+    fixtureStyles.textContent = styles;
+    document.head.appendChild(fixtureStyles);
+    const body = document.createElement("body");
+    body.innerHTML = markup;
+    document.body.replaceWith(body);
+    await Promise.all(loaded);
+  }, { markup, styles, basePath });
+}
+
+export async function mountLayout(page, markup, { styles = "", basePath = "/app/static/", preserveDocument = false } = {}) {
+  if (preserveDocument) await replaceLayoutBody(page, markup, styles, basePath);
+  else {
+    await page.setContent(`<html><head><link rel="stylesheet" href="${basePath}src/styles.css">
+      <link rel="stylesheet" href="${basePath}src/styles/shell.css">
+      <style>${styles}</style></head><body>${markup}</body></html>`, { waitUntil: "load" });
+  }
   await page.evaluate(() => document.fonts.ready);
 }
 

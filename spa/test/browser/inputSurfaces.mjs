@@ -120,7 +120,7 @@ async function seedInputSurface({ name, theme }) {
   const options = [{ id: "none", label: "Nobody" }, { id: "workspace", label: "New workspace", form: "workspace" }];
   const disposers = [];
   const dispose = (mounted) => disposers.push(() => mounted?.dispose?.());
-  window.__inputDispose = () => disposers.forEach((stop) => stop());
+  window.__inputDispose = async () => { for (const stop of disposers) await stop(); };
   m.app.App.devices = [device];
   m.app.App.selectedDeviceId = device.id;
   m.app.App.deviceFilter = "all";
@@ -136,6 +136,7 @@ async function seedInputSurface({ name, theme }) {
     "directory browser": async () => {
       await m.cache.writeCached(m.browser.browserListingAddress(device.id, "/code"), listing);
       await m.browser.openBrowser({ title: "Choose a folder", deviceId: device.id, startPath: "/code", allowCreateDirectory: true, callRpc, onChoose: () => {} });
+      disposers.push(() => document.querySelector("#bcancel")?.click());
     },
     "device label": async () => {
       await m.cache.writeCached(m.records.deviceSettingsAddress(device.id), { projects_dir: "/code" });
@@ -155,13 +156,13 @@ async function seedInputSurface({ name, theme }) {
       m.app.App.route = { name: "project", projectId: project.id, deviceId: device.id };
       await m.feed.startFeed();
       await m.toolbar.initToolbar();
-      disposers.push(() => { m.toolbar.stopToolbar(); m.feed.stopFeed(); });
+      disposers.push(async () => { await m.toolbar.stopToolbar(); m.feed.stopFeed(); });
     },
     "toolbar workspaces": async () => {
       m.app.App.route = { name: "workspace", projectId: project.id, workspaceId: workspace.id, deviceId: device.id };
       await m.feed.startFeed();
       await m.toolbar.initToolbar();
-      disposers.push(() => { m.toolbar.stopToolbar(); m.feed.stopFeed(); });
+      disposers.push(async () => { await m.toolbar.stopToolbar(); m.feed.stopFeed(); });
     },
     reroute() {
       const entry = { key: "capture:input", captureId: "input", captureState: "routed", name: "Restyle inputs", text: "Restyle inputs", state: "open" };
@@ -179,7 +180,10 @@ async function seedInputSurface({ name, theme }) {
       disposers.push(() => composer.close());
     },
     "task comment"() { root.innerHTML = m.task.composerHtml("", false); },
-    "assignee note"() { m.assignee.openAssigneePicker({ task, options, note: "Review the field styling", callRpc }); },
+    "assignee note"() {
+      const picker = m.assignee.openAssigneePicker({ task, options, note: "Review the field styling", callRpc });
+      disposers.push(() => picker.close());
+    },
     "comment popover"() {
       m.pop.openCommentComposer({ left: 16, bottom: 80 }, () => {}, root);
       disposers.push(() => m.pop.hideCommentPop(root));
@@ -200,7 +204,7 @@ async function seedInputSurface({ name, theme }) {
 
 async function mountExtraSurface(page, basePath, name, theme) {
   await mountLayout(page, '<div id="shell"><div id="view"><div id="toolbar"></div><main id="root" class="surface"></main></div></div><div id="scrim" class="scrim"><div id="sheet" class="sheet"></div></div>', {
-    basePath, styles: '#root{padding:16px;overflow:auto;min-width:0} #view{min-width:0}',
+    basePath, preserveDocument: true, styles: '#root{padding:16px;overflow:auto;min-width:0} #view{min-width:0}',
   });
   page.setDefaultTimeout(15_000);
   await loadBrowserModules(page, { app: modules.app }, basePath);
@@ -229,9 +233,18 @@ export async function mountInputSurface(page, basePath, name, theme) {
   if (!surface) throw new Error(`Unknown input surface: ${name}`);
   page.setDefaultTimeout(5000);
   if (surface.selectSurface) {
-    await mountSelectSurface(page, basePath, surface.selectSurface, theme);
+    await mountSelectSurface(page, basePath, surface.selectSurface, theme, { preserveDocument: true });
     await page.evaluate(() => { window.__inputDispose = () => window.__selectDispose?.(); });
   } else await mountExtraSurface(page, basePath, name, theme);
+  await page.evaluate(() => {
+    const dispose = window.__inputDispose;
+    const feed = window.__layoutModules.feed;
+    window.__inputDispose = async () => {
+      await dispose?.();
+      feed.stopFeed();
+      ["select-device", "menu-device", "input-device"].forEach((deviceId) => feed.dropFeedDevice(deviceId));
+    };
+  });
   await openInputVariant(page, name);
   await openInputDisclosures(page);
   for (const selector of surface.selectors) await page.waitForSelector(selector, { state: "attached" });

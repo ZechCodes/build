@@ -245,17 +245,10 @@ impl IcePolicy {
 
     /// The agent knobs rule 8 asks for, as the webrtc crate spells them.
     ///
-    /// `multicast_dns` is the caller's because it is the one knob that can fail
-    /// a build: `QueryOnly` decides whether a browser can be reached at all on
-    /// a LAN — Chrome and Safari offer `<uuid>.local` host candidates and
-    /// nothing else, and an agent with mDNS disabled discards every one of
-    /// them — but the crate joins the multicast group while it binds, so a host
-    /// that cannot join gets no peer connection at all. Rule 8 asks for
-    /// `QueryOnly` and `rtc.rs::built_or_without_mdns` is what falls back. It
-    /// is also the one knob here no test in this crate can prove: an in-process
-    /// peer offers IP host candidates, never mDNS names, so resolution is
-    /// never exercised. A real browser is what verifies it (stage 06's
-    /// browser pass).
+    /// The bridge resolves browser mDNS names before handing their IPs to
+    /// the core (`remote.rs`, `mdns.rs`). Its own socket queries every eligible
+    /// LAN explicitly, so a multicast join failure never prevents building the
+    /// peer or using TURN. The crate's multicast mode stays disabled here.
     pub(crate) fn setting_engine(&self, multicast_dns: MulticastDnsMode) -> SettingEngine {
         let mut engine = SettingEngine::default();
         engine.set_multicast_dns_mode(multicast_dns);

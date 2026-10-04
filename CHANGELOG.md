@@ -12,6 +12,22 @@ Wire 3.11.0.
 
 ### Changed
 
+- Same-LAN browser mDNS candidates are resolved on every eligible LAN interface,
+  with explicit multicast membership and egress, subnet-validated answers, shared
+  reply handling and retries that leave TURN available. Container and tunnel
+  interfaces are excluded; same-credential offers retain pending discovery, and
+  only live lookups count toward the discovery limit. Relayed sessions keep
+  checking for direct viability and may restart ICE once when a direct pair
+  succeeds or mDNS host discovery completes. Optional restarts give direct
+  candidates a head start
+  while retaining fallback signaling. Sampling backs off and ends after a bounded
+  observation window once the one upgrade attempt finishes; slow gathering can
+  remain pending. The browser's TURN allocation remains allocated after direct
+  nomination, while relayed traffic stops. Connection diagnostics now say why no
+  direct pair was attempted and report remote candidate and resolution counts
+  without peer addresses, coalesced by generation/reason with query details at
+  debug level (`rtc.candidateDiagnostics`, wire 3.11.0, #369).
+
 - Text inputs and textareas share token-based field styling in both themes,
   with the same standard or compact height, radius, border, background and
   focus ring as adjacent selects. Read-only fields retain muted text and a

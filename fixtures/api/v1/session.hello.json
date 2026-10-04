@@ -92,6 +92,7 @@
       "push.revokeKey",
       "requests.priority",
       "requests.receipts",
+      "rtc.candidateDiagnostics",
       "rtc.close",
       "rtc.ice",
       "rtc.offer",
@@ -186,7 +187,8 @@
     "events": [
       "changes",
       "bridge.update_status",
-      "models.changed"
+      "models.changed",
+      "rtc.diagnostics"
     ],
     "coalesce_window_ms": 250,
     "changes": {

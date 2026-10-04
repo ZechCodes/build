@@ -162,7 +162,12 @@ async fn the_greeting_announces_push_events() {
     );
     assert_eq!(
         hello["result"]["events"],
-        json!(["changes", "bridge.update_status", "models.changed"]),
+        json!([
+            "changes",
+            "bridge.update_status",
+            "models.changed",
+            "rtc.diagnostics"
+        ]),
         "{hello:?}"
     );
     // Step 1.5: what a Part 1 adapter reads instead of probing — now

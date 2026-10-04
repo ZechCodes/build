@@ -118,9 +118,14 @@ impl RelaySignaling for RelaySession {
     }
 
     async fn device_candidate(&self) -> Value {
-        let pushed = within_patience(self.pushes.lock().await.recv()).await;
-        assert_eq!(pushed["type"], "rtc.ice", "{pushed}");
-        pushed["candidate"].clone()
+        loop {
+            let pushed = within_patience(self.pushes.lock().await.recv()).await;
+            if pushed["type"] == "rtc.diagnostics" {
+                continue;
+            }
+            assert_eq!(pushed["type"], "rtc.ice", "{pushed}");
+            return pushed["candidate"].clone();
+        }
     }
 }
 

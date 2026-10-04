@@ -54,6 +54,7 @@ export const EVENT_TYPES = Object.freeze([
   "term.reset",
   "term.closed",
   "rtc.ice",
+  "rtc.diagnostics",
   "bridge.update_status",
   "models.changed",
 ]);

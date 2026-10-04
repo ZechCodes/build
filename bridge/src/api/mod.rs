@@ -104,6 +104,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "params.strict",
     "requests.priority",
     "requests.receipts",
+    "rtc.candidateDiagnostics", // Since 3.11.0: content-free candidate discovery diagnostics (#369).
     "settings.projectAgent",
     "settings.roleModels",
     "settings.workspaceLifecycle",

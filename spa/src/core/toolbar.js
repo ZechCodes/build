@@ -472,7 +472,7 @@ function projectMenuEntries() {
 /** The project half's frame. */
 function projectMenuShellHtml() {
   return `
-    <input class="tb-filter" type="text" placeholder="Jump to a project" value="${esc(open.query)}"
+    <input class="tb-filter mini" type="text" placeholder="Jump to a project" value="${esc(open.query)}"
       aria-label="Filter projects" ${fieldTraits("search", "go")} />
     <div class="tbmenu-list"></div>`;
 }
@@ -506,7 +506,7 @@ const scopedName = () => nameOf(scopedProject()) || "This project";
 
 function workspaceMenuShellHtml() {
   return `
-    <input class="tb-filter" type="text" placeholder="Jump to a workspace" value="${esc(open.query)}"
+    <input class="tb-filter mini" type="text" placeholder="Jump to a workspace" value="${esc(open.query)}"
       aria-label="Filter workspaces" ${fieldTraits("search", "go")} />
     <div class="tb-group tb-scope">
       <span>${esc(scopedName())}</span>

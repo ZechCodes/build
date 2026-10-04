@@ -2,6 +2,25 @@ import { expect, it } from "vitest";
 import { deviceShim } from "./taskIdentityHarness.mjs";
 import { loadBrowserModules, withLayoutPage } from "./layoutHarness.mjs";
 
+it.each(["modules", "error"])("waits for this import when a previous %s result is present", async (stale) => {
+  const plugin = {
+    name: "delayed-layout-module",
+    resolveId(id) { if (id.endsWith("/test/slow-loader-fixture.js")) return id; },
+    load(id) {
+      if (id.endsWith("/test/slow-loader-fixture.js")) return "await new Promise(resolve => setTimeout(resolve, 250)); export const ready = true;";
+    },
+  };
+  await withLayoutPage(async ({ page, basePath }) => {
+    await page.evaluate((stale) => {
+      window.__layoutModules = stale === "modules" ? { previous: {} } : undefined;
+      window.__layoutModuleError = stale === "error" ? "Previous import failed" : undefined;
+    }, stale);
+    await loadBrowserModules(page, { replacement: "test/slow-loader-fixture.js" }, basePath);
+    expect(await page.evaluate(() => window.__layoutModules.replacement.ready)).toBe(true);
+    expect(await page.evaluate(() => Object.keys(window.__layoutModules))).toEqual(["replacement"]);
+  }, { plugins: [plugin] });
+}, 30_000);
+
 it("isolates concurrent layout servers' dependency caches", async () => {
   const cacheDirs = [];
   let ready = 0;

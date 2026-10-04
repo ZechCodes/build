@@ -27,6 +27,16 @@ Wire 3.11.0.
   direct pair was attempted and report remote candidate and resolution counts
   without peer addresses, coalesced by generation/reason with query details at
   debug level (`rtc.candidateDiagnostics`, wire 3.11.0, #369).
+
+- Text inputs and textareas share token-based field styling in both themes,
+  with the same standard or compact height, radius, border, background and
+  focus ring as adjacent selects. Read-only fields retain muted text and a
+  stable hover border. Task review bases, capture branches and workspace labels
+  now match the rest of the forms; embedded composers and the source editor
+  retain their sizing and native editing behaviour. Branch routing menus stay
+  inside narrow screens, and short task rails keep their Close action fully
+  in view (#368).
+
 - Saving the conversation menu's Compact at threshold updates the open menu
   in place. Its menu, thumb, focus and active drag survive cache repaints
   without closing, reopening or replaying animations. Surface rows can appear

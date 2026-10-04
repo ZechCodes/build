@@ -150,7 +150,8 @@ pub struct SummaryLedger {
 struct Tally {
     minted_at: Instant,
     carrying_since: Option<Instant>,
-    carried: Duration,
+    direct: Option<Duration>,
+    turn: Option<Duration>,
     path: Option<TransportPath>,
     carryings: u32,
     channel_losses: u32,
@@ -164,7 +165,8 @@ impl Tally {
         Tally {
             minted_at: now,
             carrying_since: None,
-            carried: Duration::ZERO,
+            direct: None,
+            turn: None,
             path: None,
             carryings: 0,
             channel_losses: 0,
@@ -176,15 +178,26 @@ impl Tally {
 
     fn stop_carrying(&mut self, now: Instant) {
         if let Some(since) = self.carrying_since.take() {
-            self.carried += now.duration_since(since);
+            let carried = match self.path {
+                Some(TransportPath::Direct) => &mut self.direct,
+                Some(TransportPath::Turn) => &mut self.turn,
+                None => return,
+            };
+            *carried.get_or_insert(Duration::ZERO) += now.duration_since(since);
         }
     }
 
     fn line(mut self, session_id: &str, gap: Duration, now: Instant) -> String {
         self.stop_carrying(now);
-        let carried = match self.path {
-            Some(path) => format!("carried {}s over {}", self.carried.as_secs(), path.as_str()),
-            None => "carried nothing".to_string(),
+        let carried = match (self.turn, self.direct) {
+            (Some(turn), Some(direct)) => format!(
+                "carried {}s over turn and {}s over direct",
+                turn.as_secs(),
+                direct.as_secs()
+            ),
+            (Some(turn), None) => format!("carried {}s over turn", turn.as_secs()),
+            (None, Some(direct)) => format!("carried {}s over direct", direct.as_secs()),
+            (None, None) => "carried nothing".to_string(),
         };
         format!(
             "transport: session {session_id} summary: lived {}s, {carried}, {}, {}, {}, {} over {}s",
@@ -369,6 +382,24 @@ impl TransportLedger for RecordingLedger {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_upgrade_attributes_carried_time_to_each_selected_path() {
+        let start = Instant::now();
+        let mut tally = Tally::new(start);
+        tally.path = Some(TransportPath::Turn);
+        tally.carrying_since = Some(start);
+        tally.stop_carrying(start + Duration::from_secs(7));
+        tally.path = Some(TransportPath::Direct);
+        tally.carrying_since = Some(start + Duration::from_secs(7));
+        tally.carryings = 2;
+        let line = tally.line("upgrade", PING_GAP, start + Duration::from_secs(18));
+        assert!(
+            line.contains("carried 7s over turn and 11s over direct"),
+            "{line}"
+        );
+        assert!(line.contains("1 ICE restart"), "{line}");
+    }
 
     /// The `rtc:` line is the one the ops checklist greps (`TURN, billed`), so
     /// it does not move; the three session events read as what they are.

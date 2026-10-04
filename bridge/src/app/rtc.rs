@@ -44,7 +44,12 @@ pub(in crate::app) fn rtc_offer(
     let sdp = require_str(params, "sdp")?;
     let ice_servers = require_array(params, "ice_servers")?;
     let answer = peers
-        .offer(&sdp, &ice_servers, sender.clone())
+        .offer_with_client(
+            &sdp,
+            &ice_servers,
+            sender.clone(),
+            crate::rtc::client_hint::from_params(params),
+        )
         .map_err(|e| e.to_string())?;
     Ok(json!({ "sdp": answer }))
 }

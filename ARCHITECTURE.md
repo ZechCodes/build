@@ -229,7 +229,7 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.11.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.12.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
@@ -320,6 +320,8 @@ runtime that starts them.
   3.11.0 also adds `rtc.candidateDiagnostics` and the `rtc.diagnostics` push
   (#369), reporting remote host/mDNS/srflx/relay counts and resolution reasons
   without addresses. These are additive changes in the same unreleased minor.
+  3.12.0 adds `rtc.clientLanCache`, the optional paired `client_id` discovery
+  hint on `rtc.offer`, and actual per-host connectivity-check diagnostics (#372).
   3.11.0 adds `conversation.reset` (#358) and thread generations on conversation
   digests and responses. Generation-aware requests refuse a cleared thread;
   the reset capability gates the menu, its generation-aware cache handling,
@@ -926,15 +928,47 @@ The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
   offers preserve it. A session keeps resolved addresses for 60 seconds across
   ICE restarts; fresh ICE credentials and ports still determine whether a cached
   address works.
+- **Late direct checks**: the bridge opts into bounded ICE checks on waiting or
+  in-progress non-relay pairs after TURN is selected. The selected path and its
+  keepalives remain intact; successful alternatives do not nominate themselves.
+  The browser's existing direct-pair monitor may then use its single optional
+  ICE restart to select direct. Default behavior of the vendored library is
+  unchanged unless its setting is enabled.
+- **Paired LAN hint**: `rtc.offer` accepts optional `client_id` under
+  `rtc.clientLanCache` (wire 3.12.0). The SPA sends it only after a greeting from
+  that paired bridge advertised the capability. It uses `crypto.randomUUID`,
+  stores it separately per device and pinned transport key, and removes it on
+  unpair or account replacement. Invalid or noncanonical 36-character UUIDs
+  are treated as absent. An existing peer may bind its first valid hint on a
+  post-greeting offer, but later offers cannot change that binding. This partitions an optimization; it grants no identity
+  or authorization. A bridge keeps at most 64 previously validated IPv4 LAN
+  addresses, one per hint, for at most an hour in memory. For a new name the
+  first lookup sends one extra query to that address on its matching interface;
+  retries remain multicast only. Every query is QM from port 5353. A fresh
+  reply must pass the existing name, arrival-interface/subnet, private-address,
+  not-self and DNS TTL checks; the cache never substitutes an answer. Explicit
+  source-address probing is Linux-only; other hosts retain multicast discovery.
+  Neither the hint nor the cached address enters logs, pushes or diagnostics.
 - **Candidate diagnostics**: `rtc.diagnostics` reports remote candidate type
-  counts and discovery reasons without names, addresses or credentials. Reports
+  counts and discovery reasons without names, addresses or credentials. Actual
+  direct-check snapshots on ICE restart or close report each remote host by a
+  bounded ordinal with request/reply counters and successful-pair evidence;
+  receiving a host candidate alone means checks pending, never a failed check.
+  Reports
   are coalesced by generation/reason; resolution evidence is also delivered when
   needed for an upgrade. Normal logs contain one discovery summary per generation,
   while query detail is debug-level. It uses an authenticated data channel
   (app preferred), and the rendezvous before that. Older clients ignore the new
   push; older bridges
   provide browser-stat-only diagnostics. The greeting advertises
-  `rtc.candidateDiagnostics` (wire 3.11.0).
+  `rtc.candidateDiagnostics` (wire 3.11.0). The `direct-checks` event and
+  pending/not-sent/no-reply/succeeded reasons are added in 3.12.0; old clients
+  may ignore those additional diagnostic fields.
+- **Initial signaling completion**: channel greeting makes application RPCs
+  usable immediately. The rendezvous lease remains until the initial gathering
+  completes and every queued candidate RPC has settled, bounded by the offer's
+  original negotiation deadline. Recovery follows the same rule. Closing a link
+  cancels completion and cannot release a newer restart's signaling lease.
 
 **The browser↔relay contract.** The relay is authentication and rendezvous and
 nothing else

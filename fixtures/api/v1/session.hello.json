@@ -3,7 +3,7 @@
   "since": "1.0.0",
   "params": {},
   "result": {
-    "api_version": "3.11.0",
+    "api_version": "3.12.0",
     "capabilities": [
       "agent.add",
       "agent.attach",
@@ -93,6 +93,7 @@
       "requests.priority",
       "requests.receipts",
       "rtc.candidateDiagnostics",
+      "rtc.clientLanCache",
       "rtc.close",
       "rtc.ice",
       "rtc.offer",
@@ -226,5 +227,14 @@
       "version": 1
     }
   },
-  "errors": []
+  "errors": [],
+  "client_lan_cache": {
+    "since": "3.12.0",
+    "capability": "rtc.clientLanCache",
+    "method": "rtc.offer",
+    "optional_params": {
+      "client_id": "4c14a372-9db5-4faa-bbf1-d93583114e89"
+    },
+    "invalid_hint": "treated as absent"
+  }
 }

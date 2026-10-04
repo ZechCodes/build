@@ -6,6 +6,22 @@ Notable changes to the bridge (`build-bridge`). The format follows
 protocol versions; see
 [Wire versioning and capabilities](ARCHITECTURE.md#wire-versioning-and-capabilities).
 
+## [0.2.9] - Unreleased
+
+Wire 3.12.0.
+
+### Fixed
+
+- Relayed sessions now send bounded connectivity checks on late direct pairs
+  while retaining the selected TURN path. Candidate diagnostics report actual
+  per-host request and reply counts instead of inferring failed checks from
+  candidate counts. Initial signaling remains available until late browser
+  candidates have been delivered, without delaying application readiness.
+- LAN discovery uses QM queries from port 5353. A capability-gated random hint
+  per paired bridge permits one additional query to a previously validated LAN
+  address, held only in a bounded expiring memory cache; every fresh name still
+  needs a fully validated reply (#372).
+
 ## [0.2.8] - 2026-10-03
 
 Wire 3.11.0.

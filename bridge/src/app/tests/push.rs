@@ -201,7 +201,7 @@ async fn the_greeting_announces_push_events() {
     // 3.8.0 adds saved review Git actions (#330); 3.9.0 adds configured project
     // source file scopes (#359); 3.10.0 adds conditional task body writes (#347);
     // 3.11.0 adds generation-guarded conversation reset (#358).
-    assert_eq!(hello["result"]["api_version"], "3.11.0", "{hello:?}");
+    assert_eq!(hello["result"]["api_version"], "3.12.0", "{hello:?}");
     assert!(
         hello["result"]["coalesce_window_ms"]
             .as_u64()

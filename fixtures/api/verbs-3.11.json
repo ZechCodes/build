@@ -1,6 +1,6 @@
 {
-  "api_version": "3.10.0",
-  "commit": "cad6ed45",
+  "api_version": "3.11.0",
+  "commit": "071f84a4",
   "generated_by": "scripts/api-verbs-manifest.mjs",
   "verbs": [
     "agent.add",
@@ -20,6 +20,7 @@
     "capture.reroute",
     "changes.subscribe",
     "changes.unsubscribe",
+    "conversation.reset",
     "conversation.settings",
     "conversation.unwatch",
     "conversation.watch",
@@ -151,6 +152,7 @@
     "changes.subscribe",
     "changes.subscriptions",
     "changes.unsubscribe",
+    "conversation.reset",
     "conversation.settings",
     "conversation.unwatch",
     "conversation.watch",
@@ -207,6 +209,7 @@
     "push.revokeKey",
     "requests.priority",
     "requests.receipts",
+    "rtc.candidateDiagnostics",
     "rtc.close",
     "rtc.ice",
     "rtc.offer",

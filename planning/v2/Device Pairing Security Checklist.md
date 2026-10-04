@@ -1,12 +1,13 @@
 # Device pairing security checklist
 
-**Status:** verified (9/9 controls)
+**Status:** verified (14/14 controls)
 
 **Scope:** what `build-bridge pair` prints and the approve link it prints,
 #319. The bridge registers as pending with only the hash of a fresh pairing
 code and a signature binding its keys to it, and a signed-in person approves
 the code in Build (`bridge/src/pairing.rs`, `skriftapp/buildapp/devices_controller.py`).
-That flow is unchanged here and not rescored. This checklist covers the link
+That flow is unchanged here and not rescored. #372 additionally covers the
+per-pairing browser hint used only for LAN discovery. This checklist covers the link
 `<web>/app/#/pair/<code>`, the screen it opens, and the terminal output around it.
 
 ## Threat model
@@ -37,6 +38,20 @@ plainly what approving does and when to do it (control 9).
 | 7 | Sign-in keeps the fragment without becoming a redirect. The fragment goes back only onto a same-origin redirect that has none of its own, and the result is that parsed URL's absolute href, so it can choose which page of this site opens and nothing else. | [x] | `passkey-signin.test.mjs`: "a signed-in visitor goes on with the fragment they arrived with", "a redirect with its own fragment, or to another origin, is left as the server said" (absolute and protocol-relative), "a same-origin path that starts with // stays on this site", "the page goes on with the fragment once the passkey is accepted". |
 | 8 | The terminal output names no secret beyond what it did before. The retire notice names the directory the old identity was moved to, `~`-shortened under the home directory and in full outside it, and, for an api other than the default, the api. It prints no identity contents and no file names. | [x] | `a_retired_approval_says_so_in_two_short_lines`, `a_retired_approval_outside_home_names_the_full_directory`, `a_retired_approval_names_an_api_that_is_not_the_default`, `the_retire_message_names_the_api_and_where_the_old_identity_is`. |
 | 9 | A sheet a link opened says so and warns before anything can be approved: only approve if you just ran the installer or `build-bridge pair` on a machine you own, because approving gives that machine access to your account. The typed-code subtitle is not shown for a link. | [x] | `addDeviceDom.test.js` "a sheet a link opened says so and warns before anything can be approved" (pins the copy), "a sheet opened by hand keeps its own subtitle and carries no link warning"; `gateOnboardingDom.test.js` "opens Add a device with the link's code, marked as opened by a link". |
+
+## Paired LAN discovery hint (#372)
+
+The optional hint is not an authentication credential. Even an invented hint
+can request only one additional DNS query to a previously validated private
+LAN address; it cannot supply an address or bypass answer validation.
+
+| # | Control | Status | Required evidence |
+| --- | --- | --- | --- |
+| 10 | `client_id` has the exact canonical 36-character UUID shape; malformed values are absent and never refuse the offer. The SPA sends it only to a bridge advertising `rtc.clientLanCache`. | [x] | `rtc::client_hint` parser regression; `rtcClientHint.test.js` and `peerLink.test.js` capability gating. |
+| 11 | `crypto.randomUUID` creates a hint per paired device and pinned key; unpair and account replacement discard it. | [x] | `rtcClientHint.test.js`; pairing cleanup in `connection.js`. |
+| 12 | The bridge cache is memory-only, bounded to 64 entries and one validated IPv4 address per hint, expiring after one hour. Hints and cached addresses never enter logs, pushes or diagnostic exports. | [x] | `rtc/mdns/cache.rs` bound/expiry/isolation tests; review of hint plumbing and safe diagnostic sanitizer. |
+| 13 | A hint permits at most one extra unicast query in the initial lookup, never on retry. All queries use QM, source port 5353 and the chosen LAN interface. | [x] | mDNS query wire-byte, initial-probe, retry and Linux source-egress regressions. |
+| 14 | Cache hits never resolve a new name by themselves. Fresh replies still require matching name, valid arrival interface/subnet, private and not-self address, and live DNS TTL. Invalid answers cannot refresh the cache. | [x] | mDNS rotated-name, invalid-answer and stale-TTL regressions. |
 
 ## Accepted
 

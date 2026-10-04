@@ -10,9 +10,9 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use webrtc::peer_connection::{PeerConnection, RTCIceCandidateInit};
+use webrtc::peer_connection::{PeerConnection, RTCIceCandidateInit, RTCStatsReport};
 
-use super::{mdns, RtcError};
+use super::{checks::DirectChecks, mdns, RtcError};
 
 const MAX_DISCOVERIES: usize = 32;
 const RESOLVED_CACHE_TTL: Duration = Duration::from_secs(60);
@@ -35,20 +35,34 @@ impl CandidateTarget for PeerTarget {
 
 #[async_trait]
 trait Resolver: Send + Sync {
-    async fn resolve(&self, name: &str) -> Result<Vec<IpAddr>, String>;
+    async fn resolve(&self, name: &str, use_remembered: bool) -> Result<Vec<IpAddr>, String>;
+    fn bind_client_hint(&self, _hint: uuid::Uuid) {}
 }
 
 struct LanResolver {
     session_id: String,
     interfaces: Option<Vec<String>>,
+    lan_addresses: Arc<mdns::LanAddressCache>,
+    client_hint: super::client_hint::Binding,
 }
 
 #[async_trait]
 impl Resolver for LanResolver {
-    async fn resolve(&self, name: &str) -> Result<Vec<IpAddr>, String> {
-        mdns::resolve(name, self.interfaces.as_deref(), &self.session_id)
-            .await
-            .map_err(|failure| failure.code().to_string())
+    fn bind_client_hint(&self, hint: uuid::Uuid) {
+        self.client_hint.bind(hint);
+    }
+
+    async fn resolve(&self, name: &str, use_remembered: bool) -> Result<Vec<IpAddr>, String> {
+        mdns::resolve(
+            name,
+            self.interfaces.as_deref(),
+            &self.session_id,
+            &self.lan_addresses,
+            self.client_hint.get(),
+            use_remembered,
+        )
+        .await
+        .map_err(|failure| failure.code().to_string())
     }
 }
 
@@ -75,7 +89,7 @@ impl CandidateCounts {
     }
     fn reason(&self) -> &'static str {
         if self.host_ip + self.mdns_resolved > 0 {
-            return "direct-checks-no-success";
+            return "direct-checks-pending";
         }
         if self.mdns_pending > 0 {
             return "mdns-pending";
@@ -93,6 +107,7 @@ struct State {
     closed: bool,
     credentials: Option<Vec<IceCredentials>>,
     counts: CandidateCounts,
+    checks: DirectChecks,
     seen: HashSet<String>,
     jobs: HashMap<String, JoinHandle<()>>,
     resolved: HashMap<String, (Instant, Vec<IpAddr>)>,
@@ -110,6 +125,7 @@ impl State {
         self.generation += 1;
         self.seen.clear();
         self.counts = CandidateCounts::default();
+        self.checks = DirectChecks::default();
         self.last_reason = None;
         self.resolution_reported = false;
         self.reported_failures.clear();
@@ -128,6 +144,10 @@ impl State {
             .get(name)
             .filter(|(at, _)| at.elapsed() < RESOLVED_CACHE_TTL)
             .map(|(_, addresses)| addresses.clone())
+    }
+
+    fn reason(&self) -> &'static str {
+        self.checks.reason().unwrap_or_else(|| self.counts.reason())
     }
 }
 
@@ -181,15 +201,22 @@ pub(super) struct RemoteCandidates {
 }
 
 impl RemoteCandidates {
+    pub(super) fn bind_client_hint(&self, hint: uuid::Uuid) {
+        self.resolver.bind_client_hint(hint);
+    }
     pub(super) fn new(
         session_id: String,
         interfaces: Option<Vec<String>>,
         emit: Arc<dyn Fn(Value) + Send + Sync>,
+        lan_addresses: Arc<mdns::LanAddressCache>,
+        client_hint: Option<uuid::Uuid>,
     ) -> Arc<Self> {
         Self::with_resolver(
             Arc::new(LanResolver {
                 session_id: session_id.clone(),
                 interfaces,
+                lan_addresses,
+                client_hint: super::client_hint::Binding::new(client_hint),
             }),
             emit,
             session_id,
@@ -207,25 +234,46 @@ impl RemoteCandidates {
             emit,
         })
     }
+    #[cfg(test)]
     pub(super) async fn begin(&self, offer: &str) {
+        self.begin_with_stats(offer, None).await;
+    }
+    pub(super) async fn begin_with_stats(&self, offer: &str, stats: Option<&RTCStatsReport>) {
         let mut state = self.state.lock().await;
         let credentials = ice_credentials(offer);
         if !state.closed && state.credentials.as_ref() == Some(&credentials) {
             return;
         }
+        self.observe_checks(&mut state, stats);
         self.summarize(&state, "restart");
         state.cancel();
         state.closed = false;
         state.credentials = Some(credentials);
         self.report(&mut state, "generation", None);
     }
+    #[cfg(test)]
     pub(super) async fn close(&self) {
+        self.close_with_stats(None).await;
+    }
+    pub(super) async fn close_with_stats(&self, stats: Option<&RTCStatsReport>) {
         let mut state = self.state.lock().await;
+        self.observe_checks(&mut state, stats);
         self.summarize(&state, "close");
         state.cancel();
         state.closed = true;
         state.credentials = None;
         state.resolved.clear();
+    }
+    fn observe_checks(&self, state: &mut State, stats: Option<&RTCStatsReport>) {
+        if state.closed || state.credentials.is_none() {
+            return;
+        }
+        if let Some(stats) = stats {
+            state.checks.observe(stats);
+            (self.emit)(json!({ "type": "rtc.diagnostics", "event": "direct-checks",
+                "reason": state.reason(), "candidates": state.counts,
+                "detail": null, "hosts": state.checks.hosts() }));
+        }
     }
     fn summarize(&self, state: &State, ended: &str) {
         if state.credentials.is_some() && !state.closed {
@@ -234,8 +282,9 @@ impl RemoteCandidates {
                 &format!(
                     "remote_candidates {}",
                     json!({"generation": state.generation,
-                    "ended": ended, "reason": state.counts.reason(),
-                    "candidates": state.counts, "failures": state.failures})
+                    "ended": ended, "reason": state.reason(),
+                    "candidates": state.counts, "failures": state.failures,
+                    "hosts": state.checks.hosts()})
                 ),
             );
         }
@@ -244,16 +293,16 @@ impl RemoteCandidates {
         let first_failure = detail.is_some_and(|failure| state.reported_failures.insert(failure));
         let first_resolution = event == "mdns-resolved" && !state.resolution_reported;
         if event != "generation"
-            && state.last_reason == Some(state.counts.reason())
+            && state.last_reason == Some(state.reason())
             && !first_resolution
             && !first_failure
         {
             return;
         }
-        state.last_reason = Some(state.counts.reason());
+        state.last_reason = Some(state.reason());
         state.resolution_reported |= first_resolution;
         (self.emit)(json!({ "type": "rtc.diagnostics", "event": event,
-            "reason": state.counts.reason(), "candidates": state.counts,
+            "reason": state.reason(), "candidates": state.counts,
             "detail": detail }));
     }
 
@@ -265,8 +314,9 @@ impl RemoteCandidates {
         {
             let line = format!("candidate:{line}");
             let kind = candidate_kind(&line);
-            if kind != "host-mdns" && state.seen.insert(line) {
+            if kind != "host-mdns" && state.seen.insert(line.clone()) {
                 state.counts.received(kind);
+                state.checks.track_candidate(&line);
             }
         }
         self.report(&mut state, "remote-candidate", None);
@@ -287,6 +337,7 @@ impl RemoteCandidates {
         let kind = candidate_kind(&candidate.candidate);
         state.counts.received(kind);
         if kind != "host-mdns" {
+            state.checks.track_candidate(&candidate.candidate);
             self.report(&mut state, "remote-candidate", None);
             return target.add(candidate).await;
         }
@@ -299,7 +350,7 @@ impl RemoteCandidates {
             }
         };
         if let Some(addresses) = state.cached(&name) {
-            add_resolved(&*target, &candidate, &addresses).await?;
+            add_resolved(&*target, &candidate, &addresses, &mut state.checks).await?;
             state.counts.mdns_resolved += 1;
             self.report(&mut state, "mdns-resolved", None);
             return Ok(());
@@ -348,7 +399,7 @@ impl RemoteCandidates {
         name: String,
     ) {
         for attempt in 0..=RETRY_DELAYS.len() {
-            let result = self.resolver.resolve(&name).await;
+            let result = self.resolver.resolve(&name, attempt == 0).await;
             if self
                 .complete(generation, &*target, &candidate, &name, result)
                 .await
@@ -386,7 +437,7 @@ impl RemoteCandidates {
         state.counts.mdns_pending -= 1;
         let failure = match result {
             Ok(addresses) if !addresses.is_empty() => {
-                match add_resolved(target, candidate, &addresses).await {
+                match add_resolved(target, candidate, &addresses, &mut state.checks).await {
                     Ok(()) => {
                         state
                             .resolved
@@ -424,6 +475,7 @@ async fn add_resolved(
     target: &dyn CandidateTarget,
     original: &RTCIceCandidateInit,
     addresses: &[IpAddr],
+    checks: &mut DirectChecks,
 ) -> Result<(), RtcError> {
     for address in addresses {
         let mut candidate = original.clone();
@@ -434,7 +486,8 @@ async fn add_resolved(
             .collect();
         fields[4] = address.to_string();
         candidate.candidate = fields.join(" ");
-        target.add(candidate).await?;
+        target.add(candidate.clone()).await?;
+        checks.track_candidate(&candidate.candidate);
     }
     Ok(())
 }
@@ -525,7 +578,7 @@ mod tests {
     }
     #[async_trait]
     impl Resolver for FakeResolver {
-        async fn resolve(&self, _: &str) -> Result<Vec<IpAddr>, String> {
+        async fn resolve(&self, _: &str, _: bool) -> Result<Vec<IpAddr>, String> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.ready.acquire().await.unwrap().forget();
             self.answer.lock().unwrap().clone()
@@ -538,7 +591,7 @@ mod tests {
 
     #[async_trait]
     impl Resolver for HandshakeResolver {
-        async fn resolve(&self, _: &str) -> Result<Vec<IpAddr>, String> {
+        async fn resolve(&self, _: &str, _: bool) -> Result<Vec<IpAddr>, String> {
             let (reply, result) = oneshot::channel();
             self.requests.send(reply).unwrap();
             result.await.unwrap()
@@ -584,6 +637,75 @@ mod tests {
     async fn settled() {
         for _ in 0..20 {
             tokio::task::yield_now().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn actual_check_counters_belong_to_the_generation_that_sent_them() {
+        let (remote, _, target, events) = fixture(Err("unused".into()));
+        let first = offer("first", "first-password");
+        remote.begin(&first).await;
+        remote
+            .add(target.clone(), candidate("192.0.2.2", "host"))
+            .await
+            .unwrap();
+        assert_eq!(
+            events.lock().unwrap().last().unwrap()["reason"],
+            "direct-checks-pending"
+        );
+        let report = super::super::checks::unanswered_report();
+        remote.begin_with_stats(&first, Some(&report)).await;
+        assert!(
+            events
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|event| event["event"] != "direct-checks"),
+            "same-credential offers do not end or sample the generation"
+        );
+        remote
+            .begin_with_stats(&offer("second", "second-password"), Some(&report))
+            .await;
+        let finished = events
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|event| event["event"] == "direct-checks")
+            .cloned()
+            .expect("restart reports the old generation's actual checks");
+        assert_eq!(finished["reason"], "direct-checks-no-reply");
+        assert_eq!(
+            finished["hosts"],
+            json!([
+                {"ordinal": 1, "requests_sent": 2, "responses_received": 0, "succeeded": false}
+            ])
+        );
+        assert_eq!(
+            events.lock().unwrap().last().unwrap()["event"],
+            "generation"
+        );
+        remote
+            .add(target, candidate("192.0.2.3", "host"))
+            .await
+            .unwrap();
+        let empty = rtc::peer_connection::RTCPeerConnectionBuilder::new()
+            .build()
+            .unwrap()
+            .get_stats(Instant::now(), rtc::statistics::StatsSelector::None);
+        remote.close_with_stats(Some(&empty)).await;
+        let last = events.lock().unwrap().last().unwrap().clone();
+        assert_eq!(last["event"], "direct-checks");
+        assert_eq!(last["reason"], "direct-checks-not-sent");
+        assert_eq!(
+            last["hosts"],
+            json!([
+                {"ordinal": 1, "requests_sent": 0, "responses_received": 0, "succeeded": false}
+            ])
+        );
+        for event in [finished, last] {
+            let serialized = event.to_string();
+            assert!(!serialized.contains("192.0.2."));
+            assert!(!serialized.contains("password"));
         }
     }
 
@@ -849,7 +971,7 @@ mod tests {
             .unwrap();
         settled().await;
         let rejected = events.lock().unwrap().last().unwrap().clone();
-        assert_eq!(rejected["reason"], "direct-checks-no-success");
+        assert_eq!(rejected["reason"], "direct-checks-pending");
         assert_eq!(
             rejected["detail"], "mdns-answer-rejected",
             "a new failure category stays visible despite an unchanged coarse reason"

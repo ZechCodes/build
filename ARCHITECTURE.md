@@ -969,6 +969,10 @@ The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
   completes and every queued candidate RPC has settled, bounded by the offer's
   original negotiation deadline. Recovery follows the same rule. Closing a link
   cancels completion and cannot release a newer restart's signaling lease.
+  Local diagnostics separately count gathered, delivered and failed candidates
+  per generation. Completed native gathering with no host in its events, local
+  SDP or stats reports `browser-no-host-candidates` and keeps TURN instead of
+  taking the mDNS upgrade fallback.
 
 **The browser↔relay contract.** The relay is authentication and rendezvous and
 nothing else

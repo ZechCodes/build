@@ -404,10 +404,7 @@ impl RemoteCandidates {
         self.rejected(&mut state, failure);
         matches!(
             failure,
-            "mdns-invalid-name"
-                | "mdns-no-lan-interfaces"
-                | "mdns-answer-rejected"
-                | "mdns-candidate-rejected"
+            "mdns-invalid-name" | "mdns-no-lan-interfaces" | "mdns-candidate-rejected"
         )
     }
 }
@@ -519,7 +516,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::sync::Mutex;
-    use tokio::sync::Semaphore;
+    use tokio::sync::{mpsc, oneshot, Semaphore};
 
     struct FakeResolver {
         ready: Semaphore,
@@ -532,6 +529,19 @@ mod tests {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.ready.acquire().await.unwrap().forget();
             self.answer.lock().unwrap().clone()
+        }
+    }
+
+    struct HandshakeResolver {
+        requests: mpsc::UnboundedSender<oneshot::Sender<Result<Vec<IpAddr>, String>>>,
+    }
+
+    #[async_trait]
+    impl Resolver for HandshakeResolver {
+        async fn resolve(&self, _: &str) -> Result<Vec<IpAddr>, String> {
+            let (reply, result) = oneshot::channel();
+            self.requests.send(reply).unwrap();
+            result.await.unwrap()
         }
     }
     #[derive(Default)]
@@ -643,11 +653,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn permanent_resolution_failures_do_not_retry() {
-        for failure in [
-            "mdns-invalid-name",
-            "mdns-no-lan-interfaces",
-            "mdns-answer-rejected",
-        ] {
+        for failure in ["mdns-invalid-name", "mdns-no-lan-interfaces"] {
             let (remote, resolver, target, _) = fixture(Err(failure.into()));
             remote.begin(&offer("first", "password")).await;
             resolver.ready.add_permits(200);
@@ -668,6 +674,74 @@ mod tests {
             );
             assert!(remote.state.lock().await.jobs.is_empty());
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_rejected_answer_round_retries_then_resolves_and_caches_the_host() {
+        let (requests, mut resolutions) = mpsc::unbounded_channel();
+        let (diagnostics, mut reported) = mpsc::unbounded_channel();
+        let remote = RemoteCandidates::with_resolver(
+            Arc::new(HandshakeResolver { requests }),
+            Arc::new(move |event| {
+                if event["event"] == "mdns-unresolved" || event["event"] == "mdns-resolved" {
+                    let _ = diagnostics.send(event);
+                }
+            }),
+            "test".into(),
+        );
+        let target = Arc::new(Target::default());
+        let name = "73af967b-f3ee-4e8d-b0bd-213da4ec5901.local";
+        let address = "192.168.68.30".parse().unwrap();
+        remote.begin(&offer("first", "password")).await;
+        remote
+            .add(target.clone(), candidate(name, "host"))
+            .await
+            .unwrap();
+        resolutions
+            .recv()
+            .await
+            .unwrap()
+            .send(Err("mdns-answer-rejected".into()))
+            .unwrap();
+        assert_eq!(
+            reported.recv().await.unwrap()["detail"],
+            "mdns-answer-rejected"
+        );
+        {
+            let state = remote.state.lock().await;
+            assert_eq!(state.jobs.len(), 1, "a rejected round keeps its retry job");
+            assert_eq!(state.counts.mdns_unresolved, 1);
+            assert!(state.cached(name).is_none());
+        }
+        let retry_started = tokio::time::Instant::now();
+        tokio::time::advance(RETRY_DELAYS[0]).await;
+        let reply = resolutions.recv().await.unwrap();
+        assert_eq!(retry_started.elapsed(), RETRY_DELAYS[0]);
+        reply.send(Ok(vec![address])).unwrap();
+        assert_eq!(reported.recv().await.unwrap()["event"], "mdns-resolved");
+        {
+            let state = remote.state.lock().await;
+            assert_eq!(state.cached(name), Some(vec![address]));
+            assert_eq!(state.counts.mdns_unresolved, 0);
+            assert_eq!(state.counts.mdns_resolved, 1);
+            assert!(state.jobs.is_empty());
+        }
+        assert!(target.0.lock().unwrap()[0]
+            .candidate
+            .contains("192.168.68.30 48861"));
+        remote.begin(&offer("second", "new-password")).await;
+        let mut fresh = candidate(name, "host");
+        fresh.username_fragment = Some("second".into());
+        fresh.candidate = fresh.candidate.replace("48861", "48862");
+        remote.add(target.clone(), fresh).await.unwrap();
+        let added = target.0.lock().unwrap();
+        assert_eq!(added.len(), 2, "the later answer is cached across restart");
+        assert!(added[1].candidate.contains("192.168.68.30 48862"));
+        assert_eq!(added[1].username_fragment.as_deref(), Some("second"));
+        assert!(matches!(
+            resolutions.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
     }
 
     #[tokio::test]

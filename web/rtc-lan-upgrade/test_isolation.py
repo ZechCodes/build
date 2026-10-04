@@ -33,6 +33,25 @@ class NamespaceGuardTests(unittest.TestCase):
 
 
 class NamespaceEntryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_mdns_listener_binds_the_multicast_group(self):
+        loop = MagicMock()
+        loop.create_datagram_endpoint = AsyncMock(side_effect=[
+            (MagicMock(), MagicMock()),
+            RuntimeError("stop before starting the fixture"),
+        ])
+        mdns_socket = MagicMock()
+        with (
+            patch("pathlib.Path.read_text", return_value="0 1000 1\n"),
+            patch("os.geteuid", return_value=0),
+            patch.object(network.asyncio, "get_running_loop", return_value=loop),
+            patch.object(network.socket, "socket", return_value=mdns_socket),
+            patch.object(network.subprocess, "run") as nft,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "stop before starting the fixture"):
+                await network.main(MagicMock())
+            mdns_socket.bind.assert_called_once_with(("224.0.0.251", 5353))
+            nft.assert_not_called()
+
     async def test_network_rejects_host_root_before_socket_or_firewall_changes(self):
         loop = MagicMock()
         loop.create_datagram_endpoint = AsyncMock(

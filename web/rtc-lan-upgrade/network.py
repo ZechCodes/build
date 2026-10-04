@@ -98,7 +98,7 @@ async def main(artifacts):
     await loop.create_datagram_endpoint(Turn, local_addr=("10.72.0.2", 3478))
     mdns_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     mdns_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    mdns_socket.bind(("", 5353))
+    mdns_socket.bind(("224.0.0.251", 5353))
     mdns_socket.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
                           socket.inet_aton("224.0.0.251") + socket.inet_aton("10.72.0.2"))
     mdns_socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton("10.72.0.2"))

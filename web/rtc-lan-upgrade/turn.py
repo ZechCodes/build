@@ -11,6 +11,8 @@ REALM = b"build-lan-fixture"
 NONCE = b"isolated-test-nonce"
 USERNAME = b"fixture"
 PASSWORD = b"fixture-password"
+# RFC 5389 long-term TURN integrity keys require MD5 for these fixture credentials.
+# nosemgrep: python.lang.security.audit.md5-used-as-password.md5-used-as-password
 KEY = hashlib.md5(USERNAME + b":" + REALM + b":" + PASSWORD).digest()
 
 

@@ -239,6 +239,8 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
    *  mDNS resolution also warrants fresh checks: the bridge stops checking
    *  nonselected pairs after nomination, so those old checks cannot succeed.
    *  With neither evidence, the working TURN path is left alone. */
+  // One optional upgrade attempt for this peer link's entire lifetime.
+  // Recovery reuses the peer and does not renew that budget.
   const mayMonitorDirectPair = () => !torn && !renegotiating && transportPath === TURN;
   const mayTryDirectPair = () => !upgradeAsked && mayMonitorDirectPair();
   const directPairIsWorthTrying = async () => {
@@ -267,7 +269,10 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
    *  point of it being optional — unless the restart left the path itself
    *  broken, because sitting on a dead peer is worse than reconnecting. */
   const directPairFailed = (error) => {
-    diagnostic("direct-pair", { state: "failed", reason: error?.blockedReason === "timeout" ? "timeout" : "failed" });
+    const pending = error?.blockedReason === "timeout" && frames.connected && peer.iceGatheringState === "gathering";
+    diagnostic("direct-pair", {
+      state: pending ? "pending" : "failed", reason: error?.blockedReason === "timeout" ? "timeout" : "failed", path: transportPath,
+    });
     if (!torn && ["failed", "disconnected"].includes(peer.connectionState)) {
       tearDown("the direct-pair attempt left the path failed");
     }
@@ -318,7 +323,9 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     await sampleTransportPath(false);
     if (!torn && transportPath !== TURN) reportDirectPair();
   };
-  const directPairMonitor = createDirectPairMonitor({ check: monitorDirectPair, canCheck: mayMonitorDirectPair });
+  const directPairMonitor = createDirectPairMonitor({
+    check: monitorDirectPair, canCheck: mayMonitorDirectPair, hasAttempted: () => upgradeAsked,
+  });
 
   try {
     diagnostic("negotiating", { phase: "initial" });

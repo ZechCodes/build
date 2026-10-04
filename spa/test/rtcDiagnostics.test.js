@@ -21,6 +21,13 @@ describe("candidate diagnostic privacy", () => {
     expect(safeCandidateReason("private.local failed")).toBeNull();
   });
 
+  it("preserves a fixed discovery rejection code while excluding raw error content", () => {
+    expect(candidateDiagnostic({ reason: "mdns-unresolved", event: "mdns-unresolved", detail: "mdns-answer-rejected" }))
+      .toEqual({ reason: "mdns-unresolved", phase: "mdns-unresolved", candidates: {}, discoveryReason: "mdns-answer-rejected" });
+    expect(candidateDiagnostic({ reason: "mdns-unresolved", event: "mdns-unresolved", detail: "192.168.1.2 private.local was rejected" }))
+      .toEqual({ reason: "mdns-unresolved", phase: "mdns-unresolved", candidates: {} });
+  });
+
   it("uses the bridge's precise LAN-discovery reason while preserving browser check details", () => {
     expect(directPairNoTryReason("no-direct-pairs", "mdns-unresolved")).toBe("mdns-unresolved");
     expect(directPairNoTryReason("direct-checks-failed", "direct-checks-no-success")).toBe("direct-checks-failed");

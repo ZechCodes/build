@@ -984,6 +984,22 @@ describe("a session that landed on a relayed pair", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("reports a timed-out gathering round as pending when native ICE can still nominate direct later", async () => {
+    const { peer, resolved } = await landedOnRelay();
+    peer.iceGatheringState = "gathering";
+    await vi.advanceTimersByTimeAsync(35001);
+    expect(diagnosticsOf("direct-pair")).toEqual(["trying", "pending"]);
+    expect(connectionDiagnosticHistory().find((entry) => entry.event === "direct-pair" && entry.state === "pending"))
+      .toMatchObject({ reason: "timeout", path: "turn" });
+    peer.iceGatheringState = "complete";
+    peer.emit("icegatheringstatechange");
+    peer.getStats = async () => asReport(pairEntries("direct", { localType: "host", remoteType: "host", nominated: true }));
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(resolved.transportPath()).toBe("direct");
+    expect(diagnosticsOf("direct-pair")).toEqual(["trying", "pending", "renominated"]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("rejects late fresh-server results after the optional restart timed out without closing TURN", async () => {
     const { peer, resolved, fetchIceServers, signalled } = await landedOnRelay();
     let finishFetch;

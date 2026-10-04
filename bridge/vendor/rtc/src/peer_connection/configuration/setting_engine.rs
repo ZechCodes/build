@@ -332,6 +332,7 @@ impl Default for SctpMaxMessageSize {
 #[derive(Default, Clone)]
 pub struct SettingEngine {
     pub(crate) timeout: Timeout,
+    pub(crate) check_pending_direct_pairs: bool,
     pub(crate) candidates: Candidates,
     pub(crate) multicast_dns: MulticastDNS,
     pub(crate) replay_protection: ReplayProtection,
@@ -360,6 +361,15 @@ pub struct SettingEngine {
 }
 
 impl SettingEngine {
+    /// Check pending non-relay pairs after ICE selects a carrying pair.
+    ///
+    /// Disabled by default. Checks stop on success or the normal binding-request
+    /// budget; they preserve nomination and the selected pair's consent keepalives.
+    /// ICE-lite agents never initiate these checks.
+    pub fn set_check_pending_direct_pairs(&mut self, enabled: bool) {
+        self.check_pending_direct_pairs = enabled;
+    }
+
     /// Returns the configured receive MTU, or the default if not set.
     pub(crate) fn get_receive_mtu(&self) -> usize {
         if self.receive_mtu != 0 {

@@ -1,15 +1,17 @@
-# Vendored crates: webrtc and rtc 0.20.4, patched (#166, #179, #298)
+# Vendored crates: webrtc, rtc and rtc-ice 0.20.4, patched (#166, #179, #298, #372)
 
-The bridge builds `webrtc` and `rtc` from here instead of crates.io, through
+The bridge builds `webrtc`, `rtc` and `rtc-ice` from here instead of crates.io, through
 the `[patch.crates-io]` entries at the end of `bridge/Cargo.toml`:
 
 | crate | upstream | crates.io checksum | patch |
 | --- | --- | --- | --- |
-| `webrtc/` | [webrtc 0.20.4](https://crates.io/crates/webrtc/0.20.4) (github.com/webrtc-rs/webrtc) | `3daa8f2f6366331ae3275a6c02a855c6fb3faa1d16960498d7daaf61c96e76bd` | `webrtc-driver-drain.patch`, then `webrtc-negotiated-first-message-test.patch` |
-| `rtc/` | [rtc 0.20.4](https://crates.io/crates/rtc/0.20.4) (github.com/webrtc-rs/rtc) | `c9005c36795ad076abd36db3ea9ae0275a60395944647d58c1f2bc3e118dddba` | `rtc-dtls-client-hello.patch`, `rtc-negotiated-first-message.patch` |
+| `webrtc/` | [webrtc 0.20.4](https://crates.io/crates/webrtc/0.20.4) (github.com/webrtc-rs/webrtc) | `3daa8f2f6366331ae3275a6c02a855c6fb3faa1d16960498d7daaf61c96e76bd` | `webrtc-driver-drain.patch`, then `webrtc-negotiated-first-message-test.patch`, `webrtc-late-direct-tests.patch` |
+| `rtc/` | [rtc 0.20.4](https://crates.io/crates/rtc/0.20.4) (github.com/webrtc-rs/rtc) | `c9005c36795ad076abd36db3ea9ae0275a60395944647d58c1f2bc3e118dddba` | `rtc-dtls-client-hello.patch`, `rtc-negotiated-first-message.patch`, `rtc-late-direct-stats.patch` |
+| `rtc-ice/` | [rtc-ice 0.20.4](https://crates.io/crates/rtc-ice/0.20.4) (github.com/webrtc-rs/rtc) | `2c06eeabd250a7693e1e8b28222b78c4a81a7c6ca7fe3cb99bbdff2f6c0ff0ab` | `rtc-ice-late-direct-checks.patch` |
 
 `webrtc` is the async driver. `rtc` is the sans-I/O peer connection it drives
-(ICE, DTLS, SCTP), which the bridge also uses directly. The other `rtc-*`
+(ICE, DTLS, SCTP), which the bridge also uses directly. `rtc-ice` is its ICE
+agent. The other `rtc-*`
 crates still come from crates.io.
 
 Each directory is the published crate as the registry unpacks it, with its
@@ -147,6 +149,31 @@ never delivered the far end's first message".
 The measurement harness for #166 is `bridge/experiments/166/` at commit
 `1ca86df4`. The numbers for both changes are on their tasks.
 
+#372: a browser host candidate resolved after TURN nomination created a Waiting
+pair, but the selected-pair branch only sent consent keepalives. With an inbound
+drop firewall, the bridge never sent the direct STUN request needed to open the
+return path.
+
+`rtc-ice-late-direct-checks.patch` adds opt-in pending direct checks to both full
+ICE selectors after selection. `SettingEngine::set_check_pending_direct_pairs`
+enables them in the bridge; it defaults to false. ICE-lite is unchanged. Only
+Waiting/InProgress pairs with neither endpoint relayed are checked, using the
+normal binding-request budget. Succeeded, Failed and nominated pairs are skipped.
+Selected-pair keepalives continue and nomination is unchanged: a browser ICE
+restart still makes the direct pair carrying.
+
+`rtc-late-direct-stats.patch` carries the setting into `AgentConfig` and syncs
+all active pair counters, states and nomination flags into RTC stats, preserving
+the application byte counters. Earlier-generation pair accumulators are removed.
+Previously only the selected pair's counters were exposed, so a resolved host
+could not be distinguished from an address that actually received checks.
+
+Four ICE unit regressions check outgoing STUN packets, budget exhaustion, success
+responses, selection and keepalive preservation, default/lite behavior and relay
+exclusion. `webrtc-late-direct-tests.patch` drives two real sans-I/O cores through
+TURN nomination before adding a host and verifies Waiting, InProgress, Succeeded
+and Failed counters plus generation retirement through public RTC stats.
+
 ## Tests
 
 The bridge's own gates never reach in here. The crates are not members of
@@ -158,7 +185,7 @@ the bridge does. From `bridge/`:
 
     nice -n 10 cargo test --locked --manifest-path vendor/Cargo.toml --lib
 
-That runs webrtc's unit tests, the driver tests included, on the patched rtc.
+That runs webrtc's and rtc-ice's unit tests, the driver tests included, on the patched rtc.
 webrtc's integration tests (`tests/`) are left out: `play_save_disk` needs
 media files the published crate does not ship.
 
@@ -185,12 +212,15 @@ From the repo root, with the crates in the local registry (a `cargo fetch` in
     }
     V=$(mktemp -d)
     pristine webrtc $V/webrtc; pristine rtc $V/rtc
+    pristine rtc-ice $V/rtc-ice
     for p in webrtc-driver-drain webrtc-negotiated-first-message-test \
-        rtc-dtls-client-hello rtc-negotiated-first-message; do
+        rtc-dtls-client-hello rtc-negotiated-first-message \
+        rtc-ice-late-direct-checks rtc-late-direct-stats webrtc-late-direct-tests; do
       (cd $V && patch -p1 < "$OLDPWD/bridge/vendor/$p.patch")
     done
     diff -r -x target $V/webrtc bridge/vendor/webrtc
     diff -r -x target $V/rtc bridge/vendor/rtc
+    diff -r -x target $V/rtc-ice bridge/vendor/rtc-ice
 
 No output means each vendored tree is exactly the registry source plus its
 patches. To move to a new upstream version, copy the new crate over its
@@ -215,3 +245,14 @@ Both webrtc patches touch `src/peer_connection/driver.rs`. The test patch is
 the diff to the vendored file from the pristine crate with
 `webrtc-driver-drain.patch` applied; the drain patch is the diff from the
 pristine crate to that intermediate copy.
+
+The #372 patches touch different files from those earlier patches. Re-derive
+`rtc-ice-late-direct-checks.patch` against pristine `rtc-ice` for
+`src/agent/{agent_config.rs,agent_selector.rs,mod.rs,late_direct_test.rs}`;
+`rtc-late-direct-stats.patch` against pristine `rtc` for
+`src/peer_connection/{configuration/setting_engine.rs,internal.rs}` and
+`src/statistics/accumulator/mod.rs`; and `webrtc-late-direct-tests.patch` against
+pristine `webrtc` for `src/peer_connection/{mod.rs,late_direct_tests.rs}`. New test
+files use an empty source file in the comparison directory. Include each exact
+file in the diff, preserving the `a/<crate>/` and `b/<crate>/` paths so `patch -p1`
+can apply it.

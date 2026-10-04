@@ -68,6 +68,7 @@ where
                 .ice_check_interval
                 .unwrap_or(std::time::Duration::from_millis(0)),
             max_binding_requests: setting_engine.timeout.ice_max_binding_requests,
+            check_pending_direct_pairs: setting_engine.check_pending_direct_pairs,
             host_acceptance_min_wait: setting_engine.timeout.ice_host_acceptance_min_wait,
             srflx_acceptance_min_wait: setting_engine.timeout.ice_srflx_acceptance_min_wait,
             prflx_acceptance_min_wait: setting_engine.timeout.ice_prflx_acceptance_min_wait,
@@ -1320,38 +1321,30 @@ where
     /// This is called automatically by `get_stats()` to ensure ICE candidate pair
     /// statistics (RTT, requests/responses sent/received) are up to date.
     pub(super) fn update_ice_agent_stats(&mut self) {
-        if let Some((local, remote)) = self
+        let mut active_pairs = std::collections::HashSet::new();
+        for cp_stats in self
             .pipeline_context
             .ice_handler_context
             .ice_transport
             .agent
-            .get_selected_candidate_pair()
+            .get_candidate_pairs_stats()
         {
-            let pair_id = format!("RTCIceCandidatePair_{}_{}", local.id(), remote.id());
-
-            // Get candidate pair stats from the ice agent
-            for cp_stats in self
-                .pipeline_context
-                .ice_handler_context
-                .ice_transport
-                .agent
-                .get_candidate_pairs_stats()
-            {
-                let ice_pair_id = format!(
-                    "RTCIceCandidatePair_{}_{}",
-                    cp_stats.local_candidate_id, cp_stats.remote_candidate_id
-                );
-                if ice_pair_id == pair_id {
-                    // Sync STUN stats from ice agent to RTC accumulator
-                    self.pipeline_context.stats.update_ice_agent_stats(
-                        local.id(),
-                        remote.id(),
-                        &cp_stats,
-                    );
-                    break;
-                }
-            }
+            active_pairs.insert(format!(
+                "RTCIceCandidatePair_{}_{}",
+                cp_stats.local_candidate_id, cp_stats.remote_candidate_id
+            ));
+            // Include pending and failed alternatives: selection alone cannot
+            // show whether an address received any connectivity checks.
+            self.pipeline_context.stats.update_ice_agent_stats(
+                &cp_stats.local_candidate_id,
+                &cp_stats.remote_candidate_id,
+                &cp_stats,
+            );
         }
+        self.pipeline_context
+            .stats
+            .ice_candidate_pairs
+            .retain(|id, _| active_pairs.contains(id));
     }
 
     /// Update codec stats from transceivers to the stats accumulator.

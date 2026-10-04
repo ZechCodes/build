@@ -122,3 +122,4 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc
 [patch.crates-io]
 webrtc = { path = "vendor/webrtc" }
 rtc = { path = "vendor/rtc" }
+rtc-ice = { path = "vendor/rtc-ice" }

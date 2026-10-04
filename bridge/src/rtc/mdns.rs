@@ -384,11 +384,15 @@ fn arrival_index(message: &libc::msghdr) -> Option<u32> {
 
 #[cfg(unix)]
 fn interface_index(name: &str) -> u32 {
-    let Ok(name) = std::ffi::CString::new(name) else {
+    let Ok(name) = std::ffi::CString::new(interface_lookup_name(name)) else {
         return 0;
     };
     // SAFETY: name is a NUL-terminated OS interface name.
     unsafe { libc::if_nametoindex(name.as_ptr()) }
+}
+
+fn interface_lookup_name(name: &str) -> &str {
+    name.split_once(':').map_or(name, |(device, _)| device)
 }
 
 #[cfg(not(unix))]
@@ -524,6 +528,12 @@ fn eligible_interface(name: &str, address: Ipv4Addr, allowlist: Option<&[String]
         "zt",
         "cni-",
         "podman",
+        "tap",
+        "virbr",
+        "vmnet",
+        "vboxnet",
+        "lxcbr",
+        "lxdbr",
     ]
     .iter()
     .any(|prefix| lower.starts_with(prefix));
@@ -553,6 +563,7 @@ impl LanInterface {
         let host_bits = !mask;
         let host = u32::from(address) & host_bits;
         valid_netmask(self.netmask)
+            && address != self.address
             && u32::from(address) & mask == u32::from(self.address) & mask
             && (host_bits <= 1 || (host != 0 && host != host_bits))
     }
@@ -612,6 +623,7 @@ fn decoded_answer(name: &str, packet: &[u8], _: SocketAddr) -> Option<IpAddr> {
         let answer = cursor.answer()?;
         if answer.kind == 1
             && answer.class & 0x7fff == 1
+            && answer.ttl > 0
             && answer.name.eq_ignore_ascii_case(name.as_bytes())
         {
             if let Ok(octets) = <[u8; 4]>::try_from(answer.data) {
@@ -631,6 +643,7 @@ struct DnsAnswer<'a> {
     name: Vec<u8>,
     kind: u16,
     class: u16,
+    ttl: u32,
     data: &'a [u8],
 }
 
@@ -657,13 +670,14 @@ impl<'a> DnsCursor<'a> {
         let name = self.name()?;
         let kind = self.word()?;
         let class = self.word()?;
-        self.take(4)?; // TTL
+        let ttl = u32::from_be_bytes(self.take(4)?.try_into().ok()?);
         let length = usize::from(self.word()?);
         let data = self.take(length)?;
         Some(DnsAnswer {
             name,
             kind,
             class,
+            ttl,
             data,
         })
     }
@@ -752,7 +766,7 @@ fn validated_answer_for_platform(
     if require_arrival && arrival.is_none() {
         return Err(AnswerRejection::MissingArrival);
     }
-    if !usable_ipv4(address) || (arrival.is_none() && !local_ipv4(address)) {
+    if !usable_ipv4(address) || !local_ipv4(address) {
         return Err(AnswerRejection::NonLocalAddress);
     }
     let receiving = interfaces
@@ -761,6 +775,12 @@ fn validated_answer_for_platform(
         .collect::<Vec<_>>();
     if receiving.is_empty() {
         return Err(AnswerRejection::UnqueriedInterface);
+    }
+    if receiving
+        .iter()
+        .any(|interface| interface.address == address)
+    {
+        return Err(AnswerRejection::OffSubnet);
     }
     let on_lan = receiving.iter().any(|interface| {
         matches!(source.ip(), IpAddr::V4(source) if interface.contains(source) && interface.contains(address))
@@ -1004,7 +1024,7 @@ mod tests {
                 Some(1),
                 &interfaces
             ),
-            Err(AnswerRejection::OffSubnet)
+            Err(AnswerRejection::NonLocalAddress)
         );
         assert_eq!(
             validated_answer(
@@ -1078,7 +1098,100 @@ mod tests {
                 &public,
                 false
             ),
-            Ok(Some("8.8.8.8".parse().unwrap()))
+            Err(AnswerRejection::NonLocalAddress)
+        );
+    }
+
+    #[test]
+    fn public_addresses_are_rejected_with_kernel_arrival_metadata() {
+        let public = vec![interface("eth0", "8.8.8.10")];
+        assert_eq!(
+            validated_answer_for_platform(
+                NAME,
+                &response(NAME, "8.8.8.8"),
+                "8.8.8.50:5353".parse().unwrap(),
+                Some(1),
+                &public,
+                true
+            ),
+            Err(AnswerRejection::NonLocalAddress)
+        );
+    }
+
+    #[test]
+    fn the_receiving_interface_own_address_is_not_a_peer_address() {
+        let local = vec![interface("eth0", "192.168.1.10")];
+        assert_eq!(
+            validated_answer_for_platform(
+                NAME,
+                &response(NAME, "192.168.1.10"),
+                "192.168.1.50:5353".parse().unwrap(),
+                Some(1),
+                &local,
+                true
+            ),
+            Err(AnswerRejection::OffSubnet)
+        );
+        assert!(!local[0].contains(local[0].address));
+    }
+
+    #[test]
+    fn another_alias_cannot_make_the_receiving_device_own_addresses_into_peers() {
+        let interfaces = vec![
+            interface("eth0", "192.168.1.10"),
+            interface("eth0:1", "192.168.1.11"),
+        ];
+        let source = "192.168.1.50:5353".parse().unwrap();
+        for address in ["192.168.1.10", "192.168.1.11"] {
+            assert_eq!(
+                validated_answer_for_platform(
+                    NAME,
+                    &response(NAME, address),
+                    source,
+                    Some(1),
+                    &interfaces,
+                    true
+                ),
+                Err(AnswerRejection::OffSubnet),
+                "{address}"
+            );
+        }
+        assert_eq!(
+            validated_answer_for_platform(
+                NAME,
+                &response(NAME, "192.168.1.60"),
+                source,
+                Some(1),
+                &interfaces,
+                true
+            ),
+            Ok(Some("192.168.1.60".parse().unwrap()))
+        );
+    }
+
+    #[test]
+    fn interface_aliases_use_the_real_device_name_for_index_lookup() {
+        for (reported, device) in [
+            ("eth0:1", "eth0"),
+            ("en0:2", "en0"),
+            ("eth0", "eth0"),
+            ("br0", "br0"),
+        ] {
+            assert_eq!(interface_lookup_name(reported), device);
+        }
+    }
+
+    #[test]
+    fn virtual_lan_interfaces_are_skipped_but_physical_br0_remains() {
+        for name in ["tap0", "virbr0", "vmnet1", "vboxnet0", "lxcbr0", "lxdbr0"] {
+            assert!(
+                selected_interfaces(&reported(&[(name, "192.168.1.10:0")]), None).is_empty(),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            selected_interfaces(&reported(&[("br0", "192.168.1.10:0")]), None),
+            vec![interface("br0", "192.168.1.10")]
         );
     }
 
@@ -1302,6 +1415,25 @@ mod tests {
                 &interfaces
             ),
             Ok(Some("192.168.1.60".parse().unwrap()))
+        );
+    }
+
+    #[test]
+    fn ttl_zero_goodbye_records_do_not_resolve_and_later_live_a_records_do() {
+        let record = 12 + NAME.len() + 2;
+        let source = "192.168.1.50:5353".parse().unwrap();
+        let mut goodbye = response_records(&[(NAME, "192.168.1.60")]);
+        goodbye[record + 4..record + 8].fill(0);
+        let interfaces = vec![interface("eth0", "192.168.1.10")];
+        assert_eq!(
+            validated_answer_for_platform(NAME, &goodbye, source, Some(1), &interfaces, true),
+            Ok(None)
+        );
+        let mut mixed = response_records(&[(NAME, "192.168.1.60"), (NAME, "192.168.1.70")]);
+        mixed[record + 4..record + 8].fill(0);
+        assert_eq!(
+            validated_answer_for_platform(NAME, &mixed, source, Some(1), &interfaces, true),
+            Ok(Some("192.168.1.70".parse().unwrap()))
         );
     }
 

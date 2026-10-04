@@ -31,3 +31,12 @@ pending-pair checks through the test factory constructor: this negative
 control must fail on zero outbound late-host checks, while TURN still carries
 the session and the bridge reports successful mDNS resolution. No fixture
 timer replaces the SPA monitor or its 20-second settling period.
+
+From the repository root, run the deterministic namespace safety tests with:
+
+```sh
+nice -n 10 python3 -m unittest discover -s web/rtc-lan-upgrade -p 'test_*.py'
+```
+
+These tests mock UID mappings, sockets and firewall commands to verify that
+host namespace entry is rejected before any side effects.

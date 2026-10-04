@@ -1321,6 +1321,7 @@ where
     /// This is called automatically by `get_stats()` to ensure ICE candidate pair
     /// statistics (RTT, requests/responses sent/received) are up to date.
     pub(super) fn update_ice_agent_stats(&mut self) {
+        self.register_ice_remote_candidate_stats();
         let mut active_pairs = std::collections::HashSet::new();
         for cp_stats in self
             .pipeline_context
@@ -1345,6 +1346,30 @@ where
             .stats
             .ice_candidate_pairs
             .retain(|id, _| active_pairs.contains(id));
+    }
+
+    fn register_ice_remote_candidate_stats(&mut self) {
+        let (ufrag, _) = self.ice_transport().get_remote_user_credentials();
+        let candidates: Vec<_> = self
+            .ice_transport()
+            .agent
+            .get_remote_candidates()
+            .iter()
+            .map(|candidate| {
+                let candidate = RTCIceCandidate::from(candidate);
+                let id = format!("RTCRemoteIceCandidate_{}", candidate.id);
+                (id, self.candidate_to_accumulator(&candidate, ufrag, None))
+            })
+            .collect();
+        // SDP and peer-reflexive discovery can add directly to the ICE agent,
+        // bypassing add_ice_remote_candidate's statistics registration.
+        for (id, candidate) in candidates {
+            self.pipeline_context
+                .stats
+                .remote_candidates
+                .entry(id)
+                .or_insert(candidate);
+        }
     }
 
     /// Update codec stats from transceivers to the stats accumulator.

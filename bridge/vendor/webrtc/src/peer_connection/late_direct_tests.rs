@@ -235,3 +235,27 @@ fn rtc_stats_remove_previous_generation_pairs_on_restart() {
         "an earlier generation's success must not survive as current evidence"
     );
 }
+
+#[test]
+fn rtc_stats_register_the_actual_candidate_ids_received_inside_an_offer() {
+    let mut browser = core(false);
+    browser.create_data_channel("app", None).unwrap();
+    browser.add_local_candidate(candidate(HOST)).unwrap();
+    let offer = browser.create_offer(None).unwrap();
+    browser.set_local_description(offer.clone()).unwrap();
+    let mut bridge = core(false);
+    bridge.set_remote_description(offer).unwrap();
+    bridge.add_local_candidate(candidate(BRIDGE)).unwrap();
+    let answer = bridge.create_answer(None).unwrap();
+    bridge.set_local_description(answer).unwrap();
+    let now = Instant::now();
+    bridge.handle_timeout(now).unwrap();
+    let report = bridge.get_stats(now, StatsSelector::None);
+    let pair = report.candidate_pairs().next().unwrap();
+    assert_eq!(pair.requests_sent, 1);
+    let remote_id = format!("RTCRemoteIceCandidate_{}", pair.remote_candidate_id);
+    assert!(
+        matches!(report.get(&remote_id), Some(RTCStatsReportEntry::RemoteCandidate(remote)) if remote.address.as_deref() == Some("192.0.2.2")),
+        "the pair must reference metadata for the exact candidate the ICE agent received from SDP"
+    );
+}

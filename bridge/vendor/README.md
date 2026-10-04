@@ -164,7 +164,9 @@ restart still makes the direct pair carrying.
 
 `rtc-late-direct-stats.patch` carries the setting into `AgentConfig` and syncs
 all active pair counters, states and nomination flags into RTC stats, preserving
-the application byte counters. Earlier-generation pair accumulators are removed.
+the application byte counters. Candidate metadata is backfilled from the exact
+accepted ICE candidates, including candidates embedded in SDP and candidates
+discovered by checks. Earlier-generation pair accumulators are removed.
 Previously only the selected pair's counters were exposed, so a resolved host
 could not be distinguished from an address that actually received checks.
 
@@ -173,6 +175,8 @@ responses, selection and keepalive preservation, default/lite behavior and relay
 exclusion. `webrtc-late-direct-tests.patch` drives two real sans-I/O cores through
 TURN nomination before adding a host and verifies Waiting, InProgress, Succeeded
 and Failed counters plus generation retirement through public RTC stats.
+An SDP-only regression verifies that each checked pair references metadata with
+the actual accepted remote candidate ID.
 
 ## Tests
 

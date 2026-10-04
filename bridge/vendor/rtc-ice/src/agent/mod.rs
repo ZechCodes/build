@@ -712,6 +712,11 @@ impl Agent {
         &self.local_candidates
     }
 
+    /// Returns the remote candidates, including candidates received in SDP.
+    pub fn get_remote_candidates(&self) -> &[Candidate] {
+        &self.remote_candidates
+    }
+
     fn contact(&mut self, now: Instant) {
         // Consume any pending deferred-check request now that we are running one.
         // Reset before the early returns below so a failed/settled agent does not

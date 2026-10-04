@@ -1,4 +1,7 @@
-//! Previously validated LAN addresses are query destinations, never answers.
+//! Client-held bearer hints select previously validated query destinations.
+//! A hint is not an authenticated client identity. Possessing it can cause a
+//! probe or replace its remembered address after a validated resolution; the
+//! hint cannot supply an address or bypass fresh answer validation.
 
 use std::collections::VecDeque;
 use std::net::{IpAddr, Ipv4Addr};
@@ -16,6 +19,8 @@ struct ClientAddress {
     validated_at: Instant,
 }
 
+/// Bounded, process-memory cache keyed by a client-held bearer UUID.
+/// Remembered addresses are query destinations and never resolution answers.
 #[derive(Default)]
 pub(crate) struct LanAddressCache {
     clients: Mutex<VecDeque<ClientAddress>>,
@@ -29,10 +34,13 @@ impl LanAddressCache {
     pub(super) fn remembered(&self, token: uuid::Uuid) -> Option<Ipv4Addr> {
         let mut clients = self.clients.lock().ok()?;
         clients.retain(|client| client.validated_at.elapsed() < ADDRESS_LIFETIME);
-        clients
-            .iter()
-            .find(|client| client.token == token)
-            .map(|client| client.address)
+        let position = clients.iter().position(|client| client.token == token)?;
+        let client = clients.remove(position)?;
+        let address = client.address;
+        // Usage affects eviction order, while only a validated reply refreshes
+        // the address lifetime.
+        clients.push_back(client);
+        Some(address)
     }
 
     pub(super) fn remember_validated(&self, token: uuid::Uuid, addresses: &[IpAddr]) {
@@ -66,6 +74,40 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[tokio::test]
+    async fn looking_up_a_hint_refreshes_its_eviction_recency() {
+        let cache = LanAddressCache::new();
+        let hints: Vec<_> = (0..MAX_CLIENTS).map(|_| uuid::Uuid::new_v4()).collect();
+        for hint in &hints {
+            cache.remember_validated(*hint, &["192.168.1.50".parse().unwrap()]);
+        }
+        assert!(cache.remembered(hints[0]).is_some());
+        cache.remember_validated(uuid::Uuid::new_v4(), &["192.168.1.60".parse().unwrap()]);
+        assert!(
+            cache.remembered(hints[0]).is_some(),
+            "a recently queried hint remains cached"
+        );
+        assert!(
+            cache.remembered(hints[1]).is_none(),
+            "the least recently used hint is evicted"
+        );
+        assert_eq!(cache.clients.lock().unwrap().len(), MAX_CLIENTS);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn looking_up_a_hint_does_not_refresh_its_validation_lifetime() {
+        let cache = LanAddressCache::new();
+        let hint = uuid::Uuid::new_v4();
+        cache.remember_validated(hint, &["192.168.1.50".parse().unwrap()]);
+        tokio::time::advance(ADDRESS_LIFETIME - Duration::from_secs(1)).await;
+        assert!(cache.remembered(hint).is_some());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(
+            cache.remembered(hint).is_none(),
+            "lookup recency cannot extend validated address age"
+        );
+    }
 
     #[tokio::test(start_paused = true)]
     async fn clients_have_separate_addresses_that_expire_after_an_hour() {

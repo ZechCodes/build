@@ -76,7 +76,7 @@ export async function withLayoutPage(check, { width = 1180, height = 840, plugin
     // Serve real Vite-transformed modules through the driver, without an HTTP
     // proxy or retained APIResponse bodies. Host network notifications can
     // cancel Chromium's loopback module graph even when the server is healthy.
-    await page.route(`http://127.0.0.1:${port}/**`, async (route) => {
+    await page.context().route(`http://127.0.0.1:${port}/**`, async (route) => {
       if (route.request().resourceType() !== "script") return route.continue();
       let result;
       try {

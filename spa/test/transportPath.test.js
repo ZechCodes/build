@@ -21,6 +21,34 @@ const remote = (candidateType) => ({ id: "remote-1", type: "remote-candidate", c
 const pathOf = (entries) => classifyTransportPath(report(entries));
 
 describe("the path a connection is carrying on", () => {
+  it.each([
+    ["relay", "host", "direct"],
+    ["host", "relay", "turn"],
+  ])("uses the transport's current %s to %s selection when old nominated pairs remain", (oldType, selectedType, expected) => {
+    const entries = [
+      pair(), local(oldType), remote("host"),
+      pair({ id: "pair-2", localCandidateId: "local-2", remoteCandidateId: "remote-2" }),
+      { id: "local-2", type: "local-candidate", candidateType: selectedType },
+      { id: "remote-2", type: "remote-candidate", candidateType: "host" },
+      { id: "transport-1", type: "transport", selectedCandidatePairId: "pair-2" },
+    ];
+    expect(pathOf(entries)).toBe(expected);
+  });
+
+  it("uses nomination when the transport's selected pair is missing from the report", () => {
+    expect(pathOf([
+      pair(), local("relay"), remote("host"),
+      { id: "transport-1", type: "transport", selectedCandidatePairId: "missing" },
+    ])).toBe("turn");
+  });
+
+  it("finds a known selected pair after a transport whose selected pair is missing", () => {
+    expect(pathOf([
+      pair({ nominated: false }), local("host"), remote("host"),
+      { id: "transport-0", type: "transport", selectedCandidatePairId: "missing" },
+      { id: "transport-1", type: "transport", selectedCandidatePairId: "pair-1" },
+    ])).toBe("direct");
+  });
   it("is direct when both ends are on the machine itself", () => {
     expect(pathOf([pair(), local("host"), remote("host")])).toBe("direct");
   });

@@ -1129,7 +1129,7 @@ export function recentToggleHtml(recent, open, scope = "inbox") {
 function rerouteBranchHtml(projectId, branches) {
   const options = (branches || []).map((branch) => `<option value="${esc(branch)}"></option>`).join("");
   return `<div class="reroute-branch">
-    <input type="text" class="path" data-reroute-branch="${esc(projectId)}" list="reroute-branches"
+    <input type="text" class="path mini" data-reroute-branch="${esc(projectId)}" list="reroute-branches"
       placeholder="a new branch, named after what you said" aria-label="Branch" ${fieldTraits("identifier", "go")} />
     <datalist id="reroute-branches">${options}</datalist>
     <button class="btn mini primary" type="button" data-reroute-project="${esc(projectId)}" data-reroute-kind="branch">Dispatch</button>

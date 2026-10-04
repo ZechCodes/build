@@ -51,7 +51,7 @@ const device = { id: "select-device", name: "Laptop", status: "online", fingerpr
 const project = { id: "select-project", project_id: "select-project", name: "Build", path: "/code/Build", is_git: true, base_branch: "main", isolation_default: "worktree", isolation_effective: "worktree", isolation_available: { rift: true }, sources: [{ id: "source-web", name: "Website", path: "/code/website", is_git: true }] };
 const settings = { projects_dir: "/code", default_harness: "claude_adk", project_agent: { provider: "claude_adk", model: "claude-opus-4", effort: "high" }, agent_modes: { claude: "headless", codex: "tui" }, role_models: [{ model: "gpt-6", roles: ["implementer"], capability: "scoped" }], isolation: "worktree", isolation_available: { rift: true }, watch_tasks: true, workspace_idle_minutes: 15, workspace_reclaim_build_artifacts: false };
 const modules = {
-  app: "src/app.js", cache: "src/core/localCache.js", records: "src/core/settingsRecords.js",
+  app: "src/app.js", cache: "src/core/localCache.js", records: "src/core/settingsRecords.js", feed: "src/core/taskFeed.js",
   settings: "src/views/settings.js", panels: "src/views/devicePanels.js", contexts: "src/core/deviceContexts.js",
   defaults: "src/core/harnessDefaults.js", task: "src/core/trackerTaskRender.js", assignee: "src/core/trackerAssigneeControl.js",
   capture: "src/core/captureDecision.js", create: "src/core/createWork.js", sort: "src/core/diffSort.js",
@@ -74,7 +74,7 @@ async function seedSelectSurface({ name, theme, catalog, device, project, settin
   m.app.App.devices = [device];
   m.app.App.selectedDeviceId = device.id;
   const disposers = [];
-  window.__selectDispose = () => disposers.forEach((dispose) => dispose?.());
+  window.__selectDispose = async () => { for (const dispose of disposers) await dispose?.(); };
   window.__selectCalls = [];
   const callRpc = async (method, params = {}) => {
     window.__selectCalls.push({ method, params });
@@ -115,12 +115,14 @@ async function seedSelectSurface({ name, theme, catalog, device, project, settin
     root.innerHTML = '<div id="compose"></div>';
     m.compose.initCompose();
     m.compose.openCompose();
+    disposers.push(() => m.compose.closeCompose());
   }
   if (name === "workspace settings") {
     disposers.push(m.workspace.openWorkspaceSettings({ id: "workspace-1", name: "Select styling", workspaceKey: `${device.id}/workspace-1` }, { callRpc, catalog, deviceId: device.id }));
   }
   if (name === "project settings") {
     m.project.openProjectSettings(project.id, { callRpc, deviceId: device.id });
+    disposers.push(() => root.ownerDocument.querySelector("#pscancel")?.click());
   }
   if (name === "new project") {
     disposers.push(m.newRepo.openNewRepo(() => {}, { devices: [device, { ...device, id: "desktop", name: "Desktop" }], defaultDeviceId: device.id, callRpcFor: () => callRpc }));
@@ -139,10 +141,13 @@ async function seedSelectSurface({ name, theme, catalog, device, project, settin
   }
 }
 
-export async function mountSelectSurface(page, basePath, name, theme) {
+export async function mountSelectSurface(page, basePath, name, theme, { preserveDocument = false } = {}) {
   page.setDefaultTimeout(5000);
   if (name.endsWith("conversation")) {
-    await mountChatMenu(page, basePath, "phone", { theme, bigCounts: false, resetCapable: true });
+    await mountChatMenu(page, basePath, "phone", { theme, bigCounts: false, resetCapable: true }, { preserveDocument });
+    await page.evaluate(() => {
+      window.__selectDispose = () => { window.__menuRail.dispose(); window.__layoutModules.feed.stopFeed(); };
+    });
     if (name === "new conversation") await page.locator('[data-bubble="add"]').click();
     else {
       await page.locator(".rail-surface-menu .caret").click();
@@ -152,7 +157,7 @@ export async function mountSelectSurface(page, basePath, name, theme) {
     await settled(page);
     return;
   }
-  await mountLayout(page, '<div id="shell"><div id="view"><main id="root" class="surface"></main></div></div><div id="scrim" class="scrim"><div id="sheet" class="sheet"></div></div>', { basePath, styles: '#root{padding:16px;overflow:auto} #view{min-width:0}' });
+  await mountLayout(page, '<div id="shell"><div id="view"><main id="root" class="surface"></main></div></div><div id="scrim" class="scrim"><div id="sheet" class="sheet"></div></div>', { basePath, preserveDocument, styles: '#root{padding:16px;overflow:auto} #view{min-width:0}' });
   await page.route("**/api/devices", (route) => route.fulfill({ json: { devices: [device] } }));
   await page.route("**/app/downloads", (route) => route.fulfill({ status: 503, json: { detail: "Fixture downloads unavailable" } }));
   await loadSurfaceModules(page, basePath);

@@ -67,11 +67,6 @@
    that any later `display` beats, and a popover laid out as a flex column is a
    popover that is never hidden. */
 .fmenu-pop[hidden] { display:none; }
-.fmenu-search {
-  font:inherit; font-size:12px; color:var(--ink);
-  background:var(--panel2); border:1px solid var(--line2); border-radius:7px; padding:5px 8px;
-}
-.fmenu-search:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
 .fmenu-rows { list-style:none; margin:0; padding:0; max-height:46vh; overflow:auto; }
 /* The workspace an agent stands on, as the assignee picker groups them. */
 .fmenu-group {
@@ -122,13 +117,6 @@
   padding:12px; border-radius:11px;
   background:var(--panel2); border:1px solid var(--line2);
 }
-.task-compose-title {
-  font:inherit; font-size:14px; font-weight:550; color:var(--ink);
-  background:var(--panel); border:1px solid var(--line2); border-radius:8px;
-  padding:8px 10px;
-}
-.task-compose-title::placeholder { font-weight:400; color:var(--dim); }
-.task-compose-title:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
 /* The body box is the chat composer's, so the paperclip, the tray, the drop
    mask and the paste all look and behave the way they do in a conversation. */
 .task-compose-body { background:var(--panel); }
@@ -506,12 +494,7 @@
 .task-assignee .task-avatar .rail-harness-icon svg { width:14px; height:14px; }
 
 .task-composer { display:flex; flex-direction:column; gap:8px; }
-.task-composer textarea {
-  font:inherit; width:100%; resize:vertical;
-  background:var(--panel); color:var(--ink);
-  border:1px solid var(--line); border-radius:10px; padding:9px 11px;
-}
-.task-composer textarea:focus-visible { outline:2px solid var(--accent); outline-offset:-1px; }
+.task-composer textarea { width:100%; resize:vertical; }
 .task-composer-row { display:flex; justify-content:flex-end; }
 /* While the reader is typing, the box they are typing into is what the scroll
    holds still (#153). A comment pushed above it, and the screenshot in it
@@ -520,28 +503,19 @@
    everything else in the column steps out of the running. */
 .task-page-main:has(.task-composer :focus) > :not(.task-composer) { overflow-anchor:none; }
 
-/* The comment box that takes files (#57): the conversation's own composer,
-   which wears its frame on the FIELD and hangs the paperclip on a bar beneath
-   it. Restated at a specificity that beats both `.task-composer textarea`
-   above and `.composer textarea` in the base sheet, because those two are
-   equally specific and which of them wins should not depend on which file was
-   imported last. */
-.task-composer .task-comment-box textarea {
-  min-height:72px; resize:none;
-  border:1px solid var(--line); border-radius:11px;
-  padding:13px 14px; background:var(--bg);
-}
-.task-composer .task-comment-box textarea:focus-visible {
-  border-color:var(--accent); outline:none;
-}
+/* The comment box that takes files (#57) keeps the conversation composer
+   layout; its field paint lives in the shared text controls block. */
+.task-composer .task-comment-box textarea { min-height:72px; resize:none; }
 .task-comment-box .composer-bar { padding:4px 2px 0; }
 .task-composer .composer-tray:not([hidden]) { display:flex; flex-wrap:wrap; gap:6px; }
 
 /* Bound the sticky rail to its own scroll surface, which can be shorter than
    the viewport under the toolbar or inside a workspace tab. Long link lists
-   then scroll inside the rail and leave the Close action reachable. */
+   then scroll inside the rail and leave the Close action reachable. A pixel
+   below its last row accounts for integer scroll rounding of fractional field
+   heights, so the entire Close button remains inside the scroll viewport. */
 .task-rail { position:sticky; top:var(--pane-top); display:flex; flex-direction:column; gap:16px;
-  max-height:calc(100cqh - var(--pane-top) - var(--pane-bottom)); overflow-y:auto; }
+  max-height:calc(100cqh - var(--pane-top) - var(--pane-bottom)); overflow-y:auto; padding-bottom:1px; }
 .task-rail-section { display:flex; flex-direction:column; gap:6px; }
 .task-rail-action { display:flex; }
 .task-rail-action .btn { width:100%; }
@@ -551,11 +525,7 @@
 }
 .task-rail-section .sub { margin:0; font-size:11px; color:var(--dim); }
 .task-rail select { width:100%; }
-.task-rail input[type="text"] {
-  font:inherit; font-size:13px; width:100%;
-  background:var(--panel); color:var(--ink);
-  border:1px solid var(--line); border-radius:8px; padding:6px 9px;
-}
+.task-rail input[type="text"] { width:100%; }
 .task-assign-open { text-align:left; }
 .task-links { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:5px; }
 .task-link a { color:var(--accent); text-decoration:none; font-size:12px; }
@@ -566,11 +536,7 @@
 
 .task-assignee-control { display:flex; flex-direction:column; gap:4px; margin-top:4px; }
 .task-assignee-control select { width:100%; }
-.task-assignee-control input[type="text"] {
-  font:inherit; width:100%;
-  background:var(--panel); color:var(--ink);
-  border:1px solid var(--line); border-radius:8px; padding:7px 10px;
-}
+.task-assignee-control input[type="text"] { width:100%; }
 /* Assigning starts work. The reader is told which before they press. */
 .task-assignee-hint { margin:2px 0 6px; font-size:11px; color:var(--dim); min-height:1.2em; }
 /* And while the slow one runs, what is being waited on: cutting a checkout is
@@ -578,11 +544,7 @@
    reads as a hung one. */
 .task-assign-waiting { margin:6px 0 0; font-size:11px; color:var(--ink2); }
 
-.modal-task-new textarea {
-  font:inherit; width:100%; resize:vertical;
-  background:var(--panel); color:var(--ink);
-  border:1px solid var(--line); border-radius:8px; padding:8px 10px;
-}
+.modal-task-new textarea { width:100%; resize:vertical; }
 
 /* ---- the message a task was handed over in ----------------------------- */
 
@@ -622,7 +584,7 @@
 @media (max-width: 760px) {
   .task-page { grid-template-columns:minmax(0,1fr); gap:18px; }
   .task-page-head { margin-right:calc(0px - var(--pane-gutter)); padding-right:var(--pane-gutter); }
-  .task-rail { position:static; flex-direction:row; flex-wrap:wrap; gap:14px 20px;
+  .task-rail { position:static; padding-bottom:0; flex-direction:row; flex-wrap:wrap; gap:14px 20px;
     max-height:none; overflow-y:visible; }
   .task-rail-section { flex:1 1 150px; }
   .task-rail-action { flex:1 1 100%; }

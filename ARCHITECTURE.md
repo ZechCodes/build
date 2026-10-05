@@ -934,6 +934,108 @@ The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
   The browser's existing direct-pair monitor may then use its single optional
   ICE restart to select direct. Default behavior of the vendored library is
   unchanged unless its setting is enabled.
+- **Unresolved-host conntrack sweep**: the bridge enables the vendored
+  `SettingEngine` host-socket sweep; the library defaults to disabled. A valid
+  unresolved UUID `.local` UDP host candidate starts a 250 ms grace, racing
+  mDNS rather than waiting for discovery to fail. Scout and sweep packets also
+  require matching IPv4 server-reflexive addresses in the current operational
+  local and remote ICE candidate sets. Local evidence must still derive from a
+  current advertised live host socket; terminal stats and previous remote
+  generations cannot authorize work. This is a same-NAT plausibility check,
+  not proof of LAN membership or authentication. Missing evidence waits within
+  the existing 25-second lifetime, then skips with `nat-evidence-missing`;
+  unequal addresses yield `nat-address-mismatch` without values or packets.
+  Later accepted trickle can establish a match before expiry. Host and relay
+  addresses are not substituted for missing srflx evidence. On Linux/Tokio,
+  neighbor scouting resolves on-link addresses without charging unresolved ARP packets
+  to the ICE socket. Credential-free STUN Binding Indications then leave the
+  advertised host socket for freshly usable neighbors on its actual interface
+  subnet. `IP_PKTINFO` fixes the source/interface and `MSG_DONTROUTE` prevents
+  off-link routing. Only wholly
+  RFC 1918 or IPv4 link-local subnets with at most 1024 total addresses qualify;
+  the bridge's addresses, network and broadcast are excluded. A container
+  interface qualifies only when it owns the advertised host socket. Other
+  platforms/runtimes skip the sweep with a fixed reason.
+  Before each probe, Linux send-queue accounting reserves at least three
+  quarters of `SO_SNDBUF` for ordinary ICE, DTLS and SCTP writes. A probe yields
+  under pressure without advancing its destination; 200 packets/s is a ceiling,
+  not a required rate. Ordinary ICE writes keep their existing path. A bounded,
+  read-only snapshot identifies reachable, stale and delay neighbors on the
+  owning interface. Unknown destinations are scouted from at most five temporary
+  sockets across the process, bound to that interface address at ephemeral ports.
+  One zero byte to UDP discard port 9 causes ARP without credentials or session
+  data. Scout sockets also yield at the quarter-buffer watermark. A scout pass
+  orders addresses by distance to initially usable neighbors and the bridge's
+  address, with stable ties.
+  No new unresolved scout is admitted if observed incomplete neighbors plus
+  unobserved reservations would exceed `min(256, gc_thresh2 / 2)`. A separate
+  read-only `RTM_GETNEIGHTBL` guard admits no work at 75% of the actual global
+  ARP table's `gc_thresh3`, including failed entries and other network namespaces.
+  Closing a socket does not erase kernel neighbor state; numeric admission
+  accounting stays conservative until a fresh observation. Neighbor addresses
+  are used only for active work, without a persistent cache.
+  A process-wide owning-interface key and first successful scout-enqueue timestamp
+  reserve one scout pass per 60 seconds, including an in-progress or canceled
+  pass. Source aliases, peers, generations and candidate ports share that reservation; neither
+  completion nor restart renews it; known-neighbor-only work consumes no reservation.
+  Later work probes only freshly usable kernel neighbors and does not re-scout
+  unknown addresses inside the window. No
+  neighbor knowledge is retained across sessions by this reservation. The registry
+  holds at most 64 unexpired interface timestamps and skips new interfaces when
+  full; it never evicts a live reservation. A fully
+  sparse /22 pass produces about 3,000 ARP requests including default kernel
+  retries, at most once per interface per window (about 50/s averaged over 60 s).
+  Different-NAT sessions produce zero scout and sweep packets. This reduces
+  broadcast load at the cost of deferring new unknown addresses during cooldown.
+  Scout and real-probe traffic share a process-wide 200-packet/s ceiling;
+  kernel ARP retries are measured separately by the namespace fixture.
+  The driver accepts at most 32 distinct candidate ports and 32768 attempts per
+  generation, and permits one
+  repeat one second after a pass only while TURN still carries the connection.
+  Every plan expires 25 seconds after candidate arrival. A complete pass requires
+  subnet scouting and real-port probes to usable neighbors; a queued unresolved
+  packet is not proof of delivery. Resolution, direct
+  selection, credential changes and close cancel it and erase destination
+  state and close scout sockets. Expiry also erases destination state; numeric
+  upgrade eligibility and bounded local-subnet retirement markers survive so
+  a late candidate port cannot start another discovery pass in that generation.
+  Completed or expired unresolved work may still justify the existing optional
+  fresh-generation restart while current NAT evidence matches. Missing or
+  mismatched NAT evidence exposes zero eligibility even when historical probe
+  counters are positive.
+  A sparse subnet's tail may expire before a full pass, and direct selection
+  stops a pass immediately. Each 28-byte indication
+  has only a FINGERPRINT and a fresh random transaction ID, without credentials,
+  ufrags or session identifiers; it requests no reply. Outbound packets open
+  conntrack tuples so a browser's authenticated inbound STUN check can create
+  a peer-reflexive pair through an inbound UDP DROP rule. No guessed address
+  becomes an ICE candidate. Fixed-code `host-sweep` diagnostics report the
+  generation, status, attempted/sent counts, aggregate eligible unresolved
+  plans and whether a prflx pair followed, without addresses, ports or names
+  (`rtc.conntrackSweep`,
+  additive within wire 3.12.0).
+  Chromium 152 namespace measurements on a mostly-empty /22 completed scouting
+  in 15–24.4 seconds, depending on global neighbor-table pressure. An unknown phone
+  near a known neighbor received its first real-port probe 369 ms after the
+  fixture proved its absence (419 ms after candidate gathering) and carried
+  both encrypted pulls directly with zero
+  restarts. An unknown far-edge phone took 11.6–19.0 seconds in coverage controls
+  and 18.9 seconds in an initial production run. The final same-NAT run hit at
+  17.5 seconds; both production runs exceeded Chromium's roughly 15-second initial
+  check window. The existing single optional restart then
+  selected host/prflx for the same encrypted session. Kernel ARP and global
+  neighbor-table pressure make this timing variable; discovery must remain
+  within the unchanged 25-second plan lifetime. The measured incomplete-neighbor
+  peak was 256 and the advertised ICE socket's send occupancy stayed zero.
+  The final same-NAT far-edge run observed 3,058 ARP requests including kernel
+  retries, averaging 159/s over its active ARP interval with a maximum aligned
+  one-second bin of 256. Full-coverage controls averaged 136–224/s with maximum
+  aligned one-second bins of 250–252. The far-edge run's sampled
+  global ARP table peaked at 768 entries with `gc_thresh3=1024`, and the kernel's
+  table-overflow counter did not increase.
+  Retained FAILED entries can pause admission at the global occupancy guard even
+  after INCOMPLETE reaches zero; this accounts for the pressure-limited coverage
+  run's longer tail. The guard and lifetime are not relaxed to improve a benchmark.
 - **Paired LAN hint**: `rtc.offer` accepts optional `client_id` under
   `rtc.clientLanCache` (wire 3.12.0). The SPA sends it only after a greeting from
   that paired bridge advertised the capability. It uses `crypto.randomUUID`,
@@ -962,10 +1064,16 @@ The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
   Neither the hint nor the cached address enters logs, pushes or diagnostics.
 - **Candidate diagnostics**: `rtc.diagnostics` reports remote candidate type
   counts and discovery reasons without names, addresses or credentials. Actual
-  direct-check snapshots on ICE restart or close report each remote host by a
-  bounded ordinal with request/reply counters and successful-pair evidence;
+  direct-check snapshots on ICE restart or close report up to 64 tracked remote
+  host endpoints by a bounded ordinal with request/reply counters and successful-pair evidence;
   receiving a host candidate alone means checks pending, never a failed check.
-  Reports
+  ICE failure retains a stats-only terminal snapshot until valid restart or
+  close, so cleared operational candidates cannot erase earlier checks. A
+  peer-reflexive pair contributes evidence only when its remote IP and port
+  match an already tracked remote host; relayed pairs never count as direct.
+  Success records historical evidence in the generation, not current selection.
+  An unresolved sweep-discovered endpoint is reported by sweep and path
+  diagnostics without asserting a name-to-address mapping. Reports
   are coalesced by generation/reason; resolution evidence is also delivered when
   needed for an upgrade. Normal logs contain one discovery summary per generation,
   while query detail is debug-level. It uses an authenticated data channel
@@ -1409,10 +1517,15 @@ through the same device's rendezvous (`mintTerminalSession`), and it rides the
   then samples direct viability with a 5/10/20/40/60-second backoff, remaining
   at one minute while waiting for evidence. It permits one optional ICE restart
   for the peer link's entire lifetime when an alternate direct pair succeeds or
-  a browser mDNS name resolves for the current generation; recovery restarts do
-  not renew that optional budget. The bridge stops alternative checks after
-  nomination, so a newly resolved address requires fresh checks. That restart
-  holds relay candidates
+  a browser mDNS name resolves for the current generation. Eligible unresolved
+  host-sweep evidence can also spend that existing budget when fresh browser
+  checks are needed; skipped sweeps and absent browser host candidates cannot.
+  Recovery restarts do not renew the optional budget. Failed or ping-exhausted
+  browser pairs are not revived: every new generation starts the early sweep
+  against its current-generation candidate port. Chromium namespace measurements observed
+  unreplied host checks for about 15 seconds; Safari timing is inferred from
+  [WebKit/libwebrtc source](https://github.com/WebKit/WebKit/blob/main/Source/ThirdParty/libwebrtc/Source/webrtc/p2p/base/basic_ice_controller.cc#L271),
+  not measured on iOS. That restart holds relay candidates
   behind host candidates again and retains its rendezvous lease through gathering
   and delayed candidate signaling. A gathering timeout on a still-carried path
   reports pending because native ICE may still nominate later. After the attempt

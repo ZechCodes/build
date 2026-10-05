@@ -21,6 +21,21 @@ Wire 3.12.0.
   absent browser host candidates from candidates lost during signaling.
   Path diagnostics prefer the current transport selection when browsers retain
   old nominated relay pairs after an upgrade.
+- Unresolved browser mDNS host candidates can now open a direct LAN path
+  through inbound UDP DROP rules. An early, paced, credential-free conntrack
+  sweep uses the advertised host socket on its private on-link IPv4 subnet,
+  capped at 1024 addresses. Temporary neighbor scouts discover live addresses
+  separately, with shared pacing and neighbor-table pressure bounds; the ICE
+  socket probes resolved neighbors and keeps send-buffer headroom for ordinary
+  traffic. Matching IPv4 server-reflexive addresses gate all probes, and one
+  process-wide discovery pass per interface per 60 seconds limits repeated LAN
+  broadcasts across sessions and recovery generations. It learns endpoints only
+  from authenticated STUN checks. Generation diagnostics report sweep counts and skip reasons without
+  addresses; late cases use the existing single optional upgrade restart
+  (`rtc.conntrackSweep`, #374).
+- ICE failure preserves historical direct-check evidence, including successful
+  peer-reflexive pairs matching tracked remote host endpoints. Session summaries count accepted
+  ICE credential changes instead of reconnections (#374).
 - LAN discovery uses QM queries from port 5353. A capability-gated client-held
   UUIDv4 bearer hint (122 random bits), stored per paired bridge and sent inside
   encrypted offers, keys a memory-only 64-entry LRU cache with one-hour expiry.

@@ -1,4 +1,5 @@
 use super::*;
+use crate::attributes::{control::AttrControlling, priority::PriorityAttr};
 use crate::candidate::unmarshal_candidate;
 use sansio::Protocol;
 use stun::fingerprint::FINGERPRINT;
@@ -194,4 +195,190 @@ fn late_checks_skip_pairs_with_a_relay_at_either_end() {
     let stats = agent.get_candidate_pairs_stats();
     assert_eq!(stats[1].requests_sent, 0);
     assert_eq!(stats[3].requests_sent, 0);
+}
+
+#[test]
+fn failed_checking_agent_keeps_unsampled_checks_without_operational_candidates() {
+    let mut agent = Agent::new(Arc::new(AgentConfig::default())).unwrap();
+    agent
+        .add_local_candidate(unmarshal_candidate(LOCAL).unwrap())
+        .unwrap();
+    agent
+        .add_remote_candidate(unmarshal_candidate(HOST).unwrap())
+        .unwrap();
+    agent
+        .start_connectivity_checks(false, "remote-ufrag".into(), REMOTE_PASSWORD.into())
+        .unwrap();
+    let now = Instant::now();
+    agent.handle_timeout(now).unwrap();
+    agent
+        .handle_timeout(
+            now + agent.disconnected_timeout + agent.failed_timeout + Duration::from_secs(1),
+        )
+        .unwrap();
+    assert_eq!(agent.state(), ConnectionState::Failed);
+    assert!(agent.get_local_candidates().is_empty());
+    assert!(agent.get_remote_candidates().is_empty());
+    assert!(agent.candidate_pairs.is_empty());
+    assert!(agent.get_selected_candidate_pair().is_none());
+    assert_eq!(agent.poll_timeout(), None);
+
+    let pairs = agent.get_candidate_pairs_stats();
+    assert_eq!(
+        pairs.len(),
+        1,
+        "the first stats query after failure retains the checks actually sent"
+    );
+    assert_eq!(pairs[0].requests_sent, 1);
+    assert_eq!(pairs[0].responses_received, 0);
+    let remotes = agent.get_remote_candidates_stats();
+    assert_eq!(remotes.len(), 1);
+    assert_eq!(remotes[0].id, pairs[0].remote_candidate_id);
+    assert_eq!(remotes[0].candidate_type, CandidateType::Host);
+    assert_eq!(
+        agent.get_candidate_pairs_stats()[0].requests_sent,
+        1,
+        "repeated sampling cannot spend or duplicate checks"
+    );
+}
+
+#[test]
+fn failed_connected_agent_keeps_success_and_clears_it_only_on_valid_restart_or_close() {
+    let mut agent = selected_relay(true, false, false);
+    agent
+        .add_remote_candidate(unmarshal_candidate(HOST).unwrap())
+        .unwrap();
+    let writes = tick(&mut agent);
+    let check = host_writes(&writes)[0];
+    let mut request = Message::new();
+    request.raw = check.message.to_vec();
+    request.decode().unwrap();
+    let mut response = Message::new();
+    response
+        .build(&[
+            Box::new(BINDING_SUCCESS),
+            Box::new(request.transaction_id),
+            Box::new(MessageIntegrity::new_short_term_integrity(
+                REMOTE_PASSWORD.into(),
+            )),
+            Box::new(FINGERPRINT),
+        ])
+        .unwrap();
+    agent
+        .handle_read(TaggedBytesMut {
+            now: Instant::now(),
+            transport: check.transport,
+            message: response.raw.as_slice().into(),
+        })
+        .unwrap();
+
+    agent.remote_candidates[0]
+        .set_last_received(Instant::now() - agent.disconnected_timeout - Duration::from_millis(1));
+    tick(&mut agent);
+    assert_eq!(agent.state(), ConnectionState::Disconnected);
+    agent.remote_candidates[0].set_last_received(
+        Instant::now() - agent.disconnected_timeout - agent.failed_timeout - Duration::from_secs(1),
+    );
+    tick(&mut agent);
+    assert_eq!(agent.state(), ConnectionState::Failed);
+    let pairs = agent.get_candidate_pairs_stats();
+    assert_eq!(
+        pairs.len(),
+        2,
+        "failure retains one stats snapshot before cleaning up active vectors"
+    );
+    assert_eq!(pairs[1].requests_sent, 1);
+    assert_eq!(pairs[1].responses_received, 1);
+    assert_eq!(pairs[1].state, CandidatePairState::Succeeded);
+
+    assert!(agent.restart("x".into(), "short".into(), false).is_err());
+    assert_eq!(
+        agent.get_candidate_pairs_stats()[1].responses_received,
+        1,
+        "rejected restart credentials must not erase the final snapshot"
+    );
+    assert!(
+        agent
+            .restart("valid-fragment".into(), "short".into(), false)
+            .is_err()
+    );
+    assert_eq!(
+        agent.get_remote_candidates_stats().len(),
+        2,
+        "password validation also precedes snapshot retirement"
+    );
+    agent
+        .restart("next-generation".into(), REMOTE_PASSWORD.into(), false)
+        .unwrap();
+    assert!(agent.get_candidate_pairs_stats().is_empty());
+    assert!(agent.get_remote_candidates_stats().is_empty());
+    agent
+        .add_local_candidate(unmarshal_candidate(LOCAL).unwrap())
+        .unwrap();
+    agent
+        .add_remote_candidate(unmarshal_candidate(HOST).unwrap())
+        .unwrap();
+    agent
+        .start_connectivity_checks(false, "new-remote-ufrag".into(), REMOTE_PASSWORD.into())
+        .unwrap();
+    agent.update_connection_state(ConnectionState::Failed);
+    assert_eq!(
+        agent.get_candidate_pairs_stats()[0].requests_sent,
+        0,
+        "the new generation cannot inherit an earlier request"
+    );
+    agent.close().unwrap();
+    assert!(agent.get_candidate_pairs_stats().is_empty());
+    assert!(agent.get_remote_candidates_stats().is_empty());
+}
+
+#[test]
+fn failed_agent_keeps_metadata_discovered_from_an_inbound_check() {
+    let mut agent = Agent::new(Arc::new(AgentConfig::default())).unwrap();
+    agent
+        .add_local_candidate(unmarshal_candidate(LOCAL).unwrap())
+        .unwrap();
+    agent
+        .start_connectivity_checks(false, "remote-ufrag".into(), REMOTE_PASSWORD.into())
+        .unwrap();
+    let credentials = agent.get_local_credentials();
+    let mut request = Message::new();
+    request
+        .build(&[
+            Box::new(BINDING_REQUEST),
+            Box::new(TransactionId::new()),
+            Box::new(Username::new(
+                ATTR_USERNAME,
+                format!("{}:remote-ufrag", credentials.ufrag),
+            )),
+            Box::new(AttrControlling(0)),
+            Box::new(PriorityAttr(2130706431)),
+            Box::new(MessageIntegrity::new_short_term_integrity(
+                credentials.pwd.clone(),
+            )),
+            Box::new(FINGERPRINT),
+        ])
+        .unwrap();
+    agent
+        .handle_read(TaggedBytesMut {
+            now: Instant::now(),
+            transport: TransportContext {
+                local_addr: "192.0.2.1:5000".parse().unwrap(),
+                peer_addr: "192.0.2.2:5001".parse().unwrap(),
+                ..Default::default()
+            },
+            message: request.raw.as_slice().into(),
+        })
+        .unwrap();
+    agent.update_connection_state(ConnectionState::Failed);
+    let pairs = agent.get_candidate_pairs_stats();
+    assert_eq!(pairs.len(), 1);
+    assert_eq!(pairs[0].requests_received, 1);
+    assert_eq!(pairs[0].requests_sent, 1);
+    let metadata = agent.get_remote_candidates_stats();
+    assert_eq!(metadata.len(), 1);
+    assert_eq!(metadata[0].id, pairs[0].remote_candidate_id);
+    assert_eq!(metadata[0].candidate_type, CandidateType::PeerReflexive);
+    assert_eq!(metadata[0].ip, "192.0.2.2");
+    assert!(agent.get_remote_candidates().is_empty());
 }

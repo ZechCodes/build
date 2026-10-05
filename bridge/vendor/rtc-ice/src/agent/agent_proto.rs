@@ -159,6 +159,7 @@ impl sansio::Protocol<TaggedBytesMut, (), ()> for Agent {
     }
 
     fn close(&mut self) -> std::result::Result<(), Self::Error> {
+        self.failed_stats = None;
         self.set_selected_pair(None);
         self.delete_all_candidates(false);
         self.update_connection_state(ConnectionState::Closed);

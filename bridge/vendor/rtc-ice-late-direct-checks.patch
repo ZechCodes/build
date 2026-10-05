@@ -40,7 +40,28 @@
  
  /// Configuration for a new [`Agent`]: servers, timeouts and role.
  pub mod agent_config;
-@@ -142,6 +144,7 @@
+@@ -116,6 +118,12 @@
+     RoleChange(bool),
+ }
+ 
++/// Final evidence for the failed generation, separate from its released transports.
++struct FailedStats {
++    remote_candidates: Vec<Candidate>,
++    pairs: Vec<agent_stats::CandidatePairStats>,
++}
++
+ /// Represents the ICE agent.
+ pub struct Agent {
+     pub(crate) tie_breaker: u64,
+@@ -133,6 +141,7 @@
+     pub(crate) local_candidates: Vec<Candidate>,
+     pub(crate) remote_candidates: Vec<Candidate>,
+     pub(crate) candidate_pairs: Vec<CandidatePair>,
++    failed_stats: Option<FailedStats>,
+     pub(crate) nominated_pair: Option<usize>,
+     pub(crate) selected_pair: Option<usize>,
+ 
+@@ -142,6 +151,7 @@
      // the following variables won't be changed after init_with_defaults()
      pub(crate) insecure_skip_verify: bool,
      pub(crate) max_binding_requests: u16,
@@ -48,7 +69,13 @@
      pub(crate) host_acceptance_min_wait: Duration,
      pub(crate) srflx_acceptance_min_wait: Duration,
      pub(crate) prflx_acceptance_min_wait: Duration,
-@@ -201,6 +204,7 @@
+@@ -196,11 +206,13 @@
+             local_candidates: vec![],
+             remote_candidates: vec![],
+             candidate_pairs: vec![],
++            failed_stats: None,
+             nominated_pair: None,
+             selected_pair: None,
              pending_binding_requests: vec![],
              insecure_skip_verify: false,
              max_binding_requests: 0,
@@ -56,7 +83,7 @@
              host_acceptance_min_wait: Default::default(),
              srflx_acceptance_min_wait: Default::default(),
              prflx_acceptance_min_wait: Default::default(),
-@@ -275,6 +279,7 @@
+@@ -275,12 +287,14 @@
              tie_breaker: rand::random::<u64>(),
              is_controlling: config.is_controlling,
              lite: config.lite,
@@ -64,19 +91,58 @@
  
              start_time: Instant::now(),
  
-@@ -707,6 +712,11 @@
-         &self.local_candidates
-     }
+             nominated_pair: None,
+             selected_pair: None,
+             candidate_pairs: vec![],
++            failed_stats: None,
  
+             connection_state: ConnectionState::New,
+ 
+@@ -680,6 +694,8 @@
+             return Err(Error::ErrLocalPwdInsufficientBits);
+         }
+ 
++        self.failed_stats = None;
++
+         // Clear all agent needed to take back to fresh state
+         self.ufrag_pwd.local_credentials.ufrag = ufrag;
+         self.ufrag_pwd.local_credentials.pwd = pwd;
+@@ -705,6 +721,21 @@
+     /// Returns the local candidates.
+     pub fn get_local_candidates(&self) -> &[Candidate] {
+         &self.local_candidates
++    }
++
 +    /// Returns the remote candidates, including candidates received in SDP.
 +    pub fn get_remote_candidates(&self) -> &[Candidate] {
 +        &self.remote_candidates
 +    }
 +
++    /// Remote candidate metadata for current-generation statistics.
++    ///
++    /// After failure this reads the final snapshot, while operational candidate
++    /// lists remain empty. A successful restart or close retires the snapshot.
++    pub fn get_remote_candidates_for_stats(&self) -> &[Candidate] {
++        self.failed_stats
++            .as_ref()
++            .map_or(&self.remote_candidates, |stats| &stats.remote_candidates)
+     }
+ 
      fn contact(&mut self, now: Instant) {
-         // Consume any pending deferred-check request now that we are running one.
-         // Reset before the early returns below so a failed/settled agent does not
-@@ -788,6 +798,16 @@
+@@ -747,6 +778,12 @@
+         if self.connection_state != new_state {
+             // Connection has gone to failed, release all gathered candidates
+             if new_state == ConnectionState::Failed {
++                if self.failed_stats.is_none() {
++                    self.failed_stats = Some(FailedStats {
++                        remote_candidates: self.remote_candidates.clone(),
++                        pairs: self.get_candidate_pairs_stats(),
++                    });
++                }
+                 self.set_selected_pair(None);
+                 self.delete_all_candidates(false);
+             }
+@@ -788,6 +825,16 @@
      }
  
      pub(crate) fn ping_all_candidates(&mut self) {
@@ -93,7 +159,7 @@
          let mut pairs: Vec<(usize, usize)> = vec![];
  
          let name = self.get_name().to_string();
-@@ -798,6 +818,17 @@
+@@ -798,6 +845,17 @@
              );
          }
          for p in &mut self.candidate_pairs {
@@ -111,10 +177,53 @@
              if p.state == CandidatePairState::Waiting {
                  p.state = CandidatePairState::InProgress;
              } else if p.state != CandidatePairState::InProgress {
+--- a/rtc-ice/src/agent/agent_proto.rs
++++ b/rtc-ice/src/agent/agent_proto.rs
+@@ -159,6 +159,7 @@
+     }
+ 
+     fn close(&mut self) -> std::result::Result<(), Self::Error> {
++        self.failed_stats = None;
+         self.set_selected_pair(None);
+         self.delete_all_candidates(false);
+         self.update_connection_state(ConnectionState::Closed);
+--- a/rtc-ice/src/agent/agent_stats.rs
++++ b/rtc-ice/src/agent/agent_stats.rs
+@@ -5,6 +5,7 @@
+ use crate::network_type::NetworkType;
+ 
+ /// Contains ICE candidate pair statistics.
++#[derive(Clone)]
+ pub struct CandidatePairStats {
+     /// The timestamp associated with this struct.
+     /// When this snapshot was taken.
+@@ -214,6 +215,9 @@
+ impl Agent {
+     /// Returns a list of candidate pair stats.
+     pub fn get_candidate_pairs_stats(&self) -> Vec<CandidatePairStats> {
++        if let Some(stats) = &self.failed_stats {
++            return stats.pairs.clone();
++        }
+         let mut res = Vec::with_capacity(self.candidate_pairs.len());
+         for cp in &self.candidate_pairs {
+             let stat = CandidatePairStats {
+@@ -262,8 +266,9 @@
+ 
+     /// Returns a list of remote candidates stats.
+     pub fn get_remote_candidates_stats(&self) -> Vec<CandidateStats> {
+-        let mut res = Vec::with_capacity(self.remote_candidates.len());
+-        for c in &self.remote_candidates {
++        let candidates = self.get_remote_candidates_for_stats();
++        let mut res = Vec::with_capacity(candidates.len());
++        for c in candidates {
+             let stat = CandidateStats {
+                 timestamp: Instant::now(),
+                 id: c.id().to_string(),
 --- /dev/null
 +++ b/rtc-ice/src/agent/late_direct_test.rs
-@@ -0,0 +1,197 @@
+@@ -0,0 +1,384 @@
 +use super::*;
++use crate::attributes::{control::AttrControlling, priority::PriorityAttr};
 +use crate::candidate::unmarshal_candidate;
 +use sansio::Protocol;
 +use stun::fingerprint::FINGERPRINT;
@@ -310,4 +419,190 @@
 +    let stats = agent.get_candidate_pairs_stats();
 +    assert_eq!(stats[1].requests_sent, 0);
 +    assert_eq!(stats[3].requests_sent, 0);
++}
++
++#[test]
++fn failed_checking_agent_keeps_unsampled_checks_without_operational_candidates() {
++    let mut agent = Agent::new(Arc::new(AgentConfig::default())).unwrap();
++    agent
++        .add_local_candidate(unmarshal_candidate(LOCAL).unwrap())
++        .unwrap();
++    agent
++        .add_remote_candidate(unmarshal_candidate(HOST).unwrap())
++        .unwrap();
++    agent
++        .start_connectivity_checks(false, "remote-ufrag".into(), REMOTE_PASSWORD.into())
++        .unwrap();
++    let now = Instant::now();
++    agent.handle_timeout(now).unwrap();
++    agent
++        .handle_timeout(
++            now + agent.disconnected_timeout + agent.failed_timeout + Duration::from_secs(1),
++        )
++        .unwrap();
++    assert_eq!(agent.state(), ConnectionState::Failed);
++    assert!(agent.get_local_candidates().is_empty());
++    assert!(agent.get_remote_candidates().is_empty());
++    assert!(agent.candidate_pairs.is_empty());
++    assert!(agent.get_selected_candidate_pair().is_none());
++    assert_eq!(agent.poll_timeout(), None);
++
++    let pairs = agent.get_candidate_pairs_stats();
++    assert_eq!(
++        pairs.len(),
++        1,
++        "the first stats query after failure retains the checks actually sent"
++    );
++    assert_eq!(pairs[0].requests_sent, 1);
++    assert_eq!(pairs[0].responses_received, 0);
++    let remotes = agent.get_remote_candidates_stats();
++    assert_eq!(remotes.len(), 1);
++    assert_eq!(remotes[0].id, pairs[0].remote_candidate_id);
++    assert_eq!(remotes[0].candidate_type, CandidateType::Host);
++    assert_eq!(
++        agent.get_candidate_pairs_stats()[0].requests_sent,
++        1,
++        "repeated sampling cannot spend or duplicate checks"
++    );
++}
++
++#[test]
++fn failed_connected_agent_keeps_success_and_clears_it_only_on_valid_restart_or_close() {
++    let mut agent = selected_relay(true, false, false);
++    agent
++        .add_remote_candidate(unmarshal_candidate(HOST).unwrap())
++        .unwrap();
++    let writes = tick(&mut agent);
++    let check = host_writes(&writes)[0];
++    let mut request = Message::new();
++    request.raw = check.message.to_vec();
++    request.decode().unwrap();
++    let mut response = Message::new();
++    response
++        .build(&[
++            Box::new(BINDING_SUCCESS),
++            Box::new(request.transaction_id),
++            Box::new(MessageIntegrity::new_short_term_integrity(
++                REMOTE_PASSWORD.into(),
++            )),
++            Box::new(FINGERPRINT),
++        ])
++        .unwrap();
++    agent
++        .handle_read(TaggedBytesMut {
++            now: Instant::now(),
++            transport: check.transport,
++            message: response.raw.as_slice().into(),
++        })
++        .unwrap();
++
++    agent.remote_candidates[0]
++        .set_last_received(Instant::now() - agent.disconnected_timeout - Duration::from_millis(1));
++    tick(&mut agent);
++    assert_eq!(agent.state(), ConnectionState::Disconnected);
++    agent.remote_candidates[0].set_last_received(
++        Instant::now() - agent.disconnected_timeout - agent.failed_timeout - Duration::from_secs(1),
++    );
++    tick(&mut agent);
++    assert_eq!(agent.state(), ConnectionState::Failed);
++    let pairs = agent.get_candidate_pairs_stats();
++    assert_eq!(
++        pairs.len(),
++        2,
++        "failure retains one stats snapshot before cleaning up active vectors"
++    );
++    assert_eq!(pairs[1].requests_sent, 1);
++    assert_eq!(pairs[1].responses_received, 1);
++    assert_eq!(pairs[1].state, CandidatePairState::Succeeded);
++
++    assert!(agent.restart("x".into(), "short".into(), false).is_err());
++    assert_eq!(
++        agent.get_candidate_pairs_stats()[1].responses_received,
++        1,
++        "rejected restart credentials must not erase the final snapshot"
++    );
++    assert!(
++        agent
++            .restart("valid-fragment".into(), "short".into(), false)
++            .is_err()
++    );
++    assert_eq!(
++        agent.get_remote_candidates_stats().len(),
++        2,
++        "password validation also precedes snapshot retirement"
++    );
++    agent
++        .restart("next-generation".into(), REMOTE_PASSWORD.into(), false)
++        .unwrap();
++    assert!(agent.get_candidate_pairs_stats().is_empty());
++    assert!(agent.get_remote_candidates_stats().is_empty());
++    agent
++        .add_local_candidate(unmarshal_candidate(LOCAL).unwrap())
++        .unwrap();
++    agent
++        .add_remote_candidate(unmarshal_candidate(HOST).unwrap())
++        .unwrap();
++    agent
++        .start_connectivity_checks(false, "new-remote-ufrag".into(), REMOTE_PASSWORD.into())
++        .unwrap();
++    agent.update_connection_state(ConnectionState::Failed);
++    assert_eq!(
++        agent.get_candidate_pairs_stats()[0].requests_sent,
++        0,
++        "the new generation cannot inherit an earlier request"
++    );
++    agent.close().unwrap();
++    assert!(agent.get_candidate_pairs_stats().is_empty());
++    assert!(agent.get_remote_candidates_stats().is_empty());
++}
++
++#[test]
++fn failed_agent_keeps_metadata_discovered_from_an_inbound_check() {
++    let mut agent = Agent::new(Arc::new(AgentConfig::default())).unwrap();
++    agent
++        .add_local_candidate(unmarshal_candidate(LOCAL).unwrap())
++        .unwrap();
++    agent
++        .start_connectivity_checks(false, "remote-ufrag".into(), REMOTE_PASSWORD.into())
++        .unwrap();
++    let credentials = agent.get_local_credentials();
++    let mut request = Message::new();
++    request
++        .build(&[
++            Box::new(BINDING_REQUEST),
++            Box::new(TransactionId::new()),
++            Box::new(Username::new(
++                ATTR_USERNAME,
++                format!("{}:remote-ufrag", credentials.ufrag),
++            )),
++            Box::new(AttrControlling(0)),
++            Box::new(PriorityAttr(2130706431)),
++            Box::new(MessageIntegrity::new_short_term_integrity(
++                credentials.pwd.clone(),
++            )),
++            Box::new(FINGERPRINT),
++        ])
++        .unwrap();
++    agent
++        .handle_read(TaggedBytesMut {
++            now: Instant::now(),
++            transport: TransportContext {
++                local_addr: "192.0.2.1:5000".parse().unwrap(),
++                peer_addr: "192.0.2.2:5001".parse().unwrap(),
++                ..Default::default()
++            },
++            message: request.raw.as_slice().into(),
++        })
++        .unwrap();
++    agent.update_connection_state(ConnectionState::Failed);
++    let pairs = agent.get_candidate_pairs_stats();
++    assert_eq!(pairs.len(), 1);
++    assert_eq!(pairs[0].requests_received, 1);
++    assert_eq!(pairs[0].requests_sent, 1);
++    let metadata = agent.get_remote_candidates_stats();
++    assert_eq!(metadata.len(), 1);
++    assert_eq!(metadata[0].id, pairs[0].remote_candidate_id);
++    assert_eq!(metadata[0].candidate_type, CandidateType::PeerReflexive);
++    assert_eq!(metadata[0].ip, "192.0.2.2");
++    assert!(agent.get_remote_candidates().is_empty());
 +}

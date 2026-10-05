@@ -118,6 +118,12 @@ pub enum Event {
     RoleChange(bool),
 }
 
+/// Final evidence for the failed generation, separate from its released transports.
+struct FailedStats {
+    remote_candidates: Vec<Candidate>,
+    pairs: Vec<agent_stats::CandidatePairStats>,
+}
+
 /// Represents the ICE agent.
 pub struct Agent {
     pub(crate) tie_breaker: u64,
@@ -135,6 +141,7 @@ pub struct Agent {
     pub(crate) local_candidates: Vec<Candidate>,
     pub(crate) remote_candidates: Vec<Candidate>,
     pub(crate) candidate_pairs: Vec<CandidatePair>,
+    failed_stats: Option<FailedStats>,
     pub(crate) nominated_pair: Option<usize>,
     pub(crate) selected_pair: Option<usize>,
 
@@ -199,6 +206,7 @@ impl Default for Agent {
             local_candidates: vec![],
             remote_candidates: vec![],
             candidate_pairs: vec![],
+            failed_stats: None,
             nominated_pair: None,
             selected_pair: None,
             pending_binding_requests: vec![],
@@ -286,6 +294,7 @@ impl Agent {
             nominated_pair: None,
             selected_pair: None,
             candidate_pairs: vec![],
+            failed_stats: None,
 
             connection_state: ConnectionState::New,
 
@@ -685,6 +694,8 @@ impl Agent {
             return Err(Error::ErrLocalPwdInsufficientBits);
         }
 
+        self.failed_stats = None;
+
         // Clear all agent needed to take back to fresh state
         self.ufrag_pwd.local_credentials.ufrag = ufrag;
         self.ufrag_pwd.local_credentials.pwd = pwd;
@@ -715,6 +726,16 @@ impl Agent {
     /// Returns the remote candidates, including candidates received in SDP.
     pub fn get_remote_candidates(&self) -> &[Candidate] {
         &self.remote_candidates
+    }
+
+    /// Remote candidate metadata for current-generation statistics.
+    ///
+    /// After failure this reads the final snapshot, while operational candidate
+    /// lists remain empty. A successful restart or close retires the snapshot.
+    pub fn get_remote_candidates_for_stats(&self) -> &[Candidate] {
+        self.failed_stats
+            .as_ref()
+            .map_or(&self.remote_candidates, |stats| &stats.remote_candidates)
     }
 
     fn contact(&mut self, now: Instant) {
@@ -757,6 +778,12 @@ impl Agent {
         if self.connection_state != new_state {
             // Connection has gone to failed, release all gathered candidates
             if new_state == ConnectionState::Failed {
+                if self.failed_stats.is_none() {
+                    self.failed_stats = Some(FailedStats {
+                        remote_candidates: self.remote_candidates.clone(),
+                        pairs: self.get_candidate_pairs_stats(),
+                    });
+                }
                 self.set_selected_pair(None);
                 self.delete_all_candidates(false);
             }

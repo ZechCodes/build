@@ -1,4 +1,4 @@
-# Vendored crates: webrtc, rtc and rtc-ice 0.20.4, patched (#166, #179, #298, #372)
+# Vendored crates: webrtc, rtc and rtc-ice 0.20.4, patched (#166, #179, #298, #372, #374)
 
 The bridge builds `webrtc`, `rtc` and `rtc-ice` from here instead of crates.io, through
 the `[patch.crates-io]` entries at the end of `bridge/Cargo.toml`:
@@ -180,6 +180,24 @@ An SDP-only regression verifies that each checked pair references metadata with
 the actual accepted remote candidate ID. A repeated-restart regression verifies
 that only the current generation's remote candidate metadata survives.
 
+#374: sampling only when a session ended could report zero checks after ICE
+failure had deleted the generation's active candidates and pairs. The ICE agent
+now saves one final statistics snapshot immediately before failure cleanup,
+including pair counters, states and remote candidate metadata. Operational
+candidates and selection are still cleared, and the failed agent schedules no
+checks. Statistics retain that generation's evidence until a restart with valid
+credentials or close; a rejected restart preserves it. RTC reads the metadata
+through the statistics-only accessor, so the first `getStats` after failure can
+still join candidates received in SDP or discovered by inbound checks. No
+sampling timer or connectivity behavior changes.
+
+ICE lifecycle regressions cover unsampled Checking-to-Failed and
+Connected-to-Disconnected-to-Failed transitions, discovered peer-reflexive
+metadata, unchanged cleanup, and snapshot retirement on restart and close.
+Bridge diagnostic tests additionally verify the public RTC report after failure,
+same-socket peer-reflexive evidence for a tracked host, relay exclusion and
+success-state evidence without fabricated request or response counts.
+
 ## Tests
 
 The bridge's own gates never reach in here. The crates are not members of
@@ -254,7 +272,7 @@ pristine crate to that intermediate copy.
 
 The #372 patches touch different files from those earlier patches. Re-derive
 `rtc-ice-late-direct-checks.patch` against pristine `rtc-ice` for
-`src/agent/{agent_config.rs,agent_selector.rs,mod.rs,late_direct_test.rs}`;
+`src/agent/{agent_config.rs,agent_selector.rs,mod.rs,agent_proto.rs,agent_stats.rs,late_direct_test.rs}`;
 `rtc-late-direct-stats.patch` against pristine `rtc` for
 `src/peer_connection/{configuration/setting_engine.rs,internal.rs}` and
 `src/statistics/accumulator/mod.rs`; and `webrtc-late-direct-tests.patch` against

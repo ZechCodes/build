@@ -24,7 +24,8 @@ Wire 3.12.0.
 - Unresolved browser mDNS host candidates can now open a direct LAN path
   through inbound UDP DROP rules. An early, paced, credential-free conntrack
   sweep uses the advertised host socket on its private on-link IPv4 subnet,
-  capped at 1024 addresses. Temporary neighbor scouts discover live addresses
+  capped at 1024 addresses, with candidate ports below 1024 rejected by the
+  bridge and vendor. Temporary neighbor scouts discover live addresses
   separately, with shared pacing and neighbor-table pressure bounds; the ICE
   socket probes resolved neighbors and keeps send-buffer headroom for ordinary
   traffic. Matching IPv4 server-reflexive addresses gate all probes, and one

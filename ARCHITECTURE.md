@@ -941,8 +941,11 @@ The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
   require matching IPv4 server-reflexive addresses in the current operational
   local and remote ICE candidate sets. Local evidence must still derive from a
   current advertised live host socket; terminal stats and previous remote
-  generations cannot authorize work. This is a same-NAT plausibility check,
-  not proof of LAN membership or authentication. Missing evidence waits within
+  generations cannot authorize work. Srflx equality is a traffic-avoidance
+  heuristic for honest off-LAN peers, not a security boundary. The remote
+  srflx is self-reported, and a malicious paired peer can copy the bridge's
+  advertised srflx back. Distinct LANs behind CGNAT or a shared enterprise egress
+  can also match. Missing evidence waits within
   the existing 25-second lifetime, then skips with `nat-evidence-missing`;
   unequal addresses yield `nat-address-mismatch` without values or packets.
   Later accepted trickle can establish a match before expiry. Host and relay
@@ -956,6 +959,12 @@ The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
   the bridge's addresses, network and broadcast are excluded. A container
   interface qualifies only when it owns the advertised host socket. Other
   platforms/runtimes skip the sweep with a fixed reason.
+  The security controls are these private on-link subnet bounds, a candidate
+  port floor of 1024 enforced by both bridge and vendor, the 200-packet/s ceiling,
+  the 60-second interface lease, resolved-neighbor-only real probes,
+  credential-free payloads, and authenticated-inbound-only candidate creation.
+  Ports below 1024 cannot create a plan or consume its 32-port allowance;
+  the floor does not exclude services on higher ports.
   Before each probe, Linux send-queue accounting reserves at least three
   quarters of `SO_SNDBUF` for ordinary ICE, DTLS and SCTP writes. A probe yields
   under pressure without advancing its destination; 200 packets/s is a ceiling,
@@ -985,7 +994,8 @@ The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
   full; it never evicts a live reservation. A fully
   sparse /22 pass produces about 3,000 ARP requests including default kernel
   retries, at most once per interface per window (about 50/s averaged over 60 s).
-  Different-NAT sessions produce zero scout and sweep packets. This reduces
+  Honest peers reporting unequal srflx addresses produce zero scout and sweep
+  packets. This reduces
   broadcast load at the cost of deferring new unknown addresses during cooldown.
   Scout and real-probe traffic share a process-wide 200-packet/s ceiling;
   kernel ARP retries are measured separately by the namespace fixture.

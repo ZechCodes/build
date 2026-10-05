@@ -69,10 +69,10 @@ impl<'a> Fields<'a> {
                 5 => Some(&mut fields.config),
                 _ => None,
             };
-            if let Some(target) = target {
-                if target.replace(value).is_some() {
-                    return Err(invalid_dump());
-                }
+            if let Some(target) = target
+                && target.replace(value).is_some()
+            {
+                return Err(invalid_dump());
             }
             data = remaining;
         }

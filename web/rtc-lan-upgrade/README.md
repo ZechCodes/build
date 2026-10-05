@@ -1,6 +1,6 @@
 This explicit Linux integration gate reproduces tasks #372 and #374 using Chromium's
 real UUID `.local` candidate, the production SPA peer link and crypto, the
-bridge's real `FrameIntake` and WebRTC factory, and a local UDP TURN fixture.
+bridge's real `FrameIntake` and WebRTC factory, and isolated UDP STUN/TURN fixtures.
 
 From `bridge/`, after installing the SPA dependencies:
 
@@ -15,15 +15,20 @@ environment, a temporary HOME, an explicit temporary identity path, a new
 database and an unsigned test repository. Chromium uses a fresh profile.
 
 The bridge firewall is stock inbound DROP with established traffic and
-multicast mDNS allowed. TURN lives at a separate address in the browser
-namespace. A real nft SNAT rule gives phone-to-TURN packets a documentation
-address, so TURN checks disclose that public mapping, rather than accidentally
-disclosing the phone's private address through an on-LAN TURN server. The
-bridge routes only the TURN address; the public phone mapping is off-link.
+multicast mDNS allowed. A disposable gateway joins the bridge and phone on a
+real LAN and routes them to a fourth external-service namespace. UDP traffic
+to that service alone is translated by real nft SNAT. The separate STUN and
+TURN endpoints observe the actual translated source tuple; no mapped address
+is fabricated in a response or candidate. Both peers gather current
+UDP/component-1 IPv4 srflx candidates for the same documentation public IP in
+the positive cases. The public mappings are local to the router and have no
+UDP listener or DNAT hairpin path, so they cannot produce the private
+host/prflx upgrade. The fixture records both actually signaled candidate sets
+and the independent STUN service's observed source tuples. These scoped test
+artifacts may contain the fixture addresses; product diagnostics do not.
 The default `delayed` mode disables only the sweep through the test factory,
 so the original late-check and final failure-history assertions measure
-those components independently. All nine unresolved modes enable the
-production sweep. The default mode holds the browser's mDNS answers until
+those components independently. All unresolved modes enable the production sweep and its NAT evidence gate. The default mode holds the browser's mDNS answers until
 the session completes `board.list`, `project.list`, `tasks.list` and `ping`
 over TURN. After resolving that name, the bridge must originate host STUN
 checks. The browser's host responses remain gated across another full TURN
@@ -34,8 +39,8 @@ restart. Both ICE ufrags must change; the same encrypted session must then
 answer the full pull on the nominated direct pair. It then removes browser
 connection-state listeners for this final failure-only phase, keeping native
 ICE running while preventing automatic browser recovery from replacing the
-generation being measured. Dropping UDP returns in the disposable namespace
-must produce the bridge's actual ICE Failed event using its unchanged 5+25 s
+generation being measured. Dropping both direct phone UDP returns and external-service UDP returns
+in the disposable namespaces must produce the bridge's actual ICE Failed event using its unchanged 5+25 s
 timeout. An encrypted `rtc.close` must retain nonzero successful host counters;
 the final session summary must retain direct time and the actual restart count.
 
@@ -57,8 +62,8 @@ count as application traffic. This preserves the early win as its own case.
 
 `BUILD_RTC_LAN_MODE=far-edge-unresolved` repeats that production early-win
 proof on a mostly empty /22: the real phone owns `10.72.3.254/22`, near the
-far end of the bridge's actual on-link interface subnet. Real signaling and
-TURN traffic establish that interface's neighbor entry; no ICE address is
+far end of the bridge's actual on-link interface subnet. Real direct signaling establishes that interface's phone neighbor entry;
+TURN/STUN traffic establishes the gateway neighbor; no ICE address is
 invented. The JSON result records first indication timing against genuine
 candidate gathering and sweep start, the first application RPC time, and
 timestamped sweep lifecycle events. The native host/prflx pair must carry every
@@ -83,9 +88,9 @@ Results report peak occupied fraction and remaining headroom, including normal
 TURN traffic when it shares that socket. The outer deadline remains 65 seconds.
 
 The `unknown-neighbor-unresolved`, `unknown-neighbor-clustered` and
-`unknown-neighbor-pressure` modes add a disposable third router namespace.
-Its Linux bridge joins both real on-link interfaces, and its gateway hosts
-off-link TURN and a transparent rendezvous proxy. The phone routes its authentic
+`unknown-neighbor-pressure` modes use the disposable gateway's transparent rendezvous proxy.
+Its Linux bridge joins both real on-link interfaces; STUN/TURN still live in
+the separate external-service namespace. The phone routes its authentic
 bridge-host checks through that gateway, preserving the original source IP,
 UDP port and authenticated STUN content. Its replies also use the gateway MAC.
 The bridge's connected /22 route stays direct. Signaling and TURN therefore
@@ -104,7 +109,10 @@ requires discovery inside the unchanged 25-second lifetime, then exactly the
 existing one optional restart with fresh credentials to upgrade the same
 encrypted TURN session to authenticated host/prflx. Its first native checks can
 already be exhausted before the far-edge hit. The failed zero-restart artifact
-is retained separately; no retry budget or timer is enlarged.
+is retained separately; no retry budget or timer is enlarged. The restart
+occurs inside the process-wide 60-second scout lease: its new generation must
+send zero anonymous scouts, report `interface-scout-cooldown`, and still send
+real host-port indications to freshly usable phone/gateway neighbors.
 The known-neighbor early case remains the separate assertion that no
 application data used TURN. Packet capture records the previously absent
 phone's real ARP request/reply before its first advertised-host-socket probe,
@@ -115,7 +123,8 @@ The unknown-neighbor pressure mode retains the separately labeled native
 no-direct control and counted namespace host-check DROP. A complete /22 has
 1,021 authorized destinations after network, broadcast and our address are
 excluded. One genuinely known neighbor is excluded from scouting, leaving
-1,020 anonymous scout admissions; the unknown control requires that many
+1,020 anonymous scout admissions; the known-neighbor control has both phone
+and gateway known, so it admits 1,019 scouts; the unknown control requires that many
 distinct actual ARP destinations, settled pending entries and both real host
 probes to the phone. Admission coverage does not mean every address resolved.
 Direct cancellation is recorded separately from genuine completed coverage.
@@ -124,14 +133,30 @@ GC thresholds and table-full counter deltas. Wire counts include kernel ARP
 retries and report aligned one-second-bin maxima plus the average over the
 observed request interval. No address is retained in those numeric samples.
 
-The initial unknown no-direct control completed in 15.411 seconds; the final
-control completed in 22.865 seconds. Retained FAILED entries can reach the
+In the preserved pre-NAT baseline, the initial unknown no-direct control
+completed in 15.411 seconds and its final control completed in 22.865 seconds. Retained FAILED entries can reach the
 global 75%-of-gc3 guard even after INCOMPLETE entries settle, pausing admission
 until normal kernel GC frees headroom. Coverage therefore varies with real
 pressure rather than always completing inside the browser's retry window.
 The fixed 25-second lifetime, all guards, candidate arrival and the common
 65-second outer deadline remain unchanged. No candidate is fabricated and no
 host namespace or neighbor cache is modified.
+
+With genuine common-NAT srflx evidence, the final known-neighbor control
+completed in 24.377 seconds with 1,019 scout admissions; the unknown control
+completed in 15.709 seconds with 1,020. Both sent four real host-port probes,
+peaked at 256 INCOMPLETE neighbors and 768 global ARP entries out of the actual
+1,024-entry gc3 threshold, and observed no table-full counter increase. Sampled
+advertised ICE socket TX occupancy stayed zero. Kernel-inclusive ARP one-second
+bins peaked at 250 and 252 requests respectively; observed averages were
+135.56 and 224.29 requests/second. These ARP rates include retries, separately
+from the process-wide 200-datagram/second admission limit.
+The genuine unknown production phone was hit at 17.510 seconds after its
+ABSENT gate and the clustered phone at 368.6 milliseconds. The far-edge session
+needed its existing one optional restart; the new generation emitted zero
+scouts and two real probes under the 60-second interface cooldown. The early
+and clustered cases carried every encrypted application RPC on direct with
+zero restarts.
 
 `BUILD_RTC_LAN_MODE=unresolved` permanently silences mDNS and leaves browser
 host connectivity checks running under the bridge's inbound DROP. It delivers
@@ -158,14 +183,35 @@ With this topology, Chromium initially retries the unanswered host pair for
 about 15 seconds; packet capture records the actual cadence rather than
 assuming retries continue forever.
 
+`BUILD_RTC_LAN_MODE=different-nat` applies genuinely different source NAT
+addresses to the two peers' requests to the independent STUN service. Both
+current srflx sets must be nonempty and disjoint. The same encrypted TURN
+session completes a full pull before and after the original 25-second sweep
+lifetime, with zero optional restarts, zero anonymous scouts and zero real
+host-port indications. Diagnostics must end with `nat-address-mismatch`.
+The frozen pre-gate library fails this control: despite the actual unequal
+public evidence it sends scouts and host-port indications and selects direct.
+
+`BUILD_RTC_LAN_MODE=missing-srflx` keeps genuine TURN working but withholds
+STUN Binding responses. Neither peer may signal an IPv4 srflx candidate.
+The same 25-second lifetime expires with `nat-evidence-missing`; both kinds of
+feature packet and the optional restart count remain zero, and a complete
+encrypted TURN pull still succeeds afterward. TURN's related address is never
+accepted as srflx evidence.
+
 `BUILD_RTC_LAN_MODE=large-subnet` uses /21 instead of /24 on the same candidate
 interface. It requires the fixed `subnet-too-large` skip reason, zero sweep
 indications, and a full TURN pull after the production monitor's first sample
 with zero restarts. All modes use the same 65-second fixture process deadline.
 
 `BUILD_RTC_LAN_MODE=late-unresolved` holds the real `.local` host trickle until
-packet capture records Chromium's measured 31-check retry budget and at least
-15 seconds since its first check. Native stats may remove that pair or retain
+packet capture records at least 31 original-host-socket authenticated checks
+and at least 15 seconds since its first check. With actual srflx, this count
+includes checks to both the private bridge host and its actually signaled
+public srflx tuple. Their packet rows stay separate; there must be a real
+private-host check. Bare STUN gathering requests and TURN traffic are excluded.
+This sum and age are a release trigger, rather than proof of pair exhaustion.
+Native stats may remove that pair or retain
 it as in progress; the fixture must prove retrospectively that no original-port
 check resumed between that snapshot and the actual optional restart.
 The exact candidate is then delivered through the encrypted `rtc.ice` RPC,

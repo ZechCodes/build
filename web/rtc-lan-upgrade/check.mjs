@@ -13,6 +13,7 @@ const mode = process.env.BUILD_RTC_LAN_MODE || "delayed";
 const startsDirect = ["early-unresolved", "far-edge-unresolved"].includes(mode);
 const unknown = mode.startsWith("unknown-neighbor-");
 const pressureControl = ["far-edge-pressure", "unknown-neighbor-pressure"].includes(mode);
+const natControl = ["different-nat", "missing-srflx"].includes(mode);
 const command = promisify(execFile);
 const save = async (name, value) => {
   const target = path.join(artifacts, name);
@@ -52,22 +53,33 @@ try {
   await page.exposeFunction("fixtureMode", () => mode);
   const initialCheckWindow = async (sourcePort, destinationPort) => {
     const wire = JSON.parse(await readFile(path.join(artifacts, "wire.json"), "utf8"));
-    const checks = wire.browser_checks.filter((row) => row.source_port === sourcePort && row.destination_port === destinationPort);
-    return { checks: checks.length, firstAt: checks[0]?.at, lastAt: checks.at(-1)?.at,
+    const privateChecks = wire.browser_checks.filter((row) => row.source_port === sourcePort
+      && row.destination_port === destinationPort && row.has_username && row.has_integrity);
+    const srflxChecks = wire.browser_srflx_checks.filter((row) => row.source_port === sourcePort);
+    const checks = [...privateChecks, ...srflxChecks].sort((left, right) => left.at - right.at);
+    return { checks: checks.length, privateChecks: privateChecks.length, srflxChecks: srflxChecks.length,
+      firstAt: checks[0]?.at, lastAt: checks.at(-1)?.at,
       observedAt: Date.now() / 1000 };
   };
   await page.exposeFunction("fixtureInitialCheckWindow", initialCheckWindow);
   await page.exposeFunction("fixtureInitialChecksExhausted", async (sourcePort, destinationPort) => {
     const window = await initialCheckWindow(sourcePort, destinationPort);
-    // This installed Chromium sends 31 unanswered host checks across about
-    // 15 seconds. Some runs retain their native in-progress stats row after
-    // retransmission ends. Require the measured budget and age, then assert
-    // retrospectively that no checks resumed before the actual restart.
-    return window.checks >= 31 && window.observedAt - window.firstAt >= 15;
+    // Actual srflx adds a second remote tuple sharing this original socket.
+    // Use the measured total budget and age only as a release trigger;
+    // retrospective private-tuple silence through the restart proves that
+    // the later real indication alone did not revive that host pair.
+    return window.privateChecks > 0 && window.checks >= 31 && window.observedAt - window.firstAt >= 15;
   });
   await page.exposeFunction("fixtureExhausted", (state) => save("exhausted.json", state));
   await page.exposeFunction("fixtureLatePrimed", (state) => save("late-primed.json", state));
   const gatheredHosts = [];
+  const gatheredSrflx = [];
+  let srflxSave = Promise.resolve();
+  await page.exposeFunction("fixtureSrflx", async (candidate) => {
+    gatheredSrflx.push(candidate);
+    srflxSave = srflxSave.then(() => save("gathered-srflx.json", gatheredSrflx));
+    await srflxSave;
+  });
   await page.exposeFunction("fixtureBridgeHostPort", (port) => save("bridge-host-socket.json", { port }));
   await page.exposeFunction("fixtureHostPort", async (host) => {
     gatheredHosts.push(host);
@@ -101,7 +113,11 @@ try {
     await save("disconnect-host", "ready");
     const deadline = Date.now() + 3000;
     while (true) {
-      try { await readFile(path.join(artifacts, "host-disconnected")); return; } catch (error) {
+      try {
+        await readFile(path.join(artifacts, "host-disconnected"));
+        await readFile(path.join(artifacts, "service-host-disconnected"));
+        return;
+      } catch (error) {
         if (error.code !== "ENOENT" || Date.now() >= deadline) throw error;
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
@@ -111,6 +127,9 @@ try {
     /ice_state=failed\b/.test(await readFile(path.join(artifacts, "bridge.log"), "utf8")));
   await page.exposeFunction("fixtureSweepSkipped", async () =>
     /subnet-too-large/.test(await readFile(path.join(artifacts, "bridge.log"), "utf8")));
+  await page.exposeFunction("fixtureNatSkipped", async () =>
+    /host-sweep .*"reason":"nat-(?:evidence-missing|address-mismatch)".*"status":"skipped"/.test(
+      await readFile(path.join(artifacts, "bridge.log"), "utf8")));
   await page.exposeFunction("fixtureSweepPrimed", async () => {
     const wire = JSON.parse(await readFile(path.join(artifacts, "wire.json"), "utf8"));
     const { before } = JSON.parse(await readFile(path.join(artifacts, "before.json"), "utf8"));
@@ -140,6 +159,23 @@ try {
     .map((line) => ({ at: Number(line.match(/timestamp_ms=(\d+)/)?.[1]),
       ...JSON.parse(line.slice(line.indexOf("host-sweep ") + "host-sweep ".length)) }));
   const wire = JSON.parse(await readFile(path.join(artifacts, "wire.json"), "utf8"));
+  await srflxSave;
+  const observedStun = JSON.parse(await readFile(path.join(artifacts, "stun-observed.json"), "utf8"));
+  const ipv4Srflx = gatheredSrflx.filter((candidate) => candidate.protocol === "udp" && candidate.component === 1
+    && /^\d+\.\d+\.\d+\.\d+$/.test(candidate.ip));
+  const browserSrflx = ipv4Srflx.filter((candidate) => candidate.side === "browser");
+  const bridgeSrflx = ipv4Srflx.filter((candidate) => candidate.side === "bridge");
+  const commonIp = browserSrflx.some((left) => bridgeSrflx.some((right) => left.ip === right.ip));
+  result.natEvidence = { browser: browserSrflx, bridge: bridgeSrflx, commonIpv4: commonIp, observedStun };
+  assert(observedStun.length > 0, "the external namespace observes actual STUN requests through kernel SNAT");
+  if (mode === "missing-srflx") {
+    assert.equal(ipv4Srflx.length, 0, "withholding STUN yields no actual signaled IPv4 srflx candidate");
+  } else {
+    assert(browserSrflx.length > 0 && bridgeSrflx.length > 0, "both peers gather real IPv4 srflx through kernel SNAT");
+    assert(ipv4Srflx.every((candidate) => observedStun.some((tuple) => tuple.ip === candidate.ip && tuple.port === candidate.port)),
+      "every signaled srflx tuple was actually observed by the independent STUN service");
+    assert.equal(commonIp, mode !== "different-nat", "the actual public candidate sets match only in equal-NAT cases");
+  }
   if (mode === "delayed") {
     assert.equal(finalChecks?.reason, "direct-checks-succeeded", "actual ICE Failed must retain its successful host history at rtc.close");
     assert(finalChecks.hosts.some((host) => host.requests_sent > 0 && host.responses_received > 0 && host.succeeded),
@@ -207,8 +243,8 @@ try {
     assert.equal(stopped.prflx_followed, false, "suppressing inbound checks prevents direct learning");
     assert(wire.host_socket_indications.length > 0, "the actual far-edge phone still receives the credential-free probe");
     if (stopped.reason === "completed") {
-      assert.equal(stopped.destinations_scouted, 1020,
-        "completion covers all /22 destinations except the one genuinely known neighbor");
+      assert.equal(stopped.destinations_scouted, unknown ? 1020 : 1019,
+        "completion covers all /22 destinations except genuinely known gateway and phone neighbors");
       assert.equal(stopped.neighbors_pending, 0, "completion settles admitted ARP attempts");
       assert.equal(wire.host_socket_indications.length, 2,
         "completion includes the initial and bounded repeat from the real host socket to the phone");
@@ -226,6 +262,14 @@ try {
       minHeadroomAtPeak: peak.tx_capacity - peak.tx_occupied,
       neighborStatesAtPeak: peak.neighbor_states };
     result.measurements.arp = arpPressure(wire, pressure);
+  } else if (natControl) {
+    const reason = mode === "different-nat" ? "nat-address-mismatch" : "nat-evidence-missing";
+    assert.equal(wire.host_socket_indications.length, 0, "ineligible NAT evidence sends no real host-socket indication");
+    assert.equal(wire.scout_hits.length, 0, "ineligible NAT evidence sends no anonymous scout to the phone");
+    assert(sweepEvents.some((event) => event.reason === reason && event.status === "skipped"), "the fixed NAT skip reason is observable");
+    assert(sweepEvents.every((event) => event.addresses_sent === 0 && event.addresses_attempted === 0
+      && event.scout_datagrams_sent === 0 && event.scout_attempted === 0 && !event.eligible),
+      "missing or disjoint public evidence suppresses both kinds of feature traffic for the complete lifetime");
   } else {
     assert.equal(wire.host_socket_indications.length, 0, "a /21 must send no sweep datagrams");
     assert(sweepEvents.some((event) => event.reason === "subnet-too-large"), "the skip reason is observable");
@@ -263,6 +307,13 @@ try {
         "far-edge discovery reaches the real phone inside the unchanged 25-second lifetime");
       assert.equal(result.appRpcPaths[0].path, "turn", "the same encrypted session starts on genuine TURN");
       assert.equal(result.appRpcPaths.at(-1).path, "direct", "the same encrypted session finishes on direct");
+      const restarted = sweepEvents.filter((event) => event.generation === 2);
+      assert(restarted.length > 0 && restarted.every((event) => event.scout_datagrams_sent === 0 && event.scout_attempted === 0),
+        "the generation inside the 60-second interface lease emits zero anonymous scouts");
+      assert(restarted.some((event) => event.reason === "interface-scout-cooldown"),
+        "the interface scout cooldown is observable on the existing optional restart");
+      assert(restarted.some((event) => event.addresses_sent > 0),
+        "fresh usable neighbors still receive real host-socket indications during scout cooldown");
     }
     const gathered = JSON.parse(await readFile(path.join(artifacts, "host.json"), "utf8"));
     const startedAt = sweepEvents.find((event) => event.generation === 1 && event.status === "started")?.at;

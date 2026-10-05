@@ -7,7 +7,8 @@ import { connectionDiagnosticHistory } from "/src/core/connectionDiagnostics.js"
 
 const SESSION_ID = "lan-upgrade-fixture";
 const DEVICE_ID = "dev-1";
-const ICE_SERVERS = [{ urls: ["turn:198.18.0.1:3478?transport=udp"], username: "fixture", credential: "fixture-password" }];
+const ICE_SERVERS = [{ urls: ["stun:198.18.0.1:3479"] },
+  { urls: ["turn:198.18.0.1:3478?transport=udp"], username: "fixture", credential: "fixture-password" }];
 const waitFor = async (predicate, deadline, description) => {
   while (!(await predicate())) {
     if (Date.now() >= deadline) throw new Error(`deadline: ${description}`);
@@ -70,6 +71,8 @@ export async function run() {
       if (method === "rtc.ice") {
         console.log("candidate", params.candidate.candidate);
         const fields = params.candidate.candidate.split(/\s+/);
+        if (fields[7] === "srflx") await window.fixtureSrflx({ side: "browser", generation: restarts + 1,
+          protocol: fields[2].toLowerCase(), component: Number(fields[1]), ip: fields[4], port: Number(fields[5]), at: Date.now() });
         if (fields[7] === "host" && fields[4].endsWith(".local")) {
           const gatheredHost = { name: fields[4], port: Number(fields[5]), gatheredAt: Date.now() };
           await window.fixtureHostPort(gatheredHost);
@@ -82,12 +85,21 @@ export async function run() {
         }
       }
       const answer = await rpc.call(method, params, { carrier: signaling, timeoutMs: 10000 });
+      if (method === "rtc.offer") {
+        for (const line of answer.sdp.split(/\r?\n/).filter((row) => row.startsWith("a=candidate:"))) {
+          const fields = line.slice(2).split(/\s+/);
+          if (fields[7] === "srflx") await window.fixtureSrflx({ side: "bridge", generation: restarts + 1,
+            protocol: fields[2].toLowerCase(), component: Number(fields[1]), ip: fields[4], port: Number(fields[5]), at: Date.now() });
+        }
+      }
       if (method === "rtc.ice" && params.candidate.candidate.includes(".local")) hostTrickled = true;
       return answer;
   };
   const onPush = (callback) => rpc.onPush((push) => {
     if (push.type === "rtc.ice") {
       const fields = push.candidate?.candidate?.split(/\s+/) || [];
+      if (fields[7] === "srflx") void window.fixtureSrflx({ side: "bridge", generation: restarts + 1,
+        protocol: fields[2].toLowerCase(), component: Number(fields[1]), ip: fields[4], port: Number(fields[5]), at: Date.now() });
       if (fields[7] === "host" && fields[4] === "10.72.0.1") {
         // Record the authentic advertised socket before channels open, so
         // aggregate pressure samples include the first scout/ICE activity.
@@ -289,6 +301,16 @@ async function unresolvedUpgrade({ mode, before, turnPull, stats, pull, link, ex
     && state.selected.localType !== "relay" && state.selected.remoteType !== "relay"
     && link.transportPath() === "direct" && !link.recovery.snapshot().recovering;
   const unresolved = () => !connectionDiagnosticHistory().some((row) => row.phase === "mdns-resolved");
+  if (["different-nat", "missing-srflx"].includes(mode)) {
+    await waitFor(() => window.fixtureNatSkipped(), Date.now() + 30000,
+      "the NAT eligibility control expires inside the original 25-second sweep lifetime");
+    const after = await stats();
+    if ((after.selected?.localType !== "relay" && after.selected?.remoteType !== "relay")
+      || after.restarts !== 0 || after.connections !== 1 || !unresolved()) {
+      throw new Error(`ineligible NAT evidence must keep the same TURN session: ${JSON.stringify(after)}`);
+    }
+    return { mode, before, after, turnPull, turnAfter: await pull(), diagnostics: connectionDiagnosticHistory() };
+  }
   if (["far-edge-pressure", "unknown-neighbor-pressure"].includes(mode)) {
     await waitFor(() => window.fixtureSweepFinished(), Date.now() + 30000,
       "the no-direct control terminates its bounded production sweep");

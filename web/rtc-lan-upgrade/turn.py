@@ -71,9 +71,11 @@ class Relay(asyncio.DatagramProtocol):
 
 
 class Turn(asyncio.DatagramProtocol):
-    def __init__(self):
+    def __init__(self, stun_enabled=True, on_binding=None):
         self.allocations = {}
         self.transport = None
+        self.stun_enabled = stun_enabled
+        self.on_binding = on_binding
 
     def connection_made(self, transport):
         self.transport = transport
@@ -104,9 +106,13 @@ class Turn(asyncio.DatagramProtocol):
         values = attributes(data)
         transaction = data[8:20]
         if kind == 0x0001:
-            # This fixture provides TURN only. A STUN reflexive candidate on
-            # this untranslated LAN would disclose the host IP ahead of mDNS.
-            return
+            if self.on_binding:
+                self.on_binding(client)
+            if not self.stun_enabled:
+                return
+            # The mapped tuple is the source actually observed after kernel
+            # SNAT in the separate external-service namespace.
+            reply = message(0x0101, transaction, [(0x0020, xor_address(client))])
         elif kind == 0x0003 and 0x0015 not in values:
             reply = message(0x0113, transaction, [
                 (0x0009, bytes([0, 0, 4, 1]) + b"Unauthorized"),

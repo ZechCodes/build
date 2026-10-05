@@ -1,11 +1,10 @@
-"""Off-link TURN and transparent rendezvous for the unknown-neighbor fixture."""
+"""Transparent rendezvous on the disposable LAN gateway."""
 
 import asyncio
 from pathlib import Path
 import sys
 
 from isolation import require_private_namespace
-from turn import Turn
 
 
 async def rendezvous(reader, writer):
@@ -26,8 +25,6 @@ async def rendezvous(reader, writer):
 
 async def main(artifacts):
     require_private_namespace()
-    loop = asyncio.get_running_loop()
-    await loop.create_datagram_endpoint(Turn, local_addr=("198.18.0.1", 3478))
     server = await asyncio.start_server(rendezvous, "198.18.0.2", 9000)
     (artifacts / "router-ready").write_text("ready")
     async with server:

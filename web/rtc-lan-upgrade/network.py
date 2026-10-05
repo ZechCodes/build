@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 
-from turn import COOKIE, Turn, attributes
+from turn import COOKIE, attributes
 from isolation import require_private_namespace
 
 PHONE_IP = os.environ.get("BUILD_RTC_LAN_PHONE_IP", "10.72.0.2")
@@ -117,6 +117,7 @@ async def capture(report, artifacts):
         if len(payload) < 20 or struct.unpack_from("!I", payload, 4)[0] != COOKIE:
             continue
         kind = struct.unpack_from("!H", payload)[0]
+        fields = attributes(payload)
         if (packet[26:30] == socket.inet_aton("10.72.0.1")
                 and packet[30:34] == socket.inet_aton(PHONE_IP) and destination_port in host_ports):
             key = {0x0001: "host_checks", 0x0011: "host_socket_indications"}.get(kind)
@@ -124,10 +125,24 @@ async def capture(report, artifacts):
               and packet[30:34] == socket.inet_aton("10.72.0.1") and source_port in host_ports and kind == 0x0001):
             key = "browser_checks"
         else:
-            continue
+            # Keep the private tuple's evidence separate. Only authenticated
+            # checks from the original genuine host socket to an actually
+            # signaled first-generation bridge srflx tuple belong here.
+            srflx_file = artifacts / "gathered-srflx.json"
+            srflx = json.loads(srflx_file.read_text()) if srflx_file.exists() else []
+            if (packet[26:30] == socket.inet_aton(PHONE_IP)
+                    and source_port == json.loads(host_file.read_text())["port"]
+                    and kind == 0x0001 and 0x0006 in fields and 0x0008 in fields
+                    and any(candidate["side"] == "bridge" and candidate["generation"] == 1
+                            and candidate["component"] == 1 and candidate["protocol"] == "udp"
+                            and ":" not in candidate["ip"]
+                            and packet[30:34] == socket.inet_aton(candidate["ip"])
+                            and destination_port == candidate["port"] for candidate in srflx)):
+                key = "browser_srflx_checks"
+            else:
+                continue
         if key is None:
             continue
-        fields = attributes(payload)
         report[key].append({
             "at": time.time(), "source_port": source_port, "destination_port": destination_port,
             "transaction": payload[8:20].hex(), "after_release": report["released"],
@@ -141,7 +156,7 @@ async def capture(report, artifacts):
 async def main(artifacts):
     require_private_namespace()
     mode = os.environ.get("BUILD_RTC_LAN_MODE", "delayed")
-    report = {"queries": [], "host_checks": [], "browser_checks": [],
+    report = {"queries": [], "host_checks": [], "browser_checks": [], "browser_srflx_checks": [],
               "host_socket_indications": [], "released": False, "mdns_silenced": mode != "delayed",
               "arp_requests": 0, "arp_unique_destinations": 0,
               "first_arp_request_at": None, "last_new_arp_request_at": None,
@@ -150,8 +165,6 @@ async def main(artifacts):
     save_report(artifacts, report)
     loop = asyncio.get_running_loop()
     unknown = mode.startswith("unknown-neighbor-")
-    if not unknown:
-        await loop.create_datagram_endpoint(Turn, local_addr=("198.18.0.1", 3478))
     mdns_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     mdns_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     mdns_socket.bind(("224.0.0.251", 5353))

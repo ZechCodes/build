@@ -4,6 +4,7 @@ import { openCarrier, peerFrames } from "/src/core/carrier.js";
 import { openPeerLink } from "/src/core/peerLink.js";
 import { createSessionRpc } from "/src/core/sessionRpc.js";
 import { connectionDiagnosticHistory } from "/src/core/connectionDiagnostics.js";
+import { observeArp } from "/__arp_observation__.mjs";
 
 const SESSION_ID = "lan-upgrade-fixture";
 const DEVICE_ID = "dev-1";
@@ -85,6 +86,7 @@ export async function run() {
         }
       }
       const answer = await rpc.call(method, params, { carrier: signaling, timeoutMs: 10000 });
+      if (mode.startsWith("arp-") && method === "rtc.offer") void window.fixtureAnswer({ at: Date.now(), generation: restarts + 1 });
       if (method === "rtc.offer") {
         for (const line of answer.sdp.split(/\r?\n/).filter((row) => row.startsWith("a=candidate:"))) {
           const fields = line.slice(2).split(/\s+/);
@@ -142,7 +144,7 @@ export async function run() {
   const appRpcPaths = [];
   const applicationCall = async (method, params) => {
     const startsDirect = ["early-unresolved", "far-edge-unresolved"].includes(mode);
-    if (startsDirect || mode.startsWith("unknown-neighbor-")) {
+    if (startsDirect || mode.startsWith("unknown-neighbor-") || mode.startsWith("arp-")) {
       const state = await stats();
       if (startsDirect && (state.selected?.state !== "succeeded" || !state.selected.nominated
         || state.selected.localType === "relay" || state.selected.remoteType === "relay"
@@ -162,6 +164,10 @@ export async function run() {
     await applicationCall("ping");
     return { board, projectCount: projects.length, tasks, sessionId: rpc.sessionId };
   };
+  if (mode.startsWith("arp-")) {
+    const result = await observeArp({ mode, rpc, signaling, fixture, link, hostCandidate, stats, pull, applicationCall });
+    return { ...result, appRpcPaths, diagnostics: connectionDiagnosticHistory() };
+  }
   if (["early-unresolved", "far-edge-unresolved"].includes(mode)) {
     // The genuine host trickle arrives immediately in this case. Record the
     // selected native pair before the first encrypted application RPC, and

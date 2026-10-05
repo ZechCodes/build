@@ -14,6 +14,21 @@ temporary user/network namespace. The bridge fixture gets a cleared
 environment, a temporary HOME, an explicit temporary identity path, a new
 database and an unsigned test repository. Chromium uses a fresh profile.
 
+Task #377's [passive-ARP findings](arp-findings.md) use `arp-cold`,
+`arp-cached`, `arp-refresh`, `arp-stale`, `arp-proxy` and `arp-active` modes.
+They add two-sided PCAPs, decoded packet events, timestamped `ip monitor neigh`
+output and read-only neighbour snapshots. All except `arp-active` suppress UDP9
+scouts in the disposable namespace before neighbour resolution; the production
+scheduler and its attempt accounting still run. The cached cases seed only the
+phone's bridge MAC (PERMANENT, REACHABLE or STALE respectively), with the bridge's
+phone entry absent before ICE negotiation. Signaling uses the existing gateway
+rendezvous to avoid warming that entry. `arp-proxy` preserves the original
+unknown-neighbour /32 gateway route; the other cases check the bridge directly.
+Each observation retains the production peer link and optional restart monitor,
+records the first carrying pull, then observes until direct selection or 26 s
+after the first candidate. This fixed measurement boundary does not extend any
+production generation's 25 s lifetime or the fixture's 65 s outer deadline.
+
 The bridge firewall is stock inbound DROP with established traffic and
 multicast mDNS allowed. A disposable gateway joins the bridge and phone on a
 real LAN and routes them to a fourth external-service namespace. UDP traffic

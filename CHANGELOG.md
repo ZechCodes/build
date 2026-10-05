@@ -10,6 +10,13 @@ protocol versions; see
 
 Wire 3.12.0.
 
+### Test tooling
+
+- Add isolated passive-ARP discovery controls and packet/neighbour timelines
+  for cold, cached and gateway-routed browser endpoints. The #377 findings
+  record the remaining scout-fallback timing decision; production discovery
+  behaviour is unchanged.
+
 ### Fixed
 
 - Relayed sessions now send bounded connectivity checks on late direct pairs

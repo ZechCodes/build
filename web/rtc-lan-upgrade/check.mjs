@@ -27,6 +27,7 @@ const server = await createServer({
     fs: { allow: [path.resolve(here, "../../..")] } },
   plugins: [{ name: "lan-fixture", resolveId(id) {
     if (id === "/__lan_fixture__.mjs") return path.join(here, "browser.mjs");
+    if (id === "/__arp_observation__.mjs") return path.join(here, "arp-browser.mjs");
   }, configureServer(vite) {
     vite.middlewares.use("/fixture", async (_request, response) => {
       response.setHeader("Content-Type", "text/html");

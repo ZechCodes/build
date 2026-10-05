@@ -164,7 +164,7 @@ async def main(artifacts):
               "phone_arp_requests": [], "phone_arp_replies": [], "scout_hits": []}
     save_report(artifacts, report)
     loop = asyncio.get_running_loop()
-    unknown = mode.startswith("unknown-neighbor-")
+    unknown = mode.startswith("unknown-neighbor-") or mode.startswith("arp-")
     mdns_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     mdns_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     mdns_socket.bind(("224.0.0.251", 5353))

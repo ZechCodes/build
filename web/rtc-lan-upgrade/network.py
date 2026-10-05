@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 from pathlib import Path
 import socket
 import struct
@@ -9,9 +10,10 @@ import subprocess
 import sys
 import time
 
-from turn import COOKIE, Turn
+from turn import COOKIE, Turn, attributes
 from isolation import require_private_namespace
 
+PHONE_IP = os.environ.get("BUILD_RTC_LAN_PHONE_IP", "10.72.0.2")
 
 def save_report(artifacts, report):
     temporary = artifacts / "wire.json.tmp"
@@ -42,8 +44,9 @@ def answer(name):
 
 
 class Mdns(asyncio.DatagramProtocol):
-    def __init__(self, report):
+    def __init__(self, report, artifacts):
         self.report = report
+        self.artifacts = artifacts
         self.names = set()
         self.transport = None
 
@@ -56,6 +59,7 @@ class Mdns(asyncio.DatagramProtocol):
             return
         name, kind, klass = query
         self.report["queries"].append({"name": name, "port": peer[1], "class": klass})
+        save_report(self.artifacts, self.report)
         if kind == 1 and name.endswith(".local"):
             self.names.add(name)
 
@@ -66,43 +70,60 @@ class Mdns(asyncio.DatagramProtocol):
 
 
 async def capture(report, artifacts):
-    wire = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0800))
+    wire = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
     wire.bind(("eth0", 0))
     wire.setblocking(False)
     loop = asyncio.get_running_loop()
     while True:
         packet = await loop.sock_recv(wire, 65536)
-        if len(packet) < 42 or packet[23] != 17:
+        if len(packet) < 42 or packet[12:14] != b"\x08\x00" or packet[23] != 17:
             continue
         offset = 14 + (packet[14] & 15) * 4
-        if packet[26:30] != socket.inet_aton("10.72.0.1"):
-            continue
         source_port, destination_port = struct.unpack_from("!HH", packet, offset)
         payload = packet[offset + 8 :]
-        if len(payload) < 20 or payload[:2] != b"\0\1" or struct.unpack_from("!I", payload, 4)[0] != COOKIE:
+        if len(payload) < 20 or struct.unpack_from("!I", payload, 4)[0] != COOKIE:
             continue
         host_file = artifacts / "host.json"
-        if not host_file.exists() or destination_port != json.loads(host_file.read_text())["port"]:
+        if not host_file.exists():
             continue
-        report["host_checks"].append({
+        host_ports = {host["port"] for host in json.loads((artifacts / "gathered-hosts.json").read_text())}
+        kind = struct.unpack_from("!H", payload)[0]
+        if (packet[26:30] == socket.inet_aton("10.72.0.1")
+                and packet[30:34] == socket.inet_aton(PHONE_IP) and destination_port in host_ports):
+            key = {0x0001: "host_checks", 0x0011: "host_socket_indications"}.get(kind)
+        elif (packet[26:30] == socket.inet_aton(PHONE_IP)
+              and packet[30:34] == socket.inet_aton("10.72.0.1") and source_port in host_ports and kind == 0x0001):
+            key = "browser_checks"
+        else:
+            continue
+        if key is None:
+            continue
+        fields = attributes(payload)
+        report[key].append({
             "at": time.time(), "source_port": source_port, "destination_port": destination_port,
             "transaction": payload[8:20].hex(), "after_release": report["released"],
+            "bytes": len(payload), "has_integrity": 0x0008 in fields,
+            "has_username": 0x0006 in fields, "attributes": len(fields),
+            "has_fingerprint": 0x8028 in fields,
         })
         save_report(artifacts, report)
 
 
 async def main(artifacts):
     require_private_namespace()
-    report = {"queries": [], "host_checks": [], "released": False}
+    mode = os.environ.get("BUILD_RTC_LAN_MODE", "delayed")
+    report = {"queries": [], "host_checks": [], "browser_checks": [],
+              "host_socket_indications": [], "released": False, "mdns_silenced": mode != "delayed"}
+    save_report(artifacts, report)
     loop = asyncio.get_running_loop()
-    await loop.create_datagram_endpoint(Turn, local_addr=("10.72.0.2", 3478))
+    await loop.create_datagram_endpoint(Turn, local_addr=("198.18.0.1", 3478))
     mdns_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     mdns_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     mdns_socket.bind(("224.0.0.251", 5353))
     mdns_socket.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
-                          socket.inet_aton("224.0.0.251") + socket.inet_aton("10.72.0.2"))
-    mdns_socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton("10.72.0.2"))
-    _, mdns = await loop.create_datagram_endpoint(lambda: Mdns(report), sock=mdns_socket)
+                          socket.inet_aton("224.0.0.251") + socket.inet_aton(PHONE_IP))
+    mdns_socket.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(PHONE_IP))
+    _, mdns = await loop.create_datagram_endpoint(lambda: Mdns(report, artifacts), sock=mdns_socket)
     asyncio.create_task(capture(report, artifacts))
     (artifacts / "network-ready").write_text("ready")
     # Chromium first registers its UUID normally. Before that candidate is
@@ -112,20 +133,38 @@ async def main(artifacts):
     subprocess.run(["nft", "add", "rule", "inet", "delay_mdns", "output",
                     "udp", "sport", "5353", "drop"], check=True)
     host_port = json.loads((artifacts / "host.json").read_text())["port"]
-    subprocess.run(["nft", "add", "rule", "inet", "hold_checks", "output",
-                    "ip", "daddr", "10.72.0.1", "udp", "sport", str(host_port), "drop"], check=True)
+    if mode in {"delayed", "far-edge-pressure"}:
+        subprocess.run(["nft", "add", "rule", "inet", "hold_checks", "output",
+                        "ip", "daddr", "10.72.0.1", "udp", "sport", str(host_port), "counter", "drop"], check=True)
     (artifacts / "gated").write_text("ready")
     while not (artifacts / "release").exists():
         await asyncio.sleep(0.02)
-    subprocess.run(["nft", "delete", "table", "inet", "delay_mdns"], check=True)
     report["released"] = True
-    mdns.release()
+    if mode == "delayed":
+        subprocess.run(["nft", "delete", "table", "inet", "delay_mdns"], check=True)
+        mdns.release()
     save_report(artifacts, report)
+    if mode != "delayed":
+        while True:
+            await asyncio.sleep(0.1)
     # The browser can receive the bridge's checks, but its host socket cannot
     # answer until the session has completed a full pull over the TURN pair.
     while not (artifacts / "release-host-checks").exists():
         await asyncio.sleep(0.02)
     subprocess.run(["nft", "delete", "table", "inet", "hold_checks"], check=True)
+    while not (artifacts / "disconnect-host").exists():
+        await asyncio.sleep(0.02)
+    # The bridge keeps sending its authenticated checks, so Chromium still
+    # hears it. Drop every UDP return to make the bridge itself reach Failed
+    # without replacing ICE's production timeout or inventing an event.
+    subprocess.run(["nft", "-f", "-"], input="""
+table inet fail_bridge_ice {
+ chain output { type filter hook output priority 0; policy accept;
+   ip daddr 10.72.0.1 ip protocol udp drop
+ }
+}
+""", text=True, check=True)
+    (artifacts / "host-disconnected").write_text("ready")
     while True:
         await asyncio.sleep(0.1)
 

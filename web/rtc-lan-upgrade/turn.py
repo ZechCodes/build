@@ -85,7 +85,7 @@ class Turn(asyncio.DatagramProtocol):
         if client not in self.allocations:
             relay = Relay(self, client)
             await asyncio.get_running_loop().create_datagram_endpoint(
-                lambda: relay, local_addr=("10.72.0.2", 0)
+                lambda: relay, local_addr=("198.18.0.1", 0)
             )
             self.allocations[client] = relay
         return self.allocations[client]

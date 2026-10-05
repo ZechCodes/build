@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Run the task #372 fixture in private user/network namespaces."""
+"""Run the #372/#374 fixture in private user/network namespaces."""
 
 import os
+import json
+import re
 import signal
 from pathlib import Path
 import subprocess
@@ -29,6 +31,33 @@ def namespace_command(pid, *arguments):
     return ["nsenter", "-t", str(pid), "-n", "--", *arguments]
 
 
+def sample_host_pressure(artifacts):
+    before = artifacts / "before.json"
+    if not before.exists():
+        return None
+    port = json.loads(before.read_text())["before"].get("hostSocketPort")
+    if port is None:
+        return None
+    output = subprocess.run(["ss", "-u", "-a", "-m", "-n"], text=True,
+                            capture_output=True, check=True).stdout.splitlines()
+    for index, line in enumerate(output):
+        if f"10.72.0.1:{port}" not in line.split() or index + 1 >= len(output):
+            continue
+        memory = re.search(r"skmem:\(r(\d+),rb\d+,t(\d+),tb(\d+)", output[index + 1])
+        if not memory:
+            continue
+        neighbors = json.loads(subprocess.run(["ip", "-j", "neigh", "show", "dev", "eth0"],
+                                             text=True, capture_output=True, check=True).stdout)
+        states = {}
+        for neighbor in neighbors:
+            for state in neighbor.get("state", []):
+                states[state] = states.get(state, 0) + 1
+        return {"at": time.time(), "rx_occupied": int(memory[1]),
+                "tx_occupied": int(memory[2]), "tx_capacity": int(memory[3]),
+                "neighbor_states": states}
+    return None
+
+
 def inside(binary, artifacts):
     require_private_namespace()
     artifacts.mkdir(parents=True, exist_ok=True)
@@ -36,10 +65,20 @@ def inside(binary, artifacts):
                    "LANG": "C.UTF-8", "BRIDGE_IDENTITY_FILE": str(artifacts / "identity.json"),
                    "PYTHONDONTWRITEBYTECODE": "1",
                    "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null",
-                   "BUILD_RTC_LAN_CHILD": "1", "BUILD_RTC_LAN_READY": str(artifacts / "bridge-ready")}
+                   "BUILD_RTC_LAN_CHILD": "1", "BUILD_RTC_LAN_READY": str(artifacts / "bridge-ready"),
+                   "BUILD_RTC_LAN_FINISHED": str(artifacts / "bridge-finished")}
     Path(environment["HOME"]).mkdir(exist_ok=True)
     if os.environ.get("BUILD_RTC_LAN_BASELINE"):
         environment["BUILD_RTC_LAN_BASELINE"] = "1"
+    mode = os.environ.get("BUILD_RTC_LAN_MODE", "delayed")
+    assert mode in {"delayed", "early-unresolved", "far-edge-unresolved", "far-edge-pressure", "unresolved", "late-unresolved", "large-subnet"}, f"unknown fixture mode: {mode}"
+    environment["BUILD_RTC_LAN_MODE"] = mode
+    if os.environ.get("BUILD_RTC_LAN_SWEEP_BASELINE"):
+        environment["BUILD_RTC_LAN_SWEEP_BASELINE"] = "1"
+    wide = mode in {"far-edge-unresolved", "far-edge-pressure"}
+    prefix = 21 if mode == "large-subnet" else 22 if wide else 24
+    phone = "10.72.3.254" if wide else "10.72.0.2"
+    environment["BUILD_RTC_LAN_PHONE_IP"] = phone
     processes = []
     logs = []
 
@@ -63,7 +102,7 @@ def inside(binary, artifacts):
         run("ip", "link", "set", "lo", "up")
         run("ip", "link", "add", "eth0", "type", "veth", "peer", "name", "browser0")
         run("ip", "link", "set", "browser0", "netns", str(peer))
-        run("ip", "addr", "add", "10.72.0.1/24", "dev", "eth0")
+        run("ip", "addr", "add", f"10.72.0.1/{prefix}", "dev", "eth0")
         run("ip", "link", "set", "eth0", "up")
         # Enable conntrack before opening signaling, then tighten the policy
         # after that TCP connection is established.
@@ -75,11 +114,19 @@ table inet bridge_firewall {
 }
 """)
         run(*namespace_command(peer, "ip", "link", "set", "browser0", "name", "eth0"))
-        run(*namespace_command(peer, "ip", "addr", "add", "10.72.0.2/24", "dev", "eth0"))
+        run(*namespace_command(peer, "ip", "addr", "add", f"{phone}/{prefix}", "dev", "eth0"))
         run(*namespace_command(peer, "ip", "link", "set", "lo", "up"))
+        run(*namespace_command(peer, "ip", "addr", "add", "198.18.0.1/32", "dev", "lo"))
+        run(*namespace_command(peer, "ip", "addr", "add", "203.0.113.2/32", "dev", "lo"))
         run(*namespace_command(peer, "ip", "link", "set", "eth0", "up"))
         run(*namespace_command(peer, "ip", "route", "add", "default", "via", "10.72.0.1"))
+        run("ip", "route", "add", "198.18.0.1/32", "via", phone)
         run(*namespace_command(peer, "nft", "-f", "-"), input="""
+table ip turn_nat {
+ chain postrouting { type nat hook postrouting priority 100; policy accept;
+   ip saddr 10.72.0.2 ip daddr 198.18.0.1 ip protocol udp snat to 203.0.113.2
+ }
+}
 table inet delay_mdns {
  chain output { type filter hook output priority 0; policy accept;
  }
@@ -88,7 +135,7 @@ table inet hold_checks {
  chain output { type filter hook output priority 0; policy accept;
  }
 }
-""")
+""".replace("10.72.0.2", phone))
         network = start("network", namespace_command(peer, "python3", str(HERE / "network.py"), str(artifacts)))
         wait_file(artifacts / "network-ready", network)
         bridge = start("bridge", [str(binary), "late_mdns_host_is_checked_before_the_spa_restarts_ice", "--ignored", "--exact", "--nocapture"])
@@ -109,7 +156,24 @@ table inet bridge_firewall {
 }
 """)
         (artifacts / "firewall-ready").write_text("ready")
-        result = browser.wait(timeout=65)
+        if mode == "far-edge-pressure":
+            samples = []
+            deadline = time.monotonic() + 65
+            while browser.poll() is None:
+                if time.monotonic() >= deadline:
+                    raise subprocess.TimeoutExpired(browser.args, 65)
+                sample = sample_host_pressure(artifacts)
+                if sample is not None:
+                    samples.append(sample)
+                    temporary = artifacts / "pressure.json.tmp"
+                    temporary.write_text(json.dumps(samples))
+                    temporary.replace(artifacts / "pressure.json")
+                time.sleep(0.25)
+            result = browser.returncode
+        else:
+            result = browser.wait(timeout=65)
+        if result == 0:
+            wait_file(artifacts / "bridge-finished", bridge, seconds=3)
         run("nft", "-j", "list", "ruleset")
         assert result == 0, f"Chromium check exit {result}; artifacts {artifacts}"
     finally:

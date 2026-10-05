@@ -1,11 +1,13 @@
 //! The transport ledger: what happened to each client session's wire, as the
 //! bridge saw it (`planning/v2/Transport Telemetry Spec.md`).
 //!
-//! Four events, one line each, content-free — a session id, a word, and for a
+//! Five events, one line each, content-free — a session id, a word, and for a
 //! `carrying` the candidate types the pair won on. The registry records the
 //! session's life (`minted`, `channels_lost`, `ended`); the peer transport records
-//! every path it carries on (`carrying`), the first time and after every ICE
-//! restart. Where the events go is a sink behind [`TransportLedger`]: stderr
+//! every path it carries on (`carrying`) and each accepted change in ICE
+//! credentials (`ice_restart`). The latter is internal to the bridge, not an
+//! event reported to the control API. Where events go is a sink behind
+//! [`TransportLedger`]: stderr
 //! on every bridge, and whatever else is installed beside it.
 
 use std::collections::HashMap;
@@ -36,9 +38,13 @@ pub enum TransportEvent {
     /// The registry admitted a new session (not a carrier re-attach). It is on
     /// the relay from here.
     Minted,
+    /// The live peer accepted changed remote ICE credentials. An attempt that
+    /// never connects still counts; the initial offer and connected-state
+    /// recoveries with unchanged credentials do not. Internal to the bridge.
+    IceRestart,
     /// The session's peer connection reached `Connected`: the first time, and
-    /// again after every ICE restart. `detail` is the pair as the peer names it
-    /// (`host/relay candidates (TURN, billed)`), for the log line.
+    /// again after ICE restarts or connectivity recovers. `detail` is the pair
+    /// as the peer names it (`host/relay candidates (TURN, billed)`), for the log line.
     Carrying { path: TransportPath, detail: String },
     /// The session's last DataChannel carrier closed while the session lives:
     /// an ICE restart is under way, or the session is about to end. It is not a
@@ -51,10 +57,11 @@ pub enum TransportEvent {
 }
 
 impl TransportEvent {
-    /// The wire word for this event.
+    /// The ledger word for this event.
     pub fn name(&self) -> &'static str {
         match self {
             TransportEvent::Minted => "minted",
+            TransportEvent::IceRestart => "ice_restart",
             TransportEvent::Carrying { .. } => "carrying",
             TransportEvent::ChannelsLost => "channels_lost",
             TransportEvent::Ended => "ended",
@@ -84,6 +91,7 @@ pub trait TransportLedger: Send + Sync {
 pub fn render(session_id: &str, event: &TransportEvent) -> String {
     match event {
         TransportEvent::Minted => format!("transport: session {session_id} minted over the relay"),
+        TransportEvent::IceRestart => format!("transport: session {session_id} ICE restarted"),
         TransportEvent::Carrying { detail, .. } => {
             format!("rtc: session {session_id} carrying over {detail}")
         }
@@ -153,7 +161,7 @@ struct Tally {
     direct: Option<Duration>,
     turn: Option<Duration>,
     path: Option<TransportPath>,
-    carryings: u32,
+    ice_restarts: u32,
     channel_losses: u32,
     pings: u64,
     last_ping: Option<Instant>,
@@ -168,7 +176,7 @@ impl Tally {
             direct: None,
             turn: None,
             path: None,
-            carryings: 0,
+            ice_restarts: 0,
             channel_losses: 0,
             pings: 0,
             last_ping: None,
@@ -202,7 +210,7 @@ impl Tally {
         format!(
             "transport: session {session_id} summary: lived {}s, {carried}, {}, {}, {}, {} over {}s",
             now.duration_since(self.minted_at).as_secs(),
-            counted(self.carryings.saturating_sub(1).into(), "ICE restart", "ICE restarts"),
+            counted(self.ice_restarts.into(), "ICE restart", "ICE restarts"),
             counted(self.channel_losses.into(), "channel loss", "channel losses"),
             counted(self.pings, "ping", "pings"),
             counted(self.gaps, "gap", "gaps"),
@@ -267,7 +275,9 @@ impl TransportLedger for SummaryLedger {
                 tally.stop_carrying(now);
                 tally.carrying_since = Some(now);
                 tally.path = Some(path);
-                tally.carryings += 1;
+            }
+            TransportEvent::IceRestart => {
+                tally.ice_restarts = tally.ice_restarts.saturating_add(1);
             }
             TransportEvent::ChannelsLost => {
                 tally.stop_carrying(now);
@@ -392,7 +402,7 @@ mod tests {
         tally.stop_carrying(start + Duration::from_secs(7));
         tally.path = Some(TransportPath::Direct);
         tally.carrying_since = Some(start + Duration::from_secs(7));
-        tally.carryings = 2;
+        tally.ice_restarts = 1;
         let line = tally.line("upgrade", PING_GAP, start + Duration::from_secs(18));
         assert!(
             line.contains("carried 7s over turn and 11s over direct"),
@@ -424,14 +434,20 @@ mod tests {
             "transport: session sess-1 lost its last channel"
         );
         assert_eq!(
+            render("sess-1", &TransportEvent::IceRestart),
+            "transport: session sess-1 ICE restarted"
+        );
+        assert_eq!(
             render("sess-1", &TransportEvent::Ended),
             "transport: session sess-1 ended"
         );
     }
 
     #[test]
-    fn the_wire_words_are_the_four_the_api_accepts() {
+    fn ledger_words_keep_the_public_events_and_name_the_internal_restart() {
         assert_eq!(TransportEvent::Minted.name(), "minted");
+        assert_eq!(TransportEvent::IceRestart.name(), "ice_restart");
+        assert_eq!(TransportEvent::IceRestart.path(), None);
         assert_eq!(TransportEvent::ChannelsLost.name(), "channels_lost");
         assert_eq!(TransportEvent::Ended.name(), "ended");
         let carrying = TransportEvent::Carrying {
@@ -534,9 +550,51 @@ mod tests {
         let line = &said[0];
         assert!(
             line.starts_with("transport: session sess-1 summary: lived 0s, carried 0s over turn, ")
-                && line.ends_with(", 1 ICE restart, 1 channel loss, 4 pings, 1 gap over 0s"),
+                && line.ends_with(", 0 ICE restarts, 1 channel loss, 4 pings, 1 gap over 0s"),
             "{line}"
         );
+    }
+
+    #[test]
+    fn one_actual_restart_is_counted_even_when_no_pair_becomes_connected() {
+        let said: Arc<Mutex<Vec<String>>> = Arc::default();
+        let sink = said.clone();
+        let ledger = SummaryLedger::saying_to(
+            PING_GAP,
+            Arc::new(move |line| sink.lock().unwrap().push(line.to_string())),
+        );
+        ledger.record("unconnected", TransportEvent::Minted);
+        ledger.record("unconnected", TransportEvent::IceRestart);
+        ledger.record("unconnected", TransportEvent::Ended);
+        let said = said.lock().unwrap();
+        assert!(
+            said[0].contains("carried nothing, 1 ICE restart"),
+            "{}",
+            said[0]
+        );
+    }
+
+    #[test]
+    fn returning_to_connected_without_new_credentials_is_not_an_ice_restart() {
+        let said: Arc<Mutex<Vec<String>>> = Arc::default();
+        let sink = said.clone();
+        let ledger = SummaryLedger::saying_to(
+            PING_GAP,
+            Arc::new(move |line| sink.lock().unwrap().push(line.to_string())),
+        );
+        ledger.record("reconnected", TransportEvent::Minted);
+        for _ in 0..3 {
+            ledger.record(
+                "reconnected",
+                TransportEvent::Carrying {
+                    path: TransportPath::Turn,
+                    detail: "host/relay candidates (TURN, billed)".into(),
+                },
+            );
+        }
+        ledger.record("reconnected", TransportEvent::Ended);
+        let said = said.lock().unwrap();
+        assert!(said[0].contains("0 ICE restarts"), "{}", said[0]);
     }
 
     /// A session that never carried says so, and one the summary never saw

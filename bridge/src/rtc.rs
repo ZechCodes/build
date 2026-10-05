@@ -638,10 +638,17 @@ impl SessionPeer for WebrtcPeer {
         let previous_stats = connection
             .get_stats(std::time::Instant::now(), StatsSelector::None)
             .await;
-        self.remote
+        let restarting = self
+            .remote
             .begin_with_stats(&allowed_offer, Some(&previous_stats))
             .await;
         connection.set_remote_description(offer).await?;
+        self.remote.accept_offer(&allowed_offer).await;
+        if restarting {
+            self.intake
+                .ledger()
+                .record(&self.session_id, TransportEvent::IceRestart);
+        }
         self.remote.observe_offer(&allowed_offer).await;
         let answer = connection.create_answer(None).await?;
         let sdp = answer.sdp.clone();
@@ -2317,6 +2324,138 @@ mod stall_tests {
 mod ice_diagnostic_tests {
     use super::*;
     use log::Log;
+
+    fn with_ice_credentials(offer: &str, fragment: &str, password: &str) -> String {
+        offer
+            .split_inclusive('\n')
+            .map(|line| {
+                if line.starts_with("a=ice-ufrag:") {
+                    format!("a=ice-ufrag:{fragment}\r\n")
+                } else if line.starts_with("a=ice-pwd:") {
+                    format!("a=ice-pwd:{password}\r\n")
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn rejected_credentials_later_accepted_count_exactly_one_restart() {
+        use crate::transport_ledger::SummaryLedger;
+        use rtc::peer_connection::RTCPeerConnectionBuilder;
+
+        let said: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        let sink = said.clone();
+        let ledger = SummaryLedger::saying_to(
+            crate::transport_ledger::PING_GAP,
+            Arc::new(move |line| sink.lock().unwrap().push(line.to_string())),
+        );
+        let (handler, _) = crate::carrier::testing::reporting_handler();
+        let intake = FrameIntake::with_ledger(
+            handler,
+            crate::transport::generate_transport_keypair(),
+            ledger.clone(),
+        );
+        let peer = WebrtcPeer {
+            session_id: "accepted-retry".into(),
+            intake,
+            policy: Arc::new(IcePolicy::default()),
+            signaling: Arc::default(),
+            remote: remote::RemoteCandidates::new(
+                "accepted-retry".into(),
+                None,
+                Arc::new(|_| {}),
+                Arc::new(mdns::LanAddressCache::new()),
+                None,
+            ),
+            check_pending_direct_pairs: true,
+            negotiation: tokio::sync::Mutex::new(None),
+        };
+        let signaling = SessionSender::detached("accepted-retry");
+        let mut browser = RTCPeerConnectionBuilder::new().build().unwrap();
+        browser.create_data_channel("app", None).unwrap();
+        let initial = browser.create_offer(None).unwrap().sdp;
+        peer.answer(&initial, &[], signaling.clone()).await.unwrap();
+        let upgraded = with_ice_credentials(&initial, "upgrade", "upgrade-password-0123456789");
+        let refused = format!("{upgraded}a=candidate:not-a-candidate\r\n");
+        assert!(peer.answer(&refused, &[], signaling.clone()).await.is_err());
+        let connection = peer
+            .negotiation
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .connection
+            .clone();
+        connection
+            .set_remote_description(RTCSessionDescription::rollback(None).unwrap())
+            .await
+            .unwrap();
+        peer.answer(&upgraded, &[], signaling.clone())
+            .await
+            .unwrap();
+        peer.answer(&upgraded, &[], signaling).await.unwrap();
+        peer.close().await;
+        ledger.record("accepted-retry", TransportEvent::Ended);
+        let said = said.lock().unwrap();
+        assert!(
+            said[0].contains("carried nothing, 1 ICE restart"),
+            "{}",
+            said[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn accepted_upgrade_and_recovery_credentials_count_without_a_connected_pair() {
+        use crate::transport_ledger::SummaryLedger;
+        use rtc::peer_connection::RTCPeerConnectionBuilder;
+
+        let said: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        let sink = said.clone();
+        let ledger = SummaryLedger::saying_to(
+            crate::transport_ledger::PING_GAP,
+            Arc::new(move |line| sink.lock().unwrap().push(line.to_string())),
+        );
+        let (handler, _) = crate::carrier::testing::reporting_handler();
+        let intake = FrameIntake::with_ledger(
+            handler,
+            crate::transport::generate_transport_keypair(),
+            ledger.clone(),
+        );
+        let factory = WebrtcPeerFactory::new(intake, IcePolicy::default());
+        let peer = factory.open("restart-count").unwrap();
+        let signaling = SessionSender::detached("restart-count");
+        let mut browser = RTCPeerConnectionBuilder::new().build().unwrap();
+        browser.create_data_channel("app", None).unwrap();
+        let initial = browser.create_offer(None).unwrap().sdp;
+        peer.answer(&initial, &[], signaling.clone()).await.unwrap();
+        peer.answer(&initial, &[], signaling.clone()).await.unwrap();
+        let upgraded = with_ice_credentials(&initial, "upgrade", "upgrade-password-0123456789");
+        peer.answer(&upgraded, &[], signaling.clone())
+            .await
+            .unwrap();
+        let recovery = with_ice_credentials(&initial, "recovery", "recovery-password-0123456789");
+        peer.answer(&recovery, &[], signaling.clone())
+            .await
+            .unwrap();
+        let refused = upgraded
+            .lines()
+            .filter(|line| !line.starts_with("a=ice-pwd:"))
+            .map(|line| format!("{line}\r\n"))
+            .collect::<String>();
+        assert!(peer.answer(&refused, &[], signaling.clone()).await.is_err());
+        peer.close().await;
+        peer.answer(&initial, &[], signaling).await.unwrap();
+        peer.close().await;
+        ledger.record("restart-count", TransportEvent::Ended);
+        let said = said.lock().unwrap();
+        assert!(
+            said[0].contains("carried nothing, 2 ICE restarts"),
+            "{}",
+            said[0]
+        );
+    }
 
     /// The setup line names what the agent was built with, after policy, and
     /// says whether each server can authenticate an allocation — without ever

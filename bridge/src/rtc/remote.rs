@@ -106,6 +106,7 @@ struct State {
     generation: u64,
     closed: bool,
     credentials: Option<Vec<IceCredentials>>,
+    accepted_credentials: Option<Vec<IceCredentials>>,
     counts: CandidateCounts,
     checks: DirectChecks,
     seen: HashSet<String>,
@@ -237,12 +238,24 @@ impl RemoteCandidates {
     #[cfg(test)]
     pub(super) async fn begin(&self, offer: &str) {
         self.begin_with_stats(offer, None).await;
+        self.accept_offer(offer).await;
     }
-    pub(super) async fn begin_with_stats(&self, offer: &str, stats: Option<&RTCStatsReport>) {
+    /// Cancel discovery before changing the native generation, and compare
+    /// against the last accepted credentials. Rejected offers may change
+    /// discovery without becoming the restart baseline.
+    pub(super) async fn begin_with_stats(
+        &self,
+        offer: &str,
+        stats: Option<&RTCStatsReport>,
+    ) -> bool {
         let mut state = self.state.lock().await;
         let credentials = ice_credentials(offer);
+        let restarting = state
+            .accepted_credentials
+            .as_ref()
+            .is_some_and(|accepted| accepted != &credentials);
         if !state.closed && state.credentials.as_ref() == Some(&credentials) {
-            return;
+            return restarting;
         }
         self.observe_checks(&mut state, stats);
         self.summarize(&state, "restart");
@@ -250,6 +263,11 @@ impl RemoteCandidates {
         state.closed = false;
         state.credentials = Some(credentials);
         self.report(&mut state, "generation", None);
+        restarting
+    }
+    /// Advance the restart baseline only after native description acceptance.
+    pub(super) async fn accept_offer(&self, offer: &str) {
+        self.state.lock().await.accepted_credentials = Some(ice_credentials(offer));
     }
     #[cfg(test)]
     pub(super) async fn close(&self) {
@@ -262,6 +280,7 @@ impl RemoteCandidates {
         state.cancel();
         state.closed = true;
         state.credentials = None;
+        state.accepted_credentials = None;
         state.resolved.clear();
     }
     fn observe_checks(&self, state: &mut State, stats: Option<&RTCStatsReport>) {
@@ -665,6 +684,24 @@ mod tests {
         for _ in 0..20 {
             tokio::task::yield_now().await;
         }
+    }
+
+    #[tokio::test]
+    async fn only_a_changed_live_generation_reports_a_restart() {
+        let (remote, _, _, _) = fixture(Err("unused".into()));
+        let initial = offer("initial", "initial-password");
+        assert!(!remote.begin_with_stats(&initial, None).await);
+        remote.accept_offer(&initial).await;
+        assert!(!remote.begin_with_stats(&initial, None).await);
+        let upgraded = offer("upgrade", "upgrade-password");
+        assert!(remote.begin_with_stats(&upgraded, None).await);
+        remote.accept_offer(&upgraded).await;
+        assert!(!remote.begin_with_stats(&upgraded, None).await);
+        let recovery = offer("recovery", "recovery-password");
+        assert!(remote.begin_with_stats(&recovery, None).await);
+        remote.accept_offer(&recovery).await;
+        remote.close().await;
+        assert!(!remote.begin_with_stats(&initial, None).await);
     }
 
     #[tokio::test]

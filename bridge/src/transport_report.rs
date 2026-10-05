@@ -153,6 +153,11 @@ impl TransportReporter {
 
 impl TransportLedger for TransportReporter {
     fn record(&self, session_id: &str, event: TransportEvent) {
+        // Credential transitions are bridge diagnostics. The control API's
+        // transport contract remains its four existing lifecycle/path events.
+        if matches!(event, TransportEvent::IceRestart) {
+            return;
+        }
         // A reporter whose task is gone drops the event: the stderr ledger
         // beside it still has it, and nothing above waits on this. A full
         // queue drops it too, and says so at every doubling of the count.
@@ -220,6 +225,20 @@ impl Sender {
 mod tests {
     use super::*;
     use crate::transport_ledger::TransportPath;
+
+    #[test]
+    fn restart_events_never_enter_the_control_report_queue() {
+        let (queue, mut reports) = mpsc::channel(4);
+        let reporter = TransportReporter {
+            queue,
+            dropped: AtomicU64::new(0),
+        };
+        reporter.record("sess-1", TransportEvent::IceRestart);
+        reporter.record("sess-1", TransportEvent::Minted);
+        assert_eq!(reports.try_recv().unwrap().1, TransportEvent::Minted);
+        assert!(reports.try_recv().is_err());
+        assert_eq!(reporter.dropped(), 0);
+    }
 
     /// The exact string `buildapp.transport_report.report_challenge` produces,
     /// and every field bound into it.

@@ -1,6 +1,6 @@
 //! Read-only, bounded neighbor hints; callers retain subnet authorization.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::{
     io,
@@ -17,6 +17,50 @@ const MAX_ADDRESSES: usize = 1024;
 const MAX_DURATION: Duration = Duration::from_millis(5);
 const DATAGRAM_BYTES: usize = 16 * 1024;
 
+#[path = "host_neighbor_table.rs"]
+mod table;
+
+/// Active-plan observations only. No Debug/Serialize implementation exposes
+/// the interface addresses through logs or diagnostic payloads.
+#[derive(Clone)]
+pub(super) struct ScoutSnapshot {
+    pub observed_at: Instant,
+    pub usable: Vec<Ipv4Addr>,
+    pub incomplete: Vec<Ipv4Addr>,
+    pub failed: Vec<Ipv4Addr>,
+    pub netns_total: usize,
+    pub incomplete_total: usize,
+    pub table_entries: usize,
+    pub gc_thresh2: usize,
+    pub gc_thresh3: usize,
+}
+
+/// Both dumps share work and time bounds. Table pressure is global, while
+/// destination states and the incomplete count belong to the current netns.
+pub(super) fn scout_snapshot_until(
+    interface_index: u32,
+    deadline: Instant,
+) -> io::Result<ScoutSnapshot> {
+    let observed_at = Instant::now();
+    let deadline = validated_deadline(interface_index, observed_at, deadline)?;
+    let mut dump = Dump::scout();
+    dump.deadline = Some(deadline);
+    read_dump(&mut dump, interface_index, &request(0))?;
+    read_dump(&mut dump, interface_index, &table_request())?;
+    let pressure = dump.table.finish()?;
+    Ok(ScoutSnapshot {
+        observed_at,
+        usable: dump.addresses,
+        incomplete: dump.incomplete,
+        failed: dump.failed,
+        netns_total: dump.netns_total,
+        incomplete_total: dump.incomplete_total,
+        table_entries: pressure.entries,
+        gc_thresh2: pressure.gc_thresh2,
+        gc_thresh3: pressure.gc_thresh3,
+    })
+}
+
 /// Consume only immediately available RTM_GETNEIGH replies. Incomplete dumps
 /// are discarded; hints never authorize targets outside the caller's subnet.
 #[cfg(test)]
@@ -26,24 +70,38 @@ pub(super) fn snapshot(interface_index: u32) -> io::Result<Vec<Ipv4Addr>> {
 
 /// The driver shares one absolute deadline across its interface preparations.
 pub(super) fn snapshot_until(interface_index: u32, deadline: Instant) -> io::Result<Vec<Ipv4Addr>> {
+    let deadline = validated_deadline(interface_index, Instant::now(), deadline)?;
+    let mut dump = Dump::new();
+    dump.deadline = Some(deadline);
+    read_dump(&mut dump, interface_index, &request(interface_index))?;
+    Ok(dump.addresses)
+}
+
+fn validated_deadline(
+    interface_index: u32,
+    now: Instant,
+    deadline: Instant,
+) -> io::Result<Instant> {
     if interface_index == 0 || interface_index > i32::MAX as u32 {
         return Err(io::ErrorKind::InvalidInput.into());
     }
-    let now = Instant::now();
     if now >= deadline {
         return Err(io::ErrorKind::TimedOut.into());
     }
-    let deadline = deadline.min(now + MAX_DURATION);
+    Ok(deadline.min(now + MAX_DURATION))
+}
+
+fn read_dump(dump: &mut Dump, interface_index: u32, request: &[u8]) -> io::Result<()> {
+    dump.check_deadline()?;
     let socket = open_socket()?;
-    send_request(&socket, interface_index)?;
-    let mut dump = Dump::new();
-    dump.deadline = Some(deadline);
+    dump.check_deadline()?;
+    send_request(&socket, request)?;
     let mut buffer = [0u8; DATAGRAM_BYTES];
     loop {
         dump.check_deadline()?;
         let count = receive(&socket, &mut buffer)?;
         if dump.consume(&buffer[..count], interface_index)? {
-            return Ok(dump.addresses);
+            return Ok(());
         }
     }
 }
@@ -90,8 +148,17 @@ fn request(interface_index: u32) -> [u8; HEADER_LEN + NEIGHBOR_LEN] {
     request
 }
 
-fn send_request(socket: &OwnedFd, interface_index: u32) -> io::Result<()> {
-    let request = request(interface_index);
+fn table_request() -> [u8; HEADER_LEN + 4] {
+    let mut request = [0u8; HEADER_LEN + 4];
+    request[..4].copy_from_slice(&((HEADER_LEN + 4) as u32).to_ne_bytes());
+    request[4..6].copy_from_slice(&libc::RTM_GETNEIGHTBL.to_ne_bytes());
+    request[6..8].copy_from_slice(&((libc::NLM_F_REQUEST | libc::NLM_F_DUMP) as u16).to_ne_bytes());
+    request[8..12].copy_from_slice(&SEQUENCE.to_ne_bytes());
+    request[HEADER_LEN] = libc::AF_INET as u8;
+    request
+}
+
+fn send_request(socket: &OwnedFd, request: &[u8]) -> io::Result<()> {
     // SAFETY: sockaddr_nl and the fixed request are initialized for the whole
     // call. Port/group zero address the kernel only; GET never mutates entries.
     let mut kernel: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
@@ -159,9 +226,16 @@ fn validate_sender(sender: &libc::sockaddr_nl, length: libc::socklen_t) -> io::R
 struct Dump {
     addresses: Vec<Ipv4Addr>,
     seen: HashSet<Ipv4Addr>,
+    states: HashMap<Ipv4Addr, u16>,
     bytes: usize,
     messages: usize,
     deadline: Option<Instant>,
+    collect_pressure: bool,
+    incomplete: Vec<Ipv4Addr>,
+    failed: Vec<Ipv4Addr>,
+    netns_total: usize,
+    incomplete_total: usize,
+    table: table::Table,
 }
 
 impl Dump {
@@ -169,9 +243,23 @@ impl Dump {
         Self {
             addresses: Vec::new(),
             seen: HashSet::new(),
+            states: HashMap::new(),
             bytes: 0,
             messages: 0,
             deadline: None,
+            collect_pressure: false,
+            incomplete: Vec::new(),
+            failed: Vec::new(),
+            netns_total: 0,
+            incomplete_total: 0,
+            table: table::Table::new(),
+        }
+    }
+
+    fn scout() -> Self {
+        Self {
+            collect_pressure: true,
+            ..Self::new()
         }
     }
 
@@ -234,6 +322,10 @@ impl Dump {
                 self.neighbor(payload, interface_index)?;
                 Ok(false)
             }
+            _ if kind == libc::RTM_NEWNEIGHTBL && self.collect_pressure => {
+                self.table.observe(payload)?;
+                Ok(false)
+            }
             _ => Ok(false),
         }
     }
@@ -244,8 +336,24 @@ impl Dump {
         }
         let owner = i32::from_ne_bytes(payload[4..8].try_into().unwrap());
         let state = u16::from_ne_bytes(payload[8..10].try_into().unwrap());
-        if payload[0] != libc::AF_INET as u8
-            || owner <= 0
+        if payload[0] != libc::AF_INET as u8 {
+            return Ok(());
+        }
+        if self.collect_pressure {
+            if owner <= 0 {
+                return Err(invalid_dump());
+            }
+            self.netns_total += 1;
+            self.incomplete_total += usize::from(state & libc::NUD_INCOMPLETE != 0);
+            // Validate every counted IPv4 entry, including background entries,
+            // without retaining addresses owned by unrelated interfaces.
+            let address = destination(&payload[NEIGHBOR_LEN..])?.ok_or_else(invalid_dump)?;
+            if owner as u32 == interface_index {
+                self.record_state(address, state)?;
+            }
+            return Ok(());
+        }
+        if owner <= 0
             || owner as u32 != interface_index
             || !matches!(
                 state,
@@ -266,28 +374,54 @@ impl Dump {
         }
         Ok(())
     }
+
+    fn record_state(&mut self, address: Ipv4Addr, state: u16) -> io::Result<()> {
+        if let Some(previous) = self.states.get(&address) {
+            if *previous != state {
+                return Err(invalid_dump());
+            }
+            return Ok(());
+        }
+        if self.states.len() == MAX_ADDRESSES {
+            return Err(invalid_dump());
+        }
+        self.states.insert(address, state);
+        let target = match state {
+            libc::NUD_REACHABLE | libc::NUD_STALE | libc::NUD_DELAY => &mut self.addresses,
+            libc::NUD_INCOMPLETE => &mut self.incomplete,
+            libc::NUD_FAILED => &mut self.failed,
+            _ => return Ok(()),
+        };
+        target.push(address);
+        Ok(())
+    }
 }
 
 fn destination(mut data: &[u8]) -> io::Result<Option<Ipv4Addr>> {
     let mut address = None;
     while !data.is_empty() {
-        if data.len() < 4 {
-            return Err(invalid_dump());
-        }
-        let length = u16::from_ne_bytes(data[..2].try_into().unwrap()) as usize;
-        let kind = u16::from_ne_bytes(data[2..4].try_into().unwrap());
-        if length < 4 || length > data.len() {
-            return Err(invalid_dump());
-        }
+        let (kind, value, remaining) = attribute(data)?;
         if kind == libc::NDA_DST {
-            if length != 8 || address.is_some() {
+            if value.len() != 4 || address.is_some() {
                 return Err(invalid_dump());
             }
-            address = Some(Ipv4Addr::new(data[4], data[5], data[6], data[7]));
+            address = Some(Ipv4Addr::new(value[0], value[1], value[2], value[3]));
         }
-        data = advance(data, length)?;
+        data = remaining;
     }
     Ok(address)
+}
+
+fn attribute(data: &[u8]) -> io::Result<(u16, &[u8], &[u8])> {
+    if data.len() < 4 {
+        return Err(invalid_dump());
+    }
+    let length = u16::from_ne_bytes(data[..2].try_into().unwrap()) as usize;
+    if length < 4 || length > data.len() {
+        return Err(invalid_dump());
+    }
+    let kind = u16::from_ne_bytes(data[2..4].try_into().unwrap());
+    Ok((kind, &data[4..length], advance(data, length)?))
 }
 
 fn status(payload: &[u8], acknowledgement: bool) -> io::Result<()> {
@@ -621,5 +755,135 @@ mod tests {
         assert_eq!(data[HEADER_LEN], libc::AF_INET as u8);
         assert_eq!(u32::from_ne_bytes(data[20..24].try_into().unwrap()), OWNER);
         assert!(data[24..].iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn scout_counts_namespace_pressure_but_retains_only_exact_interface_states() {
+        let mut dump = Dump::scout();
+        let mut data = Vec::new();
+        for (family, owner, state, octet) in [
+            (2, OWNER, 2, 1),
+            (2, OWNER, 4, 2),
+            (2, OWNER, 8, 3),
+            (2, OWNER, 1, 4),
+            (2, OWNER, 32, 5),
+            (2, OWNER, 16, 6),
+            (2, OWNER + 1, 1, 7),
+            (2, OWNER + 1, 32, 8),
+            (10, OWNER, 1, 9),
+        ] {
+            data.extend(neighbor(
+                family,
+                owner,
+                state,
+                Ipv4Addr::new(10, 0, 0, octet),
+            ));
+        }
+        dump.consume(&data, OWNER).unwrap();
+        assert_eq!(dump.netns_total, 8);
+        assert_eq!(dump.incomplete_total, 2);
+        assert_eq!(
+            dump.addresses,
+            vec![
+                Ipv4Addr::new(10, 0, 0, 1),
+                Ipv4Addr::new(10, 0, 0, 2),
+                Ipv4Addr::new(10, 0, 0, 3)
+            ]
+        );
+        assert_eq!(dump.incomplete, vec![Ipv4Addr::new(10, 0, 0, 4)]);
+        assert_eq!(dump.failed, vec![Ipv4Addr::new(10, 0, 0, 5)]);
+    }
+
+    #[test]
+    fn unrelated_interface_pressure_does_not_consume_own_address_budget() {
+        let mut dump = Dump::scout();
+        for value in 0..MAX_ADDRESSES + 1 {
+            dump.consume(
+                &neighbor(2, OWNER + 1, 1, Ipv4Addr::from(0x0a000001 + value as u32)),
+                OWNER,
+            )
+            .unwrap();
+        }
+        assert_eq!(dump.netns_total, MAX_ADDRESSES + 1);
+        assert_eq!(dump.incomplete_total, MAX_ADDRESSES + 1);
+        assert!(dump.addresses.is_empty() && dump.incomplete.is_empty() && dump.failed.is_empty());
+        dump.consume(&neighbor(2, OWNER, 2, Ipv4Addr::new(10, 1, 0, 1)), OWNER)
+            .unwrap();
+        assert_eq!(dump.addresses.len(), 1);
+    }
+
+    #[test]
+    fn own_incomplete_and_failed_addresses_share_the_unique_address_cap() {
+        let mut dump = Dump::scout();
+        for value in 0..MAX_ADDRESSES {
+            let state = if value % 2 == 0 { 1 } else { 32 };
+            dump.consume(
+                &neighbor(2, OWNER, state, Ipv4Addr::from(0x0a000001 + value as u32)),
+                OWNER,
+            )
+            .unwrap();
+        }
+        assert_eq!(dump.incomplete.len() + dump.failed.len(), MAX_ADDRESSES);
+        assert!(
+            dump.consume(&neighbor(2, OWNER, 2, Ipv4Addr::new(10, 1, 0, 1)), OWNER)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_scout_expired_budget_fails_before_either_dump() {
+        assert_eq!(
+            scout_snapshot_until(OWNER, Instant::now() - Duration::from_millis(1))
+                .err()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
+    }
+
+    #[test]
+    fn conflicting_destination_states_cannot_authorize_a_real_ice_probe() {
+        let address = Ipv4Addr::new(10, 0, 0, 1);
+        for (first, second) in [(2, 1), (2, 32), (32, 2), (2, 16), (16, 2), (2, 0), (2, 128)] {
+            let mut dump = Dump::scout();
+            dump.consume(&neighbor(2, OWNER, first, address), OWNER)
+                .unwrap();
+            assert_eq!(
+                dump.consume(&neighbor(2, OWNER, second, address), OWNER)
+                    .err()
+                    .unwrap()
+                    .kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+        let mut dump = Dump::scout();
+        dump.consume(&neighbor(2, OWNER, 2, address), OWNER)
+            .unwrap();
+        dump.consume(&neighbor(2, OWNER, 2, address), OWNER)
+            .unwrap();
+        assert_eq!(dump.addresses, vec![address]);
+    }
+
+    #[test]
+    fn both_read_only_dumps_share_message_budget_without_a_reset_at_done() {
+        let mut dump = Dump::scout();
+        for _ in 0..MAX_MESSAGES - 1 {
+            dump.consume(&message(1, 0, SEQUENCE, &[]), OWNER).unwrap();
+        }
+        assert!(dump.consume(&message(3, 0, SEQUENCE, &[]), OWNER).unwrap());
+        assert!(
+            dump.consume(
+                &message(libc::RTM_NEWNEIGHTBL, 2, SEQUENCE, &[2, 0, 0, 0]),
+                OWNER
+            )
+            .is_err()
+        );
+        let data = table_request();
+        assert_eq!(
+            u16::from_ne_bytes(data[4..6].try_into().unwrap()),
+            libc::RTM_GETNEIGHTBL
+        );
+        assert_eq!(data.len(), HEADER_LEN + 4);
+        assert_eq!(data[HEADER_LEN..], [libc::AF_INET as u8, 0, 0, 0]);
     }
 }

@@ -143,8 +143,27 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   // path. Gathering and nomination can precede the browser's connected event.
   let upgradeAsked = false;
   let mdnsResolvedInGeneration = false;
+  let mdnsUnresolvedInGeneration = false;
+  let sweepEligibleInGeneration = false;
+  let bridgeGeneration = null;
   let bridgeCandidateReason = null;
   let lastNoTryReason = null;
+  const clearBridgeGenerationEvidence = () => {
+    mdnsResolvedInGeneration = false;
+    mdnsUnresolvedInGeneration = false;
+    sweepEligibleInGeneration = false;
+    bridgeGeneration = null;
+    bridgeCandidateReason = null;
+    lastNoTryReason = null;
+  };
+  const belongsToBridgeGeneration = (detail) => {
+    if (bridgeGeneration === null) return true;
+    return [detail.generation, detail.sweep?.generation].every((generation) => generation === undefined || generation === bridgeGeneration);
+  };
+  const bridgeUpgradeReason = () => {
+    if (mdnsResolvedInGeneration) return "mdns-resolved";
+    return sweepEligibleInGeneration && mdnsUnresolvedInGeneration ? "conntrack-sweep" : null;
+  };
   const observed = [];
   const observe = (target, type, listener) => {
     target.addEventListener(type, listener);
@@ -191,17 +210,21 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   const receiveCandidateDiagnostic = (push) => {
     const detail = candidateDiagnostic(push);
     if (!detail) return;
+    diagnostic("candidate-diagnostics", detail);
     // Ordered on the bound channel before this ICE generation's candidates.
     // It clears any old resolver result queued while recovery was starting.
     if (detail.phase === "generation") {
-      mdnsResolvedInGeneration = false;
-      lastNoTryReason = null;
+      clearBridgeGenerationEvidence();
+      bridgeGeneration = detail.generation ?? null;
+      return;
     }
-    bridgeCandidateReason = detail.phase === "generation" ? null : detail.reason;
+    if (!belongsToBridgeGeneration(detail)) return;
+    bridgeCandidateReason = detail.reason;
+    mdnsUnresolvedInGeneration = detail.candidates.mdns_pending > 0 || detail.candidates.mdns_unresolved > 0;
+    if (detail.sweep) sweepEligibleInGeneration = detail.sweep.eligible && detail.sweep.status !== "skipped";
     // A newly resolved LAN address warrants fresh browser nomination even
     // when the old browser checklist cannot show that pair as succeeded.
     if (detail.phase === "mdns-resolved" && detail.candidates.mdns_resolved > 0) mdnsResolvedInGeneration = true;
-    diagnostic("candidate-diagnostics", detail);
   };
   const pushHandlers = new Map([
     ["rtc.ice", (push) => holdInbound.offer(push.candidate)],
@@ -273,7 +296,9 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
 
   /** After TURN has been steady for 20 s, keep watching for direct evidence.
    *  A succeeded alternative pair warrants one re-nomination attempt. Late
-   *  mDNS resolution also warrants fresh browser checks and nomination.
+   *  mDNS resolution also warrants fresh browser checks and nomination. An
+   *  eligible unresolved host sweep warrants a fresh generation too: browser
+   *  host pairs that exhausted their checks cannot be revived in place.
    *  With neither evidence, the working TURN path is left alone. */
   // One optional upgrade attempt for this peer link's entire lifetime.
   // Recovery reuses the peer and does not renew that budget.
@@ -289,7 +314,8 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     if (!mayTryDirectPair() || generation !== negotiationGeneration) return null;
     if (status.worthTrying) return status.reason;
     const noBrowserHosts = browserOffersNoHosts(localCandidates, stats);
-    if (mdnsResolvedInGeneration && !noBrowserHosts) return "mdns-resolved";
+    const discoveryReason = noBrowserHosts ? null : bridgeUpgradeReason();
+    if (discoveryReason) return discoveryReason;
     const reason = noBrowserHosts ? "browser-no-host-candidates" : directPairNoTryReason(status.reason, bridgeCandidateReason);
     if (reason !== lastNoTryReason) diagnostic("direct-pair", { state: "none-to-try", reason });
     lastNoTryReason = reason;
@@ -438,9 +464,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
       holdInbound.stopHolding();
       holdOutbound.stopHolding();
     }
-    mdnsResolvedInGeneration = false;
-    bridgeCandidateReason = null;
-    lastNoTryReason = null;
+    clearBridgeGenerationEvidence();
     try {
       await withinDeadline(openTimeoutMs, async (remaining) => {
         await onFailed();

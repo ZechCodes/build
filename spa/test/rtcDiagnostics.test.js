@@ -123,6 +123,16 @@ describe("candidate diagnostic privacy", () => {
       .toEqual({ ...baseSweep, reason: "ambiguous-interface" });
   });
 
+  it.each(["neighbor-pressure", "neighbor-snapshot-unavailable", "scout-socket-limit"])("preserves the fixed scout pause reason %s without changing eligibility", (reason) => {
+    expect(candidateDiagnostic({
+      reason: "mdns-pending", event: "host-sweep", generation: 2,
+      sweep: { ...baseSweep, reason, neighbors_pending: 12, interface_name: "wlan0", address: "192.168.1.2", error: "private.local was rejected" },
+    })).toEqual({
+      reason: "mdns-pending", phase: "host-sweep", generation: 2, candidates: {},
+      sweep: { ...baseSweep, reason, neighbors_pending: 12 },
+    });
+  });
+
   it("rejects unknown reasons and never copies unknown event text", () => {
     expect(candidateDiagnostic({ reason: "192.168.1.2 failed" })).toBeNull();
     expect(candidateDiagnostic({ reason: "mdns-pending", event: "private.local" }))

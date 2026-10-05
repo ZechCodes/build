@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { candidateDiagnostic, directPairNoTryReason, safeCandidateReason } from "../src/core/rtcDiagnostics.js";
 
+const SCOUT_COUNTERS = ["scout_datagrams_sent", "scout_attempted", "destinations_scouted", "neighbors_pending", "neighbors_pending_peak"];
+const baseSweep = { status: "progress", eligible: true, eligible_unresolved: 1, generation: 2, addresses_sent: 3, reason: null, prflx_followed: false };
+
 describe("candidate diagnostic privacy", () => {
   it("keeps bounded per-host check counts while excluding addresses and arbitrary fields", () => {
     expect(candidateDiagnostic({
@@ -83,6 +86,41 @@ describe("candidate diagnostic privacy", () => {
     const sweep = { status: "stopped", eligible: true, eligible_unresolved: 1, generation: 1, addresses_sent: 0, reason, prflx_followed: false, addresses_attempted: "private.local" };
     expect(candidateDiagnostic({ reason: "mdns-pending", event: "host-sweep", sweep }).sweep)
       .toEqual({ status: "stopped", eligible: true, eligible_unresolved: 1, generation: 1, addresses_sent: 0, reason, prflx_followed: false });
+  });
+
+  it("keeps distinct neighbor scout counters without copying content-bearing fields", () => {
+    const counters = { scout_datagrams_sent: 12, scout_attempted: 15, destinations_scouted: 14, neighbors_pending: 1, neighbors_pending_peak: 2 };
+    expect(candidateDiagnostic({
+      reason: "mdns-pending", event: "host-sweep", generation: 2, candidates: { mdns_pending: 1 },
+      sweep: { ...baseSweep, addresses_attempted: 4, ...counters, neighbor_address: "192.168.1.2", neighbor_state: "FAILED",
+        interface_name: "wlan0", scout_port: 48861, hostname: "private.local", scout_payload: "private session" },
+    })).toEqual({
+      reason: "mdns-pending", phase: "host-sweep", generation: 2, candidates: { mdns_pending: 1 },
+      sweep: { ...baseSweep, addresses_attempted: 4, ...counters },
+    });
+  });
+
+  it.each(SCOUT_COUNTERS)("keeps valid optional %s independently of malformed scout fields", (counter) => {
+    for (const invalid of [-1, 0.5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1, "private.local", null, {}, undefined]) {
+      const others = Object.fromEntries(SCOUT_COUNTERS.filter((field) => field !== counter).map((field) => [field, 0]));
+      expect(candidateDiagnostic({
+        reason: "mdns-pending", event: "host-sweep", generation: 2,
+        sweep: { ...baseSweep, [counter]: invalid, ...others },
+      })).toEqual({
+        reason: "mdns-pending", phase: "host-sweep", generation: 2, candidates: {},
+        sweep: { ...baseSweep, ...others },
+      });
+    }
+  });
+
+  it("accepts older host sweep diagnostics without neighbor scout fields", () => {
+    expect(candidateDiagnostic({ reason: "mdns-pending", event: "host-sweep", sweep: baseSweep }))
+      .toEqual({ reason: "mdns-pending", phase: "host-sweep", candidates: {}, sweep: baseSweep });
+  });
+
+  it("preserves the ambiguous-interface fixed skip code without copying interface text", () => {
+    expect(candidateDiagnostic({ reason: "mdns-pending", event: "host-sweep", sweep: { ...baseSweep, reason: "ambiguous-interface", interface_name: "wlan0" } }).sweep)
+      .toEqual({ ...baseSweep, reason: "ambiguous-interface" });
   });
 
   it("rejects unknown reasons and never copies unknown event text", () => {

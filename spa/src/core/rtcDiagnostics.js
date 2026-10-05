@@ -13,7 +13,10 @@ const SWEEP_STATUSES = new Set(["started", "progress", "stopped", "skipped"]);
 const SWEEP_REASONS = new Set([
   "subnet-too-large", "no-host-socket", "no-on-link-interface", "non-private-subnet", "invalid-netmask", "point-to-point",
   "unsupported-platform", "port-limit", "packet-limit", "window-expired", "resolved", "direct-selected", "generation-changed", "closed", "send-error",
-  "no-usable-addresses", "completed",
+  "no-usable-addresses", "completed", "ambiguous-interface",
+]);
+const OPTIONAL_SWEEP_COUNTERS = new Set([
+  "addresses_attempted", "scout_datagrams_sent", "scout_attempted", "destinations_scouted", "neighbors_pending", "neighbors_pending_peak",
 ]);
 const HOST_LIMIT = 64;
 const safeCount = (value) => Number.isSafeInteger(value) && value >= 0;
@@ -22,6 +25,8 @@ const safeHostCheck = (host) => host && safeCount(host.ordinal) && host.ordinal 
 const hostChecks = (hosts) => hosts.slice(0, HOST_LIMIT).filter(safeHostCheck).map((host) => ({
   ordinal: host.ordinal, requests_sent: host.requests_sent, responses_received: host.responses_received, succeeded: host.succeeded,
 }));
+const optionalSweepCounters = (sweep) => Object.fromEntries(Object.entries(sweep)
+  .filter(([name, value]) => OPTIONAL_SWEEP_COUNTERS.has(name) && safeCount(value)));
 
 function safeSweep(sweep) {
   if (!sweep || !SWEEP_STATUSES.has(sweep.status) || typeof sweep.eligible !== "boolean"
@@ -30,7 +35,7 @@ function safeSweep(sweep) {
     status: sweep.status, eligible: sweep.eligible, eligible_unresolved: sweep.eligible_unresolved, generation: sweep.generation,
     addresses_sent: sweep.addresses_sent, reason: SWEEP_REASONS.has(sweep.reason) ? sweep.reason : null,
     prflx_followed: sweep.prflx_followed,
-    ...(safeCount(sweep.addresses_attempted) ? { addresses_attempted: sweep.addresses_attempted } : {}),
+    ...optionalSweepCounters(sweep),
   } };
 }
 

@@ -13,6 +13,128 @@ fn interface(ip: &str, mask: &str, name: &str) -> Interface {
         hop: None,
     }
 }
+
+#[test]
+fn neighbor_priority_changes_order_without_authorizing_any_address() {
+    let local = address("192.168.2.1:45000");
+    let iface = interface("192.168.2.1:0", "255.255.255.0:0", "wifi");
+    let mut subnet = SweepSubnet::from_interface(local, &iface, 2, &[]).unwrap();
+    let original = subnet.addresses.to_vec();
+    subnet.prioritize(&[
+        Ipv4Addr::new(8, 8, 8, 8),
+        Ipv4Addr::new(172, 17, 0, 2),
+        Ipv4Addr::new(192, 168, 2, 0),
+        Ipv4Addr::new(192, 168, 2, 1),
+        Ipv4Addr::new(192, 168, 2, 255),
+        Ipv4Addr::new(192, 168, 2, 254),
+        Ipv4Addr::new(192, 168, 2, 254),
+        Ipv4Addr::new(192, 168, 3, 2),
+    ]);
+    assert_eq!(subnet.addresses[0], Ipv4Addr::new(192, 168, 2, 254));
+    let mut reordered = subnet.addresses.to_vec();
+    reordered.sort_unstable();
+    assert_eq!(
+        reordered, original,
+        "neighbor hints cannot widen or duplicate the allowed set"
+    );
+}
+
+#[test]
+fn socket_pressure_keeps_the_same_destination_until_it_is_sent() {
+    let now = Instant::now();
+    let mut sweep = HostSweep::default();
+    sweep.start(7, "ufrag".into(), 40000, now);
+    sweep.prepare(40000, vec![subnet()]);
+    let first = sweep.next_probe(now + GRACE, false).unwrap();
+    sweep.record_result(first.port, false);
+    let retry = sweep.next_probe(now + GRACE + PACE, false).unwrap();
+    assert_eq!(
+        retry.destination, first.destination,
+        "pressure cannot omit an address"
+    );
+    sweep.record_result(retry.port, true);
+    let second = sweep.next_probe(now + GRACE + 2 * PACE, false).unwrap();
+    assert_ne!(second.destination, first.destination);
+    sweep.record_result(second.port, false);
+    assert!(
+        !sweep.plans[&40000].repeat,
+        "pressure cannot consume the pass budget"
+    );
+    let again = sweep.next_probe(now + GRACE + REPEAT_DELAY, true).unwrap();
+    assert_eq!(again.destination, second.destination);
+    sweep.record_result(again.port, true);
+    assert!(sweep.plans[&40000].repeat);
+    assert_eq!(sweep.packets, 4);
+    assert_eq!(sweep.sent, 2);
+    let repeat = now + GRACE + 2 * REPEAT_DELAY;
+    let first_repeat = sweep.next_probe(repeat, true).unwrap();
+    sweep.record_result(first_repeat.port, true);
+    let last_repeat = sweep.next_probe(repeat + PACE, true).unwrap();
+    sweep.record_result(last_repeat.port, false);
+    assert!(
+        !sweep.plans[&40000].stopped,
+        "pressure cannot prematurely finish the repeat"
+    );
+    let retry_repeat = sweep.next_probe(repeat + 2 * PACE, true).unwrap();
+    assert_eq!(retry_repeat.destination, last_repeat.destination);
+    sweep.record_result(retry_repeat.port, true);
+    assert!(sweep.plans[&40000].stopped);
+    assert_eq!(sweep.sent, 4);
+}
+
+#[test]
+fn retired_sweep_address_state_is_erased_but_numeric_eligibility_survives_expiry() {
+    let now = Instant::now();
+    for reason in [
+        "resolved",
+        "direct-selected",
+        "generation-changed",
+        "closed",
+    ] {
+        let mut sweep = HostSweep::default();
+        sweep.start(7, "ufrag".into(), 40000, now);
+        sweep.prepare(40000, vec![subnet()]);
+        let probe = sweep.next_probe(now + GRACE, false).unwrap();
+        sweep.record_result(probe.port, true);
+        if reason == "resolved" {
+            sweep.cancel(7, "ufrag", 40000);
+        } else {
+            sweep.stop_all(reason);
+        }
+        let plan = &sweep.plans[&40000];
+        assert!(
+            plan.subnets.is_none(),
+            "{reason} must retire subnet and neighbor observations"
+        );
+        assert!(plan.successful_destinations.is_empty());
+        assert!(plan.attempted_destination.is_none());
+    }
+    let mut sweep = HostSweep::default();
+    sweep.start(7, "ufrag".into(), 40000, now);
+    sweep.prepare(40000, vec![subnet()]);
+    for tick in [now + GRACE, now + GRACE + PACE] {
+        let probe = sweep.next_probe(tick, false).unwrap();
+        sweep.record_result(probe.port, true);
+    }
+    let repeat = now + GRACE + PACE + REPEAT_DELAY;
+    for tick in [repeat, repeat + PACE] {
+        let probe = sweep.next_probe(tick, true).unwrap();
+        sweep.record_result(probe.port, true);
+    }
+    assert!(sweep.plans[&40000].stopped);
+    assert_eq!(sweep.deadline(), Some(now + WINDOW));
+    sweep.next_probe(now + WINDOW, true);
+    let plan = &sweep.plans[&40000];
+    assert!(
+        plan.subnets.is_none(),
+        "completed plans still expire address observations"
+    );
+    assert!(plan.successful_destinations.is_empty());
+    assert!(
+        plan.eligible && plan.unresolved,
+        "only numeric fresh-restart evidence is retained"
+    );
+}
 fn subnet() -> SweepSubnet {
     SweepSubnet {
         local: address("192.168.2.1:45000"),
@@ -367,7 +489,9 @@ fn one_repeat_only_on_relay_and_inside_absolute_window() {
     sweep.start(7, "ufrag".into(), 40000, now);
     sweep.prepare(40000, vec![subnet()]);
     assert!(sweep.next_probe(now + GRACE, false).is_some());
+    sweep.record_result(40000, true);
     assert!(sweep.next_probe(now + GRACE + PACE, false).is_some());
+    sweep.record_result(40000, true);
     assert!(
         sweep
             .next_probe(now + GRACE + PACE + REPEAT_DELAY, false)
@@ -378,11 +502,13 @@ fn one_repeat_only_on_relay_and_inside_absolute_window() {
             .next_probe(now + GRACE + PACE + REPEAT_DELAY, true)
             .is_some()
     );
+    sweep.record_result(40000, true);
     assert!(
         sweep
             .next_probe(now + GRACE + 2 * PACE + REPEAT_DELAY, true)
             .is_some()
     );
+    sweep.record_result(40000, true);
     assert!(
         sweep
             .next_probe(now + Duration::from_secs(20), true)

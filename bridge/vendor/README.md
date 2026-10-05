@@ -225,6 +225,23 @@ an equivalent explicit-interface operation is supplied. A candidate port of
 All ports/subnets of a peer share a 200-packet/s limiter. Each generation admits
 at most 32 distinct ports and 32768 attempted datagrams, one initial pass and
 one repeat a second after its initial pass, inside an absolute 25-second window.
+Before each probe, Linux reads TIOCOUTQ/SIOCOUTQ and SO_SNDBUF. Probes yield unless
+queued bytes plus 4096 bytes of conservative bookkeeping fit within one quarter
+of the send buffer. A pressure retry keeps the same destination and pass budget;
+it never extends the window. Ordinary ICE, DTLS and SCTP sends keep their existing
+path. An unfinished empty-subnet tail is reported as `window-expired` with actual
+successful-send and attempted counts, rather than as a completed pass.
+
+Read-only RTM_GETNEIGH hints prioritize reachable, stale or delay neighbors of
+the exact owning interface, after intersection with the approved destination
+set. Hints never add a destination or create an ICE candidate. One subnet
+preparation is shared across due ports, and all neighbor queries share an
+absolute 5 ms budget; absent or incomplete hints retain ordinary address order.
+Raw hints are discarded immediately. Address-bearing plan observations are
+erased on resolution, direct selection, close, restart or the original 25-second
+expiry, including plans whose passes finished early. Only numeric unresolved
+eligibility remains available for a fresh restart.
+
 The initial pass can race mDNS during checking; a repeat requires a selected
 relay pair. Resolution, direct selection, close and restart retire the work.
 Synchronous cancellation stays locked through each nonblocking syscall;
@@ -244,6 +261,22 @@ and clear races use real sans-I/O cores in `host_sweep_driver_tests.rs`. A Tokio
 UDP test pins the actual advertised source port and interface. The namespace
 fixture in `web/rtc-lan-upgrade/` proves the authenticated PRFLX upgrade and
 subnet-size skip with real Chromium and encrypted data channels.
+
+The ignored Linux real-socket regression uses a disposable /22 namespace with
+unanswered neighbors. It requires an ordinary ICE-sized send and a 65507-byte
+GSO batch to poll immediately ready on the same bound port after probe pressure.
+65507 is the IPv4 UDP payload ceiling; the larger generic batching cap produces
+an immediate size error rather than socket pressure. The test requires actual
+GSO support and reports numeric queue/buffer occupancy and send timings. From
+the repo root, build the unit-test ELF, then pass its printed path to the runner:
+
+    nice -n 10 cargo test --locked --manifest-path bridge/vendor/Cargo.toml -p webrtc --lib --no-run
+    nice -n 10 python web/rtc-lan-upgrade/socket-pressure.py bridge/vendor/target/debug/deps/webrtc-<hash>
+
+The runner creates private user/network namespaces and veth interfaces, starts
+only a private UDP receiver, and never starts a production bridge or changes the
+host firewall. Removing the probe headroom gate from an isolated source copy
+makes the ordinary send poll pending, providing the red control.
 
 ## Tests
 
@@ -334,7 +367,7 @@ The #374 conntrack patches are layered diffs against the trees after all earlier
 patches are applied. `rtc-host-candidate-sweep.patch` touches
 `src/peer_connection/{mod.rs,configuration/setting_engine.rs}`.
 `webrtc-host-candidate-sweep.patch` touches `Cargo.toml`, `Cargo.toml.orig`,
-`src/peer_connection/{mod.rs,driver.rs,host_sweep.rs,host_sweep_tests.rs,host_sweep_driver_tests.rs}`
+`src/peer_connection/{mod.rs,driver.rs,host_sweep.rs,host_sweep_tests.rs,host_sweep_driver_tests.rs,host_neighbors.rs}`
 and `src/runtime/{mod.rs,tokio.rs,host_egress.rs}`. The Linux-only libc dependency
 is already in the dependency graph; the workspace lockfile records it as a direct
 webrtc dependency. Regenerate each patch from its pre-conntrack tree rather than

@@ -50,6 +50,8 @@
 //! ```
 
 pub(crate) mod driver;
+#[cfg(target_os = "linux")]
+mod host_neighbors;
 mod host_sweep;
 #[cfg(test)]
 mod host_sweep_driver_tests;

@@ -44,6 +44,16 @@ pub(crate) struct SweepSubnet {
 }
 
 impl SweepSubnet {
+    pub fn prioritize(&mut self, neighbors: &[Ipv4Addr]) {
+        let hints = neighbors
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        // Reorder only the already authorized set. A neighbor observation never
+        // adds a destination or authorizes a candidate, and is not cached.
+        Arc::make_mut(&mut self.addresses).sort_by_key(|address| !hints.contains(address));
+    }
+
     pub fn from_interface(
         local: SocketAddr,
         interface: &Interface,
@@ -312,6 +322,7 @@ struct PortSweep {
     unresolved: bool,
     successful_destinations: std::collections::HashSet<(SocketAddr, Ipv4Addr)>,
     attempted_destination: Option<(SocketAddr, Ipv4Addr)>,
+    attempted_at: Instant,
 }
 
 impl HostSweep {
@@ -355,6 +366,7 @@ impl HostSweep {
                 unresolved: true,
                 successful_destinations: std::collections::HashSet::new(),
                 attempted_destination: None,
+                attempted_at: now,
             },
         );
     }
@@ -380,6 +392,7 @@ impl HostSweep {
         if let Some(plan) = self.plans.get_mut(&port) {
             plan.stopped = true;
             plan.eligible = false;
+            plan.retire_addresses();
             self.events
                 .push_back(plan.event(self.generation, "skipped", Some(reason), false));
         }
@@ -398,12 +411,9 @@ impl HostSweep {
         for (port, plan) in &mut self.plans {
             if let Some((subnet, destination)) = plan.take_next(now, relay) {
                 plan.attempted += 1;
+                plan.attempted_at = now;
                 self.packets += 1;
                 self.next_packet = Some(now + PACE);
-                if plan.finished_pass() {
-                    plan.report_pending = true;
-                    plan.finish_pass(now);
-                }
                 return Some(SweepProbe {
                     port: *port,
                     subnet,
@@ -421,8 +431,13 @@ impl HostSweep {
         if let Some(plan) = self.plans.get_mut(&port) {
             if sent {
                 plan.sent += 1;
+                plan.cursor += 1;
                 if let Some(destination) = plan.attempted_destination.take() {
                     plan.successful_destinations.insert(destination);
+                }
+                if plan.finished_pass() {
+                    plan.report_pending = true;
+                    plan.finish_pass(plan.attempted_at);
                 }
             } else {
                 plan.attempted_destination = None;
@@ -469,6 +484,7 @@ impl HostSweep {
         {
             plan.stopped = true;
             plan.unresolved = false;
+            plan.retire_addresses();
             self.events
                 .push_back(plan.event(self.generation, "stopped", Some("resolved"), false));
         }
@@ -501,6 +517,7 @@ impl HostSweep {
                 plan.stopped = true;
                 if retire {
                     plan.unresolved = false;
+                    plan.retire_addresses();
                 }
                 self.events
                     .push_back(plan.event(self.generation, "stopped", Some(reason), false));
@@ -527,9 +544,9 @@ impl HostSweep {
     pub fn deadline(&self) -> Option<Instant> {
         self.plans
             .values()
-            .filter(|plan| !plan.stopped)
+            .filter(|plan| !plan.stopped || plan.subnets.is_some())
             .map(|plan| {
-                let due = if plan.repeat && !self.relay {
+                let due = if plan.stopped || (plan.repeat && !self.relay) {
                     plan.expires
                 } else {
                     plan.due
@@ -585,7 +602,10 @@ impl HostSweep {
 
     fn expire(&mut self, now: Instant) {
         for plan in self.plans.values_mut() {
-            if !plan.stopped && now >= plan.expires {
+            if now < plan.expires {
+                continue;
+            }
+            if !plan.stopped {
                 plan.stopped = true;
                 self.events.push_back(plan.event(
                     self.generation,
@@ -594,6 +614,7 @@ impl HostSweep {
                     false,
                 ));
             }
+            plan.retire_addresses();
         }
     }
 
@@ -620,6 +641,12 @@ impl HostSweep {
 }
 
 impl PortSweep {
+    fn retire_addresses(&mut self) {
+        self.subnets = None;
+        self.successful_destinations.clear();
+        self.attempted_destination = None;
+    }
+
     fn take_next(&mut self, now: Instant, relay: bool) -> Option<(SweepSubnet, Ipv4Addr)> {
         if self.stopped || now < self.due || (self.repeat && !relay) {
             return None;
@@ -628,7 +655,6 @@ impl PortSweep {
         let mut offset = self.cursor;
         for subnet in subnets {
             if let Some(destination) = subnet.addresses.get(offset) {
-                self.cursor += 1;
                 self.attempted_destination = Some((subnet.local, *destination));
                 return Some((subnet.clone(), *destination));
             }

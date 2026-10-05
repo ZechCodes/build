@@ -21,13 +21,15 @@ index 8ac676f..f36e324 100644
 +[target.'cfg(target_os = "linux")'.dependencies]
 +libc = "0.2"
 diff --git a/webrtc/src/peer_connection/mod.rs b/webrtc/src/peer_connection/mod.rs
-index b7c5c8d..c77e2da 100644
+index b7c5c8d..4b471ee 100644
 --- a/webrtc/src/peer_connection/mod.rs
 +++ b/webrtc/src/peer_connection/mod.rs
-@@ -50,6 +50,10 @@
+@@ -50,6 +50,12 @@
  //! ```
  
  pub(crate) mod driver;
++#[cfg(target_os = "linux")]
++mod host_neighbors;
 +mod host_sweep;
 +#[cfg(test)]
 +mod host_sweep_driver_tests;
@@ -35,7 +37,7 @@ index b7c5c8d..c77e2da 100644
  #[cfg(test)]
  mod late_direct_tests;
  pub(crate) mod transports;
-@@ -165,6 +169,9 @@ pub trait PeerConnectionEventHandler: Send + Sync + 'static {
+@@ -165,6 +171,9 @@ pub trait PeerConnectionEventHandler: Send + Sync + 'static {
      /// Called when a remote peer creates a data channel
      async fn on_data_channel(&self, _data_channel: Arc<dyn DataChannel>) {}
  
@@ -45,7 +47,7 @@ index b7c5c8d..c77e2da 100644
      /// Called when a remote track is received
      async fn on_track(&self, _track: Arc<dyn TrackRemote>) {}
  }
-@@ -182,6 +189,7 @@ where
+@@ -182,6 +191,7 @@ where
      handler: Option<Arc<dyn PeerConnectionEventHandler>>,
      mdns_mode: MulticastDnsMode,
      discard_local_candidates_during_ice_restart: bool,
@@ -53,7 +55,7 @@ index b7c5c8d..c77e2da 100644
      udp_addrs: Vec<A>,
      tcp_addrs: Vec<A>,
      dedicated_reactor: bool,
-@@ -197,6 +205,7 @@ impl<A: ToSocketAddrs> Default for PeerConnectionBuilder<A, NoopInterceptor> {
+@@ -197,6 +207,7 @@ impl<A: ToSocketAddrs> Default for PeerConnectionBuilder<A, NoopInterceptor> {
              handler: None,
              mdns_mode: MulticastDnsMode::Disabled,
              discard_local_candidates_during_ice_restart: false,
@@ -61,7 +63,7 @@ index b7c5c8d..c77e2da 100644
              udp_addrs: vec![],
              tcp_addrs: vec![],
              dedicated_reactor: false,
-@@ -235,6 +244,7 @@ where
+@@ -235,6 +246,7 @@ where
      /// Configures the builder with the specified [`SettingEngine`].
      pub fn with_setting_engine(mut self, setting_engine: SettingEngine) -> Self {
          self.mdns_mode = setting_engine.multicast_dns().mode;
@@ -69,7 +71,7 @@ index b7c5c8d..c77e2da 100644
          self.discard_local_candidates_during_ice_restart =
              setting_engine.discard_local_candidates_during_ice_restart();
          self.builder = self.builder.with_setting_engine(setting_engine);
-@@ -286,6 +296,7 @@ where
+@@ -286,6 +298,7 @@ where
              mdns_mode: self.mdns_mode,
              discard_local_candidates_during_ice_restart: self
                  .discard_local_candidates_during_ice_restart,
@@ -77,7 +79,7 @@ index b7c5c8d..c77e2da 100644
              udp_addrs: self.udp_addrs,
              tcp_addrs: self.tcp_addrs,
              dedicated_reactor: self.dedicated_reactor,
-@@ -461,6 +472,7 @@ where
+@@ -461,6 +474,7 @@ where
                  .ok_or_else(|| std::io::Error::other("no event handler found"))?,
              self.mdns_mode,
              self.discard_local_candidates_during_ice_restart,
@@ -85,7 +87,7 @@ index b7c5c8d..c77e2da 100644
              self.udp_addrs,
              self.tcp_addrs,
              self.dedicated_reactor,
-@@ -570,6 +582,29 @@ pub trait PeerConnection: Send + Sync + 'static {
+@@ -570,6 +584,29 @@ pub trait PeerConnection: Send + Sync + 'static {
          kind: RtpCodecKind,
          init: Option<RTCRtpTransceiverInit>,
      ) -> Result<Arc<dyn RtpTransceiver>>;
@@ -115,7 +117,7 @@ index b7c5c8d..c77e2da 100644
      /// Get a snapshot of accumulated statistics.
      async fn get_stats(&self, now: Instant, selector: StatsSelector) -> RTCStatsReport;
  }
-@@ -653,6 +688,8 @@ where
+@@ -653,6 +690,8 @@ where
      /// discarding the old candidates and replacing the sockets they name are two halves of the
      /// same decision (webrtc#868).
      pub(crate) discard_local_candidates_during_ice_restart: bool,
@@ -124,7 +126,7 @@ index b7c5c8d..c77e2da 100644
      /// Set when an ICE restart is detected, cleared by the driver when it has rebound.
      ///
      /// A flag rather than a driver event so the rebind cannot be ordered after the gathering it
-@@ -758,6 +795,7 @@ where
+@@ -758,6 +797,7 @@ where
      /// its transport across restarts pays nothing.
      #[inline]
      pub(crate) fn mark_ice_restart_rebind_pending(&self) {
@@ -132,7 +134,7 @@ index b7c5c8d..c77e2da 100644
          if self.discard_local_candidates_during_ice_restart {
              self.ice_restart_rebind_pending
                  .store(true, Ordering::Release);
-@@ -807,6 +845,7 @@ where
+@@ -807,6 +847,7 @@ where
          handler: Arc<dyn PeerConnectionEventHandler>,
          mdns_mode: MulticastDnsMode,
          discard_local_candidates_during_ice_restart: bool,
@@ -140,7 +142,7 @@ index b7c5c8d..c77e2da 100644
          udp_addrs: Vec<A>,
          tcp_addrs: Vec<A>,
          dedicated_reactor: bool,
-@@ -835,6 +874,8 @@ where
+@@ -835,6 +876,8 @@ where
                  data_channel_send_buffer_limit,
                  data_channel_backpressure: crate::runtime::Notify::new(),
                  discard_local_candidates_during_ice_restart,
@@ -149,7 +151,7 @@ index b7c5c8d..c77e2da 100644
                  ice_restart_rebind_pending: AtomicBool::new(false),
              }),
              driver_handle: Mutex::new(None),
-@@ -1332,6 +1373,82 @@ where
+@@ -1332,6 +1375,82 @@ where
          Ok(rtp_transceiver.clone() as Arc<dyn RtpTransceiver>)
      }
  
@@ -232,7 +234,7 @@ index b7c5c8d..c77e2da 100644
      /// Get a snapshot of accumulated statistics.
      async fn get_stats(&self, now: Instant, selector: StatsSelector) -> RTCStatsReport {
          let mut core = self.inner.core.lock().await;
-@@ -1391,6 +1508,8 @@ mod tests {
+@@ -1391,6 +1510,8 @@ mod tests {
              track_local_events_tx: Mutex::new(HashMap::new()),
              rtp_transceivers: Mutex::new(HashMap::new()),
              discard_local_candidates_during_ice_restart,
@@ -242,7 +244,7 @@ index b7c5c8d..c77e2da 100644
          });
  
 diff --git a/webrtc/src/peer_connection/driver.rs b/webrtc/src/peer_connection/driver.rs
-index 8a0a53a..f79f18e 100644
+index 8a0a53a..966b81d 100644
 --- a/webrtc/src/peer_connection/driver.rs
 +++ b/webrtc/src/peer_connection/driver.rs
 @@ -2,6 +2,7 @@
@@ -337,7 +339,7 @@ index 8a0a53a..f79f18e 100644
  
              // Wake senders blocked in `DataChannel::writable()`: the poll_* passes above
              // applied any SCTP buffer releases (acked/abandoned bytes) to the per-channel
-@@ -851,6 +885,161 @@ where
+@@ -851,6 +885,180 @@ where
          }
      }
  
@@ -392,19 +394,27 @@ index 8a0a53a..f79f18e 100644
 +    }
 +
 +    fn prepare_host_sweep_ports(&mut self, now: Instant, hosts: &[SocketAddr]) {
-+        for port in self.host_sweep.unprepared_ports(now) {
-+            if hosts.is_empty() && self.ice_gathering_active {
++        let ports = self.host_sweep.unprepared_ports(now);
++        if ports.is_empty() {
++            return;
++        }
++        if hosts.is_empty() && self.ice_gathering_active {
++            for port in ports {
 +                self.host_sweep.defer_preparation(port, now);
-+                continue;
 +            }
-+            let (subnets, reasons) = self.sweep_subnets(hosts);
++            return;
++        }
++        // Enumerate and prioritize once per poll, sharing the authorized address
++        // arrays across due ports. Neighbor queries share one absolute budget.
++        let (subnets, reasons) = self.sweep_subnets(hosts);
++        for port in ports {
 +            if subnets.is_empty() {
 +                self.host_sweep
 +                    .skip(port, reasons.first().copied().unwrap_or("no-host-socket"));
 +            } else {
-+                self.host_sweep.prepare(port, subnets);
++                self.host_sweep.prepare(port, subnets.clone());
 +            }
-+            for reason in reasons {
++            for reason in &reasons {
 +                self.host_sweep.note_skip(reason);
 +            }
 +        }
@@ -425,13 +435,24 @@ index 8a0a53a..f79f18e 100644
 +        };
 +        let mut subnets = Vec::new();
 +        let mut reasons = Vec::new();
++        #[cfg(target_os = "linux")]
++        let neighbor_deadline = Instant::now() + Duration::from_millis(5);
 +        for local in hosts {
 +            if !self.udp_sockets.contains_key(local) {
 +                reasons.push("no-host-socket");
 +                continue;
 +            }
 +            match SweepSubnet::for_socket(*local, &interfaces, sweep_interface_index) {
-+                Ok(subnet) => subnets.push(subnet),
++                Ok(mut subnet) => {
++                    #[cfg(target_os = "linux")]
++                    if let Ok(neighbors) = super::host_neighbors::snapshot_until(
++                        subnet.interface_index,
++                        neighbor_deadline,
++                    ) {
++                        subnet.prioritize(&neighbors);
++                    }
++                    subnets.push(subnet);
++                }
 +                Err(reason) => reasons.push(reason),
 +            }
 +        }
@@ -499,7 +520,7 @@ index 8a0a53a..f79f18e 100644
      async fn handle_write(&mut self, msg: TaggedBytesMut) -> Result<usize> {
          if msg.transport.transport_protocol == TransportProtocol::TCP {
              self.tcp_transport.write(&msg).await
-@@ -1283,8 +1472,50 @@ where
+@@ -1283,8 +1491,50 @@ where
          }
      }
  
@@ -551,7 +572,7 @@ index 8a0a53a..f79f18e 100644
              PeerConnectionDriverEvent::SenderRtp(sender_id, packet) => {
                  let mut core = self.inner.core.lock().await;
                  if let Some(mut sender) = core.rtp_sender(sender_id) {
-@@ -1397,6 +1628,8 @@ where
+@@ -1397,6 +1647,8 @@ where
                  self.tcp_transport.register_stream(four_tuple, stream);
              }
              PeerConnectionDriverEvent::Close => {
@@ -560,7 +581,7 @@ index 8a0a53a..f79f18e 100644
                  if let Err(err) = self.turn_relayer.close() {
                      error!("Failed to close turn_relayer: {}", err);
                  }
-@@ -1752,11 +1985,16 @@ where
+@@ -1752,11 +2004,16 @@ where
          let stun_timeout = self.stun_gatherer.poll_timeout();
          let turn_timeout = self.turn_relayer.poll_timeout();
  
@@ -583,10 +604,10 @@ index 8a0a53a..f79f18e 100644
  
      async fn handle_timeout(&mut self, now: Instant) -> Result<()> {
 diff --git a/webrtc/src/peer_connection/host_sweep.rs b/webrtc/src/peer_connection/host_sweep.rs
-index e69de29..4b4ccf0 100644
+index e69de29..1aac5a0 100644
 --- a/webrtc/src/peer_connection/host_sweep.rs
 +++ b/webrtc/src/peer_connection/host_sweep.rs
-@@ -0,0 +1,678 @@
+@@ -0,0 +1,704 @@
 +//! Bounded, credential-free conntrack probes on an advertised host socket.
 +
 +use rtc::shared::ifaces::{Interface, NextHop};
@@ -633,6 +654,16 @@ index e69de29..4b4ccf0 100644
 +}
 +
 +impl SweepSubnet {
++    pub fn prioritize(&mut self, neighbors: &[Ipv4Addr]) {
++        let hints = neighbors
++            .iter()
++            .copied()
++            .collect::<std::collections::HashSet<_>>();
++        // Reorder only the already authorized set. A neighbor observation never
++        // adds a destination or authorizes a candidate, and is not cached.
++        Arc::make_mut(&mut self.addresses).sort_by_key(|address| !hints.contains(address));
++    }
++
 +    pub fn from_interface(
 +        local: SocketAddr,
 +        interface: &Interface,
@@ -901,6 +932,7 @@ index e69de29..4b4ccf0 100644
 +    unresolved: bool,
 +    successful_destinations: std::collections::HashSet<(SocketAddr, Ipv4Addr)>,
 +    attempted_destination: Option<(SocketAddr, Ipv4Addr)>,
++    attempted_at: Instant,
 +}
 +
 +impl HostSweep {
@@ -944,6 +976,7 @@ index e69de29..4b4ccf0 100644
 +                unresolved: true,
 +                successful_destinations: std::collections::HashSet::new(),
 +                attempted_destination: None,
++                attempted_at: now,
 +            },
 +        );
 +    }
@@ -969,6 +1002,7 @@ index e69de29..4b4ccf0 100644
 +        if let Some(plan) = self.plans.get_mut(&port) {
 +            plan.stopped = true;
 +            plan.eligible = false;
++            plan.retire_addresses();
 +            self.events
 +                .push_back(plan.event(self.generation, "skipped", Some(reason), false));
 +        }
@@ -987,12 +1021,9 @@ index e69de29..4b4ccf0 100644
 +        for (port, plan) in &mut self.plans {
 +            if let Some((subnet, destination)) = plan.take_next(now, relay) {
 +                plan.attempted += 1;
++                plan.attempted_at = now;
 +                self.packets += 1;
 +                self.next_packet = Some(now + PACE);
-+                if plan.finished_pass() {
-+                    plan.report_pending = true;
-+                    plan.finish_pass(now);
-+                }
 +                return Some(SweepProbe {
 +                    port: *port,
 +                    subnet,
@@ -1010,8 +1041,13 @@ index e69de29..4b4ccf0 100644
 +        if let Some(plan) = self.plans.get_mut(&port) {
 +            if sent {
 +                plan.sent += 1;
++                plan.cursor += 1;
 +                if let Some(destination) = plan.attempted_destination.take() {
 +                    plan.successful_destinations.insert(destination);
++                }
++                if plan.finished_pass() {
++                    plan.report_pending = true;
++                    plan.finish_pass(plan.attempted_at);
 +                }
 +            } else {
 +                plan.attempted_destination = None;
@@ -1058,6 +1094,7 @@ index e69de29..4b4ccf0 100644
 +        {
 +            plan.stopped = true;
 +            plan.unresolved = false;
++            plan.retire_addresses();
 +            self.events
 +                .push_back(plan.event(self.generation, "stopped", Some("resolved"), false));
 +        }
@@ -1090,6 +1127,7 @@ index e69de29..4b4ccf0 100644
 +                plan.stopped = true;
 +                if retire {
 +                    plan.unresolved = false;
++                    plan.retire_addresses();
 +                }
 +                self.events
 +                    .push_back(plan.event(self.generation, "stopped", Some(reason), false));
@@ -1116,9 +1154,9 @@ index e69de29..4b4ccf0 100644
 +    pub fn deadline(&self) -> Option<Instant> {
 +        self.plans
 +            .values()
-+            .filter(|plan| !plan.stopped)
++            .filter(|plan| !plan.stopped || plan.subnets.is_some())
 +            .map(|plan| {
-+                let due = if plan.repeat && !self.relay {
++                let due = if plan.stopped || (plan.repeat && !self.relay) {
 +                    plan.expires
 +                } else {
 +                    plan.due
@@ -1174,7 +1212,10 @@ index e69de29..4b4ccf0 100644
 +
 +    fn expire(&mut self, now: Instant) {
 +        for plan in self.plans.values_mut() {
-+            if !plan.stopped && now >= plan.expires {
++            if now < plan.expires {
++                continue;
++            }
++            if !plan.stopped {
 +                plan.stopped = true;
 +                self.events.push_back(plan.event(
 +                    self.generation,
@@ -1183,6 +1224,7 @@ index e69de29..4b4ccf0 100644
 +                    false,
 +                ));
 +            }
++            plan.retire_addresses();
 +        }
 +    }
 +
@@ -1209,6 +1251,12 @@ index e69de29..4b4ccf0 100644
 +}
 +
 +impl PortSweep {
++    fn retire_addresses(&mut self) {
++        self.subnets = None;
++        self.successful_destinations.clear();
++        self.attempted_destination = None;
++    }
++
 +    fn take_next(&mut self, now: Instant, relay: bool) -> Option<(SweepSubnet, Ipv4Addr)> {
 +        if self.stopped || now < self.due || (self.repeat && !relay) {
 +            return None;
@@ -1217,7 +1265,6 @@ index e69de29..4b4ccf0 100644
 +        let mut offset = self.cursor;
 +        for subnet in subnets {
 +            if let Some(destination) = subnet.addresses.get(offset) {
-+                self.cursor += 1;
 +                self.attempted_destination = Some((subnet.local, *destination));
 +                return Some((subnet.clone(), *destination));
 +            }
@@ -1266,10 +1313,10 @@ index e69de29..4b4ccf0 100644
 +#[path = "host_sweep_tests.rs"]
 +mod tests;
 diff --git a/webrtc/src/peer_connection/host_sweep_tests.rs b/webrtc/src/peer_connection/host_sweep_tests.rs
-index e69de29..fb93f3a 100644
+index e69de29..0eb4967 100644
 --- a/webrtc/src/peer_connection/host_sweep_tests.rs
 +++ b/webrtc/src/peer_connection/host_sweep_tests.rs
-@@ -0,0 +1,421 @@
+@@ -0,0 +1,547 @@
 +use super::*;
 +use rtc::shared::ifaces::Kind;
 +
@@ -1284,6 +1331,128 @@ index e69de29..fb93f3a 100644
 +        mask: Some(address(mask)),
 +        hop: None,
 +    }
++}
++
++#[test]
++fn neighbor_priority_changes_order_without_authorizing_any_address() {
++    let local = address("192.168.2.1:45000");
++    let iface = interface("192.168.2.1:0", "255.255.255.0:0", "wifi");
++    let mut subnet = SweepSubnet::from_interface(local, &iface, 2, &[]).unwrap();
++    let original = subnet.addresses.to_vec();
++    subnet.prioritize(&[
++        Ipv4Addr::new(8, 8, 8, 8),
++        Ipv4Addr::new(172, 17, 0, 2),
++        Ipv4Addr::new(192, 168, 2, 0),
++        Ipv4Addr::new(192, 168, 2, 1),
++        Ipv4Addr::new(192, 168, 2, 255),
++        Ipv4Addr::new(192, 168, 2, 254),
++        Ipv4Addr::new(192, 168, 2, 254),
++        Ipv4Addr::new(192, 168, 3, 2),
++    ]);
++    assert_eq!(subnet.addresses[0], Ipv4Addr::new(192, 168, 2, 254));
++    let mut reordered = subnet.addresses.to_vec();
++    reordered.sort_unstable();
++    assert_eq!(
++        reordered, original,
++        "neighbor hints cannot widen or duplicate the allowed set"
++    );
++}
++
++#[test]
++fn socket_pressure_keeps_the_same_destination_until_it_is_sent() {
++    let now = Instant::now();
++    let mut sweep = HostSweep::default();
++    sweep.start(7, "ufrag".into(), 40000, now);
++    sweep.prepare(40000, vec![subnet()]);
++    let first = sweep.next_probe(now + GRACE, false).unwrap();
++    sweep.record_result(first.port, false);
++    let retry = sweep.next_probe(now + GRACE + PACE, false).unwrap();
++    assert_eq!(
++        retry.destination, first.destination,
++        "pressure cannot omit an address"
++    );
++    sweep.record_result(retry.port, true);
++    let second = sweep.next_probe(now + GRACE + 2 * PACE, false).unwrap();
++    assert_ne!(second.destination, first.destination);
++    sweep.record_result(second.port, false);
++    assert!(
++        !sweep.plans[&40000].repeat,
++        "pressure cannot consume the pass budget"
++    );
++    let again = sweep.next_probe(now + GRACE + REPEAT_DELAY, true).unwrap();
++    assert_eq!(again.destination, second.destination);
++    sweep.record_result(again.port, true);
++    assert!(sweep.plans[&40000].repeat);
++    assert_eq!(sweep.packets, 4);
++    assert_eq!(sweep.sent, 2);
++    let repeat = now + GRACE + 2 * REPEAT_DELAY;
++    let first_repeat = sweep.next_probe(repeat, true).unwrap();
++    sweep.record_result(first_repeat.port, true);
++    let last_repeat = sweep.next_probe(repeat + PACE, true).unwrap();
++    sweep.record_result(last_repeat.port, false);
++    assert!(
++        !sweep.plans[&40000].stopped,
++        "pressure cannot prematurely finish the repeat"
++    );
++    let retry_repeat = sweep.next_probe(repeat + 2 * PACE, true).unwrap();
++    assert_eq!(retry_repeat.destination, last_repeat.destination);
++    sweep.record_result(retry_repeat.port, true);
++    assert!(sweep.plans[&40000].stopped);
++    assert_eq!(sweep.sent, 4);
++}
++
++#[test]
++fn retired_sweep_address_state_is_erased_but_numeric_eligibility_survives_expiry() {
++    let now = Instant::now();
++    for reason in [
++        "resolved",
++        "direct-selected",
++        "generation-changed",
++        "closed",
++    ] {
++        let mut sweep = HostSweep::default();
++        sweep.start(7, "ufrag".into(), 40000, now);
++        sweep.prepare(40000, vec![subnet()]);
++        let probe = sweep.next_probe(now + GRACE, false).unwrap();
++        sweep.record_result(probe.port, true);
++        if reason == "resolved" {
++            sweep.cancel(7, "ufrag", 40000);
++        } else {
++            sweep.stop_all(reason);
++        }
++        let plan = &sweep.plans[&40000];
++        assert!(
++            plan.subnets.is_none(),
++            "{reason} must retire subnet and neighbor observations"
++        );
++        assert!(plan.successful_destinations.is_empty());
++        assert!(plan.attempted_destination.is_none());
++    }
++    let mut sweep = HostSweep::default();
++    sweep.start(7, "ufrag".into(), 40000, now);
++    sweep.prepare(40000, vec![subnet()]);
++    for tick in [now + GRACE, now + GRACE + PACE] {
++        let probe = sweep.next_probe(tick, false).unwrap();
++        sweep.record_result(probe.port, true);
++    }
++    let repeat = now + GRACE + PACE + REPEAT_DELAY;
++    for tick in [repeat, repeat + PACE] {
++        let probe = sweep.next_probe(tick, true).unwrap();
++        sweep.record_result(probe.port, true);
++    }
++    assert!(sweep.plans[&40000].stopped);
++    assert_eq!(sweep.deadline(), Some(now + WINDOW));
++    sweep.next_probe(now + WINDOW, true);
++    let plan = &sweep.plans[&40000];
++    assert!(
++        plan.subnets.is_none(),
++        "completed plans still expire address observations"
++    );
++    assert!(plan.successful_destinations.is_empty());
++    assert!(
++        plan.eligible && plan.unresolved,
++        "only numeric fresh-restart evidence is retained"
++    );
 +}
 +fn subnet() -> SweepSubnet {
 +    SweepSubnet {
@@ -1639,7 +1808,9 @@ index e69de29..fb93f3a 100644
 +    sweep.start(7, "ufrag".into(), 40000, now);
 +    sweep.prepare(40000, vec![subnet()]);
 +    assert!(sweep.next_probe(now + GRACE, false).is_some());
++    sweep.record_result(40000, true);
 +    assert!(sweep.next_probe(now + GRACE + PACE, false).is_some());
++    sweep.record_result(40000, true);
 +    assert!(
 +        sweep
 +            .next_probe(now + GRACE + PACE + REPEAT_DELAY, false)
@@ -1650,11 +1821,13 @@ index e69de29..fb93f3a 100644
 +            .next_probe(now + GRACE + PACE + REPEAT_DELAY, true)
 +            .is_some()
 +    );
++    sweep.record_result(40000, true);
 +    assert!(
 +        sweep
 +            .next_probe(now + GRACE + 2 * PACE + REPEAT_DELAY, true)
 +            .is_some()
 +    );
++    sweep.record_result(40000, true);
 +    assert!(
 +        sweep
 +            .next_probe(now + Duration::from_secs(20), true)
@@ -1789,6 +1962,636 @@ index e69de29..93a7799 100644
 +        );
 +    }));
 +}
+diff --git a/webrtc/src/peer_connection/host_neighbors.rs b/webrtc/src/peer_connection/host_neighbors.rs
+index e69de29..6477833 100644
+--- a/webrtc/src/peer_connection/host_neighbors.rs
++++ b/webrtc/src/peer_connection/host_neighbors.rs
+@@ -0,0 +1,625 @@
++//! Read-only, bounded neighbor hints; callers retain subnet authorization.
++
++use std::collections::HashSet;
++use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
++use std::{
++    io,
++    net::Ipv4Addr,
++    time::{Duration, Instant},
++};
++
++const HEADER_LEN: usize = 16;
++const NEIGHBOR_LEN: usize = 12;
++const SEQUENCE: u32 = 1;
++const MAX_BYTES: usize = 256 * 1024;
++const MAX_MESSAGES: usize = 4096;
++const MAX_ADDRESSES: usize = 1024;
++const MAX_DURATION: Duration = Duration::from_millis(5);
++const DATAGRAM_BYTES: usize = 16 * 1024;
++
++/// Consume only immediately available RTM_GETNEIGH replies. Incomplete dumps
++/// are discarded; hints never authorize targets outside the caller's subnet.
++#[cfg(test)]
++pub(super) fn snapshot(interface_index: u32) -> io::Result<Vec<Ipv4Addr>> {
++    snapshot_until(interface_index, Instant::now() + MAX_DURATION)
++}
++
++/// The driver shares one absolute deadline across its interface preparations.
++pub(super) fn snapshot_until(interface_index: u32, deadline: Instant) -> io::Result<Vec<Ipv4Addr>> {
++    if interface_index == 0 || interface_index > i32::MAX as u32 {
++        return Err(io::ErrorKind::InvalidInput.into());
++    }
++    let now = Instant::now();
++    if now >= deadline {
++        return Err(io::ErrorKind::TimedOut.into());
++    }
++    let deadline = deadline.min(now + MAX_DURATION);
++    let socket = open_socket()?;
++    send_request(&socket, interface_index)?;
++    let mut dump = Dump::new();
++    dump.deadline = Some(deadline);
++    let mut buffer = [0u8; DATAGRAM_BYTES];
++    loop {
++        dump.check_deadline()?;
++        let count = receive(&socket, &mut buffer)?;
++        if dump.consume(&buffer[..count], interface_index)? {
++            return Ok(dump.addresses);
++        }
++    }
++}
++
++fn open_socket() -> io::Result<OwnedFd> {
++    // SAFETY: these are Linux netlink constants; the returned descriptor is
++    // checked and transferred exactly once to OwnedFd for every return path.
++    let descriptor = unsafe {
++        libc::socket(
++            libc::AF_NETLINK,
++            libc::SOCK_RAW | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
++            libc::NETLINK_ROUTE,
++        )
++    };
++    if descriptor < 0 {
++        return Err(io::Error::last_os_error());
++    }
++    let socket = unsafe { OwnedFd::from_raw_fd(descriptor) };
++    // SAFETY: zero initializes sockaddr_nl including its private padding. A
++    // zero port requests a unique kernel-assigned ID; no groups are joined.
++    let mut address: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
++    address.nl_family = libc::AF_NETLINK as u16;
++    let result = unsafe {
++        libc::bind(
++            socket.as_raw_fd(),
++            (&address as *const libc::sockaddr_nl).cast(),
++            std::mem::size_of_val(&address) as libc::socklen_t,
++        )
++    };
++    if result < 0 {
++        return Err(io::Error::last_os_error());
++    }
++    Ok(socket)
++}
++
++fn request(interface_index: u32) -> [u8; HEADER_LEN + NEIGHBOR_LEN] {
++    let mut request = [0u8; HEADER_LEN + NEIGHBOR_LEN];
++    request[..4].copy_from_slice(&((HEADER_LEN + NEIGHBOR_LEN) as u32).to_ne_bytes());
++    request[4..6].copy_from_slice(&libc::RTM_GETNEIGH.to_ne_bytes());
++    request[6..8].copy_from_slice(&((libc::NLM_F_REQUEST | libc::NLM_F_DUMP) as u16).to_ne_bytes());
++    request[8..12].copy_from_slice(&SEQUENCE.to_ne_bytes());
++    request[HEADER_LEN] = libc::AF_INET as u8;
++    request[20..24].copy_from_slice(&interface_index.to_ne_bytes());
++    request
++}
++
++fn send_request(socket: &OwnedFd, interface_index: u32) -> io::Result<()> {
++    let request = request(interface_index);
++    // SAFETY: sockaddr_nl and the fixed request are initialized for the whole
++    // call. Port/group zero address the kernel only; GET never mutates entries.
++    let mut kernel: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
++    kernel.nl_family = libc::AF_NETLINK as u16;
++    let count = unsafe {
++        libc::sendto(
++            socket.as_raw_fd(),
++            request.as_ptr().cast(),
++            request.len(),
++            libc::MSG_DONTWAIT,
++            (&kernel as *const libc::sockaddr_nl).cast(),
++            std::mem::size_of_val(&kernel) as libc::socklen_t,
++        )
++    };
++    if count < 0 {
++        return Err(io::Error::last_os_error());
++    }
++    if count as usize != request.len() {
++        return Err(io::ErrorKind::WriteZero.into());
++    }
++    Ok(())
++}
++
++fn receive(socket: &OwnedFd, buffer: &mut [u8]) -> io::Result<usize> {
++    // SAFETY: recvmsg receives into initialized sockaddr storage and exactly
++    // buffer.len() writable bytes; no returned length is trusted until checked.
++    let mut sender: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
++    let mut vector = libc::iovec {
++        iov_base: buffer.as_mut_ptr().cast(),
++        iov_len: buffer.len(),
++    };
++    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
++    message.msg_name = (&mut sender as *mut libc::sockaddr_nl).cast();
++    message.msg_namelen = std::mem::size_of_val(&sender) as libc::socklen_t;
++    message.msg_iov = &mut vector;
++    message.msg_iovlen = 1;
++    let count = unsafe {
++        libc::recvmsg(
++            socket.as_raw_fd(),
++            &mut message,
++            libc::MSG_DONTWAIT | libc::MSG_TRUNC,
++        )
++    };
++    if count < 0 {
++        return Err(io::Error::last_os_error());
++    }
++    validate_sender(&sender, message.msg_namelen)?;
++    if count == 0 || count as usize > buffer.len() || message.msg_flags & libc::MSG_TRUNC != 0 {
++        return Err(invalid_dump());
++    }
++    Ok(count as usize)
++}
++
++fn validate_sender(sender: &libc::sockaddr_nl, length: libc::socklen_t) -> io::Result<()> {
++    if length as usize != std::mem::size_of_val(sender)
++        || sender.nl_family != libc::AF_NETLINK as u16
++        || sender.nl_pid != 0
++        || sender.nl_groups != 0
++    {
++        return Err(invalid_dump());
++    }
++    Ok(())
++}
++
++struct Dump {
++    addresses: Vec<Ipv4Addr>,
++    seen: HashSet<Ipv4Addr>,
++    bytes: usize,
++    messages: usize,
++    deadline: Option<Instant>,
++}
++
++impl Dump {
++    fn new() -> Self {
++        Self {
++            addresses: Vec::new(),
++            seen: HashSet::new(),
++            bytes: 0,
++            messages: 0,
++            deadline: None,
++        }
++    }
++
++    fn check_deadline(&self) -> io::Result<()> {
++        if self
++            .deadline
++            .is_some_and(|deadline| Instant::now() >= deadline)
++        {
++            return Err(io::ErrorKind::TimedOut.into());
++        }
++        Ok(())
++    }
++
++    fn consume(&mut self, mut data: &[u8], interface_index: u32) -> io::Result<bool> {
++        self.check_deadline()?;
++        self.bytes = self
++            .bytes
++            .checked_add(data.len())
++            .ok_or_else(invalid_dump)?;
++        if self.bytes > MAX_BYTES {
++            return Err(invalid_dump());
++        }
++        let mut done = false;
++        while !data.is_empty() {
++            self.check_deadline()?;
++            self.messages += 1;
++            if self.messages > MAX_MESSAGES || data.len() < HEADER_LEN {
++                return Err(invalid_dump());
++            }
++            let length = u32::from_ne_bytes(data[..4].try_into().unwrap()) as usize;
++            if length < HEADER_LEN || length > data.len() {
++                return Err(invalid_dump());
++            }
++            let sequence = u32::from_ne_bytes(data[8..12].try_into().unwrap());
++            if sequence == SEQUENCE {
++                let kind = u16::from_ne_bytes(data[4..6].try_into().unwrap());
++                let flags = u16::from_ne_bytes(data[6..8].try_into().unwrap());
++                if flags & libc::NLM_F_DUMP_INTR as u16 != 0 {
++                    return Err(invalid_dump());
++                }
++                done |= self.message(kind, &data[HEADER_LEN..length], interface_index)?;
++            }
++            data = advance(data, length)?;
++        }
++        Ok(done)
++    }
++
++    fn message(&mut self, kind: u16, payload: &[u8], interface_index: u32) -> io::Result<bool> {
++        match kind as i32 {
++            libc::NLMSG_DONE => {
++                status(payload, false)?;
++                Ok(true)
++            }
++            libc::NLMSG_ERROR => {
++                status(payload, true)?;
++                Ok(false)
++            }
++            libc::NLMSG_OVERRUN => Err(invalid_dump()),
++            _ if kind == libc::RTM_NEWNEIGH => {
++                self.neighbor(payload, interface_index)?;
++                Ok(false)
++            }
++            _ => Ok(false),
++        }
++    }
++
++    fn neighbor(&mut self, payload: &[u8], interface_index: u32) -> io::Result<()> {
++        if payload.len() < NEIGHBOR_LEN {
++            return Err(invalid_dump());
++        }
++        let owner = i32::from_ne_bytes(payload[4..8].try_into().unwrap());
++        let state = u16::from_ne_bytes(payload[8..10].try_into().unwrap());
++        if payload[0] != libc::AF_INET as u8
++            || owner <= 0
++            || owner as u32 != interface_index
++            || !matches!(
++                state,
++                libc::NUD_REACHABLE | libc::NUD_STALE | libc::NUD_DELAY
++            )
++        {
++            return Ok(());
++        }
++        if let Some(address) = destination(&payload[NEIGHBOR_LEN..])? {
++            if self.seen.contains(&address) {
++                return Ok(());
++            }
++            if self.addresses.len() == MAX_ADDRESSES {
++                return Err(invalid_dump());
++            }
++            self.seen.insert(address);
++            self.addresses.push(address);
++        }
++        Ok(())
++    }
++}
++
++fn destination(mut data: &[u8]) -> io::Result<Option<Ipv4Addr>> {
++    let mut address = None;
++    while !data.is_empty() {
++        if data.len() < 4 {
++            return Err(invalid_dump());
++        }
++        let length = u16::from_ne_bytes(data[..2].try_into().unwrap()) as usize;
++        let kind = u16::from_ne_bytes(data[2..4].try_into().unwrap());
++        if length < 4 || length > data.len() {
++            return Err(invalid_dump());
++        }
++        if kind == libc::NDA_DST {
++            if length != 8 || address.is_some() {
++                return Err(invalid_dump());
++            }
++            address = Some(Ipv4Addr::new(data[4], data[5], data[6], data[7]));
++        }
++        data = advance(data, length)?;
++    }
++    Ok(address)
++}
++
++fn status(payload: &[u8], acknowledgement: bool) -> io::Result<()> {
++    if payload.is_empty() && !acknowledgement {
++        return Ok(());
++    }
++    if payload.len() < if acknowledgement { 20 } else { 4 } {
++        return Err(invalid_dump());
++    }
++    let value = i32::from_ne_bytes(payload[..4].try_into().unwrap());
++    if value == 0 {
++        return Ok(());
++    }
++    if value > 0 {
++        return Err(invalid_dump());
++    }
++    Err(io::Error::from_raw_os_error(
++        value.checked_neg().ok_or_else(invalid_dump)?,
++    ))
++}
++
++fn advance(data: &[u8], length: usize) -> io::Result<&[u8]> {
++    let aligned = length.checked_add(3).ok_or_else(invalid_dump)? & !3;
++    if aligned <= data.len() {
++        return Ok(&data[aligned..]);
++    }
++    if length == data.len() {
++        return Ok(&[]);
++    }
++    Err(invalid_dump())
++}
++
++fn invalid_dump() -> io::Error {
++    io::Error::new(
++        io::ErrorKind::InvalidData,
++        "incomplete or oversized neighbor dump",
++    )
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    const OWNER: u32 = 7;
++
++    fn message(kind: u16, flags: u16, sequence: u32, payload: &[u8]) -> Vec<u8> {
++        let length = HEADER_LEN + payload.len();
++        let mut result = Vec::new();
++        result.extend_from_slice(&(length as u32).to_ne_bytes());
++        result.extend_from_slice(&kind.to_ne_bytes());
++        result.extend_from_slice(&flags.to_ne_bytes());
++        result.extend_from_slice(&sequence.to_ne_bytes());
++        result.extend_from_slice(&0u32.to_ne_bytes());
++        result.extend_from_slice(payload);
++        result.resize((length + 3) & !3, 0);
++        result
++    }
++
++    fn attribute(kind: u16, value: &[u8]) -> Vec<u8> {
++        let length = 4 + value.len();
++        let mut result = Vec::new();
++        result.extend_from_slice(&(length as u16).to_ne_bytes());
++        result.extend_from_slice(&kind.to_ne_bytes());
++        result.extend_from_slice(value);
++        result.resize((length + 3) & !3, 0);
++        result
++    }
++
++    fn neighbor(family: u8, index: u32, state: u16, address: Ipv4Addr) -> Vec<u8> {
++        let mut payload = vec![family, 0, 0, 0];
++        payload.extend_from_slice(&index.to_ne_bytes());
++        payload.extend_from_slice(&state.to_ne_bytes());
++        payload.extend_from_slice(&[0, 0]);
++        payload.extend_from_slice(&attribute(1, &address.octets()));
++        message(28, 2, SEQUENCE, &payload)
++    }
++
++    fn consume(data: &[u8]) -> io::Result<Dump> {
++        let mut dump = Dump::new();
++        dump.consume(data, OWNER)?;
++        Ok(dump)
++    }
++
++    #[test]
++    fn only_exact_ipv4_owner_and_three_dynamic_states_are_hints() {
++        let mut data = Vec::new();
++        for (family, owner, state, octet) in [
++            (2, OWNER, 2, 1),
++            (2, OWNER, 4, 2),
++            (2, OWNER, 8, 3),
++            (10, OWNER, 2, 4),
++            (2, OWNER + 1, 2, 5),
++            (2, OWNER, 0, 6),
++            (2, OWNER, 1, 7),
++            (2, OWNER, 16, 8),
++            (2, OWNER, 32, 9),
++            (2, OWNER, 64, 10),
++            (2, OWNER, 128, 11),
++            (2, OWNER, 2 | 32, 12),
++        ] {
++            data.extend(neighbor(
++                family,
++                owner,
++                state,
++                Ipv4Addr::new(10, 1, 2, octet),
++            ));
++        }
++        data.extend(neighbor(2, OWNER, 4, Ipv4Addr::new(10, 1, 2, 1)));
++        assert_eq!(
++            consume(&data).unwrap().addresses,
++            vec![
++                Ipv4Addr::new(10, 1, 2, 1),
++                Ipv4Addr::new(10, 1, 2, 2),
++                Ipv4Addr::new(10, 1, 2, 3),
++            ]
++        );
++    }
++
++    #[test]
++    fn multipart_ignores_other_sequences_and_message_types() {
++        let mut dump = Dump::new();
++        let mut first = neighbor(2, OWNER, 2, Ipv4Addr::new(192, 168, 1, 9));
++        first[8..12].copy_from_slice(&2u32.to_ne_bytes());
++        first.extend(message(16, 2, SEQUENCE, &[]));
++        assert!(!dump.consume(&first, OWNER).unwrap());
++        assert!(dump.addresses.is_empty());
++        let mut second = neighbor(2, OWNER, 2, Ipv4Addr::new(192, 168, 1, 10));
++        second.extend(message(3, 2, SEQUENCE, &0i32.to_ne_bytes()));
++        assert!(dump.consume(&second, OWNER).unwrap());
++        assert_eq!(dump.addresses, vec![Ipv4Addr::new(192, 168, 1, 10)]);
++    }
++
++    #[test]
++    fn aligned_unknown_attributes_are_skipped_without_reinterpreting_bytes() {
++        let mut payload = vec![2, 0, 0, 0];
++        payload.extend_from_slice(&OWNER.to_ne_bytes());
++        payload.extend_from_slice(&2u16.to_ne_bytes());
++        payload.extend_from_slice(&[0, 0]);
++        payload.extend(attribute(2, &[1, 2, 3, 4, 5, 6]));
++        payload.extend(attribute(1, &[172, 19, 4, 200]));
++        assert_eq!(
++            consume(&message(28, 2, SEQUENCE, &payload))
++                .unwrap()
++                .addresses,
++            vec![Ipv4Addr::new(172, 19, 4, 200)]
++        );
++    }
++
++    #[test]
++    fn truncated_or_malformed_headers_and_attributes_are_errors() {
++        let valid = neighbor(2, OWNER, 2, Ipv4Addr::new(10, 0, 0, 1));
++        for length in [
++            1,
++            HEADER_LEN - 1,
++            HEADER_LEN + NEIGHBOR_LEN - 1,
++            valid.len() - 1,
++        ] {
++            assert_eq!(
++                consume(&valid[..length]).err().unwrap().kind(),
++                io::ErrorKind::InvalidData
++            );
++        }
++        for malformed_length in [0u32, 15, u32::MAX] {
++            let mut data = valid.clone();
++            data[..4].copy_from_slice(&malformed_length.to_ne_bytes());
++            assert_eq!(
++                consume(&data).err().unwrap().kind(),
++                io::ErrorKind::InvalidData
++            );
++        }
++        for malformed_length in [0u16, 3, 7, 9] {
++            let mut data = valid.clone();
++            data[28..30].copy_from_slice(&malformed_length.to_ne_bytes());
++            assert_eq!(
++                consume(&data).err().unwrap().kind(),
++                io::ErrorKind::InvalidData
++            );
++        }
++        let mut trailing = valid.clone();
++        trailing.push(0);
++        assert_eq!(
++            consume(&trailing).err().unwrap().kind(),
++            io::ErrorKind::InvalidData
++        );
++        let mut duplicate = valid[HEADER_LEN..].to_vec();
++        duplicate.extend(attribute(1, &[10, 0, 0, 2]));
++        assert_eq!(
++            consume(&message(28, 2, SEQUENCE, &duplicate))
++                .err()
++                .unwrap()
++                .kind(),
++            io::ErrorKind::InvalidData
++        );
++    }
++
++    #[test]
++    fn incomplete_dump_and_kernel_errors_never_return_partial_success() {
++        let mut error = (-libc::EPERM).to_ne_bytes().to_vec();
++        error.resize(20, 0);
++        assert_eq!(
++            consume(&message(2, 0, SEQUENCE, &error))
++                .err()
++                .unwrap()
++                .raw_os_error(),
++            Some(libc::EPERM)
++        );
++        assert_eq!(
++            consume(&message(3, 0, SEQUENCE, &(-libc::EINVAL).to_ne_bytes()))
++                .err()
++                .unwrap()
++                .raw_os_error(),
++            Some(libc::EINVAL)
++        );
++        assert!(consume(&message(4, 0, SEQUENCE, &[])).is_err());
++        assert!(consume(&message(3, 0x10, SEQUENCE, &[])).is_err());
++        for (kind, payload) in [(2, vec![0; 3]), (3, vec![0; 3])] {
++            assert_eq!(
++                consume(&message(kind, 0, SEQUENCE, &payload))
++                    .err()
++                    .unwrap()
++                    .kind(),
++                io::ErrorKind::InvalidData
++            );
++        }
++        let mut acknowledgement = vec![0; 20];
++        assert!(
++            !Dump::new()
++                .consume(&message(2, 0, SEQUENCE, &acknowledgement), OWNER)
++                .unwrap()
++        );
++        acknowledgement[..4].copy_from_slice(&i32::MIN.to_ne_bytes());
++        assert!(consume(&message(2, 0, SEQUENCE, &acknowledgement)).is_err());
++    }
++
++    #[test]
++    fn address_message_and_byte_budgets_are_enforced_across_datagrams() {
++        let mut addresses = Dump::new();
++        for value in 0..MAX_ADDRESSES {
++            addresses
++                .consume(
++                    &neighbor(2, OWNER, 2, Ipv4Addr::from(0x0a000001 + value as u32)),
++                    OWNER,
++                )
++                .unwrap();
++        }
++        assert_eq!(addresses.addresses.len(), MAX_ADDRESSES);
++        assert!(
++            addresses
++                .consume(&neighbor(2, OWNER, 2, Ipv4Addr::new(10, 1, 0, 1)), OWNER)
++                .is_err()
++        );
++        let mut messages = Dump::new();
++        for _ in 0..MAX_MESSAGES {
++            messages
++                .consume(&message(1, 0, SEQUENCE, &[]), OWNER)
++                .unwrap();
++        }
++        assert!(
++            messages
++                .consume(&message(1, 0, SEQUENCE, &[]), OWNER)
++                .is_err()
++        );
++        let mut bytes = Dump::new();
++        let chunk = message(16, 0, SEQUENCE, &vec![0; 4096 - HEADER_LEN]);
++        for _ in 0..MAX_BYTES / chunk.len() {
++            bytes.consume(&chunk, OWNER).unwrap();
++        }
++        assert!(bytes.consume(&message(1, 0, SEQUENCE, &[]), OWNER).is_err());
++    }
++
++    #[test]
++    fn invalid_interface_indices_are_rejected_before_opening_a_socket() {
++        for index in [0, u32::MAX] {
++            assert_eq!(
++                snapshot(index).unwrap_err().kind(),
++                io::ErrorKind::InvalidInput
++            );
++        }
++    }
++
++    #[test]
++    fn an_expired_budget_rejects_even_an_immediately_available_dump() {
++        let mut dump = Dump::new();
++        dump.deadline = Some(Instant::now() - std::time::Duration::from_millis(1));
++        assert_eq!(
++            dump.consume(&message(3, 0, SEQUENCE, &[]), OWNER)
++                .unwrap_err()
++                .kind(),
++            io::ErrorKind::TimedOut
++        );
++    }
++
++    #[test]
++    fn a_shared_expired_snapshot_budget_never_opens_a_socket() {
++        assert_eq!(
++            snapshot_until(OWNER, Instant::now() - Duration::from_millis(1))
++                .unwrap_err()
++                .kind(),
++            io::ErrorKind::TimedOut
++        );
++    }
++
++    #[test]
++    fn only_kernel_unicast_senders_are_accepted() {
++        let mut sender: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
++        sender.nl_family = libc::AF_NETLINK as u16;
++        let length = std::mem::size_of_val(&sender) as libc::socklen_t;
++        assert!(validate_sender(&sender, length).is_ok());
++        assert!(validate_sender(&sender, length - 1).is_err());
++        sender.nl_pid = 123;
++        assert!(validate_sender(&sender, length).is_err());
++        sender.nl_pid = 0;
++        sender.nl_groups = 1;
++        assert!(validate_sender(&sender, length).is_err());
++        sender.nl_groups = 0;
++        sender.nl_family = libc::AF_INET as u16;
++        assert!(validate_sender(&sender, length).is_err());
++    }
++
++    #[test]
++    fn request_is_only_an_ipv4_neighbor_dump_for_the_owner() {
++        let data = request(OWNER);
++        assert_eq!(
++            u16::from_ne_bytes(data[4..6].try_into().unwrap()),
++            libc::RTM_GETNEIGH
++        );
++        assert_eq!(
++            u16::from_ne_bytes(data[6..8].try_into().unwrap()),
++            (libc::NLM_F_REQUEST | libc::NLM_F_DUMP) as u16
++        );
++        assert_eq!(data[HEADER_LEN], libc::AF_INET as u8);
++        assert_eq!(u32::from_ne_bytes(data[20..24].try_into().unwrap()), OWNER);
++        assert!(data[24..].iter().all(|byte| *byte == 0));
++    }
++}
 diff --git a/webrtc/src/runtime/mod.rs b/webrtc/src/runtime/mod.rs
 index 0fdaf3b..b663c14 100644
 --- a/webrtc/src/runtime/mod.rs
@@ -1907,15 +2710,166 @@ index 7966d4e..d697e1c 100644
 +    }
 +}
 diff --git a/webrtc/src/runtime/host_egress.rs b/webrtc/src/runtime/host_egress.rs
-index e69de29..f322e7c 100644
+index e69de29..deb292e 100644
 --- a/webrtc/src/runtime/host_egress.rs
 +++ b/webrtc/src/runtime/host_egress.rs
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,224 @@
 +//! Linux-only explicit-interface, gateway-free sends on an existing ICE socket.
 +
 +use std::io;
 +use std::net::{Ipv4Addr, SocketAddrV4};
 +use std::os::fd::AsRawFd;
++
++fn queue_headroom(used: i32, capacity: i32) -> io::Result<()> {
++    if used < 0 || capacity <= 0 {
++        return Err(io::Error::new(
++            io::ErrorKind::InvalidData,
++            "socket budget unavailable",
++        ));
++    }
++    // Reserve room for the tiny probe's kernel bookkeeping as well as its payload.
++    // Keep at least three quarters of the socket available to ordinary ICE/DTLS/SCTP.
++    if used.saturating_add(4096) > capacity / 4 {
++        return Err(io::ErrorKind::WouldBlock.into());
++    }
++    Ok(())
++}
++
++fn require_queue_headroom(socket: &::tokio::net::UdpSocket) -> io::Result<()> {
++    let (used, capacity) = socket_budget(socket)?;
++    queue_headroom(used, capacity)
++}
++
++fn socket_budget(socket: &::tokio::net::UdpSocket) -> io::Result<(i32, i32)> {
++    let mut used: libc::c_int = 0;
++    let mut capacity: libc::c_int = 0;
++    let mut length = std::mem::size_of_val(&capacity) as libc::socklen_t;
++    // SAFETY: both calls write into live c_int values of the documented size.
++    let (queued, sized) = unsafe {
++        (
++            libc::ioctl(socket.as_raw_fd(), libc::TIOCOUTQ, &mut used),
++            libc::getsockopt(
++                socket.as_raw_fd(),
++                libc::SOL_SOCKET,
++                libc::SO_SNDBUF,
++                (&mut capacity as *mut libc::c_int).cast(),
++                &mut length,
++            ),
++        )
++    };
++    if queued < 0 || sized < 0 || length as usize != std::mem::size_of_val(&capacity) {
++        return Err(io::Error::new(
++            io::ErrorKind::Unsupported,
++            "socket budget unavailable",
++        ));
++    }
++    Ok((used, capacity))
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::runtime::Transmit;
++    use futures::FutureExt;
++
++    #[test]
++    fn sweep_yields_before_it_consumes_normal_ice_socket_headroom() {
++        assert!(queue_headroom(0, 212992).is_ok());
++        assert!(queue_headroom(48000, 212992).is_ok());
++        for used in [50000, 53248, 106496, 213120] {
++            assert_eq!(
++                queue_headroom(used, 212992).unwrap_err().kind(),
++                io::ErrorKind::WouldBlock,
++                "probes must yield while ordinary ICE output still fits"
++            );
++        }
++    }
++
++    #[test]
++    fn unusable_socket_budget_never_authorizes_a_probe() {
++        for (used, capacity) in [(-1, 212992), (0, 0), (0, -1)] {
++            assert!(queue_headroom(used, capacity).is_err());
++        }
++    }
++
++    #[test]
++    #[ignore = "requires socket-pressure.py disposable network namespace"]
++    fn blocked_neighbors_leave_ordinary_ice_and_maximum_gso_send_immediately_ready() {
++        assert_ne!(
++            std::fs::read_link("/proc/self/ns/net").unwrap(),
++            std::path::PathBuf::from(
++                std::env::var("BUILD_RTC_PRESSURE_PARENT_NET_NS")
++                    .expect("socket-pressure.py must supply the outer namespace")
++            ),
++            "this fixture must run in a disposable network namespace"
++        );
++        let runtime = crate::runtime::default_runtime().unwrap();
++        let driver_runtime = runtime.clone();
++        runtime.block_on(Box::pin(async move {
++            let source = Ipv4Addr::new(10, 72, 0, 1);
++            let target = SocketAddrV4::new(Ipv4Addr::new(10, 72, 0, 2), 40000);
++            let bound = std::net::UdpSocket::bind((source, 0)).unwrap();
++            bound.set_nonblocking(true).unwrap();
++            let local = bound.local_addr().unwrap();
++            let socket = driver_runtime.wrap_udp_socket(bound.try_clone().unwrap()).unwrap();
++            let raw = ::tokio::net::UdpSocket::from_std(bound).unwrap();
++            assert_eq!(socket.local_addr().unwrap(), raw.local_addr().unwrap());
++            assert_eq!(socket.local_addr().unwrap().port(), local.port());
++            assert!(socket.max_gso_segments() >= 64, "GSO unsupported in the test environment");
++            socket.send_to(b"warm neighbor", target.into()).await.unwrap();
++            driver_runtime.sleep(std::time::Duration::from_millis(100)).await;
++            let name = std::ffi::CString::new("eth0").unwrap();
++            // SAFETY: name is a terminated interface name in this private namespace.
++            let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
++            assert_ne!(index, 0);
++            let payload = [0u8; 28]; // Same size as the credential-free production indication.
++            let mut probes = 0;
++            let mut yielded = false;
++            for offset in 3..1023u32 {
++                let unreachable = Ipv4Addr::from(u32::from(source) - 1 + offset);
++                match send(&raw, &payload, source, index, SocketAddrV4::new(unreachable, 40000)) {
++                    Ok(length) => {
++                        assert_eq!(length, payload.len());
++                        probes += 1;
++                    }
++                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
++                        yielded = true;
++                        break;
++                    }
++                    Err(error) => panic!("probe send failed: {error}"),
++                }
++                driver_runtime.sleep(std::time::Duration::from_millis(5)).await;
++            }
++            assert!(yielded && probes > 0, "the unanswered subnet must exercise pressure");
++            let (queued, capacity) = socket_budget(&raw).unwrap();
++            println!("probes_sent={probes}; send_queue={queued}; send_buffer={capacity}");
++            let ordinary = [0u8; 112];
++            let ordinary_started = std::time::Instant::now();
++            assert!(
++                matches!(socket.send_to(&ordinary, target.into()).now_or_never(), Some(Ok(112))),
++                "probe pressure must not park an ordinary same-port ICE-sized send"
++            );
++            let ordinary_elapsed = ordinary_started.elapsed();
++            // IPv4's aggregate UDP payload ceiling is lower than the generic
++            // production batching bound; do not turn a size error into a pressure result.
++            let maximum = vec![0u8; crate::peer_connection::transports::MAX_GSO_BATCH_BYTES.min(65507)];
++            let transmit = Transmit {
++                destination: target.into(),
++                ecn: Some(crate::runtime::EcnCodepoint::Ect0),
++                contents: &maximum,
++                segment_size: Some(1024),
++                src_ip: None,
++            };
++            let maximum_started = std::time::Instant::now();
++            let maximum_poll = futures::future::poll_fn(|cx| socket.poll_send(cx, &transmit)).now_or_never();
++            assert!(
++                matches!(maximum_poll, Some(Ok(length)) if length == maximum.len()),
++                "the maximum production GSO batch must remain immediately writable: {maximum_poll:?}"
++            );
++            println!("probes_sent={probes}; send_queue={queued}; send_buffer={capacity}; ordinary=112; ordinary_us={}; maximum_gso={}; maximum_gso_us={}; source_port_matches=true", ordinary_elapsed.as_micros(), maximum.len(), maximum_started.elapsed().as_micros());
++        }));
++    }
++}
 +
 +pub(super) fn send(
 +    socket: &::tokio::net::UdpSocket,
@@ -1930,6 +2884,7 @@ index e69de29..f322e7c 100644
 +            "host source unavailable",
 +        ));
 +    }
++    require_queue_headroom(socket)?;
 +    let destination = libc::sockaddr_in {
 +        sin_family: libc::AF_INET as libc::sa_family_t,
 +        sin_port: target.port().to_be(),

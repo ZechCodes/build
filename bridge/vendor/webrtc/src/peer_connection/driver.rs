@@ -936,19 +936,27 @@ where
     }
 
     fn prepare_host_sweep_ports(&mut self, now: Instant, hosts: &[SocketAddr]) {
-        for port in self.host_sweep.unprepared_ports(now) {
-            if hosts.is_empty() && self.ice_gathering_active {
+        let ports = self.host_sweep.unprepared_ports(now);
+        if ports.is_empty() {
+            return;
+        }
+        if hosts.is_empty() && self.ice_gathering_active {
+            for port in ports {
                 self.host_sweep.defer_preparation(port, now);
-                continue;
             }
-            let (subnets, reasons) = self.sweep_subnets(hosts);
+            return;
+        }
+        // Enumerate and prioritize once per poll, sharing the authorized address
+        // arrays across due ports. Neighbor queries share one absolute budget.
+        let (subnets, reasons) = self.sweep_subnets(hosts);
+        for port in ports {
             if subnets.is_empty() {
                 self.host_sweep
                     .skip(port, reasons.first().copied().unwrap_or("no-host-socket"));
             } else {
-                self.host_sweep.prepare(port, subnets);
+                self.host_sweep.prepare(port, subnets.clone());
             }
-            for reason in reasons {
+            for reason in &reasons {
                 self.host_sweep.note_skip(reason);
             }
         }
@@ -969,13 +977,24 @@ where
         };
         let mut subnets = Vec::new();
         let mut reasons = Vec::new();
+        #[cfg(target_os = "linux")]
+        let neighbor_deadline = Instant::now() + Duration::from_millis(5);
         for local in hosts {
             if !self.udp_sockets.contains_key(local) {
                 reasons.push("no-host-socket");
                 continue;
             }
             match SweepSubnet::for_socket(*local, &interfaces, sweep_interface_index) {
-                Ok(subnet) => subnets.push(subnet),
+                Ok(mut subnet) => {
+                    #[cfg(target_os = "linux")]
+                    if let Ok(neighbors) = super::host_neighbors::snapshot_until(
+                        subnet.interface_index,
+                        neighbor_deadline,
+                    ) {
+                        subnet.prioritize(&neighbors);
+                    }
+                    subnets.push(subnet);
+                }
                 Err(reason) => reasons.push(reason),
             }
         }

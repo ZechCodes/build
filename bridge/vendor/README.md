@@ -206,7 +206,9 @@ implementation is `webrtc-host-candidate-sweep.patch`, applied after the earlier
 patches. No ICE candidate is fabricated or revived.
 
 The async peer exposes generation-guarded start/cancel/clear operations for an
-unresolved candidate port. After 250 ms it emits 28-byte STUN Binding Indications,
+unresolved candidate port. Candidate ports below 1024 are rejected at bridge
+and vendor admission without consuming the 32-port capacity. After 250 ms it
+emits 28-byte STUN Binding Indications,
 each with a fresh random transaction ID and only FINGERPRINT. They contain no
 USERNAME, integrity attribute, credential or session identifier and require no
 reply. A later authenticated inbound check may create a peer-reflexive candidate

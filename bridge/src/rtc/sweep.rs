@@ -168,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_or_mismatched_nat_evidence_never_gains_restart_eligibility() {
+    fn serialization_preserves_supplied_nat_wait_observation_fields() {
         for (status, reason) in [
             ("progress", "nat-evidence-missing"),
             ("skipped", "nat-evidence-missing"),
@@ -185,7 +185,7 @@ mod tests {
             assert_eq!(snapshot["eligible_unresolved"], 0);
             assert_eq!(
                 snapshot["scout_datagrams_sent"], 1004,
-                "prior traffic cannot make current NAT evidence eligible"
+                "serialization preserves the supplied historical traffic count"
             );
         }
     }

@@ -262,7 +262,7 @@ fn sweep_port(candidate: &RTCIceCandidateInit) -> Option<u16> {
         return None;
     }
     let port = fields.nth(2)?.parse::<u16>().ok()?;
-    (port != 0).then_some(port)
+    (port >= 1024).then_some(port)
 }
 
 #[derive(Clone, Default, PartialEq, Eq)]

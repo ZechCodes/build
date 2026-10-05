@@ -11,6 +11,7 @@ const PACE: Duration = Duration::from_millis(5);
 const REPEAT_DELAY: Duration = Duration::from_secs(1);
 const WINDOW: Duration = Duration::from_secs(25);
 const MAX_PORTS: usize = 32;
+const MIN_CANDIDATE_PORT: u16 = 1024;
 const MAX_PACKETS: u32 = 32768;
 
 /// A content-free observation. Addresses, ports and credentials never leave the driver.
@@ -324,6 +325,9 @@ impl HostSweepControl {
     }
 
     pub fn start(&self, generation: u64, ufrag: &str, port: u16) -> bool {
+        if port < MIN_CANDIDATE_PORT {
+            return false;
+        }
         let Ok(mut state) = self.state.lock() else {
             return false;
         };
@@ -449,7 +453,7 @@ struct PortSweep {
 
 impl HostSweep {
     pub fn start(&mut self, generation: u64, ufrag: String, port: u16, now: Instant) {
-        if generation < self.generation {
+        if port < MIN_CANDIDATE_PORT || generation < self.generation {
             return;
         }
         if self.remote_ufrag != ufrag || generation != self.generation {
@@ -465,7 +469,7 @@ impl HostSweep {
             self.remote_ufrag = ufrag;
             self.generation = generation;
         }
-        if port == 0 || self.plans.contains_key(&port) {
+        if self.plans.contains_key(&port) {
             return;
         }
         if self.plans.len() >= MAX_PORTS {

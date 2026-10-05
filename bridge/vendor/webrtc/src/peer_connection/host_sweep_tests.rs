@@ -540,11 +540,83 @@ fn resolve_and_generation_changes_stop_and_stale_cancels_do_not() {
 fn duplicate_ports_and_plan_cap_are_bounded() {
     let now = Instant::now();
     let mut sweep = HostSweep::default();
-    for port in 1..=(MAX_PORTS as u16 + 1) {
+    for port in 1024..=(1024 + MAX_PORTS as u16) {
         sweep.start(7, "ufrag".into(), port, now);
     }
-    sweep.start(7, "ufrag".into(), 1, now);
+    sweep.start(7, "ufrag".into(), 1024, now);
     assert_eq!(sweep.plans.len(), MAX_PORTS);
+}
+
+#[test]
+fn low_candidate_ports_are_rejected_before_plan_capacity_or_generation_changes() {
+    let now = Instant::now();
+    let mut sweep = HostSweep::default();
+    for port in [0, 53, 123, 161, 1023] {
+        sweep.start(7, "ufrag".into(), port, now);
+        assert!(
+            sweep.plans.is_empty(),
+            "low port {port} cannot create a plan"
+        );
+    }
+    for port in [1024, 1900, 5353, 48861, 65535]
+        .into_iter()
+        .chain(20000..20000 + (MAX_PORTS as u16 - 5))
+    {
+        sweep.start(7, "ufrag".into(), port, now);
+        assert!(sweep.plans.contains_key(&port));
+    }
+    sweep.start(7, "ufrag".into(), 30000, now);
+    assert_eq!(sweep.plans.len(), MAX_PORTS);
+    assert!(!sweep.plans.contains_key(&30000));
+    sweep.start(8, "new".into(), 53, now);
+    assert_eq!(sweep.generation(), 7);
+    assert_eq!(sweep.plans.len(), MAX_PORTS);
+}
+
+#[test]
+fn low_candidate_ports_are_rejected_by_synchronous_sweep_admission() {
+    let control = HostSweepControl::default();
+    for port in [0, 53, 123, 161, 1023] {
+        assert!(!control.start(7, "ufrag", port));
+    }
+    for port in [1024, 1900, 5353, 48861, 65535]
+        .into_iter()
+        .chain(20000..20000 + (MAX_PORTS as u16 - 5))
+    {
+        assert!(control.start(7, "ufrag", port));
+    }
+    assert!(!control.start(7, "ufrag", 30000));
+    assert!(!control.start(8, "new", 53));
+    assert!(control.allowed(7, "ufrag", 65535));
+}
+
+#[test]
+fn actual_missing_or_mismatched_nat_mask_removes_real_unresolved_eligibility() {
+    let now = Instant::now();
+    for reason in ["nat-evidence-missing", "nat-address-mismatch"] {
+        let mut sweep = HostSweep::default();
+        sweep.start(7, "ufrag".into(), 40000, now);
+        sweep.prepare(40000, vec![subnet()]);
+        let ready = sweep.pop_event().unwrap();
+        assert!(ready.eligible);
+        assert_eq!(ready.eligible_unresolved, 1);
+        assert!(sweep.plans[&40000].eligible && sweep.plans[&40000].unresolved);
+        assert!(!sweep.gate_nat(now + GRACE, Some(reason)));
+        let blocked = sweep
+            .pop_event()
+            .expect("real gate emits the NAT observation");
+        assert_eq!(blocked.reason, Some(reason));
+        assert!(!blocked.eligible);
+        assert_eq!(blocked.eligible_unresolved, 0);
+        assert_eq!(
+            sweep
+                .plans
+                .values()
+                .filter(|plan| plan.eligible && plan.unresolved)
+                .count(),
+            0,
+        );
+    }
 }
 
 #[test]

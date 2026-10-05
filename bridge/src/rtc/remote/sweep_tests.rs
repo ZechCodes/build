@@ -160,6 +160,46 @@ async fn invalid_names_ip_candidates_and_unusable_ports_never_start_sweeps() {
 }
 
 #[tokio::test]
+async fn low_candidate_ports_never_start_sweeps_or_consume_port_capacity() {
+    let (remote, _, target, _) = fixture();
+    remote.begin(&offer("first")).await;
+    for port in [0, 53, 123, 161, 1023] {
+        remote
+            .add(
+                target.clone(),
+                candidate(NAME, Some("first"), &port.to_string()),
+            )
+            .await
+            .unwrap();
+    }
+    assert!(target.actions.lock().unwrap().is_empty());
+    for port in [1024, 1900, 5353, 48861, 65535]
+        .into_iter()
+        .chain(20000..20000 + (MAX_DISCOVERIES as u16 - 5))
+    {
+        remote
+            .add(
+                target.clone(),
+                candidate(NAME, Some("first"), &port.to_string()),
+            )
+            .await
+            .unwrap();
+    }
+    remote
+        .add(target.clone(), candidate(NAME, Some("first"), "30000"))
+        .await
+        .unwrap();
+    {
+        let actions = target.actions.lock().unwrap();
+        assert_eq!(actions.len(), MAX_DISCOVERIES);
+        for port in [1024, 1900, 5353, 48861, 65535] {
+            assert!(actions.contains(&Action::Start(1, "first".into(), port)));
+        }
+    }
+    remote.close().await;
+}
+
+#[tokio::test]
 async fn a_stale_candidate_ufrag_cannot_start_for_the_current_generation() {
     let (remote, _, target, _) = fixture();
     remote.begin(&offer("second")).await;

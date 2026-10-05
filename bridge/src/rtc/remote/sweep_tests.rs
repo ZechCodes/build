@@ -243,11 +243,17 @@ async fn restart_and_close_clear_early_sweeps_and_ignore_late_resolvers() {
 }
 
 fn observation(generation: u64) -> HostCandidateSweepEvent {
+    let ordinal = u32::try_from(generation).unwrap();
     HostCandidateSweepEvent {
         generation,
         status: "started",
         addresses_sent: 0,
         addresses_attempted: 0,
+        scout_datagrams_sent: 13 * ordinal,
+        scout_attempted: 14 * ordinal,
+        destinations_scouted: 12 * ordinal,
+        neighbors_pending: 5 * ordinal,
+        neighbors_pending_peak: 8 * ordinal,
         reason: None,
         eligible: true,
         eligible_unresolved: 1,
@@ -271,6 +277,13 @@ async fn sweep_observations_follow_the_marker_and_stale_generations_are_ignored(
     assert_eq!(first["candidates"]["host_mdns"], 1);
     assert_eq!(first["sweep"]["eligible"], true);
     assert_eq!(first["sweep"]["eligible_unresolved"], 1);
+    assert_eq!(first["sweep"]["addresses_sent"], 0);
+    assert_eq!(first["sweep"]["addresses_attempted"], 0);
+    assert_eq!(first["sweep"]["scout_datagrams_sent"], 13);
+    assert_eq!(first["sweep"]["scout_attempted"], 14);
+    assert_eq!(first["sweep"]["destinations_scouted"], 12);
+    assert_eq!(first["sweep"]["neighbors_pending"], 5);
+    assert_eq!(first["sweep"]["neighbors_pending_peak"], 8);
     let serialized = first.to_string();
     for private in [NAME, "48861", "first", "private-password"] {
         assert!(!serialized.contains(private));
@@ -280,7 +293,10 @@ async fn sweep_observations_follow_the_marker_and_stale_generations_are_ignored(
     remote.observe_sweep(observation(1)).await;
     assert_eq!(events.lock().unwrap().len(), before);
     remote.observe_sweep(observation(2)).await;
-    assert_eq!(events.lock().unwrap().last().unwrap()["generation"], 2);
+    let fresh = events.lock().unwrap().last().unwrap().clone();
+    assert_eq!(fresh["generation"], 2);
+    assert_eq!(fresh["sweep"]["scout_datagrams_sent"], 26);
+    assert_eq!(fresh["sweep"]["neighbors_pending_peak"], 16);
     remote.close().await;
     let before = events.lock().unwrap().len();
     remote.observe_sweep(observation(2)).await;

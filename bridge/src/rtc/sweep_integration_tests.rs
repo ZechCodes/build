@@ -32,13 +32,19 @@ async fn sweep_callbacks_queue_in_order_without_waiting_for_remote_discovery() {
         gathered: Mutex::new(GatheredTypes::default()),
         sweeps,
     };
-    for status in ["started", "progress", "stopped"] {
+    for (ordinal, status) in ["started", "progress", "stopped"].into_iter().enumerate() {
+        let ordinal = u32::try_from(ordinal).unwrap();
         handler
             .on_host_candidate_sweep(HostCandidateSweepEvent {
                 generation: 1,
                 status,
                 addresses_sent: 0,
                 addresses_attempted: 0,
+                scout_datagrams_sent: 10 + ordinal,
+                scout_attempted: 20 + ordinal,
+                destinations_scouted: 30 + ordinal,
+                neighbors_pending: 40 + ordinal,
+                neighbors_pending_peak: 50 + ordinal,
                 reason: None,
                 eligible: true,
                 eligible_unresolved: 1,
@@ -46,7 +52,16 @@ async fn sweep_callbacks_queue_in_order_without_waiting_for_remote_discovery() {
             })
             .await;
     }
-    for status in ["started", "progress", "stopped"] {
-        assert_eq!(observed.try_recv().unwrap().status, status);
+    for (ordinal, status) in ["started", "progress", "stopped"].into_iter().enumerate() {
+        let ordinal = u32::try_from(ordinal).unwrap();
+        let event = observed.try_recv().unwrap();
+        assert_eq!(event.status, status);
+        assert_eq!(event.addresses_sent, 0);
+        assert_eq!(event.addresses_attempted, 0);
+        assert_eq!(event.scout_datagrams_sent, 10 + ordinal);
+        assert_eq!(event.scout_attempted, 20 + ordinal);
+        assert_eq!(event.destinations_scouted, 30 + ordinal);
+        assert_eq!(event.neighbors_pending, 40 + ordinal);
+        assert_eq!(event.neighbors_pending_peak, 50 + ordinal);
     }
 }

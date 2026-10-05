@@ -1,0 +1,1985 @@
+diff --git a/webrtc/Cargo.toml b/webrtc/Cargo.toml
+index f7c1262..26f9177 100644
+--- a/webrtc/Cargo.toml
++++ b/webrtc/Cargo.toml
+@@ -461,3 +461,6 @@ version = "1.0.150"
+ [dev-dependencies.signal]
+ version = "0.20.4"
+ package = "rtc-signal"
++
++[target.'cfg(target_os = "linux")'.dependencies.libc]
++version = "0.2"
+diff --git a/webrtc/Cargo.toml.orig b/webrtc/Cargo.toml.orig
+index 8ac676f..f36e324 100644
+--- a/webrtc/Cargo.toml.orig
++++ b/webrtc/Cargo.toml.orig
+@@ -250,3 +250,6 @@ required-features = ["runtime-tokio"]
+ name = "stats"
+ path = "examples/stats/stats.rs"
+ bench = false
++
++[target.'cfg(target_os = "linux")'.dependencies]
++libc = "0.2"
+diff --git a/webrtc/src/peer_connection/mod.rs b/webrtc/src/peer_connection/mod.rs
+index b7c5c8d..c77e2da 100644
+--- a/webrtc/src/peer_connection/mod.rs
++++ b/webrtc/src/peer_connection/mod.rs
+@@ -50,6 +50,10 @@
+ //! ```
+ 
+ pub(crate) mod driver;
++mod host_sweep;
++#[cfg(test)]
++mod host_sweep_driver_tests;
++pub use host_sweep::HostCandidateSweepEvent;
+ #[cfg(test)]
+ mod late_direct_tests;
+ pub(crate) mod transports;
+@@ -165,6 +169,9 @@ pub trait PeerConnectionEventHandler: Send + Sync + 'static {
+     /// Called when a remote peer creates a data channel
+     async fn on_data_channel(&self, _data_channel: Arc<dyn DataChannel>) {}
+ 
++    /// Content-free progress from bounded on-link host-socket probes.
++    async fn on_host_candidate_sweep(&self, _event: HostCandidateSweepEvent) {}
++
+     /// Called when a remote track is received
+     async fn on_track(&self, _track: Arc<dyn TrackRemote>) {}
+ }
+@@ -182,6 +189,7 @@ where
+     handler: Option<Arc<dyn PeerConnectionEventHandler>>,
+     mdns_mode: MulticastDnsMode,
+     discard_local_candidates_during_ice_restart: bool,
++    host_candidate_sweep: bool,
+     udp_addrs: Vec<A>,
+     tcp_addrs: Vec<A>,
+     dedicated_reactor: bool,
+@@ -197,6 +205,7 @@ impl<A: ToSocketAddrs> Default for PeerConnectionBuilder<A, NoopInterceptor> {
+             handler: None,
+             mdns_mode: MulticastDnsMode::Disabled,
+             discard_local_candidates_during_ice_restart: false,
++            host_candidate_sweep: false,
+             udp_addrs: vec![],
+             tcp_addrs: vec![],
+             dedicated_reactor: false,
+@@ -235,6 +244,7 @@ where
+     /// Configures the builder with the specified [`SettingEngine`].
+     pub fn with_setting_engine(mut self, setting_engine: SettingEngine) -> Self {
+         self.mdns_mode = setting_engine.multicast_dns().mode;
++        self.host_candidate_sweep = setting_engine.host_candidate_sweep();
+         self.discard_local_candidates_during_ice_restart =
+             setting_engine.discard_local_candidates_during_ice_restart();
+         self.builder = self.builder.with_setting_engine(setting_engine);
+@@ -286,6 +296,7 @@ where
+             mdns_mode: self.mdns_mode,
+             discard_local_candidates_during_ice_restart: self
+                 .discard_local_candidates_during_ice_restart,
++            host_candidate_sweep: self.host_candidate_sweep,
+             udp_addrs: self.udp_addrs,
+             tcp_addrs: self.tcp_addrs,
+             dedicated_reactor: self.dedicated_reactor,
+@@ -461,6 +472,7 @@ where
+                 .ok_or_else(|| std::io::Error::other("no event handler found"))?,
+             self.mdns_mode,
+             self.discard_local_candidates_during_ice_restart,
++            self.host_candidate_sweep,
+             self.udp_addrs,
+             self.tcp_addrs,
+             self.dedicated_reactor,
+@@ -570,6 +582,29 @@ pub trait PeerConnection: Send + Sync + 'static {
+         kind: RtpCodecKind,
+         init: Option<RTCRtpTransceiverInit>,
+     ) -> Result<Arc<dyn RtpTransceiver>>;
++    /// Race unresolved host-name discovery with bounded on-link probes. The
++    /// username fragment guards generation replacement; it never enters a probe.
++    async fn start_host_candidate_sweep(
++        &self,
++        _generation: u64,
++        _remote_ufrag: String,
++        _port: u16,
++    ) -> Result<()> {
++        Ok(())
++    }
++    /// Stop a port when its unresolved name is resolved, preserving its one-pass budget.
++    async fn cancel_host_candidate_sweep(
++        &self,
++        _generation: u64,
++        _remote_ufrag: String,
++        _port: u16,
++    ) -> Result<()> {
++        Ok(())
++    }
++    /// Retire all outstanding host probes during shutdown or generation replacement.
++    async fn clear_host_candidate_sweeps(&self) -> Result<()> {
++        Ok(())
++    }
+     /// Get a snapshot of accumulated statistics.
+     async fn get_stats(&self, now: Instant, selector: StatsSelector) -> RTCStatsReport;
+ }
+@@ -653,6 +688,8 @@ where
+     /// discarding the old candidates and replacing the sockets they name are two halves of the
+     /// same decision (webrtc#868).
+     pub(crate) discard_local_candidates_during_ice_restart: bool,
++    pub(crate) host_candidate_sweep: bool,
++    pub(crate) host_sweep_control: host_sweep::HostSweepControl,
+     /// Set when an ICE restart is detected, cleared by the driver when it has rebound.
+     ///
+     /// A flag rather than a driver event so the rebind cannot be ordered after the gathering it
+@@ -758,6 +795,7 @@ where
+     /// its transport across restarts pays nothing.
+     #[inline]
+     pub(crate) fn mark_ice_restart_rebind_pending(&self) {
++        self.host_sweep_control.clear();
+         if self.discard_local_candidates_during_ice_restart {
+             self.ice_restart_rebind_pending
+                 .store(true, Ordering::Release);
+@@ -807,6 +845,7 @@ where
+         handler: Arc<dyn PeerConnectionEventHandler>,
+         mdns_mode: MulticastDnsMode,
+         discard_local_candidates_during_ice_restart: bool,
++        host_candidate_sweep: bool,
+         udp_addrs: Vec<A>,
+         tcp_addrs: Vec<A>,
+         dedicated_reactor: bool,
+@@ -835,6 +874,8 @@ where
+                 data_channel_send_buffer_limit,
+                 data_channel_backpressure: crate::runtime::Notify::new(),
+                 discard_local_candidates_during_ice_restart,
++                host_candidate_sweep,
++                host_sweep_control: host_sweep::HostSweepControl::default(),
+                 ice_restart_rebind_pending: AtomicBool::new(false),
+             }),
+             driver_handle: Mutex::new(None),
+@@ -1332,6 +1373,82 @@ where
+         Ok(rtp_transceiver.clone() as Arc<dyn RtpTransceiver>)
+     }
+ 
++    async fn start_host_candidate_sweep(
++        &self,
++        generation: u64,
++        remote_ufrag: String,
++        port: u16,
++    ) -> Result<()> {
++        if !self.inner.host_candidate_sweep {
++            return Ok(());
++        }
++        let core = self.inner.core.lock().await;
++        if core.remote_ice_username_fragment() != remote_ufrag {
++            return Ok(());
++        }
++        if self.inner.closing.load(Ordering::Acquire) {
++            return Err(Error::ErrClosed);
++        }
++        if !self
++            .inner
++            .host_sweep_control
++            .start(generation, &remote_ufrag, port)
++        {
++            if self
++                .inner
++                .host_sweep_control
++                .generation_allowed(generation, &remote_ufrag)
++            {
++                let _ = self.inner.driver_event_tx.try_send(
++                    PeerConnectionDriverEvent::HostSweepSkipped {
++                        generation,
++                        reason: "port-limit",
++                    },
++                );
++            }
++            return Ok(());
++        }
++        let (ufrag, password) = core.remote_ice_credentials();
++        let credentials = host_sweep::SweepCredentials::new(ufrag, password);
++        self.inner
++            .driver_event_tx
++            .try_send(PeerConnectionDriverEvent::StartHostSweep {
++                generation,
++                credentials,
++                port,
++            })
++            .map_err(|_| Error::ErrClosed)
++    }
++
++    async fn cancel_host_candidate_sweep(
++        &self,
++        generation: u64,
++        remote_ufrag: String,
++        port: u16,
++    ) -> Result<()> {
++        self.inner
++            .host_sweep_control
++            .cancel(generation, &remote_ufrag, port);
++        let _ = self
++            .inner
++            .driver_event_tx
++            .try_send(PeerConnectionDriverEvent::CancelHostSweep {
++                generation,
++                remote_ufrag,
++                port,
++            });
++        Ok(())
++    }
++
++    async fn clear_host_candidate_sweeps(&self) -> Result<()> {
++        self.inner.host_sweep_control.clear();
++        let _ = self
++            .inner
++            .driver_event_tx
++            .try_send(PeerConnectionDriverEvent::WriteNotify);
++        Ok(())
++    }
++
+     /// Get a snapshot of accumulated statistics.
+     async fn get_stats(&self, now: Instant, selector: StatsSelector) -> RTCStatsReport {
+         let mut core = self.inner.core.lock().await;
+@@ -1391,6 +1508,8 @@ mod tests {
+             track_local_events_tx: Mutex::new(HashMap::new()),
+             rtp_transceivers: Mutex::new(HashMap::new()),
+             discard_local_candidates_during_ice_restart,
++            host_candidate_sweep: false,
++            host_sweep_control: host_sweep::HostSweepControl::default(),
+             ice_restart_rebind_pending: AtomicBool::new(false),
+         });
+ 
+diff --git a/webrtc/src/peer_connection/driver.rs b/webrtc/src/peer_connection/driver.rs
+index 8a0a53a..f79f18e 100644
+--- a/webrtc/src/peer_connection/driver.rs
++++ b/webrtc/src/peer_connection/driver.rs
+@@ -2,6 +2,7 @@
+ //!
+ //! Follows the rtc EventLoop pattern with async select
+ 
++use super::host_sweep::{HostSweep, SweepCredentials, SweepSubnet, binding_indication};
+ use super::transports::stun_gatherer::{
+     RTCStunGatherEventIn, RTCStunGatherEventOut, RTCStunGatherer,
+ };
+@@ -27,7 +28,7 @@ use futures::FutureExt; // For .fuse() in futures::select!
+ use futures::future::OptionFuture;
+ use futures::stream::{FuturesUnordered, StreamExt};
+ use log::{debug, error, trace, warn};
+-use rtc::ice::candidate::Candidate;
++use rtc::ice::candidate::{Candidate, CandidateType};
+ use rtc::ice::mdns::MulticastDnsMode;
+ use rtc::interceptor::{Interceptor, NoopInterceptor};
+ use rtc::mdns::{MDNS_PORT, MulticastSocket};
+@@ -253,6 +254,20 @@ fn is_link_local(ip: &IpAddr) -> bool {
+     }
+ }
+ 
++#[cfg(target_os = "linux")]
++fn sweep_interface_index(name: &str) -> u32 {
++    let Ok(name) = std::ffi::CString::new(name) else {
++        return 0;
++    };
++    // SAFETY: CString supplies the NUL-terminated interface name required by libc.
++    unsafe { libc::if_nametoindex(name.as_ptr()) }
++}
++
++#[cfg(not(target_os = "linux"))]
++fn sweep_interface_index(_: &str) -> u32 {
++    0
++}
++
+ /// Unified inner message type for the peer connection driver
+ #[derive(Debug)]
+ pub(crate) enum PeerConnectionDriverEvent {
+@@ -267,6 +282,20 @@ pub(crate) enum PeerConnectionDriverEvent {
+         ice_transport_policy: RTCIceTransportPolicy,
+     },
+     IceGathering,
++    StartHostSweep {
++        generation: u64,
++        credentials: SweepCredentials,
++        port: u16,
++    },
++    CancelHostSweep {
++        generation: u64,
++        remote_ufrag: String,
++        port: u16,
++    },
++    HostSweepSkipped {
++        generation: u64,
++        reason: &'static str,
++    },
+     Close,
+ }
+ 
+@@ -283,6 +312,7 @@ where
+     tcp_transport: RTCTcpTransport,
+     mdns_socket: Option<Arc<dyn AsyncUdpSocket>>,
+     udp_sockets: HashMap<SocketAddr, Arc<dyn AsyncUdpSocket>>,
++    pub(super) host_sweep: HostSweep,
+     /// Reused scratch buffer for concatenating a run of same-destination datagrams
+     /// into one UDP GSO send (see [`flush_writes`](Self::flush_writes)).
+     gso_scratch: Vec<u8>,
+@@ -446,6 +476,7 @@ where
+             ),
+             mdns_socket: None,
+             udp_sockets: HashMap::new(),
++            host_sweep: HostSweep::default(),
+             gso_scratch: Vec::new(),
+             tcp_transport: RTCTcpTransport::new(HashMap::new()),
+             ice_gathering_active: false,
+@@ -588,6 +619,8 @@ where
+             // momentarily full channel), this check still guarantees the loop —
+             // and thus a dedicated reactor thread — terminates instead of leaking.
+             if self.inner.closing.load(Ordering::Acquire) {
++                self.host_sweep.clear("closed");
++                self.report_host_sweep().await;
+                 if let Err(err) = self.turn_relayer.close() {
+                     error!("Failed to close turn_relayer: {}", err);
+                 }
+@@ -595,6 +628,7 @@ where
+             }
+ 
+             self.poll_pass().await?;
++            self.poll_host_sweep(Instant::now()).await;
+ 
+             // Wake senders blocked in `DataChannel::writable()`: the poll_* passes above
+             // applied any SCTP buffer releases (acked/abandoned bytes) to the per-channel
+@@ -851,6 +885,161 @@ where
+         }
+     }
+ 
++    /// One probe at most per wake; the scheduler shares one 200pps budget across all ports.
++    /// The core lock covers validation and the nonblocking syscall, so restart and
++    /// selection cannot change the socket's generation between the two.
++    async fn poll_host_sweep(&mut self, now: Instant) {
++        if !self.inner.host_candidate_sweep {
++            return;
++        }
++        if self.host_sweep.is_empty() {
++            self.report_host_sweep().await;
++            return;
++        }
++        let inner = Arc::clone(&self.inner);
++        let core = inner.core.lock().await;
++        let (ufrag, password) = core.remote_ice_credentials();
++        self.host_sweep.sync_credentials(ufrag, password);
++        self.host_sweep.cancel_inactive(&inner.host_sweep_control);
++        let relay = self.observe_sweep_pair(core.selected_ice_candidates());
++        let hosts = core
++            .local_ice_candidates()
++            .iter()
++            .filter(|candidate| {
++                candidate.candidate_type() == CandidateType::Host
++                    && candidate.network_type().is_udp()
++            })
++            .map(Candidate::addr)
++            .collect::<Vec<_>>();
++        self.prepare_host_sweep_ports(now, &hosts);
++        if let Some(probe) = self.host_sweep.next_probe(now, relay) {
++            self.send_host_probe(probe);
++        }
++        drop(core);
++        self.report_host_sweep().await;
++    }
++
++    fn observe_sweep_pair(&mut self, selected: Option<(&Candidate, &Candidate)>) -> bool {
++        let relay = selected.is_some_and(|(local, remote)| {
++            local.candidate_type() == CandidateType::Relay
++                || remote.candidate_type() == CandidateType::Relay
++        });
++        if let Some((local, remote)) = selected {
++            if remote.candidate_type() == CandidateType::PeerReflexive {
++                self.host_sweep.observe_prflx(local.addr(), remote.addr());
++            }
++            if !relay {
++                self.host_sweep.stop_all("direct-selected");
++            }
++        }
++        relay
++    }
++
++    fn prepare_host_sweep_ports(&mut self, now: Instant, hosts: &[SocketAddr]) {
++        for port in self.host_sweep.unprepared_ports(now) {
++            if hosts.is_empty() && self.ice_gathering_active {
++                self.host_sweep.defer_preparation(port, now);
++                continue;
++            }
++            let (subnets, reasons) = self.sweep_subnets(hosts);
++            if subnets.is_empty() {
++                self.host_sweep
++                    .skip(port, reasons.first().copied().unwrap_or("no-host-socket"));
++            } else {
++                self.host_sweep.prepare(port, subnets);
++            }
++            for reason in reasons {
++                self.host_sweep.note_skip(reason);
++            }
++        }
++    }
++
++    async fn report_host_sweep(&mut self) {
++        while let Some(event) = self.host_sweep.pop_event() {
++            self.inner.handler.on_host_candidate_sweep(event).await;
++        }
++    }
++
++    fn sweep_subnets(&self, hosts: &[SocketAddr]) -> (Vec<SweepSubnet>, Vec<&'static str>) {
++        if !cfg!(target_os = "linux") {
++            return (Vec::new(), vec!["unsupported-platform"]);
++        }
++        let Ok(interfaces) = ifaces() else {
++            return (Vec::new(), vec!["no-on-link-interface"]);
++        };
++        let mut subnets = Vec::new();
++        let mut reasons = Vec::new();
++        for local in hosts {
++            if !self.udp_sockets.contains_key(local) {
++                reasons.push("no-host-socket");
++                continue;
++            }
++            match SweepSubnet::for_socket(*local, &interfaces, sweep_interface_index) {
++                Ok(subnet) => subnets.push(subnet),
++                Err(reason) => reasons.push(reason),
++            }
++        }
++        reasons.sort_unstable();
++        reasons.dedup();
++        (subnets, reasons)
++    }
++
++    fn send_host_probe(&mut self, probe: super::host_sweep::SweepProbe) {
++        // Re-enumerate before each emission: a route is no longer safe after its
++        // interface/address/mask disappears or changes. No routing fallback is allowed.
++        let valid = ifaces().ok().is_some_and(|interfaces| {
++            probe.subnet.still_owned(
++                &interfaces,
++                sweep_interface_index(&probe.subnet.interface_name),
++                probe.destination,
++            )
++        });
++        if !valid {
++            self.host_sweep.skip(probe.port, "no-on-link-interface");
++            return;
++        }
++        let Some(socket) = self.udp_sockets.get(&probe.subnet.local) else {
++            self.host_sweep.skip(probe.port, "no-host-socket");
++            return;
++        };
++        let (Ok(payload), IpAddr::V4(source)) = (binding_indication(), probe.subnet.local.ip())
++        else {
++            self.host_sweep.skip(probe.port, "send-error");
++            return;
++        };
++        let destination = std::net::SocketAddrV4::new(probe.destination, probe.port);
++        let result = self.inner.host_sweep_control.while_allowed(
++            self.host_sweep.generation(),
++            self.host_sweep.remote_ufrag(),
++            probe.port,
++            || {
++                socket.try_send_on_interface(
++                    &payload,
++                    source,
++                    probe.subnet.interface_index,
++                    destination,
++                )
++            },
++        );
++        match result {
++            Some(Ok(sent)) if sent == payload.len() => {
++                self.host_sweep.record_result(probe.port, true)
++            }
++            Some(Err(error)) if error.kind() == std::io::ErrorKind::WouldBlock => {
++                self.host_sweep.record_result(probe.port, false)
++            }
++            Some(Err(error)) if error.kind() == std::io::ErrorKind::Unsupported => {
++                self.host_sweep.skip(probe.port, "unsupported-platform")
++            }
++            Some(_) => self.host_sweep.skip(probe.port, "send-error"),
++            None => {
++                let ufrag = self.host_sweep.remote_ufrag().to_owned();
++                self.host_sweep
++                    .cancel(self.host_sweep.generation(), &ufrag, probe.port);
++            }
++        }
++    }
++
+     async fn handle_write(&mut self, msg: TaggedBytesMut) -> Result<usize> {
+         if msg.transport.transport_protocol == TransportProtocol::TCP {
+             self.tcp_transport.write(&msg).await
+@@ -1283,8 +1472,50 @@ where
+         }
+     }
+ 
+-    async fn handle_driver_event(&mut self, evt: PeerConnectionDriverEvent) -> bool {
++    async fn start_host_sweep(
++        &mut self,
++        generation: u64,
++        credentials: SweepCredentials,
++        port: u16,
++    ) {
++        let core = self.inner.core.lock().await;
++        if self.inner.host_candidate_sweep
++            && credentials.matches(core.remote_ice_credentials())
++            && self
++                .inner
++                .host_sweep_control
++                .generation_allowed(generation, credentials.ufrag())
++        {
++            let (ufrag, password) = core.remote_ice_credentials();
++            self.host_sweep.sync_credentials(ufrag, password);
++            self.host_sweep
++                .start(generation, credentials.ufrag().into(), port, Instant::now());
++        }
++    }
++
++    fn note_sweep_skip(&mut self, generation: u64, reason: &'static str) {
++        if generation == self.host_sweep.generation() {
++            self.host_sweep.note_skip(reason);
++        }
++    }
++
++    pub(super) async fn handle_driver_event(&mut self, evt: PeerConnectionDriverEvent) -> bool {
+         match evt {
++            PeerConnectionDriverEvent::StartHostSweep {
++                generation,
++                credentials,
++                port,
++            } => self.start_host_sweep(generation, credentials, port).await,
++            PeerConnectionDriverEvent::CancelHostSweep {
++                generation,
++                remote_ufrag,
++                port,
++            } => {
++                self.host_sweep.cancel(generation, &remote_ufrag, port);
++            }
++            PeerConnectionDriverEvent::HostSweepSkipped { generation, reason } => {
++                self.note_sweep_skip(generation, reason);
++            }
+             PeerConnectionDriverEvent::SenderRtp(sender_id, packet) => {
+                 let mut core = self.inner.core.lock().await;
+                 if let Some(mut sender) = core.rtp_sender(sender_id) {
+@@ -1397,6 +1628,8 @@ where
+                 self.tcp_transport.register_stream(four_tuple, stream);
+             }
+             PeerConnectionDriverEvent::Close => {
++                self.host_sweep.clear("closed");
++                self.report_host_sweep().await;
+                 if let Err(err) = self.turn_relayer.close() {
+                     error!("Failed to close turn_relayer: {}", err);
+                 }
+@@ -1752,11 +1985,16 @@ where
+         let stun_timeout = self.stun_gatherer.poll_timeout();
+         let turn_timeout = self.turn_relayer.poll_timeout();
+ 
+-        [core_timeout, stun_timeout, turn_timeout]
+-            .into_iter()
+-            .flatten()
+-            .min()
+-            .unwrap_or_else(|| Instant::now() + DEFAULT_TIMEOUT_DURATION)
++        [
++            core_timeout,
++            stun_timeout,
++            turn_timeout,
++            self.host_sweep.deadline(),
++        ]
++        .into_iter()
++        .flatten()
++        .min()
++        .unwrap_or_else(|| Instant::now() + DEFAULT_TIMEOUT_DURATION)
+     }
+ 
+     async fn handle_timeout(&mut self, now: Instant) -> Result<()> {
+diff --git a/webrtc/src/peer_connection/host_sweep.rs b/webrtc/src/peer_connection/host_sweep.rs
+index e69de29..4b4ccf0 100644
+--- a/webrtc/src/peer_connection/host_sweep.rs
++++ b/webrtc/src/peer_connection/host_sweep.rs
+@@ -0,0 +1,678 @@
++//! Bounded, credential-free conntrack probes on an advertised host socket.
++
++use rtc::shared::ifaces::{Interface, NextHop};
++use std::collections::{BTreeMap, VecDeque};
++use std::net::{IpAddr, Ipv4Addr, SocketAddr};
++use std::sync::Arc;
++use std::time::{Duration, Instant};
++
++const GRACE: Duration = Duration::from_millis(250);
++const PACE: Duration = Duration::from_millis(5);
++const REPEAT_DELAY: Duration = Duration::from_secs(1);
++const WINDOW: Duration = Duration::from_secs(25);
++const MAX_PORTS: usize = 32;
++const MAX_PACKETS: u32 = 32768;
++
++/// A content-free observation. Addresses, ports and credentials never leave the driver.
++#[derive(Clone, Debug)]
++pub struct HostCandidateSweepEvent {
++    /// Bridge generation ordinal, supplied by the caller.
++    pub generation: u64,
++    /// started, progress, stopped or skipped.
++    pub status: &'static str,
++    /// Successful datagram sends, cumulative for this generation.
++    pub addresses_sent: u32,
++    /// Scheduled send attempts, including transient socket failures.
++    pub addresses_attempted: u32,
++    /// Fixed content-free skip or stop reason.
++    pub reason: Option<&'static str>,
++    /// An advertised host socket has a safe, bounded on-link subnet.
++    pub eligible: bool,
++    /// Generation-wide eligible ports whose names remain unresolved.
++    pub eligible_unresolved: u32,
++    /// An authenticated peer-reflexive pair matched a swept host socket and port.
++    pub prflx_followed: bool,
++}
++
++#[derive(Clone, Debug)]
++pub(crate) struct SweepSubnet {
++    pub local: SocketAddr,
++    pub interface_name: String,
++    pub interface_index: u32,
++    pub addresses: Arc<[Ipv4Addr]>,
++    mask: u32,
++}
++
++impl SweepSubnet {
++    pub fn from_interface(
++        local: SocketAddr,
++        interface: &Interface,
++        interface_index: u32,
++        local_addresses: &[IpAddr],
++    ) -> Result<Self, &'static str> {
++        let IpAddr::V4(ip) = local.ip() else {
++            return Err("non-private-subnet");
++        };
++        if interface_index == 0 || interface.addr.map(|addr| addr.ip()) != Some(local.ip()) {
++            return Err("no-on-link-interface");
++        }
++        if matches!(interface.hop, Some(NextHop::Destination(_))) {
++            return Err("point-to-point");
++        }
++        let mask = interface
++            .mask
++            .and_then(|addr| match addr.ip() {
++                IpAddr::V4(mask) => Some(u32::from(mask)),
++                _ => None,
++            })
++            .ok_or("invalid-netmask")?;
++        let host_bits = !mask;
++        if host_bits & host_bits.wrapping_add(1) != 0 {
++            return Err("invalid-netmask");
++        }
++        let network = u32::from(ip) & mask;
++        let broadcast = network | host_bits;
++        if !private_ipv4(ip) || !private_ipv4(network.into()) || !private_ipv4(broadcast.into()) {
++            return Err("non-private-subnet");
++        }
++        if u64::from(host_bits) + 1 > 1024 {
++            return Err("subnet-too-large");
++        }
++        let addresses = (network..=broadcast)
++            .filter(|value| *value != network && *value != broadcast && *value != u32::from(ip))
++            .map(Ipv4Addr::from)
++            .filter(|ip| !local_addresses.contains(&IpAddr::V4(*ip)))
++            .collect::<Vec<_>>();
++        if addresses.is_empty() {
++            return Err("no-usable-addresses");
++        }
++        Ok(Self {
++            local,
++            interface_name: interface.name.clone(),
++            interface_index,
++            addresses: addresses.into(),
++            mask,
++        })
++    }
++
++    pub fn for_socket(
++        local: SocketAddr,
++        interfaces: &[Interface],
++        index: impl Fn(&str) -> u32,
++    ) -> Result<Self, &'static str> {
++        let owners = interfaces
++            .iter()
++            .filter(|interface| interface.addr.map(|addr| addr.ip()) == Some(local.ip()))
++            .collect::<Vec<_>>();
++        if owners.len() > 1 {
++            return Err("ambiguous-interface");
++        }
++        let owner = owners.first().ok_or("no-on-link-interface")?;
++        let local_addresses = interfaces
++            .iter()
++            .filter_map(|interface| interface.addr.map(|addr| addr.ip()))
++            .collect::<Vec<_>>();
++        Self::from_interface(local, owner, index(&owner.name), &local_addresses)
++    }
++
++    pub fn still_owned(&self, interfaces: &[Interface], index: u32, destination: Ipv4Addr) -> bool {
++        if index != self.interface_index
++            || interfaces.iter().any(|interface| {
++                interface.addr.map(|addr| addr.ip()) == Some(IpAddr::V4(destination))
++            })
++        {
++            return false;
++        }
++        if interfaces
++            .iter()
++            .filter(|interface| interface.addr.map(|addr| addr.ip()) == Some(self.local.ip()))
++            .count()
++            != 1
++        {
++            return false;
++        }
++        interfaces.iter().any(|interface| {
++            interface.name == self.interface_name
++                && interface.addr.map(|addr| addr.ip()) == Some(self.local.ip())
++                && interface.mask.map(|mask| mask.ip()) == Some(IpAddr::V4(self.mask.into()))
++                && !matches!(interface.hop, Some(NextHop::Destination(_)))
++        })
++    }
++}
++
++fn private_ipv4(ip: Ipv4Addr) -> bool {
++    ip.is_private() || ip.is_link_local()
++}
++
++/// STUN Binding Indications request no reply. Only FINGERPRINT is an attribute;
++/// the fresh random transaction ID cannot identify the session.
++pub(crate) fn binding_indication() -> rtc::shared::error::Result<Vec<u8>> {
++    use rtc::stun::fingerprint::FINGERPRINT;
++    use rtc::stun::message::{
++        CLASS_INDICATION, METHOD_BINDING, Message, MessageType, TransactionId,
++    };
++    let mut message = Message::new();
++    message.build(&[
++        Box::new(MessageType {
++            method: METHOD_BINDING,
++            class: CLASS_INDICATION,
++        }),
++        Box::new(TransactionId::new()),
++        Box::new(FINGERPRINT),
++    ])?;
++    Ok(message.raw)
++}
++
++#[derive(Clone, Debug)]
++pub(crate) struct SweepProbe {
++    pub port: u16,
++    pub subnet: SweepSubnet,
++    pub destination: Ipv4Addr,
++}
++
++/// Immutable generation credentials accepted while the core is locked. Debug
++/// intentionally hides both fields; neither enters a probe or public event.
++#[derive(Clone)]
++pub(crate) struct SweepCredentials {
++    ufrag: String,
++    password: String,
++}
++
++impl std::fmt::Debug for SweepCredentials {
++    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        formatter.write_str("SweepCredentials(<redacted>)")
++    }
++}
++impl SweepCredentials {
++    pub fn new(ufrag: &str, password: &str) -> Self {
++        Self {
++            ufrag: ufrag.into(),
++            password: password.into(),
++        }
++    }
++    pub fn matches(&self, credentials: (&str, &str)) -> bool {
++        self.ufrag == credentials.0 && self.password == credentials.1
++    }
++    pub fn ufrag(&self) -> &str {
++        &self.ufrag
++    }
++}
++
++/// Synchronous cancellation makes resolution effective before the driver's next
++/// syscall, even if its event queue is full or a callback holds the bridge lock.
++#[derive(Default)]
++pub(crate) struct HostSweepControl {
++    state: std::sync::Mutex<ControlState>,
++}
++
++#[derive(Default)]
++struct ControlState {
++    generation: Option<u64>,
++    ufrag: String,
++    ports: std::collections::BTreeSet<u16>,
++    retired: bool,
++}
++
++impl HostSweepControl {
++    pub fn start(&self, generation: u64, ufrag: &str, port: u16) -> bool {
++        let Ok(mut state) = self.state.lock() else {
++            return false;
++        };
++        if state
++            .generation
++            .is_some_and(|current| generation < current || (generation == current && state.retired))
++        {
++            return false;
++        }
++        if state.generation != Some(generation) {
++            state.generation = Some(generation);
++            state.ufrag = ufrag.into();
++            state.ports.clear();
++            state.retired = false;
++        }
++        if state.ufrag != ufrag || (state.ports.len() >= MAX_PORTS && !state.ports.contains(&port))
++        {
++            return false;
++        }
++        state.ports.insert(port);
++        true
++    }
++    pub fn cancel(&self, generation: u64, ufrag: &str, port: u16) {
++        if let Ok(mut state) = self.state.lock()
++            && state.generation == Some(generation)
++            && state.ufrag == ufrag
++        {
++            state.ports.remove(&port);
++        }
++    }
++    pub fn clear(&self) {
++        if let Ok(mut state) = self.state.lock() {
++            state.ports.clear();
++            state.retired = true;
++        }
++    }
++    pub fn generation_allowed(&self, generation: u64, ufrag: &str) -> bool {
++        self.state.lock().is_ok_and(|state| {
++            state.generation == Some(generation) && state.ufrag == ufrag && !state.retired
++        })
++    }
++    pub fn allowed(&self, generation: u64, ufrag: &str, port: u16) -> bool {
++        self.state.lock().is_ok_and(|state| {
++            state.generation == Some(generation)
++                && state.ufrag == ufrag
++                && state.ports.contains(&port)
++                && !state.retired
++        })
++    }
++    pub fn while_allowed<T>(
++        &self,
++        generation: u64,
++        ufrag: &str,
++        port: u16,
++        send: impl FnOnce() -> T,
++    ) -> Option<T> {
++        let state = self.state.lock().ok()?;
++        if state.generation != Some(generation)
++            || state.ufrag != ufrag
++            || !state.ports.contains(&port)
++            || state.retired
++        {
++            return None;
++        }
++        Some(send())
++    }
++}
++
++#[derive(Default)]
++pub(crate) struct HostSweep {
++    generation: u64,
++    remote_ufrag: String,
++    remote_password: String,
++    plans: BTreeMap<u16, PortSweep>,
++    next_packet: Option<Instant>,
++    packets: u32,
++    sent: u32,
++    prflx_followed: bool,
++    events: VecDeque<HostCandidateSweepEvent>,
++    relay: bool,
++}
++
++struct PortSweep {
++    due: Instant,
++    expires: Instant,
++    subnets: Option<Vec<SweepSubnet>>,
++    cursor: usize,
++    repeat: bool,
++    stopped: bool,
++    sent: u32,
++    attempted: u32,
++    prflx_followed: bool,
++    report_pending: bool,
++    eligible: bool,
++    unresolved: bool,
++    successful_destinations: std::collections::HashSet<(SocketAddr, Ipv4Addr)>,
++    attempted_destination: Option<(SocketAddr, Ipv4Addr)>,
++}
++
++impl HostSweep {
++    pub fn start(&mut self, generation: u64, ufrag: String, port: u16, now: Instant) {
++        if generation < self.generation {
++            return;
++        }
++        if self.remote_ufrag != ufrag || generation != self.generation {
++            self.stop_all("generation-changed");
++            self.snapshot_queued_events();
++            self.plans.clear();
++            self.prflx_followed = false;
++            self.packets = 0;
++            self.sent = 0;
++            self.next_packet = None;
++            self.remote_ufrag = ufrag;
++            self.generation = generation;
++        }
++        if port == 0 || self.plans.contains_key(&port) {
++            return;
++        }
++        if self.plans.len() >= MAX_PORTS {
++            self.events
++                .push_back(self.event("skipped", Some("port-limit"), false, 0, 0, false));
++            return;
++        }
++        self.plans.insert(
++            port,
++            PortSweep {
++                due: now + GRACE,
++                expires: now + WINDOW,
++                subnets: None,
++                cursor: 0,
++                repeat: false,
++                stopped: false,
++                sent: 0,
++                attempted: 0,
++                prflx_followed: false,
++                report_pending: false,
++                eligible: false,
++                unresolved: true,
++                successful_destinations: std::collections::HashSet::new(),
++                attempted_destination: None,
++            },
++        );
++    }
++
++    pub fn unprepared_ports(&self, now: Instant) -> Vec<u16> {
++        self.plans
++            .iter()
++            .filter(|(_, plan)| !plan.stopped && plan.subnets.is_none() && now >= plan.due)
++            .map(|(port, _)| *port)
++            .collect()
++    }
++
++    pub fn prepare(&mut self, port: u16, subnets: Vec<SweepSubnet>) {
++        if let Some(plan) = self.plans.get_mut(&port) {
++            plan.eligible = !subnets.is_empty();
++            plan.subnets = Some(subnets);
++            self.events
++                .push_back(self.event("started", None, true, 0, 0, false));
++        }
++    }
++
++    pub fn skip(&mut self, port: u16, reason: &'static str) {
++        if let Some(plan) = self.plans.get_mut(&port) {
++            plan.stopped = true;
++            plan.eligible = false;
++            self.events
++                .push_back(plan.event(self.generation, "skipped", Some(reason), false));
++        }
++    }
++
++    pub fn next_probe(&mut self, now: Instant, relay: bool) -> Option<SweepProbe> {
++        self.relay = relay;
++        self.expire(now);
++        if self.next_packet.is_some_and(|next| now < next) {
++            return None;
++        }
++        if self.packets >= MAX_PACKETS {
++            self.stop_all("packet-limit");
++            return None;
++        }
++        for (port, plan) in &mut self.plans {
++            if let Some((subnet, destination)) = plan.take_next(now, relay) {
++                plan.attempted += 1;
++                self.packets += 1;
++                self.next_packet = Some(now + PACE);
++                if plan.finished_pass() {
++                    plan.report_pending = true;
++                    plan.finish_pass(now);
++                }
++                return Some(SweepProbe {
++                    port: *port,
++                    subnet,
++                    destination,
++                });
++            }
++        }
++        None
++    }
++
++    pub fn record_result(&mut self, port: u16, sent: bool) {
++        if sent {
++            self.sent += 1;
++        }
++        if let Some(plan) = self.plans.get_mut(&port) {
++            if sent {
++                plan.sent += 1;
++                if let Some(destination) = plan.attempted_destination.take() {
++                    plan.successful_destinations.insert(destination);
++                }
++            } else {
++                plan.attempted_destination = None;
++            }
++            if plan.report_pending {
++                plan.report_pending = false;
++                let status = if plan.stopped { "stopped" } else { "progress" };
++                let reason = if plan.stopped {
++                    Some("completed")
++                } else {
++                    None
++                };
++                self.events
++                    .push_back(plan.event(self.generation, status, reason, true));
++            }
++        }
++    }
++
++    pub fn cancel_inactive(&mut self, control: &HostSweepControl) {
++        let ports = self
++            .plans
++            .keys()
++            .copied()
++            .filter(|port| !control.allowed(self.generation, &self.remote_ufrag, *port))
++            .collect::<Vec<_>>();
++        let ufrag = self.remote_ufrag.clone();
++        for port in ports {
++            self.cancel(self.generation, &ufrag, port);
++        }
++    }
++    pub fn generation(&self) -> u64 {
++        self.generation
++    }
++    pub fn remote_ufrag(&self) -> &str {
++        &self.remote_ufrag
++    }
++
++    pub fn cancel(&mut self, generation: u64, ufrag: &str, port: u16) {
++        if generation != self.generation || ufrag != self.remote_ufrag {
++            return;
++        }
++        if let Some(plan) = self.plans.get_mut(&port)
++            && plan.unresolved
++        {
++            plan.stopped = true;
++            plan.unresolved = false;
++            self.events
++                .push_back(plan.event(self.generation, "stopped", Some("resolved"), false));
++        }
++    }
++
++    pub fn sync_generation(&mut self, ufrag: &str) {
++        if ufrag != self.remote_ufrag {
++            self.clear("generation-changed");
++        }
++    }
++
++    pub fn clear(&mut self, reason: &'static str) {
++        self.stop_all(reason);
++        self.plans.clear();
++        self.remote_ufrag.clear();
++        self.remote_password.clear();
++        self.next_packet = None;
++    }
++
++    pub fn stop_all(&mut self, reason: &'static str) {
++        let retire = [
++            "direct-selected",
++            "resolved",
++            "generation-changed",
++            "closed",
++        ]
++        .contains(&reason);
++        for plan in self.plans.values_mut() {
++            if !plan.stopped || (retire && plan.eligible && plan.unresolved) {
++                plan.stopped = true;
++                if retire {
++                    plan.unresolved = false;
++                }
++                self.events
++                    .push_back(plan.event(self.generation, "stopped", Some(reason), false));
++            }
++        }
++    }
++
++    pub fn observe_prflx(&mut self, local: SocketAddr, remote: SocketAddr) {
++        let Some(plan) = self.plans.get_mut(&remote.port()) else {
++            return;
++        };
++        let IpAddr::V4(ip) = remote.ip() else {
++            return;
++        };
++        let matched = plan.successful_destinations.contains(&(local, ip));
++        if matched && plan.sent > 0 && !plan.prflx_followed {
++            plan.prflx_followed = true;
++            self.prflx_followed = true;
++            self.events
++                .push_back(plan.event(self.generation, "progress", None, true));
++        }
++    }
++
++    pub fn deadline(&self) -> Option<Instant> {
++        self.plans
++            .values()
++            .filter(|plan| !plan.stopped)
++            .map(|plan| {
++                let due = if plan.repeat && !self.relay {
++                    plan.expires
++                } else {
++                    plan.due
++                };
++                due.max(self.next_packet.unwrap_or(due)).min(plan.expires)
++            })
++            .min()
++    }
++
++    pub fn pop_event(&mut self) -> Option<HostCandidateSweepEvent> {
++        let mut event = self.events.pop_front()?;
++        if event.generation == self.generation {
++            event.prflx_followed = self.prflx_followed;
++            event.addresses_sent = self.sent;
++            event.addresses_attempted = self.packets;
++            event.eligible_unresolved = self
++                .plans
++                .values()
++                .filter(|plan| plan.eligible && plan.unresolved)
++                .count() as u32;
++        }
++        Some(event)
++    }
++    pub fn sync_credentials(&mut self, ufrag: &str, password: &str) {
++        if self.remote_ufrag != ufrag || self.remote_password != password {
++            self.clear("generation-changed");
++        }
++        self.remote_ufrag = ufrag.into();
++        self.remote_password = password.into();
++    }
++    pub fn defer_preparation(&mut self, port: u16, now: Instant) {
++        if let Some(plan) = self.plans.get_mut(&port) {
++            plan.due = now + Duration::from_millis(50);
++        }
++    }
++    pub fn note_skip(&mut self, reason: &'static str) {
++        self.events
++            .push_back(self.event("skipped", Some(reason), false, 0, 0, false));
++    }
++    pub fn is_empty(&self) -> bool {
++        self.plans.is_empty()
++    }
++
++    fn snapshot_queued_events(&mut self) {
++        for event in &mut self.events {
++            if event.generation == self.generation {
++                event.prflx_followed = self.prflx_followed;
++                event.addresses_sent = self.sent;
++                event.addresses_attempted = self.packets;
++            }
++        }
++    }
++
++    fn expire(&mut self, now: Instant) {
++        for plan in self.plans.values_mut() {
++            if !plan.stopped && now >= plan.expires {
++                plan.stopped = true;
++                self.events.push_back(plan.event(
++                    self.generation,
++                    "stopped",
++                    Some("window-expired"),
++                    false,
++                ));
++            }
++        }
++    }
++
++    fn event(
++        &self,
++        status: &'static str,
++        reason: Option<&'static str>,
++        eligible: bool,
++        sent: u32,
++        attempted: u32,
++        prflx_followed: bool,
++    ) -> HostCandidateSweepEvent {
++        HostCandidateSweepEvent {
++            generation: self.generation,
++            status,
++            reason,
++            eligible,
++            eligible_unresolved: 0,
++            addresses_sent: sent,
++            addresses_attempted: attempted,
++            prflx_followed,
++        }
++    }
++}
++
++impl PortSweep {
++    fn take_next(&mut self, now: Instant, relay: bool) -> Option<(SweepSubnet, Ipv4Addr)> {
++        if self.stopped || now < self.due || (self.repeat && !relay) {
++            return None;
++        }
++        let subnets = self.subnets.as_ref()?;
++        let mut offset = self.cursor;
++        for subnet in subnets {
++            if let Some(destination) = subnet.addresses.get(offset) {
++                self.cursor += 1;
++                self.attempted_destination = Some((subnet.local, *destination));
++                return Some((subnet.clone(), *destination));
++            }
++            offset -= subnet.addresses.len();
++        }
++        None
++    }
++
++    fn finished_pass(&self) -> bool {
++        self.subnets.as_ref().is_some_and(|subnets| {
++            self.cursor == subnets.iter().map(|s| s.addresses.len()).sum::<usize>()
++        })
++    }
++
++    fn finish_pass(&mut self, now: Instant) {
++        if self.repeat {
++            self.stopped = true;
++        } else {
++            self.repeat = true;
++            self.cursor = 0;
++            self.due = now + REPEAT_DELAY;
++        }
++    }
++
++    fn event(
++        &self,
++        generation: u64,
++        status: &'static str,
++        reason: Option<&'static str>,
++        eligible: bool,
++    ) -> HostCandidateSweepEvent {
++        HostCandidateSweepEvent {
++            generation,
++            status,
++            reason,
++            eligible,
++            eligible_unresolved: 0,
++            addresses_sent: self.sent,
++            addresses_attempted: self.attempted,
++            prflx_followed: self.prflx_followed,
++        }
++    }
++}
++
++#[cfg(test)]
++#[path = "host_sweep_tests.rs"]
++mod tests;
+diff --git a/webrtc/src/peer_connection/host_sweep_tests.rs b/webrtc/src/peer_connection/host_sweep_tests.rs
+index e69de29..fb93f3a 100644
+--- a/webrtc/src/peer_connection/host_sweep_tests.rs
++++ b/webrtc/src/peer_connection/host_sweep_tests.rs
+@@ -0,0 +1,421 @@
++use super::*;
++use rtc::shared::ifaces::Kind;
++
++fn address(value: &str) -> SocketAddr {
++    value.parse().unwrap()
++}
++fn interface(ip: &str, mask: &str, name: &str) -> Interface {
++    Interface {
++        name: name.into(),
++        kind: Kind::Ipv4,
++        addr: Some(address(ip)),
++        mask: Some(address(mask)),
++        hop: None,
++    }
++}
++fn subnet() -> SweepSubnet {
++    SweepSubnet {
++        local: address("192.168.2.1:45000"),
++        interface_name: "wifi".into(),
++        interface_index: 2,
++        addresses: vec![Ipv4Addr::new(192, 168, 2, 2), Ipv4Addr::new(192, 168, 2, 3)].into(),
++        mask: u32::from(Ipv4Addr::new(255, 255, 255, 0)),
++    }
++}
++
++#[test]
++fn generation_prflx_observation_survives_sibling_port_stop_and_close() {
++    let now = Instant::now();
++    let mut sweep = HostSweep::default();
++    for port in [40000, 40001] {
++        sweep.start(7, "same".into(), port, now);
++        sweep.prepare(port, vec![subnet()]);
++    }
++    let probe = sweep.next_probe(now + GRACE, false).unwrap();
++    sweep.record_result(probe.port, true);
++    sweep.observe_prflx(address("192.168.2.1:45000"), address("192.168.2.2:40000"));
++    sweep.stop_all("direct-selected");
++    let mut last = None;
++    while let Some(event) = sweep.pop_event() {
++        last = Some(event);
++    }
++    assert!(last.unwrap().prflx_followed);
++    sweep.clear("closed");
++    while let Some(event) = sweep.pop_event() {
++        assert!(event.prflx_followed);
++    }
++    sweep.start(8, "new".into(), 40001, now);
++    sweep.prepare(40001, vec![subnet()]);
++    assert!(!sweep.pop_event().unwrap().prflx_followed);
++}
++
++#[test]
++fn prflx_attribution_excludes_an_address_that_has_not_been_sent_a_probe() {
++    let now = Instant::now();
++    let mut sweep = HostSweep::default();
++    sweep.start(7, "same".into(), 40000, now);
++    sweep.prepare(40000, vec![subnet()]);
++    while sweep.pop_event().is_some() {}
++    let probe = sweep.next_probe(now + GRACE, false).unwrap();
++    assert_eq!(probe.destination, Ipv4Addr::new(192, 168, 2, 2));
++    sweep.record_result(40000, true);
++    sweep.observe_prflx(address("192.168.2.1:45000"), address("192.168.2.3:40000"));
++    assert!(sweep.pop_event().is_none());
++    sweep.observe_prflx(address("192.168.2.1:45000"), address("192.168.2.2:40000"));
++    assert!(sweep.pop_event().unwrap().prflx_followed);
++}
++
++#[test]
++fn generation_totals_never_decrease_across_ports_skips_cancel_and_close() {
++    let now = Instant::now();
++    let mut sweep = HostSweep::default();
++    for port in [40000, 40001] {
++        let mut route = subnet();
++        route.addresses = vec![Ipv4Addr::new(192, 168, 2, 2)].into();
++        sweep.start(7, "same".into(), port, now);
++        sweep.prepare(port, vec![route]);
++    }
++    while sweep.pop_event().is_some() {}
++    let first = sweep.next_probe(now + GRACE, false).unwrap();
++    sweep.record_result(first.port, true);
++    assert_eq!(sweep.pop_event().unwrap().addresses_sent, 1);
++    let second = sweep.next_probe(now + GRACE + PACE, false).unwrap();
++    sweep.record_result(second.port, true);
++    assert_eq!(sweep.pop_event().unwrap().addresses_sent, 2);
++    sweep.start(7, "same".into(), 40002, now);
++    sweep.skip(40002, "subnet-too-large");
++    assert_eq!(sweep.pop_event().unwrap().addresses_sent, 2);
++    sweep.cancel(7, "same", 40000);
++    assert_eq!(sweep.pop_event().unwrap().addresses_sent, 2);
++    sweep.clear("closed");
++    while let Some(event) = sweep.pop_event() {
++        assert_eq!((event.addresses_sent, event.addresses_attempted), (2, 2));
++    }
++    sweep.start(8, "new".into(), 40000, now);
++    sweep.prepare(40000, vec![subnet()]);
++    assert_eq!(sweep.pop_event().unwrap().addresses_sent, 0);
++}
++
++#[test]
++fn ambiguous_source_address_ownership_and_interface_replacement_are_skipped() {
++    let local = address("192.168.2.1:45000");
++    let wifi = interface("192.168.2.1:0", "255.255.255.0:0", "wifi");
++    let duplicate = interface("192.168.2.1:0", "255.255.255.0:0", "bridge");
++    assert_eq!(
++        SweepSubnet::for_socket(local, &[wifi.clone(), duplicate], |_| 2).unwrap_err(),
++        "ambiguous-interface"
++    );
++    let subnet = SweepSubnet::for_socket(local, &[wifi.clone()], |_| 2).unwrap();
++    let remote = Ipv4Addr::new(192, 168, 2, 2);
++    assert!(subnet.still_owned(&[wifi.clone()], 2, remote));
++    assert!(!subnet.still_owned(&[wifi.clone()], 3, remote));
++    let own_new = interface("192.168.2.2:0", "255.255.255.0:0", "wifi");
++    assert!(!subnet.still_owned(&[wifi.clone(), own_new], 2, remote));
++    let changed_mask = interface("192.168.2.1:0", "255.255.255.128:0", "wifi");
++    assert!(!subnet.still_owned(&[changed_mask], 2, remote));
++    assert!(!subnet.still_owned(&[], 2, remote));
++}
++
++#[test]
++fn last_successful_send_is_counted_and_prflx_attribution_requires_the_swept_socket_port_and_ip() {
++    let now = Instant::now();
++    let mut sweep = HostSweep::default();
++    sweep.start(7, "same".into(), 40000, now);
++    sweep.prepare(40000, vec![subnet()]);
++    while sweep.pop_event().is_some() {}
++    assert!(sweep.next_probe(now + GRACE, false).is_some());
++    sweep.record_result(40000, true);
++    assert!(sweep.next_probe(now + GRACE + PACE, false).is_some());
++    sweep.record_result(40000, true);
++    assert_eq!(sweep.pop_event().unwrap().addresses_sent, 2);
++    sweep.observe_prflx(address("192.168.2.1:45001"), address("192.168.2.2:40000"));
++    sweep.observe_prflx(address("192.168.2.1:45000"), address("192.168.3.2:40000"));
++    sweep.observe_prflx(address("192.168.2.1:45000"), address("192.168.2.2:40001"));
++    assert!(sweep.pop_event().is_none());
++    sweep.observe_prflx(address("192.168.2.1:45000"), address("192.168.2.2:40000"));
++    assert!(sweep.pop_event().unwrap().prflx_followed);
++    sweep.start(8, "new".into(), 40000, now);
++    sweep.prepare(40000, vec![subnet()]);
++    while sweep.pop_event().is_some() {}
++    sweep.observe_prflx(address("192.168.2.1:45000"), address("192.168.2.2:40000"));
++    assert!(sweep.pop_event().is_none());
++}
++
++#[test]
++fn missing_host_gathering_can_be_deferred_without_extending_the_window() {
++    let now = Instant::now();
++    let mut sweep = HostSweep::default();
++    sweep.start(7, "same".into(), 40000, now);
++    assert_eq!(sweep.unprepared_ports(now + GRACE), vec![40000]);
++    sweep.defer_preparation(40000, now + GRACE);
++    assert!(sweep.unprepared_ports(now + GRACE).is_empty());
++    sweep.prepare(40000, vec![subnet()]);
++    assert!(
++        sweep
++            .next_probe(now + GRACE + Duration::from_millis(50), false)
++            .is_some()
++    );
++    assert!(sweep.next_probe(now + WINDOW, false).is_none());
++}
++
++#[test]
++fn numeric_generation_restarts_budget_even_when_ufrag_is_reused() {
++    let now = Instant::now();
++    let mut sweep = HostSweep::default();
++    sweep.start(7, "same".into(), 40000, now);
++    sweep.prepare(40000, vec![subnet()]);
++    sweep.cancel(7, "same", 40000);
++    sweep.start(8, "same".into(), 40000, now);
++    sweep.prepare(40000, vec![subnet()]);
++    assert!(sweep.next_probe(now + GRACE, false).is_some());
++    sweep.start(7, "same".into(), 40001, now);
++    assert!(!sweep.plans.contains_key(&40001));
++}
++
++#[test]
++fn password_only_restart_retires_all_old_port_plans() {
++    let now = Instant::now();
++    let mut sweep = HostSweep::default();
++    sweep.sync_credentials("same", "old-password");
++    sweep.start(7, "same".into(), 40000, now);
++    sweep.prepare(40000, vec![subnet()]);
++    sweep.sync_credentials("same", "new-password");
++    assert!(sweep.next_probe(now + GRACE, false).is_none());
++}
++
++#[test]
++fn aggregate_eligibility_survives_unrelated_skips_and_expiry_but_resolution_clears_one_port() {
++    let now = Instant::now();
++    let mut sweep = HostSweep::default();
++    sweep.start(7, "same".into(), 40000, now);
++    sweep.prepare(40000, vec![subnet()]);
++    sweep.start(7, "same".into(), 40001, now);
++    sweep.prepare(40001, vec![subnet()]);
++    sweep.start(7, "same".into(), 40002, now);
++    sweep.skip(40002, "subnet-too-large");
++    while let Some(event) = sweep.pop_event() {
++        assert_eq!(event.eligible_unresolved, 2);
++    }
++    sweep.next_probe(now + WINDOW, true);
++    assert_eq!(sweep.pop_event().unwrap().eligible_unresolved, 2);
++    sweep.cancel(7, "same", 40000);
++    let event = sweep.pop_event().unwrap();
++    assert_eq!(event.eligible_unresolved, 1);
++    sweep.stop_all("direct-selected");
++    while let Some(event) = sweep.pop_event() {
++        assert_eq!(event.eligible_unresolved, 0);
++    }
++}
++
++#[test]
++fn synchronous_cancel_stops_next_send_and_stale_cancel_cannot_touch_new_generation() {
++    let control = HostSweepControl::default();
++    assert!(control.start(7, "old", 40000));
++    assert!(control.allowed(7, "old", 40000));
++    control.cancel(7, "old", 40000);
++    assert!(!control.allowed(7, "old", 40000));
++    assert!(control.start(8, "new", 40000));
++    control.cancel(7, "old", 40000);
++    assert!(control.allowed(8, "new", 40000));
++    assert!(!control.allowed(7, "old", 40000));
++    control.clear();
++    assert!(!control.allowed(8, "new", 40000));
++    assert!(!control.start(8, "new", 40001));
++    assert!(!control.start(7, "old", 40001));
++    assert!(control.start(9, "new", 40000));
++    control.cancel(8, "new", 40000);
++    assert!(control.allowed(9, "new", 40000));
++}
++
++#[test]
++fn payload_contains_only_fingerprint_and_fresh_nonidentifying_transaction_id() {
++    use rtc::stun::attributes::ATTR_FINGERPRINT;
++    use rtc::stun::fingerprint::FINGERPRINT;
++    use rtc::stun::message::{CLASS_INDICATION, METHOD_BINDING, Message};
++    let first = binding_indication().unwrap();
++    let second = binding_indication().unwrap();
++    assert_eq!(first.len(), 28);
++    assert_ne!(&first[8..20], &second[8..20]);
++    let mut message = Message::new();
++    message.raw = first;
++    message.decode().unwrap();
++    assert_eq!(message.typ.method, METHOD_BINDING);
++    assert_eq!(message.typ.class, CLASS_INDICATION);
++    assert_eq!(message.attributes.0.len(), 1);
++    assert_eq!(message.attributes.0[0].typ, ATTR_FINGERPRINT);
++    FINGERPRINT.check(&message).unwrap();
++}
++
++#[test]
++fn link_local_is_allowed_but_single_host_and_point_to_point_masks_have_no_targets() {
++    let local = address("169.254.7.1:45000");
++    let iface = interface("169.254.7.1:0", "255.255.255.0:0", "wifi");
++    assert_eq!(
++        SweepSubnet::from_interface(local, &iface, 2, &[])
++            .unwrap()
++            .addresses
++            .len(),
++        253
++    );
++    for mask in ["255.255.255.254:0", "255.255.255.255:0"] {
++        let iface = interface("169.254.7.1:0", mask, "wifi");
++        assert_eq!(
++            SweepSubnet::from_interface(local, &iface, 2, &[]).unwrap_err(),
++            "no-usable-addresses"
++        );
++    }
++}
++
++#[test]
++fn the_global_packet_cap_stops_even_with_multiple_subnets() {
++    let now = Instant::now();
++    let mut sweep = HostSweep::default();
++    sweep.start(7, "ufrag".into(), 5353, now);
++    sweep.prepare(5353, vec![subnet()]);
++    sweep.packets = MAX_PACKETS - 1;
++    assert_eq!(sweep.next_probe(now + GRACE, false).unwrap().port, 5353);
++    assert!(sweep.next_probe(now + GRACE + PACE, false).is_none());
++    assert!(
++        sweep
++            .events
++            .iter()
++            .any(|event| event.reason == Some("packet-limit"))
++    );
++}
++
++#[test]
++fn only_the_host_socket_owning_interface_supplies_destinations() {
++    let local = address("192.168.2.1:45000");
++    let wifi = interface("192.168.2.1:0", "255.255.255.0:0", "wifi");
++    let docker = interface("172.17.0.1:0", "255.255.255.0:0", "docker0");
++    let own = SweepSubnet::from_interface(local, &wifi, 2, &[local.ip()]).unwrap();
++    assert_eq!(own.addresses.len(), 253);
++    assert!(
++        own.addresses
++            .iter()
++            .all(|ip| ip.octets()[..3] == [192, 168, 2])
++    );
++    assert_eq!(own.local, local);
++    assert!(SweepSubnet::from_interface(local, &docker, 3, &[]).is_err());
++}
++
++#[test]
++fn subnet_cap_is_total_addresses_and_all_our_addresses_are_skipped() {
++    let local = address("10.3.0.1:45000");
++    let too_large = interface("10.3.0.1:0", "255.255.248.0:0", "wifi");
++    assert_eq!(
++        SweepSubnet::from_interface(local, &too_large, 2, &[]).unwrap_err(),
++        "subnet-too-large"
++    );
++    let fits = interface("10.3.0.1:0", "255.255.252.0:0", "wifi");
++    let result =
++        SweepSubnet::from_interface(local, &fits, 2, &[local.ip(), address("10.3.0.2:0").ip()])
++            .unwrap();
++    assert_eq!(result.addresses.len(), 1020);
++    assert!(!result.addresses.contains(&Ipv4Addr::new(10, 3, 0, 0)));
++    assert!(!result.addresses.contains(&Ipv4Addr::new(10, 3, 3, 255)));
++    assert!(!result.addresses.contains(&Ipv4Addr::new(10, 3, 0, 2)));
++}
++
++#[test]
++fn public_cgnat_bad_mask_and_point_to_point_are_skipped() {
++    for ip in ["8.8.8.1:45000", "100.64.0.1:45000", "127.0.0.1:45000"] {
++        let iface = interface(ip, "255.255.255.0:0", "wifi");
++        assert_eq!(
++            SweepSubnet::from_interface(address(ip), &iface, 2, &[]).unwrap_err(),
++            "non-private-subnet"
++        );
++    }
++    let local = address("192.168.2.1:45000");
++    let mut iface = interface("192.168.2.1:0", "255.0.255.0:0", "wifi");
++    assert_eq!(
++        SweepSubnet::from_interface(local, &iface, 2, &[]).unwrap_err(),
++        "invalid-netmask"
++    );
++    iface.mask = None;
++    assert_eq!(
++        SweepSubnet::from_interface(local, &iface, 2, &[]).unwrap_err(),
++        "invalid-netmask"
++    );
++    iface.mask = Some(address("255.255.255.0:0"));
++    iface.hop = Some(NextHop::Destination(address("192.168.2.2:0")));
++    assert_eq!(
++        SweepSubnet::from_interface(local, &iface, 2, &[]).unwrap_err(),
++        "point-to-point"
++    );
++}
++
++#[test]
++fn initial_grace_and_global_pace_apply_across_ports() {
++    let now = Instant::now();
++    let mut sweep = HostSweep::default();
++    for port in [40000, 40001] {
++        sweep.start(7, "ufrag".into(), port, now);
++        sweep.prepare(port, vec![subnet()]);
++    }
++    assert!(sweep.next_probe(now, false).is_none());
++    let first = sweep.next_probe(now + GRACE, false).expect("first probe");
++    assert_eq!(first.subnet.local.port(), 45000);
++    assert!(sweep.next_probe(now + GRACE, false).is_none());
++    assert!(sweep.next_probe(now + GRACE + PACE, false).is_some());
++}
++
++#[test]
++fn one_repeat_only_on_relay_and_inside_absolute_window() {
++    let now = Instant::now();
++    let mut sweep = HostSweep::default();
++    sweep.start(7, "ufrag".into(), 40000, now);
++    sweep.prepare(40000, vec![subnet()]);
++    assert!(sweep.next_probe(now + GRACE, false).is_some());
++    assert!(sweep.next_probe(now + GRACE + PACE, false).is_some());
++    assert!(
++        sweep
++            .next_probe(now + GRACE + PACE + REPEAT_DELAY, false)
++            .is_none()
++    );
++    assert!(
++        sweep
++            .next_probe(now + GRACE + PACE + REPEAT_DELAY, true)
++            .is_some()
++    );
++    assert!(
++        sweep
++            .next_probe(now + GRACE + 2 * PACE + REPEAT_DELAY, true)
++            .is_some()
++    );
++    assert!(
++        sweep
++            .next_probe(now + Duration::from_secs(20), true)
++            .is_none()
++    );
++    sweep.start(8, "new".into(), 40001, now);
++    sweep.prepare(40001, vec![subnet()]);
++    assert!(sweep.next_probe(now + WINDOW, true).is_none());
++}
++
++#[test]
++fn resolve_and_generation_changes_stop_and_stale_cancels_do_not() {
++    let now = Instant::now();
++    let mut sweep = HostSweep::default();
++    sweep.start(7, "ufrag".into(), 40000, now);
++    sweep.prepare(40000, vec![subnet()]);
++    sweep.cancel(7, "ufrag", 40000);
++    assert!(sweep.next_probe(now + GRACE, true).is_none());
++    sweep.start(8, "new".into(), 40000, now);
++    sweep.prepare(40000, vec![subnet()]);
++    sweep.cancel(7, "ufrag", 40000);
++    assert!(sweep.next_probe(now + GRACE, true).is_some());
++    sweep.sync_generation("newer");
++    assert!(sweep.next_probe(now + GRACE + PACE, true).is_none());
++}
++
++#[test]
++fn duplicate_ports_and_plan_cap_are_bounded() {
++    let now = Instant::now();
++    let mut sweep = HostSweep::default();
++    for port in 1..=(MAX_PORTS as u16 + 1) {
++        sweep.start(7, "ufrag".into(), port, now);
++    }
++    sweep.start(7, "ufrag".into(), 1, now);
++    assert_eq!(sweep.plans.len(), MAX_PORTS);
++}
+diff --git a/webrtc/src/peer_connection/host_sweep_driver_tests.rs b/webrtc/src/peer_connection/host_sweep_driver_tests.rs
+index e69de29..93a7799 100644
+--- a/webrtc/src/peer_connection/host_sweep_driver_tests.rs
++++ b/webrtc/src/peer_connection/host_sweep_driver_tests.rs
+@@ -0,0 +1,93 @@
++use super::driver::{PeerConnectionDriver, PeerConnectionDriverEvent};
++use super::tests::new_test_peer_connection;
++use crate::runtime::default_runtime;
++use rtc::peer_connection::RTCPeerConnectionBuilder;
++use rtc::peer_connection::configuration::RTCIceTransportPolicy;
++use rtc::peer_connection::configuration::setting_engine::SettingEngine;
++use rtc::peer_connection::sdp::RTCSessionDescription;
++use std::net::SocketAddr;
++use std::sync::Arc;
++
++#[test]
++fn queued_start_is_rejected_after_native_password_only_restart() {
++    let runtime = default_runtime().unwrap();
++    runtime.block_on(Box::pin(async {
++        let (mut inner, _) = new_test_peer_connection().await;
++        Arc::get_mut(&mut inner).unwrap().host_candidate_sweep = true;
++        let mut settings = SettingEngine::default();
++        settings.set_ice_credentials("same-ufrag".into(), "original-password-for-the-test".into());
++        let mut browser = RTCPeerConnectionBuilder::new()
++            .with_setting_engine(settings)
++            .build()
++            .unwrap();
++        browser.create_data_channel("sweep", None).unwrap();
++        let old_offer = browser.create_offer(None).unwrap();
++        {
++            let mut core = inner.core.lock().await;
++            core.set_remote_description(old_offer.clone()).unwrap();
++            let answer = core.create_answer(None).unwrap();
++            core.set_local_description(answer).unwrap();
++        }
++        inner.host_sweep_control.start(7, "same-ufrag", 40000);
++        let queued = PeerConnectionDriverEvent::StartHostSweep {
++            generation: 7,
++            credentials: super::host_sweep::SweepCredentials::new(
++                "same-ufrag",
++                "original-password-for-the-test",
++            ),
++            port: 40000,
++        };
++        let changed = RTCSessionDescription::offer(old_offer.sdp.replace(
++            "original-password-for-the-test",
++            "replacement-password-for-test",
++        ))
++        .unwrap();
++        inner
++            .core
++            .lock()
++            .await
++            .set_remote_description(changed)
++            .unwrap();
++        let mut driver = PeerConnectionDriver::new(
++            inner,
++            Vec::<SocketAddr>::new(),
++            Vec::<SocketAddr>::new(),
++            rtc::ice::mdns::MulticastDnsMode::Disabled,
++            Vec::new(),
++            RTCIceTransportPolicy::All,
++            false,
++        );
++        driver.handle_driver_event(queued).await;
++        assert!(
++            driver.host_sweep.is_empty(),
++            "a queued command must retain its accepted credential epoch"
++        );
++    }));
++}
++
++#[test]
++fn delayed_old_clear_does_not_retire_the_new_generation() {
++    let runtime = default_runtime().unwrap();
++    runtime.block_on(Box::pin(async {
++        let (inner, _) = new_test_peer_connection().await;
++        let mut driver = PeerConnectionDriver::new(
++            inner,
++            Vec::<SocketAddr>::new(),
++            Vec::<SocketAddr>::new(),
++            rtc::ice::mdns::MulticastDnsMode::Disabled,
++            Vec::new(),
++            RTCIceTransportPolicy::All,
++            false,
++        );
++        driver
++            .host_sweep
++            .start(8, "new".into(), 40000, std::time::Instant::now());
++        driver
++            .handle_driver_event(PeerConnectionDriverEvent::WriteNotify)
++            .await;
++        assert!(
++            !driver.host_sweep.is_empty(),
++            "a stale clear notification must not destroy newer plans"
++        );
++    }));
++}
+diff --git a/webrtc/src/runtime/mod.rs b/webrtc/src/runtime/mod.rs
+index 0fdaf3b..b663c14 100644
+--- a/webrtc/src/runtime/mod.rs
++++ b/webrtc/src/runtime/mod.rs
+@@ -54,6 +54,8 @@ use std::io::IoSliceMut;
+ use std::task::{Context, Poll};
+ use std::{fmt::Debug, future::Future, io, net::SocketAddr, pin::Pin, sync::Arc, time::Duration};
+ 
++#[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
++mod host_egress;
+ pub mod primitives;
+ 
+ pub use primitives::{
+@@ -275,6 +277,21 @@ pub trait AsyncUdpSocket: Send + Sync + Debug + 'static {
+     /// Returns the number of payload bytes accepted.
+     fn poll_send(&self, cx: &mut Context<'_>, transmit: &Transmit<'_>) -> Poll<io::Result<usize>>;
+ 
++    /// Try one datagram on exactly this IPv4 source and interface, with no gateway.
++    /// Unsupported runtimes must skip probes rather than use ordinary routing.
++    fn try_send_on_interface(
++        &self,
++        _buf: &[u8],
++        _source: std::net::Ipv4Addr,
++        _interface_index: u32,
++        _target: std::net::SocketAddrV4,
++    ) -> io::Result<usize> {
++        Err(io::Error::new(
++            io::ErrorKind::Unsupported,
++            "explicit on-link egress unavailable",
++        ))
++    }
++
+     /// Attempt to receive up to `bufs.len()` messages, registering `cx`'s waker if none is
+     /// ready.
+     ///
+diff --git a/webrtc/src/runtime/tokio.rs b/webrtc/src/runtime/tokio.rs
+index 7966d4e..d697e1c 100644
+--- a/webrtc/src/runtime/tokio.rs
++++ b/webrtc/src/runtime/tokio.rs
+@@ -256,6 +256,17 @@ impl AsyncUdpSocket for UdpSocket {
+         self.io.local_addr()
+     }
+ 
++    #[cfg(target_os = "linux")]
++    fn try_send_on_interface(
++        &self,
++        payload: &[u8],
++        source: std::net::Ipv4Addr,
++        interface_index: u32,
++        target: std::net::SocketAddrV4,
++    ) -> io::Result<usize> {
++        super::host_egress::send(&self.io, payload, source, interface_index, target)
++    }
++
+     fn max_gso_segments(&self) -> usize {
+         self.batch.max_gso_segments()
+     }
+@@ -424,3 +435,59 @@ impl AsyncTcpStream for TcpStream {
+         Ok(self.peer_addr)
+     }
+ }
++
++#[cfg(all(test, target_os = "linux"))]
++mod host_probe_tests {
++    use super::*;
++    use std::net::{Ipv4Addr, SocketAddrV4};
++
++    #[test]
++    fn host_probe_uses_the_bound_ice_source_port_and_exact_interface() {
++        let runtime = ::tokio::runtime::Builder::new_current_thread()
++            .enable_all()
++            .build()
++            .unwrap();
++        runtime.block_on(async {
++            let receiving = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
++            receiving
++                .set_read_timeout(Some(Duration::from_secs(1)))
++                .unwrap();
++            let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
++            sender.set_nonblocking(true).unwrap();
++            let advertised = sender.local_addr().unwrap();
++            let socket = TokioRuntime.wrap_udp_socket(sender).unwrap();
++            let name = std::ffi::CString::new("lo").unwrap();
++            // SAFETY: the interface name is a valid NUL-terminated CString.
++            let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
++            let SocketAddr::V4(destination) = receiving.local_addr().unwrap() else {
++                unreachable!()
++            };
++            assert_eq!(
++                socket
++                    .try_send_on_interface(b"probe", Ipv4Addr::LOCALHOST, index, destination)
++                    .unwrap(),
++                5
++            );
++            let mut payload = [0u8; 28];
++            let (length, source) = receiving.recv_from(&mut payload).unwrap();
++            assert_eq!(source, advertised);
++            assert_eq!(&payload[..length], b"probe");
++            let wrong_source = Ipv4Addr::new(127, 0, 0, 2);
++            assert!(
++                socket
++                    .try_send_on_interface(b"probe", wrong_source, index, destination)
++                    .is_err()
++            );
++            assert!(
++                socket
++                    .try_send_on_interface(
++                        b"probe",
++                        Ipv4Addr::LOCALHOST,
++                        0,
++                        SocketAddrV4::new(Ipv4Addr::LOCALHOST, 5353)
++                    )
++                    .is_err()
++            );
++        });
++    }
++}
+diff --git a/webrtc/src/runtime/host_egress.rs b/webrtc/src/runtime/host_egress.rs
+index e69de29..f322e7c 100644
+--- a/webrtc/src/runtime/host_egress.rs
++++ b/webrtc/src/runtime/host_egress.rs
+@@ -0,0 +1,72 @@
++//! Linux-only explicit-interface, gateway-free sends on an existing ICE socket.
++
++use std::io;
++use std::net::{Ipv4Addr, SocketAddrV4};
++use std::os::fd::AsRawFd;
++
++pub(super) fn send(
++    socket: &::tokio::net::UdpSocket,
++    payload: &[u8],
++    source: Ipv4Addr,
++    interface_index: u32,
++    target: SocketAddrV4,
++) -> io::Result<usize> {
++    if interface_index == 0 || socket.local_addr()?.ip() != source {
++        return Err(io::Error::new(
++            io::ErrorKind::InvalidInput,
++            "host source unavailable",
++        ));
++    }
++    let destination = libc::sockaddr_in {
++        sin_family: libc::AF_INET as libc::sa_family_t,
++        sin_port: target.port().to_be(),
++        sin_addr: libc::in_addr {
++            s_addr: u32::from_ne_bytes(target.ip().octets()),
++        },
++        sin_zero: [0; 8],
++    };
++    let information = libc::in_pktinfo {
++        ipi_ifindex: interface_index as libc::c_int,
++        ipi_spec_dst: libc::in_addr {
++            s_addr: u32::from_ne_bytes(source.octets()),
++        },
++        ipi_addr: libc::in_addr { s_addr: 0 },
++    };
++    let mut control = [0usize; 8];
++    let mut vector = libc::iovec {
++        iov_base: payload.as_ptr().cast_mut().cast(),
++        iov_len: payload.len(),
++    };
++    // SAFETY: zero is a valid msghdr; all pointees remain alive through sendmsg.
++    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
++    message.msg_name = (&destination as *const libc::sockaddr_in).cast_mut().cast();
++    message.msg_namelen = std::mem::size_of_val(&destination) as libc::socklen_t;
++    message.msg_iov = &mut vector;
++    message.msg_iovlen = 1;
++    message.msg_control = control.as_mut_ptr().cast();
++    // SAFETY: the usize-aligned buffer fits cmsghdr plus one in_pktinfo. sendmsg
++    // reads initialized ancillary data and payload, without changing either.
++    // DONTROUTE forbids gateway fallback; DONTWAIT permits one syscall without
++    // parking the driver behind a socket while resolution/selection cancels.
++    let sent = unsafe {
++        message.msg_controllen =
++            libc::CMSG_SPACE(std::mem::size_of_val(&information) as u32) as usize;
++        let header = libc::CMSG_FIRSTHDR(&message);
++        (*header).cmsg_level = libc::IPPROTO_IP;
++        (*header).cmsg_type = libc::IP_PKTINFO;
++        (*header).cmsg_len = libc::CMSG_LEN(std::mem::size_of_val(&information) as u32) as usize;
++        std::ptr::write_unaligned(
++            libc::CMSG_DATA(header).cast::<libc::in_pktinfo>(),
++            information,
++        );
++        libc::sendmsg(
++            socket.as_raw_fd(),
++            &message,
++            libc::MSG_DONTROUTE | libc::MSG_DONTWAIT,
++        )
++    };
++    if sent < 0 {
++        return Err(io::Error::last_os_error());
++    }
++    Ok(sent as usize)
++}

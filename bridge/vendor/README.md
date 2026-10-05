@@ -5,8 +5,8 @@ the `[patch.crates-io]` entries at the end of `bridge/Cargo.toml`:
 
 | crate | upstream | crates.io checksum | patch |
 | --- | --- | --- | --- |
-| `webrtc/` | [webrtc 0.20.4](https://crates.io/crates/webrtc/0.20.4) (github.com/webrtc-rs/webrtc) | `3daa8f2f6366331ae3275a6c02a855c6fb3faa1d16960498d7daaf61c96e76bd` | `webrtc-driver-drain.patch`, then `webrtc-negotiated-first-message-test.patch`, `webrtc-late-direct-tests.patch` |
-| `rtc/` | [rtc 0.20.4](https://crates.io/crates/rtc/0.20.4) (github.com/webrtc-rs/rtc) | `c9005c36795ad076abd36db3ea9ae0275a60395944647d58c1f2bc3e118dddba` | `rtc-dtls-client-hello.patch`, `rtc-negotiated-first-message.patch`, `rtc-late-direct-stats.patch` |
+| `webrtc/` | [webrtc 0.20.4](https://crates.io/crates/webrtc/0.20.4) (github.com/webrtc-rs/webrtc) | `3daa8f2f6366331ae3275a6c02a855c6fb3faa1d16960498d7daaf61c96e76bd` | `webrtc-driver-drain.patch`, then `webrtc-negotiated-first-message-test.patch`, `webrtc-late-direct-tests.patch`, `webrtc-host-candidate-sweep.patch` |
+| `rtc/` | [rtc 0.20.4](https://crates.io/crates/rtc/0.20.4) (github.com/webrtc-rs/rtc) | `c9005c36795ad076abd36db3ea9ae0275a60395944647d58c1f2bc3e118dddba` | `rtc-dtls-client-hello.patch`, `rtc-negotiated-first-message.patch`, `rtc-late-direct-stats.patch`, `rtc-host-candidate-sweep.patch` |
 | `rtc-ice/` | [rtc-ice 0.20.4](https://crates.io/crates/rtc-ice/0.20.4) (github.com/webrtc-rs/rtc) | `2c06eeabd250a7693e1e8b28222b78c4a81a7c6ca7fe3cb99bbdff2f6c0ff0ab` | `rtc-ice-late-direct-checks.patch` |
 
 `webrtc` is the async driver. `rtc` is the sans-I/O peer connection it drives
@@ -198,6 +198,53 @@ Bridge diagnostic tests additionally verify the public RTC report after failure,
 same-socket peer-reflexive evidence for a tracked host, relay exclusion and
 success-state evidence without fabricated request or response counts.
 
+#374: unresolved browser host names can leave inbound firewall DROP intact even
+while Chromium continues checking the bridge's advertised host candidate.
+`rtc-host-candidate-sweep.patch` adds an opt-in `SettingEngine` switch (default
+false) and narrow operational ICE candidate/credential accessors. Its async
+implementation is `webrtc-host-candidate-sweep.patch`, applied after the earlier
+patches. No ICE candidate is fabricated or revived.
+
+The async peer exposes generation-guarded start/cancel/clear operations for an
+unresolved candidate port. After 250 ms it emits 28-byte STUN Binding Indications,
+each with a fresh random transaction ID and only FINGERPRINT. They contain no
+USERNAME, integrity attribute, credential or session identifier and require no
+reply. A later authenticated inbound check may create a peer-reflexive candidate
+through normal ICE processing; the indication alone proves nothing.
+
+Only an accepted UDP host candidate's existing bound socket is used. Its exact
+source IP must have one current owning interface, a contiguous actual IPv4 mask,
+and an RFC 1918 or link-local subnet of at most 1024 total addresses. Network,
+broadcast and every current local address are excluded. Interface name, index,
+address and mask are rechecked before every send. Linux's Tokio socket adapter
+uses IP_PKTINFO plus MSG_DONTROUTE and MSG_DONTWAIT on that same socket, so there
+is no gateway or source-port fallback. Other platforms and runtimes skip until
+an equivalent explicit-interface operation is supplied. A candidate port of
+5353 still uses the host socket: probes bypass the driver's mDNS write dispatch.
+
+All ports/subnets of a peer share a 200-packet/s limiter. Each generation admits
+at most 32 distinct ports and 32768 attempted datagrams, one initial pass and
+one repeat a second after its initial pass, inside an absolute 25-second window.
+The initial pass can race mDNS during checking; a repeat requires a selected
+relay pair. Resolution, direct selection, close and restart retire the work.
+Synchronous cancellation stays locked through each nonblocking syscall;
+generation high-water marks and immutable, privately captured full credentials
+reject queued stale commands, including password-only restarts. Clear queues
+only a wake, so its delayed notification cannot clear a newer generation.
+
+Events expose only generation totals, fixed statuses/reasons, an aggregate
+eligible-unresolved count and whether an authenticated selected PRFLX tuple
+matched a successfully sent probe. No address, port, name or credential is
+emitted; observed tuple matching does not establish DNS identity or causation.
+Completed/expired eligible unresolved plans remain evidence for the bridge's
+single optional fresh-generation upgrade restart, without renewing its budget.
+
+Policy/scheduler regressions live in `host_sweep_tests.rs`; queued-generation
+and clear races use real sans-I/O cores in `host_sweep_driver_tests.rs`. A Tokio
+UDP test pins the actual advertised source port and interface. The namespace
+fixture in `web/rtc-lan-upgrade/` proves the authenticated PRFLX upgrade and
+subnet-size skip with real Chromium and encrypted data channels.
+
 ## Tests
 
 The bridge's own gates never reach in here. The crates are not members of
@@ -239,7 +286,8 @@ From the repo root, with the crates in the local registry (a `cargo fetch` in
     pristine rtc-ice $V/rtc-ice
     for p in webrtc-driver-drain webrtc-negotiated-first-message-test \
         rtc-dtls-client-hello rtc-negotiated-first-message \
-        rtc-ice-late-direct-checks rtc-late-direct-stats webrtc-late-direct-tests; do
+        rtc-ice-late-direct-checks rtc-late-direct-stats webrtc-late-direct-tests \
+        rtc-host-candidate-sweep webrtc-host-candidate-sweep; do
       (cd $V && patch -p1 < "$OLDPWD/bridge/vendor/$p.patch")
     done
     diff -r -x target $V/webrtc bridge/vendor/webrtc
@@ -280,3 +328,16 @@ pristine `webrtc` for `src/peer_connection/{mod.rs,late_direct_tests.rs}`. New t
 files use an empty source file in the comparison directory. Include each exact
 file in the diff, preserving the `a/<crate>/` and `b/<crate>/` paths so `patch -p1`
 can apply it.
+
+
+The #374 conntrack patches are layered diffs against the trees after all earlier
+patches are applied. `rtc-host-candidate-sweep.patch` touches
+`src/peer_connection/{mod.rs,configuration/setting_engine.rs}`.
+`webrtc-host-candidate-sweep.patch` touches `Cargo.toml`, `Cargo.toml.orig`,
+`src/peer_connection/{mod.rs,driver.rs,host_sweep.rs,host_sweep_tests.rs,host_sweep_driver_tests.rs}`
+and `src/runtime/{mod.rs,tokio.rs,host_egress.rs}`. The Linux-only libc dependency
+is already in the dependency graph; the workspace lockfile records it as a direct
+webrtc dependency. Regenerate each patch from its pre-conntrack tree rather than
+pristine source, using the same `a/<crate>/` and `b/<crate>/` paths above. A full
+registry reconstruction, including both new patches, must match all three final
+vendored trees exactly.

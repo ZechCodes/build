@@ -461,3 +461,6 @@ version = "1.0.150"
 [dev-dependencies.signal]
 version = "0.20.4"
 package = "rtc-signal"
+
+[target.'cfg(target_os = "linux")'.dependencies.libc]
+version = "0.2"

@@ -333,6 +333,7 @@ impl Default for SctpMaxMessageSize {
 pub struct SettingEngine {
     pub(crate) timeout: Timeout,
     pub(crate) check_pending_direct_pairs: bool,
+    pub(crate) host_candidate_sweep: bool,
     pub(crate) candidates: Candidates,
     pub(crate) multicast_dns: MulticastDNS,
     pub(crate) replay_protection: ReplayProtection,
@@ -368,6 +369,19 @@ impl SettingEngine {
     /// ICE-lite agents never initiate these checks.
     pub fn set_check_pending_direct_pairs(&mut self, enabled: bool) {
         self.check_pending_direct_pairs = enabled;
+    }
+
+    /// Opt in to bounded, credential-free on-link probes from ICE host sockets.
+    ///
+    /// Disabled by default. The async driver requires explicit-interface egress
+    /// support and never turns a probed destination into an ICE candidate.
+    pub fn set_host_candidate_sweep(&mut self, enabled: bool) {
+        self.host_candidate_sweep = enabled;
+    }
+
+    /// Whether the async driver's on-link host probes are enabled.
+    pub fn host_candidate_sweep(&self) -> bool {
+        self.host_candidate_sweep
     }
 
     /// Returns the configured receive MTU, or the default if not set.

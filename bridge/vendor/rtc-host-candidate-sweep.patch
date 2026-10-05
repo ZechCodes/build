@@ -1,0 +1,66 @@
+diff --git a/rtc/src/peer_connection/configuration/setting_engine.rs b/rtc/src/peer_connection/configuration/setting_engine.rs
+index 40fe30d..d45cacb 100644
+--- a/rtc/src/peer_connection/configuration/setting_engine.rs
++++ b/rtc/src/peer_connection/configuration/setting_engine.rs
+@@ -333,6 +333,7 @@ impl Default for SctpMaxMessageSize {
+ pub struct SettingEngine {
+     pub(crate) timeout: Timeout,
+     pub(crate) check_pending_direct_pairs: bool,
++    pub(crate) host_candidate_sweep: bool,
+     pub(crate) candidates: Candidates,
+     pub(crate) multicast_dns: MulticastDNS,
+     pub(crate) replay_protection: ReplayProtection,
+@@ -370,6 +371,19 @@ impl SettingEngine {
+         self.check_pending_direct_pairs = enabled;
+     }
+ 
++    /// Opt in to bounded, credential-free on-link probes from ICE host sockets.
++    ///
++    /// Disabled by default. The async driver requires explicit-interface egress
++    /// support and never turns a probed destination into an ICE candidate.
++    pub fn set_host_candidate_sweep(&mut self, enabled: bool) {
++        self.host_candidate_sweep = enabled;
++    }
++
++    /// Whether the async driver's on-link host probes are enabled.
++    pub fn host_candidate_sweep(&self) -> bool {
++        self.host_candidate_sweep
++    }
++
+     /// Returns the configured receive MTU, or the default if not set.
+     pub(crate) fn get_receive_mtu(&self) -> usize {
+         if self.receive_mtu != 0 {
+diff --git a/rtc/src/peer_connection/mod.rs b/rtc/src/peer_connection/mod.rs
+index 0a641c0..424e2fd 100644
+--- a/rtc/src/peer_connection/mod.rs
++++ b/rtc/src/peer_connection/mod.rs
+@@ -2098,6 +2098,29 @@ where
+         Ok(())
+     }
+ 
++    /// Current generation's accepted local ICE candidates, without a stats allocation.
++    pub fn local_ice_candidates(&self) -> &[ice::candidate::Candidate] {
++        self.ice_transport().agent.get_local_candidates()
++    }
++
++    /// The operational selected pair, without retaining failed-generation history.
++    pub fn selected_ice_candidates(
++        &self,
++    ) -> Option<(&ice::candidate::Candidate, &ice::candidate::Candidate)> {
++        self.ice_transport().agent.get_selected_candidate_pair()
++    }
++
++    /// Current remote ICE credentials, for generation-bound transport operations.
++    /// These values must never enter uncredentialed probes or diagnostic events.
++    pub fn remote_ice_credentials(&self) -> (&str, &str) {
++        self.ice_transport().get_remote_user_credentials()
++    }
++
++    /// Current remote ICE generation identifier. Never send this in host probes.
++    pub fn remote_ice_username_fragment(&self) -> &str {
++        self.ice_transport().get_remote_user_credentials().0
++    }
++
+     /// Creates a new `RTCRtpTransceiver` and adds it to the set of transceivers.
+     ///
+     /// This method creates a transceiver associated with the given track, which can be

@@ -50,6 +50,10 @@
 //! ```
 
 pub(crate) mod driver;
+mod host_sweep;
+#[cfg(test)]
+mod host_sweep_driver_tests;
+pub use host_sweep::HostCandidateSweepEvent;
 #[cfg(test)]
 mod late_direct_tests;
 pub(crate) mod transports;
@@ -165,6 +169,9 @@ pub trait PeerConnectionEventHandler: Send + Sync + 'static {
     /// Called when a remote peer creates a data channel
     async fn on_data_channel(&self, _data_channel: Arc<dyn DataChannel>) {}
 
+    /// Content-free progress from bounded on-link host-socket probes.
+    async fn on_host_candidate_sweep(&self, _event: HostCandidateSweepEvent) {}
+
     /// Called when a remote track is received
     async fn on_track(&self, _track: Arc<dyn TrackRemote>) {}
 }
@@ -182,6 +189,7 @@ where
     handler: Option<Arc<dyn PeerConnectionEventHandler>>,
     mdns_mode: MulticastDnsMode,
     discard_local_candidates_during_ice_restart: bool,
+    host_candidate_sweep: bool,
     udp_addrs: Vec<A>,
     tcp_addrs: Vec<A>,
     dedicated_reactor: bool,
@@ -197,6 +205,7 @@ impl<A: ToSocketAddrs> Default for PeerConnectionBuilder<A, NoopInterceptor> {
             handler: None,
             mdns_mode: MulticastDnsMode::Disabled,
             discard_local_candidates_during_ice_restart: false,
+            host_candidate_sweep: false,
             udp_addrs: vec![],
             tcp_addrs: vec![],
             dedicated_reactor: false,
@@ -235,6 +244,7 @@ where
     /// Configures the builder with the specified [`SettingEngine`].
     pub fn with_setting_engine(mut self, setting_engine: SettingEngine) -> Self {
         self.mdns_mode = setting_engine.multicast_dns().mode;
+        self.host_candidate_sweep = setting_engine.host_candidate_sweep();
         self.discard_local_candidates_during_ice_restart =
             setting_engine.discard_local_candidates_during_ice_restart();
         self.builder = self.builder.with_setting_engine(setting_engine);
@@ -286,6 +296,7 @@ where
             mdns_mode: self.mdns_mode,
             discard_local_candidates_during_ice_restart: self
                 .discard_local_candidates_during_ice_restart,
+            host_candidate_sweep: self.host_candidate_sweep,
             udp_addrs: self.udp_addrs,
             tcp_addrs: self.tcp_addrs,
             dedicated_reactor: self.dedicated_reactor,
@@ -461,6 +472,7 @@ where
                 .ok_or_else(|| std::io::Error::other("no event handler found"))?,
             self.mdns_mode,
             self.discard_local_candidates_during_ice_restart,
+            self.host_candidate_sweep,
             self.udp_addrs,
             self.tcp_addrs,
             self.dedicated_reactor,
@@ -570,6 +582,29 @@ pub trait PeerConnection: Send + Sync + 'static {
         kind: RtpCodecKind,
         init: Option<RTCRtpTransceiverInit>,
     ) -> Result<Arc<dyn RtpTransceiver>>;
+    /// Race unresolved host-name discovery with bounded on-link probes. The
+    /// username fragment guards generation replacement; it never enters a probe.
+    async fn start_host_candidate_sweep(
+        &self,
+        _generation: u64,
+        _remote_ufrag: String,
+        _port: u16,
+    ) -> Result<()> {
+        Ok(())
+    }
+    /// Stop a port when its unresolved name is resolved, preserving its one-pass budget.
+    async fn cancel_host_candidate_sweep(
+        &self,
+        _generation: u64,
+        _remote_ufrag: String,
+        _port: u16,
+    ) -> Result<()> {
+        Ok(())
+    }
+    /// Retire all outstanding host probes during shutdown or generation replacement.
+    async fn clear_host_candidate_sweeps(&self) -> Result<()> {
+        Ok(())
+    }
     /// Get a snapshot of accumulated statistics.
     async fn get_stats(&self, now: Instant, selector: StatsSelector) -> RTCStatsReport;
 }
@@ -653,6 +688,8 @@ where
     /// discarding the old candidates and replacing the sockets they name are two halves of the
     /// same decision (webrtc#868).
     pub(crate) discard_local_candidates_during_ice_restart: bool,
+    pub(crate) host_candidate_sweep: bool,
+    pub(crate) host_sweep_control: host_sweep::HostSweepControl,
     /// Set when an ICE restart is detected, cleared by the driver when it has rebound.
     ///
     /// A flag rather than a driver event so the rebind cannot be ordered after the gathering it
@@ -758,6 +795,7 @@ where
     /// its transport across restarts pays nothing.
     #[inline]
     pub(crate) fn mark_ice_restart_rebind_pending(&self) {
+        self.host_sweep_control.clear();
         if self.discard_local_candidates_during_ice_restart {
             self.ice_restart_rebind_pending
                 .store(true, Ordering::Release);
@@ -807,6 +845,7 @@ where
         handler: Arc<dyn PeerConnectionEventHandler>,
         mdns_mode: MulticastDnsMode,
         discard_local_candidates_during_ice_restart: bool,
+        host_candidate_sweep: bool,
         udp_addrs: Vec<A>,
         tcp_addrs: Vec<A>,
         dedicated_reactor: bool,
@@ -835,6 +874,8 @@ where
                 data_channel_send_buffer_limit,
                 data_channel_backpressure: crate::runtime::Notify::new(),
                 discard_local_candidates_during_ice_restart,
+                host_candidate_sweep,
+                host_sweep_control: host_sweep::HostSweepControl::default(),
                 ice_restart_rebind_pending: AtomicBool::new(false),
             }),
             driver_handle: Mutex::new(None),
@@ -1332,6 +1373,82 @@ where
         Ok(rtp_transceiver.clone() as Arc<dyn RtpTransceiver>)
     }
 
+    async fn start_host_candidate_sweep(
+        &self,
+        generation: u64,
+        remote_ufrag: String,
+        port: u16,
+    ) -> Result<()> {
+        if !self.inner.host_candidate_sweep {
+            return Ok(());
+        }
+        let core = self.inner.core.lock().await;
+        if core.remote_ice_username_fragment() != remote_ufrag {
+            return Ok(());
+        }
+        if self.inner.closing.load(Ordering::Acquire) {
+            return Err(Error::ErrClosed);
+        }
+        if !self
+            .inner
+            .host_sweep_control
+            .start(generation, &remote_ufrag, port)
+        {
+            if self
+                .inner
+                .host_sweep_control
+                .generation_allowed(generation, &remote_ufrag)
+            {
+                let _ = self.inner.driver_event_tx.try_send(
+                    PeerConnectionDriverEvent::HostSweepSkipped {
+                        generation,
+                        reason: "port-limit",
+                    },
+                );
+            }
+            return Ok(());
+        }
+        let (ufrag, password) = core.remote_ice_credentials();
+        let credentials = host_sweep::SweepCredentials::new(ufrag, password);
+        self.inner
+            .driver_event_tx
+            .try_send(PeerConnectionDriverEvent::StartHostSweep {
+                generation,
+                credentials,
+                port,
+            })
+            .map_err(|_| Error::ErrClosed)
+    }
+
+    async fn cancel_host_candidate_sweep(
+        &self,
+        generation: u64,
+        remote_ufrag: String,
+        port: u16,
+    ) -> Result<()> {
+        self.inner
+            .host_sweep_control
+            .cancel(generation, &remote_ufrag, port);
+        let _ = self
+            .inner
+            .driver_event_tx
+            .try_send(PeerConnectionDriverEvent::CancelHostSweep {
+                generation,
+                remote_ufrag,
+                port,
+            });
+        Ok(())
+    }
+
+    async fn clear_host_candidate_sweeps(&self) -> Result<()> {
+        self.inner.host_sweep_control.clear();
+        let _ = self
+            .inner
+            .driver_event_tx
+            .try_send(PeerConnectionDriverEvent::WriteNotify);
+        Ok(())
+    }
+
     /// Get a snapshot of accumulated statistics.
     async fn get_stats(&self, now: Instant, selector: StatsSelector) -> RTCStatsReport {
         let mut core = self.inner.core.lock().await;
@@ -1391,6 +1508,8 @@ mod tests {
             track_local_events_tx: Mutex::new(HashMap::new()),
             rtp_transceivers: Mutex::new(HashMap::new()),
             discard_local_candidates_during_ice_restart,
+            host_candidate_sweep: false,
+            host_sweep_control: host_sweep::HostSweepControl::default(),
             ice_restart_rebind_pending: AtomicBool::new(false),
         });
 

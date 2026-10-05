@@ -2098,6 +2098,29 @@ where
         Ok(())
     }
 
+    /// Current generation's accepted local ICE candidates, without a stats allocation.
+    pub fn local_ice_candidates(&self) -> &[ice::candidate::Candidate] {
+        self.ice_transport().agent.get_local_candidates()
+    }
+
+    /// The operational selected pair, without retaining failed-generation history.
+    pub fn selected_ice_candidates(
+        &self,
+    ) -> Option<(&ice::candidate::Candidate, &ice::candidate::Candidate)> {
+        self.ice_transport().agent.get_selected_candidate_pair()
+    }
+
+    /// Current remote ICE credentials, for generation-bound transport operations.
+    /// These values must never enter uncredentialed probes or diagnostic events.
+    pub fn remote_ice_credentials(&self) -> (&str, &str) {
+        self.ice_transport().get_remote_user_credentials()
+    }
+
+    /// Current remote ICE generation identifier. Never send this in host probes.
+    pub fn remote_ice_username_fragment(&self) -> &str {
+        self.ice_transport().get_remote_user_credentials().0
+    }
+
     /// Creates a new `RTCRtpTransceiver` and adds it to the set of transceivers.
     ///
     /// This method creates a transceiver associated with the given track, which can be

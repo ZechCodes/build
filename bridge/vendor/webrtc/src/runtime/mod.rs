@@ -55,7 +55,7 @@ use std::task::{Context, Poll};
 use std::{fmt::Debug, future::Future, io, net::SocketAddr, pin::Pin, sync::Arc, time::Duration};
 
 #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
-mod host_egress;
+pub(crate) mod host_egress;
 pub mod primitives;
 
 pub use primitives::{
@@ -279,6 +279,14 @@ pub trait AsyncUdpSocket: Send + Sync + Debug + 'static {
 
     /// Try one datagram on exactly this IPv4 source and interface, with no gateway.
     /// Unsupported runtimes must skip probes rather than use ordinary routing.
+    /// Whether this actual adapter can issue the bounded explicit-interface host probe.
+    /// Custom and unsupported adapters must opt in before any scout socket is opened.
+    fn supports_host_candidate_sweep(&self) -> bool {
+        false
+    }
+
+    /// Make one nonblocking explicit-interface probe on the advertised host socket.
+    /// The default refuses runtimes without this supported operation.
     fn try_send_on_interface(
         &self,
         _buf: &[u8],

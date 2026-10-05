@@ -52,6 +52,8 @@
 pub(crate) mod driver;
 #[cfg(target_os = "linux")]
 mod host_neighbors;
+#[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+mod host_scout;
 mod host_sweep;
 #[cfg(test)]
 mod host_sweep_driver_tests;

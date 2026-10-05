@@ -256,6 +256,10 @@ impl AsyncUdpSocket for UdpSocket {
         self.io.local_addr()
     }
 
+    fn supports_host_candidate_sweep(&self) -> bool {
+        cfg!(target_os = "linux")
+    }
+
     #[cfg(target_os = "linux")]
     fn try_send_on_interface(
         &self,

@@ -19,12 +19,12 @@ fn queue_headroom(used: i32, capacity: i32) -> io::Result<()> {
     Ok(())
 }
 
-fn require_queue_headroom(socket: &::tokio::net::UdpSocket) -> io::Result<()> {
+fn require_queue_headroom(socket: &impl AsRawFd) -> io::Result<()> {
     let (used, capacity) = socket_budget(socket)?;
     queue_headroom(used, capacity)
 }
 
-fn socket_budget(socket: &::tokio::net::UdpSocket) -> io::Result<(i32, i32)> {
+fn socket_budget(socket: &impl AsRawFd) -> io::Result<(i32, i32)> {
     let mut used: libc::c_int = 0;
     let mut capacity: libc::c_int = 0;
     let mut length = std::mem::size_of_val(&capacity) as libc::socklen_t;
@@ -168,6 +168,37 @@ pub(super) fn send(
             "host source unavailable",
         ));
     }
+    send_raw(socket, payload, source, interface_index, target)
+}
+
+/// Scout sockets are separate, unconnected, ephemeral sockets. A stale ICMP
+/// error belongs to the scout only; never touch the ordinary ICE socket error.
+pub(crate) fn send_scout(
+    socket: &std::net::UdpSocket,
+    source: Ipv4Addr,
+    interface_index: u32,
+    target: Ipv4Addr,
+) -> io::Result<usize> {
+    if interface_index == 0 || socket.local_addr()?.ip() != source {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    let _ = socket.take_error()?;
+    send_raw(
+        socket,
+        &[0],
+        source,
+        interface_index,
+        SocketAddrV4::new(target, 9),
+    )
+}
+
+fn send_raw(
+    socket: &impl AsRawFd,
+    payload: &[u8],
+    source: Ipv4Addr,
+    interface_index: u32,
+    target: SocketAddrV4,
+) -> io::Result<usize> {
     require_queue_headroom(socket)?;
     let destination = libc::sockaddr_in {
         sin_family: libc::AF_INET as libc::sa_family_t,

@@ -222,25 +222,51 @@ is no gateway or source-port fallback. Other platforms and runtimes skip until
 an equivalent explicit-interface operation is supplied. A candidate port of
 5353 still uses the host socket: probes bypass the driver's mDNS write dispatch.
 
-All ports/subnets of a peer share a 200-packet/s limiter. Each generation admits
-at most 32 distinct ports and 32768 attempted datagrams, one initial pass and
-one repeat a second after its initial pass, inside an absolute 25-second window.
-Before each probe, Linux reads TIOCOUTQ/SIOCOUTQ and SO_SNDBUF. Probes yield unless
-queued bytes plus 4096 bytes of conservative bookkeeping fit within one quarter
-of the send buffer. A pressure retry keeps the same destination and pass budget;
-it never extends the window. Ordinary ICE, DTLS and SCTP sends keep their existing
-path. An unfinished empty-subnet tail is reported as `window-expired` with actual
-successful-send and attempted counts, rather than as a completed pass.
+Real host-socket indications target only neighbors freshly observed in
+REACHABLE, STALE or DELAY state. Unknown addresses are discovered through at
+most five separate ephemeral UDP sockets process-wide, bound to the same owned
+host IP and explicit interface. Scouts send one zero byte to UDP Discard port 9;
+the payload has no credential, session marker or reply requirement. Scout-only
+SO_ERROR is drained before sends; prior-destination ICMP/unreachable errors get
+one paced retry, and persistent errors do not count as successful coverage.
+Ordinary ICE socket errors and sends are unchanged.
 
-Read-only RTM_GETNEIGH hints prioritize reachable, stale or delay neighbors of
-the exact owning interface, after intersection with the approved destination
-set. Hints never add a destination or create an ICE candidate. One subnet
-preparation is shared across due ports, and all neighbor queries share an
-absolute 5 ms budget; absent or incomplete hints retain ordinary address order.
-Raw hints are discarded immediately. Address-bearing plan observations are
-erased on resolution, direct selection, close, restart or the original 25-second
-expiry, including plans whose passes finished early. Only numeric unresolved
-eligibility remains available for a fresh restart.
+Scouts and real indications share a process-wide 200-packet/s ceiling. Each
+generation admits at most 32 distinct candidate ports and 32768 combined
+attempts, inside the original absolute 25-second window. Each subnet has one
+discovery cursor reused across ports. A bounded tombstone retaining only the
+owned source/interface/mask prevents late same-generation ports from restarting
+discovery after retirement. The real indication pass may repeat once, a second
+after settlement, only while a relay pair is selected. Settlement requires
+successful discovery admissions or known-neighbor exclusions for the entire
+approved set, settled ARP outcomes, and indications to every resolved usable
+neighbor. Dead neighbors never receive an ICE-socket indication. Incomplete
+coverage reports `window-expired`, with successful sends separate from attempts.
+
+Before every scout or real indication, Linux reads TIOCOUTQ/SIOCOUTQ and
+SO_SNDBUF. It yields unless queued bytes plus 4096 bytes of bookkeeping fit
+within one quarter of that socket's send buffer. Pressure preserves the
+current destination and does not extend the window or consume a pass. Ordinary
+ICE, DTLS and SCTP output keep their existing path and never enter a new queue.
+
+Read-only RTM_GETNEIGH snapshots refresh every 100 ms and authorize only exact
+interface neighbors. RTM_GETNEIGHTBL supplies actual global ARP-table occupancy
+and gc thresholds, including other namespaces; the neighbor dump's INCOMPLETE
+count covers the current namespace. Fresh complete dumps and numeric unobserved
+send reservations enforce a pending cap of min(256, gc_thresh2 / 2) and a global
+occupancy ceiling below 75% of gc_thresh3. Canceled sockets release their file
+descriptors before permits; reservations survive until a later dump begun after
+the sends accounts for them. Missing, stale, partial or invalid metadata admits
+no new scout and stale neighbor observations authorize no real indication.
+No neighbor, threshold, route or firewall configuration is changed.
+
+The initial destination order uses distance to the owned source IP and initial
+usable authorized neighbors, with stable numeric ties. This favors nearby DHCP
+allocations without adding addresses. All read-only queries in a preparation
+share an absolute 5 ms budget and validated byte/message caps. Usable membership
+is a bounded active-plan set; raw observations and addresses are erased on
+resolution, direct selection, close, restart or the original expiry. Only
+numeric eligibility and bounded owned-interface tombstones remain afterward.
 
 The initial pass can race mDNS during checking; a repeat requires a selected
 relay pair. Resolution, direct selection, close and restart retire the work.
@@ -255,6 +281,13 @@ matched a successfully sent probe. No address, port, name or credential is
 emitted; observed tuple matching does not establish DNS identity or causation.
 Completed/expired eligible unresolved plans remain evidence for the bridge's
 single optional fresh-generation upgrade restart, without renewing its budget.
+`addresses_sent`/`addresses_attempted` count real host-socket probes only.
+`scout_datagrams_sent`/`scout_attempted` count successful scout enqueues and paced
+attempts; `destinations_scouted` counts unique successful admissions across
+candidate ports and excludes known neighbors. `neighbors_pending` and its peak
+report conservative current-namespace INCOMPLETE pressure plus unobserved
+process reservations. Coalesced progress reasons distinguish `neighbor-pressure`,
+`neighbor-snapshot-unavailable` and `scout-socket-limit` pauses.
 
 Policy/scheduler regressions live in `host_sweep_tests.rs`; queued-generation
 and clear races use real sans-I/O cores in `host_sweep_driver_tests.rs`. A Tokio
@@ -272,6 +305,11 @@ the repo root, build the unit-test ELF, then pass its printed path to the runner
 
     nice -n 10 cargo test --locked --manifest-path bridge/vendor/Cargo.toml -p webrtc --lib --no-run
     nice -n 10 python web/rtc-lan-upgrade/socket-pressure.py bridge/vendor/target/debug/deps/webrtc-<hash>
+    nice -n 10 python web/rtc-lan-upgrade/socket-pressure.py --scout bridge/vendor/target/debug/deps/webrtc-<hash>
+
+The scout mode runs the actual discovery pool while ordinary sends use the
+advertised ICE socket. Its `--scout-red` control deliberately saturates only that
+fixture's host socket to prove the immediate-write assertion detects pressure.
 
 The runner creates private user/network namespaces and veth interfaces, starts
 only a private UDP receiver, and never starts a production bridge or changes the
@@ -367,7 +405,7 @@ The #374 conntrack patches are layered diffs against the trees after all earlier
 patches are applied. `rtc-host-candidate-sweep.patch` touches
 `src/peer_connection/{mod.rs,configuration/setting_engine.rs}`.
 `webrtc-host-candidate-sweep.patch` touches `Cargo.toml`, `Cargo.toml.orig`,
-`src/peer_connection/{mod.rs,driver.rs,host_sweep.rs,host_sweep_tests.rs,host_sweep_driver_tests.rs,host_neighbors.rs}`
+`src/peer_connection/{mod.rs,driver.rs,host_sweep.rs,host_sweep_tests.rs,host_sweep_driver_tests.rs,host_neighbors.rs,host_neighbor_table.rs,host_scout.rs,host_scout_socket_tests.rs}`
 and `src/runtime/{mod.rs,tokio.rs,host_egress.rs}`. The Linux-only libc dependency
 is already in the dependency graph; the workspace lockfile records it as a direct
 webrtc dependency. Regenerate each patch from its pre-conntrack tree rather than

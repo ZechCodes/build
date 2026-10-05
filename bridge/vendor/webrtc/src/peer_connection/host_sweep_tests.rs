@@ -141,6 +141,7 @@ fn subnet() -> SweepSubnet {
         interface_name: "wifi".into(),
         interface_index: 2,
         addresses: vec![Ipv4Addr::new(192, 168, 2, 2), Ipv4Addr::new(192, 168, 2, 3)].into(),
+        authorized: vec![Ipv4Addr::new(192, 168, 2, 2), Ipv4Addr::new(192, 168, 2, 3)].into(),
         mask: u32::from(Ipv4Addr::new(255, 255, 255, 0)),
     }
 }
@@ -544,4 +545,159 @@ fn duplicate_ports_and_plan_cap_are_bounded() {
     }
     sweep.start(7, "ufrag".into(), 1, now);
     assert_eq!(sweep.plans.len(), MAX_PORTS);
+}
+
+#[test]
+fn scouts_cluster_once_around_only_authorized_anchors_with_deterministic_ties() {
+    let local = address("10.72.0.1:45000");
+    let iface = interface("10.72.0.1:0", "255.255.252.0:0", "wifi");
+    let mut subnet = SweepSubnet::from_interface(local, &iface, 2, &[]).unwrap();
+    let original = subnet.addresses.to_vec();
+    subnet.cluster_order(&[
+        "10.72.0.254".parse().unwrap(),
+        "10.72.0.254".parse().unwrap(),
+        "10.72.8.1".parse().unwrap(),
+        "8.8.8.8".parse().unwrap(),
+        "10.72.0.0".parse().unwrap(),
+    ]);
+    assert_eq!(
+        subnet.addresses[0],
+        "10.72.0.254".parse::<Ipv4Addr>().unwrap()
+    );
+    let cluster = subnet
+        .addresses
+        .iter()
+        .position(|ip| *ip == "10.72.1.2".parse::<Ipv4Addr>().unwrap())
+        .unwrap();
+    assert!(cluster < 16, "DHCP-near phone should be discovered early");
+    assert_eq!(
+        subnet.addresses.last().unwrap(),
+        &"10.72.3.254".parse::<Ipv4Addr>().unwrap()
+    );
+    let mut ordered = subnet.addresses.to_vec();
+    ordered.sort_unstable();
+    assert_eq!(ordered, original);
+    let tie = subnet
+        .addresses
+        .iter()
+        .position(|ip| *ip == "10.72.0.253".parse::<Ipv4Addr>().unwrap())
+        .unwrap();
+    assert_eq!(
+        subnet.addresses[tie + 1],
+        "10.72.0.255".parse::<Ipv4Addr>().unwrap()
+    );
+}
+
+#[test]
+fn real_ice_probe_never_targets_unknown_neighbors_but_can_reach_newly_resolved_tail() {
+    let now = Instant::now();
+    let mut sweep = HostSweep::default();
+    sweep.start(7, "ufrag".into(), 40000, now);
+    let local = address("10.72.0.1:45000");
+    let iface = interface("10.72.0.1:0", "255.255.252.0:0", "wifi");
+    sweep.prepare(
+        40000,
+        vec![SweepSubnet::from_interface(local, &iface, 2, &[]).unwrap()],
+    );
+    assert!(
+        sweep
+            .next_usable_probe(now + GRACE, false, |_, _| false)
+            .is_none()
+    );
+    let phone: Ipv4Addr = "10.72.3.254".parse().unwrap();
+    let probe = sweep
+        .next_usable_probe(now + GRACE + PACE, false, |_, ip| ip == phone)
+        .unwrap();
+    assert_eq!(probe.destination, phone);
+    sweep.record_result(probe.port, true);
+    assert!(
+        sweep
+            .next_usable_probe(now + GRACE + 2 * PACE, false, |_, ip| ip == phone)
+            .is_none(),
+        "at most once per pass"
+    );
+    assert!(
+        !sweep.plans[&40000].repeat,
+        "unanswered tail cannot count as a full pass"
+    );
+}
+
+#[test]
+fn unrelated_early_wakes_do_not_slide_the_sweep_deadline() {
+    let now = Instant::now();
+    let mut sweep = HostSweep::default();
+    sweep.start(7, "ufrag".into(), 40000, now);
+    sweep.prepare(40000, vec![subnet()]);
+    let mut sent = 0;
+    for ms in 250..300 {
+        let tick = now + Duration::from_millis(ms);
+        if let Some(probe) = sweep.next_probe(tick, false) {
+            sweep.record_result(probe.port, true);
+            sent += 1;
+        }
+        sweep.defer_tick(tick);
+    }
+    assert_eq!(
+        sent, 2,
+        "both initial destinations still progress amid1ms wakes"
+    );
+    assert!(sweep.deadline().unwrap() <= now + WINDOW);
+}
+
+#[test]
+fn sparse_discovery_waits_for_settlement_then_completes_using_only_live_neighbors() {
+    let now = Instant::now();
+    let mut sweep = HostSweep::default();
+    sweep.start(7, "ufrag".into(), 40000, now);
+    let local = address("10.72.0.1:45000");
+    let iface = interface("10.72.0.1:0", "255.255.252.0:0", "wifi");
+    sweep.prepare(
+        40000,
+        vec![SweepSubnet::from_interface(local, &iface, 2, &[]).unwrap()],
+    );
+    let gateway = "10.72.0.254".parse::<Ipv4Addr>().unwrap();
+    let phone = "10.72.3.254".parse::<Ipv4Addr>().unwrap();
+    let initial = now + GRACE;
+    let probe = sweep
+        .next_usable_probe(initial, true, |_, ip| ip == gateway)
+        .unwrap();
+    sweep.record_result(probe.port, true);
+    sweep.settle_discovery(initial + PACE, true, |_, ip| ip == gateway, |_| false);
+    assert!(
+        !sweep.plans[&40000].repeat,
+        "gateway exhaustion cannot finish while scouting"
+    );
+    let late = now + Duration::from_secs(10);
+    let probe = sweep
+        .next_usable_probe(late, true, |_, ip| ip == gateway || ip == phone)
+        .unwrap();
+    assert_eq!(probe.destination, phone);
+    sweep.record_result(probe.port, true);
+    sweep.settle_discovery(
+        late + PACE,
+        true,
+        |_, ip| ip == gateway || ip == phone,
+        |_| true,
+    );
+    assert!(
+        sweep.plans[&40000].repeat,
+        "settled dead neighbors need no ICE sends"
+    );
+    let repeat = late + PACE + REPEAT_DELAY;
+    for offset in 0..2 {
+        let probe = sweep
+            .next_usable_probe(repeat + offset * PACE, true, |_, ip| {
+                ip == gateway || ip == phone
+            })
+            .unwrap();
+        sweep.record_result(probe.port, true);
+    }
+    sweep.settle_discovery(
+        repeat + 2 * PACE,
+        true,
+        |_, ip| ip == gateway || ip == phone,
+        |_| true,
+    );
+    assert!(sweep.plans[&40000].stopped);
+    assert_eq!(sweep.sent, 4);
 }

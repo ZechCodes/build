@@ -313,6 +313,8 @@ where
     mdns_socket: Option<Arc<dyn AsyncUdpSocket>>,
     udp_sockets: HashMap<SocketAddr, Arc<dyn AsyncUdpSocket>>,
     pub(super) host_sweep: HostSweep,
+    #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+    host_scouts: super::host_scout::HostScouts,
     /// Reused scratch buffer for concatenating a run of same-destination datagrams
     /// into one UDP GSO send (see [`flush_writes`](Self::flush_writes)).
     gso_scratch: Vec<u8>,
@@ -477,6 +479,8 @@ where
             mdns_socket: None,
             udp_sockets: HashMap::new(),
             host_sweep: HostSweep::default(),
+            #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+            host_scouts: super::host_scout::HostScouts::default(),
             gso_scratch: Vec::new(),
             tcp_transport: RTCTcpTransport::new(HashMap::new()),
             ice_gathering_active: false,
@@ -620,6 +624,8 @@ where
             // and thus a dedicated reactor thread — terminates instead of leaking.
             if self.inner.closing.load(Ordering::Acquire) {
                 self.host_sweep.clear("closed");
+                #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+                self.host_scouts.close();
                 self.report_host_sweep().await;
                 if let Err(err) = self.turn_relayer.close() {
                     error!("Failed to close turn_relayer: {}", err);
@@ -912,11 +918,78 @@ where
             .map(Candidate::addr)
             .collect::<Vec<_>>();
         self.prepare_host_sweep_ports(now, &hosts);
-        if let Some(probe) = self.host_sweep.next_probe(now, relay) {
-            self.send_host_probe(probe);
-        }
+        #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+        self.poll_host_scouts(now, relay, &hosts);
+        self.host_sweep.defer_tick(now);
         drop(core);
         self.report_host_sweep().await;
+    }
+
+    #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+    fn poll_host_scouts(&mut self, now: Instant, relay: bool, hosts: &[SocketAddr]) {
+        let subnets = self.operational_sweep_subnets(now, hosts);
+        self.host_scouts.sync(
+            self.host_sweep.generation(),
+            subnets,
+            &self.inner.host_sweep_control,
+            self.host_sweep.remote_ufrag(),
+            now,
+        );
+        self.host_scouts.refresh(now);
+        let now = Instant::now();
+        let scouts = &self.host_scouts;
+        self.host_sweep.settle_discovery(
+            now,
+            relay,
+            |subnet, ip| scouts.usable(subnet, ip, now),
+            |subnet| scouts.settled(subnet, now),
+        );
+        if let Some(probe) = self
+            .host_sweep
+            .next_usable_probe(now, relay, |subnet, ip| scouts.usable(subnet, ip, now))
+        {
+            self.send_host_probe(probe);
+        } else if self.host_sweep.combined_attempts() < 32768
+            && let Some((port, expires)) = self.host_sweep.active_port()
+            && let Some(reason) = self.host_scouts.send_one(
+                now,
+                &self.inner.host_sweep_control,
+                self.host_sweep.remote_ufrag(),
+                port,
+                expires,
+            )
+        {
+            self.host_sweep.note_progress(reason);
+        }
+        self.host_sweep
+            .set_scout_counters(self.host_scouts.counters);
+        let active = self.operational_sweep_subnets(now, hosts);
+        self.host_scouts.sync(
+            self.host_sweep.generation(),
+            active,
+            &self.inner.host_sweep_control,
+            self.host_sweep.remote_ufrag(),
+            now,
+        );
+    }
+
+    #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+    fn operational_sweep_subnets(
+        &mut self,
+        now: Instant,
+        hosts: &[SocketAddr],
+    ) -> Vec<SweepSubnet> {
+        self.host_sweep
+            .active_subnets(now)
+            .into_iter()
+            .filter(|subnet| {
+                hosts.contains(&subnet.local)
+                    && self
+                        .udp_sockets
+                        .get(&subnet.local)
+                        .is_some_and(|socket| socket.supports_host_candidate_sweep())
+            })
+            .collect()
     }
 
     fn observe_sweep_pair(&mut self, selected: Option<(&Candidate, &Candidate)>) -> bool {
@@ -969,7 +1042,7 @@ where
     }
 
     fn sweep_subnets(&self, hosts: &[SocketAddr]) -> (Vec<SweepSubnet>, Vec<&'static str>) {
-        if !cfg!(target_os = "linux") {
+        if !cfg!(all(target_os = "linux", feature = "runtime-tokio")) {
             return (Vec::new(), vec!["unsupported-platform"]);
         }
         let Ok(interfaces) = ifaces() else {
@@ -980,8 +1053,12 @@ where
         #[cfg(target_os = "linux")]
         let neighbor_deadline = Instant::now() + Duration::from_millis(5);
         for local in hosts {
-            if !self.udp_sockets.contains_key(local) {
+            let Some(socket) = self.udp_sockets.get(local) else {
                 reasons.push("no-host-socket");
+                continue;
+            };
+            if !socket.supports_host_candidate_sweep() {
+                reasons.push("unsupported-platform");
                 continue;
             }
             match SweepSubnet::for_socket(*local, &interfaces, sweep_interface_index) {
@@ -1027,17 +1104,28 @@ where
             return;
         };
         let destination = std::net::SocketAddrV4::new(probe.destination, probe.port);
+        #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+        let expires = self
+            .host_scouts
+            .usable_until(&probe.subnet)
+            .unwrap_or_else(Instant::now)
+            .min(probe.expires);
         let result = self.inner.host_sweep_control.while_allowed(
             self.host_sweep.generation(),
             self.host_sweep.remote_ufrag(),
             probe.port,
             || {
-                socket.try_send_on_interface(
-                    &payload,
-                    source,
-                    probe.subnet.interface_index,
-                    destination,
-                )
+                #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+                return super::host_scout::send_real(expires, || {
+                    socket.try_send_on_interface(
+                        &payload,
+                        source,
+                        probe.subnet.interface_index,
+                        destination,
+                    )
+                });
+                #[cfg(not(all(target_os = "linux", feature = "runtime-tokio")))]
+                Err(std::io::ErrorKind::Unsupported.into())
             },
         );
         match result {
@@ -1648,6 +1736,8 @@ where
             }
             PeerConnectionDriverEvent::Close => {
                 self.host_sweep.clear("closed");
+                #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+                self.host_scouts.close();
                 self.report_host_sweep().await;
                 if let Err(err) = self.turn_relayer.close() {
                     error!("Failed to close turn_relayer: {}", err);

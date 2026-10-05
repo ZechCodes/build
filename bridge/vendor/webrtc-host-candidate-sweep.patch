@@ -21,15 +21,17 @@ index 8ac676f..f36e324 100644
 +[target.'cfg(target_os = "linux")'.dependencies]
 +libc = "0.2"
 diff --git a/webrtc/src/peer_connection/mod.rs b/webrtc/src/peer_connection/mod.rs
-index b7c5c8d..4b471ee 100644
+index b7c5c8d..c248a76 100644
 --- a/webrtc/src/peer_connection/mod.rs
 +++ b/webrtc/src/peer_connection/mod.rs
-@@ -50,6 +50,12 @@
+@@ -50,6 +50,14 @@
  //! ```
  
  pub(crate) mod driver;
 +#[cfg(target_os = "linux")]
 +mod host_neighbors;
++#[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
++mod host_scout;
 +mod host_sweep;
 +#[cfg(test)]
 +mod host_sweep_driver_tests;
@@ -37,7 +39,7 @@ index b7c5c8d..4b471ee 100644
  #[cfg(test)]
  mod late_direct_tests;
  pub(crate) mod transports;
-@@ -165,6 +171,9 @@ pub trait PeerConnectionEventHandler: Send + Sync + 'static {
+@@ -165,6 +173,9 @@ pub trait PeerConnectionEventHandler: Send + Sync + 'static {
      /// Called when a remote peer creates a data channel
      async fn on_data_channel(&self, _data_channel: Arc<dyn DataChannel>) {}
  
@@ -47,7 +49,7 @@ index b7c5c8d..4b471ee 100644
      /// Called when a remote track is received
      async fn on_track(&self, _track: Arc<dyn TrackRemote>) {}
  }
-@@ -182,6 +191,7 @@ where
+@@ -182,6 +193,7 @@ where
      handler: Option<Arc<dyn PeerConnectionEventHandler>>,
      mdns_mode: MulticastDnsMode,
      discard_local_candidates_during_ice_restart: bool,
@@ -55,7 +57,7 @@ index b7c5c8d..4b471ee 100644
      udp_addrs: Vec<A>,
      tcp_addrs: Vec<A>,
      dedicated_reactor: bool,
-@@ -197,6 +207,7 @@ impl<A: ToSocketAddrs> Default for PeerConnectionBuilder<A, NoopInterceptor> {
+@@ -197,6 +209,7 @@ impl<A: ToSocketAddrs> Default for PeerConnectionBuilder<A, NoopInterceptor> {
              handler: None,
              mdns_mode: MulticastDnsMode::Disabled,
              discard_local_candidates_during_ice_restart: false,
@@ -63,7 +65,7 @@ index b7c5c8d..4b471ee 100644
              udp_addrs: vec![],
              tcp_addrs: vec![],
              dedicated_reactor: false,
-@@ -235,6 +246,7 @@ where
+@@ -235,6 +248,7 @@ where
      /// Configures the builder with the specified [`SettingEngine`].
      pub fn with_setting_engine(mut self, setting_engine: SettingEngine) -> Self {
          self.mdns_mode = setting_engine.multicast_dns().mode;
@@ -71,7 +73,7 @@ index b7c5c8d..4b471ee 100644
          self.discard_local_candidates_during_ice_restart =
              setting_engine.discard_local_candidates_during_ice_restart();
          self.builder = self.builder.with_setting_engine(setting_engine);
-@@ -286,6 +298,7 @@ where
+@@ -286,6 +300,7 @@ where
              mdns_mode: self.mdns_mode,
              discard_local_candidates_during_ice_restart: self
                  .discard_local_candidates_during_ice_restart,
@@ -79,7 +81,7 @@ index b7c5c8d..4b471ee 100644
              udp_addrs: self.udp_addrs,
              tcp_addrs: self.tcp_addrs,
              dedicated_reactor: self.dedicated_reactor,
-@@ -461,6 +474,7 @@ where
+@@ -461,6 +476,7 @@ where
                  .ok_or_else(|| std::io::Error::other("no event handler found"))?,
              self.mdns_mode,
              self.discard_local_candidates_during_ice_restart,
@@ -87,7 +89,7 @@ index b7c5c8d..4b471ee 100644
              self.udp_addrs,
              self.tcp_addrs,
              self.dedicated_reactor,
-@@ -570,6 +584,29 @@ pub trait PeerConnection: Send + Sync + 'static {
+@@ -570,6 +586,29 @@ pub trait PeerConnection: Send + Sync + 'static {
          kind: RtpCodecKind,
          init: Option<RTCRtpTransceiverInit>,
      ) -> Result<Arc<dyn RtpTransceiver>>;
@@ -117,7 +119,7 @@ index b7c5c8d..4b471ee 100644
      /// Get a snapshot of accumulated statistics.
      async fn get_stats(&self, now: Instant, selector: StatsSelector) -> RTCStatsReport;
  }
-@@ -653,6 +690,8 @@ where
+@@ -653,6 +692,8 @@ where
      /// discarding the old candidates and replacing the sockets they name are two halves of the
      /// same decision (webrtc#868).
      pub(crate) discard_local_candidates_during_ice_restart: bool,
@@ -126,7 +128,7 @@ index b7c5c8d..4b471ee 100644
      /// Set when an ICE restart is detected, cleared by the driver when it has rebound.
      ///
      /// A flag rather than a driver event so the rebind cannot be ordered after the gathering it
-@@ -758,6 +797,7 @@ where
+@@ -758,6 +799,7 @@ where
      /// its transport across restarts pays nothing.
      #[inline]
      pub(crate) fn mark_ice_restart_rebind_pending(&self) {
@@ -134,7 +136,7 @@ index b7c5c8d..4b471ee 100644
          if self.discard_local_candidates_during_ice_restart {
              self.ice_restart_rebind_pending
                  .store(true, Ordering::Release);
-@@ -807,6 +847,7 @@ where
+@@ -807,6 +849,7 @@ where
          handler: Arc<dyn PeerConnectionEventHandler>,
          mdns_mode: MulticastDnsMode,
          discard_local_candidates_during_ice_restart: bool,
@@ -142,7 +144,7 @@ index b7c5c8d..4b471ee 100644
          udp_addrs: Vec<A>,
          tcp_addrs: Vec<A>,
          dedicated_reactor: bool,
-@@ -835,6 +876,8 @@ where
+@@ -835,6 +878,8 @@ where
                  data_channel_send_buffer_limit,
                  data_channel_backpressure: crate::runtime::Notify::new(),
                  discard_local_candidates_during_ice_restart,
@@ -151,7 +153,7 @@ index b7c5c8d..4b471ee 100644
                  ice_restart_rebind_pending: AtomicBool::new(false),
              }),
              driver_handle: Mutex::new(None),
-@@ -1332,6 +1375,82 @@ where
+@@ -1332,6 +1377,82 @@ where
          Ok(rtp_transceiver.clone() as Arc<dyn RtpTransceiver>)
      }
  
@@ -234,7 +236,7 @@ index b7c5c8d..4b471ee 100644
      /// Get a snapshot of accumulated statistics.
      async fn get_stats(&self, now: Instant, selector: StatsSelector) -> RTCStatsReport {
          let mut core = self.inner.core.lock().await;
-@@ -1391,6 +1510,8 @@ mod tests {
+@@ -1391,6 +1512,8 @@ mod tests {
              track_local_events_tx: Mutex::new(HashMap::new()),
              rtp_transceivers: Mutex::new(HashMap::new()),
              discard_local_candidates_during_ice_restart,
@@ -244,7 +246,7 @@ index b7c5c8d..4b471ee 100644
          });
  
 diff --git a/webrtc/src/peer_connection/driver.rs b/webrtc/src/peer_connection/driver.rs
-index 8a0a53a..966b81d 100644
+index 8a0a53a..491dd77 100644
 --- a/webrtc/src/peer_connection/driver.rs
 +++ b/webrtc/src/peer_connection/driver.rs
 @@ -2,6 +2,7 @@
@@ -306,32 +308,38 @@ index 8a0a53a..966b81d 100644
      Close,
  }
  
-@@ -283,6 +312,7 @@ where
+@@ -283,6 +312,9 @@ where
      tcp_transport: RTCTcpTransport,
      mdns_socket: Option<Arc<dyn AsyncUdpSocket>>,
      udp_sockets: HashMap<SocketAddr, Arc<dyn AsyncUdpSocket>>,
 +    pub(super) host_sweep: HostSweep,
++    #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
++    host_scouts: super::host_scout::HostScouts,
      /// Reused scratch buffer for concatenating a run of same-destination datagrams
      /// into one UDP GSO send (see [`flush_writes`](Self::flush_writes)).
      gso_scratch: Vec<u8>,
-@@ -446,6 +476,7 @@ where
+@@ -446,6 +478,9 @@ where
              ),
              mdns_socket: None,
              udp_sockets: HashMap::new(),
 +            host_sweep: HostSweep::default(),
++            #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
++            host_scouts: super::host_scout::HostScouts::default(),
              gso_scratch: Vec::new(),
              tcp_transport: RTCTcpTransport::new(HashMap::new()),
              ice_gathering_active: false,
-@@ -588,6 +619,8 @@ where
+@@ -588,6 +623,10 @@ where
              // momentarily full channel), this check still guarantees the loop —
              // and thus a dedicated reactor thread — terminates instead of leaking.
              if self.inner.closing.load(Ordering::Acquire) {
 +                self.host_sweep.clear("closed");
++                #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
++                self.host_scouts.close();
 +                self.report_host_sweep().await;
                  if let Err(err) = self.turn_relayer.close() {
                      error!("Failed to close turn_relayer: {}", err);
                  }
-@@ -595,6 +628,7 @@ where
+@@ -595,6 +634,7 @@ where
              }
  
              self.poll_pass().await?;
@@ -339,7 +347,7 @@ index 8a0a53a..966b81d 100644
  
              // Wake senders blocked in `DataChannel::writable()`: the poll_* passes above
              // applied any SCTP buffer releases (acked/abandoned bytes) to the per-channel
-@@ -851,6 +885,180 @@ where
+@@ -851,6 +891,262 @@ where
          }
      }
  
@@ -370,11 +378,78 @@ index 8a0a53a..966b81d 100644
 +            .map(Candidate::addr)
 +            .collect::<Vec<_>>();
 +        self.prepare_host_sweep_ports(now, &hosts);
-+        if let Some(probe) = self.host_sweep.next_probe(now, relay) {
-+            self.send_host_probe(probe);
-+        }
++        #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
++        self.poll_host_scouts(now, relay, &hosts);
++        self.host_sweep.defer_tick(now);
 +        drop(core);
 +        self.report_host_sweep().await;
++    }
++
++    #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
++    fn poll_host_scouts(&mut self, now: Instant, relay: bool, hosts: &[SocketAddr]) {
++        let subnets = self.operational_sweep_subnets(now, hosts);
++        self.host_scouts.sync(
++            self.host_sweep.generation(),
++            subnets,
++            &self.inner.host_sweep_control,
++            self.host_sweep.remote_ufrag(),
++            now,
++        );
++        self.host_scouts.refresh(now);
++        let now = Instant::now();
++        let scouts = &self.host_scouts;
++        self.host_sweep.settle_discovery(
++            now,
++            relay,
++            |subnet, ip| scouts.usable(subnet, ip, now),
++            |subnet| scouts.settled(subnet, now),
++        );
++        if let Some(probe) = self
++            .host_sweep
++            .next_usable_probe(now, relay, |subnet, ip| scouts.usable(subnet, ip, now))
++        {
++            self.send_host_probe(probe);
++        } else if self.host_sweep.combined_attempts() < 32768
++            && let Some((port, expires)) = self.host_sweep.active_port()
++            && let Some(reason) = self.host_scouts.send_one(
++                now,
++                &self.inner.host_sweep_control,
++                self.host_sweep.remote_ufrag(),
++                port,
++                expires,
++            )
++        {
++            self.host_sweep.note_progress(reason);
++        }
++        self.host_sweep
++            .set_scout_counters(self.host_scouts.counters);
++        let active = self.operational_sweep_subnets(now, hosts);
++        self.host_scouts.sync(
++            self.host_sweep.generation(),
++            active,
++            &self.inner.host_sweep_control,
++            self.host_sweep.remote_ufrag(),
++            now,
++        );
++    }
++
++    #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
++    fn operational_sweep_subnets(
++        &mut self,
++        now: Instant,
++        hosts: &[SocketAddr],
++    ) -> Vec<SweepSubnet> {
++        self.host_sweep
++            .active_subnets(now)
++            .into_iter()
++            .filter(|subnet| {
++                hosts.contains(&subnet.local)
++                    && self
++                        .udp_sockets
++                        .get(&subnet.local)
++                        .is_some_and(|socket| socket.supports_host_candidate_sweep())
++            })
++            .collect()
 +    }
 +
 +    fn observe_sweep_pair(&mut self, selected: Option<(&Candidate, &Candidate)>) -> bool {
@@ -427,7 +502,7 @@ index 8a0a53a..966b81d 100644
 +    }
 +
 +    fn sweep_subnets(&self, hosts: &[SocketAddr]) -> (Vec<SweepSubnet>, Vec<&'static str>) {
-+        if !cfg!(target_os = "linux") {
++        if !cfg!(all(target_os = "linux", feature = "runtime-tokio")) {
 +            return (Vec::new(), vec!["unsupported-platform"]);
 +        }
 +        let Ok(interfaces) = ifaces() else {
@@ -438,8 +513,12 @@ index 8a0a53a..966b81d 100644
 +        #[cfg(target_os = "linux")]
 +        let neighbor_deadline = Instant::now() + Duration::from_millis(5);
 +        for local in hosts {
-+            if !self.udp_sockets.contains_key(local) {
++            let Some(socket) = self.udp_sockets.get(local) else {
 +                reasons.push("no-host-socket");
++                continue;
++            };
++            if !socket.supports_host_candidate_sweep() {
++                reasons.push("unsupported-platform");
 +                continue;
 +            }
 +            match SweepSubnet::for_socket(*local, &interfaces, sweep_interface_index) {
@@ -485,17 +564,28 @@ index 8a0a53a..966b81d 100644
 +            return;
 +        };
 +        let destination = std::net::SocketAddrV4::new(probe.destination, probe.port);
++        #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
++        let expires = self
++            .host_scouts
++            .usable_until(&probe.subnet)
++            .unwrap_or_else(Instant::now)
++            .min(probe.expires);
 +        let result = self.inner.host_sweep_control.while_allowed(
 +            self.host_sweep.generation(),
 +            self.host_sweep.remote_ufrag(),
 +            probe.port,
 +            || {
-+                socket.try_send_on_interface(
-+                    &payload,
-+                    source,
-+                    probe.subnet.interface_index,
-+                    destination,
-+                )
++                #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
++                return super::host_scout::send_real(expires, || {
++                    socket.try_send_on_interface(
++                        &payload,
++                        source,
++                        probe.subnet.interface_index,
++                        destination,
++                    )
++                });
++                #[cfg(not(all(target_os = "linux", feature = "runtime-tokio")))]
++                Err(std::io::ErrorKind::Unsupported.into())
 +            },
 +        );
 +        match result {
@@ -520,7 +610,7 @@ index 8a0a53a..966b81d 100644
      async fn handle_write(&mut self, msg: TaggedBytesMut) -> Result<usize> {
          if msg.transport.transport_protocol == TransportProtocol::TCP {
              self.tcp_transport.write(&msg).await
-@@ -1283,8 +1491,50 @@ where
+@@ -1283,8 +1579,50 @@ where
          }
      }
  
@@ -572,16 +662,18 @@ index 8a0a53a..966b81d 100644
              PeerConnectionDriverEvent::SenderRtp(sender_id, packet) => {
                  let mut core = self.inner.core.lock().await;
                  if let Some(mut sender) = core.rtp_sender(sender_id) {
-@@ -1397,6 +1647,8 @@ where
+@@ -1397,6 +1735,10 @@ where
                  self.tcp_transport.register_stream(four_tuple, stream);
              }
              PeerConnectionDriverEvent::Close => {
 +                self.host_sweep.clear("closed");
++                #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
++                self.host_scouts.close();
 +                self.report_host_sweep().await;
                  if let Err(err) = self.turn_relayer.close() {
                      error!("Failed to close turn_relayer: {}", err);
                  }
-@@ -1752,11 +2004,16 @@ where
+@@ -1752,11 +2094,16 @@ where
          let stun_timeout = self.stun_gatherer.poll_timeout();
          let turn_timeout = self.turn_relayer.poll_timeout();
  
@@ -604,10 +696,10 @@ index 8a0a53a..966b81d 100644
  
      async fn handle_timeout(&mut self, now: Instant) -> Result<()> {
 diff --git a/webrtc/src/peer_connection/host_sweep.rs b/webrtc/src/peer_connection/host_sweep.rs
-index e69de29..1aac5a0 100644
+index e69de29..019a9c4 100644
 --- a/webrtc/src/peer_connection/host_sweep.rs
 +++ b/webrtc/src/peer_connection/host_sweep.rs
-@@ -0,0 +1,704 @@
+@@ -0,0 +1,943 @@
 +//! Bounded, credential-free conntrack probes on an advertised host socket.
 +
 +use rtc::shared::ifaces::{Interface, NextHop};
@@ -634,6 +726,16 @@ index e69de29..1aac5a0 100644
 +    pub addresses_sent: u32,
 +    /// Scheduled send attempts, including transient socket failures.
 +    pub addresses_attempted: u32,
++    /// Successful anonymous one-byte UDP9 scout enqueues, cumulative per generation.
++    pub scout_datagrams_sent: u32,
++    /// Paced scout attempts, including socket or neighbor-pressure yields.
++    pub scout_attempted: u32,
++    /// Unique successfully scouted source/interface/destinations; known neighbors excluded.
++    pub destinations_scouted: u32,
++    /// Latest current-netns INCOMPLETE count plus unobserved process reservations.
++    pub neighbors_pending: u32,
++    /// Generation maximum of that conservative pending pressure.
++    pub neighbors_pending_peak: u32,
 +    /// Fixed content-free skip or stop reason.
 +    pub reason: Option<&'static str>,
 +    /// An advertised host socket has a safe, bounded on-link subnet.
@@ -650,10 +752,30 @@ index e69de29..1aac5a0 100644
 +    pub interface_name: String,
 +    pub interface_index: u32,
 +    pub addresses: Arc<[Ipv4Addr]>,
++    authorized: Arc<[Ipv4Addr]>,
 +    mask: u32,
 +}
 +
 +impl SweepSubnet {
++    pub fn own_subnet_identity(&self) -> (IpAddr, u32, u32, String) {
++        (
++            self.local.ip(),
++            self.mask,
++            self.interface_index,
++            self.interface_name.clone(),
++        )
++    }
++    pub fn same_authorization(&self, other: &Self) -> bool {
++        self.local.ip() == other.local.ip()
++            && self.interface_index == other.interface_index
++            && self.interface_name == other.interface_name
++            && self.mask == other.mask
++            && (Arc::ptr_eq(&self.authorized, &other.authorized)
++                || self.authorized == other.authorized)
++    }
++    pub fn authorizes(&self, address: Ipv4Addr) -> bool {
++        self.authorized.binary_search(&address).is_ok()
++    }
 +    pub fn prioritize(&mut self, neighbors: &[Ipv4Addr]) {
 +        let hints = neighbors
 +            .iter()
@@ -662,6 +784,35 @@ index e69de29..1aac5a0 100644
 +        // Reorder only the already authorized set. A neighbor observation never
 +        // adds a destination or authorizes a candidate, and is not cached.
 +        Arc::make_mut(&mut self.addresses).sort_by_key(|address| !hints.contains(address));
++    }
++
++    pub fn cluster_order(&mut self, neighbors: &[Ipv4Addr]) {
++        let authorized = self
++            .addresses
++            .iter()
++            .copied()
++            .collect::<std::collections::HashSet<_>>();
++        let known = neighbors
++            .iter()
++            .copied()
++            .filter(|ip| authorized.contains(ip))
++            .collect::<std::collections::HashSet<_>>();
++        let mut anchors = known.iter().copied().map(u32::from).collect::<Vec<_>>();
++        if let IpAddr::V4(source) = self.local.ip() {
++            anchors.push(source.into());
++        }
++        anchors.sort_unstable();
++        anchors.dedup();
++        Arc::make_mut(&mut self.addresses).sort_by_cached_key(|address| {
++            let value = u32::from(*address);
++            let insertion = anchors.partition_point(|anchor| *anchor < value);
++            let left = insertion
++                .checked_sub(1)
++                .map(|index| value.abs_diff(anchors[index]));
++            let right = anchors.get(insertion).map(|anchor| value.abs_diff(*anchor));
++            let distance = left.into_iter().chain(right).min().unwrap_or(u32::MAX);
++            (!known.contains(address), distance, value)
++        });
 +    }
 +
 +    pub fn from_interface(
@@ -706,11 +857,13 @@ index e69de29..1aac5a0 100644
 +        if addresses.is_empty() {
 +            return Err("no-usable-addresses");
 +        }
++        let addresses: Arc<[Ipv4Addr]> = addresses.into();
 +        Ok(Self {
++            authorized: Arc::clone(&addresses),
 +            local,
 +            interface_name: interface.name.clone(),
 +            interface_index,
-+            addresses: addresses.into(),
++            addresses,
 +            mask,
 +        })
 +    }
@@ -786,6 +939,7 @@ index e69de29..1aac5a0 100644
 +#[derive(Clone, Debug)]
 +pub(crate) struct SweepProbe {
 +    pub port: u16,
++    pub expires: Instant,
 +    pub subnet: SweepSubnet,
 +    pub destination: Ipv4Addr,
 +}
@@ -831,9 +985,46 @@ index e69de29..1aac5a0 100644
 +    ufrag: String,
 +    ports: std::collections::BTreeSet<u16>,
 +    retired: bool,
++    #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
++    scouts: Vec<std::sync::Weak<std::sync::Mutex<super::host_scout::ScoutResources>>>,
++}
++
++#[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
++impl ControlState {
++    fn close_scouts(&mut self) {
++        for entry in self.scouts.drain(..) {
++            if let Some(resources) = entry.upgrade()
++                && let Ok(mut resources) = resources.lock()
++            {
++                resources.close();
++            }
++        }
++    }
 +}
 +
 +impl HostSweepControl {
++    #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
++    pub(super) fn attach_scout_resources(
++        &self,
++        generation: u64,
++        ufrag: &str,
++        resources: Arc<std::sync::Mutex<super::host_scout::ScoutResources>>,
++    ) -> bool {
++        let Ok(mut state) = self.state.lock() else {
++            return false;
++        };
++        if state.generation != Some(generation)
++            || state.ufrag != ufrag
++            || state.retired
++            || state.ports.is_empty()
++        {
++            return false;
++        }
++        state.scouts.retain(|entry| entry.strong_count() > 0);
++        state.scouts.push(Arc::downgrade(&resources));
++        true
++    }
++
 +    pub fn start(&self, generation: u64, ufrag: &str, port: u16) -> bool {
 +        let Ok(mut state) = self.state.lock() else {
 +            return false;
@@ -845,6 +1036,8 @@ index e69de29..1aac5a0 100644
 +            return false;
 +        }
 +        if state.generation != Some(generation) {
++            #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
++            state.close_scouts();
 +            state.generation = Some(generation);
 +            state.ufrag = ufrag.into();
 +            state.ports.clear();
@@ -863,11 +1056,17 @@ index e69de29..1aac5a0 100644
 +            && state.ufrag == ufrag
 +        {
 +            state.ports.remove(&port);
++            #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
++            if state.ports.is_empty() {
++                state.close_scouts();
++            }
 +        }
 +    }
 +    pub fn clear(&self) {
 +        if let Ok(mut state) = self.state.lock() {
 +            state.ports.clear();
++            #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
++            state.close_scouts();
 +            state.retired = true;
 +        }
 +    }
@@ -903,6 +1102,15 @@ index e69de29..1aac5a0 100644
 +    }
 +}
 +
++#[derive(Clone, Copy, Default)]
++pub(crate) struct SweepScoutCounters {
++    pub sent: u32,
++    pub attempted: u32,
++    pub destinations: u32,
++    pub pending: u32,
++    pub pending_peak: u32,
++}
++
 +#[derive(Default)]
 +pub(crate) struct HostSweep {
 +    generation: u64,
@@ -913,6 +1121,7 @@ index e69de29..1aac5a0 100644
 +    packets: u32,
 +    sent: u32,
 +    prflx_followed: bool,
++    scout: SweepScoutCounters,
 +    events: VecDeque<HostCandidateSweepEvent>,
 +    relay: bool,
 +}
@@ -931,6 +1140,7 @@ index e69de29..1aac5a0 100644
 +    eligible: bool,
 +    unresolved: bool,
 +    successful_destinations: std::collections::HashSet<(SocketAddr, Ipv4Addr)>,
++    pass_destinations: std::collections::HashSet<(SocketAddr, Ipv4Addr)>,
 +    attempted_destination: Option<(SocketAddr, Ipv4Addr)>,
 +    attempted_at: Instant,
 +}
@@ -947,6 +1157,7 @@ index e69de29..1aac5a0 100644
 +            self.prflx_followed = false;
 +            self.packets = 0;
 +            self.sent = 0;
++            self.scout = SweepScoutCounters::default();
 +            self.next_packet = None;
 +            self.remote_ufrag = ufrag;
 +            self.generation = generation;
@@ -975,6 +1186,7 @@ index e69de29..1aac5a0 100644
 +                eligible: false,
 +                unresolved: true,
 +                successful_destinations: std::collections::HashSet::new(),
++                pass_destinations: std::collections::HashSet::new(),
 +                attempted_destination: None,
 +                attempted_at: now,
 +            },
@@ -1008,24 +1220,35 @@ index e69de29..1aac5a0 100644
 +        }
 +    }
 +
++    #[cfg(test)]
 +    pub fn next_probe(&mut self, now: Instant, relay: bool) -> Option<SweepProbe> {
++        self.next_usable_probe(now, relay, |_, _| true)
++    }
++
++    pub fn next_usable_probe(
++        &mut self,
++        now: Instant,
++        relay: bool,
++        usable: impl Fn(&SweepSubnet, Ipv4Addr) -> bool,
++    ) -> Option<SweepProbe> {
 +        self.relay = relay;
 +        self.expire(now);
 +        if self.next_packet.is_some_and(|next| now < next) {
 +            return None;
 +        }
-+        if self.packets >= MAX_PACKETS {
++        if self.packets.saturating_add(self.scout.attempted) >= MAX_PACKETS {
 +            self.stop_all("packet-limit");
 +            return None;
 +        }
 +        for (port, plan) in &mut self.plans {
-+            if let Some((subnet, destination)) = plan.take_next(now, relay) {
++            if let Some((subnet, destination)) = plan.take_next(now, relay, &usable) {
 +                plan.attempted += 1;
 +                plan.attempted_at = now;
 +                self.packets += 1;
 +                self.next_packet = Some(now + PACE);
 +                return Some(SweepProbe {
 +                    port: *port,
++                    expires: plan.expires,
 +                    subnet,
 +                    destination,
 +                });
@@ -1044,6 +1267,7 @@ index e69de29..1aac5a0 100644
 +                plan.cursor += 1;
 +                if let Some(destination) = plan.attempted_destination.take() {
 +                    plan.successful_destinations.insert(destination);
++                    plan.pass_destinations.insert(destination);
 +                }
 +                if plan.finished_pass() {
 +                    plan.report_pending = true;
@@ -1172,6 +1396,7 @@ index e69de29..1aac5a0 100644
 +            event.prflx_followed = self.prflx_followed;
 +            event.addresses_sent = self.sent;
 +            event.addresses_attempted = self.packets;
++            self.scout.fill(&mut event);
 +            event.eligible_unresolved = self
 +                .plans
 +                .values()
@@ -1196,6 +1421,63 @@ index e69de29..1aac5a0 100644
 +        self.events
 +            .push_back(self.event("skipped", Some(reason), false, 0, 0, false));
 +    }
++    pub fn set_scout_counters(&mut self, counters: SweepScoutCounters) {
++        self.scout = counters;
++    }
++    pub fn defer_tick(&mut self, now: Instant) {
++        if self.next_packet.is_none_or(|next| now >= next) {
++            self.next_packet = Some(now + PACE);
++        }
++    }
++    pub fn settle_discovery(
++        &mut self,
++        now: Instant,
++        relay: bool,
++        usable: impl Fn(&SweepSubnet, Ipv4Addr) -> bool,
++        settled: impl Fn(&SweepSubnet) -> bool,
++    ) {
++        self.expire(now);
++        for plan in self.plans.values_mut() {
++            if !plan.can_settle(now, relay, &usable, &settled) {
++                continue;
++            }
++            plan.finish_pass(now);
++            let status = if plan.stopped { "stopped" } else { "progress" };
++            self.events.push_back(plan.event(
++                self.generation,
++                status,
++                if plan.stopped {
++                    Some("completed")
++                } else {
++                    None
++                },
++                true,
++            ));
++        }
++    }
++    pub fn active_subnets(&mut self, now: Instant) -> Vec<SweepSubnet> {
++        self.expire(now);
++        self.plans
++            .values()
++            .filter(|plan| !plan.stopped)
++            .filter_map(|plan| plan.subnets.as_ref())
++            .flatten()
++            .cloned()
++            .collect()
++    }
++    pub fn active_port(&self) -> Option<(u16, Instant)> {
++        self.plans
++            .iter()
++            .find(|(_, plan)| !plan.stopped && plan.unresolved)
++            .map(|(port, plan)| (*port, plan.expires))
++    }
++    pub fn combined_attempts(&self) -> u32 {
++        self.packets.saturating_add(self.scout.attempted)
++    }
++    pub fn note_progress(&mut self, reason: &'static str) {
++        self.events
++            .push_back(self.event("progress", Some(reason), true, 0, 0, false));
++    }
 +    pub fn is_empty(&self) -> bool {
 +        self.plans.is_empty()
 +    }
@@ -1206,6 +1488,7 @@ index e69de29..1aac5a0 100644
 +                event.prflx_followed = self.prflx_followed;
 +                event.addresses_sent = self.sent;
 +                event.addresses_attempted = self.packets;
++                self.scout.fill(event);
 +            }
 +        }
 +    }
@@ -1246,29 +1529,71 @@ index e69de29..1aac5a0 100644
 +            addresses_sent: sent,
 +            addresses_attempted: attempted,
 +            prflx_followed,
++            scout_datagrams_sent: 0,
++            scout_attempted: 0,
++            destinations_scouted: 0,
++            neighbors_pending: 0,
++            neighbors_pending_peak: 0,
 +        }
 +    }
 +}
 +
++impl SweepScoutCounters {
++    fn fill(&self, event: &mut HostCandidateSweepEvent) {
++        event.scout_datagrams_sent = self.sent;
++        event.scout_attempted = self.attempted;
++        event.destinations_scouted = self.destinations;
++        event.neighbors_pending = self.pending;
++        event.neighbors_pending_peak = self.pending_peak;
++    }
++}
++
 +impl PortSweep {
++    fn can_settle(
++        &self,
++        now: Instant,
++        relay: bool,
++        usable: &impl Fn(&SweepSubnet, Ipv4Addr) -> bool,
++        settled: &impl Fn(&SweepSubnet) -> bool,
++    ) -> bool {
++        if self.stopped || now < self.due || (self.repeat && !relay) {
++            return false;
++        }
++        self.subnets.as_ref().is_some_and(|subnets| {
++            !subnets.is_empty()
++                && subnets.iter().all(|subnet| {
++                    settled(subnet)
++                        && subnet.addresses.iter().all(|ip| {
++                            !usable(subnet, *ip)
++                                || self.pass_destinations.contains(&(subnet.local, *ip))
++                        })
++                })
++        })
++    }
 +    fn retire_addresses(&mut self) {
 +        self.subnets = None;
 +        self.successful_destinations.clear();
++        self.pass_destinations.clear();
 +        self.attempted_destination = None;
 +    }
 +
-+    fn take_next(&mut self, now: Instant, relay: bool) -> Option<(SweepSubnet, Ipv4Addr)> {
++    fn take_next(
++        &mut self,
++        now: Instant,
++        relay: bool,
++        usable: &impl Fn(&SweepSubnet, Ipv4Addr) -> bool,
++    ) -> Option<(SweepSubnet, Ipv4Addr)> {
 +        if self.stopped || now < self.due || (self.repeat && !relay) {
 +            return None;
 +        }
 +        let subnets = self.subnets.as_ref()?;
-+        let mut offset = self.cursor;
 +        for subnet in subnets {
-+            if let Some(destination) = subnet.addresses.get(offset) {
++            if let Some(destination) = subnet.addresses.iter().find(|ip| {
++                !self.pass_destinations.contains(&(subnet.local, **ip)) && usable(subnet, **ip)
++            }) {
 +                self.attempted_destination = Some((subnet.local, *destination));
 +                return Some((subnet.clone(), *destination));
 +            }
-+            offset -= subnet.addresses.len();
 +        }
 +        None
 +    }
@@ -1285,6 +1610,7 @@ index e69de29..1aac5a0 100644
 +        } else {
 +            self.repeat = true;
 +            self.cursor = 0;
++            self.pass_destinations.clear();
 +            self.due = now + REPEAT_DELAY;
 +        }
 +    }
@@ -1305,6 +1631,11 @@ index e69de29..1aac5a0 100644
 +            addresses_sent: self.sent,
 +            addresses_attempted: self.attempted,
 +            prflx_followed: self.prflx_followed,
++            scout_datagrams_sent: 0,
++            scout_attempted: 0,
++            destinations_scouted: 0,
++            neighbors_pending: 0,
++            neighbors_pending_peak: 0,
 +        }
 +    }
 +}
@@ -1313,10 +1644,10 @@ index e69de29..1aac5a0 100644
 +#[path = "host_sweep_tests.rs"]
 +mod tests;
 diff --git a/webrtc/src/peer_connection/host_sweep_tests.rs b/webrtc/src/peer_connection/host_sweep_tests.rs
-index e69de29..0eb4967 100644
+index e69de29..15872e4 100644
 --- a/webrtc/src/peer_connection/host_sweep_tests.rs
 +++ b/webrtc/src/peer_connection/host_sweep_tests.rs
-@@ -0,0 +1,547 @@
+@@ -0,0 +1,703 @@
 +use super::*;
 +use rtc::shared::ifaces::Kind;
 +
@@ -1460,6 +1791,7 @@ index e69de29..0eb4967 100644
 +        interface_name: "wifi".into(),
 +        interface_index: 2,
 +        addresses: vec![Ipv4Addr::new(192, 168, 2, 2), Ipv4Addr::new(192, 168, 2, 3)].into(),
++        authorized: vec![Ipv4Addr::new(192, 168, 2, 2), Ipv4Addr::new(192, 168, 2, 3)].into(),
 +        mask: u32::from(Ipv4Addr::new(255, 255, 255, 0)),
 +    }
 +}
@@ -1864,6 +2196,161 @@ index e69de29..0eb4967 100644
 +    sweep.start(7, "ufrag".into(), 1, now);
 +    assert_eq!(sweep.plans.len(), MAX_PORTS);
 +}
++
++#[test]
++fn scouts_cluster_once_around_only_authorized_anchors_with_deterministic_ties() {
++    let local = address("10.72.0.1:45000");
++    let iface = interface("10.72.0.1:0", "255.255.252.0:0", "wifi");
++    let mut subnet = SweepSubnet::from_interface(local, &iface, 2, &[]).unwrap();
++    let original = subnet.addresses.to_vec();
++    subnet.cluster_order(&[
++        "10.72.0.254".parse().unwrap(),
++        "10.72.0.254".parse().unwrap(),
++        "10.72.8.1".parse().unwrap(),
++        "8.8.8.8".parse().unwrap(),
++        "10.72.0.0".parse().unwrap(),
++    ]);
++    assert_eq!(
++        subnet.addresses[0],
++        "10.72.0.254".parse::<Ipv4Addr>().unwrap()
++    );
++    let cluster = subnet
++        .addresses
++        .iter()
++        .position(|ip| *ip == "10.72.1.2".parse::<Ipv4Addr>().unwrap())
++        .unwrap();
++    assert!(cluster < 16, "DHCP-near phone should be discovered early");
++    assert_eq!(
++        subnet.addresses.last().unwrap(),
++        &"10.72.3.254".parse::<Ipv4Addr>().unwrap()
++    );
++    let mut ordered = subnet.addresses.to_vec();
++    ordered.sort_unstable();
++    assert_eq!(ordered, original);
++    let tie = subnet
++        .addresses
++        .iter()
++        .position(|ip| *ip == "10.72.0.253".parse::<Ipv4Addr>().unwrap())
++        .unwrap();
++    assert_eq!(
++        subnet.addresses[tie + 1],
++        "10.72.0.255".parse::<Ipv4Addr>().unwrap()
++    );
++}
++
++#[test]
++fn real_ice_probe_never_targets_unknown_neighbors_but_can_reach_newly_resolved_tail() {
++    let now = Instant::now();
++    let mut sweep = HostSweep::default();
++    sweep.start(7, "ufrag".into(), 40000, now);
++    let local = address("10.72.0.1:45000");
++    let iface = interface("10.72.0.1:0", "255.255.252.0:0", "wifi");
++    sweep.prepare(
++        40000,
++        vec![SweepSubnet::from_interface(local, &iface, 2, &[]).unwrap()],
++    );
++    assert!(
++        sweep
++            .next_usable_probe(now + GRACE, false, |_, _| false)
++            .is_none()
++    );
++    let phone: Ipv4Addr = "10.72.3.254".parse().unwrap();
++    let probe = sweep
++        .next_usable_probe(now + GRACE + PACE, false, |_, ip| ip == phone)
++        .unwrap();
++    assert_eq!(probe.destination, phone);
++    sweep.record_result(probe.port, true);
++    assert!(
++        sweep
++            .next_usable_probe(now + GRACE + 2 * PACE, false, |_, ip| ip == phone)
++            .is_none(),
++        "at most once per pass"
++    );
++    assert!(
++        !sweep.plans[&40000].repeat,
++        "unanswered tail cannot count as a full pass"
++    );
++}
++
++#[test]
++fn unrelated_early_wakes_do_not_slide_the_sweep_deadline() {
++    let now = Instant::now();
++    let mut sweep = HostSweep::default();
++    sweep.start(7, "ufrag".into(), 40000, now);
++    sweep.prepare(40000, vec![subnet()]);
++    let mut sent = 0;
++    for ms in 250..300 {
++        let tick = now + Duration::from_millis(ms);
++        if let Some(probe) = sweep.next_probe(tick, false) {
++            sweep.record_result(probe.port, true);
++            sent += 1;
++        }
++        sweep.defer_tick(tick);
++    }
++    assert_eq!(
++        sent, 2,
++        "both initial destinations still progress amid1ms wakes"
++    );
++    assert!(sweep.deadline().unwrap() <= now + WINDOW);
++}
++
++#[test]
++fn sparse_discovery_waits_for_settlement_then_completes_using_only_live_neighbors() {
++    let now = Instant::now();
++    let mut sweep = HostSweep::default();
++    sweep.start(7, "ufrag".into(), 40000, now);
++    let local = address("10.72.0.1:45000");
++    let iface = interface("10.72.0.1:0", "255.255.252.0:0", "wifi");
++    sweep.prepare(
++        40000,
++        vec![SweepSubnet::from_interface(local, &iface, 2, &[]).unwrap()],
++    );
++    let gateway = "10.72.0.254".parse::<Ipv4Addr>().unwrap();
++    let phone = "10.72.3.254".parse::<Ipv4Addr>().unwrap();
++    let initial = now + GRACE;
++    let probe = sweep
++        .next_usable_probe(initial, true, |_, ip| ip == gateway)
++        .unwrap();
++    sweep.record_result(probe.port, true);
++    sweep.settle_discovery(initial + PACE, true, |_, ip| ip == gateway, |_| false);
++    assert!(
++        !sweep.plans[&40000].repeat,
++        "gateway exhaustion cannot finish while scouting"
++    );
++    let late = now + Duration::from_secs(10);
++    let probe = sweep
++        .next_usable_probe(late, true, |_, ip| ip == gateway || ip == phone)
++        .unwrap();
++    assert_eq!(probe.destination, phone);
++    sweep.record_result(probe.port, true);
++    sweep.settle_discovery(
++        late + PACE,
++        true,
++        |_, ip| ip == gateway || ip == phone,
++        |_| true,
++    );
++    assert!(
++        sweep.plans[&40000].repeat,
++        "settled dead neighbors need no ICE sends"
++    );
++    let repeat = late + PACE + REPEAT_DELAY;
++    for offset in 0..2 {
++        let probe = sweep
++            .next_usable_probe(repeat + offset * PACE, true, |_, ip| {
++                ip == gateway || ip == phone
++            })
++            .unwrap();
++        sweep.record_result(probe.port, true);
++    }
++    sweep.settle_discovery(
++        repeat + 2 * PACE,
++        true,
++        |_, ip| ip == gateway || ip == phone,
++        |_| true,
++    );
++    assert!(sweep.plans[&40000].stopped);
++    assert_eq!(sweep.sent, 4);
++}
 diff --git a/webrtc/src/peer_connection/host_sweep_driver_tests.rs b/webrtc/src/peer_connection/host_sweep_driver_tests.rs
 index e69de29..93a7799 100644
 --- a/webrtc/src/peer_connection/host_sweep_driver_tests.rs
@@ -1963,13 +2450,13 @@ index e69de29..93a7799 100644
 +    }));
 +}
 diff --git a/webrtc/src/peer_connection/host_neighbors.rs b/webrtc/src/peer_connection/host_neighbors.rs
-index e69de29..6477833 100644
+index e69de29..e4e93ec 100644
 --- a/webrtc/src/peer_connection/host_neighbors.rs
 +++ b/webrtc/src/peer_connection/host_neighbors.rs
-@@ -0,0 +1,625 @@
+@@ -0,0 +1,889 @@
 +//! Read-only, bounded neighbor hints; callers retain subnet authorization.
 +
-+use std::collections::HashSet;
++use std::collections::{HashMap, HashSet};
 +use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 +use std::{
 +    io,
@@ -1986,6 +2473,50 @@ index e69de29..6477833 100644
 +const MAX_DURATION: Duration = Duration::from_millis(5);
 +const DATAGRAM_BYTES: usize = 16 * 1024;
 +
++#[path = "host_neighbor_table.rs"]
++mod table;
++
++/// Active-plan observations only. No Debug/Serialize implementation exposes
++/// the interface addresses through logs or diagnostic payloads.
++#[derive(Clone)]
++pub(super) struct ScoutSnapshot {
++    pub observed_at: Instant,
++    pub usable: Vec<Ipv4Addr>,
++    pub incomplete: Vec<Ipv4Addr>,
++    pub failed: Vec<Ipv4Addr>,
++    pub netns_total: usize,
++    pub incomplete_total: usize,
++    pub table_entries: usize,
++    pub gc_thresh2: usize,
++    pub gc_thresh3: usize,
++}
++
++/// Both dumps share work and time bounds. Table pressure is global, while
++/// destination states and the incomplete count belong to the current netns.
++pub(super) fn scout_snapshot_until(
++    interface_index: u32,
++    deadline: Instant,
++) -> io::Result<ScoutSnapshot> {
++    let observed_at = Instant::now();
++    let deadline = validated_deadline(interface_index, observed_at, deadline)?;
++    let mut dump = Dump::scout();
++    dump.deadline = Some(deadline);
++    read_dump(&mut dump, interface_index, &request(0))?;
++    read_dump(&mut dump, interface_index, &table_request())?;
++    let pressure = dump.table.finish()?;
++    Ok(ScoutSnapshot {
++        observed_at,
++        usable: dump.addresses,
++        incomplete: dump.incomplete,
++        failed: dump.failed,
++        netns_total: dump.netns_total,
++        incomplete_total: dump.incomplete_total,
++        table_entries: pressure.entries,
++        gc_thresh2: pressure.gc_thresh2,
++        gc_thresh3: pressure.gc_thresh3,
++    })
++}
++
 +/// Consume only immediately available RTM_GETNEIGH replies. Incomplete dumps
 +/// are discarded; hints never authorize targets outside the caller's subnet.
 +#[cfg(test)]
@@ -1995,24 +2526,38 @@ index e69de29..6477833 100644
 +
 +/// The driver shares one absolute deadline across its interface preparations.
 +pub(super) fn snapshot_until(interface_index: u32, deadline: Instant) -> io::Result<Vec<Ipv4Addr>> {
++    let deadline = validated_deadline(interface_index, Instant::now(), deadline)?;
++    let mut dump = Dump::new();
++    dump.deadline = Some(deadline);
++    read_dump(&mut dump, interface_index, &request(interface_index))?;
++    Ok(dump.addresses)
++}
++
++fn validated_deadline(
++    interface_index: u32,
++    now: Instant,
++    deadline: Instant,
++) -> io::Result<Instant> {
 +    if interface_index == 0 || interface_index > i32::MAX as u32 {
 +        return Err(io::ErrorKind::InvalidInput.into());
 +    }
-+    let now = Instant::now();
 +    if now >= deadline {
 +        return Err(io::ErrorKind::TimedOut.into());
 +    }
-+    let deadline = deadline.min(now + MAX_DURATION);
++    Ok(deadline.min(now + MAX_DURATION))
++}
++
++fn read_dump(dump: &mut Dump, interface_index: u32, request: &[u8]) -> io::Result<()> {
++    dump.check_deadline()?;
 +    let socket = open_socket()?;
-+    send_request(&socket, interface_index)?;
-+    let mut dump = Dump::new();
-+    dump.deadline = Some(deadline);
++    dump.check_deadline()?;
++    send_request(&socket, request)?;
 +    let mut buffer = [0u8; DATAGRAM_BYTES];
 +    loop {
 +        dump.check_deadline()?;
 +        let count = receive(&socket, &mut buffer)?;
 +        if dump.consume(&buffer[..count], interface_index)? {
-+            return Ok(dump.addresses);
++            return Ok(());
 +        }
 +    }
 +}
@@ -2059,8 +2604,17 @@ index e69de29..6477833 100644
 +    request
 +}
 +
-+fn send_request(socket: &OwnedFd, interface_index: u32) -> io::Result<()> {
-+    let request = request(interface_index);
++fn table_request() -> [u8; HEADER_LEN + 4] {
++    let mut request = [0u8; HEADER_LEN + 4];
++    request[..4].copy_from_slice(&((HEADER_LEN + 4) as u32).to_ne_bytes());
++    request[4..6].copy_from_slice(&libc::RTM_GETNEIGHTBL.to_ne_bytes());
++    request[6..8].copy_from_slice(&((libc::NLM_F_REQUEST | libc::NLM_F_DUMP) as u16).to_ne_bytes());
++    request[8..12].copy_from_slice(&SEQUENCE.to_ne_bytes());
++    request[HEADER_LEN] = libc::AF_INET as u8;
++    request
++}
++
++fn send_request(socket: &OwnedFd, request: &[u8]) -> io::Result<()> {
 +    // SAFETY: sockaddr_nl and the fixed request are initialized for the whole
 +    // call. Port/group zero address the kernel only; GET never mutates entries.
 +    let mut kernel: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
@@ -2128,9 +2682,16 @@ index e69de29..6477833 100644
 +struct Dump {
 +    addresses: Vec<Ipv4Addr>,
 +    seen: HashSet<Ipv4Addr>,
++    states: HashMap<Ipv4Addr, u16>,
 +    bytes: usize,
 +    messages: usize,
 +    deadline: Option<Instant>,
++    collect_pressure: bool,
++    incomplete: Vec<Ipv4Addr>,
++    failed: Vec<Ipv4Addr>,
++    netns_total: usize,
++    incomplete_total: usize,
++    table: table::Table,
 +}
 +
 +impl Dump {
@@ -2138,9 +2699,23 @@ index e69de29..6477833 100644
 +        Self {
 +            addresses: Vec::new(),
 +            seen: HashSet::new(),
++            states: HashMap::new(),
 +            bytes: 0,
 +            messages: 0,
 +            deadline: None,
++            collect_pressure: false,
++            incomplete: Vec::new(),
++            failed: Vec::new(),
++            netns_total: 0,
++            incomplete_total: 0,
++            table: table::Table::new(),
++        }
++    }
++
++    fn scout() -> Self {
++        Self {
++            collect_pressure: true,
++            ..Self::new()
 +        }
 +    }
 +
@@ -2203,6 +2778,10 @@ index e69de29..6477833 100644
 +                self.neighbor(payload, interface_index)?;
 +                Ok(false)
 +            }
++            _ if kind == libc::RTM_NEWNEIGHTBL && self.collect_pressure => {
++                self.table.observe(payload)?;
++                Ok(false)
++            }
 +            _ => Ok(false),
 +        }
 +    }
@@ -2213,8 +2792,24 @@ index e69de29..6477833 100644
 +        }
 +        let owner = i32::from_ne_bytes(payload[4..8].try_into().unwrap());
 +        let state = u16::from_ne_bytes(payload[8..10].try_into().unwrap());
-+        if payload[0] != libc::AF_INET as u8
-+            || owner <= 0
++        if payload[0] != libc::AF_INET as u8 {
++            return Ok(());
++        }
++        if self.collect_pressure {
++            if owner <= 0 {
++                return Err(invalid_dump());
++            }
++            self.netns_total += 1;
++            self.incomplete_total += usize::from(state & libc::NUD_INCOMPLETE != 0);
++            // Validate every counted IPv4 entry, including background entries,
++            // without retaining addresses owned by unrelated interfaces.
++            let address = destination(&payload[NEIGHBOR_LEN..])?.ok_or_else(invalid_dump)?;
++            if owner as u32 == interface_index {
++                self.record_state(address, state)?;
++            }
++            return Ok(());
++        }
++        if owner <= 0
 +            || owner as u32 != interface_index
 +            || !matches!(
 +                state,
@@ -2235,28 +2830,54 @@ index e69de29..6477833 100644
 +        }
 +        Ok(())
 +    }
++
++    fn record_state(&mut self, address: Ipv4Addr, state: u16) -> io::Result<()> {
++        if let Some(previous) = self.states.get(&address) {
++            if *previous != state {
++                return Err(invalid_dump());
++            }
++            return Ok(());
++        }
++        if self.states.len() == MAX_ADDRESSES {
++            return Err(invalid_dump());
++        }
++        self.states.insert(address, state);
++        let target = match state {
++            libc::NUD_REACHABLE | libc::NUD_STALE | libc::NUD_DELAY => &mut self.addresses,
++            libc::NUD_INCOMPLETE => &mut self.incomplete,
++            libc::NUD_FAILED => &mut self.failed,
++            _ => return Ok(()),
++        };
++        target.push(address);
++        Ok(())
++    }
 +}
 +
 +fn destination(mut data: &[u8]) -> io::Result<Option<Ipv4Addr>> {
 +    let mut address = None;
 +    while !data.is_empty() {
-+        if data.len() < 4 {
-+            return Err(invalid_dump());
-+        }
-+        let length = u16::from_ne_bytes(data[..2].try_into().unwrap()) as usize;
-+        let kind = u16::from_ne_bytes(data[2..4].try_into().unwrap());
-+        if length < 4 || length > data.len() {
-+            return Err(invalid_dump());
-+        }
++        let (kind, value, remaining) = attribute(data)?;
 +        if kind == libc::NDA_DST {
-+            if length != 8 || address.is_some() {
++            if value.len() != 4 || address.is_some() {
 +                return Err(invalid_dump());
 +            }
-+            address = Some(Ipv4Addr::new(data[4], data[5], data[6], data[7]));
++            address = Some(Ipv4Addr::new(value[0], value[1], value[2], value[3]));
 +        }
-+        data = advance(data, length)?;
++        data = remaining;
 +    }
 +    Ok(address)
++}
++
++fn attribute(data: &[u8]) -> io::Result<(u16, &[u8], &[u8])> {
++    if data.len() < 4 {
++        return Err(invalid_dump());
++    }
++    let length = u16::from_ne_bytes(data[..2].try_into().unwrap()) as usize;
++    if length < 4 || length > data.len() {
++        return Err(invalid_dump());
++    }
++    let kind = u16::from_ne_bytes(data[2..4].try_into().unwrap());
++    Ok((kind, &data[4..length], advance(data, length)?))
 +}
 +
 +fn status(payload: &[u8], acknowledgement: bool) -> io::Result<()> {
@@ -2591,9 +3212,1311 @@ index e69de29..6477833 100644
 +        assert_eq!(u32::from_ne_bytes(data[20..24].try_into().unwrap()), OWNER);
 +        assert!(data[24..].iter().all(|byte| *byte == 0));
 +    }
++
++    #[test]
++    fn scout_counts_namespace_pressure_but_retains_only_exact_interface_states() {
++        let mut dump = Dump::scout();
++        let mut data = Vec::new();
++        for (family, owner, state, octet) in [
++            (2, OWNER, 2, 1),
++            (2, OWNER, 4, 2),
++            (2, OWNER, 8, 3),
++            (2, OWNER, 1, 4),
++            (2, OWNER, 32, 5),
++            (2, OWNER, 16, 6),
++            (2, OWNER + 1, 1, 7),
++            (2, OWNER + 1, 32, 8),
++            (10, OWNER, 1, 9),
++        ] {
++            data.extend(neighbor(
++                family,
++                owner,
++                state,
++                Ipv4Addr::new(10, 0, 0, octet),
++            ));
++        }
++        dump.consume(&data, OWNER).unwrap();
++        assert_eq!(dump.netns_total, 8);
++        assert_eq!(dump.incomplete_total, 2);
++        assert_eq!(
++            dump.addresses,
++            vec![
++                Ipv4Addr::new(10, 0, 0, 1),
++                Ipv4Addr::new(10, 0, 0, 2),
++                Ipv4Addr::new(10, 0, 0, 3)
++            ]
++        );
++        assert_eq!(dump.incomplete, vec![Ipv4Addr::new(10, 0, 0, 4)]);
++        assert_eq!(dump.failed, vec![Ipv4Addr::new(10, 0, 0, 5)]);
++    }
++
++    #[test]
++    fn unrelated_interface_pressure_does_not_consume_own_address_budget() {
++        let mut dump = Dump::scout();
++        for value in 0..MAX_ADDRESSES + 1 {
++            dump.consume(
++                &neighbor(2, OWNER + 1, 1, Ipv4Addr::from(0x0a000001 + value as u32)),
++                OWNER,
++            )
++            .unwrap();
++        }
++        assert_eq!(dump.netns_total, MAX_ADDRESSES + 1);
++        assert_eq!(dump.incomplete_total, MAX_ADDRESSES + 1);
++        assert!(dump.addresses.is_empty() && dump.incomplete.is_empty() && dump.failed.is_empty());
++        dump.consume(&neighbor(2, OWNER, 2, Ipv4Addr::new(10, 1, 0, 1)), OWNER)
++            .unwrap();
++        assert_eq!(dump.addresses.len(), 1);
++    }
++
++    #[test]
++    fn own_incomplete_and_failed_addresses_share_the_unique_address_cap() {
++        let mut dump = Dump::scout();
++        for value in 0..MAX_ADDRESSES {
++            let state = if value % 2 == 0 { 1 } else { 32 };
++            dump.consume(
++                &neighbor(2, OWNER, state, Ipv4Addr::from(0x0a000001 + value as u32)),
++                OWNER,
++            )
++            .unwrap();
++        }
++        assert_eq!(dump.incomplete.len() + dump.failed.len(), MAX_ADDRESSES);
++        assert!(
++            dump.consume(&neighbor(2, OWNER, 2, Ipv4Addr::new(10, 1, 0, 1)), OWNER)
++                .is_err()
++        );
++    }
++
++    #[test]
++    fn a_scout_expired_budget_fails_before_either_dump() {
++        assert_eq!(
++            scout_snapshot_until(OWNER, Instant::now() - Duration::from_millis(1))
++                .err()
++                .unwrap()
++                .kind(),
++            io::ErrorKind::TimedOut
++        );
++    }
++
++    #[test]
++    fn conflicting_destination_states_cannot_authorize_a_real_ice_probe() {
++        let address = Ipv4Addr::new(10, 0, 0, 1);
++        for (first, second) in [(2, 1), (2, 32), (32, 2), (2, 16), (16, 2), (2, 0), (2, 128)] {
++            let mut dump = Dump::scout();
++            dump.consume(&neighbor(2, OWNER, first, address), OWNER)
++                .unwrap();
++            assert_eq!(
++                dump.consume(&neighbor(2, OWNER, second, address), OWNER)
++                    .err()
++                    .unwrap()
++                    .kind(),
++                io::ErrorKind::InvalidData
++            );
++        }
++        let mut dump = Dump::scout();
++        dump.consume(&neighbor(2, OWNER, 2, address), OWNER)
++            .unwrap();
++        dump.consume(&neighbor(2, OWNER, 2, address), OWNER)
++            .unwrap();
++        assert_eq!(dump.addresses, vec![address]);
++    }
++
++    #[test]
++    fn both_read_only_dumps_share_message_budget_without_a_reset_at_done() {
++        let mut dump = Dump::scout();
++        for _ in 0..MAX_MESSAGES - 1 {
++            dump.consume(&message(1, 0, SEQUENCE, &[]), OWNER).unwrap();
++        }
++        assert!(dump.consume(&message(3, 0, SEQUENCE, &[]), OWNER).unwrap());
++        assert!(
++            dump.consume(
++                &message(libc::RTM_NEWNEIGHTBL, 2, SEQUENCE, &[2, 0, 0, 0]),
++                OWNER
++            )
++            .is_err()
++        );
++        let data = table_request();
++        assert_eq!(
++            u16::from_ne_bytes(data[4..6].try_into().unwrap()),
++            libc::RTM_GETNEIGHTBL
++        );
++        assert_eq!(data.len(), HEADER_LEN + 4);
++        assert_eq!(data[HEADER_LEN..], [libc::AF_INET as u8, 0, 0, 0]);
++    }
++}
+diff --git a/webrtc/src/peer_connection/host_neighbor_table.rs b/webrtc/src/peer_connection/host_neighbor_table.rs
+index e69de29..b1598dd 100644
+--- a/webrtc/src/peer_connection/host_neighbor_table.rs
++++ b/webrtc/src/peer_connection/host_neighbor_table.rs
+@@ -0,0 +1,247 @@
++//! Global ARP-table pressure, read through RTM_GETNEIGHTBL only.
++
++use super::{attribute, invalid_dump};
++use std::io;
++
++pub(super) struct Pressure {
++    pub entries: usize,
++    pub gc_thresh2: usize,
++    pub gc_thresh3: usize,
++}
++
++pub(super) struct Table {
++    pressure: Option<Pressure>,
++}
++
++impl Table {
++    pub fn new() -> Self {
++        Self { pressure: None }
++    }
++
++    pub fn observe(&mut self, payload: &[u8]) -> io::Result<()> {
++        if payload.len() < 4 {
++            return Err(invalid_dump());
++        }
++        if payload[1..4] != [0, 0, 0] {
++            return Err(invalid_dump());
++        }
++        if payload[0] != libc::AF_INET as u8 {
++            return Ok(());
++        }
++        let fields = Fields::parse(&payload[4..])?;
++        if fields.name != Some(b"arp_cache\0") {
++            return Ok(());
++        }
++        if fields.config.is_none() && fields.second.is_none() && fields.third.is_none() {
++            // Device-specific parameter messages have no table-wide config.
++            return Ok(());
++        }
++        let pressure = fields.pressure()?;
++        if self.pressure.is_some() {
++            return Err(invalid_dump());
++        }
++        self.pressure = Some(pressure);
++        Ok(())
++    }
++
++    pub fn finish(self) -> io::Result<Pressure> {
++        self.pressure.ok_or_else(invalid_dump)
++    }
++}
++
++#[derive(Default)]
++struct Fields<'a> {
++    name: Option<&'a [u8]>,
++    config: Option<&'a [u8]>,
++    second: Option<&'a [u8]>,
++    third: Option<&'a [u8]>,
++}
++
++impl<'a> Fields<'a> {
++    fn parse(mut data: &'a [u8]) -> io::Result<Self> {
++        let mut fields = Self::default();
++        while !data.is_empty() {
++            let (kind, value, remaining) = attribute(data)?;
++            let target = match kind {
++                1 => Some(&mut fields.name),
++                3 => Some(&mut fields.second),
++                4 => Some(&mut fields.third),
++                5 => Some(&mut fields.config),
++                _ => None,
++            };
++            if let Some(target) = target
++                && target.replace(value).is_some()
++            {
++                return Err(invalid_dump());
++            }
++            data = remaining;
++        }
++        Ok(fields)
++    }
++
++    fn pressure(self) -> io::Result<Pressure> {
++        let config = self.config.ok_or_else(invalid_dump)?;
++        if config.len() < 32 || u16::from_ne_bytes(config[..2].try_into().unwrap()) != 4 {
++            return Err(invalid_dump());
++        }
++        let entries = u32::from_ne_bytes(config[4..8].try_into().unwrap()) as usize;
++        let gc_thresh2 = threshold(self.second)?;
++        let gc_thresh3 = threshold(self.third)?;
++        if gc_thresh2 > gc_thresh3 || entries > i32::MAX as usize {
++            return Err(invalid_dump());
++        }
++        Ok(Pressure {
++            entries,
++            gc_thresh2,
++            gc_thresh3,
++        })
++    }
++}
++
++fn threshold(value: Option<&[u8]>) -> io::Result<usize> {
++    let bytes: [u8; 4] = value
++        .ok_or_else(invalid_dump)?
++        .try_into()
++        .map_err(|_| invalid_dump())?;
++    let value = u32::from_ne_bytes(bytes) as usize;
++    if value == 0 || value > i32::MAX as usize {
++        return Err(invalid_dump());
++    }
++    Ok(value)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn attribute(kind: u16, value: &[u8]) -> Vec<u8> {
++        let length = 4 + value.len();
++        let mut result = Vec::new();
++        result.extend_from_slice(&(length as u16).to_ne_bytes());
++        result.extend_from_slice(&kind.to_ne_bytes());
++        result.extend_from_slice(value);
++        result.resize((length + 3) & !3, 0);
++        result
++    }
++
++    fn payload(family: u8, name: &[u8], entries: u32, thresh2: u32, thresh3: u32) -> Vec<u8> {
++        let mut result = vec![family, 0, 0, 0];
++        result.extend(attribute(1, name));
++        result.extend(attribute(3, &thresh2.to_ne_bytes()));
++        result.extend(attribute(4, &thresh3.to_ne_bytes()));
++        let mut config = vec![0; 32];
++        config[..2].copy_from_slice(&4u16.to_ne_bytes());
++        config[4..8].copy_from_slice(&entries.to_ne_bytes());
++        result.extend(attribute(5, &config));
++        result
++    }
++
++    #[test]
++    fn actual_global_entries_and_thresholds_come_from_ipv4_arp_table_config() {
++        let mut table = Table::new();
++        table
++            .observe(&payload(2, b"arp_cache\0", 900, 768, 1024))
++            .unwrap();
++        let pressure = table.finish().unwrap();
++        assert_eq!(
++            (pressure.entries, pressure.gc_thresh2, pressure.gc_thresh3),
++            (900, 768, 1024)
++        );
++    }
++
++    #[test]
++    fn per_interface_parameters_and_other_families_do_not_substitute_global_config() {
++        let mut table = Table::new();
++        table
++            .observe(&payload(10, b"ndisc_cache\0", 1, 768, 1024))
++            .unwrap();
++        table
++            .observe(&payload(2, b"other_cache\0", 1, 768, 1024))
++            .unwrap();
++        let mut parameters = vec![2, 0, 0, 0];
++        parameters.extend(attribute(1, b"arp_cache\0"));
++        parameters.extend(attribute(6, &attribute(1, &7u32.to_ne_bytes())));
++        table.observe(&parameters).unwrap();
++        assert_eq!(
++            table.finish().err().unwrap().kind(),
++            io::ErrorKind::InvalidData
++        );
++    }
++
++    #[test]
++    fn duplicate_or_missing_global_config_and_thresholds_fail_closed() {
++        let good = payload(2, b"arp_cache\0", 900, 768, 1024);
++        let mut table = Table::new();
++        table.observe(&good).unwrap();
++        assert!(table.observe(&good).is_err());
++        for missing_kind in [1u16, 3, 4, 5] {
++            let mut filtered = vec![2, 0, 0, 0];
++            let mut attributes = &good[4..];
++            while !attributes.is_empty() {
++                let length = u16::from_ne_bytes(attributes[..2].try_into().unwrap()) as usize;
++                let aligned = (length + 3) & !3;
++                let kind = u16::from_ne_bytes(attributes[2..4].try_into().unwrap());
++                if kind != missing_kind {
++                    filtered.extend_from_slice(&attributes[..aligned]);
++                }
++                attributes = &attributes[aligned..];
++            }
++            let mut table = Table::new();
++            assert!(
++                table
++                    .observe(&filtered)
++                    .and_then(|_| table.finish())
++                    .is_err()
++            );
++        }
++    }
++
++    #[test]
++    fn malformed_attributes_bad_sizes_and_unverified_thresholds_are_errors() {
++        for data in [
++            vec![2, 0, 0],
++            vec![2, 0, 0, 0, 3, 0, 1, 0],
++            vec![2, 0, 0, 0, 8, 0, 4, 0, 1],
++        ] {
++            assert_eq!(
++                Table::new().observe(&data).err().unwrap().kind(),
++                io::ErrorKind::InvalidData
++            );
++        }
++        for (second, third) in [(0, 1024), (768, 0), (1025, 1024), (768, u32::MAX)] {
++            assert_eq!(
++                Table::new()
++                    .observe(&payload(2, b"arp_cache\0", 900, second, third))
++                    .err()
++                    .unwrap()
++                    .kind(),
++                io::ErrorKind::InvalidData
++            );
++        }
++        let mut duplicate = payload(2, b"arp_cache\0", 900, 768, 1024);
++        duplicate.extend(attribute(4, &1024u32.to_ne_bytes()));
++        assert_eq!(
++            Table::new().observe(&duplicate).err().unwrap().kind(),
++            io::ErrorKind::InvalidData
++        );
++        let mut short = vec![2, 0, 0, 0];
++        short.extend(attribute(1, b"arp_cache\0"));
++        short.extend(attribute(3, &768u32.to_ne_bytes()));
++        short.extend(attribute(4, &1024u32.to_ne_bytes()));
++        short.extend(attribute(5, &[0; 8]));
++        assert_eq!(
++            Table::new().observe(&short).err().unwrap().kind(),
++            io::ErrorKind::InvalidData
++        );
++    }
++
++    #[test]
++    fn nonzero_table_header_padding_is_not_trusted() {
++        let mut data = payload(2, b"arp_cache\0", 900, 768, 1024);
++        data[1] = 1;
++        assert_eq!(
++            Table::new().observe(&data).err().unwrap().kind(),
++            io::ErrorKind::InvalidData
++        );
++    }
++}
+diff --git a/webrtc/src/peer_connection/host_scout.rs b/webrtc/src/peer_connection/host_scout.rs
+index e69de29..8217250 100644
+--- a/webrtc/src/peer_connection/host_scout.rs
++++ b/webrtc/src/peer_connection/host_scout.rs
+@@ -0,0 +1,685 @@
++//! Anonymous ARP discovery, kept separate from the advertised ICE socket.
++use super::host_neighbors::{ScoutSnapshot, scout_snapshot_until};
++use super::host_sweep::{HostSweepControl, SweepScoutCounters, SweepSubnet};
++use std::collections::HashSet;
++use std::io;
++use std::net::{IpAddr, Ipv4Addr, UdpSocket};
++use std::sync::{Arc, Mutex, OnceLock};
++use std::time::{Duration, Instant};
++
++const PACE: Duration = Duration::from_millis(5);
++const FRESH: Duration = Duration::from_millis(100);
++const MAX_PENDING: usize = 256;
++const MAX_SOCKETS: usize = 5;
++
++#[derive(Default)]
++struct Admission {
++    next_packet: Option<Instant>,
++    reservations: Vec<Instant>,
++    observed_at: Option<Instant>,
++    incomplete: usize,
++    total: usize,
++    threshold: usize,
++    soft_threshold: usize,
++    sockets: usize,
++}
++impl Admission {
++    fn observe(
++        &mut self,
++        at: Instant,
++        incomplete: usize,
++        total: usize,
++        soft_threshold: usize,
++        threshold: usize,
++    ) {
++        if self.observed_at.is_some_and(|previous| at < previous) {
++            return;
++        }
++        self.reservations.retain(|sent| *sent >= at);
++        self.observed_at = Some(at);
++        self.incomplete = incomplete;
++        self.total = total;
++        self.threshold = threshold;
++        self.soft_threshold = soft_threshold;
++    }
++    fn pending(&self) -> usize {
++        self.incomplete + self.reservations.len()
++    }
++    fn admit(&self, now: Instant) -> bool {
++        self.observed_at
++            .is_some_and(|at| now >= at && now.duration_since(at) < FRESH)
++            && self.soft_threshold > 1
++            && self.threshold > self.soft_threshold
++            && self.pending() < MAX_PENDING.min(self.soft_threshold / 2)
++            && self.total.saturating_add(self.reservations.len())
++                < self.threshold.saturating_mul(3) / 4
++    }
++    fn claim_tick(&mut self, now: Instant) -> bool {
++        if self.next_packet.is_some_and(|next| now < next) {
++            return false;
++        }
++        self.next_packet = Some(now + PACE);
++        true
++    }
++    fn socket_permit(&mut self) -> bool {
++        if self.sockets >= MAX_SOCKETS {
++            return false;
++        }
++        self.sockets += 1;
++        true
++    }
++}
++
++static PROCESS: OnceLock<Mutex<Admission>> = OnceLock::new();
++fn process() -> &'static Mutex<Admission> {
++    PROCESS.get_or_init(|| Mutex::new(Admission::default()))
++}
++
++pub(super) fn send_real(
++    expires: Instant,
++    send: impl FnOnce() -> io::Result<usize>,
++) -> io::Result<usize> {
++    let mut budget = process().lock().map_err(|_| io::ErrorKind::WouldBlock)?;
++    let now = Instant::now();
++    if now >= expires || !budget.claim_tick(now) {
++        return Err(io::ErrorKind::WouldBlock.into());
++    }
++    send()
++}
++
++struct OwnedScout {
++    socket: Option<UdpSocket>,
++}
++impl OwnedScout {
++    fn bind(source: Ipv4Addr, budget: &mut Admission) -> io::Result<Self> {
++        if !budget.socket_permit() {
++            return Err(io::ErrorKind::WouldBlock.into());
++        }
++        let result = UdpSocket::bind((source, 0)).and_then(|socket| {
++            socket.set_nonblocking(true)?;
++            Ok(socket)
++        });
++        match result {
++            Ok(socket) => Ok(Self {
++                socket: Some(socket),
++            }),
++            Err(error) => {
++                budget.sockets -= 1;
++                Err(error)
++            }
++        }
++    }
++}
++fn release_socket() {
++    if let Ok(mut budget) = process().lock() {
++        budget.sockets = budget.sockets.saturating_sub(1);
++    }
++}
++impl Drop for OwnedScout {
++    fn drop(&mut self) {
++        drop(self.socket.take());
++        release_socket();
++    }
++}
++
++#[derive(Default)]
++pub(super) struct ScoutResources {
++    sockets: Vec<OwnedScout>,
++}
++impl ScoutResources {
++    pub fn close(&mut self) {
++        self.sockets.clear();
++    }
++    fn send(
++        &mut self,
++        source: Ipv4Addr,
++        index: u32,
++        target: Ipv4Addr,
++        budget: &mut Admission,
++    ) -> io::Result<usize> {
++        for scout in &self.sockets {
++            match crate::runtime::host_egress::send_scout(
++                scout.socket.as_ref().expect("live scout socket"),
++                source,
++                index,
++                target,
++            ) {
++                Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
++                result => return result,
++            }
++        }
++        let scout = OwnedScout::bind(source, budget)?;
++        let result = crate::runtime::host_egress::send_scout(
++            scout.socket.as_ref().expect("live scout socket"),
++            source,
++            index,
++            target,
++        );
++        self.sockets.push(scout);
++        result
++    }
++}
++
++struct Group {
++    subnet: SweepSubnet,
++    cursor: usize,
++    snapshot: Option<ScoutSnapshot>,
++    refresh_at: Instant,
++    resources: Arc<Mutex<ScoutResources>>,
++    retry: bool,
++    ordered: bool,
++    failed: u32,
++    usable: HashSet<Ipv4Addr>,
++    last_admission: Option<Instant>,
++}
++impl Group {
++    fn same_subnet(&self, subnet: &SweepSubnet) -> bool {
++        self.subnet.same_authorization(subnet)
++    }
++    fn fresh(&self, now: Instant) -> Option<&ScoutSnapshot> {
++        self.snapshot.as_ref().filter(|snapshot| {
++            now >= snapshot.observed_at && now.duration_since(snapshot.observed_at) < FRESH
++        })
++    }
++    fn destination(&mut self, now: Instant) -> Option<Ipv4Addr> {
++        self.fresh(now)?;
++        while self.cursor < self.subnet.addresses.len()
++            && self.usable.contains(&self.subnet.addresses[self.cursor])
++        {
++            self.cursor += 1;
++        }
++        self.subnet.addresses.get(self.cursor).copied()
++    }
++    fn permanent_failure(&mut self) {
++        self.cursor += 1;
++        self.retry = false;
++        self.failed += 1;
++    }
++    fn discovery_complete(&self) -> bool {
++        self.cursor >= self.subnet.addresses.len() && self.failed == 0
++    }
++    fn clear(&mut self) {
++        if let Ok(mut resources) = self.resources.lock() {
++            resources.close();
++        }
++        self.snapshot = None;
++        self.usable.clear();
++    }
++}
++impl Drop for Group {
++    fn drop(&mut self) {
++        self.clear();
++    }
++}
++
++#[derive(Default)]
++pub(super) struct HostScouts {
++    generation: u64,
++    groups: Vec<Group>,
++    pub counters: SweepScoutCounters,
++    pause: Option<&'static str>,
++    retired: HashSet<(IpAddr, u32, u32, String)>,
++    retirement_limit: bool,
++}
++impl HostScouts {
++    pub fn sync(
++        &mut self,
++        generation: u64,
++        subnets: Vec<SweepSubnet>,
++        control: &HostSweepControl,
++        ufrag: &str,
++        now: Instant,
++    ) {
++        if generation != self.generation {
++            self.groups.clear();
++            self.retired.clear();
++            self.retirement_limit = false;
++            self.counters = SweepScoutCounters::default();
++            self.generation = generation;
++            self.pause = None;
++        }
++        let groups = std::mem::take(&mut self.groups);
++        for group in groups {
++            if subnets.iter().any(|subnet| group.same_subnet(subnet)) {
++                self.groups.push(group);
++            } else {
++                self.remember_retired(&group.subnet);
++            }
++        }
++        for subnet in subnets {
++            if self.groups.iter().any(|group| group.same_subnet(&subnet)) {
++                continue;
++            }
++            let resources = Arc::new(Mutex::new(ScoutResources::default()));
++            if !control.attach_scout_resources(generation, ufrag, Arc::clone(&resources)) {
++                continue;
++            }
++            let suppressed =
++                self.retirement_limit || self.retired.contains(&subnet.own_subnet_identity());
++            let cursor = if suppressed {
++                subnet.addresses.len()
++            } else {
++                0
++            };
++            self.groups.push(Group {
++                subnet,
++                cursor,
++                snapshot: None,
++                refresh_at: now,
++                resources,
++                retry: false,
++                ordered: false,
++                failed: u32::from(suppressed),
++                usable: HashSet::new(),
++                last_admission: None,
++            });
++        }
++    }
++    pub fn close(&mut self) {
++        self.groups.clear();
++        self.retired.clear();
++        self.retirement_limit = false;
++        self.pause = None;
++    }
++    fn remember_retired(&mut self, subnet: &SweepSubnet) {
++        if self.retired.len() < 32 {
++            self.retired.insert(subnet.own_subnet_identity());
++        } else {
++            self.retirement_limit = true;
++        }
++    }
++    fn retire_active(&mut self) {
++        for group in std::mem::take(&mut self.groups) {
++            self.remember_retired(&group.subnet);
++        }
++    }
++    pub fn refresh(&mut self, now: Instant) {
++        let deadline = Instant::now() + Duration::from_millis(5);
++        for group in &mut self.groups {
++            if now < group.refresh_at {
++                continue;
++            }
++            group.refresh_at = now + FRESH;
++            group.usable.clear();
++            group.snapshot = scout_snapshot_until(group.subnet.interface_index, deadline).ok();
++            if let Some(snapshot) = &group.snapshot {
++                group.usable = snapshot
++                    .usable
++                    .iter()
++                    .copied()
++                    .filter(|ip| group.subnet.authorizes(*ip))
++                    .collect();
++                if !group.ordered {
++                    group.subnet.cluster_order(&snapshot.usable);
++                    group.ordered = true;
++                }
++                if let Ok(mut budget) = process().lock() {
++                    budget.observe(
++                        snapshot.observed_at,
++                        snapshot.incomplete_total,
++                        snapshot.table_entries,
++                        snapshot.gc_thresh2,
++                        snapshot.gc_thresh3,
++                    );
++                }
++            }
++        }
++        self.update_pending();
++    }
++    pub fn usable(&self, subnet: &SweepSubnet, address: Ipv4Addr, now: Instant) -> bool {
++        self.groups
++            .iter()
++            .find(|group| group.same_subnet(subnet))
++            .is_some_and(|group| group.fresh(now).is_some() && group.usable.contains(&address))
++    }
++    pub fn usable_until(&self, subnet: &SweepSubnet) -> Option<Instant> {
++        self.groups
++            .iter()
++            .find(|group| group.same_subnet(subnet))
++            .and_then(|group| group.snapshot.as_ref())
++            .map(|snapshot| snapshot.observed_at + FRESH)
++    }
++    pub fn settled(&self, subnet: &SweepSubnet, now: Instant) -> bool {
++        self.groups
++            .iter()
++            .find(|group| group.same_subnet(subnet))
++            .is_some_and(|group| {
++                group.discovery_complete()
++                    && group.fresh(now).is_some_and(|snapshot| {
++                        group
++                            .last_admission
++                            .is_none_or(|sent| snapshot.observed_at > sent)
++                            && !snapshot
++                                .incomplete
++                                .iter()
++                                .any(|ip| group.subnet.authorizes(*ip))
++                    })
++            })
++    }
++    pub fn send_one(
++        &mut self,
++        now: Instant,
++        control: &HostSweepControl,
++        ufrag: &str,
++        port: u16,
++        expires: Instant,
++    ) -> Option<&'static str> {
++        let Some(index) = self
++            .groups
++            .iter_mut()
++            .position(|group| group.destination(now).is_some())
++        else {
++            return self.changed_pause(
++                if self.groups.iter().any(|group| group.fresh(now).is_none()) {
++                    Some("neighbor-snapshot-unavailable")
++                } else {
++                    None
++                },
++            );
++        };
++        let result = control.while_allowed(self.generation, ufrag, port, || {
++            self.send_group(index, now, expires)
++        });
++        self.update_pending();
++        self.finish_attempt(result)
++    }
++    fn send_group(
++        &mut self,
++        index: usize,
++        now: Instant,
++        expires: Instant,
++    ) -> Result<bool, &'static str> {
++        let group = &mut self.groups[index];
++        let destination = group
++            .destination(now)
++            .ok_or("neighbor-snapshot-unavailable")?;
++        let IpAddr::V4(source) = group.subnet.local.ip() else {
++            return Err("unsupported-platform");
++        };
++        let valid = rtc::shared::ifaces::ifaces()
++            .ok()
++            .is_some_and(|interfaces| {
++                let Ok(name) = std::ffi::CString::new(group.subnet.interface_name.as_str()) else {
++                    return false;
++                };
++                // SAFETY: the name is terminated and only a read-only interface lookup occurs.
++                let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
++                group.subnet.still_owned(&interfaces, index, destination)
++            });
++        if !valid {
++            group.clear();
++            return Err("no-on-link-interface");
++        }
++        let resource_handle = Arc::clone(&group.resources);
++        let mut resources = resource_handle.lock().map_err(|_| "send-error")?;
++        let mut budget = process()
++            .lock()
++            .map_err(|_| "neighbor-snapshot-unavailable")?;
++        let send_at = Instant::now();
++        if send_at >= expires {
++            return Err("window-expired");
++        }
++        if group.fresh(send_at).is_none() {
++            return Err("neighbor-snapshot-unavailable");
++        }
++        if !budget.claim_tick(send_at) {
++            return Ok(false);
++        }
++        self.counters.attempted = self.counters.attempted.saturating_add(1);
++        if !budget.admit(send_at) {
++            return Err(
++                if budget
++                    .observed_at
++                    .is_some_and(|at| send_at >= at && send_at.duration_since(at) < FRESH)
++                {
++                    "neighbor-pressure"
++                } else {
++                    "neighbor-snapshot-unavailable"
++                },
++            );
++        }
++        let result = resources.send(
++            source,
++            group.subnet.interface_index,
++            destination,
++            &mut budget,
++        );
++        match result {
++            Ok(1) => {
++                let accepted = Instant::now();
++                budget.reservations.push(accepted);
++                group.last_admission = Some(accepted);
++                self.counters.sent += 1;
++                self.counters.destinations += 1;
++                group.cursor += 1;
++                group.retry = false;
++                Ok(true)
++            }
++            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Err("scout-socket-limit"),
++            Err(error)
++                if matches!(
++                    error.raw_os_error(),
++                    Some(libc::ECONNREFUSED) | Some(libc::EHOSTUNREACH) | Some(libc::ENETUNREACH)
++                ) && !group.retry =>
++            {
++                group.retry = true;
++                Err("send-error")
++            }
++            _ => {
++                group.permanent_failure();
++                Err("send-error")
++            }
++        }
++    }
++    fn update_pending(&mut self) {
++        if let Ok(budget) = process().lock() {
++            self.counters.pending = budget.pending().min(u32::MAX as usize) as u32;
++        }
++        self.counters.pending_peak = self.counters.pending_peak.max(self.counters.pending);
++    }
++    fn finish_attempt(
++        &mut self,
++        result: Option<Result<bool, &'static str>>,
++    ) -> Option<&'static str> {
++        let reason = match result {
++            Some(Ok(false)) => return None,
++            Some(Ok(true)) => None,
++            Some(Err(reason)) => Some(reason),
++            None => {
++                self.retire_active();
++                None
++            }
++        };
++        self.changed_pause(reason)
++    }
++    fn changed_pause(&mut self, reason: Option<&'static str>) -> Option<&'static str> {
++        if self.pause == reason {
++            return None;
++        }
++        self.pause = reason;
++        reason
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    fn test_subnet(own: &[IpAddr]) -> SweepSubnet {
++        use rtc::shared::ifaces::{Interface, Kind};
++        let interface = Interface {
++            name: "wifi".into(),
++            kind: Kind::Ipv4,
++            addr: Some("10.72.0.1:0".parse().unwrap()),
++            mask: Some("255.255.255.248:0".parse().unwrap()),
++            hop: None,
++        };
++        SweepSubnet::from_interface("10.72.0.1:45000".parse().unwrap(), &interface, 2, own).unwrap()
++    }
++    fn test_group(subnet: SweepSubnet) -> Group {
++        Group {
++            subnet,
++            cursor: 0,
++            snapshot: None,
++            refresh_at: Instant::now(),
++            resources: Arc::new(Mutex::new(ScoutResources::default())),
++            retry: false,
++            ordered: false,
++            failed: 0,
++            usable: HashSet::new(),
++            last_admission: None,
++        }
++    }
++    #[test]
++    fn a_denied_shared_tick_never_rearms_identical_pressure_logging() {
++        let mut scouts = HostScouts::default();
++        assert_eq!(
++            scouts.finish_attempt(Some(Err("neighbor-pressure"))),
++            Some("neighbor-pressure")
++        );
++        assert_eq!(scouts.finish_attempt(Some(Ok(false))), None);
++        assert_eq!(scouts.finish_attempt(Some(Err("neighbor-pressure"))), None);
++        assert_eq!(scouts.finish_attempt(Some(Ok(true))), None);
++        assert_eq!(
++            scouts.finish_attempt(Some(Err("neighbor-pressure"))),
++            Some("neighbor-pressure")
++        );
++    }
++    #[test]
++    fn late_same_generation_port_never_restarts_a_retired_discovery_cursor() {
++        let now = Instant::now();
++        let control = HostSweepControl::default();
++        control.start(7, "ufrag", 40000);
++        let mut scouts = HostScouts::default();
++        let subnet = test_subnet(&[]);
++        scouts.sync(7, vec![subnet.clone()], &control, "ufrag", now);
++        scouts.groups[0].cursor = 2;
++        scouts.sync(7, Vec::new(), &control, "ufrag", now + PACE);
++        control.cancel(7, "ufrag", 40000);
++        control.start(7, "ufrag", 40001);
++        scouts.sync(7, vec![subnet.clone()], &control, "ufrag", now + 2 * PACE);
++        assert_eq!(scouts.groups[0].cursor, subnet.addresses.len());
++        assert!(
++            !scouts.groups[0].discovery_complete(),
++            "a canceled partial pass cannot claim coverage"
++        );
++        control.start(8, "new", 40002);
++        scouts.sync(8, vec![subnet], &control, "new", now + 3 * PACE);
++        assert_eq!(
++            scouts.groups[0].cursor, 0,
++            "fresh generation gets a fresh discovery budget"
++        );
++    }
++    #[test]
++    fn same_size_alias_replacement_is_a_different_authorization() {
++        let first = test_subnet(&["10.72.0.2".parse().unwrap()]);
++        let second = test_subnet(&["10.72.0.3".parse().unwrap()]);
++        assert_eq!(first.addresses.len(), second.addresses.len());
++        assert!(!test_group(first).same_subnet(&second));
++    }
++    #[test]
++    fn persistent_error_can_never_claim_successful_discovery_coverage() {
++        let mut group = test_group(test_subnet(&[]));
++        while group.cursor < group.subnet.addresses.len() {
++            group.permanent_failure();
++        }
++        assert!(!group.discovery_complete());
++        assert_eq!(group.failed as usize, group.subnet.addresses.len());
++    }
++    #[test]
++    fn synchronous_last_port_cancel_closes_scout_fds_before_returning() {
++        let control = HostSweepControl::default();
++        assert!(control.start(7, "ufrag", 40000));
++        assert!(control.start(7, "ufrag", 40001));
++        let resources = Arc::new(Mutex::new(ScoutResources::default()));
++        assert!(control.attach_scout_resources(7, "ufrag", Arc::clone(&resources)));
++        let socket = {
++            let mut budget = process().lock().unwrap();
++            OwnedScout::bind(Ipv4Addr::LOCALHOST, &mut budget).unwrap()
++        };
++        resources.lock().unwrap().sockets.push(socket);
++        control.cancel(7, "ufrag", 40000);
++        assert_eq!(
++            resources.lock().unwrap().sockets.len(),
++            1,
++            "unresolved sibling can share scout"
++        );
++        control.cancel(7, "ufrag", 40001);
++        assert!(
++            resources.lock().unwrap().sockets.is_empty(),
++            "last-port cancel closes fd synchronously"
++        );
++    }
++    #[test]
++    fn fresh_complete_pressure_and_global_headroom_are_required_for_scouts() {
++        let now = Instant::now();
++        let mut budget = Admission::default();
++        assert!(
++            !budget.admit(now),
++            "missing global table metadata fails closed"
++        );
++        budget.observe(now, 255, 767, 512, 1024);
++        assert!(budget.admit(now));
++        budget.reservations.push(now);
++        assert!(!budget.admit(now), "background plus reservations cap at256");
++        budget.observe(now + PACE, 0, 768, 512, 1024);
++        assert!(
++            !budget.admit(now + PACE),
++            "global occupancy cap includes FAILED and other namespaces"
++        );
++        budget.observe(now + 2 * PACE, 0, 200, 512, 1024);
++        assert!(budget.admit(now + 2 * PACE));
++        assert!(
++            !budget.admit(now + FRESH + 2 * PACE),
++            "100ms staleness fails closed"
++        );
++    }
++    #[test]
++    fn actual_tuned_soft_threshold_reduces_admission_without_guessing() {
++        let now = Instant::now();
++        let mut budget = Admission::default();
++        budget.observe(now, 63, 200, 128, 1024);
++        assert!(budget.admit(now));
++        budget.reservations.push(now);
++        assert!(!budget.admit(now));
++        budget.observe(now + PACE, 0, 100, 0, 1024);
++        assert!(!budget.admit(now + PACE));
++    }
++    #[test]
++    fn reservations_survive_cancel_and_dump_overlap_and_reject_old_observations() {
++        let now = Instant::now();
++        let mut budget = Admission::default();
++        budget
++            .reservations
++            .extend([now, now + PACE, now + 2 * PACE]);
++        budget.observe(now + PACE, 2, 10, 512, 1024);
++        assert_eq!(budget.reservations, [now + PACE, now + 2 * PACE]);
++        assert_eq!(budget.pending(), 4);
++        budget.observe(now, 0, 0, 512, 1024);
++        assert_eq!(
++            budget.pending(),
++            4,
++            "out-of-order peer dump cannot erase pressure"
++        );
++        // No fd/candidate cancellation operation releases numeric reservations.
++        budget.observe(now + 3 * PACE, 3, 20, 512, 1024);
++        assert!(budget.reservations.is_empty());
++        assert_eq!(budget.pending(), 3);
++    }
++    #[test]
++    fn real_probes_and_scouts_share_one_process_clock_and_five_socket_permits() {
++        let now = Instant::now();
++        let mut budget = Admission::default();
++        assert!(budget.claim_tick(now));
++        assert!(!budget.claim_tick(now));
++        assert!(!budget.claim_tick(now + PACE / 2));
++        assert!(budget.claim_tick(now + PACE));
++        for _ in 0..MAX_SOCKETS {
++            assert!(budget.socket_permit());
++        }
++        assert!(!budget.socket_permit(), "socket bound is process-wide");
++    }
++}
++
++#[cfg(test)]
++#[path = "host_scout_socket_tests.rs"]
++mod socket_tests;
+diff --git a/webrtc/src/peer_connection/host_scout_socket_tests.rs b/webrtc/src/peer_connection/host_scout_socket_tests.rs
+index e69de29..2b3aff0 100644
+--- a/webrtc/src/peer_connection/host_scout_socket_tests.rs
++++ b/webrtc/src/peer_connection/host_scout_socket_tests.rs
+@@ -0,0 +1,225 @@
++//! Ignored real-socket pressure gate, confined to socket-pressure.py namespaces.
++
++use super::{HostScouts, process};
++use crate::peer_connection::host_sweep::{HostSweepControl, SweepSubnet};
++use crate::runtime::{AsyncUdpSocket, EcnCodepoint, Transmit};
++use futures::FutureExt;
++use std::io;
++use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
++use std::os::fd::AsRawFd;
++use std::path::PathBuf;
++use std::time::{Duration, Instant};
++
++fn require_disposable_namespace() {
++    let outer = std::env::var("BUILD_RTC_PRESSURE_PARENT_NET_NS")
++        .expect("socket-pressure.py must supply the outer namespace");
++    assert!(
++        std::fs::read_link("/proc/self/ns/net").unwrap() != PathBuf::from(outer),
++        "this fixture requires a disposable network namespace"
++    );
++}
++
++fn socket_budget(socket: &UdpSocket) -> io::Result<(i32, i32)> {
++    let mut queued: libc::c_int = 0;
++    let mut capacity: libc::c_int = 0;
++    let mut length = std::mem::size_of_val(&capacity) as libc::socklen_t;
++    // SAFETY: both read-only calls write into initialized integers of their
++    // documented sizes. The descriptor remains live for the whole call.
++    let (read_queue, read_capacity) = unsafe {
++        (
++            libc::ioctl(socket.as_raw_fd(), libc::TIOCOUTQ, &mut queued),
++            libc::getsockopt(
++                socket.as_raw_fd(),
++                libc::SOL_SOCKET,
++                libc::SO_SNDBUF,
++                (&mut capacity as *mut libc::c_int).cast(),
++                &mut length,
++            ),
++        )
++    };
++    if read_queue < 0 || read_capacity < 0 || length as usize != std::mem::size_of_val(&capacity) {
++        return Err(io::Error::last_os_error());
++    }
++    if queued < 0 || capacity <= 0 {
++        return Err(io::ErrorKind::InvalidData.into());
++    }
++    Ok((queued, capacity))
++}
++
++#[derive(Default)]
++struct Pressure {
++    sockets_peak: usize,
++    scout_queue_peak: i32,
++    scout_buffer_min: Option<i32>,
++    ordinary_queue_peak: i32,
++    ordinary_us: u128,
++    maximum_us: u128,
++    writes: usize,
++}
++
++impl Pressure {
++    fn observe(&mut self, scouts: &HostScouts, ordinary: &UdpSocket) {
++        let sockets = scouts
++            .groups
++            .iter()
++            .map(|group| {
++                let resources = group.resources.lock().unwrap();
++                for scout in &resources.sockets {
++                    let socket = scout.socket.as_ref().expect("live scout socket");
++                    let (queued, capacity) = socket_budget(socket).unwrap();
++                    assert!(
++                        queued <= capacity / 4,
++                        "scout output must stay within one quarter"
++                    );
++                    self.scout_queue_peak = self.scout_queue_peak.max(queued);
++                    self.scout_buffer_min = Some(
++                        self.scout_buffer_min
++                            .map_or(capacity, |old| old.min(capacity)),
++                    );
++                }
++                resources.sockets.len()
++            })
++            .sum::<usize>();
++        self.sockets_peak = self.sockets_peak.max(sockets);
++        assert!(sockets <= 5, "scouts exceed the process socket cap");
++        let budget = process().lock().unwrap();
++        assert!(
++            budget.sockets <= 5,
++            "all peer scouts exceed the process socket cap"
++        );
++        assert!(
++            budget.pending() <= 256.min(budget.soft_threshold / 2),
++            "observed neighbors and unobserved admissions exceed the pending cap"
++        );
++        drop(budget);
++        self.ordinary_queue_peak = self
++            .ordinary_queue_peak
++            .max(socket_budget(ordinary).unwrap().0);
++    }
++
++    fn writes_now(&mut self, socket: &dyn AsyncUdpSocket, target: SocketAddr) {
++        let ordinary = [0u8; 112];
++        let started = Instant::now();
++        let first = socket.send_to(&ordinary, target).now_or_never();
++        self.ordinary_us = self.ordinary_us.max(started.elapsed().as_micros());
++        let ready = matches!(first, Some(Ok(112)));
++        println!("ordinary_first_poll_ready={ready}; ordinary_bytes=112");
++        assert!(
++            ready,
++            "scout pressure must not park an ordinary advertised-socket write"
++        );
++        let maximum = vec![0u8; crate::peer_connection::transports::MAX_GSO_BATCH_BYTES.min(65507)];
++        let transmit = Transmit {
++            destination: target,
++            ecn: Some(EcnCodepoint::Ect0),
++            contents: &maximum,
++            segment_size: Some(1024),
++            src_ip: None,
++        };
++        let started = Instant::now();
++        let first = futures::future::poll_fn(|cx| socket.poll_send(cx, &transmit)).now_or_never();
++        self.maximum_us = self.maximum_us.max(started.elapsed().as_micros());
++        let ready = matches!(first, Some(Ok(length)) if length == maximum.len());
++        println!(
++            "maximum_first_poll_ready={ready}; maximum_gso_bytes={}",
++            maximum.len()
++        );
++        assert!(
++            ready,
++            "scout pressure must not park the maximum valid production GSO write"
++        );
++        self.writes += 1;
++    }
++}
++
++fn saturate_ordinary_fixture(socket: &UdpSocket, subnet: &SweepSubnet, peer: Ipv4Addr) {
++    let payload = [0u8; 1024];
++    let mut blocked = false;
++    for address in subnet
++        .addresses
++        .iter()
++        .copied()
++        .filter(|address| *address != peer)
++    {
++        match socket.send_to(&payload, (address, 9)) {
++            Ok(length) => assert!(length == payload.len(), "fixture datagram was truncated"),
++            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
++                blocked = true;
++                break;
++            }
++            Err(error) => panic!("private pressure fixture failed: {error}"),
++        }
++    }
++    assert!(
++        blocked,
++        "the negative control must saturate the ordinary output queue"
++    );
++}
++
++#[test]
++#[ignore = "requires socket-pressure.py --scout disposable network namespace"]
++fn scout_pressure_keeps_advertised_ice_socket_immediately_writable() {
++    require_disposable_namespace();
++    let runtime = crate::runtime::default_runtime().unwrap();
++    let driver_runtime = runtime.clone();
++    runtime.block_on(Box::pin(async move {
++        let source = Ipv4Addr::new(10, 72, 0, 1);
++        let peer = Ipv4Addr::new(10, 72, 0, 2);
++        let target = SocketAddr::from((peer, 40000));
++        let interfaces = rtc::shared::ifaces::ifaces().unwrap();
++        assert!(interfaces.iter().any(|interface| interface.addr.map(|address| address.ip()) == Some(IpAddr::V4(source))
++            && interface.mask.map(|mask| mask.ip()) == Some(IpAddr::V4(Ipv4Addr::new(255, 255, 252, 0)))),
++            "the disposable fixture must own its private bounded subnet");
++        let bound = UdpSocket::bind((source, 0)).unwrap();
++        bound.set_nonblocking(true).unwrap();
++        let local = bound.local_addr().unwrap();
++        let socket = driver_runtime.wrap_udp_socket(bound.try_clone().unwrap()).unwrap();
++        assert!(socket.local_addr().unwrap() == local, "runtime wrapper must retain the advertised source port");
++        assert!(socket.max_gso_segments() >= 64, "GSO unsupported in the private fixture");
++        let subnet = SweepSubnet::for_socket(local, &interfaces, |name| {
++            let name = std::ffi::CString::new(name).unwrap();
++            // SAFETY: read-only lookup of a terminated, authorized interface name.
++            unsafe { libc::if_nametoindex(name.as_ptr()) }
++        }).unwrap();
++        socket.send_to(b"warm neighbor", target).await.unwrap();
++        driver_runtime.sleep(Duration::from_millis(100)).await;
++        let control = HostSweepControl::default();
++        assert!(control.start(7, "fixture", 40000));
++        let mut scouts = HostScouts::default();
++        let started = Instant::now();
++        scouts.sync(7, vec![subnet.clone()], &control, "fixture", started);
++        let expires = started + Duration::from_secs(25);
++        let mut pressure = Pressure::default();
++        pressure.writes_now(&*socket, target);
++        let mut iteration = 0;
++        while started.elapsed() < Duration::from_secs(2) {
++            let now = Instant::now();
++            scouts.refresh(now);
++            scouts.send_one(now, &control, "fixture", 40000, expires);
++            pressure.observe(&scouts, &bound);
++            if iteration % 20 == 0 { pressure.writes_now(&*socket, target); }
++            iteration += 1;
++            driver_runtime.sleep(Duration::from_millis(5)).await;
++        }
++        println!("scout_datagrams_sent={}; scout_attempted={}; destinations_scouted={}; neighbors_pending_peak={}; scout_sockets_peak={}; scout_queue_peak={}; scout_buffer_min={}; ordinary_queue_peak={}; ordinary_buffer={}",
++            scouts.counters.sent, scouts.counters.attempted, scouts.counters.destinations,
++            scouts.counters.pending_peak, pressure.sockets_peak, pressure.scout_queue_peak,
++            pressure.scout_buffer_min.unwrap_or(0), pressure.ordinary_queue_peak, socket_budget(&bound).unwrap().1);
++        assert!(scouts.counters.sent > 64 && scouts.counters.pending_peak > 64 && pressure.sockets_peak >= 2,
++            "the unanswered subnet must exercise multiple scout sockets and sustained neighbor pressure");
++        assert!(scouts.counters.pending_peak <= 256, "scouts exceeded the conservative pending cap");
++        if std::env::var_os("BUILD_RTC_SCOUT_PRESSURE_SATURATE_HOST").is_some() {
++            saturate_ordinary_fixture(&bound, &subnet, peer);
++            let (queued, capacity) = socket_budget(&bound).unwrap();
++            println!("negative_control=true; ordinary_queue={queued}; ordinary_buffer={capacity}");
++        }
++        pressure.writes_now(&*socket, target);
++        assert!(socket.local_addr().unwrap() == local && bound.local_addr().unwrap() == local,
++            "ordinary and GSO writes must retain the advertised source port");
++        control.clear();
++        scouts.close();
++        assert!(process().lock().unwrap().sockets == 0, "closing the plan must release every scout socket");
++        println!("ordinary_bytes=112; ordinary_max_us={}; maximum_gso_bytes=65507; maximum_gso_max_us={}; write_pairs={}; source_port_matches=true; scout_sockets_after_close=0",
++            pressure.ordinary_us, pressure.maximum_us, pressure.writes);
++    }));
 +}
 diff --git a/webrtc/src/runtime/mod.rs b/webrtc/src/runtime/mod.rs
-index 0fdaf3b..b663c14 100644
+index 0fdaf3b..405f186 100644
 --- a/webrtc/src/runtime/mod.rs
 +++ b/webrtc/src/runtime/mod.rs
 @@ -54,6 +54,8 @@ use std::io::IoSliceMut;
@@ -2601,16 +4524,24 @@ index 0fdaf3b..b663c14 100644
  use std::{fmt::Debug, future::Future, io, net::SocketAddr, pin::Pin, sync::Arc, time::Duration};
  
 +#[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
-+mod host_egress;
++pub(crate) mod host_egress;
  pub mod primitives;
  
  pub use primitives::{
-@@ -275,6 +277,21 @@ pub trait AsyncUdpSocket: Send + Sync + Debug + 'static {
+@@ -275,6 +277,29 @@ pub trait AsyncUdpSocket: Send + Sync + Debug + 'static {
      /// Returns the number of payload bytes accepted.
      fn poll_send(&self, cx: &mut Context<'_>, transmit: &Transmit<'_>) -> Poll<io::Result<usize>>;
  
 +    /// Try one datagram on exactly this IPv4 source and interface, with no gateway.
 +    /// Unsupported runtimes must skip probes rather than use ordinary routing.
++    /// Whether this actual adapter can issue the bounded explicit-interface host probe.
++    /// Custom and unsupported adapters must opt in before any scout socket is opened.
++    fn supports_host_candidate_sweep(&self) -> bool {
++        false
++    }
++
++    /// Make one nonblocking explicit-interface probe on the advertised host socket.
++    /// The default refuses runtimes without this supported operation.
 +    fn try_send_on_interface(
 +        &self,
 +        _buf: &[u8],
@@ -2628,13 +4559,17 @@ index 0fdaf3b..b663c14 100644
      /// ready.
      ///
 diff --git a/webrtc/src/runtime/tokio.rs b/webrtc/src/runtime/tokio.rs
-index 7966d4e..d697e1c 100644
+index 7966d4e..0fe088a 100644
 --- a/webrtc/src/runtime/tokio.rs
 +++ b/webrtc/src/runtime/tokio.rs
-@@ -256,6 +256,17 @@ impl AsyncUdpSocket for UdpSocket {
+@@ -256,6 +256,21 @@ impl AsyncUdpSocket for UdpSocket {
          self.io.local_addr()
      }
  
++    fn supports_host_candidate_sweep(&self) -> bool {
++        cfg!(target_os = "linux")
++    }
++
 +    #[cfg(target_os = "linux")]
 +    fn try_send_on_interface(
 +        &self,
@@ -2649,7 +4584,7 @@ index 7966d4e..d697e1c 100644
      fn max_gso_segments(&self) -> usize {
          self.batch.max_gso_segments()
      }
-@@ -424,3 +435,59 @@ impl AsyncTcpStream for TcpStream {
+@@ -424,3 +439,59 @@ impl AsyncTcpStream for TcpStream {
          Ok(self.peer_addr)
      }
  }
@@ -2710,10 +4645,10 @@ index 7966d4e..d697e1c 100644
 +    }
 +}
 diff --git a/webrtc/src/runtime/host_egress.rs b/webrtc/src/runtime/host_egress.rs
-index e69de29..deb292e 100644
+index e69de29..b2730ca 100644
 --- a/webrtc/src/runtime/host_egress.rs
 +++ b/webrtc/src/runtime/host_egress.rs
-@@ -0,0 +1,224 @@
+@@ -0,0 +1,255 @@
 +//! Linux-only explicit-interface, gateway-free sends on an existing ICE socket.
 +
 +use std::io;
@@ -2735,12 +4670,12 @@ index e69de29..deb292e 100644
 +    Ok(())
 +}
 +
-+fn require_queue_headroom(socket: &::tokio::net::UdpSocket) -> io::Result<()> {
++fn require_queue_headroom(socket: &impl AsRawFd) -> io::Result<()> {
 +    let (used, capacity) = socket_budget(socket)?;
 +    queue_headroom(used, capacity)
 +}
 +
-+fn socket_budget(socket: &::tokio::net::UdpSocket) -> io::Result<(i32, i32)> {
++fn socket_budget(socket: &impl AsRawFd) -> io::Result<(i32, i32)> {
 +    let mut used: libc::c_int = 0;
 +    let mut capacity: libc::c_int = 0;
 +    let mut length = std::mem::size_of_val(&capacity) as libc::socklen_t;
@@ -2884,6 +4819,37 @@ index e69de29..deb292e 100644
 +            "host source unavailable",
 +        ));
 +    }
++    send_raw(socket, payload, source, interface_index, target)
++}
++
++/// Scout sockets are separate, unconnected, ephemeral sockets. A stale ICMP
++/// error belongs to the scout only; never touch the ordinary ICE socket error.
++pub(crate) fn send_scout(
++    socket: &std::net::UdpSocket,
++    source: Ipv4Addr,
++    interface_index: u32,
++    target: Ipv4Addr,
++) -> io::Result<usize> {
++    if interface_index == 0 || socket.local_addr()?.ip() != source {
++        return Err(io::ErrorKind::InvalidInput.into());
++    }
++    let _ = socket.take_error()?;
++    send_raw(
++        socket,
++        &[0],
++        source,
++        interface_index,
++        SocketAddrV4::new(target, 9),
++    )
++}
++
++fn send_raw(
++    socket: &impl AsRawFd,
++    payload: &[u8],
++    source: Ipv4Addr,
++    interface_index: u32,
++    target: SocketAddrV4,
++) -> io::Result<usize> {
 +    require_queue_headroom(socket)?;
 +    let destination = libc::sockaddr_in {
 +        sin_family: libc::AF_INET as libc::sa_family_t,

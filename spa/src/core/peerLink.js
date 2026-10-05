@@ -221,7 +221,10 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     if (!belongsToBridgeGeneration(detail)) return;
     bridgeCandidateReason = detail.reason;
     mdnsUnresolvedInGeneration = detail.candidates.mdns_pending > 0 || detail.candidates.mdns_unresolved > 0;
-    if (detail.sweep) sweepEligibleInGeneration = detail.sweep.eligible && detail.sweep.status !== "skipped";
+    // The aggregate tracks eligible unresolved ports through completed or
+    // expired send windows. A later skipped port cannot erase another port's
+    // evidence; resolution and direct selection retire it in the driver.
+    if (detail.sweep) sweepEligibleInGeneration = detail.sweep.eligible_unresolved > 0;
     // A newly resolved LAN address warrants fresh browser nomination even
     // when the old browser checklist cannot show that pair as succeeded.
     if (detail.phase === "mdns-resolved" && detail.candidates.mdns_resolved > 0) mdnsResolvedInGeneration = true;

@@ -52,26 +52,27 @@ describe("candidate diagnostic privacy", () => {
       .toEqual({ reason: "mdns-pending", phase: "generation", candidates: {}, generation: 2 });
     expect(candidateDiagnostic({
       reason: "mdns-unresolved", event: "host-sweep", candidates: { mdns_unresolved: 1 },
-      sweep: { status: "stopped", eligible: true, generation: 2, addresses_sent: 253, addresses_attempted: 254, reason: "window-expired", prflx_followed: false,
+      sweep: { status: "stopped", eligible: true, eligible_unresolved: 2, generation: 2, addresses_sent: 253, addresses_attempted: 254, reason: "window-expired", prflx_followed: false,
         hostname: "private.local", endpoint: "192.168.1.2:1234", client_id: "private" },
     })).toEqual({
       reason: "mdns-unresolved", phase: "host-sweep", candidates: { mdns_unresolved: 1 },
-      sweep: { status: "stopped", eligible: true, generation: 2, addresses_sent: 253, addresses_attempted: 254, reason: "window-expired", prflx_followed: false },
+      sweep: { status: "stopped", eligible: true, eligible_unresolved: 2, generation: 2, addresses_sent: 253, addresses_attempted: 254, reason: "window-expired", prflx_followed: false },
     });
   });
 
   it.each([
     { status: "private.local" }, { eligible: "192.168.1.2" }, { generation: -1 }, { generation: "private.local" },
     { addresses_sent: Infinity }, { addresses_sent: -1 }, { prflx_followed: "private" },
+    { eligible_unresolved: undefined }, { eligible_unresolved: "private.local" }, { eligible_unresolved: -1 }, { eligible_unresolved: Infinity },
   ])("rejects malformed sweep evidence without letting it authorize a restart: %j", (invalid) => {
     expect(candidateDiagnostic({
       reason: "mdns-pending", event: "host-sweep",
-      sweep: { status: "started", eligible: true, generation: 1, addresses_sent: 0, reason: null, prflx_followed: false, ...invalid },
+      sweep: { status: "started", eligible: true, eligible_unresolved: 1, generation: 1, addresses_sent: 0, reason: null, prflx_followed: false, ...invalid },
     })).toEqual({ reason: "mdns-pending", phase: "host-sweep", candidates: {} });
   });
 
   it("does not copy arbitrary sweep reason text or sweep fields on other events", () => {
-    const sweep = { status: "started", eligible: true, generation: 1, addresses_sent: 0, reason: "192.168.1.2 private.local", prflx_followed: false };
+    const sweep = { status: "started", eligible: true, eligible_unresolved: 1, generation: 1, addresses_sent: 0, reason: "192.168.1.2 private.local", prflx_followed: false };
     expect(candidateDiagnostic({ reason: "mdns-pending", event: "host-sweep", sweep }).sweep)
       .toEqual({ ...sweep, reason: null });
     expect(candidateDiagnostic({ reason: "mdns-pending", event: "remote-candidate", sweep }))
@@ -79,9 +80,9 @@ describe("candidate diagnostic privacy", () => {
   });
 
   it.each(["no-usable-addresses", "completed"])("preserves the fixed host sweep termination reason %s", (reason) => {
-    const sweep = { status: "stopped", eligible: true, generation: 1, addresses_sent: 0, reason, prflx_followed: false, addresses_attempted: "private.local" };
+    const sweep = { status: "stopped", eligible: true, eligible_unresolved: 1, generation: 1, addresses_sent: 0, reason, prflx_followed: false, addresses_attempted: "private.local" };
     expect(candidateDiagnostic({ reason: "mdns-pending", event: "host-sweep", sweep }).sweep)
-      .toEqual({ status: "stopped", eligible: true, generation: 1, addresses_sent: 0, reason, prflx_followed: false });
+      .toEqual({ status: "stopped", eligible: true, eligible_unresolved: 1, generation: 1, addresses_sent: 0, reason, prflx_followed: false });
   });
 
   it("rejects unknown reasons and never copies unknown event text", () => {

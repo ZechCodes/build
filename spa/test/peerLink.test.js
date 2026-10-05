@@ -200,9 +200,10 @@ const landedDirect = () =>
   });
 
 const offers = (signalled) => signalled.filter(([method]) => method === "rtc.offer").length;
-const hostSweepDiagnostic = (generation, { candidateReason = "mdns-pending", eligible = true, status = "started", candidates = { mdns_pending: 1 }, ...sweep } = {}) => ({
+const hostSweepDiagnostic = (generation, { candidateReason = "mdns-pending", eligible = true, status = "started", candidates = { mdns_pending: 1 },
+  eligible_unresolved = eligible && status !== "skipped" ? 1 : 0, ...sweep } = {}) => ({
   type: "rtc.diagnostics", event: "host-sweep", reason: candidateReason, candidates,
-  sweep: { generation, status, eligible, addresses_sent: 0, reason: null, prflx_followed: false, ...sweep },
+  sweep: { generation, status, eligible, eligible_unresolved, addresses_sent: 0, reason: null, prflx_followed: false, ...sweep },
 });
 const bridgeGenerationDiagnostic = (generation) => ({ type: "rtc.diagnostics", event: "generation", generation, reason: "no-host-candidates", candidates: {} });
 
@@ -1111,6 +1112,38 @@ describe("a session that landed on a relayed pair", () => {
     candidateSinks[0](bridgeGenerationDiagnostic(1));
     candidateSinks[0](hostSweepDiagnostic(1, detail));
     await vi.advanceTimersByTimeAsync(60000);
+    expect(offers(signalled)).toBe(1);
+    resolved.close();
+  });
+
+  it.each([
+    { eligible: false, status: "skipped", reason: "subnet-too-large", candidates: { mdns_pending: 2 }, eligible_unresolved: 1 },
+    { eligible: false, status: "stopped", reason: "window-expired", eligible_unresolved: 1 },
+    { eligible: false, status: "stopped", reason: "packet-limit", eligible_unresolved: 1 },
+    { eligible: false, status: "stopped", reason: "resolved", candidates: { mdns_pending: 1, mdns_resolved: 1 }, eligible_unresolved: 1 },
+  ])("keeps usable unresolved sweep evidence after a later per-port event: %j", async (detail) => {
+    const { resolved, signalled, candidateSinks } = await landedOnRelay({ alsoDirect: "failed" });
+    candidateSinks[0](bridgeGenerationDiagnostic(1));
+    candidateSinks[0](hostSweepDiagnostic(1));
+    candidateSinks[0](hostSweepDiagnostic(1, detail));
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(offers(signalled)).toBe(2);
+    expect(connectionDiagnosticHistory().find((entry) => entry.event === "direct-pair"))
+      .toMatchObject({ state: "trying", reason: "conntrack-sweep" });
+    resolved.close();
+  });
+
+  it.each([
+    { reason: "resolved", candidates: { mdns_pending: 0, mdns_unresolved: 0 } },
+    { reason: "resolved", candidates: { mdns_pending: 1, mdns_resolved: 1 } },
+    { reason: "direct-selected", candidates: { mdns_pending: 1 } },
+  ])("clears previous sweep upgrade evidence when it is no longer useful: %j", async (detail) => {
+    const { resolved, signalled, candidateSinks } = await landedOnRelay({ alsoDirect: "failed" });
+    candidateSinks[0](bridgeGenerationDiagnostic(1));
+    candidateSinks[0](hostSweepDiagnostic(1));
+    candidateSinks[0](hostSweepDiagnostic(1, { ...detail, eligible: false, status: "stopped" }));
+    candidateSinks[0](hostSweepDiagnostic(1, { eligible: false, status: "skipped", reason: "subnet-too-large" }));
+    await vi.advanceTimersByTimeAsync(20000);
     expect(offers(signalled)).toBe(1);
     resolved.close();
   });

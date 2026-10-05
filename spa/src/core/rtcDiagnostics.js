@@ -25,9 +25,9 @@ const hostChecks = (hosts) => hosts.slice(0, HOST_LIMIT).filter(safeHostCheck).m
 
 function safeSweep(sweep) {
   if (!sweep || !SWEEP_STATUSES.has(sweep.status) || typeof sweep.eligible !== "boolean"
-    || !safeCount(sweep.generation) || !safeCount(sweep.addresses_sent) || typeof sweep.prflx_followed !== "boolean") return {};
+    || !safeCount(sweep.generation) || !safeCount(sweep.addresses_sent) || !safeCount(sweep.eligible_unresolved) || typeof sweep.prflx_followed !== "boolean") return {};
   return { sweep: {
-    status: sweep.status, eligible: sweep.eligible, generation: sweep.generation,
+    status: sweep.status, eligible: sweep.eligible, eligible_unresolved: sweep.eligible_unresolved, generation: sweep.generation,
     addresses_sent: sweep.addresses_sent, reason: SWEEP_REASONS.has(sweep.reason) ? sweep.reason : null,
     prflx_followed: sweep.prflx_followed,
     ...(safeCount(sweep.addresses_attempted) ? { addresses_attempted: sweep.addresses_attempted } : {}),

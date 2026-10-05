@@ -95,6 +95,7 @@
       "rtc.candidateDiagnostics",
       "rtc.clientLanCache",
       "rtc.close",
+      "rtc.conntrackSweep",
       "rtc.ice",
       "rtc.offer",
       "run.abandon",

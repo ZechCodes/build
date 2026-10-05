@@ -256,6 +256,21 @@ impl AsyncUdpSocket for UdpSocket {
         self.io.local_addr()
     }
 
+    fn supports_host_candidate_sweep(&self) -> bool {
+        cfg!(target_os = "linux")
+    }
+
+    #[cfg(target_os = "linux")]
+    fn try_send_on_interface(
+        &self,
+        payload: &[u8],
+        source: std::net::Ipv4Addr,
+        interface_index: u32,
+        target: std::net::SocketAddrV4,
+    ) -> io::Result<usize> {
+        super::host_egress::send(&self.io, payload, source, interface_index, target)
+    }
+
     fn max_gso_segments(&self) -> usize {
         self.batch.max_gso_segments()
     }
@@ -422,5 +437,61 @@ impl AsyncTcpStream for TcpStream {
 
     fn peer_addr(&self) -> io::Result<SocketAddr> {
         Ok(self.peer_addr)
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod host_probe_tests {
+    use super::*;
+    use std::net::{Ipv4Addr, SocketAddrV4};
+
+    #[test]
+    fn host_probe_uses_the_bound_ice_source_port_and_exact_interface() {
+        let runtime = ::tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let receiving = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            receiving
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            sender.set_nonblocking(true).unwrap();
+            let advertised = sender.local_addr().unwrap();
+            let socket = TokioRuntime.wrap_udp_socket(sender).unwrap();
+            let name = std::ffi::CString::new("lo").unwrap();
+            // SAFETY: the interface name is a valid NUL-terminated CString.
+            let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
+            let SocketAddr::V4(destination) = receiving.local_addr().unwrap() else {
+                unreachable!()
+            };
+            assert_eq!(
+                socket
+                    .try_send_on_interface(b"probe", Ipv4Addr::LOCALHOST, index, destination)
+                    .unwrap(),
+                5
+            );
+            let mut payload = [0u8; 28];
+            let (length, source) = receiving.recv_from(&mut payload).unwrap();
+            assert_eq!(source, advertised);
+            assert_eq!(&payload[..length], b"probe");
+            let wrong_source = Ipv4Addr::new(127, 0, 0, 2);
+            assert!(
+                socket
+                    .try_send_on_interface(b"probe", wrong_source, index, destination)
+                    .is_err()
+            );
+            assert!(
+                socket
+                    .try_send_on_interface(
+                        b"probe",
+                        Ipv4Addr::LOCALHOST,
+                        0,
+                        SocketAddrV4::new(Ipv4Addr::LOCALHOST, 5353)
+                    )
+                    .is_err()
+            );
+        });
     }
 }

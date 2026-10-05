@@ -1,4 +1,4 @@
-//! Real Chromium + TURN + stock inbound firewall regression for task #372.
+//! Real Chromium + TURN + stock inbound firewall regressions for #372 and #374.
 //!
 //! Run explicitly on Linux with `cargo test --test rtc_lan_upgrade -- --ignored`.
 //! All processes, addresses and firewall rules live in disposable user/network
@@ -9,6 +9,7 @@ use build_bridge::carrier::FrameIntake;
 use build_bridge::harness::HarnessContext;
 use build_bridge::rtc::{IcePolicy, WebrtcPeerFactory};
 use build_bridge::transport;
+use build_bridge::transport_ledger::{FanOutLedger, StderrLedger, SummaryLedger};
 use common::{connected_device, device_identity};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
@@ -66,16 +67,22 @@ async fn serve_fixture() {
     app.lock()
         .unwrap()
         .add_project(repo_path, "main".to_string());
-    let intake = FrameIntake::new(
+    let intake = FrameIntake::with_ledger(
         AppState::handler(app.clone()),
         transport::generate_transport_keypair(),
+        FanOutLedger::new(vec![
+            std::sync::Arc::new(StderrLedger),
+            SummaryLedger::new(),
+        ]),
     );
     app.lock()
         .unwrap()
-        .set_peer_factory(WebrtcPeerFactory::with_pending_direct_pair_checks(
+        .set_peer_factory(WebrtcPeerFactory::with_connection_checks(
             intake.clone(),
             IcePolicy::default(),
             std::env::var_os("BUILD_RTC_LAN_BASELINE").is_none(),
+            std::env::var("BUILD_RTC_LAN_MODE").unwrap() != "delayed"
+                && std::env::var_os("BUILD_RTC_LAN_SWEEP_BASELINE").is_none(),
         ));
     let device = connected_device(intake, &device_identity()).await;
     let listener = TcpListener::bind("10.72.0.1:9000").await.unwrap();
@@ -103,8 +110,14 @@ async fn serve_fixture() {
             }
         }
     }
-    device.bridge.abort();
+    device
+        .to_device
+        .send(json!({ "type": "session_closed", "session_id": "lan-upgrade-fixture" }))
+        .await
+        .unwrap();
     device.relay_socket.abort();
+    let _ = device.bridge.await;
+    std::fs::write(std::env::var("BUILD_RTC_LAN_FINISHED").unwrap(), "finished").unwrap();
 }
 
 /// libgit2 fixture setup with an explicit local identity, unsigned product

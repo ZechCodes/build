@@ -1353,7 +1353,7 @@ where
         let candidates: Vec<_> = self
             .ice_transport()
             .agent
-            .get_remote_candidates()
+            .get_remote_candidates_for_stats()
             .iter()
             .map(|candidate| {
                 let candidate = RTCIceCandidate::from(candidate);

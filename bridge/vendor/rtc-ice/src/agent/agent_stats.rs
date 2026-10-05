@@ -5,6 +5,7 @@ use crate::candidate::{CandidateType, candidate_pair::CandidatePairState};
 use crate::network_type::NetworkType;
 
 /// Contains ICE candidate pair statistics.
+#[derive(Clone)]
 pub struct CandidatePairStats {
     /// The timestamp associated with this struct.
     /// When this snapshot was taken.
@@ -214,6 +215,9 @@ impl Default for CandidateStats {
 impl Agent {
     /// Returns a list of candidate pair stats.
     pub fn get_candidate_pairs_stats(&self) -> Vec<CandidatePairStats> {
+        if let Some(stats) = &self.failed_stats {
+            return stats.pairs.clone();
+        }
         let mut res = Vec::with_capacity(self.candidate_pairs.len());
         for cp in &self.candidate_pairs {
             let stat = CandidatePairStats {
@@ -262,8 +266,9 @@ impl Agent {
 
     /// Returns a list of remote candidates stats.
     pub fn get_remote_candidates_stats(&self) -> Vec<CandidateStats> {
-        let mut res = Vec::with_capacity(self.remote_candidates.len());
-        for c in &self.remote_candidates {
+        let candidates = self.get_remote_candidates_for_stats();
+        let mut res = Vec::with_capacity(candidates.len());
+        for c in candidates {
             let stat = CandidateStats {
                 timestamp: Instant::now(),
                 id: c.id().to_string(),

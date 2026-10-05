@@ -2,6 +2,7 @@
 //!
 //! Follows the rtc EventLoop pattern with async select
 
+use super::host_sweep::{HostSweep, SweepCredentials, SweepSubnet, binding_indication};
 use super::transports::stun_gatherer::{
     RTCStunGatherEventIn, RTCStunGatherEventOut, RTCStunGatherer,
 };
@@ -27,7 +28,7 @@ use futures::FutureExt; // For .fuse() in futures::select!
 use futures::future::OptionFuture;
 use futures::stream::{FuturesUnordered, StreamExt};
 use log::{debug, error, trace, warn};
-use rtc::ice::candidate::Candidate;
+use rtc::ice::candidate::{Candidate, CandidateType};
 use rtc::ice::mdns::MulticastDnsMode;
 use rtc::interceptor::{Interceptor, NoopInterceptor};
 use rtc::mdns::{MDNS_PORT, MulticastSocket};
@@ -253,6 +254,20 @@ fn is_link_local(ip: &IpAddr) -> bool {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn sweep_interface_index(name: &str) -> u32 {
+    let Ok(name) = std::ffi::CString::new(name) else {
+        return 0;
+    };
+    // SAFETY: CString supplies the NUL-terminated interface name required by libc.
+    unsafe { libc::if_nametoindex(name.as_ptr()) }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn sweep_interface_index(_: &str) -> u32 {
+    0
+}
+
 /// Unified inner message type for the peer connection driver
 #[derive(Debug)]
 pub(crate) enum PeerConnectionDriverEvent {
@@ -267,6 +282,20 @@ pub(crate) enum PeerConnectionDriverEvent {
         ice_transport_policy: RTCIceTransportPolicy,
     },
     IceGathering,
+    StartHostSweep {
+        generation: u64,
+        credentials: SweepCredentials,
+        port: u16,
+    },
+    CancelHostSweep {
+        generation: u64,
+        remote_ufrag: String,
+        port: u16,
+    },
+    HostSweepSkipped {
+        generation: u64,
+        reason: &'static str,
+    },
     Close,
 }
 
@@ -283,6 +312,9 @@ where
     tcp_transport: RTCTcpTransport,
     mdns_socket: Option<Arc<dyn AsyncUdpSocket>>,
     udp_sockets: HashMap<SocketAddr, Arc<dyn AsyncUdpSocket>>,
+    pub(super) host_sweep: HostSweep,
+    #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+    host_scouts: super::host_scout::HostScouts,
     /// Reused scratch buffer for concatenating a run of same-destination datagrams
     /// into one UDP GSO send (see [`flush_writes`](Self::flush_writes)).
     gso_scratch: Vec<u8>,
@@ -446,6 +478,9 @@ where
             ),
             mdns_socket: None,
             udp_sockets: HashMap::new(),
+            host_sweep: HostSweep::default(),
+            #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+            host_scouts: super::host_scout::HostScouts::default(),
             gso_scratch: Vec::new(),
             tcp_transport: RTCTcpTransport::new(HashMap::new()),
             ice_gathering_active: false,
@@ -588,6 +623,10 @@ where
             // momentarily full channel), this check still guarantees the loop —
             // and thus a dedicated reactor thread — terminates instead of leaking.
             if self.inner.closing.load(Ordering::Acquire) {
+                self.host_sweep.clear("closed");
+                #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+                self.host_scouts.close();
+                self.report_host_sweep().await;
                 if let Err(err) = self.turn_relayer.close() {
                     error!("Failed to close turn_relayer: {}", err);
                 }
@@ -595,6 +634,7 @@ where
             }
 
             self.poll_pass().await?;
+            self.poll_host_sweep(Instant::now()).await;
 
             // Wake senders blocked in `DataChannel::writable()`: the poll_* passes above
             // applied any SCTP buffer releases (acked/abandoned bytes) to the per-channel
@@ -847,6 +887,282 @@ where
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /// One probe at most per wake; the scheduler shares one 200pps budget across all ports.
+    /// The core lock covers validation and the nonblocking syscall, so restart and
+    /// selection cannot change the socket's generation between the two.
+    async fn poll_host_sweep(&mut self, now: Instant) {
+        if !self.inner.host_candidate_sweep {
+            return;
+        }
+        if self.host_sweep.is_empty() {
+            self.report_host_sweep().await;
+            return;
+        }
+        let inner = Arc::clone(&self.inner);
+        let core = inner.core.lock().await;
+        let (ufrag, password) = core.remote_ice_credentials();
+        self.host_sweep.sync_credentials(ufrag, password);
+        self.host_sweep.cancel_inactive(&inner.host_sweep_control);
+        let relay = self.observe_sweep_pair(core.selected_ice_candidates());
+        let hosts = core
+            .local_ice_candidates()
+            .iter()
+            .filter(|candidate| {
+                candidate.candidate_type() == CandidateType::Host
+                    && candidate.network_type().is_udp()
+                    && candidate.component() == 1
+            })
+            .map(Candidate::addr)
+            .collect::<Vec<_>>();
+        let live_hosts = hosts
+            .iter()
+            .copied()
+            .filter(|local| {
+                self.udp_sockets
+                    .get(local)
+                    .is_some_and(|socket| socket.supports_host_candidate_sweep())
+            })
+            .collect::<Vec<_>>();
+        let nat = super::host_sweep_nat::evidence(
+            core.local_ice_candidates(),
+            core.remote_ice_candidates(),
+            &live_hosts,
+        );
+        if self.host_sweep.gate_nat(now, nat.reason()) {
+            self.prepare_host_sweep_ports(now, &hosts);
+            #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+            self.poll_host_scouts(now, relay, &live_hosts);
+        } else {
+            #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+            self.host_scouts.suspend();
+        }
+        self.host_sweep.defer_tick(now);
+        drop(core);
+        self.report_host_sweep().await;
+    }
+
+    #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+    fn poll_host_scouts(&mut self, now: Instant, relay: bool, hosts: &[SocketAddr]) {
+        let subnets = self.operational_sweep_subnets(now, hosts);
+        self.host_scouts.sync(
+            self.host_sweep.generation(),
+            subnets,
+            &self.inner.host_sweep_control,
+            self.host_sweep.remote_ufrag(),
+            now,
+        );
+        self.host_scouts.refresh(now);
+        let now = Instant::now();
+        let scouts = &self.host_scouts;
+        self.host_sweep.settle_discovery(
+            now,
+            relay,
+            |subnet, ip| scouts.usable(subnet, ip, now),
+            |subnet| scouts.settled(subnet, now),
+        );
+        if let Some(probe) = self
+            .host_sweep
+            .next_usable_probe(now, relay, |subnet, ip| scouts.usable(subnet, ip, now))
+        {
+            self.send_host_probe(probe);
+        } else if self.host_sweep.combined_attempts() < 32768
+            && let Some((port, expires)) = self.host_sweep.active_port()
+            && let Some(reason) = self.host_scouts.send_one(
+                now,
+                &self.inner.host_sweep_control,
+                self.host_sweep.remote_ufrag(),
+                port,
+                expires,
+            )
+        {
+            self.host_sweep.note_progress(reason);
+        }
+        self.host_sweep
+            .set_scout_counters(self.host_scouts.counters);
+        let active = self.operational_sweep_subnets(now, hosts);
+        self.host_scouts.sync(
+            self.host_sweep.generation(),
+            active,
+            &self.inner.host_sweep_control,
+            self.host_sweep.remote_ufrag(),
+            now,
+        );
+    }
+
+    #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+    fn operational_sweep_subnets(
+        &mut self,
+        now: Instant,
+        hosts: &[SocketAddr],
+    ) -> Vec<SweepSubnet> {
+        self.host_sweep
+            .active_subnets(now)
+            .into_iter()
+            .filter(|subnet| {
+                hosts.contains(&subnet.local)
+                    && self
+                        .udp_sockets
+                        .get(&subnet.local)
+                        .is_some_and(|socket| socket.supports_host_candidate_sweep())
+            })
+            .collect()
+    }
+
+    fn observe_sweep_pair(&mut self, selected: Option<(&Candidate, &Candidate)>) -> bool {
+        let relay = selected.is_some_and(|(local, remote)| {
+            local.candidate_type() == CandidateType::Relay
+                || remote.candidate_type() == CandidateType::Relay
+        });
+        if let Some((local, remote)) = selected {
+            if remote.candidate_type() == CandidateType::PeerReflexive {
+                self.host_sweep.observe_prflx(local.addr(), remote.addr());
+            }
+            if !relay {
+                self.host_sweep.stop_all("direct-selected");
+            }
+        }
+        relay
+    }
+
+    fn prepare_host_sweep_ports(&mut self, now: Instant, hosts: &[SocketAddr]) {
+        let ports = self.host_sweep.unprepared_ports(now);
+        if ports.is_empty() {
+            return;
+        }
+        if hosts.is_empty() && self.ice_gathering_active {
+            for port in ports {
+                self.host_sweep.defer_preparation(port, now);
+            }
+            return;
+        }
+        // Enumerate and prioritize once per poll, sharing the authorized address
+        // arrays across due ports. Neighbor queries share one absolute budget.
+        let (subnets, reasons) = self.sweep_subnets(hosts);
+        for port in ports {
+            if subnets.is_empty() {
+                self.host_sweep
+                    .skip(port, reasons.first().copied().unwrap_or("no-host-socket"));
+            } else {
+                self.host_sweep.prepare(port, subnets.clone());
+            }
+            for reason in &reasons {
+                self.host_sweep.note_skip(reason);
+            }
+        }
+    }
+
+    async fn report_host_sweep(&mut self) {
+        while let Some(event) = self.host_sweep.pop_event() {
+            self.inner.handler.on_host_candidate_sweep(event).await;
+        }
+    }
+
+    fn sweep_subnets(&self, hosts: &[SocketAddr]) -> (Vec<SweepSubnet>, Vec<&'static str>) {
+        if !cfg!(all(target_os = "linux", feature = "runtime-tokio")) {
+            return (Vec::new(), vec!["unsupported-platform"]);
+        }
+        let Ok(interfaces) = ifaces() else {
+            return (Vec::new(), vec!["no-on-link-interface"]);
+        };
+        let mut subnets = Vec::new();
+        let mut reasons = Vec::new();
+        #[cfg(target_os = "linux")]
+        let neighbor_deadline = Instant::now() + Duration::from_millis(5);
+        for local in hosts {
+            let Some(socket) = self.udp_sockets.get(local) else {
+                reasons.push("no-host-socket");
+                continue;
+            };
+            if !socket.supports_host_candidate_sweep() {
+                reasons.push("unsupported-platform");
+                continue;
+            }
+            match SweepSubnet::for_socket(*local, &interfaces, sweep_interface_index) {
+                Ok(mut subnet) => {
+                    #[cfg(target_os = "linux")]
+                    if let Ok(neighbors) = super::host_neighbors::snapshot_until(
+                        subnet.interface_index,
+                        neighbor_deadline,
+                    ) {
+                        subnet.prioritize(&neighbors);
+                    }
+                    subnets.push(subnet);
+                }
+                Err(reason) => reasons.push(reason),
+            }
+        }
+        reasons.sort_unstable();
+        reasons.dedup();
+        (subnets, reasons)
+    }
+
+    fn send_host_probe(&mut self, probe: super::host_sweep::SweepProbe) {
+        // Re-enumerate before each emission: a route is no longer safe after its
+        // interface/address/mask disappears or changes. No routing fallback is allowed.
+        let valid = ifaces().ok().is_some_and(|interfaces| {
+            probe.subnet.still_owned(
+                &interfaces,
+                sweep_interface_index(&probe.subnet.interface_name),
+                probe.destination,
+            )
+        });
+        if !valid {
+            self.host_sweep.skip(probe.port, "no-on-link-interface");
+            return;
+        }
+        let Some(socket) = self.udp_sockets.get(&probe.subnet.local) else {
+            self.host_sweep.skip(probe.port, "no-host-socket");
+            return;
+        };
+        let (Ok(payload), IpAddr::V4(source)) = (binding_indication(), probe.subnet.local.ip())
+        else {
+            self.host_sweep.skip(probe.port, "send-error");
+            return;
+        };
+        let destination = std::net::SocketAddrV4::new(probe.destination, probe.port);
+        #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+        let expires = self
+            .host_scouts
+            .usable_until(&probe.subnet)
+            .unwrap_or_else(Instant::now)
+            .min(probe.expires);
+        let result = self.inner.host_sweep_control.while_allowed(
+            self.host_sweep.generation(),
+            self.host_sweep.remote_ufrag(),
+            probe.port,
+            || {
+                #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+                return super::host_scout::send_real(expires, || {
+                    socket.try_send_on_interface(
+                        &payload,
+                        source,
+                        probe.subnet.interface_index,
+                        destination,
+                    )
+                });
+                #[cfg(not(all(target_os = "linux", feature = "runtime-tokio")))]
+                Err(std::io::ErrorKind::Unsupported.into())
+            },
+        );
+        match result {
+            Some(Ok(sent)) if sent == payload.len() => {
+                self.host_sweep.record_result(probe.port, true)
+            }
+            Some(Err(error)) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                self.host_sweep.record_result(probe.port, false)
+            }
+            Some(Err(error)) if error.kind() == std::io::ErrorKind::Unsupported => {
+                self.host_sweep.skip(probe.port, "unsupported-platform")
+            }
+            Some(_) => self.host_sweep.skip(probe.port, "send-error"),
+            None => {
+                let ufrag = self.host_sweep.remote_ufrag().to_owned();
+                self.host_sweep
+                    .cancel(self.host_sweep.generation(), &ufrag, probe.port);
             }
         }
     }
@@ -1283,8 +1599,50 @@ where
         }
     }
 
-    async fn handle_driver_event(&mut self, evt: PeerConnectionDriverEvent) -> bool {
+    async fn start_host_sweep(
+        &mut self,
+        generation: u64,
+        credentials: SweepCredentials,
+        port: u16,
+    ) {
+        let core = self.inner.core.lock().await;
+        if self.inner.host_candidate_sweep
+            && credentials.matches(core.remote_ice_credentials())
+            && self
+                .inner
+                .host_sweep_control
+                .generation_allowed(generation, credentials.ufrag())
+        {
+            let (ufrag, password) = core.remote_ice_credentials();
+            self.host_sweep.sync_credentials(ufrag, password);
+            self.host_sweep
+                .start(generation, credentials.ufrag().into(), port, Instant::now());
+        }
+    }
+
+    fn note_sweep_skip(&mut self, generation: u64, reason: &'static str) {
+        if generation == self.host_sweep.generation() {
+            self.host_sweep.note_skip(reason);
+        }
+    }
+
+    pub(super) async fn handle_driver_event(&mut self, evt: PeerConnectionDriverEvent) -> bool {
         match evt {
+            PeerConnectionDriverEvent::StartHostSweep {
+                generation,
+                credentials,
+                port,
+            } => self.start_host_sweep(generation, credentials, port).await,
+            PeerConnectionDriverEvent::CancelHostSweep {
+                generation,
+                remote_ufrag,
+                port,
+            } => {
+                self.host_sweep.cancel(generation, &remote_ufrag, port);
+            }
+            PeerConnectionDriverEvent::HostSweepSkipped { generation, reason } => {
+                self.note_sweep_skip(generation, reason);
+            }
             PeerConnectionDriverEvent::SenderRtp(sender_id, packet) => {
                 let mut core = self.inner.core.lock().await;
                 if let Some(mut sender) = core.rtp_sender(sender_id) {
@@ -1397,6 +1755,10 @@ where
                 self.tcp_transport.register_stream(four_tuple, stream);
             }
             PeerConnectionDriverEvent::Close => {
+                self.host_sweep.clear("closed");
+                #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+                self.host_scouts.close();
+                self.report_host_sweep().await;
                 if let Err(err) = self.turn_relayer.close() {
                     error!("Failed to close turn_relayer: {}", err);
                 }
@@ -1752,11 +2114,16 @@ where
         let stun_timeout = self.stun_gatherer.poll_timeout();
         let turn_timeout = self.turn_relayer.poll_timeout();
 
-        [core_timeout, stun_timeout, turn_timeout]
-            .into_iter()
-            .flatten()
-            .min()
-            .unwrap_or_else(|| Instant::now() + DEFAULT_TIMEOUT_DURATION)
+        [
+            core_timeout,
+            stun_timeout,
+            turn_timeout,
+            self.host_sweep.deadline(),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or_else(|| Instant::now() + DEFAULT_TIMEOUT_DURATION)
     }
 
     async fn handle_timeout(&mut self, now: Instant) -> Result<()> {

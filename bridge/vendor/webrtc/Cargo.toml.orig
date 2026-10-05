@@ -250,3 +250,6 @@ required-features = ["runtime-tokio"]
 name = "stats"
 path = "examples/stats/stats.rs"
 bench = false
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"

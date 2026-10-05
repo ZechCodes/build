@@ -54,6 +54,8 @@ use std::io::IoSliceMut;
 use std::task::{Context, Poll};
 use std::{fmt::Debug, future::Future, io, net::SocketAddr, pin::Pin, sync::Arc, time::Duration};
 
+#[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+pub(crate) mod host_egress;
 pub mod primitives;
 
 pub use primitives::{
@@ -274,6 +276,29 @@ pub trait AsyncUdpSocket: Send + Sync + Debug + 'static {
     ///
     /// Returns the number of payload bytes accepted.
     fn poll_send(&self, cx: &mut Context<'_>, transmit: &Transmit<'_>) -> Poll<io::Result<usize>>;
+
+    /// Try one datagram on exactly this IPv4 source and interface, with no gateway.
+    /// Unsupported runtimes must skip probes rather than use ordinary routing.
+    /// Whether this actual adapter can issue the bounded explicit-interface host probe.
+    /// Custom and unsupported adapters must opt in before any scout socket is opened.
+    fn supports_host_candidate_sweep(&self) -> bool {
+        false
+    }
+
+    /// Make one nonblocking explicit-interface probe on the advertised host socket.
+    /// The default refuses runtimes without this supported operation.
+    fn try_send_on_interface(
+        &self,
+        _buf: &[u8],
+        _source: std::net::Ipv4Addr,
+        _interface_index: u32,
+        _target: std::net::SocketAddrV4,
+    ) -> io::Result<usize> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "explicit on-link egress unavailable",
+        ))
+    }
 
     /// Attempt to receive up to `bufs.len()` messages, registering `cx`'s waker if none is
     /// ready.

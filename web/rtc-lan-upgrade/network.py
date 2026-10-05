@@ -74,19 +74,48 @@ async def capture(report, artifacts):
     wire.bind(("eth0", 0))
     wire.setblocking(False)
     loop = asyncio.get_running_loop()
+    arp_destinations = set()
     while True:
         packet = await loop.sock_recv(wire, 65536)
+        if len(packet) >= 42 and packet[12:14] == b"\x08\x06":
+            operation = struct.unpack_from("!H", packet, 20)[0]
+            if operation == 1 and packet[28:32] == socket.inet_aton("10.72.0.1"):
+                report["arp_requests"] += 1
+                report["arp_one_second_bins"][str(int(time.time()))] = report["arp_one_second_bins"].get(str(int(time.time())), 0) + 1
+                report["last_arp_request_at"] = time.time()
+                if not arp_destinations:
+                    report["first_arp_request_at"] = time.time()
+                if packet[38:42] not in arp_destinations:
+                    report["last_new_arp_request_at"] = time.time()
+                arp_destinations.add(packet[38:42])
+                report["arp_unique_destinations"] = len(arp_destinations)
+                if packet[38:42] == socket.inet_aton(PHONE_IP):
+                    report["phone_arp_requests"].append({"at": time.time()})
+                save_report(artifacts, report)
+            elif (operation == 2 and packet[28:32] == socket.inet_aton(PHONE_IP)
+                  and packet[38:42] == socket.inet_aton("10.72.0.1")):
+                report["phone_arp_replies"].append({"at": time.time()})
+                save_report(artifacts, report)
+            continue
         if len(packet) < 42 or packet[12:14] != b"\x08\x00" or packet[23] != 17:
             continue
         offset = 14 + (packet[14] & 15) * 4
-        source_port, destination_port = struct.unpack_from("!HH", packet, offset)
-        payload = packet[offset + 8 :]
-        if len(payload) < 20 or struct.unpack_from("!I", payload, 4)[0] != COOKIE:
+        source_port, destination_port, udp_length = struct.unpack_from("!HHH", packet, offset)
+        if udp_length < 8 or offset + udp_length > len(packet):
             continue
+        payload = packet[offset + 8 : offset + udp_length]
         host_file = artifacts / "host.json"
         if not host_file.exists():
             continue
         host_ports = {host["port"] for host in json.loads((artifacts / "gathered-hosts.json").read_text())}
+        if (packet[26:30] == socket.inet_aton("10.72.0.1")
+                and packet[30:34] == socket.inet_aton(PHONE_IP) and destination_port not in host_ports):
+            report["scout_hits"].append({"at": time.time(), "source_port": source_port,
+                                         "destination_port": destination_port, "bytes": len(payload)})
+            save_report(artifacts, report)
+            continue
+        if len(payload) < 20 or struct.unpack_from("!I", payload, 4)[0] != COOKIE:
+            continue
         kind = struct.unpack_from("!H", payload)[0]
         if (packet[26:30] == socket.inet_aton("10.72.0.1")
                 and packet[30:34] == socket.inet_aton(PHONE_IP) and destination_port in host_ports):
@@ -113,10 +142,16 @@ async def main(artifacts):
     require_private_namespace()
     mode = os.environ.get("BUILD_RTC_LAN_MODE", "delayed")
     report = {"queries": [], "host_checks": [], "browser_checks": [],
-              "host_socket_indications": [], "released": False, "mdns_silenced": mode != "delayed"}
+              "host_socket_indications": [], "released": False, "mdns_silenced": mode != "delayed",
+              "arp_requests": 0, "arp_unique_destinations": 0,
+              "first_arp_request_at": None, "last_new_arp_request_at": None,
+              "last_arp_request_at": None, "arp_one_second_bins": {},
+              "phone_arp_requests": [], "phone_arp_replies": [], "scout_hits": []}
     save_report(artifacts, report)
     loop = asyncio.get_running_loop()
-    await loop.create_datagram_endpoint(Turn, local_addr=("198.18.0.1", 3478))
+    unknown = mode.startswith("unknown-neighbor-")
+    if not unknown:
+        await loop.create_datagram_endpoint(Turn, local_addr=("198.18.0.1", 3478))
     mdns_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     mdns_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     mdns_socket.bind(("224.0.0.251", 5353))
@@ -133,10 +168,12 @@ async def main(artifacts):
     subprocess.run(["nft", "add", "rule", "inet", "delay_mdns", "output",
                     "udp", "sport", "5353", "drop"], check=True)
     host_port = json.loads((artifacts / "host.json").read_text())["port"]
-    if mode in {"delayed", "far-edge-pressure"}:
+    if mode in {"delayed", "far-edge-pressure", "unknown-neighbor-pressure"}:
         subprocess.run(["nft", "add", "rule", "inet", "hold_checks", "output",
                         "ip", "daddr", "10.72.0.1", "udp", "sport", str(host_port), "counter", "drop"], check=True)
-    (artifacts / "gated").write_text("ready")
+    # The outer namespace must prove the far-edge entry is absent immediately
+    # before signaling releases this real candidate. No neighbor is removed.
+    (artifacts / ("phone-gated" if unknown else "gated")).write_text("ready")
     while not (artifacts / "release").exists():
         await asyncio.sleep(0.02)
     report["released"] = True

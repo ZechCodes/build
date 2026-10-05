@@ -15,9 +15,9 @@ const waitFor = async (predicate, deadline, description) => {
   }
 };
 
-// Plaintext mock rendezvous on an isolated namespace's fixed private address.
+// Plaintext mock rendezvous at a fixed address in a disposable network namespace.
 // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
-const fixture = new WebSocket("ws://10.72.0.1:9000");
+const fixture = new WebSocket(new URLSearchParams(location.search).get("topology") === "unknown" ? "ws://198.18.0.2:9000" : "ws://10.72.0.1:9000");
 const firstMessage = () => new Promise((resolve, reject) => {
   const timeout = setTimeout(() => reject(new Error("fixture WebSocket message deadline")), 5000);
   fixture.addEventListener("message", (event) => { clearTimeout(timeout); resolve(JSON.parse(event.data)); }, { once: true });
@@ -85,13 +85,24 @@ export async function run() {
       if (method === "rtc.ice" && params.candidate.candidate.includes(".local")) hostTrickled = true;
       return answer;
   };
-  const link = mode === "far-edge-pressure"
-    ? await openPressureControl({ signal, onPush: (callback) => rpc.onPush(callback),
+  const onPush = (callback) => rpc.onPush((push) => {
+    if (push.type === "rtc.ice") {
+      const fields = push.candidate?.candidate?.split(/\s+/) || [];
+      if (fields[7] === "host" && fields[4] === "10.72.0.1") {
+        // Record the authentic advertised socket before channels open, so
+        // aggregate pressure samples include the first scout/ICE activity.
+        void window.fixtureBridgeHostPort(Number(fields[5]));
+      }
+    }
+    callback(push);
+  });
+  const link = ["far-edge-pressure", "unknown-neighbor-pressure"].includes(mode)
+    ? await openPressureControl({ signal, onPush,
       TrackedPeer, hostGated: () => hostGated })
     : await openPeerLink({
     signal,
     fetchIceServers: async () => ICE_SERVERS,
-    onPush: (callback) => rpc.onPush(callback),
+    onPush,
     RTCPeerConnectionImpl: TrackedPeer,
     diagnosticId: SESSION_ID,
   });
@@ -118,14 +129,16 @@ export async function run() {
   window.fixtureSnapshot = async () => ({ stats: await stats(), diagnostics: connectionDiagnosticHistory() });
   const appRpcPaths = [];
   const applicationCall = async (method, params) => {
-    if (["early-unresolved", "far-edge-unresolved"].includes(mode)) {
+    const startsDirect = ["early-unresolved", "far-edge-unresolved"].includes(mode);
+    if (startsDirect || mode.startsWith("unknown-neighbor-")) {
       const state = await stats();
-      if (state.selected?.state !== "succeeded" || !state.selected.nominated
+      if (startsDirect && (state.selected?.state !== "succeeded" || !state.selected.nominated
         || state.selected.localType === "relay" || state.selected.remoteType === "relay"
-        || link.transportPath() !== "direct") {
+        || link.transportPath() !== "direct")) {
         throw new Error(`early application RPC must use direct: ${method} ${JSON.stringify(state)}`);
       }
-      appRpcPaths.push({ at: Date.now(), method, selected: state.selected, path: link.transportPath() });
+      const path = link.transportPath?.() || (state.selected.localType === "relay" || state.selected.remoteType === "relay" ? "turn" : "direct");
+      appRpcPaths.push({ at: Date.now(), method, selected: state.selected, path });
     }
     return rpc.call(method, params);
   };
@@ -166,7 +179,8 @@ export async function run() {
   }
   await applicationCall("session.hello");
   const before = await stats();
-  if (before.selected?.localType !== "relay" && before.selected?.remoteType !== "relay") throw new Error(`initial path must use TURN: ${JSON.stringify(before)}`);
+  if (!["unknown-neighbor-unresolved", "unknown-neighbor-clustered"].includes(mode)
+    && before.selected?.localType !== "relay" && before.selected?.remoteType !== "relay") throw new Error(`initial path must use TURN: ${JSON.stringify(before)}`);
   if (!hostCandidate) throw new Error("Chromium must gather a real UUID.local host candidate");
   if (connectionDiagnosticHistory().some((row) => row.phase === "mdns-resolved")) throw new Error("the browser name resolved before the fixture released its answer");
   const turnPull = await pull();
@@ -194,6 +208,7 @@ export async function run() {
   }
   if (mode !== "delayed") {
     const result = await unresolvedUpgrade({ mode, before, turnPull, stats, pull, link, exhausted, exhaustedCheckWindow });
+    result.appRpcPaths = appRpcPaths;
     await rpc.call("rtc.close", {}, { carrier: signaling, timeoutMs: 10000 });
     link.close("unresolved mDNS namespace fixture finished");
     fixture.close();
@@ -274,9 +289,9 @@ async function unresolvedUpgrade({ mode, before, turnPull, stats, pull, link, ex
     && state.selected.localType !== "relay" && state.selected.remoteType !== "relay"
     && link.transportPath() === "direct" && !link.recovery.snapshot().recovering;
   const unresolved = () => !connectionDiagnosticHistory().some((row) => row.phase === "mdns-resolved");
-  if (mode === "far-edge-pressure") {
-    await waitFor(() => window.fixtureSweepExpired(), Date.now() + 30000,
-      "the no-direct control reaches the production 25-second sweep expiry");
+  if (["far-edge-pressure", "unknown-neighbor-pressure"].includes(mode)) {
+    await waitFor(() => window.fixtureSweepFinished(), Date.now() + 30000,
+      "the no-direct control terminates its bounded production sweep");
     const after = await stats();
     if (after.selected?.localType !== "relay" && after.selected?.remoteType !== "relay") {
       throw new Error("the pressure control must retain its genuine TURN pair");
@@ -309,8 +324,18 @@ async function unresolvedUpgrade({ mode, before, turnPull, stats, pull, link, ex
     if (isDirect(primed) || primed.restarts !== 0) throw new Error("the exhausted host pair must stay on TURN after the real late phone indication");
     await window.fixtureLatePrimed({ primed, exhausted });
   }
-  await waitFor(async () => isDirect(await stats()), Date.now() + 32000,
+  let initialViable;
+  await waitFor(async () => {
+    const state = await stats();
+    if (mode.startsWith("unknown-neighbor-") && !initialViable && state.restarts === 0
+      && state.direct.some((pair) => pair.state === "succeeded")) {
+      initialViable = { ...state, at: Date.now() };
+      await window.fixtureViable({ mode, viable: initialViable, diagnostics: connectionDiagnosticHistory() });
+    }
+    return isDirect(state);
+  }, Date.now() + 32000,
     "the same unresolved-mDNS encrypted session upgrades via authenticated peer-reflexive checks");
+  const directObservedAt = Date.now();
   const directBefore = await stats();
   const directPull = await pull();
   await waitFor(async () => {
@@ -321,10 +346,19 @@ async function unresolvedUpgrade({ mode, before, turnPull, stats, pull, link, ex
   const after = await stats();
   if (!unresolved()) throw new Error("the permanently silenced mDNS responder must never resolve");
   if (after.connections !== 1 || after.restarts > 1) throw new Error("sweep upgrade must reuse its connection and bounded optional restart");
+  if (mode === "unknown-neighbor-clustered" && (after.restarts !== 0
+    || after.localUfrag !== before.localUfrag || after.remoteUfrag !== before.remoteUfrag)) {
+    throw new Error("clustered unknown scout must upgrade within original checks and credentials, with zero restarts");
+  }
+  if (mode === "unknown-neighbor-unresolved" && (after.restarts !== 1
+    || after.localUfrag === before.localUfrag || after.remoteUfrag === before.remoteUfrag)) {
+    throw new Error("unknown far-edge scout must reuse its encrypted session and exactly one existing optional restart");
+  }
   if (mode === "late-unresolved" && (after.restarts !== 1 || after.localUfrag === before.localUfrag || after.remoteUfrag === before.remoteUfrag)) {
     throw new Error("the late sweep needs exactly one real ICE restart with fresh credentials");
   }
-  return { mode, before, turnPull, exhausted, exhaustedCheckWindow, primed, after, directPull, diagnostics: connectionDiagnosticHistory() };
+  return { mode, before, turnPull, exhausted, exhaustedCheckWindow, primed, initialViable, after, directPull, directObservedAt,
+    diagnostics: connectionDiagnosticHistory() };
 }
 
 function beforeAt() {

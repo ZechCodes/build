@@ -32,10 +32,14 @@ def namespace_command(pid, *arguments):
 
 
 def sample_host_pressure(artifacts):
+    advertised = artifacts / "bridge-host-socket.json"
     before = artifacts / "before.json"
-    if not before.exists():
+    if advertised.exists():
+        port = json.loads(advertised.read_text())["port"]
+    elif before.exists():
+        port = json.loads(before.read_text())["before"].get("hostSocketPort")
+    else:
         return None
-    port = json.loads(before.read_text())["before"].get("hostSocketPort")
     if port is None:
         return None
     output = subprocess.run(["ss", "-u", "-a", "-m", "-n"], text=True,
@@ -52,9 +56,17 @@ def sample_host_pressure(artifacts):
         for neighbor in neighbors:
             for state in neighbor.get("state", []):
                 states[state] = states.get(state, 0) + 1
+        # RTM_GETNEIGHTBL metadata includes the real global IPv4 ARP entry
+        # count and allocation-failure counter across network namespaces.
+        # Save only numeric aggregates, never interface names or addresses.
+        tables = json.loads(subprocess.run(["ip", "-s", "-j", "ntable", "show", "name", "arp_cache"],
+                                          text=True, capture_output=True, check=True).stdout)
+        table = next(row for row in tables if "entries" in row and "thresh3" in row)
         return {"at": time.time(), "rx_occupied": int(memory[1]),
                 "tx_occupied": int(memory[2]), "tx_capacity": int(memory[3]),
-                "neighbor_states": states}
+                "neighbor_states": states, "global_arp_entries": table["entries"],
+                "global_gc_thresh2": table["thresh2"], "global_gc_thresh3": table["thresh3"],
+                "global_table_fulls": table["table_fulls"]}
     return None
 
 
@@ -71,13 +83,14 @@ def inside(binary, artifacts):
     if os.environ.get("BUILD_RTC_LAN_BASELINE"):
         environment["BUILD_RTC_LAN_BASELINE"] = "1"
     mode = os.environ.get("BUILD_RTC_LAN_MODE", "delayed")
-    assert mode in {"delayed", "early-unresolved", "far-edge-unresolved", "far-edge-pressure", "unresolved", "late-unresolved", "large-subnet"}, f"unknown fixture mode: {mode}"
+    assert mode in {"delayed", "early-unresolved", "far-edge-unresolved", "far-edge-pressure", "unresolved", "late-unresolved", "large-subnet", "unknown-neighbor-unresolved", "unknown-neighbor-clustered", "unknown-neighbor-pressure"}, f"unknown fixture mode: {mode}"
     environment["BUILD_RTC_LAN_MODE"] = mode
     if os.environ.get("BUILD_RTC_LAN_SWEEP_BASELINE"):
         environment["BUILD_RTC_LAN_SWEEP_BASELINE"] = "1"
-    wide = mode in {"far-edge-unresolved", "far-edge-pressure"}
+    unknown = mode.startswith("unknown-neighbor-")
+    wide = mode in {"far-edge-unresolved", "far-edge-pressure"} or unknown
     prefix = 21 if mode == "large-subnet" else 22 if wide else 24
-    phone = "10.72.3.254" if wide else "10.72.0.2"
+    phone = "10.72.1.2" if mode == "unknown-neighbor-clustered" else "10.72.3.254" if wide else "10.72.0.2"
     environment["BUILD_RTC_LAN_PHONE_IP"] = phone
     processes = []
     logs = []
@@ -90,18 +103,48 @@ def inside(binary, artifacts):
         processes.append(process)
         return process
 
-    try:
-        browser_namespace = start("namespace", ["unshare", "-n", "sleep", "180"])
-        # Ensure unshare has entered its new network namespace before moving the peer.
+    def new_namespace(name):
+        process = start(name, ["unshare", "-n", "sleep", "180"])
         current_namespace = os.readlink("/proc/self/ns/net")
         deadline = time.monotonic() + 3
-        while os.readlink(f"/proc/{browser_namespace.pid}/ns/net") == current_namespace:
+        while os.readlink(f"/proc/{process.pid}/ns/net") == current_namespace:
             assert time.monotonic() < deadline
             time.sleep(0.01)
-        peer = browser_namespace.pid
+        return process.pid
+
+    try:
+        peer = new_namespace("namespace")
         run("ip", "link", "set", "lo", "up")
-        run("ip", "link", "add", "eth0", "type", "veth", "peer", "name", "browser0")
-        run("ip", "link", "set", "browser0", "netns", str(peer))
+        if unknown:
+            gateway = new_namespace("router-namespace")
+            run("ip", "link", "add", "eth0", "type", "veth", "peer", "name", "bridge0")
+            run("ip", "link", "set", "bridge0", "netns", str(gateway))
+            run("ip", "link", "add", "phone0", "type", "veth", "peer", "name", "browser0")
+            run("ip", "link", "set", "phone0", "netns", str(gateway))
+            run("ip", "link", "set", "browser0", "netns", str(peer))
+            for arguments in [
+                ["link", "set", "lo", "up"],
+                ["link", "add", "lan", "type", "bridge"],
+                ["addr", "add", "10.72.0.254/22", "dev", "lan"],
+                ["addr", "add", "198.18.0.1/32", "dev", "lo"],
+                ["addr", "add", "198.18.0.2/32", "dev", "lo"],
+                ["link", "set", "bridge0", "master", "lan"],
+                ["link", "set", "phone0", "master", "lan"],
+                ["link", "set", "bridge0", "up"],
+                ["link", "set", "phone0", "up"],
+                ["link", "set", "lan", "up"],
+                ["route", "add", "203.0.113.2/32", "via", phone],
+            ]:
+                run(*namespace_command(gateway, "ip", *arguments))
+            # Same-interface forwarding preserves the original host-check IP
+            # tuple. Disable redirects and proxy ARP only in this disposable
+            # router; neither may manufacture or warm the bridge's phone entry.
+            run(*namespace_command(gateway, "sysctl", "-q", "-w", "net.ipv4.ip_forward=1",
+                                  "net.ipv4.conf.all.send_redirects=0", "net.ipv4.conf.lan.send_redirects=0",
+                                  "net.ipv4.conf.all.proxy_arp=0", "net.ipv4.conf.lan.proxy_arp=0"))
+        else:
+            run("ip", "link", "add", "eth0", "type", "veth", "peer", "name", "browser0")
+            run("ip", "link", "set", "browser0", "netns", str(peer))
         run("ip", "addr", "add", f"10.72.0.1/{prefix}", "dev", "eth0")
         run("ip", "link", "set", "eth0", "up")
         # Enable conntrack before opening signaling, then tighten the policy
@@ -116,11 +159,22 @@ table inet bridge_firewall {
         run(*namespace_command(peer, "ip", "link", "set", "browser0", "name", "eth0"))
         run(*namespace_command(peer, "ip", "addr", "add", f"{phone}/{prefix}", "dev", "eth0"))
         run(*namespace_command(peer, "ip", "link", "set", "lo", "up"))
-        run(*namespace_command(peer, "ip", "addr", "add", "198.18.0.1/32", "dev", "lo"))
+        if not unknown:
+            run(*namespace_command(peer, "ip", "addr", "add", "198.18.0.1/32", "dev", "lo"))
         run(*namespace_command(peer, "ip", "addr", "add", "203.0.113.2/32", "dev", "lo"))
         run(*namespace_command(peer, "ip", "link", "set", "eth0", "up"))
-        run(*namespace_command(peer, "ip", "route", "add", "default", "via", "10.72.0.1"))
-        run("ip", "route", "add", "198.18.0.1/32", "via", phone)
+        if unknown:
+            run(*namespace_command(peer, "ip", "route", "add", "default", "via", "10.72.0.254"))
+            run(*namespace_command(peer, "ip", "route", "add", "10.72.0.1/32", "via", "10.72.0.254"))
+            run(*namespace_command(peer, "sysctl", "-q", "-w", "net.ipv4.conf.all.accept_redirects=0",
+                                  "net.ipv4.conf.eth0.accept_redirects=0"))
+            for address in ["198.18.0.1/32", "198.18.0.2/32"]:
+                run("ip", "route", "add", address, "via", "10.72.0.254")
+            router = start("router", namespace_command(gateway, "python3", str(HERE / "router.py"), str(artifacts)))
+            wait_file(artifacts / "router-ready", router)
+        else:
+            run(*namespace_command(peer, "ip", "route", "add", "default", "via", "10.72.0.1"))
+            run("ip", "route", "add", "198.18.0.1/32", "via", phone)
         run(*namespace_command(peer, "nft", "-f", "-"), input="""
 table ip turn_nat {
  chain postrouting { type nat hook postrouting priority 100; policy accept;
@@ -156,7 +210,18 @@ table inet bridge_firewall {
 }
 """)
         (artifacts / "firewall-ready").write_text("ready")
-        if mode == "far-edge-pressure":
+        if unknown:
+            wait_file(artifacts / "phone-gated", network)
+            neighbors = json.loads(subprocess.run(["ip", "-j", "neigh", "show", "dev", "eth0"],
+                                                 text=True, capture_output=True, check=True).stdout)
+            proxy = json.loads(subprocess.run(["ip", "-j", "neigh", "show", "proxy", "dev", "eth0"],
+                                             text=True, capture_output=True, check=True).stdout)
+            absent = not any(row.get("dst") == phone for row in neighbors + proxy)
+            (artifacts / "neighbor-before.json").write_text(json.dumps({"at": time.time(), "phone_absent": absent,
+                                                                       "proxy_entries": len(proxy)}))
+            assert absent, "the far-edge phone must be genuinely absent before authentic host trickle"
+            (artifacts / "gated").write_text("ready")
+        if mode == "far-edge-pressure" or unknown:
             samples = []
             deadline = time.monotonic() + 65
             while browser.poll() is None:
@@ -190,7 +255,7 @@ table inet bridge_firewall {
                 process.wait()
         for log in logs:
             log.close()
-        for name in ["browser", "network", "bridge"]:
+        for name in ["browser", "network", "bridge", "router"]:
             log_path = artifacts / (name + ".log")
             if log_path.exists():
                 print(f"{name}:\n{log_path.read_text()}")

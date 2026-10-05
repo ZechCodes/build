@@ -22,7 +22,7 @@ disclosing the phone's private address through an on-LAN TURN server. The
 bridge routes only the TURN address; the public phone mapping is off-link.
 The default `delayed` mode disables only the sweep through the test factory,
 so the original late-check and final failure-history assertions measure
-those components independently. All six unresolved modes enable the
+those components independently. All nine unresolved modes enable the
 production sweep. The default mode holds the browser's mDNS answers until
 the session completes `board.list`, `project.list`, `tasks.list` and `ping`
 over TURN. After resolving that name, the bridge must originate host STUN
@@ -61,7 +61,7 @@ far end of the bridge's actual on-link interface subnet. Real signaling and
 TURN traffic establish that interface's neighbor entry; no ICE address is
 invented. The JSON result records first indication timing against genuine
 candidate gathering and sweep start, the first application RPC time, and
-timestamped sweep pass events. The native host/prflx pair must carry every
+timestamped sweep lifecycle events. The native host/prflx pair must carry every
 application RPC with zero restarts, under the same permanently silenced mDNS,
 inbound DROP and 65-second outer deadline.
 
@@ -70,8 +70,8 @@ pressure control. It uses genuine Chromium native offer/trickle, channels,
 the same encrypted SessionRPC and bridge intake, and the same far-edge phone.
 The browser's host-port UDP checks are dropped by a counted namespace OUTPUT
 rule installed before applying its genuine remote answer. This control omits
-the SPA optional-upgrade monitor so the bridge's fixed 25-second sweep can
-expire without a fresh generation replacing it. It does not prove production
+the SPA optional-upgrade monitor so a fresh generation cannot replace the
+bounded sweep before completion or its fixed 25-second expiry. It does not prove production
 monitor behavior. It requires zero restarts, a full encrypted TURN pull after
 expiry, and the actual firewall drop count. Results record elapsed time,
 successful sends, attempted sends and the incomplete tail's `window-expired`
@@ -81,6 +81,57 @@ using its native candidate port; the saved samples retain only occupied RX/TX,
 TX capacity and neighbor-state counts. They contain no addresses or ports.
 Results report peak occupied fraction and remaining headroom, including normal
 TURN traffic when it shares that socket. The outer deadline remains 65 seconds.
+
+The `unknown-neighbor-unresolved`, `unknown-neighbor-clustered` and
+`unknown-neighbor-pressure` modes add a disposable third router namespace.
+Its Linux bridge joins both real on-link interfaces, and its gateway hosts
+off-link TURN and a transparent rendezvous proxy. The phone routes its authentic
+bridge-host checks through that gateway, preserving the original source IP,
+UDP port and authenticated STUN content. Its replies also use the gateway MAC.
+The bridge's connected /22 route stays direct. Signaling and TURN therefore
+warm only the gateway neighbor; they cannot reveal or warm the phone's entry.
+ICMP redirects and proxy ARP are disabled only in the disposable router/phone
+namespaces. Immediately before delivering the genuine `.local` trickle, the
+runner requires the phone's neighbor and proxy entry to be absent. It never
+flushes or removes a neighbor.
+
+The unknown far-edge phone retains `10.72.3.254/22`; the independent clustered
+phone uses `10.72.1.2/22`, close to the genuinely known gateway at `10.72.0.254`.
+Both use the full production SPA peer link and deliver the authentic candidate
+at its original arrival time. The clustered case requires zero restarts,
+unchanged credentials and direct for every application RPC. The far-edge case
+requires discovery inside the unchanged 25-second lifetime, then exactly the
+existing one optional restart with fresh credentials to upgrade the same
+encrypted TURN session to authenticated host/prflx. Its first native checks can
+already be exhausted before the far-edge hit. The failed zero-restart artifact
+is retained separately; no retry budget or timer is enlarged.
+The known-neighbor early case remains the separate assertion that no
+application data used TURN. Packet capture records the previously absent
+phone's real ARP request/reply before its first advertised-host-socket probe,
+and the read-only aggregate pressure samples measure actual ICE socket
+occupancy and INCOMPLETE neighbor counts.
+
+The unknown-neighbor pressure mode retains the separately labeled native
+no-direct control and counted namespace host-check DROP. A complete /22 has
+1,021 authorized destinations after network, broadcast and our address are
+excluded. One genuinely known neighbor is excluded from scouting, leaving
+1,020 anonymous scout admissions; the unknown control requires that many
+distinct actual ARP destinations, settled pending entries and both real host
+probes to the phone. Admission coverage does not mean every address resolved.
+Direct cancellation is recorded separately from genuine completed coverage.
+Read-only `ip -s -j ntable` samples retain only numeric global IPv4 ARP entries,
+GC thresholds and table-full counter deltas. Wire counts include kernel ARP
+retries and report aligned one-second-bin maxima plus the average over the
+observed request interval. No address is retained in those numeric samples.
+
+The initial unknown no-direct control completed in 15.411 seconds; the final
+control completed in 22.865 seconds. Retained FAILED entries can reach the
+global 75%-of-gc3 guard even after INCOMPLETE entries settle, pausing admission
+until normal kernel GC frees headroom. Coverage therefore varies with real
+pressure rather than always completing inside the browser's retry window.
+The fixed 25-second lifetime, all guards, candidate arrival and the common
+65-second outer deadline remain unchanged. No candidate is fabricated and no
+host namespace or neighbor cache is modified.
 
 `BUILD_RTC_LAN_MODE=unresolved` permanently silences mDNS and leaves browser
 host connectivity checks running under the bridge's inbound DROP. It delivers

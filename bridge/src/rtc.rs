@@ -30,10 +30,10 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use webrtc::data_channel::{DataChannel, DataChannelEvent, RTCDataChannelInit};
 use webrtc::peer_connection::{
-    PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCConfiguration,
-    RTCConfigurationBuilder, RTCIceCandidateInit, RTCIceConnectionState, RTCIceGatheringState,
-    RTCIceServer, RTCPeerConnectionIceEvent, RTCPeerConnectionState, RTCSessionDescription,
-    RTCStatsReport, RTCStatsReportEntry, StatsSelector,
+    HostCandidateSweepEvent, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
+    RTCConfiguration, RTCConfigurationBuilder, RTCIceCandidateInit, RTCIceConnectionState,
+    RTCIceGatheringState, RTCIceServer, RTCPeerConnectionIceEvent, RTCPeerConnectionState,
+    RTCSessionDescription, RTCStatsReport, RTCStatsReportEntry, StatsSelector,
 };
 
 use rtc::ice::mdns::MulticastDnsMode;
@@ -58,6 +58,9 @@ pub(crate) mod client_hint;
 mod mdns;
 mod policy;
 mod remote;
+mod sweep;
+#[cfg(test)]
+mod sweep_integration_tests;
 
 pub use policy::{IceMode, IcePolicy, ICE_INTERFACES_ENV, ICE_POLICY_ENV, ICE_RELAY_MIN_WAIT_ENV};
 
@@ -499,6 +502,7 @@ pub struct WebrtcPeerFactory {
     policy: Arc<IcePolicy>,
     lan_addresses: Arc<mdns::LanAddressCache>,
     check_pending_direct_pairs: bool,
+    host_candidate_sweep: bool,
 }
 
 impl WebrtcPeerFactory {
@@ -507,7 +511,7 @@ impl WebrtcPeerFactory {
     /// them gathers under — resolved once at startup, so every session of a
     /// run reaches its browser the same way.
     pub fn new(intake: Arc<FrameIntake>, policy: IcePolicy) -> Arc<Self> {
-        Self::configured(intake, policy, true)
+        Self::configured(intake, policy, true, true)
     }
 
     #[cfg(any(test, feature = "testing"))]
@@ -516,16 +520,32 @@ impl WebrtcPeerFactory {
         policy: IcePolicy,
         enabled: bool,
     ) -> Arc<Self> {
-        Self::configured(intake, policy, enabled)
+        Self::configured(intake, policy, enabled, true)
     }
 
-    fn configured(intake: Arc<FrameIntake>, policy: IcePolicy, enabled: bool) -> Arc<Self> {
+    #[cfg(any(test, feature = "testing"))]
+    pub fn with_connection_checks(
+        intake: Arc<FrameIntake>,
+        policy: IcePolicy,
+        pending_direct_pairs: bool,
+        host_sweep: bool,
+    ) -> Arc<Self> {
+        Self::configured(intake, policy, pending_direct_pairs, host_sweep)
+    }
+
+    fn configured(
+        intake: Arc<FrameIntake>,
+        policy: IcePolicy,
+        pending_direct_pairs: bool,
+        host_sweep: bool,
+    ) -> Arc<Self> {
         install_gatherer_log();
         Arc::new(WebrtcPeerFactory {
             intake,
             policy: Arc::new(policy),
             lan_addresses: Arc::new(mdns::LanAddressCache::new()),
-            check_pending_direct_pairs: enabled,
+            check_pending_direct_pairs: pending_direct_pairs,
+            host_candidate_sweep: host_sweep,
         })
     }
 }
@@ -560,6 +580,7 @@ impl SessionPeerFactory for WebrtcPeerFactory {
             signaling,
             remote,
             check_pending_direct_pairs: self.check_pending_direct_pairs,
+            host_candidate_sweep: self.host_candidate_sweep,
             negotiation: tokio::sync::Mutex::new(None),
         }))
     }
@@ -572,6 +593,7 @@ struct WebrtcPeer {
     signaling: Arc<Trickling>,
     remote: Arc<remote::RemoteCandidates>,
     check_pending_direct_pairs: bool,
+    host_candidate_sweep: bool,
     negotiation: tokio::sync::Mutex<Option<Negotiation>>,
 }
 
@@ -582,12 +604,14 @@ struct Negotiation {
     connection: Arc<dyn PeerConnection>,
     carriers: Vec<DataChannelCarrier>,
     path_report: tokio::task::JoinHandle<()>,
+    sweep_report: tokio::task::JoinHandle<()>,
 }
 
 impl Drop for Negotiation {
     fn drop(&mut self) {
         self.carriers.clear();
         self.path_report.abort();
+        self.sweep_report.abort();
     }
 }
 
@@ -712,15 +736,18 @@ impl WebrtcPeer {
     /// that won.
     async fn connect(&self, configuration: RTCConfiguration) -> Result<Negotiation, RtcError> {
         let (connected, first_connect) = mpsc::unbounded_channel();
+        let (sweeps, sweep_events) = mpsc::channel(256);
         let events: Arc<dyn PeerConnectionEventHandler> = Arc::new(PeerEvents {
             session_id: self.session_id.clone(),
             signaling: self.signaling.clone(),
             connected,
             gathered: Mutex::new(GatheredTypes::default()),
+            sweeps,
         });
         let udp_addrs = self.policy.gather_from()?;
         let mut engine = self.policy.setting_engine(MulticastDnsMode::Disabled);
         engine.set_check_pending_direct_pairs(self.check_pending_direct_pairs);
+        engine.set_host_candidate_sweep(self.host_candidate_sweep);
         // Browser mDNS names are resolved by our interface-explicit resolver;
         // the crate's one OS-selected multicast socket is disabled.
         let connection: Arc<dyn PeerConnection> = Arc::new(
@@ -735,6 +762,7 @@ impl WebrtcPeer {
                 .build()
                 .await?,
         );
+        let sweep_report = tokio::spawn(sweep::report(self.remote.clone(), sweep_events));
         let path_report = tokio::spawn(report_negotiated_path(
             self.session_id.clone(),
             connection.clone(),
@@ -759,6 +787,7 @@ impl WebrtcPeer {
             connection,
             carriers,
             path_report,
+            sweep_report,
         })
     }
 }
@@ -864,10 +893,15 @@ struct PeerEvents {
     /// The kinds of candidate this gathering has produced so far, said and
     /// cleared when it completes.
     gathered: Mutex<GatheredTypes>,
+    sweeps: mpsc::Sender<HostCandidateSweepEvent>,
 }
 
 #[async_trait]
 impl PeerConnectionEventHandler for PeerEvents {
+    async fn on_host_candidate_sweep(&self, event: HostCandidateSweepEvent) {
+        // The driver never waits on discovery locks; the worker preserves order.
+        let _ = self.sweeps.try_send(event);
+    }
     async fn on_ice_candidate(&self, event: RTCPeerConnectionIceEvent) {
         self.gathered
             .lock()
@@ -2070,6 +2104,7 @@ mod trickle_tests {
                 None,
             ),
             check_pending_direct_pairs: true,
+            host_candidate_sweep: true,
             negotiation: tokio::sync::Mutex::new(None),
         };
         assert!(!outgoing.is_closed());
@@ -2371,6 +2406,7 @@ mod ice_diagnostic_tests {
             ),
             check_pending_direct_pairs: true,
             negotiation: tokio::sync::Mutex::new(None),
+            host_candidate_sweep: true,
         };
         let signaling = SessionSender::detached("accepted-retry");
         let mut browser = RTCPeerConnectionBuilder::new().build().unwrap();

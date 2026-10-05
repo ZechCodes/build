@@ -10,7 +10,9 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use webrtc::peer_connection::{PeerConnection, RTCIceCandidateInit, RTCStatsReport};
+use webrtc::peer_connection::{
+    HostCandidateSweepEvent, PeerConnection, RTCIceCandidateInit, RTCStatsReport,
+};
 
 use super::{checks::DirectChecks, mdns, RtcError};
 
@@ -21,6 +23,25 @@ const RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(15), Duration::from_sec
 #[async_trait]
 pub(super) trait CandidateTarget: Send + Sync {
     async fn add(&self, candidate: RTCIceCandidateInit) -> Result<(), RtcError>;
+    async fn start_sweep(
+        &self,
+        _generation: u64,
+        _ufrag: String,
+        _port: u16,
+    ) -> Result<(), RtcError> {
+        Ok(())
+    }
+    async fn cancel_sweep(
+        &self,
+        _generation: u64,
+        _ufrag: String,
+        _port: u16,
+    ) -> Result<(), RtcError> {
+        Ok(())
+    }
+    async fn clear_sweeps(&self) -> Result<(), RtcError> {
+        Ok(())
+    }
 }
 
 pub(super) struct PeerTarget(pub Arc<dyn PeerConnection>);
@@ -29,6 +50,27 @@ pub(super) struct PeerTarget(pub Arc<dyn PeerConnection>);
 impl CandidateTarget for PeerTarget {
     async fn add(&self, candidate: RTCIceCandidateInit) -> Result<(), RtcError> {
         self.0.add_ice_candidate(candidate).await?;
+        Ok(())
+    }
+    async fn start_sweep(&self, generation: u64, ufrag: String, port: u16) -> Result<(), RtcError> {
+        self.0
+            .start_host_candidate_sweep(generation, ufrag, port)
+            .await?;
+        Ok(())
+    }
+    async fn cancel_sweep(
+        &self,
+        generation: u64,
+        ufrag: String,
+        port: u16,
+    ) -> Result<(), RtcError> {
+        self.0
+            .cancel_host_candidate_sweep(generation, ufrag, port)
+            .await?;
+        Ok(())
+    }
+    async fn clear_sweeps(&self) -> Result<(), RtcError> {
+        self.0.clear_host_candidate_sweeps().await?;
         Ok(())
     }
 }
@@ -116,6 +158,9 @@ struct State {
     resolution_reported: bool,
     reported_failures: HashSet<&'static str>,
     failures: HashMap<&'static str, usize>,
+    sweep_ports: HashMap<u16, String>,
+    sweep_target: Option<Arc<dyn CandidateTarget>>,
+    last_sweep: Option<super::sweep::Snapshot>,
 }
 
 impl State {
@@ -131,6 +176,9 @@ impl State {
         self.resolution_reported = false;
         self.reported_failures.clear();
         self.failures.clear();
+        self.sweep_ports.clear();
+        self.sweep_target = None;
+        self.last_sweep = None;
         self.resolved
             .retain(|_, (at, _)| at.elapsed() < RESOLVED_CACHE_TTL);
     }
@@ -150,6 +198,71 @@ impl State {
     fn reason(&self) -> &'static str {
         self.checks.reason().unwrap_or_else(|| self.counts.reason())
     }
+
+    fn sweep_ufrag(&self, candidate: &RTCIceCandidateInit) -> Option<String> {
+        let index = usize::from(candidate.sdp_mline_index.unwrap_or(0));
+        let ufrag = self.credentials.as_ref()?.get(index)?.ufrag.as_ref()?;
+        if candidate
+            .username_fragment
+            .as_ref()
+            .is_some_and(|supplied| supplied != ufrag)
+        {
+            return None;
+        }
+        let mut fields = candidate.candidate.split_whitespace();
+        if fields.any(|field| field == "ufrag") && fields.next() != Some(ufrag.as_str()) {
+            return None;
+        }
+        Some(ufrag.clone())
+    }
+
+    async fn start_sweep(
+        &mut self,
+        target: Arc<dyn CandidateTarget>,
+        candidate: &RTCIceCandidateInit,
+    ) {
+        let Some(port) = sweep_port(candidate) else {
+            return;
+        };
+        let Some(ufrag) = self.sweep_ufrag(candidate) else {
+            return;
+        };
+        if self.sweep_ports.contains_key(&port) || self.sweep_ports.len() >= MAX_DISCOVERIES {
+            return;
+        }
+        self.sweep_ports.insert(port, ufrag.clone());
+        self.sweep_target = Some(target.clone());
+        // A closed driver cannot take away the working relay or block discovery.
+        let _ = target.start_sweep(self.generation, ufrag, port).await;
+    }
+
+    async fn cancel_sweep(&self, target: &dyn CandidateTarget, candidate: &RTCIceCandidateInit) {
+        let Some(port) = sweep_port(candidate) else {
+            return;
+        };
+        let Some(ufrag) = self.sweep_ufrag(candidate) else {
+            return;
+        };
+        if self.sweep_ports.get(&port) == Some(&ufrag) {
+            let _ = target.cancel_sweep(self.generation, ufrag, port).await;
+        }
+    }
+
+    async fn clear_sweeps(&mut self) {
+        if let Some(target) = self.sweep_target.take() {
+            let _ = target.clear_sweeps().await;
+        }
+    }
+}
+
+fn sweep_port(candidate: &RTCIceCandidateInit) -> Option<u16> {
+    let mut fields = candidate.candidate.split_whitespace();
+    fields.next()?;
+    if fields.next()? != "1" || !fields.next()?.eq_ignore_ascii_case("udp") {
+        return None;
+    }
+    let port = fields.nth(2)?.parse::<u16>().ok()?;
+    (port != 0).then_some(port)
 }
 
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -202,6 +315,18 @@ pub(super) struct RemoteCandidates {
 }
 
 impl RemoteCandidates {
+    pub(super) async fn observe_sweep(&self, event: HostCandidateSweepEvent) {
+        let mut state = self.state.lock().await;
+        if state.closed || state.credentials.is_none() || state.generation != event.generation {
+            return;
+        }
+        let snapshot = super::sweep::Snapshot::from(event);
+        state.last_sweep = Some(snapshot.clone());
+        super::diagnostic(&self.session_id, &format!("host-sweep {}", json!(snapshot)));
+        (self.emit)(json!({"type": "rtc.diagnostics", "event": "host-sweep",
+            "generation": state.generation, "reason": state.reason(),
+            "candidates": state.counts, "detail": null, "sweep": snapshot}));
+    }
     pub(super) fn bind_client_hint(&self, hint: uuid::Uuid) {
         self.resolver.bind_client_hint(hint);
     }
@@ -259,6 +384,7 @@ impl RemoteCandidates {
         }
         self.observe_checks(&mut state, stats);
         self.summarize(&state, "restart");
+        state.clear_sweeps().await;
         state.cancel();
         state.closed = false;
         state.credentials = Some(credentials);
@@ -277,6 +403,7 @@ impl RemoteCandidates {
         let mut state = self.state.lock().await;
         self.observe_checks(&mut state, stats);
         self.summarize(&state, "close");
+        state.clear_sweeps().await;
         state.cancel();
         state.closed = true;
         state.credentials = None;
@@ -290,6 +417,7 @@ impl RemoteCandidates {
         if let Some(stats) = stats {
             state.checks.observe(stats);
             (self.emit)(json!({ "type": "rtc.diagnostics", "event": "direct-checks",
+                "generation": state.generation,
                 "reason": state.reason(), "candidates": state.counts,
                 "detail": null, "hosts": state.checks.hosts() }));
         }
@@ -303,7 +431,7 @@ impl RemoteCandidates {
                     json!({"generation": state.generation,
                     "ended": ended, "reason": state.reason(),
                     "candidates": state.counts, "failures": state.failures,
-                    "hosts": state.checks.hosts()})
+                    "hosts": state.checks.hosts(), "sweep": state.last_sweep})
                 ),
             );
         }
@@ -321,6 +449,7 @@ impl RemoteCandidates {
         state.last_reason = Some(state.reason());
         state.resolution_reported |= first_resolution;
         (self.emit)(json!({ "type": "rtc.diagnostics", "event": event,
+            "generation": state.generation,
             "reason": state.reason(), "candidates": state.counts,
             "detail": detail }));
     }
@@ -369,11 +498,13 @@ impl RemoteCandidates {
             }
         };
         if let Some(addresses) = state.cached(&name) {
+            state.cancel_sweep(&*target, &candidate).await;
             add_resolved(&*target, &candidate, &addresses, &mut state.checks).await?;
             state.counts.mdns_resolved += 1;
             self.report(&mut state, "mdns-resolved", None);
             return Ok(());
         }
+        state.start_sweep(target.clone(), &candidate).await;
         self.start_discovery(&mut state, target, candidate, name);
         Ok(())
     }
@@ -456,6 +587,7 @@ impl RemoteCandidates {
         state.counts.mdns_pending -= 1;
         let failure = match result {
             Ok(addresses) if !addresses.is_empty() => {
+                state.cancel_sweep(target, candidate).await;
                 match add_resolved(target, candidate, &addresses, &mut state.checks).await {
                     Ok(()) => {
                         state
@@ -478,6 +610,8 @@ impl RemoteCandidates {
         )
     }
 }
+#[cfg(test)]
+mod sweep_tests;
 
 fn failure_code(failure: &str) -> &'static str {
     match failure {

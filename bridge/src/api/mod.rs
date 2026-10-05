@@ -41,7 +41,8 @@ use std::collections::BTreeSet;
 /// 3.9.0 adds configured project source scopes for file browsing and editing.
 /// 3.10.0 adds conditional task body writes (`tasks.bodyPrecondition`, #347).
 /// 3.11.0 adds generation-guarded conversation reset (#358).
-/// 3.12.0 adds a bounded per-paired-client LAN discovery hint (#372).
+/// 3.12.0 adds a bounded per-paired-client LAN discovery hint (#372) and
+/// bounded host-socket conntrack sweeps for unresolved LAN names (#374).
 pub const API_VERSION: &str = "3.12.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
@@ -107,6 +108,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "requests.receipts",
     "rtc.candidateDiagnostics", // Since 3.11.0: content-free candidate discovery diagnostics (#369).
     "rtc.clientLanCache",       // Since 3.12.0: optional client_id on rtc.offer (#372).
+    "rtc.conntrackSweep",       // Since 3.12.0: bounded host-socket sweep diagnostics (#374).
     "settings.projectAgent",
     "settings.roleModels",
     "settings.workspaceLifecycle",
@@ -428,6 +430,11 @@ pub fn reply(id: Value, result: Result<Value, ApiError>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_greeting_advertises_the_bounded_host_socket_sweep() {
+        assert!(capabilities(false).contains(&"rtc.conntrackSweep"));
+    }
 
     #[test]
     fn the_api_version_is_three_dot_separated_integers() {

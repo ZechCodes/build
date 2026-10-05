@@ -36,7 +36,7 @@ pub struct HostCandidateSweepEvent {
     pub neighbors_pending_peak: u32,
     /// Fixed content-free skip or stop reason.
     pub reason: Option<&'static str>,
-    /// An advertised host socket has a safe, bounded on-link subnet.
+    /// A safe, bounded host subnet is authorized by current matching srflx evidence.
     pub eligible: bool,
     /// Generation-wide eligible ports whose names remain unresolved.
     pub eligible_unresolved: u32,
@@ -422,6 +422,7 @@ pub(crate) struct HostSweep {
     scout: SweepScoutCounters,
     events: VecDeque<HostCandidateSweepEvent>,
     relay: bool,
+    nat_wait_reason: Option<&'static str>,
 }
 
 struct PortSweep {
@@ -436,6 +437,9 @@ struct PortSweep {
     prflx_followed: bool,
     report_pending: bool,
     eligible: bool,
+    // Numeric restart evidence survives address retirement, but current NAT
+    // authorization masks the public eligibility independently.
+    subnet_eligible: bool,
     unresolved: bool,
     successful_destinations: std::collections::HashSet<(SocketAddr, Ipv4Addr)>,
     pass_destinations: std::collections::HashSet<(SocketAddr, Ipv4Addr)>,
@@ -456,6 +460,7 @@ impl HostSweep {
             self.packets = 0;
             self.sent = 0;
             self.scout = SweepScoutCounters::default();
+            self.nat_wait_reason = None;
             self.next_packet = None;
             self.remote_ufrag = ufrag;
             self.generation = generation;
@@ -482,6 +487,7 @@ impl HostSweep {
                 prflx_followed: false,
                 report_pending: false,
                 eligible: false,
+                subnet_eligible: false,
                 unresolved: true,
                 successful_destinations: std::collections::HashSet::new(),
                 pass_destinations: std::collections::HashSet::new(),
@@ -502,6 +508,7 @@ impl HostSweep {
     pub fn prepare(&mut self, port: u16, subnets: Vec<SweepSubnet>) {
         if let Some(plan) = self.plans.get_mut(&port) {
             plan.eligible = !subnets.is_empty();
+            plan.subnet_eligible = plan.eligible;
             plan.subnets = Some(subnets);
             self.events
                 .push_back(self.event("started", None, true, 0, 0, false));
@@ -512,6 +519,7 @@ impl HostSweep {
         if let Some(plan) = self.plans.get_mut(&port) {
             plan.stopped = true;
             plan.eligible = false;
+            plan.subnet_eligible = false;
             plan.retire_addresses();
             self.events
                 .push_back(plan.event(self.generation, "skipped", Some(reason), false));
@@ -645,7 +653,7 @@ impl HostSweep {
         ]
         .contains(&reason);
         for plan in self.plans.values_mut() {
-            if !plan.stopped || (retire && plan.eligible && plan.unresolved) {
+            if !plan.stopped || (retire && plan.unresolved) {
                 plan.stopped = true;
                 if retire {
                     plan.unresolved = false;
@@ -718,6 +726,57 @@ impl HostSweep {
     pub fn note_skip(&mut self, reason: &'static str) {
         self.events
             .push_back(self.event("skipped", Some(reason), false, 0, 0, false));
+    }
+    pub fn gate_nat(&mut self, now: Instant, reason: Option<&'static str>) -> bool {
+        if let Some(reason) = reason {
+            self.mask_nat_eligibility(now, reason);
+            false
+        } else {
+            self.restore_nat_eligibility();
+            true
+        }
+    }
+
+    fn restore_nat_eligibility(&mut self) {
+        for plan in self.plans.values_mut() {
+            plan.eligible = plan.subnet_eligible && plan.unresolved;
+        }
+        if self.nat_wait_reason.take().is_some() && self.plans.values().any(|plan| plan.unresolved)
+        {
+            let eligible = self.plans.values().any(|plan| plan.eligible);
+            self.events
+                .push_back(self.event("progress", None, eligible, 0, 0, false));
+        }
+    }
+
+    fn mask_nat_eligibility(&mut self, now: Instant, reason: &'static str) {
+        let waiting = self
+            .plans
+            .values()
+            .any(|plan| plan.unresolved && now >= plan.due);
+        if waiting && self.nat_wait_reason != Some(reason) {
+            self.nat_wait_reason = Some(reason);
+            self.events
+                .push_back(self.event("progress", Some(reason), false, 0, 0, false));
+        }
+        for plan in self.plans.values_mut() {
+            plan.eligible = false;
+            if now >= plan.expires {
+                if !plan.stopped && plan.unresolved {
+                    self.events.push_back(plan.event(
+                        self.generation,
+                        "skipped",
+                        Some(reason),
+                        false,
+                    ));
+                }
+                plan.stopped = true;
+                plan.retire_addresses();
+            }
+        }
+        if self.next_packet.is_none_or(|next| now >= next) {
+            self.next_packet = Some(now + Duration::from_millis(50));
+        }
     }
     pub fn set_scout_counters(&mut self, counters: SweepScoutCounters) {
         self.scout = counters;

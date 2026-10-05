@@ -21,10 +21,10 @@ index 8ac676f..f36e324 100644
 +[target.'cfg(target_os = "linux")'.dependencies]
 +libc = "0.2"
 diff --git a/webrtc/src/peer_connection/mod.rs b/webrtc/src/peer_connection/mod.rs
-index b7c5c8d..c248a76 100644
+index b7c5c8d..d915009 100644
 --- a/webrtc/src/peer_connection/mod.rs
 +++ b/webrtc/src/peer_connection/mod.rs
-@@ -50,6 +50,14 @@
+@@ -50,6 +50,15 @@
  //! ```
  
  pub(crate) mod driver;
@@ -35,11 +35,12 @@ index b7c5c8d..c248a76 100644
 +mod host_sweep;
 +#[cfg(test)]
 +mod host_sweep_driver_tests;
++mod host_sweep_nat;
 +pub use host_sweep::HostCandidateSweepEvent;
  #[cfg(test)]
  mod late_direct_tests;
  pub(crate) mod transports;
-@@ -165,6 +173,9 @@ pub trait PeerConnectionEventHandler: Send + Sync + 'static {
+@@ -165,6 +174,9 @@ pub trait PeerConnectionEventHandler: Send + Sync + 'static {
      /// Called when a remote peer creates a data channel
      async fn on_data_channel(&self, _data_channel: Arc<dyn DataChannel>) {}
  
@@ -49,7 +50,7 @@ index b7c5c8d..c248a76 100644
      /// Called when a remote track is received
      async fn on_track(&self, _track: Arc<dyn TrackRemote>) {}
  }
-@@ -182,6 +193,7 @@ where
+@@ -182,6 +194,7 @@ where
      handler: Option<Arc<dyn PeerConnectionEventHandler>>,
      mdns_mode: MulticastDnsMode,
      discard_local_candidates_during_ice_restart: bool,
@@ -57,7 +58,7 @@ index b7c5c8d..c248a76 100644
      udp_addrs: Vec<A>,
      tcp_addrs: Vec<A>,
      dedicated_reactor: bool,
-@@ -197,6 +209,7 @@ impl<A: ToSocketAddrs> Default for PeerConnectionBuilder<A, NoopInterceptor> {
+@@ -197,6 +210,7 @@ impl<A: ToSocketAddrs> Default for PeerConnectionBuilder<A, NoopInterceptor> {
              handler: None,
              mdns_mode: MulticastDnsMode::Disabled,
              discard_local_candidates_during_ice_restart: false,
@@ -65,7 +66,7 @@ index b7c5c8d..c248a76 100644
              udp_addrs: vec![],
              tcp_addrs: vec![],
              dedicated_reactor: false,
-@@ -235,6 +248,7 @@ where
+@@ -235,6 +249,7 @@ where
      /// Configures the builder with the specified [`SettingEngine`].
      pub fn with_setting_engine(mut self, setting_engine: SettingEngine) -> Self {
          self.mdns_mode = setting_engine.multicast_dns().mode;
@@ -73,7 +74,7 @@ index b7c5c8d..c248a76 100644
          self.discard_local_candidates_during_ice_restart =
              setting_engine.discard_local_candidates_during_ice_restart();
          self.builder = self.builder.with_setting_engine(setting_engine);
-@@ -286,6 +300,7 @@ where
+@@ -286,6 +301,7 @@ where
              mdns_mode: self.mdns_mode,
              discard_local_candidates_during_ice_restart: self
                  .discard_local_candidates_during_ice_restart,
@@ -81,7 +82,7 @@ index b7c5c8d..c248a76 100644
              udp_addrs: self.udp_addrs,
              tcp_addrs: self.tcp_addrs,
              dedicated_reactor: self.dedicated_reactor,
-@@ -461,6 +476,7 @@ where
+@@ -461,6 +477,7 @@ where
                  .ok_or_else(|| std::io::Error::other("no event handler found"))?,
              self.mdns_mode,
              self.discard_local_candidates_during_ice_restart,
@@ -89,7 +90,7 @@ index b7c5c8d..c248a76 100644
              self.udp_addrs,
              self.tcp_addrs,
              self.dedicated_reactor,
-@@ -570,6 +586,29 @@ pub trait PeerConnection: Send + Sync + 'static {
+@@ -570,6 +587,29 @@ pub trait PeerConnection: Send + Sync + 'static {
          kind: RtpCodecKind,
          init: Option<RTCRtpTransceiverInit>,
      ) -> Result<Arc<dyn RtpTransceiver>>;
@@ -119,7 +120,7 @@ index b7c5c8d..c248a76 100644
      /// Get a snapshot of accumulated statistics.
      async fn get_stats(&self, now: Instant, selector: StatsSelector) -> RTCStatsReport;
  }
-@@ -653,6 +692,8 @@ where
+@@ -653,6 +693,8 @@ where
      /// discarding the old candidates and replacing the sockets they name are two halves of the
      /// same decision (webrtc#868).
      pub(crate) discard_local_candidates_during_ice_restart: bool,
@@ -128,7 +129,7 @@ index b7c5c8d..c248a76 100644
      /// Set when an ICE restart is detected, cleared by the driver when it has rebound.
      ///
      /// A flag rather than a driver event so the rebind cannot be ordered after the gathering it
-@@ -758,6 +799,7 @@ where
+@@ -758,6 +800,7 @@ where
      /// its transport across restarts pays nothing.
      #[inline]
      pub(crate) fn mark_ice_restart_rebind_pending(&self) {
@@ -136,7 +137,7 @@ index b7c5c8d..c248a76 100644
          if self.discard_local_candidates_during_ice_restart {
              self.ice_restart_rebind_pending
                  .store(true, Ordering::Release);
-@@ -807,6 +849,7 @@ where
+@@ -807,6 +850,7 @@ where
          handler: Arc<dyn PeerConnectionEventHandler>,
          mdns_mode: MulticastDnsMode,
          discard_local_candidates_during_ice_restart: bool,
@@ -144,7 +145,7 @@ index b7c5c8d..c248a76 100644
          udp_addrs: Vec<A>,
          tcp_addrs: Vec<A>,
          dedicated_reactor: bool,
-@@ -835,6 +878,8 @@ where
+@@ -835,6 +879,8 @@ where
                  data_channel_send_buffer_limit,
                  data_channel_backpressure: crate::runtime::Notify::new(),
                  discard_local_candidates_during_ice_restart,
@@ -153,7 +154,7 @@ index b7c5c8d..c248a76 100644
                  ice_restart_rebind_pending: AtomicBool::new(false),
              }),
              driver_handle: Mutex::new(None),
-@@ -1332,6 +1377,82 @@ where
+@@ -1332,6 +1378,82 @@ where
          Ok(rtp_transceiver.clone() as Arc<dyn RtpTransceiver>)
      }
  
@@ -236,7 +237,7 @@ index b7c5c8d..c248a76 100644
      /// Get a snapshot of accumulated statistics.
      async fn get_stats(&self, now: Instant, selector: StatsSelector) -> RTCStatsReport {
          let mut core = self.inner.core.lock().await;
-@@ -1391,6 +1512,8 @@ mod tests {
+@@ -1391,6 +1513,8 @@ mod tests {
              track_local_events_tx: Mutex::new(HashMap::new()),
              rtp_transceivers: Mutex::new(HashMap::new()),
              discard_local_candidates_during_ice_restart,
@@ -246,7 +247,7 @@ index b7c5c8d..c248a76 100644
          });
  
 diff --git a/webrtc/src/peer_connection/driver.rs b/webrtc/src/peer_connection/driver.rs
-index 8a0a53a..491dd77 100644
+index 8a0a53a..cf9ad9a 100644
 --- a/webrtc/src/peer_connection/driver.rs
 +++ b/webrtc/src/peer_connection/driver.rs
 @@ -2,6 +2,7 @@
@@ -347,7 +348,7 @@ index 8a0a53a..491dd77 100644
  
              // Wake senders blocked in `DataChannel::writable()`: the poll_* passes above
              // applied any SCTP buffer releases (acked/abandoned bytes) to the per-channel
-@@ -851,6 +891,262 @@ where
+@@ -851,6 +891,282 @@ where
          }
      }
  
@@ -374,12 +375,32 @@ index 8a0a53a..491dd77 100644
 +            .filter(|candidate| {
 +                candidate.candidate_type() == CandidateType::Host
 +                    && candidate.network_type().is_udp()
++                    && candidate.component() == 1
 +            })
 +            .map(Candidate::addr)
 +            .collect::<Vec<_>>();
-+        self.prepare_host_sweep_ports(now, &hosts);
-+        #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
-+        self.poll_host_scouts(now, relay, &hosts);
++        let live_hosts = hosts
++            .iter()
++            .copied()
++            .filter(|local| {
++                self.udp_sockets
++                    .get(local)
++                    .is_some_and(|socket| socket.supports_host_candidate_sweep())
++            })
++            .collect::<Vec<_>>();
++        let nat = super::host_sweep_nat::evidence(
++            core.local_ice_candidates(),
++            core.remote_ice_candidates(),
++            &live_hosts,
++        );
++        if self.host_sweep.gate_nat(now, nat.reason()) {
++            self.prepare_host_sweep_ports(now, &hosts);
++            #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
++            self.poll_host_scouts(now, relay, &live_hosts);
++        } else {
++            #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
++            self.host_scouts.suspend();
++        }
 +        self.host_sweep.defer_tick(now);
 +        drop(core);
 +        self.report_host_sweep().await;
@@ -610,7 +631,7 @@ index 8a0a53a..491dd77 100644
      async fn handle_write(&mut self, msg: TaggedBytesMut) -> Result<usize> {
          if msg.transport.transport_protocol == TransportProtocol::TCP {
              self.tcp_transport.write(&msg).await
-@@ -1283,8 +1579,50 @@ where
+@@ -1283,8 +1599,50 @@ where
          }
      }
  
@@ -662,7 +683,7 @@ index 8a0a53a..491dd77 100644
              PeerConnectionDriverEvent::SenderRtp(sender_id, packet) => {
                  let mut core = self.inner.core.lock().await;
                  if let Some(mut sender) = core.rtp_sender(sender_id) {
-@@ -1397,6 +1735,10 @@ where
+@@ -1397,6 +1755,10 @@ where
                  self.tcp_transport.register_stream(four_tuple, stream);
              }
              PeerConnectionDriverEvent::Close => {
@@ -673,7 +694,7 @@ index 8a0a53a..491dd77 100644
                  if let Err(err) = self.turn_relayer.close() {
                      error!("Failed to close turn_relayer: {}", err);
                  }
-@@ -1752,11 +2094,16 @@ where
+@@ -1752,11 +2114,16 @@ where
          let stun_timeout = self.stun_gatherer.poll_timeout();
          let turn_timeout = self.turn_relayer.poll_timeout();
  
@@ -696,10 +717,10 @@ index 8a0a53a..491dd77 100644
  
      async fn handle_timeout(&mut self, now: Instant) -> Result<()> {
 diff --git a/webrtc/src/peer_connection/host_sweep.rs b/webrtc/src/peer_connection/host_sweep.rs
-index e69de29..019a9c4 100644
+index e69de29..44f10c5 100644
 --- a/webrtc/src/peer_connection/host_sweep.rs
 +++ b/webrtc/src/peer_connection/host_sweep.rs
-@@ -0,0 +1,943 @@
+@@ -0,0 +1,1002 @@
 +//! Bounded, credential-free conntrack probes on an advertised host socket.
 +
 +use rtc::shared::ifaces::{Interface, NextHop};
@@ -738,7 +759,7 @@ index e69de29..019a9c4 100644
 +    pub neighbors_pending_peak: u32,
 +    /// Fixed content-free skip or stop reason.
 +    pub reason: Option<&'static str>,
-+    /// An advertised host socket has a safe, bounded on-link subnet.
++    /// A safe, bounded host subnet is authorized by current matching srflx evidence.
 +    pub eligible: bool,
 +    /// Generation-wide eligible ports whose names remain unresolved.
 +    pub eligible_unresolved: u32,
@@ -1124,6 +1145,7 @@ index e69de29..019a9c4 100644
 +    scout: SweepScoutCounters,
 +    events: VecDeque<HostCandidateSweepEvent>,
 +    relay: bool,
++    nat_wait_reason: Option<&'static str>,
 +}
 +
 +struct PortSweep {
@@ -1138,6 +1160,9 @@ index e69de29..019a9c4 100644
 +    prflx_followed: bool,
 +    report_pending: bool,
 +    eligible: bool,
++    // Numeric restart evidence survives address retirement, but current NAT
++    // authorization masks the public eligibility independently.
++    subnet_eligible: bool,
 +    unresolved: bool,
 +    successful_destinations: std::collections::HashSet<(SocketAddr, Ipv4Addr)>,
 +    pass_destinations: std::collections::HashSet<(SocketAddr, Ipv4Addr)>,
@@ -1158,6 +1183,7 @@ index e69de29..019a9c4 100644
 +            self.packets = 0;
 +            self.sent = 0;
 +            self.scout = SweepScoutCounters::default();
++            self.nat_wait_reason = None;
 +            self.next_packet = None;
 +            self.remote_ufrag = ufrag;
 +            self.generation = generation;
@@ -1184,6 +1210,7 @@ index e69de29..019a9c4 100644
 +                prflx_followed: false,
 +                report_pending: false,
 +                eligible: false,
++                subnet_eligible: false,
 +                unresolved: true,
 +                successful_destinations: std::collections::HashSet::new(),
 +                pass_destinations: std::collections::HashSet::new(),
@@ -1204,6 +1231,7 @@ index e69de29..019a9c4 100644
 +    pub fn prepare(&mut self, port: u16, subnets: Vec<SweepSubnet>) {
 +        if let Some(plan) = self.plans.get_mut(&port) {
 +            plan.eligible = !subnets.is_empty();
++            plan.subnet_eligible = plan.eligible;
 +            plan.subnets = Some(subnets);
 +            self.events
 +                .push_back(self.event("started", None, true, 0, 0, false));
@@ -1214,6 +1242,7 @@ index e69de29..019a9c4 100644
 +        if let Some(plan) = self.plans.get_mut(&port) {
 +            plan.stopped = true;
 +            plan.eligible = false;
++            plan.subnet_eligible = false;
 +            plan.retire_addresses();
 +            self.events
 +                .push_back(plan.event(self.generation, "skipped", Some(reason), false));
@@ -1347,7 +1376,7 @@ index e69de29..019a9c4 100644
 +        ]
 +        .contains(&reason);
 +        for plan in self.plans.values_mut() {
-+            if !plan.stopped || (retire && plan.eligible && plan.unresolved) {
++            if !plan.stopped || (retire && plan.unresolved) {
 +                plan.stopped = true;
 +                if retire {
 +                    plan.unresolved = false;
@@ -1420,6 +1449,57 @@ index e69de29..019a9c4 100644
 +    pub fn note_skip(&mut self, reason: &'static str) {
 +        self.events
 +            .push_back(self.event("skipped", Some(reason), false, 0, 0, false));
++    }
++    pub fn gate_nat(&mut self, now: Instant, reason: Option<&'static str>) -> bool {
++        if let Some(reason) = reason {
++            self.mask_nat_eligibility(now, reason);
++            false
++        } else {
++            self.restore_nat_eligibility();
++            true
++        }
++    }
++
++    fn restore_nat_eligibility(&mut self) {
++        for plan in self.plans.values_mut() {
++            plan.eligible = plan.subnet_eligible && plan.unresolved;
++        }
++        if self.nat_wait_reason.take().is_some() && self.plans.values().any(|plan| plan.unresolved)
++        {
++            let eligible = self.plans.values().any(|plan| plan.eligible);
++            self.events
++                .push_back(self.event("progress", None, eligible, 0, 0, false));
++        }
++    }
++
++    fn mask_nat_eligibility(&mut self, now: Instant, reason: &'static str) {
++        let waiting = self
++            .plans
++            .values()
++            .any(|plan| plan.unresolved && now >= plan.due);
++        if waiting && self.nat_wait_reason != Some(reason) {
++            self.nat_wait_reason = Some(reason);
++            self.events
++                .push_back(self.event("progress", Some(reason), false, 0, 0, false));
++        }
++        for plan in self.plans.values_mut() {
++            plan.eligible = false;
++            if now >= plan.expires {
++                if !plan.stopped && plan.unresolved {
++                    self.events.push_back(plan.event(
++                        self.generation,
++                        "skipped",
++                        Some(reason),
++                        false,
++                    ));
++                }
++                plan.stopped = true;
++                plan.retire_addresses();
++            }
++        }
++        if self.next_packet.is_none_or(|next| now >= next) {
++            self.next_packet = Some(now + Duration::from_millis(50));
++        }
 +    }
 +    pub fn set_scout_counters(&mut self, counters: SweepScoutCounters) {
 +        self.scout = counters;
@@ -1644,10 +1724,10 @@ index e69de29..019a9c4 100644
 +#[path = "host_sweep_tests.rs"]
 +mod tests;
 diff --git a/webrtc/src/peer_connection/host_sweep_tests.rs b/webrtc/src/peer_connection/host_sweep_tests.rs
-index e69de29..15872e4 100644
+index e69de29..e7d6b5d 100644
 --- a/webrtc/src/peer_connection/host_sweep_tests.rs
 +++ b/webrtc/src/peer_connection/host_sweep_tests.rs
-@@ -0,0 +1,703 @@
+@@ -0,0 +1,860 @@
 +use super::*;
 +use rtc::shared::ifaces::Kind;
 +
@@ -2351,6 +2431,163 @@ index e69de29..15872e4 100644
 +    assert!(sweep.plans[&40000].stopped);
 +    assert_eq!(sweep.sent, 4);
 +}
++
++#[test]
++fn missing_or_different_nat_emits_no_packets_and_expires_without_renewal() {
++    let now = Instant::now();
++    for reason in ["nat-evidence-missing", "nat-address-mismatch"] {
++        let mut sweep = HostSweep::default();
++        sweep.start(7, "ufrag".into(), 40000, now);
++        for ms in 250..26000 {
++            let tick = now + Duration::from_millis(ms);
++            assert!(!sweep.gate_nat(tick, Some(reason)));
++        }
++        assert!(sweep.plans[&40000].stopped);
++        assert!(!sweep.plans[&40000].eligible);
++        assert_eq!(sweep.packets, 0);
++        assert!(
++            sweep.deadline().is_none(),
++            "expired NAT wait cannot spin timer"
++        );
++        let events = std::iter::from_fn(|| sweep.pop_event()).collect::<Vec<_>>();
++        assert!(events.len() <= 2, "pause and terminal events coalesce");
++        let last = events.last().unwrap();
++        assert_eq!(last.status, "skipped");
++        assert_eq!(last.reason, Some(reason));
++        assert_eq!(last.eligible_unresolved, 0);
++    }
++}
++#[test]
++fn delayed_nat_evidence_can_authorize_within_the_existing_candidate_lifetime() {
++    let now = Instant::now();
++    let mut sweep = HostSweep::default();
++    sweep.start(7, "ufrag".into(), 40000, now);
++    assert!(!sweep.gate_nat(now + GRACE, Some("nat-address-mismatch")));
++    assert!(sweep.gate_nat(now + Duration::from_secs(2), None));
++    sweep.prepare(40000, vec![subnet()]);
++    let probe = sweep
++        .next_probe(now + Duration::from_secs(2), false)
++        .unwrap();
++    sweep.record_result(probe.port, true);
++    assert_eq!(sweep.sent, 1);
++    assert_eq!(sweep.plans[&40000].expires, now + WINDOW);
++    assert!(!sweep.gate_nat(now + Duration::from_secs(3), Some("nat-evidence-missing")));
++    let event = std::iter::from_fn(|| sweep.pop_event()).last().unwrap();
++    assert!(!event.eligible);
++    assert_eq!(event.eligible_unresolved, 0);
++}
++
++#[test]
++fn nat_loss_still_retires_completed_plan_addresses_at_original_expiry() {
++    let now = Instant::now();
++    let mut sweep = HostSweep::default();
++    sweep.start(7, "ufrag".into(), 40000, now);
++    sweep.prepare(40000, vec![subnet()]);
++    for tick in [
++        now + GRACE,
++        now + GRACE + PACE,
++        now + GRACE + PACE + REPEAT_DELAY,
++        now + GRACE + 2 * PACE + REPEAT_DELAY,
++    ] {
++        let probe = sweep.next_probe(tick, true).unwrap();
++        sweep.record_result(probe.port, true);
++    }
++    assert!(sweep.plans[&40000].stopped);
++    assert!(sweep.plans[&40000].subnets.is_some());
++    assert!(!sweep.gate_nat(now + WINDOW, Some("nat-evidence-missing")));
++    assert!(sweep.plans[&40000].subnets.is_none());
++    assert!(sweep.plans[&40000].successful_destinations.is_empty());
++    assert!(sweep.deadline().is_none());
++}
++
++#[test]
++fn expired_unresolved_plan_keeps_numeric_eligibility_only_while_nat_matches() {
++    let now = Instant::now();
++    let mut sweep = HostSweep::default();
++    sweep.start(7, "ufrag".into(), 40000, now);
++    sweep.prepare(40000, vec![subnet()]);
++    while sweep.pop_event().is_some() {}
++    sweep.active_subnets(now + WINDOW);
++    assert!(sweep.plans[&40000].subnets.is_none());
++    assert!(sweep.gate_nat(now + WINDOW + PACE, None));
++    let expired = sweep.pop_event().unwrap();
++    assert_eq!(
++        expired.eligible_unresolved, 1,
++        "expiry preserves restart evidence"
++    );
++    assert!(!sweep.gate_nat(now + WINDOW + 2 * PACE, Some("nat-evidence-missing")));
++    assert!(
++        !sweep.plans[&40000].eligible,
++        "missing NAT masks numeric evidence"
++    );
++    assert!(sweep.gate_nat(now + WINDOW + 3 * PACE, None));
++    assert!(
++        sweep.plans[&40000].eligible,
++        "later match restores numeric evidence"
++    );
++    assert!(sweep.plans[&40000].subnets.is_none());
++    assert!(sweep.deadline().is_none());
++    assert!(sweep.next_probe(now + WINDOW + 3 * PACE, true).is_none());
++}
++
++#[test]
++fn direct_selection_retires_completed_observations_even_when_nat_masks_eligibility() {
++    let now = Instant::now();
++    let mut sweep = HostSweep::default();
++    sweep.start(7, "ufrag".into(), 40000, now);
++    sweep.prepare(40000, vec![subnet()]);
++    for tick in [
++        now + GRACE,
++        now + GRACE + PACE,
++        now + GRACE + PACE + REPEAT_DELAY,
++        now + GRACE + 2 * PACE + REPEAT_DELAY,
++    ] {
++        let probe = sweep.next_probe(tick, true).unwrap();
++        sweep.record_result(probe.port, true);
++    }
++    assert!(sweep.plans[&40000].stopped);
++    assert!(!sweep.gate_nat(now + Duration::from_secs(2), Some("nat-evidence-missing")));
++    sweep.stop_all("direct-selected");
++    assert!(sweep.plans[&40000].subnets.is_none());
++    assert!(sweep.plans[&40000].successful_destinations.is_empty());
++    assert!(!sweep.plans[&40000].unresolved);
++    assert!(sweep.gate_nat(now + Duration::from_secs(3), None));
++    assert!(!sweep.plans[&40000].eligible);
++    let last = std::iter::from_fn(|| sweep.pop_event()).last().unwrap();
++    assert_eq!(last.reason, Some("direct-selected"));
++    assert_eq!(last.eligible_unresolved, 0);
++    assert!(sweep.deadline().is_none());
++}
++
++#[test]
++fn nat_transitions_publish_masked_and_restored_numeric_evidence_after_expiry() {
++    let now = Instant::now();
++    let mut sweep = HostSweep::default();
++    sweep.start(7, "ufrag".into(), 40000, now);
++    sweep.prepare(40000, vec![subnet()]);
++    sweep.active_subnets(now + WINDOW);
++    while sweep.pop_event().is_some() {}
++    assert!(!sweep.gate_nat(now + WINDOW + PACE, Some("nat-evidence-missing")));
++    let missing = sweep
++        .pop_event()
++        .expect("published eligibility must reflect NAT loss");
++    assert_eq!(missing.eligible_unresolved, 0);
++    assert!(!missing.eligible);
++    assert_eq!(missing.reason, Some("nat-evidence-missing"));
++    assert!(!sweep.gate_nat(now + WINDOW + 2 * PACE, Some("nat-evidence-missing")));
++    assert!(sweep.pop_event().is_none(), "unchanged evidence coalesces");
++    assert!(sweep.gate_nat(now + WINDOW + 3 * PACE, None));
++    let matching = sweep
++        .pop_event()
++        .expect("published eligibility must reflect restored NAT match");
++    assert_eq!(matching.eligible_unresolved, 1);
++    assert!(matching.eligible);
++    assert!(sweep.gate_nat(now + WINDOW + 4 * PACE, None));
++    assert!(sweep.pop_event().is_none());
++    assert_eq!(sweep.packets, 0);
++    assert!(sweep.deadline().is_none());
++    assert!(sweep.plans[&40000].subnets.is_none());
++}
 diff --git a/webrtc/src/peer_connection/host_sweep_driver_tests.rs b/webrtc/src/peer_connection/host_sweep_driver_tests.rs
 index e69de29..93a7799 100644
 --- a/webrtc/src/peer_connection/host_sweep_driver_tests.rs
@@ -2448,6 +2685,153 @@ index e69de29..93a7799 100644
 +            "a stale clear notification must not destroy newer plans"
 +        );
 +    }));
++}
+diff --git a/webrtc/src/peer_connection/host_sweep_nat.rs b/webrtc/src/peer_connection/host_sweep_nat.rs
+index e69de29..94bcefa 100644
+--- a/webrtc/src/peer_connection/host_sweep_nat.rs
++++ b/webrtc/src/peer_connection/host_sweep_nat.rs
+@@ -0,0 +1,142 @@
++//! Current operational ICE evidence for the same-NAT sweep authorization.
++use rtc::ice::candidate::{Candidate, CandidateType};
++use std::collections::HashSet;
++use std::net::{IpAddr, Ipv4Addr, SocketAddr};
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub(super) enum NatEvidence {
++    Match,
++    Missing,
++    Different,
++}
++impl NatEvidence {
++    pub fn reason(self) -> Option<&'static str> {
++        match self {
++            Self::Match => None,
++            Self::Missing => Some("nat-evidence-missing"),
++            Self::Different => Some("nat-address-mismatch"),
++        }
++    }
++}
++pub(super) fn evidence(
++    local: &[Candidate],
++    remote: &[Candidate],
++    live_hosts: &[SocketAddr],
++) -> NatEvidence {
++    let local = local
++        .iter()
++        .filter(|candidate| live_hosts.contains(&candidate.base_addr()))
++        .filter_map(ipv4_srflx)
++        .collect::<HashSet<_>>();
++    let remote = remote.iter().filter_map(ipv4_srflx).collect::<HashSet<_>>();
++    if local.is_empty() || remote.is_empty() {
++        NatEvidence::Missing
++    } else if local.is_disjoint(&remote) {
++        NatEvidence::Different
++    } else {
++        NatEvidence::Match
++    }
++}
++
++fn ipv4_srflx(candidate: &Candidate) -> Option<Ipv4Addr> {
++    if candidate.candidate_type() != CandidateType::ServerReflexive
++        || !candidate.network_type().is_udp()
++        || candidate.component() != 1
++    {
++        return None;
++    }
++    match candidate.addr().ip() {
++        IpAddr::V4(ip) => Some(ip),
++        IpAddr::V6(_) => None,
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use rtc::ice::candidate::{
++        CandidateConfig, candidate_server_reflexive::CandidateServerReflexiveConfig,
++    };
++    fn srflx(ip: &str, port: u16, base: &str, component: u16) -> Candidate {
++        let base: SocketAddr = base.parse().unwrap();
++        CandidateServerReflexiveConfig {
++            base_config: CandidateConfig {
++                network: "udp".into(),
++                address: ip.into(),
++                port,
++                component,
++                ..Default::default()
++            },
++            rel_addr: base.ip().to_string(),
++            rel_port: base.port(),
++            ..Default::default()
++        }
++        .new_candidate_server_reflexive()
++        .unwrap()
++    }
++    #[test]
++    fn only_current_ipv4_srflx_intersection_qualifies_and_ports_need_not_match() {
++        let host = "10.72.0.1:45000".parse().unwrap();
++        let local = [srflx("203.0.113.1", 52000, "10.72.0.1:45000", 1)];
++        let remote = [srflx("203.0.113.1", 53000, "10.72.3.254:40000", 1)];
++        assert_eq!(evidence(&local, &remote, &[host]), NatEvidence::Match);
++        assert_eq!(
++            evidence(
++                &local,
++                &[srflx("203.0.113.2", 53000, "10.72.3.254:40000", 1)],
++                &[host]
++            ),
++            NatEvidence::Different
++        );
++        assert_eq!(evidence(&local, &[], &[host]), NatEvidence::Missing);
++        assert_eq!(evidence(&[], &remote, &[host]), NatEvidence::Missing);
++        assert_eq!(
++            evidence(&local, &remote, &[]),
++            NatEvidence::Missing,
++            "old/rebound local srflx base does not qualify"
++        );
++    }
++    #[test]
++    fn relay_prflx_ipv6_and_other_component_evidence_cannot_authorize() {
++        let host = "10.72.0.1:45000".parse().unwrap();
++        let local = [srflx("203.0.113.1", 52000, "10.72.0.1:45000", 1)];
++        for remote in [
++            "candidate:r 1 udp 1 203.0.113.1 53000 typ relay raddr 10.72.3.254 rport 40000",
++            "candidate:p 1 udp 1 203.0.113.1 53000 typ prflx",
++            "candidate:s 1 tcp 1 203.0.113.1 53000 typ srflx raddr 10.72.3.254 rport 40000 tcptype passive",
++            "candidate:v 1 udp 1 2001:db8::1 53000 typ srflx raddr 2001:db8::2 rport 40000",
++        ] {
++            let candidate = rtc::ice::candidate::unmarshal_candidate(
++                remote.strip_prefix("candidate:").unwrap(),
++            )
++            .unwrap();
++            assert_eq!(
++                evidence(&local, &[candidate], &[host]),
++                NatEvidence::Missing
++            );
++        }
++        assert_eq!(
++            evidence(
++                &local,
++                &[srflx("203.0.113.1", 53000, "10.72.3.254:40000", 2)],
++                &[host]
++            ),
++            NatEvidence::Missing
++        );
++    }
++    #[test]
++    fn multihomed_sets_match_any_live_mapping_without_retired_base_substitution() {
++        let host = "10.72.0.1:45000".parse().unwrap();
++        let local = [
++            srflx("203.0.113.1", 52000, "10.72.0.1:45001", 1),
++            srflx("203.0.113.2", 52000, "10.72.0.1:45000", 1),
++        ];
++        let remote = [srflx("203.0.113.1", 53000, "10.72.3.254:40000", 1)];
++        assert_eq!(evidence(&local, &remote, &[host]), NatEvidence::Different);
++        let both = [
++            remote[0].clone(),
++            srflx("203.0.113.2", 53000, "10.72.3.254:40000", 1),
++        ];
++        assert_eq!(evidence(&local, &both, &[host]), NatEvidence::Match);
++    }
 +}
 diff --git a/webrtc/src/peer_connection/host_neighbors.rs b/webrtc/src/peer_connection/host_neighbors.rs
 index e69de29..e4e93ec 100644
@@ -3596,14 +3980,14 @@ index e69de29..b1598dd 100644
 +    }
 +}
 diff --git a/webrtc/src/peer_connection/host_scout.rs b/webrtc/src/peer_connection/host_scout.rs
-index e69de29..8217250 100644
+index e69de29..b4ff94f 100644
 --- a/webrtc/src/peer_connection/host_scout.rs
 +++ b/webrtc/src/peer_connection/host_scout.rs
-@@ -0,0 +1,685 @@
+@@ -0,0 +1,819 @@
 +//! Anonymous ARP discovery, kept separate from the advertised ICE socket.
 +use super::host_neighbors::{ScoutSnapshot, scout_snapshot_until};
 +use super::host_sweep::{HostSweepControl, SweepScoutCounters, SweepSubnet};
-+use std::collections::HashSet;
++use std::collections::{HashMap, HashSet};
 +use std::io;
 +use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 +use std::sync::{Arc, Mutex, OnceLock};
@@ -3613,6 +3997,8 @@ index e69de29..8217250 100644
 +const FRESH: Duration = Duration::from_millis(100);
 +const MAX_PENDING: usize = 256;
 +const MAX_SOCKETS: usize = 5;
++const INTERFACE_WINDOW: Duration = Duration::from_secs(60);
++const MAX_INTERFACE_WINDOWS: usize = 64;
 +
 +#[derive(Default)]
 +struct Admission {
@@ -3624,8 +4010,27 @@ index e69de29..8217250 100644
 +    threshold: usize,
 +    soft_threshold: usize,
 +    sockets: usize,
++    interface_windows: HashMap<u32, Instant>,
 +}
 +impl Admission {
++    fn interface_available(&mut self, index: u32, owner: Option<Instant>, now: Instant) -> bool {
++        self.interface_windows
++            .retain(|_, start| now < *start || now.duration_since(*start) < INTERFACE_WINDOW);
++        if index == 0 {
++            return false;
++        }
++        if let Some(start) = owner {
++            return self.interface_windows.get(&index) == Some(&start)
++                && now >= start
++                && now.duration_since(start) < INTERFACE_WINDOW;
++        }
++        !self.interface_windows.contains_key(&index)
++            && self.interface_windows.len() < MAX_INTERFACE_WINDOWS
++    }
++    fn start_interface(&mut self, index: u32, at: Instant) {
++        self.interface_windows.entry(index).or_insert(at);
++    }
++
 +    fn observe(
 +        &mut self,
 +        at: Instant,
@@ -3773,8 +4178,17 @@ index e69de29..8217250 100644
 +    failed: u32,
 +    usable: HashSet<Ipv4Addr>,
 +    last_admission: Option<Instant>,
++    scout_lease: Option<Instant>,
 +}
 +impl Group {
++    fn scout_available(&mut self, budget: &mut Admission, now: Instant) -> bool {
++        if budget.interface_available(self.subnet.interface_index, self.scout_lease, now) {
++            return true;
++        }
++        self.cursor = self.subnet.addresses.len();
++        self.failed += 1;
++        false
++    }
 +    fn same_subnet(&self, subnet: &SweepSubnet) -> bool {
 +        self.subnet.same_authorization(subnet)
 +    }
@@ -3874,6 +4288,7 @@ index e69de29..8217250 100644
 +                failed: u32::from(suppressed),
 +                usable: HashSet::new(),
 +                last_admission: None,
++                scout_lease: None,
 +            });
 +        }
 +    }
@@ -3889,6 +4304,9 @@ index e69de29..8217250 100644
 +        } else {
 +            self.retirement_limit = true;
 +        }
++    }
++    pub fn suspend(&mut self) {
++        self.retire_active();
 +    }
 +    fn retire_active(&mut self) {
 +        for group in std::mem::take(&mut self.groups) {
@@ -4018,6 +4436,9 @@ index e69de29..8217250 100644
 +            .lock()
 +            .map_err(|_| "neighbor-snapshot-unavailable")?;
 +        let send_at = Instant::now();
++        if !group.scout_available(&mut budget, send_at) {
++            return Err("interface-scout-cooldown");
++        }
 +        if send_at >= expires {
 +            return Err("window-expired");
 +        }
@@ -4051,6 +4472,10 @@ index e69de29..8217250 100644
 +                let accepted = Instant::now();
 +                budget.reservations.push(accepted);
 +                group.last_admission = Some(accepted);
++                if group.scout_lease.is_none() {
++                    budget.start_interface(group.subnet.interface_index, accepted);
++                    group.scout_lease = Some(accepted);
++                }
 +                self.counters.sent += 1;
 +                self.counters.destinations += 1;
 +                group.cursor += 1;
@@ -4129,6 +4554,99 @@ index e69de29..8217250 100644
 +            failed: 0,
 +            usable: HashSet::new(),
 +            last_admission: None,
++            scout_lease: None,
++        }
++    }
++    #[test]
++    fn interface_window_allows_one_pass_across_peers_and_generations_without_sliding() {
++        let now = Instant::now();
++        let mut budget = Admission::default();
++        assert!(budget.interface_available(2, None, now));
++        // Only a successful scout enqueue creates the timestamp.
++        assert!(budget.interface_available(2, None, now + PACE));
++        budget.start_interface(2, now + PACE);
++        assert!(budget.interface_available(2, Some(now + PACE), now + 2 * PACE));
++        assert!(
++            !budget.interface_available(2, None, now + 2 * PACE),
++            "second peer cannot start a pass"
++        );
++        assert!(
++            !budget.interface_available(2, None, now + Duration::from_secs(59)),
++            "new generation cannot renew it"
++        );
++        assert!(
++            budget.interface_available(3, None, now + Duration::from_secs(59)),
++            "different owning interface independent"
++        );
++        assert!(budget.interface_available(2, None, now + PACE + Duration::from_secs(60)));
++        assert!(
++            !budget.interface_available(2, Some(now + PACE), now + PACE + Duration::from_secs(60)),
++            "old owner cannot renew after expiry"
++        );
++    }
++    #[test]
++    fn full_interface_registry_never_evicts_an_unexpired_pass() {
++        let now = Instant::now();
++        let mut budget = Admission::default();
++        for index in 1..=MAX_INTERFACE_WINDOWS as u32 {
++            budget.start_interface(index, now);
++        }
++        assert!(!budget.interface_available(65, None, now + PACE));
++        assert_eq!(budget.interface_windows.len(), MAX_INTERFACE_WINDOWS);
++        assert!(budget.interface_available(1, Some(now), now + PACE));
++        assert!(!budget.interface_available(1, None, now - PACE));
++        assert_eq!(budget.interface_windows.len(), MAX_INTERFACE_WINDOWS);
++        assert!(budget.interface_available(65, None, now + INTERFACE_WINDOW));
++        assert!(budget.interface_windows.is_empty());
++    }
++    #[test]
++    fn second_peer_and_generation_reuse_known_neighbor_without_scouting_again() {
++        use super::super::host_sweep::HostSweep;
++        let now = Instant::now();
++        let subnet = test_subnet(&[]);
++        let phone = Ipv4Addr::new(10, 72, 0, 6);
++        let mut budget = Admission::default();
++        budget.start_interface(subnet.interface_index, now);
++        for generation in [7, 8] {
++            let current = now + Duration::from_secs(generation);
++            let mut group = test_group(subnet.clone());
++            assert!(
++                !group.scout_available(&mut budget, current),
++                "another peer or ICE generation cannot scout that interface again"
++            );
++            assert_eq!(group.cursor, subnet.addresses.len());
++            group.snapshot = Some(ScoutSnapshot {
++                observed_at: current,
++                usable: vec![phone],
++                incomplete: Vec::new(),
++                failed: Vec::new(),
++                netns_total: 1,
++                incomplete_total: 0,
++                table_entries: 1,
++                gc_thresh2: 512,
++                gc_thresh3: 1024,
++            });
++            group.usable.insert(phone);
++            let scouts = HostScouts {
++                groups: vec![group],
++                ..Default::default()
++            };
++            let mut sweep = HostSweep::default();
++            sweep.start(
++                generation,
++                "fresh".into(),
++                40000,
++                current - Duration::from_millis(250),
++            );
++            sweep.prepare(40000, vec![subnet.clone()]);
++            let probe = sweep
++                .next_usable_probe(current, true, |source, address| {
++                    scouts.usable(source, address, current)
++                })
++                .expect("a fresh resolved neighbor still gets a real-host probe");
++            assert_eq!(probe.destination, phone);
++            assert_eq!(scouts.counters.sent, 0);
++            assert_eq!(budget.interface_windows[&subnet.interface_index], now);
 +        }
 +    }
 +    #[test]

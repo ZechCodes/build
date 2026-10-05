@@ -914,12 +914,32 @@ where
             .filter(|candidate| {
                 candidate.candidate_type() == CandidateType::Host
                     && candidate.network_type().is_udp()
+                    && candidate.component() == 1
             })
             .map(Candidate::addr)
             .collect::<Vec<_>>();
-        self.prepare_host_sweep_ports(now, &hosts);
-        #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
-        self.poll_host_scouts(now, relay, &hosts);
+        let live_hosts = hosts
+            .iter()
+            .copied()
+            .filter(|local| {
+                self.udp_sockets
+                    .get(local)
+                    .is_some_and(|socket| socket.supports_host_candidate_sweep())
+            })
+            .collect::<Vec<_>>();
+        let nat = super::host_sweep_nat::evidence(
+            core.local_ice_candidates(),
+            core.remote_ice_candidates(),
+            &live_hosts,
+        );
+        if self.host_sweep.gate_nat(now, nat.reason()) {
+            self.prepare_host_sweep_ports(now, &hosts);
+            #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+            self.poll_host_scouts(now, relay, &live_hosts);
+        } else {
+            #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+            self.host_scouts.suspend();
+        }
         self.host_sweep.defer_tick(now);
         drop(core);
         self.report_host_sweep().await;

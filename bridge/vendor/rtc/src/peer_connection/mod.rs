@@ -2103,6 +2103,11 @@ where
         self.ice_transport().agent.get_local_candidates()
     }
 
+    /// Current generation's accepted remote ICE candidates, without retained stats history.
+    pub fn remote_ice_candidates(&self) -> &[ice::candidate::Candidate] {
+        self.ice_transport().agent.get_remote_candidates()
+    }
+
     /// The operational selected pair, without retaining failed-generation history.
     pub fn selected_ice_candidates(
         &self,

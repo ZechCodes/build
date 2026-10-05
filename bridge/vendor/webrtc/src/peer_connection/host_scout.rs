@@ -1,7 +1,7 @@
 //! Anonymous ARP discovery, kept separate from the advertised ICE socket.
 use super::host_neighbors::{ScoutSnapshot, scout_snapshot_until};
 use super::host_sweep::{HostSweepControl, SweepScoutCounters, SweepSubnet};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -11,6 +11,8 @@ const PACE: Duration = Duration::from_millis(5);
 const FRESH: Duration = Duration::from_millis(100);
 const MAX_PENDING: usize = 256;
 const MAX_SOCKETS: usize = 5;
+const INTERFACE_WINDOW: Duration = Duration::from_secs(60);
+const MAX_INTERFACE_WINDOWS: usize = 64;
 
 #[derive(Default)]
 struct Admission {
@@ -22,8 +24,27 @@ struct Admission {
     threshold: usize,
     soft_threshold: usize,
     sockets: usize,
+    interface_windows: HashMap<u32, Instant>,
 }
 impl Admission {
+    fn interface_available(&mut self, index: u32, owner: Option<Instant>, now: Instant) -> bool {
+        self.interface_windows
+            .retain(|_, start| now < *start || now.duration_since(*start) < INTERFACE_WINDOW);
+        if index == 0 {
+            return false;
+        }
+        if let Some(start) = owner {
+            return self.interface_windows.get(&index) == Some(&start)
+                && now >= start
+                && now.duration_since(start) < INTERFACE_WINDOW;
+        }
+        !self.interface_windows.contains_key(&index)
+            && self.interface_windows.len() < MAX_INTERFACE_WINDOWS
+    }
+    fn start_interface(&mut self, index: u32, at: Instant) {
+        self.interface_windows.entry(index).or_insert(at);
+    }
+
     fn observe(
         &mut self,
         at: Instant,
@@ -171,8 +192,17 @@ struct Group {
     failed: u32,
     usable: HashSet<Ipv4Addr>,
     last_admission: Option<Instant>,
+    scout_lease: Option<Instant>,
 }
 impl Group {
+    fn scout_available(&mut self, budget: &mut Admission, now: Instant) -> bool {
+        if budget.interface_available(self.subnet.interface_index, self.scout_lease, now) {
+            return true;
+        }
+        self.cursor = self.subnet.addresses.len();
+        self.failed += 1;
+        false
+    }
     fn same_subnet(&self, subnet: &SweepSubnet) -> bool {
         self.subnet.same_authorization(subnet)
     }
@@ -272,6 +302,7 @@ impl HostScouts {
                 failed: u32::from(suppressed),
                 usable: HashSet::new(),
                 last_admission: None,
+                scout_lease: None,
             });
         }
     }
@@ -287,6 +318,9 @@ impl HostScouts {
         } else {
             self.retirement_limit = true;
         }
+    }
+    pub fn suspend(&mut self) {
+        self.retire_active();
     }
     fn retire_active(&mut self) {
         for group in std::mem::take(&mut self.groups) {
@@ -416,6 +450,9 @@ impl HostScouts {
             .lock()
             .map_err(|_| "neighbor-snapshot-unavailable")?;
         let send_at = Instant::now();
+        if !group.scout_available(&mut budget, send_at) {
+            return Err("interface-scout-cooldown");
+        }
         if send_at >= expires {
             return Err("window-expired");
         }
@@ -449,6 +486,10 @@ impl HostScouts {
                 let accepted = Instant::now();
                 budget.reservations.push(accepted);
                 group.last_admission = Some(accepted);
+                if group.scout_lease.is_none() {
+                    budget.start_interface(group.subnet.interface_index, accepted);
+                    group.scout_lease = Some(accepted);
+                }
                 self.counters.sent += 1;
                 self.counters.destinations += 1;
                 group.cursor += 1;
@@ -527,6 +568,99 @@ mod tests {
             failed: 0,
             usable: HashSet::new(),
             last_admission: None,
+            scout_lease: None,
+        }
+    }
+    #[test]
+    fn interface_window_allows_one_pass_across_peers_and_generations_without_sliding() {
+        let now = Instant::now();
+        let mut budget = Admission::default();
+        assert!(budget.interface_available(2, None, now));
+        // Only a successful scout enqueue creates the timestamp.
+        assert!(budget.interface_available(2, None, now + PACE));
+        budget.start_interface(2, now + PACE);
+        assert!(budget.interface_available(2, Some(now + PACE), now + 2 * PACE));
+        assert!(
+            !budget.interface_available(2, None, now + 2 * PACE),
+            "second peer cannot start a pass"
+        );
+        assert!(
+            !budget.interface_available(2, None, now + Duration::from_secs(59)),
+            "new generation cannot renew it"
+        );
+        assert!(
+            budget.interface_available(3, None, now + Duration::from_secs(59)),
+            "different owning interface independent"
+        );
+        assert!(budget.interface_available(2, None, now + PACE + Duration::from_secs(60)));
+        assert!(
+            !budget.interface_available(2, Some(now + PACE), now + PACE + Duration::from_secs(60)),
+            "old owner cannot renew after expiry"
+        );
+    }
+    #[test]
+    fn full_interface_registry_never_evicts_an_unexpired_pass() {
+        let now = Instant::now();
+        let mut budget = Admission::default();
+        for index in 1..=MAX_INTERFACE_WINDOWS as u32 {
+            budget.start_interface(index, now);
+        }
+        assert!(!budget.interface_available(65, None, now + PACE));
+        assert_eq!(budget.interface_windows.len(), MAX_INTERFACE_WINDOWS);
+        assert!(budget.interface_available(1, Some(now), now + PACE));
+        assert!(!budget.interface_available(1, None, now - PACE));
+        assert_eq!(budget.interface_windows.len(), MAX_INTERFACE_WINDOWS);
+        assert!(budget.interface_available(65, None, now + INTERFACE_WINDOW));
+        assert!(budget.interface_windows.is_empty());
+    }
+    #[test]
+    fn second_peer_and_generation_reuse_known_neighbor_without_scouting_again() {
+        use super::super::host_sweep::HostSweep;
+        let now = Instant::now();
+        let subnet = test_subnet(&[]);
+        let phone = Ipv4Addr::new(10, 72, 0, 6);
+        let mut budget = Admission::default();
+        budget.start_interface(subnet.interface_index, now);
+        for generation in [7, 8] {
+            let current = now + Duration::from_secs(generation);
+            let mut group = test_group(subnet.clone());
+            assert!(
+                !group.scout_available(&mut budget, current),
+                "another peer or ICE generation cannot scout that interface again"
+            );
+            assert_eq!(group.cursor, subnet.addresses.len());
+            group.snapshot = Some(ScoutSnapshot {
+                observed_at: current,
+                usable: vec![phone],
+                incomplete: Vec::new(),
+                failed: Vec::new(),
+                netns_total: 1,
+                incomplete_total: 0,
+                table_entries: 1,
+                gc_thresh2: 512,
+                gc_thresh3: 1024,
+            });
+            group.usable.insert(phone);
+            let scouts = HostScouts {
+                groups: vec![group],
+                ..Default::default()
+            };
+            let mut sweep = HostSweep::default();
+            sweep.start(
+                generation,
+                "fresh".into(),
+                40000,
+                current - Duration::from_millis(250),
+            );
+            sweep.prepare(40000, vec![subnet.clone()]);
+            let probe = sweep
+                .next_usable_probe(current, true, |source, address| {
+                    scouts.usable(source, address, current)
+                })
+                .expect("a fresh resolved neighbor still gets a real-host probe");
+            assert_eq!(probe.destination, phone);
+            assert_eq!(scouts.counters.sent, 0);
+            assert_eq!(budget.interface_windows[&subnet.interface_index], now);
         }
     }
     #[test]

@@ -231,6 +231,17 @@ SO_ERROR is drained before sends; prior-destination ICMP/unreachable errors get
 one paced retry, and persistent errors do not count as successful coverage.
 Ordinary ICE socket errors and sends are unchanged.
 
+Both scouts and real indications require a matching IPv4 server-reflexive IP
+in the current operational local and remote ICE candidate sets. Only UDP
+component 1 srflx candidates qualify. The local candidate's base must match a
+currently advertised, live supported host socket; retained locals on that same
+base qualify. Relay, peer-reflexive, related-address, IPv6 and historical stats
+are not substitutes. Matching IPs are a same-NAT heuristic, not peer identity
+or proof that both devices share a LAN. Missing evidence or disjoint IP sets
+send no feature packets and remain ineligible while later trickle is checked
+inside the original window. Expiry reports `nat-evidence-missing` or
+`nat-address-mismatch`. Losing evidence closes active scout sockets immediately.
+
 Scouts and real indications share a process-wide 200-packet/s ceiling. Each
 generation admits at most 32 distinct candidate ports and 32768 combined
 attempts, inside the original absolute 25-second window. Each subnet has one
@@ -242,6 +253,17 @@ successful discovery admissions or known-neighbor exclusions for the entire
 approved set, settled ARP outcomes, and indications to every resolved usable
 neighbor. Dead neighbors never receive an ICE-socket indication. Incomplete
 coverage reports `window-expired`, with successful sends separate from attempts.
+
+Discovery also has one process-wide 60-second window per owning interface,
+shared by all aliases, ports, peers and ICE generations. The first successful
+scout enqueue atomically stores only the interface index and its start timestamp;
+known-neighbor-only work, failed sends and preparation consume no window.
+An owner continues without renewing the timestamp. Cancellation, completion,
+failure and peer close never refund it. Other work reports
+`interface-scout-cooldown` and may send real indications to fresh usable
+neighbors, without another discovery pass. The registry keeps at most 64
+interface timestamps, prunes only expired entries, and denies new discovery
+when full. It retains no neighbor addresses.
 
 Before every scout or real indication, Linux reads TIOCOUTQ/SIOCOUTQ and
 SO_SNDBUF. It yields unless queued bytes plus 4096 bytes of bookkeeping fit
@@ -281,13 +303,17 @@ matched a successfully sent probe. No address, port, name or credential is
 emitted; observed tuple matching does not establish DNS identity or causation.
 Completed/expired eligible unresolved plans remain evidence for the bridge's
 single optional fresh-generation upgrade restart, without renewing its budget.
+Only a remembered safe-subnet boolean survives address expiry; current NAT
+authorization masks/restores the published eligibility with coalesced events.
+That observation never rearms an expired packet plan or timer.
 `addresses_sent`/`addresses_attempted` count real host-socket probes only.
 `scout_datagrams_sent`/`scout_attempted` count successful scout enqueues and paced
 attempts; `destinations_scouted` counts unique successful admissions across
 candidate ports and excludes known neighbors. `neighbors_pending` and its peak
 report conservative current-namespace INCOMPLETE pressure plus unobserved
 process reservations. Coalesced progress reasons distinguish `neighbor-pressure`,
-`neighbor-snapshot-unavailable` and `scout-socket-limit` pauses.
+`neighbor-snapshot-unavailable` and `scout-socket-limit` pauses. NAT waiting
+reasons are also coalesced, and report zero current eligibility.
 
 Policy/scheduler regressions live in `host_sweep_tests.rs`; queued-generation
 and clear races use real sans-I/O cores in `host_sweep_driver_tests.rs`. A Tokio
@@ -405,7 +431,7 @@ The #374 conntrack patches are layered diffs against the trees after all earlier
 patches are applied. `rtc-host-candidate-sweep.patch` touches
 `src/peer_connection/{mod.rs,configuration/setting_engine.rs}`.
 `webrtc-host-candidate-sweep.patch` touches `Cargo.toml`, `Cargo.toml.orig`,
-`src/peer_connection/{mod.rs,driver.rs,host_sweep.rs,host_sweep_tests.rs,host_sweep_driver_tests.rs,host_neighbors.rs,host_neighbor_table.rs,host_scout.rs,host_scout_socket_tests.rs}`
+`src/peer_connection/{mod.rs,driver.rs,host_sweep.rs,host_sweep_tests.rs,host_sweep_driver_tests.rs,host_sweep_nat.rs,host_neighbors.rs,host_neighbor_table.rs,host_scout.rs,host_scout_socket_tests.rs}`
 and `src/runtime/{mod.rs,tokio.rs,host_egress.rs}`. The Linux-only libc dependency
 is already in the dependency graph; the workspace lockfile records it as a direct
 webrtc dependency. Regenerate each patch from its pre-conntrack tree rather than

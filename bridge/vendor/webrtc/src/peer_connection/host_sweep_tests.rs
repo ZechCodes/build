@@ -701,3 +701,160 @@ fn sparse_discovery_waits_for_settlement_then_completes_using_only_live_neighbor
     assert!(sweep.plans[&40000].stopped);
     assert_eq!(sweep.sent, 4);
 }
+
+#[test]
+fn missing_or_different_nat_emits_no_packets_and_expires_without_renewal() {
+    let now = Instant::now();
+    for reason in ["nat-evidence-missing", "nat-address-mismatch"] {
+        let mut sweep = HostSweep::default();
+        sweep.start(7, "ufrag".into(), 40000, now);
+        for ms in 250..26000 {
+            let tick = now + Duration::from_millis(ms);
+            assert!(!sweep.gate_nat(tick, Some(reason)));
+        }
+        assert!(sweep.plans[&40000].stopped);
+        assert!(!sweep.plans[&40000].eligible);
+        assert_eq!(sweep.packets, 0);
+        assert!(
+            sweep.deadline().is_none(),
+            "expired NAT wait cannot spin timer"
+        );
+        let events = std::iter::from_fn(|| sweep.pop_event()).collect::<Vec<_>>();
+        assert!(events.len() <= 2, "pause and terminal events coalesce");
+        let last = events.last().unwrap();
+        assert_eq!(last.status, "skipped");
+        assert_eq!(last.reason, Some(reason));
+        assert_eq!(last.eligible_unresolved, 0);
+    }
+}
+#[test]
+fn delayed_nat_evidence_can_authorize_within_the_existing_candidate_lifetime() {
+    let now = Instant::now();
+    let mut sweep = HostSweep::default();
+    sweep.start(7, "ufrag".into(), 40000, now);
+    assert!(!sweep.gate_nat(now + GRACE, Some("nat-address-mismatch")));
+    assert!(sweep.gate_nat(now + Duration::from_secs(2), None));
+    sweep.prepare(40000, vec![subnet()]);
+    let probe = sweep
+        .next_probe(now + Duration::from_secs(2), false)
+        .unwrap();
+    sweep.record_result(probe.port, true);
+    assert_eq!(sweep.sent, 1);
+    assert_eq!(sweep.plans[&40000].expires, now + WINDOW);
+    assert!(!sweep.gate_nat(now + Duration::from_secs(3), Some("nat-evidence-missing")));
+    let event = std::iter::from_fn(|| sweep.pop_event()).last().unwrap();
+    assert!(!event.eligible);
+    assert_eq!(event.eligible_unresolved, 0);
+}
+
+#[test]
+fn nat_loss_still_retires_completed_plan_addresses_at_original_expiry() {
+    let now = Instant::now();
+    let mut sweep = HostSweep::default();
+    sweep.start(7, "ufrag".into(), 40000, now);
+    sweep.prepare(40000, vec![subnet()]);
+    for tick in [
+        now + GRACE,
+        now + GRACE + PACE,
+        now + GRACE + PACE + REPEAT_DELAY,
+        now + GRACE + 2 * PACE + REPEAT_DELAY,
+    ] {
+        let probe = sweep.next_probe(tick, true).unwrap();
+        sweep.record_result(probe.port, true);
+    }
+    assert!(sweep.plans[&40000].stopped);
+    assert!(sweep.plans[&40000].subnets.is_some());
+    assert!(!sweep.gate_nat(now + WINDOW, Some("nat-evidence-missing")));
+    assert!(sweep.plans[&40000].subnets.is_none());
+    assert!(sweep.plans[&40000].successful_destinations.is_empty());
+    assert!(sweep.deadline().is_none());
+}
+
+#[test]
+fn expired_unresolved_plan_keeps_numeric_eligibility_only_while_nat_matches() {
+    let now = Instant::now();
+    let mut sweep = HostSweep::default();
+    sweep.start(7, "ufrag".into(), 40000, now);
+    sweep.prepare(40000, vec![subnet()]);
+    while sweep.pop_event().is_some() {}
+    sweep.active_subnets(now + WINDOW);
+    assert!(sweep.plans[&40000].subnets.is_none());
+    assert!(sweep.gate_nat(now + WINDOW + PACE, None));
+    let expired = sweep.pop_event().unwrap();
+    assert_eq!(
+        expired.eligible_unresolved, 1,
+        "expiry preserves restart evidence"
+    );
+    assert!(!sweep.gate_nat(now + WINDOW + 2 * PACE, Some("nat-evidence-missing")));
+    assert!(
+        !sweep.plans[&40000].eligible,
+        "missing NAT masks numeric evidence"
+    );
+    assert!(sweep.gate_nat(now + WINDOW + 3 * PACE, None));
+    assert!(
+        sweep.plans[&40000].eligible,
+        "later match restores numeric evidence"
+    );
+    assert!(sweep.plans[&40000].subnets.is_none());
+    assert!(sweep.deadline().is_none());
+    assert!(sweep.next_probe(now + WINDOW + 3 * PACE, true).is_none());
+}
+
+#[test]
+fn direct_selection_retires_completed_observations_even_when_nat_masks_eligibility() {
+    let now = Instant::now();
+    let mut sweep = HostSweep::default();
+    sweep.start(7, "ufrag".into(), 40000, now);
+    sweep.prepare(40000, vec![subnet()]);
+    for tick in [
+        now + GRACE,
+        now + GRACE + PACE,
+        now + GRACE + PACE + REPEAT_DELAY,
+        now + GRACE + 2 * PACE + REPEAT_DELAY,
+    ] {
+        let probe = sweep.next_probe(tick, true).unwrap();
+        sweep.record_result(probe.port, true);
+    }
+    assert!(sweep.plans[&40000].stopped);
+    assert!(!sweep.gate_nat(now + Duration::from_secs(2), Some("nat-evidence-missing")));
+    sweep.stop_all("direct-selected");
+    assert!(sweep.plans[&40000].subnets.is_none());
+    assert!(sweep.plans[&40000].successful_destinations.is_empty());
+    assert!(!sweep.plans[&40000].unresolved);
+    assert!(sweep.gate_nat(now + Duration::from_secs(3), None));
+    assert!(!sweep.plans[&40000].eligible);
+    let last = std::iter::from_fn(|| sweep.pop_event()).last().unwrap();
+    assert_eq!(last.reason, Some("direct-selected"));
+    assert_eq!(last.eligible_unresolved, 0);
+    assert!(sweep.deadline().is_none());
+}
+
+#[test]
+fn nat_transitions_publish_masked_and_restored_numeric_evidence_after_expiry() {
+    let now = Instant::now();
+    let mut sweep = HostSweep::default();
+    sweep.start(7, "ufrag".into(), 40000, now);
+    sweep.prepare(40000, vec![subnet()]);
+    sweep.active_subnets(now + WINDOW);
+    while sweep.pop_event().is_some() {}
+    assert!(!sweep.gate_nat(now + WINDOW + PACE, Some("nat-evidence-missing")));
+    let missing = sweep
+        .pop_event()
+        .expect("published eligibility must reflect NAT loss");
+    assert_eq!(missing.eligible_unresolved, 0);
+    assert!(!missing.eligible);
+    assert_eq!(missing.reason, Some("nat-evidence-missing"));
+    assert!(!sweep.gate_nat(now + WINDOW + 2 * PACE, Some("nat-evidence-missing")));
+    assert!(sweep.pop_event().is_none(), "unchanged evidence coalesces");
+    assert!(sweep.gate_nat(now + WINDOW + 3 * PACE, None));
+    let matching = sweep
+        .pop_event()
+        .expect("published eligibility must reflect restored NAT match");
+    assert_eq!(matching.eligible_unresolved, 1);
+    assert!(matching.eligible);
+    assert!(sweep.gate_nat(now + WINDOW + 4 * PACE, None));
+    assert!(sweep.pop_event().is_none());
+    assert_eq!(sweep.packets, 0);
+    assert!(sweep.deadline().is_none());
+    assert!(sweep.plans[&40000].subnets.is_none());
+}

@@ -57,6 +57,7 @@ mod host_scout;
 mod host_sweep;
 #[cfg(test)]
 mod host_sweep_driver_tests;
+mod host_sweep_nat;
 pub use host_sweep::HostCandidateSweepEvent;
 #[cfg(test)]
 mod late_direct_tests;

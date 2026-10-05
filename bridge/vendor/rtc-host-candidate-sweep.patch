@@ -31,16 +31,21 @@ index 40fe30d..d45cacb 100644
      pub(crate) fn get_receive_mtu(&self) -> usize {
          if self.receive_mtu != 0 {
 diff --git a/rtc/src/peer_connection/mod.rs b/rtc/src/peer_connection/mod.rs
-index 0a641c0..424e2fd 100644
+index 0a641c0..d20a0d0 100644
 --- a/rtc/src/peer_connection/mod.rs
 +++ b/rtc/src/peer_connection/mod.rs
-@@ -2098,6 +2098,29 @@ where
+@@ -2098,6 +2098,34 @@ where
          Ok(())
      }
  
 +    /// Current generation's accepted local ICE candidates, without a stats allocation.
 +    pub fn local_ice_candidates(&self) -> &[ice::candidate::Candidate] {
 +        self.ice_transport().agent.get_local_candidates()
++    }
++
++    /// Current generation's accepted remote ICE candidates, without retained stats history.
++    pub fn remote_ice_candidates(&self) -> &[ice::candidate::Candidate] {
++        self.ice_transport().agent.get_remote_candidates()
 +    }
 +
 +    /// The operational selected pair, without retaining failed-generation history.

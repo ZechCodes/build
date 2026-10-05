@@ -19,11 +19,21 @@ const DATAGRAM_BYTES: usize = 16 * 1024;
 
 /// Consume only immediately available RTM_GETNEIGH replies. Incomplete dumps
 /// are discarded; hints never authorize targets outside the caller's subnet.
+#[cfg(test)]
 pub(super) fn snapshot(interface_index: u32) -> io::Result<Vec<Ipv4Addr>> {
+    snapshot_until(interface_index, Instant::now() + MAX_DURATION)
+}
+
+/// The driver shares one absolute deadline across its interface preparations.
+pub(super) fn snapshot_until(interface_index: u32, deadline: Instant) -> io::Result<Vec<Ipv4Addr>> {
     if interface_index == 0 || interface_index > i32::MAX as u32 {
         return Err(io::ErrorKind::InvalidInput.into());
     }
-    let deadline = Instant::now() + MAX_DURATION;
+    let now = Instant::now();
+    if now >= deadline {
+        return Err(io::ErrorKind::TimedOut.into());
+    }
+    let deadline = deadline.min(now + MAX_DURATION);
     let socket = open_socket()?;
     send_request(&socket, interface_index)?;
     let mut dump = Dump::new();
@@ -564,6 +574,16 @@ mod tests {
         dump.deadline = Some(Instant::now() - std::time::Duration::from_millis(1));
         assert_eq!(
             dump.consume(&message(3, 0, SEQUENCE, &[]), OWNER)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
+    }
+
+    #[test]
+    fn a_shared_expired_snapshot_budget_never_opens_a_socket() {
+        assert_eq!(
+            snapshot_until(OWNER, Instant::now() - Duration::from_millis(1))
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::TimedOut

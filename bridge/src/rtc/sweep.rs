@@ -87,6 +87,9 @@ fn known_reason(reason: &str) -> bool {
             | "neighbor-pressure"
             | "neighbor-snapshot-unavailable"
             | "scout-socket-limit"
+            | "nat-evidence-missing"
+            | "nat-address-mismatch"
+            | "interface-scout-cooldown"
     )
 }
 
@@ -162,6 +165,41 @@ mod tests {
                 serde_json::to_value(Snapshot::from(event("progress", Some(reason)))).unwrap();
             assert_eq!(snapshot["reason"], reason);
         }
+    }
+
+    #[test]
+    fn missing_or_mismatched_nat_evidence_never_gains_restart_eligibility() {
+        for (status, reason) in [
+            ("progress", "nat-evidence-missing"),
+            ("skipped", "nat-evidence-missing"),
+            ("progress", "nat-address-mismatch"),
+            ("skipped", "nat-address-mismatch"),
+        ] {
+            let mut blocked = event(status, Some(reason));
+            blocked.eligible = false;
+            blocked.eligible_unresolved = 0;
+            let snapshot = serde_json::to_value(Snapshot::from(blocked)).unwrap();
+            assert_eq!(snapshot["reason"], reason);
+            assert_eq!(snapshot["status"], status);
+            assert_eq!(snapshot["eligible"], false);
+            assert_eq!(snapshot["eligible_unresolved"], 0);
+            assert_eq!(
+                snapshot["scout_datagrams_sent"], 1004,
+                "prior traffic cannot make current NAT evidence eligible"
+            );
+        }
+    }
+
+    #[test]
+    fn interface_scout_cooldown_preserves_authoritative_eligibility() {
+        let snapshot = serde_json::to_value(Snapshot::from(event(
+            "progress",
+            Some("interface-scout-cooldown"),
+        )))
+        .unwrap();
+        assert_eq!(snapshot["reason"], "interface-scout-cooldown");
+        assert_eq!(snapshot["eligible"], true);
+        assert_eq!(snapshot["eligible_unresolved"], 2);
     }
 
     #[test]

@@ -304,6 +304,45 @@ async fn sweep_observations_follow_the_marker_and_stale_generations_are_ignored(
 }
 
 #[tokio::test]
+async fn nat_safeguards_keep_ineligible_current_evidence_and_ignore_stale_cooldowns() {
+    let (remote, _, target, events) = fixture();
+    remote.begin(&offer("first")).await;
+    remote
+        .add(target, candidate(NAME, Some("first"), "48861"))
+        .await
+        .unwrap();
+    for reason in ["nat-evidence-missing", "nat-address-mismatch"] {
+        let mut blocked = observation(1);
+        blocked.status = "progress";
+        blocked.reason = Some(reason);
+        blocked.eligible = false;
+        blocked.eligible_unresolved = 0;
+        remote.observe_sweep(blocked).await;
+        let current = events.lock().unwrap().last().unwrap().clone();
+        assert_eq!(current["sweep"]["reason"], reason);
+        assert_eq!(current["sweep"]["eligible"], false);
+        assert_eq!(current["sweep"]["eligible_unresolved"], 0);
+        for private in [NAME, "48861", "first", "private-password"] {
+            assert!(!current.to_string().contains(private));
+        }
+    }
+    remote.begin(&offer("second")).await;
+    let mut cooldown = observation(1);
+    cooldown.status = "progress";
+    cooldown.reason = Some("interface-scout-cooldown");
+    let before = events.lock().unwrap().len();
+    remote.observe_sweep(cooldown.clone()).await;
+    assert_eq!(events.lock().unwrap().len(), before);
+    cooldown.generation = 2;
+    remote.observe_sweep(cooldown).await;
+    let current = events.lock().unwrap().last().unwrap().clone();
+    assert_eq!(current["sweep"]["reason"], "interface-scout-cooldown");
+    assert_eq!(current["sweep"]["eligible"], true);
+    assert_eq!(current["sweep"]["eligible_unresolved"], 1);
+    remote.close().await;
+}
+
+#[tokio::test]
 async fn media_credentials_supply_the_sweep_when_candidate_ufrag_is_absent() {
     let (remote, _, target, _) = fixture();
     let media = offer("session") + "a=ice-ufrag:media\r\na=ice-pwd:media-password\r\n";

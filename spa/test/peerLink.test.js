@@ -1116,6 +1116,51 @@ describe("a session that landed on a relayed pair", () => {
     resolved.close();
   });
 
+  it.each(["nat-evidence-missing", "nat-address-mismatch"])("keeps the same TURN carriers and optional restart budget when %s clears sweep eligibility", async (reason) => {
+    const { peer, resolved, signalled, candidateSinks } = await landedOnRelay({ alsoDirect: "failed" });
+    const app = resolved.app;
+    const term = resolved.term;
+    const appChannel = peer.channels.get("app");
+    const termChannel = peer.channels.get("term");
+    const closed = vi.fn();
+    app.onClose(closed);
+    term.onClose(closed);
+    const envelope = { nonce: "AQID", ciphertext: "BAUG" };
+    await app.send(envelope);
+    candidateSinks[0](bridgeGenerationDiagnostic(1));
+    candidateSinks[0](hostSweepDiagnostic(1, { addresses_sent: 3, scout_datagrams_sent: 12 }));
+    candidateSinks[0](hostSweepDiagnostic(1, {
+      status: "skipped", reason, eligible: false, eligible_unresolved: 0,
+      addresses_sent: 0, addresses_attempted: 0, scout_datagrams_sent: 0, scout_attempted: 0,
+    }));
+
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(offers(signalled)).toBe(1);
+    expect(peer.localDescriptions.filter(({ sdp }) => sdp.includes("restart"))).toEqual([]);
+    expect(FakePeerConnection.instances).toEqual([peer]);
+    expect(peer.connectionState).toBe("connected");
+    expect(peer.closed).toBe(false);
+    expect(resolved.transportPath()).toBe("turn");
+    expect(resolved.app).toBe(app);
+    expect(resolved.term).toBe(term);
+    expect(peer.channels.get("app")).toBe(appChannel);
+    expect(peer.channels.get("term")).toBe(termChannel);
+    expect(appChannel.readyState).toBe("open");
+    expect(termChannel.readyState).toBe("open");
+    expect(app.peerIsConnected()).toBe(true);
+    expect(closed).not.toHaveBeenCalled();
+    await app.send(envelope);
+    expect(appChannel.sent.map((text) => JSON.parse(text))).toEqual([envelope, envelope]);
+    expect(diagnosticsOf("direct-pair")).not.toContain("trying");
+
+    candidateSinks[0](hostSweepDiagnostic(1, { eligible_unresolved: 1 }));
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(offers(signalled)).toBe(2);
+    expect(connectionDiagnosticHistory().filter((entry) => entry.event === "direct-pair" && entry.state === "trying"))
+      .toEqual([expect.objectContaining({ reason: "conntrack-sweep" })]);
+    resolved.close();
+  });
+
   it.each([
     { eligible: false, status: "skipped", reason: "subnet-too-large", candidates: { mdns_pending: 2 }, eligible_unresolved: 1 },
     { eligible: false, status: "stopped", reason: "window-expired", eligible_unresolved: 1 },

@@ -15,6 +15,7 @@ const SWEEP_REASONS = new Set([
   "unsupported-platform", "port-limit", "packet-limit", "window-expired", "resolved", "direct-selected", "generation-changed", "closed", "send-error",
   "no-usable-addresses", "completed", "ambiguous-interface",
   "neighbor-pressure", "neighbor-snapshot-unavailable", "scout-socket-limit",
+  "nat-evidence-missing", "nat-address-mismatch", "interface-scout-cooldown",
 ]);
 const OPTIONAL_SWEEP_COUNTERS = new Set([
   "addresses_attempted", "scout_datagrams_sent", "scout_attempted", "destinations_scouted", "neighbors_pending", "neighbors_pending_peak",

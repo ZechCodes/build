@@ -133,6 +133,20 @@ describe("candidate diagnostic privacy", () => {
     });
   });
 
+  it.each([
+    { reason: "nat-evidence-missing", status: "skipped", eligible: false, eligible_unresolved: 0 },
+    { reason: "nat-address-mismatch", status: "skipped", eligible: false, eligible_unresolved: 0 },
+    { reason: "interface-scout-cooldown", status: "progress", eligible: true, eligible_unresolved: 1 },
+  ])("preserves the fixed safeguard code $reason without copying network metadata", (detail) => {
+    const sweep = { ...baseSweep, ...detail, addresses_sent: 0, scout_datagrams_sent: 0 };
+    expect(candidateDiagnostic({
+      reason: "mdns-pending", event: "host-sweep", generation: 2,
+      sweep: { ...sweep, srflx_address: "203.0.113.10", host_address: "192.168.1.2", interface_name: "wlan0", interface_index: 42, port: 48861 },
+    })).toEqual({
+      reason: "mdns-pending", phase: "host-sweep", generation: 2, candidates: {}, sweep,
+    });
+  });
+
   it("rejects unknown reasons and never copies unknown event text", () => {
     expect(candidateDiagnostic({ reason: "192.168.1.2 failed" })).toBeNull();
     expect(candidateDiagnostic({ reason: "mdns-pending", event: "private.local" }))

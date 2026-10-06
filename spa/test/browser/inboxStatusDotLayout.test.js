@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { captureLayout, withLayoutPage } from "./layoutHarness.mjs";
-import { mountReclaimStatusDot, mountStatusDotInbox } from "./inboxStatusDotSeed.mjs";
+import { mountReclaimStatusDot, mountStatusDotInbox, mountWaitingStatusDotInbox } from "./inboxStatusDotSeed.mjs";
 
 async function rowLayout(row) {
   return row.evaluate((element) => {
@@ -31,6 +31,36 @@ for (const { label, width, height } of [
   { label: "desktop", width: 1280, height: 800 },
   { label: "mobile", width: 390, height: 760 },
 ]) {
+  it(`pulses waiting-agent inbox rows and watched project summaries on ${label}`, async () => {
+    await withLayoutPage(async ({ page, basePath }) => {
+      for (const { ownWaiting, workspaceWatched, unreadCount } of [
+        { ownWaiting: true, workspaceWatched: true, unreadCount: 0 },
+        { ownWaiting: true, workspaceWatched: true, unreadCount: 2 },
+        { ownWaiting: false, workspaceWatched: true, unreadCount: 0 },
+        { ownWaiting: false, workspaceWatched: false, unreadCount: 0 },
+      ]) {
+        for (const { grouped, folded } of [{ grouped: false, folded: false },
+          { grouped: true, folded: false }, { grouped: true, folded: true }]) {
+          await mountWaitingStatusDotInbox(page, basePath, { grouped, folded, ownWaiting, workspaceWatched, unreadCount });
+          const projectDot = page.locator(grouped ? ".inbox-project-head > .inbox-status-dot"
+            : '[data-key="project-agent:layout-device/layout-project"] .inbox-status-dot');
+          const projectRuns = ownWaiting || (folded && workspaceWatched);
+          expect(await projectDot.count()).toBe(projectRuns || unreadCount > 0 ? 1 : 0);
+          if (projectRuns || unreadCount > 0) {
+            expect(await projectDot.evaluate((dot) => dot.classList.contains("inbox-status-running"))).toBe(projectRuns);
+            expect(await projectDot.evaluate((dot) => dot.classList.contains("inbox-status-unread"))).toBe(unreadCount > 0);
+            expect(await projectDot.evaluate((dot) => getComputedStyle(dot).animationName === "none")).toBe(!projectRuns);
+          }
+          if (folded) continue;
+          const workspace = page.locator('[data-key="workspace:layout-device/waiting"]');
+          expect(await workspace.locator(".inbox-status-running").count()).toBe(1);
+          expect(await workspace.locator(".inbox-status-unread").count()).toBe(unreadCount > 0 && workspaceWatched ? 1 : 0);
+          expect(await workspace.locator(".inbox-facts").textContent()).toContain("1 running");
+        }
+      }
+    }, { width, height });
+  }, 60_000);
+
   it(`keeps one right status dot clear of names and hover controls on ${label}`, async () => {
     await withLayoutPage(async ({ page, basePath }) => {
       for (const grouped of [false, true]) {

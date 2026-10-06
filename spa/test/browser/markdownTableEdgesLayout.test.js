@@ -81,6 +81,7 @@ for (const theme of ["dark", "light"]) {
       await withLayoutPage(async ({ page, basePath }) => {
         await mountLayout(page, `<link rel="stylesheet" href="${basePath}src/styles/tasks.css">${wrap(markdownHtml(FITS))}`, { basePath, styles: HIDE_TEXT });
         await page.evaluate((name) => { document.documentElement.dataset.theme = name; }, theme);
+        await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
         const found = await edges(page);
         expect(found.scrolls).toBe(false);
         expect([found.left, found.right]).toEqual(["0px", "0px"]);
@@ -99,6 +100,7 @@ for (const theme of ["dark", "light"]) {
       await mountLayout(page, `<link rel="stylesheet" href="${basePath}src/styles/tasks.css">${HOSTS["tinted task comment"](markdownHtml(FITS))}`, { basePath, styles: HIDE_TEXT });
       await page.evaluate((name) => { document.documentElement.dataset.theme = name; }, theme);
       await page.evaluate(withoutScrollTimelines);
+      await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
       const found = await edges(page);
       expect([found.left, found.right]).toEqual(["0px", "0px"]);
       const pixels = await rowPixels(page, found.png);
@@ -112,6 +114,17 @@ for (const theme of ["dark", "light"]) {
     await withLayoutPage(async ({ page, basePath }) => {
       await mountLayout(page, `<link rel="stylesheet" href="${basePath}src/styles/tasks.css">${HOSTS["tinted task comment"](markdownHtml(OVERFLOWS))}`, { basePath, styles: HIDE_TEXT });
       await page.evaluate((name) => { document.documentElement.dataset.theme = name; }, theme);
+      // Load and fonts can settle before the scroll timeline produces its first shade.
+      await page.evaluate(async () => {
+        const table = document.querySelector(".mdtable");
+        let right;
+        for (let frame = 0; frame < 60; frame += 1) {
+          await new Promise(requestAnimationFrame);
+          right = getComputedStyle(table).getPropertyValue("--mdtable-shade-right").trim();
+          if (Number.parseFloat(right) > 0) return;
+        }
+        throw new Error(`Table scroll timeline did not produce a right shade after 60 animation frames: ${right}`);
+      });
       const atStart = await edges(page);
       expect(atStart.scrolls).toBe(true);
       expect([atStart.left, atStart.right]).toEqual(["0px", "14px"]);

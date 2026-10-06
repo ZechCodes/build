@@ -224,8 +224,8 @@ first browser host candidate was gathered; each range covers three runs.
 All six initial connected-to-`direct-pair trying` intervals were 20.002–20.004 s,
 consistent with the SPA monitor's 20-second initial delay. Final-source runs
 recorded one scout start each and zero scout holds. Their
-`early_neighbors_probed` counts were 1, 0 and 1; the two increments occurred
-around 20.6–20.9 s, after scouts had started, and PCAPs associate them with
+`early_neighbors_probed` counts were 1, 0 and 1; the two increments were first
+reported around 20.6–20.9 s, after scouts had started, and PCAPs associate them with
 the phone indication rather than the earlier gateway indication. The old code
 has no such counters; its values are inapplicable, not zero. This trace orders
 the events but does not establish why the original ICE checks did or did not

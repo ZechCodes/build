@@ -322,7 +322,8 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   border-radius:0;
   margin-left:calc(-1 * var(--inbox-row-bleed-left)); margin-right:calc(-1 * var(--inbox-row-bleed-right));
   padding-left:calc(13px + var(--inbox-row-bleed-left)); padding-right:calc(13px + var(--inbox-row-bleed-right)); }
-.inbox-project .inbox-entry { --inbox-row-bleed-left:calc(var(--inbox-band-bleed) + 5px); --inbox-row-bleed-right:15px; }
+.inbox-project, .inbox-project .inbox-entry { --inbox-row-bleed-right:15px; }
+.inbox-project .inbox-entry { --inbox-row-bleed-left:calc(var(--inbox-band-bleed) + 5px); }
 /* The overlays that sit on the row's right edge keep to the column the words
    use, not the gutter the fill now covers. */
 .inbox-entry .inbox-actions { right:calc(var(--inbox-actions-inset) + var(--inbox-row-bleed-right)); }
@@ -397,8 +398,9 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    button's popover. */
 /* Reserve the controls' width even while they are hidden. Keeping them in the
    flex layout also keeps the final dot fixed on hover. */
+/* The project head and its rows share the status column's inset. */
+.inbox-entry, .inbox-project { --inbox-actions-inset:4px; }
 .inbox-entry { position:relative;
-  --inbox-actions-inset:4px;  /* how far in from the row's corner the overlay sits */
   --inbox-actions-fade:6px;   /* the fade it stands on, before its first control */
   --inbox-menu-width:24px;    /* the ⋯ */
   --inbox-done-width:56px;    /* Done, and Done… while it is being done */
@@ -488,7 +490,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   position:relative; border:0; border-radius:0; background:var(--inbox-project-fill);
   --inbox-band-bleed:calc(10px + env(safe-area-inset-left, 0px));
   margin:0 -10px 0 calc(var(--inbox-band-bleed) * -1);
-  padding:5px 15px 6px calc(var(--inbox-band-bleed) + 5px);
+  padding:5px var(--inbox-row-bleed-right) 6px calc(var(--inbox-band-bleed) + 5px);
   transition:background-color .12s ease, box-shadow .12s ease; }
 .inbox-project.active { --inbox-project-fill:var(--accent-soft); }
 /* A block with nothing live is a band like the rest — a bare head between two
@@ -511,7 +513,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   border-radius:6px; cursor:pointer; font:inherit; font-size:12.5px; font-weight:650;
   color:var(--ink2); }
 .inbox-project-name:hover { background:var(--line2); color:var(--ink); }
-.inbox-project-head > .inbox-status-dot { position:absolute; right:0; top:50%; transform:translateY(-50%); }
+.inbox-project-head > .inbox-status-dot { position:absolute; right:var(--inbox-actions-inset); top:50%; transform:translateY(-50%); }
 .inbox-project-tools { flex:none; display:grid; align-items:center; justify-items:end; margin-left:auto; }
 .inbox-project-device, .inbox-project-actions { grid-area:1 / 1; }
 /* Which machine a block is on is a secondary tag, not a second name: it reads

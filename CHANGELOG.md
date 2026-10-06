@@ -10,6 +10,8 @@ protocol versions; see
 
 ### Fixed
 
+- Align grouped inbox project status dots with workspace and task row dots,
+  keeping the shared right edge stable on hover and selection (#384).
 - Inbox action and quiet-row facts overlays follow their row's current fill,
   removing the green block on hover inside an active project (#381).
 

@@ -67,6 +67,8 @@ for (const { label, width, height } of [
             if (target === "name") await name.hover();
             else await page.mouse.move(target === "left gutter" ? rowFill.left + 1 : rowFill.right - 1,
               before.box.y + before.box.height / 2);
+            await head.evaluate((element) => Promise.all(element.getAnimations({ subtree: true })
+              .map((animation) => animation.finished)));
             const hovered = await headLayout(head);
             const state = `${active ? "active" : "inactive"}, ${target}`;
             await captureLayout(page, `inbox-project-hover-${label}-${theme}-${active ? "active" : "inactive"}-${target.replaceAll(" ", "-")}.png`);

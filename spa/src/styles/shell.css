@@ -322,8 +322,8 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   border-radius:0;
   margin-left:calc(-1 * var(--inbox-row-bleed-left)); margin-right:calc(-1 * var(--inbox-row-bleed-right));
   padding-left:calc(13px + var(--inbox-row-bleed-left)); padding-right:calc(13px + var(--inbox-row-bleed-right)); }
-.inbox-project, .inbox-project .inbox-entry { --inbox-row-bleed-right:15px; }
-.inbox-project .inbox-entry { --inbox-row-bleed-left:calc(var(--inbox-band-bleed) + 5px); }
+.inbox-project, .inbox-project .inbox-entry {
+  --inbox-row-bleed-left:calc(var(--inbox-band-bleed) + 5px); --inbox-row-bleed-right:15px; }
 /* The overlays that sit on the row's right edge keep to the column the words
    use, not the gutter the fill now covers. */
 .inbox-entry .inbox-actions { right:calc(var(--inbox-actions-inset) + var(--inbox-row-bleed-right)); }
@@ -498,8 +498,15 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    quiet ones and its fold has nothing to open (below). */
 .inbox-project.inbox-flat { border:0; box-shadow:none; }
 /* Keep the final dot's slot even when it is absent, so the name and hover
-   controls keep their width as activity changes. */
-.inbox-project-head { position:relative; display:flex; align-items:center; gap:2px; padding:1px 14px 1px 0; }
+   controls keep their width as activity changes. The head uses the rows' bleed
+   and pays it back in padding. Its vertical fill takes 4px from the space on
+   either side, keeping the name, controls, dot and following rows in place. */
+.inbox-project-head { position:relative; display:flex; align-items:center; gap:2px;
+  margin:-4px calc(-1 * var(--inbox-row-bleed-right)) -4px calc(-1 * var(--inbox-row-bleed-left));
+  padding:5px calc(14px + var(--inbox-row-bleed-right)) 5px var(--inbox-row-bleed-left); }
+.inbox-project-head:hover { background:var(--row-hover); }
+/* Selected rows keep their accent fill on hover; their project head does too. */
+.inbox-project.active > .inbox-project-head:hover { background:var(--accent-soft); }
 .inbox-fold svg, .inbox-recent-caret svg, .inbox-project-create svg,
 .inbox-project-hide svg { width:16px; height:16px; display:block; }
 /* The fold and Recent caret center 12px into the band. */
@@ -512,8 +519,9 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   white-space:nowrap; text-align:left; background:none; border:0; padding:4px 4px;
   border-radius:6px; cursor:pointer; font:inherit; font-size:12.5px; font-weight:650;
   color:var(--ink2); }
-.inbox-project-name:hover { background:var(--line2); color:var(--ink); }
-.inbox-project-head > .inbox-status-dot { position:absolute; right:var(--inbox-actions-inset); top:50%; transform:translateY(-50%); }
+.inbox-project-name:hover { color:var(--ink); }
+.inbox-project-head > .inbox-status-dot { position:absolute;
+  right:calc(var(--inbox-actions-inset) + var(--inbox-row-bleed-right)); top:50%; transform:translateY(-50%); }
 .inbox-project-tools { flex:none; display:grid; align-items:center; justify-items:end; margin-left:auto; }
 .inbox-project-device, .inbox-project-actions { grid-area:1 / 1; }
 /* Which machine a block is on is a secondary tag, not a second name: it reads

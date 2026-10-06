@@ -279,7 +279,7 @@ index b7c5c8d..4232db2 100644
          });
  
 diff --git a/webrtc/src/peer_connection/driver.rs b/webrtc/src/peer_connection/driver.rs
-index 8a0a53a..e9cb95a 100644
+index 8a0a53a..eb5c497 100644
 --- a/webrtc/src/peer_connection/driver.rs
 +++ b/webrtc/src/peer_connection/driver.rs
 @@ -2,6 +2,7 @@
@@ -707,7 +707,7 @@ index 8a0a53a..e9cb95a 100644
 +            self.host_sweep.generation(),
 +            self.host_sweep.remote_ufrag(),
 +            probe.port,
-+            || {
++            || -> std::io::Result<usize> {
 +                #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
 +                return super::host_scout::send_real(expires, || {
 +                    socket.try_send_on_interface(

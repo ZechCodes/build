@@ -139,6 +139,36 @@ jobs:
       - name: Vendored webrtc
         run: cargo test --locked --manifest-path vendor/Cargo.toml --lib
 
+  bridge-macos:
+    name: macOS bridge release check
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-bridge-macos
+      cancel-in-progress: true
+    needs: [changes]
+    # Dispatch also checks workflow-only revisions on a branch.
+    if: ${{ !cancelled() && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.bridge == 'true') }}
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: bridge
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - name: Cache cargo
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            bridge/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('bridge/Cargo.lock') }}
+
+      - name: Check the macOS release configuration
+        run: cargo check --locked --features release-portable --bin build-bridge
+
   interop:
     name: Crypto interop (Rust ↔ Python)
     concurrency:
@@ -422,7 +452,7 @@ jobs:
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}-build-app
       cancel-in-progress: true
-    needs: [changes, spa, landing, skriftapp, scripts, shell, bridge, interop, secrets]
+    needs: [changes, spa, landing, skriftapp, scripts, shell, bridge, bridge-macos, interop, secrets]
     if: >-
       ${{ !cancelled()
           && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
@@ -430,6 +460,7 @@ jobs:
           && needs.changes.outputs.app == 'true'
           && (needs.changes.outputs.bridge != 'true'
               || (needs.bridge.result == 'success'
+                  && needs['bridge-macos'].result == 'success'
                   && needs.interop.result == 'success'))
           && needs.spa.result == 'success'
           && needs.landing.result == 'success'
@@ -471,13 +502,14 @@ jobs:
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}-build-relay
       cancel-in-progress: true
-    needs: [changes, bridge, interop, web-e2e, secrets]
+    needs: [changes, bridge, bridge-macos, interop, web-e2e, secrets]
     if: >-
       ${{ !cancelled()
           && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
           && github.ref == 'refs/heads/main'
           && needs.changes.outputs.relay == 'true'
           && needs.bridge.result == 'success'
+          && needs['bridge-macos'].result == 'success'
           && needs.interop.result == 'success'
           && needs['web-e2e'].result == 'success'
           && needs.secrets.result == 'success' }}

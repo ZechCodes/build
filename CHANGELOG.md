@@ -12,6 +12,8 @@ protocol versions; see
 
 - Align the collapsed inbox toggle with the directory rail icons at desktop
   and phone widths, preserving the toolbar's existing clearance (#378).
+- Fix macOS compilation of the vendored WebRTC host-probe fallback and check
+  the macOS release configuration in CI (#379).
 
 ## [0.2.9] - 2026-10-06
 

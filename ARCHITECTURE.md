@@ -1085,14 +1085,16 @@ The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
   answer, received a matching authenticated STUN exchange at 306.8–317.4 ms,
   selected host/host direct with zero restarts, and enqueued zero scouts or
   bridge-originated ARP requests. Three final-source runs each for cached-MAC
-  and gateway-routed controls kept the bounded scout fallback and selected
-  direct after the existing single restart. One additional old-code routed run
-  missed the browser before the 26-second observation boundary, so full
-  coverage is not guaranteed in every run; the small paired timing samples do
-  not establish latency equivalence. Cold different-NAT and missing-srflx
-  controls learned a usable neighbor through browser ARP but emitted zero
-  feature packets. The 12-mode
-  namespace matrix is recorded in `web/rtc-lan-upgrade/arp-findings.md`.
+  and gateway-routed controls kept the bounded scout fallback and ended on
+  direct with one restart recorded. The first browser-nominated direct pair
+  can precede that restart; it is not the final application-ready path. One
+  additional old-code routed run missed the browser before the 26-second
+  observation boundary, so full coverage is not guaranteed in every run; the
+  small paired timing samples do not establish latency equivalence. Cold
+  different-NAT and missing-srflx controls learned a usable neighbor through
+  browser ARP but emitted zero
+  feature packets. The 12-case namespace matrix is recorded in
+  `web/rtc-lan-upgrade/arp-findings.md`.
 - **Paired LAN hint**: `rtc.offer` accepts optional `client_id` under
   `rtc.clientLanCache` (wire 3.12.0). The SPA sends it only after a greeting from
   that paired bridge advertised the capability. It uses `crypto.randomUUID`,

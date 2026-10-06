@@ -117,25 +117,25 @@ The first production red controls, retained in `/tmp/task377-part2/`, use the
 unmodified discovery behavior from main. They establish the regression target;
 they are not green evidence for the new design. The PERMANENT and routed runs
 retain `failure.json` from obsolete fixture expectations of a TURN-only outcome;
-their measured selected paths, packet captures and restart counts show direct
-after one restart. The REACHABLE and STALE baseline fixtures passed their
-updated assertions.
+their measured selected paths, packet captures and restart counts show a final
+direct path with one restart recorded. The REACHABLE and STALE baseline fixtures
+passed their updated assertions.
 
 | Red control | Observed outcome | Scout/ARP cost |
 | --- | --- | ---: |
 | Cold on-link, active scouts | Direct before application RPC, zero restarts, but zero-scout assertion fails | 38 successful scout enqueues; 38 bridge ARP requests (the preceding part 1 control saw 39/40) |
-| Browser bridge-MAC cache PERMANENT, bridge lacks browser | First nominated host/host at 21.981 s after gathering, one existing restart | 991 successful scout enqueues, 3,002 scout attempts, 3,058 ARP requests, 1,020 unique targets |
-| Browser bridge-MAC cache REACHABLE, bridge lacks browser | First nominated host/host at 12.854 s after gathering, one existing restart | 1,020 successful scout enqueues, 1,709 scout attempts, 3,058 ARP requests, 1,020 unique targets |
-| Browser bridge-MAC cache STALE, bridge lacks browser | First nominated host/host at 7.566 s after gathering, one existing restart | 1,019 successful scout enqueues, 1,927 scout attempts, 3,058 ARP requests, 1,020 unique targets |
-| Gateway-routed browser (formerly `unknown-neighbor-*`) | First nominated host/host at 13.453 s after gathering, one existing restart | 1,020 successful scout enqueues, 1,757 scout attempts, 3,058 ARP requests, 1,020 unique targets |
+| Browser bridge-MAC cache PERMANENT, bridge lacks browser | First nominated host/host at 21.981 s after gathering; one restart recorded by fixture end | 991 successful scout enqueues, 3,002 scout attempts, 3,058 ARP requests, 1,020 unique targets |
+| Browser bridge-MAC cache REACHABLE, bridge lacks browser | First nominated host/host at 12.854 s after gathering; one restart recorded by fixture end | 1,020 successful scout enqueues, 1,709 scout attempts, 3,058 ARP requests, 1,020 unique targets |
+| Browser bridge-MAC cache STALE, bridge lacks browser | First nominated host/host at 7.566 s after gathering; one restart recorded by fixture end | 1,019 successful scout enqueues, 1,927 scout attempts, 3,058 ARP requests, 1,020 unique targets |
+| Gateway-routed browser (formerly `unknown-neighbor-*`) | First nominated host/host at 13.453 s after gathering; one restart recorded by fixture end | 1,020 successful scout enqueues, 1,757 scout attempts, 3,058 ARP requests, 1,020 unique targets |
 
 The PERMANENT cache is a deliberate no-refresh control, not a model of a
 physical phone. The routed fixture must remain a full-coverage fallback
 control after its clearer `never-arps-*` rename. In the old STALE production
 run, the browser's unicast ARP refresh made its address available around 5.4 s;
-the existing sweep sent a real indication about 20.6 ms after that ARP. Direct
-selection still waited for the existing restart. This trace supports prompt
-usable-neighbor probing in the old code and does not by itself show a benefit
+the existing sweep sent a real indication about 20.6 ms after that ARP. The
+final selected path was direct with one restart recorded. This trace supports
+prompt usable-neighbor probing in the old code and does not by itself show a benefit
 from the new late-neighbor priority.
 
 ### Final-source cold on-link runs
@@ -158,13 +158,16 @@ host/host selection followed 0.381–0.439 s after candidate gathering.
 
 ### Final-source fallback and NAT controls
 
-The full final-source fixture matrix passed 12/12 modes, with each process exit
-code checked (`/tmp/task377-part2/final-matrix.log`). The original old/final
-fallback runs and the planned paired repetitions are summarized in
+The full final-source fixture matrix passed 12/12 runs across 10 distinct
+modes, with each process exit code checked
+(`/tmp/task377-part2/final-matrix.log`). The original old/final fallback runs
+and the planned paired repetitions are summarized in
 `/tmp/task377-part2/part2-fixture-evidence.json`. Time is from the first browser
 host candidate gathering to the first nominated host/host browser snapshot,
 using the same rule in both source versions; browser nomination was sampled
-about every 50 ms. The counts are successful direct runs / attempted runs.
+about every 50 ms. This first nominated snapshot can precede the optional
+restart and is not the final application-ready selected path. The counts are
+successful direct runs / attempted runs.
 
 | Condition | Old direct runs and time | Final direct runs and time | Successful scout enqueues, old → final |
 | --- | ---: | ---: | ---: |
@@ -173,7 +176,7 @@ about every 50 ms. The counts are successful direct runs / attempted runs.
 | Bridge MAC cached STALE at browser | 3/3, 6.466–7.566 s | 3/3, 7.475–7.569 s | 998–1,019 → 997–1,019 |
 | Browser routes checks via gateway (`never-arps`) | 1/2, 13.453 s | 3/3, 14.466–22.017 s | 1,020 → 1,020 |
 
-Every successful fallback run selected direct after one existing restart and
+Every successful fallback run ended on direct with one restart recorded and
 produced 3,058 bridge ARP requests, including kernel retries, to 1,020 unique
 destinations. The planned second old-code routed run did not reach the browser
 by the 26-second observation boundary: it stayed on TURN after one restart,
@@ -193,8 +196,8 @@ The STALE final run sent its real indication 89.6 ms after the browser's
 unicast ARP refresh, compared with 20.6 ms in the old-code run. The 100 ms
 later polling phase and scheduling variance explain why that one trace cannot
 support a claim of faster late-neighbor probing. The cached and routed cases
-confirm that the no-hit scout fallback remains available and the existing
-single restart still selects direct.
+confirm that the no-hit scout fallback remains available; each final path was
+direct with one restart recorded.
 
 The `different-nat` and `missing-srflx` modes each produced a cold browser ARP
 and a fresh usable neighbor, yet all feature probe/scout counters stayed zero,

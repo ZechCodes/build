@@ -13,6 +13,13 @@ protocol versions; see
 - Inbox action and quiet-row facts overlays follow their row's current fill,
   removing the green block on hover inside an active project (#381).
 
+### Test tooling
+
+- Cover sweep retirement across recovery ICE credentials and the browser's
+  TURN-to-direct upgrade after recovery. An isolated Chromium regression
+  verifies fresh PRFLX discovery and encrypted pulls on the same connection
+  through direct, recovery TURN and direct upgrade (#383).
+
 ## [0.2.10] - 2026-10-06
 
 ### Changed

@@ -261,7 +261,7 @@
 /* A row on a page is a link, not a rail entry: it carries no menu, so the
    right-hand gutter the rail keeps for one is the page's own inset. */
 .project-page .inbox-entry { cursor:pointer; }
-.project-page .inbox-entry:hover { background:var(--line2); }
+.project-page .inbox-entry:hover { --inbox-row-fill:var(--line2); background:var(--inbox-row-fill); }
 /* The empty state stands in the pane rather than filling it: what to do next is
    a sentence, and a sentence centred in a column of air reads as an error. */
 .project-empty { padding:0 var(--pane-gutter); text-align:left; }

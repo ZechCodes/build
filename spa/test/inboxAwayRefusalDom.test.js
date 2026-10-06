@@ -81,6 +81,20 @@ const rowFor = (key) => [...document.querySelectorAll("#inbox-list .inbox-entry"
 const rowError = (key) => rowFor(key)?.querySelector("[data-done-error]");
 const shown = (element) => Boolean(element && !element.hidden && element.textContent);
 
+// The inbox head no longer opens settings. Exercise the sheet through its
+// exported entrypoint with the same production, reconnect-aware device caller
+// that protects a press on an away machine.
+const settingsActions = {
+  "project.list": "open this project's settings",
+  "project.set_remote": "save this folder's remote",
+  "project.remove_source": "remove this folder from this project",
+  "project.delete": "delete this project",
+};
+const openSettings = () => modules.projectSettings.openProjectSettings(PROJECT, {
+  deviceId: DEVICE,
+  callRpc: modules.inboxDevices.deviceCall(DEVICE, (method) => settingsActions[method] || "change this project's settings"),
+});
+
 beforeEach(async () => {
   vi.resetModules();
   globalThis.indexedDB = new IDBFactory();
@@ -97,6 +111,8 @@ beforeEach(async () => {
     inboxView: await import("../src/core/inboxView.js"),
     deviceContexts: await import("../src/core/deviceContexts.js"),
     connection: await import("../src/connection.js"),
+    inboxDevices: await import("../src/core/inboxDevices.js"),
+    projectSettings: await import("../src/sheets/projectSettings.js"),
   };
   // A reload: the board and the watched task are already on disk. The fixture
   // is imported with the fresh modules, so it writes the cache they read.
@@ -156,7 +172,7 @@ describe("a press on a machine that is away", () => {
   });
 
   it("says why settings nothing cached could not be opened, in the sheet", async () => {
-    block().querySelector("[data-project-settings]").click();
+    openSettings();
     await vi.waitFor(() => expect($("#sheet").textContent).toContain("because this machine is away"), WAIT);
     expect($("#sheet .sub").textContent).toBe("Build cannot open this project's settings because this machine is away.");
   });
@@ -165,7 +181,7 @@ describe("a press on a machine that is away", () => {
     beforeEach(async () => {
       const { writeProjectSetting } = await import("../src/core/settingsRecords.js");
       await writeProjectSetting(DEVICE, project);
-      block().querySelector("[data-project-settings]").click();
+      openSettings();
       await vi.waitFor(() => expect(firstCard()?.querySelector("[data-save-source]")).toBeTruthy(), WAIT);
     });
 
@@ -207,7 +223,7 @@ describe("a press on a machine that is away", () => {
     await writeProjectSetting(DEVICE, project);
     await connect();
     await vi.waitFor(() => expect(block().classList.contains("inbox-offline")).toBe(false), WAIT);
-    block().querySelector("[data-project-settings]").click();
+    openSettings();
     await vi.waitFor(() => expect(firstCard()?.querySelector("[data-save-source]")).toBeTruthy(), WAIT);
     modules.deviceContexts.setContextOffline(DEVICE, { offline: true });
     call.mockClear();
@@ -277,11 +293,11 @@ describe("a press on a machine that is away", () => {
   });
 
   // Hide asks no machine anything, so it is the one press that works while the
-  // machine is away — from the block's menu, as on every block.
-  it("hides the block from its menu", async () => {
-    block().querySelector(".inbox-project-head [data-menu]").click();
-    await vi.waitFor(() => expect(block().querySelector("[data-project-hide]")).not.toBe(null), WAIT);
-    block().querySelector("[data-project-hide]").click();
+  // machine is away — directly on the head, as on every block.
+  it("hides the block from its head", async () => {
+    const hide = block().querySelector(".inbox-project-head .inbox-project-hide");
+    expect(hide.disabled).toBe(false);
+    hide.click();
     await vi.waitFor(() => expect(block()).toBe(null), WAIT);
   });
 });

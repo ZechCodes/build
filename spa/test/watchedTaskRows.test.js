@@ -48,7 +48,7 @@ describe("which watched tasks are rows by the narrow rule (#144)", () => {
     expect(narrow([review, chatter], details)).toEqual([]);
   });
 
-  it("lists one assigned to the user and one an agent asked, with a bubble for all unread news", () => {
+  it("lists one assigned to the user and one an agent asked, counting all unread news", () => {
     const mine = watched({ id: "i-mine", number: 1, status: "in_review", assignee: { kind: "user" } });
     const asked = watched({ id: "i-asked", number: 2, read_through: "te-01" });
     const timeline = [
@@ -64,24 +64,25 @@ describe("which watched tasks are rows by the narrow rule (#144)", () => {
 });
 
 describe("what a row says", () => {
-  it("shows an unread assignment event in its bubble", () => {
+  it("shows an unread assignment event with one dot and keeps its numeric count in the model", () => {
     const one = watched({ id: "i-assigned", assignee: { kind: "user" }, read_through: "te-01" });
     const detail = taskDetail(one, [event({ id: "te-02", kind: "assigned", actor: { kind: "agent", agent_id: "a1" } })]);
     const [row] = rows([one], new Map([[one.id, detail]]));
     expect(row.unreadCount).toBe(1);
-    expect(inboxRowHtml(row)).toContain('<span class="badge inbox-unread">1</span>');
+    expect(inboxRowHtml(row)).toContain("inbox-status-unread");
+    expect(inboxRowHtml(row)).not.toContain("inbox-unread");
   });
 
-  it("counts a mentioned creation until read while an assignment keeps it in Needs you", () => {
+  it("clears the unread dot after a mentioned creation is read while assignment keeps it in Needs you", () => {
     const one = watched({ id: "i-created", assignee: { kind: "user" }, read_through: "" });
     const detail = taskDetail(one, [event({ id: "te-02", kind: "created", actor: { kind: "agent", agent_id: "a1" }, mentions_user: true })]);
     const [row] = watchedTaskEntries([{ ...source([one], new Map([[one.id, detail]])), askedOnly: true }]);
     expect(row).toMatchObject({ state: "unread", unreadCount: 1 });
-    expect(inboxRowHtml(row)).toContain('<span class="badge inbox-unread">1</span>');
+    expect(inboxRowHtml(row)).toContain("inbox-status-unread");
     const read = { ...one, read_through: "te-02" };
     const [stillAsking] = watchedTaskEntries([{ ...source([read], new Map([[read.id, taskDetail(read, detail.timeline)]])), askedOnly: true }]);
-    expect(stillAsking).toMatchObject({ state: "unread", unreadCount: 0 });
-    expect(inboxRowHtml(stillAsking)).not.toContain('class="badge inbox-unread"');
+    expect(stillAsking).toMatchObject({ state: "inactive", unreadCount: 0 });
+    expect(inboxRowHtml(stillAsking)).not.toContain("inbox-status-dot");
   });
 
   it("is named by number and title, says every reason, and opens the task", () => {
@@ -95,7 +96,7 @@ describe("what a row says", () => {
       projectKey: "dev-1|p1",
       deviceId: "dev-1",
       facts: "In review · Assigned to you",
-      state: "unread",
+      state: "inactive",
       route: { name: "trackerTask", deviceId: "dev-1", projectId: "p1", taskId: "i-7" },
     });
   });
@@ -129,5 +130,49 @@ describe("what a row says", () => {
     const older = watched({ id: "i-old", status: "in_review", updated_at: "2026-09-23T10:00:00Z" });
     const newer = watched({ id: "i-new", status: "in_review", updated_at: "2026-09-23T11:00:00Z" });
     expect(rows([newer, older]).map((row) => row.taskId)).toEqual(["i-old", "i-new"]);
+  });
+});
+
+describe("a watched task's running state", () => {
+  const assigned = (over = {}) => watched({
+    id: "i-running", status: "in_review", assignee: { kind: "agent", agent_id: "a1" }, ...over,
+  });
+  const listed = (one, runningAgentIds = new Set(), detail = null) => watchedTaskEntries([{
+    ...source([one], detail ? new Map([[one.id, detail]]) : new Map()), runningAgentIds,
+  }])[0];
+
+  it("follows its assigned agent while keeping the task's Needs-you reason", () => {
+    const one = assigned();
+    const row = listed(one, new Set(["a1"]));
+    expect(row).toMatchObject({ working: true, state: "working", facts: "In review", unreadCount: 0 });
+    expect(inboxRowHtml(row)).toContain("inbox-status-running");
+    expect(listed(one)).toMatchObject({ working: false, state: "inactive" });
+    expect(inboxRowHtml(listed(one))).not.toContain("inbox-status-dot");
+  });
+
+  it("keeps running and unread independent when its agent works after new task news", () => {
+    const one = assigned({ read_through: "te-01" });
+    const detail = taskDetail(one, [comment({ id: "tc-02", author: { kind: "agent", agent_id: "a1" } })]);
+    const row = listed(one, new Set(["a1"]), detail);
+    expect(row).toMatchObject({ working: true, state: "working", unreadCount: 1 });
+    expect(inboxRowHtml(row)).toContain("inbox-status-running");
+    expect(inboxRowHtml(row)).toContain("inbox-status-unread");
+    expect(inboxRowHtml(row).match(/inbox-status-dot/g)).toHaveLength(1);
+  });
+
+  it("does not infer running from task status or an unrelated running agent", () => {
+    const mine = assigned({ status: "in_progress", assignee: { kind: "user" } });
+    expect(listed(mine, new Set(["a1"]))).toMatchObject({ working: false, state: "inactive" });
+    expect(listed(assigned(), new Set(["a2"]))).toMatchObject({ working: false, state: "inactive" });
+  });
+
+  it("resolves a legacy project-agent assignment to that project's identified holder", () => {
+    const one = assigned({ assignee: { kind: "project_agent" } });
+    const rowFor = (projectAgentId) => watchedTaskEntries([{
+      ...source([one]), projectAgentId, runningAgentIds: new Set(["a-project"]),
+    }])[0];
+    expect(rowFor("a-project")).toMatchObject({ working: true, state: "working" });
+    expect(rowFor("a-idle")).toMatchObject({ working: false, state: "inactive" });
+    expect(rowFor(null)).toMatchObject({ working: false, state: "inactive" });
   });
 });

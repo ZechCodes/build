@@ -6,8 +6,9 @@
 // bridge's session summary on that conversation's feed row, since wire 1.28.0),
 // and after a day without activity it moves to Recent the way a workspace row
 // does. On the projects face it is not a row at all: it is the head of its
-// project's block (core/inboxProjects.js). Its badge carries the project's
-// watched tasks too, the ones no workspace row wears (#104).
+// project's block (core/inboxProjects.js). The inbox tally carries the project's
+// watched tasks too, the ones no workspace row wears (#104); the expanded
+// project head reads the conversation's own unread separately (#380).
 //
 // No DOM, no app imports — the wiring (core/inboxView.js) renders these, and
 // the row itself is painted by core/inbox.js with the rest.
@@ -64,6 +65,7 @@ function toProjectAgentEntry(project, rows, rosterOf, taskUnreadOf) {
   const agentUnread = agents.length ? agentsUnreadCount(agents) : row?.unread_count || 0;
   const unreadCount = agentUnread + taskUnreadOf(project.projectKey);
   const working = agents.length ? agents.some((agent) => agent.working) : !!row?.working;
+  const watchedWorking = agents.length ? agents.some((agent) => agent.watched !== false && agent.working) : working;
   const name = projectNameOf(project);
   return {
     key: projectAgentEntryKey(project.projectKey),
@@ -76,8 +78,10 @@ function toProjectAgentEntry(project, rows, rosterOf, taskUnreadOf) {
     title: "Project agent",
     entityId,
     state: agentState(unreadCount, working),
+    ownUnreadCount: agentUnread,
     unreadCount,
     working,
+    watchedWorking,
     muted: false,
     dismissed: false,
     facts: "",
@@ -88,8 +92,8 @@ function toProjectAgentEntry(project, rows, rosterOf, taskUnreadOf) {
 
 /** One row per project the rail lists, for its project agent.
  *  `taskUnreadOf(projectKey)` is the unread of the project's watched tasks
- *  no workspace row wears (#104, core/taskUnread.js): they count on the
- *  project's own badge like its agent's. */
+ *  no workspace row wears (#104, core/taskUnread.js): they contribute to the
+ *  project's unread tally alongside its agent's news. */
 export function projectAgentEntries(projects = [], items = [], runs = [], taskUnreadOf = () => 0) {
   const rosterOf = freshestRosters([...runs, ...items]);
   const rows = { items, runs };

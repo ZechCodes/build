@@ -44,7 +44,7 @@ function railRows(current, tasks) {
 }
 
 describe("a task held by a workspace's agent", () => {
-  it("counts on that workspace's badge, whether or not that agent is watched", () => {
+  it("counts on that workspace and lights its dot, whether or not that agent is watched", () => {
     const { workspaceRow, agentRow } = railRows(view(), [
       task({ id: "i-1", watched: true, unread_count: 3, assignee: heldBy("a1") }),
       task({ id: "i-2", watched: true, unread_count: 4, assignee: heldBy("a2") }),
@@ -52,7 +52,8 @@ describe("a task held by a workspace's agent", () => {
     expect(workspaceRow.unreadCount).toBe(2 + 3 + 4);
     expect(agentRow.unreadCount).toBe(1);
     const doc = new DOMParser().parseFromString(inboxRowHtml(workspaceRow), "text/html");
-    expect(doc.querySelector(".inbox-actions .inbox-unread").textContent).toBe("9");
+    expect(doc.querySelector(".inbox-actions > .inbox-status-unread")).not.toBeNull();
+    expect(doc.querySelector(".inbox-unread")).toBeNull();
   });
 
   it("marks a workspace unread that only its tasks are waiting on", () => {
@@ -89,22 +90,25 @@ describe("a task no listed workspace holds", () => {
 });
 
 describe("the projects face's head", () => {
-  const headBadge = (tasks, folded) => {
+  const headUnread = (tasks, folded) => {
     const current = view();
     const block = workspaceProjectBlocks(railRows(current, tasks).rows, current.projects, [], null, 2 * HOUR).blocks[0];
     expect(block.projectKey).toBe(PROJECT_KEY);
     const html = projectHeadHtml(block, { folded: new Set(folded ? [block.projectKey] : []) });
-    return new DOMParser().parseFromString(html, "text/html").querySelector(".inbox-unread")?.textContent || null;
+    expect(block.unreadCount).toBe(1 + 10 + 2 + 3);
+    expect(block.agentEntry.ownUnreadCount).toBe(1);
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    expect(doc.querySelector(".inbox-unread")).toBeNull();
+    return Boolean(doc.querySelector(".inbox-status-unread"));
   };
   const tasks = [
     task({ id: "i-1", watched: true, unread_count: 3, assignee: heldBy("a1") }),
     task({ id: "i-2", watched: true, unread_count: 10 }),
   ];
 
-  // #183: the head carries everything in the block, open or folded.
-  it("wears every task, the workspace's too, open or folded", () => {
-    expect(headBadge(tasks, false)).toBe(String(1 + 10 + 2 + 3));
-    expect(headBadge(tasks, true)).toBe(String(1 + 10 + 2 + 3));
+  it("shows unread without a counter while preserving task tally accounting", () => {
+    expect(headUnread(tasks, false)).toBe(true);
+    expect(headUnread(tasks, true)).toBe(true);
   });
 
   // A watched task asking for the user is a row in the block too (#125). Its

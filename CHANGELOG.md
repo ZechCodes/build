@@ -8,6 +8,13 @@ protocol versions; see
 
 ## [0.2.10] - Unreleased
 
+### Changed
+
+- Inbox rows use one status dot on the right: grey while an agent runs, green
+  for unread activity, and pulsing only while running. Folded project heads
+  summarize watched activity; expanded heads reflect the project agent.
+  Project heads offer Hide and New workspace directly (#380).
+
 ### Fixed
 
 - Align the collapsed inbox toggle with the directory rail icons at desktop

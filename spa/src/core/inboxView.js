@@ -62,7 +62,6 @@ import {
 } from "./inboxProjects.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import { openCreateWork } from "./createWork.js";
-import { openProjectSettings } from "../sheets/projectSettings.js";
 import { openNewRepo } from "../sheets/newRepo.js";
 import { branchOptions, mergeCaptureRows } from "./compose.js";
 import { pendingCaptureRows, subscribePendingCaptures } from "./composeView.js";
@@ -98,9 +97,8 @@ let folds = new Map();
 let foldRecord = null;
 let recentRecord = null;
 let menuRecord = null;
-// Where a press leaves an open menu alone: a row's own action cluster, and a
-// block head's ⋯ and the menu it opens.
-const MENU_ZONES = ".inbox-actions, .inbox-project-head .inbox-more, .inbox-project-head > .inbox-menu";
+// Where a press leaves an open row menu alone: its own action cluster.
+const MENU_ZONES = ".inbox-actions";
 const onOutsideMenu = (event) => {
   if (!event.target.closest(MENU_ZONES)) closeMenu();
 };
@@ -162,8 +160,8 @@ function drawFromFeed() {
   draw();
 }
 
-/** The top badge (#183): the sum of the projects face's head badges, over the
- *  rows either face paints. */
+/** The top badge (#183): every project's numeric unread total, over the rows
+ *  either face paints, independent of the heads' status dots. */
 function publishAttentionCount(rows = railRows()) {
   publishInboxAttentionCount(projectsUnreadCount(rows, projects));
 }
@@ -310,7 +308,9 @@ const offlineDeviceIds = () =>
  *  block per project — every machine's, each head naming its machine where two
  *  machines use that project name. */
 function drawProjects(list, shown) {
-  const { unsorted, blocks, recentBlocks } = workspaceProjectBlocks(shown, projects, App.devices, offlineDeviceIds());
+  const { unsorted, blocks, recentBlocks } = workspaceProjectBlocks(
+    shown, projects, App.devices, offlineDeviceIds(), Date.now(), watchedTasks?.runningProjectKeys(),
+  );
   const allBlocks = [...blocks, ...recentBlocks];
   entries = [...unsorted, ...allBlocks.flatMap((block) => [...block.entries, ...block.recent])];
   blocksPainted = new Map(allBlocks.map((block) => [block.projectKey, block]));
@@ -499,7 +499,6 @@ function pressed(controls, target) {
 const BLOCK_CONTROLS = [
   ["data-project-fold", (control) => toggleFold(control.dataset.projectFold)],
   ["data-project-open", (control) => openBlockHead(control.dataset.projectOpen)],
-  ["data-project-settings", (control) => settingsForBlock(control.dataset.projectSettings)],
   ["data-project-create", (control) => createInBlock(control.dataset.projectCreate)],
   ["data-project-hide", (control) => hideBlock(control.dataset.projectHide)],
   ["data-new-project", () => openNewProject()],
@@ -537,10 +536,9 @@ function openMenu(key) {
   }
 }
 
-/** The ⋯ a menu is opened by, and the menu it opens: a row's sits beside it in
- *  the row's actions, a block's hangs off the block's head. */
+/** The ⋯ a row menu is opened by, and the menu beside it in the actions. */
 const moreButtonOf = (list, key) => [...list.querySelectorAll("[data-menu]")].find((button) => button.dataset.menu === key);
-const menuOf = (more) => more?.closest(".inbox-actions, .inbox-project-head")?.querySelector(".inbox-menu") || null;
+const menuOf = (more) => more?.closest(".inbox-actions")?.querySelector(".inbox-menu") || null;
 const menuItems = (menu) => [...menu.querySelectorAll(".mi")];
 
 /** Once the paint carrying the menu's new state has landed, focus goes where
@@ -605,11 +603,10 @@ function onListKeydown(event) {
 
 // ---- project blocks -----------------------------------------------------------
 //
-// What a block's head can do: fold, open the project's own page, open its
-// settings, create — a workspace, on the one create surface, scoped to the
-// block's project — and, behind its ⋯, hide it. And the one control above every
-// block: a new project. Which press is which is the table BLOCK_CONTROLS, up
-// with the other control tables.
+// What a block's head can do: fold, open the project's own page, create a
+// workspace on the create surface scoped to its project, and hide it directly.
+// The control above every block creates a new project. Which press is which
+// is the table BLOCK_CONTROLS, up with the other control tables.
 
 /** The block's name opens the project's own page — its workspaces, and the
  *  agent you talk to about the project. Every project has one, so every head
@@ -617,40 +614,6 @@ function onListKeydown(event) {
 function openBlockHead(projectKey) {
   const block = blockOf(projectKey);
   if (block) goFromInbox(block.route);
-}
-
-/** What each verb the settings sheet sends was for, in the reader's words — the
- *  sentence a press on it says when the block's machine cannot take it. A verb this
- *  does not name is still a change to the project's settings. */
-const SETTINGS_DOING = {
-  "project.list": "open this project's settings",
-  "project.set_remote": "save this folder's remote",
-  "project.update_source": "change this folder",
-  "project.set_isolation": "change this project's isolation",
-  "project.add_source": "add a folder to this project",
-  "project.remove_source": "remove this folder from this project",
-  "project.delete": "delete this project",
-  "settings.get": "list this machine's folders",
-  "fs.list": "list this machine's folders",
-  "fs.mkdir": "make a folder on this machine",
-};
-const settingsDoing = (method) => SETTINGS_DOING[method] || "change this project's settings";
-
-/** Settings open on what the cache holds for the project, whether or not its
- *  machine is answering; each change the sheet sends goes through the block's
- *  own call, which refuses one the machine cannot take in a sentence saying
- *  so. */
-function settingsForBlock(projectKey) {
-  const block = blockOf(projectKey);
-  if (!block) return;
-  openProjectSettings(block.id, {
-    callRpc: verbCall(block, settingsDoing),
-    deviceId: block.deviceId,
-    onDeleted: async () => {
-      if (routeProjectKey(App.route) === block.projectKey) goFromInbox({ name: "inbox" });
-      await refreshFeed(block.deviceId);
-    },
-  });
 }
 
 /** The + opens the create surface on this block's project, with the block
@@ -671,7 +634,7 @@ function createInBlock(projectKey) {
 }
 
 /** Put a block away: it goes from the rail, and everything cached under it on
- *  its own machine goes with it (core/projectHide.js). Every block's menu
+ *  its own machine goes with it (core/projectHide.js). Every block
  *  offers it, and the fold the user had set for it goes too — a fold is about a
  *  block that is there, and this one is not coming back the same way. The rail
  *  repaints off the feed the drop delivers. */

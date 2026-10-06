@@ -392,19 +392,15 @@ describe("the projects face", () => {
     await writeUiRecord(address, { entries: [["dev-1/project-1", false]] });
     await vi.waitFor(() => expect(document.querySelector('[data-project="dev-1/project-1"]').classList.contains("inbox-folded")).toBe(false));
   });
-  it("opens settings on the owning device and leaves a deleted project's route", async () => {
+  it("keeps project settings and the overflow menu off the inbox head", () => {
     feed([], [project("project-1", "Website", "dev-2")]);
     setInboxView("projects");
-    document.querySelector('[data-project-settings="dev-2/project-1"]').click();
-    expect(projectSettings).toHaveBeenCalledWith("project-1", expect.any(Object));
-    const options = projectSettings.mock.calls[0][1];
-    await options.callRpc("project.list");
-    expect(laptopCall).toHaveBeenCalledWith("project.list");
-    expect(workshopCall).not.toHaveBeenCalled();
-    App.route = { name: "workspace", deviceId: "dev-2", projectId: "project-1", workspaceId: "workspace-1" };
-    await options.onDeleted();
-    expect(navigate).toHaveBeenCalledWith({ name: "inbox" });
-    expect(refreshFeed).toHaveBeenCalledWith("dev-2");
+    const head = document.querySelector('[data-project="dev-2/project-1"] .inbox-project-head');
+    expect(head.querySelector("[data-project-settings]")).toBeNull();
+    expect(head.querySelector("[data-menu]")).toBeNull();
+    expect(head.querySelector(".inbox-menu")).toBeNull();
+    expect(head.querySelector(".inbox-project-hide")).not.toBeNull();
+    expect(projectSettings).not.toHaveBeenCalled();
   });
 
   it("groups workspaces under their projects, by the account-wide project name", () => {
@@ -562,7 +558,7 @@ describe("an account with more than one device", () => {
     expect(rows()[0].querySelector(".inbox-away")).toBeNull();
   });
 
-  it("greys a block whose machine is away and leaves its + and settings live", () => {
+  it("greys a block whose machine is away and leaves its + and Hide live", () => {
     twoDevices();
     setInboxView("projects");
 
@@ -572,7 +568,7 @@ describe("an account with more than one device", () => {
     expect(away.classList.contains("inbox-offline")).toBe(true);
     const here = document.querySelector('[data-project="dev-1/project-1"]');
     expect(here.classList.contains("inbox-offline")).toBe(false);
-    for (const control of ["[data-project-create]", "[data-project-settings]", "[data-menu]"]) {
+    for (const control of ["[data-project-create]", "[data-project-hide]"]) {
       const shown = away.querySelector(control);
       expect(shown.hasAttribute("disabled")).toBe(false);
       expect(shown.hasAttribute("aria-disabled")).toBe(false);
@@ -604,30 +600,20 @@ describe("an account with more than one device", () => {
     expect(tagOf("dev-2/project-1")).toBe("Offline");
   });
 
-  /** Open one block's ⋯ menu, and answer what it offers once it is open. */
-  const openBlockMenu = async (projectKey) => {
-    document.querySelector(`[data-project="${projectKey}"] .inbox-project-head [data-menu]`).click();
-    await vi.waitFor(() => expect(document.querySelector(`[data-project="${projectKey}"] .inbox-menu`)).not.toBeNull());
-    return [...document.querySelectorAll("[data-project-hide]")].map((item) => item.dataset.projectHide);
-  };
-
   // Which controls a block has is what the cache holds: Hide is in every
-  // block's menu, whether its machine is answering, connecting or gone.
-  it("offers Hide in every block's menu, whatever its machine is doing", async () => {
+  // block's head, whether its machine is answering, connecting or gone.
+  it("offers Hide directly in every block's head, whatever its machine is doing", () => {
     twoDevices();
     setInboxView("projects");
-    expect(document.querySelectorAll("[data-project-hide]")).toHaveLength(0);
-
-    expect(await openBlockMenu("dev-1/project-1")).toEqual(["dev-1/project-1"]);
+    const hides = () => [...document.querySelectorAll(".inbox-project-head .inbox-project-hide")];
+    expect(hides().map((item) => item.dataset.projectHide)).toEqual(["dev-1/project-1", "dev-2/project-1"]);
 
     setContextOffline("dev-2", { offline: true });
-    expect(await openBlockMenu("dev-2/project-1")).toEqual(["dev-2/project-1"]);
-    expect(document.querySelector("[data-project-hide]").hasAttribute("disabled")).toBe(false);
+    expect(hides().map((item) => item.dataset.projectHide)).toEqual(["dev-1/project-1", "dev-2/project-1"]);
+    expect(hides().every((item) => !item.disabled)).toBe(true);
 
     setContextOffline("dev-2", { offline: false });
-    expect([...document.querySelectorAll("[data-project-hide]")].map((item) => item.dataset.projectHide)).toEqual([
-      "dev-2/project-1",
-    ]);
+    expect(hides().map((item) => item.dataset.projectHide)).toEqual(["dev-1/project-1", "dev-2/project-1"]);
   });
 
   // Hide drops the project from the cache — which, on a machine that has gone,
@@ -638,69 +624,32 @@ describe("an account with more than one device", () => {
     setInboxView("projects");
     setContextOffline("dev-2", { offline: true });
 
-    await openBlockMenu("dev-2/project-1");
-    document.querySelector("[data-project-hide]").click();
+    document.querySelector('[data-project-hide="dev-2/project-1"]').click();
 
     expect(hidden).toEqual([{ deviceId: "dev-2", projectKey: "dev-2/project-1" }]);
     expect(blocks().map((block) => block.dataset.project)).toEqual(["dev-1/project-1"]);
     expect(rows().map((row) => row.dataset.key)).toEqual(["workspace:dev-1/workspace-1"]);
+    expect(navigate).not.toHaveBeenCalled();
   });
 
-  // The keyboard reaches Hide as the pointer does: the ⋯ opens the menu with
-  // focus on its first item, the arrows walk it, Escape shuts it with focus
-  // back on the ⋯, and the item is a button, so Enter and Space press it.
-  it("drives a block's menu from the keyboard, and hides the block from it", async () => {
+  // Hide is a native button in the tab order. jsdom does not perform trusted
+  // keyboard activation, so dispatch the key to check it is left to the
+  // browser, then click as the browser does for Enter or Space.
+  it.each(["Enter", " "])("keeps direct Hide focusable and lets %j activate it", (key) => {
     twoDevices();
     setInboxView("projects");
     setContextOffline("dev-2", { offline: true });
-    const head = () => document.querySelector('[data-project="dev-2/project-1"] .inbox-project-head');
-    const more = () => head().querySelector("[data-menu]");
-    const key = (name) => document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true }));
-    const hideItem = () => head().querySelector("[data-project-hide]");
-
-    expect(more().getAttribute("aria-haspopup")).toBe("menu");
-    expect(more().getAttribute("aria-expanded")).toBe("false");
-    more().focus();
-    more().click(); // what Enter or Space on the ⋯ does
-    await vi.waitFor(() => expect(document.activeElement).toBe(hideItem()));
-    expect(more().getAttribute("aria-expanded")).toBe("true");
-    expect(head().querySelector(".inbox-menu").getAttribute("role")).toBe("menu");
-    expect(hideItem().tagName).toBe("BUTTON");
-    expect(hideItem().getAttribute("role")).toBe("menuitem");
-
-    for (const name of ["ArrowDown", "ArrowUp", "End", "Home"]) {
-      expect(key(name)).toBe(false); // answered, so the page does not scroll
-      expect(document.activeElement).toBe(hideItem());
-    }
-
-    expect(key("Escape")).toBe(false);
-    await vi.waitFor(() => expect(head().querySelector(".inbox-menu")).toBeNull());
-    await vi.waitFor(() => expect(document.activeElement).toBe(more()));
-    expect(more().getAttribute("aria-expanded")).toBe("false");
-
-    more().click();
-    await vi.waitFor(() => expect(document.activeElement).toBe(hideItem()));
-    document.activeElement.click(); // what Enter or Space on the focused item does
+    const hide = document.querySelector('[data-project-hide="dev-2/project-1"]');
+    expect(hide.tagName).toBe("BUTTON");
+    expect(hide.tabIndex).toBe(0);
+    expect(hide.getAttribute("role")).toBeNull();
+    hide.focus();
+    expect(document.activeElement).toBe(hide);
+    expect(hide.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }))).toBe(true);
+    hide.click();
     expect(hidden).toEqual([{ deviceId: "dev-2", projectKey: "dev-2/project-1" }]);
     expect(blocks().map((block) => block.dataset.project)).toEqual(["dev-1/project-1"]);
-  });
-
-  it("shuts a menu when Tab takes focus out of it, and on Escape from its ⋯", async () => {
-    twoDevices();
-    setInboxView("projects");
-    const head = () => document.querySelector('[data-project="dev-1/project-1"] .inbox-project-head');
-    const press = (name) => document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true }));
-    head().querySelector("[data-menu]").click();
-    await vi.waitFor(() => expect(document.activeElement).toBe(head().querySelector("[data-project-hide]")));
-    expect(press("Tab")).toBe(true); // left to the browser, which moves focus on
-    await vi.waitFor(() => expect(head().querySelector(".inbox-menu")).toBeNull());
-
-    head().querySelector("[data-menu]").click();
-    await vi.waitFor(() => expect(head().querySelector(".inbox-menu")).not.toBeNull());
-    head().querySelector("[data-menu]").focus();
-    expect(press("Escape")).toBe(false);
-    await vi.waitFor(() => expect(head().querySelector(".inbox-menu")).toBeNull());
-    expect(document.activeElement).toBe(head().querySelector("[data-menu]"));
+    expect(navigate).not.toHaveBeenCalled();
   });
 
   it("narrows the list to one machine without touching the route", async () => {

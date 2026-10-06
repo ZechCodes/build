@@ -296,7 +296,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 
 /* ---- inbox entries ----
    One list across every project, and every row is two lines: what this is, with
-   the unread count at the right edge, and what it weighs. The row shell (.srow,
+   the status dot at the right edge, and what it weighs. The row shell (.srow,
    .stitle, .badge, .warn) is the shared vocabulary in styles.css; only what the
    inbox adds lives here. */
 /* No divider between rows: room, a hover fill, and on the standing row a fill
@@ -323,17 +323,12 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .inbox-entry .inbox-actions { right:calc(var(--inbox-actions-inset) + var(--inbox-row-bleed-right)); }
 .inbox-entry .inbox-facts-float { right:calc(10px + var(--inbox-row-bleed-right)); }
 .inbox-body { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
-.inbox-entry .sdot { margin-top:5px; }
-/* Align project row dots with the fold while keeping the text column fixed. */
-.inbox-project .inbox-entry > .sdot { margin-left:-5px; margin-right:5px; }
 .inbox-line { display:flex; align-items:center; gap:6px; min-width:0; }
 .inbox-line .stitle { font-size:13px; }
 .inbox-line .badge { flex:none; }
-/* Line one: the name takes the line, and how many messages are waiting is
-   pulled to its far edge — the one number that is scanned down a column. */
+/* Line one: the name takes the space before the controls and status dot. */
 .inbox-name .stitle { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .inbox-entry[data-key^="workspace:"] .stitle { white-space:pre; }
-.inbox-unread { margin-left:auto; }
 .inbox-where { gap:8px; font-size:11.5px; color:var(--dim); }
 .inbox-tag { flex:none; max-width:52%; overflow:hidden; text-overflow:ellipsis;
   white-space:nowrap; color:var(--ink2); font-weight:550; }
@@ -344,10 +339,9 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    +/−, and that is the half that says how big this has got. */
 .inbox-facts { font-size:11.5px; color:var(--dim); font-family:var(--mono);
   overflow-wrap:anywhere; }
-/* A quiet row (Recent): one line, no state dot, and what it weighs floating
+/* A quiet row (Recent): one line, and what it weighs floating
    over the line's right edge with the row's own background behind it, so a
-   long name runs under it rather than wrapping. Its text starts where a live
-   row's name does, past the dot column. */
+   long name runs under it rather than wrapping. */
 .inbox-quiet { padding:8px calc(10px + var(--inbox-row-bleed-right)) 8px calc(26px + var(--inbox-row-bleed-left)); align-items:center; }
 .inbox-quiet .inbox-line .stitle { font-size:12.5px; }
 .inbox-facts-float { position:absolute; right:10px; top:50%; transform:translateY(-50%);
@@ -364,12 +358,11 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    everything under it, and the ⋯ menu is painted inside the row it belongs to:
    greying the row made the popup see-through, and a menu you can read the row
    through is a menu nobody can read. It also keeps a row that is both muted and
-   away from being greyed twice over. A block greys its own head, all but the
-   menu hanging off it, for the same reason; the rows inside it are each greyed
-   on their own account. */
-.inbox-muted > .sdot, .inbox-muted > .inbox-body, .inbox-muted > .inbox-facts-float,
-.inbox-offline > .sdot, .inbox-offline > .inbox-body, .inbox-offline > .inbox-facts-float,
-.inbox-offline > .inbox-project-head > :not(.inbox-menu), .inbox-offline > .inbox-recent { opacity:.62; }
+   away from being greyed twice over. A block greys its head's contents;
+   the rows inside it are each greyed on their own account. */
+.inbox-muted > .inbox-body, .inbox-muted > .inbox-facts-float,
+.inbox-offline > .inbox-body, .inbox-offline > .inbox-facts-float,
+.inbox-offline > .inbox-project-head > *, .inbox-offline > .inbox-recent { opacity:.62; }
 /* And the word that says which of the two the grey means. It is on line one,
    at the row's right edge — which is also where the actions overlay fades in.
    So a greyed row keeps the overlay's width out of that line: hovering a row
@@ -381,40 +374,49 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .inbox-entry .warn { font-size:11px; }
 .inbox-entry .warn[hidden] { display:none; }
 
-/* The three states the dot says, in the inbox's own vocabulary: a pulse ONLY
-   while an agent works, amber while something waits on you, quiet once read.
-   Tasks never use amber: their dot is always the quiet grey, so an unread
-   task cannot read as an agent that stopped (its badge carries the news).
-   (sdot-pulse is defined beside the shared dot in styles.css.) */
-.sdot-working { background:var(--accent); animation:sdot-pulse 1.6s ease-in-out infinite; }
-.sdot-unread { background:var(--amber); }
-.sdot-inactive, .sdot-task { background:var(--line); border:1px solid var(--dim); }
-@media (prefers-reduced-motion: reduce) { .sdot-working { animation:none; } }
+/* One indicator: grey while running, green with unread activity. The running
+   modifier alone adds motion; its colour follows the unread modifier. */
+.inbox-status-dot { flex:0 0 8px; width:8px; height:8px; border-radius:50%;
+  color:var(--dim); background:currentColor; pointer-events:none; }
+.inbox-status-unread { color:var(--green); }
+.inbox-status-running { animation:inbox-status-pulse 1.6s ease-in-out infinite; }
+@keyframes inbox-status-pulse {
+  0%, 100% { opacity:1; box-shadow:0 0 0 0 color-mix(in srgb, currentColor 35%, transparent); }
+  50% { opacity:.55; box-shadow:0 0 0 3px color-mix(in srgb, currentColor 0%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) { .inbox-status-running { animation:none; } }
 
 /* Done and the ⋯ menu: overlaid on the row's top-right, present only while
-   the row is hovered, focused, active, or holding its menu open — the row's
-   full width belongs to its words, so the facts line never wraps to make
-   room for buttons. The overlay carries the row's own background so the
+   the row is hovered, focused, active, or holding its menu open. The name
+   reserves their space so controls never cover it. The facts line keeps its
+   full width. The overlay carries the row's own background so the
    title it covers reads as covered, not collided. The menu reuses the split
    button's popover. */
-/* --inbox-actions-room is what this overlay costs the row's right edge, and it
-   is reserved on a greyed row's first line above. It is built from the numbers
-   the overlay is built from: where it sits, the fade it stands on, and the one
-   control it holds. Which control that is differs by row — the ⋯ on most, Done
-   on a clean workspace's, which has no ⋯ at all (a workspace's verbs are that
-   one button) and is more than twice as wide as one. */
+/* Reserve the controls' width even while they are hidden. Keeping them in the
+   flex layout also keeps the final dot fixed on hover. */
 .inbox-entry { position:relative;
   --inbox-actions-inset:4px;  /* how far in from the row's corner the overlay sits */
   --inbox-actions-fade:6px;   /* the fade it stands on, before its first control */
   --inbox-menu-width:24px;    /* the ⋯ */
   --inbox-done-width:56px;    /* Done, and Done… while it is being done */
-  --inbox-actions-room:calc(var(--inbox-actions-inset) + var(--inbox-actions-fade) + var(--inbox-menu-width)); }
+  --inbox-control-width:0px;
+  --inbox-status-room:12px; /* the dot's slot stays reserved when read and idle */
+  --inbox-actions-room:calc(var(--inbox-actions-inset) + var(--inbox-actions-fade) + var(--inbox-control-width) + var(--inbox-status-room)); }
+.inbox-entry:has(.inbox-actions > .inbox-more) { --inbox-control-width:var(--inbox-menu-width); }
 .inbox-entry:has(.inbox-workspace-done) {
-  --inbox-actions-room:calc(var(--inbox-actions-inset) + var(--inbox-actions-fade) + var(--inbox-done-width)); }
+  --inbox-control-width:var(--inbox-done-width); }
+.inbox-entry:has([data-capture-retry]) { --inbox-control-width:56px; }
+.inbox-entry:has([data-capture-reroute]) { --inbox-control-width:72px; }
+.inbox-entry:has([data-workspace-reclaim]) { --inbox-control-width:100px; }
+.inbox-entry > .inbox-body > .inbox-line:first-child { padding-right:var(--inbox-actions-room); }
 .inbox-actions { position:absolute; top:var(--inbox-actions-inset); right:var(--inbox-actions-inset); display:flex;
-  align-items:center; gap:2px; opacity:0; pointer-events:none;
+  align-items:center; gap:4px; min-height:30px; opacity:0; pointer-events:none;
   background:var(--panel); border-radius:6px; padding-left:var(--inbox-actions-fade);
   box-shadow:-8px 0 8px -6px var(--panel); }
+.inbox-actions > button { opacity:0; pointer-events:none; transition:opacity 120ms ease; }
+.inbox-actions > .inbox-more { width:var(--inbox-menu-width); flex:none; padding:4px; }
+.inbox-actions > .inbox-workspace-done { opacity:1; pointer-events:auto; }
+.inbox-actions > [data-workspace-reclaim] { min-width:var(--inbox-control-width); }
 .inbox-entry:hover .inbox-actions { background:var(--line2);
   box-shadow:-8px 0 8px -6px var(--line2); }
 .inbox-entry.active .inbox-actions { background:var(--accent-soft);
@@ -423,23 +425,14 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .inbox-entry.active .inbox-actions,
 .inbox-actions:has(.inbox-workspace-done),
 .inbox-actions:has(.inbox-menu:not([hidden])) { opacity:1; pointer-events:auto; }
-/* A workspace's unread badge stands right of its Done, and the project agent's
-   at the same edge (#103): in the cluster, and shown whatever the rest of the
-   cluster is doing, since it is news rather than a control. Line one keeps
-   clear of the badge as it did when the badge sat on the line, and Done still
-   lies over the name's tail as it always has. A greyed row keeps the whole
-   cluster clear, so its away word is never covered. */
-.inbox-entry { --inbox-badge-width:28px;
-  --inbox-badge-room:calc(var(--inbox-actions-inset) + var(--inbox-actions-fade) + var(--inbox-badge-width)); }
-.inbox-actions > .inbox-unread { margin-left:4px; }
-.inbox-actions:has(> .inbox-unread) { opacity:1; pointer-events:auto; }
-.inbox-entry:has(.inbox-actions > .inbox-unread) { --inbox-actions-room:var(--inbox-badge-room); }
-.inbox-entry:has(.inbox-workspace-done):has(.inbox-actions > .inbox-unread) {
-  --inbox-actions-room:calc(var(--inbox-badge-room) + var(--inbox-done-width)); }
-.inbox-entry:has(.inbox-actions > .inbox-unread) > .inbox-body > .inbox-line:first-child { padding-right:var(--inbox-badge-room); }
-.inbox-offline:has(.inbox-actions > .inbox-unread) > .inbox-body > .inbox-line:first-child { padding-right:var(--inbox-actions-room); }
-/* The project agent's row is one line, so its badge stands level with it. */
-.inbox-project-agent .inbox-actions { top:50%; transform:translateY(-50%); }
+.inbox-entry:hover .inbox-actions > button,
+.inbox-entry:focus-within .inbox-actions > button,
+.inbox-entry.active .inbox-actions > button,
+.inbox-actions:has(.inbox-menu:not([hidden])) > button { opacity:1; pointer-events:auto; }
+/* The dot stays visible while controls wait for hover or keyboard focus. */
+.inbox-actions:has(> .inbox-status-dot) { opacity:1; }
+.inbox-project-agent .inbox-actions, .inbox-quiet .inbox-actions { top:50%; transform:translateY(-50%); }
+.inbox-entry.inbox-quiet .inbox-facts-float { right:calc(var(--inbox-actions-room) + var(--inbox-row-bleed-right)); }
 /* One width for Done and for Done…, so pressing it does not widen it. */
 /* Inside a project block the rows stand on the block's step of tone, so the
    overlays that carry a row's own fill carry that one. */
@@ -453,8 +446,12 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   .inbox-entry:hover .inbox-actions { opacity:0; pointer-events:none; }
   .inbox-entry.active .inbox-actions, .inbox-entry:focus-within .inbox-actions,
   .inbox-entry .inbox-actions:has(.inbox-workspace-done),
-  .inbox-entry .inbox-actions:has(> .inbox-unread),
+  .inbox-entry .inbox-actions:has(> .inbox-status-dot),
   .inbox-entry .inbox-actions:has(.inbox-menu:not([hidden])) { opacity:1; pointer-events:auto; }
+  .inbox-entry:hover .inbox-actions > button { opacity:0; pointer-events:none; }
+  .inbox-entry.active .inbox-actions > button, .inbox-entry:focus-within .inbox-actions > button,
+  .inbox-entry .inbox-actions > .inbox-workspace-done,
+  .inbox-entry .inbox-actions:has(.inbox-menu:not([hidden])) > button { opacity:1; pointer-events:auto; }
 }
 /* The rail's rows are near the top of the viewport, so the menu drops rather
    than rises, and stays on the row's right edge at every width. */
@@ -477,7 +474,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 
 /* ---- the projects face ----
    The inbox, grouped by project. Each block is a box: its head — fold, name,
-   unread, the + that creates — and its rows; the block holding the branch or
+   the + that creates, Hide, and status — and its rows; the block holding the branch or
    task the route stands on wears the composer's focused look. The unrouted
    captures stand above every block on their own. */
 .inbox-unsorted:not(:empty) { display:flex; flex-direction:column; gap:4px; }
@@ -504,12 +501,12 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    filled bands read as a gap in the list, not as a project. Its rows are the
    quiet ones and its fold has nothing to open (below). */
 .inbox-project.inbox-flat { border:0; box-shadow:none; }
-/* Positioned, because the block's menu drops from the head's right edge. */
-.inbox-project-head { position:relative; display:flex; align-items:center; gap:2px; padding:1px 0; }
+/* Keep the final dot's slot even when it is absent, so the name and hover
+   controls keep their width as activity changes. */
+.inbox-project-head { position:relative; display:flex; align-items:center; gap:2px; padding:1px 14px 1px 0; }
 .inbox-fold svg, .inbox-recent-caret svg, .inbox-project-create svg,
-.inbox-project-settings svg { width:16px; height:16px; display:block; }
-/* The fold and Recent caret center 12px into the band. Row dots use the same
-   center: 13px row padding minus 5px margin plus half the 8px dot. */
+.inbox-project-hide svg { width:16px; height:16px; display:block; }
+/* The fold and Recent caret center 12px into the band. */
 .inbox-fold { flex:none; padding:3px 4px; }
 /* Nothing to fold: no chevron at all. A dimmed "open" chevron said the block
    was open when it had nothing to be open; the button keeps its column so the
@@ -520,7 +517,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   border-radius:6px; cursor:pointer; font:inherit; font-size:12.5px; font-weight:650;
   color:var(--ink2); }
 .inbox-project-name:hover { background:var(--line2); color:var(--ink); }
-.inbox-project-head .inbox-unread { flex:none; margin-left:2px; }
+.inbox-project-head > .inbox-status-dot { position:absolute; right:0; top:50%; transform:translateY(-50%); }
 .inbox-project-tools { flex:none; display:grid; align-items:center; justify-items:end; margin-left:auto; }
 .inbox-project-device, .inbox-project-actions { grid-area:1 / 1; }
 /* Which machine a block is on is a secondary tag, not a second name: it reads
@@ -533,14 +530,11 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   font-size:10px; font-weight:400; opacity:.72; }
 .inbox-device { font-size:.86em; font-weight:400; opacity:.78; }
 .inbox-project-actions { display:flex; opacity:0; pointer-events:none; transition:opacity 120ms ease; }
-/* The block's controls stay up while its menu is open, as a row's do. */
 .inbox-project-head:hover .inbox-project-device,
-.inbox-project-head:focus-within .inbox-project-device,
-.inbox-project-head:has(> .inbox-menu) .inbox-project-device { opacity:0; }
+.inbox-project-head:focus-within .inbox-project-device { opacity:0; }
 .inbox-project-head:hover .inbox-project-actions,
-.inbox-project-head:focus-within .inbox-project-actions,
-.inbox-project-head:has(> .inbox-menu) .inbox-project-actions { opacity:1; pointer-events:auto; }
-.inbox-project-create, .inbox-project-settings, .inbox-project-head .inbox-more { flex:none; }
+.inbox-project-head:focus-within .inbox-project-actions { opacity:1; pointer-events:auto; }
+.inbox-project-create, .inbox-project-hide { flex:none; }
 @media (hover:none) {
   .inbox-project-device { opacity:0; }
   .inbox-project-actions { opacity:1; pointer-events:auto; }

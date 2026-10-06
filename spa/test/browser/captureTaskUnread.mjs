@@ -1,5 +1,5 @@
 // Capture the review images for #104 in a real Chromium against the production
-// app: a watched task's unread on the inbox's workspace and project badges
+// app: a watched task's unread on the inbox's workspace and project status dots
 // (both faces), the project's Tasks face on its rail, the workspace's Tasks
 // face on its rail, and the per-task bubble on the dashboard, list and board.
 // One scripted machine answers the tracker; everything else is the app's own.
@@ -153,16 +153,28 @@ async function expectText(locator, want, what) {
   throw new Error(`${what}: ${got}, wanted ${want}`);
 }
 
+async function expectStatus(row, { unread, running = false }) {
+  await row.locator(".inbox-status-dot").waitFor();
+  const matches = await row.evaluate((element, { unread, running }) => {
+    const dot = element.querySelector(".inbox-status-dot");
+    return dot.classList.contains("inbox-status-unread") === unread
+      && dot.classList.contains("inbox-status-running") === running
+      && !element.querySelector(".inbox-unread, .sdot");
+  }, { unread, running });
+  if (!matches) throw new Error(`Unexpected inbox status on ${await row.getAttribute("data-key") || "project head"}`);
+}
+
 // ---- the inbox ------------------------------------------------------------
 await withLayoutPage(async ({ page, basePath }) => {
   await open(page, basePath, { inbox: true });
   const row = (key) => page.locator(`#inbox-list .inbox-entry[data-key="${key}"]`);
   const workspaceRow = row(`workspace:${DEVICE}/ws-1`);
   const agentRow = row(`project-agent:${PROJECT_KEY}`);
-  // The workspace: its watched agents' 2 + 1, and #12 its builder holds, 3.
-  await expectText(workspaceRow.locator(".inbox-unread"), "6", "workspace badge");
-  // The project: its agent's 1, #7 the user holds, 2, and #5 nobody holds, 1.
-  await expectText(agentRow.locator(".inbox-unread"), "4", "project badge");
+  // The workspace holds watched news and running agents; the project holds
+  // agent and task news. Their numeric total remains on the inbox toggle.
+  await expectText(page.locator("#inbox-open .inbox-open-count"), "10", "inbox count");
+  await expectStatus(workspaceRow, { unread: true, running: true });
+  await expectStatus(agentRow, { unread: true });
   await page.mouse.move(0, 0);
   await page.locator("#inbox-rail").screenshot({ path: `${output}/inbox-face.png` });
   await workspaceRow.screenshot({ path: `${output}/inbox-workspace-row.png` });
@@ -170,13 +182,16 @@ await withLayoutPage(async ({ page, basePath }) => {
 
   await page.evaluate(() => window.__layoutModules.inboxView.setInboxView("projects"));
   const head = page.locator(`#inbox-list .inbox-project[data-project="${PROJECT_KEY}"] > .inbox-project-head`);
-  // A project head wears the whole block total on both faces (#183).
-  await expectText(head.locator(".inbox-unread"), "10", "expanded head");
+  // An expanded head shows its project agent; the folded head also carries
+  // the workspace's running state. Neither fold changes the numeric total.
+  await expectStatus(head, { unread: true });
+  await expectText(page.locator("#inbox-open .inbox-open-count"), "10", "expanded inbox count");
   await page.locator("#inbox-rail").screenshot({ path: `${output}/projects-face-expanded.png` });
   await head.locator("[data-project-fold]").click();
   await page.waitForFunction(() =>
     document.querySelector("[data-project-fold]")?.getAttribute("aria-expanded") === "false");
-  await expectText(head.locator(".inbox-unread"), "10", "folded head");
+  await expectStatus(head, { unread: true, running: true });
+  await expectText(page.locator("#inbox-open .inbox-open-count"), "10", "folded inbox count");
   await page.evaluate(() => document.activeElement?.blur());
   await page.mouse.move(0, 0);
   await page.locator("#inbox-rail").screenshot({ path: `${output}/projects-face-folded.png` });

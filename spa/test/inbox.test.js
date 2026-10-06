@@ -228,9 +228,7 @@ describe("what the inbox lists", () => {
     expect(html).toContain("data-menu");
   });
 
-  // An unread task is not an agent that stopped: its dot stays grey and the
-  // badge carries the news. Agents keep amber for unread.
-  it("keeps an unread task's dot grey while an unread agent row goes amber", () => {
+  it("uses the same unread status dot for task and agent rows", () => {
     const entries = listed([
       task({ unread: true, unread_count: 2, unread_reason: "comment" }),
       branch({ unread: true, unread_count: 1, unread_reason: "done" }),
@@ -239,10 +237,10 @@ describe("what the inbox lists", () => {
     const agentEntry = entries.find((entry) => entry.kind !== "task");
     expect(taskEntry.state).toBe("unread");
     const taskHtml = inboxRowHtml(taskEntry, {});
-    expect(taskHtml).toContain("sdot-task");
-    expect(taskHtml).not.toContain("sdot-unread");
-    expect(taskHtml).toContain('<span class="badge inbox-unread">2</span>');
-    expect(inboxRowHtml(agentEntry, {})).toContain("sdot sdot-unread");
+    expect(taskHtml).toContain("inbox-status-dot inbox-status-unread");
+    expect(taskHtml).not.toContain("sdot");
+    expect(taskHtml).not.toContain("badge inbox-unread");
+    expect(inboxRowHtml(agentEntry, {})).toContain("inbox-status-dot inbox-status-unread");
   });
 
   it("routes a task to its own surface", () => {
@@ -644,17 +642,16 @@ describe("the active entry", () => {
 // ---- the two lines --------------------------------------------------------------
 
 describe("what a row says", () => {
-  it("names the branch on line one, with the unread count at the right edge", () => {
+  it("names the branch on line one, with the unread dot in the actions", () => {
     const [entry] = listed([branch({ unread: true, unread_count: 3, unread_reason: "done" })]);
     expect(entry.name).toBe("build/login");
     const html = inboxRowHtml(entry, {});
     const line = html.match(/<div class="inbox-line inbox-name">.*?<\/div>/s)[0];
     expect(line).toContain("build/login");
-    expect(line).toContain("inbox-unread");
-    expect(line).toContain(">3<");
-    // Pulled right: the count is the last thing on the line.
-    expect(line.indexOf("build/login")).toBeLessThan(line.indexOf("inbox-unread"));
-    expect(html).toContain("sdot-unread");
+    expect(line).not.toContain("inbox-status-dot");
+    expect(line).not.toContain(">3<");
+    expect(html).toMatch(/<div class="inbox-actions">[\s\S]*inbox-status-dot inbox-status-unread/);
+    expect(html).not.toContain("sdot");
     expect(html).toContain('data-entity="run-1"');
   });
 
@@ -920,7 +917,8 @@ describe("capture rows", () => {
   it("say what is happening to them, in the order it happens", () => {
     expect(inboxRowHtml(entryOf(captureItem({ state: "queued" })), {})).toContain("Waiting for your device");
     expect(inboxRowHtml(entryOf(captureItem({ state: "routing" })), {})).toContain("Deciding where this goes");
-    expect(inboxRowHtml(entryOf(captureItem({ state: "routing" })), {})).toContain("capture-spinner");
+    expect(inboxRowHtml(entryOf(captureItem({ state: "routing", working: true })), {})).toContain("inbox-status-dot inbox-status-running");
+    expect(inboxRowHtml(entryOf(captureItem({ state: "routing" })), {})).not.toContain("capture-spinner");
   });
 
   it("say where a routed capture went, and offer to send it somewhere else", () => {

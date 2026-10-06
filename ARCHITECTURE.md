@@ -1717,6 +1717,15 @@ open as a modal (`spa/src/views/settingsModal.js`).
 | Terminal | `spa/src/core/console.js`, `spa/src/terminal/` |
 | Settings | `spa/src/views/settingsModal.js`, `settings.js`, `deviceSettings.js`, `devicePanels.js` in `spa/src/views/`; `spa/src/sheets/` |
 
+Inbox rows, including Recent and the project Workspaces tab, use
+`spa/src/core/inboxStatusDot.js` for one right-edge status dot. Unread activity
+is green; running activity without unread is grey. Only running agents pulse,
+and reduced-motion preferences disable the animation. Watched tasks read their
+assigned agent's running state from cached rosters. A folded project head
+summarizes watched activity, including tasks without a Needs you row; an
+expanded head uses only its project conversation's own unread and activity.
+The head offers Hide and New workspace directly.
+
 ### Theming
 
 Tokens are CSS custom properties in `spa/src/styles.css`: `:root` holds the light

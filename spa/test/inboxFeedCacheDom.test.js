@@ -52,7 +52,8 @@ it.each([true, false])("paints cached rows before hello and keeps them when watc
   expect(document.querySelector('#active [data-key="tracker_task:task-324"] .stitle')?.textContent)
     .toBe("#324 Cached task");
   expect(document.querySelector("#active .inbox-facts")?.textContent).toBe("Choose the fix");
-  expect(document.querySelector("#active .inbox-unread")?.textContent).toBe("2");
+  expect(document.querySelector("#active .inbox-actions > .inbox-status-unread")).not.toBeNull();
+  expect(document.querySelector("#active .inbox-unread, #active .sdot")).toBeNull();
   expect(document.querySelector('#recent [data-key="tracker_task:task-cleared"] .stitle')?.textContent)
     .toBe("#325 Cleared task");
 

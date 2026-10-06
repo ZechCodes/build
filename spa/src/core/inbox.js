@@ -15,15 +15,16 @@
 // least 12 hours as the anchor. Other row
 // kinds retain their bridge anchor. All rows sort by anchor, oldest first.
 //
-// A row is two lines: what it is, with the unread count pulled to the right
-// edge, and what it weighs — files touched, ahead/behind, +/−. A row with
-// nothing to weigh yet says so.
+// A row is two lines: what it is and what it weighs — files touched,
+// ahead/behind, +/−. One status dot at the right says unread activity by its
+// colour and running activity by its pulse. A row with nothing to weigh yet
+// says so.
 //
 // A workspace row's second line ends with how many of its agents are running,
-// and its one badge, right of its Done, is the unread of its watched agents.
+// and its right-hand status dot reflects the unread of its watched agents.
 // Each project's own agent has a row among them too (core/inboxProjectAgent.js):
 // the project's name alone, ordered by that agent's own conversation (#103).
-// A watched task's unread counts in those badges like an agent's (#104,
+// A watched task's unread counts in those totals like an agent's (#104,
 // core/taskUnread.js): on the workspace whose agent holds it, and on the
 // project's row when no workspace row does.
 //
@@ -41,6 +42,7 @@ import { NO_TASK_UNREAD } from "./taskUnread.js";
 import { standsOnProjectCheckout, workspaceDisplayName, workspaceRun, workspaceStatusText } from "./workspaceModel.js";
 import { sessionTimes } from "./sessionSpans.js";
 import { fieldTraits } from "./fieldTraits.js";
+import { statusDotHtml } from "./inboxStatusDot.js";
 
 const DAY_MS = 24 * 3600 * 1000;
 
@@ -169,10 +171,10 @@ export function watchedWorkspaceEntries(workspaces = [], projects = [], items = 
 }
 
 /** A workspace row with what its roster says (#103): how many agents are
- *  running, said after the git status on line two, and the unread of the
- *  watched agents, which is the one badge the row wears. The watched tasks
- *  its agents hold count in that badge like agents (#104, core/taskUnread.js),
- *  and a row they alone are waiting on is unread. */
+ * running, said after the git status on line two, and the unread of the
+ * watched agents. Its dot uses both facts; project and inbox totals still
+ * count the unread. Watched tasks its agents hold count like agents (#104,
+ * core/taskUnread.js), and a row they alone are waiting on is unread. */
 function withRosterTallies(entry, agents, taskUnread) {
   const runningCount = runningAgentCount(agents);
   const agentIds = agents.map((agent) => agent.id).filter(Boolean);
@@ -180,9 +182,13 @@ function withRosterTallies(entry, agents, taskUnread) {
   return {
     ...entry,
     runningCount,
+    working: runningCount > 0,
+    // A folded project summarizes watched agents only; the workspace's own
+    // dot and running count still describe every agent working in it.
+    watchedWorking: agents.some((agent) => agent.watched !== false && agent.working),
     agentIds,
     unreadCount: watchedUnreadCount(agents) + taskUnreadCount,
-    state: taskUnreadCount > 0 ? "unread" : entry.state,
+    state: entryState({ unread: taskUnreadCount > 0 || entry.state === "unread", working: runningCount > 0 }),
     facts: `${entry.facts} · ${runningCount} running`,
   };
 }
@@ -990,33 +996,34 @@ function rowTooltip(entry) {
   return [entry.title, titleProject(entry), entry.reason].filter(Boolean).join(" — ");
 }
 
-/** The dot's state class. A task is never an agent, so its dot stays grey in
- *  every state: amber there would read as an agent that stopped. The unread
- *  badge still says it has news. */
-const dotClass = (entry) => (entry.kind === "task" ? "sdot-task" : `sdot-${entry.state}`);
+/** Execution and unread are independent: normalization may give unread
+ * priority in `state`, but an agent can keep running while it asks for the
+ * reader. Older row shapes name running only through their state. */
+const rowStatusDotHtml = (entry) => statusDotHtml({
+  running: entry.working || entry.state === "working",
+  unread: entry.unreadCount > 0,
+});
 
-/** One inbox row, in two lines: the state dot and what this is, with the unread
- *  count at the right edge; then what it weighs. `ui`: { activeKey,
+/** One inbox row, in two lines: what this is, then what it weighs. The status
+ * dot follows its actions at the right edge. `ui`: { activeKey,
  *  openMenuKey, showProject, quiet }. A quiet row — one in Recent — is one
  *  line instead (quietRowHtml). */
 export function inboxRowHtml(entry, ui = {}) {
   const ownPainter = ROW_PAINTERS[entry.kind];
   if (ownPainter) return ownPainter(entry, ui);
   if (ui.quiet) return quietRowHtml(entry, ui);
-  const badge = badgePlacement(entry);
   // One list across every project: which project a row belongs to is the one
   // fact it cannot go without, so it leads line one — two rows both named
   // "main" must never read as the same thing. A row painted under its project's
   // own block (`showProject: false`) has already been told.
   const projectTag = projectTagHtml(entry, ui);
   return `${rowOpenHtml(entry, ui)}
-    <span class="sdot ${dotClass(entry)}" title="${entry.state}"></span>
     <div class="inbox-body">
-      <div class="inbox-line inbox-name">${projectTag}<span class="stitle">${esc(entry.name)}</span>${badge.line}</div>
+      <div class="inbox-line inbox-name">${projectTag}<span class="stitle">${esc(entry.name)}</span></div>
       <div class="inbox-facts">${esc(entry.facts || GETTING_STARTED)}</div>
       <span class="warn" data-done-error hidden></span>
     </div>
-    <div class="inbox-actions">${workspaceDoneHtml(entry, ui)}${badge.actions}${menuHtml(entry, ui.openMenuKey === entry.key)}</div>
+    <div class="inbox-actions">${workspaceDoneHtml(entry, ui)}${menuHtml(entry, ui.openMenuKey === entry.key)}${rowStatusDotHtml(entry)}</div>
   </div>`;
 }
 
@@ -1039,29 +1046,17 @@ function rowOpenHtml(entry, ui, extra = []) {
   } title="${esc(rowTooltip(entry))}">`;
 }
 
-/** How many messages are waiting, as the badge every kind of row wears. */
-const unreadBadgeHtml = (entry) =>
-  (entry.unreadCount > 0 ? `<span class="badge inbox-unread">${entry.unreadCount}</span>` : "");
-
-/** Where a live row wears its badge. A workspace wears it right of its Done,
- *  in the actions cluster (#103); every other row pulls it to line one's far
- *  edge. */
-const badgePlacement = (entry) => (entry.kind === "workspace"
-  ? { line: "", actions: unreadBadgeHtml(entry) }
-  : { line: unreadBadgeHtml(entry), actions: "" });
-
 /** The project agent's row (#103): the project's name and nothing more — no
- *  second line, no Done, no menu. Its badge stands at the right edge where a
- *  workspace's does, and in Recent it is one quiet line like every other. The
+ *  second line, no Done, no menu. Its status dot stands at the right edge where
+ *  a workspace's does, and in Recent it is one quiet line like every other. The
  *  project is already its name, so it wears no project tag; the machine is
  *  said after it only where two machines share the name. */
 function projectAgentRowHtml(entry, ui) {
-  const dot = ui.quiet ? "" : `<span class="sdot ${dotClass(entry)}" title="${entry.state}"></span>`;
   return `${rowOpenHtml(entry, ui, ["inbox-project-agent", ui.quiet ? "inbox-quiet" : ""])}
-    ${dot}<div class="inbox-body">
+    <div class="inbox-body">
       <div class="inbox-line inbox-name"><span class="stitle">${esc(entry.name)}</span>${dimDeviceHtml(entry.deviceName)}</div>
     </div>
-    <div class="inbox-actions">${unreadBadgeHtml(entry)}</div>
+    <div class="inbox-actions">${rowStatusDotHtml(entry)}</div>
   </div>`;
 }
 
@@ -1072,21 +1067,18 @@ const ROW_PAINTERS = {
 };
 
 /** A quiet row, which is what Recent holds: one line — what this is, with
- *  what it weighs floating over the line's right edge — and no state dot. A
- *  row that has said nothing for a day has no state worth a glance, and what
- *  it weighs is the one fact left worth reading, so it takes the right edge
- *  the way the unread count does on a live row. Same key, same verbs, same
+ *  what it weighs floating over the line's right edge. Its status dot follows
+ *  the same rules as a live row. Same key, same verbs, same
  *  element shape, so a row going quiet keeps its element. */
 function quietRowHtml(entry, ui) {
-  const unread = unreadBadgeHtml(entry);
   const projectTag = projectTagHtml(entry, ui);
   return `${rowOpenHtml(entry, ui, ["inbox-quiet"])}
     <div class="inbox-body">
-      <div class="inbox-line inbox-name">${projectTag}<span class="stitle">${esc(entry.name)}</span>${unread}</div>
+      <div class="inbox-line inbox-name">${projectTag}<span class="stitle">${esc(entry.name)}</span></div>
       <span class="warn" data-done-error hidden></span>
     </div>
     ${entry.facts ? `<span class="inbox-facts inbox-facts-float">${esc(entry.facts)}</span>` : ""}
-    <div class="inbox-actions">${menuHtml(entry, ui.openMenuKey === entry.key)}</div>
+    <div class="inbox-actions">${menuHtml(entry, ui.openMenuKey === entry.key)}${rowStatusDotHtml(entry)}</div>
   </div>`;
 }
 
@@ -1155,14 +1147,18 @@ function rerouteMenuHtml(entry, ui = {}) {
   </div>`;
 }
 
+/** A routing state includes queued work; only the cached working bit says an
+ * agent is running. A question is the router at rest, waiting on the user.
+ * Older captures can mark unread activity without carrying its count. */
+const captureActivity = (entry) => ({
+  running: entry.working && !entry.question,
+  unread: entry.unreadCount > 0 || entry.state === "unread",
+});
+
 /** One capture row. `ui`: { activeKey, rerouteKey, projects, rerouteBranchProject,
  *  rerouteBranches }. */
-// eslint-disable-next-line complexity -- ratchet: captureRowHtml is at 14, cap 10 — reduce it, then drop this line
 export function captureRowHtml(entry, ui = {}) {
-  const working = entry.captureState === "queued" || entry.captureState === "unrouted" || entry.captureState === "routing";
-  // A question is the router at rest, waiting on the user: a spinner there
-  // says something is happening when nothing is.
-  const spinning = working && !entry.question;
+  const activity = captureActivity(entry);
   const status = captureStatusText(entry);
   const actions = [];
   if (entry.captureState === "failed") {
@@ -1177,18 +1173,15 @@ export function captureRowHtml(entry, ui = {}) {
     .filter(Boolean)
     .join(" ");
   return `<div class="${classes}" data-key="${esc(entry.key)}" data-capture="${esc(entry.captureId)}" title="${esc(entry.text || entry.name)}">
-    <span class="sdot sdot-${entry.state}" title="${entry.state}"></span>
     <div class="inbox-body">
       <div class="inbox-line"><span class="stitle">${esc(entry.name)}</span></div>
-      <div class="inbox-line capture-status${spinning ? " dim" : ""}">${
-        spinning ? '<span class="capture-spinner" aria-hidden="true"></span>' : ""
-      }<span>${esc(status)}</span></div>
+      <div class="inbox-line capture-status${activity.running ? " dim" : ""}"><span>${esc(status)}</span></div>
       ${entry.question ? `<div class="inbox-reason">${esc(entry.question)}</div>` : ""}
       <span class="warn" data-capture-error hidden></span>
     </div>
     <div class="inbox-actions">${actions.join("")}${
       ui.rerouteKey === entry.key ? rerouteMenuHtml(entry, ui) : ""
-    }</div>
+    }${statusDotHtml(activity)}</div>
   </div>`;
 }
 

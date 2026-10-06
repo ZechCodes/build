@@ -1453,7 +1453,7 @@ describe("the inbox row's actions", () => {
   });
 
   it("reserves the row's edge from the control the overlay actually holds", () => {
-    // A greyed row keeps the overlay's width out of its first line, so hovering
+    // Every row keeps the overlay's width out of its first line, so hovering
     // never covers the one word saying why the row is grey. The reserve was the
     // ⋯ button's, and a clean workspace's row does not carry the ⋯ — it carries
     // Done, which is more than twice as wide, so the overlay covered the last
@@ -1462,12 +1462,15 @@ describe("the inbox row's actions", () => {
     // The row is stated twice — once as a row of the list, once as the box this
     // overlay is positioned against. It is the second that carries the reserve.
     const row = rulesFor(".inbox-entry").find((rule) => declaration(rule.body, "--inbox-actions-room"));
+    const withMenu = baseRule(".inbox-entry:has(.inbox-actions > .inbox-more)");
     const withDone = cssRules().find((rule) => rule.selector === ".inbox-entry:has(.inbox-workspace-done)");
     expect(withDone).toBeTruthy();
-    const room = (inside) =>
-      `calc(var(--inbox-actions-inset) + var(--inbox-actions-fade) + var(${inside}))`;
-    expect(declaration(row.body, "--inbox-actions-room")).toBe(room("--inbox-menu-width"));
-    expect(declaration(withDone.body, "--inbox-actions-room")).toBe(room("--inbox-done-width"));
+    expect(declaration(row.body, "--inbox-actions-room")).toBe(
+      "calc(var(--inbox-actions-inset) + var(--inbox-actions-fade) + var(--inbox-control-width) + var(--inbox-status-room))",
+    );
+    expect(declaration(row.body, "--inbox-status-room")).toBe("12px");
+    expect(declaration(withMenu.body, "--inbox-control-width")).toBe("var(--inbox-menu-width)");
+    expect(declaration(withDone.body, "--inbox-control-width")).toBe("var(--inbox-done-width)");
 
     // …and those numbers have one home each: where the overlay sits, the fade it
     // stands on, and the width of the control it holds.
@@ -1479,7 +1482,7 @@ describe("the inbox row's actions", () => {
 
     // The room is reserved on the line the word stands on, and nowhere else.
     const line = cssRules().find(
-      (rule) => rule.selector === ".inbox-offline > .inbox-body > .inbox-line:first-child",
+      (rule) => rule.selector === ".inbox-entry > .inbox-body > .inbox-line:first-child",
     );
     expect(declaration(line.body, "padding-right")).toBe("var(--inbox-actions-room)");
   });

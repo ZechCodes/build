@@ -1,8 +1,9 @@
 // Capture the review images for #183 in a real Chromium against the production
 // app, at a phone's width: the inbox popover on the projects face, with the top
-// badge beside the project heads. Two projects each have a fully read task
+// badge beside the project status dots. Two projects each have a fully read task
 // assigned to the user, plus an unassigned watched task with unread moves
-// but no Needs-you row. Their badges must sum to 3 (Build 2 + smarter-dev 1).
+// but no Needs-you row. The top badge stays 3 (Build 2 + smarter-dev 1)
+// while head dots show own news expanded and aggregate news folded (#380).
 // Run from spa/: node test/browser/captureInboxBadgeSum.mjs [output directory]
 import { mkdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -113,14 +114,20 @@ async function mountApp(page, basePath) {
   await page.evaluate(() => document.fonts.ready);
 }
 
-/** Assert the actual totals, not just a repeated (possibly empty) paint. */
-async function expectBadges(page) {
-  await page.waitForFunction(() => {
+/** Check the numeric total independently of the two head dots. */
+async function expectBadges(page, folded = false) {
+  await page.waitForFunction((folded) => {
     const count = (selector) => document.querySelector(selector)?.textContent.trim();
-    return count("#inbox-open .inbox-open-count") === "3"
-      && count('[data-project="dev-1/build"] > .inbox-project-head .inbox-unread') === "2"
-      && count('[data-project="dev-1/smarter"] > .inbox-project-head .inbox-unread') === "1";
-  });
+    const statusMatches = (id) => {
+      const head = document.querySelector(`[data-project="dev-1/${id}"] > .inbox-project-head`);
+      const dot = head?.querySelector(".inbox-status-dot");
+      const matches = folded
+        ? dot?.classList.contains("inbox-status-unread") && !dot.classList.contains("inbox-status-running")
+        : !dot;
+      return head && matches && !head.querySelector(".inbox-unread, .sdot");
+    };
+    return count("#inbox-open .inbox-open-count") === "3" && statusMatches("build") && statusMatches("smarter");
+  }, folded);
 }
 
 await withLayoutPage(async ({ page, basePath }) => {
@@ -146,7 +153,7 @@ await withLayoutPage(async ({ page, basePath }) => {
   }
   const said = await page.evaluate(() => {
     const heads = [...document.querySelectorAll("#inbox-list .inbox-project-head")]
-      .map((head) => `${head.querySelector(".inbox-project-name").textContent} ${head.querySelector(".inbox-unread")?.textContent || 0}`);
+      .map((head) => `${head.querySelector(".inbox-project-name").textContent} ${head.querySelector(".inbox-status-unread") ? "unread" : "read"}`);
     return `top ${document.querySelector("#inbox-open .inbox-open-count").textContent || 0} · ${heads.join(" · ")}`;
   });
   await page.mouse.move(0, 0);
@@ -159,7 +166,7 @@ await withLayoutPage(async ({ page, basePath }) => {
       document.querySelector(`[data-project-fold="${key}"]`)?.getAttribute("aria-expanded") === "false",
     `${DEVICE}/${project}`);
   }
-  await expectBadges(page);
+  await expectBadges(page, true);
   await page.evaluate(() => document.activeElement?.blur());
   await page.mouse.move(0, 0);
   await page.screenshot({ path: `${output}/inbox-popover-folded.png`, animations: "disabled" });

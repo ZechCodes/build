@@ -2166,7 +2166,7 @@ index e69de29..e70eae2 100644
 +#[path = "host_sweep_tests.rs"]
 +mod tests;
 diff --git a/webrtc/src/peer_connection/host_sweep_tests.rs b/webrtc/src/peer_connection/host_sweep_tests.rs
-index e69de29..379f93b 100644
+index e69de29..6e4b056 100644
 --- a/webrtc/src/peer_connection/host_sweep_tests.rs
 +++ b/webrtc/src/peer_connection/host_sweep_tests.rs
 @@ -0,0 +1,1374 @@
@@ -2742,11 +2742,11 @@ index e69de29..379f93b 100644
 +    assert!(baseline.contains(&known));
 +    assert!(!baseline.contains(&newly_usable));
 +    assert!(control.start(7, "ufrag", 40001));
-+    sweep.start(7, "ufrag".into(), 40001, now + PACE);
++    sweep.start(7, "ufrag".into(), 40001, now + 3 * PACE);
 +    sweep.prepare(40001, vec![subnet()]);
 +    let probe = sweep
 +        .next_priority_probe(
-+            now + 2 * PACE,
++            now + 4 * PACE,
 +            true,
 +            |_, ip| ip == newly_usable,
 +            |_, ip| !baseline.contains(&ip),

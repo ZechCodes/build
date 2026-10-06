@@ -1682,8 +1682,13 @@ where
         {
             let (ufrag, password) = core.remote_ice_credentials();
             self.host_sweep.sync_credentials(ufrag, password);
+            let now = Instant::now();
+            #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+            if self.host_sweep.all_plans_expired(now) {
+                self.inner.host_sweep_control.retire_baseline();
+            }
             self.host_sweep
-                .start(generation, credentials.ufrag().into(), port, Instant::now());
+                .start(generation, credentials.ufrag().into(), port, now);
         }
     }
 

@@ -457,10 +457,6 @@ impl HostSweepControl {
             if state.ports.is_empty() {
                 state.close_scouts();
             }
-            #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
-            if state.ports.is_empty() {
-                state.baseline.clear();
-            }
         }
     }
     pub fn clear(&self) {
@@ -588,6 +584,10 @@ impl HostSweep {
             self.authenticated_hit = false;
             self.remote_ufrag = ufrag;
             self.generation = generation;
+        } else {
+            // A late port cannot reopen the early budget after every earlier
+            // port's original lifetime has elapsed without a driver tick.
+            self.expire(now);
         }
         if self.plans.contains_key(&port) {
             return;
@@ -834,14 +834,6 @@ impl HostSweep {
             self.events
                 .push_back(plan.event(self.generation, "stopped", Some("resolved"), false));
         }
-        if !self.plans.is_empty()
-            && self
-                .plans
-                .values()
-                .all(|plan| plan.stopped || !plan.unresolved)
-        {
-            self.retire_early_state();
-        }
     }
 
     pub fn sync_generation(&mut self, ufrag: &str) {
@@ -917,7 +909,8 @@ impl HostSweep {
     }
 
     pub fn deadline(&self) -> Option<Instant> {
-        self.plans
+        let active = self
+            .plans
             .values()
             .filter(|plan| !plan.stopped || plan.subnets.is_some())
             .map(|plan| {
@@ -930,7 +923,13 @@ impl HostSweep {
                 };
                 due.max(self.next_packet.unwrap_or(due)).min(plan.expires)
             })
-            .min()
+            .min();
+        // Resolved ports retain credential-scoped early state until the last
+        // original plan expiry. Wake for that retirement even with no live port.
+        let retirement = (!self.early_retired)
+            .then(|| self.plans.values().map(|plan| plan.expires).max())
+            .flatten();
+        active.into_iter().chain(retirement).min()
     }
     pub fn initial_grace_until(&self) -> Option<Instant> {
         self.plans
@@ -1028,6 +1027,9 @@ impl HostSweep {
                 plan.stopped = true;
                 plan.retire_addresses();
             }
+        }
+        if self.all_plans_expired(now) {
+            self.retire_early_state();
         }
         if self.next_packet.is_none_or(|next| now >= next) {
             self.next_packet = Some(now + Duration::from_millis(50));
@@ -1147,7 +1149,7 @@ impl HostSweep {
             }
             plan.retire_addresses();
         }
-        if !self.plans.is_empty() && self.plans.values().all(|plan| plan.stopped) {
+        if self.all_plans_expired(now) {
             self.retire_early_state();
         }
     }

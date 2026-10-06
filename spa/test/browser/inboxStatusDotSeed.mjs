@@ -84,7 +84,8 @@ export async function mountWaitingStatusDotInbox(page, basePath, {
   grouped = false, folded = false, ownWaiting = true, workspaceWatched = true, unreadCount = 0,
 } = {}) {
   await mountStatusDotInbox(page, basePath);
-  await loadBrowserModules(page, { agents: "src/core/inboxProjectAgent.js" }, basePath);
+  await loadBrowserModules(page, { rows: "src/core/inbox.js", projects: "src/core/inboxProjects.js",
+    agents: "src/core/inboxProjectAgent.js" }, basePath);
   await page.evaluate(({ grouped, folded, ownWaiting, workspaceWatched, unreadCount, projectKey }) => {
     const { rows, projects, agents } = window.__layoutModules;
     const now = Date.now();

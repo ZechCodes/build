@@ -31,6 +31,53 @@ for (const { label, width, height } of [
   { label: "desktop", width: 1280, height: 800 },
   { label: "mobile", width: 390, height: 760 },
 ]) {
+  for (const theme of ["light", "dark"]) {
+    it(`aligns project and row status dot right edges on ${label} in ${theme}`, async () => {
+      await withLayoutPage(async ({ page, basePath }) => {
+        await page.emulateMedia({ reducedMotion: "reduce" });
+        await mountStatusDotInbox(page, basePath, { grouped: true });
+        await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, theme);
+        const block = page.locator(".inbox-project");
+        const head = block.locator(".inbox-project-head");
+        const dot = head.locator(":scope > .inbox-status-dot");
+        const rows = block.locator(".inbox-entry:visible").filter({ has: page.locator(".inbox-status-dot") });
+        expect(await block.locator('[data-key^="workspace:"] .inbox-status-dot').count()).toBeGreaterThan(0);
+        expect(await block.locator('[data-key^="task:"] .inbox-status-dot').count()).toBe(1);
+        const before = await dot.boundingBox();
+        const nameBefore = await head.locator(".inbox-project-name").boundingBox();
+        for (const active of [false, true]) {
+          await block.evaluate((element, active) => { element.classList.toggle("active", active); }, active);
+          await rows.first().evaluate((element, active) => { element.classList.toggle("active", active); }, active);
+          for (const hovered of [false, true]) {
+            if (hovered) {
+              await head.hover();
+              await page.waitForFunction(() => getComputedStyle(document.querySelector(".inbox-project-actions")).opacity === "1");
+            } else await page.mouse.move(width - 1, height - 1);
+            const state = `${active ? "active" : "inactive"}, ${hovered ? "head hovered" : "resting"}`;
+            await captureLayout(page, `inbox-status-dot-alignment-${label}-${theme}-${active ? "active" : "inactive"}-${hovered ? "hovered" : "resting"}.png`);
+            expect(await dot.boundingBox(), state).toEqual(before);
+            expect(await head.locator(".inbox-project-name").boundingBox(), state).toEqual(nameBefore);
+            const right = await dot.evaluate((element) => element.getBoundingClientRect().right);
+            for (const row of await rows.all()) {
+              const layout = await rowLayout(row);
+              expect.soft(layout.dot.right, `${state}: ${layout.key}`).toBe(right);
+              if (!hovered) {
+                await row.hover();
+                expect.soft((await rowLayout(row)).dot.right, `${state}: ${layout.key} hovered`).toBe(right);
+                await page.mouse.move(width - 1, height - 1);
+              }
+            }
+            for (const button of await head.locator(".inbox-project-create, .inbox-project-hide").all()) {
+              const box = await button.boundingBox();
+              expect(box.x + box.width, state).toBeLessThanOrEqual(before.x - 2);
+              expect(box.x, state).toBeGreaterThanOrEqual(nameBefore.x + nameBefore.width);
+            }
+          }
+        }
+      }, { width, height });
+    }, 60_000);
+  }
+
   it(`keeps one right status dot clear of names and hover controls on ${label}`, async () => {
     await withLayoutPage(async ({ page, basePath }) => {
       for (const grouped of [false, true]) {

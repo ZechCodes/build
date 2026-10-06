@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { candidateDiagnostic, directPairNoTryReason, safeCandidateReason } from "../src/core/rtcDiagnostics.js";
 
-const SCOUT_COUNTERS = ["scout_datagrams_sent", "scout_attempted", "destinations_scouted", "neighbors_pending", "neighbors_pending_peak"];
+const SCOUT_COUNTERS = ["scout_datagrams_sent", "scout_attempted", "destinations_scouted", "neighbors_pending", "neighbors_pending_peak", "early_neighbors_probed", "scout_holds", "scout_starts"];
 const baseSweep = { status: "progress", eligible: true, eligible_unresolved: 1, generation: 2, addresses_sent: 3, reason: null, prflx_followed: false };
 
 describe("candidate diagnostic privacy", () => {
@@ -89,7 +89,7 @@ describe("candidate diagnostic privacy", () => {
   });
 
   it("keeps distinct neighbor scout counters without copying content-bearing fields", () => {
-    const counters = { scout_datagrams_sent: 12, scout_attempted: 15, destinations_scouted: 14, neighbors_pending: 1, neighbors_pending_peak: 2 };
+    const counters = { scout_datagrams_sent: 12, scout_attempted: 15, destinations_scouted: 14, neighbors_pending: 1, neighbors_pending_peak: 2, early_neighbors_probed: 1, scout_holds: 1, scout_starts: 0 };
     expect(candidateDiagnostic({
       reason: "mdns-pending", event: "host-sweep", generation: 2, candidates: { mdns_pending: 1 },
       sweep: { ...baseSweep, addresses_attempted: 4, ...counters, neighbor_address: "192.168.1.2", neighbor_state: "FAILED",

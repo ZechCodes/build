@@ -98,7 +98,8 @@ the browser's ARP can precede its unresolved `.local` candidate trickle. The
 baseline's owning-interface set is fixed for that generation; a later owner
 change cannot add an unobserved interface to the early path.
 
-A successful early indication holds an **unstarted** scout pass for one second.
+A successful early indication holds an **unstarted** scout pass until one second
+after the latest successful early indication.
 An authenticated inbound STUN check from the exact host/peer-reflexive tuple
 can prevent scout start while TURN is still selected, while leaving the
 existing unresolved evidence available to the optional restart. Without that
@@ -158,26 +159,35 @@ host/host selection followed 0.381–0.439 s after candidate gathering.
 ### Final-source fallback and NAT controls
 
 The full final-source fixture matrix passed 12/12 modes, with each process exit
-code checked (`/tmp/task377-part2/final-matrix.log`). The table compares the
-old-code baseline with one final-source run per cached or routed condition.
-Time is from the first browser host candidate gathering to the first nominated
-host/host snapshot. ARP totals include kernel retries; unique targets are
-reported separately. These individual times show observed behavior under
-that run's kernel pressure, not a stable latency reduction.
+code checked (`/tmp/task377-part2/final-matrix.log`). The original old/final
+fallback runs and the planned paired repetitions are summarized in
+`/tmp/task377-part2/part2-fixture-evidence.json`. Time is from the first browser
+host candidate gathering to the first nominated host/host browser snapshot,
+using the same rule in both source versions; browser nomination was sampled
+about every 50 ms. The counts are successful direct runs / attempted runs.
 
-| Condition | Old → final direct time | Old → final scout enqueues | Final bridge ARP / unique targets | Final restarts |
-| --- | ---: | ---: | ---: | ---: |
-| Bridge MAC cached PERMANENT at browser | 21.981 → 14.471 s | 991 → 1,020 | 3,058 / 1,020 | 1 |
-| Bridge MAC cached REACHABLE at browser | 12.854 → 21.966 s | 1,020 → 1,020 | 3,058 / 1,020 | 1 |
-| Bridge MAC cached STALE at browser | 7.566 → 7.475 s | 1,019 → 997 | 3,058 / 1,020 | 1 |
-| Browser routes checks via gateway (`never-arps`) | 13.453 → 14.466 s | 1,020 → 1,020 | 3,058 / 1,020 | 1 |
+| Condition | Old direct runs and time | Final direct runs and time | Successful scout enqueues, old → final |
+| --- | ---: | ---: | ---: |
+| Bridge MAC cached PERMANENT at browser | 3/3, 13.451–21.981 s | 3/3, 12.839–21.977 s | 991–1,020 → 1,020 |
+| Bridge MAC cached REACHABLE at browser | 3/3, 12.854–21.983 s | 3/3, 21.966–21.969 s | 999–1,020 → 973–1,020 |
+| Bridge MAC cached STALE at browser | 3/3, 6.466–7.566 s | 3/3, 7.475–7.569 s | 998–1,019 → 997–1,019 |
+| Browser routes checks via gateway (`never-arps`) | 1/2, 13.453 s | 3/3, 14.466–22.017 s | 1,020 → 1,020 |
 
-Each timing uses the same first nominated host/host snapshot rule in the old
-and final result JSON, rather than the fixture's later end time. One run per
-fallback condition cannot establish a latency distribution. The REACHABLE
-sample was 9.112 s slower after the change, while PERMANENT was 7.510 s
-faster; repeat runs are needed before calling either difference measurement
-noise or a regression. All four still selected direct with one restart.
+Every successful fallback run selected direct after one existing restart and
+produced 3,058 bridge ARP requests, including kernel retries, to 1,020 unique
+destinations. The planned second old-code routed run did not reach the browser
+by the 26-second observation boundary: it stayed on TURN after one restart,
+with 1,007 of 1,020 scout destinations and 3,021 bridge ARP requests. Its next
+old-code repetition was skipped without retrying the failure. The 25-second
+plan lifetime and pressure guards therefore do not guarantee full coverage in
+every run, either before or after this change.
+
+The PERMANENT-cache old/final order reversed across repetitions, and the
+observed direct-time ranges overlap in the cached conditions. There is no
+consistent timing ordering in these samples. These small
+samples show preserved fallback behavior in the successful final runs, but do
+not establish statistical timing equivalence or a stable speed change. The
+old-code routed failure remains part of the sample tally.
 
 The STALE final run sent its real indication 89.6 ms after the browser's
 unicast ARP refresh, compared with 20.6 ms in the old-code run. The 100 ms
@@ -238,8 +248,9 @@ Wi-Fi access points have not been measured.
 
 ## Verification and artifacts
 
-The helper tests were written first and failed before implementation; all 21
-namespace, cache-control and packet-decoder tests pass. Valid observations,
+The part 1 helper tests were written first and failed before implementation;
+all 21 namespace, cache-control and packet-decoder tests passed. The expanded
+part 2 fixture helper suite passes 24 tests. Valid observations,
 including final cold/cached checks, are separate runs, not hidden retries.
 The existing early-unresolved and unknown-neighbour-clustered fixture controls
 are checked with the shared browser module. Gates run niced with inherited

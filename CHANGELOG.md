@@ -43,7 +43,8 @@ Wire 3.12.0.
   usable neighbor before the 250 ms scout grace ends. A bounded read-only
   snapshot poll looks for at most eight new addresses per ICE generation on
   the advertised socket's owning interface. A successful real-port indication
-  gives the authenticated ICE check one second before a scout pass starts;
+  holds an unstarted scout pass until one second after the latest successful
+  early indication so the authenticated ICE check can arrive;
   a matching validated host/peer-reflexive pair can avoid that pass. If no
   direct check arrives, the existing bounded scout fallback proceeds. Three
   aggregate diagnostic counts report early neighbors probed, scout holds and

@@ -1018,8 +1018,9 @@ The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
   The driver accepts at most 32 distinct candidate ports and 32768 attempts per
   generation, and permits one
   repeat one second after a pass only while TURN still carries the connection.
-  A successful early indication holds an unstarted scout pass for at most one
-  second so the browser's authenticated check can arrive. An exact validated
+  A successful early indication holds an unstarted scout pass until one second
+  after the latest successful early indication, so the browser's authenticated
+  check can arrive. An exact validated
   host/peer-reflexive tuple following that indication prevents scout start even if
   TURN is still selected, while preserving unresolved evidence for the existing
   optional restart. Absent that proof, the original bounded scout pass
@@ -1083,10 +1084,14 @@ The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
   one early real-port indication each at 44.9–71.3 ms after the first bridge
   answer, received a matching authenticated STUN exchange at 306.8–317.4 ms,
   selected host/host direct with zero restarts, and enqueued zero scouts or
-  bridge-originated ARP requests. Cached-MAC and gateway-routed controls kept
-  the bounded scout fallback and selected direct after the existing single
-  restart. Cold different-NAT and missing-srflx controls learned a usable
-  neighbor through browser ARP but emitted zero feature packets. The 12-mode
+  bridge-originated ARP requests. Three final-source runs each for cached-MAC
+  and gateway-routed controls kept the bounded scout fallback and selected
+  direct after the existing single restart. One additional old-code routed run
+  missed the browser before the 26-second observation boundary, so full
+  coverage is not guaranteed in every run; the small paired timing samples do
+  not establish latency equivalence. Cold different-NAT and missing-srflx
+  controls learned a usable neighbor through browser ARP but emitted zero
+  feature packets. The 12-mode
   namespace matrix is recorded in `web/rtc-lan-upgrade/arp-findings.md`.
 - **Paired LAN hint**: `rtc.offer` accepts optional `client_id` under
   `rtc.clientLanCache` (wire 3.12.0). The SPA sends it only after a greeting from

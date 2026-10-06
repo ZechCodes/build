@@ -1200,7 +1200,7 @@ where
             self.host_sweep.generation(),
             self.host_sweep.remote_ufrag(),
             probe.port,
-            || {
+            || -> std::io::Result<usize> {
                 #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
                 return super::host_scout::send_real(expires, || {
                     socket.try_send_on_interface(

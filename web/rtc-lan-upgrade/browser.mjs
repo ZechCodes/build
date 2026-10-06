@@ -110,7 +110,7 @@ export async function run() {
     }
     callback(push);
   });
-  const link = ["far-edge-pressure", "unknown-neighbor-pressure"].includes(mode)
+  const link = ["far-edge-pressure", "never-arps-pressure"].includes(mode)
     ? await openPressureControl({ signal, onPush,
       TrackedPeer, hostGated: () => hostGated })
     : await openPeerLink({
@@ -144,7 +144,7 @@ export async function run() {
   const appRpcPaths = [];
   const applicationCall = async (method, params) => {
     const startsDirect = ["early-unresolved", "far-edge-unresolved"].includes(mode);
-    if (startsDirect || mode.startsWith("unknown-neighbor-") || mode.startsWith("arp-")) {
+    if (startsDirect || mode.startsWith("never-arps-") || mode.startsWith("arp-")) {
       const state = await stats();
       if (startsDirect && (state.selected?.state !== "succeeded" || !state.selected.nominated
         || state.selected.localType === "relay" || state.selected.remoteType === "relay"
@@ -197,7 +197,7 @@ export async function run() {
   }
   await applicationCall("session.hello");
   const before = await stats();
-  if (!["unknown-neighbor-unresolved", "unknown-neighbor-clustered"].includes(mode)
+  if (!["never-arps-unresolved", "never-arps-clustered"].includes(mode)
     && before.selected?.localType !== "relay" && before.selected?.remoteType !== "relay") throw new Error(`initial path must use TURN: ${JSON.stringify(before)}`);
   if (!hostCandidate) throw new Error("Chromium must gather a real UUID.local host candidate");
   if (connectionDiagnosticHistory().some((row) => row.phase === "mdns-resolved")) throw new Error("the browser name resolved before the fixture released its answer");
@@ -317,7 +317,7 @@ async function unresolvedUpgrade({ mode, before, turnPull, stats, pull, link, ex
     }
     return { mode, before, after, turnPull, turnAfter: await pull(), diagnostics: connectionDiagnosticHistory() };
   }
-  if (["far-edge-pressure", "unknown-neighbor-pressure"].includes(mode)) {
+  if (["far-edge-pressure", "never-arps-pressure"].includes(mode)) {
     await waitFor(() => window.fixtureSweepFinished(), Date.now() + 30000,
       "the no-direct control terminates its bounded production sweep");
     const after = await stats();
@@ -355,7 +355,7 @@ async function unresolvedUpgrade({ mode, before, turnPull, stats, pull, link, ex
   let initialViable;
   await waitFor(async () => {
     const state = await stats();
-    if (mode.startsWith("unknown-neighbor-") && !initialViable && state.restarts === 0
+    if (mode.startsWith("never-arps-") && !initialViable && state.restarts === 0
       && state.direct.some((pair) => pair.state === "succeeded")) {
       initialViable = { ...state, at: Date.now() };
       await window.fixtureViable({ mode, viable: initialViable, diagnostics: connectionDiagnosticHistory() });
@@ -374,11 +374,11 @@ async function unresolvedUpgrade({ mode, before, turnPull, stats, pull, link, ex
   const after = await stats();
   if (!unresolved()) throw new Error("the permanently silenced mDNS responder must never resolve");
   if (after.connections !== 1 || after.restarts > 1) throw new Error("sweep upgrade must reuse its connection and bounded optional restart");
-  if (mode === "unknown-neighbor-clustered" && (after.restarts !== 0
+  if (mode === "never-arps-clustered" && (after.restarts !== 0
     || after.localUfrag !== before.localUfrag || after.remoteUfrag !== before.remoteUfrag)) {
     throw new Error("clustered unknown scout must upgrade within original checks and credentials, with zero restarts");
   }
-  if (mode === "unknown-neighbor-unresolved" && (after.restarts !== 1
+  if (mode === "never-arps-unresolved" && (after.restarts !== 1
     || after.localUfrag === before.localUfrag || after.remoteUfrag === before.remoteUfrag)) {
     throw new Error("unknown far-edge scout must reuse its encrypted session and exactly one existing optional restart");
   }

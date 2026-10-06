@@ -164,7 +164,7 @@ async def main(artifacts):
               "phone_arp_requests": [], "phone_arp_replies": [], "scout_hits": []}
     save_report(artifacts, report)
     loop = asyncio.get_running_loop()
-    unknown = mode.startswith("unknown-neighbor-") or mode.startswith("arp-")
+    absent_cache_control = mode.startswith("never-arps-") or mode.startswith("arp-")
     mdns_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     mdns_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     mdns_socket.bind(("224.0.0.251", 5353))
@@ -181,12 +181,12 @@ async def main(artifacts):
     subprocess.run(["nft", "add", "rule", "inet", "delay_mdns", "output",
                     "udp", "sport", "5353", "drop"], check=True)
     host_port = json.loads((artifacts / "host.json").read_text())["port"]
-    if mode in {"delayed", "far-edge-pressure", "unknown-neighbor-pressure"}:
+    if mode in {"delayed", "far-edge-pressure", "never-arps-pressure"}:
         subprocess.run(["nft", "add", "rule", "inet", "hold_checks", "output",
                         "ip", "daddr", "10.72.0.1", "udp", "sport", str(host_port), "counter", "drop"], check=True)
     # The outer namespace must prove the far-edge entry is absent immediately
     # before signaling releases this real candidate. No neighbor is removed.
-    (artifacts / ("phone-gated" if unknown else "gated")).write_text("ready")
+    (artifacts / ("phone-gated" if absent_cache_control else "gated")).write_text("ready")
     while not (artifacts / "release").exists():
         await asyncio.sleep(0.02)
     report["released"] = True

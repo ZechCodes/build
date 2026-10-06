@@ -1,4 +1,4 @@
-"""Cache controls used only by the #377 passive-ARP investigation."""
+"""Initial cache controls for the #377 production-scout namespace fixture."""
 
 import json
 import subprocess
@@ -32,9 +32,9 @@ def initial(case, peer, artifacts):
 
 
 def configure(case, peer):
-    # DROP happens before neighbour resolution: no scout can cause ARP.
-    # The unmodified scheduler still runs and may count successful enqueues.
-    if case != "active":
+    # Only the named investigation control blocks UDP9 before neighbour resolution.
+    # Every permanent regression mode keeps the production scout path enabled.
+    if case == "suppressed":
         suppress_scouts()
     if case not in CACHE_STATES:
         return

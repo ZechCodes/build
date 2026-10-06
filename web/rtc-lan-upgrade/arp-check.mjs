@@ -66,6 +66,7 @@ try {
     }
   }
   const result = await page.evaluate(() => window.runLanUpgrade());
+  await save("result.json", { ...result, answers, hosts, srflx });
   assert.equal(result.after.connections, 1, "observation keeps the production peer");
   assert(result.after.restarts <= 1, "the production restart budget is unchanged");
   assert.equal(result.firstPull.projectCount, 1);
@@ -74,8 +75,9 @@ try {
   const selected = result.after.selected;
   assert(selected?.state === "succeeded" && selected.nominated, "the observation finishes with a carrying pair");
   const selectedDirect = selected.localType !== "relay" && selected.remoteType !== "relay";
-  if (mode !== "arp-refresh") assert.equal(selectedDirect, ["arp-cold", "arp-active", "arp-stale"].includes(mode), "only the ARP-learning cases become direct");
-  await verifyPacketEvidence(mode, artifacts);
+  assert(selectedDirect, "production discovery selects a native direct pair");
+  if (mode === "arp-cold") assert.equal(result.after.restarts, 0, "cold on-link upgrades without an ICE restart");
+  result.packetEvidence = await verifyPacketEvidence(mode, artifacts);
   await save("result.json", { ...result, answers, hosts, srflx });
   console.log("PASS", JSON.stringify({ mode, before: result.before.selected, after: result.after.selected, restarts: result.after.restarts }));
 } catch (error) {
@@ -96,20 +98,42 @@ async function verifyPacketEvidence(mode, artifacts) {
   const events = lines.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
   const arp = events.filter((event) => event.kind === "arp" && event.operation === "request" && event.direction === "inbound");
   const indications = events.filter((event) => event.stun_kind === "binding_indication");
-  if (mode !== "arp-active") {
+  const wire = JSON.parse(await readFile(path.join(artifacts, "wire.json"), "utf8"));
+  if (mode === "arp-suppressed") {
     assert.equal(events.filter((event) => event.kind === "scout").length, 0, "no scout crosses the bridge interface");
     assert(sweep.length > 0 && sweep.every((event) => event.scout_datagrams_sent === 0), "the kernel rejects every scout enqueue");
   }
-  if (["arp-cold", "arp-active", "arp-stale"].includes(mode)) {
+  if (mode === "arp-cold") {
+    assert(sweep.length > 0 && sweep.every((event) => event.scout_datagrams_sent === 0),
+      "cold on-link production path enqueues zero anonymous scouts");
+    assert.equal(wire.arp_requests, 0, "cold on-link production path causes zero bridge ARP requests");
+    assert.equal(wire.arp_unique_destinations, 0, "cold on-link production path opens no anonymous ARP destinations");
+  }
+  if (["arp-cold", "arp-suppressed", "arp-stale"].includes(mode)) {
     assert(arp.length > 0, "the phone supplies its own ARP");
     assert(indications.length > 0 && indications[0].at > arp[0].at, "the real probe follows ARP learning");
     const bridge = JSON.parse(await readFile(path.join(artifacts, "bridge-host-socket.json"), "utf8"));
     assert.equal(indications[0].source_port, bridge.port, "the probe leaves the advertised socket");
-    assert.match(log, /carrying over host\/prflx candidates/, "the bridge authenticates the learned peer");
   }
+  const authenticatedRequests = events.filter((event) => event.kind === "stun" && event.direction === "inbound"
+    && event.request_with_credentials);
+  const authenticatedReplies = events.filter((event) => event.kind === "stun" && event.direction === "outbound"
+    && event.stun_kind === "binding_success");
+  const exchange = authenticatedRequests.find((request) => authenticatedReplies.some((reply) =>
+    reply.transaction === request.transaction && reply.at >= request.at));
+  assert(exchange,
+  "the direct pair exchanges a matching authenticated STUN check and success");
+  assert.match(log, /carrying over host\/prflx candidates/, "the bridge authenticates the direct peer");
   if (mode === "arp-stale") assert(arp.every((event) => event.destination_mac !== "ff:ff:ff:ff:ff:ff"), "cached stale MACs refresh through unicast ARP");
-  if (["arp-cached", "arp-proxy"].includes(mode)) {
+  if (["arp-cached", "arp-never-arps"].includes(mode)) {
     assert.equal(arp.length, 0, "the asymmetric control never supplies ARP to the bridge");
-    assert.equal(indications.length, 0, "an absent phone receives no real probe");
+    assert(sweep.some((event) => event.scout_datagrams_sent > 0),
+      "the one-sided cache falls back to production anonymous scouting");
+    assert(wire.arp_unique_destinations > 0, "the fallback emits real bridge ARP on the isolated LAN");
+    assert(indications.length > 0, "scout discovery makes real host-socket probes possible");
   }
+  return { firstPhoneArpAt: arp[0]?.at, firstHostIndicationAt: indications[0]?.at,
+    firstAuthenticatedExchangeAt: exchange.at,
+    scoutDatagramsSent: Math.max(...sweep.map((event) => event.scout_datagrams_sent)),
+    bridgeArpRequests: wire.arp_requests, uniqueBridgeArpDestinations: wire.arp_unique_destinations };
 }

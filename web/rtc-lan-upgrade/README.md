@@ -14,20 +14,32 @@ temporary user/network namespace. The bridge fixture gets a cleared
 environment, a temporary HOME, an explicit temporary identity path, a new
 database and an unsigned test repository. Chromium uses a fresh profile.
 
-Task #377's [passive-ARP findings](arp-findings.md) use `arp-cold`,
-`arp-cached`, `arp-refresh`, `arp-stale`, `arp-proxy` and `arp-active` modes.
-They add two-sided PCAPs, decoded packet events, timestamped `ip monitor neigh`
-output and read-only neighbour snapshots. All except `arp-active` suppress UDP9
-scouts in the disposable namespace before neighbour resolution; the production
-scheduler and its attempt accounting still run. The cached cases seed only the
-phone's bridge MAC (PERMANENT, REACHABLE or STALE respectively), with the bridge's
-phone entry absent before ICE negotiation. Signaling uses the existing gateway
-rendezvous to avoid warming that entry. `arp-proxy` preserves the original
-unknown-neighbour /32 gateway route; the other cases check the bridge directly.
+Task #377's [passive-ARP findings](arp-findings.md) led to permanent production
+controls: `arp-cold`, `arp-cached`, `arp-refresh`, `arp-stale` and
+`arp-never-arps`. They record two-sided PCAPs, decoded packet events,
+timestamped `ip monitor neigh` output and read-only neighbour snapshots.
+Production UDP9 scouting stays enabled in every permanent control. The cold
+on-link case requires direct carrying with no scout enqueue, bridge ARP request
+or ICE restart. The cached cases seed only the phone's bridge MAC (PERMANENT,
+REACHABLE or STALE respectively), with the bridge's phone entry absent before
+ICE negotiation. Signaling uses the existing gateway rendezvous to avoid
+warming that entry. `arp-never-arps` routes bridge checks through the gateway:
+the phone ARPs for the gateway and never for the bridge. The earlier
+`unknown-neighbor-*` cases now have the explicit `never-arps-*` name for the
+same /32 routed topology. `arp-suppressed` remains a separately named
+investigation control that drops UDP9 before neighbour resolution.
 Each observation retains the production peer link and optional restart monitor,
 records the first carrying pull, then observes until direct selection or 26 s
 after the first candidate. This fixed measurement boundary does not extend any
 production generation's 25 s lifetime or the fixture's 65 s outer deadline.
+The runner verifies both sides' initial neighbour state after signaling opens
+and before Chromium starts ICE. The answer timestamp is recorded without
+awaiting a measurement IPC. Cold packet checks require a matching
+credential-bearing STUN request and success response, native direct carrying,
+zero restarts, zero scout enqueues and zero bridge-originated ARP requests.
+Cached and routed cases require real anonymous scout fallback and direct
+selection. `different-nat` and `missing-srflx` require zero early and late
+feature probes, including scout ARP, across all sweep events.
 
 The bridge firewall is stock inbound DROP with established traffic and
 multicast mDNS allowed. A disposable gateway joins the bridge and phone on a
@@ -102,8 +114,8 @@ TX capacity and neighbor-state counts. They contain no addresses or ports.
 Results report peak occupied fraction and remaining headroom, including normal
 TURN traffic when it shares that socket. The outer deadline remains 65 seconds.
 
-The `unknown-neighbor-unresolved`, `unknown-neighbor-clustered` and
-`unknown-neighbor-pressure` modes use the disposable gateway's transparent rendezvous proxy.
+The `never-arps-unresolved`, `never-arps-clustered` and
+`never-arps-pressure` modes use the disposable gateway's transparent rendezvous proxy.
 Its Linux bridge joins both real on-link interfaces; STUN/TURN still live in
 the separate external-service namespace. The phone routes its authentic
 bridge-host checks through that gateway, preserving the original source IP,
@@ -134,7 +146,7 @@ phone's real ARP request/reply before its first advertised-host-socket probe,
 and the read-only aggregate pressure samples measure actual ICE socket
 occupancy and INCOMPLETE neighbor counts.
 
-The unknown-neighbor pressure mode retains the separately labeled native
+The never-arps pressure mode retains the separately labeled native
 no-direct control and counted namespace host-check DROP. A complete /22 has
 1,021 authorized destinations after network, broadcast and our address are
 excluded. One genuinely known neighbor is excluded from scouting, leaving

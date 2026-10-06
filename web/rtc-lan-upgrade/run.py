@@ -84,15 +84,15 @@ def inside(binary, artifacts):
     if os.environ.get("BUILD_RTC_LAN_BASELINE"):
         environment["BUILD_RTC_LAN_BASELINE"] = "1"
     mode = os.environ.get("BUILD_RTC_LAN_MODE", "delayed")
-    assert mode in {"delayed", "early-unresolved", "far-edge-unresolved", "far-edge-pressure", "unresolved", "late-unresolved", "large-subnet", "unknown-neighbor-unresolved", "unknown-neighbor-clustered", "unknown-neighbor-pressure", "different-nat", "missing-srflx", "arp-cold", "arp-cached", "arp-refresh", "arp-stale", "arp-proxy", "arp-active"}, f"unknown fixture mode: {mode}"
+    assert mode in {"delayed", "early-unresolved", "far-edge-unresolved", "far-edge-pressure", "unresolved", "late-unresolved", "large-subnet", "never-arps-unresolved", "never-arps-clustered", "never-arps-pressure", "different-nat", "missing-srflx", "arp-cold", "arp-cached", "arp-refresh", "arp-stale", "arp-never-arps", "arp-suppressed"}, f"unknown fixture mode: {mode}"
     environment["BUILD_RTC_LAN_MODE"] = mode
     if os.environ.get("BUILD_RTC_LAN_SWEEP_BASELINE"):
         environment["BUILD_RTC_LAN_SWEEP_BASELINE"] = "1"
-    unknown = mode.startswith("unknown-neighbor-")
+    never_arps = mode.startswith("never-arps-")
     arp = mode.startswith("arp-")
-    wide = mode in {"far-edge-unresolved", "far-edge-pressure"} or unknown or arp
+    wide = mode in {"far-edge-unresolved", "far-edge-pressure"} or never_arps or arp
     prefix = 21 if mode == "large-subnet" else 22 if wide else 24
-    phone = "10.72.1.2" if mode == "unknown-neighbor-clustered" else "10.72.3.254" if wide else "10.72.0.2"
+    phone = "10.72.1.2" if mode == "never-arps-clustered" else "10.72.3.254" if wide else "10.72.0.2"
     environment["BUILD_RTC_LAN_PHONE_IP"] = phone
     processes = []
     logs = []
@@ -179,7 +179,7 @@ table inet bridge_firewall {
         run(*namespace_command(peer, "ip", "link", "set", "lo", "up"))
         run(*namespace_command(peer, "ip", "link", "set", "eth0", "up"))
         run(*namespace_command(peer, "ip", "route", "add", "default", "via", "10.72.0.254"))
-        if unknown or mode == "arp-proxy":
+        if never_arps or mode == "arp-never-arps":
             run(*namespace_command(peer, "ip", "route", "add", "10.72.0.1/32", "via", "10.72.0.254"))
             run(*namespace_command(peer, "sysctl", "-q", "-w", "net.ipv4.conf.all.accept_redirects=0",
                                   "net.ipv4.conf.eth0.accept_redirects=0"))
@@ -227,7 +227,7 @@ table inet bridge_firewall {
         if arp:
             arp_case.initial(mode.removeprefix("arp-"), peer, artifacts)
         (artifacts / "firewall-ready").write_text("ready")
-        if unknown:
+        if never_arps:
             wait_file(artifacts / "phone-gated", network)
             neighbors = json.loads(subprocess.run(["ip", "-j", "neigh", "show", "dev", "eth0"],
                                                  text=True, capture_output=True, check=True).stdout)
@@ -241,7 +241,7 @@ table inet bridge_firewall {
         if arp:
             wait_file(artifacts / "phone-gated", network)
             (artifacts / "gated").write_text("ready")
-        if mode == "far-edge-pressure" or unknown or arp:
+        if mode == "far-edge-pressure" or never_arps or arp:
             samples = []
             deadline = time.monotonic() + 65
             while browser.poll() is None:

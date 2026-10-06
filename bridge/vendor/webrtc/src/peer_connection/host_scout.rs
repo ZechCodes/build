@@ -1,6 +1,6 @@
 //! Anonymous ARP discovery, kept separate from the advertised ICE socket.
 use super::host_neighbors::{ScoutSnapshot, scout_snapshot_until};
-use super::host_sweep::{HostSweepControl, SweepScoutCounters, SweepSubnet};
+use super::host_sweep::{HostSweepControl, SweepCredentials, SweepScoutCounters, SweepSubnet};
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
@@ -186,15 +186,25 @@ struct Group {
     cursor: usize,
     snapshot: Option<ScoutSnapshot>,
     refresh_at: Instant,
+    early_until: Instant,
     resources: Arc<Mutex<ScoutResources>>,
     retry: bool,
     ordered: bool,
     failed: u32,
     usable: HashSet<Ipv4Addr>,
+    baseline: Option<HashSet<Ipv4Addr>>,
     last_admission: Option<Instant>,
     scout_lease: Option<Instant>,
 }
 impl Group {
+    fn early_usable(&self, address: Ipv4Addr, now: Instant) -> bool {
+        self.fresh(now).is_some()
+            && self.usable.contains(&address)
+            && self
+                .baseline
+                .as_ref()
+                .is_some_and(|known| !known.contains(&address))
+    }
     fn scout_available(&mut self, budget: &mut Admission, now: Instant) -> bool {
         if budget.interface_available(self.subnet.interface_index, self.scout_lease, now) {
             return true;
@@ -245,6 +255,7 @@ impl Drop for Group {
 #[derive(Default)]
 pub(super) struct HostScouts {
     generation: u64,
+    credentials: Option<SweepCredentials>,
     groups: Vec<Group>,
     pub counters: SweepScoutCounters,
     pause: Option<&'static str>,
@@ -257,15 +268,23 @@ impl HostScouts {
         generation: u64,
         subnets: Vec<SweepSubnet>,
         control: &HostSweepControl,
-        ufrag: &str,
+        credentials: (&str, &str),
+        grace_until: Instant,
         now: Instant,
     ) {
-        if generation != self.generation {
+        let (ufrag, password) = credentials;
+        if generation != self.generation
+            || !self
+                .credentials
+                .as_ref()
+                .is_some_and(|saved| saved.matches((ufrag, password)))
+        {
             self.groups.clear();
             self.retired.clear();
             self.retirement_limit = false;
             self.counters = SweepScoutCounters::default();
             self.generation = generation;
+            self.credentials = Some(SweepCredentials::new(ufrag, password));
             self.pause = None;
         }
         let groups = std::mem::take(&mut self.groups);
@@ -291,16 +310,19 @@ impl HostScouts {
             } else {
                 0
             };
+            let baseline = control.baseline_for((ufrag, password), subnet.interface_index);
             self.groups.push(Group {
                 subnet,
                 cursor,
                 snapshot: None,
                 refresh_at: now,
+                early_until: grace_until,
                 resources,
                 retry: false,
                 ordered: false,
                 failed: u32::from(suppressed),
                 usable: HashSet::new(),
+                baseline,
                 last_admission: None,
                 scout_lease: None,
             });
@@ -333,7 +355,12 @@ impl HostScouts {
             if now < group.refresh_at {
                 continue;
             }
-            group.refresh_at = now + FRESH;
+            group.refresh_at = now
+                + if now < group.early_until {
+                    Duration::from_millis(20)
+                } else {
+                    FRESH
+                };
             group.usable.clear();
             group.snapshot = scout_snapshot_until(group.subnet.interface_index, deadline).ok();
             if let Some(snapshot) = &group.snapshot {
@@ -365,6 +392,15 @@ impl HostScouts {
             .iter()
             .find(|group| group.same_subnet(subnet))
             .is_some_and(|group| group.fresh(now).is_some() && group.usable.contains(&address))
+    }
+    pub fn early_usable(&self, subnet: &SweepSubnet, address: Ipv4Addr, now: Instant) -> bool {
+        self.groups
+            .iter()
+            .find(|group| group.same_subnet(subnet))
+            .is_some_and(|group| group.early_usable(address, now))
+    }
+    pub fn deadline(&self) -> Option<Instant> {
+        self.groups.iter().map(|group| group.refresh_at).min()
     }
     pub fn usable_until(&self, subnet: &SweepSubnet) -> Option<Instant> {
         self.groups
@@ -562,14 +598,61 @@ mod tests {
             cursor: 0,
             snapshot: None,
             refresh_at: Instant::now(),
+            early_until: Instant::now() + Duration::from_millis(250),
             resources: Arc::new(Mutex::new(ScoutResources::default())),
             retry: false,
             ordered: false,
             failed: 0,
             usable: HashSet::new(),
+            baseline: None,
             last_admission: None,
             scout_lease: None,
         }
+    }
+    #[test]
+    fn failed_baseline_cannot_grant_early_probe_and_fresh_live_snapshot_is_required() {
+        let now = Instant::now();
+        let phone = Ipv4Addr::new(10, 72, 0, 6);
+        let mut group = test_group(test_subnet(&[]));
+        group.snapshot = Some(ScoutSnapshot {
+            observed_at: now,
+            usable: vec![phone],
+            incomplete: Vec::new(),
+            failed: Vec::new(),
+            netns_total: 1,
+            incomplete_total: 0,
+            table_entries: 1,
+            gc_thresh2: 512,
+            gc_thresh3: 1024,
+        });
+        group.usable.insert(phone);
+        assert!(!group.early_usable(phone, now));
+        group.baseline = Some([phone].into());
+        assert!(!group.early_usable(phone, now));
+        group.baseline = Some(HashSet::new());
+        assert!(group.early_usable(phone, now));
+        assert!(!group.early_usable(phone, now + FRESH));
+        group.clear();
+        assert!(!group.early_usable(phone, now));
+    }
+    #[test]
+    fn accelerated_snapshot_phase_ends_at_original_grace_not_late_plan_preparation() {
+        let started = Instant::now();
+        let control = HostSweepControl::default();
+        assert!(control.start(7, "ufrag", 40000));
+        let mut scouts = HostScouts::default();
+        let grace_until = started + Duration::from_millis(250);
+        let late_preparation = started + Duration::from_millis(200);
+        scouts.sync(
+            7,
+            vec![test_subnet(&[])],
+            &control,
+            ("ufrag", "password"),
+            grace_until,
+            late_preparation,
+        );
+        assert_eq!(scouts.groups[0].early_until, grace_until);
+        assert!(scouts.groups[0].early_until < late_preparation + Duration::from_millis(250));
     }
     #[test]
     fn interface_window_allows_one_pass_across_peers_and_generations_without_sliding() {
@@ -685,19 +768,47 @@ mod tests {
         control.start(7, "ufrag", 40000);
         let mut scouts = HostScouts::default();
         let subnet = test_subnet(&[]);
-        scouts.sync(7, vec![subnet.clone()], &control, "ufrag", now);
+        scouts.sync(
+            7,
+            vec![subnet.clone()],
+            &control,
+            ("ufrag", "password"),
+            now + Duration::from_millis(250),
+            now,
+        );
         scouts.groups[0].cursor = 2;
-        scouts.sync(7, Vec::new(), &control, "ufrag", now + PACE);
+        scouts.sync(
+            7,
+            Vec::new(),
+            &control,
+            ("ufrag", "password"),
+            now + Duration::from_millis(250),
+            now + PACE,
+        );
         control.cancel(7, "ufrag", 40000);
         control.start(7, "ufrag", 40001);
-        scouts.sync(7, vec![subnet.clone()], &control, "ufrag", now + 2 * PACE);
+        scouts.sync(
+            7,
+            vec![subnet.clone()],
+            &control,
+            ("ufrag", "password"),
+            now + Duration::from_millis(250),
+            now + 2 * PACE,
+        );
         assert_eq!(scouts.groups[0].cursor, subnet.addresses.len());
         assert!(
             !scouts.groups[0].discovery_complete(),
             "a canceled partial pass cannot claim coverage"
         );
         control.start(8, "new", 40002);
-        scouts.sync(8, vec![subnet], &control, "new", now + 3 * PACE);
+        scouts.sync(
+            8,
+            vec![subnet],
+            &control,
+            ("new", "password"),
+            now + Duration::from_millis(250),
+            now + 3 * PACE,
+        );
         assert_eq!(
             scouts.groups[0].cursor, 0,
             "fresh generation gets a fresh discovery budget"

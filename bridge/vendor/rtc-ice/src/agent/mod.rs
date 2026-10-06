@@ -638,6 +638,27 @@ impl Agent {
         }
     }
 
+    /// Current peer-reflexive pairs with successful, authenticated ICE traffic.
+    /// A candidate claimed in signaling alone cannot satisfy the check counters.
+    pub fn authenticated_peer_reflexive_pairs(
+        &self,
+    ) -> impl Iterator<Item = (&Candidate, &Candidate)> {
+        self.candidate_pairs
+            .iter()
+            .filter(|pair| {
+                pair.state == CandidatePairState::Succeeded
+                    && (pair.requests_received > 0 || pair.responses_received > 0)
+                    && self.remote_candidates[pair.remote_index].candidate_type()
+                        == CandidateType::PeerReflexive
+            })
+            .map(|pair| {
+                (
+                    &self.local_candidates[pair.local_index],
+                    &self.remote_candidates[pair.remote_index],
+                )
+            })
+    }
+
     /// The highest-priority pair that is still usable, whether or not it has been nominated.
     pub fn get_best_available_candidate_pair(&self) -> Option<(&Candidate, &Candidate)> {
         if let Some(pair_index) = self.get_best_available_pair() {

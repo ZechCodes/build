@@ -10,6 +10,7 @@ const LOCAL: &str = "candidate:1 1 udp 2130706431 192.0.2.1 5000 typ host";
 const RELAY: &str =
     "candidate:2 1 udp 16777215 203.0.113.1 6000 typ relay raddr 192.0.2.2 rport 5001";
 const HOST: &str = "candidate:3 1 udp 2130706431 192.0.2.2 5001 typ host";
+const PRFLX: &str = "candidate:4 1 udp 2130706431 192.0.2.3 5002 typ prflx";
 const REMOTE_PASSWORD: &str = "remote-password-for-checks";
 
 fn selected_relay(enabled: bool, controlling: bool, lite: bool) -> Agent {
@@ -59,6 +60,30 @@ fn host_writes(writes: &[TaggedBytesMut]) -> Vec<&TaggedBytesMut> {
         .iter()
         .filter(|write| write.transport.peer_addr == "192.0.2.2:5001".parse().unwrap())
         .collect()
+}
+
+#[test]
+fn self_reported_peer_reflexive_address_cannot_count_as_authenticated_hit() {
+    let mut agent = selected_relay(true, false, false);
+    agent
+        .add_remote_candidate(unmarshal_candidate(PRFLX).unwrap())
+        .unwrap();
+    let index = agent
+        .candidate_pairs
+        .iter()
+        .position(|pair| {
+            agent.remote_candidates[pair.remote_index].candidate_type()
+                == CandidateType::PeerReflexive
+        })
+        .unwrap();
+    assert_eq!(agent.authenticated_peer_reflexive_pairs().count(), 0);
+    agent.candidate_pairs[index].state = CandidatePairState::Succeeded;
+    assert_eq!(agent.authenticated_peer_reflexive_pairs().count(), 0);
+    agent.candidate_pairs[index].requests_received = 1;
+    assert_eq!(agent.authenticated_peer_reflexive_pairs().count(), 1);
+    agent.candidate_pairs[index].requests_received = 0;
+    agent.candidate_pairs[index].responses_received = 1;
+    assert_eq!(agent.authenticated_peer_reflexive_pairs().count(), 1);
 }
 
 #[test]

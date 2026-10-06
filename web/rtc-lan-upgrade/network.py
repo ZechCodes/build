@@ -81,6 +81,8 @@ async def capture(report, artifacts):
             operation = struct.unpack_from("!H", packet, 20)[0]
             if operation == 1 and packet[28:32] == socket.inet_aton("10.72.0.1"):
                 report["arp_requests"] += 1
+                if packet[38:42] != socket.inet_aton("10.72.0.254"):
+                    report["non_gateway_arp_requests"] += 1
                 report["arp_one_second_bins"][str(int(time.time()))] = report["arp_one_second_bins"].get(str(int(time.time())), 0) + 1
                 report["last_arp_request_at"] = time.time()
                 if not arp_destinations:
@@ -158,13 +160,15 @@ async def main(artifacts):
     mode = os.environ.get("BUILD_RTC_LAN_MODE", "delayed")
     report = {"queries": [], "host_checks": [], "browser_checks": [], "browser_srflx_checks": [],
               "host_socket_indications": [], "released": False, "mdns_silenced": mode != "delayed",
-              "arp_requests": 0, "arp_unique_destinations": 0,
+              "arp_requests": 0, "non_gateway_arp_requests": 0,
+              "arp_unique_destinations": 0,
               "first_arp_request_at": None, "last_new_arp_request_at": None,
               "last_arp_request_at": None, "arp_one_second_bins": {},
               "phone_arp_requests": [], "phone_arp_replies": [], "scout_hits": []}
     save_report(artifacts, report)
     loop = asyncio.get_running_loop()
-    unknown = mode.startswith("unknown-neighbor-")
+    absent_cache_control = (mode.startswith("never-arps-") or mode.startswith("arp-")
+                            or mode in {"different-nat", "missing-srflx"})
     mdns_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     mdns_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     mdns_socket.bind(("224.0.0.251", 5353))
@@ -181,12 +185,12 @@ async def main(artifacts):
     subprocess.run(["nft", "add", "rule", "inet", "delay_mdns", "output",
                     "udp", "sport", "5353", "drop"], check=True)
     host_port = json.loads((artifacts / "host.json").read_text())["port"]
-    if mode in {"delayed", "far-edge-pressure", "unknown-neighbor-pressure"}:
+    if mode in {"delayed", "far-edge-pressure", "never-arps-pressure"}:
         subprocess.run(["nft", "add", "rule", "inet", "hold_checks", "output",
                         "ip", "daddr", "10.72.0.1", "udp", "sport", str(host_port), "counter", "drop"], check=True)
     # The outer namespace must prove the far-edge entry is absent immediately
     # before signaling releases this real candidate. No neighbor is removed.
-    (artifacts / ("phone-gated" if unknown else "gated")).write_text("ready")
+    (artifacts / ("phone-gated" if absent_cache_control else "gated")).write_text("ready")
     while not (artifacts / "release").exists():
         await asyncio.sleep(0.02)
     report["released"] = True

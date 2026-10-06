@@ -187,7 +187,7 @@ fn scout_pressure_keeps_advertised_ice_socket_immediately_writable() {
         assert!(control.start(7, "fixture", 40000));
         let mut scouts = HostScouts::default();
         let started = Instant::now();
-        scouts.sync(7, vec![subnet.clone()], &control, "fixture", started);
+        scouts.sync(7, vec![subnet.clone()], &control, ("fixture", "password"), started + Duration::from_millis(250), started);
         let expires = started + Duration::from_secs(25);
         let mut pressure = Pressure::default();
         pressure.writes_now(&*socket, target);

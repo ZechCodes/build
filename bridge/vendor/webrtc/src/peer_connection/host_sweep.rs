@@ -13,6 +13,7 @@ const WINDOW: Duration = Duration::from_secs(25);
 const MAX_PORTS: usize = 32;
 const MIN_CANDIDATE_PORT: u16 = 1024;
 const MAX_PACKETS: u32 = 32768;
+const MAX_EARLY_NEIGHBORS: usize = 8;
 
 /// A content-free observation. Addresses, ports and credentials never leave the driver.
 #[derive(Clone, Debug)]
@@ -31,6 +32,12 @@ pub struct HostCandidateSweepEvent {
     pub scout_attempted: u32,
     /// Unique successfully scouted source/interface/destinations; known neighbors excluded.
     pub destinations_scouted: u32,
+    /// Distinct newly usable owning-interface neighbors reached on a real host port.
+    pub early_neighbors_probed: u32,
+    /// Whether early real-port sends delayed the first scout pass.
+    pub scout_holds: u32,
+    /// First successful scout enqueue in this generation, at most one.
+    pub scout_starts: u32,
     /// Latest current-netns INCOMPLETE count plus unobserved process reservations.
     pub neighbors_pending: u32,
     /// Generation maximum of that conservative pending pressure.
@@ -285,6 +292,12 @@ struct ControlState {
     ports: std::collections::BTreeSet<u16>,
     retired: bool,
     #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+    owners: Vec<u32>,
+    #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+    baseline_credentials: Option<SweepCredentials>,
+    #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+    baseline: BTreeMap<u32, Option<std::collections::HashSet<Ipv4Addr>>>,
+    #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
     scouts: Vec<std::sync::Weak<std::sync::Mutex<super::host_scout::ScoutResources>>>,
 }
 
@@ -302,6 +315,88 @@ impl ControlState {
 }
 
 impl HostSweepControl {
+    #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+    pub(super) fn retire_baseline(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.baseline.clear();
+        }
+    }
+    #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+    pub(super) fn set_owners(&self, mut owners: Vec<u32>) {
+        owners.sort_unstable();
+        owners.dedup();
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        if owners.len() > 32 || owners.contains(&0) {
+            owners.clear();
+        }
+        if state.owners != owners {
+            state.owners = owners;
+            let active = state.owners.clone();
+            state.baseline.retain(|index, _| active.contains(index));
+        }
+    }
+
+    #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+    pub(super) fn capture_baseline(&self, credentials: (&str, &str)) {
+        self.capture_baseline_with(credentials, |index, deadline| {
+            super::host_neighbors::snapshot_until(index, deadline).ok()
+        });
+    }
+
+    #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+    fn capture_baseline_with(
+        &self,
+        credentials: (&str, &str),
+        mut snapshot: impl FnMut(u32, Instant) -> Option<Vec<Ipv4Addr>>,
+    ) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        if state
+            .baseline_credentials
+            .as_ref()
+            .is_some_and(|saved| saved.matches(credentials))
+        {
+            return;
+        }
+        state.baseline_credentials = Some(SweepCredentials::new(credentials.0, credentials.1));
+        state.baseline.clear();
+        let owners = state.owners.clone();
+        let deadline = Instant::now() + Duration::from_millis(5);
+        for index in owners {
+            let usable = snapshot(index, deadline)
+                .filter(|addresses| addresses.len() <= 1024)
+                .map(|addresses| addresses.into_iter().collect());
+            state.baseline.insert(index, usable);
+        }
+    }
+
+    #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+    pub(super) fn baseline_for(
+        &self,
+        credentials: (&str, &str),
+        index: u32,
+    ) -> Option<std::collections::HashSet<Ipv4Addr>> {
+        let state = self.state.lock().ok()?;
+        state
+            .baseline_credentials
+            .as_ref()
+            .filter(|saved| saved.matches(credentials))?;
+        state.baseline.get(&index)?.clone()
+    }
+
+    #[cfg(all(test, target_os = "linux", feature = "runtime-tokio"))]
+    pub(super) fn baseline_captured(&self, credentials: (&str, &str), index: u32) -> bool {
+        self.state.lock().is_ok_and(|state| {
+            state
+                .baseline_credentials
+                .as_ref()
+                .is_some_and(|saved| saved.matches(credentials))
+                && state.baseline.contains_key(&index)
+        })
+    }
     #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
     pub(super) fn attach_scout_resources(
         &self,
@@ -368,6 +463,8 @@ impl HostSweepControl {
         if let Ok(mut state) = self.state.lock() {
             state.ports.clear();
             #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+            state.baseline.clear();
+            #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
             state.close_scouts();
             state.retired = true;
         }
@@ -427,10 +524,20 @@ pub(crate) struct HostSweep {
     events: VecDeque<HostCandidateSweepEvent>,
     relay: bool,
     nat_wait_reason: Option<&'static str>,
+    early_admitted: std::collections::HashSet<(u32, Ipv4Addr)>,
+    early_probed: std::collections::HashSet<(u32, Ipv4Addr)>,
+    early_probed_count: u32,
+    early_retired: bool,
+    scout_hold_until: Option<Instant>,
+    scout_holds: u32,
+    scout_starts: u32,
+    authenticated_hit: bool,
 }
 
 struct PortSweep {
     due: Instant,
+    initial_grace_until: Instant,
+    preparation_due: Instant,
     expires: Instant,
     subnets: Option<Vec<SweepSubnet>>,
     cursor: usize,
@@ -448,6 +555,7 @@ struct PortSweep {
     successful_destinations: std::collections::HashSet<(SocketAddr, Ipv4Addr)>,
     pass_destinations: std::collections::HashSet<(SocketAddr, Ipv4Addr)>,
     attempted_destination: Option<(SocketAddr, Ipv4Addr)>,
+    attempted_early: Option<(u32, Ipv4Addr)>,
     attempted_at: Instant,
 }
 
@@ -466,8 +574,20 @@ impl HostSweep {
             self.scout = SweepScoutCounters::default();
             self.nat_wait_reason = None;
             self.next_packet = None;
+            self.early_admitted.clear();
+            self.early_probed.clear();
+            self.early_probed_count = 0;
+            self.early_retired = false;
+            self.scout_hold_until = None;
+            self.scout_holds = 0;
+            self.scout_starts = 0;
+            self.authenticated_hit = false;
             self.remote_ufrag = ufrag;
             self.generation = generation;
+        } else {
+            // A late port cannot reopen the early budget after every earlier
+            // port's original lifetime has elapsed without a driver tick.
+            self.expire(now);
         }
         if self.plans.contains_key(&port) {
             return;
@@ -481,6 +601,8 @@ impl HostSweep {
             port,
             PortSweep {
                 due: now + GRACE,
+                initial_grace_until: now + GRACE,
+                preparation_due: now,
                 expires: now + WINDOW,
                 subnets: None,
                 cursor: 0,
@@ -496,6 +618,7 @@ impl HostSweep {
                 successful_destinations: std::collections::HashSet::new(),
                 pass_destinations: std::collections::HashSet::new(),
                 attempted_destination: None,
+                attempted_early: None,
                 attempted_at: now,
             },
         );
@@ -504,7 +627,12 @@ impl HostSweep {
     pub fn unprepared_ports(&self, now: Instant) -> Vec<u16> {
         self.plans
             .iter()
-            .filter(|(_, plan)| !plan.stopped && plan.subnets.is_none() && now >= plan.due)
+            .filter(|(_, plan)| {
+                !plan.stopped
+                    && plan.subnets.is_none()
+                    && now >= plan.preparation_due
+                    && now < plan.expires
+            })
             .map(|(port, _)| *port)
             .collect()
     }
@@ -541,6 +669,16 @@ impl HostSweep {
         relay: bool,
         usable: impl Fn(&SweepSubnet, Ipv4Addr) -> bool,
     ) -> Option<SweepProbe> {
+        self.next_priority_probe(now, relay, usable, |_, _| false)
+    }
+
+    pub fn next_priority_probe(
+        &mut self,
+        now: Instant,
+        relay: bool,
+        usable: impl Fn(&SweepSubnet, Ipv4Addr) -> bool,
+        early: impl Fn(&SweepSubnet, Ipv4Addr) -> bool,
+    ) -> Option<SweepProbe> {
         self.relay = relay;
         self.expire(now);
         if self.next_packet.is_some_and(|next| now < next) {
@@ -550,29 +688,89 @@ impl HostSweep {
             self.stop_all("packet-limit");
             return None;
         }
+        if !self.early_retired {
+            for (port, plan) in &mut self.plans {
+                if let Some((subnet, destination)) =
+                    plan.take_early(now, relay, &usable, &early, &self.early_admitted)
+                {
+                    self.early_admitted
+                        .insert((subnet.interface_index, destination));
+                    plan.attempted_early = Some((subnet.interface_index, destination));
+                    return Some(Self::scheduled_probe(
+                        *port,
+                        plan,
+                        subnet,
+                        destination,
+                        now,
+                        &mut self.packets,
+                        &mut self.next_packet,
+                    ));
+                }
+            }
+        }
         for (port, plan) in &mut self.plans {
             if let Some((subnet, destination)) = plan.take_next(now, relay, &usable) {
-                plan.attempted += 1;
-                plan.attempted_at = now;
-                self.packets += 1;
-                self.next_packet = Some(now + PACE);
-                return Some(SweepProbe {
-                    port: *port,
-                    expires: plan.expires,
+                plan.attempted_early = None;
+                return Some(Self::scheduled_probe(
+                    *port,
+                    plan,
                     subnet,
                     destination,
-                });
+                    now,
+                    &mut self.packets,
+                    &mut self.next_packet,
+                ));
             }
         }
         None
     }
 
+    fn scheduled_probe(
+        port: u16,
+        plan: &mut PortSweep,
+        subnet: SweepSubnet,
+        destination: Ipv4Addr,
+        now: Instant,
+        packets: &mut u32,
+        next_packet: &mut Option<Instant>,
+    ) -> SweepProbe {
+        plan.attempted += 1;
+        plan.attempted_at = now;
+        *packets += 1;
+        *next_packet = Some(now + PACE);
+        SweepProbe {
+            port,
+            expires: plan.expires,
+            subnet,
+            destination,
+        }
+    }
+
     pub fn record_result(&mut self, port: u16, sent: bool) {
+        let accepted_at = self
+            .plans
+            .get(&port)
+            .map_or_else(Instant::now, |plan| plan.attempted_at);
+        self.record_result_at(port, sent, accepted_at);
+    }
+
+    pub fn record_result_at(&mut self, port: u16, sent: bool, accepted_at: Instant) {
         if sent {
             self.sent += 1;
         }
         if let Some(plan) = self.plans.get_mut(&port) {
             if sent {
+                if let Some(key) = plan.attempted_early.take() {
+                    if self.early_probed.insert(key) {
+                        self.early_probed_count += 1;
+                    }
+                    if self.scout_starts == 0 {
+                        if self.scout_hold_until.is_none() {
+                            self.scout_holds = 1;
+                        }
+                        self.scout_hold_until = Some(accepted_at + REPEAT_DELAY);
+                    }
+                }
                 plan.sent += 1;
                 plan.cursor += 1;
                 if let Some(destination) = plan.attempted_destination.take() {
@@ -585,6 +783,7 @@ impl HostSweep {
                 }
             } else {
                 plan.attempted_destination = None;
+                plan.attempted_early = None;
             }
             if plan.report_pending {
                 plan.report_pending = false;
@@ -617,6 +816,9 @@ impl HostSweep {
     }
     pub fn remote_ufrag(&self) -> &str {
         &self.remote_ufrag
+    }
+    pub fn remote_password(&self) -> &str {
+        &self.remote_password
     }
 
     pub fn cancel(&mut self, generation: u64, ufrag: &str, port: u16) {
@@ -667,6 +869,14 @@ impl HostSweep {
                     .push_back(plan.event(self.generation, "stopped", Some(reason), false));
             }
         }
+        self.retire_early_state();
+    }
+
+    fn retire_early_state(&mut self) {
+        self.early_admitted.clear();
+        self.early_probed.clear();
+        self.early_retired = true;
+        self.scout_hold_until = None;
     }
 
     pub fn observe_prflx(&mut self, local: SocketAddr, remote: SocketAddr) {
@@ -684,19 +894,47 @@ impl HostSweep {
                 .push_back(plan.event(self.generation, "progress", None, true));
         }
     }
+    pub fn matches_authenticated_hit(&self, local: SocketAddr, remote: SocketAddr) -> bool {
+        let IpAddr::V4(ip) = remote.ip() else {
+            return false;
+        };
+        self.plans.get(&remote.port()).is_some_and(|plan| {
+            !plan.stopped && plan.successful_destinations.contains(&(local, ip))
+        })
+    }
+    pub fn note_authenticated_hit(&mut self) {
+        if self.scout_starts == 0 {
+            self.authenticated_hit = true;
+        }
+    }
 
     pub fn deadline(&self) -> Option<Instant> {
-        self.plans
+        let active = self
+            .plans
             .values()
             .filter(|plan| !plan.stopped || plan.subnets.is_some())
             .map(|plan| {
-                let due = if plan.stopped || (plan.repeat && !self.relay) {
+                let due = if plan.subnets.is_none() && !plan.stopped {
+                    plan.preparation_due
+                } else if plan.stopped || (plan.repeat && !self.relay) {
                     plan.expires
                 } else {
                     plan.due
                 };
                 due.max(self.next_packet.unwrap_or(due)).min(plan.expires)
             })
+            .min();
+        // Resolved ports retain credential-scoped early state until the last
+        // original plan expiry. Wake for that retirement even with no live port.
+        let retirement = (!self.early_retired)
+            .then(|| self.plans.values().map(|plan| plan.expires).max())
+            .flatten();
+        active.into_iter().chain(retirement).min()
+    }
+    pub fn initial_grace_until(&self) -> Option<Instant> {
+        self.plans
+            .values()
+            .map(|plan| plan.initial_grace_until)
             .min()
     }
 
@@ -706,6 +944,9 @@ impl HostSweep {
             event.prflx_followed = self.prflx_followed;
             event.addresses_sent = self.sent;
             event.addresses_attempted = self.packets;
+            event.early_neighbors_probed = self.early_neighbors_probed();
+            event.scout_holds = self.scout_holds;
+            event.scout_starts = self.scout_starts;
             self.scout.fill(&mut event);
             event.eligible_unresolved = self
                 .plans
@@ -718,13 +959,22 @@ impl HostSweep {
     pub fn sync_credentials(&mut self, ufrag: &str, password: &str) {
         if self.remote_ufrag != ufrag || self.remote_password != password {
             self.clear("generation-changed");
+            self.snapshot_queued_events();
+            self.early_probed_count = 0;
+            self.early_retired = false;
+            self.scout_holds = 0;
+            self.scout_starts = 0;
+            self.authenticated_hit = false;
+            self.scout = SweepScoutCounters::default();
+            self.packets = 0;
+            self.sent = 0;
         }
         self.remote_ufrag = ufrag.into();
         self.remote_password = password.into();
     }
     pub fn defer_preparation(&mut self, port: u16, now: Instant) {
         if let Some(plan) = self.plans.get_mut(&port) {
-            plan.due = now + Duration::from_millis(50);
+            plan.preparation_due = now + Duration::from_millis(50);
         }
     }
     pub fn note_skip(&mut self, reason: &'static str) {
@@ -778,11 +1028,17 @@ impl HostSweep {
                 plan.retire_addresses();
             }
         }
+        if self.all_plans_expired(now) {
+            self.retire_early_state();
+        }
         if self.next_packet.is_none_or(|next| now >= next) {
             self.next_packet = Some(now + Duration::from_millis(50));
         }
     }
     pub fn set_scout_counters(&mut self, counters: SweepScoutCounters) {
+        if counters.sent > 0 {
+            self.scout_starts = 1;
+        }
         self.scout = counters;
     }
     pub fn defer_tick(&mut self, now: Instant) {
@@ -826,14 +1082,33 @@ impl HostSweep {
             .cloned()
             .collect()
     }
-    pub fn active_port(&self) -> Option<(u16, Instant)> {
+    pub fn all_plans_expired(&self, now: Instant) -> bool {
+        !self.plans.is_empty() && self.plans.values().all(|plan| now >= plan.expires)
+    }
+    pub fn active_port(&self, now: Instant) -> Option<(u16, Instant)> {
         self.plans
             .iter()
-            .find(|(_, plan)| !plan.stopped && plan.unresolved)
+            .find(|(_, plan)| !plan.stopped && plan.unresolved && now >= plan.due)
             .map(|(port, plan)| (*port, plan.expires))
     }
     pub fn combined_attempts(&self) -> u32 {
         self.packets.saturating_add(self.scout.attempted)
+    }
+    pub fn early_neighbors_probed(&self) -> u32 {
+        self.early_probed_count
+    }
+    pub fn scout_holds(&self) -> u32 {
+        self.scout_holds
+    }
+    pub fn scouts_allowed(&self, now: Instant, authenticated_hit: bool) -> bool {
+        (!(authenticated_hit || self.authenticated_hit) || self.scout_starts > 0)
+            && self
+                .scout_hold_until
+                .is_none_or(|until| now >= until || self.scout_starts > 0)
+            && self
+                .plans
+                .values()
+                .any(|plan| !plan.stopped && plan.unresolved && now >= plan.due)
     }
     pub fn note_progress(&mut self, reason: &'static str) {
         self.events
@@ -844,11 +1119,15 @@ impl HostSweep {
     }
 
     fn snapshot_queued_events(&mut self) {
+        let early_neighbors_probed = self.early_neighbors_probed();
         for event in &mut self.events {
             if event.generation == self.generation {
                 event.prflx_followed = self.prflx_followed;
                 event.addresses_sent = self.sent;
                 event.addresses_attempted = self.packets;
+                event.early_neighbors_probed = early_neighbors_probed;
+                event.scout_holds = self.scout_holds;
+                event.scout_starts = self.scout_starts;
                 self.scout.fill(event);
             }
         }
@@ -869,6 +1148,9 @@ impl HostSweep {
                 ));
             }
             plan.retire_addresses();
+        }
+        if self.all_plans_expired(now) {
+            self.retire_early_state();
         }
     }
 
@@ -893,6 +1175,9 @@ impl HostSweep {
             scout_datagrams_sent: 0,
             scout_attempted: 0,
             destinations_scouted: 0,
+            early_neighbors_probed: 0,
+            scout_holds: 0,
+            scout_starts: 0,
             neighbors_pending: 0,
             neighbors_pending_peak: 0,
         }
@@ -936,6 +1221,7 @@ impl PortSweep {
         self.successful_destinations.clear();
         self.pass_destinations.clear();
         self.attempted_destination = None;
+        self.attempted_early = None;
     }
 
     fn take_next(
@@ -951,6 +1237,35 @@ impl PortSweep {
         for subnet in subnets {
             if let Some(destination) = subnet.addresses.iter().find(|ip| {
                 !self.pass_destinations.contains(&(subnet.local, **ip)) && usable(subnet, **ip)
+            }) {
+                self.attempted_destination = Some((subnet.local, *destination));
+                return Some((subnet.clone(), *destination));
+            }
+        }
+        None
+    }
+
+    fn take_early(
+        &mut self,
+        now: Instant,
+        relay: bool,
+        usable: &impl Fn(&SweepSubnet, Ipv4Addr) -> bool,
+        early: &impl Fn(&SweepSubnet, Ipv4Addr) -> bool,
+        admitted: &std::collections::HashSet<(u32, Ipv4Addr)>,
+    ) -> Option<(SweepSubnet, Ipv4Addr)> {
+        if self.stopped || now >= self.expires || (self.repeat && !relay) {
+            return None;
+        }
+        for subnet in self.subnets.as_ref()? {
+            if let Some(destination) = subnet.addresses.iter().find(|ip| {
+                let key = (subnet.interface_index, **ip);
+                !self.pass_destinations.contains(&(subnet.local, **ip))
+                    && (!self.repeat
+                        || now >= self.due
+                        || !self.successful_destinations.contains(&(subnet.local, **ip)))
+                    && (admitted.contains(&key) || admitted.len() < MAX_EARLY_NEIGHBORS)
+                    && usable(subnet, **ip)
+                    && early(subnet, **ip)
             }) {
                 self.attempted_destination = Some((subnet.local, *destination));
                 return Some((subnet.clone(), *destination));
@@ -995,6 +1310,9 @@ impl PortSweep {
             scout_datagrams_sent: 0,
             scout_attempted: 0,
             destinations_scouted: 0,
+            early_neighbors_probed: 0,
+            scout_holds: 0,
+            scout_starts: 0,
             neighbors_pending: 0,
             neighbors_pending_peak: 0,
         }

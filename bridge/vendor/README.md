@@ -7,7 +7,7 @@ the `[patch.crates-io]` entries at the end of `bridge/Cargo.toml`:
 | --- | --- | --- | --- |
 | `webrtc/` | [webrtc 0.20.4](https://crates.io/crates/webrtc/0.20.4) (github.com/webrtc-rs/webrtc) | `3daa8f2f6366331ae3275a6c02a855c6fb3faa1d16960498d7daaf61c96e76bd` | `webrtc-driver-drain.patch`, then `webrtc-negotiated-first-message-test.patch`, `webrtc-late-direct-tests.patch`, `webrtc-host-candidate-sweep.patch` |
 | `rtc/` | [rtc 0.20.4](https://crates.io/crates/rtc/0.20.4) (github.com/webrtc-rs/rtc) | `c9005c36795ad076abd36db3ea9ae0275a60395944647d58c1f2bc3e118dddba` | `rtc-dtls-client-hello.patch`, `rtc-negotiated-first-message.patch`, `rtc-late-direct-stats.patch`, `rtc-host-candidate-sweep.patch` |
-| `rtc-ice/` | [rtc-ice 0.20.4](https://crates.io/crates/rtc-ice/0.20.4) (github.com/webrtc-rs/rtc) | `2c06eeabd250a7693e1e8b28222b78c4a81a7c6ca7fe3cb99bbdff2f6c0ff0ab` | `rtc-ice-late-direct-checks.patch` |
+| `rtc-ice/` | [rtc-ice 0.20.4](https://crates.io/crates/rtc-ice/0.20.4) (github.com/webrtc-rs/rtc) | `2c06eeabd250a7693e1e8b28222b78c4a81a7c6ca7fe3cb99bbdff2f6c0ff0ab` | `rtc-ice-late-direct-checks.patch`, then `rtc-ice-host-candidate-sweep.patch` |
 
 `webrtc` is the async driver. `rtc` is the sans-I/O peer connection it drives
 (ICE, DTLS, SCTP), which the bridge also uses directly. `rtc-ice` is its ICE
@@ -207,8 +207,9 @@ patches. No ICE candidate is fabricated or revived.
 
 The async peer exposes generation-guarded start/cancel/clear operations for an
 unresolved candidate port. Candidate ports below 1024 are rejected at bridge
-and vendor admission without consuming the 32-port capacity. After 250 ms it
-emits 28-byte STUN Binding Indications,
+and vendor admission without consuming the 32-port capacity. Ordinary probes
+wait 250 ms; #377's newly usable neighbors can be probed before that grace ends.
+Both paths emit 28-byte STUN Binding Indications,
 each with a fresh random transaction ID and only FINGERPRINT. They contain no
 USERNAME, integrity attribute, credential or session identifier and require no
 reply. A later authenticated inbound check may create a peer-reflexive candidate
@@ -273,8 +274,9 @@ within one quarter of that socket's send buffer. Pressure preserves the
 current destination and does not extend the window or consume a pass. Ordinary
 ICE, DTLS and SCTP output keep their existing path and never enter a new queue.
 
-Read-only RTM_GETNEIGH snapshots refresh every 100 ms and authorize only exact
-interface neighbors. RTM_GETNEIGHTBL supplies actual global ARP-table occupancy
+Read-only RTM_GETNEIGH snapshots refresh every 20 ms through the original
+250 ms grace, then every 100 ms, and authorize only exact interface neighbors.
+RTM_GETNEIGHTBL supplies actual global ARP-table occupancy
 and gc thresholds, including other namespaces; the neighbor dump's INCOMPLETE
 count covers the current namespace. Fresh complete dumps and numeric unobserved
 send reservations enforce a pending cap of min(256, gc_thresh2 / 2) and a global
@@ -283,6 +285,22 @@ descriptors before permits; reservations survive until a later dump begun after
 the sends accounts for them. Missing, stale, partial or invalid metadata admits
 no new scout and stale neighbor observations authorize no real indication.
 No neighbor, threshold, route or firewall configuration is changed.
+
+#377 captures an immutable usable-neighbor baseline for the live socket's owning
+interface when remote credentials are accepted, before answer creation. At most
+32 owners and 1024 usable addresses per owner share one absolute 5 ms read budget.
+Failed snapshots and owners introduced later receive no early privilege. At most
+eight distinct newly usable interface/address pairs per generation, shared across
+ports, are prioritized on real candidate ports under all the same traffic gates.
+Only successful early enqueues hold an unstarted scout pass until one second
+after the most recent enqueue. Authenticated checks matching an exact successfully
+probed host/peer-reflexive tuple prevent scout startup even before direct selection,
+without changing unresolved restart eligibility. A started scout pass is not
+paused by late neighbors. Zero-scout generations consume no interface lease.
+Baseline and early address state are erased on retirement; their numeric counts
+survive. Bounded snapshot polling reuses the existing netlink path without adding
+a notification socket or subscription lifecycle. Physical iOS/Android/AP timing
+is unmeasured.
 
 The initial destination order uses distance to the owned source IP and initial
 usable authorized neighbors, with stable numeric ties. This favors nearby DHCP
@@ -300,7 +318,7 @@ reject queued stale commands, including password-only restarts. Clear queues
 only a wake, so its delayed notification cannot clear a newer generation.
 
 Events expose only generation totals, fixed statuses/reasons, an aggregate
-eligible-unresolved count and whether an authenticated selected PRFLX tuple
+eligible-unresolved count and whether an authenticated PRFLX tuple
 matched a successfully sent probe. No address, port, name or credential is
 emitted; observed tuple matching does not establish DNS identity or causation.
 Completed/expired eligible unresolved plans remain evidence for the bridge's
@@ -316,6 +334,9 @@ report conservative current-namespace INCOMPLETE pressure plus unobserved
 process reservations. Coalesced progress reasons distinguish `neighbor-pressure`,
 `neighbor-snapshot-unavailable` and `scout-socket-limit` pauses. NAT waiting
 reasons are also coalesced, and report zero current eligibility.
+The additive counts `early_neighbors_probed`, `scout_holds` and `scout_starts`
+describe new neighbors reached and whether this generation held or started scouts;
+the latter two are zero or one. No event code or wire version changes.
 
 Policy/scheduler regressions live in `host_sweep_tests.rs`; queued-generation
 and clear races use real sans-I/O cores in `host_sweep_driver_tests.rs`. A Tokio
@@ -386,7 +407,7 @@ From the repo root, with the crates in the local registry (a `cargo fetch` in
     for p in webrtc-driver-drain webrtc-negotiated-first-message-test \
         rtc-dtls-client-hello rtc-negotiated-first-message \
         rtc-ice-late-direct-checks rtc-late-direct-stats webrtc-late-direct-tests \
-        rtc-host-candidate-sweep webrtc-host-candidate-sweep; do
+        rtc-ice-host-candidate-sweep rtc-host-candidate-sweep webrtc-host-candidate-sweep; do
       (cd $V && patch -p1 < "$OLDPWD/bridge/vendor/$p.patch")
     done
     diff -r -x target $V/webrtc bridge/vendor/webrtc
@@ -429,8 +450,11 @@ file in the diff, preserving the `a/<crate>/` and `b/<crate>/` paths so `patch -
 can apply it.
 
 
-The #374 conntrack patches are layered diffs against the trees after all earlier
-patches are applied. `rtc-host-candidate-sweep.patch` touches
+The #374/#377 conntrack patches are layered diffs against the trees after all
+earlier patches are applied. `rtc-ice-host-candidate-sweep.patch` touches
+`src/agent/{mod.rs,late_direct_test.rs}` and adds the allocation-free authenticated
+operational peer-reflexive pair iterator, with regression coverage.
+`rtc-host-candidate-sweep.patch` touches
 `src/peer_connection/{mod.rs,configuration/setting_engine.rs}`.
 `webrtc-host-candidate-sweep.patch` touches `Cargo.toml`, `Cargo.toml.orig`,
 `src/peer_connection/{mod.rs,driver.rs,host_sweep.rs,host_sweep_tests.rs,host_sweep_driver_tests.rs,host_sweep_nat.rs,host_neighbors.rs,host_neighbor_table.rs,host_scout.rs,host_scout_socket_tests.rs}`
@@ -438,5 +462,5 @@ and `src/runtime/{mod.rs,tokio.rs,host_egress.rs}`. The Linux-only libc dependen
 is already in the dependency graph; the workspace lockfile records it as a direct
 webrtc dependency. Regenerate each patch from its pre-conntrack tree rather than
 pristine source, using the same `a/<crate>/` and `b/<crate>/` paths above. A full
-registry reconstruction, including both new patches, must match all three final
+registry reconstruction, including all three conntrack patches, must match all three final
 vendored trees exactly.

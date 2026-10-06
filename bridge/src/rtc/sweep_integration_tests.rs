@@ -45,6 +45,9 @@ async fn sweep_callbacks_queue_in_order_without_waiting_for_remote_discovery() {
                 destinations_scouted: 30 + ordinal,
                 neighbors_pending: 40 + ordinal,
                 neighbors_pending_peak: 50 + ordinal,
+                early_neighbors_probed: ordinal,
+                scout_holds: 1,
+                scout_starts: ordinal,
                 reason: None,
                 eligible: true,
                 eligible_unresolved: 1,
@@ -63,5 +66,8 @@ async fn sweep_callbacks_queue_in_order_without_waiting_for_remote_discovery() {
         assert_eq!(event.destinations_scouted, 30 + ordinal);
         assert_eq!(event.neighbors_pending, 40 + ordinal);
         assert_eq!(event.neighbors_pending_peak, 50 + ordinal);
+        assert_eq!(event.early_neighbors_probed, ordinal);
+        assert_eq!(event.scout_holds, 1);
+        assert_eq!(event.scout_starts, ordinal);
     }
 }

@@ -19,6 +19,7 @@ const SWEEP_REASONS = new Set([
 ]);
 const OPTIONAL_SWEEP_COUNTERS = new Set([
   "addresses_attempted", "scout_datagrams_sent", "scout_attempted", "destinations_scouted", "neighbors_pending", "neighbors_pending_peak",
+  "early_neighbors_probed", "scout_holds", "scout_starts",
 ]);
 const HOST_LIMIT = 64;
 const safeCount = (value) => Number.isSafeInteger(value) && value >= 0;

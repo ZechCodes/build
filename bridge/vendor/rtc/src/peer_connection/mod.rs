@@ -2115,6 +2115,15 @@ where
         self.ice_transport().agent.get_selected_candidate_pair()
     }
 
+    /// Operational peer-reflexive pairs whose ICE checks succeeded with authenticated traffic.
+    pub fn authenticated_peer_reflexive_pairs(
+        &self,
+    ) -> impl Iterator<Item = (&ice::candidate::Candidate, &ice::candidate::Candidate)> {
+        self.ice_transport()
+            .agent
+            .authenticated_peer_reflexive_pairs()
+    }
+
     /// Current remote ICE credentials, for generation-bound transport operations.
     /// These values must never enter uncredentialed probes or diagnostic events.
     pub fn remote_ice_credentials(&self) -> (&str, &str) {

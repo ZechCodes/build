@@ -10,6 +10,11 @@ protocol versions; see
 
 Wire 3.12.0.
 
+### Test tooling
+
+- Add isolated passive-ARP discovery controls and packet/neighbour timelines
+  for cold, cached and gateway-routed browser endpoints (#377).
+
 ### Fixed
 
 - Relayed sessions now send bounded connectivity checks on late direct pairs
@@ -34,6 +39,21 @@ Wire 3.12.0.
   from authenticated STUN checks. Generation diagnostics report sweep counts and skip reasons without
   addresses; late cases use the existing single optional upgrade restart
   (`rtc.conntrackSweep`, #374).
+- On Linux, an unresolved browser host candidate can use a newly learned,
+  usable neighbor before the 250 ms scout grace ends. A bounded read-only
+  snapshot poll looks for at most eight new addresses per ICE generation on
+  the advertised socket's owning interface. The pre-answer baseline and bounded
+  eight-address admission membership persist across a temporarily empty
+  candidate-port set for the same credentials, within the original lifetime.
+  On a busy LAN, other newly usable devices can fill the eight early slots;
+  a later phone still has the ordinary post-grace real-port path before scouts,
+  but can incur scout traffic and the existing restart. A successful real-port
+  indication holds an unstarted scout pass until one second after the latest successful
+  early indication so the authenticated ICE check can arrive;
+  a matching validated host/peer-reflexive pair can avoid that pass. If no
+  direct check arrives, the existing bounded scout fallback proceeds. Three
+  aggregate diagnostic counts report early neighbors probed, scout holds and
+  scout starts without addresses (`rtc.conntrackSweep`, #377).
 - ICE failure preserves historical direct-check evidence, including successful
   peer-reflexive pairs matching tracked remote host endpoints. Session summaries count accepted
   ICE credential changes instead of reconnections (#374).

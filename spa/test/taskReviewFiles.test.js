@@ -16,6 +16,16 @@ const git = { id: "dir-1", source_id: "source-1", is_git: true, status: "git", h
 const live = { id: "dir-live", source_id: "source-live", is_git: false, status: "not_git" };
 const textFile = (path, text) => ({ path, mime: "text/plain", size: text.length, content_b64: btoa(text), truncated: false, editable: false });
 const tick = async () => { for (let i = 0; i < 8; i++) await new Promise((resolve) => setTimeout(resolve, 0)); };
+const previewContains = (host, expected) => new Promise((resolve) => {
+  const preview = host.querySelector(".trf-preview");
+  if (preview.textContent.includes(expected)) return resolve();
+  const observer = new MutationObserver(() => {
+    if (!preview.textContent.includes(expected)) return;
+    observer.disconnect();
+    resolve();
+  });
+  observer.observe(preview, { childList: true, subtree: true, characterData: true });
+});
 const address = (directory, path, kind = "task-review-tree", snap = snapshot) => ({
   deviceId: "device", entityId: "project", kind,
   sub: JSON.stringify(["task", snap.id, directory.id, path, "head"]),
@@ -173,14 +183,24 @@ describe("task review Files", () => {
 
   it("refetches named live files on push and on reconnect, without touching saved Git", async () => {
     let text = "first";
-    const callRpc = vi.fn(async (method, params) => method === "fs.tree"
-      ? { path: params.path, entries: [{ name: "same.txt", kind: "file" }] }
-      : textFile(params.path, text));
+    let answerThirdRead;
+    const thirdRead = new Promise((resolve) => { answerThirdRead = resolve; });
+    let announceThirdRead;
+    const thirdReadStarted = new Promise((resolve) => { announceThirdRead = resolve; });
+    const callRpc = vi.fn(async (method, params) => {
+      if (method === "fs.tree") return { path: params.path, entries: [{ name: "same.txt", kind: "file" }] };
+      if (text === "third") { announceThirdRead(); return thirdRead; }
+      return textFile(params.path, text);
+    });
     const { host, view } = mount(live, callRpc);
-    const gitRpc = vi.fn(async (_method, params) => ({ path: params.path, entries: [] }));
+    let announceGitRead;
+    const gitReadStarted = new Promise((resolve) => { announceGitRead = resolve; });
+    const gitRpc = vi.fn(async (_method, params) => { announceGitRead(); return { path: params.path, entries: [] }; });
     mount(git, gitRpc);
+    const firstPaint = previewContains(host, "first");
     await view.open("same.txt");
-    await tick();
+    await firstPaint;
+    await gitReadStarted;
     const gitBefore = gitRpc.mock.calls.length;
     const before = callRpc.mock.calls.filter(([method]) => method === "fs.read").length;
     armChangeEvents({ push_events: true }, "device");
@@ -188,12 +208,17 @@ describe("task review Files", () => {
     await tick();
     expect(callRpc.mock.calls.filter(([method]) => method === "fs.read")).toHaveLength(before);
     text = "second";
+    const secondPaint = previewContains(host, "second");
     dispatchChangeEvent({ type: "changes", items: [{ entity_id: "workspace", files: { paths: ["same.txt"] } }] }, "device");
-    await tick();
+    await secondPaint;
     expect(host.querySelector(".trf-preview").textContent).toContain("second");
     text = "third";
+    const thirdPaint = previewContains(host, "third");
     refetchEverything("device");
-    await tick();
+    await thirdReadStarted;
+    expect(host.querySelector(".trf-preview").textContent).toContain("second");
+    answerThirdRead(textFile("same.txt", "third"));
+    await thirdPaint;
     expect(host.querySelector(".trf-preview").textContent).toContain("third");
     expect(gitRpc).toHaveBeenCalledTimes(gitBefore);
   });

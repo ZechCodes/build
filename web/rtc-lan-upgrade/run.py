@@ -11,6 +11,7 @@ import sys
 import time
 
 from isolation import require_private_namespace
+import arp_case
 
 HERE = Path(__file__).resolve().parent
 
@@ -83,14 +84,17 @@ def inside(binary, artifacts):
     if os.environ.get("BUILD_RTC_LAN_BASELINE"):
         environment["BUILD_RTC_LAN_BASELINE"] = "1"
     mode = os.environ.get("BUILD_RTC_LAN_MODE", "delayed")
-    assert mode in {"delayed", "early-unresolved", "far-edge-unresolved", "far-edge-pressure", "unresolved", "late-unresolved", "large-subnet", "unknown-neighbor-unresolved", "unknown-neighbor-clustered", "unknown-neighbor-pressure", "different-nat", "missing-srflx"}, f"unknown fixture mode: {mode}"
+    assert mode in {"delayed", "early-unresolved", "far-edge-unresolved", "far-edge-pressure", "unresolved", "late-unresolved", "large-subnet", "never-arps-unresolved", "never-arps-clustered", "never-arps-pressure", "different-nat", "missing-srflx", "arp-cold", "arp-cached", "arp-refresh", "arp-stale", "arp-never-arps", "arp-suppressed"}, f"unknown fixture mode: {mode}"
     environment["BUILD_RTC_LAN_MODE"] = mode
     if os.environ.get("BUILD_RTC_LAN_SWEEP_BASELINE"):
         environment["BUILD_RTC_LAN_SWEEP_BASELINE"] = "1"
-    unknown = mode.startswith("unknown-neighbor-")
-    wide = mode in {"far-edge-unresolved", "far-edge-pressure"} or unknown
+    never_arps = mode.startswith("never-arps-")
+    arp = mode.startswith("arp-")
+    nat_control = mode in {"different-nat", "missing-srflx"}
+    observe_arp = arp or nat_control
+    wide = mode in {"far-edge-unresolved", "far-edge-pressure"} or never_arps or arp
     prefix = 21 if mode == "large-subnet" else 22 if wide else 24
-    phone = "10.72.1.2" if mode == "unknown-neighbor-clustered" else "10.72.3.254" if wide else "10.72.0.2"
+    phone = "10.72.1.2" if mode == "never-arps-clustered" else "10.72.3.254" if wide else "10.72.0.2"
     environment["BUILD_RTC_LAN_PHONE_IP"] = phone
     processes = []
     logs = []
@@ -177,12 +181,17 @@ table inet bridge_firewall {
         run(*namespace_command(peer, "ip", "link", "set", "lo", "up"))
         run(*namespace_command(peer, "ip", "link", "set", "eth0", "up"))
         run(*namespace_command(peer, "ip", "route", "add", "default", "via", "10.72.0.254"))
-        if unknown:
+        if never_arps or mode == "arp-never-arps":
             run(*namespace_command(peer, "ip", "route", "add", "10.72.0.1/32", "via", "10.72.0.254"))
             run(*namespace_command(peer, "sysctl", "-q", "-w", "net.ipv4.conf.all.accept_redirects=0",
                                   "net.ipv4.conf.eth0.accept_redirects=0"))
         for address in ["198.18.0.1/32", "198.18.0.2/32"]:
             run("ip", "route", "add", address, "via", "10.72.0.254")
+        if observe_arp:
+            arp_case.configure(mode.removeprefix("arp-") if arp else "cold", peer)
+            for side, command in [("bridge", []), ("phone", namespace_command(peer))]:
+                observer = start(f"{side}-observe", [*command, "python3", str(HERE / "arp_observe.py"), str(artifacts), side])
+                wait_file(artifacts / f"{side}-observe-ready", observer)
         router = start("router", namespace_command(gateway, "python3", str(HERE / "router.py"), str(artifacts)))
         wait_file(artifacts / "router-ready", router)
         external = start("service", namespace_command(service, "python3", str(HERE / "service.py"), str(artifacts)))
@@ -199,9 +208,10 @@ table inet hold_checks {
 """)
         network = start("network", namespace_command(peer, "python3", str(HERE / "network.py"), str(artifacts)))
         wait_file(artifacts / "network-ready", network)
-        bridge = start("bridge", [str(binary), "late_mdns_host_is_checked_before_the_spa_restarts_ice", "--ignored", "--exact", "--nocapture"])
+        bridge = start("bridge", ["env", "-i", *(f"{key}={value}" for key, value in environment.items()), str(binary), "late_mdns_host_is_checked_before_the_spa_restarts_ice", "--ignored", "--exact", "--nocapture"])
         wait_file(artifacts / "bridge-ready", bridge)
-        browser = start("browser", namespace_command(peer, "node", str(HERE / "check.mjs"), str(artifacts)))
+        check = "arp-check.mjs" if arp else "check.mjs"
+        browser = start("browser", namespace_command(peer, "node", str(HERE / check), str(artifacts)))
         wait_file(artifacts / "browser-ready", browser)
         # Signaling's TCP connection predates the firewall, so the only inbound
         # allowances here are stock UFW's established traffic and mDNS.
@@ -216,8 +226,10 @@ table inet bridge_firewall {
  }
 }
 """)
+        if observe_arp:
+            arp_case.initial(mode.removeprefix("arp-") if arp else "cold", peer, artifacts, phone)
         (artifacts / "firewall-ready").write_text("ready")
-        if unknown:
+        if never_arps:
             wait_file(artifacts / "phone-gated", network)
             neighbors = json.loads(subprocess.run(["ip", "-j", "neigh", "show", "dev", "eth0"],
                                                  text=True, capture_output=True, check=True).stdout)
@@ -228,7 +240,10 @@ table inet bridge_firewall {
                                                                        "proxy_entries": len(proxy)}))
             assert absent, "the far-edge phone must be genuinely absent before authentic host trickle"
             (artifacts / "gated").write_text("ready")
-        if mode == "far-edge-pressure" or unknown:
+        if observe_arp:
+            wait_file(artifacts / "phone-gated", network)
+            (artifacts / "gated").write_text("ready")
+        if mode == "far-edge-pressure" or never_arps or arp:
             samples = []
             deadline = time.monotonic() + 65
             while browser.poll() is None:
@@ -246,7 +261,8 @@ table inet bridge_firewall {
             result = browser.wait(timeout=65)
         if result == 0:
             wait_file(artifacts / "bridge-finished", bridge, seconds=3)
-        run("nft", "-j", "list", "ruleset")
+        rules = subprocess.run(["nft", "-j", "list", "ruleset"], text=True, capture_output=True, check=True)
+        (artifacts / "firewall.json").write_text(rules.stdout)
         assert result == 0, f"Chromium check exit {result}; artifacts {artifacts}"
     finally:
         for process in reversed(processes):

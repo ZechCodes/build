@@ -11,8 +11,8 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const artifacts = process.argv[2];
 const mode = process.env.BUILD_RTC_LAN_MODE || "delayed";
 const startsDirect = ["early-unresolved", "far-edge-unresolved"].includes(mode);
-const unknown = mode.startsWith("unknown-neighbor-");
-const pressureControl = ["far-edge-pressure", "unknown-neighbor-pressure"].includes(mode);
+const unknown = mode.startsWith("never-arps-");
+const pressureControl = ["far-edge-pressure", "never-arps-pressure"].includes(mode);
 const natControl = ["different-nat", "missing-srflx"].includes(mode);
 const command = promisify(execFile);
 const save = async (name, value) => {
@@ -27,6 +27,7 @@ const server = await createServer({
     fs: { allow: [path.resolve(here, "../../..")] } },
   plugins: [{ name: "lan-fixture", resolveId(id) {
     if (id === "/__lan_fixture__.mjs") return path.join(here, "browser.mjs");
+    if (id === "/__arp_observation__.mjs") return path.join(here, "arp-browser.mjs");
   }, configureServer(vite) {
     vite.middlewares.use("/fixture", async (_request, response) => {
       response.setHeader("Content-Type", "text/html");
@@ -139,7 +140,7 @@ try {
   await page.exposeFunction("fixtureSweepFinished", async () =>
     /host-sweep .*"reason":"(?:window-expired|completed)"/.test(await readFile(path.join(artifacts, "bridge.log"), "utf8")));
   await page.exposeFunction("fixtureDroppedHostChecks", droppedHostChecks);
-  await page.goto(`http://localhost:9001/fixture${unknown ? "?topology=unknown" : ""}`);
+  await page.goto(`http://localhost:9001/fixture${unknown || natControl ? "?topology=unknown" : ""}`);
   console.log("fixture page loaded");
   await page.waitForFunction(() => typeof window.runLanUpgrade === "function");
   console.log("fixture modules ready");
@@ -183,7 +184,7 @@ try {
     assert(bridgeLog.indexOf("ice_state=failed") < bridgeLog.lastIndexOf("remote_candidates "),
       "the final host diagnostics follow actual bridge ICE Failed");
     assert(wire.host_checks.some((row) => row.after_release), "bridge sends outbound late-host STUN checks");
-  } else if (["early-unresolved", "far-edge-unresolved", "unresolved", "late-unresolved", "unknown-neighbor-unresolved", "unknown-neighbor-clustered"].includes(mode)) {
+  } else if (["early-unresolved", "far-edge-unresolved", "unresolved", "late-unresolved", "never-arps-unresolved", "never-arps-clustered"].includes(mode)) {
     assert(wire.mdns_silenced, "the responder remains permanently silenced");
     const indications = wire.host_socket_indications;
     assert(indications.length > 0, "bridge sends real host socket indications");
@@ -264,12 +265,8 @@ try {
     result.measurements.arp = arpPressure(wire, pressure);
   } else if (natControl) {
     const reason = mode === "different-nat" ? "nat-address-mismatch" : "nat-evidence-missing";
-    assert.equal(wire.host_socket_indications.length, 0, "ineligible NAT evidence sends no real host-socket indication");
-    assert.equal(wire.scout_hits.length, 0, "ineligible NAT evidence sends no anonymous scout to the phone");
-    assert(sweepEvents.some((event) => event.reason === reason && event.status === "skipped"), "the fixed NAT skip reason is observable");
-    assert(sweepEvents.every((event) => event.addresses_sent === 0 && event.addresses_attempted === 0
-      && event.scout_datagrams_sent === 0 && event.scout_attempted === 0 && !event.eligible),
-      "missing or disjoint public evidence suppresses both kinds of feature traffic for the complete lifetime");
+    assertNatIneligibilityPreventsEarlyProbes(reason, wire, sweepEvents);
+    result.natColdNeighbor = await assertNatColdNeighborDoesNotBypassGate(artifacts, reason, sweepEvents);
   } else {
     assert.equal(wire.host_socket_indications.length, 0, "a /21 must send no sweep datagrams");
     assert(sweepEvents.some((event) => event.reason === "subnet-too-large"), "the skip reason is observable");
@@ -290,7 +287,7 @@ try {
     assert(wire.scout_hits.some((row) => row.source_port !== result.before.hostSocketPort
       && row.destination_port === 9 && row.bytes === 1 && row.at <= indication.at),
       "the discovery datagram uses a separate ephemeral socket and only one anonymous byte to UDP9");
-    if (mode === "unknown-neighbor-clustered") {
+    if (mode === "never-arps-clustered") {
       assert.equal(result.after.restarts, 0, "unknown neighbor is discovered during the original browser retry window");
       assert.equal(result.before.localUfrag, result.after.localUfrag);
       assert.equal(result.before.remoteUfrag, result.after.remoteUfrag);
@@ -299,7 +296,7 @@ try {
       assert(bridgeLog.split("\n").filter((line) => line.includes("carrying over "))
         .every((line) => line.includes("host/prflx candidates")),
       "the clustered unknown bridge never carries application data on TURN");
-    } else if (mode === "unknown-neighbor-unresolved") {
+    } else if (mode === "never-arps-unresolved") {
       assert.equal(result.after.restarts, 1, "the far-edge discovery uses exactly the existing one optional restart");
       assert.notEqual(result.before.localUfrag, result.after.localUfrag);
       assert.notEqual(result.before.remoteUfrag, result.after.remoteUfrag);
@@ -381,7 +378,7 @@ try {
   if (mode === "delayed") {
     assert.match(sessionSummary, /carried \d+s over turn and [1-9]\d*s over direct/,
       "the same session's final summary retains its real time on direct");
-  } else if (startsDirect || mode === "unknown-neighbor-clustered") {
+  } else if (startsDirect || mode === "never-arps-clustered") {
     assert.match(sessionSummary, /carried \d+s over direct, 0 ICE restarts/,
       "the initially direct session has no TURN carrying history");
   }
@@ -411,4 +408,42 @@ function arpPressure(wire, samples) {
     requestsIncludingKernelRetries: wire.arp_requests,
     maxOneSecondBinPps: Math.max(...Object.values(wire.arp_one_second_bins)),
     averagePps: wire.arp_requests / elapsed, observedDurationSeconds: elapsed };
+}
+
+function assertNatIneligibilityPreventsEarlyProbes(reason, wire, sweepEvents) {
+  assert.equal(wire.host_socket_indications.length, 0,
+    "ineligible NAT evidence sends no early or late real host-socket indication");
+  assert.equal(wire.scout_hits.length, 0,
+    "ineligible NAT evidence sends no early or late anonymous scout to the phone");
+  assert.equal(wire.non_gateway_arp_requests, 0,
+    "ineligible NAT evidence causes no scout ARP outside the known gateway");
+  assert(sweepEvents.some((event) => event.reason === reason && event.status === "skipped"),
+    "the fixed NAT skip reason is observable");
+  assert(sweepEvents.every((event) => event.addresses_sent === 0 && event.addresses_attempted === 0
+    && event.scout_datagrams_sent === 0 && event.scout_attempted === 0 && !event.eligible),
+  "missing or disjoint public evidence suppresses early and late feature traffic");
+}
+
+async function assertNatColdNeighborDoesNotBypassGate(artifacts, reason, sweepEvents) {
+  const initial = JSON.parse(await readFile(path.join(artifacts, "arp-initial.json"), "utf8"));
+  assert.equal(initial.case, "cold", "the NAT control starts with cold on-link caches");
+  assert(!initial.bridge.concat(initial.proxy).some((row) => row.dst === initial.phone_ip),
+    "the bridge has no phone neighbor before native ICE begins");
+  assert(!initial.phone.some((row) => row.dst === "10.72.0.1"),
+    "the phone has no bridge MAC before native ICE begins");
+  const packets = (await readFile(path.join(artifacts, "bridge-observe.jsonl"), "utf8"))
+    .trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  const request = packets.find((packet) => packet.kind === "arp" && packet.operation === "request"
+    && packet.direction === "inbound" && packet.source_ip === initial.phone_ip
+    && packet.target_ip === "10.72.0.1" && packet.at >= initial.at);
+  assert(request, "the cold phone sends its own ARP for the bridge after the cache barrier");
+  const snapshots = (await readFile(path.join(artifacts, "bridge-ip-neigh.jsonl"), "utf8"))
+    .trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  const learned = snapshots.find((snapshot) => snapshot.after >= request.at
+    && snapshot.neighbors.some((row) => row.dst === initial.phone_ip && row.lladdr
+      && row.state.some((state) => ["REACHABLE", "STALE", "DELAY"].includes(state))));
+  assert(learned, "the bridge learns a usable phone neighbor from that ARP");
+  assert(sweepEvents.some((event) => event.reason === reason && event.at >= request.at * 1000),
+    "the NAT eligibility gate remains closed after the phone becomes on-link usable");
+  return { firstPhoneArpAt: request.at, usableNeighborObservedBy: learned.after };
 }

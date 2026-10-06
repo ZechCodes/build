@@ -294,6 +294,9 @@ fn observation(generation: u64) -> HostCandidateSweepEvent {
         destinations_scouted: 12 * ordinal,
         neighbors_pending: 5 * ordinal,
         neighbors_pending_peak: 8 * ordinal,
+        early_neighbors_probed: ordinal,
+        scout_holds: ordinal,
+        scout_starts: ordinal - 1,
         reason: None,
         eligible: true,
         eligible_unresolved: 1,
@@ -324,6 +327,9 @@ async fn sweep_observations_follow_the_marker_and_stale_generations_are_ignored(
     assert_eq!(first["sweep"]["destinations_scouted"], 12);
     assert_eq!(first["sweep"]["neighbors_pending"], 5);
     assert_eq!(first["sweep"]["neighbors_pending_peak"], 8);
+    assert_eq!(first["sweep"]["early_neighbors_probed"], 1);
+    assert_eq!(first["sweep"]["scout_holds"], 1);
+    assert_eq!(first["sweep"]["scout_starts"], 0);
     let serialized = first.to_string();
     for private in [NAME, "48861", "first", "private-password"] {
         assert!(!serialized.contains(private));
@@ -337,6 +343,9 @@ async fn sweep_observations_follow_the_marker_and_stale_generations_are_ignored(
     assert_eq!(fresh["generation"], 2);
     assert_eq!(fresh["sweep"]["scout_datagrams_sent"], 26);
     assert_eq!(fresh["sweep"]["neighbors_pending_peak"], 16);
+    assert_eq!(fresh["sweep"]["early_neighbors_probed"], 2);
+    assert_eq!(fresh["sweep"]["scout_holds"], 2);
+    assert_eq!(fresh["sweep"]["scout_starts"], 1);
     remote.close().await;
     let before = events.lock().unwrap().len();
     remote.observe_sweep(observation(2)).await;

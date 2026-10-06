@@ -946,6 +946,7 @@ where
     I: Interceptor,
 {
     fn drop(&mut self) {
+        self.inner.host_sweep_control.clear();
         // A reactor-pool driver task only exits when its event loop returns, so a
         // connection dropped without an explicit `close()` would leave that task
         // running on a shared pool thread — pinning a scarce reactor thread and
@@ -981,6 +982,7 @@ where
             let mut core = self.inner.core.lock().await;
             core.close()?;
         }
+        self.inner.host_sweep_control.clear();
         // Mark closing before waking the driver, so it stops even if the wake is
         // ever dropped (mirrors `Drop`; see `PeerConnectionRef::closing`).
         self.inner.closing.store(true, Ordering::Release);
@@ -1102,6 +1104,15 @@ where
             }
 
             core.set_remote_description(desc)?;
+            // The generation baseline precedes answer creation and any unresolved
+            // host-candidate event. Failed descriptions never replace it.
+            #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+            if self.inner.host_candidate_sweep {
+                let credentials = core.remote_ice_credentials();
+                if !credentials.0.is_empty() && !credentials.1.is_empty() {
+                    self.inner.host_sweep_control.capture_baseline(credentials);
+                }
+            }
         }
         // Wake the driver so it re-polls its timeout. When both local and remote
         // descriptions are set, set_remote_description triggers start_transports

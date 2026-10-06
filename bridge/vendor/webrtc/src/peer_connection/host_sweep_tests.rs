@@ -484,6 +484,264 @@ fn initial_grace_and_global_pace_apply_across_ports() {
 }
 
 #[test]
+fn new_usable_neighbor_uses_real_port_during_original_grace() {
+    let now = Instant::now();
+    let mut sweep = HostSweep::default();
+    sweep.start(7, "ufrag".into(), 40000, now);
+    sweep.prepare(40000, vec![subnet()]);
+    let phone = Ipv4Addr::new(192, 168, 2, 3);
+    let probe = sweep
+        .next_priority_probe(
+            now + Duration::from_millis(20),
+            true,
+            |_, _| true,
+            |_, ip| ip == phone,
+        )
+        .expect("newly usable neighbor should preempt grace and cluster order");
+    assert_eq!(probe.destination, phone);
+    sweep.record_result_at(probe.port, true, now + Duration::from_millis(40));
+    assert_eq!(sweep.early_neighbors_probed(), 1);
+    assert_eq!(sweep.scout_holds(), 1);
+    assert!(!sweep.scouts_allowed(now + GRACE, false));
+    assert!(!sweep.scouts_allowed(now + Duration::from_millis(1039), false));
+    assert!(sweep.scouts_allowed(now + Duration::from_millis(1040), false));
+}
+
+#[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+#[test]
+fn baseline_is_credential_and_owner_bound_and_missing_snapshot_has_no_early_privilege() {
+    let control = HostSweepControl::default();
+    control.set_owners(vec![2]);
+    let existing = Ipv4Addr::new(192, 168, 2, 2);
+    control.capture_baseline_with(("first", "password"), |_, _| Some(vec![existing]));
+    let baseline = control.baseline_for(("first", "password"), 2).unwrap();
+    assert_eq!(baseline.len(), 1);
+    assert!(baseline.contains(&existing));
+    control.capture_baseline_with(("first", "password"), |_, _| {
+        panic!("same generation recaptured")
+    });
+    assert!(control.baseline_for(("first", "changed"), 2).is_none());
+    control.capture_baseline_with(("first", "changed"), |_, _| None);
+    assert!(control.baseline_for(("first", "changed"), 2).is_none());
+    assert!(control.baseline_for(("first", "password"), 2).is_none());
+    control.set_owners(vec![3]);
+    assert!(control.baseline_for(("first", "changed"), 2).is_none());
+    control.capture_baseline_with(("first", "changed"), |_, _| {
+        panic!("new owner cannot gain a late baseline")
+    });
+    assert!(control.baseline_for(("first", "changed"), 3).is_none());
+    control.capture_baseline_with(("second", "password"), |_, _| Some(Vec::new()));
+    assert_eq!(
+        control
+            .baseline_for(("second", "password"), 3)
+            .unwrap()
+            .len(),
+        0
+    );
+    control.set_owners((1..=33).collect());
+    control.capture_baseline_with(("third", "password"), |_, _| panic!("unbounded owner list"));
+    assert!(control.baseline_for(("third", "password"), 3).is_none());
+}
+
+#[test]
+fn eight_early_neighbors_are_shared_by_all_ports_without_capping_retries() {
+    let now = Instant::now();
+    let mut sweep = HostSweep::default();
+    let local = address("10.72.0.1:45000");
+    let iface = interface("10.72.0.1:0", "255.255.255.0:0", "wifi");
+    let subnet = SweepSubnet::from_interface(local, &iface, 2, &[]).unwrap();
+    for port in [40000, 40001] {
+        sweep.start(7, "ufrag".into(), port, now);
+        sweep.prepare(port, vec![subnet.clone()]);
+    }
+    let mut seen = std::collections::HashSet::new();
+    for tick in 1..=18 {
+        let at = now + Duration::from_millis(5 * tick);
+        let Some(probe) = sweep.next_priority_probe(at, true, |_, _| true, |_, _| true) else {
+            break;
+        };
+        seen.insert(probe.destination);
+        sweep.record_result(probe.port, true);
+    }
+    assert_eq!(seen.len(), 8);
+    assert_eq!(sweep.early_neighbors_probed(), 8);
+    assert!(
+        sweep
+            .next_priority_probe(
+                now + Duration::from_millis(100),
+                true,
+                |_, _| true,
+                |_, _| true
+            )
+            .is_none()
+    );
+}
+
+#[test]
+fn early_completion_does_not_bypass_the_original_repeat_delay() {
+    let now = Instant::now();
+    let mut sweep = HostSweep::default();
+    sweep.start(7, "ufrag".into(), 40000, now);
+    sweep.prepare(40000, vec![subnet()]);
+    for at in [now + PACE, now + 2 * PACE] {
+        let probe = sweep
+            .next_priority_probe(at, true, |_, _| true, |_, _| true)
+            .unwrap();
+        sweep.record_result(probe.port, true);
+    }
+    assert!(sweep.plans[&40000].repeat);
+    assert!(
+        sweep
+            .next_priority_probe(now + GRACE, true, |_, _| true, |_, _| true)
+            .is_none()
+    );
+    assert!(
+        sweep
+            .next_priority_probe(
+                now + 2 * PACE + REPEAT_DELAY,
+                true,
+                |_, _| true,
+                |_, _| true
+            )
+            .is_some()
+    );
+}
+
+#[test]
+fn genuinely_new_neighbor_can_preempt_a_pending_repeat() {
+    let now = Instant::now();
+    let mut sweep = HostSweep::default();
+    sweep.start(7, "ufrag".into(), 40000, now);
+    sweep.prepare(40000, vec![subnet()]);
+    let gateway = Ipv4Addr::new(192, 168, 2, 2);
+    let phone = Ipv4Addr::new(192, 168, 2, 3);
+    let first = sweep
+        .next_priority_probe(
+            now + PACE,
+            true,
+            |_, ip| ip == gateway,
+            |_, ip| ip == gateway,
+        )
+        .unwrap();
+    sweep.record_result(first.port, true);
+    sweep.settle_discovery(now + GRACE, true, |_, ip| ip == gateway, |_| true);
+    assert!(sweep.plans[&40000].repeat);
+    let late = sweep
+        .next_priority_probe(now + GRACE + PACE, true, |_, _| true, |_, ip| ip == phone)
+        .unwrap();
+    assert_eq!(late.destination, phone);
+    sweep.record_result(late.port, true);
+    assert!(
+        sweep
+            .next_priority_probe(now + GRACE + 2 * PACE, true, |_, _| true, |_, _| true)
+            .is_none()
+    );
+}
+
+#[test]
+fn cancel_and_expiry_erase_early_addresses_but_keep_numeric_diagnostics() {
+    let now = Instant::now();
+    for expire in [false, true] {
+        let mut sweep = HostSweep::default();
+        sweep.start(7, "ufrag".into(), 40000, now);
+        sweep.prepare(40000, vec![subnet()]);
+        let probe = sweep
+            .next_priority_probe(now + PACE, true, |_, _| true, |_, _| true)
+            .unwrap();
+        sweep.record_result(probe.port, true);
+        if expire {
+            sweep.next_priority_probe(now + WINDOW, true, |_, _| true, |_, _| true);
+        } else {
+            sweep.cancel(7, "ufrag", 40000);
+        }
+        assert!(sweep.early_admitted.is_empty());
+        assert!(sweep.early_probed.is_empty());
+        assert_eq!(sweep.early_neighbors_probed(), 1);
+        assert!(sweep.early_retired);
+        let event = sweep.pop_event().unwrap();
+        assert_eq!(event.early_neighbors_probed, 1);
+        let next_port_at = if expire {
+            now + WINDOW + PACE
+        } else {
+            now + 2 * PACE
+        };
+        sweep.start(7, "ufrag".into(), 40001, next_port_at);
+        sweep.prepare(40001, vec![subnet()]);
+        assert!(
+            sweep
+                .next_priority_probe(next_port_at + PACE, true, |_, _| true, |_, _| true)
+                .is_none(),
+            "retired generation cannot renew early privilege through a late port"
+        );
+    }
+}
+
+#[test]
+fn late_new_neighbor_preempts_cluster_order_without_pausing_started_scouts() {
+    let now = Instant::now();
+    let mut sweep = HostSweep::default();
+    sweep.start(7, "ufrag".into(), 40000, now);
+    sweep.prepare(40000, vec![subnet()]);
+    sweep.set_scout_counters(SweepScoutCounters {
+        sent: 1,
+        ..Default::default()
+    });
+    let late = Ipv4Addr::new(192, 168, 2, 3);
+    let probe = sweep
+        .next_priority_probe(now + GRACE, true, |_, _| true, |_, ip| ip == late)
+        .unwrap();
+    assert_eq!(probe.destination, late);
+    sweep.record_result(probe.port, true);
+    assert!(sweep.scouts_allowed(now + GRACE + PACE, false));
+    assert_eq!(sweep.scout_holds(), 0);
+}
+
+#[test]
+fn authenticated_hit_prevents_held_scouts_before_selection() {
+    let now = Instant::now();
+    let mut sweep = HostSweep::default();
+    sweep.start(7, "ufrag".into(), 40000, now);
+    sweep.prepare(40000, vec![subnet()]);
+    let probe = sweep
+        .next_priority_probe(now + PACE, true, |_, _| true, |_, _| true)
+        .unwrap();
+    sweep.record_result(probe.port, true);
+    assert!(!sweep.scouts_allowed(now + Duration::from_secs(2), true));
+}
+
+#[test]
+fn exact_authenticated_hit_suppresses_only_unstarted_scouts_and_keeps_restart_eligibility() {
+    let now = Instant::now();
+    let local = address("192.168.2.1:45000");
+    let remote = address("192.168.2.2:40000");
+    for already_started in [false, true] {
+        let mut sweep = HostSweep::default();
+        sweep.start(7, "ufrag".into(), 40000, now);
+        sweep.prepare(40000, vec![subnet()]);
+        let probe = sweep.next_probe(now + GRACE, true).unwrap();
+        assert_eq!(probe.destination, Ipv4Addr::new(192, 168, 2, 2));
+        sweep.record_result(probe.port, true);
+        assert!(!sweep.matches_authenticated_hit(local, address("192.168.2.3:40000")));
+        assert!(!sweep.matches_authenticated_hit(address("192.168.2.9:45000"), remote));
+        assert!(sweep.matches_authenticated_hit(local, remote));
+        if already_started {
+            sweep.set_scout_counters(SweepScoutCounters {
+                sent: 1,
+                ..Default::default()
+            });
+        }
+        sweep.observe_prflx(local, remote);
+        sweep.note_authenticated_hit();
+        let plan = &sweep.plans[&40000];
+        assert!(plan.eligible && plan.unresolved && !plan.stopped);
+        assert_eq!(
+            sweep.scouts_allowed(now + Duration::from_secs(2), false),
+            already_started
+        );
+    }
+}
+
+#[test]
 fn one_repeat_only_on_relay_and_inside_absolute_window() {
     let now = Instant::now();
     let mut sweep = HostSweep::default();

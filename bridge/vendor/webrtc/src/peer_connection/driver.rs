@@ -423,6 +423,33 @@ where
             ));
         }
 
+        #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+        if self.inner.host_candidate_sweep {
+            let owners = ifaces()
+                .ok()
+                .map(|interfaces| {
+                    self.udp_sockets
+                        .iter()
+                        .filter_map(|(local, socket)| {
+                            socket
+                                .supports_host_candidate_sweep()
+                                .then(|| {
+                                    SweepSubnet::for_socket(
+                                        *local,
+                                        &interfaces,
+                                        sweep_interface_index,
+                                    )
+                                    .ok()
+                                })
+                                .flatten()
+                                .map(|subnet| subnet.interface_index)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            self.inner.host_sweep_control.set_owners(owners);
+        }
+
         self.tcp_transport = RTCTcpTransport::new(tcp_listeners);
 
         // Rebuilt, not updated: a gatherer's STUN clients and TURN allocations are keyed by
@@ -508,6 +535,7 @@ where
     /// on its next re-check; the wake makes that immediate. Idempotent on the clean path.
     pub(crate) fn signal_stopped(&self) {
         self.inner.closing.store(true, Ordering::Release);
+        self.inner.host_sweep_control.clear();
         self.inner.data_channel_backpressure.notify_waiters();
     }
 
@@ -898,16 +926,37 @@ where
         if !self.inner.host_candidate_sweep {
             return;
         }
+        let inner = Arc::clone(&self.inner);
+        let core = inner.core.lock().await;
         if self.host_sweep.is_empty() {
+            #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+            if core
+                .selected_ice_candidates()
+                .is_some_and(|(local, remote)| {
+                    local.candidate_type() != CandidateType::Relay
+                        && remote.candidate_type() != CandidateType::Relay
+                })
+            {
+                inner.host_sweep_control.retire_baseline();
+            }
+            drop(core);
             self.report_host_sweep().await;
             return;
         }
-        let inner = Arc::clone(&self.inner);
-        let core = inner.core.lock().await;
         let (ufrag, password) = core.remote_ice_credentials();
         self.host_sweep.sync_credentials(ufrag, password);
         self.host_sweep.cancel_inactive(&inner.host_sweep_control);
         let relay = self.observe_sweep_pair(core.selected_ice_candidates());
+        if let Some((local, remote)) =
+            core.authenticated_peer_reflexive_pairs()
+                .find(|(local, remote)| {
+                    self.host_sweep
+                        .matches_authenticated_hit(local.addr(), remote.addr())
+                })
+        {
+            self.host_sweep.observe_prflx(local.addr(), remote.addr());
+            self.host_sweep.note_authenticated_hit();
+        }
         let hosts = core
             .local_ice_candidates()
             .iter()
@@ -940,6 +989,10 @@ where
             #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
             self.host_scouts.suspend();
         }
+        #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+        if self.host_sweep.all_plans_expired(now) {
+            inner.host_sweep_control.retire_baseline();
+        }
         self.host_sweep.defer_tick(now);
         drop(core);
         self.report_host_sweep().await;
@@ -952,7 +1005,11 @@ where
             self.host_sweep.generation(),
             subnets,
             &self.inner.host_sweep_control,
-            self.host_sweep.remote_ufrag(),
+            (
+                self.host_sweep.remote_ufrag(),
+                self.host_sweep.remote_password(),
+            ),
+            self.host_sweep.initial_grace_until().unwrap_or(now),
             now,
         );
         self.host_scouts.refresh(now);
@@ -964,13 +1021,16 @@ where
             |subnet, ip| scouts.usable(subnet, ip, now),
             |subnet| scouts.settled(subnet, now),
         );
-        if let Some(probe) = self
-            .host_sweep
-            .next_usable_probe(now, relay, |subnet, ip| scouts.usable(subnet, ip, now))
-        {
+        if let Some(probe) = self.host_sweep.next_priority_probe(
+            now,
+            relay,
+            |subnet, ip| scouts.usable(subnet, ip, now),
+            |subnet, ip| scouts.early_usable(subnet, ip, now),
+        ) {
             self.send_host_probe(probe);
         } else if self.host_sweep.combined_attempts() < 32768
-            && let Some((port, expires)) = self.host_sweep.active_port()
+            && self.host_sweep.scouts_allowed(now, false)
+            && let Some((port, expires)) = self.host_sweep.active_port(now)
             && let Some(reason) = self.host_scouts.send_one(
                 now,
                 &self.inner.host_sweep_control,
@@ -988,7 +1048,11 @@ where
             self.host_sweep.generation(),
             active,
             &self.inner.host_sweep_control,
-            self.host_sweep.remote_ufrag(),
+            (
+                self.host_sweep.remote_ufrag(),
+                self.host_sweep.remote_password(),
+            ),
+            self.host_sweep.initial_grace_until().unwrap_or(now),
             now,
         );
     }
@@ -1023,6 +1087,8 @@ where
             }
             if !relay {
                 self.host_sweep.stop_all("direct-selected");
+                #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+                self.inner.host_sweep_control.retire_baseline();
             }
         }
         relay
@@ -1150,7 +1216,8 @@ where
         );
         match result {
             Some(Ok(sent)) if sent == payload.len() => {
-                self.host_sweep.record_result(probe.port, true)
+                self.host_sweep
+                    .record_result_at(probe.port, true, Instant::now())
             }
             Some(Err(error)) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 self.host_sweep.record_result(probe.port, false)
@@ -2119,6 +2186,8 @@ where
             stun_timeout,
             turn_timeout,
             self.host_sweep.deadline(),
+            #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+            self.host_scouts.deadline(),
         ]
         .into_iter()
         .flatten()

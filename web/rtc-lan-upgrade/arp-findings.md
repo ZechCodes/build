@@ -96,7 +96,23 @@ shared across candidate ports. This preserves the existing snapshot path and
 does not add a netlink notification socket. The pre-answer baseline matters:
 the browser's ARP can precede its unresolved `.local` candidate trickle. The
 baseline's owning-interface set is fixed for that generation; a later owner
-change cannot add an unobserved interface to the early path.
+change cannot add an unobserved interface to the early path. A resolved first
+port erases its destinations and can leave the candidate-port set temporarily
+empty; the same-credential baseline and eight-address admission membership
+remain for a later port until the original plan expires or the generation is
+otherwise retired. This retention does not extend the 25-second lifetime.
+
+The eight-address budget is a selected-order limit, not a guarantee that the
+phone is among the first eight newly usable neighbors. On a busy LAN, unrelated
+devices can consume those early slots; a ninth phone then loses the early-grace
+privilege. If it is still a fresh usable neighbor after the 250 ms grace and
+passes the existing gates, an ordinary real-port probe is considered ahead of
+anonymous scouts. Scout traffic and a later restart remain possible, so the
+zero-scout cold result below does not generalize to every busy LAN.
+
+Late newly usable neighbors can also take the baseline-absent priority, so the
+aggregate `early_neighbors_probed` count may rise after scouting has started;
+only a successful send before scout start can hold that pass.
 
 A successful early indication holds an **unstarted** scout pass until one second
 after the latest successful early indication.
@@ -191,6 +207,29 @@ consistent timing ordering in these samples. These small
 samples show preserved fallback behavior in the successful final runs, but do
 not establish statistical timing equivalence or a stable speed change. The
 old-code routed failure remains part of the sample tally.
+
+The retained six-run REACHABLE chronology
+(`/tmp/task377-part2/reachable-chronology.md` and
+`/tmp/task377-part2/reachable-chronology.json`) separates initial scouting
+from the much later phone probe. Times below are seconds after the
+first browser host candidate was gathered; each range covers three runs.
+
+| REACHABLE event | Old | Final |
+| --- | ---: | ---: |
+| First non-gateway scout-generated ARP | 0.320–0.324 | 0.291–0.317 |
+| First real host-port indication to phone | 11.672–19.332 | 17.598–20.711 |
+| First matched authenticated STUN request | 12.827–21.949 | 21.946–21.959 |
+| First browser direct nomination | 12.854–21.983 | 21.966–21.969 |
+
+All six initial connected-to-`direct-pair trying` intervals were 20.002–20.004 s,
+consistent with the SPA monitor's 20-second initial delay. Final-source runs
+recorded one scout start each and zero scout holds. Their
+`early_neighbors_probed` counts were 1, 0 and 1; the two increments occurred
+around 20.6–20.9 s, after scouts had started, and PCAPs associate them with
+the phone indication rather than the earlier gateway indication. The old code
+has no such counters; its values are inapplicable, not zero. This trace orders
+the events but does not establish why the original ICE checks did or did not
+nominate direct earlier.
 
 The STALE final run sent its real indication 89.6 ms after the browser's
 unicast ARP refresh, compared with 20.6 ms in the old-code run. The 100 ms

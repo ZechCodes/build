@@ -42,8 +42,13 @@ Wire 3.12.0.
 - On Linux, an unresolved browser host candidate can use a newly learned,
   usable neighbor before the 250 ms scout grace ends. A bounded read-only
   snapshot poll looks for at most eight new addresses per ICE generation on
-  the advertised socket's owning interface. A successful real-port indication
-  holds an unstarted scout pass until one second after the latest successful
+  the advertised socket's owning interface. The pre-answer baseline and bounded
+  eight-address admission membership persist across a temporarily empty
+  candidate-port set for the same credentials, within the original lifetime.
+  On a busy LAN, other newly usable devices can fill the eight early slots;
+  a later phone still has the ordinary post-grace real-port path before scouts,
+  but can incur scout traffic and the existing restart. A successful real-port
+  indication holds an unstarted scout pass until one second after the latest successful
   early indication so the authenticated ICE check can arrive;
   a matching validated host/peer-reflexive pair can avoid that pass. If no
   direct check arrives, the existing bounded scout fallback proceeds. Three

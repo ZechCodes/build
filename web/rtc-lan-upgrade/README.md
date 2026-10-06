@@ -1,4 +1,4 @@
-This explicit Linux integration gate reproduces tasks #372 and #374 using Chromium's
+This explicit Linux integration gate reproduces tasks #372, #374 and #377 using Chromium's
 real UUID `.local` candidate, the production SPA peer link and crypto, the
 bridge's real `FrameIntake` and WebRTC factory, and isolated UDP STUN/TURN fixtures.
 
@@ -10,9 +10,11 @@ nice -n 10 cargo test --test rtc_lan_upgrade -- --ignored --nocapture
 
 It requires `python3`, `node`, Chromium at `/usr/bin/chromium`, `ip`, `nft`,
 `unshare`, and `nsenter`; the pressure control also uses `ss`. Every network process and firewall rule lives in a
-temporary user/network namespace. The bridge fixture gets a cleared
-environment, a temporary HOME, an explicit temporary identity path, a new
-database and an unsigned test repository. Chromium uses a fresh profile.
+temporary user/network namespace. In every mode, `run.py` launches the bridge
+test process through `env -i` with an explicit fixture environment, a temporary
+`HOME` and `BRIDGE_IDENTITY_FILE` path. It uses a new database and an unsigned
+test repository; it cannot inherit the host's bridge identity. Chromium uses
+a fresh profile.
 
 Task #377's [passive-ARP findings](arp-findings.md) led to permanent production
 controls: `arp-cold`, `arp-cached`, `arp-refresh`, `arp-stale` and
@@ -28,6 +30,12 @@ the phone ARPs for the gateway and never for the bridge. The earlier
 `unknown-neighbor-*` cases now have the explicit `never-arps-*` name for the
 same /32 routed topology. `arp-suppressed` remains a separately named
 investigation control that drops UDP9 before neighbour resolution.
+The cold case has one newly learned phone, not eight unrelated new neighbors.
+The per-generation early budget is eight distinct addresses; a ninth newly
+usable phone can miss the early grace on a busy LAN. The ordinary post-grace
+real-port probe remains ahead of anonymous scouts when its existing gates pass,
+but this fixture's zero-scout cold assertion is not a busy-LAN guarantee.
+
 Each observation retains the production peer link and optional restart monitor,
 records the first carrying pull, then observes until direct selection or 26 s
 after the first candidate. This fixed measurement boundary does not extend any

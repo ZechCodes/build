@@ -974,14 +974,25 @@ The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
   generation records usable neighbors on the current owning interface as its
   baseline. That interface set and baseline are immutable for the generation:
   a later owner change cannot make an unobserved interface eligible for early
-  probing. The baseline is discarded on credential change, direct selection,
-  close or expiry. For the first 250 ms after an unresolved candidate arrives, a bounded
-  snapshot poll runs every 20 ms, then every 100 ms. This reuses the existing
+  probing. Resolving a port erases that port's destinations and closes scouts
+  when none remain. The bounded baseline and eight-address admission membership
+  survive a temporarily empty candidate-port set, so a later port with the same
+  credentials still uses the pre-answer baseline without resetting its budget.
+  They retire on credential change, direct selection, close or original plan
+  expiry; retaining them does not extend the 25-second lifetime. For the first
+  250 ms after an unresolved candidate arrives, a bounded snapshot poll runs
+  every 20 ms, then every 100 ms. This reuses the existing
   read-only neighbor snapshot rather than adding a notification socket. At most
   eight distinct newly usable addresses per generation, shared by all candidate
   ports, may receive an early real-port indication before the ordinary 250 ms
-  scout grace ends. Each send still requires current matching srflx evidence,
-  a live owning host socket, approved subnet and destination, a fresh usable
+  scout grace ends. On a busy LAN, unrelated newly usable neighbors can occupy
+  those first eight slots; a ninth phone then loses early-grace priority. After
+  the grace, the ordinary eligible real-port probe still precedes anonymous
+  scouting, but scouts and a later restart may still be needed. Newly learned
+  neighbors can also receive this baseline-absent priority after grace; the
+  aggregate early-neighbor count can rise after scouting starts, without holding
+  that started scout pass. Each send still requires current matching srflx
+  evidence, a live owning host socket, approved subnet and destination, a fresh usable
   neighbor, source/interface pinning, packet and send-queue headroom, and active
   credentials. The early path uses the same credential-free indication and
   cancellation rules as every real probe. It neither trusts an ARP entry as peer

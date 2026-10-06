@@ -266,6 +266,7 @@ try {
   } else if (natControl) {
     const reason = mode === "different-nat" ? "nat-address-mismatch" : "nat-evidence-missing";
     assertNatIneligibilityPreventsEarlyProbes(reason, wire, sweepEvents);
+    result.natColdNeighbor = await assertNatColdNeighborDoesNotBypassGate(artifacts, reason, sweepEvents);
   } else {
     assert.equal(wire.host_socket_indications.length, 0, "a /21 must send no sweep datagrams");
     assert(sweepEvents.some((event) => event.reason === "subnet-too-large"), "the skip reason is observable");
@@ -414,11 +415,35 @@ function assertNatIneligibilityPreventsEarlyProbes(reason, wire, sweepEvents) {
     "ineligible NAT evidence sends no early or late real host-socket indication");
   assert.equal(wire.scout_hits.length, 0,
     "ineligible NAT evidence sends no early or late anonymous scout to the phone");
-  assert.equal(wire.arp_unique_destinations, 0,
-    "ineligible NAT evidence causes no scout ARP destination on the bridge LAN");
+  assert.equal(wire.non_gateway_arp_requests, 0,
+    "ineligible NAT evidence causes no scout ARP outside the known gateway");
   assert(sweepEvents.some((event) => event.reason === reason && event.status === "skipped"),
     "the fixed NAT skip reason is observable");
   assert(sweepEvents.every((event) => event.addresses_sent === 0 && event.addresses_attempted === 0
     && event.scout_datagrams_sent === 0 && event.scout_attempted === 0 && !event.eligible),
   "missing or disjoint public evidence suppresses early and late feature traffic");
+}
+
+async function assertNatColdNeighborDoesNotBypassGate(artifacts, reason, sweepEvents) {
+  const initial = JSON.parse(await readFile(path.join(artifacts, "arp-initial.json"), "utf8"));
+  assert.equal(initial.case, "cold", "the NAT control starts with cold on-link caches");
+  assert(!initial.bridge.concat(initial.proxy).some((row) => row.dst === initial.phone_ip),
+    "the bridge has no phone neighbor before native ICE begins");
+  assert(!initial.phone.some((row) => row.dst === "10.72.0.1"),
+    "the phone has no bridge MAC before native ICE begins");
+  const packets = (await readFile(path.join(artifacts, "bridge-observe.jsonl"), "utf8"))
+    .trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  const request = packets.find((packet) => packet.kind === "arp" && packet.operation === "request"
+    && packet.direction === "inbound" && packet.source_ip === initial.phone_ip
+    && packet.target_ip === "10.72.0.1" && packet.at >= initial.at);
+  assert(request, "the cold phone sends its own ARP for the bridge after the cache barrier");
+  const snapshots = (await readFile(path.join(artifacts, "bridge-ip-neigh.jsonl"), "utf8"))
+    .trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  const learned = snapshots.find((snapshot) => snapshot.after >= request.at
+    && snapshot.neighbors.some((row) => row.dst === initial.phone_ip && row.lladdr
+      && row.state.some((state) => ["REACHABLE", "STALE", "DELAY", "PROBE"].includes(state))));
+  assert(learned, "the bridge learns a usable phone neighbor from that ARP");
+  assert(sweepEvents.some((event) => event.reason === reason && event.at >= request.at * 1000),
+    "the NAT eligibility gate remains closed after the phone becomes on-link usable");
+  return { firstPhoneArpAt: request.at, usableNeighborObservedBy: learned.after };
 }

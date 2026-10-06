@@ -90,6 +90,8 @@ def inside(binary, artifacts):
         environment["BUILD_RTC_LAN_SWEEP_BASELINE"] = "1"
     never_arps = mode.startswith("never-arps-")
     arp = mode.startswith("arp-")
+    nat_control = mode in {"different-nat", "missing-srflx"}
+    observe_arp = arp or nat_control
     wide = mode in {"far-edge-unresolved", "far-edge-pressure"} or never_arps or arp
     prefix = 21 if mode == "large-subnet" else 22 if wide else 24
     phone = "10.72.1.2" if mode == "never-arps-clustered" else "10.72.3.254" if wide else "10.72.0.2"
@@ -185,8 +187,8 @@ table inet bridge_firewall {
                                   "net.ipv4.conf.eth0.accept_redirects=0"))
         for address in ["198.18.0.1/32", "198.18.0.2/32"]:
             run("ip", "route", "add", address, "via", "10.72.0.254")
-        if arp:
-            arp_case.configure(mode.removeprefix("arp-"), peer)
+        if observe_arp:
+            arp_case.configure(mode.removeprefix("arp-") if arp else "cold", peer)
             for side, command in [("bridge", []), ("phone", namespace_command(peer))]:
                 observer = start(f"{side}-observe", [*command, "python3", str(HERE / "arp_observe.py"), str(artifacts), side])
                 wait_file(artifacts / f"{side}-observe-ready", observer)
@@ -224,8 +226,8 @@ table inet bridge_firewall {
  }
 }
 """)
-        if arp:
-            arp_case.initial(mode.removeprefix("arp-"), peer, artifacts)
+        if observe_arp:
+            arp_case.initial(mode.removeprefix("arp-") if arp else "cold", peer, artifacts, phone)
         (artifacts / "firewall-ready").write_text("ready")
         if never_arps:
             wait_file(artifacts / "phone-gated", network)
@@ -238,7 +240,7 @@ table inet bridge_firewall {
                                                                        "proxy_entries": len(proxy)}))
             assert absent, "the far-edge phone must be genuinely absent before authentic host trickle"
             (artifacts / "gated").write_text("ready")
-        if arp:
+        if observe_arp:
             wait_file(artifacts / "phone-gated", network)
             (artifacts / "gated").write_text("ready")
         if mode == "far-edge-pressure" or never_arps or arp:

@@ -9,8 +9,8 @@ PHONE = "10.72.3.254"
 CACHE_STATES = {"cached": "PERMANENT", "refresh": "REACHABLE", "stale": "STALE"}
 
 
-def validate_initial(case, bridge, proxy, phone):
-    assert not any(row.get("dst") == PHONE for row in bridge + proxy), "bridge already knows phone"
+def validate_initial(case, bridge, proxy, phone, phone_ip=PHONE):
+    assert not any(row.get("dst") == phone_ip for row in bridge + proxy), "bridge already knows phone"
     cached = next((row for row in phone if row.get("dst") == BRIDGE), None)
     if case in CACHE_STATES:
         state = CACHE_STATES[case]
@@ -19,15 +19,16 @@ def validate_initial(case, bridge, proxy, phone):
         assert cached is None, "phone already knows bridge"
 
 
-def initial(case, peer, artifacts):
+def initial(case, peer, artifacts, phone_ip=PHONE):
     def read(*args):
         return json.loads(subprocess.run(args, check=True, text=True, capture_output=True).stdout)
 
     bridge = read("ip", "-j", "neigh", "show", "dev", "eth0")
     proxy = read("ip", "-j", "neigh", "show", "proxy", "dev", "eth0")
     phone = read("nsenter", "-t", str(peer), "-n", "--", "ip", "-j", "neigh", "show", "dev", "eth0")
-    validate_initial(case, bridge, proxy, phone)
-    report = {"at": time.time(), "case": case, "bridge": bridge, "proxy": proxy, "phone": phone}
+    validate_initial(case, bridge, proxy, phone, phone_ip)
+    report = {"at": time.time(), "case": case, "phone_ip": phone_ip,
+              "bridge": bridge, "proxy": proxy, "phone": phone}
     (artifacts / "arp-initial.json").write_text(json.dumps(report, indent=2))
 
 

@@ -16,6 +16,11 @@ class InitialCacheTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "phone already knows"):
             validate_initial("cold", [], [], [{"dst": "10.72.0.1"}])
 
+    def test_nat_controls_require_a_cold_phone_on_their_24_subnet(self):
+        validate_initial("cold", [], [], [], phone_ip="10.72.0.2")
+        with self.assertRaisesRegex(AssertionError, "bridge already knows"):
+            validate_initial("cold", [{"dst": "10.72.0.2"}], [], [], phone_ip="10.72.0.2")
+
     def test_cached_requires_the_intended_one_sided_cache(self):
         for case, state in [("cached", "PERMANENT"), ("refresh", "REACHABLE"), ("stale", "STALE")]:
             with self.subTest(case=case):

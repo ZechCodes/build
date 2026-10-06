@@ -38,8 +38,10 @@ awaiting a measurement IPC. Cold packet checks require a matching
 credential-bearing STUN request and success response, native direct carrying,
 zero restarts, zero scout enqueues and zero bridge-originated ARP requests.
 Cached and routed cases require real anonymous scout fallback and direct
-selection. `different-nat` and `missing-srflx` require zero early and late
-feature probes, including scout ARP, across all sweep events.
+selection. `different-nat` and `missing-srflx` use the same cold pre-ICE
+barrier and two-sided ARP observers. They require the phone's own ARP to create
+a usable bridge neighbor, yet zero early and late feature probes and zero
+non-gateway bridge ARP across all sweep events.
 
 The bridge firewall is stock inbound DROP with established traffic and
 multicast mDNS allowed. A disposable gateway joins the bridge and phone on a

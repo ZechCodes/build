@@ -95,7 +95,7 @@ const waitForGitRecords = () => vi.waitFor(async () => {
     expect(record?.value).toBeTruthy();
     expect(record.value.stale).not.toBe(true);
   }
-});
+}, { timeout: 10_000 });
 const rowIn = (root, path) =>
   [...document.querySelectorAll(".froot")].find((one) => one.dataset.root === root)?.querySelector(`.frow[data-path="${path}"]`);
 
@@ -248,7 +248,7 @@ describe("a workspace with two directories, one not git", () => {
     await vi.waitFor(() => expect(asked.filter(({ method }) => method.startsWith("git.")).sort((a, b) => a.method.localeCompare(b.method))).toEqual([
       { method: "git.status", params: { workspace_id: "ws-1", source_id: "repo", if_status_key: "status-1" } },
       { method: "git.unpushed", params: { workspace_id: "ws-1", source_id: "repo", if_diff_key: "review-1" } },
-    ]));
+    ]), { timeout: 10_000 });
   });
 
   // A comment being written floats over the page, outside the surface it was

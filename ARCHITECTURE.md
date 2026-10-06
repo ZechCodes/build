@@ -970,7 +970,23 @@ The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
   under pressure without advancing its destination; 200 packets/s is a ceiling,
   not a required rate. Ordinary ICE writes keep their existing path. A bounded,
   read-only snapshot identifies reachable, stale and delay neighbors on the
-  owning interface. Unknown destinations are scouted from at most five temporary
+  owning interface. Before returning the bridge's answer, the active ICE
+  generation records usable neighbors on the current owning interface as its
+  baseline. That interface set and baseline are immutable for the generation:
+  a later owner change cannot make an unobserved interface eligible for early
+  probing. The baseline is discarded on credential change, direct selection,
+  close or expiry. For the first 250 ms after an unresolved candidate arrives, a bounded
+  snapshot poll runs every 20 ms, then every 100 ms. This reuses the existing
+  read-only neighbor snapshot rather than adding a notification socket. At most
+  eight distinct newly usable addresses per generation, shared by all candidate
+  ports, may receive an early real-port indication before the ordinary 250 ms
+  scout grace ends. Each send still requires current matching srflx evidence,
+  a live owning host socket, approved subnet and destination, a fresh usable
+  neighbor, source/interface pinning, packet and send-queue headroom, and active
+  credentials. The early path uses the same credential-free indication and
+  cancellation rules as every real probe. It neither trusts an ARP entry as peer
+  identity nor creates an ICE candidate. Unknown destinations are scouted from
+  at most five temporary
   sockets across the process, bound to that interface address at ephemeral ports.
   One zero byte to UDP discard port 9 causes ARP without credentials or session
   data. Scout sockets also yield at the quarter-buffer watermark. A scout pass
@@ -1002,6 +1018,16 @@ The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
   The driver accepts at most 32 distinct candidate ports and 32768 attempts per
   generation, and permits one
   repeat one second after a pass only while TURN still carries the connection.
+  A successful early indication holds an unstarted scout pass for at most one
+  second so the browser's authenticated check can arrive. An exact validated
+  host/peer-reflexive tuple following that indication prevents scout start even if
+  TURN is still selected, while preserving unresolved evidence for the existing
+  optional restart. Absent that proof, the original bounded scout pass
+  begins. A scout already started is not paused. A later STALE neighbor learned
+  through a browser's unicast ARP refresh can move ahead in the real-probe order
+  without restarting discovery. The process-wide 60-second interface lease
+  begins only when a scout datagram is successfully enqueued, never when early
+  observation or an early indication occurs.
   Every plan expires 25 seconds after candidate arrival. A complete pass requires
   subnet scouting and real-port probes to usable neighbors; a queued unresolved
   packet is not proof of delivery. Resolution, direct
@@ -1021,9 +1047,10 @@ The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
   a peer-reflexive pair through an inbound UDP DROP rule. No guessed address
   becomes an ICE candidate. Fixed-code `host-sweep` diagnostics report the
   generation, status, attempted/sent counts, aggregate eligible unresolved
-  plans and whether a prflx pair followed, without addresses, ports or names
-  (`rtc.conntrackSweep`,
-  additive within wire 3.12.0).
+  plans and whether a prflx pair followed, without addresses, ports or names.
+  Three additive counts, `early_neighbors_probed`, `scout_holds` and
+  `scout_starts`, make the early path and fallback visible without exposing an
+  endpoint (`rtc.conntrackSweep`, additive within wire 3.12.0).
   Chromium 152 namespace measurements on a mostly-empty /22 completed scouting
   in 15–24.4 seconds, depending on global neighbor-table pressure. An unknown phone
   near a known neighbor received its first real-port probe 369 ms after the
@@ -1046,6 +1073,21 @@ The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
   Retained FAILED entries can pause admission at the global occupancy guard even
   after INCOMPLETE reaches zero; this accounts for the pressure-limited coverage
   run's longer tail. The guard and lifetime are not relaxed to improve a benchmark.
+  The #377 Chromium namespace controls separately show that a cold on-link
+  browser's request for the bridge can create a STALE neighbor within 26.4 ms
+  of the first answer. Cached bridge-MAC and gateway-routed controls do not
+  always generate that ARP, so scouting remains necessary. The 20 ms early
+  snapshot cadence is based on Linux namespace observations with Chromium; physical
+  Android/iOS devices and Wi-Fi access points have not been measured.
+  With #377's final source, three independent cold on-link Chromium runs sent
+  one early real-port indication each at 44.9–71.3 ms after the first bridge
+  answer, received a matching authenticated STUN exchange at 306.8–317.4 ms,
+  selected host/host direct with zero restarts, and enqueued zero scouts or
+  bridge-originated ARP requests. Cached-MAC and gateway-routed controls kept
+  the bounded scout fallback and selected direct after the existing single
+  restart. Cold different-NAT and missing-srflx controls learned a usable
+  neighbor through browser ARP but emitted zero feature packets. The 12-mode
+  namespace matrix is recorded in `web/rtc-lan-upgrade/arp-findings.md`.
 - **Paired LAN hint**: `rtc.offer` accepts optional `client_id` under
   `rtc.clientLanCache` (wire 3.12.0). The SPA sends it only after a greeting from
   that paired bridge advertised the capability. It uses `crypto.randomUUID`,

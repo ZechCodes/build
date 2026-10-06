@@ -13,9 +13,7 @@ Wire 3.12.0.
 ### Test tooling
 
 - Add isolated passive-ARP discovery controls and packet/neighbour timelines
-  for cold, cached and gateway-routed browser endpoints. The #377 findings
-  record the remaining scout-fallback timing decision; production discovery
-  behaviour is unchanged.
+  for cold, cached and gateway-routed browser endpoints (#377).
 
 ### Fixed
 
@@ -41,6 +39,15 @@ Wire 3.12.0.
   from authenticated STUN checks. Generation diagnostics report sweep counts and skip reasons without
   addresses; late cases use the existing single optional upgrade restart
   (`rtc.conntrackSweep`, #374).
+- On Linux, an unresolved browser host candidate can use a newly learned,
+  usable neighbor before the 250 ms scout grace ends. A bounded read-only
+  snapshot poll looks for at most eight new addresses per ICE generation on
+  the advertised socket's owning interface. A successful real-port indication
+  gives the authenticated ICE check one second before a scout pass starts;
+  a matching validated host/peer-reflexive pair can avoid that pass. If no
+  direct check arrives, the existing bounded scout fallback proceeds. Three
+  aggregate diagnostic counts report early neighbors probed, scout holds and
+  scout starts without addresses (`rtc.conntrackSweep`, #377).
 - ICE failure preserves historical direct-check evidence, including successful
   peer-reflexive pairs matching tracked remote host endpoints. Session summaries count accepted
   ICE credential changes instead of reconnections (#374).

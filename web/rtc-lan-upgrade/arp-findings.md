@@ -1,9 +1,9 @@
 # #377: passive ARP investigation
 
-Findings only, measured on main `98df30c0` with Chromium
-152.0.7977.82 and Linux 7.2.5-3-omarchy on 2026-10-05. Production bridge,
-vendored transport and SPA code are unchanged. Part 2 awaits the assigner's
-decision.
+Part 1 findings were measured on main `98df30c0` with Chromium
+152.0.7977.82 and Linux 7.2.5-3-omarchy on 2026-10-05. The production
+bridge, vendored transport and SPA were unchanged for those measurements.
+Part 2 implementation and verification are in progress below.
 
 ## What holds
 
@@ -71,8 +71,9 @@ surviving to its 25 s expiry; its credentials change on restart as before.
 
 ## Why #374's unknown far-edge phone took 11.6–19 s
 
-`run.py` explicitly adds a phone-side `10.72.0.1/32 via 10.72.0.254` route in
-the `unknown-neighbor-*` cases. The gateway preserves the private UDP tuple
+`run.py` originally added a phone-side `10.72.0.1/32 via 10.72.0.254` route
+in the `unknown-neighbor-*` cases, now named `never-arps-*`. The gateway
+preserves the private UDP tuple
 but owns the L2 next hop. The phone ARPs for the gateway, not the bridge;
 signaling also uses the gateway rendezvous. That fixture deliberately prevents
 the bridge from learning the phone through its own ARP. Its result measures
@@ -84,26 +85,120 @@ The cold packet and neighbour traces rule out a wrong receiving interface or
 rejection of STALE state in these runs. They do not establish how frequently
 this fast path occurs on physical Wi-Fi phones or APs.
 
-## Recommendation for the part 2 decision
+## Part 2 decision and red baselines
 
-Use a **150 ms passive-neighbour observation window inside the existing 250 ms
-grace**, then prioritize newly observed, still-usable addresses ahead of older
-cluster anchors. This is a proposed policy, not a measured implementation. It
-covers these <27 ms observations and one 100 ms snapshot interval with margin.
-Take the generation's baseline before sending the answer: the phone ARP can
-precede the unresolved `.local` trickle, so the first scout snapshot or port
-plan creation is too late to identify it as newly appeared.
+The approved part 2 design takes an owning-interface usable-neighbor baseline
+before the bridge sends its answer, then polls the existing bounded, read-only
+snapshot every 20 ms through the initial 250 ms and every 100 ms afterward. A
+newly usable neighbor can receive a credential-free real-port indication during
+that initial grace; at most eight distinct addresses per ICE generation qualify,
+shared across candidate ports. This preserves the existing snapshot path and
+does not add a netlink notification socket. The pre-answer baseline matters:
+the browser's ARP can precede its unresolved `.local` candidate trickle. The
+baseline's owning-interface set is fixed for that generation; a later owner
+change cannot add an unobserved interface to the early path.
 
-There is a design constraint to settle before claiming zero scouts: today's
-first real phone indication waits until grace ends, and the authenticated
-exchange arrives near 500 ms. A 150 ms passive window alone cannot prevent
-scouts in the gap. Achieving zero requires either permitting fresh-neighbour
-real probes during grace, or a bounded scout hold while their outcome is
-pending. If every no-hit fallback must start by 250 ms and real probes must
-also wait 250 ms, these measurements cannot promise zero scouts. Any approved
-implementation must preserve the original 25 s expiry, NAT heuristic,
-restart budget and every #374 packet, socket, interface and pressure bound.
-Retain scouting for the demonstrated one-sided cache and routed cases.
+A successful early indication holds an **unstarted** scout pass for one second.
+An authenticated inbound STUN check from the exact host/peer-reflexive tuple
+can prevent scout start while TURN is still selected, while leaving the
+existing unresolved evidence available to the optional restart. Without that
+proof, the original
+scout fallback begins. A later STALE neighbor can move ahead of ordinary
+cluster order, but cannot pause a pass already scouting. Early observations
+never claim the process-wide 60-second interface lease; only the first
+successful scout enqueue does. All original #374 NAT, socket, subnet, packet,
+pressure, credential and cancellation checks still gate sends. The 25-second
+plan lifetime, single optional restart and paired LAN hint cache are outside
+this change. The early path needs no firewall change, privileged socket,
+media permission or TURN application-data inference.
+
+The first production red controls, retained in `/tmp/task377-part2/`, use the
+unmodified discovery behavior from main. They establish the regression target;
+they are not green evidence for the new design. The PERMANENT and routed runs
+retain `failure.json` from obsolete fixture expectations of a TURN-only outcome;
+their measured selected paths, packet captures and restart counts show direct
+after one restart. The REACHABLE and STALE baseline fixtures passed their
+updated assertions.
+
+| Red control | Observed outcome | Scout/ARP cost |
+| --- | --- | ---: |
+| Cold on-link, active scouts | Direct before application RPC, zero restarts, but zero-scout assertion fails | 38 successful scout enqueues; 38 bridge ARP requests (the preceding part 1 control saw 39/40) |
+| Browser bridge-MAC cache PERMANENT, bridge lacks browser | First nominated host/host at 21.981 s after gathering, one existing restart | 991 successful scout enqueues, 3,002 scout attempts, 3,058 ARP requests, 1,020 unique targets |
+| Browser bridge-MAC cache REACHABLE, bridge lacks browser | First nominated host/host at 12.854 s after gathering, one existing restart | 1,020 successful scout enqueues, 1,709 scout attempts, 3,058 ARP requests, 1,020 unique targets |
+| Browser bridge-MAC cache STALE, bridge lacks browser | First nominated host/host at 7.566 s after gathering, one existing restart | 1,019 successful scout enqueues, 1,927 scout attempts, 3,058 ARP requests, 1,020 unique targets |
+| Gateway-routed browser (formerly `unknown-neighbor-*`) | First nominated host/host at 13.453 s after gathering, one existing restart | 1,020 successful scout enqueues, 1,757 scout attempts, 3,058 ARP requests, 1,020 unique targets |
+
+The PERMANENT cache is a deliberate no-refresh control, not a model of a
+physical phone. The routed fixture must remain a full-coverage fallback
+control after its clearer `never-arps-*` rename. In the old STALE production
+run, the browser's unicast ARP refresh made its address available around 5.4 s;
+the existing sweep sent a real indication about 20.6 ms after that ARP. Direct
+selection still waited for the existing restart. This trace supports prompt
+usable-neighbor probing in the old code and does not by itself show a benefit
+from the new late-neighbor priority.
+
+### Final-source cold on-link runs
+
+Three independent runs with the final rebuilt source (`arp-cold-1` through
+`arp-cold-3` under `/tmp/task377-part2/final/`) passed the production fixture.
+Each selected host/host direct with zero restarts and two encrypted pulls over
+direct. Each recorded one successful early real-port indication, one scout
+hold, zero scout starts/enqueues and zero bridge-originated ARP requests. The
+browser's own ARP request remained observable.
+
+| Event | After the browser receives the first bridge answer |
+| --- | ---: |
+| Browser ARP request at bridge ingress | 2.9–3.8 ms |
+| First real host-socket indication to browser | 44.9–71.3 ms |
+| First matching integrity-bearing STUN request/success exchange | 306.8–317.4 ms |
+
+The one-second hold covered these authenticated exchanges; first nominated
+host/host selection followed 0.381–0.439 s after candidate gathering.
+
+### Final-source fallback and NAT controls
+
+The full final-source fixture matrix passed 12/12 modes, with each process exit
+code checked (`/tmp/task377-part2/final-matrix.log`). The table compares the
+old-code baseline with one final-source run per cached or routed condition.
+Time is from the first browser host candidate gathering to the first nominated
+host/host snapshot. ARP totals include kernel retries; unique targets are
+reported separately. These individual times show observed behavior under
+that run's kernel pressure, not a stable latency reduction.
+
+| Condition | Old → final direct time | Old → final scout enqueues | Final bridge ARP / unique targets | Final restarts |
+| --- | ---: | ---: | ---: | ---: |
+| Bridge MAC cached PERMANENT at browser | 21.981 → 14.471 s | 991 → 1,020 | 3,058 / 1,020 | 1 |
+| Bridge MAC cached REACHABLE at browser | 12.854 → 21.966 s | 1,020 → 1,020 | 3,058 / 1,020 | 1 |
+| Bridge MAC cached STALE at browser | 7.566 → 7.475 s | 1,019 → 997 | 3,058 / 1,020 | 1 |
+| Browser routes checks via gateway (`never-arps`) | 13.453 → 14.466 s | 1,020 → 1,020 | 3,058 / 1,020 | 1 |
+
+Each timing uses the same first nominated host/host snapshot rule in the old
+and final result JSON, rather than the fixture's later end time. One run per
+fallback condition cannot establish a latency distribution. The REACHABLE
+sample was 9.112 s slower after the change, while PERMANENT was 7.510 s
+faster; repeat runs are needed before calling either difference measurement
+noise or a regression. All four still selected direct with one restart.
+
+The STALE final run sent its real indication 89.6 ms after the browser's
+unicast ARP refresh, compared with 20.6 ms in the old-code run. The 100 ms
+later polling phase and scheduling variance explain why that one trace cannot
+support a claim of faster late-neighbor probing. The cached and routed cases
+confirm that the no-hit scout fallback remains available and the existing
+single restart still selects direct.
+
+The `different-nat` and `missing-srflx` modes each produced a cold browser ARP
+and a fresh usable neighbor, yet all feature probe/scout counters stayed zero,
+there was no non-gateway bridge ARP, and no optional restart. The three routed
+`never-arps-unresolved`, `never-arps-clustered` and `never-arps-pressure` controls
+also passed. The pressure run completed all 1,020 scout enqueues and destinations
+with 3,058 ARP requests to 1,020 unique targets, peaked at 256 pending
+neighbors, and selected direct without a restart. Separate socket-pressure
+and scout-pressure controls passed; the scout-pressure fixture held at most five
+scout sockets, peaked at 256 pending neighbors, kept the ordinary ICE socket's
+send queue empty and closed its temporary sockets.
+
+These are Chromium/Linux namespace results. Physical Android/iOS phones and
+Wi-Fi access points have not been measured.
 
 ## Platform evidence and cleaner alternatives
 

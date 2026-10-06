@@ -430,11 +430,18 @@ describe("kept Git initialization dialogs", () => {
     document.querySelector("[data-confirm-init-git]").click();
     expect(asked.filter(({ method }) => method === "workspace.init_git")).toHaveLength(1);
     const heldDialog = dialog();
+    expect(heldDialog.querySelector("[data-confirm-init-git]").disabled).toBe(true);
     leave();
     if (outcome === "success") {
       settle.resolve(await machine("workspace.init_git", { source_id: "assets" }));
       await vi.waitFor(async () => expect((await readCached({ deviceId: "dev-1", entityId: "ws-1", kind: "git-init-options", sub: "assets" }))?.value.workspace.is_git).toBe(true));
-      expect(document.querySelector('[data-surface="assets"] .gitpane')).not.toBeNull();
+      // The cached result arrives before the submit closes its dialog. Its
+      // final render re-enables the remaining original-source offer only after
+      // that close has completed, even while the dialog is detached.
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-surface="assets"] .gitpane')).not.toBeNull();
+        expect(heldDialog.querySelector("[data-confirm-init-git]").disabled).toBe(false);
+      });
     } else {
       settle.reject(new Error("initialization refused"));
       await vi.waitFor(() => {

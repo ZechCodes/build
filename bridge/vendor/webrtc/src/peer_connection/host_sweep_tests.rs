@@ -173,6 +173,54 @@ fn generation_prflx_observation_survives_sibling_port_stop_and_close() {
 }
 
 #[test]
+fn recovery_after_direct_selection_uses_fresh_sweep_evidence() {
+    let now = Instant::now();
+    let mut sweep = HostSweep::default();
+    sweep.sync_credentials("initial", "initial-password");
+    sweep.start(1, "initial".into(), 40000, now);
+    sweep.prepare(40000, vec![subnet()]);
+    let probe = sweep.next_probe(now + GRACE, true).unwrap();
+    sweep.record_result(probe.port, true);
+    sweep.observe_prflx(address("192.168.2.1:45000"), address("192.168.2.2:40000"));
+    sweep.note_authenticated_hit();
+    sweep.stop_all("direct-selected");
+    let initial = std::iter::from_fn(|| sweep.pop_event()).last().unwrap();
+    assert!(initial.prflx_followed);
+    assert_eq!(initial.addresses_sent, 1);
+    assert_eq!(initial.addresses_attempted, 1);
+
+    // Match the driver's accepted-credentials sync followed by the bridge's
+    // new generation ordinal, before preparing the recovery candidate port.
+    let restarted = now + Duration::from_secs(30);
+    sweep.sync_credentials("recovery", "recovery-password");
+    sweep.start(2, "recovery".into(), 40001, restarted);
+    sweep.prepare(40001, vec![subnet()]);
+    let fresh = std::iter::from_fn(|| sweep.pop_event()).last().unwrap();
+    assert_eq!(fresh.generation, 2);
+    assert_eq!(fresh.addresses_sent, 0);
+    assert_eq!(fresh.addresses_attempted, 0);
+    assert_eq!(fresh.scout_datagrams_sent, 0);
+    assert_eq!(fresh.scout_attempted, 0);
+    assert_eq!(fresh.early_neighbors_probed, 0);
+    assert!(!fresh.prflx_followed);
+    assert!(sweep.scouts_allowed(restarted + GRACE, false));
+
+    let probe = sweep.next_probe(restarted + GRACE, true).unwrap();
+    assert_eq!(probe.port, 40001);
+    sweep.record_result(probe.port, true);
+    sweep.observe_prflx(address("192.168.2.1:45000"), address("192.168.2.2:40000"));
+    assert!(
+        !sweep.prflx_followed,
+        "the previous port is no longer evidence"
+    );
+    sweep.observe_prflx(address("192.168.2.1:45000"), address("192.168.2.2:40001"));
+    let followed = std::iter::from_fn(|| sweep.pop_event()).last().unwrap();
+    assert!(followed.prflx_followed);
+    assert_eq!(followed.addresses_sent, 1);
+    assert_eq!(followed.addresses_attempted, 1);
+}
+
+#[test]
 fn prflx_attribution_excludes_an_address_that_has_not_been_sent_a_probe() {
     let now = Instant::now();
     let mut sweep = HostSweep::default();

@@ -51,6 +51,26 @@ function expectedToken(context, state) {
   return context.grouped ? "--panel2" : "--panel";
 }
 
+it("samples the active row's final fill while its colour transition is pending", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await mountStatusDotInbox(page, basePath);
+    const row = await page.locator(`.inbox-entry[data-key="${rowKeys[0]}"]`).elementHandle();
+    const pending = await row.evaluate((element) => {
+      // Keep a real transition pending long enough to reproduce the stale sample.
+      element.style.transitionDuration = "60s";
+      element.getBoundingClientRect();
+      element.classList.add("active");
+      element.getBoundingClientRect();
+      return element.getAnimations().some((animation) => animation.playState === "running");
+    });
+    expect(pending).toBe(true);
+    const fill = await rowFill(row, "--accent-soft", { active: true });
+    expect(fill.background).toBe(fill.expected);
+    expect(fill.overlays[0].background).toBe(fill.expected);
+  });
+});
+
 for (const theme of ["light", "dark"]) {
   for (const touch of [false, true]) {
     it(`matches inbox overlay fills to their rows in ${theme} with ${touch ? "touch" : "a pointer"}`, async () => {

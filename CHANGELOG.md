@@ -6,6 +6,13 @@ Notable changes to the bridge (`build-bridge`). The format follows
 protocol versions; see
 [Wire versioning and capabilities](ARCHITECTURE.md#wire-versioning-and-capabilities).
 
+## [0.2.10] - Unreleased
+
+### Fixed
+
+- Align the collapsed inbox toggle with the directory rail icons at desktop
+  and phone widths, preserving the toolbar's existing clearance (#378).
+
 ## [0.2.9] - 2026-10-06
 
 Wire 3.12.0.

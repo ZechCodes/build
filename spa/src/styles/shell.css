@@ -24,8 +24,8 @@
      styles.css and styles/surfaces.css both read it. */
   --surface-head:46px;
   --inbox-toggle:28px;  /* both rail toggles' width — the head's and the floating one */
-  /* What the collapsed toolbar clears: the floating toggle's 12px offset, its
-     box, and the 8px gap before the toolbar content. */
+  /* Keep the collapsed toolbar's content at its existing inset, clear of the
+     floating toggle and its badge. The toggle aligns to --dir-rail below. */
   --inbox-open-clear:calc(48px + env(safe-area-inset-left, 0px));
   --chat-glass-opacity:72%;
   --chat-glass-blur:6px;
@@ -77,7 +77,10 @@ body.inbox-collapsed { --inbox-space:0px; }
 #global-controls { position:absolute; z-index:48;
   top:var(--region-gap, 10px); left:calc(var(--region-gap, 10px) + env(safe-area-inset-left, 0px));
   height:var(--toolbar-h); display:flex; align-items:center;
-  padding:0 12px; pointer-events:none; }
+  padding:0 calc((var(--dir-rail) - var(--inbox-toggle)) / 2); pointer-events:none; }
+/* A standing directory rail owns this column's centre, including on devices
+   with a left safe-area inset. The toolbar keeps its own safe-area clearance. */
+body.inbox-collapsed #shell:has(#dir-rail:not(:empty)) #global-controls { left:var(--region-gap); }
 #global-controls > * { pointer-events:auto; }
 
 /* ---- inbox rail (left) ---- */
@@ -127,8 +130,8 @@ body.inbox-collapsed.inbox-peek #inbox-rail::before { content:""; position:absol
      room on both sides, rather than a fixed head that centred them short. */
   padding:10px 10px 0 calc(10px + env(safe-area-inset-left, 0px));
   margin:0; background:inherit; border-radius:inherit; }
-/* One width for the toggle wherever it stands — it is what the collapsed
-   toolbar's clearance is derived from. */
+/* One width for the toggle wherever it stands; the global controls centre
+   its box in --dir-rail. */
 #inbox-open, #inbox-collapse { width:var(--inbox-toggle); }
 /* One pin, in two heads (core/pinControl.js): the inbox rail's and the
    conversation panel's. One rule dresses both, and the icon beside it is the

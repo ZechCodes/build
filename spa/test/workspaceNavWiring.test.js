@@ -38,7 +38,7 @@ import { renderWorkspace } from "../src/views/workspaceView.js";
 import { adoptDeviceSession, resetDeviceContexts } from "../src/core/deviceContexts.js";
 import { standShell, stopShell } from "../src/core/shell.js";
 import { fakeSession } from "./deviceSessionFixture.js";
-import { readCached, wipeCache } from "../src/core/localCache.js";
+import { readCached, readCachedMany, wipeCache, writeCached } from "../src/core/localCache.js";
 import { wipeUiRecords } from "../src/core/localUiStore.js";
 import { createViewingContext } from "../src/core/viewingContext.js";
 import { worktreeOf } from "./gitWireFixture.js";
@@ -88,7 +88,14 @@ const machine = async (method, params = {}) => {
   return {};
 };
 
-const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+const gitAddress = (kind) => ({ deviceId: "dev-1", entityId: 'workspace:["ws-1","repo"]', kind });
+const waitForGitRecords = () => vi.waitFor(async () => {
+  const records = await readCachedMany(["refs", "status", "log", "unpushed", "diff"].map(gitAddress));
+  for (const record of records) {
+    expect(record?.value).toBeTruthy();
+    expect(record.value.stale).not.toBe(true);
+  }
+}, { timeout: 10_000 });
 const rowIn = (root, path) =>
   [...document.querySelectorAll(".froot")].find((one) => one.dataset.root === root)?.querySelector(`.frow[data-path="${path}"]`);
 
@@ -96,7 +103,6 @@ const open = async (route) => {
   App.route = route;
   standShell(App.route);
   await renderWorkspace();
-  await flush();
 };
 
 beforeAll(() => initRouter());
@@ -123,6 +129,7 @@ afterEach(() => {
   stopShell();
   resetDeviceContexts();
   delete window.matchMedia;
+  vi.restoreAllMocks();
 });
 
 describe("a workspace with two directories, one not git", () => {
@@ -190,13 +197,9 @@ describe("a workspace with two directories, one not git", () => {
     const reads = (sourceId) => asked.filter(({ method, params }) => params.source_id === sourceId && method !== "fs.tree");
     await vi.waitFor(() => expect(document.querySelector('[data-surface="repo"]')?.textContent).toContain("Seed the repository"));
     await vi.waitFor(() => expect(reads("repo").map(({ method }) => method)).toEqual(expect.arrayContaining(["git.status", "git.log", "git.refs", "git.unpushed"])));
-    // Settled: the first visit's reads have all answered.
-    let seen = -1;
-    await vi.waitFor(async () => {
-      const now = asked.length;
-      await new Promise((resolve) => setTimeout(resolve, 30));
-      expect(asked.length === now && now === (seen = now)).toBe(true);
-    });
+    // The review can invalidate history after its first answer. Wait for all
+    // five records to be present and fresh before measuring the return.
+    await waitForGitRecords();
     const repoSurface = document.querySelector('[data-surface="repo"]');
     asked.length = 0;
 
@@ -205,8 +208,16 @@ describe("a workspace with two directories, one not git", () => {
     await vi.waitFor(() => expect(document.querySelector('[data-surface="assets"] .workspace-gitinit [data-init-git]')).not.toBeNull());
     expect(repoSurface.hidden).toBe(true);
 
+    // Give the kept surface something new to paint from cache. Seeing it on
+    // return proves the asynchronous cache read completed without a wire read.
+    const log = (await readCached(gitAddress("log"))).value;
+    const cachedSubject = "An older commit received while Repository was hidden";
+    await writeCached(gitAddress("log"), { ...log, commits: [
+      ...log.commits,
+      { ...log.commits[0], hash: "abcdef1234567", short: "abcdef1", subject: cachedSubject },
+    ] });
     document.querySelector('.workspace-dirtab[data-directory="repo"]').click();
-    await new Promise((resolve) => setTimeout(resolve, 60));
+    await vi.waitFor(() => expect(repoSurface.textContent).toContain(cachedSubject));
     expect(App.route).toMatchObject({ sourceId: "repo", tab: "changes" });
     // The very surface it left, showing, with what it held.
     expect(document.querySelector('[data-surface="repo"]')).toBe(repoSurface);
@@ -220,13 +231,8 @@ describe("a workspace with two directories, one not git", () => {
 
   it.each(["files", "tasks"])("returns from the %s rail with only two keyed Git checks", async (tab) => {
     await open({ name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes" });
-    const address = (kind) => ({ deviceId: "dev-1", entityId: 'workspace:["ws-1","repo"]', kind });
-    await vi.waitFor(async () => {
-      for (const kind of ["refs", "status", "log", "unpushed", "diff"]) {
-        expect((await readCached(address(kind)))?.value).toBeTruthy();
-      }
-      expect(document.querySelector(".gitpane")?.textContent).toContain("Seed the repository");
-    });
+    await waitForGitRecords();
+    await vi.waitFor(() => expect(document.querySelector(".gitpane")?.textContent).toContain("Seed the repository"));
     const firstPane = document.querySelector(".gitpane");
     document.querySelector(`#dir-rail [data-tab="${tab}"]`).click();
     await vi.waitFor(() => expect(App.route.tab).toBe(tab));
@@ -236,12 +242,13 @@ describe("a workspace with two directories, one not git", () => {
     document.querySelector('#dir-rail [data-tab="changes"]').click();
     await vi.waitFor(() => expect(document.querySelector(".gitpane")?.textContent).toContain("Seed the repository"));
     await vi.waitFor(() => expect(document.querySelector(".workspace-reftrigger-name")?.textContent).toBe("main"));
-    await new Promise((resolve) => setTimeout(resolve, 60));
     expect(App.route.tab).toBe("changes");
-    expect(asked.filter(({ method }) => method.startsWith("git.")).sort((a, b) => a.method.localeCompare(b.method))).toEqual([
+    // Cached content can paint before both keyed checks are issued. Wait for
+    // the exact requests, still rejecting extra calls or unkeyed reads.
+    await vi.waitFor(() => expect(asked.filter(({ method }) => method.startsWith("git.")).sort((a, b) => a.method.localeCompare(b.method))).toEqual([
       { method: "git.status", params: { workspace_id: "ws-1", source_id: "repo", if_status_key: "status-1" } },
       { method: "git.unpushed", params: { workspace_id: "ws-1", source_id: "repo", if_diff_key: "review-1" } },
-    ]);
+    ]), { timeout: 10_000 });
   });
 
   // A comment being written floats over the page, outside the surface it was
@@ -264,11 +271,13 @@ describe("a workspace with two directories, one not git", () => {
       }) });
       await open({ name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes" });
       await vi.waitFor(() => expect(repo().querySelector('.file[data-key$="repo-only.js"] .fcmt')).not.toBeNull());
+      const listeners = vi.spyOn(document, "addEventListener");
       repo().querySelector('.file[data-key$="repo-only.js"] .fcmt').click();
       await vi.waitFor(() => expect(pop()?.querySelector(".cp-input")).not.toBeNull());
       pop().querySelector(".cp-input").value = "keep this comment";
       // Its outside tap is listened for from the next turn on.
-      await flush();
+      await vi.waitFor(() => expect(listeners).toHaveBeenCalledWith("pointerdown", pop()._onDown));
+      listeners.mockRestore();
     };
 
     const assetsShowsAlone = async () => {
@@ -345,7 +354,6 @@ describe("a workspace with two directories, one not git", () => {
     const comeBackAndOpen = async () => {
       tab("assets").click();
       expect(App.route.sourceId).toBe("assets");
-      await flush();
       expect(dialog()).toBeNull();
       expect(offer().disabled).toBe(false);
       offer().click();
@@ -421,15 +429,25 @@ describe("kept Git initialization dialogs", () => {
     await openDialog();
     document.querySelector("[data-confirm-init-git]").click();
     expect(asked.filter(({ method }) => method === "workspace.init_git")).toHaveLength(1);
+    const heldDialog = dialog();
+    expect(heldDialog.querySelector("[data-confirm-init-git]").disabled).toBe(true);
     leave();
     if (outcome === "success") {
       settle.resolve(await machine("workspace.init_git", { source_id: "assets" }));
       await vi.waitFor(async () => expect((await readCached({ deviceId: "dev-1", entityId: "ws-1", kind: "git-init-options", sub: "assets" }))?.value.workspace.is_git).toBe(true));
-      expect(document.querySelector('[data-surface="assets"] .gitpane')).not.toBeNull();
+      // The cached result arrives before the submit closes its dialog. Its
+      // final render re-enables the remaining original-source offer only after
+      // that close has completed, even while the dialog is detached.
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-surface="assets"] .gitpane')).not.toBeNull();
+        expect(heldDialog.querySelector("[data-confirm-init-git]").disabled).toBe(false);
+      });
     } else {
       settle.reject(new Error("initialization refused"));
-      await flush();
-      await flush();
+      await vi.waitFor(() => {
+        expect(heldDialog.textContent).toContain("initialization refused");
+        expect(heldDialog.querySelector("[data-confirm-init-git]").disabled).toBe(false);
+      });
     }
     expect(dialog()).toBeNull();
     expect(App.route.sourceId).toBe("repo");

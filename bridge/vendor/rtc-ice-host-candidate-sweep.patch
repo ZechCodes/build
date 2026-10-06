@@ -1,0 +1,75 @@
+diff --git a/rtc-ice/src/agent/late_direct_test.rs b/rtc-ice/src/agent/late_direct_test.rs
+index d27b5bd..400cde9 100644
+--- a/rtc-ice/src/agent/late_direct_test.rs
++++ b/rtc-ice/src/agent/late_direct_test.rs
+@@ -10,6 +10,7 @@ const LOCAL: &str = "candidate:1 1 udp 2130706431 192.0.2.1 5000 typ host";
+ const RELAY: &str =
+     "candidate:2 1 udp 16777215 203.0.113.1 6000 typ relay raddr 192.0.2.2 rport 5001";
+ const HOST: &str = "candidate:3 1 udp 2130706431 192.0.2.2 5001 typ host";
++const PRFLX: &str = "candidate:4 1 udp 2130706431 192.0.2.3 5002 typ prflx";
+ const REMOTE_PASSWORD: &str = "remote-password-for-checks";
+ 
+ fn selected_relay(enabled: bool, controlling: bool, lite: bool) -> Agent {
+@@ -61,6 +62,30 @@ fn host_writes(writes: &[TaggedBytesMut]) -> Vec<&TaggedBytesMut> {
+         .collect()
+ }
+ 
++#[test]
++fn self_reported_peer_reflexive_address_cannot_count_as_authenticated_hit() {
++    let mut agent = selected_relay(true, false, false);
++    agent
++        .add_remote_candidate(unmarshal_candidate(PRFLX).unwrap())
++        .unwrap();
++    let index = agent
++        .candidate_pairs
++        .iter()
++        .position(|pair| {
++            agent.remote_candidates[pair.remote_index].candidate_type()
++                == CandidateType::PeerReflexive
++        })
++        .unwrap();
++    assert_eq!(agent.authenticated_peer_reflexive_pairs().count(), 0);
++    agent.candidate_pairs[index].state = CandidatePairState::Succeeded;
++    assert_eq!(agent.authenticated_peer_reflexive_pairs().count(), 0);
++    agent.candidate_pairs[index].requests_received = 1;
++    assert_eq!(agent.authenticated_peer_reflexive_pairs().count(), 1);
++    agent.candidate_pairs[index].requests_received = 0;
++    agent.candidate_pairs[index].responses_received = 1;
++    assert_eq!(agent.authenticated_peer_reflexive_pairs().count(), 1);
++}
++
+ #[test]
+ fn late_direct_pair_sends_real_bounded_checks_without_replacing_the_relay() {
+     for controlling in [false, true] {
+diff --git a/rtc-ice/src/agent/mod.rs b/rtc-ice/src/agent/mod.rs
+index a534b2d..960d4e6 100644
+--- a/rtc-ice/src/agent/mod.rs
++++ b/rtc-ice/src/agent/mod.rs
+@@ -638,6 +638,27 @@ impl Agent {
+         }
+     }
+ 
++    /// Current peer-reflexive pairs with successful, authenticated ICE traffic.
++    /// A candidate claimed in signaling alone cannot satisfy the check counters.
++    pub fn authenticated_peer_reflexive_pairs(
++        &self,
++    ) -> impl Iterator<Item = (&Candidate, &Candidate)> {
++        self.candidate_pairs
++            .iter()
++            .filter(|pair| {
++                pair.state == CandidatePairState::Succeeded
++                    && (pair.requests_received > 0 || pair.responses_received > 0)
++                    && self.remote_candidates[pair.remote_index].candidate_type()
++                        == CandidateType::PeerReflexive
++            })
++            .map(|pair| {
++                (
++                    &self.local_candidates[pair.local_index],
++                    &self.remote_candidates[pair.remote_index],
++                )
++            })
++    }
++
+     /// The highest-priority pair that is still usable, whether or not it has been nominated.
+     pub fn get_best_available_candidate_pair(&self) -> Option<(&Candidate, &Candidate)> {
+         if let Some(pair_index) = self.get_best_available_pair() {

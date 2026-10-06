@@ -73,7 +73,9 @@ import { srcJsFiles, srcSourceOf } from "./treeFiles.js";
 // loop over every kind of line became a reader per block in
 // core/markdownBlocks.js — a fence, a heading, a list, a table, a paragraph —
 // each asked in turn at the line it stands on.
-const RATCHETED_FUNCTIONS = 38;
+// 37 since the inbox's capture painter shares its activity reader with the
+// status dot instead of deriving a routing spinner in its markup.
+const RATCHETED_FUNCTIONS = 37;
 
 const DISABLE = "eslint-disable-next-line complexity";
 // A block or file-level disable would switch the rule off for everything

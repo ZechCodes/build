@@ -1157,7 +1157,6 @@ const captureActivity = (entry) => ({
 
 /** One capture row. `ui`: { activeKey, rerouteKey, projects, rerouteBranchProject,
  *  rerouteBranches }. */
-// eslint-disable-next-line complexity -- ratchet: captureRowHtml is at 14, cap 10 — reduce it, then drop this line
 export function captureRowHtml(entry, ui = {}) {
   const activity = captureActivity(entry);
   const status = captureStatusText(entry);

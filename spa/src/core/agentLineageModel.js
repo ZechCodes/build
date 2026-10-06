@@ -18,6 +18,7 @@ import { agentDisplayName } from "./agentName.js";
 import { entityIdOf } from "./entityId.js";
 import { conversationRoute } from "./router.js";
 import { workspaceDisplayName } from "./workspaceModel.js";
+import { agentIsRunning } from "./agentRunning.js";
 
 const NOTHING_RUNNING = Object.freeze({ running: false, agentsRunning: 0, since: null });
 
@@ -110,7 +111,7 @@ export function agentLineage(members, { namesMakers = true } = {}) {
       .filter(({ rollup }) => rollup.running);
     const agentsRunning = subagents.length + madeRunning.length;
     const answer = {
-      running: !!member.agent.working || agentsRunning > 0,
+      running: agentIsRunning({ working: member.agent.working, agents_running: agentsRunning }),
       agentsRunning,
       since: ownSince(member.agent) || earliest([
         ...subagents.map((entry) => isoOfMs(entry.started_at)),

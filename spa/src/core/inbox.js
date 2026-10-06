@@ -37,7 +37,8 @@ import { esc } from "./text.js";
 import { entityIdOf } from "./entityId.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT } from "./icons.js";
 import { workspaceRoute } from "./projectModel.js";
-import { freshestRosters, runningAgentCount, watchedUnreadCount } from "./inboxRoster.js";
+import { freshestRosters, runningAgentCount, watchedAgentsRunning, watchedUnreadCount } from "./inboxRoster.js";
+import { agentIsRunning } from "./agentRunning.js";
 import { NO_TASK_UNREAD } from "./taskUnread.js";
 import { standsOnProjectCheckout, workspaceDisplayName, workspaceRun, workspaceStatusText } from "./workspaceModel.js";
 import { sessionTimes } from "./sessionSpans.js";
@@ -115,7 +116,7 @@ function toWorkspaceEntry(workspace, projectNames, conversation) {
     reason: unreadReasonText(activity.unread_reason, "branch"),
     muted: !!activity.muted,
     dismissed: !!activity.dismissed,
-    working: !!activity.working,
+    working: agentIsRunning(activity),
     // Done removes the workspace, so only the bridge decides when it is
     // offered: it is the one that can see every repository and every agent at
     // once. A missing verdict is not a yes.
@@ -185,7 +186,7 @@ function withRosterTallies(entry, agents, taskUnread) {
     working: runningCount > 0,
     // A folded project summarizes watched agents only; the workspace's own
     // dot and running count still describe every agent working in it.
-    watchedWorking: agents.some((agent) => agent.watched !== false && agent.working),
+    watchedWorking: watchedAgentsRunning(agents),
     agentIds,
     unreadCount: watchedUnreadCount(agents) + taskUnreadCount,
     state: entryState({ unread: taskUnreadCount > 0 || entry.state === "unread", working: runningCount > 0 }),
@@ -224,10 +225,10 @@ export const isFinishedState = (state) => FINISHED_STATES.has(state);
 
 /** Three states, one glance. Unread wins over working: an entry that asked you
  *  something while it kept going is still asking. Working is "any agent is
- *  running on it" — the bridge resolves that for every kind of row. */
+ *  running on it", including cached descendant activity. */
 export function entryState(item) {
   if (item.unread) return "unread";
-  if (item.working) return "working";
+  if (agentIsRunning(item)) return "working";
   return "inactive";
 }
 
@@ -640,7 +641,7 @@ function toEntry(item) {
     state,
     // Unread wins visually, but execution is an independent classification
     // input: an unread row can also have an agent actively working on it.
-    working: !!item.working,
+    working: agentIsRunning(item),
     reason: state === "unread" ? unreadReasonText(item.unread_reason, item.kind) : "",
     unreadCount: item.unread_count || 0,
     muted: !!item.muted,

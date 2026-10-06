@@ -30,6 +30,8 @@ import { syncDevice } from "./cacheSync.js";
 import { DEVICES_ADDRESS, readCached, subscribeCache } from "./localCache.js";
 import { isAtLeastAsFresh, withCacheFreshness } from "./cacheFreshness.js";
 import { feedReferenceIndex } from "./referenceIndexFeed.js";
+import { AGENT_LINEAGE_SUPPORT_KIND, readAgentLineageSupport } from "./agentLineageSupport.js";
+import { withFeedAgentRollups } from "./agentLineageFeedModel.js";
 
 const subscribers = new Set();
 const byDevice = new Map(); // deviceId → that device's last snapshot
@@ -42,7 +44,7 @@ let unwatchDevices = null;
  *  device — a status, a diff, a conversation — moves several times a second
  *  while an agent works and says nothing about the rail, so an announcement
  *  naming one of those is not a re-read. */
-const FEED_KINDS = new Set(["feed", "projects", "workspaces", "row"]);
+const FEED_KINDS = new Set(["feed", "projects", "workspaces", "row", AGENT_LINEAGE_SUPPORT_KIND]);
 
 /** Subscribe to feed snapshots ({items, plans, runs, externalWorktrees,
  *  pending, projects, devices}); the current snapshot (if any) is delivered
@@ -113,14 +115,15 @@ function rowsOverBoard(listed, rows) {
 }
 
 async function readDeviceOnce(deviceId, live) {
-  const [record, view] = await Promise.all([
+  const [record, view, namesMakers] = await Promise.all([
     readCached({ deviceId, entityId: "", kind: "feed" }),
     cachedFeedView(deviceId),
+    readAgentLineageSupport(deviceId),
   ]);
   if (!watchers.has(deviceId)) return;
   const snapshot = feedSnapshot(record, view, live);
   if (!snapshot) return;
-  byDevice.set(deviceId, snapshot);
+  byDevice.set(deviceId, withFeedAgentRollups(snapshot, { namesMakers }));
   deliverFeed();
 }
 

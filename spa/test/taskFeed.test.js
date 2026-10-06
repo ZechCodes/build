@@ -86,7 +86,7 @@ const settle = async () => {
 
 describe("the feed's cached running-agent rollups (#386)", () => {
   const parentRow = (agents, over = {}) => branchRow({ entity_id: "run-project", agents, ...over });
-  const project = { id: "proj-1", name: "Build", entity_id: "run-project" };
+  const project = { id: "proj-1", name: "Build", entity_id: "run-project", deviceId: "dev-1", projectKey: "dev-1/proj-1" };
   const agentOf = (snapshot, deviceId = "dev-1") => snapshot.devices[deviceId].items
     .find((row) => row.entity_id === "run-project").agents[0];
   const support = (deviceId, namesMakers) => writeCached({ deviceId, entityId: "", kind: "agent-lineage-support" }, { namesMakers });
@@ -94,7 +94,8 @@ describe("the feed's cached running-agent rollups (#386)", () => {
   it("pulses project and workspace rows from raw harness descendants, then stops on a cache write", async () => {
     const waiting = { id: "parent", watched: true, working: false,
       surfaces: { subagents: [{ id: "harness-child", state: "running", started_at: 100 }] } };
-    const workspace = { id: "ws-1", project_id: "proj-1", name: "Checkout", status: "ready", entity_id: "run-workspace" };
+    const workspace = { id: "ws-1", project_id: "proj-1", name: "Checkout", status: "ready", entity_id: "run-workspace",
+      deviceId: "dev-1", projectKey: project.projectKey, workspaceKey: "dev-1/ws-1" };
     await writeDevice("dev-1", { projects: [project], workspaces: [workspace], items: [parentRow([waiting]),
       branchRow({ entity_id: "run-workspace", agents: [{ ...waiting, id: "workspace-parent" }] })] });
     await writeCached(DEVICES_ADDRESS, [{ id: "dev-1" }]);
@@ -150,7 +151,8 @@ describe("the feed's cached running-agent rollups (#386)", () => {
     const unrelated = branchRow({ project_id: "proj-2", projectKey: "dev-1/proj-2", entity_id: "other-project",
       agents: [{ id: "child", created_by: "parent", working: true }] });
     await writeDevice("dev-1", { projects: [project], items: [parent, unrelated] });
-    await writeDevice("dev-2", { projects: [project], items: [parentRow([{ id: "parent", watched: true, working: true }], { deviceId: "dev-2" })] });
+    await writeDevice("dev-2", { projects: [{ ...project, deviceId: "dev-2", projectKey: "dev-2/proj-1" }],
+      items: [parentRow([{ id: "parent", watched: true, working: true }], { deviceId: "dev-2", projectKey: "dev-2/proj-1" })] });
     await support("dev-1", true);
     await support("dev-2", true);
     await writeCached(DEVICES_ADDRESS, [{ id: "dev-1" }, { id: "dev-2" }]);

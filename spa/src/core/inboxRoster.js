@@ -9,6 +9,7 @@
 
 import { entityIdOf } from "./entityId.js";
 import { isAtLeastAsFresh } from "./cacheFreshness.js";
+import { agentIsRunning } from "./agentRunning.js";
 
 const conversationKey = (projectKey, entityId) => JSON.stringify([projectKey, entityId]);
 
@@ -26,9 +27,12 @@ export function freshestRosters(rows = []) {
   return (projectKey, entityId) => byConversation.get(conversationKey(projectKey, entityId));
 }
 
-/** How many agents have a turn in flight right now — "working" is the bridge's
- *  word for an agent that is running. */
-export const runningAgentCount = (agents = []) => agents.filter((agent) => agent.working).length;
+/** How many agents run, including those waiting on running descendants.
+ * Each roster member counts once, however many descendants it has. */
+export const runningAgentCount = (agents = []) => agents.filter(agentIsRunning).length;
+
+/** The folded project summary includes only watched running agents. */
+export const watchedAgentsRunning = (agents = []) => agents.some((agent) => agent.watched !== false && agentIsRunning(agent));
 
 const unreadOf = (agents) => agents.reduce((total, agent) => total + (agent.unread_count || 0), 0);
 

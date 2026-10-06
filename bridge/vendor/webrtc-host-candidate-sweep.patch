@@ -279,7 +279,7 @@ index b7c5c8d..4232db2 100644
          });
  
 diff --git a/webrtc/src/peer_connection/driver.rs b/webrtc/src/peer_connection/driver.rs
-index 8a0a53a..5d057d2 100644
+index 8a0a53a..e9cb95a 100644
 --- a/webrtc/src/peer_connection/driver.rs
 +++ b/webrtc/src/peer_connection/driver.rs
 @@ -2,6 +2,7 @@
@@ -744,7 +744,7 @@ index 8a0a53a..5d057d2 100644
      async fn handle_write(&mut self, msg: TaggedBytesMut) -> Result<usize> {
          if msg.transport.transport_protocol == TransportProtocol::TCP {
              self.tcp_transport.write(&msg).await
-@@ -1283,8 +1666,50 @@ where
+@@ -1283,8 +1666,55 @@ where
          }
      }
  
@@ -765,8 +765,13 @@ index 8a0a53a..5d057d2 100644
 +        {
 +            let (ufrag, password) = core.remote_ice_credentials();
 +            self.host_sweep.sync_credentials(ufrag, password);
++            let now = Instant::now();
++            #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
++            if self.host_sweep.all_plans_expired(now) {
++                self.inner.host_sweep_control.retire_baseline();
++            }
 +            self.host_sweep
-+                .start(generation, credentials.ufrag().into(), port, Instant::now());
++                .start(generation, credentials.ufrag().into(), port, now);
 +        }
 +    }
 +
@@ -796,7 +801,7 @@ index 8a0a53a..5d057d2 100644
              PeerConnectionDriverEvent::SenderRtp(sender_id, packet) => {
                  let mut core = self.inner.core.lock().await;
                  if let Some(mut sender) = core.rtp_sender(sender_id) {
-@@ -1397,6 +1822,10 @@ where
+@@ -1397,6 +1827,10 @@ where
                  self.tcp_transport.register_stream(four_tuple, stream);
              }
              PeerConnectionDriverEvent::Close => {
@@ -807,7 +812,7 @@ index 8a0a53a..5d057d2 100644
                  if let Err(err) = self.turn_relayer.close() {
                      error!("Failed to close turn_relayer: {}", err);
                  }
-@@ -1752,11 +2181,18 @@ where
+@@ -1752,11 +2186,18 @@ where
          let stun_timeout = self.stun_gatherer.poll_timeout();
          let turn_timeout = self.turn_relayer.poll_timeout();
  
@@ -832,10 +837,10 @@ index 8a0a53a..5d057d2 100644
  
      async fn handle_timeout(&mut self, now: Instant) -> Result<()> {
 diff --git a/webrtc/src/peer_connection/host_sweep.rs b/webrtc/src/peer_connection/host_sweep.rs
-index e69de29..d2a397c 100644
+index e69de29..e70eae2 100644
 --- a/webrtc/src/peer_connection/host_sweep.rs
 +++ b/webrtc/src/peer_connection/host_sweep.rs
-@@ -0,0 +1,1322 @@
+@@ -0,0 +1,1324 @@
 +//! Bounded, credential-free conntrack probes on an advertised host socket.
 +
 +use rtc::shared::ifaces::{Interface, NextHop};
@@ -1295,10 +1300,6 @@ index e69de29..d2a397c 100644
 +            if state.ports.is_empty() {
 +                state.close_scouts();
 +            }
-+            #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
-+            if state.ports.is_empty() {
-+                state.baseline.clear();
-+            }
 +        }
 +    }
 +    pub fn clear(&self) {
@@ -1426,6 +1427,10 @@ index e69de29..d2a397c 100644
 +            self.authenticated_hit = false;
 +            self.remote_ufrag = ufrag;
 +            self.generation = generation;
++        } else {
++            // A late port cannot reopen the early budget after every earlier
++            // port's original lifetime has elapsed without a driver tick.
++            self.expire(now);
 +        }
 +        if self.plans.contains_key(&port) {
 +            return;
@@ -1672,14 +1677,6 @@ index e69de29..d2a397c 100644
 +            self.events
 +                .push_back(plan.event(self.generation, "stopped", Some("resolved"), false));
 +        }
-+        if !self.plans.is_empty()
-+            && self
-+                .plans
-+                .values()
-+                .all(|plan| plan.stopped || !plan.unresolved)
-+        {
-+            self.retire_early_state();
-+        }
 +    }
 +
 +    pub fn sync_generation(&mut self, ufrag: &str) {
@@ -1755,7 +1752,8 @@ index e69de29..d2a397c 100644
 +    }
 +
 +    pub fn deadline(&self) -> Option<Instant> {
-+        self.plans
++        let active = self
++            .plans
 +            .values()
 +            .filter(|plan| !plan.stopped || plan.subnets.is_some())
 +            .map(|plan| {
@@ -1768,7 +1766,13 @@ index e69de29..d2a397c 100644
 +                };
 +                due.max(self.next_packet.unwrap_or(due)).min(plan.expires)
 +            })
-+            .min()
++            .min();
++        // Resolved ports retain credential-scoped early state until the last
++        // original plan expiry. Wake for that retirement even with no live port.
++        let retirement = (!self.early_retired)
++            .then(|| self.plans.values().map(|plan| plan.expires).max())
++            .flatten();
++        active.into_iter().chain(retirement).min()
 +    }
 +    pub fn initial_grace_until(&self) -> Option<Instant> {
 +        self.plans
@@ -1866,6 +1870,9 @@ index e69de29..d2a397c 100644
 +                plan.stopped = true;
 +                plan.retire_addresses();
 +            }
++        }
++        if self.all_plans_expired(now) {
++            self.retire_early_state();
 +        }
 +        if self.next_packet.is_none_or(|next| now >= next) {
 +            self.next_packet = Some(now + Duration::from_millis(50));
@@ -1985,7 +1992,7 @@ index e69de29..d2a397c 100644
 +            }
 +            plan.retire_addresses();
 +        }
-+        if !self.plans.is_empty() && self.plans.values().all(|plan| plan.stopped) {
++        if self.all_plans_expired(now) {
 +            self.retire_early_state();
 +        }
 +    }
@@ -2159,10 +2166,10 @@ index e69de29..d2a397c 100644
 +#[path = "host_sweep_tests.rs"]
 +mod tests;
 diff --git a/webrtc/src/peer_connection/host_sweep_tests.rs b/webrtc/src/peer_connection/host_sweep_tests.rs
-index e69de29..30d7e30 100644
+index e69de29..379f93b 100644
 --- a/webrtc/src/peer_connection/host_sweep_tests.rs
 +++ b/webrtc/src/peer_connection/host_sweep_tests.rs
-@@ -0,0 +1,1190 @@
+@@ -0,0 +1,1374 @@
 +use super::*;
 +use rtc::shared::ifaces::Kind;
 +
@@ -2708,6 +2715,177 @@ index e69de29..30d7e30 100644
 +    assert!(control.baseline_for(("third", "password"), 3).is_none());
 +}
 +
++#[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
++#[test]
++fn resolved_first_port_keeps_credential_baseline_for_second_port_early_probe() {
++    let now = Instant::now();
++    let control = HostSweepControl::default();
++    control.set_owners(vec![2]);
++    let known = Ipv4Addr::new(192, 168, 2, 2);
++    let newly_usable = Ipv4Addr::new(192, 168, 2, 3);
++    control.capture_baseline_with(("ufrag", "password"), |_, _| Some(vec![known]));
++    assert!(control.start(7, "ufrag", 40000));
++    let mut sweep = HostSweep::default();
++    sweep.start(7, "ufrag".into(), 40000, now);
++    sweep.prepare(40000, vec![subnet()]);
++    control.cancel(7, "ufrag", 40000);
++    sweep.cancel(7, "ufrag", 40000);
++    assert!(
++        sweep
++            .next_priority_probe(now + 2 * PACE, true, |_, _| true, |_, _| true)
++            .is_none()
++    );
++    assert_eq!(sweep.deadline(), Some(now + WINDOW));
++    let baseline = control
++        .baseline_for(("ufrag", "password"), 2)
++        .expect("resolving the first port cannot erase the generation baseline");
++    assert!(baseline.contains(&known));
++    assert!(!baseline.contains(&newly_usable));
++    assert!(control.start(7, "ufrag", 40001));
++    sweep.start(7, "ufrag".into(), 40001, now + PACE);
++    sweep.prepare(40001, vec![subnet()]);
++    let probe = sweep
++        .next_priority_probe(
++            now + 2 * PACE,
++            true,
++            |_, ip| ip == newly_usable,
++            |_, ip| !baseline.contains(&ip),
++        )
++        .expect("second port reaches the newly usable neighbor before its grace ends");
++    assert_eq!(probe.port, 40001);
++    assert_eq!(probe.destination, newly_usable);
++}
++
++#[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
++#[test]
++fn resolved_last_port_baseline_retires_at_original_plan_expiry() {
++    let now = Instant::now();
++    let control = HostSweepControl::default();
++    control.set_owners(vec![2]);
++    control.capture_baseline_with(("ufrag", "password"), |_, _| Some(Vec::new()));
++    assert!(control.start(7, "ufrag", 40000));
++    let mut sweep = HostSweep::default();
++    sweep.start(7, "ufrag".into(), 40000, now);
++    control.cancel(7, "ufrag", 40000);
++    sweep.cancel(7, "ufrag", 40000);
++    assert_eq!(sweep.deadline(), Some(now + WINDOW));
++    sweep.active_subnets(now + PACE);
++    assert!(control.baseline_for(("ufrag", "password"), 2).is_some());
++    assert!(!sweep.all_plans_expired(now + WINDOW - PACE));
++    sweep.active_subnets(now + WINDOW);
++    assert!(sweep.early_retired);
++    assert!(sweep.deadline().is_none());
++    assert!(sweep.all_plans_expired(now + WINDOW));
++    control.retire_baseline();
++    assert!(control.baseline_for(("ufrag", "password"), 2).is_none());
++}
++
++#[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
++#[test]
++fn late_second_port_cannot_revive_expired_early_generation() {
++    let now = Instant::now();
++    let control = HostSweepControl::default();
++    control.set_owners(vec![2]);
++    control.capture_baseline_with(("ufrag", "password"), |_, _| Some(Vec::new()));
++    assert!(control.start(7, "ufrag", 40000));
++    let mut sweep = HostSweep::default();
++    sweep.start(7, "ufrag".into(), 40000, now);
++    sweep.cancel(7, "ufrag", 40000);
++    control.cancel(7, "ufrag", 40000);
++    let late = now + WINDOW + PACE;
++    assert!(sweep.all_plans_expired(late));
++    control.retire_baseline();
++    assert!(control.start(7, "ufrag", 40001));
++    sweep.start(7, "ufrag".into(), 40001, late);
++    sweep.prepare(40001, vec![subnet()]);
++    assert!(control.baseline_for(("ufrag", "password"), 2).is_none());
++    assert!(
++        sweep
++            .next_priority_probe(late + PACE, true, |_, _| true, |_, _| true)
++            .is_none()
++    );
++    assert!(sweep.early_retired);
++}
++
++#[test]
++fn ninth_new_neighbor_gets_ordinary_real_port_probe_after_grace_before_scouts() {
++    let now = Instant::now();
++    let local = address("10.72.0.1:45000");
++    let iface = interface("10.72.0.1:0", "255.255.255.0:0", "wifi");
++    let subnet = SweepSubnet::from_interface(local, &iface, 2, &[]).unwrap();
++    let ninth = subnet.addresses[8];
++    let mut sweep = HostSweep::default();
++    sweep.start(7, "ufrag".into(), 40000, now);
++    sweep.prepare(40000, vec![subnet]);
++    for tick in 1..=8 {
++        let probe = sweep
++            .next_priority_probe(now + tick * PACE, true, |_, _| true, |_, _| true)
++            .unwrap();
++        sweep.record_result(probe.port, true);
++    }
++    assert_eq!(sweep.early_neighbors_probed(), 8);
++    assert!(
++        sweep
++            .next_priority_probe(now + 9 * PACE, true, |_, _| true, |_, _| true)
++            .is_none()
++    );
++    assert!(
++        !sweep.scouts_allowed(now + GRACE, false),
++        "successful early probes hold the first scout enqueue"
++    );
++    let probe = sweep
++        .next_priority_probe(now + GRACE, true, |_, _| true, |_, _| true)
++        .expect("the ninth usable neighbor still receives an ordinary real-port indication");
++    assert_eq!(probe.destination, ninth);
++    assert!(sweep.plans[&40000].attempted_early.is_none());
++    sweep.record_result(probe.port, true);
++    assert_eq!(sweep.early_neighbors_probed(), 8);
++    assert_eq!(sweep.scout_starts, 0);
++}
++
++#[test]
++fn resolving_all_ports_does_not_renew_the_eight_neighbor_early_budget() {
++    let now = Instant::now();
++    let local = address("10.72.0.1:45000");
++    let iface = interface("10.72.0.1:0", "255.255.255.0:0", "wifi");
++    let subnet = SweepSubnet::from_interface(local, &iface, 2, &[]).unwrap();
++    let ninth = subnet.addresses[8];
++    let mut sweep = HostSweep::default();
++    sweep.start(7, "ufrag".into(), 40000, now);
++    sweep.prepare(40000, vec![subnet.clone()]);
++    for tick in 1..=8 {
++        let probe = sweep
++            .next_priority_probe(now + tick * PACE, true, |_, _| true, |_, _| true)
++            .unwrap();
++        sweep.record_result(probe.port, true);
++    }
++    sweep.cancel(7, "ufrag", 40000);
++    let second_started = now + 9 * PACE;
++    sweep.start(7, "ufrag".into(), 40001, second_started);
++    sweep.prepare(40001, vec![subnet]);
++    assert!(
++        sweep
++            .next_priority_probe(
++                second_started + PACE,
++                true,
++                |_, ip| ip == ninth,
++                |_, _| true
++            )
++            .is_none()
++    );
++    let ordinary = sweep
++        .next_priority_probe(
++            second_started + GRACE,
++            true,
++            |_, ip| ip == ninth,
++            |_, _| true,
++        )
++        .unwrap();
++    assert_eq!(ordinary.destination, ninth);
++    assert!(sweep.plans[&40001].attempted_early.is_none());
++    assert_eq!(sweep.early_neighbors_probed(), 8);
++}
++
 +#[test]
 +fn eight_early_neighbors_are_shared_by_all_ports_without_capping_retries() {
 +    let now = Instant::now();
@@ -2804,41 +2982,54 @@ index e69de29..30d7e30 100644
 +}
 +
 +#[test]
-+fn cancel_and_expiry_erase_early_addresses_but_keep_numeric_diagnostics() {
++fn resolved_plan_erases_its_destinations_but_preserves_generation_early_budget() {
 +    let now = Instant::now();
-+    for expire in [false, true] {
-+        let mut sweep = HostSweep::default();
-+        sweep.start(7, "ufrag".into(), 40000, now);
-+        sweep.prepare(40000, vec![subnet()]);
-+        let probe = sweep
-+            .next_priority_probe(now + PACE, true, |_, _| true, |_, _| true)
-+            .unwrap();
-+        sweep.record_result(probe.port, true);
-+        if expire {
-+            sweep.next_priority_probe(now + WINDOW, true, |_, _| true, |_, _| true);
-+        } else {
-+            sweep.cancel(7, "ufrag", 40000);
-+        }
-+        assert!(sweep.early_admitted.is_empty());
-+        assert!(sweep.early_probed.is_empty());
-+        assert_eq!(sweep.early_neighbors_probed(), 1);
-+        assert!(sweep.early_retired);
-+        let event = sweep.pop_event().unwrap();
-+        assert_eq!(event.early_neighbors_probed, 1);
-+        let next_port_at = if expire {
-+            now + WINDOW + PACE
-+        } else {
-+            now + 2 * PACE
-+        };
-+        sweep.start(7, "ufrag".into(), 40001, next_port_at);
-+        sweep.prepare(40001, vec![subnet()]);
-+        assert!(
-+            sweep
-+                .next_priority_probe(next_port_at + PACE, true, |_, _| true, |_, _| true)
-+                .is_none(),
-+            "retired generation cannot renew early privilege through a late port"
-+        );
-+    }
++    let mut sweep = HostSweep::default();
++    sweep.start(7, "ufrag".into(), 40000, now);
++    sweep.prepare(40000, vec![subnet()]);
++    let probe = sweep
++        .next_priority_probe(now + PACE, true, |_, _| true, |_, _| true)
++        .unwrap();
++    sweep.record_result(probe.port, true);
++    sweep.cancel(7, "ufrag", 40000);
++    assert!(sweep.plans[&40000].subnets.is_none());
++    assert!(sweep.plans[&40000].successful_destinations.is_empty());
++    assert_eq!(sweep.early_admitted.len(), 1);
++    assert_eq!(sweep.early_probed.len(), 1);
++    assert_eq!(sweep.early_neighbors_probed(), 1);
++    assert!(!sweep.early_retired);
++    sweep.start(7, "ufrag".into(), 40001, now + 2 * PACE);
++    sweep.prepare(40001, vec![subnet()]);
++    let next = sweep
++        .next_priority_probe(now + 3 * PACE, true, |_, _| true, |_, _| true)
++        .unwrap();
++    assert_eq!(next.port, 40001);
++}
++
++#[test]
++fn expiry_erases_generation_early_addresses_but_keeps_numeric_diagnostics() {
++    let now = Instant::now();
++    let mut sweep = HostSweep::default();
++    sweep.start(7, "ufrag".into(), 40000, now);
++    sweep.prepare(40000, vec![subnet()]);
++    let probe = sweep
++        .next_priority_probe(now + PACE, true, |_, _| true, |_, _| true)
++        .unwrap();
++    sweep.record_result(probe.port, true);
++    sweep.next_priority_probe(now + WINDOW, true, |_, _| true, |_, _| true);
++    assert!(sweep.early_admitted.is_empty());
++    assert!(sweep.early_probed.is_empty());
++    assert_eq!(sweep.early_neighbors_probed(), 1);
++    assert!(sweep.early_retired);
++    let event = sweep.pop_event().unwrap();
++    assert_eq!(event.early_neighbors_probed, 1);
++    sweep.start(7, "ufrag".into(), 40001, now + WINDOW + PACE);
++    sweep.prepare(40001, vec![subnet()]);
++    assert!(
++        sweep
++            .next_priority_probe(now + WINDOW + 2 * PACE, true, |_, _| true, |_, _| true)
++            .is_none()
++    );
 +}
 +
 +#[test]

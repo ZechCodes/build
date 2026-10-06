@@ -344,6 +344,11 @@ UDP test pins the actual advertised source port and interface. The namespace
 fixture in `web/rtc-lan-upgrade/` proves the authenticated PRFLX upgrade and
 subnet-size skip with real Chromium and encrypted data channels.
 
+#383 recovery regressions cover direct-selected PRFLX followed by a native
+credential-changing restart onto relay: fresh sweep counters start at zero,
+old tuple evidence is retired, and the recovery candidate port can follow a
+fresh probe. The native test exchanges ICE, DTLS and SCTP between two cores.
+
 The ignored Linux real-socket regression uses a disposable /22 namespace with
 unanswered neighbors. It requires an ordinary ICE-sized send and a 65507-byte
 GSO batch to poll immediately ready on the same bound port after probe pressure.

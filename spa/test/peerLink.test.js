@@ -4,7 +4,8 @@
 
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { openPeerLink } from "../src/core/peerLink.js";
-import { clearConnectionDiagnosticHistory, connectionDiagnosticHistory } from "../src/core/connectionDiagnostics.js";
+import { clearConnectionDiagnosticHistory, connectionDiagnosticHistory, connectionDiagnosticReport } from "../src/core/connectionDiagnostics.js";
+import { diagnosticsJson } from "../src/core/connectionDiagnosticsModel.js";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -1071,6 +1072,97 @@ describe("a session that landed on a relayed pair", () => {
     expect(diagnosticsOf("direct-pair")).toContain("trying");
   });
 
+  it.each(["neighbor-pressure", "neighbor-snapshot-unavailable"])("upgrades a recovered TURN path after 20 seconds even when its sweep reports %s", async (reason) => {
+    const { peer, resolved, signalled, candidateSinks } = await landedDirect();
+    const app = resolved.app;
+    const term = resolved.term;
+    candidateSinks[0](bridgeGenerationDiagnostic(1));
+    const relayWithFailedHost = asReport([
+      ...pairEntries("relayed", { localType: "relay", remoteType: "host", nominated: true }),
+      ...pairEntries("failed-host", { localType: "host", remoteType: "host", state: "failed" }),
+    ]);
+    peer.getStats = async () => offers(signalled) < 3 ? relayWithFailedHost
+      : asReport(pairEntries("fresh-direct", { localType: "host", remoteType: "prflx", nominated: true }));
+    peer.iceConnectionState = "failed";
+    peer.emit("iceconnectionstatechange");
+    peer.fail();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(offers(signalled)).toBe(2);
+    expect(resolved.transportPath()).toBe("turn");
+    const reconnectedAt = connectionDiagnosticHistory().find((entry) => entry.event === "connected" && entry.phase === "restart").at;
+
+    // Match the export: the bridge marker repeats 1, and the active sweep has
+    // cumulative counters and an already-followed PRFLX. Browser eligibility
+    // uses eligible unresolved ports, not the historical probe counters.
+    candidateSinks[0](bridgeGenerationDiagnostic(1));
+    candidateSinks[0](hostSweepDiagnostic(1, {
+      status: "progress", candidateReason: "mdns-unresolved", candidates: { mdns_unresolved: 1 },
+      reason, addresses_sent: 80, addresses_attempted: 86, prflx_followed: true,
+      destinations_scouted: 651, neighbors_pending_peak: 256,
+    }));
+    await vi.advanceTimersByTimeAsync(12690);
+    expect(diagnosticsOf("direct-pair")).toEqual([]);
+    await vi.advanceTimersByTimeAsync(7309);
+    expect(offers(signalled)).toBe(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(offers(signalled)).toBe(3);
+    expect(resolved.transportPath()).toBe("direct");
+    const carrying = connectionDiagnosticHistory().filter((entry) => entry.event === "carrying");
+    expect(carrying.map(({ path }) => path)).toEqual(["direct", "turn", "direct"]);
+    expect(carrying.at(-1).at - reconnectedAt).toBe(20000);
+    expect(connectionDiagnosticHistory().find((entry) => entry.event === "direct-pair"))
+      .toMatchObject({ state: "trying", reason: "conntrack-sweep" });
+    const exported = JSON.parse(diagnosticsJson(connectionDiagnosticReport()));
+    expect(exported.events.filter((entry) => entry.event === "direct-pair")).toMatchObject([
+      { at: reconnectedAt + 20000, state: "trying", reason: "conntrack-sweep" },
+      { at: reconnectedAt + 20000, state: "renominated", path: "direct" },
+    ]);
+    expect(peer.localDescriptions.slice(1).every(({ sdp }) => sdp.includes("restart"))).toBe(true);
+    expect(resolved.app).toBe(app);
+    expect(resolved.term).toBe(term);
+    expect(FakePeerConnection.instances).toEqual([peer]);
+    expect(peer.closed).toBe(false);
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(offers(signalled)).toBe(3);
+    resolved.close();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("rejects stale recovery sweep evidence at 20 and 25 seconds, then upgrades with fresh evidence at 35 seconds", async () => {
+    const { peer, resolved, signalled, candidateSinks } = await landedDirect();
+    candidateSinks[0](bridgeGenerationDiagnostic(1));
+    candidateSinks[0](hostSweepDiagnostic(1));
+    const relayWithFailedHost = asReport([
+      ...pairEntries("relayed", { localType: "relay", remoteType: "host", nominated: true }),
+      ...pairEntries("failed-host", { localType: "host", remoteType: "host", state: "failed" }),
+    ]);
+    peer.getStats = async () => offers(signalled) < 3 ? relayWithFailedHost
+      : asReport(pairEntries("fresh-direct", { localType: "host", remoteType: "prflx", nominated: true }));
+    peer.fail();
+    await vi.advanceTimersByTimeAsync(0);
+    const reconnectedAt = connectionDiagnosticHistory().find((entry) => entry.event === "connected" && entry.phase === "restart").at;
+    candidateSinks[0](bridgeGenerationDiagnostic(2));
+    candidateSinks[0](hostSweepDiagnostic(1));
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(offers(signalled)).toBe(2);
+    expect(resolved.transportPath()).toBe("turn");
+    candidateSinks[0]({ ...hostSweepDiagnostic(2), generation: 1 });
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(offers(signalled)).toBe(2);
+    expect(diagnosticsOf("direct-pair")).toEqual(["none-to-try"]);
+
+    candidateSinks[0]({ ...hostSweepDiagnostic(2), generation: 2 });
+    await vi.advanceTimersByTimeAsync(9999);
+    expect(offers(signalled)).toBe(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(offers(signalled)).toBe(3);
+    expect(resolved.transportPath()).toBe("direct");
+    expect(connectionDiagnosticHistory().filter((entry) => entry.event === "carrying").at(-1).at - reconnectedAt).toBe(35000);
+    expect(diagnosticsOf("direct-pair")).toEqual(["none-to-try", "trying", "renominated"]);
+    resolved.close();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("rechecks ICE for mDNS resolved after TURN nomination even when old direct checks never succeeded", async () => {
     const { resolved, signalled, candidateSinks } = await landedOnRelay({ alsoDirect: null });
     candidateSinks[0]({ type: "rtc.diagnostics", event: "mdns-resolved", reason: "direct-checks-no-success", candidates: { mdns_resolved: 1 } });
@@ -1544,6 +1636,9 @@ describe("a session that landed on a relayed pair", () => {
     expect(finishFetch).toBeTypeOf("function");
     await vi.advanceTimersByTimeAsync(15001);
     expect(resolved.recovery.snapshot().recovering).toBe(false);
+    const exported = JSON.parse(diagnosticsJson(connectionDiagnosticReport()));
+    expect(exported.events.filter((entry) => entry.event === "direct-pair" && entry.state === "failed"))
+      .toMatchObject([{ reason: "timeout", path: "turn" }]);
     finishFetch(SERVERS);
     await vi.advanceTimersByTimeAsync(0);
     expect(offers(signalled)).toBe(1);
@@ -1588,6 +1683,9 @@ describe("a session that landed on a relayed pair", () => {
     expect(moves).toEqual(["direct"]);
     expect(offers(signalled)).toBe(2);
     expect(diagnosticsOf("direct-pair")).toEqual(["trying", "stayed-relayed", "renominated"]);
+    const exported = JSON.parse(diagnosticsJson(connectionDiagnosticReport()));
+    expect(exported.events.filter((entry) => entry.event === "direct-pair" && entry.state === "stayed-relayed"))
+      .toMatchObject([{ path: "turn" }]);
     expect(vi.getTimerCount()).toBe(0);
   });
 

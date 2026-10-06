@@ -4,6 +4,7 @@ import { openCarrier, peerFrames } from "/src/core/carrier.js";
 import { openPeerLink } from "/src/core/peerLink.js";
 import { createSessionRpc } from "/src/core/sessionRpc.js";
 import { connectionDiagnosticHistory } from "/src/core/connectionDiagnostics.js";
+import { observeRecovery } from "/__recovery_observation__.mjs";
 import { observeArp } from "/__arp_observation__.mjs";
 
 const SESSION_ID = "lan-upgrade-fixture";
@@ -63,6 +64,9 @@ export async function run() {
     const createOffer = peer.createOffer.bind(peer);
     peer.createOffer = (options) => {
       if (options?.iceRestart) restarts += 1;
+      if (mode === "recovery-unresolved" && options?.iceRestart && restarts === 1) {
+        return window.fixtureBeginRecovery().then(() => createOffer(options));
+      }
       return createOffer(options);
     };
     return peer;
@@ -85,7 +89,9 @@ export async function run() {
           }
         }
       }
+      if (mode === "recovery-unresolved" && method === "rtc.offer") void window.fixtureNativeDescription({ side: "browser", generation: restarts + 1, at: Date.now(), sdp: params.sdp });
       const answer = await rpc.call(method, params, { carrier: signaling, timeoutMs: 10000 });
+      if (mode === "recovery-unresolved" && method === "rtc.offer") void window.fixtureNativeDescription({ side: "bridge", generation: restarts + 1, at: Date.now(), sdp: answer.sdp });
       if (mode.startsWith("arp-") && method === "rtc.offer") void window.fixtureAnswer({ at: Date.now(), generation: restarts + 1 });
       if (method === "rtc.offer") {
         for (const line of answer.sdp.split(/\r?\n/).filter((row) => row.startsWith("a=candidate:"))) {
@@ -140,13 +146,13 @@ export async function run() {
       restarts, connections, localUfrag: peer.localDescription.sdp.match(/a=ice-ufrag:(\S+)/)?.[1],
       remoteUfrag: peer.remoteDescription.sdp.match(/a=ice-ufrag:(\S+)/)?.[1] };
   };
-  window.fixtureSnapshot = async () => ({ stats: await stats(), diagnostics: connectionDiagnosticHistory() });
+  window.fixtureSnapshot = async () => ({ stats: await stats(), diagnostics: connectionDiagnosticHistory(), recoverySnapshots: window.recoverySnapshots });
   const appRpcPaths = [];
   const applicationCall = async (method, params) => {
-    const startsDirect = ["early-unresolved", "far-edge-unresolved"].includes(mode);
+    const startsDirect = ["early-unresolved", "far-edge-unresolved", "recovery-unresolved"].includes(mode);
     if (startsDirect || mode.startsWith("never-arps-") || mode.startsWith("arp-")) {
       const state = await stats();
-      if (startsDirect && (state.selected?.state !== "succeeded" || !state.selected.nominated
+      if (startsDirect && (mode !== "recovery-unresolved" || appRpcPaths.length === 0) && (state.selected?.state !== "succeeded" || !state.selected.nominated
         || state.selected.localType === "relay" || state.selected.remoteType === "relay"
         || link.transportPath() !== "direct")) {
         throw new Error(`early application RPC must use direct: ${method} ${JSON.stringify(state)}`);
@@ -164,6 +170,9 @@ export async function run() {
     await applicationCall("ping");
     return { board, projectCount: projects.length, tasks, sessionId: rpc.sessionId };
   };
+  if (mode === "recovery-unresolved") {
+    return observeRecovery({ rpc, signaling, fixture, link, stats, pull, applicationCall, hostCandidate, appRpcPaths });
+  }
   if (mode.startsWith("arp-")) {
     const result = await observeArp({ mode, rpc, signaling, fixture, link, hostCandidate, stats, pull, applicationCall });
     return { ...result, appRpcPaths, diagnostics: connectionDiagnosticHistory() };

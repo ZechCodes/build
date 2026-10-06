@@ -1,4 +1,4 @@
-This explicit Linux integration gate reproduces tasks #372, #374 and #377 using Chromium's
+This explicit Linux integration gate covers tasks #372, #374, #377 and #383 using Chromium's
 real UUID `.local` candidate, the production SPA peer link and crypto, the
 bridge's real `FrameIntake` and WebRTC factory, and isolated UDP STUN/TURN fixtures.
 
@@ -270,3 +270,30 @@ nice -n 10 python3 -m unittest discover -s web/rtc-lan-upgrade -p 'test_*.py'
 
 These tests mock UID mappings, sockets and firewall commands to verify that
 host namespace entry is rejected before any side effects.
+
+`BUILD_RTC_LAN_MODE=recovery-unresolved` starts with an encrypted pull on
+direct, then drops only native browser STUN Binding requests in the disposable
+phone namespace until Chromium reports the real consent failure and the
+production peer link automatically restarts ICE. Before the new offer is
+created, the gate switches to dropping only bridge STUN Binding success
+responses: SCTP, authenticated browser requests and bridge consent continue.
+The recovered native pair must nominate TURN and carry a complete encrypted
+pull while the bridge has already followed a fresh PRFLX, mDNS stays unresolved
+and eligible-unresolved evidence remains set. After 16 seconds of recovered
+checks the loss gate opens; the unchanged production 20-second monitor must
+perform its single optional restart and nominate direct on the same peer and
+encrypted session. A complete final pull must increase both byte counters on
+that selected native pair. Each credential boundary clears candidate counters;
+both restart sweeps begin without an old followed-PRFLX flag.
+
+Results retain the genuine offer/answer candidate types, native selected-pair
+snapshots, all application RPC paths and the reconnect-to-direct interval
+calculated from production `connected phase=restart` and `carrying path=direct`
+diagnostic timestamps. The 65-second outer deadline is unchanged. This is a
+known-neighbor regression of the recovery and nomination boundary; it does not
+claim to reproduce every physical phone/AP condition. The tightened original
+main controls completed in 21.566–21.609 seconds after the logged recovery connection.
+
+```sh
+BUILD_RTC_LAN_MODE=recovery-unresolved nice -n 10 cargo test --test rtc_lan_upgrade -- --ignored --nocapture
+```

@@ -205,6 +205,7 @@ describe("task review Files", () => {
     const before = callRpc.mock.calls.filter(([method]) => method === "fs.read").length;
     armChangeEvents({ push_events: true }, "device");
     dispatchChangeEvent({ type: "changes", items: [{ entity_id: "workspace", files: { paths: ["other.txt"] } }] }, "device");
+    await tick();
     expect(callRpc.mock.calls.filter(([method]) => method === "fs.read")).toHaveLength(before);
     text = "second";
     const secondPaint = previewContains(host, "second");

@@ -7,6 +7,7 @@ import network
 import router
 import service
 import run as runner
+import recovery
 from isolation import require_private_namespace
 
 
@@ -100,6 +101,18 @@ class NamespaceEntryTests(unittest.IsolatedAsyncioTestCase):
             open_socket.assert_not_called()
             nft.assert_not_called()
             self.assertEqual(artifacts.mock_calls, [])
+
+    def test_recovery_rejects_host_root_before_firewall_changes(self):
+        for phase in ["fail", "recover", "release"]:
+            with (
+                self.subTest(phase=phase),
+                patch("pathlib.Path.read_text", return_value="0 0 4294967295\n"),
+                patch("os.geteuid", return_value=0),
+                patch.object(recovery.subprocess, "run") as nft,
+            ):
+                with self.assertRaisesRegex(AssertionError, "disposable single-user namespace"):
+                    recovery.configure(phase, MagicMock())
+                nft.assert_not_called()
 
     def test_runner_rejects_host_root_before_process_or_firewall_changes(self):
         artifacts = MagicMock()

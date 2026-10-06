@@ -4,6 +4,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { assertRecovery } from "./recovery-check.mjs";
 import { createServer } from "../../spa/node_modules/vite/dist/node/index.js";
 import { chromium } from "../../spa/node_modules/playwright-core/index.mjs";
 
@@ -27,6 +28,7 @@ const server = await createServer({
     fs: { allow: [path.resolve(here, "../../..")] } },
   plugins: [{ name: "lan-fixture", resolveId(id) {
     if (id === "/__lan_fixture__.mjs") return path.join(here, "browser.mjs");
+    if (id === "/__recovery_observation__.mjs") return path.join(here, "recovery-browser.mjs");
     if (id === "/__arp_observation__.mjs") return path.join(here, "arp-browser.mjs");
   }, configureServer(vite) {
     vite.middlewares.use("/fixture", async (_request, response) => {
@@ -73,6 +75,15 @@ try {
   });
   await page.exposeFunction("fixtureExhausted", (state) => save("exhausted.json", state));
   await page.exposeFunction("fixtureLatePrimed", (state) => save("late-primed.json", state));
+  const descriptions = [];
+  let descriptionSave = Promise.resolve();
+  await page.exposeFunction("fixtureNativeDescription", ({ side, generation, at, sdp }) => {
+    const candidates = sdp.split(/\r?\n/).filter((line) => line.startsWith("a=candidate:"))
+      .map((line) => { const fields = line.slice(2).split(/\s+/); return { type: fields[7], port: Number(fields[5]) }; });
+    descriptions.push({ side, generation, at, candidates });
+    descriptionSave = descriptionSave.then(() => save("native-descriptions.json", descriptions));
+    return descriptionSave;
+  });
   const gatheredHosts = [];
   const gatheredSrflx = [];
   let srflxSave = Promise.resolve();
@@ -124,6 +135,11 @@ try {
       }
     }
   });
+  await page.exposeFunction("fixtureRecoveryState", (state) => save("recovery.json", state));
+  const configureRecovery = (phase) => command("python3", [path.join(here, "recovery.py"), phase, artifacts]);
+  await page.exposeFunction("fixtureBlockDirect", () => configureRecovery("fail"));
+  await page.exposeFunction("fixtureBeginRecovery", () => configureRecovery("recover"));
+  await page.exposeFunction("fixtureReleaseDirect", () => configureRecovery("release"));
   await page.exposeFunction("fixtureBridgeFailed", async () =>
     /ice_state=failed\b/.test(await readFile(path.join(artifacts, "bridge.log"), "utf8")));
   await page.exposeFunction("fixtureSweepSkipped", async () =>
@@ -152,6 +168,7 @@ try {
     }
   }
   const result = await page.evaluate(() => window.runLanUpgrade());
+  await descriptionSave;
   const bridgeLog = await readFile(path.join(artifacts, "bridge.log"), "utf8");
   const summaries = bridgeLog.split("\n").filter((line) => line.includes("remote_candidates "))
     .map((line) => JSON.parse(line.slice(line.indexOf("remote_candidates ") + "remote_candidates ".length)));
@@ -177,7 +194,14 @@ try {
       "every signaled srflx tuple was actually observed by the independent STUN service");
     assert.equal(commonIp, mode !== "different-nat", "the actual public candidate sets match only in equal-NAT cases");
   }
-  if (mode === "delayed") {
+  if (mode === "recovery-unresolved") {
+    assertRecovery(result, sweepEvents, wire, bridgeLog);
+    const recoveryRules = JSON.parse(await readFile(path.join(artifacts, "recovery-firewall.json"), "utf8"));
+    const droppedResponses = recoveryRules.nftables.flatMap((row) => row.rule?.expr || [])
+      .reduce((count, expression) => count + (expression.counter?.packets || 0), 0);
+    assert(droppedResponses > 0, "the disposable recovery gate counts actual native STUN success loss");
+    result.droppedRecoveryResponses = droppedResponses;
+  } else if (mode === "delayed") {
     assert.equal(finalChecks?.reason, "direct-checks-succeeded", "actual ICE Failed must retain its successful host history at rtc.close");
     assert(finalChecks.hosts.some((host) => host.requests_sent > 0 && host.responses_received > 0 && host.succeeded),
       "the final host diagnostic retains real request/reply counters and success");

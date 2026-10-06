@@ -84,7 +84,7 @@ def inside(binary, artifacts):
     if os.environ.get("BUILD_RTC_LAN_BASELINE"):
         environment["BUILD_RTC_LAN_BASELINE"] = "1"
     mode = os.environ.get("BUILD_RTC_LAN_MODE", "delayed")
-    assert mode in {"delayed", "early-unresolved", "far-edge-unresolved", "far-edge-pressure", "unresolved", "late-unresolved", "large-subnet", "never-arps-unresolved", "never-arps-clustered", "never-arps-pressure", "different-nat", "missing-srflx", "arp-cold", "arp-cached", "arp-refresh", "arp-stale", "arp-never-arps", "arp-suppressed"}, f"unknown fixture mode: {mode}"
+    assert mode in {"delayed", "recovery-unresolved", "early-unresolved", "far-edge-unresolved", "far-edge-pressure", "unresolved", "late-unresolved", "large-subnet", "never-arps-unresolved", "never-arps-clustered", "never-arps-pressure", "different-nat", "missing-srflx", "arp-cold", "arp-cached", "arp-refresh", "arp-stale", "arp-never-arps", "arp-suppressed"}, f"unknown fixture mode: {mode}"
     environment["BUILD_RTC_LAN_MODE"] = mode
     if os.environ.get("BUILD_RTC_LAN_SWEEP_BASELINE"):
         environment["BUILD_RTC_LAN_SWEEP_BASELINE"] = "1"

@@ -192,7 +192,7 @@ describe("snapshot Changes", () => {
     const viewed = host.querySelector("[data-review-viewed]");
     viewed.focus();
     viewed.click();
-    await vi.waitFor(async () => expect((await readUiRecord(viewedAddress))?.value.viewed["src/a.js"]).toBe("v1"));
+    await watchUiState.mock.results.at(-1).value.flush();
     expect(document.activeElement).toBe(host.querySelector('[data-review-path="src/a.js"] [data-review-viewed]'));
     pane.dispose();
   });

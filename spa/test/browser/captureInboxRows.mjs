@@ -1,5 +1,5 @@
 // Capture the review images for #103 with the production inbox rail: the
-// workspace row's running count and unread badge, the project agent's row, and
+// workspace row's running count and status dot, the project agent's row, and
 // the projects face's head expanded and folded.
 // Run from spa/: node test/browser/captureInboxRows.mjs (CAPTURE_DIR to redirect)
 import { mkdir, readFile } from "node:fs/promises";
@@ -88,14 +88,23 @@ await withLayoutPage(async ({ page, basePath }) => {
 
   await page.evaluate(() => window.__layoutModules.view.setInboxView("projects"));
   const head = page.locator(`#inbox-list .inbox-project[data-project="${PROJECT_KEY}"] > .inbox-project-head`);
-  const headBadge = () => head.locator(".inbox-unread").textContent();
   await head.waitFor();
-  if (await headBadge() !== "2") throw new Error(`Expanded head badge: ${await headBadge()}`);
+  await page.waitForFunction((key) => {
+    const head = document.querySelector(`#inbox-list .inbox-project[data-project="${key}"] .inbox-project-head`);
+    const dot = head?.querySelector(".inbox-status-dot");
+    return dot?.classList.contains("inbox-status-unread") && !dot.classList.contains("inbox-status-running")
+      && !head.querySelector(".inbox-unread, .sdot")
+      && document.querySelector("#inbox-open .inbox-open-count")?.textContent.trim() === "5";
+  }, PROJECT_KEY);
   await page.locator("#inbox-rail").screenshot({ path: `${directory}projects-face-expanded.png` });
   await head.screenshot({ path: `${directory}projects-head-expanded.png` });
 
   await head.locator("[data-project-fold]").click();
-  await page.waitForFunction((key) => document.querySelector(`#inbox-list .inbox-project[data-project="${key}"] .inbox-project-head .inbox-unread`)?.textContent === "5", PROJECT_KEY);
+  await page.waitForFunction((key) => {
+    const dot = document.querySelector(`#inbox-list .inbox-project[data-project="${key}"] .inbox-project-head .inbox-status-dot`);
+    return dot?.classList.contains("inbox-status-unread") && dot.classList.contains("inbox-status-running")
+      && document.querySelector("#inbox-open .inbox-open-count")?.textContent.trim() === "5";
+  }, PROJECT_KEY);
   await page.evaluate(() => document.activeElement?.blur());
   await page.mouse.move(0, 0);
   await page.locator("#inbox-rail").screenshot({ path: `${directory}projects-face-collapsed.png` });

@@ -65,6 +65,7 @@ function toProjectAgentEntry(project, rows, rosterOf, taskUnreadOf) {
   const agentUnread = agents.length ? agentsUnreadCount(agents) : row?.unread_count || 0;
   const unreadCount = agentUnread + taskUnreadOf(project.projectKey);
   const working = agents.length ? agents.some((agent) => agent.working) : !!row?.working;
+  const watchedWorking = agents.length ? agents.some((agent) => agent.watched !== false && agent.working) : working;
   const name = projectNameOf(project);
   return {
     key: projectAgentEntryKey(project.projectKey),
@@ -80,6 +81,7 @@ function toProjectAgentEntry(project, rows, rosterOf, taskUnreadOf) {
     ownUnreadCount: agentUnread,
     unreadCount,
     working,
+    watchedWorking,
     muted: false,
     dismissed: false,
     facts: "",

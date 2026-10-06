@@ -16,7 +16,7 @@ const projectKey = `${deviceId}/project-1`;
 const address = (kind, entityId = "") => ({ deviceId, entityId, kind });
 const rows = () => [...document.querySelectorAll("#inbox-list .inbox-entry")];
 const rowByKey = (key) => rows().find((row) => row.dataset.key === key) || null;
-const badgeIn = (element) => element?.querySelector(".inbox-actions > .inbox-unread")?.textContent || null;
+const dotIn = (element) => element?.querySelector(".inbox-actions > .inbox-status-dot") || null;
 const head = () => document.querySelector(`#inbox-list .inbox-project[data-project="${projectKey}"] .inbox-project-head`);
 
 const agent = (id, over = {}) => ({ id, watched: true, working: false, unread_count: 0, ...over });
@@ -80,23 +80,24 @@ describe("#103 inbox rows, from the cache", () => {
     ]));
     const workspaceRow = rowByKey(`workspace:${deviceId}/workspace-1`);
     expect(workspaceRow.querySelector(".inbox-facts").textContent).toBe("↑1 ↓0 +12 −3 · 2 running");
-    expect(badgeIn(workspaceRow)).toBe("3");
-    expect(workspaceRow.querySelector(".inbox-actions > .inbox-workspace-done + .inbox-unread")).not.toBeNull();
+    expect(dotIn(workspaceRow)?.classList.contains("inbox-status-unread")).toBe(true);
+    expect(workspaceRow.querySelector(".inbox-actions > .inbox-workspace-done + .inbox-status-dot")).not.toBeNull();
+    expect(workspaceRow.querySelector(".inbox-unread, .sdot")).toBeNull();
 
     const agentRow = rowByKey(`project-agent:${projectKey}`);
     expect(agentRow.querySelector(".stitle").textContent).toBe("Payments");
     expect(agentRow.querySelector(".inbox-facts, [data-workspace-done]")).toBeNull();
-    expect(badgeIn(agentRow)).toBe("4");
+    expect(dotIn(agentRow)?.classList.contains("inbox-status-unread")).toBe(true);
   });
 
   it("repaints the project agent's row from a state push written to the cache", async () => {
     const { projectRun } = await seed();
     mountInboxList();
     await startFeed();
-    await vi.waitFor(() => expect(badgeIn(rowByKey(`project-agent:${projectKey}`))).toBe("4"));
+    await vi.waitFor(() => expect(dotIn(rowByKey(`project-agent:${projectKey}`))?.classList.contains("inbox-status-unread")).toBe(true));
     await writeCached(address("row", "run-p"), stampRow({ ...projectRun,
-      agents: [agent("project-agent", { unread_count: 6 })] }, deviceId));
-    await vi.waitFor(() => expect(badgeIn(rowByKey(`project-agent:${projectKey}`))).toBe("6"));
+      agents: [agent("project-agent", { unread_count: 0 })] }, deviceId));
+    await vi.waitFor(() => expect(dotIn(rowByKey(`project-agent:${projectKey}`))).toBeNull());
   });
 
   it("lists a project nobody has talked to yet in the inbox proper, not in Recent", async () => {
@@ -112,20 +113,23 @@ describe("#103 inbox rows, from the cache", () => {
     expect(document.querySelector("#inbox-list > .inbox-recent")).toBeNull();
   });
 
-  // #183: the head wears the block's whole count, the same open or folded.
-  it("makes the project agent the head of its block, badged with everything in it", async () => {
+  it("makes the project agent the head and aggregates unread only when folded", async () => {
     await seed();
     mountInboxList();
     await startFeed();
     setInboxView("projects");
-    await vi.waitFor(() => expect(head()?.querySelector(".inbox-unread")?.textContent).toBe("7"));
+    await vi.waitFor(() => expect(head()?.querySelector(".inbox-status-unread")).not.toBeNull());
+    expect(head().querySelector(".inbox-unread")).toBeNull();
     expect(rows().map((row) => row.dataset.key)).toEqual([`workspace:${deviceId}/workspace-1`]);
 
     head().querySelector("[data-project-fold]").click();
     await vi.waitFor(() => expect(head().closest(".inbox-project").classList.contains("inbox-folded")).toBe(true));
-    expect(head().querySelector(".inbox-unread")?.textContent).toBe("7");
+    expect(head().querySelector(".inbox-status-unread")).not.toBeNull();
+    await writeCached(address("row", "run-p"), stampRow({ kind: "branch", project_id: "project-1", run_id: "run-p",
+      agents: [agent("project-agent", { unread_count: 0 })] }, deviceId));
+    expect(head().querySelector(".inbox-status-unread")).not.toBeNull();
     head().querySelector("[data-project-fold]").click();
     await vi.waitFor(() => expect(head().closest(".inbox-project").classList.contains("inbox-folded")).toBe(false));
-    expect(head().querySelector(".inbox-unread")?.textContent).toBe("7");
+    await vi.waitFor(() => expect(head().querySelector(".inbox-status-dot")).toBeNull());
   });
 });

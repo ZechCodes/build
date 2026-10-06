@@ -26,4 +26,13 @@ describe("the project agent's own unread activity", () => {
     expect(entry.ownUnreadCount).toBe(0);
     expect(entry.unreadCount).toBe(4);
   });
+
+  it("keeps the folded watched summary separate from an unwatched agent's own work", () => {
+    const item = { kind: "branch", project_id: project.id, projectKey: project.projectKey,
+      run_id: project.entity_id, agents: [{ id: "watched", watched: true, working: false },
+        { id: "unwatched", watched: false, working: true }] };
+    const [entry] = projectAgentEntries([project], [item]);
+    expect(entry.working).toBe(true);
+    expect(entry.watchedWorking).toBe(false);
+  });
 });

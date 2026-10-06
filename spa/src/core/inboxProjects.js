@@ -5,13 +5,11 @@
 //
 // The block's head opens the project's own page — its workspaces, and the agent
 // you talk to about the project. The head is that agent's entry (#103): its
-// badge is everything the project is holding, open or folded (#183) — the
-// project agent's unread, the project's watched tasks no workspace wears
-// (#104), and every workspace row's. A Needs-you task row contributes no
-// extra unread: its task count is already on the project or workspace badge.
-// The inbox's top badge is the sum of these heads. It offers
-// the one create surface behind a +,
-// the project's settings, and a ⋯ menu that puts the block away.
+// dot describes that agent when open and everything the block holds when
+// folded, Recent included. Numeric unread totals retain every project's
+// watched task and workspace count (#183); a Needs-you task row adds no
+// duplicate count. The head offers the create surface behind a + and a direct
+// Hide control that puts the block away.
 // A block folds shut by its chevron and stays that way until it is opened
 // again; one with no workspace in it is flat, and its chevron has nothing to
 // fold.
@@ -24,19 +22,17 @@
 // No DOM, no app imports — the wiring (core/inboxView.js) renders these.
 
 import { esc } from "./text.js";
-import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_PLUS, ICON_SETTINGS } from "./icons.js";
+import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_EYE_OFF, ICON_PLUS } from "./icons.js";
 import {
   PROJECT_AGENT,
   RECENT_AFTER_MS,
   TRACKER_TASK,
   clashingNames,
   dimDeviceHtml,
-  menuItemHtml,
-  moreButtonHtml,
-  railMenuHtml,
   workspaceIsRecent,
 } from "./inbox.js";
 import { sessionTimes } from "./sessionSpans.js";
+import { statusDotHtml } from "./inboxStatusDot.js";
 
 /** What a block says instead of its machine's name when that machine cannot be
  *  asked anything: the reader's question about such a block is never "which
@@ -75,12 +71,14 @@ function projectsNamed(projects, rows) {
  *  on the workspace row or the project agent that wears it (#104). The task
  *  row exists for Needs you, but adds no count of its own. */
 const rowUnreadCount = (entry) => entry.kind === TRACKER_TASK ? 0 : entry.unreadCount || 0;
+const entryIsRunning = (entry) => !!entry?.working || entry?.state === "working";
+const entryIsWatchedRunning = (entry) => entry?.watchedWorking ?? entryIsRunning(entry);
 
 /** One project's block on the landing rail's workspace face: its workspaces,
  *  and the project's own page as the block's destination. Every project has one
  *  — the page is about the project, not about anything inside it — so a block is
  *  always routable, however empty it is. */
-function workspaceBlockFor(project, rows, tag, nowMs) {
+function workspaceBlockFor(project, rows, tag, nowMs, runningTaskProjectKeys) {
   // The project agent's entry is the block's head, not one of its rows (#103).
   const agentEntry = rows.find((entry) => entry.kind === PROJECT_AGENT) || null;
   const grouped = rows.filter((entry) => entry.kind !== PROJECT_AGENT).sort((left, right) =>
@@ -104,15 +102,16 @@ function workspaceBlockFor(project, rows, tag, nowMs) {
     flat: entries.length === 0,
     route: { name: "project", projectId: project.id, deviceId: project.deviceId },
     agentEntry,
-    // The head's badge, the same open or folded so a fold never changes a
-    // number (#183): everything the block is holding, Recent rows included.
+    // A fold changes the head's dot but never its numeric contribution to
+    // the toolbar (#183). Task rows are already counted by their owner row.
     unreadCount: grouped.reduce((total, entry) => total + rowUnreadCount(entry), agentEntry?.unreadCount || 0),
+    unread: agentEntry?.unreadCount > 0 || grouped.some((entry) => entry.unreadCount > 0),
+    running: entryIsWatchedRunning(agentEntry) || grouped.some(entryIsWatchedRunning) || runningTaskProjectKeys.has(project.projectKey),
   };
 }
 
-/** The inbox's top badge (#183): the sum of every project head, Recent blocks
- *  included, over the same rows the projects face paints — so it is always
- *  the sum of the numbers the heads show. */
+/** The inbox's top badge (#183): every project's numeric unread total,
+ *  including Recent blocks and rows, independent of which heads are folded. */
 export function projectsUnreadCount(entries = [], projects = []) {
   const { blocks, recentBlocks } = workspaceProjectBlocks(entries, projects);
   return [...blocks, ...recentBlocks].reduce((total, block) => total + block.unreadCount, 0);
@@ -123,7 +122,7 @@ export function projectsUnreadCount(entries = [], projects = []) {
  *  project key and never by a name or a bare id: two machines each mint a
  *  `proj-1`, and two projects may share a name — which is what the device tag
  *  on the head is for. */
-export function workspaceProjectBlocks(entries = [], projects = [], devices = [], offlineDeviceIds = null, nowMs = Date.now()) {
+export function workspaceProjectBlocks(entries = [], projects = [], devices = [], offlineDeviceIds = null, nowMs = Date.now(), runningTaskProjectKeys = new Set()) {
   const named = projectsNamed(projects, entries);
   const tags = deviceTags([...named.values()], devices, offlineDeviceIds);
   const blocks = [...named.values()].map((project) =>
@@ -132,6 +131,7 @@ export function workspaceProjectBlocks(entries = [], projects = [], devices = []
       entries.filter((entry) => entry.projectKey === project.projectKey),
       tags.get(project.projectKey),
       nowMs,
+      runningTaskProjectKeys,
     ),
   ).sort((left, right) =>
     (left.anchorMs === null) - (right.anchorMs === null)
@@ -226,15 +226,8 @@ function foldButtonHtml(block, folded) {
   return `<button class="iconbtn inbox-fold" type="button" data-project-fold="${esc(block.projectKey)}" aria-expanded="${folded ? "false" : "true"}" aria-label="${folded ? "Unfold" : "Fold"} ${esc(block.name)}"${foldable ? "" : " disabled"}>${folded ? ICON_CHEVRON_RIGHT : ICON_CHEVRON_DOWN}</button>`;
 }
 
-/** The block's ⋯: one quiet control beside Settings and the +, named the way a
- *  row's is, because it opens the block's menu the way a row's opens the row's. */
-const blockMoreHtml = (block, open) => moreButtonHtml(block.key, block.name, open);
-
 /**
- * The block's menu, in the markup only while it is open — the rows' rule, for
- * the rows' reason: the DOM patcher leaves a split menu's `hidden` alone.
- *
- * Its one item puts the block away. A machine that has gone leaves its projects
+ * Hide puts the block away. A machine that has gone leaves its projects
  * on the rail for ever: nothing can refresh them, nothing can be done in them,
  * and an account that has retired a laptop reads its blocks every day for work
  * it will never pick up again. So a block can be dropped — from the cache,
@@ -246,31 +239,28 @@ const blockMoreHtml = (block, open) => moreButtonHtml(block.key, block.name, ope
  * block has is what the cache holds, never whether a session has landed yet. On
  * a machine that is answering it simply comes back on the next pass.
  */
-const blockMenuHtml = (block, open) => railMenuHtml(open, `Actions for ${block.name}`, [
-  menuItemHtml(`data-project-hide="${esc(block.projectKey)}"`, "Hide project", "Takes it off the rail until its machine lists it again"),
-]);
+const blockHideHtml = (block) =>
+  `<button class="iconbtn inbox-project-hide" type="button" data-project-hide="${esc(block.projectKey)}" aria-label="Hide project ${esc(block.name)}" title="Hide project ${esc(block.name)}">${ICON_EYE_OFF}</button>`;
 
 /** The block's head: the fold, the name that opens the project's own page,
- *  how much inside is waiting, the project's settings, the + that starts
- *  another workspace, and the ⋯ behind which the block's menu opens. The fold
- *  is disabled on a block with nothing to fold. `ui`: { folded, openMenuKey } —
- *  the set of folded project keys, as blockIsFolded decides, and the one menu
- *  the rail holds open. The menu hangs off the head itself rather than the
- *  cluster its ⋯ sits in, so the grey an away block's head wears never reaches
- *  it (styles/shell.css). */
+ *  Hide, the + that starts another workspace, and one status dot. An expanded
+ *  head describes the project agent's own conversation; a folded one also
+ *  carries its hidden children. `ui.folded` is the set of folded project keys. */
 export function projectHeadHtml(block, ui = {}) {
   const folded = !!(ui.folded && ui.folded.has(block.projectKey));
-  const menuOpen = ui.openMenuKey === block.key;
-  const count = block.unreadCount;
-  const unread = count > 0 ? `<span class="badge inbox-unread">${count}</span>` : "";
+  const agent = block.agentEntry;
+  const dot = statusDotHtml({
+    running: folded ? block.running : entryIsRunning(agent),
+    unread: folded ? block.unread : (agent?.ownUnreadCount ?? agent?.unreadCount ?? 0) > 0,
+  });
   const title = `Open ${block.name}`;
   const create = `<button class="iconbtn inbox-project-create" type="button" data-project-create="${esc(block.projectKey)}" aria-label="New workspace in ${esc(block.name)}" title="New workspace in ${esc(block.name)}">${ICON_PLUS}</button>`;
   const device = deviceTagHtml(block);
   return `<div class="inbox-project-head">
     ${foldButtonHtml(block, folded)}
     <button class="inbox-project-name" type="button" data-project-open="${esc(block.projectKey)}" title="${esc(title)}">${esc(block.name)}</button>
-    <span class="inbox-project-tools"><span class="inbox-project-device">${device}</span><span class="inbox-project-actions">${blockMoreHtml(block, menuOpen)}<button class="iconbtn inbox-project-settings" type="button" data-project-settings="${esc(block.projectKey)}" aria-label="Settings for ${esc(block.name)}" title="Settings for ${esc(block.name)}">${ICON_SETTINGS}</button>${create}</span></span>
-    ${unread}${blockMenuHtml(block, menuOpen)}
+    <span class="inbox-project-tools"><span class="inbox-project-device">${device}</span><span class="inbox-project-actions">${blockHideHtml(block)}${create}</span></span>
+    ${dot}
   </div>`;
 }
 

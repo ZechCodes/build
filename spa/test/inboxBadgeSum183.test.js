@@ -1,8 +1,7 @@
 // @vitest-environment jsdom
-// #183: one unit for the inbox's numbers. A project's head wears everything the
-// project is holding, open or folded — its agent's unread, its watched tasks'
-// (held or not), every workspace row's, Recent included — and the top badge is
-// the sum of the heads. A fully read Needs-you row contributes zero.
+// #183/#380: the top badge counts every project's unread independently of its
+// visible head dot. Expanded heads reflect their project agents; folded heads
+// reflect everything watched inside. A fully read Needs-you row contributes zero.
 // A Done or closed task never counts, whatever the bridge sends.
 import { describe, expect, it } from "vitest";
 import { liveFeedSnapshot } from "../src/core/feedMerge.js";
@@ -66,9 +65,11 @@ const blocksOf = (rows) => {
   return new Map([...blocks, ...recentBlocks].map((block) => [block.name, block]));
 };
 
-const headBadge = (block, folded) => {
+const headUnread = (block, folded) => {
   const html = projectHeadHtml(block, { folded: new Set(folded ? [block.projectKey] : []) });
-  return Number(new DOMParser().parseFromString(html, "text/html").querySelector(".inbox-unread")?.textContent || 0);
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  expect(doc.querySelector(".inbox-unread")).toBeNull();
+  return Boolean(doc.querySelector(".inbox-status-unread"));
 };
 
 const soloProject = { id: "solo", name: "Solo", deviceId: DEVICE, projectKey: `${DEVICE}/solo` };
@@ -91,25 +92,27 @@ describe("a fully read task assigned to the user", () => {
     const unread = { ...assignedToUser, read_through: "te-02", unread_count: 1 };
     const before = soloBadges(unread, [created]);
     expect(before.taskRow.unreadCount).toBe(1);
-    expect(headBadge(before.block, false)).toBe(1);
+    expect(headUnread(before.block, false)).toBe(false);
+    expect(headUnread(before.block, true)).toBe(true);
     expect(before.top).toBe(1);
 
     const read = { ...unread, read_through: created.id, unread_count: 0 };
     const after = soloBadges(read, [created]);
     expect(attentionGroups([read]).needsYou).toEqual([read]);
-    expect(after.taskRow).toMatchObject({ state: "unread", unreadCount: 0 });
-    expect(headBadge(after.block, false)).toBe(0);
+    expect(after.taskRow).toMatchObject({ state: "inactive", unreadCount: 0 });
+    expect(headUnread(after.block, false)).toBe(false);
+    expect(headUnread(after.block, true)).toBe(false);
     expect(after.top).toBe(0);
   });
 
-  it("stays in Needs you with its dot while adding zero to project and top badges", () => {
+  it("stays in Needs you without a dot while adding zero to project and top badges", () => {
     const { taskRow, block, top } = soloBadges(assignedToUser, [
       comment({ id: "tc-02", author: { kind: "agent", agent_id: "a1" } }),
     ]);
     expect(attentionGroups([assignedToUser]).needsYou).toEqual([assignedToUser]);
-    expect(taskRow).toMatchObject({ state: "unread", unreadCount: 0 });
-    expect(inboxRowHtml(taskRow)).toContain("sdot-unread");
-    expect(headBadge(block, false)).toBe(0);
+    expect(taskRow).toMatchObject({ state: "inactive", unreadCount: 0 });
+    expect(inboxRowHtml(taskRow)).not.toContain("inbox-status-dot");
+    expect(headUnread(block, false)).toBe(false);
     expect(top).toBe(0);
   });
 
@@ -122,18 +125,21 @@ describe("a fully read task assigned to the user", () => {
     ]);
     expect(attentionGroups([asking]).needsYou).toEqual([asking]);
     expect(taskRow.unreadCount).toBe(1);
-    expect(headBadge(block, false)).toBe(1);
+    expect(headUnread(block, false)).toBe(false);
+    expect(headUnread(block, true)).toBe(true);
     expect(top).toBe(1);
   });
 });
 
 describe("a project's head", () => {
-  it("wears its agent, unheld tasks and Recent workspace rows, open or folded", () => {
+  it("summarizes unheld tasks and Recent rows only when folded", () => {
     const build = blocksOf(railRows([needsYou, unheld, held])).get("Build");
     expect(build.recent.map((row) => row.kind)).toEqual(["workspace"]);
     // agent 1 + #113 2 + Recent workspace (agent 2 + #60 3).
-    expect(headBadge(build, false)).toBe(1 + 2 + 2 + 3);
-    expect(headBadge(build, true)).toBe(1 + 2 + 2 + 3);
+    expect(build.unreadCount).toBe(1 + 2 + 2 + 3);
+    expect(build.agentEntry.ownUnreadCount).toBe(1);
+    expect(headUnread(build, false)).toBe(true);
+    expect(headUnread(build, true)).toBe(true);
   });
 
   it("counts a Needs-you task with unread once, as its unread, not 1 more", () => {
@@ -158,7 +164,7 @@ describe("finished tasks", () => {
 describe("the top badge", () => {
   it("is the sum of every project head, Recent blocks too", () => {
     const rows = railRows([needsYou, unheld, done, held]);
-    const heads = [...blocksOf(rows).values()].map((block) => headBadge(block, false));
+    const heads = [...blocksOf(rows).values()].map((block) => block.unreadCount);
     expect(heads).toEqual([8, 2]);
     expect(projectsUnreadCount(rows, feed.projects)).toBe(10);
 

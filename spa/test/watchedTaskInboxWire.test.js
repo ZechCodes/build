@@ -162,8 +162,9 @@ describe("a watched task in the inbox, over the real wire", () => {
 
     await reach(commented);
     await expect.poll(() => rowFor(taskId)?.querySelector(".inbox-facts")?.textContent, WAIT).toBe("Mentioned you");
-    // Both comments are unread, even though only one asked the user.
-    expect(rowFor(taskId).querySelector(".inbox-unread")?.textContent).toBe("2");
+    // Both comments remain counted, with one unread indicator on the row.
+    expect(rowFor(taskId).querySelectorAll(".inbox-status-unread")).toHaveLength(1);
+    expect(rowFor(taskId).querySelector(".inbox-unread")).toBe(null);
 
     await reach(read);
     await expect.poll(() => rowsNamed(taskId).length, WAIT).toBe(0);
@@ -175,7 +176,8 @@ describe("a watched task in the inbox, over the real wire", () => {
     await reach(created);
     await expect.poll(() => rowFor(taskId)?.querySelector(".inbox-facts")?.textContent, WAIT).toBe("Mentioned you");
     // The created event asked the user and is unread until the read mark passes it.
-    expect(rowFor(taskId).querySelector(".inbox-unread")?.textContent).toBe("1");
+    expect(rowFor(taskId).querySelectorAll(".inbox-status-unread")).toHaveLength(1);
+    expect(rowFor(taskId).querySelector(".inbox-unread")).toBe(null);
     await reach(read);
     await expect.poll(() => rowsNamed(taskId).length, WAIT).toBe(0);
   });

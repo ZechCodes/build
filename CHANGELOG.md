@@ -6,6 +6,15 @@ Notable changes to the bridge (`build-bridge`). The format follows
 protocol versions; see
 [Wire versioning and capabilities](ARCHITECTURE.md#wire-versioning-and-capabilities).
 
+## [0.2.10] - Unreleased
+
+### Changed
+
+- Inbox rows use one status dot on the right: grey while an agent runs, green
+  for unread activity, and pulsing only while running. Folded project heads
+  summarize watched activity; expanded heads reflect the project agent.
+  Project heads offer Hide and New workspace directly (#380).
+
 ## [0.2.9] - 2026-10-06
 
 Wire 3.12.0.

@@ -37,7 +37,6 @@ const titleOf = (task) => task.title || "(untitled)";
 /** The fields a row carries about a checkout, which a task has none of. */
 const NOT_A_CHECKOUT = Object.freeze({
   branch: null,
-  working: false,
   pending: null,
   placeholder: false,
   canFinish: false,
@@ -47,9 +46,19 @@ const NOT_A_CHECKOUT = Object.freeze({
   warnings: [],
 });
 
-function toEntry(project, task, detail, reasons, askedOnly) {
+/** A task follows the running state of the agent it is assigned to. */
+export function taskAgentIsRunning(task, runningAgentIds, projectAgentId = null) {
+  const assignee = task?.assignee;
+  const agentId = assignee?.kind === "project_agent" ? projectAgentId
+    : assignee?.kind === "agent" ? assignee.agent_id : null;
+  return runningAgentIds.has(agentId);
+}
+
+function toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, projectAgentId) {
   const facts = reasons.map((reason) => reasonWord(reason, askedOnly)).join(" · ");
   const changedMs = ms(task.updated_at);
+  const unreadCount = taskUnreadCount(task, detail);
+  const working = taskAgentIsRunning(task, runningAgentIds, projectAgentId);
   return {
     ...NOT_A_CHECKOUT,
     key: entryKeyOf({ kind: TRACKER_TASK, task_id: task.id }),
@@ -65,13 +74,13 @@ function toEntry(project, task, detail, reasons, askedOnly) {
     project: project.name || project.id,
     name: task.number ? `#${task.number} ${titleOf(task)}` : titleOf(task),
     title: titleOf(task),
-    // Every row here is asking for the user; that is why it is a row.
-    state: "unread",
+    // A Needs-you reason keeps the row, while running and unread are facts
+    // about its assigned agent and task news, respectively.
+    state: working ? "working" : unreadCount > 0 ? "unread" : "inactive",
+    working,
     reason: facts,
     facts,
-    // A Needs-you reason keeps the row and its dot; only task news after the
-    // read mark makes a badge (#183), including assignment and status changes.
-    unreadCount: taskUnreadCount(task, detail),
+    unreadCount,
     route: { name: "trackerTask", deviceId: project.deviceId, projectId: project.id, taskId: task.id },
     anchorMs: changedMs,
     lastActivityMs: changedMs,
@@ -81,21 +90,25 @@ function toEntry(project, task, detail, reasons, askedOnly) {
 /** Oldest change first, as every inbox list is; an undated task goes last. */
 const byChange = (left, right) => (left.anchorMs ?? Infinity) - (right.anchorMs ?? Infinity);
 
+function entriesFromSource({ project, tasks = [], details = new Map(), askedOnly = false, runningAgentIds = new Set(), projectAgentId = null }) {
+  const entries = [];
+  for (const task of tasks) {
+    const detail = details.get(task.id) || null;
+    const reasons = watchedTaskReasons(task, detail, askedOnly);
+    if (reasons.length) entries.push(toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, projectAgentId));
+  }
+  return entries;
+}
+
 /**
  * The rows, from each followed project's cached records: `sources` is
- * `[{ project, tasks, details, askedOnly }]`, where `project` is the feed's
- * project (`id`, `deviceId`, `projectKey`, `name`), `tasks` the cached
+ * `[{ project, tasks, details, askedOnly, runningAgentIds, projectAgentId }]`.
+ * `project` is the feed's project (`id`, `deviceId`, `projectKey`, `name`), `tasks` the cached
  * `tasks.list`, `details` the cached `tasks.get` answers by task id, and
- * `askedOnly` the machine's cached Needs you rule (core/needsYouRule.js).
+ * `askedOnly` the machine's cached Needs you rule (core/needsYouRule.js), and
+ * `runningAgentIds` the cached agent lineage's running members, and
+ * `projectAgentId` the cached project owner's holder for legacy assignments.
  */
 export function watchedTaskEntries(sources = []) {
-  const entries = [];
-  for (const { project, tasks = [], details = new Map(), askedOnly = false } of sources) {
-    for (const task of tasks) {
-      const detail = details.get(task.id) || null;
-      const reasons = watchedTaskReasons(task, detail, askedOnly);
-      if (reasons.length) entries.push(toEntry(project, task, detail, reasons, askedOnly));
-    }
-  }
-  return entries.sort(byChange);
+  return sources.flatMap(entriesFromSource).sort(byChange);
 }

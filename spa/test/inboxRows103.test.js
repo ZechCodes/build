@@ -48,6 +48,27 @@ describe("a workspace row's agents", () => {
     expect(workspaceWith([agent("a")]).facts).toBe("↑1 ↓0 +12 −3 · 0 running");
   });
 
+  it("uses its cached roster for running activity when the feed row is stale", () => {
+    const running = workspaceWith([agent("a", { working: true, unread_count: 2 })], { working: false });
+    expect(running.working).toBe(true);
+    const runningDoc = new DOMParser().parseFromString(inboxRowHtml(running), "text/html");
+    expect(runningDoc.querySelector(".inbox-status-running.inbox-status-unread")).not.toBeNull();
+
+    const stopped = workspaceWith([agent("a")], { working: true });
+    expect(stopped.working).toBe(false);
+    expect(new DOMParser().parseFromString(inboxRowHtml(stopped), "text/html").querySelector(".inbox-status-dot")).toBeNull();
+  });
+
+  it("records watched running activity separately from the workspace's running agents", () => {
+    const entry = workspaceWith([agent("watched"), agent("unwatched", { watched: false, working: true })]);
+    expect(entry).toMatchObject({ working: true, runningCount: 1 });
+    expect(entry.watchedWorking).toBe(false);
+    expect(new DOMParser().parseFromString(inboxRowHtml(entry), "text/html").querySelector(".inbox-status-running")).not.toBeNull();
+
+    const watched = workspaceWith([agent("watched", { working: true }), agent("unwatched", { watched: false })]);
+    expect(watched.watchedWorking).toBe(true);
+  });
+
   it("counts unread over the watched agents only", () => {
     const entry = workspaceWith([
       agent("a", { unread_count: 2 }),
@@ -65,25 +86,25 @@ describe("a workspace row's agents", () => {
     expect(entry.facts).toBe("↑1 ↓0 +12 −3");
   });
 
-  it("puts the unread badge to the right of Done, not on line one", () => {
+  it("puts one unread status dot after Done", () => {
     const html = inboxRowHtml(workspaceWith([agent("a", { unread_count: 4 })]));
     const doc = new DOMParser().parseFromString(html, "text/html");
     const actions = doc.querySelector(".inbox-actions");
     expect([...actions.children].map((node) => node.className)).toEqual([
       "btn mini inbox-workspace-done",
-      "badge inbox-unread",
+      "inbox-status-dot inbox-status-unread",
     ]);
-    expect(actions.querySelector(".inbox-unread").textContent).toBe("4");
-    expect(doc.querySelector(".inbox-name .inbox-unread")).toBeNull();
+    expect(actions.querySelector(".inbox-status-dot").getAttribute("aria-label")).toContain("Unread");
+    expect(doc.querySelector(".inbox-unread, .sdot")).toBeNull();
   });
 
-  it("keeps the badge's place when the workspace offers no Done", () => {
+  it("keeps the dot's place when the workspace offers no Done", () => {
     const html = inboxRowHtml(workspaceRowsOf(snapshot({
       workspaces: [{ ...readyWorkspace, status: "active" }],
       items: [{ kind: "branch", project_id: "project-1", run_id: "run-1", agents: [agent("a", { unread_count: 1 })] }],
     }))[0]);
     const doc = new DOMParser().parseFromString(html, "text/html");
-    expect(doc.querySelector(".inbox-actions .inbox-unread").textContent).toBe("1");
+    expect(doc.querySelector(".inbox-actions > .inbox-status-unread")).not.toBeNull();
   });
 });
 
@@ -114,7 +135,8 @@ describe("the project agent's row", () => {
     })] }));
     expect(entry).toMatchObject({ unreadCount: 3, state: "unread", working: true });
     const doc = new DOMParser().parseFromString(inboxRowHtml(entry), "text/html");
-    expect(doc.querySelector(".inbox-actions .inbox-unread").textContent).toBe("3");
+    expect(doc.querySelector(".inbox-actions > .inbox-status-unread")).not.toBeNull();
+    expect(doc.querySelector(".inbox-status-running")).not.toBeNull();
   });
 
   it("is ordered by its own conversation's session, among the workspace rows", () => {
@@ -167,18 +189,18 @@ describe("the project agent's row", () => {
     expect(activeEntryKey({ name: "project", deviceId: "dev-2", projectId: "project-1" }, [entry])).toBeNull();
   });
 
-  it("paints as one quiet line in Recent, with its badge", () => {
+  it("paints as one quiet line in Recent, with its unread status dot", () => {
     const [entry] = agentRowsOf(snapshot({ projects: [project()], items: [conversation({
       agents: [agent("project-agent", { unread_count: 1 })],
     })] }));
     const doc = new DOMParser().parseFromString(inboxRowHtml(entry, { quiet: true }), "text/html");
     expect(doc.querySelector(".inbox-entry").classList.contains("inbox-quiet")).toBe(true);
     expect(doc.querySelector(".sdot")).toBeNull();
-    expect(doc.querySelector(".inbox-unread").textContent).toBe("1");
+    expect(doc.querySelector(".inbox-actions > .inbox-status-unread")).not.toBeNull();
   });
 });
 
-describe("the projects face's head badge", () => {
+describe("the projects face's head dot", () => {
   const view = () => snapshot({
     projects: [{ id: "project-1", name: "Payments", entity_id: "run-p", session_started_ms: HOUR, last_activity_ms: HOUR }],
     workspaces: [{ ...readyWorkspace, session_started_ms: HOUR, last_activity_ms: HOUR }],
@@ -193,9 +215,11 @@ describe("the projects face's head badge", () => {
     const rows = [...workspaceRowsOf(current), ...agentRowsOf(current)];
     return workspaceProjectBlocks(rows, current.projects, [], null, 2 * HOUR).blocks[0];
   };
-  const headBadge = (block, folded) => {
+  const headUnread = (block, folded) => {
     const html = projectHeadHtml(block, { folded: new Set(folded ? [block.projectKey] : []) });
-    return new DOMParser().parseFromString(html, "text/html").querySelector(".inbox-unread")?.textContent || null;
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    expect(doc.querySelector(".inbox-unread")).toBeNull();
+    return Boolean(doc.querySelector(".inbox-status-unread"));
   };
 
   it("does not list the project agent as a row: the head is its entry", () => {
@@ -204,10 +228,13 @@ describe("the projects face's head badge", () => {
     expect(block.agentEntry.kind).toBe(PROJECT_AGENT);
   });
 
-  // #183: the head carries everything in the block, open or folded, so a fold
-  // never changes a number.
-  it("adds every watched workspace agent's unread, open or collapsed", () => {
-    expect(headBadge(blockOf(view()), false)).toBe("5");
-    expect(headBadge(blockOf(view()), true)).toBe("5");
+  it("keeps aggregate accounting while showing only the project agent when expanded", () => {
+    const block = blockOf(view());
+    expect(block.unreadCount).toBe(5);
+    expect(headUnread(block, false)).toBe(true);
+    expect(headUnread(block, true)).toBe(true);
+    block.agentEntry = { ...block.agentEntry, ownUnreadCount: 0, unreadCount: 0 };
+    expect(headUnread(block, false)).toBe(false);
+    expect(headUnread(block, true)).toBe(true);
   });
 });

@@ -35,6 +35,7 @@ import { ICON_PLUS } from "../core/icons.js";
 import { routeProjectKey } from "../core/deviceKey.js";
 import { mountTasksPane } from "../core/trackerTasksPane.js";
 import { hashFromRoute } from "../core/router.js";
+import { statusDotHtml } from "../core/inboxStatusDot.js";
 import "../styles/tasks.css";
 import "../styles/surfaces.css";
 
@@ -50,8 +51,6 @@ const tabOf = (route) => ([FILES_TAB, WORKSPACES_TAB].includes(route.tab) ? rout
  *  three facts the rail's rows carry, with the room this page has for them. */
 const factsLine = (row) =>
   [row.branch, row.status === "ready" ? "" : row.statusText, row.facts].filter(Boolean).join(" · ");
-
-const unreadHtml = (row) => (row.unreadCount > 0 ? `<span class="badge inbox-unread">${row.unreadCount}</span>` : "");
 
 /** Line three, when the reclaim service has something to say (#135): what holds
  *  a quiet workspace, or that nothing does. The bridge refusing a Reclaim says
@@ -69,7 +68,7 @@ const lifecycleHtml = (row, ui) => {
 const reclaimHtml = (row, ui) => {
   if (!row.lifecycle?.reclaimable) return "";
   const pending = ui.reclaiming.has(row.workspaceKey);
-  return `<div class="inbox-actions"><button class="btn mini" type="button" data-workspace-reclaim="${esc(row.workspaceKey)}" aria-label="Reclaim workspace ${esc(row.name)}"${pending ? " disabled" : ""}>${pending ? "Reclaiming…" : "Reclaim"}</button></div>`;
+  return `<button class="btn mini" type="button" data-workspace-reclaim="${esc(row.workspaceKey)}" aria-label="Reclaim workspace ${esc(row.name)}"${pending ? " disabled" : ""}>${pending ? "Reclaiming…" : "Reclaim"}</button>`;
 };
 
 /** What the workspace weighs, or the quiet placeholder for a size its machine
@@ -82,14 +81,13 @@ const sizeHtml = (row) =>
 /** One workspace, in the rail's own row shape: a project page and the rail are
  *  two views of the same list, so they read as the same list. */
 const rowHtml = (row, ui) => `<div class="srow inbox-entry project-row${row.muted ? " inbox-muted" : ""}" data-workspace="${esc(row.workspaceKey)}">
-    <span class="sdot sdot-${esc(row.state)}" title="${esc(row.state)}"></span>
     <div class="inbox-body">
-      <div class="inbox-line inbox-name"><span class="stitle">${esc(row.name)}</span>${unreadHtml(row)}</div>
+      <div class="inbox-line inbox-name"><span class="stitle">${esc(row.name)}</span></div>
       <div class="inbox-facts">${esc(factsLine(row))}</div>
       ${lifecycleHtml(row, ui)}
     </div>
     ${sizeHtml(row)}
-    ${reclaimHtml(row, ui)}
+    <div class="inbox-actions">${reclaimHtml(row, ui)}${statusDotHtml({ running: row.working || row.state === "working", unread: row.unreadCount > 0 })}</div>
   </div>`;
 
 /** A project nobody has cut a workspace in yet. That is the first state of

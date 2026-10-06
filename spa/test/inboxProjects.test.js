@@ -3,7 +3,7 @@
 // project key, with the machine said after a name two machines share.
 
 import { describe, it, expect } from "vitest";
-import { deviceTagHtml, deviceTags, projectHeadHtml, workspaceProjectBlocks } from "../src/core/inboxProjects.js";
+import { deviceTagHtml, deviceTags, projectHeadHtml, projectsUnreadCount, workspaceProjectBlocks } from "../src/core/inboxProjects.js";
 
 const devices = [
   { id: "dev-1", name: "workshop" },
@@ -150,7 +150,7 @@ describe("the machine said after a project name", () => {
 });
 
 describe("the project header actions", () => {
-  it("keeps the device and hover actions together, with unread at the far edge", () => {
+  it("keeps the device and direct hover actions together, with one dot at the far edge", () => {
     const block = {
       projectKey: "dev-1/p1",
       name: "relaydb",
@@ -158,6 +158,7 @@ describe("the project header actions", () => {
       entries: [],
       recent: [],
       unreadCount: 4,
+      agentEntry: { ownUnreadCount: 4, unreadCount: 4, state: "unread" },
       clash: true,
       deviceName: "workshop",
     };
@@ -165,9 +166,15 @@ describe("the project header actions", () => {
     expect(html).toContain('class="inbox-project-tools"');
     expect(html).toContain('class="inbox-project-device"');
     expect(html).toContain("workshop");
-    expect(html).toContain('class="iconbtn inbox-project-settings"');
+    expect(html).toContain('class="iconbtn inbox-project-hide"');
     expect(html).toContain('class="iconbtn inbox-project-create"');
-    expect(html.indexOf("inbox-project-actions")).toBeLessThan(html.indexOf("badge inbox-unread"));
+    expect(html).not.toContain("data-project-settings");
+    expect(html).not.toContain("data-menu");
+    expect(html).not.toContain("inbox-menu");
+    expect(html).not.toContain("inbox-unread");
+    expect(html.indexOf("inbox-project-actions")).toBeLessThan(html.indexOf("inbox-status-dot"));
+    expect(html.match(/inbox-status-dot/g)).toHaveLength(1);
+    expect(html.trim()).toMatch(/<span[^>]*inbox-status-dot[^>]*><\/span>\s*<\/div>$/);
   });
 
   // Which machine a block is on is a secondary tag, not a second name: it wears
@@ -219,24 +226,17 @@ describe("a project on a machine that is away", () => {
   });
 
   // Which controls a head has is what the cache holds, never whether its
-  // machine is answering: Hide lives in the block's menu on every block.
-  it("offers Hide in the block's menu, whether or not its machine is away", () => {
-    const open = { openMenuKey: "project:dev-9/p1" };
+  // machine is answering: Hide is a direct control on every block.
+  it("offers Hide directly, whether or not its machine is away", () => {
     for (const offline of [true, false]) {
-      const head = projectHeadHtml(block({ offline }), open);
+      const head = projectHeadHtml(block({ offline }));
       expect(head).toContain('data-project-hide="dev-9/p1"');
       expect(head).toContain("Hide project");
-      // Behind the block's ⋯, which stands in the hover reveal ahead of the cog
-      // and the +; the menu hangs off the head, after everything on it.
-      expect(head).toContain('data-menu="project:dev-9/p1"');
-      expect(head.indexOf("inbox-project-actions")).toBeLessThan(head.indexOf("inbox-more"));
-      expect(head.indexOf("inbox-more")).toBeLessThan(head.indexOf("inbox-project-settings"));
-      expect(head.indexOf("inbox-project-create")).toBeLessThan(head.indexOf("inbox-menu"));
+      expect(head).not.toContain("data-menu");
+      expect(head).not.toContain("data-project-settings");
+      expect(head.indexOf("inbox-project-actions")).toBeLessThan(head.indexOf("inbox-project-hide"));
+      expect(head.indexOf("inbox-project-hide")).toBeLessThan(head.indexOf("inbox-project-create"));
     }
-    // A menu that is shut is not in the markup at all, on any block.
-    expect(projectHeadHtml(block({ offline: true }))).not.toContain("data-project-hide");
-    expect(projectHeadHtml(block({ offline: true }))).toContain('data-menu="project:dev-9/p1"');
-    expect(projectHeadHtml(block({ offline: true }), { openMenuKey: "workspace:dev-9/w1" })).not.toContain("data-project-hide");
   });
 
   it("paints the same controls on a head whose machine is away as on one that answers", () => {
@@ -244,5 +244,60 @@ describe("a project on a machine that is away", () => {
       projectHeadHtml(block({ offline }), { openMenuKey: "project:dev-9/p1" })
         .match(/data-project-[a-z]+|data-menu|disabled/g);
     expect(controls(true)).toEqual(controls(false));
+  });
+});
+
+describe("the project head's status dot", () => {
+  const project = on("dev-1", { id: "p1", name: "Build" });
+  const now = Date.now();
+  const headOf = (rows, ui = {}, runningTasks = new Set()) => {
+    const { blocks } = workspaceProjectBlocks(rows, [project], [], null, now, runningTasks);
+    return projectHeadHtml(blocks[0], ui);
+  };
+  const folded = { folded: new Set([project.projectKey]) };
+  const agent = (over = {}) => entry("project", "p1", "Build", 0, {
+    kind: "project_agent", ownUnreadCount: 0, state: "inactive", ...over,
+  });
+
+  it("limits an expanded head to the project agent's own unread and running state", () => {
+    const rows = [agent({ unreadCount: 2 }), entry("child", "p1", "Build", 4, { state: "working" })];
+    expect(headOf(rows)).not.toContain("inbox-status-dot");
+    expect(headOf([agent({ ownUnreadCount: 1, unreadCount: 3, state: "unread" }), rows[1]])).toContain("inbox-status-unread");
+    const workingAgent = headOf([agent({ state: "unread", working: true, ownUnreadCount: 1, unreadCount: 1 }), rows[1]]);
+    expect(workingAgent).toContain("inbox-status-running");
+    expect(workingAgent).toContain("inbox-status-unread");
+    expect(projectsUnreadCount(rows, [project])).toBe(6);
+  });
+
+  it("aggregates hidden children's unread and running into one folded dot, including Recent", () => {
+    const rows = [
+      agent(),
+      entry("recent", "p1", "Build", 3, { state: "working", lastActivityMs: now - 25 * 60 * 60 * 1000 }),
+      entry("task", "p1", "Build", 3, { kind: "tracker_task", state: "unread" }),
+    ];
+    const html = headOf(rows, folded);
+    expect(html.match(/inbox-status-dot/g)).toHaveLength(1);
+    expect(html).toContain("inbox-status-running");
+    expect(html).toContain("inbox-status-unread");
+    expect(headOf(rows)).not.toContain("inbox-status-dot");
+    expect(projectsUnreadCount(rows, [project])).toBe(3);
+  });
+
+  it("pulses folded for a watched task whose assigned agent runs without a Needs-you row", () => {
+    const runningTasks = new Set([project.projectKey]);
+    expect(headOf([agent()], folded, runningTasks)).toContain("inbox-status-running");
+    expect(headOf([agent()], {}, runningTasks)).not.toContain("inbox-status-dot");
+    expect(headOf([agent()], folded)).not.toContain("inbox-status-dot");
+  });
+
+  it("folds only watched agent work while retaining unread and the expanded agent's own state", () => {
+    const rows = [
+      agent({ state: "unread", working: true, watchedWorking: false, ownUnreadCount: 1, unreadCount: 1 }),
+      entry("mixed", "p1", "Build", 0, { state: "working", working: true, watchedWorking: false }),
+    ];
+    expect(headOf(rows, folded)).not.toContain("inbox-status-running");
+    expect(headOf(rows, folded)).toContain("inbox-status-unread");
+    expect(headOf(rows)).toContain("inbox-status-running");
+    expect(headOf([rows[0], { ...rows[1], watchedWorking: true }], folded)).toContain("inbox-status-running");
   });
 });

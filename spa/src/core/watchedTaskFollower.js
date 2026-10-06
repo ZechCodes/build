@@ -20,10 +20,39 @@ import { isFinished } from "./trackerAgentTasks.js";
 import { createTrackerTaskDetailsFeed } from "./trackerTaskDetailsFeed.js";
 import { tasksAddress, readTasksRecord } from "./trackerCache.js";
 import { needsYouRuleAddress, readNeedsYouRule } from "./needsYouRule.js";
-import { watchedTaskEntries } from "./watchedTaskRows.js";
+import { taskAgentIsRunning, watchedTaskEntries } from "./watchedTaskRows.js";
 import { taskUnreadTally } from "./taskUnread.js";
+import { ROW_RECORD_KIND, cachedFeedView } from "./cachedRows.js";
+import { AGENT_LINEAGE_SUPPORT_KIND, readAgentLineageSupport } from "./agentLineageSupport.js";
+import { agentLineage, lineageMembers } from "./agentLineageModel.js";
+import { entityIdOf } from "./entityId.js";
 
 const followsDetail = (task) => task?.watched === true && !isFinished(task);
+const AGENT_RECORD_KINDS = new Set([ROW_RECORD_KIND, "projects", "workspaces", AGENT_LINEAGE_SUPPORT_KIND]);
+
+/** Legacy project-agent assignments carry no id. Resolve the project's own
+ *  owner roster by the same holder rule the task attention model uses:
+ *  prefer its own working agent, otherwise its first agent. */
+function projectAgentIdOf(project, feed) {
+  const owner = feed.projects.find((candidate) => candidate.id === project.id || candidate.project_id === project.id) || project;
+  const entityId = owner.entity_id || owner.run_id;
+  if (!entityId) return null;
+  const agents = feed.items.find((row) => row.project_id === project.id && entityIdOf(row) === entityId)?.agents || [];
+  return (agents.find((agent) => agent.working === true) || agents[0])?.id || null;
+}
+
+/** The agents running for this project, including their Build and harness
+ *  descendants, from the same cached lineage the Agents surface reads. */
+async function readRunningAgents(project) {
+  const { deviceId, id: projectId } = project;
+  const [feed, namesMakers] = await Promise.all([cachedFeedView(deviceId), readAgentLineageSupport(deviceId)]);
+  const members = lineageMembers(feed.items, { projectId, projects: feed.projects, workspaces: feed.workspaces });
+  const lineage = agentLineage(members, { namesMakers });
+  return {
+    runningAgentIds: new Set(members.filter(({ agent }) => lineage.rollup(agent.id).running).map(({ agent }) => agent.id)),
+    projectAgentId: projectAgentIdOf(project, feed),
+  };
+}
 
 /** Asks the machine for whatever session it is on when the read is made. */
 const callOn = (deviceId) => (method, params) => {
@@ -37,31 +66,41 @@ function followProject(project, onChange) {
   const { deviceId, id: projectId } = project;
   let tasks = [];
   let askedOnly = false;
+  let runningAgentIds = new Set();
+  let projectAgentId = null;
   let reads = 0;
   let disposed = false;
   const details = createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc: callOn(deviceId), onChange });
 
   async function reread() {
     const read = ++reads;
-    const [record, rule] = await Promise.all([readTasksRecord(deviceId, projectId), readNeedsYouRule(deviceId)]);
+    const [record, rule, running] = await Promise.all([
+      readTasksRecord(deviceId, projectId), readNeedsYouRule(deviceId), readRunningAgents(project),
+    ]);
     if (disposed || read !== reads) return;
     tasks = record?.tasks || [];
     askedOnly = rule;
+    runningAgentIds = running.runningAgentIds;
+    projectAgentId = running.projectAgentId;
     onChange();
     await details.updateTasks(tasks.filter(followsDetail));
   }
 
   const unsubscribe = subscribeCache(tasksAddress(deviceId, projectId), () => void reread());
   const unsubscribeRule = subscribeCache(needsYouRuleAddress(deviceId), () => void reread());
+  const unsubscribeAgents = subscribeCache({ deviceId }, (address) => {
+    if (AGENT_RECORD_KINDS.has(address?.kind)) void reread();
+  });
   void reread();
   return {
     // A reconnect is a new session: reads the old one refused are asked again.
     session: contextFor(deviceId)?.session || null,
-    source: () => ({ project, tasks, details: details.read(), askedOnly }),
+    source: () => ({ project, tasks, details: details.read(), askedOnly, runningAgentIds, projectAgentId }),
     dispose() {
       disposed = true;
       unsubscribe();
       unsubscribeRule();
+      unsubscribeAgents();
       details.dispose();
     },
   };
@@ -102,6 +141,11 @@ export function followWatchedTasks({ onChange = () => {} } = {}) {
     entries: () => watchedTaskEntries(sources()),
     /** Where the rail wears each watched task's unread (#104). */
     taskUnread: () => taskUnreadTally(sources()),
+    /** Folded project heads also carry running watched tasks with no Needs-you
+     *  row. A task's status alone never says its agent is running. */
+    runningProjectKeys: () => new Set(sources()
+      .filter(({ tasks, runningAgentIds, projectAgentId }) => tasks.some((task) => followsDetail(task) && taskAgentIsRunning(task, runningAgentIds, projectAgentId)))
+      .map(({ project }) => project.projectKey)),
     dispose: () => [...followed.keys()].forEach(drop),
   };
 }

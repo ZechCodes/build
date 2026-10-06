@@ -39,7 +39,7 @@ const call = vi.fn((method, params) => {
 
 /** A reload: the feed and the task records are already on disk. `greet`
  *  lands a session before the rail mounts; without it no machine answers. */
-async function boot({ greet = true, tasks = [review], rule = null, hello = GREETING, timelines = {} } = {}) {
+async function boot({ greet = true, tasks = [review], rule = null, hello = GREETING, timelines = {}, agentRows = [], namesMakers = false, projectEntityId = null } = {}) {
   vi.resetModules();
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
@@ -61,9 +61,12 @@ async function boot({ greet = true, tasks = [review], rule = null, hello = GREET
     tasksPane: await import("../src/core/trackerTasksPane.js"),
   };
   const address = (kind) => ({ deviceId: DEVICE, entityId: "", kind });
-  await modules.cache.writeCached(address("feed"), { items: [], runs: [], projects: [project], workspaces: [] });
-  await modules.cache.writeCached(address("projects"), [project]);
+  const listedProject = { ...project, entity_id: projectEntityId };
+  await modules.cache.writeCached(address("feed"), { items: [], runs: [], projects: [listedProject], workspaces: [] });
+  await modules.cache.writeCached(address("projects"), [listedProject]);
   await modules.cache.writeCached(address("workspaces"), []);
+  await modules.cache.writeCached(address("agent-lineage-support"), { namesMakers });
+  for (const row of agentRows) await modules.cache.writeCached({ deviceId: DEVICE, entityId: row.run_id, kind: "row" }, row);
   await modules.tracker.writeTasksRecord(DEVICE, PROJECT, modules.tracker.tasksRecord(tasks, []));
   for (const one of tasks) await modules.tracker.writeTaskRecord(DEVICE, PROJECT, one.id, taskDetail(one, timelines[one.id] || []));
   if (rule) await modules.needsYouRule.rememberNeedsYouRule(DEVICE, rule);
@@ -83,6 +86,90 @@ afterEach(() => {
   modules.inboxView.unmountInboxList();
   modules.taskFeed.stopFeed();
   modules.deviceContexts.resetDeviceContexts();
+});
+
+describe("watched task dots from cached agents", () => {
+  const assigned = task({ id: "task-running", watched: true, status: "in_review",
+    assignee: { kind: "agent", agent_id: "agent-task" } });
+  const agentRow = (agents) => ({ kind: "branch", project_id: PROJECT, run_id: "run-task", agents });
+  const dotFor = () => rowFor(assigned.id)?.querySelector(".inbox-status-dot");
+  const landAgents = (agents) => modules.cache.writeCached({ deviceId: DEVICE, entityId: "run-task", kind: "row" }, agentRow(agents));
+
+  it("paints the assigned agent's running state before a greeting, then changes when cached work stops", async () => {
+    await boot({ greet: false, tasks: [assigned], agentRows: [agentRow([{ id: "agent-task", working: true }])] });
+    await vi.waitFor(() => expect(dotFor()?.classList.contains("inbox-status-running")).toBe(true), WAIT);
+    expect(call).not.toHaveBeenCalled();
+    await landAgents([{ id: "agent-task", working: false }]);
+    await vi.waitFor(() => expect(dotFor()).toBe(null), WAIT);
+    expect(rowFor(assigned.id)).not.toBe(null);
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("includes the assigned agent's running Build descendants when the cache names makers", async () => {
+    const agents = [
+      { id: "agent-task", working: false },
+      { id: "agent-child", created_by: "agent-task", working: false },
+      { id: "agent-grandchild", created_by: "agent-child", working: true },
+    ];
+    await boot({ greet: false, tasks: [assigned], agentRows: [agentRow(agents)], namesMakers: true });
+    await vi.waitFor(() => expect(dotFor()?.classList.contains("inbox-status-running")).toBe(true), WAIT);
+    await modules.cache.writeCached({ deviceId: DEVICE, entityId: "", kind: "agent-lineage-support" }, { namesMakers: false });
+    await vi.waitFor(() => expect(dotFor()).toBe(null), WAIT);
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("folds a project's running watched task into its head even while the task has no Needs-you row", async () => {
+    const quietTask = { ...assigned, status: "in_progress" };
+    const mine = task({ id: "task-mine", watched: true, assignee: { kind: "user" } });
+    await boot({ greet: false, tasks: [quietTask, mine], rule: { tasks: { commentUserNotifies: true } },
+      agentRows: [agentRow([{ id: "agent-task", working: false,
+        surfaces: { subagents: [{ id: "harness-child", state: "running" }] } }])] });
+    modules.inboxView.setInboxView("projects");
+    const head = () => document.querySelector(".inbox-project-head");
+    await vi.waitFor(() => expect(head()).not.toBe(null), WAIT);
+    await vi.waitFor(() => expect(rowFor(mine.id)).not.toBe(null), WAIT);
+    expect(rowFor(quietTask.id)).toBe(null);
+    expect(head().querySelector(".inbox-status-dot")).toBe(null);
+    head().querySelector("[data-project-fold]").click();
+    await vi.waitFor(() => expect(head().querySelector(".inbox-status-running")).not.toBe(null), WAIT);
+    await modules.tracker.writeTasksRecord(DEVICE, PROJECT, modules.tracker.tasksRecord([{ ...quietTask, watched: false }, mine], []));
+    await vi.waitFor(() => expect(head().querySelector(".inbox-status-dot")).toBe(null), WAIT);
+    await modules.tracker.writeTasksRecord(DEVICE, PROJECT, modules.tracker.tasksRecord([quietTask, mine], []));
+    await vi.waitFor(() => expect(head().querySelector(".inbox-status-running")).not.toBe(null), WAIT);
+    await modules.tracker.writeTasksRecord(DEVICE, PROJECT, modules.tracker.tasksRecord([{ ...quietTask, status: "done" }, mine], []));
+    await vi.waitFor(() => expect(head().querySelector(".inbox-status-dot")).toBe(null), WAIT);
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("resolves legacy project-agent tasks from the project's owner roster, including hidden task work", async () => {
+    const legacy = { ...assigned, assignee: { kind: "project_agent" } };
+    const row = (agents) => ({ ...agentRow(agents), run_id: "run-project" });
+    const land = (agents) => modules.cache.writeCached({ deviceId: DEVICE, entityId: "run-project", kind: "row" }, row(agents));
+    const activePrimary = [{ id: "agent-task", working: false, surfaces: { subagents: [{ state: "running" }] } }];
+    await boot({ greet: false, tasks: [legacy], projectEntityId: "run-project", agentRows: [row(activePrimary)] });
+    await vi.waitFor(() => expect(dotFor()?.classList.contains("inbox-status-running")).toBe(true), WAIT);
+
+    // An idle project holder does not borrow unrelated secondary work.
+    await land([{ id: "agent-primary", working: false }, ...activePrimary]);
+    await vi.waitFor(() => expect(dotFor()).toBe(null), WAIT);
+    // The holder rule prefers the project's own working agent when one is known.
+    await land([{ id: "agent-primary", working: false }, { id: "agent-task", working: true }]);
+    await vi.waitFor(() => expect(dotFor()?.classList.contains("inbox-status-running")).toBe(true), WAIT);
+
+    await land(activePrimary);
+    const mine = task({ id: "task-mine", watched: true, assignee: { kind: "user" } });
+    await modules.needsYouRule.rememberNeedsYouRule(DEVICE, { tasks: { commentUserNotifies: true } });
+    await modules.tracker.writeTasksRecord(DEVICE, PROJECT, modules.tracker.tasksRecord([
+      { ...legacy, status: "in_progress" }, mine,
+    ], []));
+    modules.inboxView.setInboxView("projects");
+    await vi.waitFor(() => expect(rowFor(mine.id)).not.toBe(null), WAIT);
+    const head = () => document.querySelector(".inbox-project-head");
+    head().querySelector("[data-project-fold]").click();
+    await vi.waitFor(() => expect(head().querySelector(".inbox-status-running")).not.toBe(null), WAIT);
+    expect(rowFor(legacy.id)).toBe(null);
+    expect(call).not.toHaveBeenCalled();
+  });
 });
 
 const unwatch = async () => {

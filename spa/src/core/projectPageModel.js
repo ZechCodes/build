@@ -57,6 +57,7 @@ const pageRow = (entry, workspace, measuresSizes) => ({
   name: entry.name,
   route: entry.route,
   state: entry.state,
+  working: entry.working,
   unreadCount: entry.unreadCount,
   muted: entry.muted,
   facts: entry.facts,

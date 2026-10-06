@@ -143,6 +143,44 @@ const rail = () => document.querySelector("#dir-rail");
 const pressProjectTab = (tab) => rail().querySelector(`[data-tab="${tab}"]`).click();
 
 describe("the project surface", () => {
+  it("uses one final status dot for workspace unread and running activity", async () => {
+    snapshot = {
+      ...snapshot,
+      workspaces: [workspace("running", { entity_id: "run-1" }), workspace("unread", { entity_id: "run-2" }), workspace("idle")],
+      items: [
+        { kind: "branch", run_id: "run-1", project_id: "proj-1", deviceId: "dev-1", projectKey: "dev-1/proj-1", working: true },
+        { kind: "branch", run_id: "run-2", project_id: "proj-1", deviceId: "dev-1", projectKey: "dev-1/proj-1", unread: true, unread_count: 7 },
+      ],
+    };
+    await openWorkspacesTab();
+    await flush();
+
+    const [running, unread, idle] = rows();
+    const runningDot = running.querySelector(".inbox-actions > .inbox-status-dot");
+    const unreadDot = unread.querySelector(".inbox-actions > .inbox-status-dot");
+    expect(runningDot?.classList.contains("inbox-status-running")).toBe(true);
+    expect(unreadDot?.classList.contains("inbox-status-unread")).toBe(true);
+    expect(unread.querySelector(".inbox-actions").lastElementChild).toBe(unreadDot);
+    expect(idle.querySelector(".inbox-actions")).not.toBeNull();
+    expect(idle.querySelector(".inbox-status-dot")).toBeNull();
+    expect(document.querySelector(".project-row .sdot, .project-row .inbox-unread")).toBeNull();
+  });
+
+  it("repaints a workspace's status dot when unread activity is read", async () => {
+    const conversation = { kind: "branch", run_id: "run-1", project_id: "proj-1", deviceId: "dev-1", projectKey: "dev-1/proj-1", working: true };
+    snapshot = { ...snapshot, workspaces: [workspace("ws-1", { entity_id: "run-1" })],
+      items: [{ ...conversation, unread: true, unread_count: 2 }] };
+    await openWorkspacesTab();
+    await flush();
+    expect(rows()[0].querySelector(".inbox-status-dot")?.classList.contains("inbox-status-unread")).toBe(true);
+    expect(rows()[0].querySelector(".inbox-status-dot")?.classList.contains("inbox-status-running")).toBe(true);
+
+    snapshot = { ...snapshot, items: [{ ...conversation, unread: false, unread_count: 0 }] };
+    deliver();
+    expect(rows()[0].querySelector(".inbox-status-dot")?.classList.contains("inbox-status-running")).toBe(true);
+    expect(rows()[0].querySelector(".inbox-status-dot")?.classList.contains("inbox-status-unread")).toBe(false);
+  });
+
   it("lists the project's workspaces, each opening its own surface", async () => {
     await openWorkspacesTab();
     await flush();

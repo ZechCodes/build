@@ -305,7 +305,12 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    so the inbox's text column stands on the same left edge as the commit and
    file rails beside it — a rail that indents differently reads as a third
    margin rather than as the same list at a narrower width. */
-.inbox-entry { align-items:flex-start; gap:8px; padding:10px 13px; margin-bottom:0; }
+/* Rows own their current fill; the project supplies only the resting tone.
+   Both right-edge overlays inherit this value, including on keyboard focus. */
+.inbox-entry { --inbox-row-fill:var(--inbox-project-fill, var(--panel));
+  background:var(--inbox-row-fill); align-items:flex-start; gap:8px; padding:10px 13px; margin-bottom:0; }
+.inbox-entry:hover { --inbox-row-fill:var(--row-hover); background:var(--inbox-row-fill); }
+.inbox-entry.active { --inbox-row-fill:var(--accent-soft); background:var(--inbox-row-fill); }
 .inbox-entry.active::before { content:""; position:absolute; left:0; top:6px; bottom:6px;
   width:3px; border-radius:0 3px 3px 0; background:var(--accent-fill, var(--accent)); }
 /* A row's fill runs the full width of the rail: the hover and the standing
@@ -345,10 +350,8 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .inbox-quiet { padding:8px calc(10px + var(--inbox-row-bleed-right)) 8px calc(26px + var(--inbox-row-bleed-left)); align-items:center; }
 .inbox-quiet .inbox-line .stitle { font-size:12.5px; }
 .inbox-facts-float { position:absolute; right:10px; top:50%; transform:translateY(-50%);
-  padding-left:10px; background:var(--panel); box-shadow:-10px 0 10px -6px var(--panel);
+  padding-left:10px; background:var(--inbox-row-fill); box-shadow:-10px 0 10px -6px var(--inbox-row-fill);
   pointer-events:none; white-space:nowrap; }
-.inbox-quiet:hover .inbox-facts-float { background:var(--line2); box-shadow:-10px 0 10px -6px var(--line2); }
-.inbox-quiet.active .inbox-facts-float { background:var(--accent-soft); box-shadow:-10px 0 10px -6px var(--accent-soft); }
 /* A muted entry keeps its place and its live status, and stops shouting. */
 .inbox-muted .inbox-reason { color:var(--dim); }
 /* A device the page cannot reach right now. Its work has not gone anywhere, so
@@ -411,16 +414,12 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .inbox-entry > .inbox-body > .inbox-line:first-child { padding-right:var(--inbox-actions-room); }
 .inbox-actions { position:absolute; top:var(--inbox-actions-inset); right:var(--inbox-actions-inset); display:flex;
   align-items:center; gap:4px; min-height:30px; opacity:0; pointer-events:none;
-  background:var(--panel); border-radius:6px; padding-left:var(--inbox-actions-fade);
-  box-shadow:-8px 0 8px -6px var(--panel); }
+  background:var(--inbox-row-fill); border-radius:6px; padding-left:var(--inbox-actions-fade);
+  box-shadow:-8px 0 8px -6px var(--inbox-row-fill); }
 .inbox-actions > button { opacity:0; pointer-events:none; transition:opacity 120ms ease; }
 .inbox-actions > .inbox-more { width:var(--inbox-menu-width); flex:none; padding:4px; }
 .inbox-actions > .inbox-workspace-done { opacity:1; pointer-events:auto; }
 .inbox-actions > [data-workspace-reclaim] { min-width:var(--inbox-control-width); }
-.inbox-entry:hover .inbox-actions { background:var(--line2);
-  box-shadow:-8px 0 8px -6px var(--line2); }
-.inbox-entry.active .inbox-actions { background:var(--accent-soft);
-  box-shadow:-8px 0 8px -6px var(--accent-soft); }
 .inbox-entry:hover .inbox-actions, .inbox-entry:focus-within .inbox-actions,
 .inbox-entry.active .inbox-actions,
 .inbox-actions:has(.inbox-workspace-done),
@@ -434,12 +433,6 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .inbox-project-agent .inbox-actions, .inbox-quiet .inbox-actions { top:50%; transform:translateY(-50%); }
 .inbox-entry.inbox-quiet .inbox-facts-float { right:calc(var(--inbox-actions-room) + var(--inbox-row-bleed-right)); }
 /* One width for Done and for Done…, so pressing it does not widen it. */
-/* Inside a project block the rows stand on the block's step of tone, so the
-   overlays that carry a row's own fill carry that one. */
-.inbox-project .inbox-actions { background:var(--panel2); box-shadow:-8px 0 8px -6px var(--panel2); }
-.inbox-project .inbox-facts-float { background:var(--panel2); box-shadow:-10px 0 10px -6px var(--panel2); }
-.inbox-project.active .inbox-actions, .inbox-project.active .inbox-facts-float {
-  background:var(--accent-soft); box-shadow:none; }
 .inbox-workspace-done { min-width:var(--inbox-done-width); }
 /* No hover on touch: the selected row shows its actions, one tap behind. */
 @media (hover:none) {
@@ -491,12 +484,13 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    its fill alone: the accent bar belongs to the standing ROW inside it, and a
    second bar on the band drew the same mark twice. */
 .inbox-projects { display:flex; flex-direction:column; gap:8px; }
-.inbox-project { position:relative; border:0; border-radius:0; background:var(--panel2);
+.inbox-project { --inbox-project-fill:var(--panel2);
+  position:relative; border:0; border-radius:0; background:var(--inbox-project-fill);
   --inbox-band-bleed:calc(10px + env(safe-area-inset-left, 0px));
   margin:0 -10px 0 calc(var(--inbox-band-bleed) * -1);
   padding:5px 15px 6px calc(var(--inbox-band-bleed) + 5px);
   transition:background-color .12s ease, box-shadow .12s ease; }
-.inbox-project.active { background:var(--accent-soft); }
+.inbox-project.active { --inbox-project-fill:var(--accent-soft); }
 /* A block with nothing live is a band like the rest — a bare head between two
    filled bands read as a gap in the list, not as a project. Its rows are the
    quiet ones and its fold has nothing to open (below). */

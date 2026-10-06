@@ -44,6 +44,18 @@ def client(skrift_app):
 
 
 @pytest.fixture()
+def colliding_csp_nonce(monkeypatch):
+    """Page assertions must ignore these substrings in nonce attributes."""
+    nonce = "test-zz-webauthn-nonce"
+    # Replace only the middleware's reference, not the shared secrets module.
+    monkeypatch.setattr(
+        "skrift.middleware.security.secrets",
+        SimpleNamespace(token_urlsafe=lambda _: nonce),
+    )
+    return nonce
+
+
+@pytest.fixture()
 def fake_authenticator(monkeypatch):
     """Stand in for the browser's half of registration: any credential posted to
     register/complete verifies, as a real authenticator's would."""
@@ -142,13 +154,15 @@ def forms(html: str) -> list[str]:
     return re.findall(r'<form id="([^"]+)"', html)
 
 
-def test_sign_in_asks_for_nothing(client):
+def test_sign_in_asks_for_nothing(client, colliding_csp_nonce):
     html = Page(client).html
+    assert f'nonce="{colliding_csp_nonce}"' in html
     signin = re.search(r'<form id="signin-form".*?</form>', html, re.S).group(0)
     fields = re.findall(r"<input[^>]*>", signin)
     assert fields and all('type="hidden"' in field for field in fields), fields
     assert "Sign in with a passkey" in signin
-    assert "webauthn" not in html
+    page_text = re.sub(r"<[^>]*>", "", html)
+    assert "webauthn" not in page_text
 
 
 def test_without_an_invite_the_page_is_sign_in_alone(client):
@@ -199,11 +213,15 @@ def test_auth_pages_do_not_cache_or_refer_an_invite_token(client, path):
     assert response.headers["referrer-policy"] == "no-referrer"
 
 
-def test_an_unknown_view_is_the_default_and_never_reflected(client):
+def test_an_unknown_view_is_the_default_and_never_reflected(client, colliding_csp_nonce):
     open_invite(client, issue(client, INVITED))
     html = client.get(f"{LOGIN_PATH}?view=zz%3Cview%3Ezz").text
+    assert f'nonce="{colliding_csp_nonce}"' in html
     assert forms(html) == ["signup-form"]
-    assert "zz" not in html
+    assert "<h1>Create your Build account</h1>" in html
+    assert "zz<view>zz" not in html
+    assert "zz&lt;view&gt;zz" not in html
+    assert "zz%3Cview%3Ezz" not in html
 
 
 def test_opening_an_invite_shows_its_address_prefilled_and_locked(client):

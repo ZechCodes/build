@@ -6,8 +6,9 @@
 // bridge's session summary on that conversation's feed row, since wire 1.28.0),
 // and after a day without activity it moves to Recent the way a workspace row
 // does. On the projects face it is not a row at all: it is the head of its
-// project's block (core/inboxProjects.js). Its badge carries the project's
-// watched tasks too, the ones no workspace row wears (#104).
+// project's block (core/inboxProjects.js). The inbox tally carries the project's
+// watched tasks too, the ones no workspace row wears (#104); the expanded
+// project head reads the conversation's own unread separately (#380).
 //
 // No DOM, no app imports — the wiring (core/inboxView.js) renders these, and
 // the row itself is painted by core/inbox.js with the rest.
@@ -76,6 +77,7 @@ function toProjectAgentEntry(project, rows, rosterOf, taskUnreadOf) {
     title: "Project agent",
     entityId,
     state: agentState(unreadCount, working),
+    ownUnreadCount: agentUnread,
     unreadCount,
     working,
     muted: false,

@@ -6,7 +6,7 @@ Notable changes to the bridge (`build-bridge`). The format follows
 protocol versions; see
 [Wire versioning and capabilities](ARCHITECTURE.md#wire-versioning-and-capabilities).
 
-## [0.2.10] - Unreleased
+## [0.2.10] - 2026-10-06
 
 ### Changed
 

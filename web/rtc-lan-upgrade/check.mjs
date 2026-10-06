@@ -140,7 +140,7 @@ try {
   await page.exposeFunction("fixtureSweepFinished", async () =>
     /host-sweep .*"reason":"(?:window-expired|completed)"/.test(await readFile(path.join(artifacts, "bridge.log"), "utf8")));
   await page.exposeFunction("fixtureDroppedHostChecks", droppedHostChecks);
-  await page.goto(`http://localhost:9001/fixture${unknown ? "?topology=unknown" : ""}`);
+  await page.goto(`http://localhost:9001/fixture${unknown || natControl ? "?topology=unknown" : ""}`);
   console.log("fixture page loaded");
   await page.waitForFunction(() => typeof window.runLanUpgrade === "function");
   console.log("fixture modules ready");
@@ -441,7 +441,7 @@ async function assertNatColdNeighborDoesNotBypassGate(artifacts, reason, sweepEv
     .trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
   const learned = snapshots.find((snapshot) => snapshot.after >= request.at
     && snapshot.neighbors.some((row) => row.dst === initial.phone_ip && row.lladdr
-      && row.state.some((state) => ["REACHABLE", "STALE", "DELAY", "PROBE"].includes(state))));
+      && row.state.some((state) => ["REACHABLE", "STALE", "DELAY"].includes(state))));
   assert(learned, "the bridge learns a usable phone neighbor from that ARP");
   assert(sweepEvents.some((event) => event.reason === reason && event.at >= request.at * 1000),
     "the NAT eligibility gate remains closed after the phone becomes on-link usable");

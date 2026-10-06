@@ -570,11 +570,11 @@ fn resolved_first_port_keeps_credential_baseline_for_second_port_early_probe() {
     assert!(baseline.contains(&known));
     assert!(!baseline.contains(&newly_usable));
     assert!(control.start(7, "ufrag", 40001));
-    sweep.start(7, "ufrag".into(), 40001, now + PACE);
+    sweep.start(7, "ufrag".into(), 40001, now + 3 * PACE);
     sweep.prepare(40001, vec![subnet()]);
     let probe = sweep
         .next_priority_probe(
-            now + 2 * PACE,
+            now + 4 * PACE,
             true,
             |_, ip| ip == newly_usable,
             |_, ip| !baseline.contains(&ip),

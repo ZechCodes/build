@@ -15,7 +15,8 @@
 
 import { entityIdOf } from "./entityId.js";
 import { PROJECT_AGENT } from "./inbox.js";
-import { agentsUnreadCount, freshestRosters } from "./inboxRoster.js";
+import { agentsUnreadCount, freshestRosters, watchedAgentsRunning } from "./inboxRoster.js";
+import { agentIsRunning } from "./agentRunning.js";
 import { projectNameOf } from "./inboxProjects.js";
 import { projectRoute } from "./projectModel.js";
 
@@ -64,8 +65,8 @@ function toProjectAgentEntry(project, rows, rosterOf, taskUnreadOf) {
   const { entityId, row, agents } = conversationOf(project, rows, rosterOf);
   const agentUnread = agents.length ? agentsUnreadCount(agents) : row?.unread_count || 0;
   const unreadCount = agentUnread + taskUnreadOf(project.projectKey);
-  const working = agents.length ? agents.some((agent) => agent.working) : !!row?.working;
-  const watchedWorking = agents.length ? agents.some((agent) => agent.watched !== false && agent.working) : working;
+  const working = agents.length ? agents.some(agentIsRunning) : agentIsRunning(row);
+  const watchedWorking = agents.length ? watchedAgentsRunning(agents) : working;
   const name = projectNameOf(project);
   return {
     key: projectAgentEntryKey(project.projectKey),

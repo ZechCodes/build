@@ -2,7 +2,10 @@
 // #380: every row has one right-edge status dot, derived from its cached
 // running state and unread activity, instead of a left icon and a count.
 import { describe, expect, it } from "vitest";
-import { inboxEntries, inboxRowHtml } from "../src/core/inbox.js";
+import { inboxEntries, inboxRowHtml, watchedWorkspaceEntries, workspaceEntries } from "../src/core/inbox.js";
+import { projectAgentEntries } from "../src/core/inboxProjectAgent.js";
+import { projectHeadHtml, workspaceProjectBlocks } from "../src/core/inboxProjects.js";
+import { runningAgentCount } from "../src/core/inboxRoster.js";
 
 const entry = (over = {}) => ({
   kind: "workspace", key: "workspace:dev/ws", name: "Checkout", project: "Build",
@@ -11,6 +14,69 @@ const entry = (over = {}) => ({
 });
 const rowOf = (row, ui) => new DOMParser().parseFromString(inboxRowHtml(row, ui), "text/html").querySelector(".inbox-entry");
 const statusOf = (row) => row.querySelector(".inbox-actions > .inbox-status-dot");
+
+describe("inbox running activity while an agent waits on another agent (#386)", () => {
+  const project = { id: "proj-386", projectKey: "dev/proj-386", deviceId: "dev", name: "Build", entity_id: "project-run" };
+  const workspace = { id: "ws-386", workspaceKey: "dev/ws-386", project_id: project.id, projectKey: project.projectKey,
+    deviceId: project.deviceId, name: "Checkout", status: "ready", entity_id: "workspace-run" };
+  const waiting = (id, over = {}) => ({ id, working: false, agents_running: 1, watched: true, unread_count: 0, ...over });
+  const conversation = (runId, over = {}) => ({ kind: "branch", run_id: runId, project_id: project.id,
+    projectKey: project.projectKey, deviceId: project.deviceId, working: false, ...over });
+  const headDot = (entry, folded) => {
+    const { blocks } = workspaceProjectBlocks([entry], [project]);
+    const html = projectHeadHtml(blocks[0], { folded: new Set(folded ? [project.projectKey] : []) });
+    return new DOMParser().parseFromString(html, "text/html").querySelector(".inbox-status-dot");
+  };
+
+  it.each([0, 2])("pulses the project conversation and expanded/folded heads with %i unread", (unread_count) => {
+    const [entry] = projectAgentEntries([project], [conversation(project.entity_id, {
+      agents: [waiting("project-agent", { unread_count })],
+    })]);
+    expect(entry).toMatchObject({ working: true, watchedWorking: true, ownUnreadCount: unread_count });
+    for (const dot of [statusOf(rowOf(entry)), headDot(entry, false), headDot(entry, true)]) {
+      expect(dot?.classList.contains("inbox-status-running")).toBe(true);
+      expect(dot?.classList.contains("inbox-status-unread")).toBe(unread_count > 0);
+    }
+  });
+
+  it("keeps an unwatched project agent's descendants out of the folded watched summary", () => {
+    const [entry] = projectAgentEntries([project], [conversation(project.entity_id, {
+      agents: [waiting("watched", { agents_running: 0 }), waiting("unwatched", { watched: false })],
+    })]);
+    expect(entry).toMatchObject({ working: true, watchedWorking: false });
+    expect(headDot(entry, false)?.classList.contains("inbox-status-running")).toBe(true);
+    expect(headDot(entry, true)).toBeNull();
+  });
+
+  it("counts each running parent once and filters watching only for the folded summary", () => {
+    const agents = [waiting("watched", { agents_running: 4, unread_count: 2 }), waiting("unwatched", { watched: false }),
+      waiting("idle", { agents_running: 0 })];
+    expect(runningAgentCount(agents)).toBe(2);
+    const [entry] = watchedWorkspaceEntries([workspace], [project], [conversation(workspace.entity_id, { agents })]);
+    expect(entry).toMatchObject({ working: true, watchedWorking: true, runningCount: 2, unreadCount: 2 });
+    expect(entry.facts).toContain("2 running");
+    expect(statusOf(rowOf(entry))?.classList.contains("inbox-status-running")).toBe(true);
+
+    const [unwatchedOnly] = watchedWorkspaceEntries([workspace], [project], [conversation(workspace.entity_id, {
+      agents: [waiting("watched", { agents_running: 0 }), waiting("unwatched", { watched: false })],
+    })]);
+    expect(unwatchedOnly).toMatchObject({ working: true, watchedWorking: false, runningCount: 1 });
+    expect(statusOf(rowOf(unwatchedOnly))?.classList.contains("inbox-status-running")).toBe(true);
+    expect(headDot(unwatchedOnly, true)).toBeNull();
+  });
+
+  it("uses the feed summary while the workspace roster has not landed", () => {
+    const [entry] = workspaceEntries([workspace], [project], [conversation(workspace.entity_id, { agents_running: 1 })]);
+    expect(entry).toMatchObject({ working: true, state: "working" });
+    expect(statusOf(rowOf(entry))?.classList.contains("inbox-status-running")).toBe(true);
+  });
+
+  it("uses the feed summary while the project roster has not landed", () => {
+    const [entry] = projectAgentEntries([project], [conversation(project.entity_id, { agents_running: 1 })]);
+    expect(entry).toMatchObject({ working: true, watchedWorking: true, state: "working" });
+    expect(headDot(entry, false)?.classList.contains("inbox-status-running")).toBe(true);
+  });
+});
 
 describe("the inbox's shared status dot", () => {
   it.each(["workspace", "branch", "task", "tracker_task", "project_agent"])("puts %s unread activity after the actions with no left icon or counter", (kind) => {

@@ -9,6 +9,8 @@
 
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { projectAgentEntries } from "../src/core/inboxProjectAgent.js";
+import { watchedWorkspaceEntries } from "../src/core/inbox.js";
 
 const syncDevice = vi.fn(async () => true);
 vi.mock("../src/core/cacheSync.js", () => ({ syncDevice: (deviceId) => syncDevice(deviceId) }));
@@ -81,6 +83,87 @@ const branchRow = (over = {}) => ({
 const settle = async () => {
   for (let index = 0; index < 20; index += 1) await new Promise((resolve) => setTimeout(resolve, 0));
 };
+
+describe("the feed's cached running-agent rollups (#386)", () => {
+  const parentRow = (agents, over = {}) => branchRow({ entity_id: "run-project", agents, ...over });
+  const project = { id: "proj-1", name: "Build", entity_id: "run-project", deviceId: "dev-1", projectKey: "dev-1/proj-1" };
+  const agentOf = (snapshot, deviceId = "dev-1") => snapshot.devices[deviceId].items
+    .find((row) => row.entity_id === "run-project").agents[0];
+  const support = (deviceId, namesMakers) => writeCached({ deviceId, entityId: "", kind: "agent-lineage-support" }, { namesMakers });
+
+  it("pulses project and workspace rows from raw harness descendants, then stops on a cache write", async () => {
+    const waiting = { id: "parent", watched: true, working: false,
+      surfaces: { subagents: [{ id: "harness-child", state: "running", started_at: 100 }] } };
+    const workspace = { id: "ws-1", project_id: "proj-1", name: "Checkout", status: "ready", entity_id: "run-workspace",
+      deviceId: "dev-1", projectKey: project.projectKey, workspaceKey: "dev-1/ws-1" };
+    await writeDevice("dev-1", { projects: [project], workspaces: [workspace], items: [parentRow([waiting]),
+      branchRow({ entity_id: "run-workspace", agents: [{ ...waiting, id: "workspace-parent" }] })] });
+    await writeCached(DEVICES_ADDRESS, [{ id: "dev-1" }]);
+    let snapshot;
+    subscribeFeed((next) => { snapshot = next; });
+    await startFeed();
+    const view = snapshot.devices["dev-1"];
+    expect(agentOf(snapshot)).toMatchObject({ working: false, agents_running: 1 });
+    expect(projectAgentEntries(view.projects, view.items, view.runs)[0]).toMatchObject({ working: true, watchedWorking: true });
+    expect(watchedWorkspaceEntries(view.workspaces, view.projects, view.items, view.runs)[0])
+      .toMatchObject({ working: true, watchedWorking: true, runningCount: 1 });
+    await writeRow("dev-1", parentRow([{ ...waiting, surfaces: { subagents: [{ state: "idle" }] } }]));
+    await vi.waitFor(() => expect(projectAgentEntries(snapshot.projects, snapshot.items, snapshot.runs)[0].working).toBe(false));
+    expect(agentOf(snapshot).working).toBe(false);
+    expect(syncDevice).not.toHaveBeenCalled();
+  });
+
+  it("rolls up hidden Build descendants transitively with cached capability gating and child-stop repaint", async () => {
+    const parent = parentRow([{ id: "parent", watched: true, working: false }]);
+    const child = branchRow({ entity_id: "run-child", agents: [{ id: "child", created_by: "parent", working: false }] });
+    const grandchild = branchRow({ entity_id: "run-grandchild", agents: [{ id: "grandchild", created_by: "child", working: true }] });
+    await writeDevice("dev-1", { projects: [project], items: [parent], runs: [parent, child, grandchild] });
+    await support("dev-1", true);
+    await writeCached(DEVICES_ADDRESS, [{ id: "dev-1" }]);
+    let snapshot;
+    subscribeFeed((next) => { snapshot = next; });
+    await startFeed();
+    expect(agentOf(snapshot)).toMatchObject({ working: false, agents_running: 1 });
+    await support("dev-1", false);
+    await vi.waitFor(() => expect(projectAgentEntries(snapshot.projects, snapshot.items, snapshot.runs)[0].working).toBe(false));
+    await support("dev-1", true);
+    await vi.waitFor(() => expect(agentOf(snapshot).agents_running).toBe(1));
+    await writeRow("dev-1", { ...grandchild, agents: [{ ...grandchild.agents[0], working: false }] });
+    await vi.waitFor(() => expect(projectAgentEntries(snapshot.projects, snapshot.items, snapshot.runs)[0].working).toBe(false));
+    expect(syncDevice).not.toHaveBeenCalled();
+  });
+
+  it("uses the newer stopped roster over an older running board copy", async () => {
+    const older = parentRow([{ id: "parent", watched: true, working: false, surfaces: { subagents: [{ state: "running" }] } }]);
+    const newer = parentRow([{ id: "parent", watched: true, working: false, surfaces: { subagents: [] } }]);
+    await writeDevice("dev-1", { projects: [project], items: [older], runs: [older] });
+    await writeRow("dev-1", newer);
+    await writeCached(DEVICES_ADDRESS, [{ id: "dev-1" }]);
+    let snapshot;
+    subscribeFeed((next) => { snapshot = next; });
+    await startFeed();
+    expect(projectAgentEntries(snapshot.projects, snapshot.items, snapshot.runs)[0].working).toBe(false);
+    expect(agentOf(snapshot).agents_running || 0).toBe(0);
+  });
+
+  it("keeps identical agent ids on other projects and devices out of a parent's lineage", async () => {
+    const parent = parentRow([{ id: "parent", watched: true, working: false }]);
+    const unrelated = branchRow({ project_id: "proj-2", projectKey: "dev-1/proj-2", entity_id: "other-project",
+      agents: [{ id: "child", created_by: "parent", working: true }] });
+    await writeDevice("dev-1", { projects: [project], items: [parent, unrelated] });
+    await writeDevice("dev-2", { projects: [{ ...project, deviceId: "dev-2", projectKey: "dev-2/proj-1" }],
+      items: [parentRow([{ id: "parent", watched: true, working: true }], { deviceId: "dev-2", projectKey: "dev-2/proj-1" })] });
+    await support("dev-1", true);
+    await support("dev-2", true);
+    await writeCached(DEVICES_ADDRESS, [{ id: "dev-1" }, { id: "dev-2" }]);
+    let snapshot;
+    subscribeFeed((next) => { snapshot = next; });
+    await startFeed();
+    expect(agentOf(snapshot)).toMatchObject({ working: false });
+    expect(agentOf(snapshot).agents_running || 0).toBe(0);
+    expect(agentOf(snapshot, "dev-2").working).toBe(true);
+  });
+});
 
 describe("the feed as a cache view", () => {
   it("delivers every known device's cached rows with nothing asked of any bridge", async () => {

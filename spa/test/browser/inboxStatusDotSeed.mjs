@@ -78,6 +78,43 @@ export async function inboxTextPositions(page) {
   })));
 }
 
+/** The three inbox models receive cached waiting-agent digests rather than
+ * pre-normalized working entries. The existing layout mount remains isolated. */
+export async function mountWaitingStatusDotInbox(page, basePath, {
+  grouped = false, folded = false, ownWaiting = true, workspaceWatched = true, unreadCount = 0,
+} = {}) {
+  await mountStatusDotInbox(page, basePath);
+  await loadBrowserModules(page, { rows: "src/core/inbox.js", projects: "src/core/inboxProjects.js",
+    agents: "src/core/inboxProjectAgent.js" }, basePath);
+  await page.evaluate(({ grouped, folded, ownWaiting, workspaceWatched, unreadCount, projectKey }) => {
+    const { rows, projects, agents } = window.__layoutModules;
+    const now = Date.now();
+    const project = { id: "layout-project", projectKey, deviceId: "layout-device", name: "Build", entity_id: "project-run",
+      session_started_ms: now - 100_000, last_activity_ms: now - 10_000 };
+    const workspace = { id: "waiting", workspaceKey: "layout-device/waiting", project_id: project.id, projectKey,
+      deviceId: project.deviceId, name: "Agent waiting on another agent", entity_id: "workspace-run", status: "ready",
+      work_summary: { pushes: 0, behind: 0, additions: 0, deletions: 0 },
+      session_started_ms: now - 100_000, last_activity_ms: now - 10_000 };
+    const digest = (id, over = {}) => ({ id, watched: true, working: false, agents_running: 0, unread_count: unreadCount, ...over });
+    const conversation = (run_id, roster) => ({ kind: "branch", run_id, project_id: project.id, projectKey, deviceId: project.deviceId,
+      working: false, agents: roster, session_started_ms: now - 100_000, last_activity_ms: now - 10_000 });
+    const items = [conversation(project.entity_id, [digest("project-agent", { agents_running: ownWaiting ? 1 : 0 })]),
+      conversation(workspace.entity_id, [digest("workspace-agent", { watched: workspaceWatched, agents_running: 1 }),
+        digest("idle-agent", { unread_count: 0 })])];
+    const entries = [...rows.watchedWorkspaceEntries([workspace], [project], items), ...agents.projectAgentEntries([project], items)];
+    const host = document.querySelector("#inbox-list");
+    const paint = (entry) => rows.inboxRowHtml(entry, { showProject: !grouped });
+    if (!grouped) host.innerHTML = entries.map(paint).join("");
+    else {
+      const { blocks } = projects.workspaceProjectBlocks(entries, [project]);
+      host.innerHTML = `<div class="inbox-projects">${projects.projectBlockHtml(blocks[0], {
+        folded: new Set(folded ? [projectKey] : []),
+      })}</div>`;
+      host.querySelector(".inbox-project-rows").innerHTML = entries.filter((entry) => entry.kind !== rows.PROJECT_AGENT).map(paint).join("");
+    }
+  }, { grouped, folded, ownWaiting, workspaceWatched, unreadCount, projectKey: PROJECT_KEY });
+}
+
 /** A real project Workspaces page with a cached reclaimable workspace. Its
  * in-memory RPC keeps Reclaim pending so both button labels can be measured. */
 export async function mountReclaimStatusDot(page, basePath) {

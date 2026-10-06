@@ -105,6 +105,17 @@ describe("watched task dots from cached agents", () => {
     expect(call).not.toHaveBeenCalled();
   });
 
+  it("pulses while the assigned agent waits on a harness agent and stops when that child finishes", async () => {
+    const parent = { id: "agent-task", working: false,
+      surfaces: { subagents: [{ id: "harness-child", state: "running" }] } };
+    await boot({ greet: false, tasks: [assigned], agentRows: [agentRow([parent])] });
+    await vi.waitFor(() => expect(dotFor()?.classList.contains("inbox-status-running")).toBe(true), WAIT);
+    await landAgents([{ ...parent, surfaces: { subagents: [{ id: "harness-child", state: "idle" }] } }]);
+    await vi.waitFor(() => expect(dotFor()).toBe(null), WAIT);
+    expect(rowFor(assigned.id)).not.toBe(null);
+    expect(call).not.toHaveBeenCalled();
+  });
+
   it("includes the assigned agent's running Build descendants when the cache names makers", async () => {
     const agents = [
       { id: "agent-task", working: false },

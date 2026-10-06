@@ -1726,6 +1726,13 @@ summarizes watched activity, including tasks without a Needs you row; an
 expanded head uses only its project conversation's own unread and activity.
 The head offers Hide and New workspace directly.
 
+The inbox and agent rail share `agentIsRunning` in
+`spa/src/core/agentRunning.js`: an agent runs while its own loop or an agent
+in its activity panel runs. The task feed derives those descendant rollups
+from the freshest cached rosters, per device and project, using the cached
+`agents.createdBy` capability for Build descendants. The agent's own
+`working` flag stays separate for interruption controls.
+
 ### Theming
 
 Tokens are CSS custom properties in `spa/src/styles.css`: `:root` holds the light

@@ -21,6 +21,7 @@ import { unreadReasonText } from "./inbox.js";
 import { providerLabel } from "./modelPicker.js";
 import { humanAge } from "./text.js";
 import { isStartupEvent, startupEventTitle } from "./threadEvents.js";
+import { agentIsRunning } from "./agentRunning.js";
 
 // One naming table for the whole client (core/modelPicker.js): the new-agent
 // cards, the Account select and the rail's bubbles all say the same word for
@@ -123,7 +124,7 @@ export const agentIsUp = (agent) => agentSessionIsLive(agent) || (!!agent && age
  *  which core/agentLineage.js lays on as `agents_running`. What the dots, the
  *  tip, the clock and the lists say. The interrupt below asks about the
  *  agent's own loop alone, since that is the only turn it could stop. */
-export const agentIsRunning = (agent) => !!agent && (!!agent.working || agent.agents_running > 0);
+export { agentIsRunning } from "./agentRunning.js";
 
 /** When an agent started running: its own turn, else the earliest running
  *  agent in its panel. */

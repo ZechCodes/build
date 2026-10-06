@@ -34,6 +34,12 @@ pub(super) struct Snapshot {
     pub neighbors_pending: u32,
     /// Generation maximum of the conservative pending-neighbor count.
     pub neighbors_pending_peak: u32,
+    /// Unique new usable neighbors successfully probed during this generation.
+    pub early_neighbors_probed: u32,
+    /// Whether early sends held this generation's scout start (zero or one).
+    pub scout_holds: u32,
+    /// Whether this generation actually enqueued a scout datagram (zero or one).
+    pub scout_starts: u32,
     pub reason: Option<&'static str>,
     pub eligible: bool,
     pub eligible_unresolved: u32,
@@ -55,6 +61,9 @@ impl From<HostCandidateSweepEvent> for Snapshot {
             destinations_scouted: event.destinations_scouted,
             neighbors_pending: event.neighbors_pending,
             neighbors_pending_peak: event.neighbors_pending_peak,
+            early_neighbors_probed: event.early_neighbors_probed,
+            scout_holds: event.scout_holds,
+            scout_starts: event.scout_starts,
             reason: event.reason.filter(|reason| known_reason(reason)),
             eligible: event.eligible,
             eligible_unresolved: event.eligible_unresolved,
@@ -109,6 +118,9 @@ mod tests {
             destinations_scouted: 600,
             neighbors_pending: 25,
             neighbors_pending_peak: 600,
+            early_neighbors_probed: 2,
+            scout_holds: 1,
+            scout_starts: 0,
             reason,
             eligible: true,
             eligible_unresolved: 2,
@@ -126,6 +138,7 @@ mod tests {
                 "scout_datagrams_sent": 1004, "scout_attempted": 1005,
                 "destinations_scouted": 600, "neighbors_pending": 25,
                 "neighbors_pending_peak": 600,
+                "early_neighbors_probed": 2, "scout_holds": 1, "scout_starts": 0,
                 "prflx_followed": true})
         );
     }
@@ -227,6 +240,7 @@ mod tests {
                 "addresses_attempted",
                 "addresses_sent",
                 "destinations_scouted",
+                "early_neighbors_probed",
                 "eligible",
                 "eligible_unresolved",
                 "generation",
@@ -236,6 +250,8 @@ mod tests {
                 "reason",
                 "scout_attempted",
                 "scout_datagrams_sent",
+                "scout_holds",
+                "scout_starts",
                 "status"
             ]
         );

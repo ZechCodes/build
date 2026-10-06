@@ -4,7 +4,8 @@
 
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { openPeerLink } from "../src/core/peerLink.js";
-import { clearConnectionDiagnosticHistory, connectionDiagnosticHistory } from "../src/core/connectionDiagnostics.js";
+import { clearConnectionDiagnosticHistory, connectionDiagnosticHistory, connectionDiagnosticReport } from "../src/core/connectionDiagnostics.js";
+import { diagnosticsJson } from "../src/core/connectionDiagnosticsModel.js";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -1111,6 +1112,11 @@ describe("a session that landed on a relayed pair", () => {
     expect(carrying.at(-1).at - reconnectedAt).toBe(20000);
     expect(connectionDiagnosticHistory().find((entry) => entry.event === "direct-pair"))
       .toMatchObject({ state: "trying", reason: "conntrack-sweep" });
+    const exported = JSON.parse(diagnosticsJson(connectionDiagnosticReport()));
+    expect(exported.events.filter((entry) => entry.event === "direct-pair")).toMatchObject([
+      { at: reconnectedAt + 20000, state: "trying", reason: "conntrack-sweep" },
+      { at: reconnectedAt + 20000, state: "renominated", path: "direct" },
+    ]);
     expect(peer.localDescriptions.slice(1).every(({ sdp }) => sdp.includes("restart"))).toBe(true);
     expect(resolved.app).toBe(app);
     expect(resolved.term).toBe(term);
@@ -1630,6 +1636,9 @@ describe("a session that landed on a relayed pair", () => {
     expect(finishFetch).toBeTypeOf("function");
     await vi.advanceTimersByTimeAsync(15001);
     expect(resolved.recovery.snapshot().recovering).toBe(false);
+    const exported = JSON.parse(diagnosticsJson(connectionDiagnosticReport()));
+    expect(exported.events.filter((entry) => entry.event === "direct-pair" && entry.state === "failed"))
+      .toMatchObject([{ reason: "timeout", path: "turn" }]);
     finishFetch(SERVERS);
     await vi.advanceTimersByTimeAsync(0);
     expect(offers(signalled)).toBe(1);
@@ -1674,6 +1683,9 @@ describe("a session that landed on a relayed pair", () => {
     expect(moves).toEqual(["direct"]);
     expect(offers(signalled)).toBe(2);
     expect(diagnosticsOf("direct-pair")).toEqual(["trying", "stayed-relayed", "renominated"]);
+    const exported = JSON.parse(diagnosticsJson(connectionDiagnosticReport()));
+    expect(exported.events.filter((entry) => entry.event === "direct-pair" && entry.state === "stayed-relayed"))
+      .toMatchObject([{ path: "turn" }]);
     expect(vi.getTimerCount()).toBe(0);
   });
 

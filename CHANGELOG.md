@@ -6,6 +6,13 @@ Notable changes to the bridge (`build-bridge`). The format follows
 protocol versions; see
 [Wire versioning and capabilities](ARCHITECTURE.md#wire-versioning-and-capabilities).
 
+## [0.2.12] - Unreleased
+
+### Fixed
+
+- Fill the whole grouped inbox project head on hover, matching row colors and
+  edges while keeping its name, controls and status dot in place (#389).
+
 ## [0.2.11] - 2026-10-06
 
 ### Fixed

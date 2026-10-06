@@ -92,8 +92,8 @@ function toProjectAgentEntry(project, rows, rosterOf, taskUnreadOf) {
 
 /** One row per project the rail lists, for its project agent.
  *  `taskUnreadOf(projectKey)` is the unread of the project's watched tasks
- *  no workspace row wears (#104, core/taskUnread.js): they count on the
- *  project's own badge like its agent's. */
+ *  no workspace row wears (#104, core/taskUnread.js): they contribute to the
+ *  project's unread tally alongside its agent's news. */
 export function projectAgentEntries(projects = [], items = [], runs = [], taskUnreadOf = () => 0) {
   const rosterOf = freshestRosters([...runs, ...items]);
   const rows = { items, runs };

@@ -23,13 +23,17 @@ const output = process.env.LANDING_REVIEW_DIR || "/tmp/build-landing-review";
 const gpu = process.env.LANDING_GPU === "1";
 await fs.mkdir(output, { recursive: true });
 
-const browser = await chromium.launch({
-  headless: true,
-  executablePath: process.env.CHROMIUM_PATH,
-  args: gpu
-    ? ["--headless=new", "--use-gl=angle", "--use-angle=gl", "--ignore-gpu-blocklist"]
-    : ["--enable-unsafe-swiftshader"],
-});
+function launchBrowser() {
+  return chromium.launch({
+    headless: true,
+    executablePath: process.env.CHROMIUM_PATH,
+    args: gpu
+      ? ["--headless=new", "--use-gl=angle", "--use-angle=gl", "--ignore-gpu-blocklist"]
+      : ["--enable-unsafe-swiftshader"],
+  });
+}
+
+let browser = await launchBrowser();
 
 const HEADLINES = [
   "Your agents are moving fast. Know what needs you.",
@@ -838,6 +842,10 @@ try {
   for (const [width, height] of FILM_VIEWPORTS) await inspectFilm(width, height);
   await inspectResize([1440, 900], [1024, 768]);
   await inspectScenes(1440, 900);
+  // Cold-start checks get a fresh graphics process after the forced rendering
+  // sweep, rather than inheriting its pending software-renderer resources.
+  await browser.close();
+  browser = await launchBrowser();
   await inspectStartup(1440, 900);
   await inspectNav(1440, 900);
   await fs.writeFile(path.join(output, "browser-results.json"), JSON.stringify(findings, null, 2));

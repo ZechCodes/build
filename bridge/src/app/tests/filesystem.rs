@@ -1344,11 +1344,24 @@ fn fs_upload_startup_sweep_reserves_staging_names_for_internal_files() {
     let sender = SessionSender::detached("uploader");
     let project_id = state.project_at(0).id.clone();
     let name = format!(".build-upload-{}.part", uuid::Uuid::new_v4());
-    let params = json!({"project_id": project_id, "parent": "", "name": name, "size": 0});
-    let begun = upload_call(&mut state, &sender, "fs.uploadBegin", params.clone());
-    assert_eq!(begun["error_code"], "invalid_params", "{begun:?}");
-    let created = state.handle(req("fs.createDirectory", params));
-    assert_eq!(created["error_code"], "invalid_params", "{created:?}");
+    for name in [&name, &name.to_ascii_uppercase()] {
+        let begun = upload_call(
+            &mut state,
+            &sender,
+            "fs.uploadBegin",
+            json!({
+                "project_id": project_id, "parent": "", "name": name, "size": 0,
+            }),
+        );
+        assert_eq!(begun["error_code"], "invalid_params", "{begun:?}");
+        let created = state.handle(req(
+            "fs.createDirectory",
+            json!({
+                "project_id": project_id, "parent": "", "name": name,
+            }),
+        ));
+        assert_eq!(created["error_code"], "invalid_params", "{created:?}");
+    }
     assert!(!repo.join(name).exists());
     assert!(state.uploads.is_empty());
 }

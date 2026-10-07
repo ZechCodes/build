@@ -20,6 +20,11 @@ pub(crate) struct Destination {
 impl Destination {
     pub(crate) fn open(root: &Path, parent: &str, name: &str) -> Result<Self, ApiError> {
         let name = plain_component(name)?;
+        if sweep::staging_id(&name).is_some() {
+            return Err(ApiError::invalid_params(
+                "name is reserved for upload staging",
+            ));
+        }
         let directory = open_parent(root, parent)?;
         let path = if parent.is_empty() {
             name.to_string_lossy().into_owned()

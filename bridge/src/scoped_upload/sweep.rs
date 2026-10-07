@@ -67,7 +67,7 @@ fn sweep_entry(
             let Some(id) = staging_id(name) else {
                 return 0;
             };
-            if active.contains(id) {
+            if active.contains(&id.to_string()) {
                 return 0;
             }
             remove_orphan(directory, name)
@@ -76,11 +76,11 @@ fn sweep_entry(
     }
 }
 
-fn staging_id(name: &CStr) -> Option<&str> {
-    let name = name.to_str().ok()?;
+pub(super) fn staging_id(name: &CStr) -> Option<uuid::Uuid> {
+    let name = name.to_str().ok()?.to_ascii_lowercase();
     let id = name.strip_prefix(".build-upload-")?.strip_suffix(".part")?;
     let uuid = uuid::Uuid::parse_str(id).ok()?;
-    (uuid.get_version_num() == 4 && uuid.to_string() == id).then_some(id)
+    (uuid.get_version_num() == 4 && uuid.to_string() == id).then_some(uuid)
 }
 
 fn remove_orphan(directory: &File, name: &CString) -> usize {

@@ -187,6 +187,8 @@ are canonicalised before the no-follow parent walk. Before admitting clients
 on boot, the bridge sweeps its known scope roots for orphaned regular files in
 the reserved `.build-upload-<UUIDv4>.part` namespace, owned by its user with
 mode 0600. It skips active IDs, symlinks and `.git`, with bounded traversal.
+Creation refuses that reserved staging destination namespace, including case
+variants, so a published user file cannot be mistaken for an orphan on boot.
 
 `conversation.reset` belongs to the typed thread family. It reserves one exact
 conversation, stops its processes and stages files outside the app lock, then

@@ -8,7 +8,7 @@
 .fupload-progress::-moz-progress-bar { background:var(--accent); }
 .fupload-body { min-height:0; overflow:auto; overscroll-behavior:contain; }
 .fupload-list { list-style:none; margin:0; padding:0; }
-.fupload-item { padding:10px 12px; border-top:1px solid var(--line); font-size:12px; }
+.fupload-item { padding:10px 12px; border-top:1px solid var(--line); font-size:12px; line-height:1.4; }
 .fupload-name { font-weight:600; overflow-wrap:anywhere; }
 .fupload-destination, .fupload-detail, .fupload-error { margin-top:4px; overflow-wrap:anywhere; }
 .fupload-destination, .fupload-detail { color:var(--ink2); }

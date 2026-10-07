@@ -6,7 +6,7 @@ Notable changes to the bridge (`build-bridge`). The format follows
 protocol versions; see
 [Wire versioning and capabilities](ARCHITECTURE.md#wire-versioning-and-capabilities).
 
-## [0.2.12] - Unreleased
+## [0.2.12] - 2026-10-07
 
 Wire 3.13.0.
 
@@ -15,7 +15,8 @@ Wire 3.13.0.
 - Upload binary files in chunks and create directories inside a workspace or
   configured project source. Uploads stage bytes until completion, refuse
   existing destinations unless replacement is requested, and can be aborted
-  without publishing a partial file (#391).
+  without publishing a partial file. Limits: 256 MiB per file, eight open
+  uploads per client, 64 per bridge, aborted after 10 minutes idle (#391).
 - Upload files or dropped folders into any Files directory, create folders
   inline, and follow transfers or retry recent uploads in a collapsible tray
   at the bottom right of the viewer (#392).

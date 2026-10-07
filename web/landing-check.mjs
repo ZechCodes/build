@@ -23,13 +23,17 @@ const output = process.env.LANDING_REVIEW_DIR || "/tmp/build-landing-review";
 const gpu = process.env.LANDING_GPU === "1";
 await fs.mkdir(output, { recursive: true });
 
-const browser = await chromium.launch({
-  headless: true,
-  executablePath: process.env.CHROMIUM_PATH,
-  args: gpu
-    ? ["--headless=new", "--use-gl=angle", "--use-angle=gl", "--ignore-gpu-blocklist"]
-    : ["--enable-unsafe-swiftshader"],
-});
+function launchBrowser() {
+  return chromium.launch({
+    headless: true,
+    executablePath: process.env.CHROMIUM_PATH,
+    args: gpu
+      ? ["--headless=new", "--use-gl=angle", "--use-angle=gl", "--ignore-gpu-blocklist"]
+      : ["--enable-unsafe-swiftshader"],
+  });
+}
+
+let browser = await launchBrowser();
 
 const HEADLINES = [
   "Your agents are moving fast. Know what needs you.",
@@ -467,6 +471,8 @@ async function checkSlowModule(width, height, label) {
   const linkedPage = await linked.newPage();
   await delayModules(linkedPage, 3500);
   await linkedPage.goto(`${base}/?film=${gpu ? "1" : "force"}#act-8`, { waitUntil: "commit" });
+  // Wait for this document to be parsed before reading its head's boot flag.
+  await linkedPage.waitForSelector("#act-8-title", { state: "attached" });
   await linkedPage.waitForFunction(() => document.documentElement.dataset.mode === "film", null, { timeout: 10_000 });
   assert.equal(await linkedPage.evaluate(() => document.documentElement.dataset.hero), undefined, `${label}: a link to act 8 skips the entrance`);
   await linkedPage.waitForFunction(() => document.documentElement.dataset.stage === "ready", null, { timeout: 60_000 });
@@ -737,7 +743,9 @@ async function checkScrollAway(width, height, label) {
   const { context, page, errors } = await openEntrance(width, height);
   await page.waitForFunction(() => window.BuildHero.timeline.time() > 1.3, null, { timeout: 60_000 });
   await page.mouse.move(width / 2, height / 2);
-  await page.mouse.wheel(0, 400);
+  // Go past halfway: a smaller gesture may now snap back to the hero on
+  // phones, while this check specifically exercises scrolling away.
+  await page.mouse.wheel(0, height * 0.6);
   await page.waitForFunction(() => window.BuildHero.done, null, { timeout: 10_000 });
   assert.equal(await page.evaluate(() => window.BuildHero.reason), "scroll");
   await page.waitForTimeout(300);
@@ -834,6 +842,10 @@ try {
   for (const [width, height] of FILM_VIEWPORTS) await inspectFilm(width, height);
   await inspectResize([1440, 900], [1024, 768]);
   await inspectScenes(1440, 900);
+  // Cold-start checks get a fresh graphics process after the forced rendering
+  // sweep, rather than inheriting its pending software-renderer resources.
+  await browser.close();
+  browser = await launchBrowser();
   await inspectStartup(1440, 900);
   await inspectNav(1440, 900);
   await fs.writeFile(path.join(output, "browser-results.json"), JSON.stringify(findings, null, 2));

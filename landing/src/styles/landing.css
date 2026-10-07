@@ -163,16 +163,26 @@ html:not([data-mode="film"]) body {
   scroll-margin-top: 2rem;
 }
 
-/* The document's rhythm, the film's without the stage: the scroll eases onto
-   an act's start when the visitor stops near it, and the act's copy comes
-   in as the act comes into view. main.js marks each act as it arrives,
-   once; without script the copy is simply there. */
+/* The document settles on section boundaries; the film owns its own snap.
+   Keep natural section heights and normal snap-stop so oversized sections
+   can scroll through their contents before advancing. main.js still marks
+   each act as it arrives, once; without script the copy is simply there. */
 html:not([data-mode]) {
-  scroll-snap-type: y proximity;
+  scroll-snap-type: y mandatory;
 }
 
-html:not([data-mode]) .act {
+html:not([data-mode]) .act,
+html:not([data-mode]) .practical-section {
   scroll-snap-align: start;
+  /* Section padding keeps the copy below the fixed bar. Align the section
+     itself to the viewport; hero.css reserves the bar on the first act. */
+  scroll-margin-top: 0;
+}
+
+/* Include the page's tail: otherwise mandatory snapping can pull a visitor
+   back to the last act instead of letting them reach setup and the links. */
+html:not([data-mode]) .landing-footer {
+  scroll-snap-align: end;
 }
 
 html[data-js="ready"]:not([data-mode]) .act__copy > * {
@@ -549,6 +559,13 @@ pre .line-you {
 .waitlist {
   margin-top: 2.25rem;
   max-width: 32rem;
+  scroll-margin-top: var(--nav-height);
+}
+
+/* An incoming #waitlist link must land on the form rather than snapping
+   past it to setup. Add this inner stop only when that link is targeted. */
+html:not([data-mode]) .waitlist:target {
+  scroll-snap-align: start;
 }
 
 .waitlist-form {

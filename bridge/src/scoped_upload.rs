@@ -3,6 +3,7 @@
 use crate::api::ApiError;
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
+use std::io::{Seek, SeekFrom, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
@@ -101,6 +102,37 @@ pub(crate) struct StagedFile {
     destination: Destination,
     temp_name: CString,
     file: File,
+}
+
+impl StagedFile {
+    pub(crate) fn validate_parent(&self, root: &Path) -> Result<(), ApiError> {
+        let parent = Path::new(&self.destination.path)
+            .parent()
+            .and_then(Path::to_str)
+            .unwrap_or("");
+        let current = open_parent(root, parent)?.metadata().map_err(|error| {
+            ApiError::internal(format!("cannot inspect upload parent: {error}"))
+        })?;
+        let held = self.destination.directory.metadata().map_err(|error| {
+            ApiError::internal(format!("cannot inspect upload parent: {error}"))
+        })?;
+        if (current.dev(), current.ino()) != (held.dev(), held.ino()) {
+            return Err(ApiError::invalid_params(
+                "upload parent changed since upload began",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn write_chunk(&mut self, offset: u64, bytes: &[u8]) -> Result<(), ApiError> {
+        if !entry_matches(&self.destination.directory, &self.temp_name, &self.file) {
+            return Err(ApiError::invalid_params("upload staging file changed"));
+        }
+        self.file
+            .seek(SeekFrom::Start(offset))
+            .and_then(|_| self.file.write_all(bytes))
+            .map_err(|error| ApiError::internal(format!("cannot write upload chunk: {error}")))
+    }
 }
 
 impl Drop for StagedFile {

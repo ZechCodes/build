@@ -605,19 +605,41 @@ fn fs_upload_begin_refuses_traversal_git_symlinks_and_non_files() {
     assert_eq!(std::fs::read_dir(repo.join("assets")).unwrap().count(), 0);
 }
 
-fn begin_upload(state: &mut AppState, sender: &SessionSender, name: &str, size: u64, replace: bool) -> String {
+fn begin_upload(
+    state: &mut AppState,
+    sender: &SessionSender,
+    name: &str,
+    size: u64,
+    replace: bool,
+) -> String {
     let project_id = state.project_at(0).id.clone();
-    let response = upload_call(state, sender, "fs.uploadBegin", json!({
-        "project_id": project_id, "parent": "", "name": name, "size": size, "replace": replace,
-    }));
+    let response = upload_call(
+        state,
+        sender,
+        "fs.uploadBegin",
+        json!({
+            "project_id": project_id, "parent": "", "name": name, "size": size, "replace": replace,
+        }),
+    );
     assert_eq!(response["ok"], true, "{response:?}");
     response["result"]["upload_id"].as_str().unwrap().into()
 }
 
-fn upload_bytes(state: &mut AppState, sender: &SessionSender, id: &str, offset: u64, bytes: &[u8]) -> Value {
-    upload_call(state, sender, "fs.uploadChunk", json!({
-        "upload_id": id, "offset": offset, "content_b64": b64encode(bytes),
-    }))
+fn upload_bytes(
+    state: &mut AppState,
+    sender: &SessionSender,
+    id: &str,
+    offset: u64,
+    bytes: &[u8],
+) -> Value {
+    upload_call(
+        state,
+        sender,
+        "fs.uploadChunk",
+        json!({
+            "upload_id": id, "offset": offset, "content_b64": b64encode(bytes),
+        }),
+    )
 }
 
 #[test]
@@ -629,15 +651,34 @@ fn fs_upload_chunk_enforces_order_limits_encoding_and_client_ownership() {
     let temp = repo.join(format!(".build-upload-{id}.part"));
     let first = upload_bytes(&mut state, &sender, &id, 0, &[0xff, 0]);
     assert_eq!(first["result"], json!({"received": 2}), "{first:?}");
-    for (offset, bytes) in [(3, vec![1]), (1, vec![1]), (2, vec![1; 4]), (2, vec![1; 4 * 1_048_576 + 1])] {
-        assert_eq!(upload_bytes(&mut state, &sender, &id, offset, &bytes)["error_code"], "invalid_params");
+    for (offset, bytes) in [
+        (3, vec![1]),
+        (1, vec![1]),
+        (2, vec![1; 4]),
+        (2, vec![1; 4 * 1_048_576 + 1]),
+    ] {
+        assert_eq!(
+            upload_bytes(&mut state, &sender, &id, offset, &bytes)["error_code"],
+            "invalid_params"
+        );
     }
-    let invalid = upload_call(&mut state, &sender, "fs.uploadChunk", json!({
-        "upload_id": id, "offset": 2, "content_b64": "%%%",
-    }));
+    let invalid = upload_call(
+        &mut state,
+        &sender,
+        "fs.uploadChunk",
+        json!({
+            "upload_id": id, "offset": 2, "content_b64": "%%%",
+        }),
+    );
     assert_eq!(invalid["error_code"], "invalid_params", "{invalid:?}");
-    for stranger in [SessionSender::detached("other"), SessionSender::detached("uploader")] {
-        assert_eq!(upload_bytes(&mut state, &stranger, &id, 2, &[1])["error_code"], "not_found");
+    for stranger in [
+        SessionSender::detached("other"),
+        SessionSender::detached("uploader"),
+    ] {
+        assert_eq!(
+            upload_bytes(&mut state, &stranger, &id, 2, &[1])["error_code"],
+            "not_found"
+        );
     }
     assert_eq!(std::fs::read(&temp).unwrap(), [0xff, 0]);
     let last = upload_bytes(&mut state, &sender, &id, 2, &[1, 2, 3]);

@@ -1311,7 +1311,7 @@ fn fs_upload_startup_sweep_preserves_links_git_and_unrelated_names() {
     std::os::unix::fs::symlink(&outside_file, &leaf).unwrap();
     let git_file = orphaned_upload_file(&repo.join(".git"));
     let upper_git = repo.join(".GIT");
-    std::fs::create_dir(&upper_git).unwrap();
+    std::fs::create_dir_all(&upper_git).unwrap();
     let upper_git_file = orphaned_upload_file(&upper_git);
     let malformed = repo.join(".build-upload-user-file.part");
     std::fs::write(&malformed, b"keep").unwrap();
@@ -1335,6 +1335,22 @@ fn fs_upload_startup_sweep_preserves_links_git_and_unrelated_names() {
         .unwrap()
         .file_type()
         .is_symlink());
+}
+
+#[test]
+fn fs_upload_startup_sweep_reserves_staging_names_for_internal_files() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let sender = SessionSender::detached("uploader");
+    let project_id = state.project_at(0).id.clone();
+    let name = format!(".build-upload-{}.part", uuid::Uuid::new_v4());
+    let params = json!({"project_id": project_id, "parent": "", "name": name, "size": 0});
+    let begun = upload_call(&mut state, &sender, "fs.uploadBegin", params.clone());
+    assert_eq!(begun["error_code"], "invalid_params", "{begun:?}");
+    let created = state.handle(req("fs.createDirectory", params));
+    assert_eq!(created["error_code"], "invalid_params", "{created:?}");
+    assert!(!repo.join(name).exists());
+    assert!(state.uploads.is_empty());
 }
 
 #[test]

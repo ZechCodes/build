@@ -1846,10 +1846,10 @@ mod intake_tests {
         assert_eq!(within_patience(frames.recv()).await, "data:s-1");
 
         intake.close_carrier(&first);
-        assert_eq!(within_patience(ended_rx.recv()).await, "s-1");
         intake
             .open("s-1", &session_init("s-1", &key), &second)
             .expect("the id is free to mint again once its session ended");
+        assert_eq!(within_patience(ended_rx.recv()).await, "s-1");
         release_tx.send(()).unwrap();
 
         intake

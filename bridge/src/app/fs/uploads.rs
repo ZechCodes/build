@@ -14,6 +14,8 @@ use std::time::{Duration, Instant};
 
 pub(in crate::app) const UPLOAD_MAX_BYTES: u64 = 256 * 1_048_576;
 pub(in crate::app) const UPLOAD_CHUNK_BYTES: u64 = 4 * 1_048_576;
+const UPLOAD_SESSION_LIMIT: usize = 8;
+const UPLOAD_TOTAL_LIMIT: usize = 64;
 const UPLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 pub(in crate::app) struct Upload {
@@ -28,6 +30,11 @@ pub(in crate::app) struct Upload {
 }
 
 impl AppState {
+    pub(in crate::app) fn drop_ended_session_uploads(&mut self, session_id: &str) {
+        self.uploads
+            .retain(|_, upload| upload.owner != session_id || upload.opening.is_open());
+    }
+
     pub(in crate::app) fn upload_open_within(&self, root: &Path) -> bool {
         self.uploads
             .values()
@@ -53,7 +60,8 @@ impl AppState {
     pub(in crate::app) fn reap_idle_uploads_at(&mut self, now: Instant) -> usize {
         let before = self.uploads.len();
         self.uploads.retain(|_, upload| {
-            now.saturating_duration_since(upload.last_chunk_at) < UPLOAD_IDLE_TIMEOUT
+            upload.opening.is_open()
+                && now.saturating_duration_since(upload.last_chunk_at) < UPLOAD_IDLE_TIMEOUT
         });
         before - self.uploads.len()
     }
@@ -102,7 +110,9 @@ impl AppState {
         self.uploads
             .get(id)
             .filter(|upload| {
-                upload.owner == caller.session_id() && upload.opening.is(&caller.opening())
+                upload.opening.is_open()
+                    && upload.owner == caller.session_id()
+                    && upload.opening.is(&caller.opening())
             })
             .ok_or_else(|| ApiError::not_found("unknown upload_id"))
     }
@@ -171,6 +181,20 @@ impl AppState {
         params: FsUploadBeginParams,
         caller: &SessionSender,
     ) -> Result<FsUploadBeginResult, ApiError> {
+        self.reap_idle_uploads_at(Instant::now());
+        if !caller.session_is_open() {
+            return Err(ApiError::not_found("client session has ended"));
+        }
+        let owned = self
+            .uploads
+            .values()
+            .filter(|upload| upload.owner == caller.session_id())
+            .count();
+        if self.uploads.len() >= UPLOAD_TOTAL_LIMIT || owned >= UPLOAD_SESSION_LIMIT {
+            return Err(ApiError::busy(
+                "too many open uploads; finish or abort an upload first",
+            ));
+        }
         if params.size > UPLOAD_MAX_BYTES {
             return Err(ApiError::invalid_params(
                 "upload size exceeds the 268435456-byte limit",

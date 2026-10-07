@@ -624,6 +624,7 @@ impl AppState {
     /// agent key and leaves with the spawn that inherits it, the agent's
     /// retirement, or the reaper.
     pub(in crate::app) fn drop_session(&mut self, session_id: &str) {
+        self.drop_ended_session_uploads(session_id);
         self.peers().end_session(session_id);
         for screen in self.session_registry.screen_handles() {
             screen.detach(session_id);

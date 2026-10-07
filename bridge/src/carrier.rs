@@ -1809,6 +1809,7 @@ mod intake_tests {
     /// session's to receive.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_late_close_from_an_earlier_opening_leaves_the_reopened_session_alone() {
+        let (ended_tx, mut ended_rx) = mpsc::unbounded_channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let release_rx = Mutex::new(release_rx);
         let (report, mut frames) = reporting_handler();
@@ -1819,6 +1820,9 @@ mod intake_tests {
                 let _ = release_rx.lock().unwrap().recv();
             }
             response
+        })
+        .on_session_end(move |session_id| {
+            let _ = ended_tx.send(session_id.to_string());
         });
         let intake = FrameIntake::new(handler, TRANSPORT.clone());
         let (first, _first_out) = CarrierHandle::open_channel();
@@ -1842,6 +1846,7 @@ mod intake_tests {
         assert_eq!(within_patience(frames.recv()).await, "data:s-1");
 
         intake.close_carrier(&first);
+        assert_eq!(within_patience(ended_rx.recv()).await, "s-1");
         intake
             .open("s-1", &session_init("s-1", &key), &second)
             .expect("the id is free to mint again once its session ended");

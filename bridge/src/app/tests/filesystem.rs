@@ -526,19 +526,42 @@ fn fs_upload_and_directory_creation_accept_a_symlinked_scope_root() {
     let (project_id, source_id) = (project.id.clone(), project.sources[0].id.clone());
     let linked_root = dir.path().join("linked-root");
     std::os::unix::fs::symlink(&repo, &linked_root).unwrap();
-    state.projects.source_mut(&project_id, &source_id).unwrap().path = linked_root;
-    let created = state.handle(req("fs.createDirectory", json!({
-        "project_id": project_id, "source_id": source_id, "parent": "", "name": "assets",
-    })));
+    state
+        .projects
+        .source_mut(&project_id, &source_id)
+        .unwrap()
+        .path = linked_root;
+    let created = state.handle(req(
+        "fs.createDirectory",
+        json!({
+            "project_id": project_id, "source_id": source_id, "parent": "", "name": "assets",
+        }),
+    ));
     assert_eq!(created["ok"], true, "{created:?}");
     let sender = SessionSender::detached("uploader");
-    let begun = upload_call(&mut state, &sender, "fs.uploadBegin", json!({
-        "project_id": project_id, "source_id": source_id, "parent": "assets", "name": "new.bin", "size": 1,
-    }));
+    let begun = upload_call(
+        &mut state,
+        &sender,
+        "fs.uploadBegin",
+        json!({
+            "project_id": project_id, "source_id": source_id, "parent": "assets", "name": "new.bin", "size": 1,
+        }),
+    );
     assert_eq!(begun["ok"], true, "{begun:?}");
     let id = begun["result"]["upload_id"].as_str().unwrap();
-    assert_eq!(upload_bytes(&mut state, &sender, id, 0, &[0xff])["ok"], true);
-    assert_eq!(upload_call(&mut state, &sender, "fs.uploadFinish", json!({"upload_id": id}))["ok"], true);
+    assert_eq!(
+        upload_bytes(&mut state, &sender, id, 0, &[0xff])["ok"],
+        true
+    );
+    assert_eq!(
+        upload_call(
+            &mut state,
+            &sender,
+            "fs.uploadFinish",
+            json!({"upload_id": id})
+        )["ok"],
+        true
+    );
     assert_eq!(std::fs::read(repo.join("assets/new.bin")).unwrap(), [0xff]);
 }
 

@@ -179,8 +179,6 @@ impl AppState {
         let (scope, root) = self.file_mutation_scope(&params.scope)?;
         let destination = Destination::open(&root, &params.parent, &params.name)?;
         let path = destination.path().to_string();
-        let root = std::fs::canonicalize(root)
-            .map_err(|error| ApiError::internal(format!("cannot resolve upload root: {error}")))?;
         let upload_id = uuid::Uuid::new_v4().to_string();
         let staged = destination.stage(&upload_id, params.replace.unwrap_or(false))?;
         self.uploads.insert(

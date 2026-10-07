@@ -192,6 +192,9 @@ impl AppState {
         let root = scope.resolve_root(self).map_err(ApiError::classify)?;
         self.refuse_writers_while_reserved(&root)
             .map_err(ApiError::classify)?;
+        let root = std::fs::canonicalize(root).map_err(|error| {
+            ApiError::invalid_params(format!("cannot resolve scope root: {error}"))
+        })?;
         Ok((scope, root))
     }
 

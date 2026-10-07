@@ -94,6 +94,7 @@ pub mod router;
 pub mod rtc;
 pub mod run;
 pub(crate) mod scoped_file;
+pub(crate) mod scoped_upload;
 pub mod screen;
 pub mod service;
 pub mod session_summary;

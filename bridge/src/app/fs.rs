@@ -1,3 +1,6 @@
+use crate::api::v1::git::{FsCreateDirectoryParams, FsCreateDirectoryResult, ScopeParams};
+use crate::api::v1::WireParams;
+use crate::api::ApiError;
 use crate::app::{expand_tilde, mime_hint};
 use crate::body_page::{page_len, BodyRange, BodySpan, FileRange};
 use crate::encoding::b64decode;
@@ -165,6 +168,40 @@ pub(in crate::app) fn directory_listing(
 }
 
 impl AppState {
+    pub(crate) fn fs_create_directory(
+        &mut self,
+        params: FsCreateDirectoryParams,
+    ) -> Result<FsCreateDirectoryResult, ApiError> {
+        let (scope, root) = self.file_mutation_scope(&params.scope)?;
+        let destination =
+            crate::scoped_upload::Destination::open(&root, &params.parent, &params.name)?;
+        destination.create_directory()?;
+        self.finish_file_mutation(&scope)?;
+        Ok(FsCreateDirectoryResult {
+            path: destination.path().into(),
+        })
+    }
+
+    fn file_mutation_scope(
+        &mut self,
+        params: &ScopeParams,
+    ) -> Result<(FileScope, std::path::PathBuf), ApiError> {
+        let scope = FileScope::parse(&params.wire()).map_err(ApiError::classify)?;
+        let root = scope.resolve_root(self).map_err(ApiError::classify)?;
+        self.refuse_writers_while_reserved(&root)
+            .map_err(ApiError::classify)?;
+        Ok((scope, root))
+    }
+
+    fn finish_file_mutation(&mut self, scope: &FileScope) -> Result<(), ApiError> {
+        if let FileScope::WorkspaceSource { workspace_id, .. } = scope {
+            self.reopen_workspace(workspace_id)
+                .map_err(ApiError::classify)?;
+        }
+        self.invalidate_file_scope(scope);
+        Ok(())
+    }
+
     /// Browse host directories so the user can pick a repo without typing a path.
     /// Returns the canonical path, its parent (for "up"), whether it is itself a git
     /// repo, and its subdirectories (each flagged if it is a git repo).

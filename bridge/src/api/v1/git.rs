@@ -1071,10 +1071,10 @@ fn fs_write(app: &mut AppState, params: FsWriteParams) -> Result<Answer<FsFileRe
 }
 
 fn fs_create_directory(
-    _app: &mut AppState,
-    _params: FsCreateDirectoryParams,
+    app: &mut AppState,
+    params: FsCreateDirectoryParams,
 ) -> Result<FsCreateDirectoryResult, ApiError> {
-    Err(ApiError::unavailable("upload implementation pending"))
+    app.fs_create_directory(params)
 }
 
 fn fs_upload_begin(

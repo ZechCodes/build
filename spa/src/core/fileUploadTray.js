@@ -94,7 +94,15 @@ export function mountFileUploadTray(viewerEl, { uploads }) {
     aggregate.max = Math.max(1, active.reduce((sum, item) => sum + item.size, 0));
     aggregate.value = active.reduce((sum, item) => sum + item.received, 0);
     body.hidden = !expanded;
+    const focusLabel = body.contains(document.activeElement) ? document.activeElement.getAttribute("aria-label") : null;
     renderBody(active, recent);
+    if (focusLabel) restoreFocus(focusLabel);
+  }
+
+  function restoreFocus(label) {
+    for (const control of body.querySelectorAll("button")) {
+      if (control.getAttribute("aria-label") === label) { control.focus({ preventScroll: true }); break; }
+    }
   }
 
   function renderBody(active, recent) {

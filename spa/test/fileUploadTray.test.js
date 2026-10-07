@@ -41,3 +41,16 @@ it("formats large transfer totals in readable units", () => {
   expect(document.querySelector(".fupload-detail").textContent).toBe("500 MB / 2.0 GB");
   dispose();
 });
+
+it("keeps keyboard focus on an action while progress updates", () => {
+  let listener;
+  const item = { id: "one", name: "one.txt", size: 100, received: 20, status: "uploading" };
+  const uploads = { snapshot: () => ({ active: [item], recent: [] }), subscribe: (fn) => { listener = fn; return () => {}; }, prune() {}, cancel() {} };
+  const dispose = mountFileUploadTray(document.body, { uploads });
+  document.querySelector(".fupload-summary").click();
+  document.querySelector(".fupload-action").focus();
+  item.received = 30;
+  listener();
+  expect(document.activeElement.getAttribute("aria-label")).toBe("Cancel one.txt");
+  dispose();
+});

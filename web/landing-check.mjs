@@ -737,7 +737,9 @@ async function checkScrollAway(width, height, label) {
   const { context, page, errors } = await openEntrance(width, height);
   await page.waitForFunction(() => window.BuildHero.timeline.time() > 1.3, null, { timeout: 60_000 });
   await page.mouse.move(width / 2, height / 2);
-  await page.mouse.wheel(0, 400);
+  // Go past halfway: a smaller gesture may now snap back to the hero on
+  // phones, while this check specifically exercises scrolling away.
+  await page.mouse.wheel(0, height * 0.6);
   await page.waitForFunction(() => window.BuildHero.done, null, { timeout: 10_000 });
   assert.equal(await page.evaluate(() => window.BuildHero.reason), "scroll");
   await page.waitForTimeout(300);

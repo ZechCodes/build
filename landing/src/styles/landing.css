@@ -562,6 +562,12 @@ pre .line-you {
   scroll-margin-top: var(--nav-height);
 }
 
+/* An incoming #waitlist link must land on the form rather than snapping
+   past it to setup. Add this inner stop only when that link is targeted. */
+html:not([data-mode]) .waitlist:target {
+  scroll-snap-align: start;
+}
+
 .waitlist-form {
   display: flex;
   flex-wrap: wrap;

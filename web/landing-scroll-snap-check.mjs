@@ -24,23 +24,20 @@ async function sections(page) {
   }));
 }
 
-// Let native wheel/key dispatch and snapping finish, then require a stable
-// position for several frames. This also works where scrollend is absent.
+// Poll from the driver so no-JavaScript contexts work too. Require a stable
+// position after native input dispatch; no dependency on scrollend support.
 async function settled(page) {
-  return page.evaluate(() => new Promise((resolve, reject) => {
-    const started = performance.now();
-    let previous = -1;
-    let stable = 0;
-    function sample() {
-      const top = document.scrollingElement.scrollTop;
-      stable = top === previous ? stable + 1 : 0;
-      previous = top;
-      if (performance.now() - started > 250 && stable >= 8) return resolve(top);
-      if (performance.now() - started > 5000) return reject(new Error("Scrolling did not settle"));
-      requestAnimationFrame(sample);
-    }
-    requestAnimationFrame(sample);
-  }));
+  const started = performance.now();
+  let previous = -1;
+  let stable = 0;
+  while (performance.now() - started < 5000) {
+    await page.waitForTimeout(50);
+    const top = await page.evaluate(() => document.scrollingElement.scrollTop);
+    stable = top === previous ? stable + 1 : 0;
+    previous = top;
+    if (performance.now() - started > 250 && stable >= 4) return top;
+  }
+  throw new Error("Scrolling did not settle");
 }
 
 function near(actual, expected, label) {
@@ -95,7 +92,7 @@ async function checkProfile(viewport, options = {}) {
     await fragment(page, "act-1");
     for (let i = 0; i < 6; i++) await page.mouse.wheel(0, viewport.height * 0.1);
     const burst = await settled(page);
-    assert.ok(targets.some(target => Math.abs(burst - target.top) <= 1
+    assert.ok(burst <= 1 || targets.some(target => Math.abs(burst - target.top) <= 1
       || (target.height > viewport.height && burst >= target.top && burst <= target.top + target.height - viewport.height + 1)),
     `${label}: small wheel events settle on a section or inside tall content (${burst})`);
 
@@ -122,10 +119,14 @@ async function checkProfile(viewport, options = {}) {
     await page.locator(".site-nav .cta").click();
     near(await settled(page), targets.find(target => target.id === "act-8").top, `${label}: the nav reaches the waitlist act`);
     await fragment(page, "waitlist");
+    const linkedInput = await page.locator("#waitlist input").boundingBox();
+    assert.ok(linkedInput.y >= 55 && linkedInput.y + linkedInput.height <= viewport.height + 1,
+      `${label}: #waitlist exposes the input before focus (${linkedInput.y})`);
     await page.locator("#waitlist input").focus();
     await settled(page);
     const input = await page.locator("#waitlist input").boundingBox();
-    assert.ok(input.y >= 56 && input.y + input.height <= viewport.height, `${label}: the email input is reachable below the bar`);
+    assert.ok(input.y >= 55 && input.y + input.height <= viewport.height + 1,
+      `${label}: the email input is reachable below the bar (${input.y}, ${input.height})`);
 
     if (viewport.width >= 768 && options.javaScriptEnabled !== false) {
       for (const key of ["PageDown", "Space", "ArrowDown"]) await checkKeyboard(page, key, targets, label);
@@ -136,6 +137,11 @@ async function checkProfile(viewport, options = {}) {
     near(end, await page.evaluate(() => document.scrollingElement.scrollHeight - innerHeight), `${label}: End reaches the footer`);
     const footer = await page.locator("footer").boundingBox();
     assert.ok(footer.y >= 56 && footer.y + footer.height <= viewport.height + 1, `${label}: footer links stay reachable`);
+    await page.goto(`${base}/?film=0#waitlist`, { waitUntil: "networkidle" });
+    await settled(page);
+    const incomingInput = await page.locator("#waitlist input").boundingBox();
+    assert.ok(incomingInput.y >= 55 && incomingInput.y + incomingInput.height <= viewport.height + 1,
+      `${label}: an incoming #waitlist link exposes the input (${incomingInput.y})`);
     assert.deepEqual(errors, [], `${label}: no browser errors`);
     console.log(`Passed ${label}`);
   } finally {

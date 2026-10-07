@@ -1,6 +1,6 @@
 import "../styles/fileUploads.css";
 
-const bytes = (value) => value < 1024 ? `${value} B` : `${(value / 1024).toFixed(1)} KB`;
+import { humanBytes as bytes } from "./workspaceLifecycle.js";
 
 function element(tag, className, text) {
   const node = document.createElement(tag);

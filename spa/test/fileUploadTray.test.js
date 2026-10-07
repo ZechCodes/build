@@ -33,3 +33,11 @@ it("announces one finished upload in the idle summary", () => {
   expect(document.querySelector('[role="status"]').textContent).toBe("1 upload finished");
   dispose();
 });
+
+it("formats large transfer totals in readable units", () => {
+  const uploads = { snapshot: () => ({ active: [{ id: "one", name: "movie.mp4", size: 2000000000, received: 500000000, status: "uploading" }], recent: [] }), subscribe: () => () => {}, prune() {} };
+  const dispose = mountFileUploadTray(document.body, { uploads });
+  document.querySelector(".fupload-summary").click();
+  expect(document.querySelector(".fupload-detail").textContent).toBe("500 MB / 2.0 GB");
+  dispose();
+});

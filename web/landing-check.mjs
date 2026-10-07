@@ -467,6 +467,8 @@ async function checkSlowModule(width, height, label) {
   const linkedPage = await linked.newPage();
   await delayModules(linkedPage, 3500);
   await linkedPage.goto(`${base}/?film=${gpu ? "1" : "force"}#act-8`, { waitUntil: "commit" });
+  // Wait for this document to be parsed before reading its head's boot flag.
+  await linkedPage.waitForSelector("#act-8-title", { state: "attached" });
   await linkedPage.waitForFunction(() => document.documentElement.dataset.mode === "film", null, { timeout: 10_000 });
   assert.equal(await linkedPage.evaluate(() => document.documentElement.dataset.hero), undefined, `${label}: a link to act 8 skips the entrance`);
   await linkedPage.waitForFunction(() => document.documentElement.dataset.stage === "ready", null, { timeout: 60_000 });

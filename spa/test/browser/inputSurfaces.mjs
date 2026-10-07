@@ -17,6 +17,7 @@ export const INPUT_SOURCES = {
   "core/composer.js": "new conversation / task composer",
   "core/createWork.js": "task controls",
   "core/fileEditor.js": "file editor",
+  "core/filesUploadActions.js": "New folder",
   "core/filterMenuControl.js": "filter menu / task composer",
   "core/inbox.js": "reroute",
   "core/taskComposer.js": "task composer",
@@ -62,6 +63,7 @@ export const INPUT_TOGGLE_SOURCES = {
 };
 export const INPUT_RANGE_SOURCES = { "core/menuSlider.js": "native range slider; task #366 owns its styling" };
 export const INPUT_FILE_SOURCES = {
+  "core/filesUploadActions.js": "hidden directory upload picker",
   "core/composer.js": "hidden attachment picker",
   "core/taskComposer.js": "hidden task attachment picker",
   "core/trackerTaskRender.js": "hidden task comment attachment picker",
@@ -94,6 +96,7 @@ export const INPUT_SURFACES = [
   { name: "comment popover", selectors: [".cp-input"] },
   { name: "changes composer", selectors: [".csinput"] },
   { name: "file editor", selectors: [".file-editor"] },
+  { name: "New folder", selectors: ['input[aria-label="New folder name"]'] },
   { name: "review file", selectors: ["[data-review-line-input]"] },
 ];
 
@@ -103,6 +106,7 @@ const modules = {
   filter: "src/core/filterMenuControl.js", refs: "src/core/workspaceRefPicker.js", toolbar: "src/core/toolbar.js",
   feed: "src/core/taskFeed.js", inbox: "src/core/inbox.js", taskComposer: "src/core/taskComposer.js",
   task: "src/core/trackerTaskRender.js", assignee: "src/core/trackerAssigneePicker.js", pop: "src/commentPop.js",
+  fileUploads: "src/core/filesUploadActions.js",
   changes: "src/core/changesComposer.js", editor: "src/core/fileEditor.js", reviewFiles: "src/core/taskReviewFiles.js",
 };
 
@@ -132,6 +136,15 @@ async function seedInputSurface({ name, theme }) {
   await m.cache.writeCached({ deviceId: device.id, entityId: "", kind: "workspaces" }, [workspace]);
 
   const mounts = {
+    "New folder"() {
+      root.innerHTML = '<div class="ftree-list"><div class="frow fdir" data-kind="dir" data-path="docs"><span class="fname">docs</span></div></div>';
+      dispose(m.fileUploads.mountFilesUploadActions(root, {
+        roots: [{ id: null, label: "Files", scope: { run_id: "input-run" } }],
+        capabilities: { uploads: true, createDirectory: true },
+        uploads: { enqueue() {}, enqueueDrop: async () => {} }, callRpc: async () => ({ path: "docs/assets" }), onCreated() {},
+      }));
+      root.querySelector('.frow[data-path="docs"] [data-upload-action="folder"]').click();
+    },
     pairing() { disposers.push(m.pairing.openAddDevice(() => {})); },
     "directory browser": async () => {
       await m.cache.writeCached(m.browser.browserListingAddress(device.id, "/code"), listing);

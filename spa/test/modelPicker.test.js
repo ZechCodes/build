@@ -47,12 +47,14 @@ describe("the harnesses an agent can be created on", () => {
       "claude",
       "codex_app_server",
       "codex",
+      "pi",
     ]);
     expect(STARTABLE_PROVIDERS.map((provider) => provider.label)).toEqual([
       "Claude Code",
       "Claude Code TUI",
       "Codex",
       "Codex TUI",
+      "Pi",
     ]);
   });
 
@@ -61,6 +63,7 @@ describe("the harnesses an agent can be created on", () => {
     expect(providerLabel("claude")).toBe("Claude Code TUI");
     expect(providerLabel("codex_app_server")).toBe("Codex");
     expect(providerLabel("codex")).toBe("Codex TUI");
+    expect(providerLabel("pi")).toBe("Pi");
   });
 
   it("says what an unnamed or unknown provider is, rather than nothing", () => {

@@ -3732,6 +3732,33 @@ describe("the chat tab of a branch with no agent", () => {
     expect(callsTo("agent.add")[0].params).toMatchObject({ entity_id: "run-3", provider: "codex" });
   });
 
+  it("creates Pi on its default model with its saved effort and names it in the header", async () => {
+    catalog = {
+      ...CATALOG,
+      providers: [...CATALOG.providers, {
+        id: "pi", label: "Pi", installed: true, models: [], efforts: ["off", "minimal", "low", "high"], cli_version: null,
+      }],
+    };
+    localStorage.setItem("build.agentDefaults", JSON.stringify({
+      provider: "claude_adk", harnesses: { pi: { model: "stale-model", effort: "high" } },
+    }));
+    payload = agentless();
+    await mount();
+    await vi.waitFor(() => expect(cards().map((entry) => entry.textContent.trim())).toEqual(["Claude Code", "Codex", "Pi"]));
+    card("pi").click();
+    await flush();
+    expect(chosenCard().dataset.provider).toBe("pi");
+    expect(reasoningMenuButton().textContent).toContain("high");
+
+    await send("start here");
+    expect(callsTo("agent.add")[0].params).toMatchObject({ entity_id: "run-3", provider: "pi", effort: "high" });
+    expect(callsTo("agent.add")[0].params).not.toHaveProperty("model");
+
+    payload = branchRow({ agents: [agent({ id: "ag-2", provider: "pi", topic: "", model: "", requested_model: "" })] });
+    await pushRow();
+    expect(headWho(panel())).toBe("Pi");
+  });
+
   it("keeps model and effort when the selected harness is pressed again", async () => {
     localStorage.setItem("build.agentDefaults", JSON.stringify({
       provider: "claude_adk", model: "claude-opus-5", effort: "high",

@@ -57,6 +57,12 @@ export function matchCatalogModel(models, modelId) {
   return undated === modelId ? null : modelInCatalog(models, undated);
 }
 
+/** Pi's empty catalog leaves model selection to its own config. Other
+ *  harnesses still accept custom or unavailable model preferences. */
+export const creationModelSupported = (provider) => provider.id !== "pi" || !!provider.models?.length;
+
+export const creationModelId = (provider, modelId) => creationModelSupported(provider) ? modelId : "";
+
 /** <option> list for the model select: harness default, catalog, and — when the
  *  current selection is not in the catalog (e.g. a task dispatched on a newer
  *  bridge, or a model this machine's CLI is too old for) — the selection

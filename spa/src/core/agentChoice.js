@@ -11,6 +11,8 @@ import { esc } from "./text.js";
 import {
   catalogForProvider,
   creatableCatalog,
+  creationModelId,
+  creationModelSupported,
   effortLevels,
   effortOptionsHtml,
   effortSupported,
@@ -36,7 +38,7 @@ const offeredProviderId = (providers, providerId) =>
  *
  *  Over a narrowed catalog this is also what clamps a stale preference: a token
  *  the offer does not hold is answered with the default, so a provider stored
- *  when a third harness was on offer paints and dispatches as one of the two. */
+ *  when another harness was on offer paints and dispatches as one offered now. */
 export function chosenProviderId(catalog, choice) {
   const providers = (catalog && catalog.providers) || [];
   const named = choice && choice.provider;
@@ -56,29 +58,35 @@ export function chosenProviderId(catalog, choice) {
  * `prefix` names the three controls, so two panels can be open at once without
  * either one answering for the other.
  *
- * Both callers create or dispatch, so the Agent select offers the two agents a
+ * Both callers create or dispatch, so the Agent select offers the agents a
  * person can create — never the carrier question behind Claude Code, which the
- * account has already answered. An agent that already exists is locked to its
+ * device has already answered. An agent that already exists is locked to its
  * own harness and asks none of this: its picker is the composer's model menu.
  */
+function creationModelHtml(provider, modelId, prefix) {
+  const models = provider.models || [];
+  return `<label for="${esc(prefix)}-model">Model</label>
+      <select id="${esc(prefix)}-model"${creationModelSupported(provider) ? "" : " disabled"}>${modelOptionsHtml(models, modelId, provider)}</select>
+      ${modelNoteHtml(provider)}`;
+}
+
 // eslint-disable-next-line complexity -- ratchet: agentChoicePanelHtml is at 11, cap 10 — reduce it, then drop this line
 export function agentChoicePanelHtml(catalog, choice, { prefix = "agent-choice", open = false } = {}) {
   const offered = creatableCatalog(catalog || {});
   const providerId = chosenProviderId(offered, choice);
   const forProvider = catalogForProvider(offered, providerId);
   const models = forProvider.models || [];
-  const model = modelInCatalog(models, choice.model);
+  const modelId = creationModelId(forProvider, choice.model);
+  const model = modelInCatalog(models, modelId);
   return `<div class="agent-choice">
     <button class="compose-disclose" type="button" data-agent-choice-toggle="${esc(prefix)}" aria-expanded="${open ? "true" : "false"}">
       <span class="disclosure-caret" aria-hidden="true">${open ? "▾" : "▸"}</span> Agent, model and effort</button>
     <div class="agent-choice-fields"${open ? "" : " hidden"}>
       <label for="${esc(prefix)}-provider">Agent</label>
       <select id="${esc(prefix)}-provider">${providerOptionsHtml(offered.providers, providerId)}</select>
-      <label for="${esc(prefix)}-model">Model</label>
-      <select id="${esc(prefix)}-model">${modelOptionsHtml(models, choice.model, forProvider)}</select>
-      ${modelNoteHtml(forProvider)}
+      ${creationModelHtml(forProvider, modelId, prefix)}
       <label for="${esc(prefix)}-effort">Effort</label>
-      <select id="${esc(prefix)}-effort"${effortSupported(models, choice.model) ? "" : " disabled"}>${effortOptionsHtml(
+      <select id="${esc(prefix)}-effort"${effortSupported(models, modelId) ? "" : " disabled"}>${effortOptionsHtml(
         forProvider.efforts || [],
         choice.effort,
         model,
@@ -105,8 +113,9 @@ export function readAgentChoice(root, prefix = "agent-choice") {
 export function agentChoiceParams(catalog, choice) {
   const offered = creatableCatalog(catalog || {});
   const providerId = chosenProviderId(offered, choice);
-  const models = catalogForProvider(offered, providerId).models || [];
-  return modelParams(models, choice.model, choice.effort, providerId);
+  const provider = catalogForProvider(offered, providerId);
+  const models = provider.models || [];
+  return modelParams(models, creationModelId(provider, choice.model), choice.effort, providerId);
 }
 
 // ---- the composer's model menu ---------------------------------------------

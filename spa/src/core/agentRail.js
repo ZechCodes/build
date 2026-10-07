@@ -78,7 +78,7 @@ import { createTimelineSlice } from "./timelineSlice.js";
 import { hide, motionSettled, reveal, setMotionRowHtml } from "./motion.js";
 import { composerGaugeHtml, composerHtml, mountComposerModelMenu } from "./composer.js";
 import { mountContextGauge } from "./contextGauge.js";
-import { catalogForProvider, creatableCatalog, effortLevels, effortSupported, matchCatalogModel, modelParams } from "./modelPicker.js";
+import { catalogForProvider, creatableCatalog, creationModelId, effortLevels, effortSupported, matchCatalogModel, modelParams } from "./modelPicker.js";
 import { markSeen } from "./inboxView.js";
 import { onReaderReturns, readerIsHere } from "./readerPresence.js";
 import { notifyError } from "./notify.js";
@@ -258,7 +258,7 @@ const clampStoredAgentChoice = (catalog, choice) => {
   const providerCatalog = catalogForProvider(offered, provider);
   const matchedModel = matchCatalogModel(providerCatalog.models || [], choice.model || "");
   if (matchedModel) return clampKnownModelChoice(provider, providerCatalog, choice, matchedModel);
-  return { provider, model: choice.model || "", effort: choice.effort || "" };
+  return { provider, model: creationModelId(providerCatalog, choice.model || ""), effort: choice.effort || "" };
 };
 
 const recoveryExcerpt = (recovery) => {
@@ -1379,7 +1379,7 @@ function mountRailOnContext(host, context, swap) {
 
   // ---- the agent that does not exist yet -------------------------------------
 
-  /** The two agents this view offers, with the account's answer folded in: one
+  /** The agents this view offers, with the account's answer folded in: one
    *  of them IS the account's default harness (`models.list`'s
    *  `default_provider`), so the carrier question is never asked here. */
   const creatable = () => {
@@ -1446,8 +1446,9 @@ function mountRailOnContext(host, context, swap) {
   /** That choice as `agent.add` params: empties omitted, so the harness's own
    *  default stands where nothing was said. */
   const newAgentParams = (choice = newAgentChoice()) => {
-    const { models } = catalogForProvider(catalog || {}, choice.provider);
-    const params = modelParams(models || [], choice.model || choice.requestedModel, choice.effort, choice.provider);
+    const provider = catalogForProvider(catalog || {}, choice.provider);
+    const model = creationModelId(provider, choice.model || choice.requestedModel);
+    const params = modelParams(provider.models || [], model, choice.effort, choice.provider);
     // Omitted when the reader typed nothing, so the bridge's own rule stands:
     // an unnamed agent is asked to name itself the first time it is written to.
     const name = newAgentName();
@@ -2570,12 +2571,14 @@ function mountRailOnContext(host, context, swap) {
   /// where the conversation would be. The composer below it is the live one —
   /// sending is what creates the highlighted agent and speaks to it.
   ///
-  /// Rewritten only when the highlight moves, for the same reason the strip is:
+  /// Rewritten when the highlight or available harnesses move, for the same reason the strip is:
   /// a poll that replaced these buttons would swallow the press landing on one.
   const paintNewAgent = (body) => {
     const chosen = newAgentChoice().provider;
-    if (body.dataset.newAgent === chosen) return;
-    const choices = harnessChoicesHtml(creatable().providers, chosen);
+    const providers = creatable().providers;
+    const offered = JSON.stringify(providers.map(({ id, label }) => [id, label]));
+    if (body.dataset.newAgent === chosen && body.dataset.newAgentProviders === offered) return;
+    const choices = harnessChoicesHtml(providers, chosen);
     body.innerHTML = `<div class="rail-newagent">
       <p>Start a new conversation</p>
       <div class="rail-harness-picker" role="group" aria-label="Agent harness">${choices}</div>
@@ -2594,6 +2597,7 @@ function mountRailOnContext(host, context, swap) {
       <p class="dim rail-newagent-resolved" data-new-agent-resolved></p>
     </div>`;
     body.dataset.newAgent = chosen;
+    body.dataset.newAgentProviders = offered;
     // Held outside the repaint: the picker rewrites itself when the harness
     // highlight moves, and a name half-typed must not go with it.
     body.querySelector("[data-new-agent-name]").oninput = (event) => {

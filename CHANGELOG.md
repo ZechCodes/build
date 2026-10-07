@@ -19,6 +19,8 @@ Wire 3.13.0.
 
 ### Fixed
 
+- Offer installed Pi in agent creation pickers, with its reasoning efforts and
+  default model even when its model catalog and CLI version are absent (#394).
 - Fill the whole grouped inbox project head on hover, matching row colors and
   edges while keeping its name, controls and status dot in place (#389).
 

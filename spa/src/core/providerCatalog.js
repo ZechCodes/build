@@ -19,6 +19,14 @@ const PROVIDER_FAMILIES = [
       { id: "codex", label: "Codex TUI" },
     ],
   },
+  {
+    key: "pi",
+    genericLabel: "Pi",
+    fallbackCarrierId: "pi",
+    modeCarrierIds: {},
+    requiresInstalled: true,
+    carriers: [{ id: "pi", label: "Pi" }],
+  },
 ];
 
 export const STARTABLE_PROVIDERS = PROVIDER_FAMILIES.flatMap((family) =>
@@ -107,14 +115,20 @@ export function catalogForProvider(catalog, providerId) {
   return providers.find((provider) => provider.id === providerId) || providers[0] || { models: [], efforts: [] };
 }
 
+function familyAvailable(family, providers) {
+  if (!family.requiresInstalled) return true;
+  return providers.some((provider) => provider.id === family.fallbackCarrierId && provider.installed);
+}
+
 export function creatableCatalog(catalog) {
   const servedProviders = (catalog && catalog.providers) || [];
-  const providers = PROVIDER_FAMILIES.map((family) => {
+  const providers = PROVIDER_FAMILIES.filter((family) => familyAvailable(family, servedProviders)).map((family) => {
     const id = selectedCarrierId(family, catalog);
     const servedProvider = servedProviders.find((provider) => provider.id === id) || {};
     return {
       id,
       label: family.genericLabel,
+      installed: servedProvider.installed,
       models: servedProvider.models || [],
       efforts: servedProvider.efforts || [],
       cli_name: servedProvider.cli_name,

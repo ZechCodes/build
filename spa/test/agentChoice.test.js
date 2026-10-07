@@ -15,6 +15,7 @@ import {
   readAgentChoice,
   reconcileAgentChoice,
 } from "../src/core/agentChoice.js";
+import { creatableCatalog } from "../src/core/providerCatalog.js";
 
 const catalog = {
   default_provider: "claude",
@@ -48,7 +49,7 @@ const fourHarnesses = {
 const piAccountCatalog = {
   default_provider: "pi",
   providers: [
-    { id: "pi", label: "Pi", models: [], efforts: [] },
+    { id: "pi", label: "Pi", installed: true, models: [], efforts: ["off", "minimal", "low", "medium", "high", "xhigh", "max"], cli_name: "pi", cli_version: null },
     { id: "claude_adk", label: "Claude Code", models: [], efforts: [] },
     { id: "claude", label: "Claude Code TUI", models: [], efforts: [] },
     { id: "codex", label: "Codex", models: [], efforts: [] },
@@ -151,14 +152,59 @@ describe("the choice as params", () => {
     expect(agentChoiceParams(fourHarnesses, NO_AGENT_CHOICE)).toEqual({ provider: "claude_adk" });
   });
 
-  it("sends the agent displayed by the creation catalog when the account default is not offered", () => {
-    const host = mount(agentChoicePanelHtml(piAccountCatalog, NO_AGENT_CHOICE, { open: true }));
+  it("offers the installed Pi harness without models or a CLI version and creates on its default model", () => {
+    const offered = creatableCatalog(piAccountCatalog);
+    expect(offered.providers.find(({ id }) => id === "pi")).toMatchObject({
+      label: "Pi", installed: true, models: [], cli_version: null,
+      efforts: piAccountCatalog.providers[0].efforts,
+    });
+    const host = mount(agentChoicePanelHtml(offered, NO_AGENT_CHOICE, { open: true }));
     expect([...host.querySelectorAll("#agent-choice-provider option")].map((option) => option.textContent)).toEqual([
       "Claude Code",
       "Codex",
+      "Pi",
     ]);
+    expect(host.querySelector("#agent-choice-provider").value).toBe("pi");
+    expect(host.querySelector("#agent-choice-model").disabled).toBe(true);
+    expect(host.querySelector("#agent-choice-effort").disabled).toBe(false);
+    expect([...host.querySelectorAll("#agent-choice-effort option")].map(({ value }) => value)).toEqual([
+      "", ...piAccountCatalog.providers[0].efforts,
+    ]);
+    expect(host.querySelector(".model-update-note")).toBeNull();
+    expect(agentChoiceParams(piAccountCatalog, readAgentChoice(host))).toEqual({ provider: "pi" });
+    host.querySelector("#agent-choice-effort").value = "high";
+    expect(agentChoiceParams(piAccountCatalog, readAgentChoice(host))).toEqual({ provider: "pi", effort: "high" });
+  });
+
+  it("drops a stale model preference when creating on a harness with no models", () => {
+    const choice = { provider: "pi", model: "opus", effort: "low" };
+    const host = mount(agentChoicePanelHtml(piAccountCatalog, choice, { open: true }));
+    expect(host.querySelector("#agent-choice-model").value).toBe("");
+    expect(agentChoiceParams(piAccountCatalog, choice)).toEqual({ provider: "pi", effort: "low" });
+  });
+
+  it("keeps custom model choices for other harnesses whose catalog is empty", () => {
+    const choice = { provider: "claude_adk", model: "company-custom-model", effort: "" };
+    const host = mount(agentChoicePanelHtml(fourHarnesses, choice, { open: true }));
+    expect(host.querySelector("#agent-choice-model").disabled).toBe(false);
+    expect(host.querySelector("#agent-choice-model").value).toBe("company-custom-model");
+    expect(agentChoiceParams(fourHarnesses, choice)).toEqual({ provider: "claude_adk", model: "company-custom-model" });
+  });
+
+  it.each(["headless", "tui"])("keeps Pi selectable when the other agents use %s mode", (mode) => {
+    const withModes = { ...piAccountCatalog, default_provider: "claude_adk", agent_modes: { claude: mode, codex: mode } };
+    const choice = { provider: "pi", model: "", effort: "minimal" };
+    const host = mount(agentChoicePanelHtml(withModes, choice, { open: true }));
+    expect(host.querySelector("#agent-choice-provider").value).toBe("pi");
+    expect(agentChoiceParams(withModes, readAgentChoice(host))).toEqual({ provider: "pi", effort: "minimal" });
+  });
+
+  it.each([false, undefined])("keeps Pi out of creation until the bridge reports it installed (%s)", (installed) => {
+    const unavailable = { ...piAccountCatalog, providers: [{ ...piAccountCatalog.providers[0], installed }] };
+    expect(creatableCatalog(unavailable).providers.map(({ id }) => id)).not.toContain("pi");
+    const host = mount(agentChoicePanelHtml(unavailable, { provider: "pi", model: "", effort: "" }, { open: true }));
     expect(host.querySelector("#agent-choice-provider").value).toBe("claude_adk");
-    expect(agentChoiceParams(piAccountCatalog, NO_AGENT_CHOICE)).toEqual({ provider: "claude_adk" });
+    expect(agentChoiceParams(unavailable, readAgentChoice(host))).toEqual({ provider: "claude_adk" });
   });
 });
 

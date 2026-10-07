@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // The account fallback used when a coding-agent creation request does not name
-// a provider. Visible creation pickers name their Claude Code or Codex provider
+// a provider. Visible creation pickers name their displayed provider
 // and override it.
 //
 // The word "headless" stays out of every string a person reads.
@@ -129,7 +129,7 @@ describe("the fallback-agent panel", () => {
       "This device fallback is used only when a coding-agent creation request does not name a provider.",
     );
     expect(host.textContent).toContain(
-      "Creation pickers send the displayed Claude Code or Codex provider and override this fallback.",
+      "Creation pickers send the displayed provider and override this fallback.",
     );
     expect(host.textContent).not.toMatch(/branch|every new/i);
   });

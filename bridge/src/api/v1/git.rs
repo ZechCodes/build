@@ -1092,10 +1092,10 @@ fn fs_upload_chunk(
 }
 
 fn fs_upload_finish(
-    _app: &mut AppState,
-    _params: FsUploadIdParams,
+    app: &mut AppState,
+    params: FsUploadIdParams,
 ) -> Result<FsUploadFinishResult, ApiError> {
-    Err(ApiError::unavailable("upload implementation pending"))
+    app.fs_upload_finish(params, &super::changes::caller()?)
 }
 
 fn fs_upload_abort(

@@ -89,6 +89,7 @@ impl Destination {
             destination: self,
             temp_name,
             file,
+            replace,
         };
         staged
             .file
@@ -102,9 +103,53 @@ pub(crate) struct StagedFile {
     destination: Destination,
     temp_name: CString,
     file: File,
+    replace: bool,
 }
 
 impl StagedFile {
+    pub(crate) fn finish(&mut self, size: u64) -> Result<String, ApiError> {
+        if !entry_matches(&self.destination.directory, &self.temp_name, &self.file) {
+            return Err(ApiError::invalid_params("upload staging file changed"));
+        }
+        let metadata = self
+            .file
+            .metadata()
+            .map_err(|error| ApiError::internal(format!("cannot inspect upload: {error}")))?;
+        if metadata.len() != size {
+            return Err(ApiError::invalid_params("upload staging size changed"));
+        }
+        self.file
+            .sync_all()
+            .map_err(|error| ApiError::internal(format!("cannot sync upload: {error}")))?;
+        self.destination.check_target(self.replace)?;
+        self.publish()?;
+        self.destination.directory.sync_all().map_err(|error| {
+            ApiError::internal(format!("cannot sync upload directory: {error}"))
+        })?;
+        Ok(self.destination.path.clone())
+    }
+
+    fn publish(&self) -> Result<(), ApiError> {
+        let directory = self.destination.directory.as_raw_fd();
+        if !self.replace {
+            return rename_no_replace(directory, &self.temp_name, &self.destination.name);
+        }
+        // SAFETY: both names are live relative C strings in the same owned parent directory.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+        let result = unsafe {
+            libc::renameat(
+                directory,
+                self.temp_name.as_ptr(),
+                directory,
+                self.destination.name.as_ptr(),
+            )
+        };
+        if result < 0 {
+            return Err(entry_error("cannot publish upload"));
+        }
+        Ok(())
+    }
+
     pub(crate) fn validate_parent(&self, root: &Path) -> Result<(), ApiError> {
         let parent = Path::new(&self.destination.path)
             .parent()
@@ -133,6 +178,73 @@ impl StagedFile {
             .and_then(|_| self.file.write_all(bytes))
             .map_err(|error| ApiError::internal(format!("cannot write upload chunk: {error}")))
     }
+}
+
+#[cfg(target_os = "linux")]
+fn rename_no_replace(
+    directory: std::os::fd::RawFd,
+    temp: &CString,
+    target: &CString,
+) -> Result<(), ApiError> {
+    // SAFETY: both names are relative to the live parent; RENAME_NOREPLACE atomically refuses a late destination.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let result = unsafe {
+        libc::renameat2(
+            directory,
+            temp.as_ptr(),
+            directory,
+            target.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if result < 0 {
+        return Err(entry_error("cannot publish upload"));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn rename_no_replace(
+    directory: std::os::fd::RawFd,
+    temp: &CString,
+    target: &CString,
+) -> Result<(), ApiError> {
+    // SAFETY: both names are relative to the live parent; RENAME_EXCL atomically refuses a late destination.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let result = unsafe {
+        libc::renameatx_np(
+            directory,
+            temp.as_ptr(),
+            directory,
+            target.as_ptr(),
+            libc::RENAME_EXCL,
+        )
+    };
+    if result < 0 {
+        return Err(entry_error("cannot publish upload"));
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn rename_no_replace(
+    directory: std::os::fd::RawFd,
+    temp: &CString,
+    target: &CString,
+) -> Result<(), ApiError> {
+    // SAFETY: hard-link publication atomically refuses existing entries; both names are relative to the owned directory.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let result = unsafe { libc::linkat(directory, temp.as_ptr(), directory, target.as_ptr(), 0) };
+    if result < 0 {
+        return Err(entry_error("cannot publish upload"));
+    }
+    // SAFETY: the published inode remains at target while its staging name is removed.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let result = unsafe { libc::unlinkat(directory, temp.as_ptr(), 0) };
+    if result < 0 {
+        return Err(entry_error("cannot remove upload staging name"));
+    }
+    Ok(())
 }
 
 impl Drop for StagedFile {

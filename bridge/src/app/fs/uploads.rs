@@ -3,6 +3,7 @@
 use super::{AppState, FileScope};
 use crate::api::v1::git::{
     FsUploadBeginParams, FsUploadBeginResult, FsUploadChunkParams, FsUploadChunkResult,
+    FsUploadFinishResult, FsUploadIdParams,
 };
 use crate::api::ApiError;
 use crate::carrier::{Opening, SessionSender};
@@ -25,6 +26,35 @@ pub(in crate::app) struct Upload {
 }
 
 impl AppState {
+    pub(crate) fn fs_upload_finish(
+        &mut self,
+        params: FsUploadIdParams,
+        caller: &SessionSender,
+    ) -> Result<FsUploadFinishResult, ApiError> {
+        let upload = self.owned_upload(&params.upload_id, caller)?;
+        if upload.received != upload.size {
+            return Err(ApiError::invalid_params(
+                "upload must receive the declared size before finishing",
+            ));
+        }
+        if let Err(error) = self.validate_upload_scope(&params.upload_id, caller) {
+            if error.code() != "busy" {
+                self.uploads.remove(&params.upload_id);
+            }
+            return Err(error);
+        }
+        let mut upload = self
+            .uploads
+            .remove(&params.upload_id)
+            .expect("validated upload");
+        let path = upload.staged.finish(upload.size)?;
+        self.finish_file_mutation(&upload.scope)?;
+        Ok(FsUploadFinishResult {
+            path,
+            size: upload.size,
+        })
+    }
+
     fn owned_upload(&self, id: &str, caller: &SessionSender) -> Result<&Upload, ApiError> {
         self.uploads
             .get(id)

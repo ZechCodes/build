@@ -57,7 +57,7 @@ function appendActions(row, item, uploads, recent) {
 }
 
 function summaryOf(active, recent) {
-  if (!active.length) return `${recent.length} uploads finished`;
+  if (!active.length) return `${recent.length} ${recent.length === 1 ? "upload" : "uploads"} finished`;
   const size = active.reduce((sum, item) => sum + item.size, 0);
   const received = active.reduce((sum, item) => sum + item.received, 0);
   const percent = size ? Math.min(100, Math.round(received / size * 100)) : 0;

@@ -424,6 +424,70 @@ fn fs_write_uses_the_same_worktree_for_external_and_run_scopes() {
 }
 
 #[test]
+fn fs_create_directory_creates_root_and_nested_in_project_source() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let project = state.project_at(0);
+    let scope = json!({ "project_id": project.id, "source_id": project.sources[0].id });
+    for (parent, name, path) in [("", "uploads", "uploads"), ("uploads", "nested", "uploads/nested")] {
+        let mut params = scope.clone();
+        params["parent"] = json!(parent);
+        params["name"] = json!(name);
+        let response = state.handle(req("fs.createDirectory", params));
+        assert_eq!(response["ok"], true, "{response:?}");
+        assert_eq!(response["result"], json!({ "path": path }));
+        assert!(repo.join(path).is_dir());
+    }
+}
+
+#[test]
+fn fs_create_directory_refuses_invalid_existing_and_symlinked_paths() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let project_id = state.project_at(0).id.clone();
+    std::fs::create_dir(repo.join("existing")).unwrap();
+    std::os::unix::fs::symlink(repo.join("existing"), repo.join("linked")).unwrap();
+    for (parent, name) in [
+        ("..", "outside"), ("/tmp", "outside"), ("", "../outside"),
+        ("", "/tmp/outside"), ("", ""), ("", "."), ("", ".git"),
+        (".git", "objects-new"), ("linked", "child"), ("existing/.", "child"),
+        ("existing//child", "child"), ("", "bad\\name"), ("", "bad\0name"),
+        ("README.md", "child"), ("missing", "child"),
+    ] {
+        let response = state.handle(req("fs.createDirectory", json!({
+            "project_id": project_id, "parent": parent, "name": name,
+        })));
+        assert_eq!(response["ok"], false, "{parent}/{name}: {response:?}");
+        assert_eq!(response["error_code"], "invalid_params", "{response:?}");
+    }
+    let response = state.handle(req("fs.createDirectory", json!({
+        "project_id": project_id, "parent": "", "name": "existing",
+    })));
+    assert_eq!(response["error_code"], "already_exists", "{response:?}");
+    assert!(!repo.join("existing/child").exists());
+}
+
+#[test]
+fn fs_create_directory_selects_one_workspace_source() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let project_id = state.project_at(0).id.clone();
+    let sources = [crate::workspace::WorkspaceSource {
+        id: "source-1".into(), name: "files".into(), mount: "files".into(),
+        path: repo.clone(), is_git: false, base_branch: "main".into(),
+    }];
+    let workspace = state.workspaces.begin(&project_id, "new-files", &sources).unwrap();
+    let target = workspace.directories[0].path.clone();
+    std::fs::create_dir_all(&target).unwrap();
+    let response = state.handle(req("fs.createDirectory", json!({
+        "workspace_id": workspace.id, "source_id": "source-1", "parent": "", "name": "assets",
+    })));
+    assert_eq!(response["ok"], true, "{response:?}");
+    assert!(target.join("assets").is_dir());
+    assert!(!repo.join("assets").exists());
+}
+
+#[test]
 fn fs_read_truncates_oversized_files() {
     let (dir, repo) = init_repo();
     let mut state = AppState::new(

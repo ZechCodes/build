@@ -43,7 +43,9 @@ use std::collections::BTreeSet;
 /// 3.11.0 adds generation-guarded conversation reset (#358).
 /// 3.12.0 adds a bounded per-paired-client LAN discovery hint (#372) and
 /// bounded host-socket conntrack sweeps for unresolved LAN names (#374).
-pub const API_VERSION: &str = "3.12.0";
+/// 3.13.0 adds scoped directory creation, binary file uploads, and the
+/// `already_exists` refusal (#391).
+pub const API_VERSION: &str = "3.13.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -156,6 +158,11 @@ pub enum ApiError {
         message: String,
         details: Option<Value>,
     },
+    /// A file mutation would overwrite a destination without permission.
+    AlreadyExists {
+        message: String,
+        details: Option<Value>,
+    },
     /// A stale `expected_revision` / `expected_choice_revision`; `details`
     /// carries the current value.
     Conflict {
@@ -196,10 +203,11 @@ pub enum ApiError {
 
 impl ApiError {
     /// Every code, as a fixture may cite it.
-    pub const CODES: [&'static str; 10] = [
+    pub const CODES: [&'static str; 11] = [
         "unknown_method",
         "invalid_params",
         "not_found",
+        "already_exists",
         "conflict",
         "stale_version",
         "stale_body",
@@ -225,6 +233,13 @@ impl ApiError {
 
     pub fn not_found(message: impl Into<String>) -> ApiError {
         ApiError::NotFound {
+            message: message.into(),
+            details: None,
+        }
+    }
+
+    pub fn already_exists(message: impl Into<String>) -> ApiError {
+        ApiError::AlreadyExists {
             message: message.into(),
             details: None,
         }
@@ -271,6 +286,7 @@ impl ApiError {
             ApiError::UnknownMethod { .. } => "unknown_method",
             ApiError::InvalidParams { .. } => "invalid_params",
             ApiError::NotFound { .. } => "not_found",
+            ApiError::AlreadyExists { .. } => "already_exists",
             ApiError::Conflict { .. } => "conflict",
             ApiError::StaleVersion { .. } => "stale_version",
             ApiError::StaleBody { .. } => "stale_body",
@@ -291,6 +307,7 @@ impl ApiError {
             ApiError::UnknownMethod { message, details }
             | ApiError::InvalidParams { message, details }
             | ApiError::NotFound { message, details }
+            | ApiError::AlreadyExists { message, details }
             | ApiError::Conflict { message, details }
             | ApiError::StaleVersion { message, details }
             | ApiError::StaleBody { message, details }
@@ -454,6 +471,7 @@ mod tests {
             ApiError::unknown_method("x"),
             ApiError::invalid_params("m"),
             ApiError::not_found("m"),
+            ApiError::already_exists("m"),
             ApiError::conflict("m", None),
             ApiError::StaleVersion {
                 message: "m".into(),
@@ -489,6 +507,13 @@ mod tests {
         let bare = ApiError::internal("boom").into_reply(json!(1));
         assert!(bare.get("details").is_none());
         assert_eq!(bare["error_code"], "internal");
+        assert_eq!(
+            ApiError::already_exists("destination exists").into_reply(json!(2)),
+            json!({
+                "id": 2, "ok": false, "error": "destination exists",
+                "error_code": "already_exists", "retryable": false
+            })
+        );
     }
 
     #[test]

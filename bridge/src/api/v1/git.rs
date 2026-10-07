@@ -1,4 +1,4 @@
-//! The git family: every `git.*` verb, the `fs.*` reads and the one write,
+//! The git family: every `git.*` verb, the `fs.*` reads and mutations,
 //! and the diff reads (`worktree.diff`, `run.diff`, `task.stage_diff`).
 //!
 //! This is the converted family — the pattern the other four follow. The git
@@ -64,6 +64,36 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
         v1_method!("fs.tree", fs_tree, FsTreeParams, FsTreeResult),
         v1_method!("fs.read", fs_read, FsReadParams, FsFileResult),
         v1_method!("fs.write", fs_write, FsWriteParams, FsFileResult),
+        v1_method!(
+            "fs.createDirectory",
+            fs_create_directory,
+            FsCreateDirectoryParams,
+            FsCreateDirectoryResult
+        ),
+        v1_method!(
+            "fs.uploadBegin",
+            fs_upload_begin,
+            FsUploadBeginParams,
+            FsUploadBeginResult
+        ),
+        v1_method!(
+            "fs.uploadChunk",
+            fs_upload_chunk,
+            FsUploadChunkParams,
+            FsUploadChunkResult
+        ),
+        v1_method!(
+            "fs.uploadFinish",
+            fs_upload_finish,
+            FsUploadIdParams,
+            FsUploadFinishResult
+        ),
+        v1_method!(
+            "fs.uploadAbort",
+            fs_upload_abort,
+            FsUploadIdParams,
+            FsUploadAbortResult
+        ),
         v1_method!(
             "worktree.diff",
             worktree_diff,
@@ -280,6 +310,46 @@ pub struct FsWriteParams {
     /// The revision `fs.read` answered with; a stale one is refused.
     pub expected_revision: String,
     pub content_b64: String,
+}
+
+/// Create one directory inside the same resolved file scope as `fs.tree`.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FsCreateDirectoryParams {
+    #[serde(flatten)]
+    pub scope: ScopeParams,
+    /// An existing scope-relative directory; empty means the scope root.
+    pub parent: String,
+    /// One child name, with no separators, `.` or `..`.
+    pub name: String,
+}
+
+/// Reserve a destination and stage bytes without publishing a partial file.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FsUploadBeginParams {
+    #[serde(flatten)]
+    pub scope: ScopeParams,
+    pub parent: String,
+    pub name: String,
+    /// Exact decoded byte count expected when the upload finishes.
+    pub size: u64,
+    /// Explicitly permit replacing an existing regular file; absent is false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replace: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FsUploadChunkParams {
+    /// The upload begun by this caller's session.
+    pub upload_id: String,
+    /// The next consecutive decoded-byte offset.
+    pub offset: u64,
+    pub content_b64: String,
+}
+
+/// Finish or abort an upload owned by the initiating session.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FsUploadIdParams {
+    pub upload_id: String,
 }
 
 /// `git.checkout_ref` names one exact ref out of what `git.refs` listed —
@@ -712,6 +782,36 @@ pub struct FsMkdirResult {
     pub path: String,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FsCreateDirectoryResult {
+    /// Relative to the selected source or worktree root.
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FsUploadBeginResult {
+    pub upload_id: String,
+    pub path: String,
+    /// The largest decoded chunk the caller may send (4 MiB).
+    pub chunk_bytes: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FsUploadChunkResult {
+    /// Total consecutive decoded bytes accepted so far.
+    pub received: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FsUploadFinishResult {
+    pub path: String,
+    pub size: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FsUploadAbortResult {}
+
 /// What a conditional diff read answers a client that already holds it.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct UnchangedDiff {
@@ -968,6 +1068,41 @@ fn fs_read(app: &mut AppState, params: FsReadParams) -> Result<Answer<FsFileResu
 
 fn fs_write(app: &mut AppState, params: FsWriteParams) -> Result<Answer<FsFileResult>, ApiError> {
     answer(app.fs_write(&params.wire()))
+}
+
+fn fs_create_directory(
+    _app: &mut AppState,
+    _params: FsCreateDirectoryParams,
+) -> Result<FsCreateDirectoryResult, ApiError> {
+    Err(ApiError::unavailable("upload implementation pending"))
+}
+
+fn fs_upload_begin(
+    _app: &mut AppState,
+    _params: FsUploadBeginParams,
+) -> Result<FsUploadBeginResult, ApiError> {
+    Err(ApiError::unavailable("upload implementation pending"))
+}
+
+fn fs_upload_chunk(
+    _app: &mut AppState,
+    _params: FsUploadChunkParams,
+) -> Result<FsUploadChunkResult, ApiError> {
+    Err(ApiError::unavailable("upload implementation pending"))
+}
+
+fn fs_upload_finish(
+    _app: &mut AppState,
+    _params: FsUploadIdParams,
+) -> Result<FsUploadFinishResult, ApiError> {
+    Err(ApiError::unavailable("upload implementation pending"))
+}
+
+fn fs_upload_abort(
+    _app: &mut AppState,
+    _params: FsUploadIdParams,
+) -> Result<FsUploadAbortResult, ApiError> {
+    Err(ApiError::unavailable("upload implementation pending"))
 }
 
 fn worktree_diff(

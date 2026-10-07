@@ -1,8 +1,7 @@
 //! The changes family: `changes.subscribe` and `changes.unsubscribe` (wire
 //! spec Part 1, step 1.1).
 //!
-//! Two verbs over [`crate::changes::ChangeBus`], and the only family whose
-//! subject is the session itself: a subscription is an address to push to, so
+//! Two verbs over [`crate::changes::ChangeBus`], whose subject is the session itself: a subscription is an address to push to, so
 //! every verb here needs the caller's own [`SessionSender`]. [`dispatch`]
 //! deliberately carries only `AppState`, so the frame handler names the
 //! caller for the duration of the call with [`with_session`] and the handlers
@@ -55,7 +54,7 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
 thread_local! {
     /// Who is asking, for the length of one frame. A thread-local rather than
     /// a param because the facade's dispatch signature is one shape for every
-    /// verb, and this is the only family that needs the session.
+    /// verb, and subscriptions and uploads both need the session.
     static CALLER: RefCell<Option<SessionSender>> = const { RefCell::new(None) };
 }
 
@@ -72,12 +71,12 @@ pub fn with_session<T>(session: &SessionSender, run: impl FnOnce() -> T) -> T {
     run()
 }
 
-fn caller() -> Result<SessionSender, ApiError> {
+pub(crate) fn caller() -> Result<SessionSender, ApiError> {
     CALLER
         .with(|caller| caller.borrow().clone())
         .ok_or_else(|| {
             ApiError::unavailable(
-                "changes: no session on this call — a subscription is an address to push to",
+                "no session on this call — this method needs the initiating client",
             )
         })
 }

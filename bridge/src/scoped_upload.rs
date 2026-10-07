@@ -4,7 +4,7 @@ use crate::api::ApiError;
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
 use std::os::fd::{AsRawFd, FromRawFd};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
 pub(crate) struct Destination {
@@ -45,6 +45,118 @@ impl Destination {
             .sync_all()
             .map_err(|error| ApiError::internal(format!("cannot sync directory: {error}")))
     }
+
+    fn check_target(&self, replace: bool) -> Result<(), ApiError> {
+        let Some(metadata) = stat_at(&self.directory, &self.name)? else {
+            return Ok(());
+        };
+        if !replace {
+            return Err(ApiError::already_exists(format!(
+                "{} already exists",
+                self.path
+            )));
+        }
+        if metadata.st_mode & libc::S_IFMT != libc::S_IFREG {
+            return Err(ApiError::invalid_params(
+                "replacement must name a regular file, without symlinks",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn stage(self, upload_id: &str, replace: bool) -> Result<StagedFile, ApiError> {
+        self.check_target(replace)?;
+        let temp_name = CString::new(format!(".build-upload-{upload_id}.part"))
+            .expect("upload UUID has no NUL");
+        // SAFETY: the parent and C string are live, flags create a new file without following symlinks.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+        let fd = unsafe {
+            libc::openat(
+                self.directory.as_raw_fd(),
+                temp_name.as_ptr(),
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                0o600,
+            )
+        };
+        if fd < 0 {
+            return Err(entry_error("cannot create upload file"));
+        }
+        // SAFETY: openat returned a new owned descriptor.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+        let file = unsafe { File::from_raw_fd(fd) };
+        let staged = StagedFile {
+            destination: self,
+            temp_name,
+            file,
+        };
+        staged
+            .file
+            .set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|error| ApiError::internal(format!("cannot set upload file mode: {error}")))?;
+        Ok(staged)
+    }
+}
+
+pub(crate) struct StagedFile {
+    destination: Destination,
+    temp_name: CString,
+    file: File,
+}
+
+impl Drop for StagedFile {
+    fn drop(&mut self) {
+        // A reused temp name belongs to the process that replaced it, not this upload.
+        if !entry_matches(&self.destination.directory, &self.temp_name, &self.file) {
+            return;
+        }
+        // SAFETY: unlinkat only removes our entry in the still-owned directory.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+        unsafe {
+            libc::unlinkat(
+                self.destination.directory.as_raw_fd(),
+                self.temp_name.as_ptr(),
+                0,
+            )
+        };
+    }
+}
+
+fn stat_at(directory: &File, name: &CString) -> Result<Option<libc::stat>, ApiError> {
+    let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: fstatat initializes metadata on success. The name/descriptor remain live and symlinks are not followed.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let result = unsafe {
+        libc::fstatat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            metadata.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if result < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::NotFound {
+            return Ok(None);
+        }
+        return Err(ApiError::internal(format!(
+            "cannot inspect destination: {error}"
+        )));
+    }
+    // SAFETY: the successful fstatat initialized the value.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    Ok(Some(unsafe { metadata.assume_init() }))
+}
+
+fn entry_matches(directory: &File, name: &CString, file: &File) -> bool {
+    let Ok(Some(entry)) = stat_at(directory, name) else {
+        return false;
+    };
+    let Ok(opened) = file.metadata() else {
+        return false;
+    };
+    entry.st_mode & libc::S_IFMT == libc::S_IFREG
+        && entry.st_dev as u64 == opened.dev()
+        && entry.st_ino as u64 == opened.ino()
 }
 
 fn plain_component(component: &str) -> Result<CString, ApiError> {

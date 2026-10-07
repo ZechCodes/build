@@ -1078,10 +1078,10 @@ fn fs_create_directory(
 }
 
 fn fs_upload_begin(
-    _app: &mut AppState,
-    _params: FsUploadBeginParams,
+    app: &mut AppState,
+    params: FsUploadBeginParams,
 ) -> Result<FsUploadBeginResult, ApiError> {
-    Err(ApiError::unavailable("upload implementation pending"))
+    app.fs_upload_begin(params, &super::changes::caller()?)
 }
 
 fn fs_upload_chunk(

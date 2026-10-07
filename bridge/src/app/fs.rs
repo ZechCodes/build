@@ -12,6 +12,8 @@ use serde_json::{json, Value};
 
 use super::{b64encode, fenced_scope_path, media_mime_hint, require_str, AppState, TermScope};
 
+pub(in crate::app) mod uploads;
+
 /// The directory whose files an `fs.*` call may reach.
 ///
 /// Workspace and project browsing name one configured source explicitly. The legacy

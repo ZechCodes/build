@@ -8,7 +8,7 @@ use crate::api::v1::git::{
 use crate::api::ApiError;
 use crate::carrier::{Opening, SessionSender};
 use crate::scoped_upload::{Destination, StagedFile};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -28,6 +28,12 @@ pub(in crate::app) struct Upload {
 }
 
 impl AppState {
+    pub(in crate::app) fn upload_open_within(&self, root: &Path) -> bool {
+        self.uploads
+            .values()
+            .any(|upload| upload.root.starts_with(root))
+    }
+
     pub fn spawn_upload_reaper(state: Arc<Mutex<AppState>>, interval: Duration) {
         tokio::spawn(async move {
             loop {

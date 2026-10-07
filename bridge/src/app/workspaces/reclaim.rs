@@ -546,6 +546,7 @@ impl AppState {
         let busy = self.project_deletion_in_progress
             || self.deferred_work.is_some()
             || self.active_deferred_filesystem_jobs > 0
+            || self.upload_open_within(&Self::canonical_root(&workspace.root))
             || (!reserved && self.workspace_reserved(workspace_id));
         if busy || self.refuse_removing_what_is_not_builds(workspace).is_err() {
             return None;

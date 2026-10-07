@@ -458,6 +458,8 @@ fn fs_create_directory_refuses_invalid_existing_and_symlinked_paths() {
         ("", ""),
         ("", "."),
         ("", ".git"),
+        ("", ".GiT"),
+        (".GIT", "new-child"),
         (".git", "objects-new"),
         ("linked", "child"),
         ("existing/.", "child"),
@@ -584,6 +586,8 @@ fn fs_upload_begin_refuses_traversal_git_symlinks_and_non_files() {
         ("/tmp", "new.bin"),
         ("", "../new.bin"),
         ("", ".git"),
+        ("", ".GiT"),
+        (".GIT", "new-child"),
         (".git", "new.bin"),
         ("linked", "new.bin"),
         ("", "leaf-link"),
@@ -864,6 +868,122 @@ fn fs_upload_abort_removes_staging_file_and_refuses_other_clients() {
         "not_found"
     );
 }
+#[test]
+fn fs_upload_scope_cannot_move_after_begin_but_abort_can_still_clean_up() {
+    let (dir, repo) = init_repo();
+    let outside = tempfile::tempdir().unwrap();
+    let mut state = qa_state(&repo, dir.path());
+    let sender = SessionSender::detached("uploader");
+    let project = state.project_at(0);
+    let (project_id, source_id) = (project.id.clone(), project.sources[0].id.clone());
+    let mut ids = Vec::new();
+    for name in ["finish.bin", "abort.bin"] {
+        let begun = upload_call(&mut state, &sender, "fs.uploadBegin", json!({
+            "project_id": project_id, "source_id": source_id, "parent": "", "name": name, "size": 0,
+        }));
+        assert_eq!(begun["ok"], true, "{begun:?}");
+        ids.push(begun["result"]["upload_id"].as_str().unwrap().to_string());
+    }
+    state.projects.source_mut(&project_id, &source_id).unwrap().path = outside.path().into();
+    assert_eq!(upload_bytes(&mut state, &sender, &ids[0], 0, &[])["error_code"], "invalid_params");
+    let finished = upload_call(&mut state, &sender, "fs.uploadFinish", json!({"upload_id": ids[0]}));
+    assert_eq!(finished["error_code"], "invalid_params", "{finished:?}");
+    let aborted = upload_call(&mut state, &sender, "fs.uploadAbort", json!({"upload_id": ids[1]}));
+    assert_eq!(aborted["result"], json!({}), "{aborted:?}");
+    for id in ids { assert!(!repo.join(format!(".build-upload-{id}.part")).exists()); }
+    assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn fs_upload_cleanup_preserves_a_reused_temp_name() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let sender = SessionSender::detached("uploader");
+    for method in ["fs.uploadFinish", "fs.uploadAbort"] {
+        let id = begin_upload(&mut state, &sender, "new.bin", 0, false);
+        let temp = repo.join(format!(".build-upload-{id}.part"));
+        std::fs::remove_file(&temp).unwrap();
+        std::fs::write(&temp, b"someone else's file").unwrap();
+        let response = upload_call(&mut state, &sender, method, json!({"upload_id": id}));
+        if method == "fs.uploadFinish" {
+            assert_eq!(response["error_code"], "invalid_params", "{response:?}");
+        } else { assert_eq!(response["ok"], true, "{response:?}"); }
+        assert_eq!(std::fs::read(&temp).unwrap(), b"someone else's file");
+        assert!(!repo.join("new.bin").exists());
+    }
+}
+
+#[tokio::test]
+async fn fs_upload_and_create_directory_are_pushed_with_the_new_path() {
+    use super::push::{greeted_push_session, pushes_until, settled_pushes};
+    let (dir, repo) = init_repo();
+    let (_state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let board = handler.call(sender.clone(), req("board.list", json!({})));
+    let project_id = board["result"]["projects"][0]["project_id"].as_str().unwrap();
+    let subscribed = handler.call(sender.clone(), req("changes.subscribe", json!({
+        "subscription_id": "uploads", "scope": {"kind": "entity", "id": project_id}, "kinds": ["files"],
+    })));
+    assert_eq!(subscribed["result"]["watch"], "live");
+    settled_pushes(&mut rx, &key).await;
+    let created = handler.call(sender.clone(), req("fs.createDirectory", json!({
+        "project_id": project_id, "parent": "", "name": "assets",
+    })));
+    assert_eq!(created["ok"], true, "{created:?}");
+    let begun = handler.call(sender.clone(), req("fs.uploadBegin", json!({
+        "project_id": project_id, "parent": "assets", "name": "new.bin", "size": 3,
+    })));
+    assert_eq!(begun["ok"], true, "{begun:?}");
+    let id = &begun["result"]["upload_id"];
+    let chunk = handler.call(sender.clone(), req("fs.uploadChunk", json!({
+        "upload_id": id, "offset": 0, "content_b64": b64encode(&[0,1,2]),
+    })));
+    assert_eq!(chunk["ok"], true, "{chunk:?}");
+    let finished = handler.call(sender.clone(), req("fs.uploadFinish", json!({"upload_id": id})));
+    assert_eq!(finished["ok"], true, "{finished:?}");
+    let frames = pushes_until(&mut rx, &key, |frames| frames.iter().any(|frame| {
+        frame["items"].as_array().is_some_and(|items| items.iter().any(|item| {
+            item["entity_id"] == project_id && item["files"]["paths"].as_array().is_some_and(|paths| paths.contains(&json!("assets/new.bin")))
+        }))
+    })).await;
+    assert!(!frames.is_empty());
+    assert_eq!(std::fs::read(repo.join("assets/new.bin")).unwrap(), [0,1,2]);
+}
+#[test]
+fn fs_upload_chunk_refuses_a_truncated_staging_file() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let sender = SessionSender::detached("uploader");
+    let id = begin_upload(&mut state, &sender, "new.bin", 3, false);
+    assert_eq!(upload_bytes(&mut state, &sender, &id, 0, &[1,2])["ok"], true);
+    let temp = repo.join(format!(".build-upload-{id}.part"));
+    std::fs::File::options().write(true).open(&temp).unwrap().set_len(1).unwrap();
+    let response = upload_bytes(&mut state, &sender, &id, 2, &[3]);
+    assert_eq!(response["error_code"], "invalid_params", "{response:?}");
+    assert!(!temp.exists());
+    assert!(!repo.join("new.bin").exists());
+}
+
+#[test]
+fn fs_upload_idle_reaper_removes_only_uploads_past_ten_minutes() {
+    use std::time::{Duration, Instant};
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let sender = SessionSender::detached("uploader");
+    let id = begin_upload(&mut state, &sender, "new.bin", 1, false);
+    let temp = repo.join(format!(".build-upload-{id}.part"));
+    assert_eq!(state.reap_idle_uploads_at(Instant::now() + Duration::from_secs(599)), 0);
+    assert!(temp.exists());
+    assert_eq!(state.reap_idle_uploads_at(Instant::now() + Duration::from_secs(601)), 1);
+    assert!(!temp.exists());
+    assert_eq!(upload_bytes(&mut state, &sender, &id, 0, &[1])["error_code"], "not_found");
+    let reused_id = begin_upload(&mut state, &sender, "new.bin", 0, false);
+    let reused_temp = repo.join(format!(".build-upload-{reused_id}.part"));
+    std::fs::remove_file(&reused_temp).unwrap();
+    std::fs::write(&reused_temp, b"unrelated").unwrap();
+    assert_eq!(state.reap_idle_uploads_at(Instant::now() + Duration::from_secs(601)), 1);
+    assert_eq!(std::fs::read(&reused_temp).unwrap(), b"unrelated");
+}
+
 #[test]
 fn fs_read_truncates_oversized_files() {
     let (dir, repo) = init_repo();

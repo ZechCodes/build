@@ -2,7 +2,7 @@ export const UPLOAD_RETENTION_MS = 30 * 60 * 1000;
 export const joinUploadPath = (parent, name) => parent ? `${parent.replace(/\/$/, "")}/${name}` : name;
 export const uploadErrorCode = (error) => error?.code || error?.error?.code || null;
 export const uploadMetadata = (item, canRetry = false) => {
-  const { file: _file, callRpc: _callRpc, uploadId: _uploadId, cancelled: _cancelled, replace: _replace, aborting: _aborting, ...metadata } = item;
+  const { file: _file, callRpc: _callRpc, onFinished: _onFinished, uploadId: _uploadId, cancelled: _cancelled, replace: _replace, aborting: _aborting, ...metadata } = item;
   return { ...metadata, scope: { ...metadata.scope }, canRetry };
 };
 export function encodeUploadBytes(buffer) {

@@ -7,6 +7,7 @@
 // state lives in appState.js, so this registry never imports the app shell
 // or the connection layer that consumes it.
 
+import { retireFileUploads } from "./fileUploads.js";
 import { App } from "../appState.js";
 import { releaseScope, scopeFor } from "./cacheScope.js";
 import { creationDeviceId, homeDeviceId } from "./devicePolicy.js";
@@ -434,6 +435,7 @@ function bindRepository(context, call) {
  *  The transport is all this reaches: a device riding a direct connection is
  *  retired through connection.js, which hands both streams back first. */
 export function retireDeviceContext(deviceId) {
+  retireFileUploads(deviceId);
   const context = contexts.get(deviceId);
   if (!context) return null;
   contexts.delete(deviceId);

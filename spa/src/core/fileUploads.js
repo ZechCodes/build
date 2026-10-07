@@ -1,20 +1,32 @@
 // Per-device upload ownership outlives the Files view. Only completed metadata
 // reaches UI storage; browser File objects and upload sessions remain in memory.
+import { App } from "../appState.js";
 import { readUiRecord, writeUiRecord } from "./localUiStore.js";
 import { UPLOAD_RETENTION_MS, joinUploadPath, uploadErrorCode, uploadMetadata, encodeUploadBytes, walkUploadEntry } from "./fileUploadsModel.js";
 
 const instances = new Map();
 export function uploadsFor(deviceId, { callRpc } = {}) {
   if (!instances.has(deviceId)) {
+    const accountEpoch = App.accountEpoch;
+    let context;
     instances.set(deviceId, createFileUploads({
       callRpc: callRpc || (async (method, params) => {
         const { contextFor } = await import("./deviceContexts.js");
-        return contextFor(deviceId).rpc(method, params);
+        if (App.accountEpoch !== accountEpoch) throw new Error("This account changed. Reopen Files before uploading.");
+        context ||= contextFor(deviceId);
+        return context.rpc(method, params);
       }),
       stateAddress: { deviceId, entityId: "", kind: "ui-uploads", sub: "" },
     }));
   }
   return instances.get(deviceId);
+}
+export function retireFileUploads(deviceId) {
+  instances.get(deviceId)?.dispose();
+  instances.delete(deviceId);
+}
+export function resetFileUploads() {
+  for (const deviceId of [...instances.keys()]) retireFileUploads(deviceId);
 }
 const readUploadBlob = (blob) => {
   if (blob.arrayBuffer) return blob.arrayBuffer();
@@ -43,9 +55,9 @@ export function createFileUploads({ callRpc, now = Date.now, stateAddress = null
   };
   const announce = () => listeners.forEach((listener) => listener(snapshot()));
   const persist = () => {
-    if (!stateAddress) return;
+    if (!stateAddress || disposed) return;
     const recent = [...items.values()].filter((item) => item.finishedAt !== null).map((item) => uploadMetadata(item));
-    persistence = persistence.catch(() => {}).then(() => writeUiRecord(stateAddress, { recent })).catch(() => {});
+    persistence = persistence.catch(() => {}).then(() => disposed ? undefined : writeUiRecord(stateAddress, { recent })).catch(() => {});
   };
   const prune = () => {
     for (const [id, item] of items) {
@@ -88,6 +100,10 @@ export function createFileUploads({ callRpc, now = Date.now, stateAddress = null
     const result = await send(item, "fs.uploadFinish", { upload_id: item.uploadId });
     // Finish is atomic. If it won a cancellation race, report the saved file.
     Object.assign(item, { path: result.path, size: result.size, received: result.size });
+    if (!disposed) {
+      try { await item.onFinished?.({ scope: item.scope, parent: item.parent, path: item.path, rootId: item.rootId }); }
+      catch { /* The file is saved even if the cache cannot be refreshed yet. */ }
+    }
     finish(item, "finished");
   };
   const run = async (item) => {
@@ -109,14 +125,15 @@ export function createFileUploads({ callRpc, now = Date.now, stateAddress = null
       if (item.status === "queued") void run(item);
     }
   };
-  const add = ({ scope, parent = "", rootId = null, destination = "", callRpc: itemRpc, file, name = file?.name, size = file?.size || 0 }) => {
+  const add = ({ scope, parent = "", rootId = null, destination = "", callRpc: itemRpc, onFinished, file, name = file?.name, size = file?.size || 0 }) => {
     const id = globalThis.crypto.randomUUID();
-    items.set(id, { id, scope: { ...scope }, parent, rootId, destination, callRpc: itemRpc, file, name, size, received: 0,
+    items.set(id, { id, scope: { ...scope }, parent, rootId, destination, callRpc: itemRpc, onFinished, file, name, size, received: 0,
       path: joinUploadPath(parent, name), status: "queued", finishedAt: null, error: null, errorCode: null,
       cancelled: false, uploadId: null });
     return id;
   };
   const enqueue = ({ files, ...target }) => {
+    if (disposed) return [];
     const ids = Array.from(files).map((file) => add({ ...target, file }));
     announce(); pump(); return ids;
   };
@@ -135,16 +152,18 @@ export function createFileUploads({ callRpc, now = Date.now, stateAddress = null
     announce(); persist(); pump(); return true;
   };
   const enqueueDrop = async ({ dataTransfer, onDirectory, ...target }) => {
+    if (disposed) return [];
     const droppedItems = Array.from(dataTransfer.items || []);
     const entries = droppedItems.map((item) => item.webkitGetAsEntry?.()).filter(Boolean);
     if (!entries.length) return enqueue({ ...target, files: dataTransfer.files || [] });
     const looseFiles = droppedItems.filter((item) => !item.webkitGetAsEntry?.()).map((item) => item.getAsFile?.()).filter(Boolean);
     const ids = enqueue({ ...target, files: looseFiles });
     const directory = async (parent, name) => {
+      if (disposed) throw new Error("The upload was stopped.");
       try { await (target.callRpc || callRpc)("fs.createDirectory", { ...target.scope, parent, name }); }
       catch (error) { if (uploadErrorCode(error) !== "already_exists") throw error; }
       const path = joinUploadPath(parent, name);
-      onDirectory?.({ scope: target.scope, parent, path, rootId: target.rootId });
+      if (!disposed) onDirectory?.({ scope: target.scope, parent, path, rootId: target.rootId });
       return path;
     };
     const queueFile = (parent, file) => {
@@ -155,6 +174,7 @@ export function createFileUploads({ callRpc, now = Date.now, stateAddress = null
     for (const entry of entries) {
       try { await walkUploadEntry(entry, target.parent || "", { directory, enqueue: queueFile }); }
       catch (error) {
+        if (disposed) break;
         const id = add({ ...target, name: entry.name });
         finish(items.get(id), "failed", error); ids.push(id);
       }
@@ -162,8 +182,9 @@ export function createFileUploads({ callRpc, now = Date.now, stateAddress = null
     return ids;
   };
   const ready = (async () => {
-    if (!stateAddress) return;
+    if (!stateAddress || disposed) return;
     const saved = await readUiRecord(stateAddress).catch(() => null);
+    if (disposed) return;
     for (const item of saved?.value?.recent || []) {
       if (!items.has(item.id) && now() - item.finishedAt < UPLOAD_RETENTION_MS) items.set(item.id, { ...item, file: null });
     }
@@ -173,6 +194,12 @@ export function createFileUploads({ callRpc, now = Date.now, stateAddress = null
   timer.unref?.();
   return { snapshot, enqueue, enqueueDrop, cancel, retry, ready, prune,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-    dispose() { disposed = true; clearInterval(timer); listeners.clear(); },
+    dispose() {
+      disposed = true;
+      for (const item of items.values()) {
+        if (item.finishedAt === null) { item.cancelled = true; void abort(item); }
+      }
+      items.clear(); clearInterval(timer); listeners.clear();
+    },
   };
 }

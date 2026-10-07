@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { readUiRecord } from "../src/core/localUiStore.js";
-import { createFileUploads } from "../src/core/fileUploads.js";
+import { createFileUploads, uploadsFor, resetFileUploads, retireFileUploads } from "../src/core/fileUploads.js";
 const tick = async () => { for (let i = 0; i < 40; i++) await Promise.resolve(); };
 const file = (name, text = "abcdef") => Object.assign(new Blob([text]), { name });
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
@@ -143,5 +143,50 @@ describe("folder failure handling", () => {
     const engine = createFileUploads({ callRpc }); engine.enqueue({ scope: {}, files: [file("a")] });
     await vi.waitFor(() => expect(engine.snapshot().recent).toHaveLength(1));
     expect(engine.snapshot().recent[0].error).toBe("Chunk disconnected"); engine.dispose();
+  });
+});
+
+describe("upload lifetime", () => {
+  it("retires account upload singletons and fences late old-account responses", async () => {
+    const pending = deferred(); const oldRpc = vi.fn((method) => method === "fs.uploadBegin" ? pending.promise : Promise.resolve({}));
+    const old = uploadsFor("account-device", { callRpc: oldRpc }); await old.ready;
+    old.enqueue({ scope: { directory_id: "old" }, files: [file("old-file")] });
+    resetFileUploads();
+    const next = uploadsFor("account-device", { callRpc: rpc() }); await next.ready;
+    expect(next).not.toBe(old); expect(old.snapshot()).toEqual({ active: [], recent: [] });
+    pending.resolve({ upload_id: "old-upload", path: "old-file", chunk_bytes: 4 }); await tick();
+    expect(oldRpc).toHaveBeenCalledWith("fs.uploadAbort", { upload_id: "old-upload" });
+    expect(next.snapshot()).toEqual({ active: [], recent: [] });
+    expect(old.enqueue({ scope: {}, files: [file("late")] })).toEqual([]);
+    resetFileUploads();
+  });
+  it("retiring one device leaves another device's queue intact", async () => {
+    const first = uploadsFor("retired-device", { callRpc: rpc() });
+    const second = uploadsFor("kept-device", { callRpc: rpc() }); await Promise.all([first.ready, second.ready]);
+    retireFileUploads("retired-device");
+    expect(uploadsFor("kept-device")).toBe(second);
+    expect(uploadsFor("retired-device", { callRpc: rpc() })).not.toBe(first);
+    resetFileUploads();
+  });
+});
+
+describe("upload completion invalidation", () => {
+  it("awaits completion invalidation before announcing success and excludes callback metadata", async () => {
+    const held = deferred(); const onFinished = vi.fn(() => held.promise);
+    const engine = createFileUploads({ callRpc: rpc() }); const observed = [];
+    engine.subscribe((snapshot) => observed.push(snapshot.recent.length));
+    engine.enqueue({ scope: { directory_id: "d" }, parent: "docs", rootId: "root", files: [file("a")], onFinished });
+    await vi.waitFor(() => expect(onFinished).toHaveBeenCalledWith({ scope: { directory_id: "d" }, parent: "docs", path: "a", rootId: "root" }));
+    expect(engine.snapshot().recent).toHaveLength(0); held.resolve(); await tick();
+    expect(observed.at(-1)).toBe(1); expect(engine.snapshot().recent[0].onFinished).toBeUndefined(); engine.dispose();
+  });
+  it("preserves atomic success when invalidation fails and skips callbacks on upload failure", async () => {
+    const onFinished = vi.fn(async () => { throw new Error("Cache unavailable"); });
+    const engine = createFileUploads({ callRpc: rpc() });
+    engine.enqueue({ scope: {}, files: [file("a")], onFinished });
+    await vi.waitFor(() => expect(engine.snapshot().recent[0]?.status).toBe("finished")); engine.dispose();
+    const failed = createFileUploads({ callRpc: vi.fn(async () => { throw new Error("Upload failed"); }) });
+    failed.enqueue({ scope: {}, files: [file("b")], onFinished }); await tick();
+    expect(onFinished).toHaveBeenCalledTimes(1); failed.dispose();
   });
 });

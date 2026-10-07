@@ -646,6 +646,7 @@ async fn run_daemon(
         Duration::from_secs(5),
     );
     AppState::spawn_terminal_reaper(app.clone(), Duration::from_secs(30));
+    AppState::spawn_upload_reaper(app.clone(), Duration::from_secs(30));
     AppState::spawn_update_checks(app.clone(), Duration::from_secs(5));
     // Measures every workspace and tells the project agent about quiet ones
     // (#135). It never removes a workspace; `workspace.reclaim` does. It drops

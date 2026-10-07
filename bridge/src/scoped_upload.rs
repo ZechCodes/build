@@ -173,6 +173,14 @@ impl StagedFile {
         if !entry_matches(&self.destination.directory, &self.temp_name, &self.file) {
             return Err(ApiError::invalid_params("upload staging file changed"));
         }
+        let size = self
+            .file
+            .metadata()
+            .map_err(|error| ApiError::internal(format!("cannot inspect upload: {error}")))?
+            .len();
+        if size != offset {
+            return Err(ApiError::invalid_params("upload staging size changed"));
+        }
         self.file
             .seek(SeekFrom::Start(offset))
             .and_then(|_| self.file.write_all(bytes))
@@ -295,17 +303,24 @@ fn entry_matches(directory: &File, name: &CString, file: &File) -> bool {
     let Ok(Some(entry)) = stat_at(directory, name) else {
         return false;
     };
-    let Ok(opened) = file.metadata() else {
+    let mut opened = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: the owned fd remains live, and fstat initializes the output on success.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    if unsafe { libc::fstat(file.as_raw_fd(), opened.as_mut_ptr()) } < 0 {
         return false;
-    };
+    }
+    // SAFETY: fstat succeeded and initialized the value.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let opened = unsafe { opened.assume_init() };
     entry.st_mode & libc::S_IFMT == libc::S_IFREG
-        && entry.st_dev as u64 == opened.dev()
-        && entry.st_ino as u64 == opened.ino()
+        && entry.st_dev == opened.st_dev
+        && entry.st_ino == opened.st_ino
 }
 
 fn plain_component(component: &str) -> Result<CString, ApiError> {
     if component.is_empty()
-        || matches!(component, "." | ".." | ".git")
+        || matches!(component, "." | "..")
+        || component.eq_ignore_ascii_case(".git")
         || component.contains(['/', '\\'])
     {
         return Err(ApiError::invalid_params(

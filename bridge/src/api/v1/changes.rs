@@ -1,13 +1,16 @@
 //! The changes family: `changes.subscribe` and `changes.unsubscribe` (wire
 //! spec Part 1, step 1.1).
 //!
-//! Two verbs over [`crate::changes::ChangeBus`], whose subject is the session itself: a subscription is an address to push to, so
+//! Two verbs over [`crate::changes::ChangeBus`], whose subject is the session
+//! itself: a subscription is an address to push to, so
 //! every verb here needs the caller's own [`SessionSender`]. [`dispatch`]
 //! deliberately carries only `AppState`, so the frame handler names the
 //! caller for the duration of the call with [`with_session`] and the handlers
 //! read it back. Called with no session named — the synchronous test entry
 //! point, or an internal probe — the verbs refuse `unavailable` rather than
 //! guessing at a subscriber.
+//! Uploads use the same caller context to bind their state to the initiating
+//! encrypted session opening.
 //!
 //! [`dispatch`]: crate::api::v1::dispatch
 //!

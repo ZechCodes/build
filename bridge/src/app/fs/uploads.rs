@@ -9,10 +9,12 @@ use crate::api::ApiError;
 use crate::carrier::{Opening, SessionSender};
 use crate::scoped_upload::{Destination, StagedFile};
 use std::path::PathBuf;
-use std::time::Instant;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 pub(in crate::app) const UPLOAD_MAX_BYTES: u64 = 256 * 1_048_576;
 pub(in crate::app) const UPLOAD_CHUNK_BYTES: u64 = 4 * 1_048_576;
+const UPLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 pub(in crate::app) struct Upload {
     scope: FileScope,
@@ -26,6 +28,30 @@ pub(in crate::app) struct Upload {
 }
 
 impl AppState {
+    pub fn spawn_upload_reaper(state: Arc<Mutex<AppState>>, interval: Duration) {
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(interval).await;
+                let sweeping = Arc::clone(&state);
+                crate::app::runtime::off_the_workers::off_the_workers(move || {
+                    sweeping
+                        .lock()
+                        .unwrap()
+                        .reap_idle_uploads_at(Instant::now())
+                })
+                .await;
+            }
+        });
+    }
+
+    pub(in crate::app) fn reap_idle_uploads_at(&mut self, now: Instant) -> usize {
+        let before = self.uploads.len();
+        self.uploads.retain(|_, upload| {
+            now.saturating_duration_since(upload.last_chunk_at) < UPLOAD_IDLE_TIMEOUT
+        });
+        before - self.uploads.len()
+    }
+
     pub(crate) fn fs_upload_abort(
         &mut self,
         params: FsUploadIdParams,
@@ -43,17 +69,18 @@ impl AppState {
         params: FsUploadIdParams,
         caller: &SessionSender,
     ) -> Result<FsUploadFinishResult, ApiError> {
-        let upload = self.owned_upload(&params.upload_id, caller)?;
-        if upload.received != upload.size {
-            return Err(ApiError::invalid_params(
-                "upload must receive the declared size before finishing",
-            ));
-        }
+        self.owned_upload(&params.upload_id, caller)?;
         if let Err(error) = self.validate_upload_scope(&params.upload_id, caller) {
             if error.code() != "busy" {
                 self.uploads.remove(&params.upload_id);
             }
             return Err(error);
+        }
+        let upload = self.owned_upload(&params.upload_id, caller)?;
+        if upload.received != upload.size {
+            return Err(ApiError::invalid_params(
+                "upload must receive the declared size before finishing",
+            ));
         }
         let mut upload = self
             .uploads

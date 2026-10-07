@@ -1,3 +1,6 @@
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, it } from "vitest";
 import { captureLayout, loadBrowserModules, withLayoutPage } from "./layoutHarness.mjs";
 import { mountFilesExplorer } from "./filesExplorerSeed.mjs";
@@ -98,3 +101,36 @@ it(`highlights a drop destination without changing row geometry in ${theme} at $
 }, 60_000);
 }
 }
+
+
+it("accepts a native file drop on an unsupported bridge and explains the required update", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "build-unsupported-upload-"));
+  const filename = join(directory, "hello.txt");
+  await writeFile(filename, "hello");
+  try {
+    await withLayoutPage(async ({ page, basePath }) => {
+      await mountFilesExplorer(page, basePath);
+      await loadBrowserModules(page, { support: "src/core/fileUploadSupport.js" }, basePath);
+      await page.evaluate(async () => {
+        await window.__layoutModules.support.rememberFileUploadSupport("explorer-device", { fs: { uploads: false, createDirectory: false } });
+        document.addEventListener("dragover", (event) => {
+          window.__nativeDropEffect = event.dataTransfer.dropEffect;
+          window.__nativeDragTypes = [...event.dataTransfer.types];
+        });
+      });
+      expect(await page.locator("[data-upload-action]").count()).toBe(0);
+      const box = await page.locator('.frow[data-path="spa"]').boundingBox();
+      const client = await page.context().newCDPSession(page);
+      const drag = { x: box.x + 30, y: box.y + box.height / 2, data: { items: [], files: [filename], dragOperationsMask: 1 } };
+      await client.send("Input.dispatchDragEvent", { type: "dragEnter", ...drag });
+      await client.send("Input.dispatchDragEvent", { type: "dragOver", ...drag });
+      expect(await page.evaluate(() => window.__nativeDragTypes)).toContain("Files");
+      expect(await page.locator(".fupload-drop").count()).toBe(0);
+      expect(await page.evaluate(() => window.__nativeDropEffect)).toBe("copy");
+      await client.send("Input.dispatchDragEvent", { type: "drop", ...drag });
+      await expect.poll(() => page.locator(".notice-summary").textContent()).toBe("Update the bridge to upload files");
+      await captureLayout(page, "files-upload-unsupported-drop.png");
+      await client.detach();
+    });
+  } finally { await rm(directory, { recursive: true, force: true }); }
+}, 60_000);

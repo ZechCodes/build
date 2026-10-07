@@ -694,6 +694,72 @@ fn upload_bytes(
 }
 
 #[test]
+fn fs_upload_review_limits_each_session_to_eight_open_uploads() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let sender = SessionSender::detached("uploader");
+    let ids: Vec<_> = (0..8).map(|index| begin_upload(&mut state, &sender, &format!("{index}.bin"), 0, false)).collect();
+    let project_id = state.project_at(0).id.clone();
+    let params = json!({"project_id": project_id, "parent": "", "name": "overflow.bin", "size": 0});
+    assert_eq!(upload_call(&mut state, &sender, "fs.uploadBegin", params.clone())["error_code"], "busy");
+    assert_eq!(state.uploads.len(), 8);
+    assert_eq!(upload_call(&mut state, &sender, "fs.uploadAbort", json!({"upload_id": ids[0]}))["ok"], true);
+    assert_eq!(upload_call(&mut state, &sender, "fs.uploadBegin", params)["ok"], true);
+    assert_eq!(state.uploads.len(), 8);
+}
+
+#[test]
+fn fs_upload_review_limits_all_sessions_to_sixty_four_open_uploads() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let senders: Vec<_> = (0..9).map(|index| SessionSender::detached(format!("uploader-{index}"))).collect();
+    let mut first = String::new();
+    for (owner, sender) in senders.iter().take(8).enumerate() {
+        for index in 0..8 {
+            let id = begin_upload(&mut state, sender, &format!("{owner}-{index}.bin"), 0, false);
+            if first.is_empty() { first = id; }
+        }
+    }
+    let project_id = state.project_at(0).id.clone();
+    let params = json!({"project_id": project_id, "parent": "", "name": "overflow.bin", "size": 0});
+    assert_eq!(upload_call(&mut state, &senders[8], "fs.uploadBegin", params.clone())["error_code"], "busy");
+    assert_eq!(state.uploads.len(), 64);
+    assert_eq!(upload_call(&mut state, &senders[0], "fs.uploadAbort", json!({"upload_id": first}))["ok"], true);
+    assert_eq!(upload_call(&mut state, &senders[8], "fs.uploadBegin", params)["ok"], true);
+}
+
+#[tokio::test]
+async fn fs_upload_review_closed_sessions_clean_up_without_touching_reopened_uploads() {
+    let (dir, repo) = init_repo();
+    let mut app = qa_state(&repo, dir.path());
+    let ended = SessionSender::detached("uploader");
+    let other = SessionSender::detached("other");
+    let old_id = begin_upload(&mut app, &ended, "old.bin", 0, false);
+    let other_id = begin_upload(&mut app, &other, "other.bin", 0, false);
+    let state = Arc::new(Mutex::new(app));
+    let handler = AppState::handler(state.clone());
+    let close = Frame {
+        session_id: "uploader".into(), message_id: String::new(),
+        frame_type: transport::CLOSE_FRAME_TYPE.into(), sender: transport::SENDER_DEVICE.into(),
+        created_at: String::new(), payload: Value::Null,
+    };
+    ended.opening_ended();
+    handler.call(SessionSender::detached("uploader"), close.clone());
+    assert!(!repo.join(format!(".build-upload-{old_id}.part")).exists());
+    assert!(repo.join(format!(".build-upload-{other_id}.part")).exists());
+    let reopened = SessionSender::detached("uploader");
+    let new_id = begin_upload(&mut state.lock().unwrap(), &reopened, "new.bin", 0, false);
+    handler.call(SessionSender::detached("uploader"), close);
+    assert!(repo.join(format!(".build-upload-{new_id}.part")).exists());
+    let mut app = state.lock().unwrap();
+    let project_id = app.project_at(0).id.clone();
+    let refused = upload_call(&mut app, &ended, "fs.uploadBegin", json!({
+        "project_id": project_id, "parent": "", "name": "late.bin", "size": 0,
+    }));
+    assert_eq!(refused["error_code"], "not_found", "{refused:?}");
+}
+
+#[test]
 fn fs_upload_chunk_enforces_order_limits_encoding_and_client_ownership() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());

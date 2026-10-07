@@ -4,16 +4,18 @@
 // full-bleed. paneLayout.test.js holds the other half: that the sheet lets no
 // pane state a width of its own again.
 
-import { describe, expect, it, beforeEach, vi } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { threadHtml } from "../src/core/thread.js";
 import { mountTaskView } from "../src/core/taskView.js";
 import { mountGitPane } from "../src/core/gitPane.js";
 import { renderFilesTab } from "../src/views/files.js";
 import { wipeCache } from "../src/core/localCache.js";
+import { resetFileUploads } from "../src/core/fileUploads.js";
 
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
+afterEach(resetFileUploads);
 
 describe("the panes the surfaces paint carry .pane-col", () => {
   beforeEach(async () => {
@@ -95,11 +97,12 @@ describe("the two-column panes carry .pane-split", () => {
   it("gives the Files browser the primitive over its tree and preview", () => {
     const host = document.createElement("div");
     document.body.appendChild(host);
-    renderFilesTab(host, { scope: { run_id: "run-1" }, callRpc: () => new Promise(() => {}) });
+    const view = renderFilesTab(host, { scope: { run_id: "run-1" }, callRpc: () => new Promise(() => {}) });
     const split = host.querySelector(".files");
     expect(split.classList.contains("pane-split")).toBe(true);
     expect(split.querySelector("#ftree")).toBeTruthy();
     expect(split.querySelector("#fpreview")).toBeTruthy();
     expect(host.querySelectorAll(".pane-split")).toHaveLength(1);
+    view.dispose();
   });
 });

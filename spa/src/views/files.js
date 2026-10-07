@@ -59,8 +59,10 @@ import { mountFileTabs } from "../core/fileTabs.js";
 import { attachMediaSource, createMediaBody, releaseMediaSource } from "../core/mediaBlob.js";
 import { requestPriorityFields } from "../core/readRequests.js";
 import { bridgeCapabilities } from "../core/changeEvents.js";
+import { mountFilesUploads } from "../core/filesUploads.js";
 
 const FS_READ_MAX_BYTES = 1_048_576;
+const filesDeviceId = (cacheScope) => cacheScope?.deviceId;
 
 function bindPreviewMedia(host, file, pages) {
   const element = host.querySelector(".fmedia, .fimg");
@@ -852,12 +854,19 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     locate,
   });
 
+  const uploadView = mountFilesUploads({
+    treeEl, viewerEl: body.querySelector("#fpreview"), roots: checkout.roots,
+    keyOf: checkout.keyOf, tree, callRpc, deviceId: filesDeviceId(cacheScope),
+    listingAddress: (root, parent) => rootAddress(root, "tree", parent),
+  });
+
   if (openKey) void tree.reveal(openKey);
 
   return {
     dispose() {
       disposed = true;
       fileRequest += 1;
+      uploadView.dispose();
       tree.dispose();
       tabs.dispose();
       unwatchFile?.();

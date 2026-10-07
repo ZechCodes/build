@@ -169,8 +169,9 @@ export function mountFileRoots(listEl, { roots, collapsedAddress = null, treeFor
       await trees.get(open.root.id)?.reveal(open.path);
     },
     /** Read every shown directory of every mounted root again. */
-    relist() {
-      trees.forEach((tree) => tree.relist());
+    relist(paths = null, rootId = null) {
+      if (rootId !== null) trees.get(rootId)?.relist(paths);
+      else trees.forEach((tree) => tree.relist(paths));
     },
     dispose() {
       disposed = true;

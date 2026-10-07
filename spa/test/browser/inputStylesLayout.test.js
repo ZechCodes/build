@@ -15,7 +15,7 @@ it("inventories every input/textarea source and explicitly lists separate checkb
   expect(renders(/<input\b[^>]*type=["']checkbox["']/)).toEqual(Object.keys(INPUT_TOGGLE_SOURCES).sort());
   expect(renders(/<input\b[^>]*type=["']radio["']/)).toEqual(Object.keys(INPUT_RADIO_SOURCES).sort());
   expect(renders(/<input\b[^>]*type=["']range["']/)).toEqual(Object.keys(INPUT_RANGE_SOURCES).sort());
-  expect(renders(/<input\b[^>]*type=["']file["']/)).toEqual(Object.keys(INPUT_FILE_SOURCES).sort());
+  expect(renders(/<input\b[^>]*type=["']file["']|\.type\s*=\s*["']file["']/)).toEqual(Object.keys(INPUT_FILE_SOURCES).sort());
 });
 
 const excludedTypes = ["checkbox", "radio", "file", "hidden", "button", "submit", "reset", "range", "color", "image"];
@@ -47,7 +47,7 @@ export async function textControlStyles(page) {
         border: style.borderColor, expectedBorder: token("--line"), borderWidth: style.borderWidth,
         radius: style.borderRadius, expectedRadius: token("--select-radius", "borderRadius"),
         height: style.height, expectedHeight: token(field.classList.contains("mini") ? "--select-compact-height" : "--select-height", "height"),
-        compact: field.classList.contains("mini"), compactContext: field.matches(".tb-filter, .fmenu-search, .reroute-branch input, .workspace-refsearch"),
+        compact: field.classList.contains("mini"), compactContext: field.matches(".tb-filter, .fmenu-search, .reroute-branch input, .workspace-refsearch, .fupload-folder input"),
         color: style.color, expectedColor: token(field.disabled ? "--dim" : field.readOnly ? "--ink2" : "--ink"),
         opacity: style.opacity, disabled: field.disabled, rail, editor, resize: style.resize, minHeight: style.minHeight, maxHeight: style.maxHeight,
         visible: rect.width > 0 && rect.height > 0, left: rect.left, right: rect.right, viewport: innerWidth,

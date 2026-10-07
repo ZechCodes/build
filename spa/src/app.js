@@ -26,6 +26,7 @@ import { forgetHomeFollow, forgetRendezvousSockets, forgetSecurityStops } from "
 import { followTerminalDevice, resetTerminalManager, terminalDeviceId } from "./terminal/manager.js";
 import { mountFocusMemory } from "./core/focusMemory.js";
 import { resetDeviceFilterCache } from "./core/deviceFilter.js";
+import { resetFileUploads } from "./core/fileUploads.js";
 import { resetPendingPairing } from "./core/pendingPairing.js";
 import { trackBridgeUpdateDevices } from "./core/bridgeUpdates.js";
 
@@ -66,6 +67,7 @@ export function resetApplication() {
   App.viewingContext?.setEnabled?.(false);
   // Invalidate attempt authority before retiring contexts: a late greeting or
   // mint belongs to the old account and cannot land while teardown runs.
+  resetFileUploads();
   resetTerminalManager();
   forgetRendezvousSockets();
   resetDeviceContexts();

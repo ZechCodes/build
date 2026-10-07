@@ -74,6 +74,7 @@ import { rememberAgentLineageSupport } from "./agentLineageSupport.js";
 import { rememberTaskChecklistSupport } from "./taskChecklistSupport.js";
 import { rememberSourceEditSupport } from "./sourceEditSupport.js";
 import { rememberProjectFilesSupport } from "./projectFilesSupport.js";
+import { rememberFileUploadSupport } from "./fileUploadSupport.js";
 import { rememberWorkspaceSizeSupport } from "./workspaceSizeSupport.js";
 
 /** The wire API majors this build of the SPA speaks, declared in every
@@ -84,7 +85,7 @@ export { SPA_API_RANGE };
  *  a greeting, and about a bridge nobody here speaks to. */
 const NO_CAPABILITIES = Object.freeze({
   changes: Object.freeze({ subscriptions: false, kinds: Object.freeze([]) }),
-  fs: Object.freeze({ projectSources: false }),
+  fs: Object.freeze({ projectSources: false, uploads: false, createDirectory: false }),
   requests: Object.freeze({ priority: false }),
   rtc: Object.freeze({ clientLanCache: false }),
   errors: Object.freeze({ codes: false }),
@@ -927,6 +928,7 @@ function publishGreeting(call, deviceId, greeting, adapter, onGreeting) {
   // And whether it measures its workspaces' sizes when asked (#273).
   void rememberWorkspaceSizeSupport(deviceId, state.adapter.capabilities);
   void rememberProjectFilesSupport(deviceId, state.adapter.capabilities);
+  void rememberFileUploadSupport(deviceId, state.adapter.capabilities);
   // And whether task body writes compare their original hash (#347).
   void rememberTaskChecklistSupport(deviceId, state.adapter.capabilities, () => bridgeFor(deviceId)?.adapter === adapter);
   onGreeting(greeting);

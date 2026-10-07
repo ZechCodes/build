@@ -96,7 +96,7 @@ describe("adapter selection", () => {
       // whether this bridge carries the one it is about to name, because every
       // kind in one subscribe shares that call's fate.
       changes: { subscriptions: true, kinds: ["state", "thread", "git", "files"] },
-      fs: { projectSources: false },
+      fs: { projectSources: false, uploads: false, createDirectory: false },
       requests: { priority: true },
       rtc: { clientLanCache: false },
       errors: { codes: true },
@@ -179,7 +179,7 @@ describe("adapter selection", () => {
       expect(selected.major).toBe(3);
       expect(selected.create(vi.fn()).capabilities).toEqual({
         changes: { subscriptions: false, kinds: [] },
-        fs: { projectSources: false },
+        fs: { projectSources: false, uploads: false, createDirectory: false },
         requests: { priority: false },
         rtc: { clientLanCache: false },
         errors: { codes: false },

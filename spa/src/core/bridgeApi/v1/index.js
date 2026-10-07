@@ -140,7 +140,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
       subscriptions,
       kinds: subscriptions && Array.isArray(kinds) ? kinds.filter((kind) => typeof kind === "string") : [],
     },
-    fs: { projectSources: names.has("fs.projectSources") },
+    fs: { projectSources: names.has("fs.projectSources"), uploads: names.has("fs.uploadBegin"), createDirectory: names.has("fs.createDirectory") },
     requests: { priority: names.has("requests.priority") },
     rtc: { clientLanCache: names.has("rtc.clientLanCache") },
     errors: { codes: names.has("errors.codes") },

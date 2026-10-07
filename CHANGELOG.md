@@ -8,6 +8,12 @@ protocol versions; see
 
 ## [0.2.12] - Unreleased
 
+### Added
+
+- Upload files or dropped folders into any Files directory, create folders
+  inline, and follow transfers or retry recent uploads in a collapsible tray
+  at the bottom right of the viewer (#392).
+
 ### Fixed
 
 - Fill the whole grouped inbox project head on hover, matching row colors and

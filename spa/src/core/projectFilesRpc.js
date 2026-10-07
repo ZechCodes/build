@@ -1,5 +1,6 @@
 import { whenGreeted } from "./deviceContexts.js";
 import { bridgeCapabilities } from "./changeEvents.js";
+const uploadSessionMethods = new Set(["fs.uploadChunk", "fs.uploadFinish", "fs.uploadAbort"]);
 
 /** Older bridges can read only the primary source. Never send their unknown
  * source field: an old serde decoder could ignore it and read the wrong root. */
@@ -12,6 +13,7 @@ const sourceGeneration = (project, sourceId) => {
 export function projectFilesRpc(context, primarySourceId, sourceOwner = null) {
   return async (method, params, ...options) => {
     const request = await whenGreeted(context, () => {
+      if (uploadSessionMethods.has(method)) return context.rpc(method, params, ...options);
       if (sourceOwner && sourceGeneration(sourceOwner.project, params.source_id) !== sourceGeneration(sourceOwner.currentProject(), params.source_id)) {
         throw new Error("This project folder moved. Reopen Files before reading or saving it.");
       }

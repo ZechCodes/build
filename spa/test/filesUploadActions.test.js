@@ -79,6 +79,17 @@ describe("cached directory actions", () => {
     key(input, "Enter");
     await vi.waitFor(() => expect(onCreated).toHaveBeenCalledWith(root, "docs", "docs/next"));
   });
+  it("reports successful folder creation even if the view was disposed while awaiting it", async () => {
+    mount();
+    let resolve;
+    callRpc.mockImplementation(() => new Promise((done) => { resolve = done; }));
+    button("docs", "folder").click();
+    const input = host.querySelector(".fupload-folder input"); input.value = "drafts";
+    key(input, "Enter");
+    actions.dispose();
+    resolve({ path: "docs/drafts" });
+    await vi.waitFor(() => expect(onCreated).toHaveBeenCalledWith(root, "docs", "docs/drafts"));
+  });
 });
 
 describe("file drops", () => {

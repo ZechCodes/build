@@ -18,20 +18,26 @@ export function mountFilesUploads({ treeEl, viewerEl, roots, keyOf, tree, callRp
   // Ignore-file writes need their own invalidation: a files push is not
   // guaranteed. Deleting the held parent also keeps the next mount fresh when
   // a folder creation answers after this view has gone away.
-  const refresh = async (root, parent, path) => {
+  const invalidate = async (root, parent) => {
     const address = listingAddress(root, parent);
     if (address) await deleteCached([address]);
+  };
+  const refresh = async (root, parent, path) => {
+    await invalidate(root, parent);
     if (disposed) return;
-    await tree.reveal(keyOf(root, path));
+    const current = roots.find((candidate) => candidate.id === root.id && sameScope(candidate.scope, root.scope));
+    if (!current) return;
+    await tree.reveal(keyOf(current, path));
     if (!disposed) tree.relist([parent], root.id);
   };
   const actions = mountFilesUploadActions(treeEl, {
     roots, capabilities: { uploads: false, createDirectory: false }, uploads, callRpc: rpc,
     onCreated: (root, parent, path) => void refresh(root, parent, path),
+    onFinished: ({ rootId, scope, parent }) => invalidate({ id: rootId, scope }, parent),
   });
   const readSupport = async () => {
     const support = await readFileUploadSupport(deviceId);
-    if (!disposed) actions.setCapabilities(support);
+    if (!disposed) { actions.setCapabilities(support); stopTray.setCapabilities(support); }
   };
   const stopSupport = deviceId ? subscribeCache(fileUploadSupportAddress(deviceId), () => void readSupport()) : () => {};
   void readSupport();
@@ -47,7 +53,7 @@ export function mountFilesUploads({ treeEl, viewerEl, roots, keyOf, tree, callRp
   };
   const stopUploads = uploads.subscribe(onUploads);
   onUploads(uploads.snapshot());
-  const stopTray = mountFileUploadTray(viewerEl, { uploads });
+  const stopTray = mountFileUploadTray(viewerEl, { uploads, capabilities: { uploads: false } });
   return {
     dispose() { disposed = true; stopSupport(); stopUploads(); stopTray(); actions.dispose(); },
   };

@@ -12,6 +12,16 @@ beforeEach(async () => { capabilities = { fs: { projectSources: false } }; await
 const context = () => ({ deviceId: "d", rpc: vi.fn(async () => ({ ok: true })), whenGreeted: async (dispatch) => ({ sent: dispatch() }) });
 
 describe("project source filesystem support", () => {
+  it("addresses upload sessions by id even after their project source moved", async () => {
+    const machine = context();
+    const before = { path: "/old", sources: [{ id: "docs", path: "/old" }] };
+    const after = { path: "/new", sources: [{ id: "docs", path: "/new" }] };
+    const rpc = projectFilesRpc(machine, "code", { project: before, currentProject: () => after });
+    for (const method of ["fs.uploadChunk", "fs.uploadFinish", "fs.uploadAbort"]) {
+      await rpc(method, { upload_id: "u" });
+      expect(machine.rpc).toHaveBeenCalledWith(method, { upload_id: "u" });
+    }
+  });
   it("refuses reading and saving a mounted source after its folder moved", async () => {
     const machine = context();
     capabilities.fs.projectSources = true;

@@ -1282,6 +1282,22 @@ a sibling `build-secure-transport` checkout (`spa/package.json`).
 | `spa/src/styles.css`, `spa/src/styles/*.css` | tokens and styles |
 | `spa/public/` | `theme-boot.js`, service worker, manifest, icons |
 
+### Files
+
+The Files explorer shares directory upload and New folder actions across
+workspace sources, project sources and checkouts. `spa/src/core/filesUploads.js`
+mounts them from cached upload capabilities; `fileUploadRpc.js` checks the
+current greeting when starting a write. `fileUploads.js` owns an in-memory
+queue per device, streams at most two files with sequential acknowledged chunks,
+and keeps completed metadata in `ui-uploads` for 30 minutes. Directory drops
+create each parent before uploading its files. Successful writes invalidate
+their parent listing even after navigation; a mounted tree relists and reveals
+the entry rather than depending on a files push, which can omit ignored paths.
+`fileUploadTray.js` paints progress, cancellation, retry and explicit replacement
+from that queue in a collapsible card inside the preview pane. Account reset
+and device retirement cancel and clear the queue; a reload restores only recent
+metadata, never file bytes or live upload sessions.
+
 ### Render from cache
 
 **The rule.** All new SPA code follows it:

@@ -5,7 +5,7 @@ vi.mock("../src/core/fileUploadRpc.js", () => ({ fileUploadRpc: (_context, callR
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
 const { scopeFor } = await import("../src/core/cacheScope.js");
-const { wipeCache } = await import("../src/core/localCache.js");
+const { readCached, wipeCache } = await import("../src/core/localCache.js");
 const { wipeUiRecords } = await import("../src/core/localUiStore.js");
 const { rememberFileUploadSupport } = await import("../src/core/fileUploadSupport.js");
 const { uploadsFor } = await import("../src/core/fileUploads.js");
@@ -83,4 +83,21 @@ it("keeps an upload and completion refresh through a Files remount", async () =>
   await vi.waitFor(() => expect(second.host.querySelector(".fupload-status").textContent).toContain("Uploading"));
   await finish();
   await vi.waitFor(() => expect(second.host.querySelector('[data-path="ignored/new.txt"]')).toBeTruthy());
+});
+it("invalidates an ignored parent when an upload finishes while Files is unmounted", async () => {
+  const rpc = fakeRpc();
+  let finish;
+  const callRpc = (method, params) => method === "fs.uploadFinish" ? new Promise((resolve) => { finish = async () => resolve(await rpc(method, params)); }) : rpc(method, params);
+  const first = mount(sources[2], callRpc);
+  const engine = uploadsFor(device); engines.push(engine);
+  const address = { deviceId: device, entityId: "r", kind: "tree", sub: "ignored" };
+  await vi.waitFor(() => expect(first.host.querySelector('[data-path="ignored"] [data-upload-action="upload"]')).toBeTruthy());
+  first.host.querySelector('[data-path="ignored"]').click();
+  await vi.waitFor(async () => expect((await readCached(address))?.value.entries).toEqual([]));
+  chooseFiles(first.host);
+  await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+  first.view.dispose(); first.host.remove();
+  await finish();
+  await vi.waitFor(() => expect(engine.snapshot().recent[0]?.status).toBe("finished"));
+  expect(await readCached(address)).toBeUndefined();
 });

@@ -14,7 +14,7 @@ const validFolderName = (name) => name && name !== "." && name !== ".." && !/[\\
 
 /** Directory affordances decorate existing rows; drag feedback only changes a
  * class and an overlay attribute, preserving the tree's elements and geometry. */
-export function mountFilesUploadActions(host, { roots, capabilities, uploads, callRpc, onCreated }) {
+export function mountFilesUploadActions(host, { roots, capabilities, uploads, callRpc, onCreated, onFinished }) {
   let support = capabilities;
   let disposed = false;
   let dropRow = null;
@@ -55,10 +55,10 @@ export function mountFilesUploadActions(host, { roots, capabilities, uploads, ca
     dropRow.dataset.uploadHint = `Drop to upload into ${target.parent.split("/").at(-1) || target.root.label || "Files"}`;
   };
 
-  const uploadTarget = ({ root, parent }) => ({ scope: { ...root.scope }, rootId: root.id, parent, destination: destination(root, parent), callRpc });
-  const createdDirectory = ({ rootId, parent, path }) => {
+  const uploadTarget = ({ root, parent }) => ({ scope: { ...root.scope }, rootId: root.id, parent, destination: destination(root, parent), callRpc, onFinished });
+  const createdDirectory = ({ scope, rootId, parent, path }) => {
     const root = roots.find((candidate) => candidate.id === rootId);
-    if (!disposed && root) onCreated(root, parent, path);
+    if (root) onCreated({ ...root, scope }, parent, path);
   };
   const onDragOver = (event) => {
     if (!fileDrag(event)) return;
@@ -97,11 +97,11 @@ export function mountFilesUploadActions(host, { roots, capabilities, uploads, ca
     current.field.disabled = true;
     current.error.textContent = "";
     const { root, parent } = current.target;
+    const scope = { ...root.scope };
     try {
-      const result = await callRpc("fs.createDirectory", { ...root.scope, parent, name });
-      if (disposed || draft !== current) return;
-      closeDraft();
-      onCreated(root, parent, result.path);
+      const result = await callRpc("fs.createDirectory", { ...scope, parent, name });
+      if (!disposed && draft === current) closeDraft();
+      onCreated({ ...root, scope }, parent, result.path);
     } catch (error) {
       if (!disposed && draft === current) showDraftError(error.message || "Could not create folder.");
     }

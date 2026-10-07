@@ -1,0 +1,21 @@
+.fupload-tray { position:absolute; z-index:4; right:12px; bottom:12px; width:min(320px, calc(100% - 24px)); max-height:calc(100% - 24px); display:flex; flex-direction:column; border:1px solid var(--line); border-radius:10px; background:var(--panel2); color:var(--ink); overflow:hidden; }
+.fupload-tray[hidden], .fupload-tray [hidden] { display:none; }
+.fupload-summary { width:100%; min-height:40px; padding:10px 12px; background:transparent; border:0; color:inherit; font:inherit; text-align:left; cursor:pointer; }
+.fupload-summary:hover, .fupload-action:hover, .fupload-recent-toggle:hover { background:var(--row-hover); }
+.fupload-progress { display:block; width:100%; height:3px; border:0; border-radius:0; accent-color:var(--accent); background:var(--accent-soft); }
+.fupload-progress::-webkit-progress-bar { background:var(--accent-soft); }
+.fupload-progress::-webkit-progress-value { background:var(--accent); }
+.fupload-progress::-moz-progress-bar { background:var(--accent); }
+.fupload-body { min-height:0; overflow:auto; overscroll-behavior:contain; }
+.fupload-list { list-style:none; margin:0; padding:0; }
+.fupload-item { padding:10px 12px; border-top:1px solid var(--line); font-size:12px; }
+.fupload-name { font-weight:600; overflow-wrap:anywhere; }
+.fupload-destination, .fupload-detail, .fupload-error { margin-top:4px; overflow-wrap:anywhere; }
+.fupload-destination, .fupload-detail { color:var(--ink2); }
+.fupload-item .fupload-progress { margin-top:8px; }
+.fupload-actions { display:flex; gap:6px; margin-top:6px; }
+.fupload-action, .fupload-recent-toggle { border:1px solid var(--line); border-radius:5px; background:transparent; color:inherit; font:inherit; padding:4px 8px; cursor:pointer; }
+.fupload-action:disabled { cursor:default; opacity:.6; }
+.fupload-recent-toggle { width:100%; border-radius:0; border-width:1px 0 0; padding:10px 12px; text-align:left; }
+.fupload-summary:focus-visible, .fupload-action:focus-visible, .fupload-recent-toggle:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+@media (prefers-reduced-motion:reduce) { .fupload-tray *, .fupload-drop { transition:none; animation:none; } }

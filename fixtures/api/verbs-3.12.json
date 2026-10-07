@@ -1,6 +1,6 @@
 {
-  "api_version": "3.11.0",
-  "commit": "071f84a4",
+  "api_version": "3.12.0",
+  "commit": "e6cc247c",
   "generated_by": "scripts/api-verbs-manifest.mjs",
   "verbs": [
     "agent.add",
@@ -210,7 +210,9 @@
     "requests.priority",
     "requests.receipts",
     "rtc.candidateDiagnostics",
+    "rtc.clientLanCache",
     "rtc.close",
+    "rtc.conntrackSweep",
     "rtc.ice",
     "rtc.offer",
     "run.abandon",

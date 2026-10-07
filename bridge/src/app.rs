@@ -397,6 +397,7 @@ pub struct AppState {
     /// The shell user terminals spawn (resolved once; see [`resolve_term_shell`]).
     term_shell: String,
     streams: HashMap<String, StreamState>,
+    uploads: HashMap<String, self::fs::uploads::Upload>,
     /// Every live PTY the daemon owns — human shells and agent sessions — keyed
     /// by (canonical worktree root, tab id). One
     /// registry over one id space: there is no second place a terminal can be,
@@ -668,6 +669,7 @@ impl AppState {
             dispatch_fault: None,
             term_shell: resolve_term_shell(),
             streams: HashMap::new(),
+            uploads: HashMap::new(),
             session_registry: SessionRegistry::new(),
             delivery_queue: Default::default(),
             watch_agent_filed_tasks: false,

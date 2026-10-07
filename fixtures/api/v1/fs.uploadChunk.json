@@ -1,0 +1,19 @@
+{
+  "method": "fs.uploadChunk",
+  "since": "3.13.0",
+  "params": {
+    "upload_id": "upload-7",
+    "offset": 0,
+    "content_b64": "AAECAw=="
+  },
+  "result": {
+    "received": 4
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "conflict",
+    "busy",
+    "internal"
+  ]
+}

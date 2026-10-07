@@ -146,9 +146,60 @@ fn every_fixture_verb_has_an_advertised_capability() {
 }
 
 #[test]
+fn scoped_uploads_and_directory_creation_have_separate_typed_contracts() {
+    let advertised = capabilities(false);
+    for method in [
+        "fs.createDirectory",
+        "fs.uploadBegin",
+        "fs.uploadChunk",
+        "fs.uploadFinish",
+        "fs.uploadAbort",
+    ] {
+        assert!(advertised.contains(&method), "{method}: not announced");
+        let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
+        assert_eq!(fixture["since"], "3.13.0");
+        let (_, handler) = v1::methods()
+            .iter()
+            .find(|(name, _)| *name == method)
+            .unwrap();
+        for field in ["root", "source_path", "host_path", "caller", "session_id"] {
+            let mut injected = fixture["params"].clone();
+            injected[field] = serde_json::json!("/tmp/forged");
+            assert!(
+                handler.parse_params(&injected).is_err(),
+                "{method}: accepted {field}"
+            );
+        }
+    }
+    for (method, field) in [("fs.uploadBegin", "size"), ("fs.uploadChunk", "offset")] {
+        let (_, handler) = v1::methods()
+            .iter()
+            .find(|(name, _)| *name == method)
+            .unwrap();
+        let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
+        for invalid in [
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!("4"),
+        ] {
+            let mut params = fixture["params"].clone();
+            params[field] = invalid;
+            assert!(
+                handler.parse_params(&params).is_err(),
+                "{method}: accepted invalid {field}"
+            );
+        }
+    }
+    let begin = read_json(&fixtures_root().join("v1/fs.uploadBegin.json"));
+    assert_eq!(begin["result"]["chunk_bytes"], 4 * 1_048_576);
+    let abort = read_json(&fixtures_root().join("v1/fs.uploadAbort.json"));
+    assert_eq!(abort["result"], serde_json::json!({}));
+}
+
+#[test]
 fn media_page_features_are_announced_together() {
     let advertised: BTreeSet<&str> = capabilities(false).into_iter().collect();
-    assert_eq!(API_VERSION, "3.12.0");
+    assert_eq!(API_VERSION, "3.13.0");
     assert!(advertised.contains("thread.attachmentChunks"));
     assert!(advertised.contains("fs.mediaRawPages"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));

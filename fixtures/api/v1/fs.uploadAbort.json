@@ -1,0 +1,13 @@
+{
+  "method": "fs.uploadAbort",
+  "since": "3.13.0",
+  "params": {
+    "upload_id": "upload-7"
+  },
+  "result": {},
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "internal"
+  ]
+}

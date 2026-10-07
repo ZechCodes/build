@@ -125,3 +125,33 @@ describe("file drops", () => {
     expect(uploads.enqueueDrop).not.toHaveBeenCalled();
   });
 });
+
+it("ignores multi-root empty space and targets explicit second-root files", () => {
+  const second = { id: "docs", label: "Docs", scope: { project_id: "p", source_id: "docs" } };
+  host.querySelector(".ftree-list").insertAdjacentHTML("beforeend", '<div class="froot" data-root="docs"><div class="frow froot-head" data-root-head="docs">Docs</div><div class="frow" data-kind="file" data-path="readme.md">readme</div></div>');
+  actions = mountFilesUploadActions(host, { roots: [root, second], capabilities: { uploads: true }, uploads, callRpc, onCreated });
+  drag(host, "dragover");
+  expect(host.querySelector(".fupload-drop")).toBeNull();
+  drag(host, "drop");
+  expect(uploads.enqueueDrop).not.toHaveBeenCalled();
+  const explicit = host.querySelector('[data-root="docs"] [data-kind="file"]');
+  drag(explicit, "dragover");
+  expect(host.querySelector('[data-root-head="docs"]').classList.contains("fupload-drop")).toBe(true);
+  drag(explicit, "drop");
+  expect(uploads.enqueueDrop).toHaveBeenCalledWith(expect.objectContaining({ rootId: "docs", scope: second.scope, parent: "" }));
+});
+it("allows native file drop dispatch on an older bridge", () => {
+  mount({ uploads: false });
+  const transfer = { types: ["Files"], dropEffect: "none" };
+  drag(row("docs"), "dragover", transfer);
+  expect(transfer.dropEffect).toBe("copy");
+});
+it.each(["", ".", "..", "bad/name", "bad\\name", "bad\0name"])("rejects invalid new-folder name %j locally", (name) => {
+  mount();
+  button("docs", "folder").click();
+  const input = host.querySelector(".fupload-folder input");
+  input.value = name;
+  key(input, "Enter");
+  expect(callRpc).not.toHaveBeenCalled();
+  expect(host.querySelector('[role="alert"]').textContent).toContain("folder name");
+});

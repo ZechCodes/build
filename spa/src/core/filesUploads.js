@@ -13,6 +13,7 @@ const sameScope = (left, right) => Object.keys(left).length === Object.keys(righ
 export function mountFilesUploads({ treeEl, viewerEl, roots, keyOf, tree, callRpc, deviceId, listingAddress }) {
   let disposed = false;
   const refreshed = new Set();
+  const observedActive = new Set();
   const rpc = fileUploadRpc(contextFor(deviceId), callRpc);
   const uploads = uploadsFor(deviceId, { callRpc: rpc });
   // Ignore-file writes need their own invalidation: a files push is not
@@ -41,10 +42,11 @@ export function mountFilesUploads({ treeEl, viewerEl, roots, keyOf, tree, callRp
   };
   const stopSupport = deviceId ? subscribeCache(fileUploadSupportAddress(deviceId), () => void readSupport()) : () => {};
   void readSupport();
-  const onUploads = ({ recent }) => {
+  const onUploads = ({ active, recent }) => {
+    active.forEach((item) => observedActive.add(item.id));
     for (const item of recent) {
       const completed = `${item.id}:${item.finishedAt}`;
-      if (item.status !== "finished" || refreshed.has(completed)) continue;
+      if (!observedActive.has(item.id) || item.status !== "finished" || refreshed.has(completed)) continue;
       const root = roots.find((candidate) => candidate.id === item.rootId && sameScope(candidate.scope, item.scope));
       if (!root) continue;
       refreshed.add(completed);

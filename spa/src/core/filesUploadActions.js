@@ -1,4 +1,5 @@
 import { esc } from "./text.js";
+import { uploadNameValid } from "./fileUploadsModel.js";
 import { parentPath } from "./fileTreeModel.js";
 import { fieldTraits } from "./fieldTraits.js";
 import { notifyError } from "./notify.js";
@@ -11,7 +12,6 @@ const rootIdOf = (row) => row.closest("[data-root]")?.dataset.root ?? row.datase
 const directoryRows = (host) => [...host.querySelectorAll('[data-kind="dir"], [data-root-head], [data-upload-root]')];
 const interactive = (event) => event.target.closest?.("[data-upload-action], .fupload-folder, .fupload-input");
 const destination = (root, parent) => [root.label, parent].filter(Boolean).join(" / ") || "/";
-const validFolderName = (name) => name && name !== "." && name !== ".." && !/[\\/\0]/.test(name);
 
 /** Directory affordances decorate existing rows; drag feedback only changes a
  * class and an overlay attribute, preserving the tree's elements and geometry. */
@@ -28,7 +28,7 @@ export function mountFilesUploadActions(host, { roots, capabilities, uploads, ca
   input.hidden = true;
   host.append(input);
 
-  const rootOf = (row) => roots.find((root) => String(root.id) === rootIdOf(row)) || roots[0];
+  const rootOf = (row) => roots.find((root) => String(root.id) === rootIdOf(row)) || (roots.length === 1 ? roots[0] : null);
   const parentOf = (row) => row.dataset.kind === "dir" ? row.dataset.path : "";
   const targetOfRow = (row) => ({ root: rootOf(row), parent: parentOf(row), row });
   const rootHead = (root) => directoryRows(host).find((row) => rootOf(row) === root && !row.dataset.path);
@@ -38,6 +38,7 @@ export function mountFilesUploadActions(host, { roots, capabilities, uploads, ca
     const row = event.target.closest?.(".frow");
     if (row?.dataset.kind === "dir") return targetOfRow(row);
     const root = row ? rootOf(row) : rootOf(event.target.closest?.("[data-root]") || host);
+    if (!root) return null;
     const parent = row?.dataset.path ? parentPath(row.dataset.path) : "";
     return { root, parent, row: parentRow(root, parent) };
   };
@@ -64,8 +65,10 @@ export function mountFilesUploadActions(host, { roots, capabilities, uploads, ca
   const onDragOver = (event) => {
     if (!fileDrag(event)) return;
     event.preventDefault();
-    if (event.dataTransfer) event.dataTransfer.dropEffect = support.uploads ? "copy" : "none";
-    if (support.uploads) markDrop(targetOf(event));
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+    const target = targetOf(event);
+    if (support.uploads && target?.root) markDrop(target);
+    else clearDrop();
   };
   const onDragLeave = (event) => {
     if (!host.contains(event.relatedTarget)) clearDrop();
@@ -75,6 +78,7 @@ export function mountFilesUploadActions(host, { roots, capabilities, uploads, ca
     event.preventDefault();
     const target = targetOf(event);
     clearDrop();
+    if (!target?.root) return;
     if (!support.uploads) return notifyError("Update the bridge to upload files");
     void uploads.enqueueDrop({ ...uploadTarget(target), dataTransfer: event.dataTransfer, onDirectory: createdDirectory })
       .catch((error) => notifyError("Could not upload files", error.message));
@@ -94,7 +98,7 @@ export function mountFilesUploadActions(host, { roots, capabilities, uploads, ca
   const createFolder = async () => {
     const current = draft;
     const name = current.field.value;
-    if (!validFolderName(name)) return showDraftError("Enter a folder name without slashes.");
+    if (!uploadNameValid(name)) return showDraftError("Enter a folder name without slashes.");
     current.field.disabled = true;
     current.error.textContent = "";
     const { root, parent } = current.target;

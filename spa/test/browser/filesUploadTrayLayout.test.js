@@ -42,3 +42,27 @@ for (const theme of ["light", "dark"]) {
     }, 60_000);
   }
 }
+
+it("highlights a drop destination without changing row geometry", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await mountFilesExplorer(page, basePath);
+    await loadBrowserModules(page, { actions: "src/core/filesUploadActions.js" }, basePath);
+    const geometry = await page.evaluate(() => {
+      const tree = document.querySelector(".ftree");
+      window.__disposeUploadActions = window.__layoutModules.actions.mountFilesUploadActions(tree, {
+        roots: [{ id: null, label: "Checkout", scope: { run_id: "explorer-run" } }],
+        capabilities: { uploads: true, createDirectory: true }, uploads: { enqueue() {}, enqueueDrop: async () => {} }, callRpc: async () => ({}), onCreated() {},
+      });
+      const row = document.querySelector('.frow[data-path="spa"]');
+      const measure = () => { const box = row.getBoundingClientRect(); return { x: box.x, y: box.y, width: box.width, height: box.height }; };
+      const before = measure();
+      const dataTransfer = new DataTransfer();
+      dataTransfer.items.add(new File(["hello"], "hello.txt"));
+      row.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer }));
+      return { before, after: measure(), highlighted: row.classList.contains("fupload-drop"), hint: row.dataset.uploadHint };
+    });
+    expect(geometry.highlighted).toBe(true);
+    expect(geometry.hint).toBeTruthy();
+    expect(geometry.after).toEqual(geometry.before);
+  });
+}, 60_000);

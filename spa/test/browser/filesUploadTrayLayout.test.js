@@ -46,13 +46,18 @@ for (const theme of ["light", "dark"]) {
 }
 
 for (const theme of ["light", "dark"]) {
-it(`highlights a drop destination without changing row geometry in ${theme}`, async () => {
+for (const width of [1180, 320]) {
+it(`highlights a drop destination without changing row geometry in ${theme} at ${width}px`, async () => {
   await withLayoutPage(async ({ page, basePath }) => {
     await mountFilesExplorer(page, basePath, { theme });
     await loadBrowserModules(page, { support: "src/core/fileUploadSupport.js" }, basePath);
     await page.evaluate(async () => {
       await window.__layoutModules.support.rememberFileUploadSupport("explorer-device", { fs: { uploads: true, createDirectory: true } });
     });
+    if (width === 320) {
+      await page.locator(".pane-handle").click();
+      await page.waitForFunction(() => getComputedStyle(document.querySelector("#ftree")).transform === "none");
+    }
     await page.locator('.frow[data-path="spa"] [data-upload-action="upload"]').waitFor();
     const geometry = await page.evaluate(() => {
       const row = document.querySelector('.frow[data-path="spa"]');
@@ -76,6 +81,20 @@ it(`highlights a drop destination without changing row geometry in ${theme}`, as
     expect(geometry.after).toEqual(geometry.before);
     expect(geometry.allAfter).toEqual(geometry.allBefore);
     await expect.poll(() => page.locator('.frow[data-path="spa"]').evaluate((node) => getComputedStyle(node).backgroundColor)).toBe(geometry.expected);
-  });
+    await captureLayout(page, `files-upload-drop-${theme}-${width}.png`);
+    await page.locator('.frow[data-path="spa"]').evaluate((node) => node.dispatchEvent(new DragEvent("dragleave", { bubbles: true, relatedTarget: document.body })));
+    const directory = page.locator('.frow[data-path="spa"]');
+    await directory.hover();
+    const expanded = await directory.getAttribute("aria-expanded");
+    await directory.locator('[data-upload-action="folder"]').click();
+    const field = page.getByRole("textbox", { name: "New folder name" });
+    await field.fill("assets");
+    expect(await directory.getAttribute("aria-expanded")).toBe(expanded);
+    expect(await field.inputValue()).toBe("assets");
+    expect(await page.locator('.frow[data-path="spa/assets"]').count()).toBe(0);
+    expect(await page.locator(".fupload-folder-error").textContent()).toBe("");
+    await captureLayout(page, `files-upload-folder-${theme}-${width}.png`);
+  }, { width, height: 640 });
 }, 60_000);
+}
 }

@@ -55,7 +55,7 @@ export async function mountFilesExplorer(page, basePath, { theme = "dark" } = {}
   });
   await loadBrowserModules(page, { files: "src/views/files.js", scope: "src/core/cacheScope.js" }, basePath);
   await page.evaluate(seedFiles, { theme });
-  await page.waitForSelector('.frow[data-path="spa"]');
+  await page.waitForSelector('.frow[data-path="spa"]', { state: "attached" });
 }
 
 export const row = (page, path) => page.locator(`.frow[data-path="${path}"]`);

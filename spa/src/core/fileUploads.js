@@ -25,7 +25,7 @@ const readUploadBlob = (blob) => {
     reader.readAsArrayBuffer(blob);
   });
 };
-const frozenItem = (item) => Object.freeze({ ...uploadMetadata(item, !!item.file), scope: Object.freeze({ ...item.scope }) });
+const frozenItem = (item) => Object.freeze({ ...uploadMetadata(item, !!item.file && item.status !== "finished"), scope: Object.freeze({ ...item.scope }) });
 
 export function createFileUploads({ callRpc, now = Date.now, stateAddress = null }) {
   const send = (item, method, params) => (item.callRpc || callRpc)(method, params);
@@ -38,7 +38,7 @@ export function createFileUploads({ callRpc, now = Date.now, stateAddress = null
     const all = [...items.values()].map(frozenItem);
     return Object.freeze({
       active: Object.freeze(all.filter((item) => item.finishedAt === null)),
-      recent: Object.freeze(all.filter((item) => item.finishedAt !== null)),
+      recent: Object.freeze(all.filter((item) => item.finishedAt !== null && now() - item.finishedAt < UPLOAD_RETENTION_MS)),
     });
   };
   const announce = () => listeners.forEach((listener) => listener(snapshot()));
@@ -59,7 +59,7 @@ export function createFileUploads({ callRpc, now = Date.now, stateAddress = null
   };
   const abort = async (item) => {
     if (!item.uploadId) return;
-    if (!item.aborting) item.aborting = send(item, "fs.uploadAbort", { upload_id: item.uploadId }).catch(() => {});
+    if (!item.aborting) item.aborting = Promise.resolve().then(() => send(item, "fs.uploadAbort", { upload_id: item.uploadId })).catch(() => {});
     await item.aborting;
   };
   const sendChunks = async (item, chunkBytes) => {
@@ -125,7 +125,7 @@ export function createFileUploads({ callRpc, now = Date.now, stateAddress = null
     if (!item || item.finishedAt !== null) return;
     item.cancelled = true;
     if (item.status === "queued") finish(item, "cancelled");
-    else { item.status = "cancelling"; announce(); }
+    else { item.status = "cancelling"; void abort(item); announce(); }
   };
   const retry = (id, { replace = false } = {}) => {
     const item = items.get(id);
@@ -135,9 +135,11 @@ export function createFileUploads({ callRpc, now = Date.now, stateAddress = null
     announce(); persist(); pump(); return true;
   };
   const enqueueDrop = async ({ dataTransfer, onDirectory, ...target }) => {
-    const entries = Array.from(dataTransfer.items || []).map((item) => item.webkitGetAsEntry?.()).filter(Boolean);
+    const droppedItems = Array.from(dataTransfer.items || []);
+    const entries = droppedItems.map((item) => item.webkitGetAsEntry?.()).filter(Boolean);
     if (!entries.length) return enqueue({ ...target, files: dataTransfer.files || [] });
-    const ids = [];
+    const looseFiles = droppedItems.filter((item) => !item.webkitGetAsEntry?.()).map((item) => item.getAsFile?.()).filter(Boolean);
+    const ids = enqueue({ ...target, files: looseFiles });
     const directory = async (parent, name) => {
       try { await (target.callRpc || callRpc)("fs.createDirectory", { ...target.scope, parent, name }); }
       catch (error) { if (uploadErrorCode(error) !== "already_exists") throw error; }
@@ -145,7 +147,11 @@ export function createFileUploads({ callRpc, now = Date.now, stateAddress = null
       onDirectory?.({ scope: target.scope, parent, path, rootId: target.rootId });
       return path;
     };
-    const queueFile = (parent, file) => ids.push(...enqueue({ ...target, parent, files: [file] }));
+    const queueFile = (parent, file) => {
+      const relative = parent.slice((target.parent || "").length).replace(/^\//, "");
+      const destination = relative ? joinUploadPath(target.destination || target.parent || "", relative) : target.destination;
+      ids.push(...enqueue({ ...target, parent, destination, files: [file] }));
+    };
     for (const entry of entries) {
       try { await walkUploadEntry(entry, target.parent || "", { directory, enqueue: queueFile }); }
       catch (error) {

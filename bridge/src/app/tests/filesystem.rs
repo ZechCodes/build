@@ -688,6 +688,118 @@ fn fs_upload_chunk_enforces_order_limits_encoding_and_client_ownership() {
 }
 
 #[test]
+fn fs_upload_finish_publishes_three_chunk_binary_file_and_raw_read_is_exact() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let sender = SessionSender::detached("uploader");
+    let bytes: Vec<u8> = (0..(8 * 1_048_576 + 17)).map(|index| index as u8).collect();
+    let id = begin_upload(&mut state, &sender, "clip.webm", bytes.len() as u64, false);
+    let mut received = 0;
+    for chunk in bytes.chunks(4 * 1_048_576) {
+        let response = upload_bytes(&mut state, &sender, &id, received, chunk);
+        received += chunk.len() as u64;
+        assert_eq!(response["result"]["received"], received, "{response:?}");
+        assert!(!repo.join("clip.webm").exists());
+    }
+    let finished = upload_call(&mut state, &sender, "fs.uploadFinish", json!({ "upload_id": id }));
+    assert_eq!(finished["result"], json!({ "path": "clip.webm", "size": bytes.len() }), "{finished:?}");
+    let project_id = state.project_at(0).id.clone();
+    let mut read = Vec::new();
+    while read.len() < bytes.len() {
+        let page = state.handle(req("fs.read", json!({
+            "project_id": project_id, "path": "clip.webm", "range": {
+                "offset": read.len(), "bytes": 1_048_576, "raw": true,
+            },
+        })));
+        assert_eq!(page["ok"], true, "{page:?}");
+        let decoded = b64decode(page["result"]["content_b64"].as_str().unwrap()).unwrap();
+        assert!(!decoded.is_empty());
+        read.extend_from_slice(&decoded);
+    }
+    assert_eq!(read, bytes);
+    assert!(!repo.join(format!(".build-upload-{id}.part")).exists());
+    assert_eq!(upload_bytes(&mut state, &sender, &id, received, &[])["error_code"], "not_found");
+}
+
+#[test]
+fn fs_upload_finish_requires_all_bytes_and_never_clobbers_a_late_target() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let sender = SessionSender::detached("uploader");
+    let id = begin_upload(&mut state, &sender, "new.bin", 3, false);
+    assert_eq!(upload_bytes(&mut state, &sender, &id, 0, &[0])["ok"], true);
+    let finish = |state: &mut AppState| upload_call(state, &sender, "fs.uploadFinish", json!({"upload_id": id}));
+    assert_eq!(finish(&mut state)["error_code"], "invalid_params");
+    assert!(!repo.join("new.bin").exists());
+    assert_eq!(upload_bytes(&mut state, &sender, &id, 1, &[1,2])["ok"], true);
+    std::fs::write(repo.join("new.bin"), b"another writer").unwrap();
+    assert_eq!(finish(&mut state)["error_code"], "already_exists");
+    assert_eq!(std::fs::read(repo.join("new.bin")).unwrap(), b"another writer");
+    assert!(!repo.join(format!(".build-upload-{id}.part")).exists());
+}
+
+#[test]
+fn fs_upload_finish_replaces_atomically_and_accepts_empty_files() {
+    use std::io::Read as _;
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let sender = SessionSender::detached("uploader");
+    std::fs::write(repo.join("existing.bin"), b"original").unwrap();
+    let mut original = std::fs::File::open(repo.join("existing.bin")).unwrap();
+    let id = begin_upload(&mut state, &sender, "existing.bin", 0, true);
+    assert_eq!(std::fs::read(repo.join("existing.bin")).unwrap(), b"original");
+    let response = upload_call(&mut state, &sender, "fs.uploadFinish", json!({"upload_id": id}));
+    assert_eq!(response["result"], json!({"path": "existing.bin", "size": 0}), "{response:?}");
+    assert!(std::fs::read(repo.join("existing.bin")).unwrap().is_empty());
+    let mut old_bytes = Vec::new();
+    original.read_to_end(&mut old_bytes).unwrap();
+    assert_eq!(old_bytes, b"original");
+}
+
+#[test]
+fn fs_upload_finish_refuses_a_parent_symlink_swap_and_cleans_the_pinned_directory() {
+    let (dir, repo) = init_repo();
+    let outside = tempfile::tempdir().unwrap();
+    let mut state = qa_state(&repo, dir.path());
+    let sender = SessionSender::detached("uploader");
+    let project_id = state.project_at(0).id.clone();
+    std::fs::create_dir(repo.join("assets")).unwrap();
+    let begun = upload_call(&mut state, &sender, "fs.uploadBegin", json!({
+        "project_id": project_id, "parent": "assets", "name": "victim.bin", "size": 0, "replace": true,
+    }));
+    assert_eq!(begun["ok"], true, "{begun:?}");
+    let id = begun["result"]["upload_id"].as_str().unwrap();
+    std::fs::rename(repo.join("assets"), repo.join("held-assets")).unwrap();
+    std::os::unix::fs::symlink(outside.path(), repo.join("assets")).unwrap();
+    std::fs::write(outside.path().join("victim.bin"), b"safe").unwrap();
+    let response = upload_call(&mut state, &sender, "fs.uploadFinish", json!({"upload_id": id}));
+    assert_eq!(response["error_code"], "invalid_params", "{response:?}");
+    assert_eq!(std::fs::read(outside.path().join("victim.bin")).unwrap(), b"safe");
+    assert_eq!(std::fs::read_dir(repo.join("held-assets")).unwrap().count(), 0);
+}
+
+#[test]
+fn fs_upload_abort_removes_staging_file_and_refuses_other_clients() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let sender = SessionSender::detached("uploader");
+    let id = begin_upload(&mut state, &sender, "new.bin", 5, false);
+    assert_eq!(upload_bytes(&mut state, &sender, &id, 0, &[0,1])["ok"], true);
+    let temp = repo.join(format!(".build-upload-{id}.part"));
+    for stranger in [SessionSender::detached("other"), SessionSender::detached("uploader")] {
+        for method in ["fs.uploadAbort", "fs.uploadFinish"] {
+            let refused = upload_call(&mut state, &stranger, method, json!({"upload_id": id}));
+            assert_eq!(refused["error_code"], "not_found", "{refused:?}");
+        }
+        assert!(temp.exists());
+    }
+    let aborted = upload_call(&mut state, &sender, "fs.uploadAbort", json!({"upload_id": id}));
+    assert_eq!(aborted["result"], json!({}), "{aborted:?}");
+    assert!(!temp.exists());
+    assert!(!repo.join("new.bin").exists());
+    assert_eq!(upload_bytes(&mut state, &sender, &id, 2, &[2])["error_code"], "not_found");
+}
+#[test]
 fn fs_read_truncates_oversized_files() {
     let (dir, repo) = init_repo();
     let mut state = AppState::new(

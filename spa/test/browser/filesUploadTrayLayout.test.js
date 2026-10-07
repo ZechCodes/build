@@ -23,6 +23,7 @@ for (const theme of ["light", "dark"]) {
         await expect.poll(() => page.locator(".fupload-summary").textContent()).toBe("Uploading 3 files · 42%");
         await page.locator(".fupload-summary").focus();
         await page.keyboard.press("Enter");
+        await captureLayout(page, `files-upload-active-${theme}-${width}.png`);
         await page.locator(".fupload-recent-toggle").click();
         const box = await page.evaluate(() => {
           const viewer = document.querySelector("#fpreview").getBoundingClientRect();

@@ -1022,7 +1022,6 @@ fn fs_upload_verbs_and_directory_creation_refuse_a_reserved_workspace() {
             json!({"upload_id": id, "offset": 0, "content_b64": "AA=="}),
         ),
         ("fs.uploadFinish", json!({"upload_id": id})),
-        ("fs.uploadAbort", json!({"upload_id": id})),
     ];
     for (method, params) in attempts {
         let response = scoped_call(method, params);
@@ -1030,6 +1029,9 @@ fn fs_upload_verbs_and_directory_creation_refuse_a_reserved_workspace() {
     }
     assert!(!checkout.join("new-dir").exists());
     assert!(!checkout.join("another.bin").exists());
+    let aborted = scoped_call("fs.uploadAbort", json!({"upload_id": id}));
+    assert_eq!(aborted["ok"], true, "{aborted:?}");
+    assert!(!checkout.join("node_modules").join(format!(".build-upload-{id}.part")).exists());
 }
 
 #[test]

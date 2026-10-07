@@ -27,6 +27,7 @@ function progress(received, size) {
 
 function uploadItem(item, uploads, recent, support) {
   const row = element("li", "fupload-item");
+  row.dataset.uploadId = item.id;
   row.append(element("div", "fupload-name", item.name));
   row.append(element("div", "fupload-destination", item.destination || item.parent || "/"));
   const detail = element("div", "fupload-detail");
@@ -96,13 +97,14 @@ export function mountFileUploadTray(viewerEl, { uploads, capabilities = { upload
     aggregate.value = active.reduce((sum, item) => sum + item.received, 0);
     body.hidden = !expanded;
     const focusLabel = body.contains(document.activeElement) ? document.activeElement.getAttribute("aria-label") : null;
+    const focusId = document.activeElement.closest("[data-upload-id]")?.dataset.uploadId;
     renderBody(active, recent);
-    if (focusLabel) restoreFocus(focusLabel);
+    if (focusLabel) restoreFocus(focusLabel, focusId);
   }
 
-  function restoreFocus(label) {
+  function restoreFocus(label, id) {
     for (const control of body.querySelectorAll("button")) {
-      if (control.getAttribute("aria-label") === label) { control.focus({ preventScroll: true }); break; }
+      if (control.getAttribute("aria-label") === label && control.closest("[data-upload-id]")?.dataset.uploadId === id) { control.focus({ preventScroll: true }); break; }
     }
   }
 

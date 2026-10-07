@@ -65,3 +65,15 @@ it("gates recent Retry and Replace from cached support while keeping active Canc
   expect([...document.querySelectorAll(".fupload-action")].map((node) => node.textContent)).toEqual(["Cancel", "Retry", "Replace"]);
   dispose();
 });
+
+it("restores action focus to the same upload when names match across directories", () => {
+  let listener;
+  const active = ["docs", "src"].map((parent) => ({ id: parent, name: "same.txt", parent, size: 100, received: 20, status: "uploading" }));
+  const uploads = { snapshot: () => ({ active, recent: [] }), subscribe: (fn) => { listener = fn; return () => {}; }, prune() {}, cancel() {} };
+  const dispose = mountFileUploadTray(document.body, { uploads });
+  document.querySelector(".fupload-summary").click();
+  document.querySelectorAll(".fupload-action")[1].focus();
+  listener();
+  expect(document.activeElement.closest(".fupload-item").querySelector(".fupload-destination").textContent).toBe("src");
+  dispose();
+});

@@ -63,9 +63,7 @@ impl AppState {
         params: FsUploadIdParams,
         caller: &SessionSender,
     ) -> Result<FsUploadAbortResult, ApiError> {
-        let upload = self.owned_upload(&params.upload_id, caller)?;
-        self.refuse_writers_while_reserved(&upload.root)
-            .map_err(ApiError::classify)?;
+        self.owned_upload(&params.upload_id, caller)?;
         self.uploads.remove(&params.upload_id);
         Ok(FsUploadAbortResult {})
     }

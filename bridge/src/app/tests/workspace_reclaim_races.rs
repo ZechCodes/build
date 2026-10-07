@@ -1031,7 +1031,10 @@ fn fs_upload_verbs_and_directory_creation_refuse_a_reserved_workspace() {
     assert!(!checkout.join("another.bin").exists());
     let aborted = scoped_call("fs.uploadAbort", json!({"upload_id": id}));
     assert_eq!(aborted["ok"], true, "{aborted:?}");
-    assert!(!checkout.join("node_modules").join(format!(".build-upload-{id}.part")).exists());
+    assert!(!checkout
+        .join("node_modules")
+        .join(format!(".build-upload-{id}.part"))
+        .exists());
 }
 
 #[test]

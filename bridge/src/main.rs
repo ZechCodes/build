@@ -621,6 +621,14 @@ async fn run_daemon(
     // agent can create work in state that might be discarded. The local health
     // beat still proves the daemon initialized and its app lock is responsive.
     wait_for_update_probation(&home_dir()).await;
+    let cleaning = app.clone();
+    let removed =
+        tokio::task::spawn_blocking(move || cleaning.lock().unwrap().sweep_stale_uploads())
+            .await
+            .expect("startup upload cleanup completed");
+    if removed > 0 {
+        eprintln!("Removed {removed} orphaned upload staging files");
+    }
     // The relay socket, redialled for as long as the daemon runs, on the
     // liveness runtime. The main thread waits for the signal that ends the
     // daemon; the socket task is aborted then, which is the socket generation

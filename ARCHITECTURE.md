@@ -179,6 +179,14 @@ binary files in chunks of at most 4 MiB decoded bytes, staged until finish;
 the initiating session owns the upload id. The default refuses an existing
 destination with `already_exists`; `replace: true` explicitly permits file
 replacement. The host-directory browser's `fs.mkdir` remains a separate verb.
+Uploads are bounded at 256 MiB, eight open uploads per client session and 64
+in total; a full upload pool returns `busy`. The initiating session opening
+owns the ID. Its end or ten minutes without a chunk removes staging, and Abort
+can cancel an owned upload while reclaim reserves its workspace. Scope roots
+are canonicalised before the no-follow parent walk. Before admitting clients
+on boot, the bridge sweeps its known scope roots for orphaned regular files in
+the reserved `.build-upload-<UUIDv4>.part` namespace, owned by its user with
+mode 0600. It skips active IDs, symlinks and `.git`, with bounded traversal.
 
 `conversation.reset` belongs to the typed thread family. It reserves one exact
 conversation, stops its processes and stages files outside the app lock, then

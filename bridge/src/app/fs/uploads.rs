@@ -8,6 +8,7 @@ use crate::api::v1::git::{
 use crate::api::ApiError;
 use crate::carrier::{Opening, SessionSender};
 use crate::scoped_upload::{Destination, StagedFile};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -31,7 +32,32 @@ pub(in crate::app) struct Upload {
 
 impl AppState {
     pub fn sweep_stale_uploads(&self) -> usize {
-        0
+        let mut roots: HashSet<PathBuf> = self.worktree_roots().into_values().collect();
+        for project in self.projects.iter() {
+            roots.insert(project.repo_path.clone());
+            roots.extend(project.sources.iter().map(|source| source.path.clone()));
+        }
+        for workspace in self.workspaces.list(None) {
+            roots.insert(workspace.root.clone());
+            roots.extend(
+                workspace
+                    .directories
+                    .iter()
+                    .map(|directory| directory.path.clone()),
+            );
+        }
+        for (id, run) in &self.runs {
+            roots.insert(self.run_git_root(id, &run.worktree.path));
+        }
+        let roots: HashSet<PathBuf> = roots
+            .into_iter()
+            .filter_map(|root| std::fs::canonicalize(root).ok())
+            .collect();
+        let active: HashSet<String> = self.uploads.keys().cloned().collect();
+        roots
+            .iter()
+            .map(|root| crate::scoped_upload::remove_stale_uploads(root, &active))
+            .sum()
     }
 
     pub(in crate::app) fn drop_ended_session_uploads(&mut self, session_id: &str) {

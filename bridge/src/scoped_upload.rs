@@ -1,5 +1,8 @@
 //! New entries published relative to a fenced, no-follow directory descriptor.
 
+mod sweep;
+pub(crate) use sweep::remove_stale_uploads;
+
 use crate::api::ApiError;
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};

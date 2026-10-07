@@ -1261,22 +1261,40 @@ fn fs_upload_startup_sweep_cleans_known_project_and_workspace_sources() {
     let nested = plain.join("assets");
     std::fs::create_dir(&nested).unwrap();
     let sources = [crate::workspace::WorkspaceSource {
-        id: "source-2".into(), name: "files".into(), mount: "files".into(),
-        path: plain.clone(), is_git: false, base_branch: "main".into(),
+        id: "source-2".into(),
+        name: "files".into(),
+        mount: "files".into(),
+        path: plain.clone(),
+        is_git: false,
+        base_branch: "main".into(),
     }];
-    let workspace = state.workspaces.begin(&project_id, "uploads", &sources).unwrap();
+    let workspace = state
+        .workspaces
+        .begin(&project_id, "uploads", &sources)
+        .unwrap();
     let output = workspace.directories[0].path.join("node_modules");
     std::fs::create_dir_all(&output).unwrap();
-    let orphans = [orphaned_upload_file(&repo), orphaned_upload_file(&nested), orphaned_upload_file(&output)];
+    let orphans = [
+        orphaned_upload_file(&repo),
+        orphaned_upload_file(&nested),
+        orphaned_upload_file(&output),
+    ];
     let sender = SessionSender::detached("uploader");
-    let active = upload_call(&mut state, &sender, "fs.uploadBegin", json!({
-        "project_id": project_id, "source_id": "source-2", "parent": "assets", "name": "active.bin", "size": 1,
-    }));
+    let active = upload_call(
+        &mut state,
+        &sender,
+        "fs.uploadBegin",
+        json!({
+            "project_id": project_id, "source_id": "source-2", "parent": "assets", "name": "active.bin", "size": 1,
+        }),
+    );
     assert_eq!(active["ok"], true, "{active:?}");
     let id = active["result"]["upload_id"].as_str().unwrap();
     let active_temp = nested.join(format!(".build-upload-{id}.part"));
     assert_eq!(state.sweep_stale_uploads(), 3);
-    for path in orphans { assert!(!path.exists(), "{path:?}"); }
+    for path in orphans {
+        assert!(!path.exists(), "{path:?}");
+    }
     assert!(active_temp.exists());
     assert_eq!(upload_bytes(&mut state, &sender, id, 0, &[1])["ok"], true);
     assert_eq!(state.sweep_stale_uploads(), 0, "a second pass is harmless");
@@ -1303,8 +1321,20 @@ fn fs_upload_startup_sweep_preserves_links_git_and_unrelated_names() {
     let directory = repo.join(format!(".build-upload-{}.part", uuid::Uuid::new_v4()));
     std::fs::create_dir(&directory).unwrap();
     assert_eq!(state.sweep_stale_uploads(), 0);
-    for path in [&outside_file, &git_file, &upper_git_file, &malformed, &public, &directory] { assert!(path.exists(), "{path:?}"); }
-    assert!(std::fs::symlink_metadata(&leaf).unwrap().file_type().is_symlink());
+    for path in [
+        &outside_file,
+        &git_file,
+        &upper_git_file,
+        &malformed,
+        &public,
+        &directory,
+    ] {
+        assert!(path.exists(), "{path:?}");
+    }
+    assert!(std::fs::symlink_metadata(&leaf)
+        .unwrap()
+        .file_type()
+        .is_symlink());
 }
 
 #[test]

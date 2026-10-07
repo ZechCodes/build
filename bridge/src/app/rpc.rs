@@ -62,7 +62,12 @@ pub(in crate::app) const USER_ACTIVITY_VERBS: &[&str] = &[
     "entity.dismiss",
     "entity.mute",
     "entity.seen",
+    "fs.createDirectory",
     "fs.mkdir",
+    "fs.uploadAbort",
+    "fs.uploadBegin",
+    "fs.uploadChunk",
+    "fs.uploadFinish",
     "fs.write",
     "git.checkout_ref",
     "git.commit",
@@ -516,8 +521,15 @@ impl AppState {
             let app = state.lock().unwrap();
             (Arc::clone(&app.frame_clock), app.peers_slot())
         };
+        let ending = Arc::clone(&state);
         FrameHandler::new(clock, move |sender, frame, timer| {
             dispatch_frame(&state, &peers, sender, frame, timer)
+        })
+        .on_session_end(move |session_id| {
+            ending
+                .lock()
+                .unwrap()
+                .drop_ended_session_uploads(session_id);
         })
     }
 

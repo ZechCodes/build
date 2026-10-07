@@ -8,6 +8,15 @@ protocol versions; see
 
 ## [0.2.12] - Unreleased
 
+Wire 3.13.0.
+
+### Added
+
+- Upload binary files in chunks and create directories inside a workspace or
+  configured project source. Uploads stage bytes until completion, refuse
+  existing destinations unless replacement is requested, and can be aborted
+  without publishing a partial file (#391).
+
 ### Fixed
 
 - Fill the whole grouped inbox project head on hover, matching row colors and

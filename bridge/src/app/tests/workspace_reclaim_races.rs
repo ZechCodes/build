@@ -988,3 +988,92 @@ fn a_size_walk_landing_mid_sweep_keeps_its_newer_size() {
     assert_eq!(swept["size_measured_at_ms"], now + 1, "{swept:?}");
     assert_eq!(swept["size_bytes"], walked["size_bytes"]);
 }
+#[test]
+fn fs_upload_verbs_and_directory_creation_refuse_a_reserved_workspace() {
+    let (_tmp, state, _project, ws, _task, checkout, _output) = ready_to_prune();
+    let detail = call(&state, "workspace.get", json!({"workspace_id": ws}));
+    let source_id = detail["result"]["directories"][0]["source_id"]
+        .as_str()
+        .unwrap();
+    let sender = SessionSender::detached("upload-user");
+    let scoped_call = |method, params| {
+        crate::api::v1::changes::with_session(&sender, || call(&state, method, params))
+    };
+    let begun = scoped_call(
+        "fs.uploadBegin",
+        json!({
+            "workspace_id": ws, "source_id": source_id, "parent": "node_modules", "name": "new.bin", "size": 1,
+        }),
+    );
+    assert_eq!(begun["ok"], true, "{begun:?}");
+    let id = &begun["result"]["upload_id"];
+    state.lock().unwrap().reserve_workspace_for_test(&ws);
+    let attempts = [
+        (
+            "fs.createDirectory",
+            json!({"workspace_id": ws, "source_id": source_id, "parent": "", "name": "new-dir"}),
+        ),
+        (
+            "fs.uploadBegin",
+            json!({"workspace_id": ws, "source_id": source_id, "parent": "", "name": "another.bin", "size": 0}),
+        ),
+        (
+            "fs.uploadChunk",
+            json!({"upload_id": id, "offset": 0, "content_b64": "AA=="}),
+        ),
+        ("fs.uploadFinish", json!({"upload_id": id})),
+    ];
+    for (method, params) in attempts {
+        let response = scoped_call(method, params);
+        assert_eq!(response["error_code"], "busy", "{method}: {response:?}");
+    }
+    assert!(!checkout.join("new-dir").exists());
+    assert!(!checkout.join("another.bin").exists());
+    let aborted = scoped_call("fs.uploadAbort", json!({"upload_id": id}));
+    assert_eq!(aborted["ok"], true, "{aborted:?}");
+    assert!(!checkout
+        .join("node_modules")
+        .join(format!(".build-upload-{id}.part"))
+        .exists());
+}
+
+#[test]
+fn fs_upload_staging_in_ignored_directory_survives_automatic_prune() {
+    let (_tmp, state, _project, ws, _task, _checkout, output) = ready_to_prune();
+    let detail = call(&state, "workspace.get", json!({"workspace_id": ws}));
+    let source_id = detail["result"]["directories"][0]["source_id"]
+        .as_str()
+        .unwrap();
+    let sender = SessionSender::detached("upload-user");
+    let upload = |method, params| {
+        crate::api::v1::changes::with_session(&sender, || call(&state, method, params))
+    };
+    let begun = upload(
+        "fs.uploadBegin",
+        json!({
+            "workspace_id": ws, "source_id": source_id, "parent": "node_modules", "name": "new.bin", "size": 1,
+        }),
+    );
+    assert_eq!(begun["ok"], true, "{begun:?}");
+    let id = begun["result"]["upload_id"].as_str().unwrap();
+    let temp = output.join(format!(".build-upload-{id}.part"));
+    AppState::sweep_workspaces(&state, &pruning(), now_ms());
+    assert!(
+        temp.exists(),
+        "automatic prune deleted an in-progress upload"
+    );
+    let chunk = upload(
+        "fs.uploadChunk",
+        json!({"upload_id": id, "offset": 0, "content_b64": "AA=="}),
+    );
+    assert_eq!(chunk["ok"], true, "{chunk:?}");
+    assert_eq!(
+        upload("fs.uploadAbort", json!({"upload_id": id}))["ok"],
+        true
+    );
+    AppState::sweep_workspaces(&state, &pruning(), now_ms());
+    assert!(
+        !output.exists(),
+        "aborted upload must release the prune guard"
+    );
+}

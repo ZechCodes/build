@@ -1,0 +1,19 @@
+{
+  "method": "fs.uploadFinish",
+  "since": "3.13.0",
+  "params": {
+    "upload_id": "upload-7"
+  },
+  "result": {
+    "path": "assets/sample.bin",
+    "size": 4
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "already_exists",
+    "conflict",
+    "busy",
+    "internal"
+  ]
+}

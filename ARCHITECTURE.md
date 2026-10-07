@@ -161,6 +161,35 @@ names the verb, its handler and its typed params and result. Handler signatures
 never take `serde_json::Value`; a test in that module enforces it. Slow git work
 is deferred and runs with the lock released.
 
+The scoped file mutations in `api/v1/git.rs` are individually announced
+capabilities, added in wire 3.13.0 (#391):
+
+| Verb | Params beyond scope | Result |
+| --- | --- | --- |
+| `fs.createDirectory` | `parent`, `name` | `path` |
+| `fs.uploadBegin` | `parent`, `name`, `size`, optional `replace` | `upload_id`, `path`, `chunk_bytes` |
+| `fs.uploadChunk` | `upload_id`, `offset`, `content_b64` (no scope) | `received` |
+| `fs.uploadFinish` | `upload_id` (no scope) | `path`, `size` |
+| `fs.uploadAbort` | `upload_id` (no scope) | `{}` |
+
+Creation and upload begin resolve the same server-owned source/worktree ids
+as `fs.tree`. Their `parent` is scope-relative (empty means the root), and
+`name` is one child name. Result paths are scope-relative too. Uploads accept
+binary files in chunks of at most 4 MiB decoded bytes, staged until finish;
+the initiating session owns the upload id. The default refuses an existing
+destination with `already_exists`; `replace: true` explicitly permits file
+replacement. The host-directory browser's `fs.mkdir` remains a separate verb.
+Uploads are bounded at 256 MiB, eight open uploads per client session and 64
+in total; a full upload pool returns `busy`. The initiating session opening
+owns the ID. Its end or ten minutes without a chunk removes staging, and Abort
+can cancel an owned upload while reclaim reserves its workspace. Scope roots
+are canonicalised before the no-follow parent walk. Before admitting clients
+on boot, the bridge sweeps its known scope roots for orphaned regular files in
+the reserved `.build-upload-<UUIDv4>.part` namespace, owned by its user with
+mode 0600. It skips active IDs, symlinks and `.git`, with bounded traversal.
+Creation refuses that reserved staging destination namespace, including case
+variants, so a published user file cannot be mistaken for an orphan on boot.
+
 `conversation.reset` belongs to the typed thread family. It reserves one exact
 conversation, stops its processes and stages files outside the app lock, then
 commits the replacement under the lock. Cleanup does not depend on a browser
@@ -229,7 +258,7 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.12.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.13.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
@@ -322,6 +351,10 @@ runtime that starts them.
   without addresses. These are additive changes in the same unreleased minor.
   3.12.0 adds `rtc.clientLanCache`, the optional paired `client_id` discovery
   hint on `rtc.offer`, and actual per-host connectivity-check diagnostics (#372).
+  3.13.0 adds `fs.createDirectory`, `fs.uploadBegin`, `fs.uploadChunk`,
+  `fs.uploadFinish` and `fs.uploadAbort` (#391), each announced by its verb
+  name, plus the nonretryable `already_exists` error code. The new mutations
+  create directories and stage binary uploads inside a resolved file scope.
   3.11.0 adds `conversation.reset` (#358) and thread generations on conversation
   digests and responses. Generation-aware requests refuse a cleared thread;
   the reset capability gates the menu, its generation-aware cache handling,

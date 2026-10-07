@@ -19,6 +19,7 @@ use crate::transport::{Frame, CLOSE_FRAME_TYPE, SENDER_DEVICE};
 pub struct FrameHandler {
     pub(super) clock: Arc<FrameClock>,
     pub(super) dispatch: Arc<dyn Fn(SessionSender, Frame, FrameTimer) -> Value + Send + Sync>,
+    session_end: Arc<dyn Fn(&str) + Send + Sync>,
 }
 
 impl FrameHandler {
@@ -29,7 +30,14 @@ impl FrameHandler {
         Self {
             clock,
             dispatch: Arc::new(dispatch),
+            session_end: Arc::new(|_| {}),
         }
+    }
+
+    /// Release opening-owned resources promptly, even if a reopened ID suppresses its close frame.
+    pub(crate) fn on_session_end(mut self, ended: impl Fn(&str) + Send + Sync + 'static) -> Self {
+        self.session_end = Arc::new(ended);
+        self
     }
 
     /// Run a frame that never waited in the dispatcher, including session close.
@@ -543,6 +551,9 @@ impl Dispatcher {
         let handler = self.handler.clone();
         let session_id = session_id.to_string();
         tokio::spawn(async move {
+            let ending = handler.clone();
+            let ended_id = session_id.clone();
+            let _ = tokio::task::spawn_blocking(move || (ending.session_end)(&ended_id)).await;
             for lane in session_lanes {
                 let (reply, wait) = tokio::sync::oneshot::channel();
                 if lane.send(LaneMessage::Fence(reply)).await.is_ok() {

@@ -523,6 +523,11 @@ impl AppState {
         );
     }
 
+    #[cfg(test)]
+    pub(in crate::app) fn reserve_workspace_for_test(&mut self, workspace_id: &str) {
+        self.reserve_workspace(workspace_id);
+    }
+
     fn release_reservation(&mut self, workspace_id: &str) {
         self.reclaim_reserved.remove(workspace_id);
     }

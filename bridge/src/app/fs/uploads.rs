@@ -2,8 +2,8 @@
 
 use super::{AppState, FileScope};
 use crate::api::v1::git::{
-    FsUploadBeginParams, FsUploadBeginResult, FsUploadChunkParams, FsUploadChunkResult,
-    FsUploadFinishResult, FsUploadIdParams,
+    FsUploadAbortResult, FsUploadBeginParams, FsUploadBeginResult, FsUploadChunkParams,
+    FsUploadChunkResult, FsUploadFinishResult, FsUploadIdParams,
 };
 use crate::api::ApiError;
 use crate::carrier::{Opening, SessionSender};
@@ -26,6 +26,18 @@ pub(in crate::app) struct Upload {
 }
 
 impl AppState {
+    pub(crate) fn fs_upload_abort(
+        &mut self,
+        params: FsUploadIdParams,
+        caller: &SessionSender,
+    ) -> Result<FsUploadAbortResult, ApiError> {
+        let upload = self.owned_upload(&params.upload_id, caller)?;
+        self.refuse_writers_while_reserved(&upload.root)
+            .map_err(ApiError::classify)?;
+        self.uploads.remove(&params.upload_id);
+        Ok(FsUploadAbortResult {})
+    }
+
     pub(crate) fn fs_upload_finish(
         &mut self,
         params: FsUploadIdParams,

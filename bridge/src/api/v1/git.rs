@@ -1099,10 +1099,10 @@ fn fs_upload_finish(
 }
 
 fn fs_upload_abort(
-    _app: &mut AppState,
-    _params: FsUploadIdParams,
+    app: &mut AppState,
+    params: FsUploadIdParams,
 ) -> Result<FsUploadAbortResult, ApiError> {
-    Err(ApiError::unavailable("upload implementation pending"))
+    app.fs_upload_abort(params, &super::changes::caller()?)
 }
 
 fn worktree_diff(

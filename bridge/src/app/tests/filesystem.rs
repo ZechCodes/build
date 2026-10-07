@@ -689,6 +689,28 @@ fn fs_upload_chunk_enforces_order_limits_encoding_and_client_ownership() {
     assert_eq!(last["result"], json!({"received": 5}), "{last:?}");
     assert_eq!(std::fs::read(&temp).unwrap(), [0xff, 0, 1, 2, 3]);
     assert!(!repo.join("binary.bin").exists());
+
+    // Keep the declared total above the chunk cap so each bound is proved independently.
+    let chunk_limit = 4 * 1_048_576;
+    let large = begin_upload(
+        &mut state,
+        &sender,
+        "large.bin",
+        2 * chunk_limit as u64,
+        false,
+    );
+    let large_temp = repo.join(format!(".build-upload-{large}.part"));
+    for size in [chunk_limit + 1, chunk_limit + 4] {
+        assert_eq!(
+            upload_bytes(&mut state, &sender, &large, 0, &vec![1; size])["error_code"],
+            "invalid_params"
+        );
+        assert_eq!(std::fs::metadata(&large_temp).unwrap().len(), 0);
+    }
+    assert_eq!(
+        upload_bytes(&mut state, &sender, &large, 0, &vec![1; chunk_limit])["result"],
+        json!({"received": chunk_limit})
+    );
 }
 
 #[test]

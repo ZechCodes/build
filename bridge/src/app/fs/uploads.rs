@@ -30,6 +30,10 @@ pub(in crate::app) struct Upload {
 }
 
 impl AppState {
+    pub fn sweep_stale_uploads(&self) -> usize {
+        0
+    }
+
     pub(in crate::app) fn drop_ended_session_uploads(&mut self, session_id: &str) {
         self.uploads
             .retain(|_, upload| upload.owner != session_id || upload.opening.is_open());

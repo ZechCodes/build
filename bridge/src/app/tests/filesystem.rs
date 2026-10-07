@@ -1247,6 +1247,66 @@ fn fs_upload_idle_reaper_removes_only_uploads_past_ten_minutes() {
     assert_eq!(std::fs::read(&reused_temp).unwrap(), b"unrelated");
 }
 
+fn orphaned_upload_file(root: &std::path::Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+    let path = root.join(format!(".build-upload-{}.part", uuid::Uuid::new_v4()));
+    std::fs::write(&path, b"unfinished upload").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    path
+}
+
+#[test]
+fn fs_upload_startup_sweep_cleans_known_project_and_workspace_sources() {
+    let (_dir, mut state, project_id, repo, plain) = project_files_fixture();
+    let nested = plain.join("assets");
+    std::fs::create_dir(&nested).unwrap();
+    let sources = [crate::workspace::WorkspaceSource {
+        id: "source-2".into(), name: "files".into(), mount: "files".into(),
+        path: plain.clone(), is_git: false, base_branch: "main".into(),
+    }];
+    let workspace = state.workspaces.begin(&project_id, "uploads", &sources).unwrap();
+    let output = workspace.directories[0].path.join("node_modules");
+    std::fs::create_dir_all(&output).unwrap();
+    let orphans = [orphaned_upload_file(&repo), orphaned_upload_file(&nested), orphaned_upload_file(&output)];
+    let sender = SessionSender::detached("uploader");
+    let active = upload_call(&mut state, &sender, "fs.uploadBegin", json!({
+        "project_id": project_id, "source_id": "source-2", "parent": "assets", "name": "active.bin", "size": 1,
+    }));
+    assert_eq!(active["ok"], true, "{active:?}");
+    let id = active["result"]["upload_id"].as_str().unwrap();
+    let active_temp = nested.join(format!(".build-upload-{id}.part"));
+    assert_eq!(state.sweep_stale_uploads(), 3);
+    for path in orphans { assert!(!path.exists(), "{path:?}"); }
+    assert!(active_temp.exists());
+    assert_eq!(upload_bytes(&mut state, &sender, id, 0, &[1])["ok"], true);
+    assert_eq!(state.sweep_stale_uploads(), 0, "a second pass is harmless");
+}
+
+#[test]
+fn fs_upload_startup_sweep_preserves_links_git_and_unrelated_names() {
+    let (dir, repo) = init_repo();
+    let state = qa_state(&repo, dir.path());
+    let outside = tempfile::tempdir().unwrap();
+    let outside_file = orphaned_upload_file(outside.path());
+    std::os::unix::fs::symlink(outside.path(), repo.join("linked")).unwrap();
+    let leaf = repo.join(format!(".build-upload-{}.part", uuid::Uuid::new_v4()));
+    std::os::unix::fs::symlink(&outside_file, &leaf).unwrap();
+    let git_file = orphaned_upload_file(&repo.join(".git"));
+    let upper_git = repo.join(".GIT");
+    std::fs::create_dir(&upper_git).unwrap();
+    let upper_git_file = orphaned_upload_file(&upper_git);
+    let malformed = repo.join(".build-upload-user-file.part");
+    std::fs::write(&malformed, b"keep").unwrap();
+    let public = orphaned_upload_file(&repo);
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(&public, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let directory = repo.join(format!(".build-upload-{}.part", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&directory).unwrap();
+    assert_eq!(state.sweep_stale_uploads(), 0);
+    for path in [&outside_file, &git_file, &upper_git_file, &malformed, &public, &directory] { assert!(path.exists(), "{path:?}"); }
+    assert!(std::fs::symlink_metadata(&leaf).unwrap().file_type().is_symlink());
+}
+
 #[test]
 fn fs_read_truncates_oversized_files() {
     let (dir, repo) = init_repo();

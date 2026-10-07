@@ -1,5 +1,6 @@
 import { esc } from "./text.js";
 import { parentPath } from "./fileTreeModel.js";
+import { fieldTraits } from "./fieldTraits.js";
 import { notifyError } from "./notify.js";
 import "../styles/fileUploadActions.css";
 
@@ -111,7 +112,7 @@ export function mountFilesUploadActions(host, { roots, capabilities, uploads, ca
     const element = document.createElement("div");
     element.className = "fupload-folder";
     element.style.setProperty("--depth", Number(target.row.style.getPropertyValue("--depth") || 0) + 1);
-    element.innerHTML = `<input type="text" aria-label="New folder name" placeholder="Folder name" autocomplete="off"><span class="fupload-folder-error" role="alert"></span>`;
+    element.innerHTML = `<input class="mini" type="text" aria-label="New folder name" placeholder="Folder name" ${fieldTraits("identifier", "done")}><span class="fupload-folder-error" role="alert"></span>`;
     target.row.after(element);
     draft = { target, element, field: element.querySelector("input"), error: element.querySelector("span") };
     draft.field.focus();

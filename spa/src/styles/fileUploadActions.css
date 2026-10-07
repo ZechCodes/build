@@ -9,7 +9,6 @@
   box-shadow:inset 0 0 0 1px var(--accent); font-size:12px; pointer-events:none; }
 .fupload-root { flex:none; font-weight:600; }
 .fupload-folder { padding:5px 13px 5px calc(var(--pane-gutter) + var(--depth, 0) * 14px); }
-.fupload-folder input { width:100%; min-width:0; box-sizing:border-box; border:1px solid var(--accent);
-  border-radius:3px; background:var(--panel2); color:var(--ink); padding:4px 6px; font:inherit; font-size:12px; }
+.fupload-folder input { width:100%; min-width:0; box-sizing:border-box; }
 .fupload-folder-error { display:block; color:var(--ink2); font-size:12px; margin-top:3px; overflow-wrap:anywhere; }
 @media (pointer:coarse) { .fupload-directory-actions { opacity:1; } }

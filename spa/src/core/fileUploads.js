@@ -2,7 +2,9 @@
 // reaches UI storage; browser File objects and upload sessions remain in memory.
 import { App } from "../appState.js";
 import { readUiRecord, writeUiRecord } from "./localUiStore.js";
-import { UPLOAD_RETENTION_MS, joinUploadPath, uploadErrorCode, uploadMetadata, encodeUploadBytes, walkUploadEntry } from "./fileUploadsModel.js";
+import { UPLOAD_RETENTION_MS, uploadInputError, uploadNameValid, uploadNameError, joinUploadPath, uploadErrorCode, uploadMetadata, encodeUploadBytes, walkUploadEntry } from "./fileUploadsModel.js";
+
+export { uploadNameValid } from "./fileUploadsModel.js";
 
 const instances = new Map();
 export function uploadsFor(deviceId, { callRpc } = {}) {
@@ -37,7 +39,7 @@ const readUploadBlob = (blob) => {
     reader.readAsArrayBuffer(blob);
   });
 };
-const frozenItem = (item) => Object.freeze({ ...uploadMetadata(item, !!item.file && item.status !== "finished"), scope: Object.freeze({ ...item.scope }) });
+const frozenItem = (item) => Object.freeze({ ...uploadMetadata(item, !!item.file && !item.permanentlyInvalid && item.status !== "finished"), scope: Object.freeze({ ...item.scope }) });
 
 export function createFileUploads({ callRpc, now = Date.now, stateAddress = null }) {
   const send = (item, method, params) => (item.callRpc || callRpc)(method, params);
@@ -130,6 +132,12 @@ export function createFileUploads({ callRpc, now = Date.now, stateAddress = null
     items.set(id, { id, scope: { ...scope }, parent, rootId, destination, callRpc: itemRpc, onFinished, file, name, size, received: 0,
       path: joinUploadPath(parent, name), status: "queued", finishedAt: null, error: null, errorCode: null,
       cancelled: false, uploadId: null });
+    const error = uploadInputError(name, size);
+    if (error) {
+      const item = items.get(id);
+      item.permanentlyInvalid = true;
+      finish(item, "failed", error);
+    }
     return id;
   };
   const enqueue = ({ files, ...target }) => {
@@ -146,7 +154,7 @@ export function createFileUploads({ callRpc, now = Date.now, stateAddress = null
   };
   const retry = (id, { replace = false } = {}) => {
     const item = items.get(id);
-    if (!item?.file || item.finishedAt === null || item.status === "finished") return false;
+    if (!item?.file || item.permanentlyInvalid || item.finishedAt === null || item.status === "finished") return false;
     Object.assign(item, { status: "queued", finishedAt: null, error: null, errorCode: null, received: 0,
       cancelled: false, uploadId: null, aborting: null, replace });
     announce(); persist(); pump(); return true;
@@ -160,6 +168,7 @@ export function createFileUploads({ callRpc, now = Date.now, stateAddress = null
     const ids = enqueue({ ...target, files: looseFiles });
     const directory = async (parent, name) => {
       if (disposed) throw new Error("The upload was stopped.");
+      if (!uploadNameValid(name)) throw uploadNameError();
       try { await (target.callRpc || callRpc)("fs.createDirectory", { ...target.scope, parent, name }); }
       catch (error) { if (uploadErrorCode(error) !== "already_exists") throw error; }
       const path = joinUploadPath(parent, name);

@@ -190,3 +190,54 @@ describe("upload completion invalidation", () => {
     expect(onFinished).toHaveBeenCalledTimes(1); failed.dispose();
   });
 });
+
+describe("upload input validation", () => {
+  it.each(["", ".", "..", "../escape", "dir/file", "dir\\file", "bad\0name"])("rejects file name %j before any upload RPC", (name) => {
+    const callRpc = rpc(); const engine = createFileUploads({ callRpc });
+    const [id] = engine.enqueue({ scope: {}, files: [file(name)] });
+    expect(callRpc).not.toHaveBeenCalled();
+    expect(engine.snapshot().recent[0]).toMatchObject({ status: "failed", canRetry: false });
+    expect(engine.snapshot().recent[0].error).toMatch(/name/i);
+    expect(engine.retry(id)).toBe(false); engine.dispose();
+  });
+  it.each(["", ".", "..", "../escape", "dir/file", "dir\\file", "bad\0name"])("rejects dropped folder name %j without creating it or traversing children", async (name) => {
+    const callRpc = rpc(); const engine = createFileUploads({ callRpc });
+    const createReader = vi.fn();
+    await engine.enqueueDrop({ scope: {}, dataTransfer: { items: [{ webkitGetAsEntry: () => ({ name, isDirectory: true, createReader }) }] } });
+    expect(callRpc).not.toHaveBeenCalled(); expect(createReader).not.toHaveBeenCalled();
+    expect(engine.snapshot().recent[0]).toMatchObject({ status: "failed", canRetry: false });
+    expect(engine.snapshot().recent[0].error).toMatch(/name/i); engine.dispose();
+  });
+  it("rejects a too-large file before RPC but accepts the exact 256 MiB boundary", async () => {
+    const begin = deferred(); const callRpc = vi.fn(() => begin.promise); const engine = createFileUploads({ callRpc });
+    const oversized = { name: "large.bin", size: 256 * 1024 * 1024 + 1, slice: vi.fn() };
+    const [id] = engine.enqueue({ scope: {}, files: [oversized] });
+    expect(callRpc).not.toHaveBeenCalled(); expect(oversized.slice).not.toHaveBeenCalled();
+    expect(engine.snapshot().recent[0]).toMatchObject({ status: "failed", canRetry: false });
+    expect(engine.snapshot().recent[0].error).toMatch(/256 MiB/); expect(engine.retry(id)).toBe(false);
+    const boundary = { name: "limit.bin", size: 256 * 1024 * 1024, slice: vi.fn() };
+    const [accepted] = engine.enqueue({ scope: {}, files: [boundary] });
+    expect(callRpc).toHaveBeenCalledWith("fs.uploadBegin", { parent: "", name: "limit.bin", size: 256 * 1024 * 1024 });
+    engine.cancel(accepted); begin.resolve({ upload_id: "max", chunk_bytes: 4194304, path: "limit.bin" });
+    await tick(); expect(boundary.slice).not.toHaveBeenCalled(); engine.dispose();
+  });
+});
+
+describe("drop entry validation", () => {
+  it("rejects an unsafe file entry even when its File object has a safe name", async () => {
+    const callRpc = rpc(); const engine = createFileUploads({ callRpc }); const readFile = vi.fn((done) => done(file("safe")));
+    await engine.enqueueDrop({ scope: {}, dataTransfer: { items: [{ webkitGetAsEntry: () => ({ name: "../outside", isFile: true, file: readFile }) }] } });
+    expect(callRpc).not.toHaveBeenCalled(); expect(readFile).not.toHaveBeenCalled();
+    expect(engine.snapshot().recent[0]).toMatchObject({ status: "failed", canRetry: false, errorCode: "invalid_name" }); engine.dispose();
+  });
+  it("stops traversal at an unsafe nested folder without creating or uploading it", async () => {
+    const callRpc = rpc(); const engine = createFileUploads({ callRpc }); const badReader = vi.fn();
+    const root = { name: "safe", isDirectory: true, createReader() {
+      let first = true;
+      return { readEntries(done) { done(first ? [{ name: "..", isDirectory: true, createReader: badReader }] : []); first = false; } };
+    } };
+    await engine.enqueueDrop({ scope: {}, dataTransfer: { items: [{ webkitGetAsEntry: () => root }] } });
+    expect(callRpc).toHaveBeenCalledTimes(1); expect(callRpc).toHaveBeenCalledWith("fs.createDirectory", { parent: "", name: "safe" });
+    expect(badReader).not.toHaveBeenCalled(); expect(engine.snapshot().recent[0].errorCode).toBe("invalid_name"); engine.dispose();
+  });
+});

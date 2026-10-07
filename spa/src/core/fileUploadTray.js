@@ -25,7 +25,7 @@ function progress(received, size) {
   return node;
 }
 
-function uploadItem(item, uploads, recent) {
+function uploadItem(item, uploads, recent, support) {
   const row = element("li", "fupload-item");
   row.append(element("div", "fupload-name", item.name));
   row.append(element("div", "fupload-destination", item.destination || item.parent || "/"));
@@ -39,17 +39,17 @@ function uploadItem(item, uploads, recent) {
   }
   row.append(detail);
   if (item.error) row.append(element("div", "fupload-error", item.error));
-  appendActions(row, item, uploads, recent);
+  appendActions(row, item, uploads, recent, support);
   return row;
 }
 
-function appendActions(row, item, uploads, recent) {
+function appendActions(row, item, uploads, recent, support) {
   const actions = element("div", "fupload-actions");
   if (!recent) {
     const cancel = button(item.status === "cancelling" ? "Cancelling…" : "Cancel", `Cancel ${item.name}`, () => uploads.cancel(item.id));
     cancel.disabled = item.status === "cancelling";
     actions.append(cancel);
-  } else if (item.status === "failed" && item.canRetry) {
+  } else if (item.status === "failed" && item.canRetry && support.uploads) {
     actions.append(button("Retry", `Retry ${item.name}`, () => uploads.retry(item.id, { replace: false })));
     if (item.errorCode === "already_exists") actions.append(button("Replace", `Replace ${item.name}`, () => uploads.retry(item.id, { replace: true })));
   }
@@ -65,7 +65,8 @@ function summaryOf(active, recent) {
 }
 
 /** Paints the engine's in-memory upload state, confined to the file viewer. */
-export function mountFileUploadTray(viewerEl, { uploads }) {
+export function mountFileUploadTray(viewerEl, { uploads, capabilities = { uploads: true } }) {
+  let support = capabilities;
   let expanded = false;
   let showRecent = false;
   let disposed = false;
@@ -108,7 +109,7 @@ export function mountFileUploadTray(viewerEl, { uploads }) {
   function renderBody(active, recent) {
     body.replaceChildren();
     const list = element("ul", "fupload-list");
-    for (const item of active) list.append(uploadItem(item, uploads, false));
+    for (const item of active) list.append(uploadItem(item, uploads, false, support));
     body.append(list);
     if (!recent.length) return;
     const toggle = button(`Recent (${recent.length})`, "Recent uploads", () => { showRecent = !showRecent; render(); });
@@ -117,7 +118,7 @@ export function mountFileUploadTray(viewerEl, { uploads }) {
     body.append(toggle);
     if (!showRecent) return;
     const history = element("ul", "fupload-list");
-    for (const item of recent) history.append(uploadItem(item, uploads, true));
+    for (const item of recent) history.append(uploadItem(item, uploads, true, support));
     body.append(history);
   }
 
@@ -125,5 +126,7 @@ export function mountFileUploadTray(viewerEl, { uploads }) {
   const unsubscribe = uploads.subscribe(render);
   const timer = setInterval(() => { uploads.prune(); render(); }, 60_000);
   render();
-  return () => { disposed = true; clearInterval(timer); unsubscribe(); tray.remove(); };
+  const dispose = () => { disposed = true; clearInterval(timer); unsubscribe(); tray.remove(); };
+  dispose.setCapabilities = (next) => { support = next; render(); };
+  return dispose;
 }

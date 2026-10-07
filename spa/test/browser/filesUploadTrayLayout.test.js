@@ -5,6 +5,7 @@ import { mountFilesExplorer } from "./filesExplorerSeed.mjs";
 async function seedTray(page, basePath) {
   await loadBrowserModules(page, { tray: "src/core/fileUploadTray.js" }, basePath);
   await page.evaluate(() => {
+    window.__files.dispose();
     const active = [1, 2, 3].map((id) => ({ id: String(id), name: `design-${id}.png`, size: 1000, received: 420, parent: "spa/src", destination: "spa/src", status: "uploading" }));
     const recent = [{ id: "failed", name: "existing.png", size: 800, received: 0, destination: "spa/src", status: "failed", error: "A file with this name already exists", errorCode: "already_exists", canRetry: true, finishedAt: Date.now() }];
     window.__trayCalls = [];
@@ -44,26 +45,37 @@ for (const theme of ["light", "dark"]) {
   }
 }
 
-it("highlights a drop destination without changing row geometry", async () => {
+for (const theme of ["light", "dark"]) {
+it(`highlights a drop destination without changing row geometry in ${theme}`, async () => {
   await withLayoutPage(async ({ page, basePath }) => {
-    await mountFilesExplorer(page, basePath);
-    await loadBrowserModules(page, { actions: "src/core/filesUploadActions.js" }, basePath);
+    await mountFilesExplorer(page, basePath, { theme });
+    await loadBrowserModules(page, { support: "src/core/fileUploadSupport.js" }, basePath);
+    await page.evaluate(async () => {
+      await window.__layoutModules.support.rememberFileUploadSupport("explorer-device", { fs: { uploads: true, createDirectory: true } });
+    });
+    await page.locator('.frow[data-path="spa"] [data-upload-action="upload"]').waitFor();
     const geometry = await page.evaluate(() => {
-      const tree = document.querySelector(".ftree");
-      window.__disposeUploadActions = window.__layoutModules.actions.mountFilesUploadActions(tree, {
-        roots: [{ id: null, label: "Checkout", scope: { run_id: "explorer-run" } }],
-        capabilities: { uploads: true, createDirectory: true }, uploads: { enqueue() {}, enqueueDrop: async () => {} }, callRpc: async () => ({}), onCreated() {},
-      });
       const row = document.querySelector('.frow[data-path="spa"]');
       const measure = () => { const box = row.getBoundingClientRect(); return { x: box.x, y: box.y, width: box.width, height: box.height }; };
+      const allBefore = [...document.querySelectorAll(".frow")].map((node) => { const box = node.getBoundingClientRect(); return { x: box.x, y: box.y, width: box.width, height: box.height }; });
       const before = measure();
       const dataTransfer = new DataTransfer();
       dataTransfer.items.add(new File(["hello"], "hello.txt"));
       row.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer }));
-      return { before, after: measure(), highlighted: row.classList.contains("fupload-drop"), hint: row.dataset.uploadHint };
+      const allAfter = [...document.querySelectorAll(".frow")].map((node) => { const box = node.getBoundingClientRect(); return { x: box.x, y: box.y, width: box.width, height: box.height }; });
+      const actual = getComputedStyle(row).backgroundColor;
+      const probe = document.createElement("span");
+      probe.style.backgroundColor = "var(--row-hover)";
+      row.append(probe);
+      const expected = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      return { before, allBefore, allAfter, actual, expected, after: measure(), highlighted: row.classList.contains("fupload-drop"), hint: row.dataset.uploadHint };
     });
     expect(geometry.highlighted).toBe(true);
     expect(geometry.hint).toBeTruthy();
     expect(geometry.after).toEqual(geometry.before);
+    expect(geometry.allAfter).toEqual(geometry.allBefore);
+    await expect.poll(() => page.locator('.frow[data-path="spa"]').evaluate((node) => getComputedStyle(node).backgroundColor)).toBe(geometry.expected);
   });
 }, 60_000);
+}

@@ -54,3 +54,14 @@ it("keeps keyboard focus on an action while progress updates", () => {
   expect(document.activeElement.getAttribute("aria-label")).toBe("Cancel one.txt");
   dispose();
 });
+
+it("gates recent Retry and Replace from cached support while keeping active Cancel", () => {
+  const uploads = { snapshot: () => ({ active: [{ id: "active", name: "active.txt", size: 100, received: 0, status: "uploading" }], recent: [{ id: "failed", name: "existing.txt", status: "failed", errorCode: "already_exists", canRetry: true, finishedAt: Date.now() }] }), subscribe: () => () => {}, prune() {}, cancel() {}, retry() {} };
+  const dispose = mountFileUploadTray(document.body, { uploads, capabilities: { uploads: false } });
+  document.querySelector(".fupload-summary").click();
+  document.querySelector(".fupload-recent-toggle").click();
+  expect([...document.querySelectorAll(".fupload-action")].map((node) => node.textContent)).toEqual(["Cancel"]);
+  dispose.setCapabilities({ uploads: true });
+  expect([...document.querySelectorAll(".fupload-action")].map((node) => node.textContent)).toEqual(["Cancel", "Retry", "Replace"]);
+  dispose();
+});

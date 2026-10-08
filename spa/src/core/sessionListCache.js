@@ -43,9 +43,12 @@ function withActiveReviewState(held, incoming) {
   return { ...incoming, [ACTIVE_REVIEW_CACHE]: { revision: state.revision + Number(changed), floor } };
 }
 
-function mergedActiveReview(held, incoming, observation) {
+const canClearReview = (held, observation, options) => observedActiveReview(held, observation)
+  || (options.clearMissingReview === true && observation === undefined);
+
+function mergedActiveReview(held, incoming, observation, options = {}) {
   const next = preserveReviewSummary(held, incoming, "active_review", {
-    allowMissing: observedActiveReview(held, observation),
+    allowMissing: canClearReview(held, observation, options),
     keepHeld: reviewReadOvertaken(held, observation) || reviewTombstoneBlocks(held, incoming, observation),
   });
   return withActiveReviewState(held, next);
@@ -69,11 +72,11 @@ export function monotonicSession(incoming, held) {
 
 /** A bridge list is authoritative for membership. Merge every row against the
  * record held by the database while its write transaction is open. */
-export function replaceSessionList(address, kind, incoming, onReplaced, observation) {
+export function replaceSessionList(address, kind, incoming, onReplaced, observation, options = {}) {
   return mergeCachedAtomically(address, (held) => {
     onReplaced?.(held);
     const old = new Map((Array.isArray(held) ? held : []).map((row) => [rowId(kind, row), row]));
-    return incoming.map((row) => listedSession(row, old.get(rowId(kind, row)), observation ? observation[rowId(kind, row)] || {} : undefined));
+    return incoming.map((row) => listedSession(row, old.get(rowId(kind, row)), rowObservation(observation, kind, row), options));
   });
 }
 
@@ -88,23 +91,33 @@ export async function sessionListObservation(address, kind) {
 const resetSinceObservation = (held, observed) => observed !== undefined
   && Object.entries(held?.conversation_session_revisions || {}).some(([id, revision]) => Number(revision) > Number(observed[id] || 0));
 
-function listedSession(incoming, held, observation) {
-  const next = monotonicSession(mergedActiveReview(held, incoming, observation), held);
+const rowObservation = (observation, kind, row) => observation ? observation[rowId(kind, row)] || {} : undefined;
+
+function listedSession(incoming, held, observation, options) {
+  const next = monotonicSession(mergedActiveReview(held, incoming, observation, options), held);
   return resetSinceObservation(held, observation)
     ? { ...next, session_started_ms: held.session_started_ms, last_activity_ms: held.last_activity_ms } : next;
 }
 
+function upsertedSession(held, incoming, kind, options) {
+  const combined = { ...held, ...incoming };
+  // Partial upserts retain omitted fields. A complete workspace result has
+  // explicit clear authority, guarded by its request-time PR observation.
+  if (options.clearMissingReview && !Object.hasOwn(incoming, "active_review")) delete combined.active_review;
+  return monotonicSession(mergedActiveReview(held, combined, rowObservation(options.observation, kind, incoming), options), held);
+}
+
 /** A single-row answer must preserve every unrelated row in the list. */
-export function upsertSessionRow(address, kind, incoming, active = () => true) {
+export function upsertSessionRow(address, kind, incoming, active = () => true, options = {}) {
   return mergeCachedAtomically(address, (held) => {
     if (!active()) return null;
     const rows = Array.isArray(held) ? held : [];
     const id = rowId(kind, incoming);
     const present = rows.some((row) => rowId(kind, row) === id);
     const next = rows.map((row) => rowId(kind, row) === id
-      ? monotonicSession(mergedActiveReview(row, { ...row, ...incoming }), row)
+      ? upsertedSession(row, incoming, kind, options)
       : row);
-    return present ? next : [...next, mergedActiveReview(null, incoming)];
+    return present ? next : [...next, upsertedSession(null, incoming, kind, options)];
   });
 }
 

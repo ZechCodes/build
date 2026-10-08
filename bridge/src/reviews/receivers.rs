@@ -10,6 +10,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+mod initialization;
 pub(crate) mod locks;
 
 const OWNERSHIP_FILE: &str = ".build-review-receiver.json";
@@ -59,31 +60,7 @@ pub fn plan_receiver(
 }
 
 pub fn ensure_receiver(receiver: &ReviewReceiver) -> Result<(), String> {
-    validate_placement(receiver)?;
-    let parent = receiver
-        .path
-        .parent()
-        .ok_or("invalid review receiver path")?;
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    let reservation = parent.join(format!(
-        ".{}.receiver-reservation.json",
-        receiver.repository_id
-    ));
-    if receiver.path.exists() && !reservation.exists() {
-        return validate_receiver(receiver);
-    }
-    write_owned_json(&reservation, &ownership(receiver))?;
-    if read_ownership(&reservation)? != ownership(receiver) {
-        return Err("review receiver initialization ownership changed".into());
-    }
-    match fs::create_dir(&receiver.path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(error) => return Err(error.to_string()),
-    }
-    initialize_receiver(receiver)?;
-    validate_receiver(receiver)?;
-    fs::remove_file(reservation).map_err(|error| error.to_string())
+    initialization::ensure_with(receiver, initialization::initialize_receiver)
 }
 
 pub fn validate_binding_receiver(binding: &ReviewBranchBinding) -> Result<(), String> {
@@ -157,31 +134,12 @@ fn ownership(receiver: &ReviewReceiver) -> ReceiverOwnership {
     }
 }
 
-fn initialize_receiver(receiver: &ReviewReceiver) -> Result<(), String> {
-    let marker_path = receiver.path.join(OWNERSHIP_FILE);
-    if !marker_path.exists() && has_unowned_initialization_files(&receiver.path)? {
-        return Err("review receiver ownership marker is missing from a nonempty directory".into());
-    }
-    write_owned_json(&marker_path, &ownership(receiver))?;
-    if read_ownership(&marker_path)? != ownership(receiver) {
-        return Err("review receiver ownership marker changed".into());
-    }
-    if git2::Repository::open_bare(&receiver.path).is_ok_and(|repo| !repo.is_bare()) {
-        return Err("review receiver is not a bare repository".into());
-    }
-    git(&receiver.path, &["init", "--bare"])?;
-    for (key, value) in [
-        ("core.hooksPath", "/dev/null"),
-        ("gc.auto", "0"),
-        ("maintenance.auto", "false"),
-    ] {
-        git(&receiver.path, &["config", "--local", key, value])?;
-    }
-    Ok(())
-}
-
 fn validate_receiver(receiver: &ReviewReceiver) -> Result<(), String> {
     validate_placement(receiver)?;
+    validate_receiver_contents(receiver)
+}
+
+fn validate_receiver_contents(receiver: &ReviewReceiver) -> Result<(), String> {
     let saved = read_ownership(&receiver.path.join(OWNERSHIP_FILE))?;
     if saved != ownership(receiver) {
         return Err("review receiver ownership marker changed".into());
@@ -199,26 +157,6 @@ fn validate_receiver(receiver: &ReviewReceiver) -> Result<(), String> {
         }
     }
     locks::recover_git_locks(&receiver.path)
-}
-
-fn has_unowned_initialization_files(path: &Path) -> Result<bool, String> {
-    for entry in fs::read_dir(path).map_err(|error| error.to_string())? {
-        let entry = entry.map_err(|error| error.to_string())?;
-        let name = entry.file_name();
-        let temporary_id = name
-            .to_str()
-            .and_then(|name| name.strip_prefix(".build-review-write-"))
-            .and_then(|name| name.strip_suffix(".tmp"));
-        if !entry
-            .file_type()
-            .map_err(|error| error.to_string())?
-            .is_file()
-            || temporary_id.is_none_or(|id| uuid::Uuid::parse_str(id).is_err())
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 fn read_ownership(path: &Path) -> Result<ReceiverOwnership, String> {
@@ -330,3 +268,7 @@ pub(crate) fn git(repository: &Path, args: &[&str]) -> Result<String, String> {
 #[cfg(test)]
 #[path = "receivers/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "receivers/initialization_tests.rs"]
+mod initialization_tests;

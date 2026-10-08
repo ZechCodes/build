@@ -72,7 +72,7 @@ fn receiver_ownership_changes_are_refused() {
 }
 
 #[test]
-fn an_owned_initialization_reservation_recovers_an_empty_receiver() {
+fn an_initialization_reservation_does_not_adopt_an_unmarked_final_directory() {
     let (temporary, source) = init_repo();
     let receiver = plan_receiver(&source, &temporary.path().join("receivers")).unwrap();
     let parent = receiver.path.parent().unwrap();
@@ -86,10 +86,8 @@ fn an_owned_initialization_reservation_recovers_an_empty_receiver() {
     )
     .unwrap();
     std::fs::create_dir(&receiver.path).unwrap();
-    ensure_receiver(&receiver).unwrap();
-    assert!(git2::Repository::open_bare(&receiver.path)
-        .unwrap()
-        .is_bare());
+    assert!(ensure_receiver(&receiver).unwrap_err().contains("ownership"));
+    assert_eq!(std::fs::read_dir(&receiver.path).unwrap().count(), 0);
 }
 
 #[test]
@@ -171,7 +169,7 @@ fn interrupted_config_transaction_recovers_only_its_own_lock() {
 }
 
 #[test]
-fn receiver_recovers_an_interrupted_atomic_marker_write() {
+fn receiver_preserves_an_unmarked_final_directory_with_an_interrupted_marker_write() {
     let (temporary, source) = init_repo();
     let receiver = plan_receiver(&source, &temporary.path().join("receivers")).unwrap();
     let parent = receiver.path.parent().unwrap();
@@ -184,14 +182,12 @@ fn receiver_recovers_an_interrupted_atomic_marker_write() {
         &ownership(&receiver),
     )
     .unwrap();
-    std::fs::write(
-        receiver
-            .path
-            .join(format!(".build-review-write-{}.tmp", uuid::Uuid::new_v4())),
-        "{partial",
-    )
-    .unwrap();
-    ensure_receiver(&receiver).unwrap();
+    let incomplete = receiver
+        .path
+        .join(format!(".build-review-write-{}.tmp", uuid::Uuid::new_v4()));
+    std::fs::write(&incomplete, "{partial").unwrap();
+    assert!(ensure_receiver(&receiver).unwrap_err().contains("ownership"));
+    assert_eq!(std::fs::read_to_string(incomplete).unwrap(), "{partial");
 }
 
 #[test]

@@ -731,8 +731,11 @@ identity, and explicit cancellation removes only owned setup at expected
 values. The original workspace branches and dirty index/files are preserved.
 `receivers.rs` owns a local bare repository per source repository outside the
 workspace, and `publication.rs` imports and pins explicit committed OIDs there.
-Branch and receiver preparation use registered Git locks that can recover a
-dead owner's exact inode while preserving replacement locks. The caller holds
+Branch, config and receiver ref writes use registered Git locks that can
+recover a dead owner's exact inode while preserving replacement locks. A new
+receiver is initialized in a separate staging directory and published only
+after its files are durable. Interrupted staging is retained without blocking
+retry. The caller holds
 the workspace mutation lease and supplies hooks for live reclaim/placement
 checks, manifest installation and idempotent reviewer dispatch. Reviewer
 delivery runs after publication, with a durable status and explicit retry.

@@ -88,15 +88,20 @@ fn an_error_return_releases_the_merge_lease_despite_an_inherited_fd() {
     crate::git_fixture::environment::isolated_git_test!();
     let f = Fixture::new();
     let mut inherited = None;
-    let failed: Result<(), &str> = (|| {
-        let _lease = lease(&f.review()).unwrap();
-        inherited = Some(InheritedLeaseChild::hold());
-        Err("intent persistence refused")
-    })();
+    let failed = fail_after_leasing(&f.review(), &mut inherited);
     assert_eq!(failed, Err("intent persistence refused"));
     let replacement = lease(&f.review()).unwrap();
     assert!(lease(&f.review()).err().unwrap().starts_with("busy:"));
     drop(replacement);
     assert!(lease(&f.review()).is_ok());
     drop(inherited);
+}
+
+fn fail_after_leasing(
+    review: &Review,
+    inherited: &mut Option<InheritedLeaseChild>,
+) -> Result<(), &'static str> {
+    let _lease = lease(review).unwrap();
+    *inherited = Some(InheritedLeaseChild::hold());
+    Err("intent persistence refused")
 }

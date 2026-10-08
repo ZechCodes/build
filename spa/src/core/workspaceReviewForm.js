@@ -11,6 +11,7 @@ import { writeTaskRecord, taskRecord } from "./trackerCache.js";
 import { readWorkspaceReviewContext, reviewBranchPreview, shortReviewRef, sourcePushDestination, workspaceReviewListAddress, boundSourceFacts, canPushSource, pushSourceParams } from "./workspaceReviewState.js";
 
 const PREFIX = "review-create";
+const TITLE_MAX_BYTES = 200;
 const hasIncludedGit = (draft) => draft.bases.some((base) => !draft.excluded_git_directory_ids.includes(base.directory_id));
 const gitSources = (context) => context.sources.filter(({ directory }) => directory.is_git !== false);
 const baseOf = (context, directory) => directory.base_branch || context.project?.sources?.find((source) => source.id === directory.source_id)?.base_branch || context.project?.base_branch || "main";
@@ -35,7 +36,7 @@ function sourceFormHtml({ directory, refs }, draft) {
 const createFormHtml = (context, draft) => `<h3 id="review-form-title">Open review</h3>
   <p class="sub">Create a review task, switch included Git directories to dedicated review branches and publish their committed work.</p>
   <form data-review-create-form class="workspace-review-form">
-    <label>Title<input data-review-title required maxlength="500" ${fieldTraits("prose")} value="${esc(draft.title)}"></label>
+    <label>Title<input data-review-title required maxlength="${TITLE_MAX_BYTES}" ${fieldTraits("prose")} value="${esc(draft.title)}"></label>
     <label>Description<textarea data-review-description rows="3" ${fieldTraits("prose")}>${esc(draft.description)}</textarea></label>
     <div data-review-reviewer>${assigneeControlHtml(context.reviewerOptions, draft.reviewerDraft, { prefix: PREFIX, catalog: context.catalog, label: "Reviewer" })}</div>
     <div data-review-create-sources>${context.sources.map((source) => sourceFormHtml(source, draft)).join("")}</div>
@@ -73,11 +74,21 @@ function paintSourceFields(body, draft) {
 
 function freezeCreate(body, submitted, busy) {
   body.querySelectorAll("input,textarea,select").forEach((field) => {
-    if (submitted || busy) field.disabled = true;
+    const excludedBase = field.hasAttribute("data-review-base") && field.closest("fieldset").querySelector("[data-review-exclude]").checked;
+    field.disabled = Boolean(submitted || busy || excludedBase);
   });
   body.querySelector("[data-open-review-submit]").disabled = busy;
   body.querySelector("[data-open-review-submit]").textContent = busy ? "Opening…" : submitted ? "Retry opening" : "Open review";
   body.querySelector("[data-review-retry-note]").hidden = !submitted;
+}
+
+function createDraftError(draft) {
+  if (!draft.title.trim() || !hasIncludedGit(draft)) return "Enter a title and include at least one Git directory.";
+  const title = draft.title.trim();
+  if (!draft.submitted && (new TextEncoder().encode(title).byteLength > TITLE_MAX_BYTES || /[\r\n\0]/.test(title))) {
+    return "Title must be a single line of at most 200 bytes.";
+  }
+  return "";
 }
 
 function createRequest(scope, context, draft) {
@@ -151,16 +162,16 @@ export async function openReviewCreateForm(scope) {
   modal.body.querySelector("[data-review-form-cancel]").onclick = modal.close;
   modal.body.querySelector("[data-review-create-form]").onsubmit = async (event) => {
     event.preventDefault(); if (busy) return;
-    if (!draft.title.trim() || !hasIncludedGit(draft)) {
-      error.textContent = "Enter a title and include at least one Git directory."; error.hidden = false; return;
-    }
+    const invalid = createDraftError(draft);
+    if (invalid) { error.textContent = invalid; error.hidden = false; return; }
     busy = true; error.hidden = true;
     draft.submitted ||= createRequest(scope, context, draft);
     const sent = structuredClone(draft);
     freezeCreate(modal.body, true, busy);
+    let captured;
     try {
       await writer.write(sent);
-      const captured = await captureSubmittedCreateDraft(scope, sent);
+      captured = await captureMatchingDraft(reviewCreateDraftAddress(scope), sent);
       const repository = createTaskReviewRepository(scope);
       const answer = await repository.mutate("open", sent.submitted);
       if (answer.opening_state !== "published") throw new Error("Opening is incomplete. Retry this saved opening to resume.");
@@ -168,18 +179,29 @@ export async function openReviewCreateForm(scope) {
       await settleCreateDraft(scope, sent, captured, answer);
       await modal.close();
     } catch (failure) {
+      draft = await recoverRejectedCreateDraft(scope, sent, captured, failure);
       if (!closed) { error.textContent = reviewFailure(failure); error.hidden = false; }
-    } finally { busy = false; if (!closed) freezeCreate(modal.body, true, busy); }
+    } finally { busy = false; if (!closed) freezeCreate(modal.body, draft.submitted, busy); }
   };
   modal.body.querySelector("[data-review-title]").focus();
   return modal;
 }
 
-async function captureSubmittedCreateDraft(scope, sent) {
-  const captured = await readUiRecord(reviewCreateDraftAddress(scope));
+async function captureMatchingDraft(address, sent) {
+  const captured = await readUiRecord(address);
   // A peer can replace the record during the writer's readback. Its write is
   // never ours to clear or relabel, even when it predates this capture.
   return JSON.stringify(captured?.value) === JSON.stringify(sent) ? captured : undefined;
+}
+
+async function recoverRejectedCreateDraft(scope, sent, captured, failure) {
+  const code = failure.code || failure.error_code;
+  if (code !== "invalid_params" || failure.uncertain || failure.timedOut) return sent;
+  const editable = { ...sent };
+  delete editable.submitted;
+  delete editable.dispatchFailed;
+  await writeUiRecordIfUnwritten(reviewCreateDraftAddress(scope), captured, editable);
+  return editable;
 }
 
 function settleCreateDraft(scope, sent, captured, answer) {
@@ -232,7 +254,7 @@ export async function openReviewPushForm(scope, review, fact) {
     const sent = structuredClone(draft);
     try {
       await writer.write(sent);
-      const captured = await readUiRecord(reviewActionDraftAddress(actionScope, "push"));
+      const captured = await captureMatchingDraft(reviewActionDraftAddress(actionScope, "push"), sent);
       const answer = await createTaskReviewRepository(actionScope).mutate("push", sent);
       if (answer.sources?.some((source) => ["failed", "interrupted"].includes(source.status))) throw new Error(answer.sources.map((source) => source.error).filter(Boolean).join("; ") || "Publication did not finish. Inspect the saved result before retrying.");
       await writeUiRecordIfUnwritten(reviewActionDraftAddress(actionScope, "push"), captured, null); await modal.close();

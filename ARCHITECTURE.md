@@ -780,11 +780,16 @@ unavailable required bases retain the previous snapshot and expose sync health.
 Snapshot readers validate the recorded receiver without requiring the original
 source or disposable workspace.
 Before capture, sync records one pending candidate per task in SQLite and writes
-a durable candidate journal in the registered receiver. A nonblocking advisory
-lock excludes another sync writer through capture and publication. Restart and
-poll discovery include pending candidates even after a PR closes: published
-candidates retain their pins, while unpublished candidates use the existing
-marker/OID-checked cleanup. Recovery reads one candidate and an indexed snapshot
+a durable candidate journal in the registered receiver. An advisory lock
+excludes another sync writer through capture and publication. Explicit
+reconciliation waits up to two seconds for an in-flight capture, then reloads
+the current review under that lease. The background worker acquires immediately
+or schedules its existing retry, so one busy task does not stall its turn.
+Capture completion explicitly unlocks the directory, including error paths;
+an unrelated child's inherited descriptor cannot extend the completed capture.
+Restart and poll discovery include pending candidates even after a PR closes:
+published candidates retain their pins, while unpublished candidates use the
+existing marker/OID-checked cleanup. Recovery reads one candidate and an indexed snapshot
 existence check, without scanning snapshot history. Project history deletion
 waits for outstanding candidates to recover.
 
@@ -821,7 +826,9 @@ rechecked under source-sync sequencing. Per-step input and results commit before
 the next Git step starts. Multiple directories sharing a repository/base advance
 the expected tip in order; a partial failure retains successes in the other
 repositories. A ref-transaction fence rejects target movement between the
-preflight read and Git's actual update.
+preflight read and Git's actual update. The per-task merge lease is explicitly
+unlocked when the operation returns, so a retry or recovery cannot mistake an
+unrelated child's inherited descriptor for an executing merge.
 
 PR merges resolve effective hooks from the actual target checkout before
 applying the per-command ref fence. Traditional default/configured hook paths

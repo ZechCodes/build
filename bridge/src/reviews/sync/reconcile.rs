@@ -4,6 +4,7 @@ use crate::reviews::publication::{self, ReceivedCommit};
 use crate::reviews::records::Review;
 use crate::store::Store;
 use crate::tracker::Actor;
+use std::time::Duration;
 
 #[path = "observations.rs"]
 mod observations;
@@ -20,6 +21,14 @@ pub struct SyncResult {
 }
 
 pub fn reconcile(store: &Store, task_id: &str) -> Result<SyncResult, String> {
+    reconcile_with_wait(store, task_id, Duration::from_secs(2))
+}
+
+pub(crate) fn reconcile_background(store: &Store, task_id: &str) -> Result<SyncResult, String> {
+    reconcile_with_wait(store, task_id, Duration::ZERO)
+}
+
+fn reconcile_with_wait(store: &Store, task_id: &str, wait: Duration) -> Result<SyncResult, String> {
     let task = store
         .load_tracker_task(task_id)
         .map_err(|e| e.to_string())?
@@ -45,7 +54,7 @@ pub fn reconcile(store: &Store, task_id: &str) -> Result<SyncResult, String> {
         }
         return Ok(result);
     }
-    let (mut journal, current, recovered) = match prepare(store, &review) {
+    let (mut journal, current, recovered) = match prepare(store, &review, wait) {
         Ok(prepared) => prepared,
         Err(error) => return preparation_failure(store, &review, result, error),
     };
@@ -85,8 +94,10 @@ fn observe_all(review: &Review) -> Vec<Result<ReceivedCommit, String>> {
 fn prepare(
     store: &Store,
     review: &Review,
+    wait: Duration,
 ) -> Result<(recovery::CaptureJournal, Review, bool), String> {
-    let journal = recovery::CaptureJournal::acquire(&review.task_id, &review.bindings)?;
+    let journal =
+        recovery::CaptureJournal::acquire_with_wait(&review.task_id, &review.bindings, wait)?;
     let recovered = journal.recover(store, &review.bindings)?;
     let current = store
         .load_review_sync_state(&review.task_id)

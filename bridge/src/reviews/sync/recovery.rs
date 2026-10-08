@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, Metadata};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -31,6 +32,14 @@ pub(crate) struct CaptureJournal {
 
 impl CaptureJournal {
     pub(crate) fn acquire(task_id: &str, bindings: &[ReviewBranchBinding]) -> Result<Self, String> {
+        Self::acquire_with_wait(task_id, bindings, Duration::ZERO)
+    }
+
+    pub(crate) fn acquire_with_wait(
+        task_id: &str,
+        bindings: &[ReviewBranchBinding],
+        wait: Duration,
+    ) -> Result<Self, String> {
         let binding = bindings
             .iter()
             .min_by_key(|binding| &binding.receiving_repository)
@@ -40,20 +49,16 @@ impl CaptureJournal {
         let identity = format!("{:x}", Sha256::digest(task_id.as_bytes()));
         let path = ensure_child(&root, &identity)?;
         let directory = File::open(&path).map_err(|error| error.to_string())?;
-        match directory.try_lock() {
-            Ok(()) => {}
-            Err(std::fs::TryLockError::WouldBlock) => {
-                return Err("busy: review sync capture".into())
-            }
-            Err(error) => return Err(format!("review sync capture lock failed: {error}")),
-        }
-        same_directory(&directory, &path)?;
-        Ok(Self {
+        lock_capture(&directory, task_id, wait)?;
+        let journal = Self {
             directory,
             path: path.join("candidate.json"),
             task_id: task_id.into(),
             active: None,
-        })
+        };
+        // A failed identity check still ends the acquired native lease.
+        journal.validate_directory()?;
+        Ok(journal)
     }
 
     pub(crate) fn recover(
@@ -215,6 +220,40 @@ impl CaptureJournal {
                 .parent()
                 .ok_or("review sync journal parent is missing")?,
         )
+    }
+}
+
+impl Drop for CaptureJournal {
+    fn drop(&mut self) {
+        // Close alone leaves a flock active in forked children sharing this
+        // file description. The capture lifetime ends here, before any close.
+        loop {
+            match self.directory.unlock() {
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                _ => break,
+            }
+        }
+    }
+}
+
+fn lock_capture(directory: &File, _task_id: &str, wait: Duration) -> Result<(), String> {
+    let deadline = Instant::now()
+        .checked_add(wait)
+        .ok_or("review sync capture wait exceeds its supported duration")?;
+    loop {
+        match directory.try_lock() {
+            Ok(()) => return Ok(()),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                #[cfg(test)]
+                super::recovery_tests::capture_blocked(_task_id);
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err("busy: review sync capture".into());
+                }
+                std::thread::sleep(remaining.min(Duration::from_millis(25)));
+            }
+            Err(error) => return Err(format!("review sync capture lock failed: {error}")),
+        }
     }
 }
 

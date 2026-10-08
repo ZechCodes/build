@@ -5,6 +5,41 @@ use std::path::PathBuf;
 
 const CHILD: &str = "reviews::sync::reconcile::recovery_tests::sync_recovery_process_child";
 
+static CAPTURE_BLOCKED: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::BTreeMap<String, std::sync::mpsc::Sender<()>>>,
+> = std::sync::LazyLock::new(Default::default);
+
+pub(super) fn capture_blocked(task_id: &str) {
+    let sender = CAPTURE_BLOCKED.lock().unwrap().remove(task_id);
+    if let Some(sender) = sender {
+        let _ = sender.send(());
+    }
+}
+
+struct ContentionSignal {
+    task_id: String,
+    receiver: std::sync::mpsc::Receiver<()>,
+}
+impl ContentionSignal {
+    fn watch(task_id: &str) -> Self {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        assert!(CAPTURE_BLOCKED
+            .lock()
+            .unwrap()
+            .insert(task_id.into(), sender)
+            .is_none());
+        Self {
+            task_id: task_id.into(),
+            receiver,
+        }
+    }
+}
+impl Drop for ContentionSignal {
+    fn drop(&mut self) {
+        CAPTURE_BLOCKED.lock().unwrap().remove(&self.task_id);
+    }
+}
+
 fn journal(f: &Fixture) -> PathBuf {
     f.opened.review.bindings[0]
         .receiving_repository
@@ -249,7 +284,7 @@ fn live_writer_lock_excludes_recovery_of_its_candidate_without_health_churn() {
         .collect::<Result<_, _>>()
         .unwrap();
     super::capture(&f.opened.review, &id, &received).unwrap();
-    assert!(reconcile(&f.store, f.task_id())
+    assert!(super::reconcile_background(&f.store, f.task_id())
         .unwrap_err()
         .starts_with("busy:"));
     assert_eq!(pin_oid(&f, &id).as_deref(), Some(head.as_str()));
@@ -263,6 +298,215 @@ fn live_writer_lock_excludes_recovery_of_its_candidate_without_health_churn() {
     f.sync();
     assert!(pin_oid(&f, &id).is_none());
     assert!(!journal(&f).exists());
+}
+
+#[test]
+fn explicit_reconcile_waits_for_a_short_live_capture_and_recovers_its_candidate() {
+    let f = Fixture::new();
+    f.commit("short-capture.txt");
+    f.push();
+    let mut owner =
+        super::recovery::CaptureJournal::acquire(f.task_id(), &f.opened.review.bindings).unwrap();
+    let id = uuid::Uuid::new_v4().to_string();
+    owner.begin(&f.store, &id).unwrap();
+    let received = f
+        .opened
+        .review
+        .bindings
+        .iter()
+        .map(crate::reviews::publication::observe_received)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    super::capture(&f.opened.review, &id, &received).unwrap();
+    let blocked = ContentionSignal::watch(f.task_id());
+    let result = std::thread::scope(|scope| {
+        let release = scope.spawn(move || {
+            blocked
+                .receiver
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap();
+            drop(owner);
+        });
+        let result = reconcile(&f.store, f.task_id());
+        release.join().unwrap();
+        result
+    });
+    assert!(
+        result.is_ok(),
+        "explicit reconcile must join a short live capture: {result:?}"
+    );
+    assert!(result.unwrap().persisted);
+    assert!(pin_oid(&f, &id).is_none());
+    assert!(!journal(&f).exists());
+    assert_eq!(f.review().snapshots.len(), 2);
+}
+
+#[test]
+fn explicit_capture_wait_times_out_without_candidate_or_observation_churn() {
+    let f = Fixture::new();
+    let head = f.commit("busy-timeout.txt");
+    f.push();
+    let mut owner =
+        super::recovery::CaptureJournal::acquire(f.task_id(), &f.opened.review.bindings).unwrap();
+    let id = uuid::Uuid::new_v4().to_string();
+    owner.begin(&f.store, &id).unwrap();
+    let received = f
+        .opened
+        .review
+        .bindings
+        .iter()
+        .map(crate::reviews::publication::observe_received)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    super::capture(&f.opened.review, &id, &received).unwrap();
+    let wait = std::time::Duration::from_millis(30);
+    let started = std::time::Instant::now();
+    let result = super::reconcile_with_wait(&f.store, f.task_id(), wait);
+    assert!(result.unwrap_err().starts_with("busy:"));
+    assert!(
+        started.elapsed() >= wait,
+        "explicit admission must honor its wait budget"
+    );
+    assert_eq!(pin_oid(&f, &id).as_deref(), Some(head.as_str()));
+    assert_eq!(
+        f.store
+            .load_review_sync_candidate(f.task_id())
+            .unwrap()
+            .as_deref(),
+        Some(id.as_str())
+    );
+    assert!(journal(&f).exists());
+    assert!(f
+        .store
+        .load_review_sync_observations(f.task_id())
+        .unwrap()
+        .is_empty());
+    assert_eq!(f.review().snapshots.len(), 1);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn ended_capture_releases_its_lease_even_while_a_forked_child_retains_the_directory() {
+    crate::git_fixture::environment::isolated_git_test!();
+    let f = Fixture::new();
+    f.commit("inherited-capture.txt");
+    f.push();
+    let mut owner =
+        super::recovery::CaptureJournal::acquire(f.task_id(), &f.opened.review.bindings).unwrap();
+    let id = uuid::Uuid::new_v4().to_string();
+    owner.begin(&f.store, &id).unwrap();
+    let received = f
+        .opened
+        .review
+        .bindings
+        .iter()
+        .map(crate::reviews::publication::observe_received)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    super::capture(&f.opened.review, &id, &received).unwrap();
+    let lock_path = journal(&f).parent().unwrap().to_path_buf();
+    let child = InheritedCapture::hold();
+    assert!(!directory_descriptors(std::process::id(), &lock_path).is_empty());
+    assert!(!directory_descriptors(child.0 as u32, &lock_path).is_empty());
+    drop(owner);
+    assert!(directory_descriptors(std::process::id(), &lock_path).is_empty());
+    let child_descriptors = directory_descriptors(child.0 as u32, &lock_path);
+    assert!(
+        !child_descriptors.is_empty(),
+        "child retains the ended writer's FD"
+    );
+    eprintln!(
+        "ended capture actual holder pid={} descriptors={child_descriptors:?} parent={} path={}",
+        child.0,
+        std::process::id(),
+        lock_path.display()
+    );
+
+    let result = reconcile(&f.store, f.task_id());
+    drop(child);
+    assert!(
+        result.is_ok(),
+        "ended capture must not block explicit reconcile: {result:?}"
+    );
+    assert!(result.unwrap().persisted);
+    assert!(pin_oid(&f, &id).is_none());
+    assert!(!journal(&f).exists());
+    assert_eq!(f.review().snapshots.len(), 2);
+}
+
+#[cfg(target_os = "linux")]
+fn directory_descriptors(pid: u32, path: &std::path::Path) -> Vec<std::ffi::OsString> {
+    std::fs::read_dir(format!("/proc/{pid}/fd"))
+        .unwrap()
+        .flatten()
+        .filter(|entry| std::fs::read_link(entry.path()).is_ok_and(|target| target == path))
+        .map(|entry| entry.file_name())
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+struct InheritedCapture(libc::pid_t);
+
+#[cfg(target_os = "linux")]
+impl InheritedCapture {
+    fn hold() -> Self {
+        use std::os::fd::FromRawFd;
+        let mut ready = [0; 2];
+        // SAFETY: pipe2 receives two writable integer slots.
+        assert_eq!(
+            unsafe { libc::pipe2(ready.as_mut_ptr(), libc::O_CLOEXEC) },
+            0
+        );
+        // SAFETY: the fork child uses only async-signal-safe libc functions.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0);
+        if pid == 0 {
+            unsafe {
+                libc::close(ready[0]);
+                libc::write(ready[1], b"x".as_ptr().cast(), 1);
+                libc::close(ready[1]);
+                loop {
+                    libc::pause();
+                }
+            }
+        }
+        let child = Self(pid);
+        // SAFETY: the parent closes its writer and owns its reader exactly once.
+        unsafe { libc::close(ready[1]) };
+        let _reader = unsafe { std::fs::File::from_raw_fd(ready[0]) };
+        let mut poll = libc::pollfd {
+            fd: ready[0],
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: poll receives one valid pollfd with a bounded deadline.
+        assert_eq!(unsafe { libc::poll(&mut poll, 1, 2000) }, 1);
+        assert_ne!(poll.revents & libc::POLLIN, 0);
+        child
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for InheritedCapture {
+    fn drop(&mut self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        // SAFETY: this unreaped PID is our own forked child.
+        unsafe { libc::kill(self.0, libc::SIGKILL) };
+        while std::time::Instant::now() < deadline {
+            // SAFETY: waitpid operates only on our own child.
+            let result = unsafe { libc::waitpid(self.0, std::ptr::null_mut(), libc::WNOHANG) };
+            if result == self.0
+                || (result < 0
+                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD))
+            {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        if !std::thread::panicking() {
+            panic!("inherited capture child did not reap within its deadline");
+        }
+    }
 }
 
 #[test]

@@ -41,6 +41,9 @@ Wire 3.14.0.
 
 ### Fixed
 
+- Wait briefly for overlapping explicit PR synchronization, and release capture
+  and merge leases when their operations finish even if a child retains an
+  inherited descriptor (#404).
 - Preserve effective project Git hooks and their nested Git configuration during
   fenced PR merges; recover registered hook fence resources at startup after
   verifying ownership and process death, preserving live or uncertain launches

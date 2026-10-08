@@ -102,10 +102,13 @@ fn with_targets_locked<T>(
     let mut grouped: BTreeMap<PathBuf, BTreeMap<String, String>> = BTreeMap::new();
     for (binding, expected) in bindings.iter().zip(tips) {
         let repository = receivers::canonical_common_git_dir(&binding.source_repository)?;
-        grouped.entry(repository).or_default().insert(
+        let previous = grouped.entry(repository).or_default().insert(
             binding.base_branch_ref.clone(),
             expected.target_head.clone(),
         );
+        if previous.is_some_and(|previous| previous != expected.target_head) {
+            return Err("stale: shared source base changed between retarget observations; refresh and retry".into());
+        }
     }
     let mut guards = Vec::new();
     for (path, references) in grouped {
@@ -133,4 +136,34 @@ fn with_targets_locked<T>(
     let result = publish();
     drop(guards);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git_fixture::git_in;
+    use crate::reviews::sync::reconcile::tests::Fixture;
+
+    #[test]
+    fn shared_source_target_movement_between_observations_rejects_the_whole_vector() {
+        let fixture = Fixture::new();
+        let first = fixture.review().bindings[0].clone();
+        let old = publication::observe_received(&first).unwrap();
+        let mut second = first.clone();
+        second.directory_id = "directory-2".into();
+        let target = fixture.commit("new-target.txt");
+        git_in(
+            &fixture.source,
+            &["update-ref", &first.base_branch_ref, &target],
+        );
+        let new = publication::observe_received(&second).unwrap();
+        assert_ne!(old.target_head, new.target_head);
+        let published = std::cell::Cell::new(false);
+        let result = with_targets_locked(&[first, second], &[old, new], || {
+            published.set(true);
+            Ok(())
+        });
+        assert!(result.unwrap_err().starts_with("stale:"));
+        assert!(!published.get());
+    }
 }

@@ -365,6 +365,38 @@ fn merge_intents_survive_restart_and_match_requests_before_version_checks() {
 }
 
 #[test]
+fn merge_intent_discovery_keeps_finished_requests_and_filters_by_task() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let review = publish(&store);
+    let request = merge_request(&review);
+    let mut failed = store
+        .reserve_review_merge("/repo", "merge-first", request.clone())
+        .unwrap();
+    failed.state = ReviewMergeState::Failed;
+    let failed = store
+        .save_review_merge_intent(&failed, failed.version)
+        .unwrap();
+    let running = store
+        .reserve_review_merge("/repo", "merge-second", request)
+        .unwrap();
+    assert_eq!(
+        store.load_review_merge_intents(&review.task_id).unwrap(),
+        vec![failed.clone(), running.clone()]
+    );
+    assert!(store
+        .load_review_merge_intents("other-task")
+        .unwrap()
+        .is_empty());
+    drop(store);
+    let restored = Store::new(dir.path()).unwrap();
+    assert_eq!(
+        restored.load_review_merge_intents(&review.task_id).unwrap(),
+        vec![failed, running]
+    );
+}
+
+#[test]
 fn merge_admission_requires_exact_published_binding_vector() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();

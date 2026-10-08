@@ -189,3 +189,47 @@ fn a_lost_response_retry_keeps_an_explicit_user_unwatch() {
     assert!(!repeated["task"]["watched"].as_bool().unwrap_or(false));
     assert_eq!(repeated["task"]["id"], opened["task"]["id"]);
 }
+
+#[test]
+fn explicitly_excluded_git_and_live_sources_remain_members_when_their_sources_disappear() {
+    let home = tempfile::tempdir().unwrap();
+    let (_repository, mut app, project) = tracked(home.path());
+    let extra = init_repo_named(home.path(), "unavailable-git");
+    let source = app.handle(req(
+        "project.add_source",
+        json!({"project_id":project,"path":extra,"name":"unavailable"}),
+    ));
+    assert_eq!(source["ok"], true, "{source}");
+    let live = home.path().join("live-source");
+    std::fs::create_dir(&live).unwrap();
+    let source = app.handle(req(
+        "project.add_source",
+        json!({"project_id":project,"path":live,"name":"live"}),
+    ));
+    assert_eq!(source["ok"], true, "{source}");
+    let workspace_id = workspace(&mut app, &project, "fixed membership");
+    let excluded_id = app
+        .workspaces
+        .get(&workspace_id)
+        .unwrap()
+        .directories
+        .iter()
+        .find(|directory| directory.source_path == extra)
+        .unwrap()
+        .id
+        .clone();
+    std::fs::remove_dir_all(&extra).unwrap();
+    std::fs::remove_dir_all(&live).unwrap();
+    let mut asked = params(&workspace_id);
+    asked.excluded_git_directory_ids.push(excluded_id.clone());
+    let opened = open_direct(&mut app, asked, Actor::User);
+    let memberships = opened["review"]["pull_request"]["directories"]
+        .as_array()
+        .unwrap();
+    assert_eq!(memberships.len(), 3);
+    assert!(memberships
+        .iter()
+        .any(|member| member["directory_id"] == excluded_id && member["kind"] == "excluded"));
+    assert!(memberships.iter().any(|member| member["kind"] == "live"));
+    assert_eq!(opened["review"]["bindings"].as_array().unwrap().len(), 1);
+}

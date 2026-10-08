@@ -427,6 +427,12 @@ fn pull_request_fixtures_keep_sync_health_and_partial_git_results_visible() {
         "failed"
     );
     assert_eq!(
+        merge["examples"][0]["result"]["review"]["actions"][1]["steps"][1],
+        serde_json::json!({
+            "kind":"push","branch":"main","remote":"origin","status":"pending"
+        })
+    );
+    assert_eq!(
         merge["examples"][1]["result"]["review"]["pull_request"]["status"],
         "merged"
     );

@@ -90,6 +90,9 @@ describe("the v1 adapter against fixtures/api/v1", () => {
     expect(push.examples[1].params.sources[0]).toMatchObject({ force_with_lease: true, expected_received_head: expect.any(String) });
     const merge = read("merge");
     expect(merge.examples[0].result.review.actions.map(({ status }) => status)).toEqual(["succeeded", "failed"]);
+    expect(merge.examples[0].result.review.actions[1].steps[1]).toEqual({
+      kind: "push", branch: "main", remote: "origin", status: "pending",
+    });
     expect(merge.examples[1].result.review.pull_request.status).toBe("merged");
     expect(merge.examples[1].result.merge_intents[0].state).toBe("failed");
   });

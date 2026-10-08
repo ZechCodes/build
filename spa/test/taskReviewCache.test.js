@@ -7,7 +7,8 @@ import { createTaskReviewRepository, reviewAddress, writeReviewRecord } from "..
 import fixture from "../../fixtures/api/v1/tasks.review.get.json";
 
 const scope = { deviceId: "reviews-cache", projectId: "proj-1", taskId: "task-1" };
-const support = { get: true, snapshot: true, diff: true, complete: true, act: true, comments: true };
+const support = { get: true, snapshot: true, diff: true, complete: true, act: true, comments: true,
+  pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false };
 const review = fixture.result.review;
 beforeEach(async () => { await wipeCache(); });
 

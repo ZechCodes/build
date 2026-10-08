@@ -153,6 +153,11 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
       diff: names.has("tasks.review.diff"), complete: names.has("tasks.review.complete"),
       act: names.has("tasks.review.act"),
       comments: names.has("tasks.reviewComments"),
+      pullRequests: names.has("tasks.pullRequests"),
+      open: names.has("tasks.review.open"), push: names.has("tasks.review.push"),
+      update: names.has("tasks.review.update"), merge: names.has("tasks.review.merge"),
+      close: names.has("tasks.review.close"), reopen: names.has("tasks.review.reopen"),
+      refresh: names.has("tasks.review.refresh"),
     },
     tasks: {
       context: names.has("tasks.context"),

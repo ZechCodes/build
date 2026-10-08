@@ -701,3 +701,31 @@ fn pin_cleanup_preserves_other_packed_refs_and_refuses_changed_shadow_entries() 
     assert_eq!(fs::read(&packed_path).unwrap(), packed);
     assert_eq!(oid(repository.path(), reference), binding.initial_head);
 }
+
+#[test]
+fn pin_cleanup_refuses_a_replaced_held_lock_before_deleting_the_ref() {
+    let (temporary, source) = init_repo();
+    let binding = binding(&source, &temporary.path().join("receivers"));
+    configure_remote(&binding).unwrap();
+    publish_initial(&binding).unwrap();
+    let repository = git2::Repository::open_bare(&binding.receiving_repository).unwrap();
+    let reference = "refs/build/reviews/replaced/head";
+    create_expected_pin(&repository, reference, &binding.initial_head).unwrap();
+    for relative in [format!("{reference}.lock"), "packed-refs.lock".into()] {
+        let lock = repository.path().join(relative);
+        let error = super::super::receivers::refs::remove_expected_reference(
+            &repository,
+            reference,
+            git2::Oid::from_str(&binding.initial_head).unwrap(),
+            || {
+                fs::remove_file(&lock).unwrap();
+                fs::write(&lock, "user lock\n").unwrap();
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("replaced"));
+        assert_eq!(oid(repository.path(), reference), binding.initial_head);
+        assert_eq!(fs::read_to_string(&lock).unwrap(), "user lock\n");
+        fs::remove_file(lock).unwrap();
+    }
+}

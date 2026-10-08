@@ -739,3 +739,39 @@ fn head_ref_lock_remains_held_through_branch_deletion() {
     assert!(!repo.join(".git/HEAD.lock").exists());
     cleanup_branch("task-stable-identity", "request-1", &binding).unwrap();
 }
+
+#[test]
+fn branch_deletion_refuses_replaced_ref_or_packed_lock() {
+    for replaced in ["dedicated", "packed"] {
+        let (_temp, repo) = init_repo();
+        let mut binding = plan(&workspace(&repo)).remove(0);
+        prepare_branch("task-stable-identity", "request-1", &mut binding).unwrap();
+        git_in(&repo, &["pack-refs", "--all", "--no-prune"]);
+        let packed_path = repo.join(".git/packed-refs");
+        let original_packed = fs::read(&packed_path).unwrap();
+        let loose_path = repo.join(".git").join(&binding.dedicated_branch_ref);
+        let original_loose = fs::read(&loose_path).unwrap();
+        let working = git2::Repository::open(&repo).unwrap();
+        let mut locks = refs::ReferenceLocks::acquire(&working, &binding).unwrap();
+        let packed = locks.prepare_removal(&binding).unwrap();
+        let lock_path = if replaced == "dedicated" {
+            repo.join(".git")
+                .join(format!("{}.lock", binding.dedicated_branch_ref))
+        } else {
+            repo.join(".git/packed-refs.lock")
+        };
+        fs::remove_file(&lock_path).unwrap();
+        fs::write(&lock_path, b"user lock\n").unwrap();
+        assert!(locks.remove_branch(&binding, packed.as_deref()).is_err());
+        assert_eq!(fs::read(&loose_path).unwrap(), original_loose);
+        assert_eq!(fs::read(&packed_path).unwrap(), original_packed);
+        assert_eq!(
+            working.head().unwrap().name(),
+            Some(binding.dedicated_branch_ref.as_str())
+        );
+        drop(locks);
+        assert_eq!(fs::read(&lock_path).unwrap(), b"user lock\n");
+        fs::remove_file(lock_path).unwrap();
+        cleanup_branch("task-stable-identity", "request-1", &binding).unwrap();
+    }
+}

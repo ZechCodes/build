@@ -141,6 +141,16 @@ impl ReferenceLocks {
                 .and_then(|()| locked.file.sync_all())
                 .map_err(|error| error.to_string())?;
         }
+        self.references
+            .get(&binding.dedicated_branch_ref)
+            .ok_or("review branch ref was not locked")?
+            .guard
+            .verify_owned()?;
+        self.references
+            .get("packed-refs")
+            .ok_or("review packed refs were not locked")?
+            .guard
+            .verify_owned()?;
         let loose = self.common_directory.join(&binding.dedicated_branch_ref);
         match fs::remove_file(&loose) {
             Ok(()) => sync_directory(loose.parent().ok_or("invalid review ref path")?)?,

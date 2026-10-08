@@ -33,6 +33,16 @@ impl OwnedGitFileLock {
         &self.owner.token
     }
 
+    pub(crate) fn verify_owned(&self) -> Result<(), String> {
+        if file_has_identity(&self.inode_pin, &self.owner)
+            && same_lock_file(&self.path, &self.owner)
+        {
+            Ok(())
+        } else {
+            Err("owned Git lock was replaced; preserving the replacement".into())
+        }
+    }
+
     /// Publish only the same inode registered before Git lock acquisition.
     pub(crate) fn commit_to(&self, target: &Path) -> Result<(), String> {
         self.publish_retaining_lock(target)
@@ -44,9 +54,7 @@ impl OwnedGitFileLock {
         if target != self.path().with_extension("") {
             return Err("owned Git lock commit target changed".into());
         }
-        if !same_lock_file(&self.path, &self.owner) {
-            return Err("owned Git lock was replaced; preserving the replacement".into());
-        }
+        self.verify_owned()?;
         let temporary = publication_path(&self.path, &self.owner)?;
         fs::hard_link(self.path(), &temporary).map_err(|error| error.to_string())?;
         if !same_lock_file(&temporary, &self.owner) {

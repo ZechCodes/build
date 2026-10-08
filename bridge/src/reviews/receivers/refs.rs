@@ -41,7 +41,7 @@ pub(crate) fn remove_expected_reference(
     let directory = repository.commondir();
     let (packed_guard, mut packed_file) =
         acquire_git_lock(directory, Path::new("packed-refs.lock"))?;
-    let (_ref_guard, _) = acquire_git_lock(directory, Path::new(&format!("{reference}.lock")))?;
+    let (ref_guard, _) = acquire_git_lock(directory, Path::new(&format!("{reference}.lock")))?;
     checkpoint();
     let Some(current) = reference_target(repository, reference)? else {
         return Ok(());
@@ -52,6 +52,8 @@ pub(crate) fn remove_expected_reference(
     let packed_path = directory.join("packed-refs");
     let packed = packed_without_reference(&packed_path, reference, expected)?;
     let loose_path = directory.join(reference);
+    ref_guard.verify_owned()?;
+    packed_guard.verify_owned()?;
     if read_regular_optional(&loose_path)?.is_some() {
         fs::remove_file(&loose_path).map_err(|error| error.to_string())?;
         sync_parent(&loose_path)?;

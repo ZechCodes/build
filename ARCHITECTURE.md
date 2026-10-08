@@ -735,8 +735,8 @@ Branch, config and receiver ref writes use registered Git locks that can
 recover a dead owner's exact inode while preserving replacement locks. A new
 receiver is initialized in a separate staging directory and published only
 after its files are durable. Interrupted staging is retained without blocking
-retry. The caller holds
-the workspace mutation lease and supplies hooks for live reclaim/placement
+retry. The caller holds the workspace mutation lease and supplies hooks for
+live reclaim/placement
 checks, manifest installation and idempotent reviewer dispatch. Reviewer
 delivery runs after publication, with a durable status and explicit retry.
 

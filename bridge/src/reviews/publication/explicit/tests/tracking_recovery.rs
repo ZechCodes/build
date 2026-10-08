@@ -484,3 +484,65 @@ fn same_pending_goal_uses_a_newer_matching_native_receiver_tracking_lease() {
         Some(target)
     );
 }
+
+#[test]
+fn same_goal_native_tracking_lock_refuses_before_losing_receiver_authority() {
+    let fixture = Fixture::new();
+    let intermediate = fixture.commit("intermediate.txt");
+    let target = unreceived_proof(&fixture);
+    git_in(fixture.checkout(), &["reset", "--hard", &intermediate]);
+    fixture.push();
+    fixture.sync();
+    git_in(fixture.checkout(), &["reset", "--hard", &target]);
+    let (repository, reference) = tracking(&fixture);
+    let lock = repository.commondir().join(format!("{reference}.lock"));
+    std::fs::write(&lock, b"foreign same-goal tracking lock").unwrap();
+    let result = push(&fixture.store, &push_request(&fixture, target.clone())).unwrap();
+    assert_eq!(result.sources[0].status, PushStatus::Failed);
+    assert_eq!(
+        registered_received_head(&fixture.review().bindings[0]).unwrap(),
+        Some(intermediate.clone())
+    );
+    assert_eq!(
+        repository.refname_to_id(&reference).unwrap().to_string(),
+        intermediate
+    );
+    assert_eq!(
+        std::fs::read(&lock).unwrap(),
+        b"foreign same-goal tracking lock"
+    );
+    std::fs::remove_file(lock).unwrap();
+    let result = push(&fixture.store, &push_request(&fixture, target.clone())).unwrap();
+    assert_eq!(result.sources[0].status, PushStatus::Published);
+    assert_eq!(result.sources[0].recovery, None);
+    assert_eq!(
+        repository.refname_to_id(&reference).unwrap().to_string(),
+        target
+    );
+}
+
+#[test]
+fn unchanged_receiver_keeps_partial_proof_while_tracking_is_locked() {
+    let fixture = Fixture::new();
+    let (previous, head) = partial_publication(&fixture);
+    let (repository, reference) = tracking(&fixture);
+    let lock = repository.commondir().join(format!("{reference}.lock"));
+    std::fs::write(&lock, b"foreign unchanged tracking lock").unwrap();
+    let result = push(&fixture.store, &push_request(&fixture, head.clone())).unwrap();
+    assert_eq!(result.sources[0].status, PushStatus::Unchanged);
+    assert!(result.sources[0].recovery.is_some());
+    assert_eq!(
+        registered_received_head(&fixture.review().bindings[0]).unwrap(),
+        Some(head.clone())
+    );
+    assert_eq!(
+        repository.refname_to_id(&reference).unwrap().to_string(),
+        previous
+    );
+    assert_eq!(
+        std::fs::read(&lock).unwrap(),
+        b"foreign unchanged tracking lock"
+    );
+    std::fs::remove_file(lock).unwrap();
+    assert_repaired(&fixture, &head);
+}

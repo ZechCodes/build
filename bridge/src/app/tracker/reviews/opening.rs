@@ -6,6 +6,7 @@ use crate::api::v1::reviews::{
     errors, ReviewOpenParams, ReviewOpenResult, ReviewPushInstruction, ReviewReviewer,
 };
 use crate::app::git::deferred::DeferredGitWork;
+use crate::app::mcp::McpConversationGeneration;
 use crate::app::{AppState, DeferredGit, DeferredWork};
 use crate::reviews::model::{ReviewOpeningRequest, ReviewOpeningState};
 use crate::reviews::opening::{OpenReviewRequest, OpenedReview};
@@ -34,6 +35,8 @@ struct LiveOpeningHooks {
     project_path: String,
     request_id: String,
     store: crate::store::Store,
+    /// The creator's admitted conversation, retained while Git runs off lock.
+    sender: Option<McpConversationGeneration>,
 }
 
 impl AppState {
@@ -93,6 +96,13 @@ impl AppState {
         let watch = matches!(actor, Actor::User)
             || self.watch_agent_filed_tasks
             || matches!(params.reviewer, Some(ReviewReviewer::User));
+        let sender = actor
+            .agent_id()
+            .map(|agent_id| {
+                let entity_id = self.agent_of_this_project(&workspace.project_id, agent_id)?;
+                self.mcp_conversation_generation(&entity_id, agent_id)
+            })
+            .transpose()?;
         let hooks = LiveOpeningHooks {
             shared: self.self_handle.clone(),
             registry_root: self.workspaces.root().into(),
@@ -100,6 +110,7 @@ impl AppState {
             project_path: project_path.clone(),
             request_id: params.request_id.clone(),
             store: store.clone(),
+            sender,
         };
         let job = OpeningJob {
             store,

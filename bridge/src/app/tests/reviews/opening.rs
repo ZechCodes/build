@@ -203,6 +203,7 @@ fn reset_creator_before_reviewer_delivery(shared_hooks: bool) {
         .unwrap();
     assert_eq!(opened["opening_state"], "published");
     assert_eq!(opened["task"]["status"], "in_review");
+    assert!(opened["task"]["trackers"].as_array().unwrap().is_empty());
     assert_eq!(opened["review"]["snapshots"].as_array().unwrap().len(), 1);
     assert_eq!(opened["reviewer_dispatch"]["state"], "failed", "{opened}");
     assert!(opened["reviewer_dispatch"]["error"]

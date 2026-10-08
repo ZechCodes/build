@@ -1,5 +1,6 @@
 //! Post-publication reviewer delivery reuses the ordinary task dispatcher.
 use super::{validate_live_workspace, validate_recorded_workspace, LiveOpeningHooks, OpeningJob};
+use crate::app::mcp::McpConversationGeneration;
 use crate::app::AppState;
 use crate::reviews::opening::OpeningHooks;
 use crate::tracker::{Assignee, Task};
@@ -40,6 +41,7 @@ impl OpeningHooks for LiveOpeningHooks {
             &self.project_path,
             &self.request_id,
             operation_id,
+            self.sender.as_ref(),
         )
     }
 }
@@ -64,6 +66,7 @@ impl OpeningHooks for SettlementHooks<'_> {
             &self.job.request.project_path,
             &self.job.request.request_id,
             operation_id,
+            self.job.hooks.sender.as_ref(),
         )
     }
 }
@@ -75,6 +78,7 @@ fn dispatch(
     project_path: &str,
     request_id: &str,
     operation_id: &str,
+    sender: Option<&McpConversationGeneration>,
 ) -> Result<(), String> {
     let opening = store
         .load_review_opening(project_path, request_id)
@@ -95,5 +99,6 @@ fn dispatch(
         &note,
         operation_id,
         &opening.request.creator,
+        sender,
     )
 }

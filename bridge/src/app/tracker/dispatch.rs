@@ -548,6 +548,7 @@ impl AppState {
         note: &str,
         operation_id: &str,
         actor: &Actor,
+        sender: Option<&crate::app::mcp::McpConversationGeneration>,
     ) -> Result<(), String> {
         let (_, task) = self.tracker_task(&published.id)?;
         let timeline = self
@@ -562,6 +563,14 @@ impl AppState {
             )
         }) {
             return Ok(());
+        }
+        if matches!(published.assignee, None | Some(Assignee::User)) {
+            return Ok(());
+        }
+        // Publication survives a creator reset; a new reviewer hand-off must
+        // still belong to the conversation generation that admitted the open.
+        if let Some(sender) = sender {
+            sender.guard(self)?;
         }
         let (target, entity_id) = match &published.assignee {
             None | Some(Assignee::User) => return Ok(()),
@@ -587,16 +596,10 @@ impl AppState {
             AssignTarget::Agent { agent_id } => agent_id.clone(),
             _ => self.ensure_primary_agent(&entity_id)?,
         };
-        let sender_owner = actor
-            .agent_id()
-            .and_then(|agent_id| self.entity_of_agent(agent_id));
-        let sender = actor
-            .agent_id()
-            .zip(sender_owner.as_deref())
-            .map(|(agent_id, entity_id)| crate::app::AgentSender {
-                entity_id,
-                agent_id,
-            });
+        let sender = sender.map(|sender| crate::app::AgentSender {
+            entity_id: &sender.entity_id,
+            agent_id: &sender.agent_id,
+        });
         let delivered = self.hand_over_with_operation(
             published,
             &entity_id,

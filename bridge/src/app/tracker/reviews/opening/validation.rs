@@ -114,14 +114,11 @@ pub(in crate::app) fn validate_live_workspace(
                     directory.id
                 )
             })?;
-        let unavailable = |error| {
-            format!(
-                "unavailable: review directory {} source path is unavailable: {error}",
-                directory.id
-            )
-        };
-        if configured.path.canonicalize().map_err(&unavailable)?
-            != directory.source_path.canonicalize().map_err(unavailable)?
+        // Excluded Git and live folders need stable membership, including
+        // when their folders are unavailable. Git services verify participating
+        // repositories before mutating them.
+        if crate::worktree::canonical_planned_path(&configured.path)
+            != crate::worktree::canonical_planned_path(&directory.source_path)
         {
             return Err(format!(
                 "conflict: review directory {} source placement changed",

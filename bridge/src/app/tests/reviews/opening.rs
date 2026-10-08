@@ -105,10 +105,11 @@ fn foreign_reviewer_is_refused_before_reserving_a_task_or_mutating_git() {
     let (_, agent) = project_agent(&mut state, &other);
     let mut asked = params(&workspace_id);
     asked.reviewer = Some(ReviewReviewer::Agent { agent_id: agent });
-    let error = state.review_open(asked, Actor::User).unwrap_err();
-    assert!(crate::api::ApiError::classify(error)
-        .message()
-        .contains("not in project"));
+    let error = crate::api::ApiError::classify(state.review_open(asked, Actor::User).unwrap_err());
+    assert_eq!(error.code(), "not_found");
+    assert_eq!(error.message(), "unknown reviewer agent_id");
+    assert_eq!(error.details().unwrap()["reason"], "reviewer_scope");
+    assert!(!error.message().contains(&other));
     let tasks = state.handle(req("tasks.list", json!({"project_id": project})));
     assert_eq!(tasks["result"]["tasks"], json!([]));
     assert!(state.deferred_work.is_none());

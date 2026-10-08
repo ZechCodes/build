@@ -1,15 +1,23 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import "fake-indexeddb/auto";
-import { wipeCache, readCached } from "../src/core/localCache.js";
+import { wipeCache, readCached, writeCached } from "../src/core/localCache.js";
 import { capabilitiesOf } from "../src/core/bridgeApi/v1/index.js";
 import { rememberReviewSupport, readReviewSupport } from "../src/core/taskReviewSupport.js";
-import { createTaskReviewRepository, reviewAddress, writeReviewRecord } from "../src/core/taskReviewCache.js";
+import {
+  createTaskReviewRepository, readWorkspaceReview, refreshCachedReviews, refreshWorkspaceReview,
+  reviewAddress, writeReviewRecord, writeReviewReply,
+} from "../src/core/taskReviewCache.js";
 import fixture from "../../fixtures/api/v1/tasks.review.get.json";
+import openFixture from "../../fixtures/api/v1/tasks.review.open.json";
+import pushFixture from "../../fixtures/api/v1/tasks.review.push.json";
+import mergeFixture from "../../fixtures/api/v1/tasks.review.merge.json";
 
 const scope = { deviceId: "reviews-cache", projectId: "proj-1", taskId: "task-1" };
 const support = { get: true, snapshot: true, diff: true, complete: true, act: true, comments: true,
   pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false };
 const review = fixture.result.review;
+const pullRequest = fixture.examples[1].result;
+const prSupport = Object.fromEntries(Object.keys(support).map((key) => [key, true]));
 beforeEach(async () => { await wipeCache(); });
 
 it("gates each verb and comments independently and remembers the greeting", async () => {
@@ -72,4 +80,100 @@ it("keeps cached review facts with a visible read failure, and ignores a superse
   const stale = createTaskReviewRepository({ ...scope, active: () => active, callRpc: async () => { active = false; return { review: null }; } });
   expect(await stale.refresh()).toBe(false);
   expect((await readCached(reviewAddress(scope))).value.review.version).toBe(1);
+});
+
+it("keeps complete PR metadata and additive open, publication and partial merge results", async () => {
+  for (const answer of [openFixture.examples[0].result, pushFixture.examples[0].result, mergeFixture.examples[1].result]) {
+    await writeReviewReply(scope, answer, answer.review.version);
+    expect((await readCached(reviewAddress(scope))).value).toMatchObject(answer);
+  }
+  await writeReviewReply(scope, { review: mergeFixture.examples[1].result.review }, 100);
+  const held = (await readCached(reviewAddress(scope))).value;
+  expect(held.review.pull_request.status).toBe("merged");
+  expect(held.merge_intents[0].state).toBe("failed");
+  expect(held.sources[1].status).toBe("failed");
+  expect(held.reviewer_dispatch.state).toBe("failed");
+});
+
+it("orders each observation independently when metadata is newer and its observations are older", async () => {
+  const unavailable = fixture.examples[2].result;
+  await writeReviewReply(scope, unavailable, 20);
+  await writeReviewReply(scope, fixture.examples[3].result, 30);
+  const held = (await readCached(reviewAddress(scope))).value;
+  expect(held.review.version).toBe(7);
+  expect(held.sync.find((row) => row.directory_id === "dir-api").revision).toBe(3);
+  expect(held.sync.find((row) => row.directory_id === "dir-ui")).toEqual(unavailable.sync[1]);
+});
+
+it("keeps newer observations even when they come with stale metadata and replaces whole facts", async () => {
+  await writeReviewReply(scope, fixture.examples[3].result, 20);
+  const next = { ...pullRequest, sync: [{ ...pullRequest.sync[1], revision: 4, health: "unavailable", error: "Missing receiver" }] };
+  await writeReviewReply(scope, next, 10);
+  const afterFailure = (await readCached(reviewAddress(scope))).value;
+  expect(afterFailure.review.version).toBe(7);
+  expect(afterFailure.sync.find((row) => row.directory_id === "dir-ui").error).toBe("Missing receiver");
+  await writeReviewReply(scope, { ...pullRequest, sync: [{ ...pullRequest.sync[1], revision: 5 }] }, 5);
+  expect((await readCached(reviewAddress(scope))).value.sync.find((row) => row.directory_id === "dir-ui"))
+    .toEqual({ ...pullRequest.sync[1], revision: 5 });
+});
+
+it("settles equal observation revisions by shared read order inside atomic writes", async () => {
+  const newer = { ...pullRequest, sync: [{ ...pullRequest.sync[0], health: "pending", pending_commits: 2 }] };
+  await Promise.all([writeReviewReply(scope, newer, 20), writeReviewReply(scope, pullRequest, 10)]);
+  expect((await readCached(reviewAddress(scope))).value.sync[0].pending_commits).toBe(2);
+});
+
+it("refreshes discovered unopened reviews together with held metadata only once", async () => {
+  await rememberReviewSupport(scope.deviceId, { reviews: prSupport });
+  await writeReviewReply(scope, pullRequest, 1);
+  const callRpc = vi.fn(async (_method, params) => ({ ...pullRequest, review: { ...pullRequest.review, task_id: params.task_id } }));
+  await refreshCachedReviews({ ...scope, callRpc, discoveredTaskIds: ["new-task", "new-task", scope.taskId] });
+  expect(callRpc.mock.calls.map(([, params]) => params.task_id)).toEqual([scope.taskId, "new-task"]);
+  expect((await readCached(reviewAddress({ ...scope, taskId: "new-task" }))).value.review.task_id).toBe("new-task");
+});
+
+it("discovers workspace metadata before opening a task and retains facts on read failure", async () => {
+  await rememberReviewSupport(scope.deviceId, { reviews: prSupport });
+  const activeReview = { task_id: scope.taskId, workspace_id: "workspace-1", status: "open" };
+  const workspaceScope = { ...scope, workspaceId: "workspace-1" };
+  await writeCached({ deviceId: scope.deviceId, entityId: "", kind: "workspaces" }, [
+    { id: "workspace-1", project_id: scope.projectId, active_review: activeReview },
+  ]);
+  const callRpc = vi.fn(async () => pullRequest);
+  expect(await refreshWorkspaceReview({ ...workspaceScope, callRpc })).toBe(true);
+  expect(await readWorkspaceReview(workspaceScope)).toMatchObject(pullRequest);
+  expect(callRpc).toHaveBeenCalledExactlyOnceWith("tasks.review.get", { task_id: scope.taskId });
+  expect(await refreshWorkspaceReview({ ...workspaceScope, callRpc: async () => { throw new Error("Source removed"); } })).toBe(false);
+  expect(await readWorkspaceReview(workspaceScope)).toMatchObject({ ...pullRequest, error: "Source removed" });
+});
+
+it("does not read mismatched workspace hints or advertise PR support from only a verb", async () => {
+  const callRpc = vi.fn();
+  const workspaceScope = { ...scope, workspaceId: "workspace-1", callRpc };
+  await rememberReviewSupport(scope.deviceId, { reviews: { ...prSupport, pullRequests: false } });
+  expect(await refreshWorkspaceReview({ ...workspaceScope, activeReview: { task_id: scope.taskId, workspace_id: "workspace-1" } })).toBe(false);
+  await rememberReviewSupport(scope.deviceId, { reviews: prSupport });
+  expect(await refreshWorkspaceReview({ ...workspaceScope, activeReview: { task_id: scope.taskId, workspace_id: "elsewhere" } })).toBe(false);
+  expect(callRpc).not.toHaveBeenCalled();
+});
+
+it("creates once with the exact open request and writes discovered task facts to cache", async () => {
+  await rememberReviewSupport(scope.deviceId, { reviews: prSupport });
+  const callRpc = vi.fn(async () => openFixture.result);
+  const repository = createTaskReviewRepository({ deviceId: scope.deviceId, projectId: scope.projectId,
+    workspaceId: "workspace-1", callRpc });
+  await repository.mutate("open", openFixture.params);
+  expect(callRpc).toHaveBeenCalledExactlyOnceWith("tasks.review.open", openFixture.params);
+  expect((await readCached(reviewAddress(scope))).value).toMatchObject(openFixture.result);
+});
+
+it("gates PR and legacy operations against the cached review mode", async () => {
+  await rememberReviewSupport(scope.deviceId, { reviews: prSupport });
+  await writeReviewReply(scope, pullRequest, 1);
+  const callRpc = vi.fn();
+  const repository = createTaskReviewRepository({ ...scope, callRpc });
+  for (const verb of ["act", "snapshot", "complete", "pullRequests"]) {
+    await expect(repository.mutate(verb, { expected_version: 3 })).rejects.toThrow();
+  }
+  expect(callRpc).not.toHaveBeenCalled();
 });

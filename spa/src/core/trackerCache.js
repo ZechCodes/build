@@ -97,6 +97,13 @@ const olderSummary = (held, incoming) => held.task_id === incoming.task_id
 const keepRowSummary = (held, incoming, field, allowMissing) => incoming[field]
   ? olderSummary(held[field], incoming[field]) : !allowMissing && !rowWrittenLater(held, incoming);
 const sameRow = (held, incoming) => Boolean(held) && rowIdentity(held) === rowIdentity(incoming);
+const advancesSummaryFloor = (floor, summary) => hasSummaryVersion(floor) && hasSummaryVersion(summary)
+  && summary.task_id === floor.task_id && summary.version > floor.version;
+
+/** Server PR versions are independent of when a client asked for a row.
+ * Only an existing visible summary of the same PR can establish that order. */
+export const advancesReviewSummary = (held, incoming, field = "review_summary") => Boolean(incoming)
+  && sameRow(held, incoming) && advancesSummaryFloor(held[field], incoming[field]);
 
 function withHeldSummary(held, incoming, field) {
   const next = { ...incoming };
@@ -111,7 +118,7 @@ function withHeldSummary(held, incoming, field) {
  * or timestamp before it can erase a known summary. */
 export function preserveReviewSummary(held, incoming, field = "review_summary", options = {}) {
   if (!incoming || !sameRow(held, incoming)) return incoming;
-  if (options.keepHeld) return withHeldSummary(held, incoming, field);
+  if (options.keepHeld && !advancesReviewSummary(held, incoming, field)) return withHeldSummary(held, incoming, field);
   const summary = held?.[field];
   if (!hasSummaryVersion(summary)) return incoming;
   return keepRowSummary(held, incoming, field, options.allowMissing) ? { ...incoming, [field]: summary } : incoming;
@@ -153,8 +160,6 @@ function withReadThroughFloor(held, incoming) {
 }
 
 const DETAIL_REVIEW_CACHE = "__review_summary_cache";
-const advancesSummaryFloor = (floor, summary) => hasSummaryVersion(floor) && hasSummaryVersion(summary)
-  && summary.task_id === floor.task_id && summary.version > floor.version;
 const belowSummaryFloor = (floor, summary) => hasSummaryVersion(floor) && hasSummaryVersion(summary) && olderSummary(floor, summary);
 
 function detailReviewState(record) {

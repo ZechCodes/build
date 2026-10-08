@@ -141,6 +141,14 @@ describe("atomic tracker summary writes", () => {
       expect(held.tasks[0]).not.toHaveProperty("review_summary");
       expect(held.read_order).toBe(30);
     });
+
+    it(`accepts a higher same-task PR version from an earlier ${kind} request`, async () => {
+      await write(tracker, tracker.tasksRecord([row(7)], [], 20));
+      await write(tracker, tracker.tasksRecord([row(8, { title: "ordinary reply fields" })], [], 10));
+      const held = await read();
+      expect(held.tasks[0]).toMatchObject({ title: "ordinary reply fields", review_summary: summary(8) });
+      expect(held.read_order).toBe(20);
+    });
   }
 
   it("keeps a newer summary when a paged fold accepts an otherwise current task row", async () => {
@@ -158,8 +166,8 @@ describe("atomic tracker summary writes", () => {
     const address = tracker.tasksAddress(DEVICE, PROJECT);
     await tracker.writeTasksRecord(DEVICE, PROJECT, tracker.tasksRecord([row(7)], [], 20));
     await tracker.writeTasksRecord(DEVICE, PROJECT, tracker.tasksRecord([withoutSummary()], [], 30));
-    const fold = (read) => pages.foldTasksPage(address, {
-      tasks: [row(3, { title: "paged ordinary fields" })], above: Infinity, through: -Infinity, read,
+    const fold = (read, version = 3) => pages.foldTasksPage(address, {
+      tasks: [row(version, { title: "paged ordinary fields" })], above: Infinity, through: -Infinity, read,
     }, () => []);
     await fold(10);
     let held = await tracker.readTasksRecord(DEVICE, PROJECT);
@@ -169,6 +177,28 @@ describe("atomic tracker summary writes", () => {
     held = await tracker.readTasksRecord(DEVICE, PROJECT);
     expect(held.tasks[0]).not.toHaveProperty("review_summary");
     expect(held.read_order).toBe(30);
+    await fold(16, 8);
+    expect((await tracker.readTasksRecord(DEVICE, PROJECT)).tasks[0]).not.toHaveProperty("review_summary");
+  });
+
+  it("takes only a higher PR revision from an overtaken page while keeping ordinary fields", async () => {
+    const address = tracker.tasksAddress(DEVICE, PROJECT);
+    await pages.foldTasksPage(address, {
+      tasks: [row(7, { title: "newer ordinary fields" })], above: Infinity, through: -Infinity, read: 20,
+    }, () => []);
+    await pages.foldTasksPage(address, {
+      tasks: [row(8, { title: "older ordinary fields" })], above: Infinity, through: -Infinity, read: 10,
+    }, () => []);
+    const held = await tracker.readTasksRecord(DEVICE, PROJECT);
+    expect(held.tasks[0]).toMatchObject({ title: "newer ordinary fields", review_summary: summary(8) });
+    expect(held.read_order).toBe(20);
+  });
+
+  it("keeps newer page membership when an older page carries a higher PR revision", async () => {
+    const address = tracker.tasksAddress(DEVICE, PROJECT);
+    await pages.foldTasksPage(address, { tasks: [], above: Infinity, through: -Infinity, read: 20 }, () => []);
+    await pages.foldTasksPage(address, { tasks: [row(8)], above: Infinity, through: -Infinity, read: 10 }, () => []);
+    expect((await tracker.readTasksRecord(DEVICE, PROJECT)).tasks).toEqual([]);
   });
 });
 
@@ -220,6 +250,8 @@ describe("workspace list summary writes", () => {
     expect((await cache.readCached(address)).value[0]).not.toHaveProperty("active_review");
     await sessions.replaceSessionList(address, "workspaces", [workspaceRow(7)], undefined, observed);
     expect((await cache.readCached(address)).value[0]).not.toHaveProperty("active_review");
+    await sessions.replaceSessionList(address, "workspaces", [workspaceRow(8)], undefined, observed);
+    expect((await cache.readCached(address)).value[0]).not.toHaveProperty("active_review");
     const current = await sessions.sessionListObservation(address, "workspaces");
     await sessions.replaceSessionList(address, "workspaces", [workspaceRow(8)], undefined, current);
     expect((await cache.readCached(address)).value[0].active_review.version).toBe(8);
@@ -232,5 +264,13 @@ describe("workspace list summary writes", () => {
     await sessions.upsertSessionRow(address, "workspaces", next);
     await sessions.replaceSessionList(address, "workspaces", [workspaceRow(7)], undefined, observed);
     expect((await cache.readCached(address)).value[0].active_review).toEqual(next.active_review);
+  });
+
+  it("accepts a higher same-PR workspace version from a request that observed an older version", async () => {
+    await sessions.replaceSessionList(address, "workspaces", [workspaceRow(6)]);
+    const observed = await sessions.sessionListObservation(address, "workspaces");
+    await sessions.upsertSessionRow(address, "workspaces", workspaceRow(7));
+    await sessions.replaceSessionList(address, "workspaces", [workspaceRow(8)], undefined, observed);
+    expect((await cache.readCached(address)).value[0].active_review.version).toBe(8);
   });
 });

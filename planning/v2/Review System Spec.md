@@ -46,8 +46,10 @@ Approved. Open/Approved map to In review, ChangesRequested to In progress, and
 Merged/Closed to Done. Ordinary movement to Done closes a PR. Reopen is available
 only for Closed, unmerged reviews with the original managed workspace, dedicated
 branches and receiving setup recoverable. It publishes a new snapshot even when
-received heads are unchanged. Closed and Merged workspaces remain retained;
-later explicit refresh records observations without reopening or changing history.
+received heads are unchanged. Closing and merging do not finish or delete the
+workspace; ordinary lifecycle and explicit removal remain separate. Explicit
+refresh on a retained terminal PR records observations without reopening or
+changing history.
 
 Review reads preserve `{review}` and optionally include per-directory `sync`
 observations with their own revisions and durable `merge_intents`. Push replies

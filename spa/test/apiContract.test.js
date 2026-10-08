@@ -28,6 +28,146 @@ const eventExamples = fixtures
   .flatMap(({ name, body }) => body.events.map((event, index) => ({ where: `${name}[${index}]`, event })));
 
 describe("the v1 adapter against fixtures/api/v1", () => {
+  it("announces PR mutations and their shared feature while retaining Snapshot verbs", () => {
+    const greeting = methodFixtures.find(({ body }) => body.method === "session.hello").body;
+    expect(greeting.result.api_version).toBe("3.15.0");
+    expect(greeting.result.capabilities).toContain("tasks.review.pullRequests");
+    expect(greeting.result.capabilities).not.toContain("tasks.pullRequests");
+    for (const verb of ["open", "push", "update", "merge", "close", "reopen", "refresh"]) {
+      const method = `tasks.review.${verb}`;
+      expect(greeting.result.capabilities).toContain(method);
+      const fixture = methodFixtures.find(({ body }) => body.method === method)?.body;
+      expect(fixture?.since, method).toBe("3.15.0");
+    }
+    for (const verb of ["snapshot", "get", "diff", "act", "complete"]) {
+      expect(greeting.result.capabilities).toContain(`tasks.review.${verb}`);
+    }
+  });
+
+  it("gates every PR verb independently of its shared feature and Snapshot verbs", () => {
+    const greeting = methodFixtures.find(({ body }) => body.method === "session.hello").body.result;
+    expect(v1.capabilitiesOf(greeting).reviews.pullRequests).toBe(true);
+    for (const verb of ["open", "push", "update", "merge", "close", "reopen", "refresh"]) {
+      expect(v1.capabilitiesOf(greeting).reviews[verb], verb).toBe(true);
+      const isolated = { api_version: "3.15.0", capabilities: [`tasks.review.${verb}`] };
+      expect(v1.capabilitiesOf(isolated).reviews[verb], verb).toBe(true);
+      expect(v1.capabilitiesOf(isolated).reviews.pullRequests).toBe(false);
+      expect(v1.capabilitiesOf(isolated).reviews.act).toBe(false);
+    }
+    const legacy = { api_version: "3.14.0", capabilities: ["tasks.review.get", "tasks.review.act"] };
+    expect(v1.capabilitiesOf(legacy).reviews).toMatchObject({ get: true, act: true, pullRequests: false, open: false });
+    const incorrect = { api_version: "3.15.0", capabilities: ["tasks.pullRequests"] };
+    expect(v1.capabilitiesOf(incorrect).reviews.pullRequests).toBe(false);
+  });
+
+  it("keeps PR summaries additive on task, feed and workspace reads", () => {
+    const summaryOf = {
+      "tasks.get": ({ task }) => task?.review_summary,
+      "tasks.list": ({ tasks }) => tasks?.[0]?.review_summary,
+      "board.list": ({ items }) => items?.[0]?.review_summary,
+      "workspace.get": ({ active_review }) => active_review,
+      "workspace.list": ({ workspaces }) => workspaces?.[0]?.active_review,
+    };
+    for (const [method, summary] of Object.entries(summaryOf)) {
+      const fixture = methodFixtures.find(({ body }) => body.method === method).body;
+      expect(summary(fixture.result), method).toBeUndefined();
+      const example = fixture.examples?.find(({ result }) => summary(result));
+      expect(summary(example?.result || {}), method).toMatchObject({
+        status: "open", latest_published_snapshot_id: "snapshot-1",
+      });
+      expect(v1.parseResult(method, example.result)).toEqual(example.result);
+    }
+  });
+
+  it("preserves PR sync failures, partial integration and failed publication after merge", () => {
+    const read = (verb) => methodFixtures.find(({ body }) => body.method === `tasks.review.${verb}`).body;
+    expect(read("get").result.review).not.toHaveProperty("mode");
+    const refresh = read("refresh");
+    expect(refresh.examples[0].result.sync[1]).toMatchObject({ health: "unavailable", error: expect.any(String) });
+    expect(refresh.examples[1].result.review.pull_request.status).toBe("closed");
+    const push = read("push");
+    expect(push.examples[0].result.sources.map(({ status }) => status)).toEqual(["published", "failed"]);
+    expect(push.examples[1].params.sources[0]).toMatchObject({ force_with_lease: true, expected_received_head: expect.any(String) });
+    const merge = read("merge");
+    expect(merge.examples[0].result.review.actions.map(({ status }) => status)).toEqual(["succeeded", "failed"]);
+    expect(merge.examples[0].result.review.actions[1].steps[1]).toEqual({
+      kind: "push", branch: "main", remote: "origin", status: "pending",
+    });
+    expect(merge.examples[1].result.review.pull_request.status).toBe("merged");
+    expect(merge.examples[1].result.merge_intents[0].state).toBe("failed");
+  });
+
+  it("keeps structured PR refusal details when normalizing wire errors", () => {
+    for (const verb of ["open", "push", "update", "merge", "close", "reopen", "refresh"]) {
+      const fixture = methodFixtures.find(({ body }) => body.method === `tasks.review.${verb}`).body;
+      expect(fixture.refusals?.length, verb).toBeGreaterThan(0);
+      for (const { reply } of fixture.refusals) {
+        expect(fixture.errors).toContain(reply.error_code);
+        const error = v1.normalizeError(reply);
+        expect(error.code).toBe(reply.error_code);
+        expect(error.retryable).toBe(reply.error_code === "busy");
+        expect(error.details).toEqual(reply.details);
+        expect(error.details).toMatchObject({ reason: expect.any(String), recovery: expect.any(String) });
+      }
+    }
+  });
+
+  it.each([
+    ["open", {
+      id: 405, ok: false,
+      error: "dedicated review branch already exists for task: task-1",
+      error_code: "conflict", retryable: false,
+      details: {
+        reason: "branch_collision", workspace_id: "workspace-1", directory_id: "dir-api",
+        recovery: "Restore the selected workspace and source placement, then retry the same request_id to resume or read its published result.",
+      },
+    }],
+    ["merge", {
+      id: 405, ok: false,
+      error: "A rebase of main is in progress in /sources/api.",
+      error_code: "busy", retryable: true,
+      details: {
+        reason: "git_operation", task_id: "task-1", snapshot_id: "snapshot-1", directory_id: "dir-api",
+        recovery: "Read tasks.review.get and retry the saved merge plan after resolving its reported failure.",
+      },
+    }],
+    ["reopen", {
+      id: 405, ok: false,
+      error: "Only Closed unmerged PRs can reopen",
+      error_code: "conflict", retryable: false,
+      details: {
+        reason: "conflict", task_id: "task-1", recovery: "Open a new PR after merge.",
+      },
+    }],
+  ])("requires the production %s refusal and its recovery details", (verb, reply) => {
+    const fixture = methodFixtures.find(({ body }) => body.method === `tasks.review.${verb}`).body;
+    const refusal = fixture.refusals.find(({ reply: candidate }) => candidate.error === reply.error);
+    expect(refusal?.reply).toEqual(reply);
+    expect(v1.normalizeError(refusal.reply)).toMatchObject({
+      code: reply.error_code, retryable: reply.retryable, details: reply.details,
+    });
+    if (verb === "reopen") {
+      expect(refusal.review_status).toBe("merged");
+      expect(refusal.params.expected_version).toBe(7);
+    }
+  });
+
+  it("records Git mid-operation as a failed merge step while preserving partial results", () => {
+    const fixture = methodFixtures.find(({ body }) => body.method === "tasks.review.merge").body;
+    const result = fixture.examples.find(({ result: candidate }) =>
+      candidate.review.actions[1]?.steps[0]?.error === "A rebase of main is in progress in /sources/ui.")?.result;
+    expect(result?.review.pull_request.status).toBe("open");
+    expect(result.review.actions[0].status).toBe("succeeded");
+    expect(result.review.actions[1]).toMatchObject({
+      directory_id: "dir-ui", status: "failed", steps: [
+        { kind: "merge", status: "failed", branch: "main", error: expect.any(String) },
+        { kind: "push", branch: "main", remote: "origin", status: "pending" },
+      ],
+    });
+    expect(result.merge_intents[0].state).toBe("failed");
+    expect(v1.parseResult("tasks.review.merge", result)).toEqual(result);
+  });
+
   it("keeps review snapshots and Git actions independently gated", () => {
     for (const verb of ["snapshot", "get", "diff", "complete"]) {
       const fixture = methodFixtures.find(({ body }) => body.method === `tasks.review.${verb}`).body;

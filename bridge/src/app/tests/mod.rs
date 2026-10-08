@@ -216,6 +216,7 @@ mod installed_models;
 mod lifecycle_compat;
 mod mcp_generation;
 mod merge_regressions;
+mod pr_review_tools;
 mod project_agent;
 mod project_agent_base;
 mod project_conversation;

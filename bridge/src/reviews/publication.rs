@@ -8,6 +8,7 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
+pub mod explicit;
 mod pins;
 mod received;
 mod remote;

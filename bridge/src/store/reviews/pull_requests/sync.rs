@@ -144,36 +144,137 @@ impl Store {
         &self,
         task_id: &str,
         expected_version: u64,
-        mut snapshot: ReviewSnapshot,
+        snapshot: ReviewSnapshot,
         bindings: &[ReviewBranchBinding],
     ) -> Result<Review, StoreError> {
         self.in_transaction(|tx| {
-            let mut header = require_pull_request(tx, task_id)?;
-            check_version(&header, expected_version)?;
-            let metadata = header.pull_request.as_ref().expect("PR metadata checked");
-            if !metadata.status.is_active() {
-                return Err(invalid("received snapshots require an active PR"));
-            }
-            validate_received_snapshot(metadata, &load_bindings(tx, task_id)?, bindings, &snapshot)?;
-            if snapshot.id.is_empty() || snapshot_exists(tx, &snapshot.id)? {
-                return Err(StoreError::ReviewSnapshotExists { snapshot_id: snapshot.id.clone() });
-            }
-            snapshot.number = next_snapshot_number(tx, task_id)?;
-            header.version += 1;
-            header.state = ReviewState::Open;
-            header.completion = None;
-            let metadata = header.pull_request.as_mut().expect("PR metadata checked");
-            metadata.status = PullRequestStatus::Open;
-            metadata.latest_published_snapshot_id = Some(snapshot.id.clone());
-            write_header(tx, &header)?;
-            tx.execute("INSERT INTO review_snapshots (id, task_id, number, record) VALUES (?1, ?2, ?3, ?4)", params![snapshot.id, task_id, snapshot.number as i64, serde_json::to_string(&snapshot).expect("snapshot serializes")])?;
-            for binding in bindings {
-                tx.execute("UPDATE review_branch_bindings SET record = ?3 WHERE task_id = ?1 AND directory_id = ?2", params![task_id, binding.directory_id, serde_json::to_string(binding).expect("binding serializes")])?;
-            }
-            move_received_task(tx, task_id)?;
-            Ok(load_sync_state(tx, task_id)?.expect("received snapshot was written"))
+            save_received(tx, task_id, expected_version, snapshot, bindings, false)
         })
     }
+
+    /// Explicit retargeting changes only selected local base refs, and commits
+    /// them with a newly pinned snapshot. All other placement remains fixed.
+    pub(crate) fn save_review_retargeted_snapshot(
+        &self,
+        task_id: &str,
+        expected_version: u64,
+        snapshot: ReviewSnapshot,
+        bindings: &[ReviewBranchBinding],
+    ) -> Result<Review, StoreError> {
+        self.in_transaction(|tx| {
+            require_publication(tx, task_id, expected_version)?;
+            save_received(tx, task_id, expected_version, snapshot, bindings, true)
+        })
+    }
+
+    /// The final receiver-ref mutation runs while the checked metadata version
+    /// is fenced against other SQLite writers. The callback cannot use Store.
+    pub(crate) fn with_review_publication_version<T>(
+        &self,
+        task_id: &str,
+        expected_version: u64,
+        publish: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, StoreError> {
+        self.in_transaction(|tx| {
+            require_publication(tx, task_id, expected_version)?;
+            publish().map_err(StoreError::ReviewAction)
+        })
+    }
+}
+
+pub(super) fn require_publication(
+    tx: &Transaction,
+    task_id: &str,
+    expected_version: u64,
+) -> Result<(), StoreError> {
+    let header = require_pull_request(tx, task_id)?;
+    check_version(&header, expected_version)?;
+    if !header
+        .pull_request
+        .as_ref()
+        .expect("PR metadata checked")
+        .status
+        .is_active()
+    {
+        return Err(invalid("publication requires an active PR"));
+    }
+    let running: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM review_merge_intents WHERE task_id = ?1 AND state = 'running')",
+        [task_id], |row| row.get(0),
+    )?;
+    if running {
+        return Err(StoreError::ReviewAction("busy: PR merge is running".into()));
+    }
+    Ok(())
+}
+
+fn save_received(
+    tx: &Transaction,
+    task_id: &str,
+    expected_version: u64,
+    mut snapshot: ReviewSnapshot,
+    bindings: &[ReviewBranchBinding],
+    retarget: bool,
+) -> Result<Review, StoreError> {
+    let mut header = require_pull_request(tx, task_id)?;
+    check_version(&header, expected_version)?;
+    let metadata = header.pull_request.as_ref().expect("PR metadata checked");
+    if !metadata.status.is_active() {
+        return Err(invalid("received snapshots require an active PR"));
+    }
+    let mut previous = load_bindings(tx, task_id)?;
+    if retarget {
+        allow_base_retarget(&mut previous, bindings)?;
+    }
+    validate_received_snapshot(metadata, &previous, bindings, &snapshot)?;
+    if snapshot.id.is_empty() || snapshot_exists(tx, &snapshot.id)? {
+        return Err(StoreError::ReviewSnapshotExists {
+            snapshot_id: snapshot.id.clone(),
+        });
+    }
+    snapshot.number = next_snapshot_number(tx, task_id)?;
+    header.version += 1;
+    header.state = ReviewState::Open;
+    header.completion = None;
+    let metadata = header.pull_request.as_mut().expect("PR metadata checked");
+    metadata.status = PullRequestStatus::Open;
+    metadata.latest_published_snapshot_id = Some(snapshot.id.clone());
+    write_header(tx, &header)?;
+    tx.execute(
+        "INSERT INTO review_snapshots (id, task_id, number, record) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            snapshot.id,
+            task_id,
+            snapshot.number as i64,
+            serde_json::to_string(&snapshot).expect("snapshot serializes")
+        ],
+    )?;
+    for binding in bindings {
+        tx.execute("UPDATE review_branch_bindings SET record = ?3 WHERE task_id = ?1 AND directory_id = ?2", params![task_id, binding.directory_id, serde_json::to_string(binding).expect("binding serializes")])?;
+    }
+    move_received_task(tx, task_id, &snapshot.author)?;
+    Ok(load_sync_state(tx, task_id)?.expect("received snapshot was written"))
+}
+
+fn allow_base_retarget(
+    previous: &mut [ReviewBranchBinding],
+    bindings: &[ReviewBranchBinding],
+) -> Result<(), StoreError> {
+    for binding in previous {
+        let replacement = bindings
+            .iter()
+            .find(|new| new.directory_id == binding.directory_id)
+            .ok_or_else(|| invalid("retarget must preserve Git membership"))?;
+        if !replacement.base_branch_ref.starts_with("refs/heads/")
+            || !git2::Reference::is_valid_name(&replacement.base_branch_ref)
+        {
+            return Err(invalid("retarget needs a literal local base branch"));
+        }
+        binding
+            .base_branch_ref
+            .clone_from(&replacement.base_branch_ref);
+    }
+    Ok(())
 }
 
 fn sync_task_page(
@@ -312,7 +413,7 @@ fn validate_received_directory(
     Ok(())
 }
 
-fn move_received_task(tx: &Transaction, task_id: &str) -> Result<(), StoreError> {
+fn move_received_task(tx: &Transaction, task_id: &str, actor: &Actor) -> Result<(), StoreError> {
     let mut task = require_task(tx, task_id)?;
     if task.status == IN_REVIEW_STATUS {
         return Ok(());
@@ -320,7 +421,7 @@ fn move_received_task(tx: &Transaction, task_id: &str) -> Result<(), StoreError>
     let now = now_rfc3339();
     let event = TaskEvent::new(
         task_id,
-        Actor::Build,
+        actor.clone(),
         TaskEventKind::Moved,
         serde_json::json!({"from": task.status, "to": IN_REVIEW_STATUS}),
         &now,

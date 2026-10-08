@@ -315,6 +315,9 @@ pub struct WorkspaceRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
     pub directories: Vec<WorkspaceDirectoryRow>,
+    /// Active PR owner, or the latest retained terminal PR link (3.15.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_review: Option<crate::reviews::records::ReviewSummary>,
 }
 
 /// A workspace as the list answers it: the row, and the conversation entity

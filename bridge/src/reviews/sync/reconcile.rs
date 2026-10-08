@@ -21,14 +21,24 @@ pub struct SyncResult {
 }
 
 pub fn reconcile(store: &Store, task_id: &str) -> Result<SyncResult, String> {
-    reconcile_with_wait(store, task_id, Duration::from_secs(2))
+    reconcile_as(store, task_id, Actor::Build)
+}
+
+/// Explicit publication records the authenticated caller as snapshot author.
+pub fn reconcile_as(store: &Store, task_id: &str, actor: Actor) -> Result<SyncResult, String> {
+    reconcile_with_wait(store, task_id, Duration::from_secs(2), &actor)
 }
 
 pub(crate) fn reconcile_background(store: &Store, task_id: &str) -> Result<SyncResult, String> {
-    reconcile_with_wait(store, task_id, Duration::ZERO)
+    reconcile_with_wait(store, task_id, Duration::ZERO, &Actor::Build)
 }
 
-fn reconcile_with_wait(store: &Store, task_id: &str, wait: Duration) -> Result<SyncResult, String> {
+fn reconcile_with_wait(
+    store: &Store,
+    task_id: &str,
+    wait: Duration,
+    actor: &Actor,
+) -> Result<SyncResult, String> {
     let task = store
         .load_tracker_task(task_id)
         .map_err(|e| e.to_string())?
@@ -60,9 +70,45 @@ fn reconcile_with_wait(store: &Store, task_id: &str, wait: Duration) -> Result<S
     };
     review = current;
     result.persisted |= recovered;
+    finish_reconciliation(store, review, &mut journal, result, actor)
+}
+
+/// An explicit push keeps the capture lease until its caller's snapshot is
+/// committed, so the background worker cannot claim publication authorship.
+pub(crate) fn reconcile_held_as(
+    store: &Store,
+    task_id: &str,
+    journal: &mut recovery::CaptureJournal,
+    actor: &Actor,
+) -> Result<SyncResult, String> {
+    let review = store
+        .load_review_sync_state(task_id)
+        .map_err(|error| error.to_string())?
+        .ok_or("review missing")?;
+    let task = store
+        .load_tracker_task(task_id)
+        .map_err(|error| error.to_string())?
+        .ok_or("task missing")?;
+    let result = SyncResult {
+        project_path: task.project_path,
+        task_id: task_id.into(),
+        workspace_id: review.workspace_id.clone(),
+        persisted: false,
+        retry: false,
+    };
+    finish_reconciliation(store, review, journal, result, actor)
+}
+
+fn finish_reconciliation(
+    store: &Store,
+    mut review: Review,
+    journal: &mut recovery::CaptureJournal,
+    mut result: SyncResult,
+    actor: &Actor,
+) -> Result<SyncResult, String> {
     let received = observe_all(&review);
     let capture_error = if active(&review) {
-        update_snapshot(store, &mut review, &mut journal, &received, &mut result)?
+        update_snapshot(store, &mut review, journal, &received, &mut result, actor)?
     } else {
         None
     };
@@ -127,6 +173,7 @@ fn update_snapshot(
     journal: &mut recovery::CaptureJournal,
     received: &[Result<ReceivedCommit, String>],
     result: &mut SyncResult,
+    actor: &Actor,
 ) -> Result<Option<String>, String> {
     let tips: Result<Vec<_>, _> = received.iter().cloned().collect();
     let Ok(tips) = tips else {
@@ -143,7 +190,7 @@ fn update_snapshot(
     if !vector_changed(review, &tips)? {
         return Ok(None);
     }
-    match publish_locked(store, review, &tips, journal) {
+    match publish_locked(store, review, &tips, journal, actor) {
         Ok((saved, cleanup_error)) => {
             *review = saved;
             result.persisted = true;
@@ -222,7 +269,7 @@ fn vector_changed(review: &Review, received: &[ReceivedCommit]) -> Result<bool, 
 fn publish(store: &Store, review: &Review, received: &[ReceivedCommit]) -> Result<Review, String> {
     let mut journal = recovery::CaptureJournal::acquire(&review.task_id, &review.bindings)?;
     journal.recover(store, &review.bindings)?;
-    publish_locked(store, review, received, &mut journal).map(|(saved, _)| saved)
+    publish_locked(store, review, received, &mut journal, &Actor::Build).map(|(saved, _)| saved)
 }
 
 fn publish_locked(
@@ -230,10 +277,14 @@ fn publish_locked(
     review: &Review,
     received: &[ReceivedCommit],
     journal: &mut recovery::CaptureJournal,
+    actor: &Actor,
 ) -> Result<(Review, Option<String>), String> {
     let snapshot_id = uuid::Uuid::new_v4().to_string();
     journal.begin(store, &snapshot_id)?;
-    let captured = capture(review, &snapshot_id, received);
+    let captured = capture(review, &snapshot_id, received).map(|mut snapshot| {
+        snapshot.author = actor.clone();
+        snapshot
+    });
     if captured.is_ok() {
         recovery::checkpoint(&review.task_id, "before-db");
     }

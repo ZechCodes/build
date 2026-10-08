@@ -1,0 +1,539 @@
+{
+  "method": "tasks.review.open",
+  "since": "3.15.0",
+  "params": {
+    "workspace_id": "workspace-1",
+    "request_id": "open-review-1",
+    "title": "Review API and UI changes",
+    "description": "Publish the committed API and UI changes.",
+    "reviewer": {
+      "kind": "project_agent"
+    },
+    "bases": [
+      {
+        "directory_id": "dir-api",
+        "branch": "main"
+      },
+      {
+        "directory_id": "dir-ui",
+        "branch": "main"
+      }
+    ],
+    "excluded_git_directory_ids": [
+      "dir-missing"
+    ]
+  },
+  "result": {
+    "task": {
+      "id": "task-1",
+      "number": 1,
+      "title": "Review API and UI changes",
+      "body": "Publish the committed API and UI changes.",
+      "state": "open",
+      "status": "in_review",
+      "labels": [
+        "bug",
+        "ui"
+      ],
+      "priority": "none",
+      "assignee": {
+        "kind": "project_agent"
+      },
+      "links": {
+        "workspace_ids": [
+          "workspace-1"
+        ],
+        "branches": [
+          "review/1-api",
+          "review/1-ui"
+        ],
+        "commits": [],
+        "conversation_ids": [],
+        "parent_task_id": null
+      },
+      "trackers": [],
+      "identities": {},
+      "attachments": [],
+      "created_by": {
+        "kind": "user"
+      },
+      "created_at": "2026-10-08T17:00:00Z",
+      "updated_at": "2026-10-08T17:00:00Z",
+      "closed_at": null,
+      "project_path": "/sources/project"
+    },
+    "review": {
+      "task_id": "task-1",
+      "workspace_id": "workspace-1",
+      "version": 1,
+      "state": "open",
+      "snapshots": [
+        {
+          "id": "snapshot-1",
+          "number": 1,
+          "created_at": "2026-10-08T17:00:00Z",
+          "author": {
+            "kind": "user"
+          },
+          "directories": [
+            {
+              "id": "dir-api",
+              "source_id": "source-api",
+              "name": "API",
+              "path": "/workspaces/review/api",
+              "source_path": "/sources/api",
+              "is_git": true,
+              "status": "git",
+              "common_git_dir": "/receivers/api.git",
+              "branch": "review/1-api",
+              "base": {
+                "kind": "configured",
+                "name": "main",
+                "oid": "1111111111111111111111111111111111111111"
+              },
+              "head": "2222222222222222222222222222222222222222",
+              "uncommitted_files": 2
+            },
+            {
+              "id": "dir-ui",
+              "source_id": "source-ui",
+              "name": "UI",
+              "path": "/workspaces/review/ui",
+              "source_path": "/sources/ui",
+              "is_git": true,
+              "status": "git",
+              "common_git_dir": "/receivers/ui.git",
+              "branch": "review/1-ui",
+              "base": {
+                "kind": "configured",
+                "name": "main",
+                "oid": "1111111111111111111111111111111111111111"
+              },
+              "head": "2222222222222222222222222222222222222222",
+              "uncommitted_files": 0
+            },
+            {
+              "id": "dir-notes",
+              "source_id": "source-notes",
+              "name": "Notes",
+              "path": "/workspaces/review/notes",
+              "source_path": "/sources/notes",
+              "is_git": false,
+              "status": "not_git"
+            },
+            {
+              "id": "dir-missing",
+              "source_id": "source-missing",
+              "name": "Removed source",
+              "path": "/workspaces/review/missing",
+              "source_path": "/sources/missing",
+              "is_git": true,
+              "status": "unavailable",
+              "reason": "Excluded when opening this review."
+            }
+          ]
+        }
+      ],
+      "completion": null,
+      "actions": [],
+      "destinations": [],
+      "mode": "pull_request",
+      "pull_request": {
+        "status": "open",
+        "creator": {
+          "kind": "user"
+        },
+        "originating_workspace_id": "workspace-1",
+        "latest_published_snapshot_id": "snapshot-1",
+        "directories": [
+          {
+            "directory_id": "dir-api",
+            "source_id": "source-api",
+            "kind": "git"
+          },
+          {
+            "directory_id": "dir-ui",
+            "source_id": "source-ui",
+            "kind": "git"
+          },
+          {
+            "directory_id": "dir-notes",
+            "source_id": "source-notes",
+            "kind": "live"
+          },
+          {
+            "directory_id": "dir-missing",
+            "source_id": "source-missing",
+            "kind": "excluded",
+            "reason": "Excluded when opening this review."
+          }
+        ]
+      },
+      "bindings": [
+        {
+          "directory_id": "dir-api",
+          "source_id": "source-api",
+          "repository_id": "repository-api",
+          "working_repository": "/workspaces/review/api",
+          "source_repository": "/sources/api",
+          "initial_head": "2222222222222222222222222222222222222222",
+          "original_branch_ref": "refs/heads/build/work",
+          "dedicated_branch_ref": "refs/heads/review/1-api",
+          "base_branch_ref": "refs/heads/main",
+          "receiving_repository": "/receivers/api.git",
+          "receiving_ref": "refs/heads/review/1-api",
+          "remote_name": "build-review-api",
+          "last_received_head": "2222222222222222222222222222222222222222",
+          "preparation": "ready",
+          "publication": "published"
+        },
+        {
+          "directory_id": "dir-ui",
+          "source_id": "source-ui",
+          "repository_id": "repository-ui",
+          "working_repository": "/workspaces/review/ui",
+          "source_repository": "/sources/ui",
+          "initial_head": "2222222222222222222222222222222222222222",
+          "original_branch_ref": "refs/heads/build/work",
+          "dedicated_branch_ref": "refs/heads/review/1-ui",
+          "base_branch_ref": "refs/heads/main",
+          "receiving_repository": "/receivers/ui.git",
+          "receiving_ref": "refs/heads/review/1-ui",
+          "remote_name": "build-review-ui",
+          "last_received_head": "2222222222222222222222222222222222222222",
+          "preparation": "ready",
+          "publication": "published"
+        }
+      ]
+    },
+    "opening_state": "published",
+    "reviewer_dispatch": {
+      "state": "delivered"
+    },
+    "push_instructions": [
+      {
+        "directory_id": "dir-api",
+        "remote": "build-review-api",
+        "branch": "review/1-api",
+        "refspec": "HEAD:refs/heads/review/1-api"
+      },
+      {
+        "directory_id": "dir-ui",
+        "remote": "build-review-ui",
+        "branch": "review/1-ui",
+        "refspec": "HEAD:refs/heads/review/1-ui"
+      }
+    ]
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "stale_version",
+    "conflict",
+    "busy",
+    "unavailable",
+    "internal"
+  ],
+  "examples": [
+    {
+      "params": {
+        "workspace_id": "workspace-1",
+        "request_id": "open-review-1",
+        "title": "Review API and UI changes",
+        "description": "Publish the committed API and UI changes.",
+        "reviewer": {
+          "kind": "project_agent"
+        },
+        "bases": [
+          {
+            "directory_id": "dir-api",
+            "branch": "main"
+          },
+          {
+            "directory_id": "dir-ui",
+            "branch": "main"
+          }
+        ],
+        "excluded_git_directory_ids": [
+          "dir-missing"
+        ]
+      },
+      "result": {
+        "task": {
+          "id": "task-1",
+          "number": 1,
+          "title": "Review API and UI changes",
+          "body": "Publish the committed API and UI changes.",
+          "state": "open",
+          "status": "in_review",
+          "labels": [
+            "bug",
+            "ui"
+          ],
+          "priority": "none",
+          "assignee": {
+            "kind": "project_agent"
+          },
+          "links": {
+            "workspace_ids": [
+              "workspace-1"
+            ],
+            "branches": [
+              "review/1-api",
+              "review/1-ui"
+            ],
+            "commits": [],
+            "conversation_ids": [],
+            "parent_task_id": null
+          },
+          "trackers": [],
+          "identities": {},
+          "attachments": [],
+          "created_by": {
+            "kind": "user"
+          },
+          "created_at": "2026-10-08T17:00:00Z",
+          "updated_at": "2026-10-08T17:00:00Z",
+          "closed_at": null,
+          "project_path": "/sources/project"
+        },
+        "review": {
+          "task_id": "task-1",
+          "workspace_id": "workspace-1",
+          "version": 1,
+          "state": "open",
+          "snapshots": [
+            {
+              "id": "snapshot-1",
+              "number": 1,
+              "created_at": "2026-10-08T17:00:00Z",
+              "author": {
+                "kind": "user"
+              },
+              "directories": [
+                {
+                  "id": "dir-api",
+                  "source_id": "source-api",
+                  "name": "API",
+                  "path": "/workspaces/review/api",
+                  "source_path": "/sources/api",
+                  "is_git": true,
+                  "status": "git",
+                  "common_git_dir": "/receivers/api.git",
+                  "branch": "review/1-api",
+                  "base": {
+                    "kind": "configured",
+                    "name": "main",
+                    "oid": "1111111111111111111111111111111111111111"
+                  },
+                  "head": "2222222222222222222222222222222222222222",
+                  "uncommitted_files": 2
+                },
+                {
+                  "id": "dir-ui",
+                  "source_id": "source-ui",
+                  "name": "UI",
+                  "path": "/workspaces/review/ui",
+                  "source_path": "/sources/ui",
+                  "is_git": true,
+                  "status": "git",
+                  "common_git_dir": "/receivers/ui.git",
+                  "branch": "review/1-ui",
+                  "base": {
+                    "kind": "configured",
+                    "name": "main",
+                    "oid": "1111111111111111111111111111111111111111"
+                  },
+                  "head": "2222222222222222222222222222222222222222",
+                  "uncommitted_files": 0
+                },
+                {
+                  "id": "dir-notes",
+                  "source_id": "source-notes",
+                  "name": "Notes",
+                  "path": "/workspaces/review/notes",
+                  "source_path": "/sources/notes",
+                  "is_git": false,
+                  "status": "not_git"
+                },
+                {
+                  "id": "dir-missing",
+                  "source_id": "source-missing",
+                  "name": "Removed source",
+                  "path": "/workspaces/review/missing",
+                  "source_path": "/sources/missing",
+                  "is_git": true,
+                  "status": "unavailable",
+                  "reason": "Excluded when opening this review."
+                }
+              ]
+            }
+          ],
+          "completion": null,
+          "actions": [],
+          "destinations": [],
+          "mode": "pull_request",
+          "pull_request": {
+            "status": "open",
+            "creator": {
+              "kind": "user"
+            },
+            "originating_workspace_id": "workspace-1",
+            "latest_published_snapshot_id": "snapshot-1",
+            "directories": [
+              {
+                "directory_id": "dir-api",
+                "source_id": "source-api",
+                "kind": "git"
+              },
+              {
+                "directory_id": "dir-ui",
+                "source_id": "source-ui",
+                "kind": "git"
+              },
+              {
+                "directory_id": "dir-notes",
+                "source_id": "source-notes",
+                "kind": "live"
+              },
+              {
+                "directory_id": "dir-missing",
+                "source_id": "source-missing",
+                "kind": "excluded",
+                "reason": "Excluded when opening this review."
+              }
+            ]
+          },
+          "bindings": [
+            {
+              "directory_id": "dir-api",
+              "source_id": "source-api",
+              "repository_id": "repository-api",
+              "working_repository": "/workspaces/review/api",
+              "source_repository": "/sources/api",
+              "initial_head": "2222222222222222222222222222222222222222",
+              "original_branch_ref": "refs/heads/build/work",
+              "dedicated_branch_ref": "refs/heads/review/1-api",
+              "base_branch_ref": "refs/heads/main",
+              "receiving_repository": "/receivers/api.git",
+              "receiving_ref": "refs/heads/review/1-api",
+              "remote_name": "build-review-api",
+              "last_received_head": "2222222222222222222222222222222222222222",
+              "preparation": "ready",
+              "publication": "published"
+            },
+            {
+              "directory_id": "dir-ui",
+              "source_id": "source-ui",
+              "repository_id": "repository-ui",
+              "working_repository": "/workspaces/review/ui",
+              "source_repository": "/sources/ui",
+              "initial_head": "2222222222222222222222222222222222222222",
+              "original_branch_ref": "refs/heads/build/work",
+              "dedicated_branch_ref": "refs/heads/review/1-ui",
+              "base_branch_ref": "refs/heads/main",
+              "receiving_repository": "/receivers/ui.git",
+              "receiving_ref": "refs/heads/review/1-ui",
+              "remote_name": "build-review-ui",
+              "last_received_head": "2222222222222222222222222222222222222222",
+              "preparation": "ready",
+              "publication": "published"
+            }
+          ]
+        },
+        "opening_state": "published",
+        "reviewer_dispatch": {
+          "state": "failed",
+          "error": "Reviewer session unavailable; opening remains published."
+        },
+        "push_instructions": [
+          {
+            "directory_id": "dir-api",
+            "remote": "build-review-api",
+            "branch": "review/1-api",
+            "refspec": "HEAD:refs/heads/review/1-api"
+          },
+          {
+            "directory_id": "dir-ui",
+            "remote": "build-review-ui",
+            "branch": "review/1-ui",
+            "refspec": "HEAD:refs/heads/review/1-ui"
+          }
+        ]
+      }
+    }
+  ],
+  "pull_requests": {
+    "since": "3.15.0",
+    "capability": "tasks.review.pullRequests",
+    "note": "Open reserves one task identity per project/request_id; retry the same opening explicitly to recover preparation or read its published result. Reviewer delivery failure does not unpublish the PR."
+  },
+  "refusals": [
+    {
+      "params": {
+        "workspace_id": "workspace-1",
+        "request_id": "open-review-1",
+        "title": "Review API and UI changes",
+        "description": "Publish the committed API and UI changes.",
+        "reviewer": {
+          "kind": "project_agent"
+        },
+        "bases": [
+          {
+            "directory_id": "dir-api",
+            "branch": "main"
+          },
+          {
+            "directory_id": "dir-ui",
+            "branch": "main"
+          }
+        ],
+        "excluded_git_directory_ids": [
+          "dir-missing"
+        ]
+      },
+      "reply": {
+        "id": 405,
+        "ok": false,
+        "error": "Workspace already belongs to an active PR.",
+        "error_code": "conflict",
+        "retryable": false,
+        "details": {
+          "reason": "Workspace already belongs to an active PR.",
+          "recovery": "Use the linked review task, or close it before opening another review."
+        }
+      }
+    },
+    {
+      "note": "A dedicated branch collision in a workspace with one Git directory does not adopt or overwrite that branch.",
+      "params": {
+        "workspace_id": "workspace-1",
+        "request_id": "open-review-1",
+        "title": "Review API and UI changes",
+        "description": "Publish the committed API and UI changes.",
+        "reviewer": {
+          "kind": "project_agent"
+        },
+        "bases": [
+          {
+            "directory_id": "dir-api",
+            "branch": "main"
+          }
+        ]
+      },
+      "reply": {
+        "id": 405,
+        "ok": false,
+        "error": "dedicated review branch already exists for task: task-1",
+        "error_code": "conflict",
+        "retryable": false,
+        "details": {
+          "reason": "branch_collision",
+          "workspace_id": "workspace-1",
+          "directory_id": "dir-api",
+          "recovery": "Restore the selected workspace and source placement, then retry the same request_id to resume or read its published result."
+        }
+      }
+    }
+  ]
+}

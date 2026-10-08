@@ -95,6 +95,102 @@ pub(super) fn publish(binding: &ReviewBranchBinding) -> Result<(), String> {
     )
 }
 
+pub(super) fn fingerprint(
+    repository: &git2::Repository,
+    binding: &ReviewBranchBinding,
+) -> Result<String, String> {
+    let claim = TrackingClaim::for_binding(repository, binding)?;
+    require_claim(&claim)?;
+    validate_tracking_alias(binding, true)?;
+    claim_fingerprint(&claim)
+}
+
+fn claim_fingerprint(claim: &TrackingClaim) -> Result<String, String> {
+    let bytes = serde_json::to_vec(claim).map_err(|error| error.to_string())?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+/// Settle only the durable owned CAS proof while publication's source and
+/// receiver Git leases and metadata version are still fenced.
+pub(super) fn advance(
+    repository: &git2::Repository,
+    binding: &ReviewBranchBinding,
+    packed: &refs::PackedReferenceLease<'_>,
+    fingerprint: &str,
+    expected: Option<&str>,
+    head: &str,
+) -> Result<(), String> {
+    let claim = recovery_claim(repository, binding, fingerprint)?;
+    let head = git2::Oid::from_str(head).map_err(|error| error.to_string())?;
+    let expected = expected
+        .map(git2::Oid::from_str)
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    packed.settle_expected_reference_checked(
+        repository,
+        &claim.tracking_ref,
+        expected,
+        head,
+        |publish| {
+            require_claim(&claim)?;
+            validate_tracking_alias(binding, true)?;
+            publish()
+        },
+    )?;
+    Ok(())
+}
+
+pub(super) fn validate_tip(
+    repository: &git2::Repository,
+    binding: &ReviewBranchBinding,
+    packed: &refs::PackedReferenceLease<'_>,
+    fingerprint: &str,
+    expected: Option<&str>,
+) -> Result<(), String> {
+    let claim = recovery_claim(repository, binding, fingerprint)?;
+    let expected = expected
+        .map(git2::Oid::from_str)
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    packed.validate_expected_reference_checked(repository, &claim.tracking_ref, expected, || {
+        require_claim(&claim)?;
+        validate_tracking_alias(binding, true)
+    })
+}
+
+pub(super) fn matches_tip(
+    repository: &git2::Repository,
+    binding: &ReviewBranchBinding,
+    packed: &refs::PackedReferenceLease<'_>,
+    fingerprint: &str,
+    expected: &str,
+) -> Result<bool, String> {
+    let claim = recovery_claim(repository, binding, fingerprint)?;
+    let expected = git2::Oid::from_str(expected).map_err(|error| error.to_string())?;
+    packed.compare_expected_reference_checked(
+        repository,
+        &claim.tracking_ref,
+        Some(expected),
+        || {
+            require_claim(&claim)?;
+            validate_tracking_alias(binding, true)
+        },
+    )
+}
+
+fn recovery_claim(
+    repository: &git2::Repository,
+    binding: &ReviewBranchBinding,
+    fingerprint: &str,
+) -> Result<TrackingClaim, String> {
+    let claim = TrackingClaim::for_binding(repository, binding)?;
+    require_claim(&claim)?;
+    if claim_fingerprint(&claim)? != fingerprint {
+        return Err("review tracking recovery ownership changed".into());
+    }
+    Ok(claim)
+}
+
 pub(super) fn validate_cleanup(binding: &ReviewBranchBinding) -> Result<(), String> {
     let Some(repository) = working_repository(binding)? else {
         return Ok(());

@@ -47,6 +47,35 @@ impl Store {
         load_intent(&self.connection(), project_path, request_id)
     }
 
+    /// Review detail retains every admitted merge, including finished requests,
+    /// so a reconnect can recover its durable request identity and action results.
+    pub fn load_review_merge_intents(
+        &self,
+        task_id: &str,
+    ) -> Result<Vec<ReviewMergeIntent>, StoreError> {
+        let conn = self.connection();
+        let mut statement = conn.prepare(
+            "SELECT project_key, request_id, record FROM review_merge_intents \
+             WHERE task_id = ?1 ORDER BY json_extract(record, '$.created_at'), request_id",
+        )?;
+        let rows = statement.query_map([task_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (project, request, raw) = row?;
+            decode(
+                &raw,
+                "review_merge_intents",
+                &format!("{project}/{request}"),
+            )
+        })
+        .collect()
+    }
+
     /// Store references to durable per-source action results. Saving success
     /// here alone never asserts that the PR lifecycle is Merged.
     pub fn save_review_merge_intent(

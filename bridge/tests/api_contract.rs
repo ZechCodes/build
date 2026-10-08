@@ -199,7 +199,7 @@ fn scoped_uploads_and_directory_creation_have_separate_typed_contracts() {
 #[test]
 fn media_page_features_are_announced_together() {
     let advertised: BTreeSet<&str> = capabilities(false).into_iter().collect();
-    assert_eq!(API_VERSION, "3.14.0");
+    assert_eq!(API_VERSION, "3.15.0");
     assert!(advertised.contains("thread.attachmentChunks"));
     assert!(advertised.contains("fs.mediaRawPages"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
@@ -318,6 +318,273 @@ fn review_snapshots_and_selected_git_actions_have_separate_capabilities() {
         blob["result"]["range"]["version"].as_str().unwrap().len(),
         40
     );
+}
+
+#[test]
+fn pull_requests_announce_their_new_mutations_without_retiring_snapshot_reviews() {
+    let advertised = capabilities(false);
+    assert_eq!(API_VERSION, "3.15.0");
+    assert!(advertised.contains(&"tasks.review.pullRequests"));
+    assert!(!advertised.contains(&"tasks.pullRequests"));
+    for verb in [
+        "open", "push", "update", "merge", "close", "reopen", "refresh",
+    ] {
+        let method = format!("tasks.review.{verb}");
+        assert!(
+            advertised.contains(&method.as_str()),
+            "{method}: not announced"
+        );
+        let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
+        assert_eq!(fixture["since"], "3.15.0");
+    }
+    for verb in ["snapshot", "get", "diff", "act", "complete"] {
+        let method = format!("tasks.review.{verb}");
+        assert!(advertised.contains(&method.as_str()), "{method}: retired");
+    }
+}
+
+#[test]
+fn pull_request_contracts_refuse_caller_identity_and_paths_at_every_selection() {
+    for verb in [
+        "open", "push", "update", "merge", "close", "reopen", "refresh",
+    ] {
+        let method = format!("tasks.review.{verb}");
+        let (_, handler) = v1::methods()
+            .iter()
+            .find(|(name, _)| *name == method)
+            .unwrap();
+        let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
+        for field in [
+            "source_path",
+            "repo_path",
+            "project_path",
+            "actor",
+            "agent_id",
+        ] {
+            let mut injected = fixture["params"].clone();
+            injected[field] = serde_json::json!("/tmp/forged");
+            assert!(
+                handler.parse_params(&injected).is_err(),
+                "{method}: accepted {field}"
+            );
+        }
+        for selection in ["sources", "bases"] {
+            if fixture["params"][selection].is_array() {
+                for field in ["path", "repository_id", "actor"] {
+                    let mut injected = fixture["params"].clone();
+                    injected[selection][0][field] = serde_json::json!("/tmp/forged");
+                    assert!(
+                        handler.parse_params(&injected).is_err(),
+                        "{method}: accepted {selection}.{field}"
+                    );
+                }
+            }
+        }
+        if fixture["params"].get("expected_version").is_some() {
+            let mut invalid = fixture["params"].clone();
+            invalid["expected_version"] = serde_json::json!(-1);
+            assert!(
+                handler.parse_params(&invalid).is_err(),
+                "{method}: negative version"
+            );
+        }
+    }
+}
+
+#[test]
+fn pull_request_fixtures_keep_sync_health_and_partial_git_results_visible() {
+    let get = read_json(&fixtures_root().join("v1/tasks.review.get.json"));
+    assert!(get["result"]["review"].get("mode").is_none());
+    let refresh = read_json(&fixtures_root().join("v1/tasks.review.refresh.json"));
+    assert_eq!(
+        refresh["examples"][0]["result"]["sync"][1]["health"],
+        "unavailable"
+    );
+    assert_eq!(
+        refresh["examples"][1]["result"]["review"]["pull_request"]["status"],
+        "closed"
+    );
+    let push = read_json(&fixtures_root().join("v1/tasks.review.push.json"));
+    assert_eq!(
+        push["examples"][0]["result"]["sources"][0]["status"],
+        "published"
+    );
+    assert_eq!(
+        push["examples"][0]["result"]["sources"][1]["status"],
+        "failed"
+    );
+    assert_eq!(
+        push["examples"][1]["params"]["sources"][0]["force_with_lease"],
+        true
+    );
+    let merge = read_json(&fixtures_root().join("v1/tasks.review.merge.json"));
+    assert_eq!(
+        merge["examples"][0]["result"]["review"]["actions"][0]["status"],
+        "succeeded"
+    );
+    assert_eq!(
+        merge["examples"][0]["result"]["review"]["actions"][1]["status"],
+        "failed"
+    );
+    assert_eq!(
+        merge["examples"][0]["result"]["review"]["actions"][1]["steps"][1],
+        serde_json::json!({
+            "kind":"push","branch":"main","remote":"origin","status":"pending"
+        })
+    );
+    assert_eq!(
+        merge["examples"][1]["result"]["review"]["pull_request"]["status"],
+        "merged"
+    );
+    assert_eq!(
+        merge["examples"][1]["result"]["merge_intents"][0]["state"],
+        "failed"
+    );
+}
+
+#[test]
+fn pull_request_summaries_are_additive_on_task_feed_and_workspace_reads() {
+    for (method, pointer) in [
+        ("tasks.get", "/task/review_summary"),
+        ("tasks.list", "/tasks/0/review_summary"),
+        ("board.list", "/items/0/review_summary"),
+        ("workspace.get", "/active_review"),
+        ("workspace.list", "/workspaces/0/active_review"),
+    ] {
+        let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
+        assert!(
+            fixture["result"].pointer(pointer).is_none(),
+            "{method}: legacy shape changed"
+        );
+        let summary = fixture["examples"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|example| example["result"].pointer(pointer))
+            .unwrap_or_else(|| panic!("{method}: missing PR summary example"));
+        let parsed: build_bridge::reviews::model::ReviewSummary = typed(summary, method);
+        assert_eq!(serde_json::to_value(parsed).unwrap(), *summary);
+    }
+}
+
+#[test]
+fn pull_request_refusals_preserve_structured_details_across_the_deferred_boundary() {
+    for verb in [
+        "open", "push", "update", "merge", "close", "reopen", "refresh",
+    ] {
+        let method = format!("tasks.review.{verb}");
+        let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
+        let refusals = fixture["refusals"].as_array().expect("PR refusal examples");
+        assert!(!refusals.is_empty(), "{method}: no refusal examples");
+        for refusal in refusals {
+            let reply = &refusal["reply"];
+            let encoded = format!(
+                "review_api_error:{}",
+                serde_json::json!({
+                    "code":reply["error_code"], "message":reply["error"], "details":reply["details"]
+                })
+            );
+            let error = build_bridge::api::ApiError::classify(encoded);
+            assert_eq!(
+                error.into_reply(reply["id"].clone()),
+                *reply,
+                "{method}: refusal changed"
+            );
+        }
+    }
+}
+
+#[test]
+fn pull_request_fixtures_require_branch_git_operation_and_merged_refusals() {
+    for (verb, message, code, retryable, details) in [
+        (
+            "open",
+            "dedicated review branch already exists for task: task-1",
+            "conflict",
+            false,
+            serde_json::json!({
+                "reason":"branch_collision","workspace_id":"workspace-1","directory_id":"dir-api",
+                "recovery":"Restore the selected workspace and source placement, then retry the same request_id to resume or read its published result."
+            }),
+        ),
+        (
+            "merge",
+            "A rebase of main is in progress in /sources/api.",
+            "busy",
+            true,
+            serde_json::json!({
+                "reason":"git_operation","task_id":"task-1","snapshot_id":"snapshot-1","directory_id":"dir-api",
+                "recovery":"Read tasks.review.get and retry the saved merge plan after resolving its reported failure."
+            }),
+        ),
+        (
+            "reopen",
+            "Only Closed unmerged PRs can reopen",
+            "conflict",
+            false,
+            serde_json::json!({
+                "reason":"conflict","task_id":"task-1","recovery":"Open a new PR after merge."
+            }),
+        ),
+    ] {
+        let method = format!("tasks.review.{verb}");
+        let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
+        let refusal = fixture["refusals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|refusal| refusal["reply"]["error"] == message)
+            .unwrap_or_else(|| panic!("{method}: missing refusal for {message}"));
+        assert_eq!(
+            refusal["reply"],
+            serde_json::json!({
+                "id":405,"ok":false,"error":message,"error_code":code,"retryable":retryable,"details":details
+            }),
+            "{method}: refusal lost its production error details"
+        );
+        let (_, handler) = v1::methods()
+            .iter()
+            .find(|(name, _)| *name == method)
+            .unwrap();
+        assert!(
+            handler.parse_params(&refusal["params"]).is_ok(),
+            "{method}: invalid refusal params"
+        );
+        if verb == "reopen" {
+            assert_eq!(refusal["review_status"], "merged");
+            assert_eq!(refusal["params"]["expected_version"], 7);
+        }
+    }
+}
+
+#[test]
+fn pull_request_merge_records_git_mid_operation_without_losing_partial_results() {
+    let fixture = read_json(&fixtures_root().join("v1/tasks.review.merge.json"));
+    let message = "A rebase of main is in progress in /sources/ui.";
+    let result = fixture["examples"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|example| &example["result"])
+        .find(|result| result["review"]["actions"][1]["steps"][0]["error"] == message)
+        .expect("merge: missing recorded Git mid-operation example");
+    assert_eq!(result["review"]["pull_request"]["status"], "open");
+    assert_eq!(result["review"]["actions"][0]["status"], "succeeded");
+    assert_eq!(result["review"]["actions"][1]["directory_id"], "dir-ui");
+    assert_eq!(result["review"]["actions"][1]["status"], "failed");
+    assert_eq!(
+        result["review"]["actions"][1]["steps"][0]["status"],
+        "failed"
+    );
+    assert_eq!(
+        result["review"]["actions"][1]["steps"][1],
+        serde_json::json!({
+            "kind":"push","branch":"main","remote":"origin","status":"pending"
+        })
+    );
+    assert_eq!(result["merge_intents"][0]["state"], "failed");
+    let parsed: build_bridge::api::v1::reviews::ReviewResult = typed(result, "merge Git operation");
+    assert_eq!(serde_json::to_value(parsed).unwrap(), *result);
 }
 
 #[test]

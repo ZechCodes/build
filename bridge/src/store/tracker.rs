@@ -400,6 +400,7 @@ impl Store {
             }
             for review in super::reviews::load_reviews_of_project(tx, project_path)? {
                 release(&review)?;
+                super::reviews::clear_tracking_expectations(tx, &review.task_id)?;
             }
             for table in [
                 "tracker_comments",

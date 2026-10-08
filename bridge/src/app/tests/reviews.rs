@@ -4,6 +4,14 @@ use super::project_agent::{added_project, project_agent, workspace};
 use super::tracker::{filed, tracked};
 use super::*;
 
+mod merge_contracts;
+mod opening;
+mod pull_requests;
+#[path = "reviews/pull_requests/reopen_version.rs"]
+mod reopen_version;
+mod summaries;
+mod wire_actions;
+
 fn review_call(state: &mut AppState, method: &str, params: Value) -> Value {
     let answer = state.handle(req(method, params));
     assert_eq!(answer["ok"], true, "{answer}");

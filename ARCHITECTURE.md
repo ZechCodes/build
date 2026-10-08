@@ -258,7 +258,7 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.14.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.15.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
@@ -358,6 +358,11 @@ runtime that starts them.
   3.14.0 adds `workspace.set_locked` (#398), announced by its verb name,
   the Boolean `locked` field on workspace rows, and the nonretryable `locked`
   error code for removals held by the user's workspace lock.
+  3.15.0 publishes `tasks.review.open`, `push`, `update`, `merge`, `close`,
+  `reopen` and `refresh`, under the `tasks.review.` namespace (#405). Each is
+  announced by its verb name; `tasks.review.pullRequests` separately announces PR
+  mode, lifecycle, summaries and sync observations. Legacy Snapshot review
+  verbs retain their contracts and individual capabilities. See Task reviews.
   3.11.0 adds `conversation.reset` (#358) and thread generations on conversation
   digests and responses. Generation-aware requests refuse a cleared thread;
   the reset capability gates the menu, its generation-aware cache handling,
@@ -722,8 +727,39 @@ dim dash there rather than a spinner.
 
 ### Task reviews
 
-PR-style opening is an internal service in `bridge/src/reviews/opening.rs`.
-It uses schema 15's opening journal to reserve a task identity by project and
+PR-style opening is a service in `bridge/src/reviews/opening.rs`, exposed by
+wire 3.15.0's typed RPC and MCP adapters (#405). `api/v1/reviews.rs` owns the
+strict wire selections; `app/tracker/reviews/` resolves project, workspace,
+source and caller identities under the app mutex and drains Git work off it.
+Clients name stable IDs and branches, never repository paths or actors. The
+bridge attributes RPC calls to the user and MCP calls to the authenticated
+agent in that project.
+
+| RPC verb | MCP tool | Contract |
+| --- | --- | --- |
+| `tasks.review.open` | `open_review` | Workspace, request ID, title/description, optional reviewer, per-directory bases and excluded Git IDs. Returns the published task/review, reviewer delivery state and explicit local push instructions. |
+| `tasks.review.push` | `push_review` | Review version and selected directory/head OIDs; explicit force-with-lease also names the expected received head. Returns independent per-directory publication outcomes. |
+| `tasks.review.update` | `update_review_base` | Review version and per-directory base branches. Publishes a fresh snapshot against the updated targets. |
+| `tasks.review.merge` | `merge_review` | Review version, latest snapshot, every included directory's expected target head and optional remote/branch publication. Uses the durable merge service. |
+| `tasks.review.close` | `close_review` | Review version and a short action description. Closes without claiming a merge. |
+| `tasks.review.reopen` | `reopen_review` | Review version. Reopens a Closed PR only when its original workspace and receiving setup remain recoverable. |
+| `tasks.review.refresh` | `refresh_review` | Review version. Explicitly reconciles registered receivers, including observations on retained terminal PRs. |
+
+Review results preserve `{review}` and add `sync` observations and
+`merge_intents` only when populated. Push additionally returns `sources` and
+optional recovery guidance. Task get/list and watched-task feed rows carry an
+optional `review_summary`; workspace get/list carry optional `active_review`,
+including the latest retained terminal link when no active PR remains. No new
+push event or subscription kind is introduced: existing task and workspace
+invalidations make clients refetch. `tasks.review.pullRequests` and each verb have
+separate cached SPA capability flags; no flag is inferred from the wire minor.
+
+Refusals use existing error codes with structured details such as the task,
+directory, expected/current version, reason and recovery action. Partial Git
+results remain successful reply data, so one failed source does not hide another
+source's saved success. Recovery and publication retries require explicit calls.
+
+The opening service uses schema 15's journal to reserve a task identity by project and
 request ID, prepare dedicated branches in a managed workspace, then publish
 the task, PR header and first snapshot in one store transaction. Failed or
 interrupted preparations retain their recovery claim; retry resumes the same
@@ -858,6 +894,12 @@ never reruns that Merge, and can settle saved publication after a newer snapshot
 or closure without changing the newer review lifecycle. Startup recovery never
 replays Git; it finalizes recorded complete integration or preserves incomplete
 or uncertain work for explicit retry, excluding live merge workers.
+
+Explicit merge retries keep the saved completed or partially integrated plan
+and its recorded results. Running or interrupted work also keeps its recovery
+identity. If a failed plan integrated no source and has no uncertain Git work,
+the caller can confirm the current review version to admit a fresh plan after
+the review changes. Successful integration is retained rather than repeated.
 
 Reclaim holds a workspace while a durable merge is running or publication of a
 recorded successful merge tip remains unsettled, even after the PR reaches Done

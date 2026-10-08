@@ -1,7 +1,10 @@
 // Greetings write capabilities once; review surfaces paint this cached fact.
 import { mergeCachedAtomically, readCached } from "./localCache.js";
 
-export const NO_REVIEW_SUPPORT = Object.freeze({ get: false, snapshot: false, diff: false, complete: false, act: false, comments: false });
+export const NO_REVIEW_SUPPORT = Object.freeze({
+  get: false, snapshot: false, diff: false, complete: false, act: false, comments: false,
+  pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false,
+});
 export const reviewSupportAddress = (deviceId) => ({ deviceId, entityId: "", kind: "task-review-support" });
 
 export function rememberReviewSupport(deviceId, capabilities, current = () => true) {

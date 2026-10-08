@@ -8,10 +8,11 @@ protocol versions; see
 
 ## [0.2.13] - Unreleased
 
-Wire 3.14.0.
+Wire 3.15.0.
 
 ### Added
 
+- PR-style review tasks with dedicated branches and local push synchronization (#405).
 - Internal PR lifecycle and durable merge service: current-snapshot opinions,
   recoverable Closed reopening, guarded merge finalization, interrupted-operation
   recovery and explicit retry of saved publication results (#404).
@@ -30,6 +31,7 @@ Wire 3.14.0.
 
 ### Changed
 
+- Open reviews from Changes or the workspace menu; review lifecycle and workspace retention are explicit (#405).
 - Task comment replies quote their parent's author and excerpt, jump to and
   briefly highlight the full comment on activation, and show reply counts (#411).
 - Files directory actions use recognizable upload and new-folder icons, shown

@@ -427,7 +427,11 @@ impl AppState {
     ///
     /// The same refusal the project-agent handlers raise, in the same words: a
     /// task reaches the agents of its own project and nothing else.
-    fn agent_of_this_project(&self, project_id: &str, agent_id: &str) -> Result<String, String> {
+    pub(in crate::app) fn agent_of_this_project(
+        &self,
+        project_id: &str,
+        agent_id: &str,
+    ) -> Result<String, String> {
         let entity_id = self
             .entity_of_agent(agent_id)
             .ok_or_else(|| format!("unknown agent_id: {agent_id}"))?;
@@ -508,8 +512,20 @@ impl AppState {
         sender: Option<crate::app::AgentSender<'_>>,
     ) -> Result<Delivered, String> {
         let operation_id = format!("op-{}", uuid::Uuid::new_v4());
+        self.hand_over_with_operation(task, entity_id, agent_id, note, &operation_id, sender)
+    }
+
+    fn hand_over_with_operation(
+        &mut self,
+        task: &Task,
+        entity_id: &str,
+        agent_id: &str,
+        note: Option<&str>,
+        operation_id: &str,
+        sender: Option<crate::app::AgentSender<'_>>,
+    ) -> Result<Delivered, String> {
         let posted =
-            self.post_task_to_agent(task, entity_id, agent_id, note, &operation_id, sender)?;
+            self.post_task_to_agent(task, entity_id, agent_id, note, operation_id, sender)?;
         Ok(Delivered {
             // Where the agent is working, when it is working somewhere. All a
             // hand-off is given is a conversation, and a task that recorded
@@ -519,8 +535,84 @@ impl AppState {
             workspace_id: self.workspace_of_conversation(&posted),
             entity_id: posted,
             agent_id: agent_id.to_string(),
-            operation_id,
+            operation_id: operation_id.to_string(),
         })
+    }
+
+    /// Review publication supplies its durable operation ID. Reuse the usual
+    /// task hand-off and assignment bookkeeping without moving its In review card.
+    pub(in crate::app) fn dispatch_review_reviewer(
+        &mut self,
+        project_id: &str,
+        published: &Task,
+        note: &str,
+        operation_id: &str,
+        actor: &Actor,
+        sender: Option<&crate::app::mcp::McpConversationGeneration>,
+    ) -> Result<(), String> {
+        let (_, task) = self.tracker_task(&published.id)?;
+        let timeline = self
+            .tracker_store()?
+            .load_tracker_timeline(&task.id)
+            .stored()?;
+        if timeline.iter().any(|entry| {
+            matches!(entry,
+                crate::tracker::TimelineEntry::Event(event)
+                    if event.kind == TaskEventKind::Dispatched
+                        && event.payload["operation_id"] == operation_id
+            )
+        }) {
+            return Ok(());
+        }
+        if matches!(published.assignee, None | Some(Assignee::User)) {
+            return Ok(());
+        }
+        // Publication survives a creator reset; a new reviewer hand-off must
+        // still belong to the conversation generation that admitted the open.
+        if let Some(sender) = sender {
+            sender.guard(self)?;
+        }
+        let (target, entity_id) = match &published.assignee {
+            None | Some(Assignee::User) => return Ok(()),
+            Some(Assignee::ProjectAgent) => {
+                let conversation =
+                    self.project_ensure_conversation(&json!({"project_id": project_id}))?;
+                (
+                    AssignTarget::ProjectAgent,
+                    conversation["run_id"]
+                        .as_str()
+                        .ok_or("project conversation has no owner")?
+                        .to_owned(),
+                )
+            }
+            Some(Assignee::Agent { agent_id }) => (
+                AssignTarget::Agent {
+                    agent_id: agent_id.clone(),
+                },
+                self.agent_of_this_project(project_id, agent_id)?,
+            ),
+        };
+        let agent_id = match &target {
+            AssignTarget::Agent { agent_id } => agent_id.clone(),
+            _ => self.ensure_primary_agent(&entity_id)?,
+        };
+        let sender = sender.map(|sender| crate::app::AgentSender {
+            entity_id: &sender.entity_id,
+            agent_id: &sender.agent_id,
+        });
+        let delivered = self.hand_over_with_operation(
+            published,
+            &entity_id,
+            &agent_id,
+            Some(note),
+            operation_id,
+            sender,
+        )?;
+        let now = crate::store::now_rfc3339();
+        let mut write = TaskWrite::by(actor.clone(), task);
+        self.settle_assignment(&mut write, &target, &Some(delivered), actor, &now)?;
+        self.commit_task_write(project_id, write, &now)?;
+        Ok(())
     }
 }
 

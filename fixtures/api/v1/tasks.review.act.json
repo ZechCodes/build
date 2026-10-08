@@ -135,5 +135,10 @@
     "conflict",
     "busy",
     "internal"
-  ]
+  ],
+  "pull_requests": {
+    "since": "3.15.0",
+    "capability": "tasks.review.pullRequests",
+    "note": "Snapshot-mode selected Git steps remain supported. PR-mode calls refuse with invalid_params; use tasks.review.push or tasks.review.merge."
+  }
 }

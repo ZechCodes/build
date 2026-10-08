@@ -404,7 +404,14 @@ pub(in crate::app) async fn handle_coding_mcp_frame(
 pub(in crate::app) fn mcp_action_response(result: Result<Value, String>) -> Value {
     match result {
         Ok(result) => json!({ "ok": true, "result": result }),
-        Err(error) => json!({ "ok": false, "error": error }),
+        Err(error) => match crate::api::v1::reviews::errors::decode(&error) {
+            Some(error) => {
+                let mut response = error.into_reply(Value::Null);
+                response.as_object_mut().unwrap().remove("id");
+                response
+            }
+            None => json!({ "ok": false, "error": error }),
+        },
     }
 }
 
@@ -801,5 +808,44 @@ impl AppState {
                 eprintln!("on_agent_done {entity_id}: {error}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod pr_error_tests {
+    use super::*;
+
+    #[test]
+    fn mcp_pr_refusals_decode_without_exposing_the_internal_marker() {
+        for (code, retryable) in [
+            ("stale_version", false),
+            ("busy", true),
+            ("conflict", false),
+        ] {
+            let details = json!({"task_id":"task-1","directory_id":"dir-1","recovery":"Read get_review","reason":code});
+            let error = crate::api::v1::reviews::errors::encode(
+                code,
+                "Review state changed",
+                details.clone(),
+            );
+            let response = mcp_action_response(Err(error));
+            assert_eq!(
+                response,
+                json!({"ok":false,"error":"Review state changed","error_code":code,"retryable":retryable,"details":details})
+            );
+            assert!(!response.to_string().contains("review_api_error:"));
+        }
+    }
+
+    #[test]
+    fn legacy_mcp_errors_and_successes_keep_their_exact_envelopes() {
+        assert_eq!(
+            mcp_action_response(Err("legacy refusal".into())),
+            json!({"ok":false,"error":"legacy refusal"})
+        );
+        assert_eq!(
+            mcp_action_response(Ok(json!({"task_id":"task-1"}))),
+            json!({"ok":true,"result":{"task_id":"task-1"}})
+        );
     }
 }

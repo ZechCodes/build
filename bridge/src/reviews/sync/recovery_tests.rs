@@ -361,7 +361,8 @@ fn explicit_capture_wait_times_out_without_candidate_or_observation_churn() {
     super::capture(&f.opened.review, &id, &received).unwrap();
     let wait = std::time::Duration::from_millis(30);
     let started = std::time::Instant::now();
-    let result = super::reconcile_with_wait(&f.store, f.task_id(), wait);
+    let result =
+        super::reconcile_with_wait(&f.store, f.task_id(), wait, &crate::tracker::Actor::Build);
     assert!(result.unwrap_err().starts_with("busy:"));
     assert!(
         started.elapsed() >= wait,

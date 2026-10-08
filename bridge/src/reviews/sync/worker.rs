@@ -2,7 +2,7 @@ use super::reconcile::{reconcile, SyncResult};
 use super::scheduler::Scheduler;
 use crate::store::Store;
 use crate::watch::metadata::{metadata_roots, MetadataCallback, MetadataWatchers};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
@@ -10,6 +10,9 @@ use std::time::{Duration, Instant};
 
 const PAGE: usize = 64;
 const WORK_PER_TURN: usize = 8;
+// Discovery is paged separately; state loads, opening Git metadata and
+// watcher registration share this per-turn budget.
+const METADATA_PER_TURN: usize = 8;
 const POLL: Duration = Duration::from_secs(30);
 
 type MetadataTasks = BTreeMap<PathBuf, BTreeSet<String>>;
@@ -29,7 +32,15 @@ struct Scan {
     after: Option<String>,
     active: BTreeSet<String>,
     identities: MetadataTasks,
-    repositories: BTreeSet<PathBuf>,
+    repositories: BTreeMap<PathBuf, BTreeSet<PathBuf>>,
+    refreshed: BTreeSet<PathBuf>,
+    pending: VecDeque<MetadataWork>,
+    complete: bool,
+}
+enum MetadataWork {
+    Load(String),
+    Resolve(PathBuf, String),
+    Register(PathBuf),
 }
 impl Worker {
     pub(super) fn new(store: Store, invalidate: Arc<dyn Fn(SyncResult) + Send + Sync>) -> Self {
@@ -81,6 +92,18 @@ impl Worker {
         let Some(mut scan) = self.scanning.take() else {
             return;
         };
+        if scan.pending.is_empty() && !scan.complete && !self.discover_page(&mut scan, now) {
+            self.poll_after = now + POLL;
+            return;
+        }
+        self.scan_metadata(&mut scan);
+        if scan.complete && scan.pending.is_empty() {
+            self.finish_scan(scan, now);
+        } else {
+            self.scanning = Some(scan);
+        }
+    }
+    fn discover_page(&mut self, scan: &mut Scan, now: Instant) -> bool {
         let tasks = match self
             .store
             .list_active_review_sync_tasks(scan.after.as_deref(), PAGE)
@@ -88,49 +111,84 @@ impl Worker {
             Ok(tasks) => tasks,
             Err(error) => {
                 eprintln!("review sync: discover tasks: {error}");
-                self.poll_after = now + POLL;
-                return;
+                return false;
             }
         };
-        let complete = tasks.len() < PAGE;
+        scan.complete = tasks.len() < PAGE;
         for task in tasks {
             scan.after = Some(task.clone());
             scan.active.insert(task.clone());
             self.scheduler.enqueue(task.clone(), now, true);
-            self.scan_metadata(&task, &mut scan);
+            scan.pending.push_back(MetadataWork::Load(task));
         }
-        if complete {
-            self.finish_scan(scan, now);
-        } else {
-            self.scanning = Some(scan);
+        true
+    }
+    fn scan_metadata(&mut self, scan: &mut Scan) {
+        for _ in 0..METADATA_PER_TURN {
+            let Some(work) = scan.pending.pop_front() else {
+                break;
+            };
+            match work {
+                MetadataWork::Load(task) => self.load_metadata(&task, scan),
+                MetadataWork::Resolve(repository, task) => {
+                    self.resolve_metadata(repository, &task, scan);
+                }
+                MetadataWork::Register(root) => {
+                    if let Err(error) = self.watchers.refresh(&root, self.enqueue.clone()) {
+                        eprintln!("review sync: metadata watch: {error}");
+                    }
+                }
+            }
         }
     }
-    fn scan_metadata(&self, task: &str, scan: &mut Scan) {
+    fn load_metadata(&self, task: &str, scan: &mut Scan) {
+        #[cfg(test)]
+        registration_tests::record_load();
         let Ok(Some(review)) = self.store.load_review_sync_state(task) else {
             return;
         };
         for binding in review.bindings {
             for repository in [
-                binding.working_repository,
-                binding.source_repository,
                 binding.receiving_repository,
+                binding.source_repository,
+                binding.working_repository,
             ] {
-                if let Ok(roots) = metadata_roots(&repository) {
-                    for root in roots {
-                        scan.identities.entry(root).or_default().insert(task.into());
-                    }
+                scan.pending
+                    .push_front(MetadataWork::Resolve(repository, task.into()));
+            }
+        }
+    }
+    fn resolve_metadata(&mut self, repository: PathBuf, task: &str, scan: &mut Scan) {
+        let roots = scan
+            .repositories
+            .entry(repository.clone())
+            .or_insert_with(|| match metadata_roots(&repository) {
+                Ok(roots) => roots,
+                Err(error) => {
+                    eprintln!("review sync: metadata watch: {error}");
+                    BTreeSet::new()
                 }
-                scan.repositories.insert(repository);
+            });
+        for root in roots.iter() {
+            // Keep prior routes live while adding discoveries from this scan.
+            self.identities
+                .entry(root.clone())
+                .or_default()
+                .insert(task.into());
+            scan.identities
+                .entry(root.clone())
+                .or_default()
+                .insert(task.into());
+            if scan.refreshed.insert(root.clone()) {
+                scan.pending
+                    .push_front(MetadataWork::Register(root.clone()));
             }
         }
     }
     fn finish_scan(&mut self, scan: Scan, now: Instant) {
         self.scheduler.retain(&scan.active);
+        self.watchers.retain(&scan.refreshed);
         self.identities = scan.identities;
-        let repositories: Vec<_> = scan.repositories.into_iter().collect();
-        for error in self.watchers.reconcile(&repositories, self.enqueue.clone()) {
-            eprintln!("review sync: metadata watch: {error}");
-        }
         self.poll_after = now + POLL;
     }
     fn drain_events(&mut self, now: Instant) {
@@ -195,4 +253,61 @@ mod tests {
         worker.turn_at(&stopped, started + Duration::from_secs(32));
         assert!(invalidations.try_recv().is_err());
     }
+    #[test]
+    fn poll_boundary_preserves_push_burst_debounce_and_publishes_latest_once() {
+        let fixture = Fixture::new();
+        let (sender, invalidations) = mpsc::channel();
+        let mut worker = Worker::new(
+            fixture.store.clone(),
+            Arc::new(move |result| {
+                sender.send(result).unwrap();
+            }),
+        );
+        // Supply explicit task events so the regression is independent of OS
+        // notification delivery and actual Git command timing.
+        let (discarded, empty_events) = mpsc::channel();
+        drop(discarded);
+        worker.events = empty_events;
+        let started = Instant::now();
+        let stopped = AtomicBool::new(false);
+        worker.turn_at(&stopped, started);
+        invalidations.try_recv().unwrap();
+        fixture.commit("boundary-first.txt");
+        fixture.push();
+        worker.scheduler.enqueue(
+            fixture.task_id().into(),
+            started + Duration::from_millis(29_900),
+            false,
+        );
+        worker.turn_at(&stopped, started + Duration::from_secs(30));
+        assert_eq!(
+            fixture.review().snapshots.len(),
+            1,
+            "periodic discovery preserves the event quiet window"
+        );
+        assert!(invalidations.try_recv().is_err());
+        let latest = fixture.commit("boundary-latest.txt");
+        fixture.push();
+        worker.scheduler.enqueue(
+            fixture.task_id().into(),
+            started + Duration::from_millis(30_100),
+            false,
+        );
+        worker.turn_at(&stopped, started + Duration::from_millis(30_599));
+        assert_eq!(fixture.review().snapshots.len(), 1);
+        worker.turn_at(&stopped, started + Duration::from_millis(30_600));
+        let result = invalidations.try_recv().unwrap();
+        assert!(result.persisted);
+        let review = fixture.review();
+        assert_eq!(review.snapshots.len(), 2);
+        assert_eq!(
+            review.snapshots[1].directories[0].head.as_deref(),
+            Some(latest.as_str())
+        );
+        assert!(invalidations.try_recv().is_err());
+    }
 }
+
+#[cfg(test)]
+#[path = "worker/registration_tests.rs"]
+mod registration_tests;

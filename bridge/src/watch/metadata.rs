@@ -16,6 +16,11 @@ pub struct MetadataWatchers {
 }
 
 impl MetadataWatchers {
+    #[cfg(test)]
+    pub(crate) fn identities(&self) -> BTreeSet<PathBuf> {
+        self.running.keys().cloned().collect()
+    }
+
     /// Reconcile off the app lock. Missing repositories or watch failures are
     /// returned for the caller to report while its polling fallback remains live.
     pub fn reconcile(
@@ -31,28 +36,42 @@ impl MetadataWatchers {
                 Err(error) => errors.push(error),
             }
         }
-        self.running.retain(|identity, _| wanted.contains(identity));
+        self.retain(&wanted);
         for identity in wanted {
-            if let Some(watcher) = self.running.get_mut(&identity) {
-                if let Err(error) = register_metadata(watcher, &identity) {
-                    errors.push(error);
-                }
-                continue;
-            }
-            match start(&identity, Arc::clone(&enqueue)) {
-                Ok(watcher) => {
-                    self.running.insert(identity, watcher);
-                }
-                Err(error) => errors.push(error),
+            if let Err(error) = self.refresh(&identity, enqueue.clone()) {
+                errors.push(error);
             }
         }
         errors
+    }
+
+    /// Register or refresh one already-resolved canonical metadata directory.
+    /// Consumers can spread registrations across bounded worker turns.
+    pub fn refresh(
+        &mut self,
+        identity: &Path,
+        enqueue: MetadataCallback,
+    ) -> Result<(), WatchError> {
+        if let Some(watcher) = self.running.get_mut(identity) {
+            return register_metadata(watcher, identity);
+        }
+        let watcher = start(identity, enqueue)?;
+        self.running.insert(identity.into(), watcher);
+        Ok(())
+    }
+
+    /// Release stale directories only after an incremental scan is complete.
+    pub fn retain(&mut self, identities: &BTreeSet<PathBuf>) {
+        self.running
+            .retain(|identity, _| identities.contains(identity));
     }
 }
 
 /// Resolve both linked-worktree Git metadata and its shared common directory.
 /// Bare repositories produce one identity.
 pub fn metadata_roots(repository: &Path) -> Result<BTreeSet<PathBuf>, WatchError> {
+    #[cfg(test)]
+    operations::record_resolution();
     let fail = |message| WatchError::Notify {
         path: repository.display().to_string(),
         message,
@@ -82,12 +101,14 @@ fn start(
 }
 
 /// Private snapshot refs can retain arbitrarily many directories. Only branch
-/// directories carry recursive watches. Re-registering on each reconcile also
+/// directories carry recursive watches. Refreshing on each scan also
 /// recovers a refs/heads directory replaced since the previous scan.
 fn register_metadata(
     watcher: &mut notify::RecommendedWatcher,
     identity: &Path,
 ) -> Result<(), WatchError> {
+    #[cfg(test)]
+    operations::record_registration();
     watcher
         .watch(identity, notify::RecursiveMode::NonRecursive)
         .map_err(|error| watch_error(identity, error))?;
@@ -354,5 +375,25 @@ mod registration_tests {
         std::fs::write(root.join("refs/heads/review"), "branch").unwrap();
         assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), root);
         assert_eq!(kernel_watch_count(&root), 3);
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod operations {
+    use std::cell::Cell;
+
+    thread_local! {
+        static RESOLUTIONS: Cell<usize> = const { Cell::new(0) };
+        static REGISTRATIONS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(super) fn record_resolution() {
+        RESOLUTIONS.set(RESOLUTIONS.get() + 1);
+    }
+    pub(super) fn record_registration() {
+        REGISTRATIONS.set(REGISTRATIONS.get() + 1);
+    }
+    pub(crate) fn counts() -> (usize, usize) {
+        (RESOLUTIONS.get(), REGISTRATIONS.get())
     }
 }

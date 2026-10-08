@@ -12,6 +12,9 @@ Wire 3.14.0.
 
 ### Added
 
+- Internal PR review opening service with recoverable dedicated branches,
+  local receiving repositories, committed snapshots, and reviewer delivery
+  retry (#402).
 - Lock or unlock a workspace from the control beside its name. The persisted
   lock prevents workspace deletion, Done, reclaim, project deletion, and run
   cleanup by users or agents until the user unlocks it. Locked workspaces add

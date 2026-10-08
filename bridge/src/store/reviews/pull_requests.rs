@@ -11,6 +11,20 @@ mod opening;
 mod sync;
 
 impl Store {
+    /// Branch allocation consults durable claims as well as refs on disk: an
+    /// interrupted opening may have reserved its name before creating a ref.
+    pub fn review_branch_owner(
+        &self,
+        repository_id: &str,
+        branch_ref: &str,
+    ) -> Result<Option<String>, StoreError> {
+        self.connection().query_row(
+            "SELECT task_id FROM review_branch_bindings WHERE repository_id = ?1 AND dedicated_ref = ?2",
+            params![repository_id, branch_ref],
+            |row| row.get(0),
+        ).optional().map_err(StoreError::from)
+    }
+
     /// Lightweight projection for task rows, without reading snapshots/actions.
     pub fn load_review_summary(&self, task_id: &str) -> Result<Option<ReviewSummary>, StoreError> {
         Ok(load_header(&self.connection(), task_id)?.and_then(header_summary))

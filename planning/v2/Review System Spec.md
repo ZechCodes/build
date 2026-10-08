@@ -1,5 +1,77 @@
 # Workspace reviews
 
+## Published PR contracts (#405)
+
+Wire **3.15.0** publishes the PR services landed in #401–#404. This section
+describes the implemented PR mode; the earlier Snapshot-mode plan below remains
+the contract for legacy reviews. The code and `ARCHITECTURE.md` remain authoritative.
+
+A PR is an ordinary task with `mode: "pull_request"`, dedicated workspace
+branches and registered local receiving repositories. Opening explicitly selects
+a base for each included Git directory; non-Git directories remain Live and
+unavailable Git directories must be excluded. Committed pushes to the receiver
+publish immutable snapshots without a connected browser. Working files remain
+outside the saved commit tree. Dirty state is counted, never staged by review.
+
+| RPC | MCP | Inputs beyond task/review version |
+| --- | --- | --- |
+| `tasks.review.open` | `open_review` | Workspace ID, request ID, title, description, optional existing reviewer, per-directory bases and excluded Git directory IDs. |
+| `tasks.review.push` | `push_review` | Selected directory IDs and expected working heads; an explicit force-with-lease names the expected received head. |
+| `tasks.review.update` | `update_review_base` | Per-directory base branch selections. |
+| `tasks.review.merge` | `merge_review` | Latest snapshot ID and all included directories' expected base heads, with optional external push destinations. |
+| `tasks.review.close` | `close_review` | A short description of the action taken. |
+| `tasks.review.reopen` | `reopen_review` | No additional selection. |
+| `tasks.review.refresh` | `refresh_review` | No additional selection. |
+
+`open` reserves one identity per project/request ID and returns the published
+task/review, reviewer dispatch state and local push instructions. It can return
+a published review with failed reviewer delivery. Its explicit retry reads or
+recovers that same opening. The other mutations use the current review version;
+stale requests refetch before an explicit new call. Nested selections accept
+only their declared fields; callers cannot supply actor identities, source paths,
+receiving repositories or command arguments. RPC and MCP share trusted identity
+resolution, project scope, Git services and structured error mapping.
+
+The `tasks.pullRequests` capability gates PR mode, summaries and observations;
+each new RPC verb is also independently announced. Existing Snapshot verbs
+`snapshot`, `get`, `diff`, `act` and `complete` remain available with their
+original arrival versions and shapes. PR-mode `act` refuses with `invalid_params`;
+PR-mode completion closes the review without claiming a merge. Git trees/blobs,
+anchored comments and opinion metadata continue through the existing reads and
+task comments.
+
+Only each actor's latest opinion on the current published snapshot contributes:
+any request for changes yields ChangesRequested, otherwise an approval yields
+Approved. Open/Approved map to In review, ChangesRequested to In progress, and
+Merged/Closed to Done. Ordinary movement to Done closes a PR. Reopen is available
+only for Closed, unmerged reviews with the original managed workspace, dedicated
+branches and receiving setup recoverable. It publishes a new snapshot even when
+received heads are unchanged. Closed and Merged workspaces remain retained;
+later explicit refresh records observations without reopening or changing history.
+
+Review reads preserve `{review}` and optionally include per-directory `sync`
+observations with their own revisions and durable `merge_intents`. Push replies
+also include per-directory outcomes. Task get/list and watched-task feed rows
+optionally carry `review_summary`; workspace get/list optionally carry
+`active_review`, retaining the latest terminal link when no active PR remains.
+Existing task/workspace invalidations drive refetches. No new push event or
+subscription kind is required.
+
+Partial results retain successful repository facts. Only proof that every
+reviewed head remains received and integrated into its configured base sets
+Merged. Failed external publication after local integration leaves Merged with
+the failed push visible; an explicit retry publishes the recorded merge tip and
+does not rerun integration. A running merge or unsettled saved publication holds
+workspace reclamation. Startup recovery observes recorded facts and never
+automatically replays Git.
+
+Both contract suites read the same fixtures, including legacy Snapshot examples,
+PR task/workspace summaries, receiver failures, rewritten pushes, partial merges,
+reviewer delivery failure and structured refusals. The previous-minor manifest
+is generated from wire 3.14.0 on main before the bump. These contracts publish the
+backend and agent entry points; subsequent SPA work consumes the cached flags
+and saved results.
+
 ## Owner summary
 
 A review records the committed work in every source directory of a workspace.

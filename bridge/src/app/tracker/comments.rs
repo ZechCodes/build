@@ -13,6 +13,7 @@ pub(super) struct CommentMetadata {
     pub anchor: Option<ReviewCommentAnchor>,
     pub reply_to: Option<String>,
     pub opinion: Option<ReviewOpinion>,
+    pub expected_review_version: Option<u64>,
 }
 
 impl CommentMetadata {
@@ -20,6 +21,7 @@ impl CommentMetadata {
         let anchor: Option<ReviewCommentAnchor> = parse_optional(params, "anchor")?;
         let reply_to: Option<String> = parse_optional(params, "reply_to")?;
         let opinion: Option<ReviewOpinion> = parse_optional(params, "opinion")?;
+        let mut expected_review_version = None;
         if let Some(comment_id) = reply_to.as_deref() {
             if comment_id.trim().is_empty() {
                 return Err("invalid review reply_to: comment id is empty".into());
@@ -65,6 +67,7 @@ impl CommentMetadata {
                 }
             }
             if let Some(opinion) = &opinion {
+                expected_review_version = Some(review.version);
                 if !review
                     .snapshots
                     .iter()
@@ -87,6 +90,7 @@ impl CommentMetadata {
             anchor,
             reply_to,
             opinion,
+            expected_review_version,
         })
     }
 }

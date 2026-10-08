@@ -8,7 +8,7 @@ use crate::tracker::Actor;
 #[path = "observations.rs"]
 mod observations;
 #[path = "recovery.rs"]
-mod recovery;
+pub(crate) mod recovery;
 
 #[derive(Debug)]
 pub struct SyncResult {
@@ -51,11 +51,12 @@ pub fn reconcile(store: &Store, task_id: &str) -> Result<SyncResult, String> {
     };
     review = current;
     result.persisted |= recovered;
-    if !active(&review) {
-        return Ok(result);
-    }
     let received = observe_all(&review);
-    let capture_error = update_snapshot(store, &mut review, &mut journal, &received, &mut result)?;
+    let capture_error = if active(&review) {
+        update_snapshot(store, &mut review, &mut journal, &received, &mut result)?
+    } else {
+        None
+    };
     persist_observations(
         store,
         &review,
@@ -100,7 +101,7 @@ fn preparation_failure(
     mut result: SyncResult,
     error: String,
 ) -> Result<SyncResult, String> {
-    if error.starts_with("busy:") || !active(review) {
+    if error.starts_with("busy:") {
         return Err(error);
     }
     result.retry = true;
@@ -121,6 +122,13 @@ fn update_snapshot(
         result.retry = true;
         return Ok(None);
     };
+    if same_received_heads(review, &tips)?
+        && store
+            .review_merge_holds_snapshot(&review.task_id)
+            .map_err(|error| error.to_string())?
+    {
+        return Ok(None);
+    }
     if !vector_changed(review, &tips)? {
         return Ok(None);
     }
@@ -136,6 +144,17 @@ fn update_snapshot(
             Ok(Some(error))
         }
     }
+}
+
+fn same_received_heads(review: &Review, received: &[ReceivedCommit]) -> Result<bool, String> {
+    let snapshot = latest(review)?;
+    Ok(review.bindings.iter().zip(received).all(|(binding, tip)| {
+        snapshot
+            .directories
+            .iter()
+            .find(|directory| directory.id == binding.directory_id)
+            .is_some_and(|directory| directory.head.as_deref() == Some(&tip.head))
+    }))
 }
 
 fn persist_observations(
@@ -230,7 +249,7 @@ fn publish_locked(
     result.map(|saved| (saved, cleanup_error))
 }
 
-fn capture(
+pub(crate) fn capture(
     review: &Review,
     snapshot_id: &str,
     received: &[ReceivedCommit],

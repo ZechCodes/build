@@ -25,6 +25,13 @@ pub use remote::{
     choose_remote_name, choose_remote_name_avoiding, cleanup_remote, configure_remote,
 };
 
+/// Check the original owned branch routing and effective push destination
+/// without changing Git configuration or publication refs.
+pub(crate) fn validate_bound_remote(binding: &ReviewBranchBinding) -> Result<(), String> {
+    remote::validate_tracking_alias(binding, true)?;
+    remote::validate_push_destination(binding)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum PublicationError {
     #[error("{0}")]

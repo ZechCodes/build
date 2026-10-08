@@ -22,7 +22,7 @@ struct Entry {
     identity: Metadata,
 }
 
-pub(super) struct CaptureJournal {
+pub(crate) struct CaptureJournal {
     directory: File,
     path: PathBuf,
     task_id: String,
@@ -30,7 +30,7 @@ pub(super) struct CaptureJournal {
 }
 
 impl CaptureJournal {
-    pub(super) fn acquire(task_id: &str, bindings: &[ReviewBranchBinding]) -> Result<Self, String> {
+    pub(crate) fn acquire(task_id: &str, bindings: &[ReviewBranchBinding]) -> Result<Self, String> {
         let binding = bindings
             .iter()
             .min_by_key(|binding| &binding.receiving_repository)
@@ -56,7 +56,7 @@ impl CaptureJournal {
         })
     }
 
-    pub(super) fn recover(
+    pub(crate) fn recover(
         &self,
         store: &Store,
         bindings: &[ReviewBranchBinding],
@@ -82,7 +82,7 @@ impl CaptureJournal {
         self.finish_registry(store, bindings, &snapshot_id, entry.as_ref())
     }
 
-    pub(super) fn begin(&mut self, store: &Store, snapshot_id: &str) -> Result<(), String> {
+    pub(crate) fn begin(&mut self, store: &Store, snapshot_id: &str) -> Result<(), String> {
         self.validate_directory()?;
         store
             .register_review_sync_candidate(&self.task_id, snapshot_id)
@@ -105,7 +105,7 @@ impl CaptureJournal {
         Ok(())
     }
 
-    pub(super) fn finish(
+    pub(crate) fn finish(
         &self,
         store: &Store,
         bindings: &[ReviewBranchBinding],

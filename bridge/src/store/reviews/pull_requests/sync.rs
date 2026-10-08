@@ -236,7 +236,7 @@ fn load_sync_state(conn: &Connection, task_id: &str) -> Result<Option<Review>, S
     }))
 }
 
-fn validate_received_snapshot(
+pub(in crate::store::reviews) fn validate_received_snapshot(
     metadata: &PullRequestMetadata,
     previous: &[ReviewBranchBinding],
     bindings: &[ReviewBranchBinding],

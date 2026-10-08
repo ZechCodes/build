@@ -67,6 +67,7 @@ pub(in crate::app) struct TaskWrite {
     /// the whole feature rests on. An argument every caller had to remember to
     /// keep in step would be one a caller could get wrong.
     pub(in crate::app) actor: Actor,
+    expected_review_version: Option<u64>,
 }
 
 impl TaskWrite {
@@ -77,6 +78,7 @@ impl TaskWrite {
             comments: Vec::new(),
             events: Vec::new(),
             actor,
+            expected_review_version: None,
         }
     }
 
@@ -225,8 +227,8 @@ impl AppState {
         let done_at = crate::tracker::done_at_from_timeline(&task, timeline);
         if task.done_at.is_none() && done_at.is_some() {
             task.done_at = done_at;
-            self.tracker_store()?
-                .save_tracker_task_activity(&task, &[], &[])
+            task = self.tracker_store()?
+                .backfill_tracker_task(&task)
                 .stored()?;
         }
         Ok(task)
@@ -339,6 +341,7 @@ impl AppState {
             author_context: None,
         };
         let mut write = TaskWrite::by(Actor::User, task);
+        write.expected_review_version = metadata.expected_review_version;
         write.comments.push(comment.clone());
         // Saying something on a task is caring about it, so the user watches
         // it from here on. Folded into this write rather than done after it:
@@ -410,11 +413,6 @@ impl AppState {
         mut write: TaskWrite,
         now: &str,
     ) -> Result<Value, String> {
-        let moves_to_done = write.events.iter().any(|event| {
-            event.kind == TaskEventKind::Moved
-                && event.payload.get("to").and_then(Value::as_str)
-                    == Some(crate::tracker::DONE_STATUS)
-        });
         write.task.updated_at = now.to_string();
         let mut timeline = self
             .tracker_store()?
@@ -436,26 +434,13 @@ impl AppState {
                 .collect::<Vec<_>>(),
         );
         self.capture_task_identities(&mut write.task, &timeline);
-        if moves_to_done {
-            let completed = self
-                .tracker_store()?
-                .complete_review_with_task_activity(
-                    &write.task,
-                    &write.comments,
-                    &write.events,
-                    &write.actor,
-                    now,
-                )
-                .stored()?;
-            if let Some(completed) = completed {
-                timeline.push(crate::tracker::TimelineEntry::Event(completed.clone()));
-                write.events.push(completed);
-            }
-        } else {
-            self.tracker_store()?
-                .save_tracker_task_activity(&write.task, &write.comments, &write.events)
-                .stored()?;
-        }
+        let (task, additional) = self.tracker_store()?.save_review_task_activity(
+            &write.task, &write.comments, &write.events, &write.actor,
+            write.expected_review_version, now,
+        ).stored()?;
+        write.task = task;
+        timeline.extend(additional.iter().cloned().map(crate::tracker::TimelineEntry::Event));
+        write.events.extend(additional);
         self.publish_task_write(project_id, &write);
         let task = self.task_with_read_identities(write.task, &timeline, &StoredRosters::default());
         Ok(json!({ "task": task_json(project_id, &task) }))

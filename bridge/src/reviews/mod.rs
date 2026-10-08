@@ -3,6 +3,7 @@
 pub mod actions;
 pub mod capture;
 pub mod git_actions;
+pub mod lifecycle;
 pub mod model;
 pub mod merge;
 pub mod opening;

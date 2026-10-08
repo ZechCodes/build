@@ -4,6 +4,8 @@ use crate::reviews::records::ReviewState;
 use crate::tracker::{Actor, Task};
 use std::collections::BTreeMap;
 
+mod lifecycle;
+
 const NOW: &str = "2026-10-08T00:00:00Z";
 
 fn request(workspace: &str) -> ReviewOpeningRequest {
@@ -922,10 +924,11 @@ fn received_snapshot_preserves_snapshot_scoped_opinions_and_resets_approval() {
     store
         .save_tracker_task_activity(&task, std::slice::from_ref(&opinion), &[])
         .unwrap();
-    store.connection().execute("UPDATE reviews SET record = json_set(record, '$.pull_request.status', 'approved') WHERE task_id = ?1", [&review.task_id]).unwrap();
+    let approved = store.load_review(&review.task_id).unwrap().unwrap();
+    assert_eq!(approved.pull_request.as_ref().unwrap().status, PullRequestStatus::Approved);
     let (next, bindings) = received_snapshot();
     let saved = store
-        .save_review_received_snapshot(&review.task_id, 1, next, &bindings)
+        .save_review_received_snapshot(&review.task_id, approved.version, next, &bindings)
         .unwrap();
     assert_eq!(saved.pull_request.unwrap().status, PullRequestStatus::Open);
     assert_eq!(

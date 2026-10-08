@@ -9,6 +9,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 mod merge;
 mod opening;
 mod sync;
+pub(super) use sync::validate_received_snapshot;
 
 impl Store {
     /// Branch allocation consults durable claims as well as refs on disk: an
@@ -168,7 +169,10 @@ fn binding_identity(binding: &ReviewBranchBinding) -> ReviewBranchBinding {
     identity
 }
 
-fn require_pull_request(conn: &Connection, task_id: &str) -> Result<ReviewHeader, StoreError> {
+pub(super) fn require_pull_request(
+    conn: &Connection,
+    task_id: &str,
+) -> Result<ReviewHeader, StoreError> {
     let header = load_header(conn, task_id)?.ok_or_else(|| StoreError::ReviewNotFound {
         task_id: task_id.into(),
     })?;

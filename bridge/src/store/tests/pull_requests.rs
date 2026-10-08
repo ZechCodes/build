@@ -725,6 +725,46 @@ fn received_snapshot() -> (ReviewSnapshot, Vec<ReviewBranchBinding>) {
     (next, vec![next_binding])
 }
 
+fn assert_received_publication(
+    store: &Store,
+    review: &crate::reviews::records::Review,
+    saved: &crate::reviews::records::Review,
+    bindings: &[ReviewBranchBinding],
+) {
+    assert_eq!(saved.version, 2);
+    assert_eq!(saved.snapshots.len(), 1);
+    assert_eq!(saved.snapshots[0].number, 2);
+    let history = store.load_review(&review.task_id).unwrap().unwrap();
+    assert_eq!(history.snapshots.len(), 2);
+    assert_eq!(history.snapshots[0], review.snapshots[0]);
+    assert_eq!(saved.bindings, bindings);
+    assert_eq!(
+        saved
+            .pull_request
+            .as_ref()
+            .unwrap()
+            .latest_published_snapshot_id,
+        Some("snapshot-received".into())
+    );
+}
+
+fn assert_received_move(store: &Store, task_id: &str) {
+    assert_eq!(
+        store.load_tracker_task(task_id).unwrap().unwrap().status,
+        "in_review"
+    );
+    let timeline = store.load_tracker_timeline(task_id).unwrap();
+    let crate::tracker::TimelineEntry::Event(event) = &timeline[0] else {
+        panic!("receiving a snapshot must append a move event");
+    };
+    assert_eq!(event.actor, Actor::Build);
+    assert_eq!(event.kind, crate::tracker::TaskEventKind::Moved);
+    assert_eq!(
+        event.payload,
+        serde_json::json!({"from": "in_progress", "to": "in_review"})
+    );
+}
+
 #[test]
 fn received_snapshot_appends_atomically_and_moves_task_with_build_activity() {
     let dir = tempfile::tempdir().unwrap();
@@ -742,33 +782,8 @@ fn received_snapshot_appends_atomically_and_moves_task_with_build_activity() {
     let saved = store
         .save_review_received_snapshot(&review.task_id, 1, next.clone(), &bindings)
         .unwrap();
-    assert_eq!(saved.version, 2);
-    assert_eq!(saved.snapshots.len(), 2);
-    assert_eq!(saved.snapshots[0], review.snapshots[0]);
-    assert_eq!(saved.snapshots[1].number, 2);
-    assert_eq!(saved.bindings, bindings);
-    assert_eq!(
-        saved.pull_request.unwrap().latest_published_snapshot_id,
-        Some(next.id.clone())
-    );
-    assert_eq!(
-        store
-            .load_tracker_task(&review.task_id)
-            .unwrap()
-            .unwrap()
-            .status,
-        "in_review"
-    );
-    let timeline = store.load_tracker_timeline(&review.task_id).unwrap();
-    let crate::tracker::TimelineEntry::Event(event) = &timeline[0] else {
-        panic!("receiving a snapshot must append a move event");
-    };
-    assert_eq!(event.actor, Actor::Build);
-    assert_eq!(event.kind, crate::tracker::TaskEventKind::Moved);
-    assert_eq!(
-        event.payload,
-        serde_json::json!({"from": "in_progress", "to": "in_review"})
-    );
+    assert_received_publication(&store, &review, &saved, &bindings);
+    assert_received_move(&store, &review.task_id);
     assert!(matches!(
         store.save_review_received_snapshot(&review.task_id, 1, next.clone(), &bindings),
         Err(StoreError::ReviewVersionConflict { .. })
@@ -917,6 +932,81 @@ fn received_snapshot_preserves_snapshot_scoped_opinions_and_resets_approval() {
         store.load_tracker_timeline(&review.task_id).unwrap(),
         vec![crate::tracker::TimelineEntry::Comment(opinion)]
     );
-    assert_eq!(saved.snapshots[0].id, "snapshot-1");
-    assert_eq!(saved.snapshots[1].id, "snapshot-received");
+    assert_eq!(saved.snapshots.len(), 1);
+    assert_eq!(saved.snapshots[0].id, "snapshot-received");
+    let history = store.load_review(&review.task_id).unwrap().unwrap();
+    assert_eq!(history.snapshots[0].id, "snapshot-1");
+    assert_eq!(history.snapshots[1].id, "snapshot-received");
+}
+
+#[test]
+fn sync_state_and_publication_read_only_latest_snapshot_without_decoding_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let review = publish(&store);
+    let (next, bindings) = received_snapshot();
+    store
+        .save_review_received_snapshot(&review.task_id, 1, next, &bindings)
+        .unwrap();
+    let conn = store.connection();
+    conn.execute(
+        "UPDATE review_snapshots SET record = 'invalid old snapshot' WHERE id = 'snapshot-1'",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO review_actions (id, task_id, status, record) VALUES ('old-action', ?1, 'completed', 'invalid old action')", [&review.task_id]).unwrap();
+    drop(conn);
+    assert!(store.load_review(&review.task_id).is_err());
+    let state = store
+        .load_review_sync_state(&review.task_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.version, 2);
+    assert_eq!(state.snapshots.len(), 1);
+    assert_eq!(state.snapshots[0].id, "snapshot-received");
+    assert!(state.actions.is_empty());
+    assert!(state.destinations.is_empty());
+    let (mut newest, mut bindings) = received_snapshot();
+    newest.id = "snapshot-newest".into();
+    newest.directories[0].head = Some("ghi789".into());
+    bindings[0].last_received_head = Some("ghi789".into());
+    let saved = store
+        .save_review_received_snapshot(&review.task_id, 2, newest, &bindings)
+        .unwrap();
+    assert_eq!(saved.snapshots.len(), 1);
+    assert_eq!(saved.snapshots[0].number, 3);
+    assert_eq!(saved.snapshots[0].id, "snapshot-newest");
+    assert!(saved.actions.is_empty());
+    assert!(store.load_review(&review.task_id).is_err());
+    let count: i64 = store
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM review_snapshots WHERE task_id = ?1",
+            [&review.task_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 3, "historical rows must remain intact");
+}
+
+#[test]
+fn sync_state_ignores_legacy_reviews_and_binds_latest_snapshot_to_task() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let review = publish(&store);
+    assert!(store.load_review_sync_state("missing").unwrap().is_none());
+    let task = store
+        .create_tracker_task(Task::drafted("/repo", "legacy", Actor::User, NOW), &[])
+        .unwrap();
+    let mut legacy = snapshot();
+    legacy.id = "snapshot-other-task".into();
+    store
+        .save_review_snapshot(&task.id, "ws-legacy", 0, legacy)
+        .unwrap();
+    assert!(store.load_review_sync_state(&task.id).unwrap().is_none());
+    store.connection().execute("UPDATE reviews SET record = json_set(record, '$.pull_request.latest_published_snapshot_id', 'snapshot-other-task') WHERE task_id = ?1", [&review.task_id]).unwrap();
+    assert!(
+        store.load_review_sync_state(&review.task_id).is_err(),
+        "another task's snapshot must never be accepted as sync input"
+    );
 }

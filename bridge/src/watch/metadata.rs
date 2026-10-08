@@ -33,7 +33,10 @@ impl MetadataWatchers {
         }
         self.running.retain(|identity, _| wanted.contains(identity));
         for identity in wanted {
-            if self.running.contains_key(&identity) {
+            if let Some(watcher) = self.running.get_mut(&identity) {
+                if let Err(error) = register_metadata(watcher, &identity) {
+                    errors.push(error);
+                }
                 continue;
             }
             match start(&identity, Arc::clone(&enqueue)) {
@@ -74,16 +77,35 @@ fn start(
         }
     })
     .map_err(|error| watch_error(identity, error))?;
+    register_metadata(&mut watcher, identity)?;
+    Ok(watcher)
+}
+
+/// Private snapshot refs can retain arbitrarily many directories. Only branch
+/// directories carry recursive watches. Re-registering on each reconcile also
+/// recovers a refs/heads directory replaced since the previous scan.
+fn register_metadata(
+    watcher: &mut notify::RecommendedWatcher,
+    identity: &Path,
+) -> Result<(), WatchError> {
     watcher
         .watch(identity, notify::RecursiveMode::NonRecursive)
         .map_err(|error| watch_error(identity, error))?;
-    let refs = identity.join("refs");
-    if refs.is_dir() {
-        watcher
-            .watch(&refs, notify::RecursiveMode::Recursive)
-            .map_err(|error| watch_error(identity, error))?;
+    for (relative, mode) in [
+        ("refs", notify::RecursiveMode::NonRecursive),
+        ("refs/heads", notify::RecursiveMode::Recursive),
+    ] {
+        let path = identity.join(relative);
+        if path.is_dir() {
+            watcher
+                .watch(&path, mode)
+                .map_err(|error| watch_error(identity, error))?;
+        } else {
+            // The backend may already have removed a vanished directory.
+            let _ = watcher.unwatch(&path);
+        }
     }
-    Ok(watcher)
+    Ok(())
 }
 
 fn watch_error(path: &Path, error: notify::Error) -> WatchError {
@@ -189,7 +211,7 @@ mod event_tests {
         let mut service = MetadataWatchers::default();
         assert!(service
             .reconcile(
-                &[root.clone()],
+                std::slice::from_ref(&root),
                 Arc::new(move |id| {
                     let _ = tx.send(id);
                 })
@@ -222,5 +244,115 @@ mod event_tests {
         assert!(rx
             .recv_timeout(std::time::Duration::from_millis(250))
             .is_err());
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod registration_tests {
+    use super::*;
+    use std::os::unix::fs::MetadataExt;
+    use std::time::Duration;
+
+    fn directory_inodes(root: &Path, inodes: &mut BTreeSet<u64>) {
+        let metadata = std::fs::symlink_metadata(root).unwrap();
+        if !metadata.is_dir() {
+            return;
+        }
+        inodes.insert(metadata.ino());
+        for entry in std::fs::read_dir(root).unwrap().flatten() {
+            directory_inodes(&entry.path(), inodes);
+        }
+    }
+
+    fn kernel_watch_count(root: &Path) -> usize {
+        let mut owned = BTreeSet::new();
+        directory_inodes(root, &mut owned);
+        std::fs::read_dir("/proc/self/fdinfo")
+            .unwrap()
+            .flatten()
+            .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+            .map(|info| {
+                info.lines()
+                    .filter_map(watched_inode)
+                    .filter(|inode| owned.contains(inode))
+                    .count()
+            })
+            .sum()
+    }
+
+    fn watched_inode(line: &str) -> Option<u64> {
+        if !line.starts_with("inotify wd:") {
+            return None;
+        }
+        let inode = line
+            .split_whitespace()
+            .find_map(|field| field.strip_prefix("ino:"))?;
+        u64::from_str_radix(inode, 16).ok()
+    }
+
+    #[test]
+    fn private_snapshot_directories_do_not_allocate_kernel_watches() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init_bare(dir.path().join("receiver.git")).unwrap();
+        let root = repo.path().canonicalize().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let enqueue: MetadataCallback = Arc::new(move |path| {
+            let _ = tx.send(path);
+        });
+        let mut service = MetadataWatchers::default();
+        assert!(service
+            .reconcile(std::slice::from_ref(&root), enqueue.clone())
+            .is_empty());
+        let initial = kernel_watch_count(&root);
+        for snapshot in 0..128 {
+            let pin = root.join(format!(
+                "refs/build/reviews/task/snapshot-{snapshot}/directory"
+            ));
+            std::fs::create_dir_all(&pin).unwrap();
+            std::fs::write(pin.join("head"), "pin").unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(service
+            .reconcile(std::slice::from_ref(&root), enqueue)
+            .is_empty());
+        assert_eq!(
+            kernel_watch_count(&root),
+            initial,
+            "retained pins consume no watches"
+        );
+        assert_eq!(initial, 3, "metadata root, refs parent, heads tree");
+        assert!(rx.try_recv().is_err(), "pin churn never enqueues a task");
+        std::fs::write(root.join("refs/heads/review"), "branch").unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), root);
+    }
+
+    #[test]
+    fn reconcile_reinstalls_a_replaced_heads_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init_bare(dir.path().join("receiver.git")).unwrap();
+        let root = repo.path().canonicalize().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let enqueue: MetadataCallback = Arc::new(move |path| {
+            let _ = tx.send(path);
+        });
+        let mut service = MetadataWatchers::default();
+        assert!(service
+            .reconcile(std::slice::from_ref(&root), enqueue.clone())
+            .is_empty());
+        std::fs::remove_dir(root.join("refs/heads")).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(service
+            .reconcile(std::slice::from_ref(&root), enqueue.clone())
+            .is_empty());
+        assert_eq!(kernel_watch_count(&root), 2);
+        std::fs::create_dir(root.join("refs/heads")).unwrap();
+        assert!(service
+            .reconcile(std::slice::from_ref(&root), enqueue)
+            .is_empty());
+        std::thread::sleep(Duration::from_millis(100));
+        while rx.try_recv().is_ok() {}
+        std::fs::write(root.join("refs/heads/review"), "branch").unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), root);
+        assert_eq!(kernel_watch_count(&root), 3);
     }
 }

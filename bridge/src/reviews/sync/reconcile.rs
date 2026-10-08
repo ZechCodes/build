@@ -23,7 +23,7 @@ pub fn reconcile(store: &Store, task_id: &str) -> Result<SyncResult, String> {
         .map_err(|e| e.to_string())?
         .ok_or("task missing")?;
     let mut review = store
-        .load_review(task_id)
+        .load_review_sync_state(task_id)
         .map_err(|e| e.to_string())?
         .ok_or("review missing")?;
     let mut result = SyncResult {

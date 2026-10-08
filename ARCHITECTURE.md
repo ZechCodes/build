@@ -753,9 +753,12 @@ Its blocking worker discovers active PRs in pages, watches canonical worktree
 Git directories, shared common directories and bare receivers, and reconciles
 at startup and every 30 seconds. Metadata callbacks enqueue identities only;
 tasks coalesce for 500 ms of quiet with a two-second maximum and retry with
-bounded backoff. Metadata watches are deduplicated across linked worktrees;
-objects, working-file writes, access events and private pin refs do not trigger
-publication. Missing watches are covered by polling.
+bounded backoff. Its store loader reads only bindings and the latest published
+snapshot; retained history and actions add no background polling reads.
+Metadata watches are deduplicated across linked worktrees and recurse only
+through branch refs. Objects, working-file writes, access events and private
+pin trees neither allocate recursive watches nor trigger publication. Missing
+watches are covered by polling.
 
 Reconciliation reads only each registered receiving ref for publication. It
 compares the fixed directory/head/merge-base vector with the latest snapshot,

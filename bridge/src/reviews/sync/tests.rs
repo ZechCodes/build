@@ -314,6 +314,10 @@ fn workspace_and_source_removal_leave_snapshot_pins_readable() {
     assert!(f.sync().retry);
     assert_eq!(f.observation().health, ReviewSyncHealth::Unavailable);
     assert_eq!(f.review().snapshots.len(), 2);
+    git_in(
+        &f.opened.review.bindings[0].receiving_repository,
+        &["gc", "--prune=now"],
+    );
     let result = crate::reviews::read::read(
         &saved,
         &crate::reviews::read::ReviewReadRequest {
@@ -329,4 +333,93 @@ fn workspace_and_source_removal_leave_snapshot_pins_readable() {
         panic!("blob")
     };
     assert_eq!(blob.content_b64, crate::encoding::b64encode(b"saved.txt\n"));
+}
+
+#[test]
+fn received_push_after_workspace_removal_still_captures_from_registered_receiver() {
+    let f = Fixture::new();
+    let clone = f._home.path().join("publisher");
+    git_in(
+        f._home.path(),
+        &["clone", f.source.to_str().unwrap(), clone.to_str().unwrap()],
+    );
+    crate::git_fixture::configure_repo(&clone);
+    std::fs::write(clone.join("after-removal.txt"), "received from clone\n").unwrap();
+    git_in(&clone, &["add", "after-removal.txt"]);
+    git_in(&clone, &["commit", "-m", "from clone"]);
+    let binding = &f.opened.review.bindings[0];
+    std::fs::remove_dir_all(&f.request.workspace.root).unwrap();
+    git_in(
+        &clone,
+        &[
+            "push",
+            binding.receiving_repository.to_str().unwrap(),
+            &format!("HEAD:{}", binding.receiving_ref),
+        ],
+    );
+    let result = f.sync();
+    assert!(result.persisted);
+    assert!(
+        result.retry,
+        "missing working checkout remains visibly unavailable"
+    );
+    let saved = f.review();
+    assert_eq!(saved.snapshots.len(), 2);
+    assert_eq!(
+        saved.snapshots[1].directories[0].head.as_deref(),
+        Some(oid(&clone, "HEAD").as_str())
+    );
+    assert_eq!(f.observation().health, ReviewSyncHealth::Unavailable);
+}
+
+#[test]
+fn unknown_receiver_lock_retains_snapshot_and_releases_only_failed_candidates_pins() {
+    let f = Fixture::new();
+    f.sync();
+    f.commit("blocked.txt");
+    f.push();
+    let binding = &f.opened.review.bindings[0];
+    let before = private_refs(&binding.receiving_repository);
+    let lock = binding
+        .receiving_repository
+        .join(format!("{}.lock", binding.receiving_ref));
+    std::fs::write(&lock, b"unrelated writer").unwrap();
+    assert!(f.sync().retry);
+    assert_eq!(f.observation().health, ReviewSyncHealth::Interrupted);
+    assert_eq!(f.review().snapshots.len(), 1);
+    assert_eq!(private_refs(&binding.receiving_repository), before);
+    assert_eq!(std::fs::read(&lock).unwrap(), b"unrelated writer");
+    std::fs::remove_file(lock).unwrap();
+    f.sync();
+    assert_eq!(f.review().snapshots.len(), 2);
+}
+
+#[test]
+fn stale_publication_writer_releases_its_pins_and_preserves_winning_snapshot() {
+    let f = Fixture::new();
+    let stale = f.review();
+    f.commit("winning.txt");
+    f.push();
+    f.sync();
+    let winning = f.review();
+    let binding = &winning.bindings[0];
+    let before = private_refs(&binding.receiving_repository);
+    let received = publication::observe_received(binding).unwrap();
+    assert!(publish(&f.store, &stale, &[received]).is_err());
+    assert_eq!(f.review(), winning);
+    assert_eq!(private_refs(&binding.receiving_repository), before);
+}
+
+fn private_refs(path: &Path) -> BTreeMap<String, String> {
+    let repo = git2::Repository::open_bare(path).unwrap();
+    repo.references_glob("refs/build/reviews/*")
+        .unwrap()
+        .map(|reference| {
+            let reference = reference.unwrap();
+            (
+                reference.name().unwrap().into(),
+                reference.target().unwrap().to_string(),
+            )
+        })
+        .collect()
 }

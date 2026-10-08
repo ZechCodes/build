@@ -1,12 +1,19 @@
 use super::*;
 use crate::reviews::records::{Review, ReviewState};
 use crate::store::now_rfc3339;
-use crate::store::reviews::{load_review, next_snapshot_number, snapshot_exists, write_header};
+use crate::store::reviews::{next_snapshot_number, snapshot_exists, write_header};
 use crate::store::tracker::{append_activity, write_tracker_task};
 use crate::tracker::{Actor, TaskEvent, TaskEventKind, IN_REVIEW_STATUS};
 use std::collections::{BTreeMap, BTreeSet};
 
 impl Store {
+    /// Sync reads only the pointed-to published snapshot and fixed bindings.
+    /// Historical snapshots, actions and destinations are omitted; legacy
+    /// snapshot-mode reviews have no sync state.
+    pub fn load_review_sync_state(&self, task_id: &str) -> Result<Option<Review>, StoreError> {
+        load_sync_state(&self.connection(), task_id)
+    }
+
     /// Keyset pagination keeps each background sync pass bounded in SQLite.
     pub fn list_active_review_sync_tasks(
         &self,
@@ -29,6 +36,7 @@ impl Store {
 
     /// Append the receiver's pinned snapshot and advance all bindings in one
     /// versioned transaction. Prior snapshots and their review facts survive.
+    /// Returns bounded sync state containing only the latest snapshot.
     pub fn save_review_received_snapshot(
         &self,
         task_id: &str,
@@ -60,9 +68,53 @@ impl Store {
                 tx.execute("UPDATE review_branch_bindings SET record = ?3 WHERE task_id = ?1 AND directory_id = ?2", params![task_id, binding.directory_id, serde_json::to_string(binding).expect("binding serializes")])?;
             }
             move_received_task(tx, task_id)?;
-            Ok(load_review(tx, task_id)?.expect("received snapshot was written"))
+            Ok(load_sync_state(tx, task_id)?.expect("received snapshot was written"))
         })
     }
+}
+
+fn load_sync_state(conn: &Connection, task_id: &str) -> Result<Option<Review>, StoreError> {
+    let Some(header) = load_header(conn, task_id)? else {
+        return Ok(None);
+    };
+    if header.mode != ReviewMode::PullRequest {
+        return Ok(None);
+    }
+    let snapshot_id = header
+        .pull_request
+        .as_ref()
+        .and_then(|metadata| metadata.latest_published_snapshot_id.as_deref())
+        .ok_or_else(|| invalid("PR sync state requires a published snapshot"))?;
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT record FROM review_snapshots WHERE id = ?1 AND task_id = ?2",
+            params![snapshot_id, task_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let snapshot: ReviewSnapshot = decode(
+        &raw.ok_or_else(|| invalid("PR published snapshot is missing from its task"))?,
+        "review_snapshots",
+        snapshot_id,
+    )?;
+    if snapshot.id != snapshot_id {
+        return Err(invalid(
+            "PR snapshot record identity must match its pointer",
+        ));
+    }
+    Ok(Some(Review {
+        task_id: header.task_id,
+        workspace_id: header.workspace_id,
+        version: header.version,
+        state: header.state,
+        completion: header.completion,
+        mode: header.mode,
+        pull_request: header.pull_request,
+        snapshots: vec![snapshot],
+        bindings: load_bindings(conn, task_id)?,
+        actions: Vec::new(),
+        destinations: Vec::new(),
+    }))
 }
 
 fn validate_received_snapshot(

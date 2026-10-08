@@ -34,6 +34,15 @@ fn heads(review: &Review) -> Vec<(String, Option<String>)> {
         .collect()
 }
 
+fn assert_published_heads(
+    review: &Review,
+    snapshots: usize,
+    expected: Vec<(String, Option<String>)>,
+) {
+    assert_eq!(review.snapshots.len(), snapshots);
+    assert_eq!(heads(review), expected);
+}
+
 #[test]
 fn partial_pushes_publish_complete_vectors_and_missing_participant_recovers_latest_received_set() {
     let (home, source) = init_repo();
@@ -78,13 +87,13 @@ fn partial_pushes_publish_complete_vectors_and_missing_participant_recovers_late
     git_in(first_checkout, &["push"]);
     assert!(reconcile(&store, task_id).unwrap().persisted);
     let first_published = store.load_review(task_id).unwrap().unwrap();
-    assert_eq!(first_published.snapshots.len(), 2);
-    assert_eq!(
-        heads(&first_published),
+    assert_published_heads(
+        &first_published,
+        2,
         vec![
             ("directory-1".into(), Some(first.clone())),
-            baseline[1].clone()
-        ]
+            baseline[1].clone(),
+        ],
     );
 
     // A second participant publishes independently. The first participant's
@@ -93,13 +102,13 @@ fn partial_pushes_publish_complete_vectors_and_missing_participant_recovers_late
     git_in(&second_checkout, &["push"]);
     reconcile(&store, task_id).unwrap();
     let both_published = store.load_review(task_id).unwrap().unwrap();
-    assert_eq!(both_published.snapshots.len(), 3);
-    assert_eq!(
-        heads(&both_published),
+    assert_published_heads(
+        &both_published,
+        3,
         vec![
             ("directory-1".into(), Some(first)),
-            ("directory-2".into(), Some(second))
-        ]
+            ("directory-2".into(), Some(second)),
+        ],
     );
     let second_binding = &both_published.bindings[1];
     git_in(
@@ -131,13 +140,13 @@ fn partial_pushes_publish_complete_vectors_and_missing_participant_recovers_late
     git_in(&second_checkout, &["push"]);
     assert!(reconcile(&store, task_id).unwrap().persisted);
     let recovered = store.load_review(task_id).unwrap().unwrap();
-    assert_eq!(recovered.snapshots.len(), 4);
-    assert_eq!(
-        heads(&recovered),
+    assert_published_heads(
+        &recovered,
+        4,
         vec![
             ("directory-1".into(), Some(newest_first)),
-            ("directory-2".into(), Some(newest_second))
-        ]
+            ("directory-2".into(), Some(newest_second)),
+        ],
     );
     assert_eq!(
         &recovered.snapshots[..3],

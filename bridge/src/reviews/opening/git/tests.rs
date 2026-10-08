@@ -1,7 +1,9 @@
+use super::ownership::OWNERSHIP_DIRECTORY;
 use super::*;
 use crate::git_fixture::{git_in, init_repo};
-use crate::reviews::model::ReviewMembershipKind;
-use crate::workspace::{DirectoryStatus, WorkspaceDirectory, WorkspaceStatus};
+use crate::reviews::model::{ReviewMembership, ReviewMembershipKind};
+use crate::workspace::{DirectoryStatus, Workspace, WorkspaceDirectory, WorkspaceStatus};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 fn workspace(repo: &Path) -> Workspace {

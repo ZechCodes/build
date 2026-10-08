@@ -437,3 +437,27 @@ fn newer_matching_native_receiver_and_tracking_clear_obsolete_pending_proof() {
     );
     assert_eq!(fixture.review(), before);
 }
+
+#[test]
+fn newer_matching_native_receiver_and_tracking_allow_the_next_working_head() {
+    let fixture = Fixture::new();
+    unreceived_proof(&fixture);
+    fixture.commit("native-next.txt");
+    fixture.push();
+    fixture.sync();
+    let before = fixture.review();
+    let head = fixture.commit("after-native-next.txt");
+    let result = push(&fixture.store, &push_request(&fixture, head.clone())).unwrap();
+    assert_eq!(result.sources[0].status, PushStatus::Published);
+    assert_eq!(result.sources[0].recovery, None);
+    let (repository, reference) = tracking(&fixture);
+    assert_eq!(
+        repository.refname_to_id(&reference).unwrap().to_string(),
+        head
+    );
+    assert_eq!(
+        registered_received_head(&before.bindings[0]).unwrap(),
+        Some(head)
+    );
+    assert_eq!(fixture.review().snapshots.len(), before.snapshots.len() + 1);
+}

@@ -168,6 +168,30 @@ describe("PR summary version floors", () => {
     expect(tracker.preserveTaskReviewSummary(laterVisible, clear).review_summary.version).toBe(8);
   });
 
+  it.each([
+    { name: "unknown accepted reads", heldOptions: {}, clearOptions: {} },
+    { name: "a known accepted read followed by an unnumbered reply", heldOptions: { readOrder: 40 }, clearOptions: { readOrder: 30 } },
+  ])("retains equal-version PR authority after a delayed unnumbered reply with $name", ({ heldOptions, clearOptions }) => {
+    const at = (minute) => `2026-10-08T20:${String(minute).padStart(2, "0")}:00Z`;
+    const seed = tracker.preserveTaskReviewSummary(null, row(7, { updated_at: at(20) }));
+    const clear = tracker.preserveTaskReviewSummary(seed, withoutSummary({ updated_at: at(30) }), clearOptions);
+    const visible = tracker.preserveTaskReviewSummary(null, row(8, { updated_at: at(40) }), heldOptions);
+    const delayed = tracker.preserveTaskReviewSummary(visible, row(8, { title: "delayed ordinary fields", updated_at: at(10) }));
+    expect(delayed).toMatchObject({ title: "delayed ordinary fields", review_summary: summary(8) });
+    expect(tracker.preserveTaskReviewSummary(clear, delayed)).toHaveProperty("review_summary", summary(8));
+    expect(tracker.preserveTaskReviewSummary(delayed, clear)).toHaveProperty("review_summary", summary(8));
+  });
+
+  it("accepts a genuinely newer unnumbered equal-version observation", () => {
+    const at = (minute) => `2026-10-08T20:${String(minute).padStart(2, "0")}:00Z`;
+    const seed = tracker.preserveTaskReviewSummary(null, row(7, { updated_at: at(20) }));
+    const clear = tracker.preserveTaskReviewSummary(seed, withoutSummary({ updated_at: at(45) }));
+    const visible = tracker.preserveTaskReviewSummary(null, row(8, { updated_at: at(40) }));
+    const refreshed = tracker.preserveTaskReviewSummary(visible, row(8, { updated_at: at(50) }));
+    expect(tracker.preserveTaskReviewSummary(clear, refreshed)).toHaveProperty("review_summary", summary(8));
+    expect(tracker.preserveTaskReviewSummary(refreshed, clear)).toHaveProperty("review_summary", summary(8));
+  });
+
   it.each([[0, 0], [0, 30], [10, 0]])("uses clear timestamps when cached read orders %s and %s are incomparable", (visibleRead, clearRead) => {
     const at = (minute) => `2026-10-08T20:${String(minute).padStart(2, "0")}:00Z`;
     const seed = tracker.preserveTaskReviewSummary(null, row(7, { updated_at: at(20) }));

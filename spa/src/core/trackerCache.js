@@ -245,11 +245,23 @@ function withTaskReviewLineage(held, next, keep, observation) {
   return observedClear ? { ...next, observed_clear: observedClear } : next;
 }
 
+const sameReviewRevision = (held, incoming) => hasSummaryVersion(held) && hasSummaryVersion(incoming)
+  && held.task_id === incoming.task_id && held.version === incoming.version;
+
+function acceptedVisibleReviewObservation(held, next, candidate) {
+  if (held?.cleared || next.cleared || !sameReviewRevision(held?.floor, next.floor)) return candidate;
+  // Equal wire summaries can still bring older ordinary task fields. They
+  // establish a new PR observation only when its own clock is newer.
+  const before = visibleReviewObservation(held);
+  return reviewObservationOrder(before, candidate) > 0 ? candidate : before;
+}
+
 function withVisibleReviewObservation(held, incoming, next, options, keep) {
   // Protective maxima still fence raw older replies. Only an accepted
   // visible summary establishes a new observation for cached comparisons.
   const observation = keep ? visibleReviewObservation(held)
-    : { updated_at: incoming.updated_at ?? null, read_order: Number(options.readOrder) || 0 };
+    : acceptedVisibleReviewObservation(held, next,
+      { updated_at: incoming.updated_at ?? null, read_order: Number(options.readOrder) || 0 });
   const linked = withTaskReviewLineage(held, next, keep, observation);
   if (linked.cleared) return linked;
   return { ...linked, visible_observation: observation };

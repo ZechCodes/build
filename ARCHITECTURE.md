@@ -788,6 +788,63 @@ marker/OID-checked cleanup. Recovery reads one candidate and an indexed snapshot
 existence check, without scanning snapshot history. Project history deletion
 waits for outstanding candidates to recover.
 
+PR lifecycle writes live in `reviews/lifecycle.rs` and
+`store/reviews/lifecycle.rs`. Only each actor's latest opinion on the current
+published snapshot contributes: any request for changes gives ChangesRequested,
+otherwise an approval gives Approved. Older opinions stay in the timeline.
+Open and Approved map to In review, ChangesRequested to In progress, and Merged
+and Closed to Done. Review status, task movement and their activity commit
+together with a review version check. Ordinary board moves remain organization;
+moving to Done or completing an active PR closes it without claiming a merge.
+Tracker closure also closes an active PR and moves it to Done. Both terminal
+statuses retain the older review state's Completed compatibility. Ordinary
+comments and read-time identity/completion backfills preserve concurrent
+lifecycle writes, including Done and archive timestamps.
+
+Only a Closed, unmerged PR can reopen through the lifecycle service. It requires
+the original managed workspace, configured sources, dedicated branches,
+registered receivers and owned push routing to remain recoverable, with no
+competing workspace claim. Successful reopen publishes a fresh snapshot even
+when the received heads are unchanged, resets opinions and restores In review.
+It preserves the user's workspace lock. A Merged PR needs a new PR for further
+review. Explicit reconciliation of a terminal PR updates bounded observations
+of later received work or unavailable receivers without changing its status,
+version or snapshots; ordinary worker discovery still visits active reviews
+and pending captures rather than polling retained terminal history.
+
+`reviews/merge.rs` owns durable PR merge intents, independent of a browser.
+Admission reconciles receiving refs, checks the selected latest snapshot and
+version, and records every included Git binding with its configured base and
+expected target tip. A repeated project/request ID retains the same plan;
+changing that plan is a conflict. Source identities and checkout placement are
+rechecked under source-sync sequencing. Per-step input and results commit before
+the next Git step starts. Multiple directories sharing a repository/base advance
+the expected tip in order; a partial failure retains successes in the other
+repositories. A ref-transaction fence rejects target movement between the
+preflight read and Git's actual update.
+
+Finalization reacquires native receiving and target ref locks, verifies each
+reviewed head is still received and contained in its configured base, and checks
+the current snapshot, review version and intent-owned successful action results
+in the metadata transaction. Only that proof sets Merged and Done. Target-base
+movement caused by the admitted merge is deferred while its current-snapshot
+integration remains unsettled; newer received heads still publish immediately
+and prevent stale finalization. Optional external publication can fail after
+local integration: the PR stays Merged with its failed or interrupted Push
+result visible. Explicit retry publishes the recorded successful merge tip,
+never reruns that Merge, and can settle saved publication after a newer snapshot
+or closure without changing the newer review lifecycle. Startup recovery never
+replays Git; it finalizes recorded complete integration or preserves incomplete
+or uncertain work for explicit retry, excluding live merge workers.
+
+Reclaim holds a workspace while a durable merge is running or publication of a
+recorded successful merge tip remains unsettled, even after the PR reaches Done
+and after restart. Unreadable publication state also holds the workspace and
+its build output. These checks run during measurement and again before removal.
+Settling publication releases only that hold; workspace locks and ordinary
+activity, task and Git eligibility checks still apply. Project history deletion
+refuses running merges before releasing any review pins.
+
 `bridge/src/reviews/` saves one task's workspace review as numbered snapshots.
 `capture.rs` reads every manifest directory, resolves each Git directory's
 committed HEAD and base (explicit override, configured base, upstream, empty
@@ -796,8 +853,9 @@ percent-encode bytes outside ASCII letters, digits, `_` and `-`: directory IDs
 contain `:`, which Git cannot use in ref names. Metadata keeps the original IDs.
 The snapshot ID is unique before any pins are written; `service.rs` saves the
 metadata with a review version check and removes only the losing call's pins
-at their expected OIDs. A snapshot from another workspace replaces the previous
-snapshot history; its old pins are released after the metadata commits. Git
+at their expected OIDs. For Snapshot-mode reviews, a snapshot from another
+workspace replaces the previous snapshot history; its old pins are released
+after the metadata commits. Git
 work runs through the deferred drain off the app
 lock (`app/tracker/reviews.rs`).
 
@@ -823,9 +881,10 @@ as live folders; existing scoped filesystem reads remain their reader.
 Completion records the actor, description, review event and task Done in one
 transaction. A changed column also gets a Moved event and the same post-write
 behavior as an ordinary move. RPC and MCP share a 2,000-byte trimmed UTF-8
-description limit. Task closure and workspace Finish remain separate. Ordinary moves
-to Done complete an open review through the same writer with “Marked done”.
-Snapshots change only review metadata. Agent Complete reports and merged
+description limit. Snapshot-mode task closure and workspace Finish remain
+separate. Ordinary moves to Done complete an open review through the same writer
+with “Marked done”; for PR mode this records Closed. Snapshot-mode captures
+change only review metadata. Agent Complete reports and merged
 workspace Finish skip their old task-movement/closure hooks for review tasks.
 Closing/completing and removing workspaces or projects retain review history
 and refs; replacing its workspace or explicitly deleting task history releases
@@ -833,8 +892,8 @@ the previous pins. MCP exposes
 `snapshot_review`, `get_review`, `read_review`, `act_review`, `complete_review` to coding and
 project agents, authenticated and restricted to their own project.
 
-`reviews/actions.rs` executes selected source steps off the app mutex and
-publishes task invalidations after each persisted result. Targets resolve from
+`reviews/actions.rs` executes Snapshot-mode selected source steps off the app
+mutex and publishes task invalidations after each persisted result. Targets resolve from
 the source ID to the configured source repository. The service holds the same
 configured-path `source_sync::SyncLock` as base sync while Git re-reads target
 placement. `reviews/git_actions.rs` merges the saved head into a clean existing
@@ -851,6 +910,10 @@ retained history adds no Git reads to `tasks.review.get`. Results survive
 completion and workspace replacement; an old result
 still names its original snapshot. None of these operations finishes or removes
 a workspace, stages source files, or requires a review opinion.
+Legacy `tasks.review.act` and `act_review` refuse PR-mode reviews before action
+admission; the RPC returns nonretryable `invalid_params`. PR actions use the
+dedicated merge lifecycle service. Existing Snapshot-mode Merge and Push
+behavior is preserved.
 
 The task page embeds the saved review (`spa/src/core/taskReviewPage.js`), with
 every saved directory and Changes/Files views. Workspace Changes can save a

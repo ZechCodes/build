@@ -16,7 +16,7 @@ pub fn act(store: &Store, request: &ActionRequest, notify: impl Fn()) -> Result<
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("unknown review for task_id: {}", request.params.task_id))?;
     if review.mode == super::model::ReviewMode::PullRequest {
-        return Err("PR actions require the PR merge lifecycle service".into());
+        return Err("PR actions must use the PR merge lifecycle service".into());
     }
     let mut sources = prepare(&review, request)?;
     let rows = sources

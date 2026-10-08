@@ -158,6 +158,26 @@ pub(super) fn validate_tip(
     })
 }
 
+pub(super) fn matches_tip(
+    repository: &git2::Repository,
+    binding: &ReviewBranchBinding,
+    packed: &refs::PackedReferenceLease<'_>,
+    fingerprint: &str,
+    expected: &str,
+) -> Result<bool, String> {
+    let claim = recovery_claim(repository, binding, fingerprint)?;
+    let expected = git2::Oid::from_str(expected).map_err(|error| error.to_string())?;
+    packed.compare_expected_reference_checked(
+        repository,
+        &claim.tracking_ref,
+        Some(expected),
+        || {
+            require_claim(&claim)?;
+            validate_tracking_alias(binding, true)
+        },
+    )
+}
+
 fn recovery_claim(
     repository: &git2::Repository,
     binding: &ReviewBranchBinding,

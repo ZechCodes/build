@@ -54,18 +54,31 @@ impl<'a> PackedReferenceLease<'a> {
         expected: Option<git2::Oid>,
         checkpoint: impl FnOnce() -> Result<(), String>,
     ) -> Result<(), String> {
+        if !self.compare_expected_reference_checked(repository, reference, expected, checkpoint)? {
+            return Err(format!("stale: review tracking lease changed: {reference}"));
+        }
+        Ok(())
+    }
+
+    /// Distinguish a locked readable mismatch from an unavailable comparison.
+    pub(crate) fn compare_expected_reference_checked(
+        &self,
+        repository: &git2::Repository,
+        reference: &str,
+        expected: Option<git2::Oid>,
+        checkpoint: impl FnOnce() -> Result<(), String>,
+    ) -> Result<bool, String> {
         validate_reference(reference)?;
         self.verify(repository)?;
         let directory = repository.commondir();
         let (guard, _) = acquire_git_lock(directory, Path::new(&format!("{reference}.lock")))?;
         guard.verify_owned()?;
-        if reference_target(repository, reference)? != expected {
-            return Err(format!("stale: review tracking lease changed: {reference}"));
-        }
+        let current = reference_target(repository, reference)?;
         read_regular_optional(&directory.join(reference))?;
         checkpoint()?;
         guard.verify_owned()?;
-        self.verify(repository)
+        self.verify(repository)?;
+        Ok(current == expected)
     }
 
     fn update_checked(

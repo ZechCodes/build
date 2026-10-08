@@ -108,15 +108,118 @@ fn native_configured_reference_hook_preserves_nested_routing_args_and_stdin() {
 
 #[test]
 fn plain_configured_command_does_not_become_a_shell_builtin() {
-    let (home, _repository) = init_repo();
-    let path = home.path().join("shim");
-    let script = super::script("exit", "unset GIT_CONFIG_PARAMETERS\n", None).unwrap();
-    super::super::write_hook(&path, &script).unwrap();
-    let result = std::process::Command::new(path).output().unwrap();
-    assert!(
-        !result.status.success(),
-        "plain exit must remain an executable name"
+    let path = plain_script_file().into_temp_path();
+    let other = plain_script_file().into_temp_path();
+    assert_ne!(
+        path.as_os_str(),
+        other.as_os_str(),
+        "each fixture owns a different temporary path"
     );
+    let result = run_plain_script(&path);
+    assert_eq!(result.status.code(), Some(127));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("exit"));
+}
+
+fn run_plain_script(path: &Path) -> std::process::Output {
+    // The fixture's writer is closed before launch, but another pre-exec child
+    // may still hold an inherited writable FD. Read the owned script with its
+    // shebang interpreter instead of asking the kernel to execute that inode.
+    std::process::Command::new("/bin/sh")
+        .arg(path)
+        .output()
+        .unwrap()
+}
+
+fn plain_script_file() -> tempfile::NamedTempFile {
+    use std::io::Write;
+    let mut script_file = tempfile::NamedTempFile::new().unwrap();
+    let script = super::script("exit", "unset GIT_CONFIG_PARAMETERS\n", None).unwrap();
+    script_file.write_all(script.as_bytes()).unwrap();
+    script_file.as_file().sync_all().unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(script_file.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    script_file
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn plain_script_preserves_dispatch_with_an_inherited_writer() {
+    crate::git_fixture::environment::isolated_git_test!();
+    let script_file = plain_script_file();
+    let _inherited_writer = InheritedWriter::hold();
+    // Close our writer. The concurrent pre-exec child still holds its copy.
+    let path = script_file.into_temp_path();
+    let direct = std::process::Command::new(&path).output().unwrap_err();
+    assert_eq!(direct.raw_os_error(), Some(libc::ETXTBSY));
+
+    let result = run_plain_script(&path);
+    assert_eq!(result.status.code(), Some(127));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("exit"));
+}
+
+#[cfg(target_os = "linux")]
+struct InheritedWriter(libc::pid_t);
+
+#[cfg(target_os = "linux")]
+impl InheritedWriter {
+    fn hold() -> Self {
+        use std::os::fd::FromRawFd;
+        let mut ready = [0; 2];
+        // SAFETY: pipe2 receives two writable integer slots.
+        assert_eq!(
+            unsafe { libc::pipe2(ready.as_mut_ptr(), libc::O_CLOEXEC) },
+            0
+        );
+        // SAFETY: the child uses only async-signal-safe libc calls until _exit.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0);
+        if pid == 0 {
+            unsafe {
+                libc::close(ready[0]);
+                libc::write(ready[1], b"x".as_ptr().cast(), 1);
+                libc::close(ready[1]);
+                loop {
+                    libc::pause();
+                }
+            }
+        }
+        let child = Self(pid);
+        // SAFETY: the parent owns both pipe FDs and closes each once.
+        unsafe { libc::close(ready[1]) };
+        let _reader = unsafe { std::fs::File::from_raw_fd(ready[0]) };
+        let mut poll = libc::pollfd {
+            fd: ready[0],
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: poll receives one valid pollfd and a bounded deadline.
+        assert_eq!(unsafe { libc::poll(&mut poll, 1, 2000) }, 1);
+        assert_ne!(poll.revents & libc::POLLIN, 0);
+        child
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for InheritedWriter {
+    fn drop(&mut self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        // SAFETY: this unreaped PID is our own forked child.
+        unsafe { libc::kill(self.0, libc::SIGKILL) };
+        while std::time::Instant::now() < deadline {
+            // SAFETY: waiting on our own child does not access any Rust data.
+            let result = unsafe { libc::waitpid(self.0, std::ptr::null_mut(), libc::WNOHANG) };
+            if result == self.0
+                || (result < 0
+                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD))
+            {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        if !std::thread::panicking() {
+            panic!("inherited-writer child did not reap within its deadline");
+        }
+    }
 }
 
 #[test]

@@ -4,8 +4,11 @@ use super::lifecycle::{invalidates, version};
 use crate::api::v1::reviews::{errors, ReviewMergeParams};
 use crate::app::git::deferred::DeferredGitWork;
 use crate::app::{AppState, DeferredGit, DeferredWork};
+use crate::reviews::actions::{ActionStatus, StepKind, StepStatus};
 use crate::reviews::merge::MergeJob;
-use crate::reviews::model::{ReviewMergePush, ReviewMergeRequest, ReviewMergeSource};
+use crate::reviews::model::{
+    ReviewMergeIntent, ReviewMergePush, ReviewMergeRequest, ReviewMergeSource, ReviewMergeState,
+};
 use crate::reviews::records::Review;
 use crate::store::Store;
 use crate::tracker::Actor;
@@ -59,35 +62,8 @@ impl AppState {
             .sources
             .sort_by(|left, right| left.directory_id.cmp(&right.directory_id));
         let (project_id, task, review) = self.pull_request(&params.task_id)?;
-        let request_id = merge_identity(&params, &actor)?;
         let store = self.tracker_store()?.clone();
-        let existing = store
-            .load_review_merge_intent(&task.project_path, &request_id)
-            .stored()?;
-        let request = if let Some(intent) = existing {
-            if params.expected_version != intent.request.expected_version {
-                version(&review, params.expected_version)?;
-            }
-            intent.request
-        } else {
-            version(&review, params.expected_version)?;
-            if !review
-                .pull_request
-                .as_ref()
-                .expect("PR checked")
-                .status
-                .is_active()
-            {
-                return Err(errors::encode(
-                    "conflict",
-                    "Merge requires an active unmerged PR",
-                    json!({
-                        "task_id":params.task_id,"recovery":"Retry a retained merge plan, or open a new PR after merge."
-                    }),
-                ));
-            }
-            merge_request(&review, &params, actor)?
-        };
+        let (request_id, request) = resolve_plan(&store, &review, &params, actor)?;
         let sources = self.review_action_sources(&project_id, &review);
         let work = MergeWork {
             store,
@@ -110,6 +86,74 @@ impl AppState {
         })));
         Ok(Value::Null)
     }
+}
+
+fn resolve_plan(
+    store: &Store,
+    review: &Review,
+    params: &ReviewMergeParams,
+    actor: Actor,
+) -> Result<(String, ReviewMergeRequest), String> {
+    let identity = merge_identity(params, &actor)?;
+    let prefix = format!("{identity}-");
+    let existing = store
+        .load_review_merge_intents(&params.task_id)
+        .stored()?
+        .into_iter()
+        .filter(|intent| intent.request_id == identity || intent.request_id.starts_with(&prefix))
+        .max_by_key(|intent| intent.request.expected_version);
+    if let Some(intent) = existing {
+        if params.expected_version != intent.request.expected_version {
+            version(review, params.expected_version)?;
+        }
+        if !can_refresh_plan(review, &intent) {
+            return Ok((intent.request_id, intent.request));
+        }
+    }
+    version(review, params.expected_version)?;
+    if !review
+        .pull_request
+        .as_ref()
+        .expect("PR checked")
+        .status
+        .is_active()
+    {
+        return Err(errors::encode(
+            "conflict",
+            "Merge requires an active unmerged PR",
+            json!({
+                "task_id":params.task_id,"recovery":"Retry a retained merge plan, or open a new PR after merge."
+            }),
+        ));
+    }
+    let request_id = format!("{prefix}{}", params.expected_version);
+    Ok((request_id, merge_request(review, params, actor)?))
+}
+
+/// A fresh version may replace a failed plan only before any integration.
+/// Successful and uncertain Git work retains its original recovery identity.
+fn can_refresh_plan(review: &Review, intent: &ReviewMergeIntent) -> bool {
+    if intent.state != ReviewMergeState::Failed
+        || intent
+            .execution_version
+            .unwrap_or(intent.request.expected_version)
+            == review.version
+    {
+        return false;
+    }
+    review
+        .actions
+        .iter()
+        .filter(|action| intent.action_ids.contains(&action.id))
+        .all(|action| {
+            !matches!(
+                action.status,
+                ActionStatus::Running | ActionStatus::Interrupted
+            ) && action.steps.iter().all(|step| {
+                !matches!(step.status, StepStatus::Running | StepStatus::Interrupted)
+                    && (step.kind != StepKind::Merge || step.status != StepStatus::Succeeded)
+            })
+        })
 }
 
 fn merge_identity(params: &ReviewMergeParams, actor: &Actor) -> Result<String, String> {

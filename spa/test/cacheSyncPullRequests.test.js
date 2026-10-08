@@ -211,6 +211,44 @@ it.each(["individual row", "feed copy"])("persists and paints the PR version fro
   } finally { stopPaint(); feed.stopFeed(); }
 });
 
+it.each(["individual row", "feed copy"])("retains a same-version fallback observation from the %s over an older cached clear", async (source) => {
+  await sync.syncDevice(deviceId);
+  const tracker = await import("../src/core/trackerCache.js");
+  const seed = { kind: "tracker_task", task_id: taskId, project_id: projectId, title: "held fields",
+    updated_at: "2026-10-08T20:00:20Z", review_summary: summary };
+  const { review_summary: _summary, ...absent } = seed;
+  const clear = tracker.preserveTaskReviewSummary(seed, { ...absent, updated_at: "2026-10-08T20:00:30Z" });
+  const visible = tracker.preserveTaskReviewSummary(null, {
+    ...seed, updated_at: "2026-10-08T20:00:40Z", review_summary: { ...summary, version: 8 },
+  });
+  const delayed = tracker.preserveTaskReviewSummary(visible, {
+    ...seed, updated_at: "2026-10-08T20:00:10Z", review_summary: { ...summary, version: 8 },
+  });
+  const rowAddress = { deviceId, entityId: taskId, kind: "row" };
+  const feedAddress = { deviceId, entityId: "", kind: "feed" };
+  await cache.writeCached(rowAddress, source === "individual row" ? delayed : clear);
+  await cache.writeCached(feedAddress, { items: [source === "feed copy" ? delayed : clear], projects: [], workspaces: [] });
+  const ownBefore = await cache.readCached(rowAddress);
+  items = [{ ...seed, title: "board fields", updated_at: "2026-10-08T20:00:10Z" }];
+  const stopAfterFeed = cache.subscribeCache(feedAddress, () => { state.context.session = {}; });
+  try { expect(await sync.syncDevice(deviceId)).toBe(false); }
+  finally { stopAfterFeed(); }
+  expect(await cache.readCached(rowAddress)).toEqual(ownBefore);
+  const cached = (await cache.readCached(feedAddress)).value.items[0];
+  expect(cached).toMatchObject({ title: "board fields", review_summary: { ...summary, version: 8 } });
+
+  await cache.writeCached(cache.DEVICES_ADDRESS, [{ id: deviceId }]);
+  feed = await import("../src/core/taskFeed.js");
+  let painted;
+  const stopPaint = feed.subscribeFeed((snapshot) => { painted = snapshot; });
+  try {
+    await feed.startFeed();
+    expect(painted.items.find((row) => row.task_id === taskId)).toMatchObject({
+      title: "board fields", review_summary: { ...summary, version: 8 },
+    });
+  } finally { stopPaint(); feed.stopFeed(); }
+});
+
 it.each([
   { source: "individual row", version: 7, legacy: false, rejectedRefresh: false },
   { source: "feed copy", version: 7, legacy: false, rejectedRefresh: false },

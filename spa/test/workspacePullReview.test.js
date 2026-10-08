@@ -6,7 +6,7 @@ import { wipeUiRecords, readUiRecord } from "../src/core/localUiStore.js";
 import { rememberReviewSupport } from "../src/core/taskReviewSupport.js";
 import { reviewCreateDraftAddress } from "../src/core/taskReviewDrafts.js";
 import { formatReviewSinceNote, pendingReviewText } from "../src/core/workspaceReviewState.js";
-import { writeTaskRecord, taskRecord } from "../src/core/trackerCache.js";
+import { writeTaskRecord, writeTasksRecord, taskRecord } from "../src/core/trackerCache.js";
 import { directoryCacheId } from "../src/core/directoryScope.js";
 import { workspaceScope } from "../src/core/workspaceModel.js";
 import { reviewAddress, writeReviewReply } from "../src/core/taskReviewCache.js";
@@ -42,6 +42,18 @@ it("requires the exact Open capability and PR feature, with no render RPC", asyn
   expect(document.querySelector("#entry").textContent).not.toContain("Open review");
   await enable();
   await vi.waitFor(() => expect(document.querySelector("#entry").textContent).toContain("Open review"));
+  expect(rpc).not.toHaveBeenCalled();
+});
+
+it("keeps pure-folder workspaces on the legacy snapshot form on PR-capable bridges", async () => {
+  await enable();
+  await writeCached(workspaceAddress, [{ ...workspace, directories: [workspace.directories[1]] }]);
+  await writeTasksRecord(scope.deviceId, scope.projectId, { tasks: [{ id: "legacy-task", number: 8, title: "Review live files" }] });
+  const rpc = mount();
+  await vi.waitFor(() => expect(document.querySelector("[data-workspace-review]")).not.toBeNull());
+  expect(document.querySelector("[data-workspace-review]").textContent).toBe("Create snapshot review");
+  document.querySelector("[data-workspace-review]").click();
+  await vi.waitFor(() => expect(document.querySelector("[data-review-task]")).not.toBeNull());
   expect(rpc).not.toHaveBeenCalled();
 });
 

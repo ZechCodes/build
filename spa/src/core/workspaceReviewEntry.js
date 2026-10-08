@@ -81,12 +81,14 @@ function sharedWorkspaceForm(options, open) {
 async function openConfiguredReview(options) {
   const configured = await reviewOptions(options);
   const context = await readWorkspaceReviewContext(options);
-  if (context.support.open) return openReviewCreateForm(configured);
+  if (canOpenPullRequest(context)) return openReviewCreateForm(configured);
   if (context.held?.review?.mode !== "pull_request" && context.support.get && context.support.snapshot) return openReviewTaskPicker(configured);
   return null;
 }
 
 export const openWorkspaceReview = (options) => sharedWorkspaceForm(options, openConfiguredReview);
+const canOpenPullRequest = (context) => context.support.open &&
+  (Boolean(context.createDraft?.submitted) || context.sources.some(({ directory }) => directory.is_git !== false));
 
 const statusLabels = { open: "Open", approved: "Approved", changes_requested: "Changes requested", merged: "Merged", closed: "Closed" };
 const reviewRoute = (options, taskId) => ({ name: "trackerTask", deviceId: options.deviceId, projectId: options.projectId, taskId });
@@ -147,9 +149,9 @@ const resumeOpeningHtml = (draft) => draft?.submitted
 const dispatchFailureHtml = (held) => held?.reviewer_dispatch?.state === "failed"
   ? `<p class="warn">${esc(held.reviewer_dispatch.error)}</p>` : "";
 
-const availableEntryAction = (support) => {
-  if (support.open) return "Open review";
-  return support.get && support.snapshot ? "Create snapshot review" : "";
+const availableEntryAction = (context) => {
+  if (canOpenPullRequest(context)) return "Open review";
+  return context.support.get && context.support.snapshot ? "Create snapshot review" : "";
 };
 
 function entryHtml(context, options) {
@@ -157,7 +159,7 @@ function entryHtml(context, options) {
   const taskId = review?.task_id || summary?.task_id;
   if (taskId && review?.mode === "pull_request") return linkedReviewHtml(context, options, taskId);
   if (summary.task_id) return linkedReviewHtml(context, options, taskId);
-  const action = availableEntryAction(context.support);
+  const action = availableEntryAction(context);
   return `<div class="workspace-review-heading"><h2>Changes</h2>${action ? `<button type="button" class="btn" data-workspace-review>${action}</button>` : ""}</div>`;
 }
 

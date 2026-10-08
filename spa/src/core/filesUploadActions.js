@@ -3,14 +3,20 @@ import { uploadNameValid } from "./fileUploadsModel.js";
 import { parentPath } from "./fileTreeModel.js";
 import { fieldTraits } from "./fieldTraits.js";
 import { notifyError } from "./notify.js";
+import { ICON_UPLOAD, ICON_FOLDER_PLUS } from "./icons.js";
+import { mountLongPress } from "./longPress.js";
 import "../styles/fileUploadActions.css";
 
 const actionButton = (action, title, mark) => `<button type="button" class="iconbtn" data-upload-action="${action}" aria-label="${title}" title="${title}">${mark}</button>`;
-const actionsHtml = (support) => `<span class="fupload-directory-actions">${support.uploads ? actionButton("upload", "Upload files", "↑") : ""}${support.createDirectory ? actionButton("folder", "New folder", "+") : ""}</span>`;
+const actionsHtml = (support) => `<span class="fupload-directory-actions">${support.uploads ? actionButton("upload", "Upload files", ICON_UPLOAD) : ""}${support.createDirectory ? actionButton("folder", "New folder", ICON_FOLDER_PLUS) : ""}</span>`;
 const fileDrag = (event) => Array.from(event.dataTransfer?.types || []).includes("Files");
 const rootIdOf = (row) => row.closest("[data-root]")?.dataset.root ?? row.dataset.rootHead;
 const directoryRows = (host) => [...host.querySelectorAll('[data-kind="dir"], [data-root-head], [data-upload-root]')];
 const interactive = (event) => event.target.closest?.("[data-upload-action], .fupload-folder, .fupload-input");
+const actionRow = (event) => {
+  const row = event.target.closest?.(".frow");
+  return row?.querySelector(".fupload-directory-actions") ? row : null;
+};
 const destination = (root, parent) => [root.label, parent].filter(Boolean).join(" / ") || "/";
 
 /** Directory affordances decorate existing rows; drag feedback only changes a
@@ -21,6 +27,7 @@ export function mountFilesUploadActions(host, { roots, capabilities, uploads, ca
   let dropRow = null;
   let selectedTarget = null;
   let draft = null;
+  const decoratedMarkup = new WeakMap();
   const input = document.createElement("input");
   input.className = "fupload-input";
   input.type = "file";
@@ -156,9 +163,12 @@ export function mountFilesUploadActions(host, { roots, capabilities, uploads, ca
   };
   const decorateRow = (row, markup) => {
     const held = row.querySelector(".fupload-directory-actions");
-    if (held?.outerHTML === markup) return;
+    // SVG serialization expands self-closing paths; comparing outerHTML to
+    // the raw icon would continually replace buttons in the mutation observer.
+    if (held && decoratedMarkup.get(row) === markup) return;
     held?.remove();
     if (support.uploads || support.createDirectory) row.insertAdjacentHTML("beforeend", markup);
+    decoratedMarkup.set(row, markup);
   };
   const restoreDraft = () => {
     if (!draft || draft.element.isConnected) return;
@@ -177,6 +187,12 @@ export function mountFilesUploadActions(host, { roots, capabilities, uploads, ca
   const observer = new MutationObserver(decorate);
   observer.observe(host, { childList: true, subtree: true });
   decorate();
+  const longPress = mountLongPress(host, {
+    targetOf: actionRow,
+    canStart: (event) => !interactive(event),
+    onReveal: (row) => row.classList.add("fupload-revealed"),
+    onDismiss: (row) => row.classList.remove("fupload-revealed"),
+  });
   host.addEventListener("click", onClick, true);
   host.addEventListener("keydown", onKeyDown, true);
   host.addEventListener("dragover", onDragOver);
@@ -185,10 +201,11 @@ export function mountFilesUploadActions(host, { roots, capabilities, uploads, ca
   host.addEventListener("drop", onDrop);
   input.addEventListener("change", onChange);
   return {
-    setCapabilities(next) { support = next; clearDrop(); if (!support.createDirectory) closeDraft(); decorate(); },
+    setCapabilities(next) { support = next; longPress.clear(); clearDrop(); if (!support.createDirectory) closeDraft(); decorate(); },
     dispose() {
       disposed = true;
       observer.disconnect();
+      longPress.dispose();
       clearDrop(); closeDraft(); input.remove();
       host.removeEventListener("click", onClick, true);
       host.removeEventListener("keydown", onKeyDown, true);

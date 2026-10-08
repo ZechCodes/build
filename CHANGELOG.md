@@ -6,6 +6,16 @@ Notable changes to the bridge (`build-bridge`). The format follows
 protocol versions; see
 [Wire versioning and capabilities](ARCHITECTURE.md#wire-versioning-and-capabilities).
 
+## [0.2.13] - Unreleased
+
+Wire 3.13.0.
+
+### Changed
+
+- Files directory actions use recognizable upload and new-folder icons, shown
+  on hover or keyboard focus and revealed one row at a time by long press on
+  touch devices (#396).
+
 ## [0.2.12] - 2026-10-07
 
 Wire 3.13.0.

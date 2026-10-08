@@ -149,15 +149,42 @@ const reviewInstant = (state) => Date.parse(state?.updated_at) || 0;
 const reviewReadOvertaken = (state, options) => options.keepHeld
   || Number.isFinite(options.readOrder) && options.readOrder < reviewRead(state);
 
-/** Cached copies can have older ordinary fields than their accepted PR
- * authority. Compare that authority, never the ordinary row's timestamp. */
-function strongerTaskReviewState(held, incoming) {
-  if (!held) return incoming;
+function newerTaskReviewState(held, incoming) {
   if (advancesSummaryFloor(held.floor, incoming.floor)) return incoming;
   if (belowSummaryFloor(held.floor, incoming.floor)) return held;
   if (reviewInstant(held) !== reviewInstant(incoming)) return reviewInstant(incoming) > reviewInstant(held) ? incoming : held;
   if (reviewRead(held) !== reviewRead(incoming)) return reviewRead(incoming) > reviewRead(held) ? incoming : held;
   return incoming.cleared ? incoming : held;
+}
+
+function combinedTaskReviewClear(held, incoming) {
+  return {
+    ...held,
+    floor: advancesSummaryFloor(held.floor, incoming.floor) ? incoming.floor : held.floor,
+    updated_at: latestTaskTimestamp(held.updated_at, incoming.updated_at),
+    read_order: Math.max(reviewRead(held), reviewRead(incoming)),
+  };
+}
+
+function clearFencesCachedReview(clear, visible) {
+  const comparableReads = reviewRead(clear) > 0 && reviewRead(visible) > 0;
+  return comparableReads ? reviewRead(visible) < reviewRead(clear)
+    : reviewInstant(visible) <= reviewInstant(clear);
+}
+
+/** An old cached visible copy cannot use its version to cross a newer clear.
+ * Positive observation orders compare that pair; legacy copies fall back to
+ * authority timestamps. Only then do visible versions compete. Two clears
+ * retain both the highest floor and their newest observation barriers. */
+function strongerTaskReviewState(held, incoming) {
+  if (!held) return incoming;
+  if (held.cleared && incoming.cleared) return combinedTaskReviewClear(held, incoming);
+  if (Boolean(held.cleared) !== Boolean(incoming.cleared)) {
+    const clear = held.cleared ? held : incoming;
+    const visible = held.cleared ? incoming : held;
+    if (clearFencesCachedReview(clear, visible)) return clear;
+  }
+  return newerTaskReviewState(held, incoming);
 }
 
 function keepTaskReviewState(state, incoming, options) {

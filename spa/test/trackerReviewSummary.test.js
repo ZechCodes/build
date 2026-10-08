@@ -85,6 +85,62 @@ describe("PR summary version floors", () => {
     expect(stale.title).toBe("ordinary stale copy");
   });
 
+  it("fences a higher cached PR version observed before a clear, then admits a fresh raw advance", () => {
+    const at = (minute) => `2026-10-08T20:${String(minute).padStart(2, "0")}:00Z`;
+    const seed = tracker.preserveTaskReviewSummary(null, row(7, { updated_at: at(20) }), { readOrder: 20 });
+    const clear = tracker.preserveTaskReviewSummary(seed, withoutSummary({ updated_at: at(30) }), { readOrder: 30 });
+    const visible = tracker.preserveTaskReviewSummary(null, row(8, { updated_at: at(10) }), { readOrder: 10 });
+    for (const [held, incoming] of [[clear, visible], [visible, clear]]) {
+      const merged = tracker.preserveTaskReviewSummary(held, incoming);
+      expect(merged).not.toHaveProperty("review_summary");
+      expect(tracker.preserveTaskReviewSummary(merged, row(8, { updated_at: at(10) }), { readOrder: 10 })).not.toHaveProperty("review_summary");
+      expect(tracker.preserveTaskReviewSummary(merged, row(8, { updated_at: at(10) }), { readOrder: 40 }).review_summary.version).toBe(8);
+    }
+  });
+
+  it.each([[0, 0], [0, 30], [10, 0]])("uses clear timestamps when cached read orders %s and %s are incomparable", (visibleRead, clearRead) => {
+    const at = (minute) => `2026-10-08T20:${String(minute).padStart(2, "0")}:00Z`;
+    const seed = tracker.preserveTaskReviewSummary(null, row(7, { updated_at: at(20) }));
+    const clear = tracker.preserveTaskReviewSummary(seed, withoutSummary({ updated_at: at(30) }), { readOrder: clearRead });
+    const visible = tracker.preserveTaskReviewSummary(null, row(8, { updated_at: at(30) }), { readOrder: visibleRead });
+    const laterVisible = tracker.preserveTaskReviewSummary(null, row(8, { updated_at: at(40) }), { readOrder: visibleRead });
+    for (const [held, incoming] of [[clear, visible], [visible, clear]]) {
+      const merged = tracker.preserveTaskReviewSummary(held, incoming);
+      expect(merged).not.toHaveProperty("review_summary");
+      expect(tracker.preserveTaskReviewSummary(merged, row(8, { updated_at: at(10) })).review_summary.version).toBe(8);
+    }
+    expect(tracker.preserveTaskReviewSummary(clear, laterVisible).review_summary.version).toBe(8);
+    expect(tracker.preserveTaskReviewSummary(laterVisible, clear).review_summary.version).toBe(8);
+  });
+
+  it("keeps numeric version authority for visible cached PRs and later observed advances", () => {
+    const at = (minute) => `2026-10-08T20:${String(minute).padStart(2, "0")}:00Z`;
+    const visibleSeven = tracker.preserveTaskReviewSummary(null, row(7, { updated_at: at(30) }), { readOrder: 30 });
+    const visibleEight = tracker.preserveTaskReviewSummary(null, row(8, { updated_at: at(10) }), { readOrder: 10 });
+    expect(tracker.preserveTaskReviewSummary(visibleSeven, visibleEight).review_summary.version).toBe(8);
+    expect(tracker.preserveTaskReviewSummary(visibleEight, visibleSeven).review_summary.version).toBe(8);
+    const clear = tracker.preserveTaskReviewSummary(visibleSeven, withoutSummary({ updated_at: at(35) }), { readOrder: 35 });
+    const laterEight = tracker.preserveTaskReviewSummary(null, row(8, { updated_at: at(10) }), { readOrder: 40 });
+    expect(tracker.preserveTaskReviewSummary(clear, laterEight).review_summary.version).toBe(8);
+    expect(tracker.preserveTaskReviewSummary(laterEight, clear).review_summary.version).toBe(8);
+  });
+
+  it("combines two cached clears without lowering their numeric, timestamp or read floors", () => {
+    const at = (minute) => `2026-10-08T20:${String(minute).padStart(2, "0")}:00Z`;
+    const seven = tracker.preserveTaskReviewSummary(null, row(7, { updated_at: at(20) }), { readOrder: 20 });
+    const eight = tracker.preserveTaskReviewSummary(null, row(8, { updated_at: at(5) }), { readOrder: 5 });
+    const clearSeven = tracker.preserveTaskReviewSummary(seven, withoutSummary({ updated_at: at(30) }), { readOrder: 30 });
+    const clearEight = tracker.preserveTaskReviewSummary(eight, withoutSummary({ updated_at: at(10) }), { readOrder: 10 });
+    for (const [held, incoming] of [[clearSeven, clearEight], [clearEight, clearSeven]]) {
+      const merged = tracker.preserveTaskReviewSummary(held, incoming);
+      expect(merged).not.toHaveProperty("review_summary");
+      expect(tracker.preserveTaskReviewSummary(merged, row(7, { updated_at: at(40) }), { readOrder: 40 })).not.toHaveProperty("review_summary");
+      expect(tracker.preserveTaskReviewSummary(merged, row(8, { updated_at: at(20) }), { readOrder: 40 })).not.toHaveProperty("review_summary");
+      expect(tracker.preserveTaskReviewSummary(merged, row(9, { updated_at: at(5) }), { readOrder: 20 })).not.toHaveProperty("review_summary");
+      expect(tracker.preserveTaskReviewSummary(merged, row(9, { updated_at: at(5) }), { readOrder: 40 }).review_summary.version).toBe(9);
+    }
+  });
+
   it("tracks board task rows by task_id and keeps ordinary fields independent of PR authority", () => {
     const boardRow = (version, updatedAt) => {
       const next = row(version, { task_id: task.id, updated_at: updatedAt });

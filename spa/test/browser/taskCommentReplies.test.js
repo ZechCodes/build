@@ -160,7 +160,12 @@ for (const [label, width, height] of [["phone", 390, 844], ["desktop", 1440, 900
       expect(await page.locator(parentSelector).evaluate((row) => row.getBoundingClientRect().bottom < 0)).toBe(true);
       await captureLayout(page, `task-411-${label}-reply.png`);
       for (const action of ["context", "append"]) {
+        const paintTop = await page.locator("#task-pane").evaluate((host) => host.scrollTop);
         await updateReplyCache(page, action);
+        if (action === "append") {
+          const afterPaintTop = await page.locator("#task-pane").evaluate((host) => host.scrollTop);
+          expect(Math.abs(afterPaintTop - paintTop), "paint changed scrollTop with no content shift above the reader").toBeLessThanOrEqual(1);
+        }
         if (action === "context") expect(await page.locator(quoteSelector).textContent()).toContain("updated and deliberately");
         await expectReplyStill(page, before, `${label}/${action}`);
       }

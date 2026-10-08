@@ -7,8 +7,8 @@ describes the implemented PR mode; the earlier Snapshot-mode plan below remains
 the contract for legacy reviews. The code and `ARCHITECTURE.md` remain authoritative.
 
 A PR is an ordinary task with `mode: "pull_request"`, dedicated workspace
-branches and registered local receiving repositories. Opening explicitly selects
-a base for each included Git directory; non-Git directories remain Live and
+branches and registered local receiving repositories. Opening records a configured
+or explicitly selected base for each included Git directory; non-Git directories remain Live and
 unavailable Git directories must be excluded. Committed pushes to the receiver
 publish immutable snapshots without a connected browser. Working files remain
 outside the saved commit tree. Dirty state is counted, never staged by review.

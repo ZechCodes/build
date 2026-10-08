@@ -775,3 +775,51 @@ fn branch_deletion_refuses_replaced_ref_or_packed_lock() {
         cleanup_branch("task-stable-identity", "request-1", &binding).unwrap();
     }
 }
+
+#[test]
+fn cancellation_refuses_original_checkout_rebase_and_bisect_holders() {
+    for holder in ["checkout", "rebase", "bisect"] {
+        let (temp, repo) = init_repo();
+        git_in(&repo, &["switch", "-c", "build/work"]);
+        let mut binding = plan(&workspace(&repo)).remove(0);
+        prepare_branch("task-stable-identity", "request-1", &mut binding).unwrap();
+        validate_cleanup("task-stable-identity", "request-1", &binding).unwrap();
+        let other = temp.path().join("original-holder");
+        git_in(
+            &repo,
+            &["worktree", "add", other.to_str().unwrap(), "build/work"],
+        );
+        let other_git_dir = crate::isolation::checkout_git_dir(&other).unwrap();
+        if holder != "checkout" {
+            git_in(&other, &["switch", "--detach"]);
+            let marker = if holder == "rebase" {
+                fs::create_dir(other_git_dir.join("rebase-merge")).unwrap();
+                "rebase-merge/head-name"
+            } else {
+                "BISECT_START"
+            };
+            fs::write(other_git_dir.join(marker), "refs/heads/build/work\n").unwrap();
+        }
+        let working = git2::Repository::open(&repo).unwrap();
+        let head = fs::read(repo.join(".git/HEAD")).unwrap();
+        let index = fs::read(repo.join(".git/index")).unwrap();
+        let marker = ownership_path(&working, &binding);
+        let ownership = fs::read(&marker).unwrap();
+        let error = validate_cleanup("task-stable-identity", "request-1", &binding).unwrap_err();
+        assert!(
+            error.contains("original") && error.contains("build/work"),
+            "{error}"
+        );
+        assert!(
+            error.contains(&other_git_dir.to_string_lossy().to_string()),
+            "{error}"
+        );
+        assert!(cleanup_branch("task-stable-identity", "request-1", &binding).is_err());
+        assert_eq!(fs::read(repo.join(".git/HEAD")).unwrap(), head);
+        assert_eq!(fs::read(repo.join(".git/index")).unwrap(), index);
+        assert_eq!(fs::read(marker).unwrap(), ownership);
+        assert!(working
+            .find_reference(&binding.dedicated_branch_ref)
+            .is_ok());
+    }
+}

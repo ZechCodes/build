@@ -378,6 +378,7 @@ pub fn cleanup_branch(
     validate_cleanup_state(&working, binding, &ownership)?;
     let packed = locks.prepare_removal(binding)?;
     if current_branch_ref(&working)?.as_deref() == Some(&binding.dedicated_branch_ref) {
+        refuse_original_holder(&working, binding)?;
         locks.set_head(binding, true)?;
     }
     locks.remove_branch(binding, packed.as_deref())?;
@@ -418,6 +419,7 @@ fn validate_cleanup_state(
     validate_head_original_or_dedicated(working, binding)?;
     refuse_operation(working)?;
     refuse_other_holder(working, binding)?;
+    refuse_original_holder(working, binding)?;
     validate_teardown(working, ownership)
 }
 
@@ -610,6 +612,30 @@ fn branch_held_elsewhere(
     branch: &str,
     allowed_git_dir: Option<&Path>,
 ) -> Result<bool, String> {
+    find_branch_holder(repo, branch, allowed_git_dir).map(|holder| holder.is_some())
+}
+
+fn refuse_original_holder(
+    repo: &git2::Repository,
+    binding: &ReviewBranchBinding,
+) -> Result<(), String> {
+    let Some(original) = &binding.original_branch_ref else {
+        return Ok(());
+    };
+    if let Some(holder) = find_branch_holder(repo, original, Some(repo.path()))? {
+        return Err(format!(
+            "original review work branch {original} is in use at {}; release that worktree before cancelling",
+            holder.display()
+        ));
+    }
+    Ok(())
+}
+
+fn find_branch_holder(
+    repo: &git2::Repository,
+    branch: &str,
+    allowed_git_dir: Option<&Path>,
+) -> Result<Option<PathBuf>, String> {
     let common = repo
         .commondir()
         .canonicalize()
@@ -640,10 +666,10 @@ fn branch_held_elsewhere(
             continue;
         }
         if git_directory_holds_branch(&git_dir, branch)? {
-            return Ok(true);
+            return Ok(Some(git_dir));
         }
     }
-    Ok(false)
+    Ok(None)
 }
 
 fn git_directory_holds_branch(git_dir: &Path, branch: &str) -> Result<bool, String> {

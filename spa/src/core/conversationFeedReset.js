@@ -90,7 +90,9 @@ const retiredDigest = (agent, thread) => thread?.thread_id && (agent.thread_id
 function admittedFeedRow(row, deviceId, records, rewriteRow, held) {
   const entityId = entityIdOf(row);
   const own = currentRow(deviceId, entityId, records);
-  const authority = preserveTaskReviewSummary(own, held || own);
+  // Normalize saved copies before applying this board observation once.
+  const saved = preserveTaskReviewSummary(null, held || own);
+  const authority = preserveTaskReviewSummary(own, saved);
   let next = preserveTaskReviewSummary(authority, row);
   const seen = new Set();
   for (const agent of agentsOf(row)) {

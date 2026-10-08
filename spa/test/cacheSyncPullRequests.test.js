@@ -176,17 +176,19 @@ it.each(["individual row", "feed copy"])("persists and paints the PR version fro
 });
 
 it.each([
-  { source: "individual row", version: 7 }, { source: "feed copy", version: 7 },
-  { source: "individual row", version: 8 }, { source: "feed copy", version: 8 },
-])("preserves a clear from the $source over an earlier cached v$version copy", async ({ source, version }) => {
+  { source: "individual row", version: 7, legacy: false }, { source: "feed copy", version: 7, legacy: false },
+  { source: "individual row", version: 8, legacy: false }, { source: "feed copy", version: 8, legacy: false },
+  { source: "individual row", version: 8, legacy: true }, { source: "feed copy", version: 8, legacy: true },
+])("preserves a clear from the $source over an earlier cached v$version copy (legacy: $legacy)", async ({ source, version, legacy }) => {
   await sync.syncDevice(deviceId);
   const tracker = await import("../src/core/trackerCache.js");
   const { nextTaskRead } = await import("../src/core/taskReadOrder.js");
   const visible = { kind: "tracker_task", task_id: taskId, project_id: projectId, title: "held fields",
     updated_at: "2026-10-08T20:00:20Z", review_summary: { ...summary, version: 7 } };
-  const earlier = tracker.preserveTaskReviewSummary(null, {
+  const oldRow = {
     ...visible, updated_at: "2026-10-08T20:00:10Z", review_summary: { ...summary, version },
-  }, { readOrder: await nextTaskRead() });
+  };
+  const earlier = legacy ? oldRow : tracker.preserveTaskReviewSummary(null, oldRow, { readOrder: await nextTaskRead() });
   await tracker.writeTasksRecord(deviceId, projectId, tracker.tasksRecord([visible], [], await nextTaskRead()));
   const { review_summary: _summary, ...absent } = visible;
   await tracker.writeTasksRecord(deviceId, projectId, tracker.tasksRecord([
@@ -230,9 +232,28 @@ it("admits a fresh higher board version after merging two cached authorities wit
     ...visible, updated_at: "2026-10-08T20:00:10Z", review_summary: summary,
   });
   const feedAddress = { deviceId, entityId: "", kind: "feed" };
-  await cache.writeCached({ deviceId, entityId: taskId, kind: "row" }, cleared);
+  const rowAddress = { deviceId, entityId: taskId, kind: "row" };
+  await cache.writeCached(rowAddress, cleared);
   await cache.writeCached(feedAddress, { items: [older], projects: [], workspaces: [] });
+  const ownBefore = await cache.readCached(rowAddress);
   items = [{ ...visible, updated_at: "2026-10-08T20:00:10Z", review_summary: { ...summary, version: 8 } }];
-  expect(await sync.syncDevice(deviceId)).toBe(true);
+  const stopAfterFeed = cache.subscribeCache(feedAddress, () => { state.context.session = {}; });
+  try {
+    expect(await sync.syncDevice(deviceId)).toBe(false);
+    expect((await cache.readCached(feedAddress)).value.items[0]).toHaveProperty("review_summary.version", 8);
+    expect(await cache.readCached(rowAddress)).toEqual(ownBefore);
+    items = [{ ...items[0], review_summary: summary }];
+    expect(await sync.syncDevice(deviceId)).toBe(false);
+  } finally { stopAfterFeed(); }
   expect((await cache.readCached(feedAddress)).value.items[0]).toHaveProperty("review_summary.version", 8);
+  expect(await cache.readCached(rowAddress)).toEqual(ownBefore);
+
+  await cache.writeCached(cache.DEVICES_ADDRESS, [{ id: deviceId }]);
+  feed = await import("../src/core/taskFeed.js");
+  let painted;
+  const stopPaint = feed.subscribeFeed((snapshot) => { painted = snapshot; });
+  try {
+    await feed.startFeed();
+    expect(painted.items.find((candidate) => candidate.task_id === taskId)).toHaveProperty("review_summary.version", 8);
+  } finally { stopPaint(); feed.stopFeed(); }
 });

@@ -196,6 +196,30 @@ fn prepare_tracking(
         )
         .map_err(|error| error.to_string())?;
     if let Some(previous) = previous {
+        if previous.target_head == head.to_string() {
+            let matching = store
+                .with_review_publication_version(&request.task_id, request.expected_version, || {
+                    validate_head(working, binding, head)?;
+                    Ok(matching_receiver_tracking(
+                        working,
+                        binding,
+                        packed,
+                        expected,
+                        &previous.claim_fingerprint,
+                    ))
+                })
+                .map_err(|error| error.to_string())?;
+            if let Some(matching) = matching {
+                return replace_tracking(
+                    store,
+                    request,
+                    binding,
+                    &previous,
+                    Some(&matching),
+                    heads,
+                );
+            }
+        }
         if previous.target_head != head.to_string() {
             let expected_tracking = store
                 .with_review_publication_version(&request.task_id, request.expected_version, || {
@@ -205,19 +229,14 @@ fn prepare_tracking(
                     )
                 })
                 .map_err(|error| error.to_string())?;
-            return store
-                .replace_review_tracking_expectation(
-                    &request.task_id,
-                    request.expected_version,
-                    &binding.directory_id,
-                    &previous.token,
-                    (
-                        expected_tracking.as_deref(),
-                        expected.as_ref().map(|head| head.to_string()).as_deref(),
-                    ),
-                    &head.to_string(),
-                )
-                .map_err(|error| error.to_string());
+            return replace_tracking(
+                store,
+                request,
+                binding,
+                &previous,
+                expected_tracking.as_deref(),
+                heads,
+            );
         }
     }
     store
@@ -232,6 +251,43 @@ fn prepare_tracking(
         .map_err(|error| error.to_string())
 }
 
+fn replace_tracking(
+    store: &Store,
+    request: &PushRequest,
+    binding: &ReviewBranchBinding,
+    previous: &crate::store::TrackingExpectation,
+    expected_tracking: Option<&str>,
+    heads: (Option<git2::Oid>, git2::Oid),
+) -> Result<crate::store::TrackingExpectation, String> {
+    let (expected, head) = heads;
+    store
+        .replace_review_tracking_expectation(
+            &request.task_id,
+            request.expected_version,
+            &binding.directory_id,
+            &previous.token,
+            (
+                expected_tracking,
+                expected.as_ref().map(|head| head.to_string()).as_deref(),
+            ),
+            &head.to_string(),
+        )
+        .map_err(|error| error.to_string())
+}
+
+fn matching_receiver_tracking(
+    working: &git2::Repository,
+    binding: &ReviewBranchBinding,
+    packed: &refs::PackedReferenceLease<'_>,
+    received: Option<git2::Oid>,
+    fingerprint: &str,
+) -> Option<String> {
+    let received = received?.to_string();
+    publication::tracking::validate_tip(working, binding, packed, fingerprint, Some(&received))
+        .ok()?;
+    Some(received)
+}
+
 fn recover_tracking_expectation(
     working: &git2::Repository,
     receiver: &git2::Repository,
@@ -241,19 +297,14 @@ fn recover_tracking_expectation(
     previous: &crate::store::TrackingExpectation,
 ) -> Result<Option<String>, String> {
     let (received, _) = heads;
-    if let Some(received) = received {
-        let received = received.to_string();
-        if publication::tracking::validate_tip(
-            working,
-            binding,
-            packed,
-            &previous.claim_fingerprint,
-            Some(&received),
-        )
-        .is_ok()
-        {
-            return Ok(Some(received));
-        }
+    if let Some(matching) = matching_receiver_tracking(
+        working,
+        binding,
+        packed,
+        received,
+        &previous.claim_fingerprint,
+    ) {
+        return Ok(Some(matching));
     }
     if target_was_received(receiver, received, &previous.target_head)? {
         publication::tracking::advance(

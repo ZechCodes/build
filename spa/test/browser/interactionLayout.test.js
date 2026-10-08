@@ -20,7 +20,7 @@ for (const theme of ["light", "dark"]) {
       const fields = await page.locator("input, textarea, select").evaluateAll((nodes) => nodes.map((node) => ({ type: node.tagName === "INPUT" ? node.type : node.tagName.toLowerCase(), select: getComputedStyle(node).userSelect })));
       expect(fields.map((field) => field.type)).toEqual(expect.arrayContaining(["text", "checkbox", "hidden", "file", "textarea", "select"]));
       for (const field of fields) expect(field.select, field.type).toBe("text");
-      const cursors = [[".tb-sel", "pointer"], [".tabs .t", "pointer"], [".task-row", "pointer"], [".task-row-open", "pointer"], [".task-card", "grab"], [".task-page-state", "default"], [".task-rail-section h2", "default"], [".task-composer button:disabled", "default"]];
+      const cursors = [[".tb-sel", "pointer"], [".tabs .t", "pointer"], [".task-row", "default"], [".task-row-open", "pointer"], [".task-card", "grab"], [".task-page-state", "default"], [".task-rail-section h2", "default"], [".task-composer button:disabled", "default"]];
       for (const [selector, cursor] of cursors) expect(await page.locator(selector).first().evaluate((node) => getComputedStyle(node).cursor), selector).toBe(cursor);
       expect(await dragInteractionText(page, ".tb-legacy-item .tb-name", { clickCount: 3 })).toBe("");
       await captureLayout(page, `interaction-header-${theme}.png`);
@@ -106,12 +106,36 @@ it("paints pressed feedback over existing archive and commit row shadows", async
     for (const selector of [".card.archive-row", ".crow.ahead", ".crow.unpushed", ".crow.sel"]) {
       const row = page.locator(selector);
       await row.hover();
-      const hovered = await row.evaluate((node) => getComputedStyle(node).boxShadow);
+      const paint = (node) => ({ shadow: getComputedStyle(node).boxShadow, filter: getComputedStyle(node).filter });
+      const hovered = await row.evaluate(paint);
       await page.mouse.down();
       expect(await row.evaluate((node) => node.matches(":active")), selector).toBe(true);
-      expect(await row.evaluate((node) => getComputedStyle(node).boxShadow), selector).not.toBe(hovered);
+      expect(await row.evaluate(paint), selector).not.toEqual(hovered);
       await page.mouse.up();
     }
+  });
+}, 60_000);
+
+it("keeps inline prose links free of block tints and puts row navigation on its anchor", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await mountInteractionFixture(page, basePath, { extras: true });
+    const link = page.locator('.task-comment-body a[href="https://docs.example.test/interaction"]');
+    await link.hover();
+    expect(await link.evaluate((node) => getComputedStyle(node).boxShadow)).toBe("none");
+    expect(await link.evaluate((node) => getComputedStyle(node).webkitTapHighlightColor)).not.toBe("rgba(0, 0, 0, 0)");
+    await page.mouse.down();
+    expect(await link.evaluate((node) => node.matches(":active"))).toBe(true);
+    expect(await link.evaluate((node) => getComputedStyle(node).boxShadow)).toBe("none");
+    await page.mouse.move(0, 0);
+    await page.mouse.up();
+    const row = page.locator(".task-row");
+    await row.scrollIntoViewIfNeeded();
+    const target = await row.evaluate((node) => {
+      const box = node.getBoundingClientRect();
+      const hit = document.elementFromPoint(box.right - 3, box.top + 3);
+      return { anchor: Boolean(hit.closest(".task-row-open[href]")), cursor: getComputedStyle(hit).cursor };
+    });
+    expect(target).toEqual({ anchor: true, cursor: "pointer" });
   });
 }, 60_000);
 

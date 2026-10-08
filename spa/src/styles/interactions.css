@@ -53,11 +53,11 @@ body {
 
 /* Native/ARIA controls and the older click targets use one feedback grammar.
    Low specificity lets native sliders and terminal keys keep their gestures. */
-:where(button, a[href], summary, [role="button"], [role="tab"],
+:where(button, a[href]:not(.markdown *, .task-comment-body *, .thread-body *, .cc-body *, .cc-reply *), summary, [role="button"], [role="tab"],
     [role="menuitem"], [role="menuitemradio"], [role="option"],
     .tabs .t, .console-tab .tx, .card, .stagerow, .srow.snav,
     .crow, .rrow, .ivlin-row, .pcx, .cc-x,
-    .frow:is(.fdir, .ffile), .task-row:has(.task-row-open[href]),
+    .frow:is(.fdir, .ffile), .task-row-open[href],
     .file .fhead, .file.capped .dscroll, .gitmore, .fpmore,
     .toggle, .changedonly) {
   -webkit-tap-highlight-color:transparent;
@@ -68,14 +68,14 @@ body {
       [role="menuitem"], [role="menuitemradio"], [role="option"],
       .tabs .t, .console-tab .tx, .card, .stagerow, .srow.snav,
     .crow, .rrow, .ivlin-row, .pcx, .cc-x,
-      .frow:is(.fdir, .ffile), .task-row:has(.task-row-open[href]),
+      .frow:is(.fdir, .ffile), .task-row-open[href],
       .file .fhead, .file.capped .dscroll, .gitmore, .fpmore,
       .toggle, .changedonly):not(:disabled, [aria-disabled="true"]) { cursor:pointer; }
-  :where(button, a[href], summary, [role="button"], [role="tab"],
+  :where(button, a[href]:not(.markdown *, .task-comment-body *, .thread-body *, .cc-body *, .cc-reply *), summary, [role="button"], [role="tab"],
       [role="menuitem"], [role="menuitemradio"], [role="option"],
       .tabs .t, .console-tab .tx, .card, .stagerow, .srow.snav,
     .crow, .rrow, .ivlin-row, .pcx, .cc-x,
-      .frow:is(.fdir, .ffile), .task-row:has(.task-row-open[href]),
+      .frow:is(.fdir, .ffile), .task-row-open[href],
       .file .fhead, .file.capped .dscroll, .gitmore, .fpmore,
       .toggle, .changedonly):hover:not(:disabled, [aria-disabled="true"]) {
     box-shadow:inset 0 0 0 999px color-mix(in srgb, currentColor 8%, transparent);
@@ -85,19 +85,21 @@ body {
     [role="menuitem"], [role="menuitemradio"], [role="option"],
     .tabs .t, .console-tab .tx, .card, .stagerow, .srow.snav,
     .crow, .rrow, .ivlin-row, .pcx, .cc-x,
-    .frow:is(.fdir, .ffile), .task-row:has(.task-row-open[href]),
+    .frow:is(.fdir, .ffile), .task-row-open[href],
     .file .fhead, .file.capped .dscroll, .gitmore, .fpmore,
     .toggle, .changedonly):focus-visible {
   outline:2px solid var(--accent); outline-offset:2px;
 }
-body :is(button, a[href], summary, [role="button"], [role="tab"],
+body :is(button, a[href]:not(.markdown *, .task-comment-body *, .thread-body *, .cc-body *, .cc-reply *), summary, [role="button"], [role="tab"],
     [role="menuitem"], [role="menuitemradio"], [role="option"],
     .tabs .t, .console-tab .tx, .card, .stagerow, .srow.snav,
     .crow, .rrow, .ivlin-row, .pcx, .cc-x,
-    .frow:is(.fdir, .ffile), .task-row:has(.task-row-open[href]),
+    .frow:is(.fdir, .ffile), .task-row-open[href],
     .file .fhead, .file.capped .dscroll, .gitmore, .fpmore,
     .toggle, .changedonly):active:not(:disabled, [aria-disabled="true"]) {
   box-shadow:inset 0 0 0 999px color-mix(in srgb, currentColor 18%, transparent);
+  /* Keep feedback visible when a component paints its own shadow. */
+  filter:brightness(.92);
 }
 
 /* Native choices retain their own tap feedback. Every field explicitly escapes

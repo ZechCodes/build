@@ -26,6 +26,7 @@ export async function mountInteractionFixture(page, basePath, { theme = "light",
     const task = { id: "task-397", number: 397, title: "Make Build feel like an app", state: "open", status: "in_progress", priority: "medium", labels: ["ui"], updated_at: "2026-10-07T20:00:00Z", body: "Keep the navigation quiet while preserving readable content.\n\nCopy task descriptions, comments and code without accidentally selecting the app controls.", attachments: [] };
     if (extras) task.body += "\n\n| Area | Expected |\n| --- | --- |\n| Content | Selectable |";
     const context = { deviceId: "interaction-device", projectId: "proj-1", columns: [{ id: "in_progress", name: "In progress" }], links: [], labelsDraft: "ui", rows: [{ type: "comment", key: "comment-397", actor: { kind: "user", name: "You" }, body: `${comment}\n\nThe toolbar, tabs and status labels should behave like application controls.`, at: "2026-10-07T20:05:00Z", attachments: [] }], draft: "", sending: false, busy: false, identities: {} };
+    if (extras) context.rows[0].body += "\n\nRead [the docs](https://docs.example.test/interaction).";
     document.querySelector("#toolbar").innerHTML = m.toolbar.toolbarHtml({ project: "Build", kind: "task", label: header });
     const root = document.querySelector("#root");
     root.classList.add("surface");

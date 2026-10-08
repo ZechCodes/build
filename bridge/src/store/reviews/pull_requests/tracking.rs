@@ -71,7 +71,7 @@ impl Store {
     }
 
     /// Carry only a validated original tip, confirmed prior target or exact
-    /// matching receiver/working goal into the next proof. Replace the exact
+    /// matching held receiver tip into the next proof. Replace the exact
     /// token atomically, preserving authorization through every crash window.
     pub(crate) fn replace_review_tracking_expectation(
         &self,
@@ -79,9 +79,10 @@ impl Store {
         expected_version: u64,
         directory_id: &str,
         token: &str,
-        expected_tracking_head: Option<&str>,
+        tracking_heads: (Option<&str>, Option<&str>),
         target_head: &str,
     ) -> Result<TrackingExpectation, StoreError> {
+        let (expected_tracking_head, current_received_head) = tracking_heads;
         self.in_transaction(|tx| {
             require_bound_publication(tx, task_id, expected_version, directory_id)?;
             let key = tracking_key(task_id, directory_id);
@@ -95,6 +96,7 @@ impl Store {
             if expected_tracking_head != previous.expected_tracking_head.as_deref()
                 && expected_tracking_head != Some(previous.target_head.as_str())
                 && expected_tracking_head != Some(target_head)
+                && expected_tracking_head != current_received_head
             {
                 return Err(invalid("tracking replacement tip is not authorized"));
             }

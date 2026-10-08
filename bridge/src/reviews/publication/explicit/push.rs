@@ -211,7 +211,10 @@ fn prepare_tracking(
                     request.expected_version,
                     &binding.directory_id,
                     &previous.token,
-                    expected_tracking.as_deref(),
+                    (
+                        expected_tracking.as_deref(),
+                        expected.as_ref().map(|head| head.to_string()).as_deref(),
+                    ),
                     &head.to_string(),
                 )
                 .map_err(|error| error.to_string());
@@ -237,19 +240,20 @@ fn recover_tracking_expectation(
     heads: (Option<git2::Oid>, git2::Oid),
     previous: &crate::store::TrackingExpectation,
 ) -> Result<Option<String>, String> {
-    let (received, head) = heads;
-    let head = head.to_string();
-    if received.map(|received| received.to_string()).as_deref() == Some(&head)
-        && publication::tracking::validate_tip(
+    let (received, _) = heads;
+    if let Some(received) = received {
+        let received = received.to_string();
+        if publication::tracking::validate_tip(
             working,
             binding,
             packed,
             &previous.claim_fingerprint,
-            Some(&head),
+            Some(&received),
         )
         .is_ok()
-    {
-        return Ok(Some(head));
+        {
+            return Ok(Some(received));
+        }
     }
     if target_was_received(receiver, received, &previous.target_head)? {
         publication::tracking::advance(

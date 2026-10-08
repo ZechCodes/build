@@ -11,6 +11,8 @@ import openFixture from "../../fixtures/api/v1/tasks.review.open.json";
 import mergeFixture from "../../fixtures/api/v1/tasks.review.merge.json";
 import getFixture from "../../fixtures/api/v1/tasks.review.get.json";
 
+vi.mock("../src/core/deviceContexts.js", () => ({ contextFor: () => null }));
+
 const scope = { deviceId: "pr-drafts", projectId: "project-1", workspaceId: "workspace-1", taskId: "task-1", snapshotId: "snapshot-1" };
 beforeEach(async () => { await wipeCache(); await wipeUiRecords(); });
 

@@ -1,8 +1,11 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import "fake-indexeddb/auto";
 import { wipeCache, readCached, writeCached } from "../src/core/localCache.js";
+import * as cache from "../src/core/localCache.js";
+import { forgetPushes, notePush } from "../src/core/pushFence.js";
 import { capabilitiesOf } from "../src/core/bridgeApi/v1/index.js";
 import { rememberReviewSupport, readReviewSupport } from "../src/core/taskReviewSupport.js";
+import * as reviewSupport from "../src/core/taskReviewSupport.js";
 import {
   createTaskReviewRepository, readWorkspaceReview, refreshCachedReviews, refreshWorkspaceReview,
   reviewAddress, writeReviewRecord, writeReviewReply,
@@ -12,6 +15,10 @@ import openFixture from "../../fixtures/api/v1/tasks.review.open.json";
 import pushFixture from "../../fixtures/api/v1/tasks.review.push.json";
 import mergeFixture from "../../fixtures/api/v1/tasks.review.merge.json";
 
+// These repositories use isolated injected callers; current-greeting dispatch
+// is covered by taskReviewSupport's registered-device tests.
+vi.mock("../src/core/deviceContexts.js", () => ({ contextFor: () => null }));
+
 const scope = { deviceId: "reviews-cache", projectId: "proj-1", taskId: "task-1" };
 const support = { get: true, snapshot: true, diff: true, complete: true, act: true, comments: true,
   pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false };
@@ -19,6 +26,7 @@ const review = fixture.result.review;
 const pullRequest = fixture.examples[1].result;
 const prSupport = Object.fromEntries(Object.keys(support).map((key) => [key, true]));
 beforeEach(async () => { await wipeCache(); });
+afterEach(() => { vi.restoreAllMocks(); forgetPushes(); });
 
 it("gates each verb and comments independently and remembers the greeting", async () => {
   const caps = capabilitiesOf({ api_version: "3.6.0", capabilities: ["tasks.review.get", "tasks.review.diff"] });
@@ -197,4 +205,82 @@ it("filters invalidations while discovering summaries only on feature-capable de
   await rememberReviewSupport(scope.deviceId, { reviews: { ...prSupport, pullRequests: false } });
   await refreshCachedReviews({ ...scope, callRpc, discoveredTaskIds: ["new-task"] });
   expect(callRpc).toHaveBeenCalledExactlyOnceWith("tasks.review.get", { task_id: scope.taskId });
+});
+
+const delayReviewMerge = () => {
+  const started = Promise.withResolvers();
+  const continueMerge = Promise.withResolvers();
+  const original = cache.mergeCachedAtomically;
+  vi.spyOn(cache, "mergeCachedAtomically").mockImplementation(async (address, merge) => {
+    started.resolve();
+    await continueMerge.promise;
+    return original(address, merge);
+  });
+  return { started: started.promise, release: continueMerge.resolve };
+};
+
+it.each(["read", "failure", "mutation"])("discards queued %s cache writes if the repository stops before its transaction", async (operation) => {
+  await rememberReviewSupport(scope.deviceId, { reviews: prSupport });
+  await writeReviewRecord(scope, review, 1);
+  const held = await readCached(reviewAddress(scope));
+  let active = true;
+  const delayed = delayReviewMerge();
+  const callRpc = async () => {
+    if (operation === "failure") throw new Error("Source unavailable");
+    return pullRequest;
+  };
+  const repository = createTaskReviewRepository({ ...scope, callRpc, active: () => active });
+  const pending = operation === "mutation" ? repository.mutate("push", { expected_version: 1 }) : repository.refresh();
+  await delayed.started;
+  active = false;
+  delayed.release();
+  await pending;
+  expect(await readCached(reviewAddress(scope))).toEqual(held);
+});
+
+it.each(["read", "failure", "mutation"])("discards queued %s cache writes if the project is removed before its transaction", async (operation) => {
+  await rememberReviewSupport(scope.deviceId, { reviews: prSupport });
+  await writeReviewRecord(scope, review, 1);
+  const held = await readCached(reviewAddress(scope));
+  const delayed = delayReviewMerge();
+  const callRpc = async () => {
+    if (operation === "failure") throw new Error("Source unavailable");
+    return pullRequest;
+  };
+  const repository = createTaskReviewRepository({ ...scope, callRpc });
+  const pending = operation === "mutation" ? repository.mutate("push", { expected_version: 1 }) : repository.refresh();
+  await delayed.started;
+  notePush(reviewAddress(scope), { removed: true });
+  delayed.release();
+  await pending;
+  expect(await readCached(reviewAddress(scope))).toEqual(held);
+});
+
+it("returns an unchanged mutation answer only after its cache write settles", async () => {
+  await rememberReviewSupport(scope.deviceId, { reviews: prSupport });
+  const delayed = delayReviewMerge();
+  const answer = pushFixture.examples[0].result;
+  const repository = createTaskReviewRepository({ ...scope, callRpc: async () => answer });
+  let settled = false;
+  const pending = repository.mutate("push", pushFixture.params).then((result) => { settled = true; return result; });
+  await delayed.started;
+  expect(settled).toBe(false);
+  expect(await readCached(reviewAddress(scope))).toBeUndefined();
+  delayed.release();
+  expect(await pending).toBe(answer);
+  expect((await readCached(reviewAddress(scope))).value).toMatchObject(answer);
+});
+
+it("checks current greeting authority before sending a mutation advertised by older cached support", async () => {
+  await rememberReviewSupport(scope.deviceId, { reviews: prSupport });
+  const refusal = Object.assign(new Error("Current bridge does not support merge"), { code: "unknown_method" });
+  const guardedRpc = vi.fn(async () => { throw refusal; });
+  const factory = vi.spyOn(reviewSupport, "reviewMutationRpc").mockReturnValue(guardedRpc);
+  const callRpc = vi.fn();
+  const repository = createTaskReviewRepository({ ...scope, callRpc });
+  await expect(repository.mutate("merge", mergeFixture.params)).rejects.toBe(refusal);
+  expect(factory).toHaveBeenCalledExactlyOnceWith(scope.deviceId, callRpc);
+  expect(guardedRpc).toHaveBeenCalledExactlyOnceWith("tasks.review.merge", mergeFixture.params);
+  expect(callRpc).not.toHaveBeenCalled();
+  expect(await readCached(reviewAddress(scope))).toBeUndefined();
 });

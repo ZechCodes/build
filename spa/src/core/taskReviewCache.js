@@ -4,7 +4,7 @@
 import { cachedRecords, cachedSubKeys, mergeCachedAtomically, readCached } from "./localCache.js";
 import { nextTaskRead } from "./taskReadOrder.js";
 import { pushFence, removedSince } from "./pushFence.js";
-import { canReviewOperation, readReviewSupport } from "./taskReviewSupport.js";
+import { canReviewOperation, readReviewSupport, reviewMutationRpc } from "./taskReviewSupport.js";
 import { mergeReviewObservations } from "./taskReviewObservations.js";
 import { commandRefusalMessage } from "./commandRefusal.js";
 import { trailingRead } from "./trailingRead.js";
@@ -36,28 +36,30 @@ function mergeReviewReply(held, answer, readOrder, observedVersion) {
   return next;
 }
 
-export const writeReviewReply = (scope, answer, readOrder, observedVersion = 0) =>
-  mergeCachedAtomically(reviewAddress(scope), (held) => mergeReviewReply(held, answer, readOrder, observedVersion));
+export const writeReviewReply = (scope, answer, readOrder, observedVersion = 0, accept = () => true) =>
+  mergeCachedAtomically(reviewAddress(scope), (held) => accept() ? mergeReviewReply(held, answer, readOrder, observedVersion) : null);
 
-export const writeReviewRecord = (scope, review, readOrder, observedVersion = 0) =>
-  writeReviewReply(scope, { review }, readOrder, observedVersion);
+export const writeReviewRecord = (scope, review, readOrder, observedVersion = 0, accept = () => true) =>
+  writeReviewReply(scope, { review }, readOrder, observedVersion, accept);
 
-async function keepFailure(scope, error, readOrder) {
+async function keepFailure(scope, error, readOrder, accept) {
   return mergeCachedAtomically(reviewAddress(scope), (held) => {
-    if (held?.read_order > readOrder) return null;
+    if (!accept() || held?.read_order > readOrder) return null;
     return { ...held, error: reviewFailure(error), read_order: readOrder };
   });
 }
 
 export function createTaskReviewRepository({ callRpc, generationOf = () => null, active = () => true, ...scope }) {
+  const mutateRpc = reviewMutationRpc(scope.deviceId, callRpc);
   const canKeep = (fence) => active() && !removedSince(reviewAddress(scope), fence);
   const canRead = async () => Boolean(scope.taskId) && active() && (await readReviewSupport(scope.deviceId)).get;
   const mutationScope = (answer) => ({ ...scope, taskId: answer?.review?.task_id || scope.taskId });
   async function keepMutation(answer, readOrder, fence) {
     if (!answer || !active()) return;
     const destination = mutationScope(answer);
-    if (destination.taskId && !removedSince(reviewAddress(destination), fence)) {
-      await writeReviewReply(destination, answer, readOrder);
+    const accept = () => active() && !removedSince(reviewAddress(destination), fence);
+    if (destination.taskId && accept()) {
+      await writeReviewReply(destination, answer, readOrder, 0, accept);
     }
   }
   async function requireOperation(verb) {
@@ -73,10 +75,10 @@ export function createTaskReviewRepository({ callRpc, generationOf = () => null,
     try {
       const answer = await callRpc("tasks.review.get", { task_id: scope.taskId });
       if (!answer || !active()) return false;
-      if (!removedSince(reviewAddress(scope), fence)) await writeReviewReply(scope, answer, readOrder, observedVersion);
+      if (!removedSince(reviewAddress(scope), fence)) await writeReviewReply(scope, answer, readOrder, observedVersion, () => canKeep(fence));
       return true;
     } catch (error) {
-      if (canKeep(fence)) await keepFailure(scope, error, readOrder);
+      if (canKeep(fence)) await keepFailure(scope, error, readOrder, () => canKeep(fence));
       return false;
     }
   }
@@ -89,8 +91,9 @@ export function createTaskReviewRepository({ callRpc, generationOf = () => null,
       const fence = pushFence();
       try {
         const request = verb === "open" ? params : { ...params, task_id: scope.taskId };
-        const answer = await callRpc(`tasks.review.${verb}`, request);
+        const answer = await mutateRpc(`tasks.review.${verb}`, request);
         await keepMutation(answer, readOrder, fence);
+        return answer;
       } catch (error) {
         if ((error.code || error.error_code) === "stale_version") await refresh();
         throw error;

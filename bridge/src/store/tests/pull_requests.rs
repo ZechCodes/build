@@ -925,7 +925,10 @@ fn received_snapshot_preserves_snapshot_scoped_opinions_and_resets_approval() {
         .save_tracker_task_activity(&task, std::slice::from_ref(&opinion), &[])
         .unwrap();
     let approved = store.load_review(&review.task_id).unwrap().unwrap();
-    assert_eq!(approved.pull_request.as_ref().unwrap().status, PullRequestStatus::Approved);
+    assert_eq!(
+        approved.pull_request.as_ref().unwrap().status,
+        PullRequestStatus::Approved
+    );
     let (next, bindings) = received_snapshot();
     let saved = store
         .save_review_received_snapshot(&review.task_id, approved.version, next, &bindings)

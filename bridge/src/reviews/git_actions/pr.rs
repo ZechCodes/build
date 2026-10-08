@@ -5,8 +5,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// Merge the saved head only from the selected exact base. Callers retain the
-/// repository sequence and published receiver guards until this returns.
+/// Merge the saved head only from the selected exact base. Callers retain
+/// repository sequencing; finalization later reacquires receiver guards.
 pub fn merge_expected(
     directory: &ReviewDirectory,
     source_path: &Path,

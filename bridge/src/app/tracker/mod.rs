@@ -227,7 +227,8 @@ impl AppState {
         let done_at = crate::tracker::done_at_from_timeline(&task, timeline);
         if task.done_at.is_none() && done_at.is_some() {
             task.done_at = done_at;
-            task = self.tracker_store()?
+            task = self
+                .tracker_store()?
                 .backfill_tracker_task(&task)
                 .stored()?;
         }
@@ -434,12 +435,24 @@ impl AppState {
                 .collect::<Vec<_>>(),
         );
         self.capture_task_identities(&mut write.task, &timeline);
-        let (task, additional) = self.tracker_store()?.save_review_task_activity(
-            &write.task, &write.comments, &write.events, &write.actor,
-            write.expected_review_version, now,
-        ).stored()?;
+        let (task, additional) = self
+            .tracker_store()?
+            .save_review_task_activity(
+                &write.task,
+                &write.comments,
+                &write.events,
+                &write.actor,
+                write.expected_review_version,
+                now,
+            )
+            .stored()?;
         write.task = task;
-        timeline.extend(additional.iter().cloned().map(crate::tracker::TimelineEntry::Event));
+        timeline.extend(
+            additional
+                .iter()
+                .cloned()
+                .map(crate::tracker::TimelineEntry::Event),
+        );
         write.events.extend(additional);
         self.publish_task_write(project_id, &write);
         let task = self.task_with_read_identities(write.task, &timeline, &StoredRosters::default());

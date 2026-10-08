@@ -101,7 +101,7 @@ fn run(
     checkpoint: &impl Fn(MergeCheckpoint) -> Result<(), String>,
 ) -> Result<Review, String> {
     ensure_retryable(review, intent)?;
-    let publication_only = historical_snapshot(review, intent);
+    let publication_only = publication_only(review, intent);
     let mut sources = plan::actions(review, intent, job)?;
     if !sources.is_empty() {
         let rows = sources
@@ -127,6 +127,10 @@ fn run(
         }
     }
     checkpoint(MergeCheckpoint::BeforeFinalization)?;
+    if publication_only {
+        let current = load(store, &intent.request.task_id)?;
+        return settle_saved_publication(store, intent, &current, notify, checkpoint);
+    }
     finalize_and_settle(store, intent, notify, checkpoint)
 }
 
@@ -138,15 +142,8 @@ fn ensure_retryable(review: &Review, intent: &ReviewMergeIntent) -> Result<(), S
             "interrupted: PR merge has uncertain Git work; recover it before retrying".into(),
         );
     }
-    if historical_snapshot(review, intent) {
+    if publication_only(review, intent) {
         return Ok(());
-    }
-    if review
-        .pull_request
-        .as_ref()
-        .is_some_and(|metadata| metadata.status == PullRequestStatus::Closed)
-    {
-        return Err("closed PR cannot be merged".into());
     }
     let expected = intent
         .execution_version
@@ -165,6 +162,15 @@ fn historical_snapshot(review: &Review, intent: &ReviewMergeIntent) -> bool {
         != Some(&intent.request.snapshot_id)
 }
 
+fn publication_only(review: &Review, intent: &ReviewMergeIntent) -> bool {
+    historical_snapshot(review, intent)
+        || review.pull_request.as_ref().is_some_and(|metadata| {
+            metadata.status == PullRequestStatus::Closed
+                || (metadata.status == PullRequestStatus::Merged
+                    && intent.execution_version != Some(review.version))
+        })
+}
+
 fn finalize_and_settle(
     store: &Store,
     intent: &mut ReviewMergeIntent,
@@ -172,8 +178,8 @@ fn finalize_and_settle(
     checkpoint: &impl Fn(MergeCheckpoint) -> Result<(), String>,
 ) -> Result<Review, String> {
     let review = load(store, &intent.request.task_id)?;
-    if historical_snapshot(&review, intent) {
-        return settle_historical_publication(store, intent, &review, notify, checkpoint);
+    if publication_only(&review, intent) {
+        return settle_saved_publication(store, intent, &review, notify, checkpoint);
     }
     let integrated = intent
         .request
@@ -243,7 +249,7 @@ fn finalize_and_settle(
     load(store, &intent.request.task_id)
 }
 
-fn settle_historical_publication(
+fn settle_saved_publication(
     store: &Store,
     intent: &mut ReviewMergeIntent,
     review: &Review,
@@ -259,9 +265,9 @@ fn settle_historical_publication(
     };
     intent.error = Some(
         if publication_settled(review, intent) {
-            "Historical merge plan retained; recorded successful local results are published"
+            "Saved merge plan retained; recorded successful local results are published"
         } else {
-            "Historical merge plan retained; requested publication is still pending"
+            "Saved merge plan retained; requested publication is still pending"
         }
         .into(),
     );

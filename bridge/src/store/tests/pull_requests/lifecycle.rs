@@ -426,13 +426,28 @@ fn stale_read_backfill_preserves_merge_lifecycle_and_other_live_fields() {
     let review = publish(&store);
     let mut stale = store.load_tracker_task(&review.task_id).unwrap().unwrap();
     let identity = crate::tracker::TaskAgentIdentity {
-        agent_id: "reviewer".into(), name: Some("Reviewer".into()), ordinal: Some(1),
-        workspace_id: None, workspace_name: None, provider: None, available: true,
+        agent_id: "reviewer".into(),
+        name: Some("Reviewer".into()),
+        ordinal: Some(1),
+        workspace_id: None,
+        workspace_name: None,
+        provider: None,
+        available: true,
     };
     stale.identities.insert("reviewer".into(), identity.clone());
     stale.done_at = Some("2000-01-01T00:00:00Z".into());
     stale.title = "Stale title".into();
-    store.in_transaction(|tx| crate::store::reviews::lifecycle::transition_in_tx(tx, &review.task_id, PullRequestStatus::Merged, &Actor::User, "Verified merge")).unwrap();
+    store
+        .in_transaction(|tx| {
+            crate::store::reviews::lifecycle::transition_in_tx(
+                tx,
+                &review.task_id,
+                PullRequestStatus::Merged,
+                &Actor::User,
+                "Verified merge",
+            )
+        })
+        .unwrap();
     let before = store.load_tracker_task(&review.task_id).unwrap().unwrap();
     let migrated = store.backfill_tracker_task(&stale).unwrap();
     assert_eq!(migrated.status, before.status);
@@ -441,5 +456,8 @@ fn stale_read_backfill_preserves_merge_lifecycle_and_other_live_fields() {
     assert_eq!(migrated.title, before.title);
     assert_eq!(migrated.updated_at, before.updated_at);
     assert_eq!(migrated.identities.get("reviewer"), Some(&identity));
-    assert_eq!(store.load_tracker_task(&review.task_id).unwrap().unwrap(), migrated);
+    assert_eq!(
+        store.load_tracker_task(&review.task_id).unwrap().unwrap(),
+        migrated
+    );
 }

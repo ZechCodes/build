@@ -154,6 +154,15 @@ fn restart_marks_admitted_work_interrupted_when_its_receiver_is_unavailable() {
 
 #[test]
 fn stale_partial_publication_can_settle_after_a_newer_plan_without_remerging() {
+    publication_after_newer_plan(true);
+}
+
+#[test]
+fn partial_publication_can_settle_after_another_plan_merges_the_same_snapshot() {
+    publication_after_newer_plan(false);
+}
+
+fn publication_after_newer_plan(new_received_heads: bool) {
     let f = multi_fixture(false);
     super::tests::commit_at(f.checkout(), "first.txt");
     let second = &f.request.workspace.directories[1];
@@ -183,9 +192,11 @@ fn stale_partial_publication_can_settle_after_a_newer_plan_without_remerging() {
         .store
         .workspace_review_publication_pending(&f.review().workspace_id)
         .unwrap());
-    super::tests::commit_at(f.checkout(), "newer-first.txt");
-    super::tests::commit_at(&second.path, "newer.txt");
-    f.sync();
+    if new_received_heads {
+        super::tests::commit_at(f.checkout(), "newer-first.txt");
+        super::tests::commit_at(&second.path, "newer.txt");
+        f.sync();
+    }
     std::fs::remove_file(hook).unwrap();
     crate::git_fixture::git_in(&second.source_path, &["restore", "README.md"]);
     let mut newer = job(&f);
@@ -216,6 +227,102 @@ fn stale_partial_publication_can_settle_after_a_newer_plan_without_remerging() {
             .filter(|step| step.kind == StepKind::Merge)
             .count(),
         before
+    );
+    assert!(!f
+        .store
+        .workspace_review_publication_pending(&f.review().workspace_id)
+        .unwrap());
+}
+
+#[test]
+fn closed_partial_plan_can_publish_saved_success_without_merging_missing_sources() {
+    let f = multi_fixture(false);
+    super::tests::commit_at(f.checkout(), "first.txt");
+    let second = &f.request.workspace.directories[1];
+    super::tests::commit_at(&second.path, "second.txt");
+    f.sync();
+    let external = f._home.path().join("external.git");
+    crate::git_fixture::git_in(
+        f._home.path(),
+        &["init", "--bare", external.to_str().unwrap()],
+    );
+    crate::git_fixture::git_in(
+        &f.source,
+        &["remote", "add", "external", external.to_str().unwrap()],
+    );
+    let hook = external.join("hooks/pre-receive");
+    std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(second.source_path.join("README.md"), "dirty target\n").unwrap();
+    let mut selected = job(&f);
+    selected.request.sources[0].push = Some(super::super::model::ReviewMergePush {
+        remote: "external".into(),
+        branch: "main".into(),
+    });
+    merge(&f.store, &selected, || {}).unwrap();
+    let mut task = f.store.load_tracker_task(f.task_id()).unwrap().unwrap();
+    let now = crate::store::now_rfc3339();
+    task.state = crate::tracker::TaskState::Closed;
+    task.closed_at = Some(now.clone());
+    let event = crate::tracker::TaskEvent::new(
+        f.task_id(),
+        crate::tracker::Actor::User,
+        crate::tracker::TaskEventKind::Closed,
+        serde_json::json!({}),
+        &now,
+    );
+    f.store
+        .save_review_task_activity(
+            &task,
+            &[],
+            &[event],
+            &crate::tracker::Actor::User,
+            None,
+            &now,
+        )
+        .unwrap();
+    assert_eq!(
+        f.review().pull_request.unwrap().status,
+        PullRequestStatus::Closed
+    );
+    assert!(f
+        .store
+        .workspace_review_publication_pending(&f.review().workspace_id)
+        .unwrap());
+    std::fs::remove_file(hook).unwrap();
+    crate::git_fixture::git_in(&second.source_path, &["restore", "README.md"]);
+    let before = f
+        .review()
+        .actions
+        .iter()
+        .flat_map(|action| &action.steps)
+        .filter(|step| step.kind == StepKind::Merge)
+        .count();
+    let second_tip = git2::Repository::open(&second.source_path)
+        .unwrap()
+        .refname_to_id("refs/heads/main")
+        .unwrap();
+    let published = merge(&f.store, &selected, || {}).unwrap();
+    assert_eq!(
+        published.pull_request.unwrap().status,
+        PullRequestStatus::Closed
+    );
+    assert_eq!(
+        f.review()
+            .actions
+            .iter()
+            .flat_map(|action| &action.steps)
+            .filter(|step| step.kind == StepKind::Merge)
+            .count(),
+        before
+    );
+    assert_eq!(
+        git2::Repository::open(&second.source_path)
+            .unwrap()
+            .refname_to_id("refs/heads/main")
+            .unwrap(),
+        second_tip
     );
     assert!(!f
         .store

@@ -77,7 +77,7 @@ fn execute(
         StepKind::Merge => {
             if publication_only {
                 return Err(GitActionError::Failed(
-                    "Historical merge retry may only publish recorded successful tips".into(),
+                    "Saved publication retry may only publish recorded successful tips".into(),
                 ));
             }
             let expected = targets

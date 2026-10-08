@@ -336,7 +336,8 @@ impl AppState {
         let before = task.identities.clone();
         self.capture_identities_with(&mut task, timeline, rosters);
         if task.identities != before {
-            task = self.tracker_store()?
+            task = self
+                .tracker_store()?
                 .backfill_tracker_task(&task)
                 .stored()?;
         }

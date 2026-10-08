@@ -8,7 +8,7 @@ pub(super) fn actions(
     job: &MergeJob,
 ) -> Result<Vec<crate::reviews::actions::plan::PreparedSource>, String> {
     let mut selections = Vec::new();
-    let publication_only = historical_snapshot(review, intent);
+    let publication_only = publication_only(review, intent);
     for source in &intent.request.sources {
         let previous = successful_merge(review, intent, &source.directory_id);
         let merge = (previous.is_none() && !publication_only).then(|| MergeSelection {

@@ -19,7 +19,7 @@
 // record is written through by the task page itself on first open, which is
 // how every other detail surface warms its own cache.
 
-import { mergeCachedAtomically, readCached, writeCached } from "./localCache.js";
+import { mergeCachedAtomically, readCached } from "./localCache.js";
 import { taskUnreadKey, latestTaskMark } from "./trackerUnread.js";
 
 export const TRACKER_TASKS_KIND = "tracker-tasks";
@@ -89,6 +89,62 @@ export const listAskedAt = (cached) => Number(cached?.value?.read_order) || cach
 
 export const taskRecord = (task, timeline) => ({ task: task || null, timeline: timeline || [] });
 
+const rowIdentity = (row) => row?.id ?? row?.task_id ?? row?.workspace_id;
+const hasSummaryVersion = (summary) => Boolean(summary?.task_id) && Number.isFinite(summary.version);
+const rowWrittenLater = (held, incoming) => Date.parse(incoming.updated_at) > Date.parse(held.updated_at);
+const olderSummary = (held, incoming) => held.task_id === incoming.task_id
+  && Number.isFinite(incoming.version) && incoming.version < held.version;
+const keepRowSummary = (held, incoming, field, allowMissing) => incoming[field]
+  ? olderSummary(held[field], incoming[field]) : !allowMissing && !rowWrittenLater(held, incoming);
+
+/** A delayed task or workspace read can replace ordinary row fields without
+ * rolling its PR summary back. Versions belong to one PR task; a new task
+ * using the same workspace starts its own floor. Absence needs a newer read
+ * or timestamp before it can erase a known summary. */
+export function preserveReviewSummary(held, incoming, field = "review_summary", { allowMissing = false } = {}) {
+  const summary = held?.[field];
+  if (!incoming || !hasSummaryVersion(summary) || rowIdentity(held) !== rowIdentity(incoming)) return incoming;
+  return keepRowSummary(held, incoming, field, allowMissing) ? { ...incoming, [field]: summary } : incoming;
+}
+
+/** Match only the rows an incoming list names: PR floors do not revive rows
+ * that an authoritative list left out. */
+export function preserveReviewSummaries(held, incoming, field = "review_summary", options) {
+  const old = new Map((held || []).map((row) => [rowIdentity(row), row]));
+  return (incoming || []).map((row) => preserveReviewSummary(old.get(rowIdentity(row)), row, field, options));
+}
+
+const newerListRead = (held, incoming) => Number.isFinite(held?.read_order)
+  && Number.isFinite(incoming?.read_order) && incoming.read_order > held.read_order;
+const latestListRead = (held, incoming) => Number.isFinite(held?.read_order)
+  ? Math.max(held.read_order, incoming.read_order || 0) : incoming.read_order;
+
+function preserveListSummaries(held, incoming) {
+  // An older absence must not lower the read floor and make the next older
+  // absence appear authoritative enough to erase the retained summary.
+  const readOrder = latestListRead(held, incoming);
+  return {
+    ...incoming,
+    ...(Number.isFinite(readOrder) ? { read_order: readOrder } : {}),
+    tasks: preserveReviewSummaries(held?.tasks, incoming.tasks, "review_summary", {
+      allowMissing: newerListRead(held, incoming),
+    }),
+  };
+}
+
+function withReadThroughFloor(held, incoming) {
+  const floor = latestTaskMark(held?.task?.read_through, incoming?.task?.read_through);
+  const task = incoming?.task;
+  if (!task || !floor || floor === task.read_through) return incoming;
+  return { ...incoming, task: { ...task, read_through: floor } };
+}
+
+function preserveTaskFloors(held, incoming) {
+  const task = preserveReviewSummary(held?.task, incoming?.task);
+  const next = task === incoming?.task ? incoming : { ...incoming, task };
+  return withReadThroughFloor(held, next);
+}
+
 /** What the cache holds for a project, or null when it has never been read
  *  there. Never throws: a cache miss and a broken cache are the same answer. */
 export async function readTasksRecord(deviceId, projectId) {
@@ -121,7 +177,7 @@ export const readTasksQueryCached = (deviceId, projectId, params) =>
   readListCached(tasksQueryAddress(deviceId, projectId, params));
 
 export const writeTasksRecord = (deviceId, projectId, record) =>
-  writeCached(tasksAddress(deviceId, projectId), record);
+  mergeCachedAtomically(tasksAddress(deviceId, projectId), (held) => preserveListSummaries(held, record));
 
 /** Pulls may carry an older server read mark than one this browser has already
  * accepted. Keep the accepted mark in the cached task while replacing its
@@ -131,9 +187,7 @@ export const writeTaskRecord = (deviceId, projectId, taskId, record, { accept = 
   mergeCachedAtomically(taskAddress(deviceId, projectId, taskId), (held) => {
     // A writer can be superseded while waiting for the cache transaction.
     if (!accept(held)) return null;
-    const floor = latestTaskMark(held?.task?.read_through, record?.task?.read_through);
-    if (!record?.task || !floor || floor === record.task.read_through) return record;
-    return { ...record, task: { ...record.task, read_through: floor } };
+    return preserveTaskFloors(held, record);
   });
 
 /** Only an accepted read report may raise the cached floor. Do not touch the
@@ -149,7 +203,7 @@ export const advanceTaskReadThrough = (deviceId, projectId, taskId, mark) => {
 };
 
 export const writeTasksQueryRecord = (deviceId, projectId, params, record) =>
-  writeCached(tasksQueryAddress(deviceId, projectId, params), record);
+  mergeCachedAtomically(tasksQueryAddress(deviceId, projectId, params), (held) => preserveListSummaries(held, record));
 
 /** When the cache last took an answer for a record, or 0 for one it has never
  *  held. A surface showing a cached copy says when that copy was read

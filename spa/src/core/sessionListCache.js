@@ -1,4 +1,13 @@
 import { mergeCachedAtomically, mergeCachedTogether, readCached } from "./localCache.js";
+import { preserveReviewSummary } from "./trackerCache.js";
+
+// A list request observes PR state beside reset revisions. The reserved key
+// cannot be a conversation id and never participates in the reset comparison.
+const ACTIVE_REVIEW_OBSERVATION = "__active_review";
+const activeReviewObservation = (row) => row?.active_review ?? null;
+
+const observedActiveReview = (held, observation) => observation !== undefined
+  && JSON.stringify(activeReviewObservation(held)) === JSON.stringify(observation[ACTIVE_REVIEW_OBSERVATION]);
 
 const rowId = (kind, row) => kind === "projects"
   ? row.project_id || row.id
@@ -31,14 +40,16 @@ export function replaceSessionList(address, kind, incoming, onReplaced, observat
 export async function sessionListObservation(address, kind) {
   const held = (await readCached(address))?.value;
   return Object.fromEntries((Array.isArray(held) ? held : []).map((row) =>
-    [rowId(kind, row), { ...row.conversation_session_revisions }]));
+    [rowId(kind, row), { ...row.conversation_session_revisions, [ACTIVE_REVIEW_OBSERVATION]: activeReviewObservation(row) }]));
 }
 
 const resetSinceObservation = (held, observed) => observed !== undefined
   && Object.entries(held?.conversation_session_revisions || {}).some(([id, revision]) => Number(revision) > Number(observed[id] || 0));
 
 function listedSession(incoming, held, observation) {
-  const next = monotonicSession(incoming, held);
+  const next = monotonicSession(preserveReviewSummary(held, incoming, "active_review", {
+    allowMissing: observedActiveReview(held, observation),
+  }), held);
   return resetSinceObservation(held, observation)
     ? { ...next, session_started_ms: held.session_started_ms, last_activity_ms: held.last_activity_ms } : next;
 }
@@ -51,7 +62,7 @@ export function upsertSessionRow(address, kind, incoming, active = () => true) {
     const id = rowId(kind, incoming);
     const present = rows.some((row) => rowId(kind, row) === id);
     const next = rows.map((row) => rowId(kind, row) === id
-      ? monotonicSession({ ...row, ...incoming }, row)
+      ? monotonicSession(preserveReviewSummary(row, { ...row, ...incoming }, "active_review"), row)
       : row);
     return present ? next : [...next, incoming];
   });

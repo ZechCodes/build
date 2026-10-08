@@ -28,7 +28,7 @@ import { cachedSubKeys, deleteCached, mergeCachedAtomically, mergeCachedRecordsT
 import { lastSayIn, nextTaskRead, readsAddress, withStretch } from "./taskReadOrder.js";
 import { bridgeCapabilities } from "./changeEvents.js";
 import { sortTasks } from "./trackerFilters.js";
-import { TRACKER_TASKS_PAGE_KIND, tasksPageAddress, tasksRecord, listAskedAt } from "./trackerCache.js";
+import { TRACKER_TASKS_PAGE_KIND, tasksPageAddress, tasksRecord, listAskedAt, preserveReviewSummary } from "./trackerCache.js";
 import { userSessionOf } from "./userSessionCache.js";
 
 /** Tasks per page. A tenth of a large tracker, and one page of a small one. */
@@ -49,7 +49,7 @@ function rowsToLay(tasks, heldById, overtaken) {
   return tasks.filter((row) => {
     const heldRow = heldById.get(row.id);
     return !overtaken(row) && !(heldRow && writtenAfter(heldRow, row));
-  });
+  }).map((row) => preserveReviewSummary(heldById.get(row.id), row));
 }
 
 /** The span of a stretch a number falls in, or undefined outside it. A

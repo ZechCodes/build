@@ -175,12 +175,18 @@ it.each(["individual row", "feed copy"])("persists and paints the PR version fro
   } finally { stopPaint(); feed.stopFeed(); }
 });
 
-it.each(["individual row", "feed copy"])("preserves a cleared PR from the %s when merging cached feed authorities", async (source) => {
+it.each([
+  { source: "individual row", version: 7 }, { source: "feed copy", version: 7 },
+  { source: "individual row", version: 8 }, { source: "feed copy", version: 8 },
+])("preserves a clear from the $source over an earlier cached v$version copy", async ({ source, version }) => {
   await sync.syncDevice(deviceId);
   const tracker = await import("../src/core/trackerCache.js");
   const { nextTaskRead } = await import("../src/core/taskReadOrder.js");
   const visible = { kind: "tracker_task", task_id: taskId, project_id: projectId, title: "held fields",
     updated_at: "2026-10-08T20:00:20Z", review_summary: { ...summary, version: 7 } };
+  const earlier = tracker.preserveTaskReviewSummary(null, {
+    ...visible, updated_at: "2026-10-08T20:00:10Z", review_summary: { ...summary, version },
+  }, { readOrder: await nextTaskRead() });
   await tracker.writeTasksRecord(deviceId, projectId, tracker.tasksRecord([visible], [], await nextTaskRead()));
   const { review_summary: _summary, ...absent } = visible;
   await tracker.writeTasksRecord(deviceId, projectId, tracker.tasksRecord([
@@ -189,8 +195,8 @@ it.each(["individual row", "feed copy"])("preserves a cleared PR from the %s whe
   const cleared = (await tracker.readTasksRecord(deviceId, projectId)).tasks[0];
   const rowAddress = { deviceId, entityId: taskId, kind: "row" };
   const feedAddress = { deviceId, entityId: "", kind: "feed" };
-  await cache.writeCached(rowAddress, source === "individual row" ? cleared : visible);
-  await cache.writeCached(feedAddress, { items: [source === "feed copy" ? cleared : visible], projects: [], workspaces: [] });
+  await cache.writeCached(rowAddress, source === "individual row" ? cleared : earlier);
+  await cache.writeCached(feedAddress, { items: [source === "feed copy" ? cleared : earlier], projects: [], workspaces: [] });
   const ownBefore = await cache.readCached(rowAddress);
   items = [{ ...visible, title: "board fields", updated_at: "2026-10-08T20:00:10Z", review_summary: summary }];
   const stopAfterFeed = cache.subscribeCache(feedAddress, () => { state.context.session = {}; });
@@ -211,4 +217,22 @@ it.each(["individual row", "feed copy"])("preserves a cleared PR from the %s whe
     expect(row).not.toHaveProperty("review_summary");
     expect(row.title).toBe("board fields");
   } finally { stopPaint(); feed.stopFeed(); }
+});
+
+it("admits a fresh higher board version after merging two cached authorities with unknown read order", async () => {
+  await sync.syncDevice(deviceId);
+  const tracker = await import("../src/core/trackerCache.js");
+  const visible = { kind: "tracker_task", task_id: taskId, project_id: projectId,
+    updated_at: "2026-10-08T20:00:20Z", review_summary: { ...summary, version: 7 } };
+  const { review_summary: _summary, ...absent } = visible;
+  const cleared = tracker.preserveTaskReviewSummary(visible, { ...absent, updated_at: "2026-10-08T20:00:30Z" });
+  const older = tracker.preserveTaskReviewSummary(null, {
+    ...visible, updated_at: "2026-10-08T20:00:10Z", review_summary: summary,
+  });
+  const feedAddress = { deviceId, entityId: "", kind: "feed" };
+  await cache.writeCached({ deviceId, entityId: taskId, kind: "row" }, cleared);
+  await cache.writeCached(feedAddress, { items: [older], projects: [], workspaces: [] });
+  items = [{ ...visible, updated_at: "2026-10-08T20:00:10Z", review_summary: { ...summary, version: 8 } }];
+  expect(await sync.syncDevice(deviceId)).toBe(true);
+  expect((await cache.readCached(feedAddress)).value.items[0]).toHaveProperty("review_summary.version", 8);
 });

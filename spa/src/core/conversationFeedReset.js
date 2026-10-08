@@ -16,7 +16,7 @@ const threadAddress = (deviceId, entityId, conversationId) => ({ deviceId, entit
 
 function mapFeedRows(view, rewrite) {
   return { ...view, ...Object.fromEntries(FEED_COLLECTIONS.filter((field) => Array.isArray(view?.[field]))
-    .map((field) => [field, view[field].map(rewrite)])) };
+    .map((field) => [field, view[field].map((row) => rewrite(row, field))])) };
 }
 
 const ownsConversation = (row, ownership) => agentsOf(row).some((agent) => canonicalId(agent) === ownership.conversationId)
@@ -87,9 +87,11 @@ function currentConversation(deviceId, entityId, agent, records) {
 const retiredDigest = (agent, thread) => thread?.thread_id && (agent.thread_id
   ? agent.thread_id !== thread.thread_id : Number(thread.thread_generation_revision || 0) > 0);
 
-function admittedFeedRow(row, deviceId, records, rewriteRow) {
+function admittedFeedRow(row, deviceId, records, rewriteRow, held) {
   const entityId = entityIdOf(row);
-  let next = preserveTaskReviewSummary(currentRow(deviceId, entityId, records), row);
+  const own = currentRow(deviceId, entityId, records);
+  const authority = preserveTaskReviewSummary(own, held || own);
+  let next = preserveTaskReviewSummary(authority, row);
   const seen = new Set();
   for (const agent of agentsOf(row)) {
     const conversationId = canonicalId(agent);
@@ -104,13 +106,8 @@ function admittedFeedRow(row, deviceId, records, rewriteRow) {
   return next;
 }
 
-function withHeldReviewSummaries(held, view) {
-  return { ...view, ...Object.fromEntries(FEED_COLLECTIONS.filter((field) => Array.isArray(view?.[field]))
-    .map((field) => {
-      const old = new Map((held?.[field] || []).map((row) => [entityIdOf(row), row]));
-      return [field, view[field].map((row) => preserveTaskReviewSummary(old.get(entityIdOf(row)), row))];
-    })) };
-}
+const heldFeedRows = (held) => new Map(FEED_COLLECTIONS.map((field) =>
+  [field, new Map((held?.[field] || []).map((row) => [entityIdOf(row), row]))]));
 
 /** Admit a board snapshot against all its thread generations inside the same
  * transaction as the feed write. Other rows remain this list's observation. */
@@ -120,8 +117,9 @@ export function writeConversationFeed(address, view, { active, supersededFeedRow
     active, options: { observedFeedRows: true, supersededFeedRow },
     makeFeed: (held, found) => {
       const records = new Map(guards.map((at, index) => [recordKey(at), found[index]]));
-      return mapFeedRows(withHeldReviewSummaries(held, pruneView(view)),
-        (row) => admittedFeedRow(row, address.deviceId, records, rewriteRow));
+      const old = heldFeedRows(held);
+      return mapFeedRows(pruneView(view),
+        (row, field) => admittedFeedRow(row, address.deviceId, records, rewriteRow, old.get(field)?.get(entityIdOf(row))));
     },
   });
 }

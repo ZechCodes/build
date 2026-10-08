@@ -340,3 +340,100 @@ fn final_check_head_switch_cannot_publish_or_repair_tracking() {
         before.bindings[0].initial_head
     );
 }
+
+fn unreceived_proof(fixture: &Fixture) -> String {
+    let target = fixture.commit("unreceived.txt");
+    let review = fixture.review();
+    let binding = &review.bindings[0];
+    let (repository, _) = tracking(fixture);
+    let fingerprint =
+        crate::reviews::publication::tracking::fingerprint(&repository, binding).unwrap();
+    fixture
+        .store
+        .prepare_review_tracking_expectation(
+            fixture.task_id(),
+            review.version,
+            &binding.directory_id,
+            &fingerprint,
+            binding.last_received_head.as_deref(),
+            &target,
+        )
+        .unwrap();
+    target
+}
+
+#[test]
+fn unreceived_proof_retarget_and_final_refusal_preserve_receiver_and_tracking() {
+    let fixture = Fixture::new();
+    unreceived_proof(&fixture);
+    let head = fixture.commit("next.txt");
+    let before = fixture.review();
+    let checks = std::cell::Cell::new(0);
+    let result = push_checked(
+        &fixture.store,
+        &push_request(&fixture, head.clone()),
+        &|| {
+            checks.set(checks.get() + 1);
+            if checks.get() == 4 {
+                git_in(
+                    fixture.checkout(),
+                    &["symbolic-ref", "HEAD", "refs/heads/main"],
+                );
+            }
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(result.sources[0].status, PushStatus::Failed);
+    assert_eq!(
+        registered_received_head(&before.bindings[0]).unwrap(),
+        before.bindings[0].last_received_head
+    );
+    let (repository, reference) = tracking(&fixture);
+    assert_eq!(
+        repository.refname_to_id(&reference).unwrap().to_string(),
+        before.bindings[0].initial_head
+    );
+    git_in(
+        fixture.checkout(),
+        &[
+            "symbolic-ref",
+            "HEAD",
+            &before.bindings[0].dedicated_branch_ref,
+        ],
+    );
+    let result = push(&fixture.store, &push_request(&fixture, head.clone())).unwrap();
+    assert_eq!(result.sources[0].status, PushStatus::Published);
+    assert_eq!(result.sources[0].recovery, None);
+    assert_eq!(
+        repository.refname_to_id(&reference).unwrap().to_string(),
+        head
+    );
+}
+
+#[test]
+fn newer_matching_native_receiver_and_tracking_clear_obsolete_pending_proof() {
+    let fixture = Fixture::new();
+    unreceived_proof(&fixture);
+    let head = fixture.commit("native-next.txt");
+    fixture.push();
+    fixture.sync();
+    let before = fixture.review();
+    let (repository, reference) = tracking(&fixture);
+    assert_eq!(
+        repository.refname_to_id(&reference).unwrap().to_string(),
+        head
+    );
+    let result = push(&fixture.store, &push_request(&fixture, head.clone())).unwrap();
+    assert_eq!(result.sources[0].status, PushStatus::Unchanged);
+    assert_eq!(result.sources[0].recovery, None);
+    assert_eq!(
+        repository.refname_to_id(&reference).unwrap().to_string(),
+        head
+    );
+    assert_eq!(
+        registered_received_head(&before.bindings[0]).unwrap(),
+        Some(head)
+    );
+    assert_eq!(fixture.review(), before);
+}

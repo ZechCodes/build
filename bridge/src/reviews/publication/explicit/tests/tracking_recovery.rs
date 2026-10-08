@@ -201,3 +201,142 @@ fn stale_working_head_and_review_version_cannot_repair_tracking() {
         Some(head)
     );
 }
+
+fn retained_settled_proof(fixture: &Fixture) -> String {
+    let (_, head) = partial_publication(fixture);
+    let (repository, reference) = tracking(fixture);
+    repository
+        .reference(
+            &reference,
+            git2::Oid::from_str(&head).unwrap(),
+            true,
+            "settled before cleanup crash",
+        )
+        .unwrap();
+    head
+}
+
+#[test]
+fn settled_proof_retained_after_cleanup_failure_can_extend_publication() {
+    let fixture = Fixture::new();
+    retained_settled_proof(&fixture);
+    let head = fixture.commit("next-publication.txt");
+    let result = push(&fixture.store, &push_request(&fixture, head.clone())).unwrap();
+    assert_eq!(result.sources[0].status, PushStatus::Published);
+    assert_eq!(result.sources[0].recovery, None);
+    let (repository, reference) = tracking(&fixture);
+    assert_eq!(
+        repository.refname_to_id(&reference).unwrap().to_string(),
+        head
+    );
+}
+
+#[test]
+fn multiple_extensions_preserve_the_last_authorized_tracking_tip() {
+    let fixture = Fixture::new();
+    let settled = retained_settled_proof(&fixture);
+    let head = fixture.commit("next-publication.txt");
+    let (repository, reference) = tracking(&fixture);
+    let lock = repository.commondir().join(format!("{reference}.lock"));
+    let checks = std::cell::Cell::new(0);
+    let result = push_checked(
+        &fixture.store,
+        &push_request(&fixture, head.clone()),
+        &|| {
+            checks.set(checks.get() + 1);
+            if checks.get() == 4 {
+                std::fs::write(&lock, b"foreign lock after old proof settlement").unwrap();
+            }
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(result.sources[0].status, PushStatus::Published);
+    assert!(result.sources[0].recovery.is_some());
+    assert_eq!(
+        repository.refname_to_id(&reference).unwrap().to_string(),
+        settled
+    );
+    assert_eq!(
+        std::fs::read(&lock).unwrap(),
+        b"foreign lock after old proof settlement"
+    );
+    std::fs::remove_file(lock).unwrap();
+    let next = fixture.commit("third-publication.txt");
+    let result = push(&fixture.store, &push_request(&fixture, next.clone())).unwrap();
+    assert_eq!(result.sources[0].status, PushStatus::Published);
+    assert_eq!(result.sources[0].recovery, None);
+    assert_eq!(
+        repository.refname_to_id(&reference).unwrap().to_string(),
+        next
+    );
+}
+
+#[test]
+fn pending_tracking_proof_keeps_its_cas_separate_from_newer_native_receiver() {
+    let fixture = Fixture::new();
+    retained_settled_proof(&fixture);
+    let native_head = fixture.commit("native.txt");
+    let binding = fixture.review().bindings.remove(0);
+    crate::reviews::publication::import_publication_commit(
+        &binding.receiving_repository,
+        fixture.checkout(),
+        &native_head,
+    )
+    .unwrap();
+    let receiver = git2::Repository::open_bare(&binding.receiving_repository).unwrap();
+    receiver
+        .reference(
+            &binding.receiving_ref,
+            git2::Oid::from_str(&native_head).unwrap(),
+            true,
+            "native receiver advancement",
+        )
+        .unwrap();
+    fixture.sync();
+    let head = fixture.commit("after-native.txt");
+    let result = push(&fixture.store, &push_request(&fixture, head.clone())).unwrap();
+    assert_eq!(result.sources[0].status, PushStatus::Published);
+    assert_eq!(result.sources[0].recovery, None);
+    let (repository, reference) = tracking(&fixture);
+    assert_eq!(
+        repository.refname_to_id(&reference).unwrap().to_string(),
+        head
+    );
+    assert_eq!(
+        receiver
+            .refname_to_id(&binding.receiving_ref)
+            .unwrap()
+            .to_string(),
+        head
+    );
+}
+
+#[test]
+fn final_check_head_switch_cannot_publish_or_repair_tracking() {
+    let fixture = Fixture::new();
+    let head = fixture.commit("requested.txt");
+    let before = fixture.review();
+    let checks = std::cell::Cell::new(0);
+    let result = push_checked(&fixture.store, &push_request(&fixture, head), &|| {
+        checks.set(checks.get() + 1);
+        if checks.get() == 3 {
+            git_in(
+                fixture.checkout(),
+                &["symbolic-ref", "HEAD", "refs/heads/main"],
+            );
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(result.sources[0].status, PushStatus::Failed);
+    assert_eq!(
+        registered_received_head(&before.bindings[0]).unwrap(),
+        before.bindings[0].last_received_head
+    );
+    let (repository, reference) = tracking(&fixture);
+    assert_eq!(
+        repository.refname_to_id(&reference).unwrap().to_string(),
+        before.bindings[0].initial_head
+    );
+}

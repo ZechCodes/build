@@ -465,7 +465,7 @@
   ],
   "pull_requests": {
     "since": "3.15.0",
-    "capability": "tasks.pullRequests",
+    "capability": "tasks.review.pullRequests",
     "note": "Open reserves one task identity per project/request_id; retry the same opening explicitly to recover preparation or read its published result. Reviewer delivery failure does not unpublish the PR."
   },
   "refusals": [

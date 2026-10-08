@@ -83,7 +83,7 @@
   ],
   "pull_requests": {
     "since": "3.15.0",
-    "capability": "tasks.pullRequests",
+    "capability": "tasks.review.pullRequests",
     "note": "Snapshot-mode completion remains supported. Completing a PR closes it without claiming a merge; dedicated branches and workspace remain retained."
   }
 }

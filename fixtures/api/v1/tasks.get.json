@@ -308,7 +308,7 @@
   ],
   "pull_requests": {
     "since": "3.15.0",
-    "capability": "tasks.pullRequests",
+    "capability": "tasks.review.pullRequests",
     "fields": [
       "review_summary"
     ]

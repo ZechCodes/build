@@ -360,7 +360,7 @@ runtime that starts them.
   error code for removals held by the user's workspace lock.
   3.15.0 publishes `tasks.review.open`, `push`, `update`, `merge`, `close`,
   `reopen` and `refresh`, under the `tasks.review.` namespace (#405). Each is
-  announced by its verb name; `tasks.pullRequests` separately announces PR
+  announced by its verb name; `tasks.review.pullRequests` separately announces PR
   mode, lifecycle, summaries and sync observations. Legacy Snapshot review
   verbs retain their contracts and individual capabilities. See Task reviews.
   3.11.0 adds `conversation.reset` (#358) and thread generations on conversation
@@ -751,7 +751,7 @@ optional recovery guidance. Task get/list and watched-task feed rows carry an
 optional `review_summary`; workspace get/list carry optional `active_review`,
 including the latest retained terminal link when no active PR remains. No new
 push event or subscription kind is introduced: existing task and workspace
-invalidations make clients refetch. `tasks.pullRequests` and each verb have
+invalidations make clients refetch. `tasks.review.pullRequests` and each verb have
 separate cached SPA capability flags; no flag is inferred from the wire minor.
 
 Refusals use existing error codes with structured details such as the task,
@@ -894,6 +894,12 @@ never reruns that Merge, and can settle saved publication after a newer snapshot
 or closure without changing the newer review lifecycle. Startup recovery never
 replays Git; it finalizes recorded complete integration or preserves incomplete
 or uncertain work for explicit retry, excluding live merge workers.
+
+Explicit merge retries keep the saved completed or partially integrated plan
+and its recorded results. Running or interrupted work also keeps its recovery
+identity. If a failed plan integrated no source and has no uncertain Git work,
+the caller can confirm the current review version to admit a fresh plan after
+the review changes. Successful integration is retained rather than repeated.
 
 Reclaim holds a workspace while a durable merge is running or publication of a
 recorded successful merge tip remains unsettled, even after the PR reaches Done

@@ -97,7 +97,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "tasks.commentUserMentions",
     "tasks.commentUserNotifies",
     "tasks.reviewComments", // Since 3.7.0: anchor, reply_to and opinion on task comments.
-    "tasks.pullRequests",   // Since 3.15.0: PR lifecycle, summaries and sync observations (#405).
+    "tasks.review.pullRequests", // Since 3.15.0: PR lifecycle, summaries and sync observations (#405).
     "tasks.context",
     "tasks.createdUserMentions", // Since 1.27.0: mentions_user on an agent's created event.
     "tasks.doneSinceLeft",

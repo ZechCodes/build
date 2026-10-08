@@ -32,7 +32,7 @@ only their declared fields; callers cannot supply actor identities, source paths
 receiving repositories or command arguments. RPC and MCP share trusted identity
 resolution, project scope, Git services and structured error mapping.
 
-The `tasks.pullRequests` capability gates PR mode, summaries and observations;
+The `tasks.review.pullRequests` capability gates PR mode, summaries and observations;
 each new RPC verb is also independently announced. Existing Snapshot verbs
 `snapshot`, `get`, `diff`, `act` and `complete` remain available with their
 original arrival versions and shapes. PR-mode `act` refuses with `invalid_params`;

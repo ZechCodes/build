@@ -152,19 +152,24 @@ fn interrupt_tracking_writer(binding_path: &Path, phase: &str) {
 }
 
 #[cfg(unix)]
+fn run_interrupted_tracking_child_if_requested() {
+    let Some(path) = std::env::var_os("BUILD_REVIEW_INTERRUPTED_TRACKING_BINDING") else {
+        return;
+    };
+    let binding: ReviewBranchBinding = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    let phase = std::env::var("BUILD_REVIEW_INTERRUPTED_TRACKING_PHASE").unwrap();
+    if matches!(phase.as_str(), "cleanup-locked" | "tracking-removed") {
+        cleanup_initial(&binding).unwrap();
+    } else {
+        publish_initial(&binding).unwrap();
+    }
+    panic!("tracking writer must exit at its requested interruption boundary");
+}
+
+#[cfg(unix)]
 #[test]
 fn interrupted_tracking_writes_recover_for_retry_and_cancellation() {
-    if let Some(path) = std::env::var_os("BUILD_REVIEW_INTERRUPTED_TRACKING_BINDING") {
-        let binding: ReviewBranchBinding =
-            serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-        let phase = std::env::var("BUILD_REVIEW_INTERRUPTED_TRACKING_PHASE").unwrap();
-        if phase == "cleanup-locked" || phase == "tracking-removed" {
-            cleanup_initial(&binding).unwrap();
-        } else {
-            publish_initial(&binding).unwrap();
-        }
-        panic!("tracking writer must exit at its requested interruption boundary");
-    }
+    run_interrupted_tracking_child_if_requested();
     let (temporary, source) = init_repo();
     let binding = binding(&source, &temporary.path().join("receivers"));
     configure_remote(&binding).unwrap();

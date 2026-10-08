@@ -66,9 +66,10 @@ const lifecycleHtml = (row, ui) => {
  *  work is already pushed and whose tasks are finished, so it asks nothing
  *  first: the bridge measures again and refuses if that stopped being true. */
 const reclaimHtml = (row, ui) => {
-  if (!row.lifecycle?.reclaimable) return "";
+  if (!row.locked && !row.lifecycle?.reclaimable) return "";
   const pending = ui.reclaiming.has(row.workspaceKey);
-  return `<button class="btn mini" type="button" data-workspace-reclaim="${esc(row.workspaceKey)}" aria-label="Reclaim workspace ${esc(row.name)}"${pending ? " disabled" : ""}>${pending ? "Reclaiming…" : "Reclaim"}</button>`;
+  const hint = row.locked ? ' title="Unlock the workspace to delete it"' : "";
+  return `<button class="btn mini" type="button" data-workspace-reclaim="${esc(row.workspaceKey)}" aria-label="Reclaim workspace ${esc(row.name)}"${hint}${pending || row.locked ? " disabled" : ""}>${pending ? "Reclaiming…" : "Reclaim"}</button>`;
 };
 
 /** What the workspace weighs, or the quiet placeholder for a size its machine
@@ -362,7 +363,7 @@ function watchSizeSupport(state) {
  *  bridge has removed it; a refusal stays on the row until the next press. */
 async function reclaimWorkspace(state, workspaceKey) {
   const row = state.page.rows.find((candidate) => candidate.workspaceKey === workspaceKey);
-  if (!row || state.reclaiming.has(workspaceKey)) return;
+  if (!row || row.locked || state.reclaiming.has(workspaceKey)) return;
   state.reclaiming.add(workspaceKey);
   state.reclaimErrors.delete(workspaceKey);
   paint(state);

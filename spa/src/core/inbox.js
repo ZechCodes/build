@@ -126,7 +126,8 @@ function toWorkspaceEntry(workspace, projectNames, conversation) {
     // (core/threadLinks.js).
     directories: workspace.directories || [],
     ready: workspace.status === "ready",
-    canFinish: workspace.status === "ready" && workspace.can_finish === true,
+    locked: workspace.locked === true,
+    canFinish: workspace.status === "ready" && workspace.can_finish === true && workspace.locked !== true,
     finishBlockers: workspace.finish_blockers || [],
     adopted,
     facts: adopted ? adoptedCheckoutFacts(workspace) : workspaceFacts(workspace),
@@ -986,8 +987,8 @@ export const finishBlockerHint = (blockers = []) =>
 function workspaceDoneHtml(entry, ui) {
   if (entry.kind !== "workspace" || !entry.ready || entry.adopted) return "";
   const pending = ui.finishingWorkspaces?.has(entry.key);
-  const hint = finishBlockerHint(entry.finishBlockers);
-  const shut = pending || !entry.canFinish;
+  const hint = entry.locked ? "Unlock the workspace to delete it" : finishBlockerHint(entry.finishBlockers);
+  const shut = pending || entry.locked || !entry.canFinish;
   return `<button class="btn mini inbox-workspace-done" type="button" data-workspace-done="${esc(entry.key)}" aria-label="Finish workspace ${esc(entry.name)}" title="${esc(hint)}"${shut ? " disabled" : ""}>${pending ? "Done…" : "Done"}</button>`;
 }
 

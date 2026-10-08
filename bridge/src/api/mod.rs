@@ -491,6 +491,7 @@ mod tests {
             ApiError::invalid_params("m"),
             ApiError::not_found("m"),
             ApiError::already_exists("m"),
+            ApiError::locked("m"),
             ApiError::conflict("m", None),
             ApiError::StaleVersion {
                 message: "m".into(),
@@ -505,6 +506,7 @@ mod tests {
             ApiError::unsupported_version("m"),
             ApiError::internal("m"),
         ];
+        assert_eq!(errors.len(), ApiError::CODES.len());
         for (error, code) in errors.iter().zip(ApiError::CODES) {
             assert_eq!(error.code(), code);
             assert_eq!(error.retryable(), code == "busy");

@@ -490,6 +490,24 @@ describe("a workspace's lifecycle on the Workspaces tab", () => {
     };
   });
 
+  it.each([true, false])("keeps locked Reclaim visible and disabled with reclaimable=%s", async (reclaimable) => {
+    snapshot.workspaces = [workspace("ws-1", { locked: true, lifecycle: verdict({ reclaimable, holds: ["locked"] }) })];
+    await openWorkspacesTab();
+    await flush();
+    const button = reclaimButton(rows()[0]);
+    expect(button).not.toBeNull();
+    expect(button.disabled).toBe(true);
+    expect(button.title).toBe("Unlock the workspace to delete it");
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(here).not.toHaveBeenCalledWith("workspace.reclaim", expect.anything());
+    expect(document.querySelector('[data-workspace-filter="reclaimable"]').textContent).toBe("Reclaimable (0)");
+
+    snapshot.workspaces = [workspace("ws-1", { locked: false, lifecycle: verdict({ reclaimable: true }) })];
+    deliver();
+    expect(reclaimButton(rows()[0]).disabled).toBe(false);
+    expect(document.querySelector('[data-workspace-filter="reclaimable"]').textContent).toBe("Reclaimable (1)");
+  });
+
   it("says what holds a quiet workspace and offers Reclaim only where nothing does", async () => {
     await openWorkspacesTab();
     await flush();

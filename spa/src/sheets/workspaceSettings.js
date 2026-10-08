@@ -28,6 +28,7 @@ import { uiAddress, watchUiState } from "../core/localUiState.js";
 import { fieldTraits } from "../core/fieldTraits.js";
 import { refreshGithubRepos } from "../core/githubRepos.js";
 import { attachRepoPicker, disposeRepoPickers } from "./repoPicker.js";
+import { subscribeFeed } from "../core/taskFeed.js";
 
 /** The defaults panel's own element ids. Distinct from the account page's
  *  `def`, because both panels can be in one document. */
@@ -105,6 +106,32 @@ const dangerZoneHtml = () => `
       <button class="btn danger" id="wsdelete">Delete workspace…</button>
     </section>`;
 
+/** Lock and deletion progress both belong to the mounted control. Feed rows
+ * carry the current lock; the sheet's cached detail is the cold fallback. */
+function mountDeletionAvailability(workspace, { sheet, deviceId }) {
+  const button = sheet.querySelector("#wsdelete");
+  const state = { locked: workspace.locked === true, pending: false };
+  let feedKnown = false;
+  const paint = () => {
+    button.disabled = state.locked || state.pending;
+    button.title = state.locked ? "Unlock the workspace to delete it" : "";
+  };
+  const record = watchSettingsRecord(workspaceSettingsAddress(deviceId, workspace.id), (detail) => {
+    if (feedKnown || typeof detail?.locked !== "boolean") return;
+    state.locked = detail.locked;
+    paint();
+  }, { owner: sheet.firstElementChild });
+  const unwatchFeed = subscribeFeed((feed) => {
+    const row = (feed.workspaces || []).find((candidate) => candidate.id === workspace.id && candidate.deviceId === deviceId);
+    if (typeof row?.locked !== "boolean") return;
+    feedKnown = true;
+    state.locked = row.locked;
+    paint();
+  });
+  paint();
+  return { state, paint, dispose: () => { record.dispose(); unwatchFeed(); } };
+}
+
 const emptyDirectoryDraft = () => ({ kind: "", path: "", remote: "", name: "" });
 /** Each directory draft field and the input that holds it. */
 const DIRECTORY_INPUTS = { path: "#wsdirpath", remote: "#wsdirremote", name: "#wsdirlabel" };
@@ -151,6 +178,7 @@ export function openWorkspaceSettings(workspace, { callRpc, catalog, deviceId = 
   $("#scrim").classList.add("show");
   let disposeDirectories = () => {};
   let disposeCatalog = () => {};
+  const deletion = mountDeletionAvailability(workspace, { sheet, deviceId });
   const draft = { name: null, directory: emptyDirectoryDraft() };
   let draftRecord;
   const saveDraft = (debounced = false) => {
@@ -166,6 +194,7 @@ export function openWorkspaceSettings(workspace, { callRpc, catalog, deviceId = 
     disposeRepoPickers(sheet);
     disposeDirectories();
     disposeCatalog();
+    deletion.dispose();
     closed = draftRecord.flush().catch(() => {});
     draftRecord.dispose({ flushPending: false });
     $("#scrim").classList.remove("show");
@@ -191,7 +220,7 @@ export function openWorkspaceSettings(workspace, { callRpc, catalog, deviceId = 
 
   $("#wscancel").onclick = close;
   const nameChanged = wireName(workspace, { callRpc, close, onRenamed, draft, saveDraft, clearDraft });
-  $("#wsdelete").onclick = () => void deleteWorkspace(workspace, { callRpc, close, onDeleted, storage, deviceId });
+  $("#wsdelete").onclick = () => void deleteWorkspace(workspace, { callRpc, close, onDeleted, storage, deviceId, deletion });
   disposeDirectories = mountDirectories(workspace, { callRpc, current, deviceId, draft, saveDraft });
   const defaultsStorage = workspaceDefaultsStorage(workspace.workspaceKey, storage);
   let cacheCatalogSeen = false;
@@ -388,13 +417,16 @@ function confirmDeletion(workspace) {
   });
 }
 
-async function deleteWorkspace(workspace, { callRpc, close, onDeleted, storage, deviceId }) {
+async function deleteWorkspace(workspace, { callRpc, close, onDeleted, storage, deviceId, deletion }) {
+  if (deletion.state.locked || deletion.state.pending) return;
   const button = $("#wsdelete");
   const error = $("#wserr");
   error.textContent = "";
-  button.disabled = true;
-  if (!(await confirmDeletion(workspace))) {
-    button.disabled = false;
+  deletion.state.pending = true;
+  deletion.paint();
+  if (!(await confirmDeletion(workspace)) || deletion.state.locked) {
+    deletion.state.pending = false;
+    deletion.paint();
     button.focus();
     return;
   }
@@ -403,7 +435,8 @@ async function deleteWorkspace(workspace, { callRpc, close, onDeleted, storage, 
     await callRpc("workspace.delete", { workspace_id: workspace.id });
     await deleteCached([workspaceSettingsAddress(deviceId, workspace.id)]);
   } catch (thrown) {
-    button.disabled = false;
+    deletion.state.pending = false;
+    deletion.paint();
     button.textContent = "Delete workspace…";
     if (error.isConnected) error.textContent = thrown.message;
     else notifyError("Deleting the workspace failed", thrown.message);

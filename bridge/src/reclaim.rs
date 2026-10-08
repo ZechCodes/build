@@ -69,9 +69,9 @@ pub const RESERVED: &str = "Build is measuring this workspace. Try again in a mo
 pub const HOLD_TASK_OPEN: &str = "task_open";
 /// The linked tasks could not be read, so none of them can be called Done.
 pub const HOLD_TASKS_UNREAD: &str = "tasks_unread";
-/// The workspace is still provisioning, or failed to.
+/// The user locked the workspace against cleanup.
 pub const HOLD_LOCKED: &str = "locked";
-
+/// The workspace is still provisioning, or failed to.
 pub const HOLD_NOT_READY: &str = "not_ready";
 /// One of the user's terminals is open somewhere in the workspace.
 pub const HOLD_TERMINAL_OPEN: &str = "terminal_open";

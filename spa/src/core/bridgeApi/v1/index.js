@@ -35,6 +35,7 @@ export const ERROR_CODES = Object.freeze([
   "invalid_params",
   "not_found",
   "already_exists",
+  "locked",
   "conflict",
   "stale_version",
   "stale_body",
@@ -170,7 +171,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
     push: { registerKey: names.has("push.registerKey"), revokeKey: names.has("push.revokeKey") },
     agents: { createdBy: names.has("agents.createdBy") },
     projects: { updateSource: names.has("project.update_source"), syncBase: names.has("sources.syncBase") },
-    workspaces: { measureSizes: names.has("workspace.measure_sizes") },
+    workspaces: { measureSizes: names.has("workspace.measure_sizes"), setLocked: names.has("workspace.set_locked") },
   };
 }
 

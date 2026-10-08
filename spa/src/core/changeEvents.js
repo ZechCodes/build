@@ -75,6 +75,7 @@ import { rememberTaskChecklistSupport } from "./taskChecklistSupport.js";
 import { rememberSourceEditSupport } from "./sourceEditSupport.js";
 import { rememberProjectFilesSupport } from "./projectFilesSupport.js";
 import { rememberFileUploadSupport } from "./fileUploadSupport.js";
+import { rememberWorkspaceLockSupport } from "./workspaceLockSupport.js";
 import { rememberWorkspaceSizeSupport } from "./workspaceSizeSupport.js";
 
 /** The wire API majors this build of the SPA speaks, declared in every
@@ -104,7 +105,7 @@ const NO_CAPABILITIES = Object.freeze({
   push: Object.freeze({ registerKey: false, revokeKey: false }),
   agents: Object.freeze({ createdBy: false }),
   projects: Object.freeze({ updateSource: false, syncBase: false }),
-  workspaces: Object.freeze({ measureSizes: false }),
+  workspaces: Object.freeze({ measureSizes: false, setLocked: false }),
 });
 
 // Event mode is a fact about one bridge, so it is held per device: one machine
@@ -927,6 +928,7 @@ function publishGreeting(call, deviceId, greeting, adapter, onGreeting) {
   void rememberSourceEditSupport(deviceId, state.adapter.capabilities);
   // And whether it measures its workspaces' sizes when asked (#273).
   void rememberWorkspaceSizeSupport(deviceId, state.adapter.capabilities);
+  void rememberWorkspaceLockSupport(deviceId, state.adapter.capabilities);
   void rememberProjectFilesSupport(deviceId, state.adapter.capabilities);
   void rememberFileUploadSupport(deviceId, state.adapter.capabilities);
   // And whether task body writes compare their original hash (#347).

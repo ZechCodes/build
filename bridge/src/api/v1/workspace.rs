@@ -654,9 +654,7 @@ fn workspace_rename(
     answer(app.workspace_rename(&params.wire())).map_err(refine)
 }
 
-/// The removal itself runs off the app mutex, but the shape never changes:
-/// the acknowledgement here and the value the drain publishes are the same
-/// `{workspace_id, deleted}`, so no placeholder is needed.
+/// Persist the user's removal guard and return the updated workspace row.
 fn workspace_set_locked(
     app: &mut AppState,
     params: WorkspaceSetLockedParams,
@@ -664,6 +662,9 @@ fn workspace_set_locked(
     answer(app.workspace_set_locked(&params.wire())).map_err(refine)
 }
 
+/// The removal itself runs off the app mutex, but the shape never changes:
+/// the acknowledgement here and the value the drain publishes are the same
+/// `{workspace_id, deleted}`, so no placeholder is needed.
 fn workspace_delete(
     app: &mut AppState,
     params: WorkspaceIdParams,
@@ -777,6 +778,57 @@ mod tests {
     #[test]
     fn the_workspace_delete_fixture_round_trips() {
         round_trips("workspace.delete");
+    }
+
+    #[test]
+    fn typed_workspace_removal_handlers_return_a_nonretryable_locked_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        std::fs::create_dir(&repository).unwrap();
+        let context = crate::harness::HarnessContext::resolved(
+            temp.path().join("mcp.sock"),
+            temp.path().join("state"),
+        )
+        .unwrap();
+        let mut app = AppState::new_unrooted_configured(
+            temp.path().join("worktrees"),
+            "main",
+            false,
+            context,
+        );
+        let project_id = app.add_project(repository, "main".to_string());
+        let workspace_id = format!("legacy-{project_id}");
+        workspace_set_locked(
+            &mut app,
+            WorkspaceSetLockedParams {
+                workspace_id: workspace_id.clone(),
+                locked: true,
+            },
+        )
+        .unwrap();
+        let params = || WorkspaceIdParams {
+            workspace_id: workspace_id.clone(),
+        };
+        let errors = [
+            workspace_delete(&mut app, params())
+                .err()
+                .expect("locked Delete is refused"),
+            workspace_finish(&mut app, params())
+                .err()
+                .expect("locked Done is refused"),
+            workspace_reclaim(&mut app, params())
+                .err()
+                .expect("locked reclaim is refused"),
+        ];
+        for error in errors {
+            assert_eq!(error.code(), "locked");
+            assert_eq!(error.message(), crate::workspace::LOCKED_REFUSAL);
+            assert!(!error.retryable());
+            assert_eq!(
+                error.into_reply(serde_json::json!(1))["error_code"],
+                "locked"
+            );
+        }
     }
 
     /// Renaming needs both words. A name-less rename would otherwise reach the

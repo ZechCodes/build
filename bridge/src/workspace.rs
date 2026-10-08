@@ -308,8 +308,15 @@ impl WorkspaceRegistry {
     }
 
     pub(crate) fn forget_project(&mut self, project_id: &str) {
-        self.workspaces
-            .retain(|_, workspace| workspace.project_id != project_id);
+        let ids: Vec<String> = self
+            .workspaces
+            .values()
+            .filter(|workspace| workspace.project_id == project_id)
+            .map(|workspace| workspace.id.clone())
+            .collect();
+        for id in ids {
+            self.forget(&id);
+        }
     }
 
     /// Give a workspace a new human-facing name.
@@ -368,10 +375,18 @@ impl WorkspaceRegistry {
         Ok(workspace)
     }
 
-    /// Drop one workspace from the index, its root having been removed. The
-    /// manifest went with the directory, so the next reload agrees.
+    /// Drop a removed workspace or a stale adopted checkout from the index.
+    /// Its private lock marker must go too, so re-adoption starts unlocked.
     pub(crate) fn forget(&mut self, id: &str) {
         self.workspaces.remove(id);
+        if validate_segment("workspace id", id).is_err() {
+            return;
+        }
+        if let Err(error) = fs::remove_file(self.root.join(".locks").join(id)) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("remove workspace lock marker {id}: {error}");
+            }
+        }
     }
 
     pub fn root(&self) -> &Path {
@@ -1356,6 +1371,60 @@ mod tests {
         );
         assert_eq!(workspace.directories[0].path, temp.path());
         assert!(!temp.path().join(MANIFEST_FILE).exists());
+    }
+
+    #[test]
+    fn workspace_forget_clears_an_adopted_lock_before_re_adoption() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut registry = WorkspaceRegistry::empty(temp.path().join("managed"));
+        let workspace = registry.adopt_root(
+            "project",
+            "adopted".to_string(),
+            "repo".to_string(),
+            temp.path().to_path_buf(),
+            "source".to_string(),
+            false,
+        );
+        registry.set_locked(&workspace.id, true).unwrap();
+        let marker = registry.root().join(".locks").join(&workspace.id);
+        assert!(marker.is_file());
+
+        registry.forget(&workspace.id);
+        assert!(registry.get(&workspace.id).is_none());
+        assert!(!marker.exists());
+        let adopted = registry.adopt_root(
+            "project",
+            workspace.id,
+            workspace.name,
+            workspace.root,
+            "source".to_string(),
+            false,
+        );
+        assert!(!adopted.locked);
+        assert!(!temp.path().join(MANIFEST_FILE).exists());
+    }
+
+    #[test]
+    fn workspace_forget_project_clears_only_its_adopted_lock_markers() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut registry = WorkspaceRegistry::empty(temp.path().join("managed"));
+        for project in ["removed", "kept"] {
+            registry.adopt_root(
+                project,
+                project.to_string(),
+                project.to_string(),
+                temp.path().join(project),
+                "source".to_string(),
+                false,
+            );
+            registry.set_locked(project, true).unwrap();
+        }
+
+        registry.forget_project("removed");
+        assert!(registry.get("removed").is_none());
+        assert!(!registry.root().join(".locks/removed").exists());
+        assert!(registry.get("kept").unwrap().locked);
+        assert!(registry.root().join(".locks/kept").is_file());
     }
 
     #[test]

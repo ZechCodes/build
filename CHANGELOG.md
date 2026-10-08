@@ -14,9 +14,9 @@ Wire 3.14.0.
 
 - Lock or unlock a workspace from the control beside its name. The persisted
   lock prevents workspace deletion, Done, reclaim, project deletion, and run
-  cleanup by users or agents until the user unlocks it. Locked workspaces also
-  hold automatic build-output pruning. Agents can inspect the lock but have no
-  MCP action to change it (#398).
+  cleanup by users or agents until the user unlocks it. Locked workspaces add
+  an automatic reclaim hold that prevents build-output pruning. Agents can
+  inspect the lock but have no MCP action to change it (#398).
 
 ## [0.2.12] - 2026-10-07
 

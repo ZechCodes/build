@@ -20,6 +20,14 @@ vi.mock("../src/core/notify.js", () => ({
   notifySuccess: () => {},
 }));
 
+let settingsFeedListener;
+vi.mock("../src/core/taskFeed.js", () => ({
+  subscribeFeed: (listener) => {
+    settingsFeedListener = listener;
+    return () => { settingsFeedListener = null; };
+  },
+}));
+
 const { openWorkspaceSettings } = await import("../src/sheets/workspaceSettings.js");
 const {
   WORKSPACE_DEFAULTS_KEY,
@@ -73,6 +81,7 @@ beforeEach(async () => {
   await wipeUiRecords();
   confirmAction.mockReset();
   notifyError.mockReset();
+  settingsFeedListener = null;
   localStorage.clear();
   document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
 });
@@ -92,6 +101,54 @@ const open = (options = {}) => {
 };
 
 describe("the workspace settings sheet", () => {
+  it("disables deletion from the initial cached workspace lock", () => {
+    opened.push(openWorkspaceSettings({ ...WORKSPACE, locked: true }, { catalog: CATALOG, callRpc: vi.fn(() => new Promise(() => {})) }));
+    expect($("#wsdelete").disabled).toBe(true);
+    expect($("#wsdelete").title).toBe("Unlock the workspace to delete it");
+    $("#wsdelete").click();
+    expect(confirmAction).not.toHaveBeenCalled();
+  });
+
+  it("updates deletion from the settings cache while keeping the name draft", async () => {
+    open({ callRpc: vi.fn(() => new Promise(() => {})) });
+    type("unsaved name");
+    const address = workspaceSettingsAddress("dev-1", WORKSPACE.id);
+    await writeCached(address, { id: WORKSPACE.id, locked: true, directories: [] });
+    await vi.waitFor(() => expect($("#wsdelete").disabled).toBe(true));
+    expect($("#wsdelete").title).toBe("Unlock the workspace to delete it");
+    expect($("#wslabel").value).toBe("unsaved name");
+    await writeCached(address, { id: WORKSPACE.id, locked: false, directories: [] });
+    await vi.waitFor(() => expect($("#wsdelete").disabled).toBe(false));
+  });
+
+  it("follows feed locks while open and keeps them when an old detail pull finishes", async () => {
+    let finishDetail;
+    open({ callRpc: vi.fn((method) => method === "workspace.get" ? new Promise((resolve) => { finishDetail = resolve; }) : Promise.resolve({})) });
+    await vi.waitFor(() => expect(finishDetail).toBeTypeOf("function"));
+    expect(settingsFeedListener).toBeTypeOf("function");
+    settingsFeedListener({ workspaces: [{ ...WORKSPACE, deviceId: "dev-1", locked: true }] });
+    expect($("#wsdelete").disabled).toBe(true);
+    finishDetail({ id: WORKSPACE.id, locked: false, directories: [] });
+    await vi.waitFor(() => expect($("#wsdiradd")).toBeTruthy());
+    expect($("#wsdelete").disabled).toBe(true);
+    settingsFeedListener({ workspaces: [{ ...WORKSPACE, deviceId: "dev-1", locked: false }] });
+    expect($("#wsdelete").disabled).toBe(false);
+  });
+
+  it("keeps a workspace locked during confirmation from being deleted", async () => {
+    let finishConfirmation;
+    confirmAction.mockImplementation(() => new Promise((resolve) => { finishConfirmation = resolve; }));
+    const callRpc = open({ callRpc: vi.fn(() => new Promise(() => {})) });
+    $("#wsdelete").click();
+    await vi.waitFor(() => expect(finishConfirmation).toBeTypeOf("function"));
+    await writeCached(workspaceSettingsAddress("dev-1", WORKSPACE.id), { id: WORKSPACE.id, locked: true, directories: [] });
+    await vi.waitFor(() => expect($("#wsdelete").title).toBe("Unlock the workspace to delete it"));
+    finishConfirmation(true);
+    await vi.waitFor(() => expect($("#wsdelete").textContent).toBe("Delete workspace…"));
+    expect(callRpc).not.toHaveBeenCalledWith("workspace.delete", expect.anything());
+    expect($("#wsdelete").disabled).toBe(true);
+  });
+
   it("restores a cached name and directory form before either pull answers", async () => {
     const address = uiAddress({ deviceId: "dev-1", entityId: WORKSPACE.id, view: "workspace-settings", kind: "draft" });
     await writeCached(workspaceSettingsAddress("dev-1", WORKSPACE.id), { id: WORKSPACE.id, project_id: "proj-1", directories: [] });

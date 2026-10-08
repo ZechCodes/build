@@ -90,7 +90,7 @@ body {
     .toggle, .changedonly):focus-visible {
   outline:2px solid var(--accent); outline-offset:2px;
 }
-:where(button, a[href], summary, [role="button"], [role="tab"],
+body :is(button, a[href], summary, [role="button"], [role="tab"],
     [role="menuitem"], [role="menuitemradio"], [role="option"],
     .tabs .t, .console-tab .tx, .card, .stagerow, .srow.snav,
     .crow, .rrow, .ivlin-row, .pcx, .cc-x,
@@ -120,7 +120,7 @@ body {
 .surface-clip:not([role="button"]) { cursor:inherit; }
 .frow:is(.fsym, .fsubmodule), .frow.ferr { cursor:default; }
 
-:is(button, input, textarea, select, [role="button"], [role="tab"],
+:where(button, input, textarea, select, [role="button"], [role="tab"],
     [role="menuitem"], [role="menuitemradio"], [role="option"]):is(:disabled, [aria-disabled="true"]) {
   cursor:default; opacity:.55;
 }

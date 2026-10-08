@@ -100,6 +100,21 @@ it("keeps native editing, pointer feedback and keyboard focus while disabled con
   });
 }, 60_000);
 
+it("paints pressed feedback over existing archive and commit row shadows", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await mountInteractionFixture(page, basePath, { extras: true });
+    for (const selector of [".card.archive-row", ".crow.ahead", ".crow.unpushed", ".crow.sel"]) {
+      const row = page.locator(selector);
+      await row.hover();
+      const hovered = await row.evaluate((node) => getComputedStyle(node).boxShadow);
+      await page.mouse.down();
+      expect(await row.evaluate((node) => node.matches(":active")), selector).toBe(true);
+      expect(await row.evaluate((node) => getComputedStyle(node).boxShadow), selector).not.toBe(hovered);
+      await page.mouse.up();
+    }
+  });
+}, 60_000);
+
 it("keeps a real touch tap on a legacy tab actionable without selecting its label", async () => {
   await withLayoutPage(async ({ page, basePath }) => {
     await mountInteractionFixture(page, basePath);

@@ -55,6 +55,10 @@ export async function mountInteractionFixture(page, basePath, { theme = "light",
     const rowContext = { ...context, href: () => "#task-397" };
     extra.innerHTML = `<ul class="task-rows">${m.rows.taskRowHtml(task, rowContext)}</ul>
       <div role="button" tabindex="0" data-error-row><span class="error"><span>Upload refused</span></span></div>
+      <div class="card archive-row" tabindex="0">Archived task</div>
+      <div class="crow ahead" tabindex="0">Ahead commit</div>
+      <div class="crow unpushed" tabindex="0">Unpushed commit</div>
+      <div class="crow sel" tabindex="0">Selected commit</div>
       ${m.board.boardFrameHtml([{ id: "in_progress", name: "In progress", tasks: [task] }], rowContext)}
       ${m.diff.diffFileHtml({ path: "src/interaction.js", status: "M", add: 1, del: 0, rows: [{ t: "add", n: 1, text: "const copyable = true;" }] }, { fold: "open" })}
       <pre class="bridge-update-command">curl https://build.example/install | sh</pre>

@@ -96,15 +96,25 @@ const olderSummary = (held, incoming) => held.task_id === incoming.task_id
   && Number.isFinite(incoming.version) && incoming.version < held.version;
 const keepRowSummary = (held, incoming, field, allowMissing) => incoming[field]
   ? olderSummary(held[field], incoming[field]) : !allowMissing && !rowWrittenLater(held, incoming);
+const sameRow = (held, incoming) => Boolean(held) && rowIdentity(held) === rowIdentity(incoming);
+
+function withHeldSummary(held, incoming, field) {
+  const next = { ...incoming };
+  if (Object.hasOwn(held, field)) next[field] = held[field];
+  else delete next[field];
+  return next;
+}
 
 /** A delayed task or workspace read can replace ordinary row fields without
  * rolling its PR summary back. Versions belong to one PR task; a new task
  * using the same workspace starts its own floor. Absence needs a newer read
  * or timestamp before it can erase a known summary. */
-export function preserveReviewSummary(held, incoming, field = "review_summary", { allowMissing = false } = {}) {
+export function preserveReviewSummary(held, incoming, field = "review_summary", options = {}) {
+  if (!incoming || !sameRow(held, incoming)) return incoming;
+  if (options.keepHeld) return withHeldSummary(held, incoming, field);
   const summary = held?.[field];
-  if (!incoming || !hasSummaryVersion(summary) || rowIdentity(held) !== rowIdentity(incoming)) return incoming;
-  return keepRowSummary(held, incoming, field, allowMissing) ? { ...incoming, [field]: summary } : incoming;
+  if (!hasSummaryVersion(summary)) return incoming;
+  return keepRowSummary(held, incoming, field, options.allowMissing) ? { ...incoming, [field]: summary } : incoming;
 }
 
 /** Match only the rows an incoming list names: PR floors do not revive rows
@@ -116,6 +126,8 @@ export function preserveReviewSummaries(held, incoming, field = "review_summary"
 
 const newerListRead = (held, incoming) => Number.isFinite(held?.read_order)
   && Number.isFinite(incoming?.read_order) && incoming.read_order > held.read_order;
+const olderListRead = (held, incoming) => Number.isFinite(held?.read_order)
+  && Number.isFinite(incoming?.read_order) && incoming.read_order < held.read_order;
 const latestListRead = (held, incoming) => Number.isFinite(held?.read_order)
   ? Math.max(held.read_order, incoming.read_order || 0) : incoming.read_order;
 
@@ -128,6 +140,7 @@ function preserveListSummaries(held, incoming) {
     ...(Number.isFinite(readOrder) ? { read_order: readOrder } : {}),
     tasks: preserveReviewSummaries(held?.tasks, incoming.tasks, "review_summary", {
       allowMissing: newerListRead(held, incoming),
+      keepHeld: olderListRead(held, incoming),
     }),
   };
 }

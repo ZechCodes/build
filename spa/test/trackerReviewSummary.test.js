@@ -100,7 +100,7 @@ describe("atomic tracker summary writes", () => {
         write(tracker, tracker.tasksRecord([row(7)], [])),
         write(otherTab, tracker.tasksRecord([row(2, { title: "delayed reply" })], [])),
       ]);
-      expect((await read()).tasks[0]).toMatchObject({ title: "delayed reply", review_summary: summary(7) });
+      expect((await read()).tasks[0].review_summary).toEqual(summary(7));
     });
 
     it(`keeps ${kind} list summary over an older absence and clears it on a newer read`, async () => {
@@ -111,6 +111,16 @@ describe("atomic tracker summary writes", () => {
       expect((await read()).tasks[0].review_summary).toEqual(summary(7));
       await write(tracker, tracker.tasksRecord([withoutSummary()], [], 30));
       expect((await read()).tasks[0]).not.toHaveProperty("review_summary");
+    });
+
+    it(`does not restore a cleared ${kind} summary from a delayed older list`, async () => {
+      await write(tracker, tracker.tasksRecord([row(7)], [], 20));
+      await write(tracker, tracker.tasksRecord([withoutSummary()], [], 30));
+      await write(tracker, tracker.tasksRecord([row(3, { title: "ordinary reply fields" })], [], 10));
+      const held = await read();
+      expect(held.tasks[0].title).toBe("ordinary reply fields");
+      expect(held.tasks[0]).not.toHaveProperty("review_summary");
+      expect(held.read_order).toBe(30);
     });
   }
 
@@ -162,5 +172,29 @@ describe("workspace list summary writes", () => {
     delete legacy.active_review;
     await sessions.replaceSessionList(address, "workspaces", [legacy], undefined, observed);
     expect((await cache.readCached(address)).value[0]).not.toHaveProperty("active_review");
+  });
+
+  it("does not restore a cleared summary from a delayed workspace reply", async () => {
+    await sessions.replaceSessionList(address, "workspaces", [workspaceRow(7)]);
+    const observed = await sessions.sessionListObservation(address, "workspaces");
+    const legacy = { ...workspace };
+    delete legacy.active_review;
+    await sessions.replaceSessionList(address, "workspaces", [legacy], undefined, observed);
+    await sessions.replaceSessionList(address, "workspaces", [workspaceRow(3)]);
+    expect((await cache.readCached(address)).value[0]).not.toHaveProperty("active_review");
+    await sessions.replaceSessionList(address, "workspaces", [workspaceRow(7)], undefined, observed);
+    expect((await cache.readCached(address)).value[0]).not.toHaveProperty("active_review");
+    const current = await sessions.sessionListObservation(address, "workspaces");
+    await sessions.replaceSessionList(address, "workspaces", [workspaceRow(8)], undefined, current);
+    expect((await cache.readCached(address)).value[0].active_review.version).toBe(8);
+  });
+
+  it("keeps the new PR task in a reused workspace over an old request's reply", async () => {
+    await sessions.replaceSessionList(address, "workspaces", [workspaceRow(7)]);
+    const observed = await sessions.sessionListObservation(address, "workspaces");
+    const next = { ...workspaceRow(1), active_review: { ...workspaceRow(1).active_review, task_id: "new-pr-task" } };
+    await sessions.upsertSessionRow(address, "workspaces", next);
+    await sessions.replaceSessionList(address, "workspaces", [workspaceRow(7)], undefined, observed);
+    expect((await cache.readCached(address)).value[0].active_review).toEqual(next.active_review);
   });
 });

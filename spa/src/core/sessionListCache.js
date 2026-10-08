@@ -4,10 +4,48 @@ import { preserveReviewSummary } from "./trackerCache.js";
 // A list request observes PR state beside reset revisions. The reserved key
 // cannot be a conversation id and never participates in the reset comparison.
 const ACTIVE_REVIEW_OBSERVATION = "__active_review";
-const activeReviewObservation = (row) => row?.active_review ?? null;
+const ACTIVE_REVIEW_CACHE = "__active_review_cache";
+const reviewSummaryKey = (summary) => JSON.stringify(summary ? [summary.task_id, summary.workspace_id,
+  summary.version, summary.status, summary.latest_published_snapshot_id] : null);
+const validReviewSummary = (summary) => Boolean(summary?.task_id) && Number.isFinite(summary.version);
+const sameReviewTask = (left, right) => validReviewSummary(left) && validReviewSummary(right) && left.task_id === right.task_id;
+
+function activeReviewState(row) {
+  const state = row?.[ACTIVE_REVIEW_CACHE];
+  return { revision: Number(state?.revision) || 0, floor: state?.floor ?? row?.active_review ?? null };
+}
+
+const activeReviewObservation = (row) => [activeReviewState(row).revision, reviewSummaryKey(row?.active_review)];
 
 const observedActiveReview = (held, observation) => observation !== undefined
   && JSON.stringify(activeReviewObservation(held)) === JSON.stringify(observation[ACTIVE_REVIEW_OBSERVATION]);
+const reviewReadOvertaken = (held, observation) => observation !== undefined && !observedActiveReview(held, observation);
+
+function reviewTombstoneBlocks(held, incoming, observation) {
+  const floor = activeReviewState(held).floor;
+  const summary = incoming.active_review;
+  if (held?.active_review || !sameReviewTask(summary, floor)) return false;
+  return summary.version < floor.version || summary.version === floor.version && !observedActiveReview(held, observation);
+}
+
+/** Retain the last PR version after authoritative absence clears the visible
+ * link. Its separate revision also protects a new task in a reused workspace
+ * from replies that observed the previous task or the previous absence. */
+function withActiveReviewState(held, incoming) {
+  const state = activeReviewState(held);
+  if (!validReviewSummary(incoming.active_review) && !state.floor) return incoming;
+  const changed = reviewSummaryKey(held?.active_review) !== reviewSummaryKey(incoming.active_review);
+  const floor = validReviewSummary(incoming.active_review) ? incoming.active_review : state.floor;
+  return { ...incoming, [ACTIVE_REVIEW_CACHE]: { revision: state.revision + Number(changed), floor } };
+}
+
+function mergedActiveReview(held, incoming, observation) {
+  const next = preserveReviewSummary(held, incoming, "active_review", {
+    allowMissing: observedActiveReview(held, observation),
+    keepHeld: reviewReadOvertaken(held, observation) || reviewTombstoneBlocks(held, incoming, observation),
+  });
+  return withActiveReviewState(held, next);
+}
 
 const rowId = (kind, row) => kind === "projects"
   ? row.project_id || row.id
@@ -47,9 +85,7 @@ const resetSinceObservation = (held, observed) => observed !== undefined
   && Object.entries(held?.conversation_session_revisions || {}).some(([id, revision]) => Number(revision) > Number(observed[id] || 0));
 
 function listedSession(incoming, held, observation) {
-  const next = monotonicSession(preserveReviewSummary(held, incoming, "active_review", {
-    allowMissing: observedActiveReview(held, observation),
-  }), held);
+  const next = monotonicSession(mergedActiveReview(held, incoming, observation), held);
   return resetSinceObservation(held, observation)
     ? { ...next, session_started_ms: held.session_started_ms, last_activity_ms: held.last_activity_ms } : next;
 }
@@ -62,9 +98,9 @@ export function upsertSessionRow(address, kind, incoming, active = () => true) {
     const id = rowId(kind, incoming);
     const present = rows.some((row) => rowId(kind, row) === id);
     const next = rows.map((row) => rowId(kind, row) === id
-      ? monotonicSession(preserveReviewSummary(row, { ...row, ...incoming }, "active_review"), row)
+      ? monotonicSession(mergedActiveReview(row, { ...row, ...incoming }), row)
       : row);
-    return present ? next : [...next, incoming];
+    return present ? next : [...next, mergedActiveReview(null, incoming)];
   });
 }
 

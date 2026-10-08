@@ -4,6 +4,87 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 const CHILD: &str = "reviews::git_actions::pr::fence_owner::tests::crashing_owner_child";
+const PERSISTENCE_CHILD: &str =
+    "reviews::git_actions::pr::fence_owner::tests::persistence_failure_child";
+
+#[test]
+fn persistence_failure_child() {
+    let Ok(repository) = std::env::var("FENCE_TEST_PERSISTENCE_FAILURE_REPOSITORY") else {
+        return;
+    };
+    let repository = Path::new(&repository);
+    let mut original = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: only this isolated subprocess changes its limit and signal handler.
+    let previous_signal = unsafe {
+        assert_eq!(libc::getrlimit(libc::RLIMIT_FSIZE, &mut original), 0);
+        let previous = libc::signal(libc::SIGXFSZ, libc::SIG_IGN);
+        assert_ne!(previous, libc::SIG_ERR);
+        let zero = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: original.rlim_max,
+        };
+        assert_eq!(libc::setrlimit(libc::RLIMIT_FSIZE, &zero), 0);
+        previous
+    };
+    let expected = std::io::Error::from_raw_os_error(libc::EFBIG).to_string();
+    for _ in 0..3 {
+        let error = OwnedFence::create(repository)
+            .err()
+            .expect("marker persistence must fail");
+        assert_eq!(error, expected);
+    }
+    // SAFETY: restore the limit and handler saved in this subprocess above.
+    unsafe {
+        assert_eq!(libc::setrlimit(libc::RLIMIT_FSIZE, &original), 0);
+        assert_ne!(libc::signal(libc::SIGXFSZ, previous_signal), libc::SIG_ERR);
+    }
+    let fence = OwnedFence::create(repository).unwrap();
+    let path = fence.path().to_owned();
+    fence.seal().unwrap();
+    drop(fence);
+    assert!(
+        !path.exists(),
+        "failed constructors must not poison the registry lease"
+    );
+}
+
+#[test]
+fn constructor_persistence_failures_return_without_deadlocking_or_poisoning_the_registry() {
+    let (_home, repository) = init_repo();
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            PERSISTENCE_CHILD,
+            "--test-threads=1",
+            "--nocapture",
+        ])
+        .env("FENCE_TEST_PERSISTENCE_FAILURE_REPOSITORY", repository)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            let output = child.wait_with_output().unwrap();
+            assert!(
+                output.status.success(),
+                "persistence failure child: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        if Instant::now() >= deadline {
+            let kill = child.kill();
+            let output = child.wait_with_output().unwrap();
+            panic!("constructor deadlocked after persistence failure; child killed ({kill:?}) and reaped ({})", output.status);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
 
 #[test]
 fn crashing_owner_child() {

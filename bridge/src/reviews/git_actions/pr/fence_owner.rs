@@ -67,7 +67,7 @@ impl OwnedFence {
             .map_err(|error| error.to_string())?;
         let common_file = files::directory(&common)?;
         let registry = registry(&common_file, true)?.ok_or("missing PR fence registry")?;
-        let _registry_lease = registry_lease(&registry)?;
+        let construction_lease = registry_lease(&registry)?;
         files::names(&registry, MAX_REGISTRY_ENTRIES)?;
         let token = uuid::Uuid::new_v4().to_string();
         let name = format!("{PREFIX}{token}");
@@ -103,6 +103,9 @@ impl OwnedFence {
             sealed: false,
             entries: Vec::new(),
         };
+        // The directory lease protects this fence from recovery. Release the
+        // registry before a persistence error can drop Self and reacquire it.
+        drop(construction_lease);
         let fence = Self {
             path: common.join(REGISTRY).join(name),
             directory,

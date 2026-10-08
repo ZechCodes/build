@@ -189,7 +189,7 @@ fn capture_git(
     Ok(())
 }
 
-fn count_uncommitted(repo: &git2::Repository) -> Result<u64, String> {
+pub(crate) fn count_uncommitted(repo: &git2::Repository) -> Result<u64, String> {
     let mut options = git2::StatusOptions::new();
     options.include_untracked(true).recurse_untracked_dirs(true);
     let statuses = repo
@@ -259,7 +259,11 @@ fn resolve_commit(repo: &git2::Repository, name: &str) -> Result<git2::Oid, Stri
         .map_err(|error| error.to_string())
 }
 
-fn pin_prefix(task_id: &str, snapshot_id: &str, directory_id: &str) -> Result<String, String> {
+pub(crate) fn pin_prefix(
+    task_id: &str,
+    snapshot_id: &str,
+    directory_id: &str,
+) -> Result<String, String> {
     if [task_id, snapshot_id, directory_id].contains(&"") {
         return Err("invalid review pin identity".into());
     }
@@ -321,7 +325,7 @@ fn cleanup_directory_pins(
         &format!("{prefix}/base"),
         directory.base.as_ref().map(|base| base.oid.as_str()),
     )?;
-    Ok(())
+    super::publication::cleanup_snapshot_target(task_id, snapshot_id, directory)
 }
 
 fn delete_pin_if_expected(

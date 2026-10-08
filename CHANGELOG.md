@@ -12,6 +12,9 @@ Wire 3.14.0.
 
 ### Added
 
+- Internal PR review opening service with recoverable dedicated branches,
+  local receiving repositories, committed snapshots, and reviewer delivery
+  retry (#402).
 - Lock or unlock a workspace from the control beside its name. The persisted
   lock prevents workspace deletion, Done, reclaim, project deletion, and run
   cleanup by users or agents until the user unlocks it. Locked workspaces add
@@ -31,6 +34,10 @@ Wire 3.14.0.
 
 ### Fixed
 
+- Recover interrupted initial PR receiving-ref writes and preserve review
+  opening setup when another worktree holds the original branch (#402).
+- Establish recoverable PR tracking refs before opening succeeds, so the first
+  UI Push publishes to the review receiver even without origin (#402).
 - Keep long task comments and loaded images in place when ages, references or
   review metadata refresh, and follow new comments when reading at the bottom
   (#410).

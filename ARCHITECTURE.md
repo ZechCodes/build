@@ -722,6 +722,32 @@ dim dash there rather than a spinner.
 
 ### Task reviews
 
+PR-style opening is an internal service in `bridge/src/reviews/opening.rs`.
+It uses schema 15's opening journal to reserve a task identity by project and
+request ID, prepare dedicated branches in a managed workspace, then publish
+the task, PR header and first snapshot in one store transaction. Failed or
+interrupted preparations retain their recovery claim; retry resumes the same
+identity, and explicit cancellation removes only owned setup at expected
+values. The original workspace branches and dirty index/files are preserved.
+Cancellation checks all original branches for checkout, rebase and bisect
+holders and validates owned receiver and tracking refs before removing setup.
+It repeats the original-branch holder check before restoring HEAD.
+`receivers.rs` owns a local bare repository per source repository outside the
+workspace, and `publication.rs` imports and pins explicit committed OIDs there.
+Initial publication fetches objects without updating refs, then creates the
+receiving branch through the registered writer instead of native receive-pack.
+It also establishes the working repository's owned remote-tracking ref before
+success, including retries after the receiving write, so UI Push uses the local
+review remote.
+Git ref and config writes use registered Git locks that can
+recover a dead owner's exact inode while preserving replacement locks. A new
+receiver is initialized in a separate staging directory and published only
+after its files are durable. Interrupted staging is retained without blocking
+retry. The caller holds the workspace mutation lease and supplies hooks for
+live reclaim/placement
+checks, manifest installation and idempotent reviewer dispatch. Reviewer
+delivery runs after publication, with a durable status and explicit retry.
+
 `bridge/src/reviews/` saves one task's workspace review as numbered snapshots.
 `capture.rs` reads every manifest directory, resolves each Git directory's
 committed HEAD and base (explicit override, configured base, upstream, empty

@@ -1206,6 +1206,80 @@ fn persist(workspace: &Workspace) -> Result<(), String> {
     Ok(())
 }
 
+/// Publish review branch names without replacing concurrent workspace settings.
+/// The caller holds the workspace mutation lease across preparation and this write.
+pub fn publish_review_branches(
+    expected: &Workspace,
+    bindings: &[crate::reviews::model::ReviewBranchBinding],
+) -> Result<Workspace, String> {
+    record_review_branches(expected, bindings, false)
+}
+
+/// Restore the branch record only after the opening service safely unwinds Git.
+pub fn restore_review_branches(
+    expected: &Workspace,
+    bindings: &[crate::reviews::model::ReviewBranchBinding],
+) -> Result<Workspace, String> {
+    record_review_branches(expected, bindings, true)
+}
+
+fn record_review_branches(
+    expected: &Workspace,
+    bindings: &[crate::reviews::model::ReviewBranchBinding],
+    restore: bool,
+) -> Result<Workspace, String> {
+    let manifest = expected.root.join(MANIFEST_FILE);
+    let bytes = fs::read(&manifest).map_err(|error| error.to_string())?;
+    let mut workspace: Workspace =
+        serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    if !workspace.managed || workspace.id != expected.id || workspace.root != expected.root {
+        return Err("workspace identity changed while opening the review".into());
+    }
+    for binding in bindings {
+        let directory = workspace
+            .directories
+            .iter_mut()
+            .find(|directory| {
+                directory.id == binding.directory_id && directory.source_id == binding.source_id
+            })
+            .ok_or("review directory no longer belongs to this workspace")?;
+        if directory
+            .path
+            .canonicalize()
+            .map_err(|error| error.to_string())?
+            != binding.working_repository
+        {
+            return Err("review directory placement changed".into());
+        }
+        let repository =
+            git2::Repository::open(&directory.path).map_err(|error| error.to_string())?;
+        let head = repository.head().map_err(|error| error.to_string())?;
+        let actual = head
+            .is_branch()
+            .then(|| head.name().map(str::to_owned))
+            .flatten();
+        let expected_ref = if restore {
+            binding.original_branch_ref.clone()
+        } else {
+            Some(binding.dedicated_branch_ref.clone())
+        };
+        if actual != expected_ref {
+            return Err("review checkout changed branches before manifest publication".into());
+        }
+        directory.branch = expected_ref
+            .as_deref()
+            .and_then(|name| name.strip_prefix("refs/heads/"))
+            .map(str::to_owned);
+    }
+    persist(&workspace)?;
+    Ok(workspace)
+}
+
+#[cfg(test)]
+pub(crate) fn persist_review_workspace(workspace: &Workspace) -> Result<(), String> {
+    persist(workspace)
+}
+
 fn atomic_write(destination: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
     let parent = destination.parent().unwrap_or_else(|| Path::new("."));
     let name = destination

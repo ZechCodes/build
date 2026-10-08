@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import "fake-indexeddb/auto";
+import { IDBDatabase } from "fake-indexeddb";
 import { readCached, wipeCache } from "../src/core/localCache.js";
 import { clearedWorkspaceReviewTask, replaceSessionList, sessionListObservation, upsertSessionRow } from "../src/core/sessionListCache.js";
 
@@ -38,7 +39,59 @@ const missing = { id: "ws-1", project_id: "project-1", name: "Workspace without 
 const read = async () => (await readCached(address)).value;
 const push = (rows) => replaceSessionList(address, "workspaces", rows, undefined, undefined, authority);
 beforeEach(async () => { await wipeCache(); });
-afterEach(() => { view.App.viewDispose?.(); view.App.viewDispose = null; document.body.innerHTML = ""; });
+afterEach(() => { view.App.viewDispose?.(); view.App.viewDispose = null; document.body.innerHTML = ""; vi.restoreAllMocks(); });
+
+function holdWorkspaceWrite() {
+  const started = Promise.withResolvers();
+  let release;
+  const transaction = IDBDatabase.prototype.transaction;
+  const spy = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (...args) {
+    const opened = transaction.apply(this, args);
+    if (this.name === "build-cache" && args[1] === "readwrite") {
+      spy.mockRestore();
+      const start = opened._start.bind(opened);
+      opened._start = () => started.resolve();
+      release = () => { opened._start = start; start(); };
+    }
+    return opened;
+  });
+  return { started: started.promise, release: () => release() };
+}
+
+it.each(["push", "pull"])("rejects a queued workspace %s replacement after the context stops", async (source) => {
+  await replaceSessionList(address, "workspaces", [workspace(7)]);
+  const held = await readCached(address);
+  const observation = source === "pull" ? await sessionListObservation(address, "workspaces") : undefined;
+  let active = true;
+  const replaced = vi.fn();
+  const gate = holdWorkspaceWrite();
+  const pending = replaceSessionList(address, "workspaces", [missing], replaced, observation,
+    { ...authority, active: () => active });
+  await gate.started;
+  expect(replaced).not.toHaveBeenCalled();
+  active = false;
+  gate.release();
+  expect(await pending).toBe(false);
+  expect(replaced).not.toHaveBeenCalled();
+  expect(await readCached(address)).toEqual(held);
+});
+
+it.each(["push", "pull"])("accepts a queued workspace %s replacement while the context remains active", async (source) => {
+  await replaceSessionList(address, "workspaces", [workspace(7)]);
+  const observation = source === "pull" ? await sessionListObservation(address, "workspaces") : undefined;
+  const replaced = vi.fn();
+  const gate = holdWorkspaceWrite();
+  const pending = replaceSessionList(address, "workspaces", [missing], replaced, observation,
+    { ...authority, active: () => true });
+  await gate.started;
+  expect(replaced).not.toHaveBeenCalled();
+  gate.release();
+  expect(await pending).toBe(true);
+  expect(replaced).toHaveBeenCalledTimes(1);
+  const held = (await read())[0];
+  expect(held).not.toHaveProperty("active_review");
+  expect(clearedWorkspaceReviewTask(held)).toBe("pr-1");
+});
 
 it("allows an authoritative board push to clear a summary without a list-request observation", async () => {
   await replaceSessionList(address, "workspaces", [workspace(7)]);

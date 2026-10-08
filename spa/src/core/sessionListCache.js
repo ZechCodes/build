@@ -74,6 +74,7 @@ export function monotonicSession(incoming, held) {
  * record held by the database while its write transaction is open. */
 export function replaceSessionList(address, kind, incoming, onReplaced, observation, options = {}) {
   return mergeCachedAtomically(address, (held) => {
+    if (options.active && !options.active()) return null;
     onReplaced?.(held);
     const old = new Map((Array.isArray(held) ? held : []).map((row) => [rowId(kind, row), row]));
     return incoming.map((row) => listedSession(row, old.get(rowId(kind, row)), rowObservation(observation, kind, row), options));

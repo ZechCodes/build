@@ -1315,7 +1315,7 @@ const validSession = (record) => Number.isSafeInteger(record?.session_started_ms
 async function writeSessionList(context, kind, incoming, before, options) {
   await replaceSessionList(addressOf(context, "", kind), kind, incoming, (held) => {
     if (before) before[kind] = held;
-  }, context.sessionListObservations?.[kind], options);
+  }, context.sessionListObservations?.[kind], { ...options, active: context.active });
 }
 
 /** A record as a push carries it, marked so a read that was already out when

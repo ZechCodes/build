@@ -109,9 +109,26 @@ fn acquire(
     Ok(guards)
 }
 
-/// Kernel releases this operation lease on process death. The immutable intent
-/// supplies recovery identity; a concurrent retry never replays a live worker.
-pub(super) fn lease(review: &Review) -> Result<std::fs::File, String> {
+pub(super) struct MergeLease {
+    directory: std::fs::File,
+}
+
+impl Drop for MergeLease {
+    fn drop(&mut self) {
+        // Closing only our descriptor leaves flock held by a concurrent child's
+        // inherited copy. Ending this guard must end ownership on every return.
+        loop {
+            match self.directory.unlock() {
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                _ => break,
+            }
+        }
+    }
+}
+
+/// The immutable intent supplies recovery identity; a concurrent retry never
+/// replays a live worker. Explicit guard release also settles inherited FDs.
+pub(super) fn lease(review: &Review) -> Result<MergeLease, String> {
     use sha2::{Digest, Sha256};
     let binding = review
         .bindings
@@ -133,7 +150,7 @@ pub(super) fn lease(review: &Review) -> Result<std::fs::File, String> {
             return Err(format!("PR merge lease failed: {error}"))
         }
     }
-    Ok(directory)
+    Ok(MergeLease { directory })
 }
 
 fn ensure_directory(path: &Path) -> Result<(), String> {
@@ -151,3 +168,6 @@ fn ensure_directory(path: &Path) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests;

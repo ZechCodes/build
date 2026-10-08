@@ -1,6 +1,17 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { retireFileUploads, uploadsFor } from "../src/core/fileUploads.js";
 import { renderFilesTab } from "../src/views/files.js";
+
+let files, uploads;
+afterEach(async () => {
+  files?.dispose();
+  // This standalone fixture has no cache scope, so its upload owner is undefined.
+  retireFileUploads(undefined);
+  await uploads?.ready;
+  files = null;
+  uploads = null;
+});
 
 describe("conversation file-link navigation", () => {
   it("opens the linked file with the tree expanded down to it", async () => {
@@ -22,7 +33,8 @@ describe("conversation file-link navigation", () => {
     });
     const body = document.createElement("div");
 
-    renderFilesTab(body, { scope: { run_id: "run-1" }, callRpc, openAt: { path: "src/parser.js" } });
+    files = renderFilesTab(body, { scope: { run_id: "run-1" }, callRpc, openAt: { path: "src/parser.js" } });
+    uploads = uploadsFor(undefined);
     await vi.waitFor(() => expect(body.querySelector(".fppath")?.textContent).toBe("src/parser.js"));
 
     expect(calls).toContainEqual({ method: "fs.tree", params: { run_id: "run-1", path: "" } });

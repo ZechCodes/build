@@ -167,6 +167,36 @@ fn run_interrupted_tracking_child_if_requested() {
 }
 
 #[cfg(unix)]
+fn assert_tracking_phase_recovery(
+    binding: &ReviewBranchBinding,
+    binding_path: &Path,
+    repository: &git2::Repository,
+    source: &Path,
+    phase: &str,
+) {
+    let tracking = tracking_ref(binding);
+    let tracking_lock = repository.commondir().join(format!("{tracking}.lock"));
+    interrupt_tracking_writer(binding_path, phase);
+    assert_eq!(
+        received_head(binding).unwrap(),
+        Some(binding.initial_head.clone())
+    );
+    assert!(repository.find_reference(&tracking).is_err());
+    if phase == "tracking-locked" {
+        assert!(tracking_lock.exists());
+    }
+    assert_eq!(publish_initial(binding).unwrap(), binding.initial_head);
+    assert_eq!(oid(source, &tracking), binding.initial_head);
+    assert!(!tracking_lock.exists());
+    interrupt_tracking_writer(binding_path, "cleanup-locked");
+    assert!(tracking_lock.exists());
+    cleanup_initial(binding).unwrap();
+    assert!(repository.find_reference(&tracking).is_err());
+    assert!(!tracking_lock.exists());
+    assert_eq!(received_head(binding).unwrap(), None);
+}
+
+#[cfg(unix)]
 #[test]
 fn interrupted_tracking_writes_recover_for_retry_and_cancellation() {
     run_interrupted_tracking_child_if_requested();
@@ -182,24 +212,7 @@ fn interrupted_tracking_writes_recover_for_retry_and_cancellation() {
     fs::create_dir_all(unrelated_lock.parent().unwrap()).unwrap();
     fs::write(&unrelated_lock, "user lock\n").unwrap();
     for phase in ["after-receiver", "tracking-locked"] {
-        interrupt_tracking_writer(&binding_path, phase);
-        assert_eq!(
-            received_head(&binding).unwrap(),
-            Some(binding.initial_head.clone())
-        );
-        assert!(repository.find_reference(&tracking).is_err());
-        if phase == "tracking-locked" {
-            assert!(tracking_lock.exists());
-        }
-        assert_eq!(publish_initial(&binding).unwrap(), binding.initial_head);
-        assert_eq!(oid(&source, &tracking), binding.initial_head);
-        assert!(!tracking_lock.exists());
-        interrupt_tracking_writer(&binding_path, "cleanup-locked");
-        assert!(tracking_lock.exists());
-        cleanup_initial(&binding).unwrap();
-        assert!(repository.find_reference(&tracking).is_err());
-        assert!(!tracking_lock.exists());
-        assert_eq!(received_head(&binding).unwrap(), None);
+        assert_tracking_phase_recovery(&binding, &binding_path, &repository, &source, phase);
     }
     interrupt_tracking_writer(&binding_path, "tracking-locked");
     fs::remove_file(&tracking_lock).unwrap();

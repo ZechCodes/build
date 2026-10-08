@@ -489,6 +489,93 @@ fn pull_request_refusals_preserve_structured_details_across_the_deferred_boundar
 }
 
 #[test]
+fn pull_request_fixtures_require_branch_git_operation_and_merged_refusals() {
+    for (verb, message, code, retryable, details) in [
+        (
+            "open",
+            "dedicated review branch already exists for task: task-1",
+            "conflict",
+            false,
+            serde_json::json!({
+                "reason":"branch_collision","workspace_id":"workspace-1","directory_id":"dir-api",
+                "recovery":"Restore the selected workspace and source placement, then retry the same request_id to resume or read its published result."
+            }),
+        ),
+        (
+            "merge",
+            "A rebase of main is in progress in /sources/api.",
+            "busy",
+            true,
+            serde_json::json!({
+                "reason":"git_operation","task_id":"task-1","snapshot_id":"snapshot-1","directory_id":"dir-api",
+                "recovery":"Read tasks.review.get and retry the saved merge plan after resolving its reported failure."
+            }),
+        ),
+        (
+            "reopen",
+            "Only Closed unmerged PRs can reopen",
+            "conflict",
+            false,
+            serde_json::json!({
+                "reason":"conflict","task_id":"task-1","recovery":"Open a new PR after merge."
+            }),
+        ),
+    ] {
+        let method = format!("tasks.review.{verb}");
+        let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
+        let refusal = fixture["refusals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|refusal| refusal["reply"]["error"] == message)
+            .unwrap_or_else(|| panic!("{method}: missing refusal for {message}"));
+        assert_eq!(
+            refusal["reply"],
+            serde_json::json!({
+                "id":405,"ok":false,"error":message,"error_code":code,"retryable":retryable,"details":details
+            }),
+            "{method}: refusal lost its production error details"
+        );
+        let (_, handler) = v1::methods()
+            .iter()
+            .find(|(name, _)| *name == method)
+            .unwrap();
+        assert!(
+            handler.parse_params(&refusal["params"]).is_ok(),
+            "{method}: invalid refusal params"
+        );
+        if verb == "reopen" {
+            assert_eq!(refusal["review_status"], "merged");
+            assert_eq!(refusal["params"]["expected_version"], 7);
+        }
+    }
+}
+
+#[test]
+fn pull_request_merge_records_git_mid_operation_without_losing_partial_results() {
+    let fixture = read_json(&fixtures_root().join("v1/tasks.review.merge.json"));
+    let message = "A rebase of main is in progress in /sources/ui.";
+    let result = fixture["examples"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|example| &example["result"])
+        .find(|result| result["review"]["actions"][1]["steps"][0]["error"] == message)
+        .expect("merge: missing recorded Git mid-operation example");
+    assert_eq!(result["review"]["pull_request"]["status"], "open");
+    assert_eq!(result["review"]["actions"][0]["status"], "succeeded");
+    assert_eq!(result["review"]["actions"][1]["directory_id"], "dir-ui");
+    assert_eq!(result["review"]["actions"][1]["status"], "failed");
+    assert_eq!(
+        result["review"]["actions"][1]["steps"][0]["status"],
+        "failed"
+    );
+    assert_eq!(result["merge_intents"][0]["state"], "failed");
+    let parsed: build_bridge::api::v1::reviews::ReviewResult = typed(result, "merge Git operation");
+    assert_eq!(serde_json::to_value(parsed).unwrap(), *result);
+}
+
+#[test]
 fn conditional_task_body_writes_have_a_named_capability_and_distinct_refusal() {
     assert!(capabilities(false).contains(&"tasks.bodyPrecondition"));
     let update = read_json(&fixtures_root().join("v1/tasks.update.json"));

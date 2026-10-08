@@ -109,6 +109,59 @@ describe("the v1 adapter against fixtures/api/v1", () => {
     }
   });
 
+  it.each([
+    ["open", {
+      id: 405, ok: false,
+      error: "dedicated review branch already exists for task: task-1",
+      error_code: "conflict", retryable: false,
+      details: {
+        reason: "branch_collision", workspace_id: "workspace-1", directory_id: "dir-api",
+        recovery: "Restore the selected workspace and source placement, then retry the same request_id to resume or read its published result.",
+      },
+    }],
+    ["merge", {
+      id: 405, ok: false,
+      error: "A rebase of main is in progress in /sources/api.",
+      error_code: "busy", retryable: true,
+      details: {
+        reason: "git_operation", task_id: "task-1", snapshot_id: "snapshot-1", directory_id: "dir-api",
+        recovery: "Read tasks.review.get and retry the saved merge plan after resolving its reported failure.",
+      },
+    }],
+    ["reopen", {
+      id: 405, ok: false,
+      error: "Only Closed unmerged PRs can reopen",
+      error_code: "conflict", retryable: false,
+      details: {
+        reason: "conflict", task_id: "task-1", recovery: "Open a new PR after merge.",
+      },
+    }],
+  ])("requires the production %s refusal and its recovery details", (verb, reply) => {
+    const fixture = methodFixtures.find(({ body }) => body.method === `tasks.review.${verb}`).body;
+    const refusal = fixture.refusals.find(({ reply: candidate }) => candidate.error === reply.error);
+    expect(refusal?.reply).toEqual(reply);
+    expect(v1.normalizeError(refusal.reply)).toMatchObject({
+      code: reply.error_code, retryable: reply.retryable, details: reply.details,
+    });
+    if (verb === "reopen") {
+      expect(refusal.review_status).toBe("merged");
+      expect(refusal.params.expected_version).toBe(7);
+    }
+  });
+
+  it("records Git mid-operation as a failed merge step while preserving partial results", () => {
+    const fixture = methodFixtures.find(({ body }) => body.method === "tasks.review.merge").body;
+    const result = fixture.examples.find(({ result: candidate }) =>
+      candidate.review.actions[1]?.steps[0]?.error === "A rebase of main is in progress in /sources/ui.")?.result;
+    expect(result?.review.pull_request.status).toBe("open");
+    expect(result.review.actions[0].status).toBe("succeeded");
+    expect(result.review.actions[1]).toMatchObject({
+      directory_id: "dir-ui", status: "failed", steps: [{ kind: "merge", status: "failed", branch: "main", error: expect.any(String) }],
+    });
+    expect(result.merge_intents[0].state).toBe("failed");
+    expect(v1.parseResult("tasks.review.merge", result)).toEqual(result);
+  });
+
   it("keeps review snapshots and Git actions independently gated", () => {
     for (const verb of ["snapshot", "get", "diff", "complete"]) {
       const fixture = methodFixtures.find(({ body }) => body.method === `tasks.review.${verb}`).body;

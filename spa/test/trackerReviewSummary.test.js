@@ -98,6 +98,76 @@ describe("PR summary version floors", () => {
     }
   });
 
+  it.each([
+    { name: "known read orders", visibleRead: 10, clearRead: 30, staleRead: 40, staleMinute: 5, refreshRead: 50 },
+    { name: "unknown read orders and a newer ordinary timestamp", visibleRead: 0, clearRead: 0, staleRead: 0, staleMinute: 40, refreshRead: 0 },
+  ])("does not refresh accepted PR authority after a rejected summary with $name", ({ visibleRead, clearRead, staleRead, staleMinute, refreshRead }) => {
+    const at = (minute) => `2026-10-08T20:${String(minute).padStart(2, "0")}:00Z`;
+    const seed = tracker.preserveTaskReviewSummary(null, row(7, { updated_at: at(20) }));
+    const clear = tracker.preserveTaskReviewSummary(seed, withoutSummary({ updated_at: at(30) }), { readOrder: clearRead });
+    const visible = tracker.preserveTaskReviewSummary(null, row(8, { updated_at: at(10) }), { readOrder: visibleRead });
+    const rejected = tracker.preserveTaskReviewSummary(visible, row(3, { title: "ordinary rejected reply", updated_at: at(staleMinute) }), { readOrder: staleRead });
+    expect(rejected).toMatchObject({ title: "ordinary rejected reply", review_summary: summary(8) });
+    expect(tracker.preserveTaskReviewSummary(clear, rejected)).not.toHaveProperty("review_summary");
+    expect(tracker.preserveTaskReviewSummary(rejected, clear)).not.toHaveProperty("review_summary");
+    for (const version of [8, 9]) {
+      const refreshed = tracker.preserveTaskReviewSummary(rejected, row(version, { updated_at: at(35) }), { readOrder: refreshRead });
+      expect(tracker.preserveTaskReviewSummary(clear, refreshed).review_summary.version).toBe(version);
+      expect(tracker.preserveTaskReviewSummary(refreshed, clear).review_summary.version).toBe(version);
+    }
+  });
+
+  it("does not treat legacy protective PR clocks as a newer accepted visible observation", () => {
+    const at = (minute) => `2026-10-08T20:${String(minute).padStart(2, "0")}:00Z`;
+    const seed = tracker.preserveTaskReviewSummary(null, row(7, { updated_at: at(20) }));
+    const clear = tracker.preserveTaskReviewSummary(seed, withoutSummary({ updated_at: at(30) }), { readOrder: 30 });
+    const visible = tracker.preserveTaskReviewSummary(null, row(8, { updated_at: at(10) }), { readOrder: 10 });
+    const inflated = tracker.preserveTaskReviewSummary(visible, row(3, { updated_at: at(40) }), { readOrder: 40 });
+    const legacy = { ...inflated, __review_summary_cache: { ...inflated.__review_summary_cache } };
+    delete legacy.__review_summary_cache.visible_observation;
+    expect(tracker.preserveTaskReviewSummary(clear, legacy)).not.toHaveProperty("review_summary");
+    expect(tracker.preserveTaskReviewSummary(legacy, clear)).not.toHaveProperty("review_summary");
+    const refreshed = tracker.preserveTaskReviewSummary(legacy, row(8, { updated_at: at(35) }), { readOrder: 50 });
+    expect(tracker.preserveTaskReviewSummary(clear, refreshed).review_summary.version).toBe(8);
+    expect(tracker.preserveTaskReviewSummary(refreshed, clear).review_summary.version).toBe(8);
+  });
+
+  it("selects a genuinely refreshed cached equal version over rejected protective clocks", () => {
+    const at = (minute) => `2026-10-08T20:${String(minute).padStart(2, "0")}:00Z`;
+    const seed = tracker.preserveTaskReviewSummary(null, row(7, { updated_at: at(20) }));
+    const clear = tracker.preserveTaskReviewSummary(seed, withoutSummary({ updated_at: at(30) }), { readOrder: 30 });
+    const old = tracker.preserveTaskReviewSummary(null, row(8, { updated_at: at(10) }), { readOrder: 10 });
+    const rejected = tracker.preserveTaskReviewSummary(old, row(3, { updated_at: at(40) }), { readOrder: 40 });
+    const refreshed = tracker.preserveTaskReviewSummary(null, row(8, { updated_at: at(5) }), { readOrder: 35 });
+    for (const [held, incoming] of [[rejected, refreshed], [refreshed, rejected]]) {
+      const merged = tracker.preserveTaskReviewSummary(held, incoming);
+      expect(tracker.preserveTaskReviewSummary(clear, merged).review_summary.version).toBe(8);
+      expect(tracker.preserveTaskReviewSummary(merged, clear).review_summary.version).toBe(8);
+    }
+  });
+
+  it("compares accepted clear authority before later rejected protective clocks", () => {
+    const at = (minute) => `2026-10-08T20:${String(minute).padStart(2, "0")}:00Z`;
+    const seed = tracker.preserveTaskReviewSummary(null, row(7, { updated_at: at(20) }), { readOrder: 20 });
+    const clear = tracker.preserveTaskReviewSummary(seed, withoutSummary({ updated_at: at(30) }), { readOrder: 30 });
+    const rejected = tracker.preserveTaskReviewSummary(clear, row(3, { updated_at: at(40) }), { readOrder: 40 });
+    for (const version of [7, 8]) {
+      const visible = tracker.preserveTaskReviewSummary(null, row(version, { updated_at: at(35) }), { readOrder: 35 });
+      expect(tracker.preserveTaskReviewSummary(rejected, visible).review_summary.version).toBe(version);
+      expect(tracker.preserveTaskReviewSummary(visible, rejected).review_summary.version).toBe(version);
+    }
+  });
+
+  it("records the incoming accepted absence after a rejected newer task timestamp", () => {
+    const at = (minute) => `2026-10-08T20:${String(minute).padStart(2, "0")}:00Z`;
+    const visible = tracker.preserveTaskReviewSummary(null, row(8, { updated_at: at(10) }), { readOrder: 10 });
+    const rejected = tracker.preserveTaskReviewSummary(visible, row(3, { updated_at: at(40) }), { readOrder: 40 });
+    const clear = tracker.preserveTaskReviewSummary(rejected, withoutSummary({ updated_at: at(35) }), { readOrder: 50, allowMissing: true });
+    const laterVisible = tracker.preserveTaskReviewSummary(null, row(8, { updated_at: at(38) }));
+    expect(tracker.preserveTaskReviewSummary(clear, laterVisible).review_summary.version).toBe(8);
+    expect(tracker.preserveTaskReviewSummary(laterVisible, clear).review_summary.version).toBe(8);
+  });
+
   it.each([[0, 0], [0, 30], [10, 0]])("uses clear timestamps when cached read orders %s and %s are incomparable", (visibleRead, clearRead) => {
     const at = (minute) => `2026-10-08T20:${String(minute).padStart(2, "0")}:00Z`;
     const seed = tracker.preserveTaskReviewSummary(null, row(7, { updated_at: at(20) }));

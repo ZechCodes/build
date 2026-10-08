@@ -149,11 +149,25 @@ const reviewInstant = (state) => Date.parse(state?.updated_at) || 0;
 const reviewReadOvertaken = (state, options) => options.keepHeld
   || Number.isFinite(options.readOrder) && options.readOrder < reviewRead(state);
 
+/** Legacy max clocks combine accepted and rejected answers. They cannot
+ * prove that a visible PR was accepted after an independent clear. */
+const visibleReviewObservation = (state) => state?.visible_observation || { updated_at: null, read_order: 0 };
+
+/** Positive accepted read orders share the client clock. Otherwise the
+ * accepted task timestamps stand in; protective maxima never participate. */
+function reviewObservationOrder(before, next) {
+  const reads = reviewRead(next) - reviewRead(before);
+  const timestamps = reviewInstant(next) - reviewInstant(before);
+  return reviewRead(before) > 0 && reviewRead(next) > 0 ? reads || timestamps : timestamps;
+}
+
 function newerTaskReviewState(held, incoming) {
   if (advancesSummaryFloor(held.floor, incoming.floor)) return incoming;
   if (belowSummaryFloor(held.floor, incoming.floor)) return held;
-  if (reviewInstant(held) !== reviewInstant(incoming)) return reviewInstant(incoming) > reviewInstant(held) ? incoming : held;
-  if (reviewRead(held) !== reviewRead(incoming)) return reviewRead(incoming) > reviewRead(held) ? incoming : held;
+  const before = held.cleared ? taskReviewClearKey(held) : visibleReviewObservation(held);
+  const next = incoming.cleared ? taskReviewClearKey(incoming) : visibleReviewObservation(incoming);
+  const order = reviewObservationOrder(before, next);
+  if (order) return order > 0 ? incoming : held;
   return incoming.cleared ? incoming : held;
 }
 
@@ -169,10 +183,7 @@ function taskReviewClearKey(state) {
 function newerTaskReviewClearKey(held, incoming) {
   const before = taskReviewClearKey(held);
   const next = taskReviewClearKey(incoming);
-  const reads = reviewRead(next) - reviewRead(before);
-  const timestamps = reviewInstant(next) - reviewInstant(before);
-  const chronology = reviewRead(before) > 0 && reviewRead(next) > 0 ? reads : timestamps;
-  const difference = chronology || timestamps || reads || next.version - before.version;
+  const difference = reviewObservationOrder(before, next) || next.version - before.version;
   return difference > 0 ? next : before;
 }
 
@@ -189,10 +200,10 @@ function combinedTaskReviewClear(held, incoming) {
 function clearFencesCachedReview(clear, visible) {
   // A raw summary already accepted after this exact clear must survive an
   // interrupted repair. Mutable protective floors do not change that event.
-  if (JSON.stringify(visible.observed_clear) === JSON.stringify(taskReviewClearKey(clear))) return false;
-  const comparableReads = reviewRead(clear) > 0 && reviewRead(visible) > 0;
-  return comparableReads ? reviewRead(visible) < reviewRead(clear)
-    : reviewInstant(visible) <= reviewInstant(clear);
+  const absence = taskReviewClearKey(clear);
+  if (JSON.stringify(visible.observed_clear) === JSON.stringify(absence)) return false;
+  const observation = visibleReviewObservation(visible);
+  return reviewObservationOrder(absence, observation) <= 0;
 }
 
 /** An old cached visible copy cannot use its version to cross a newer clear.
@@ -228,10 +239,20 @@ function withTaskReviewState(base, state) {
   return next;
 }
 
-function withTaskReviewLineage(held, next, keep) {
-  if (next.cleared) return { ...next, clear_key: taskReviewClearKey(keep ? held : next) };
+function withTaskReviewLineage(held, next, keep, observation) {
+  if (next.cleared) return { ...next, clear_key: taskReviewClearKey(keep ? held : { ...next, ...observation }) };
   const observedClear = held?.cleared ? taskReviewClearKey(held) : held?.observed_clear;
   return observedClear ? { ...next, observed_clear: observedClear } : next;
+}
+
+function withVisibleReviewObservation(held, incoming, next, options, keep) {
+  // Protective maxima still fence raw older replies. Only an accepted
+  // visible summary establishes a new observation for cached comparisons.
+  const observation = keep ? visibleReviewObservation(held)
+    : { updated_at: incoming.updated_at ?? null, read_order: Number(options.readOrder) || 0 };
+  const linked = withTaskReviewLineage(held, next, keep, observation);
+  if (linked.cleared) return linked;
+  return { ...linked, visible_observation: observation };
 }
 
 function acceptedTaskReviewState(state, incoming, options) {
@@ -244,7 +265,7 @@ function acceptedTaskReviewState(state, incoming, options) {
     updated_at: latestTaskTimestamp(state?.updated_at, incoming.updated_at),
     read_order: Math.max(reviewRead(state), Number(options.readOrder) || 0),
   };
-  return withTaskReviewLineage(state, next, keep);
+  return withVisibleReviewObservation(state, incoming, next, options, keep);
 }
 
 /** PR floors survive clears and stale ordinary fields on every task row.

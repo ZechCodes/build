@@ -4,7 +4,9 @@
 use super::tracker::{append_activity, write_tracker_task};
 use super::{now_rfc3339, Store, StoreError};
 use crate::reviews::model::ReviewSnapshot;
-use crate::reviews::records::{Review, ReviewCompletion, ReviewState};
+use crate::reviews::records::{
+    PullRequestMetadata, PullRequestStatus, Review, ReviewCompletion, ReviewMode, ReviewState,
+};
 use crate::tracker::{Actor, Task, TaskComment, TaskEvent, TaskEventKind, DONE_STATUS};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
@@ -12,6 +14,7 @@ use serde_json::json;
 use std::path::PathBuf;
 
 mod actions;
+mod pull_requests;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct ReviewHeader {
@@ -20,6 +23,10 @@ struct ReviewHeader {
     version: u64,
     state: ReviewState,
     completion: Option<ReviewCompletion>,
+    #[serde(default, skip_serializing_if = "ReviewMode::is_snapshot")]
+    mode: ReviewMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pull_request: Option<PullRequestMetadata>,
 }
 
 struct CompletionWrite<'a> {
@@ -63,9 +70,16 @@ impl Store {
                     version: 0,
                     state: ReviewState::Open,
                     completion: None,
+                    mode: ReviewMode::Snapshot,
+                    pull_request: None,
                 },
                 None => return Err(version_conflict(task_id, expected_version, 0)),
             };
+            if header.mode == ReviewMode::PullRequest {
+                return Err(StoreError::ReviewPullRequestInvalid(
+                    "publish PR snapshots through the bound receiving refs".into(),
+                ));
+            }
             if snapshot_exists(tx, &snapshot.id)? {
                 return Err(StoreError::ReviewSnapshotExists {
                     snapshot_id: snapshot.id,
@@ -219,6 +233,11 @@ fn complete_review_in_tx(
     let latest = latest_snapshot_id(tx, task_id)?;
     header.version += 1;
     header.state = ReviewState::Completed;
+    if let Some(metadata) = &mut header.pull_request {
+        if metadata.status.is_active() {
+            metadata.status = PullRequestStatus::Closed;
+        }
+    }
     header.completion = Some(ReviewCompletion {
         actor: write.actor.clone(),
         description: write.description.into(),
@@ -296,6 +315,9 @@ fn load_review(conn: &Connection, task_id: &str) -> Result<Option<Review>, Store
         completion: header.completion,
         actions: actions::load_actions(conn, task_id)?,
         destinations: Vec::new(),
+        mode: header.mode,
+        pull_request: header.pull_request,
+        bindings: pull_requests::load_bindings(conn, task_id)?,
     }))
 }
 
@@ -311,6 +333,7 @@ fn load_header(conn: &Connection, task_id: &str) -> Result<Option<ReviewHeader>,
 }
 
 fn write_header(tx: &Transaction, header: &ReviewHeader) -> Result<(), StoreError> {
+    pull_requests::sync_workspace_claim(tx, header)?;
     tx.execute(
         "INSERT INTO reviews (task_id, workspace_id, version, record) VALUES (?1, ?2, ?3, ?4) \
          ON CONFLICT(task_id) DO UPDATE SET workspace_id = ?2, version = ?3, record = ?4",

@@ -1,0 +1,713 @@
+use super::*;
+use crate::reviews::model::*;
+use crate::reviews::records::ReviewState;
+use crate::tracker::{Actor, Task};
+use std::collections::BTreeMap;
+
+const NOW: &str = "2026-10-08T00:00:00Z";
+
+fn request(workspace: &str) -> ReviewOpeningRequest {
+    ReviewOpeningRequest {
+        workspace_id: workspace.into(),
+        title: "Review feature".into(),
+        description: "Committed work".into(),
+        creator: Actor::User,
+        reviewer: None,
+        directories: vec![ReviewMembership {
+            directory_id: "dir-1".into(),
+            source_id: "source-1".into(),
+            kind: ReviewMembershipKind::Git,
+            reason: None,
+        }],
+        base_branches: BTreeMap::from([("dir-1".into(), "refs/heads/main".into())]),
+    }
+}
+
+fn binding() -> ReviewBranchBinding {
+    ReviewBranchBinding {
+        directory_id: "dir-1".into(),
+        source_id: "source-1".into(),
+        repository_id: "repo-1".into(),
+        working_repository: "/work/Build".into(),
+        source_repository: "/source/Build".into(),
+        original_branch_ref: Some("refs/heads/build/feature".into()),
+        initial_head: "abc123".into(),
+        dedicated_branch_ref: "refs/heads/review/1-feature".into(),
+        base_branch_ref: "refs/heads/main".into(),
+        receiving_repository: "/receivers/repo-1.git".into(),
+        receiving_ref: "refs/heads/review/1-feature".into(),
+        remote_name: "build-review".into(),
+        last_received_head: Some("abc123".into()),
+        preparation: ReviewPreparationState::Ready,
+        publication: ReviewPublicationState::Published,
+        recovery: None,
+    }
+}
+
+fn snapshot() -> ReviewSnapshot {
+    ReviewSnapshot {
+        id: "snapshot-1".into(),
+        number: 0,
+        author: Actor::User,
+        created_at: NOW.into(),
+        directories: vec![ReviewDirectory {
+            id: "dir-1".into(),
+            source_id: "source-1".into(),
+            name: "Build".into(),
+            path: "/work/Build".into(),
+            source_path: "/source/Build".into(),
+            is_git: true,
+            status: ReviewDirectoryStatus::Git,
+            reason: None,
+            common_git_dir: Some("/receivers/repo-1.git".into()),
+            branch: Some("review/1-feature".into()),
+            base: Some(ReviewBase {
+                kind: ReviewBaseKind::Configured,
+                name: Some("main".into()),
+                oid: "base123".into(),
+            }),
+            head: Some("abc123".into()),
+            uncommitted_files: None,
+        }],
+    }
+}
+
+fn prepare(store: &Store, workspace: &str, request_id: &str) -> ReviewOpening {
+    let mut opening = store
+        .reserve_review_opening("/repo", request_id, request(workspace))
+        .unwrap();
+    opening.bindings.push(binding());
+    store
+        .save_review_opening(&opening, opening.version)
+        .unwrap()
+}
+
+fn publish(store: &Store) -> crate::reviews::records::Review {
+    let opening = prepare(store, "ws-1", "open-1");
+    store
+        .publish_review_opening("/repo", "open-1", opening.version, snapshot(), &[])
+        .unwrap()
+}
+
+#[test]
+fn reservation_survives_restart_and_normal_tasks_skip_its_number() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let opening = store
+        .reserve_review_opening("/repo", "open-1", request("ws-1"))
+        .unwrap();
+    assert_eq!(opening.task.number, 1);
+    assert!(store.load_tracker_task(&opening.task.id).unwrap().is_none());
+    drop(store);
+    let store = Store::new(dir.path()).unwrap();
+    assert_eq!(
+        store.load_review_opening("/repo", "open-1").unwrap(),
+        Some(opening.clone())
+    );
+    let task = store
+        .create_tracker_task(Task::drafted("/repo", "normal", Actor::User, NOW), &[])
+        .unwrap();
+    assert_eq!(task.number, 2);
+    assert_eq!(
+        store
+            .reserve_review_opening("/repo", "open-1", request("ws-1"))
+            .unwrap(),
+        opening
+    );
+    let mut changed = request("ws-1");
+    changed.title = "different".into();
+    assert!(matches!(
+        store.reserve_review_opening("/repo", "open-1", changed),
+        Err(StoreError::ReviewRequestConflict { .. })
+    ));
+    // The same request ID is scoped to its canonical project, not globally.
+    let other = store
+        .reserve_review_opening("/other", "open-1", request("ws-2"))
+        .unwrap();
+    assert_eq!(other.task.number, 1);
+}
+
+#[test]
+fn independent_connections_cannot_claim_the_same_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let left = Store::new(dir.path()).unwrap();
+    let right = Store::new(dir.path()).unwrap();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let run = |store: Store, id: &'static str, barrier: std::sync::Arc<std::sync::Barrier>| {
+        std::thread::spawn(move || {
+            barrier.wait();
+            store.reserve_review_opening("/repo", id, request("ws-1"))
+        })
+    };
+    let a = run(left, "a", barrier.clone());
+    let b = run(right, "b", barrier);
+    let results = [a.join().unwrap(), b.join().unwrap()];
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert!(results
+        .iter()
+        .any(|result| matches!(result, Err(StoreError::ReviewWorkspaceBusy { .. }))));
+}
+
+#[test]
+fn opening_publication_is_atomic_idempotent_and_keeps_the_claim() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let opening = prepare(&store, "ws-1", "open-1");
+    store.fail_next_write();
+    assert!(store
+        .publish_review_opening("/repo", "open-1", opening.version, snapshot(), &[])
+        .is_err());
+    assert!(store.load_tracker_task(&opening.task.id).unwrap().is_none());
+    assert!(store.load_review(&opening.task.id).unwrap().is_none());
+    let review = store
+        .publish_review_opening("/repo", "open-1", opening.version, snapshot(), &[])
+        .unwrap();
+    assert_eq!(review.mode, ReviewMode::PullRequest);
+    assert_eq!(
+        review
+            .pull_request
+            .as_ref()
+            .unwrap()
+            .latest_published_snapshot_id
+            .as_deref(),
+        Some("snapshot-1")
+    );
+    assert_eq!(review.bindings, opening.bindings);
+    assert_eq!(
+        store
+            .load_tracker_task(&opening.task.id)
+            .unwrap()
+            .unwrap()
+            .status,
+        "in_review"
+    );
+    assert_eq!(
+        store
+            .publish_review_opening("/repo", "open-1", opening.version, snapshot(), &[])
+            .unwrap(),
+        review
+    );
+    assert!(matches!(
+        store.reserve_review_opening("/repo", "open-2", request("ws-1")),
+        Err(StoreError::ReviewWorkspaceBusy { .. })
+    ));
+    assert_eq!(
+        store.load_workspace_review_summary("ws-1").unwrap(),
+        review.summary()
+    );
+}
+
+#[test]
+fn journal_cas_and_identity_checks_preserve_recovery_ownership() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut opening = prepare(&store, "ws-1", "open-1");
+    let original = opening.clone();
+    opening.state = ReviewOpeningState::Interrupted;
+    let interrupted = store
+        .save_review_opening(&opening, opening.version)
+        .unwrap();
+    assert!(matches!(
+        store.save_review_opening(&opening, opening.version),
+        Err(StoreError::ReviewOperationVersionConflict { .. })
+    ));
+    let mut changed = interrupted.clone();
+    changed.bindings[0].receiving_repository = "/untrusted.git".into();
+    assert!(matches!(
+        store.save_review_opening(&changed, interrupted.version),
+        Err(StoreError::ReviewPullRequestInvalid(_))
+    ));
+    assert!(matches!(
+        store.reserve_review_opening("/repo", "open-2", request("ws-1")),
+        Err(StoreError::ReviewWorkspaceBusy { .. })
+    ));
+    let mut cancelled = interrupted;
+    cancelled.state = ReviewOpeningState::Cancelled;
+    store
+        .save_review_opening(&cancelled, cancelled.version)
+        .unwrap();
+    let next = store
+        .reserve_review_opening("/repo", "open-2", request("ws-1"))
+        .unwrap();
+    assert_eq!(next.task.number, original.task.number + 1);
+}
+
+#[test]
+fn sync_revision_is_separate_from_review_version_and_lifecycle() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let review = publish(&store);
+    let observation = ReviewSyncObservation {
+        task_id: review.task_id.clone(),
+        directory_id: "dir-1".into(),
+        revision: 0,
+        health: ReviewSyncHealth::Unavailable,
+        working_head: Some("def456".into()),
+        received_head: None,
+        snapshot_head: Some("abc123".into()),
+        pending_commits: None,
+        observed_at: NOW.into(),
+        error: Some("receiver missing".into()),
+    };
+    let saved = store.save_review_sync_observation(&observation, 0).unwrap();
+    assert_eq!(saved.revision, 1);
+    assert!(matches!(
+        store.save_review_sync_observation(&observation, 0),
+        Err(StoreError::ReviewOperationVersionConflict { .. })
+    ));
+    assert_eq!(
+        store.load_review(&review.task_id).unwrap(),
+        Some(review.clone())
+    );
+    drop(store);
+    let store = Store::new(dir.path()).unwrap();
+    assert_eq!(
+        store
+            .load_review_sync_observations(&review.task_id)
+            .unwrap(),
+        vec![saved]
+    );
+}
+
+#[test]
+fn legacy_completion_preserves_pr_mode_and_releases_claim_as_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let review = publish(&store);
+    assert!(matches!(
+        store.save_review_snapshot(&review.task_id, "ws-other", review.version, snapshot()),
+        Err(StoreError::ReviewPullRequestInvalid(_))
+    ));
+    let completed = store
+        .complete_review(&review.task_id, review.version, &Actor::User, "Marked done")
+        .unwrap();
+    assert_eq!(completed.state, ReviewState::Completed);
+    assert_eq!(
+        completed.pull_request.unwrap().status,
+        PullRequestStatus::Closed
+    );
+    assert!(store
+        .reserve_review_opening("/repo", "open-2", request("ws-1"))
+        .is_ok());
+}
+
+fn merge_request(review: &crate::reviews::records::Review) -> ReviewMergeRequest {
+    ReviewMergeRequest {
+        task_id: review.task_id.clone(),
+        expected_version: review.version,
+        snapshot_id: "snapshot-1".into(),
+        actor: Actor::User,
+        sources: vec![ReviewMergeSource {
+            directory_id: "dir-1".into(),
+            repository_id: "repo-1".into(),
+            base_branch_ref: "refs/heads/main".into(),
+            head: "abc123".into(),
+            expected_base_head: "base123".into(),
+            push: Some(ReviewMergePush {
+                remote: "origin".into(),
+                branch: "main".into(),
+            }),
+        }],
+    }
+}
+
+#[test]
+fn merge_intents_survive_restart_and_match_requests_before_version_checks() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let review = publish(&store);
+    let request = merge_request(&review);
+    let intent = store
+        .reserve_review_merge("/repo", "merge-1", request.clone())
+        .unwrap();
+    assert!(store
+        .reserve_review_merge("/other", "merge-1", request.clone())
+        .is_err());
+    assert!(store
+        .reserve_review_merge("/repo", "merge-2", request.clone())
+        .is_err());
+    let mut result = intent.clone();
+    result.state = ReviewMergeState::Interrupted;
+    result.action_ids.push("action-1".into());
+    let saved = store
+        .save_review_merge_intent(&result, result.version)
+        .unwrap();
+    assert!(matches!(
+        store.save_review_merge_intent(&result, result.version),
+        Err(StoreError::ReviewOperationVersionConflict { .. })
+    ));
+    store
+        .complete_review(&review.task_id, review.version, &Actor::User, "Closed")
+        .unwrap();
+    drop(store);
+    let store = Store::new(dir.path()).unwrap();
+    assert_eq!(
+        store.load_review_merge_intent("/repo", "merge-1").unwrap(),
+        Some(saved.clone())
+    );
+    assert_eq!(
+        store
+            .reserve_review_merge("/repo", "merge-1", request.clone())
+            .unwrap(),
+        saved
+    );
+    let mut changed = request;
+    changed.sources[0].base_branch_ref = "refs/heads/other".into();
+    assert!(matches!(
+        store.reserve_review_merge("/repo", "merge-1", changed),
+        Err(StoreError::ReviewRequestConflict { .. })
+    ));
+}
+
+#[test]
+fn merge_admission_requires_exact_published_binding_vector() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let review = publish(&store);
+    let request = merge_request(&review);
+    for field in 0..5 {
+        let mut invalid = request.clone();
+        match field {
+            0 => invalid.sources.clear(),
+            1 => invalid.sources[0].head = "unpublished".into(),
+            2 => invalid.sources[0].repository_id = "different".into(),
+            3 => invalid.sources[0].base_branch_ref = "refs/heads/other".into(),
+            _ => invalid.sources.push(invalid.sources[0].clone()),
+        }
+        assert!(store
+            .reserve_review_merge("/repo", "invalid", invalid)
+            .is_err());
+    }
+    assert!(store
+        .load_review_merge_intent("/repo", "invalid")
+        .unwrap()
+        .is_none());
+    assert!(store
+        .reserve_review_merge("/repo", "valid", request)
+        .is_ok());
+}
+
+#[test]
+fn upgrading_real_v14_shape_preserves_legacy_header_and_snapshot_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let task = store
+        .create_tracker_task(Task::drafted("/repo", "legacy", Actor::User, NOW), &[])
+        .unwrap();
+    let legacy = format!(
+        r#"{{"task_id":"{}","workspace_id":"ws-old","version":1,"state":"open","completion":null}}"#,
+        task.id
+    );
+    let mut old = snapshot();
+    old.number = 1;
+    let old_snapshot = serde_json::to_string(&old).unwrap();
+    {
+        let conn = store.connection();
+        conn.execute(
+            "INSERT INTO reviews VALUES (?1, 'ws-old', 1, ?2)",
+            rusqlite::params![task.id, legacy],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO review_snapshots VALUES ('snapshot-1', ?1, 1, ?2)",
+            rusqlite::params![task.id, old_snapshot],
+        )
+        .unwrap();
+        // Recreate the pre-PR schema, including the rest of the real v14 store.
+        conn.execute_batch("DROP TABLE review_workspace_claims; DROP TABLE review_openings; DROP TABLE review_branch_bindings; DROP TABLE review_sync_observations; DROP TABLE review_merge_intents; UPDATE meta SET value = '14' WHERE key = 'schema_version';").unwrap();
+    }
+    drop(store);
+    let store = Store::new(dir.path()).unwrap();
+    assert_eq!(SCHEMA_VERSION, 15);
+    let review = store.load_review(&task.id).unwrap().unwrap();
+    assert_eq!(review.mode, ReviewMode::Snapshot);
+    assert!(review.pull_request.is_none());
+    assert!(review.bindings.is_empty());
+    let conn = store.connection();
+    let raw: String = conn
+        .query_row(
+            "SELECT record FROM reviews WHERE task_id = ?1",
+            [&task.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(raw, legacy);
+    let raw: String = conn
+        .query_row(
+            "SELECT record FROM review_snapshots WHERE task_id = ?1",
+            [&task.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(raw, old_snapshot);
+    drop(conn);
+    let complete = store
+        .complete_review(&task.id, 1, &Actor::User, "legacy complete")
+        .unwrap();
+    let raw = serde_json::to_value(complete).unwrap();
+    assert!(raw.get("mode").is_none());
+    assert!(raw.get("pull_request").is_none());
+    assert!(raw.get("bindings").is_none());
+}
+
+#[test]
+fn explicit_history_deletion_cleans_cancelled_and_published_pr_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let review = publish(&store);
+    store
+        .reserve_review_merge("/repo", "merge-1", merge_request(&review))
+        .unwrap();
+    let mut cancelled = store
+        .reserve_review_opening("/repo", "open-2", request("ws-2"))
+        .unwrap();
+    cancelled.state = ReviewOpeningState::Cancelled;
+    store
+        .save_review_opening(&cancelled, cancelled.version)
+        .unwrap();
+    store
+        .delete_tracker_tasks_of_project("/repo", |_| Ok(()))
+        .unwrap();
+    assert!(store
+        .load_review_opening("/repo", "open-2")
+        .unwrap()
+        .is_none());
+    assert!(store
+        .load_review_merge_intent("/repo", "merge-1")
+        .unwrap()
+        .is_none());
+    for workspace in ["ws-1", "ws-2"] {
+        assert!(store
+            .reserve_review_opening("/repo", workspace, request(workspace))
+            .is_ok());
+    }
+}
+
+#[test]
+fn history_deletion_preserves_unfinished_opening_recovery_across_restart() {
+    for state in [
+        ReviewOpeningState::Interrupted,
+        ReviewOpeningState::Preparing,
+        ReviewOpeningState::Failed,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        let published = publish(&store);
+        let mut opening = store
+            .reserve_review_opening("/repo", "open-2", request("ws-2"))
+            .unwrap();
+        let mut prepared = binding();
+        prepared.dedicated_branch_ref = "refs/heads/review/2-preparing".into();
+        prepared.receiving_ref = prepared.dedicated_branch_ref.clone();
+        prepared.preparation = ReviewPreparationState::RemoteConfigured;
+        prepared.publication = ReviewPublicationState::Interrupted;
+        prepared.last_received_head = None;
+        prepared.recovery = Some("Inspect the prepared remote before unwinding".into());
+        opening.bindings.push(prepared.clone());
+        opening.state = state;
+        let opening = store
+            .save_review_opening(&opening, opening.version)
+            .unwrap();
+
+        let released = std::cell::Cell::new(false);
+        let result = store.delete_tracker_tasks_of_project("/repo", |_| {
+            released.set(true);
+            Ok(())
+        });
+        assert!(matches!(
+            result,
+            Err(StoreError::ReviewPullRequestInvalid(_))
+        ));
+        assert!(
+            !released.get(),
+            "refusal must precede the Git release callback"
+        );
+        drop(store);
+
+        let store = Store::new(dir.path()).unwrap();
+        assert_eq!(
+            store.load_review_opening("/repo", "open-2").unwrap(),
+            Some(opening.clone())
+        );
+        assert_eq!(
+            store.load_unfinished_review_openings().unwrap(),
+            vec![opening.clone()]
+        );
+        let raw: String = store.connection().query_row(
+            "SELECT record FROM review_branch_bindings WHERE task_id = ?1 AND directory_id = ?2",
+            rusqlite::params![opening.task.id, prepared.directory_id], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ReviewBranchBinding>(&raw).unwrap(),
+            prepared
+        );
+        assert_eq!(
+            store.load_review(&published.task_id).unwrap(),
+            Some(published)
+        );
+        assert_eq!(
+            store
+                .reserve_review_opening("/repo", "open-2", request("ws-2"))
+                .unwrap(),
+            opening
+        );
+        assert!(matches!(
+            store.reserve_review_opening("/repo", "another", request("ws-2")),
+            Err(StoreError::ReviewWorkspaceBusy { .. })
+        ));
+        let normal = store
+            .create_tracker_task(
+                Task::drafted("/repo", "after restart", Actor::User, NOW),
+                &[],
+            )
+            .unwrap();
+        assert_eq!(normal.number, opening.task.number + 1);
+    }
+}
+
+#[test]
+fn history_deletion_checks_unfinished_openings_only_in_its_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let published = publish(&store);
+    let other = store
+        .reserve_review_opening("/other", "open-other", request("ws-other"))
+        .unwrap();
+    let released = std::cell::Cell::new(false);
+    store
+        .delete_tracker_tasks_of_project("/repo", |_| {
+            released.set(true);
+            Ok(())
+        })
+        .unwrap();
+    assert!(released.get());
+    assert!(store.load_review(&published.task_id).unwrap().is_none());
+    assert_eq!(
+        store.load_review_opening("/other", "open-other").unwrap(),
+        Some(other)
+    );
+    assert!(matches!(
+        store.reserve_review_opening("/other", "another", request("ws-other")),
+        Err(StoreError::ReviewWorkspaceBusy { .. })
+    ));
+}
+
+#[test]
+fn preparation_reserves_exact_branch_identity_before_git_mutation() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let first = prepare(&store, "ws-1", "open-1");
+    let mut second = store
+        .reserve_review_opening("/other", "open-2", request("ws-2"))
+        .unwrap();
+    second.bindings.push(binding());
+    assert!(store.save_review_opening(&second, second.version).is_err());
+    // Cancellation is the service's assertion that owned refs were unwound.
+    let mut cancelled = first;
+    cancelled.state = ReviewOpeningState::Cancelled;
+    store
+        .save_review_opening(&cancelled, cancelled.version)
+        .unwrap();
+    assert!(store.save_review_opening(&second, second.version).is_ok());
+}
+
+#[test]
+fn independent_openings_reserve_distinct_numbers_and_are_recoverable() {
+    let dir = tempfile::tempdir().unwrap();
+    let stores = [
+        Store::new(dir.path()).unwrap(),
+        Store::new(dir.path()).unwrap(),
+    ];
+    let handles: Vec<_> = stores
+        .into_iter()
+        .enumerate()
+        .map(|(index, store)| {
+            std::thread::spawn(move || {
+                store
+                    .reserve_review_opening(
+                        "/repo",
+                        &format!("request-{index}"),
+                        request(&format!("workspace-{index}")),
+                    )
+                    .unwrap()
+            })
+        })
+        .collect();
+    let mut numbers: Vec<_> = handles
+        .into_iter()
+        .map(|handle| handle.join().unwrap().task.number)
+        .collect();
+    numbers.sort();
+    assert_eq!(numbers, [1, 2]);
+    let store = Store::new(dir.path()).unwrap();
+    assert_eq!(store.load_unfinished_review_openings().unwrap().len(), 2);
+}
+
+#[test]
+fn receiver_ref_is_reserved_independently_of_working_branch_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    prepare(&store, "ws-1", "open-1");
+    let mut other = store
+        .reserve_review_opening("/repo", "open-2", request("ws-2"))
+        .unwrap();
+    let mut colliding = binding();
+    colliding.dedicated_branch_ref = "refs/heads/review/2-other".into();
+    other.bindings.push(colliding);
+    assert!(store.save_review_opening(&other, other.version).is_err());
+}
+
+#[test]
+fn late_sql_failure_rolls_back_every_publication_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let opening = prepare(&store, "ws-1", "open-1");
+    store.connection().execute_batch("CREATE TRIGGER reject_snapshot BEFORE INSERT ON review_snapshots BEGIN SELECT RAISE(ABORT, 'injected late failure'); END;").unwrap();
+    let event = crate::tracker::TaskEvent::new(
+        &opening.task.id,
+        Actor::User,
+        crate::tracker::TaskEventKind::Created,
+        serde_json::json!({}),
+        NOW,
+    );
+    assert!(store
+        .publish_review_opening("/repo", "open-1", opening.version, snapshot(), &[event])
+        .is_err());
+    assert!(store.load_review(&opening.task.id).unwrap().is_none());
+    assert!(store.load_tracker_task(&opening.task.id).unwrap().is_none());
+    assert_eq!(
+        store.load_review_opening("/repo", "open-1").unwrap(),
+        Some(opening.clone())
+    );
+    assert!(store
+        .load_tracker_timeline(&opening.task.id)
+        .unwrap()
+        .is_empty());
+    assert!(matches!(
+        store.reserve_review_opening("/repo", "open-2", request("ws-1")),
+        Err(StoreError::ReviewWorkspaceBusy { .. })
+    ));
+    store
+        .connection()
+        .execute_batch("DROP TRIGGER reject_snapshot")
+        .unwrap();
+    assert!(store
+        .publish_review_opening("/repo", "open-1", opening.version, snapshot(), &[])
+        .is_ok());
+}
+
+#[test]
+fn preparing_a_binding_requires_its_initial_recovery_head() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut opening = store
+        .reserve_review_opening("/repo", "open-1", request("ws-1"))
+        .unwrap();
+    let mut incomplete = binding();
+    incomplete.initial_head.clear();
+    opening.bindings.push(incomplete);
+    assert!(matches!(
+        store.save_review_opening(&opening, opening.version),
+        Err(StoreError::ReviewPullRequestInvalid(_))
+    ));
+}

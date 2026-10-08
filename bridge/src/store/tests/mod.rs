@@ -18,6 +18,7 @@ mod entities;
 mod legacy;
 mod migrations;
 mod operations;
+mod pull_requests;
 mod push_keys;
 mod reviews;
 mod support;

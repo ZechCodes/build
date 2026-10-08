@@ -116,7 +116,8 @@ impl Store {
     /// File a new task, minting its per-project number inside the same
     /// transaction as the insert, and write the events that explain it.
     ///
-    /// The number is `MAX(number) + 1` over the project under the `IMMEDIATE`
+    /// The number is `MAX(number) + 1` over tasks and durable PR reservations
+    /// under the `IMMEDIATE`
     /// transaction every store write already takes, so two writers cannot read
     /// the same maximum; the unique index is the backstop if one ever does.
     /// Answers the task as it was stored — the draft handed in carries no
@@ -331,12 +332,26 @@ impl Store {
     /// Explicit history deletion, called by the review service off the app
     /// lock. Release each history's Git pins inside the transaction: a snapshot
     /// cannot commit new pins between their enumeration and metadata deletion.
+    /// Unfinished openings must be recovered or safely cancelled first. Check
+    /// before release callbacks, which cannot be rolled back with SQLite.
     pub(crate) fn delete_tracker_tasks_of_project(
         &self,
         project_path: &str,
         release: impl Fn(&crate::reviews::records::Review) -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
+            let unfinished: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM review_openings WHERE project_key = ?1
+                 AND state IN ('preparing', 'failed', 'interrupted'))",
+                [project_path],
+                |row| row.get(0),
+            )?;
+            if unfinished {
+                return Err(StoreError::ReviewPullRequestInvalid(
+                    "recover or safely cancel unfinished PR openings before deleting project history"
+                        .into(),
+                ));
+            }
             for review in super::reviews::load_reviews_of_project(tx, project_path)? {
                 release(&review)?;
             }
@@ -345,6 +360,10 @@ impl Store {
                 "tracker_events",
                 "review_snapshots",
                 "review_actions",
+                "review_branch_bindings",
+                "review_sync_observations",
+                "review_workspace_claims",
+                "review_merge_intents",
                 "reviews",
             ] {
                 tx.execute(
@@ -354,6 +373,12 @@ impl Store {
                     ),
                     [project_path],
                 )?;
+            }
+            // Cancelled openings have no tracker task. Once their Git cleanup
+            // is verified, their remaining journals can be deleted by project.
+            tx.execute("DELETE FROM review_branch_bindings WHERE task_id IN (SELECT task_id FROM review_openings WHERE project_key = ?1)", [project_path])?;
+            for table in ["review_workspace_claims", "review_openings", "review_merge_intents"] {
+                tx.execute(&format!("DELETE FROM {table} WHERE project_key = ?1"), [project_path])?;
             }
             tx.execute(
                 "DELETE FROM tracker_tasks WHERE project_key = ?1",
@@ -366,9 +391,12 @@ impl Store {
 
 /// The next number this project hands out. Read inside the caller's write
 /// transaction, never before it.
-fn next_task_number(tx: &Transaction, project_path: &str) -> Result<u64, StoreError> {
+pub(super) fn next_task_number(tx: &Transaction, project_path: &str) -> Result<u64, StoreError> {
     let highest: i64 = tx.query_row(
-        "SELECT COALESCE(MAX(number), 0) FROM tracker_tasks WHERE project_key = ?1",
+        "SELECT MAX(number) FROM (
+             SELECT COALESCE(MAX(number), 0) AS number FROM tracker_tasks WHERE project_key = ?1
+             UNION ALL SELECT COALESCE(MAX(number), 0) FROM review_openings WHERE project_key = ?1
+         )",
         [project_path],
         |row| row.get(0),
     )?;

@@ -572,3 +572,132 @@ fn interrupted_metadata_publication_recovers_owned_ref_locks() {
         "user lock\n"
     );
 }
+
+#[cfg(unix)]
+fn interrupt_pin_writer(receiver: &Path, expected: &str, operation: &str) {
+    let repository = git2::Repository::open_bare(receiver).unwrap();
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "reviews::publication::tests::interrupted_pin_mutations_recover_without_touching_changed_refs_or_user_locks", "--nocapture"])
+        .env("BUILD_REVIEW_INTERRUPTED_PIN_DIR", repository.path())
+        .env("BUILD_REVIEW_INTERRUPTED_PIN_OPERATION", operation)
+        .env("BUILD_REVIEW_INTERRUPTED_PIN_OID", expected)
+        .status().unwrap();
+    assert_eq!(status.code(), Some(25));
+}
+
+#[cfg(unix)]
+#[test]
+fn interrupted_pin_mutations_recover_without_touching_changed_refs_or_user_locks() {
+    let reference = "refs/build/reviews/interrupted/head";
+    if let Some(receiver) = std::env::var_os("BUILD_REVIEW_INTERRUPTED_PIN_DIR") {
+        let repository = git2::Repository::open_bare(receiver).unwrap();
+        let expected = std::env::var("BUILD_REVIEW_INTERRUPTED_PIN_OID").unwrap();
+        if std::env::var("BUILD_REVIEW_INTERRUPTED_PIN_OPERATION").unwrap() == "create" {
+            create_expected_pin(&repository, reference, &expected).unwrap();
+        } else {
+            remove_expected_ref(&repository, reference, &expected).unwrap();
+        }
+        panic!("pin writer must exit while its Git lock is held");
+    }
+    let (temporary, source) = init_repo();
+    let binding = binding(&source, &temporary.path().join("receivers"));
+    configure_remote(&binding).unwrap();
+    publish_initial(&binding).unwrap();
+    let repository = git2::Repository::open_bare(&binding.receiving_repository).unwrap();
+    let lock = repository.path().join(format!("{reference}.lock"));
+
+    interrupt_pin_writer(repository.path(), &binding.initial_head, "create");
+    assert!(lock.exists());
+    create_expected_pin(&repository, reference, &binding.initial_head).unwrap();
+    assert_eq!(oid(repository.path(), reference), binding.initial_head);
+    assert!(!lock.exists());
+
+    interrupt_pin_writer(repository.path(), &binding.initial_head, "remove");
+    assert!(lock.exists());
+    remove_expected_ref(&repository, reference, &binding.initial_head).unwrap();
+    assert!(repository.find_reference(reference).is_err());
+    assert!(!lock.exists());
+
+    create_expected_pin(&repository, reference, &binding.initial_head).unwrap();
+    interrupt_pin_writer(repository.path(), &binding.initial_head, "remove");
+    fs::remove_file(&lock).unwrap();
+    fs::write(&lock, "user lock\n").unwrap();
+    assert!(remove_expected_ref(&repository, reference, &binding.initial_head).is_err());
+    assert_eq!(fs::read_to_string(&lock).unwrap(), "user lock\n");
+    assert_eq!(oid(repository.path(), reference), binding.initial_head);
+    fs::remove_file(&lock).unwrap();
+
+    // Retry after a dead writer must still inspect the current OID under its
+    // new lock, rather than deleting a pin that the user advanced meanwhile.
+    git_in(
+        &source,
+        &["commit", "--allow-empty", "-m", "external change"],
+    );
+    let changed = oid(&source, "HEAD");
+    import_commit(repository.path(), &source, &changed).unwrap();
+    repository
+        .reference(
+            reference,
+            git2::Oid::from_str(&changed).unwrap(),
+            true,
+            "external change",
+        )
+        .unwrap();
+    assert!(
+        remove_expected_ref(&repository, reference, &binding.initial_head)
+            .unwrap_err()
+            .contains("changed")
+    );
+    assert_eq!(oid(repository.path(), reference), changed);
+}
+
+#[test]
+fn pin_cleanup_preserves_other_packed_refs_and_refuses_changed_shadow_entries() {
+    let (temporary, source) = init_repo();
+    let binding = binding(&source, &temporary.path().join("receivers"));
+    configure_remote(&binding).unwrap();
+    publish_initial(&binding).unwrap();
+    let repository = git2::Repository::open_bare(&binding.receiving_repository).unwrap();
+    let reference = "refs/build/reviews/packed/head";
+    let unrelated = "refs/heads/user-branch";
+    create_expected_pin(&repository, reference, &binding.initial_head).unwrap();
+    repository
+        .reference(
+            unrelated,
+            git2::Oid::from_str(&binding.initial_head).unwrap(),
+            false,
+            "user ref",
+        )
+        .unwrap();
+    git_in(repository.path(), &["pack-refs", "--all"]);
+    let packed_path = repository.path().join("packed-refs");
+    let original = fs::read_to_string(&packed_path).unwrap();
+    remove_expected_ref(&repository, reference, &binding.initial_head).unwrap();
+    assert!(repository.find_reference(reference).is_err());
+    assert_eq!(oid(repository.path(), unrelated), binding.initial_head);
+    assert_eq!(
+        fs::read_to_string(&packed_path).unwrap(),
+        original
+            .lines()
+            .filter(|line| !line.ends_with(reference))
+            .map(|line| format!("{line}\n"))
+            .collect::<String>()
+    );
+
+    git_in(
+        &source,
+        &["commit", "--allow-empty", "-m", "external packed change"],
+    );
+    let changed = oid(&source, "HEAD");
+    import_commit(repository.path(), &source, &changed).unwrap();
+    create_expected_pin(&repository, reference, &binding.initial_head).unwrap();
+    // A changed packed entry may be hidden by the original loose pin. Neither
+    // entry may be removed merely because Git currently resolves the loose one.
+    let mut packed = fs::read(&packed_path).unwrap();
+    packed.extend_from_slice(format!("{changed} {reference}\n").as_bytes());
+    fs::write(&packed_path, &packed).unwrap();
+    let error = remove_expected_ref(&repository, reference, &binding.initial_head).unwrap_err();
+    assert!(error.contains("packed ref changed"));
+    assert_eq!(fs::read(&packed_path).unwrap(), packed);
+    assert_eq!(oid(repository.path(), reference), binding.initial_head);
+}

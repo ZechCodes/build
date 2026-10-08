@@ -12,6 +12,7 @@ use std::time::Duration;
 
 mod initialization;
 pub(crate) mod locks;
+pub(crate) mod refs;
 
 const OWNERSHIP_FILE: &str = ".build-review-receiver.json";
 

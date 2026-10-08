@@ -86,7 +86,9 @@ fn an_initialization_reservation_does_not_adopt_an_unmarked_final_directory() {
     )
     .unwrap();
     std::fs::create_dir(&receiver.path).unwrap();
-    assert!(ensure_receiver(&receiver).unwrap_err().contains("ownership"));
+    assert!(ensure_receiver(&receiver)
+        .unwrap_err()
+        .contains("ownership"));
     assert_eq!(std::fs::read_dir(&receiver.path).unwrap().count(), 0);
 }
 
@@ -186,7 +188,9 @@ fn receiver_preserves_an_unmarked_final_directory_with_an_interrupted_marker_wri
         .path
         .join(format!(".build-review-write-{}.tmp", uuid::Uuid::new_v4()));
     std::fs::write(&incomplete, "{partial").unwrap();
-    assert!(ensure_receiver(&receiver).unwrap_err().contains("ownership"));
+    assert!(ensure_receiver(&receiver)
+        .unwrap_err()
+        .contains("ownership"));
     assert_eq!(std::fs::read_to_string(incomplete).unwrap(), "{partial");
 }
 

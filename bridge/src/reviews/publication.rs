@@ -479,24 +479,12 @@ fn remove_expected_ref(
     reference: &str,
     expected: &str,
 ) -> Result<(), String> {
-    let mut transaction = repository
-        .transaction()
-        .map_err(|error| error.to_string())?;
-    transaction
-        .lock_ref(reference)
-        .map_err(|error| error.to_string())?;
-    let current = match repository.find_reference(reference) {
-        Ok(current) => current,
-        Err(error) if error.code() == git2::ErrorCode::NotFound => return Ok(()),
-        Err(error) => return Err(error.to_string()),
-    };
-    if current.target().map(|oid| oid.to_string()).as_deref() != Some(expected) {
-        return Err(format!("review ref changed: {reference}"));
-    }
-    transaction
-        .remove(reference)
-        .and_then(|()| transaction.commit())
-        .map_err(|error| error.to_string())
+    super::receivers::refs::remove_expected_reference(
+        repository,
+        reference,
+        git2::Oid::from_str(expected).map_err(|error| error.to_string())?,
+        || pin_mutation_checkpoint(repository, "remove"),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -663,23 +651,24 @@ fn create_expected_pin(
     name: &str,
     expected: &str,
 ) -> Result<(), String> {
-    let oid = git2::Oid::from_str(expected).map_err(|error| error.to_string())?;
-    let mut transaction = repository
-        .transaction()
-        .map_err(|error| error.to_string())?;
-    transaction
-        .lock_ref(name)
-        .map_err(|error| error.to_string())?;
-    match repository.find_reference(name) {
-        Ok(reference) if reference.target() == Some(oid) => return Ok(()),
-        Ok(_) => return Err(format!("review pin changed: {name}")),
-        Err(error) if error.code() == git2::ErrorCode::NotFound => {}
-        Err(error) => return Err(error.to_string()),
+    super::receivers::refs::create_expected_reference(
+        repository,
+        name,
+        git2::Oid::from_str(expected).map_err(|error| error.to_string())?,
+        || pin_mutation_checkpoint(repository, "create"),
+    )
+}
+
+fn pin_mutation_checkpoint(repository: &git2::Repository, operation: &str) {
+    #[cfg(test)]
+    if std::env::var_os("BUILD_REVIEW_INTERRUPTED_PIN_DIR").as_deref()
+        == Some(repository.path().as_os_str())
+        && std::env::var("BUILD_REVIEW_INTERRUPTED_PIN_OPERATION").as_deref() == Ok(operation)
+    {
+        std::process::exit(25);
     }
-    transaction
-        .set_target(name, oid, None, "Build review publication")
-        .and_then(|()| transaction.commit())
-        .map_err(|error| error.to_string())
+    #[cfg(not(test))]
+    let _ = (repository, operation);
 }
 
 /// Cancel only refs whose expected OIDs were saved before pin creation.

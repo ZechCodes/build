@@ -2,6 +2,7 @@
 
 use super::{parse_oid, sync_directory, ReviewBranchBinding};
 use crate::reviews::receivers::locks::{acquire_git_lock, recover_git_locks, OwnedGitFileLock};
+use crate::reviews::receivers::refs::packed_without_reference;
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::Write;
@@ -117,7 +118,11 @@ impl ReferenceLocks {
         &self,
         binding: &ReviewBranchBinding,
     ) -> Result<Option<Vec<u8>>, String> {
-        packed_without_branch(&self.common_directory.join("packed-refs"), binding)
+        packed_without_reference(
+            &self.common_directory.join("packed-refs"),
+            &binding.dedicated_branch_ref,
+            parse_oid(&binding.initial_head)?,
+        )
     }
 
     pub(super) fn remove_branch(
@@ -198,47 +203,4 @@ fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.to_string()),
     }
-}
-
-fn packed_without_branch(
-    path: &Path,
-    binding: &ReviewBranchBinding,
-) -> Result<Option<Vec<u8>>, String> {
-    let Some(bytes) = read_optional(path)? else {
-        return Ok(None);
-    };
-    let text = std::str::from_utf8(&bytes).map_err(|error| error.to_string())?;
-    let mut kept = Vec::with_capacity(bytes.len());
-    let mut removed = false;
-    let mut removing_peeled = false;
-    for line in text.split_inclusive('\n') {
-        if removing_peeled && line.starts_with('^') {
-            removing_peeled = false;
-            continue;
-        }
-        removing_peeled = false;
-        if packed_line_matches(line, binding)? {
-            if removed {
-                return Err("review packed ref has duplicate entries".into());
-            }
-            removed = true;
-            removing_peeled = true;
-        } else {
-            kept.extend_from_slice(line.as_bytes());
-        }
-    }
-    Ok(removed.then_some(kept))
-}
-
-fn packed_line_matches(line: &str, binding: &ReviewBranchBinding) -> Result<bool, String> {
-    let Some((oid, name)) = line.trim_end().split_once(' ') else {
-        return Ok(false);
-    };
-    if name != binding.dedicated_branch_ref {
-        return Ok(false);
-    }
-    if parse_oid(oid)? != parse_oid(&binding.initial_head)? {
-        return Err("packed dedicated review branch changed externally".into());
-    }
-    Ok(true)
 }

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct GitLockOwner {
     token: String,
     git_directory: PathBuf,
@@ -22,6 +22,7 @@ pub(crate) struct OwnedGitFileLock {
     backing: PathBuf,
     marker: PathBuf,
     owner: GitLockOwner,
+    inode_pin: File,
 }
 
 impl OwnedGitFileLock {
@@ -34,13 +35,26 @@ impl OwnedGitFileLock {
 
     /// Publish only the same inode registered before Git lock acquisition.
     pub(crate) fn commit_to(&self, target: &Path) -> Result<(), String> {
-        if target != self.path.with_extension("") {
+        self.publish_retaining_lock(target)
+    }
+
+    /// Keep the real lock held across a multi-file mutation after publishing
+    /// this file. Callers must finish writing its inode before publication.
+    pub(crate) fn publish_retaining_lock(&self, target: &Path) -> Result<(), String> {
+        if target != self.path().with_extension("") {
             return Err("owned Git lock commit target changed".into());
         }
         if !same_lock_file(&self.path, &self.owner) {
             return Err("owned Git lock was replaced; preserving the replacement".into());
         }
-        fs::rename(&self.path, target).map_err(|error| error.to_string())?;
+        let temporary = publication_path(&self.path, &self.owner)?;
+        fs::hard_link(self.path(), &temporary).map_err(|error| error.to_string())?;
+        if !same_lock_file(&temporary, &self.owner) {
+            // This is the link we just created, not the user's original lock.
+            let _ = fs::remove_file(&temporary);
+            return Err("owned Git lock was replaced during publication".into());
+        }
+        fs::rename(&temporary, target).map_err(|error| error.to_string())?;
         let parent = target.parent().ok_or("invalid Git file commit target")?;
         File::open(parent)
             .and_then(|directory| directory.sync_all())
@@ -50,16 +64,28 @@ impl OwnedGitFileLock {
 
 impl Drop for OwnedGitFileLock {
     fn drop(&mut self) {
-        if remove_owned_file(&self.path, &self.owner).is_ok() {
-            let _ = remove_owned_file(&self.backing, &self.owner);
-            remove_owned_marker(&self.marker, &self.owner);
+        let Ok(_recovery_lock) = RecoveryDirectoryLock::acquire(&self.owner.git_directory) else {
+            return;
+        };
+        if file_has_identity(&self.inode_pin, &self.owner) {
+            let _ = cleanup_registered_files(
+                &self.path,
+                &self.backing,
+                &self.marker,
+                &self.owner,
+                || {},
+            );
         }
     }
 }
 
 fn remove_owned_file(path: &Path, owner: &GitLockOwner) -> Result<(), String> {
     if same_lock_file(path, owner) {
-        fs::remove_file(path).map_err(|error| error.to_string())?;
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
     }
     let parent = path.parent().ok_or("invalid owned Git lock path")?;
     File::open(parent)
@@ -68,11 +94,55 @@ fn remove_owned_file(path: &Path, owner: &GitLockOwner) -> Result<(), String> {
     Ok(())
 }
 
-fn remove_owned_marker(path: &Path, owner: &GitLockOwner) {
-    let expected = serde_json::to_vec(owner).ok();
-    if expected.is_some() && fs::read(path).ok() == expected {
-        let _ = fs::remove_file(path);
+fn remove_owned_marker(path: &Path, owner: &GitLockOwner) -> Result<(), String> {
+    let expected = serde_json::to_vec(owner).map_err(|error| error.to_string())?;
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => {
+            let content = match fs::read(path) {
+                Ok(content) => Some(content),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error.to_string()),
+            };
+            if content.is_some_and(|content| content != expected) {
+                return Err("owned Git lock marker changed; retaining the backing inode".into());
+            }
+            match fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        Ok(_) => return Err("owned Git lock marker is not a regular file".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.to_string()),
     }
+    let directory = path.parent().ok_or("invalid Git lock marker path")?;
+    File::open(directory)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| error.to_string())
+}
+
+fn cleanup_registered_files(
+    lock: &Path,
+    backing: &Path,
+    marker: &Path,
+    owner: &GitLockOwner,
+    marker_removed: impl FnOnce(),
+) -> Result<(), String> {
+    remove_owned_file(lock, owner)?;
+    remove_owned_file(&publication_path(lock, owner)?, owner)?;
+    // Keep the backing inode linked until the authority to unlink it has been
+    // durably removed. Otherwise a stale marker could match a reused inode.
+    remove_owned_marker(marker, owner)?;
+    marker_removed();
+    remove_owned_file(backing, owner)
+}
+
+fn publication_path(lock: &Path, owner: &GitLockOwner) -> Result<std::path::PathBuf, String> {
+    Ok(lock
+        .parent()
+        .ok_or("invalid Git publication path")?
+        .join(format!(".build-review-publish-{}.tmp", owner.token)))
 }
 
 fn lock_file_identity(path: &Path) -> Option<(u64, u64)> {
@@ -80,6 +150,10 @@ fn lock_file_identity(path: &Path) -> Option<(u64, u64)> {
     if !metadata.file_type().is_file() {
         return None;
     }
+    metadata_identity(&metadata)
+}
+
+fn metadata_identity(metadata: &fs::Metadata) -> Option<(u64, u64)> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -89,6 +163,39 @@ fn lock_file_identity(path: &Path) -> Option<(u64, u64)> {
     {
         None
     }
+}
+
+fn file_has_identity(file: &File, owner: &GitLockOwner) -> bool {
+    file.metadata()
+        .ok()
+        .and_then(|metadata| metadata_identity(&metadata))
+        .is_some_and(|(device, inode)| owner.device == Some(device) && owner.inode == Some(inode))
+}
+
+fn open_backing_inode(path: &Path, owner: &GitLockOwner) -> Result<Option<File>, String> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.raw_os_error() == Some(libc::ELOOP) => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    if !file
+        .metadata()
+        .map_err(|error| error.to_string())?
+        .file_type()
+        .is_file()
+        || !file_has_identity(&file, owner)
+    {
+        return Ok(None);
+    }
+    Ok(Some(file))
 }
 
 fn same_lock_file(path: &Path, owner: &GitLockOwner) -> bool {
@@ -137,10 +244,14 @@ fn valid_lock_path(relative_path: &Path) -> bool {
     let Some(relative) = relative_path.to_str() else {
         return false;
     };
-    if matches!(relative, "config.lock" | "HEAD.lock" | "packed-refs.lock") {
+    if matches!(
+        relative,
+        "config.lock" | "HEAD.lock" | "packed-refs.lock" | "logs/HEAD.lock"
+    ) {
         return true;
     }
     relative.strip_suffix(".lock").is_some_and(|reference| {
+        let reference = reference.strip_prefix("logs/").unwrap_or(reference);
         reference.starts_with("refs/") && git2::Reference::is_valid_name(reference)
     })
 }
@@ -150,17 +261,23 @@ pub(crate) fn recover_git_locks(directory: &Path) -> Result<(), String> {
     let directory = directory
         .canonicalize()
         .map_err(|error| error.to_string())?;
+    let _recovery_lock = RecoveryDirectoryLock::acquire(&directory)?;
     for entry in fs::read_dir(&directory).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
         let Some(owner) = dead_owner(&directory, &entry)? else {
             continue;
         };
-        remove_owned_file(&directory.join(&owner.relative_path), &owner)?;
-        remove_owned_file(
-            &directory.join(format!(".build-review-git-lock-{}.tmp", owner.token)),
+        let backing_path = directory.join(format!(".build-review-git-lock-{}.tmp", owner.token));
+        let Some(_inode_pin) = open_backing_inode(&backing_path, &owner)? else {
+            continue;
+        };
+        cleanup_registered_files(
+            &directory.join(&owner.relative_path),
+            &backing_path,
+            &entry.path(),
             &owner,
+            || {},
         )?;
-        remove_owned_marker(&entry.path(), &owner);
     }
     Ok(())
 }
@@ -182,7 +299,11 @@ fn dead_owner(directory: &Path, entry: &fs::DirEntry) -> Result<Option<GitLockOw
     {
         return Ok(None);
     }
-    let content = fs::read(entry.path()).map_err(|error| error.to_string())?;
+    let content = match fs::read(entry.path()) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
     let Ok(owner) = serde_json::from_slice::<GitLockOwner>(&content) else {
         return Ok(None);
     };
@@ -204,9 +325,14 @@ fn validate_lock_parent(directory: &Path, relative_path: &Path) -> Result<(), St
         .ok_or("invalid Git lock path")?
         .components()
     {
+        let containing_directory = parent.clone();
         parent.push(component);
         match fs::create_dir(&parent) {
-            Ok(()) => {}
+            Ok(()) => {
+                File::open(&containing_directory)
+                    .and_then(|directory| directory.sync_all())
+                    .map_err(|error| error.to_string())?;
+            }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error.to_string()),
         }
@@ -219,6 +345,41 @@ fn validate_lock_parent(directory: &Path, relative_path: &Path) -> Result<(), St
         }
     }
     Ok(())
+}
+
+/// Serialize Build's reapers without adding another persistent lock file.
+/// The kernel releases this directory-FD lock even after abrupt process death.
+struct RecoveryDirectoryLock {
+    _directory: File,
+}
+
+impl RecoveryDirectoryLock {
+    fn acquire(directory: &Path) -> Result<Self, String> {
+        let file = File::open(directory).map_err(|error| error.to_string())?;
+        lock_recovery_directory(&file)?;
+        Ok(Self { _directory: file })
+    }
+}
+
+fn lock_recovery_directory(file: &File) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        loop {
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+                return Ok(());
+            }
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::Interrupted {
+                return Err(error.to_string());
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = file;
+        Err("owned Git locks require directory locking on this platform".into())
+    }
 }
 
 /// Persist an inode and holder identity before exclusively linking that inode
@@ -244,6 +405,10 @@ pub(crate) fn acquire_git_lock(
         .map_err(|error| error.to_string())?;
     file.sync_all().map_err(|error| error.to_string())?;
     let identity = lock_file_identity(&backing);
+    if identity.is_none() {
+        let _ = fs::remove_file(&backing);
+        return Err("owned Git locks require a verifiable file identity on this platform".into());
+    }
     let pid = std::process::id();
     let owner = GitLockOwner {
         token: token.clone(),
@@ -262,6 +427,7 @@ pub(crate) fn acquire_git_lock(
         backing,
         marker: directory.join(format!(".build-review-git-lock-{token}.json")),
         owner,
+        inode_pin: file.try_clone().map_err(|error| error.to_string())?,
     };
     write_owned_json(&guard.marker, &guard.owner)?;
     fs::hard_link(&guard.backing, &guard.path).map_err(|error| {
@@ -272,3 +438,7 @@ pub(crate) fn acquire_git_lock(
         .map_err(|error| error.to_string())?;
     Ok((guard, file))
 }
+
+#[cfg(test)]
+#[path = "locks/tests.rs"]
+mod tests;

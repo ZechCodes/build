@@ -14,6 +14,7 @@ use serde_json::json;
 use std::path::PathBuf;
 
 mod actions;
+pub(crate) mod lifecycle;
 mod pull_requests;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -37,6 +38,7 @@ struct CompletionWrite<'a> {
     expected_version: Option<u64>,
     description: &'a str,
     now: &'a str,
+    terminal_status: Option<PullRequestStatus>,
 }
 
 impl Store {
@@ -148,6 +150,7 @@ impl Store {
                     expected_version: Some(expected_version),
                     description,
                     now: &now,
+                    terminal_status: None,
                 },
             )
         })
@@ -176,6 +179,7 @@ impl Store {
                         expected_version: None,
                         description: "Marked done",
                         now,
+                        terminal_status: None,
                     },
                 )
                 .map(|(_, mut events)| events.pop());
@@ -235,7 +239,7 @@ fn complete_review_in_tx(
     header.state = ReviewState::Completed;
     if let Some(metadata) = &mut header.pull_request {
         if metadata.status.is_active() {
-            metadata.status = PullRequestStatus::Closed;
+            metadata.status = write.terminal_status.unwrap_or(PullRequestStatus::Closed);
         }
     }
     header.completion = Some(ReviewCompletion {

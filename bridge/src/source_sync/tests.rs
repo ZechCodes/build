@@ -492,3 +492,20 @@ fn a_second_sync_of_one_checkout_waits_for_the_first_and_knows_it_did() {
 
     assert_eq!(second.join().unwrap(), Some(true));
 }
+
+#[test]
+fn linked_worktrees_share_the_repository_sync_lock() {
+    let (temporary, repository) = crate::git_fixture::init_repo();
+    let linked = temporary.path().join("linked");
+    crate::git_fixture::git_in(
+        &repository,
+        &["worktree", "add", "-b", "linked", linked.to_str().unwrap()],
+    );
+    let (first, _) = SyncLock::acquire(&repository, Duration::ZERO).unwrap();
+    assert!(
+        SyncLock::acquire(&linked, Duration::ZERO).is_none(),
+        "the two checkouts can mutate the same base ref"
+    );
+    drop(first);
+    assert!(SyncLock::acquire(&linked, Duration::ZERO).is_some());
+}

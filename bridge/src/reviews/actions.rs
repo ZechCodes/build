@@ -2,7 +2,7 @@
 mod model;
 pub use model::*;
 
-mod plan;
+pub(crate) mod plan;
 use super::{git_actions, records::Review};
 use crate::source_sync::{SyncLock, SERVICE_FETCH_DEADLINE};
 use crate::store::{now_rfc3339, Store};
@@ -15,6 +15,9 @@ pub fn act(store: &Store, request: &ActionRequest, notify: impl Fn()) -> Result<
         .load_review(&request.params.task_id)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| format!("unknown review for task_id: {}", request.params.task_id))?;
+    if review.mode == super::model::ReviewMode::PullRequest {
+        return Err("PR actions must use the PR merge lifecycle service".into());
+    }
     let mut sources = prepare(&review, request)?;
     let rows = sources
         .iter()
@@ -146,7 +149,7 @@ fn execute(
     }
 }
 
-fn record_outcome(
+pub(crate) fn record_outcome(
     source: &mut PreparedSource,
     index: usize,
     outcome: Result<git_actions::GitStepOutcome, git_actions::GitActionError>,
@@ -236,3 +239,6 @@ pub fn with_destinations(mut review: Review, sources: &[ActionSource]) -> Review
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod pr_tests;

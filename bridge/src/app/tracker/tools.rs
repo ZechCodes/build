@@ -445,6 +445,7 @@ impl AppState {
                 .and_then(|agent_id| self.agent_context_reading(&scope.entity_id, agent_id)),
         };
         let mut write = TaskWrite::by(scope.actor.clone(), task);
+        write.expected_review_version = metadata.expected_review_version;
         write.comments.push(comment.clone());
         let answered = self.commit_task_write(&scope.project_id, write, &now)?;
         Ok(json!({

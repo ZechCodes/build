@@ -149,8 +149,50 @@ impl Store {
         events: &[TaskEvent],
     ) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
-            write_tracker_task(tx, task)?;
-            append_activity(tx, comments, events)
+            if comments.is_empty() && events.is_empty() {
+                return write_tracker_task(tx, task);
+            }
+            let actor = comments
+                .first()
+                .map(|comment| &comment.author)
+                .or_else(|| events.first().map(|event| &event.actor))
+                .unwrap_or(&crate::tracker::Actor::User);
+            super::reviews::lifecycle::save_activity_in_tx(
+                tx,
+                task,
+                comments,
+                events,
+                actor,
+                None,
+                &task.updated_at,
+            )
+            .map(|_| ())
+        })
+    }
+
+    /// Migrate read-time identity and completion metadata without overwriting
+    /// concurrent task lifecycle writes.
+    pub fn backfill_tracker_task(&self, task: &Task) -> Result<Task, StoreError> {
+        self.in_transaction(|tx| {
+            let raw: Option<String> = tx
+                .query_row(
+                    "SELECT record FROM tracker_tasks WHERE id = ?1",
+                    [&task.id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let mut current: Task = raw
+                .map(|raw| decode(&raw, "tracker_tasks", &task.id))
+                .transpose()?
+                .ok_or_else(|| StoreError::ReviewTaskNotFound {
+                    task_id: task.id.clone(),
+                })?;
+            current.identities.extend(task.identities.clone());
+            if current.status == crate::tracker::DONE_STATUS && current.done_at.is_none() {
+                current.done_at = task.done_at.clone();
+            }
+            write_tracker_task(tx, &current)?;
+            Ok(current)
         })
     }
 
@@ -332,7 +374,7 @@ impl Store {
     /// Explicit history deletion, called by the review service off the app
     /// lock. Release each history's Git pins inside the transaction: a snapshot
     /// cannot commit new pins between their enumeration and metadata deletion.
-    /// Unfinished openings and pending sync captures must be recovered first.
+    /// Unfinished openings, running merges and pending sync captures must be recovered first.
     /// Check before release callbacks, which cannot be rolled back with SQLite.
     pub(crate) fn delete_tracker_tasks_of_project(
         &self,
@@ -345,13 +387,14 @@ impl Store {
                  AND state IN ('preparing', 'failed', 'interrupted')) OR EXISTS(
                     SELECT 1 FROM review_sync_candidates AS candidates
                     JOIN tracker_tasks ON tracker_tasks.id = candidates.task_id
-                    WHERE tracker_tasks.project_key = ?1)",
+                    WHERE tracker_tasks.project_key = ?1) OR EXISTS(
+                    SELECT 1 FROM review_merge_intents WHERE project_key = ?1 AND state = 'running')",
                 [project_path],
                 |row| row.get(0),
             )?;
             if unfinished {
                 return Err(StoreError::ReviewPullRequestInvalid(
-                    "recover unfinished PR openings and pending sync captures before deleting project history"
+                    "recover unfinished PR openings, running merges and pending sync captures before deleting project history"
                         .into(),
                 ));
             }

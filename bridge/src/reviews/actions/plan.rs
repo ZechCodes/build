@@ -2,14 +2,14 @@ use super::*;
 use crate::reviews::model::ReviewDirectory;
 use std::collections::HashSet;
 
-pub(super) struct PreparedSource {
+pub(crate) struct PreparedSource {
     pub source: ActionSource,
     pub action: ReviewAction,
     pub head: Option<String>,
     pub merged: bool,
 }
 
-pub(super) fn prepare(
+pub(crate) fn prepare(
     review: &Review,
     request: &ActionRequest,
 ) -> Result<Vec<PreparedSource>, String> {

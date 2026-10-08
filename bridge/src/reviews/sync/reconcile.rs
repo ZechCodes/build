@@ -4,11 +4,12 @@ use crate::reviews::publication::{self, ReceivedCommit};
 use crate::reviews::records::Review;
 use crate::store::Store;
 use crate::tracker::Actor;
+use std::time::Duration;
 
 #[path = "observations.rs"]
 mod observations;
 #[path = "recovery.rs"]
-mod recovery;
+pub(crate) mod recovery;
 
 #[derive(Debug)]
 pub struct SyncResult {
@@ -20,6 +21,14 @@ pub struct SyncResult {
 }
 
 pub fn reconcile(store: &Store, task_id: &str) -> Result<SyncResult, String> {
+    reconcile_with_wait(store, task_id, Duration::from_secs(2))
+}
+
+pub(crate) fn reconcile_background(store: &Store, task_id: &str) -> Result<SyncResult, String> {
+    reconcile_with_wait(store, task_id, Duration::ZERO)
+}
+
+fn reconcile_with_wait(store: &Store, task_id: &str, wait: Duration) -> Result<SyncResult, String> {
     let task = store
         .load_tracker_task(task_id)
         .map_err(|e| e.to_string())?
@@ -45,17 +54,18 @@ pub fn reconcile(store: &Store, task_id: &str) -> Result<SyncResult, String> {
         }
         return Ok(result);
     }
-    let (mut journal, current, recovered) = match prepare(store, &review) {
+    let (mut journal, current, recovered) = match prepare(store, &review, wait) {
         Ok(prepared) => prepared,
         Err(error) => return preparation_failure(store, &review, result, error),
     };
     review = current;
     result.persisted |= recovered;
-    if !active(&review) {
-        return Ok(result);
-    }
     let received = observe_all(&review);
-    let capture_error = update_snapshot(store, &mut review, &mut journal, &received, &mut result)?;
+    let capture_error = if active(&review) {
+        update_snapshot(store, &mut review, &mut journal, &received, &mut result)?
+    } else {
+        None
+    };
     persist_observations(
         store,
         &review,
@@ -84,8 +94,10 @@ fn observe_all(review: &Review) -> Vec<Result<ReceivedCommit, String>> {
 fn prepare(
     store: &Store,
     review: &Review,
+    wait: Duration,
 ) -> Result<(recovery::CaptureJournal, Review, bool), String> {
-    let journal = recovery::CaptureJournal::acquire(&review.task_id, &review.bindings)?;
+    let journal =
+        recovery::CaptureJournal::acquire_with_wait(&review.task_id, &review.bindings, wait)?;
     let recovered = journal.recover(store, &review.bindings)?;
     let current = store
         .load_review_sync_state(&review.task_id)
@@ -100,7 +112,7 @@ fn preparation_failure(
     mut result: SyncResult,
     error: String,
 ) -> Result<SyncResult, String> {
-    if error.starts_with("busy:") || !active(review) {
+    if error.starts_with("busy:") {
         return Err(error);
     }
     result.retry = true;
@@ -121,6 +133,13 @@ fn update_snapshot(
         result.retry = true;
         return Ok(None);
     };
+    if same_received_heads(review, &tips)?
+        && store
+            .review_merge_holds_snapshot(&review.task_id)
+            .map_err(|error| error.to_string())?
+    {
+        return Ok(None);
+    }
     if !vector_changed(review, &tips)? {
         return Ok(None);
     }
@@ -136,6 +155,17 @@ fn update_snapshot(
             Ok(Some(error))
         }
     }
+}
+
+fn same_received_heads(review: &Review, received: &[ReceivedCommit]) -> Result<bool, String> {
+    let snapshot = latest(review)?;
+    Ok(review.bindings.iter().zip(received).all(|(binding, tip)| {
+        snapshot
+            .directories
+            .iter()
+            .find(|directory| directory.id == binding.directory_id)
+            .is_some_and(|directory| directory.head.as_deref() == Some(&tip.head))
+    }))
 }
 
 fn persist_observations(
@@ -230,7 +260,7 @@ fn publish_locked(
     result.map(|saved| (saved, cleanup_error))
 }
 
-fn capture(
+pub(crate) fn capture(
     review: &Review,
     snapshot_id: &str,
     received: &[ReceivedCommit],

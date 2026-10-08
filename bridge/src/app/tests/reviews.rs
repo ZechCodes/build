@@ -102,6 +102,47 @@ fn review_act_rpc_merges_a_saved_temp_checkout_and_keeps_its_workspace() {
 }
 
 #[test]
+fn review_act_rpc_refuses_a_pr_as_nonretryable_invalid_params_without_admission() {
+    let fixture = crate::reviews::sync::reconcile::tests::Fixture::new();
+    fixture.commit("pr-action.txt");
+    fixture.push();
+    fixture.sync();
+    let mut state = super::project_agent::rooted(fixture._home.path())
+        .with_task_store(fixture._home.path().join("db"))
+        .unwrap();
+    added_project(&mut state, &fixture.source);
+    let before = fixture.review();
+    let snapshot = before.snapshots.last().unwrap();
+    let source = git2::Repository::open(&fixture.source).unwrap();
+    let target = source.refname_to_id("refs/heads/main").unwrap();
+
+    let refused = state.handle(req(
+        "tasks.review.act",
+        json!({
+            "task_id": fixture.task_id(), "expected_version": before.version,
+            "snapshot_id": snapshot.id,
+            "sources": [{"directory_id": snapshot.directories[0].id,
+                "merge": {"branch": "main"}}],
+        }),
+    ));
+
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert_eq!(refused["error_code"], "invalid_params", "{refused}");
+    assert_eq!(refused["retryable"], false, "{refused}");
+    assert_eq!(
+        refused["error"],
+        "PR actions must use the PR merge lifecycle service",
+    );
+    assert_eq!(
+        fixture.review(),
+        before,
+        "no action admission or version write"
+    );
+    assert_eq!(source.refname_to_id("refs/heads/main").unwrap(), target);
+    assert!(!fixture.source.join("pr-action.txt").exists());
+}
+
+#[test]
 fn review_comment_metadata_round_trips_and_rejects_foreign_context() {
     let tmp = tempfile::tempdir().unwrap();
     let (_repo, mut state, project) = tracked(tmp.path());

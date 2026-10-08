@@ -632,8 +632,8 @@ impl AppState {
 
     /// What holds a workspace that only the app state knows: it is not ready,
     /// an agent is working or a terminal is open anywhere inside it, it holds
-    /// a plain directory, or its tasks are still being worked toward or
-    /// could not be read.
+    /// a plain directory, its tasks are still being worked toward or could
+    /// not be read, or durable review publication is unsettled or unreadable.
     fn live_holds(
         &self,
         workspace: &Workspace,
@@ -669,10 +669,29 @@ impl AppState {
             ),
             (tasks.is_err(), crate::reclaim::HOLD_TASKS_UNREAD),
         ];
-        checks
+        let mut holds: Vec<_> = checks
             .into_iter()
             .filter_map(|(holds, hold)| holds.then_some(hold))
-            .collect()
+            .collect();
+        if let Some(hold) = self.review_publication_hold(&workspace.id) {
+            holds.push(hold);
+        }
+        holds
+    }
+
+    /// Durable publication survives PR completion and bridge restart. This
+    /// check is shared by initial measurement and the final locked checks;
+    /// unreadable state preserves the workspace and its build output.
+    fn review_publication_hold(&self, workspace_id: &str) -> Option<&'static str> {
+        match self
+            .store
+            .as_ref()
+            .map(|store| store.workspace_review_publication_pending(workspace_id))
+        {
+            None | Some(Ok(false)) => None,
+            Some(Ok(true)) => Some(crate::reclaim::HOLD_REVIEW_PUBLICATION_PENDING),
+            Some(Err(_)) => Some(crate::reclaim::HOLD_REVIEW_PUBLICATION_UNREAD),
+        }
     }
 
     /// An agent working anywhere in the workspace: at its root, or in one of

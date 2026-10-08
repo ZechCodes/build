@@ -12,6 +12,9 @@ Wire 3.14.0.
 
 ### Added
 
+- Internal PR lifecycle and durable merge service: current-snapshot opinions,
+  recoverable Closed reopening, guarded merge finalization, interrupted-operation
+  recovery and explicit retry of saved publication results (#404).
 - Bridge-owned PR ref synchronization without a connected client: terminal
   pushes publish debounced snapshots, with startup/poll recovery, separate
   target-tip observations, rewrite history and retained receiver pins (#403).
@@ -38,6 +41,16 @@ Wire 3.14.0.
 
 ### Fixed
 
+- Wait briefly for overlapping explicit PR synchronization, and release capture
+  and merge leases when their operations finish even if a child retains an
+  inherited descriptor (#404).
+- Preserve effective project Git hooks and their nested Git configuration during
+  fenced PR merges; recover registered hook fence resources at startup after
+  verifying ownership and process death, preserving live or uncertain launches
+  (#423).
+- Retain workspaces and build output while PR merge or saved publication is
+  unsettled, preserve concurrent merge completion during task comments and read
+  backfills, and classify legacy PR action refusals as client errors (#404, #423).
 - Keep PR push bursts coalesced across polling, bound metadata registration,
   share linked-worktree metadata watches without watching private pins, and
   recover interrupted unpublished snapshot captures (#403).

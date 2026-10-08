@@ -28,6 +28,7 @@ impl Store {
                 version: 1,
                 request,
                 state: ReviewMergeState::Running,
+                execution_version: None,
                 action_ids: Vec::new(),
                 created_at: now.clone(),
                 updated_at: now,
@@ -172,7 +173,7 @@ fn validate_source(
     Ok(())
 }
 
-fn load_intent(
+pub(super) fn load_intent(
     conn: &Connection,
     project: &str,
     request: &str,
@@ -194,7 +195,7 @@ fn load_intent(
     .transpose()
 }
 
-fn write_intent(tx: &Transaction, intent: &ReviewMergeIntent) -> Result<(), StoreError> {
+pub(super) fn write_intent(tx: &Transaction, intent: &ReviewMergeIntent) -> Result<(), StoreError> {
     let state = match intent.state {
         ReviewMergeState::Running => "running",
         ReviewMergeState::Succeeded => "succeeded",
@@ -204,3 +205,5 @@ fn write_intent(tx: &Transaction, intent: &ReviewMergeIntent) -> Result<(), Stor
     tx.execute("INSERT INTO review_merge_intents (project_key, request_id, task_id, version, state, record) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT(project_key, request_id) DO UPDATE SET version = ?4, state = ?5, record = ?6", params![intent.project_path, intent.request_id, intent.request.task_id, intent.version as i64, state, serde_json::to_string(intent).expect("merge intent serializes")])?;
     Ok(())
 }
+
+mod execution;

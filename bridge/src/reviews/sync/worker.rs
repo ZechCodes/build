@@ -1,4 +1,4 @@
-use super::reconcile::{reconcile, SyncResult};
+use super::reconcile::{reconcile_background, SyncResult};
 use super::scheduler::Scheduler;
 use crate::store::Store;
 use crate::watch::metadata::{metadata_roots, MetadataCallback, MetadataWatchers};
@@ -72,7 +72,7 @@ impl Worker {
             if stopped.load(Ordering::Acquire) {
                 break;
             }
-            let retry = match reconcile(&self.store, &task) {
+            let retry = match reconcile_background(&self.store, &task) {
                 Ok(result) => {
                     let retry = result.retry;
                     if result.persisted {

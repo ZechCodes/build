@@ -307,6 +307,9 @@ pub struct ReviewMergeIntent {
     pub version: u64,
     pub request: ReviewMergeRequest,
     pub state: ReviewMergeState,
+    /// Review version advanced only by this operation; unrelated writes fence completion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_version: Option<u64>,
     pub action_ids: Vec<String>,
     pub created_at: String,
     pub updated_at: String,

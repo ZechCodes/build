@@ -272,6 +272,9 @@ CREATE TABLE IF NOT EXISTS review_actions (
     record   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS review_actions_by_task ON review_actions(task_id);
+CREATE INDEX IF NOT EXISTS review_actions_by_source ON review_actions(
+    CASE WHEN json_valid(record) THEN json_extract(record, '$.source_path') END
+);
 
 -- Claims span opening preparation and active published PRs. Failed/interrupted
 -- preparation retains ownership until its owned Git state is safely unwound.

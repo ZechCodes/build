@@ -19,7 +19,7 @@
 // record is written through by the task page itself on first open, which is
 // how every other detail surface warms its own cache.
 
-import { mergeCachedAtomically, readCached, writeCached } from "./localCache.js";
+import { mergeCachedAtomically, readCached } from "./localCache.js";
 import { taskUnreadKey, latestTaskMark } from "./trackerUnread.js";
 
 export const TRACKER_TASKS_KIND = "tracker-tasks";
@@ -89,6 +89,296 @@ export const listAskedAt = (cached) => Number(cached?.value?.read_order) || cach
 
 export const taskRecord = (task, timeline) => ({ task: task || null, timeline: timeline || [] });
 
+const rowIdentity = (row) => row?.id ?? row?.task_id ?? row?.workspace_id;
+const TASK_REVIEW_CACHE = "__review_summary_cache";
+const hasSummaryVersion = (summary) => Boolean(summary?.task_id) && Number.isFinite(summary.version);
+const rowWrittenLater = (held, incoming) => Date.parse(incoming.updated_at) > Date.parse(held.updated_at);
+const olderSummary = (held, incoming) => held.task_id === incoming.task_id
+  && Number.isFinite(incoming.version) && incoming.version < held.version;
+const keepRowSummary = (held, incoming, field, allowMissing) => incoming[field]
+  ? olderSummary(held[field], incoming[field]) : !allowMissing && !rowWrittenLater(held, incoming);
+const sameRow = (held, incoming) => Boolean(held) && rowIdentity(held) === rowIdentity(incoming);
+const advancesSummaryFloor = (floor, summary) => hasSummaryVersion(floor) && hasSummaryVersion(summary)
+  && summary.task_id === floor.task_id && summary.version > floor.version;
+
+/** Server PR versions are independent of when a client asked for a row.
+ * Only an existing visible summary of the same PR can establish that order. */
+export const advancesReviewSummary = (held, incoming, field = "review_summary") => Boolean(incoming)
+  && sameRow(held, incoming) && advancesSummaryFloor(held[field], incoming[field]);
+
+function withHeldSummary(held, incoming, field) {
+  const next = { ...incoming };
+  if (Object.hasOwn(held, field)) next[field] = held[field];
+  else delete next[field];
+  return next;
+}
+
+/** A delayed task or workspace read can replace ordinary row fields without
+ * rolling its PR summary back. Versions belong to one PR task; a new task
+ * using the same workspace starts its own floor. Absence needs a newer read
+ * or timestamp before it can erase a known summary. */
+export function preserveReviewSummary(held, incoming, field = "review_summary", options = {}) {
+  if (!incoming || !sameRow(held, incoming)) return incoming;
+  if (options.keepHeld && !advancesReviewSummary(held, incoming, field)) return withHeldSummary(held, incoming, field);
+  const summary = held?.[field];
+  if (!hasSummaryVersion(summary)) return incoming;
+  return keepRowSummary(held, incoming, field, options.allowMissing) ? { ...incoming, [field]: summary } : incoming;
+}
+
+/** Match only the rows an incoming list names: PR floors do not revive rows
+ * that an authoritative list left out. */
+export function preserveReviewSummaries(held, incoming, field = "review_summary", options) {
+  const old = new Map((held || []).map((row) => [rowIdentity(row), row]));
+  return (incoming || []).map((row) => preserveReviewSummary(old.get(rowIdentity(row)), row, field, options));
+}
+
+function cachedTaskReviewState(row) {
+  const state = row?.[TASK_REVIEW_CACHE];
+  return state?.task_id === rowIdentity(row) && hasSummaryVersion(state?.floor) ? state : null;
+}
+
+function taskReviewState(row) {
+  const cached = cachedTaskReviewState(row);
+  if (cached) return cached;
+  if (!hasSummaryVersion(row?.review_summary)) return null;
+  return { task_id: rowIdentity(row), floor: row.review_summary, updated_at: row.updated_at, cleared: false };
+}
+
+const reviewRead = (state) => Number(state?.read_order) || 0;
+const reviewInstant = (state) => Date.parse(state?.updated_at) || 0;
+const reviewReadOvertaken = (state, options) => options.keepHeld
+  || Number.isFinite(options.readOrder) && options.readOrder < reviewRead(state);
+
+/** Legacy max clocks combine accepted and rejected answers. They cannot
+ * prove that a visible PR was accepted after an independent clear. */
+const visibleReviewObservation = (state) => state?.visible_observation || { updated_at: null, read_order: 0 };
+
+/** Positive accepted read orders share the client clock. Otherwise the
+ * accepted task timestamps stand in; protective maxima never participate. */
+function reviewObservationOrder(before, next) {
+  const reads = reviewRead(next) - reviewRead(before);
+  const timestamps = reviewInstant(next) - reviewInstant(before);
+  return reviewRead(before) > 0 && reviewRead(next) > 0 ? reads || timestamps : timestamps;
+}
+
+function newerTaskReviewState(held, incoming) {
+  if (advancesSummaryFloor(held.floor, incoming.floor)) return incoming;
+  if (belowSummaryFloor(held.floor, incoming.floor)) return held;
+  const before = held.cleared ? taskReviewClearKey(held) : visibleReviewObservation(held);
+  const next = incoming.cleared ? taskReviewClearKey(incoming) : visibleReviewObservation(incoming);
+  const order = reviewObservationOrder(before, next);
+  if (order) return order > 0 ? incoming : held;
+  return incoming.cleared ? incoming : held;
+}
+
+/** An accepted absence has a stable identity even as rejected replies raise
+ * its protective floors. Old cached clears gain that identity on first use. */
+function taskReviewClearKey(state) {
+  return state.clear_key || {
+    task_id: state.task_id, review_task_id: state.floor.task_id, version: state.floor.version,
+    updated_at: state.updated_at ?? null, read_order: reviewRead(state),
+  };
+}
+
+function newerTaskReviewClearKey(held, incoming) {
+  const before = taskReviewClearKey(held);
+  const next = taskReviewClearKey(incoming);
+  const difference = reviewObservationOrder(before, next) || next.version - before.version;
+  return difference > 0 ? next : before;
+}
+
+function combinedTaskReviewClear(held, incoming) {
+  return {
+    ...held,
+    floor: advancesSummaryFloor(held.floor, incoming.floor) ? incoming.floor : held.floor,
+    updated_at: latestTaskTimestamp(held.updated_at, incoming.updated_at),
+    read_order: Math.max(reviewRead(held), reviewRead(incoming)),
+    clear_key: newerTaskReviewClearKey(held, incoming),
+  };
+}
+
+function clearFencesCachedReview(clear, visible) {
+  // A raw summary already accepted after this exact clear must survive an
+  // interrupted repair. Mutable protective floors do not change that event.
+  const absence = taskReviewClearKey(clear);
+  if (JSON.stringify(visible.observed_clear) === JSON.stringify(absence)) return false;
+  const observation = visibleReviewObservation(visible);
+  return reviewObservationOrder(absence, observation) <= 0;
+}
+
+/** An old cached visible copy cannot use its version to cross a newer clear.
+ * Positive observation orders compare that pair; legacy copies fall back to
+ * authority timestamps. Only then do visible versions compete. Two clears
+ * retain both the highest floor and their newest observation barriers. */
+function strongerTaskReviewState(held, incoming) {
+  if (!held) return incoming;
+  if (held.cleared && incoming.cleared) return combinedTaskReviewClear(held, incoming);
+  if (Boolean(held.cleared) !== Boolean(incoming.cleared)) {
+    const clear = held.cleared ? held : incoming;
+    const visible = held.cleared ? incoming : held;
+    if (clearFencesCachedReview(clear, visible)) return clear;
+  }
+  return newerTaskReviewState(held, incoming);
+}
+
+function keepTaskReviewState(state, incoming, options) {
+  const advances = advancesSummaryFloor(state.floor, incoming.review_summary);
+  // A higher server version advances a visible PR across client read order.
+  // A clear still fences requests that were made before it was accepted.
+  if (reviewReadOvertaken(state, options) && (state.cleared || !advances)) return true;
+  if (belowSummaryFloor(state.floor, incoming.review_summary)) return true;
+  const later = rowWrittenLater(state, incoming);
+  if (!incoming.review_summary) return !options.allowMissing && !later;
+  return state.cleared && !advances && !later;
+}
+
+function withTaskReviewState(base, state) {
+  const next = { ...base, [TASK_REVIEW_CACHE]: state };
+  if (state.cleared) delete next.review_summary;
+  else next.review_summary = state.floor;
+  return next;
+}
+
+function withTaskReviewLineage(held, next, keep, observation) {
+  if (next.cleared) return { ...next, clear_key: taskReviewClearKey(keep ? held : { ...next, ...observation }) };
+  const observedClear = held?.cleared ? taskReviewClearKey(held) : held?.observed_clear;
+  return observedClear ? { ...next, observed_clear: observedClear } : next;
+}
+
+const sameReviewRevision = (held, incoming) => hasSummaryVersion(held) && hasSummaryVersion(incoming)
+  && held.task_id === incoming.task_id && held.version === incoming.version;
+
+function acceptedVisibleReviewObservation(held, next, candidate) {
+  if (held?.cleared || next.cleared || !sameReviewRevision(held?.floor, next.floor)) return candidate;
+  // Equal wire summaries can still bring older ordinary task fields. They
+  // establish a new PR observation only when its own clock is newer.
+  const before = visibleReviewObservation(held);
+  return reviewObservationOrder(before, candidate) > 0 ? candidate : before;
+}
+
+function withVisibleReviewObservation(held, incoming, next, options, keep) {
+  // Protective maxima still fence raw older replies. Only an accepted
+  // visible summary establishes a new observation for cached comparisons.
+  const observation = keep ? visibleReviewObservation(held)
+    : acceptedVisibleReviewObservation(held, next,
+      { updated_at: incoming.updated_at ?? null, read_order: Number(options.readOrder) || 0 });
+  const linked = withTaskReviewLineage(held, next, keep, observation);
+  if (linked.cleared) return linked;
+  return { ...linked, visible_observation: observation };
+}
+
+function acceptedTaskReviewState(state, incoming, options) {
+  const keep = state && keepTaskReviewState(state, incoming, options);
+  const floor = keep ? state.floor : incoming.review_summary || state?.floor;
+  if (!hasSummaryVersion(floor)) return null;
+  const next = {
+    task_id: rowIdentity(incoming), floor,
+    cleared: keep ? state.cleared : !incoming.review_summary,
+    updated_at: latestTaskTimestamp(state?.updated_at, incoming.updated_at),
+    read_order: Math.max(reviewRead(state), Number(options.readOrder) || 0),
+  };
+  return withVisibleReviewObservation(state, incoming, next, options, keep);
+}
+
+/** PR floors survive clears and stale ordinary fields on every task row.
+ * Wire rows are filtered once against the held authority. Already cached
+ * copies carry their own authority, so merging two cache replicas cannot
+ * revive a clear. `baseRow` keeps a page's independently chosen ordinary
+ * fields while applying only the PR field and its private authority. */
+export function preserveTaskReviewSummary(held, incoming, options = {}) {
+  if (!incoming) return incoming;
+  const state = sameRow(held, incoming) ? taskReviewState(held) : null;
+  const incomingState = cachedTaskReviewState(incoming);
+  const next = incomingState ? strongerTaskReviewState(state, incomingState)
+    : acceptedTaskReviewState(state, incoming, options);
+  const base = options.baseRow || incoming;
+  return next ? withTaskReviewState(base, next) : base;
+}
+
+const newerListRead = (held, incoming) => Number.isFinite(held?.read_order)
+  && Number.isFinite(incoming?.read_order) && incoming.read_order > held.read_order;
+const olderListRead = (held, incoming) => Number.isFinite(held?.read_order)
+  && Number.isFinite(incoming?.read_order) && incoming.read_order < held.read_order;
+const latestListRead = (held, incoming) => Number.isFinite(held?.read_order)
+  ? Math.max(held.read_order, incoming.read_order || 0) : incoming.read_order;
+
+function preserveListSummaries(held, incoming) {
+  // An older absence must not lower the read floor and make the next older
+  // absence appear authoritative enough to erase the retained summary.
+  const readOrder = latestListRead(held, incoming);
+  return {
+    ...incoming,
+    ...(Number.isFinite(readOrder) ? { read_order: readOrder } : {}),
+    tasks: preserveListTaskRows(held, incoming),
+  };
+}
+
+function preserveListTaskRows(held, incoming) {
+  const old = new Map((held?.tasks || []).map((row) => [rowIdentity(row), row]));
+  const options = {
+    readOrder: incoming.read_order,
+    allowMissing: newerListRead(held, incoming),
+    keepHeld: olderListRead(held, incoming),
+  };
+  return (incoming.tasks || []).map((row) => preserveTaskReviewSummary(old.get(rowIdentity(row)), row, options));
+}
+
+function withReadThroughFloor(held, incoming) {
+  const floor = latestTaskMark(held?.task?.read_through, incoming?.task?.read_through);
+  const task = incoming?.task;
+  if (!task || !floor || floor === task.read_through) return incoming;
+  return { ...incoming, task: { ...task, read_through: floor } };
+}
+
+const belowSummaryFloor = (floor, summary) => hasSummaryVersion(floor) && hasSummaryVersion(summary) && olderSummary(floor, summary);
+
+function detailReviewState(record) {
+  const task = record?.task || {};
+  const state = record?.[TASK_REVIEW_CACHE];
+  if (state && state.task_id === task.id) return state;
+  return { task_id: task.id, floor: task.review_summary ?? null, updated_at: task.updated_at };
+}
+
+function detailReviewOptions(state, task) {
+  const summary = task?.review_summary;
+  const later = Date.parse(task?.updated_at) > Date.parse(state.updated_at);
+  return {
+    allowMissing: later,
+    keepHeld: belowSummaryFloor(state.floor, summary)
+      || Boolean(state.floor) && !later && !advancesSummaryFloor(state.floor, summary),
+  };
+}
+
+function latestTaskTimestamp(held, incoming) {
+  const before = Date.parse(held);
+  const next = Date.parse(incoming);
+  return Number.isFinite(before) && (!Number.isFinite(next) || before > next) ? held : incoming;
+}
+
+/** Detail replies can carry older ordinary task fields. Keep PR authority
+ * beside the record, so such fields cannot lower the timestamp of a clear,
+ * and a higher numeric PR version can still advance an older task copy. */
+function withDetailReviewState(state, record) {
+  if (!record?.task) return record;
+  const task = record.task;
+  const floor = hasSummaryVersion(task.review_summary) ? task.review_summary : state.floor;
+  if (!hasSummaryVersion(floor)) return record;
+  return { ...record, [TASK_REVIEW_CACHE]: {
+    task_id: task.id, floor, updated_at: latestTaskTimestamp(state.updated_at, task.updated_at),
+  } };
+}
+
+function preserveDetailReview(held, incoming) {
+  const state = sameRow(held?.task, incoming?.task) ? detailReviewState(held) : detailReviewState(incoming);
+  const task = preserveReviewSummary(held?.task, incoming?.task, "review_summary", detailReviewOptions(state, incoming?.task));
+  const next = task === incoming?.task ? incoming : { ...incoming, task };
+  return withDetailReviewState(state, next);
+}
+
+function preserveTaskFloors(held, incoming) {
+  return withReadThroughFloor(held, preserveDetailReview(held, incoming));
+}
+
 /** What the cache holds for a project, or null when it has never been read
  *  there. Never throws: a cache miss and a broken cache are the same answer. */
 export async function readTasksRecord(deviceId, projectId) {
@@ -121,7 +411,7 @@ export const readTasksQueryCached = (deviceId, projectId, params) =>
   readListCached(tasksQueryAddress(deviceId, projectId, params));
 
 export const writeTasksRecord = (deviceId, projectId, record) =>
-  writeCached(tasksAddress(deviceId, projectId), record);
+  mergeCachedAtomically(tasksAddress(deviceId, projectId), (held) => preserveListSummaries(held, record));
 
 /** Pulls may carry an older server read mark than one this browser has already
  * accepted. Keep the accepted mark in the cached task while replacing its
@@ -131,9 +421,7 @@ export const writeTaskRecord = (deviceId, projectId, taskId, record, { accept = 
   mergeCachedAtomically(taskAddress(deviceId, projectId, taskId), (held) => {
     // A writer can be superseded while waiting for the cache transaction.
     if (!accept(held)) return null;
-    const floor = latestTaskMark(held?.task?.read_through, record?.task?.read_through);
-    if (!record?.task || !floor || floor === record.task.read_through) return record;
-    return { ...record, task: { ...record.task, read_through: floor } };
+    return preserveTaskFloors(held, record);
   });
 
 /** Only an accepted read report may raise the cached floor. Do not touch the
@@ -149,7 +437,7 @@ export const advanceTaskReadThrough = (deviceId, projectId, taskId, mark) => {
 };
 
 export const writeTasksQueryRecord = (deviceId, projectId, params, record) =>
-  writeCached(tasksQueryAddress(deviceId, projectId, params), record);
+  mergeCachedAtomically(tasksQueryAddress(deviceId, projectId, params), (held) => preserveListSummaries(held, record));
 
 /** When the cache last took an answer for a record, or 0 for one it has never
  *  held. A surface showing a cached copy says when that copy was read

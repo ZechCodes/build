@@ -28,7 +28,9 @@ import { cachedSubKeys, deleteCached, mergeCachedAtomically, mergeCachedRecordsT
 import { lastSayIn, nextTaskRead, readsAddress, withStretch } from "./taskReadOrder.js";
 import { bridgeCapabilities } from "./changeEvents.js";
 import { sortTasks } from "./trackerFilters.js";
-import { TRACKER_TASKS_PAGE_KIND, tasksPageAddress, tasksRecord, listAskedAt } from "./trackerCache.js";
+import {
+  TRACKER_TASKS_PAGE_KIND, tasksPageAddress, tasksRecord, listAskedAt, preserveReviewSummary, preserveTaskReviewSummary,
+} from "./trackerCache.js";
 import { userSessionOf } from "./userSessionCache.js";
 
 /** Tasks per page. A tenth of a large tracker, and one page of a small one. */
@@ -49,7 +51,7 @@ function rowsToLay(tasks, heldById, overtaken) {
   return tasks.filter((row) => {
     const heldRow = heldById.get(row.id);
     return !overtaken(row) && !(heldRow && writtenAfter(heldRow, row));
-  });
+  }).map((row) => preserveReviewSummary(heldById.get(row.id), row));
 }
 
 /** The span of a stretch a number falls in, or undefined outside it. A
@@ -83,6 +85,32 @@ export function withTaskPage(held, stretch, lastSay = () => 0) {
   return sortTasks([...kept, ...laid]);
 }
 
+function summaryPageOvertaken(held, stretch, row, lastSay) {
+  const read = spanAt(stretch, Number(row.number))?.read ?? stretch.read ?? 0;
+  return Math.max(Number(held?.read_order) || 0, lastSay(row)) > read;
+}
+
+/** A whole-list read has no page stretch note. Its accepted PR field,
+ * including absence, still stands over a page asked before that list read.
+ * A higher version of the same visible PR can advance even when the page's
+ * ordinary fields were overtaken. Only rows still on the list participate. */
+function foldedTaskRows(held, stretch, reads) {
+  const lastSay = lastSayIn(reads);
+  const old = new Map((held?.tasks || []).map((row) => [row.id, row]));
+  const answered = new Map((stretch.tasks || []).map((row) => [row.id, row]));
+  return withTaskPage(held?.tasks, stretch, lastSay).map((row) => {
+    const answer = answered.get(row.id);
+    if (!answer) return row;
+    const overtaken = summaryPageOvertaken(held, stretch, answer, lastSay);
+    return preserveTaskReviewSummary(old.get(row.id), answer, {
+      readOrder: spanAt(stretch, Number(answer.number))?.read ?? stretch.read,
+      allowMissing: !overtaken,
+      keepHeld: overtaken,
+      baseRow: row,
+    });
+  });
+}
+
 /** Lay one page over the list record at `address`, and note beside it that
  *  the page had the say on its stretch there — the two in one transaction, so
  *  a write landing between the read and the write is not lost, and another
@@ -96,7 +124,7 @@ export const foldTasksPage = (address, stretch, columnsOf) =>
     const held = heldRecord?.value;
     const reads = readsRecord?.value;
     return [
-      tasksRecord(withTaskPage(held?.tasks, stretch, lastSayIn(reads)), columnsOf(held), foldedOrder(heldRecord, stretch)),
+      tasksRecord(foldedTaskRows(held, stretch, reads), columnsOf(held), foldedOrder(heldRecord, stretch)),
       withStretch(reads, stretch),
     ];
   });

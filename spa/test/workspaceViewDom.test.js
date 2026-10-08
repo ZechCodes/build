@@ -641,8 +641,13 @@ describe("workspace surface", () => {
     const revisitAndPressTwice = async () => {
       let settle;
       const held = new Promise((resolve, reject) => { settle = { resolve, reject }; });
+      const requested = Promise.withResolvers();
       App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes" };
-      const call = device("dev-1", async (method) => method === "workspace.retry" ? held : mixed);
+      const call = device("dev-1", async (method) => {
+        if (method !== "workspace.retry") return mixed;
+        requested.resolve();
+        return held;
+      });
       await standUp();
       for (const sourceId of ["assets", "repo"]) {
         document.querySelector(`.workspace-dirtab[data-directory="${sourceId}"]`).click();
@@ -654,6 +659,7 @@ describe("workspace surface", () => {
       pressed.click();
       pressed.click();
       shown("[data-workspace-action]").click();
+      await requested.promise;
       return { call, settle };
     };
     const retries = (call) => call.mock.calls.filter(([method]) => method === "workspace.retry");

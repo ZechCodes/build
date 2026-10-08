@@ -23,7 +23,7 @@ import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
 import { deviceFeedNow } from "../core/feedRows.js";
 import { cachedFeedView } from "../core/cachedRows.js";
 import { mergeCached, readCached, subscribeCache, writeCached } from "../core/localCache.js";
-import { upsertSessionRow } from "../core/sessionListCache.js";
+import { sessionListObservation, upsertSessionRow } from "../core/sessionListCache.js";
 import { refreshFeed, subscribeFeed } from "../core/taskFeed.js";
 import { mountWorkspaceTasksTab, workspaceTasksPlace } from "../core/workspaceTasksTab.js";
 import { taskContextItem } from "../core/trackerViewingContext.js";
@@ -46,10 +46,28 @@ const workspaceListAddress = (state) =>
 const gitOptionsAddress = (state, sourceId) =>
   state.context.cacheScope.address({ entityId: state.route.workspaceId, kind: "git-init-options", sub: sourceId });
 
+const WORKSPACE_RESULT_METHODS = new Set(["workspace.retry", "workspace.init_git"]);
+
+/** Complete workspace replies may remove a PR link, provided that link has
+ * not changed since the command started. Other RPCs keep their usual path. */
+function workspaceResultRpc(state) {
+  return async (method, ...args) => {
+    if (!WORKSPACE_RESULT_METHODS.has(method)) return state.context.rpc(method, ...args);
+    const observation = await sessionListObservation(workspaceListAddress(state), "workspaces");
+    const answer = await state.context.rpc(method, ...args);
+    const workspace = answer?.workspace || answer;
+    if (workspace && typeof workspace === "object") state.workspaceObservations.set(workspace, observation);
+    return answer;
+  };
+}
+
 async function writeWorkspaceResult(state, workspace) {
   const address = workspaceListAddress(state);
   if (!address || !workspace) return;
-  await upsertSessionRow(address, "workspaces", workspace, () => routeHoldsWorkspace(state));
+  await upsertSessionRow(address, "workspaces", workspace, () => routeHoldsWorkspace(state), {
+    clearMissingReview: state.workspaceObservations.has(workspace),
+    observation: state.workspaceObservations.get(workspace),
+  });
   await state.workspaceRead;
 }
 
@@ -513,7 +531,8 @@ export async function renderWorkspace() {
     mountDeviceNotice(root, route.deviceId);
     return;
   }
-  const state = { selection: shellSelection(), route, context, callRpc: context.rpc, disposed: false, pane: null, workspaceAction: null, refreshPane: null, workspace: null, sourceId: null, gitInit: new Map(), paintTabs: null, rail: null, gitInitialization: new Map(), unwatchFeed: null, workspaceRead: null, gitOptionsRead: null, gitOptionsRevision: new Map(), retryRefreshPending: false };
+  const state = { selection: shellSelection(), route, context, callRpc: context.rpc, disposed: false, pane: null, workspaceAction: null, refreshPane: null, workspace: null, sourceId: null, gitInit: new Map(), paintTabs: null, rail: null, gitInitialization: new Map(), unwatchFeed: null, workspaceRead: null, gitOptionsRead: null, gitOptionsRevision: new Map(), retryRefreshPending: false, workspaceObservations: new WeakMap() };
+  state.callRpc = workspaceResultRpc(state);
   const unwatchWorkspace = subscribeCache(workspaceListAddress(state), () => {
     state.workspaceRead = readWorkspaceResult(state);
   });

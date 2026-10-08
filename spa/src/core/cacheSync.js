@@ -65,7 +65,7 @@ import {
   writeCached,
 } from "./localCache.js";
 import { TASK_RECORD_KIND } from "./taskCache.js";
-import { tasksAddress, tasksRecord, readTasksRecord, writeTasksRecord } from "./trackerCache.js";
+import { tasksAddress, tasksRecord, readTasksRecord, writeTasksRecord, preserveTaskReviewSummary } from "./trackerCache.js";
 import { foldTasksPage, pagesTasks, pullTaskPages } from "./trackerPages.js";
 import { nextTaskRead } from "./taskReadOrder.js";
 import { refreshCachedReviews } from "./taskReviewCache.js";
@@ -504,9 +504,9 @@ const currentAgentGeneration = (thread, agent) => !agent.thread_id || thread?.th
 function writeConversationRow(context, entityId, row) {
   const agents = (row.agents || []).filter((agent) => agent.thread_id);
   const addresses = [addressOf(context, entityId, "row"), ...agents.map((agent) => agentThreadAddress(context, entityId, agent))];
-  return mergeCachedTogether(addresses, ([, ...threads]) =>
+  return mergeCachedTogether(addresses, ([held, ...threads]) =>
     context.active() && agents.every((agent, index) => currentAgentGeneration(threads[index], agent))
-      ? [row, ...agents.map(() => null)] : null);
+      ? [preserveTaskReviewSummary(held, row), ...agents.map(() => null)] : null);
 }
 
 /** The snapshot without the entities a push said left after it was asked for:
@@ -1176,7 +1176,7 @@ const subscriptionShape = (deviceId) => ({
   // A push carries bodies, so a hidden tab writing them is a hidden tab that
   // paints instantly when it comes back. Nothing here is a read to defer.
   pausesWhileHidden: false,
-  onChanges: (items) => void applyChanges(items, deviceId),
+  onChanges: (items) => applyChanges(items, deviceId),
 });
 
 /** The three watchers, and the one that follows the reader — taken out before
@@ -1312,10 +1312,10 @@ const validSession = (record) => Number.isSafeInteger(record?.session_started_ms
   && Number.isSafeInteger(record?.last_activity_ms)
   && record.session_started_ms <= record.last_activity_ms;
 
-async function writeSessionList(context, kind, incoming, before) {
+async function writeSessionList(context, kind, incoming, before, options) {
   await replaceSessionList(addressOf(context, "", kind), kind, incoming, (held) => {
     if (before) before[kind] = held;
-  }, context.sessionListObservations?.[kind]);
+  }, context.sessionListObservations?.[kind], { ...options, active: context.active });
 }
 
 /** A record as a push carries it, marked so a read that was already out when
@@ -1359,6 +1359,7 @@ async function applyBoard(context, state) {
   notePushedLists(context, state);
   const before = {};
   await writePushedBoard(context, state, before);
+  if (context.active() && state.workspaces) await readWorkspaceReviews(context, state.workspaces);
   return removedOwnerId(before, state) ? before : null;
 }
 
@@ -1382,7 +1383,8 @@ async function writePushedBoard(context, state, before) {
     const summaries = workspaceSummaries(await heldValue(context, "", "workspaces"));
     if (!context.active()) return;
     await writeSessionList(context, "workspaces", state.workspaces.map((workspace) =>
-      stampWorkspace(workspace, context.deviceId, workspace.work_summary === undefined ? summaries : [])), before);
+      stampWorkspace(workspace, context.deviceId, workspace.work_summary === undefined ? summaries : [])), before,
+    { clearMissingReview: true });
   }
 }
 
@@ -1478,6 +1480,10 @@ async function applyState(context, entityId, state) {
   await writeSurfaces(context, entityId, state.agents);
   if (!context.active()) return;
   if (isFinishedState(state.state)) await evictWorkspaceData(context.deviceId, entityId, context.active);
+  if (state.review_summary && context.active()) {
+    const ids = [state.review_summary.task_id];
+    await readReviews(context, state.project_id, ids, ids);
+  }
 }
 
 /** `thread`: one tip per conversation, carrying the items since this
@@ -1566,6 +1572,7 @@ async function applyGit(context, entityId, git) {
   if (git.diff) await writePushedDiff(context, entityId, git.diff, row);
   if (!context.active()) return;
   await pullWhatTheGitItemCouldNotCarry(context, entityId, git, row);
+  await readGitReviews(context, entityId, row);
 }
 
 async function writePushedDiff(context, entityId, diff, row) {
@@ -1753,21 +1760,53 @@ const freshFileAnswer = (context, scope, path, heldFile, readPage) => {
 const applyTerminals = (context, entityId, terminals) =>
   writePushed(addressOf(context, entityId, "terminals"), { tabs: terminals.tabs || [] });
 
-/** `tasks`: which tasks of this project moved. Content-free beyond the ids —
- *  and dropped altogether past 200 of them — so there is one answer either
- *  way, which is to read the project's list again. The entity here is a
- *  PROJECT, not a workspace: every other applier below is handed a board row's
- *  entity, and this one is handed the project the tasks belong to. Not
- *  awaited: a read folded behind one already out settles only after the read
- *  that follows it, and the rest of the flush has nothing to wait for. */
-const readReviews = (context, projectId, ids = null) => refreshCachedReviews({
-  deviceId: context.deviceId, projectId, active: context.active,
-  callRpc: (method, params) => context.call(method, params, requestPriorityFields("background")),
-}, ids);
+/** Discovery uses the records just written, including pushes newer than the
+ * pass's list replies. One task can appear in all three collections. */
+async function discoveredReviews(context, projectId) {
+  const [tasks, workspaces, feed] = await Promise.all([
+    readTasksRecord(context.deviceId, projectId),
+    heldValue(context, "", "workspaces"),
+    heldValue(context, "", "feed"),
+  ]);
+  const summaries = [
+    ...(tasks?.tasks || []).map((task) => task.review_summary),
+    ...(workspaces || []).filter((row) => row.project_id === projectId).map((row) => row.active_review),
+    ...(feed?.items || []).filter((row) => row.project_id === projectId).map((row) => row.review_summary),
+  ];
+  return [...new Set(summaries.map((summary) => summary?.task_id).filter(Boolean))];
+}
 
-const applyTasks = (context, projectId, tasks) => {
-  void readTasks(context, projectId);
-  void readReviews(context, projectId, tasks?.truncated ? null : tasks?.task_ids || null);
+async function readReviews(context, projectId, ids = null, hinted = []) {
+  if (!projectId || !context.active()) return;
+  const discoveredTaskIds = [...new Set([...await discoveredReviews(context, projectId), ...hinted])];
+  if (!context.active()) return;
+  await refreshCachedReviews({
+    deviceId: context.deviceId, projectId, active: context.active, discoveredTaskIds,
+    callRpc: (method, params) => context.call(method, params, requestPriorityFields("background")),
+  }, ids);
+}
+
+async function readWorkspaceReviews(context, workspaces) {
+  const projects = new Set(workspaces.filter((row) => row.active_review).map((row) => row.project_id));
+  for (const projectId of projects) {
+    const ids = workspaces.filter((row) => row.project_id === projectId).map((row) => row.active_review?.task_id).filter(Boolean);
+    await readReviews(context, projectId, ids, ids);
+  }
+}
+
+async function readGitReviews(context, entityId, row) {
+  if (!context.active()) return;
+  const workspaces = await heldValue(context, "", "workspaces");
+  if (!context.active()) return;
+  await readWorkspaceReviews(context, (workspaces || []).filter((workspace) =>
+    workspace.entity_id === entityId || (row?.workspace_id && (workspace.workspace_id || workspace.id) === row.workspace_id)));
+}
+
+/** Task invalidations carry IDs only. Read the project list first so a new
+ * PR summary can discover its metadata without probing ordinary tasks. */
+const applyTasks = async (context, projectId, tasks) => {
+  await readTasks(context, projectId);
+  if (context.active()) await readReviews(context, projectId, tasks?.truncated ? null : tasks?.task_ids || null);
 };
 
 /** One writer per kind, in the order a reader would want them applied: what

@@ -18,7 +18,7 @@ it("clicks the workspace lock against the fixture bridge and paints only its cac
       app.App.route = { name: "workspace", deviceId, projectId: project.id, workspaceId: window.__lockWorkspace.workspace_id };
       app.App.devices = [{ id: deviceId, name: "Workshop" }];
       window.__lockRequests = [];
-      contexts.adoptDeviceSession({ deviceId, close: () => {}, peer: () => {}, onCarrier: () => {}, onPush: () => {},
+      const context = contexts.adoptDeviceSession({ deviceId, close: () => {}, peer: () => {}, onCarrier: () => {}, onPush: () => {},
         call: async (method, params) => {
           if (method !== fixture.method) return {};
           if (params.workspace_id !== fixture.params.workspace_id || typeof params.locked !== "boolean") throw new Error("invalid_params");
@@ -27,6 +27,7 @@ it("clicks the workspace lock against the fixture bridge and paints only its cac
           return { ...fixture.result, locked: params.locked };
         },
       });
+      contexts.adoptBridgeSelection(context, { version: "3.14.0" }, { capabilities: { workspaces: { setLocked: true } } });
       await cache.writeCached(cache.DEVICES_ADDRESS, app.App.devices);
       await cache.writeCached({ deviceId, entityId: "", kind: "projects" }, [project]);
       await cache.writeCached({ deviceId, entityId: "", kind: "workspaces" }, [window.__lockWorkspace]);

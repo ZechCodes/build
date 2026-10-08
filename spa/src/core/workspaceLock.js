@@ -1,6 +1,6 @@
 // Only cached workspace facts select the icon; RPC answers never repaint it.
 import { ICON_LOCK, ICON_LOCK_OPEN } from "./icons.js";
-import { contextFor } from "./deviceContexts.js";
+import { contextFor, whenGreeted } from "./deviceContexts.js";
 import { notifyError } from "./notify.js";
 const pending = new Set();
 const pendingFocus = new WeakSet();
@@ -15,15 +15,25 @@ export function workspaceLockHtml(state) {
   const label = state.locked ? "Unlock workspace" : "Lock workspace";
   return `<button class="workspace-lock-toggle" type="button" data-workspace-lock aria-label="${label}" title="${label}" aria-pressed="${state.locked}"${state.pending ? " disabled" : ""}>${state.locked ? ICON_LOCK : ICON_LOCK_OPEN}</button>`;
 }
+async function sendLock(state) {
+  const context = contextFor(state.deviceId);
+  if (!context) throw new Error("Workspace unavailable");
+  const request = await whenGreeted(context, () => {
+    if (context.adapter?.capabilities?.workspaces?.setLocked !== true) {
+      throw new Error("Update the bridge to lock workspaces.");
+    }
+    return context.rpc("workspace.set_locked", { workspace_id: state.workspaceId, locked: !state.locked });
+  });
+  if (!request) throw new Error("This machine is unavailable.");
+  await request.sent;
+}
 async function toggle(state, changed) {
   const key = keyOf(state);
   if (pending.has(key)) return;
   pending.add(key);
   changed();
   try {
-    const context = contextFor(state.deviceId);
-    if (!context) throw new Error("Workspace unavailable");
-    await context.rpc("workspace.set_locked", { workspace_id: state.workspaceId, locked: !state.locked });
+    await sendLock(state);
   } catch (error) {
     notifyError(error?.code === "busy" ? "Try again in a moment" : error?.message || String(error));
   } finally {

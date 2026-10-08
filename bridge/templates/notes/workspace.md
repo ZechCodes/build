@@ -34,3 +34,10 @@ committed and pushed, so say what you are about to remove before you remove it.
 Neither can take the ground out from under you: Build refuses to delete the
 workspace you are standing in, or to remove the directory your own checkout is
 in.
+
+For a managed workspace ready to publish a PR, `open_review` creates its review
+task and records fixed Git membership and branch bindings. Use the returned
+push instructions to publish later commits. Closing a PR keeps its retained
+workspace available for inspection and a checked reopen. A terminal PR retains
+its branch bindings: closing, merging and refreshing do not authorize changing
+those bindings or removing a review-owned directory.

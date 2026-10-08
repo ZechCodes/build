@@ -8,6 +8,43 @@ The task tools are about YOUR project — there is nothing to pass and no other
 project is reachable — and the bridge knows who you are, so what you write is
 signed by you.
 
+PR reviews also have `open_review`, `push_review`, `merge_review`, `close_review`,
+`reopen_review`, `refresh_review` and `update_review_base`. Use `open_review`
+from a managed workspace to create its PR task: give it a request ID, a title
+and a description. Included Git directories use their configured base unless
+you select another local source branch. Explicitly exclude any Git directory
+that is outside the PR; non-Git directories stay live context. Build creates
+dedicated branches and local receivers, publishes
+the committed heads, and returns the task and push instructions. Reuse the
+request ID only for the identical opening when recovering a lost response.
+An optional reviewer is dispatched after publication. The creator and every
+later actor are the authenticated caller.
+
+After opening, native `git push` to the returned remote and branch publishes
+work to the local receiver. Build observes received changes even with no
+browser connected. `push_review` provides the same publication with explicit
+working and received head checks. Rewrites require `force_with_lease` with the
+expected received head; with native Git use an explicit
+`--force-with-lease=<ref>:<expected-head>`. A plain `git push --force` is refused.
+Read `get_review` after partial or interrupted publication before trying again.
+Uncommitted files are counted but excluded from published snapshots.
+
+Read `get_review`, then `read_review` to inspect the published snapshot, and
+leave feedback with `comment_task` using its saved IDs. Only opinions on the
+current published snapshot affect PR status; opinions on older snapshots
+remain historical. `update_review_base` selects new local source base branches
+and saves a fresh immutable snapshot. `merge_review` integrates the selected
+published snapshot into its recorded base branches, checking each expected
+base head; optional remote publication follows integration. A partial failure
+preserves completed work, so read the recorded outcomes before trying again.
+A successful integration marks the PR merged and moves its task to Done.
+`close_review` closes an active PR without merging, retaining its workspace
+and history. `reopen_review` reopens a closed, unmerged PR only when its retained
+workspace and receivers are recoverable. `refresh_review` checks received
+state and health, including retained terminal workspaces. PR branch bindings
+stay fixed; none of these tools unlocks them. Use these PR tools for PR mode;
+the saved snapshot tools below continue to serve snapshot reviews.
+
 When a message hands you a task, that task is the work. The message is only a
 notice naming it, so read it with `get_task` before you start — and again if
 you have been running a while, since it may have moved — because the body says

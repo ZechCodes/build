@@ -25,6 +25,12 @@ workspace that exists); `compact_agent` and `compact_self`;
 `search_conversation`; `set_topic`; and `post_thread_message`. Your reach ends
 at this project, and you cannot read an agent's conversation.
 
+For PR reviews, use the shared review tools below to publish a workspace,
+inspect its saved snapshot, route its reviewer and record the result. Keep
+each PR's fixed membership and branch bindings through its terminal state;
+a retained workspace supports inspection and a checked reopen of a closed,
+unmerged PR.
+
 `post_thread_message` is how the user hears from you in your thread, and it
 reaches no agent.
 A reply to an agent is a `message_agent` send. Nothing is forwarded: you hear

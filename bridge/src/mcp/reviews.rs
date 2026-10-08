@@ -14,6 +14,8 @@ use crate::reviews::records::{review_description, MAX_REVIEW_DESCRIPTION_BYTES};
 
 use super::{acted, optional_argument, refused, required_argument, BridgeAction, Handled};
 
+mod pr;
+
 const MAX_PATHS: usize = 100;
 const MAX_BASE_OVERRIDES: usize = 100;
 
@@ -29,7 +31,7 @@ pub(super) fn tools() -> Vec<Value> {
         },
         "required":["offset","bytes"]
     });
-    vec![
+    let mut tools = vec![
         json!({
             "name":"snapshot_review",
             "description":"Save the committed state of every directory in a workspace on this task. The saved Git heads and bases remain readable after branches move; uncommitted files are counted but excluded. This does not move the task. Any agent in this project may create a snapshot; Build records the caller as author.",
@@ -108,10 +110,15 @@ pub(super) fn tools() -> Vec<Value> {
                 "required":["task_id","expected_version","description"]
             }
         }),
-    ]
+    ];
+    tools.extend(pr::tools());
+    tools
 }
 
 pub(super) fn handle_call(id: &Value, name: &str, params: Option<&Value>) -> Option<Handled> {
+    if let Some(handled) = pr::handle_call(id, name, params) {
+        return Some(handled);
+    }
     let action = match name {
         "snapshot_review" => snapshot_action(params),
         "get_review" => task_id(params).map(|task_id| BridgeAction::TrackerGetReview { task_id }),
@@ -297,6 +304,209 @@ fn validate_read_options(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const PR_CALLS: &[(&str, &str)] = &[
+        (
+            "open_review",
+            r#"{"workspace_id":"ws-1","request_id":"open-1","title":"Review API","description":"Committed API change","bases":[{"directory_id":"dir-1","branch":"main"}],"excluded_git_directory_ids":[],"reviewer":{"kind":"agent","agent_id":"agent-1"}}"#,
+        ),
+        (
+            "push_review",
+            r#"{"task_id":"task-1","expected_version":1,"sources":[{"directory_id":"dir-1","expected_head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","expected_received_head":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","force_with_lease":true}]}"#,
+        ),
+        (
+            "merge_review",
+            r#"{"task_id":"task-1","expected_version":1,"snapshot_id":"snap-1","sources":[{"directory_id":"dir-1","expected_base_head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","push":{"remote":"origin","branch":"main"}}]}"#,
+        ),
+        (
+            "close_review",
+            r#"{"task_id":"task-1","expected_version":1,"description":"Superseded"}"#,
+        ),
+        (
+            "reopen_review",
+            r#"{"task_id":"task-1","expected_version":1}"#,
+        ),
+        (
+            "refresh_review",
+            r#"{"task_id":"task-1","expected_version":1}"#,
+        ),
+        (
+            "update_review_base",
+            r#"{"task_id":"task-1","expected_version":1,"bases":[{"directory_id":"dir-1","branch":"dev"}]}"#,
+        ),
+    ];
+
+    fn call(surface: super::super::McpSurface, name: &str, args: Value) -> Handled {
+        let owner = match surface {
+            super::super::McpSurface::Coding => "agent-1",
+            super::super::McpSurface::Project => "project-1",
+            super::super::McpSurface::Router => "router-1",
+        };
+        super::super::DoneServer::for_owner(owner).handle_message(
+            &json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":args}}).to_string(),
+        )
+    }
+
+    #[test]
+    fn pr_tools_share_project_bound_surfaces_and_typed_actions() {
+        use super::super::{DoneServer, McpSurface};
+        for &(name, raw) in PR_CALLS {
+            for surface in [McpSurface::Coding, McpSurface::Project] {
+                assert!(
+                    DoneServer::tool_names_of(surface).contains(&name.to_string()),
+                    "{name}"
+                );
+                let action = call(surface, name, serde_json::from_str(raw).unwrap())
+                    .action
+                    .unwrap();
+                assert_eq!(action.tool_name(), name);
+                assert!(action.allowed_on(surface));
+                assert!(!action.allowed_on(McpSurface::Router));
+                let encoded = serde_json::to_value(&action).unwrap();
+                let decoded: BridgeAction = serde_json::from_value(encoded).unwrap();
+                assert_eq!(action, decoded);
+            }
+            assert!(!DoneServer::tool_names_of(McpSurface::Router).contains(&name.to_string()));
+        }
+    }
+
+    #[test]
+    fn pr_tools_refuse_unknown_identity_and_nested_parameters() {
+        use super::super::McpSurface;
+        for &(name, raw) in PR_CALLS {
+            let original: Value = serde_json::from_str(raw).unwrap();
+            for field in [
+                "author",
+                "actor",
+                "project_id",
+                "path",
+                "source_path",
+                "workspace_path",
+            ] {
+                let mut args = original.clone();
+                args[field] = json!("forged");
+                assert!(
+                    call(McpSurface::Coding, name, args).action.is_none(),
+                    "{name} accepted {field}"
+                );
+            }
+        }
+        for (name, raw, pointer) in [
+            ("open_review", PR_CALLS[0].1, "/reviewer"),
+            ("open_review", PR_CALLS[0].1, "/bases/0"),
+            ("push_review", PR_CALLS[1].1, "/sources/0"),
+            ("merge_review", PR_CALLS[2].1, "/sources/0"),
+            ("merge_review", PR_CALLS[2].1, "/sources/0/push"),
+            ("update_review_base", PR_CALLS[6].1, "/bases/0"),
+        ] {
+            let mut args: Value = serde_json::from_str(raw).unwrap();
+            args.pointer_mut(pointer).unwrap()["path"] = json!("/tmp/forged");
+            assert!(
+                call(McpSurface::Coding, name, args).action.is_none(),
+                "{name} accepted {pointer}/path"
+            );
+        }
+    }
+
+    #[test]
+    fn pr_tool_schemas_describe_strict_ids_and_explicit_leases() {
+        for &(name, _) in PR_CALLS {
+            let listed = tools();
+            let schema = &listed.iter().find(|tool| tool["name"] == name).unwrap()["inputSchema"];
+            assert_eq!(schema["additionalProperties"], false, "{name}");
+            for field in [
+                "author",
+                "actor",
+                "project_id",
+                "path",
+                "source_path",
+                "workspace_path",
+            ] {
+                assert!(
+                    schema["properties"].get(field).is_none(),
+                    "{name} advertises {field}"
+                );
+            }
+        }
+        let listed = tools();
+        let push = &listed
+            .iter()
+            .find(|tool| tool["name"] == "push_review")
+            .unwrap()["inputSchema"]["properties"]["sources"]["items"];
+        assert_eq!(push["additionalProperties"], false);
+        assert!(push["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("expected_head")));
+        let merge = &listed
+            .iter()
+            .find(|tool| tool["name"] == "merge_review")
+            .unwrap()["inputSchema"]["properties"]["sources"]["items"];
+        assert!(merge["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("expected_base_head")));
+    }
+
+    #[test]
+    fn pr_tool_prompts_reach_coding_and_project_agents_with_publication_rules() {
+        let templates = crate::templates::Templates::default();
+        for prompt in [&templates.build, &templates.project_agent] {
+            for &(name, _) in PR_CALLS {
+                assert!(prompt.contains(name), "prompt omits {name}");
+            }
+            for rule in [
+                "native `git push`",
+                "plain `git push --force`",
+                "opinions on older snapshots",
+                "branch bindings",
+            ] {
+                assert!(prompt.contains(rule), "prompt omits {rule}");
+            }
+        }
+        let workspace = include_str!("../../templates/notes/workspace.md");
+        assert!(workspace.contains("open_review"));
+        assert!(workspace.contains("retained workspace"));
+    }
+
+    #[test]
+    fn pr_tools_refuse_malformed_leases_and_duplicate_selections() {
+        use super::super::McpSurface;
+        for (index, pointer, invalid) in [
+            (0, "/workspace_id", json!(" ")),
+            (0, "/request_id", json!("a".repeat(201))),
+            (0, "/title", json!("Two\nlines")),
+            (0, "/reviewer/agent_id", json!("")),
+            (1, "/expected_version", json!(-1)),
+            (1, "/sources/0/expected_head", json!("abc")),
+            (1, "/sources/0/expected_received_head", json!("")),
+            (1, "/sources/0/force_with_lease", json!("true")),
+            (2, "/sources/0/expected_base_head", json!("not-a-head")),
+            (2, "/sources/0/push/branch", json!("main~1")),
+            (3, "/description", json!("é".repeat(1_001))),
+            (4, "/task_id", json!("")),
+            (5, "/expected_version", json!(1.5)),
+            (6, "/bases/0/branch", json!("main~1")),
+        ] {
+            let (name, raw) = PR_CALLS[index];
+            let mut args: Value = serde_json::from_str(raw).unwrap();
+            *args.pointer_mut(pointer).unwrap() = invalid;
+            assert!(
+                call(McpSurface::Coding, name, args).action.is_none(),
+                "{name} accepted {pointer}"
+            );
+        }
+        for (index, field) in [(0, "bases"), (1, "sources"), (2, "sources"), (6, "bases")] {
+            let (name, raw) = PR_CALLS[index];
+            let mut args: Value = serde_json::from_str(raw).unwrap();
+            let selection = args[field][0].clone();
+            args[field] = json!([selection, selection]);
+            assert!(
+                call(McpSurface::Coding, name, args).action.is_none(),
+                "{name} accepted duplicate {field}"
+            );
+        }
+    }
 
     #[test]
     fn mcp_completion_description_boundary_counts_utf8_bytes() {

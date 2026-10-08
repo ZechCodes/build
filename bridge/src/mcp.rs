@@ -441,6 +441,31 @@ pub enum BridgeAction {
         expected_version: u64,
         description: String,
     },
+    /// Open a PR task from a managed workspace in the caller's project.
+    TrackerOpenReview {
+        params: crate::api::v1::reviews::ReviewOpenParams,
+    },
+    /// Publish the selected bound PR branches with explicit head leases.
+    TrackerPushReview {
+        params: crate::api::v1::reviews::ReviewPushParams,
+    },
+    /// Change selected PR comparison branches.
+    TrackerUpdateReviewBase {
+        params: crate::api::v1::reviews::ReviewUpdateParams,
+    },
+    /// Integrate a published PR snapshot into its recorded base branches.
+    TrackerMergeReview {
+        params: crate::api::v1::reviews::ReviewMergeParams,
+    },
+    TrackerCloseReview {
+        params: crate::api::v1::reviews::ReviewCloseParams,
+    },
+    TrackerReopenReview {
+        params: crate::api::v1::reviews::ReviewVersionParams,
+    },
+    TrackerRefreshReview {
+        params: crate::api::v1::reviews::ReviewVersionParams,
+    },
 }
 
 /// The choices an `ask_user` call offered beside its question. Absent reads as
@@ -512,6 +537,13 @@ impl BridgeAction {
             BridgeAction::TrackerReadReview { .. } => "read_review",
             BridgeAction::TrackerActReview { .. } => "act_review",
             BridgeAction::TrackerCompleteReview { .. } => "complete_review",
+            BridgeAction::TrackerOpenReview { .. } => "open_review",
+            BridgeAction::TrackerPushReview { .. } => "push_review",
+            BridgeAction::TrackerUpdateReviewBase { .. } => "update_review_base",
+            BridgeAction::TrackerMergeReview { .. } => "merge_review",
+            BridgeAction::TrackerCloseReview { .. } => "close_review",
+            BridgeAction::TrackerReopenReview { .. } => "reopen_review",
+            BridgeAction::TrackerRefreshReview { .. } => "refresh_review",
         }
     }
 
@@ -578,7 +610,14 @@ impl BridgeAction {
             | BridgeAction::TrackerGetReview { .. }
             | BridgeAction::TrackerReadReview { .. }
             | BridgeAction::TrackerActReview { .. }
-            | BridgeAction::TrackerCompleteReview { .. } => {
+            | BridgeAction::TrackerCompleteReview { .. }
+            | BridgeAction::TrackerOpenReview { .. }
+            | BridgeAction::TrackerPushReview { .. }
+            | BridgeAction::TrackerUpdateReviewBase { .. }
+            | BridgeAction::TrackerMergeReview { .. }
+            | BridgeAction::TrackerCloseReview { .. }
+            | BridgeAction::TrackerReopenReview { .. }
+            | BridgeAction::TrackerRefreshReview { .. } => {
                 &[McpSurface::Coding, McpSurface::Project]
             }
         }
@@ -3006,7 +3045,7 @@ mod tests {
     /// The task tracker and review inventory shared between the two
     /// working surfaces — and for the same reason: both agents are bound to a
     /// project, and a project has one board.
-    const TASK_TOOLS: [&str; 17] = [
+    const TASK_TOOLS: [&str; 24] = [
         "list_tasks",
         "get_task",
         "read_comment",
@@ -3024,6 +3063,13 @@ mod tests {
         "read_review",
         "act_review",
         "complete_review",
+        "open_review",
+        "push_review",
+        "merge_review",
+        "close_review",
+        "reopen_review",
+        "refresh_review",
+        "update_review_base",
     ];
 
     /// Every body a person reads says how to link a Build thing in it (#229):

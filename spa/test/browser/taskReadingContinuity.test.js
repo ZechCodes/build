@@ -61,7 +61,11 @@ async function mountReadingPage(page, basePath, commentId = null, omitTarget = f
     host.scrollTo = (...args) => { scrollCalls.push(args[0]); scrollTo(...args); };
     const mounted = taskPage.mountTaskPage(host, {
       ...scope, projectKey: `${scope.deviceId}/${scope.projectId}`, commentId, feed: () => feed,
-      callRpc: (method) => method === "tasks.attachment" ? Promise.resolve(attachment) : new Promise(() => {}),
+      callRpc: (method) => {
+        if (method === "tasks.attachment") return Promise.resolve(attachment);
+        if (method === "tasks.review.snapshot") return new Promise((resolve, reject) => { window.__reading.rejectSnapshot = reject; });
+        return new Promise(() => {});
+      },
       catalog: () => ({ providers: [] }), refreshCatalog: async () => ({ providers: [] }), navigate: () => {},
     });
     window.__reading = { record, fullRecord, scope, mounted, stopIndex, errors, scrollCalls };
@@ -143,7 +147,7 @@ async function measure(page, before, label) {
   expect.soft(Math.abs(result.contentTopDelta), `${label}: visible content moved`).toBeLessThanOrEqual(1);
   expect.soft(result.contentScrolls.every((delta) => Math.abs(delta) <= 1), `${label}: transient content jump`).toBe(true);
   expect.soft(result.sameContent, `${label}: reading content replaced`).toBe(true);
-  if (/delayed-(listing|patch|blob|tree|page-first|page-next|failure)$/.test(label)) {
+  if (/delayed-(listing|patch|blob|tree|page-first|page-next|failure)$|feedback-draft$|controls-failure$/.test(label)) {
     expect.soft(Math.abs(result.reviewHeightDelta), `${label}: cache arrival must change review height`).toBeGreaterThan(1);
   }
   if (!label.includes("metadata-")) expect.soft(Math.abs(result.rootTopDelta), `${label}: row geometry moved`).toBeLessThanOrEqual(1);
@@ -331,8 +335,8 @@ it("keeps the reader at the bottom when a task comment is appended there", async
 }, 60_000);
 
 
-async function mountDelayedReview(page) {
-  await page.evaluate(async () => {
+async function mountDelayedReview(page, capabilities = {}) {
+  await page.evaluate(async (capabilities) => {
     const { support, review } = window.__layoutModules;
     const { scope, record } = window.__reading;
     const directory = { id: "dir-async", source_id: "source-async", name: "Saved source", is_git: true,
@@ -341,10 +345,13 @@ async function mountDelayedReview(page) {
     const snapshot = { id: "snapshot-async", number: 8, created_at: "2026-10-07T12:00:00Z",
       author: record.task.assignee, directories: [directory] };
     window.__reading.reviewIdentity = { ...scope, snapshot, directory };
-    await support.rememberReviewSupport(scope.deviceId, { reviews: { get: true, diff: true } });
+    await support.rememberReviewSupport(scope.deviceId, { reviews: { get: true, diff: true, ...capabilities } });
     await review.writeReviewRecord(scope, { task_id: scope.taskId, workspace_id: "ws-reading", state: "open", version: 3,
-      snapshots: [snapshot], actions: [], destinations: [], completion: null }, 3);
-  });
+      snapshots: [snapshot], actions: [], destinations: capabilities.act ? [{
+        snapshot_id: snapshot.id, directory_id: directory.id, source_path: directory.source_path,
+        branches: ["main", "dev"], remotes: [{ name: "origin", branches: ["main", "build/scroll"] }], live_head: directory.head,
+      }] : [], completion: null }, 3);
+  }, capabilities);
   await page.locator(".task-review-changes").waitFor({ state: "attached" });
   await settle(page);
 }
@@ -518,4 +525,77 @@ for (const [label, width, height] of [["phone", 390, 844], ["desktop", 1440, 900
       await page.evaluate(() => { window.__reading.mounted.dispose(); window.__reading.stopIndex(); });
     }, { width, height, plugins: [deviceShim] });
   }, 30_000);
+}
+
+for (const [label, width, height] of [["phone", 390, 844], ["desktop", 1440, 900]]) {
+  it(`keeps visible ${label} task history still through review draft painters and delayed control failure`, async () => {
+    await withLayoutPage(async ({ page, basePath }) => {
+      await mountReadingPage(page, basePath);
+      await mountDelayedReview(page, { act: true, comments: true, snapshot: true });
+      await page.locator("[data-review-act-sheet]").evaluate((sheet) => { sheet.open = true; });
+      await page.locator("[data-review-snapshot-form]").evaluate((sheet) => { sheet.open = true; });
+      await settle(page);
+      await page.locator('[data-review-push-branch="dir-async"]').evaluate((input) => {
+        input.focus({ preventScroll: true });
+        input.setSelectionRange(2, 6);
+      });
+      let before = await parkReader(page);
+      await page.evaluate(() => {
+        const focus = HTMLElement.prototype.focus;
+        window.__reading.focusSamples = [];
+        HTMLElement.prototype.focus = function (...args) {
+          focus.apply(this, args);
+          window.__reading.focusSamples.push(document.querySelector("#task-pane").scrollTop);
+        };
+      });
+      await page.evaluate(async () => {
+        const { ui, uiStore } = window.__layoutModules;
+        const { scope } = window.__reading;
+        await uiStore.writeUiRecord(ui.uiAddress({ deviceId: scope.deviceId, entityId: scope.projectId,
+          view: "task-review-actions", kind: "git-draft", sub: JSON.stringify([scope.taskId, "snapshot-async"]) }), {
+          selected: { "dir-async": { merge: true, push: true, mergeBranch: "main", remote: "origin", pushBranch: "build/restored" } }, intent: null,
+        });
+      });
+      await page.waitForFunction(() => document.querySelector('[data-review-push-branch="dir-async"]').value === "build/restored");
+      await measure(page, before, `${label}/actions-draft`);
+      expect.soft(await page.evaluate((before) => window.__reading.focusSamples.every((top) => top > before - 1000), before), "restored focus must never scroll back to the review form").toBe(true);
+      expect.soft(await page.locator('[data-review-push-branch="dir-async"]').evaluate((input) => [document.activeElement === input, input.selectionStart, input.selectionEnd])).toEqual([true, 2, 6]);
+      await page.locator("#task-comment").evaluate((field) => field.focus({ preventScroll: true }));
+      before = await parkReader(page);
+      await page.evaluate(async () => {
+        const { ui, uiStore } = window.__layoutModules;
+        const { scope } = window.__reading;
+        await uiStore.writeUiRecord(ui.uiAddress({ deviceId: scope.deviceId, entityId: scope.projectId,
+          view: "task-review-feedback", kind: "draft", sub: `${scope.taskId}:snapshot-async` }), {
+          body: "Restored feedback text", verdict: "request_changes", replyTo: null,
+          anchor: { snapshot_id: "snapshot-async", directory_id: "dir-async", path: "saved/review-file.js", side: "new", line: 12 },
+        });
+      });
+      await page.waitForFunction(() => !document.querySelector("[data-review-target]").hidden);
+      await measure(page, before, `${label}/feedback-draft`);
+      expect(await page.evaluate(() => document.activeElement.id)).toBe("task-comment");
+      before = await parkReader(page);
+      await page.locator("[data-review-save]").evaluate((form) => form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+      await page.waitForFunction(() => typeof window.__reading.rejectSnapshot === "function");
+      await settle(page);
+      await page.evaluate(() => window.__reading.rejectSnapshot(new Error("Delayed snapshot refusal. ".repeat(30))));
+      await page.waitForFunction(() => !document.querySelector("[data-review-action-error]").hidden);
+      await measure(page, before, `${label}/controls-failure`);
+      expect(await page.evaluate(() => document.activeElement.id)).toBe("task-comment");
+      // Reply is intentional navigation: its focus happens after preserving
+      // the draft paint, and must bring the review composer into view.
+      await page.locator(`#${READING_ROW} [data-review-reply]`).evaluate((button) => button.click());
+      await page.waitForFunction(() => {
+        const host = document.querySelector("#task-pane");
+        const field = document.querySelector("#task-review-feedback-body");
+        const box = field.getBoundingClientRect();
+        return document.activeElement === field && box.top >= host.querySelector(".task-page-head").getBoundingClientRect().bottom &&
+          box.bottom <= host.getBoundingClientRect().bottom;
+      });
+      expect(await page.locator("#task-pane").evaluate((host) => host.scrollTop)).toBeLessThan(before - 1000);
+      console.log(`${label}/intentional-reply: feedback composer focused and visible`);
+      expect(await page.evaluate(() => window.__reading.errors)).toEqual([]);
+      await page.evaluate(() => { window.__reading.mounted.dispose(); window.__reading.stopIndex(); });
+    }, { width, height, plugins: [deviceShim] });
+  }, 45_000);
 }

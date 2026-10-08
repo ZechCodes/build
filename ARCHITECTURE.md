@@ -722,6 +722,21 @@ dim dash there rather than a spinner.
 
 ### Task reviews
 
+PR-style opening is an internal service in `bridge/src/reviews/opening.rs`.
+It uses schema 15's opening journal to reserve a task identity by project and
+request ID, prepare dedicated branches in a managed workspace, then publish
+the task, PR header and first snapshot in one store transaction. Failed or
+interrupted preparations retain their recovery claim; retry resumes the same
+identity, and explicit cancellation removes only owned setup at expected
+values. The original workspace branches and dirty index/files are preserved.
+`receivers.rs` owns a local bare repository per source repository outside the
+workspace, and `publication.rs` imports and pins explicit committed OIDs there.
+Branch and receiver preparation use registered Git locks that can recover a
+dead owner's exact inode while preserving replacement locks. The caller holds
+the workspace mutation lease and supplies hooks for live reclaim/placement
+checks, manifest installation and idempotent reviewer dispatch. Reviewer
+delivery runs after publication, with a durable status and explicit retry.
+
 `bridge/src/reviews/` saves one task's workspace review as numbered snapshots.
 `capture.rs` reads every manifest directory, resolves each Git directory's
 committed HEAD and base (explicit override, configured base, upstream, empty

@@ -985,6 +985,11 @@ and workspace-name menu open one shared PR creation form
 (`workspaceReviewEntry.js`, `workspaceReviewForm.js`). It selects a reviewer
 and per-directory bases, previews dedicated branches, and retains the exact
 submitted opening in F's durable create draft for explicit recovery. The header
+returns a definitively rejected opening to an editable durable draft; uncertain
+outcomes retain the submitted request. Titles are checked against the bridge's
+200-byte UTF-8 limit before submission. Draft cleanup only changes the matching
+submitted value and write stamp, preserving a newer draft from another tab.
+The header
 paints the bound PR, snapshots and publication observations from cache. Push
 confirms the destination and saved review version, working head and received
 head through F's action draft; a stale request stays pinned until the user

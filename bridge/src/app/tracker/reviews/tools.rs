@@ -12,8 +12,33 @@ impl AppState {
         agent_id: &str,
         action: &BridgeAction,
     ) -> Option<Result<Value, String>> {
+        if let BridgeAction::TrackerOpenReview { params } = action {
+            return Some(self.scoped_review_open(entity_id, agent_id, params));
+        }
         let task_id = review_task_id(action)?;
         Some(self.scoped_review_action(entity_id, agent_id, task_id, action))
+    }
+
+    fn scoped_review_open(
+        &mut self,
+        entity_id: &str,
+        agent_id: &str,
+        params: &crate::api::v1::reviews::ReviewOpenParams,
+    ) -> Result<Value, String> {
+        let caller_project = self
+            .projects
+            .project_id_of(entity_id)
+            .ok_or_else(|| format!("unknown workspace_id: {}", params.workspace_id))?;
+        self.workspaces
+            .get(&params.workspace_id)
+            .filter(|workspace| workspace.project_id == caller_project)
+            .ok_or_else(|| format!("unknown workspace_id: {}", params.workspace_id))?;
+        self.review_open(
+            params.clone(),
+            Actor::Agent {
+                agent_id: agent_id.to_string(),
+            },
+        )
     }
 
     fn scoped_review_action(
@@ -85,6 +110,18 @@ impl AppState {
                 actor,
             ),
             BridgeAction::TrackerActReview { params } => self.review_act(params.clone(), actor),
+            BridgeAction::TrackerPushReview { params } => self.review_push(params.clone(), actor),
+            BridgeAction::TrackerUpdateReviewBase { params } => {
+                self.review_update(params.clone(), actor)
+            }
+            BridgeAction::TrackerMergeReview { params } => self.review_merge(params.clone(), actor),
+            BridgeAction::TrackerCloseReview { params } => self.review_close(params.clone(), actor),
+            BridgeAction::TrackerReopenReview { params } => {
+                self.review_reopen(params.clone(), actor)
+            }
+            BridgeAction::TrackerRefreshReview { params } => {
+                self.review_refresh(params.clone(), actor)
+            }
             _ => unreachable!("review_task_id selected only review actions"),
         }
     }
@@ -98,7 +135,25 @@ fn review_task_id(action: &BridgeAction) -> Option<&str> {
         | BridgeAction::TrackerActReview {
             params: crate::reviews::actions::ReviewActParams { task_id, .. },
         }
-        | BridgeAction::TrackerCompleteReview { task_id, .. } => Some(task_id),
+        | BridgeAction::TrackerCompleteReview { task_id, .. }
+        | BridgeAction::TrackerPushReview {
+            params: crate::api::v1::reviews::ReviewPushParams { task_id, .. },
+        }
+        | BridgeAction::TrackerUpdateReviewBase {
+            params: crate::api::v1::reviews::ReviewUpdateParams { task_id, .. },
+        }
+        | BridgeAction::TrackerMergeReview {
+            params: crate::api::v1::reviews::ReviewMergeParams { task_id, .. },
+        }
+        | BridgeAction::TrackerCloseReview {
+            params: crate::api::v1::reviews::ReviewCloseParams { task_id, .. },
+        }
+        | BridgeAction::TrackerReopenReview {
+            params: crate::api::v1::reviews::ReviewVersionParams { task_id, .. },
+        }
+        | BridgeAction::TrackerRefreshReview {
+            params: crate::api::v1::reviews::ReviewVersionParams { task_id, .. },
+        } => Some(task_id),
         _ => None,
     }
 }

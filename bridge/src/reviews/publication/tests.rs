@@ -16,6 +16,9 @@ use std::path::Path;
 #[path = "tests/native_publication.rs"]
 mod native_publication;
 
+#[path = "tests/tracking.rs"]
+mod tracking;
+
 fn oid(repository: &Path, reference: &str) -> String {
     String::from_utf8(
         git_command(repository, &["rev-parse", reference])

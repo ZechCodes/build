@@ -72,13 +72,13 @@ function paintSourceFields(body, draft) {
   });
 }
 
-function freezeCreate(body, submitted, busy) {
+function freezeCreate(body, submitted, busy, hydrating = false) {
   body.querySelectorAll("input,textarea,select").forEach((field) => {
     const excludedBase = field.hasAttribute("data-review-base") && field.closest("fieldset").querySelector("[data-review-exclude]").checked;
-    field.disabled = Boolean(submitted || busy || excludedBase);
+    field.disabled = Boolean(submitted || busy || hydrating || excludedBase);
   });
-  body.querySelector("[data-open-review-submit]").disabled = busy;
-  body.querySelector("[data-open-review-submit]").textContent = busy ? "Opening…" : submitted ? "Retry opening" : "Open review";
+  body.querySelector("[data-open-review-submit]").disabled = busy || hydrating;
+  body.querySelector("[data-open-review-submit]").textContent = hydrating ? "Loading…" : busy ? "Opening…" : submitted ? "Retry opening" : "Open review";
   body.querySelector("[data-review-retry-note]").hidden = !submitted;
 }
 
@@ -119,18 +119,22 @@ export async function openReviewCreateForm(scope) {
   const context = await readWorkspaceReviewContext(scope);
   if (!context.support.open) return null;
   let draft = initialDraft(context);
+  let hydrating = true;
   let busy = false;
   let closed = false;
   let writer;
   const anchor = document.activeElement;
   const modal = openModal({ dialogHtml: modalDialogHtml(createFormHtml(context, draft), { className: "modal-create workspace-review-modal" }),
+    canDismiss: () => { closed = true; return true; },
     onClose: () => { closed = true; writer?.dispose(); scope.onClosed?.(); if (anchor?.isConnected) anchor.focus(); } });
   modal.body.setAttribute("aria-labelledby", "review-form-title");
+  modal.body.querySelector("[data-review-form-cancel]").onclick = () => { closed = true; return modal.close(); };
+  freezeCreate(modal.body, draft.submitted, busy, hydrating);
   const error = modal.body.querySelector("[data-review-form-error]");
   const saveDraft = () => writer.schedule(draft);
   const paint = (saved) => {
     if (busy || closed || !saved) return;
-    draft = saved; paintCreateValues(modal.body, context, draft); wire(); freezeCreate(modal.body, draft.submitted, busy);
+    draft = saved; paintCreateValues(modal.body, context, draft); wire(); freezeCreate(modal.body, draft.submitted, busy, hydrating);
   };
   const preview = () => {
     modal.body.querySelector("[data-review-branch-preview]").textContent = reviewBranchPreview(draft.title);
@@ -158,8 +162,7 @@ export async function openReviewCreateForm(scope) {
   writer = watchReviewCreateDraft(scope, paint);
   await writer.ready;
   if (closed) return modal;
-  wire(); freezeCreate(modal.body, draft.submitted, busy);
-  modal.body.querySelector("[data-review-form-cancel]").onclick = modal.close;
+  wire();
   modal.body.querySelector("[data-review-create-form]").onsubmit = async (event) => {
     event.preventDefault(); if (busy) return;
     const invalid = createDraftError(draft);
@@ -183,6 +186,8 @@ export async function openReviewCreateForm(scope) {
       if (!closed) { error.textContent = reviewFailure(failure); error.hidden = false; }
     } finally { busy = false; if (!closed) freezeCreate(modal.body, draft.submitted, busy); }
   };
+  hydrating = false;
+  freezeCreate(modal.body, draft.submitted, busy, hydrating);
   modal.body.querySelector("[data-review-title]").focus();
   return modal;
 }

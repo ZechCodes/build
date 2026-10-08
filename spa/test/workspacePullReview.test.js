@@ -1,6 +1,23 @@
 // @vitest-environment jsdom
 import "fake-indexeddb/auto";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+
+const observation = vi.hoisted(() => ({ writer: null, contextRead: null }));
+vi.mock("../src/core/taskReviewDrafts.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, watchReviewCreateDraft(...args) {
+    observation.writer = actual.watchReviewCreateDraft(...args);
+    return observation.writer;
+  } };
+});
+vi.mock("../src/core/workspaceReviewState.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, readWorkspaceReviewContext(...args) {
+    observation.contextRead = actual.readWorkspaceReviewContext(...args);
+    return observation.contextRead;
+  } };
+});
+
 import { readCached, wipeCache, writeCached } from "../src/core/localCache.js";
 import { wipeUiRecords, readUiRecord } from "../src/core/localUiStore.js";
 import { rememberReviewSupport } from "../src/core/taskReviewSupport.js";
@@ -22,6 +39,7 @@ const workspace = { id: scope.workspaceId, project_id: scope.projectId, name: "W
 ] };
 let entry;
 beforeEach(async () => {
+  observation.writer = null; observation.contextRead = null;
   await wipeCache(); await wipeUiRecords();
   document.body.innerHTML = '<div id="entry"></div>';
   await writeCached(workspaceAddress, [workspace]);
@@ -32,7 +50,7 @@ const mount = (callRpc = vi.fn()) => { entry = mountWorkspaceReviewEntry(documen
 const openForm = async () => {
   await vi.waitFor(() => expect(document.querySelector("[data-workspace-review]")).not.toBeNull());
   document.querySelector("[data-workspace-review]").click();
-  await vi.waitFor(() => expect(document.querySelector("[data-review-title]")).not.toBeNull());
+  await vi.waitFor(() => expect(document.querySelector("[data-review-create-form]")?.onsubmit).toBeTypeOf("function"));
 };
 const type = (selector, value) => { const field = document.querySelector(selector); field.value = value; field.dispatchEvent(new Event("input", { bubbles: true })); };
 
@@ -87,7 +105,7 @@ it("keeps a base field's focus and caret through draft readback", async () => {
   const selector = '[data-review-base="dir-api"]';
   document.querySelector(selector).focus(); type(selector, "release");
   document.querySelector(selector).setSelectionRange(3, 3);
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  await observation.writer.flush();
   expect(document.activeElement).toBe(document.querySelector(selector));
   expect(document.activeElement.selectionStart).toBe(3);
 });
@@ -126,8 +144,11 @@ it("pins the newest cached heads when a commit amendment leaves the pending labe
   await writeReviewReply(actionScope, { ...opened.result, sync: [pending] }, 1);
   mount(vi.fn(async () => { throw new Error("Unavailable"); }));
   await vi.waitFor(() => expect(document.querySelector('[data-review-push="dir-api"]')).not.toBeNull());
+  const previousRead = observation.contextRead;
   await writeReviewReply(actionScope, { review: { ...opened.result.review, version: 2 }, sync: [{ ...pending, revision: 5, working_head: "4".repeat(40) }] }, 2);
-  await new Promise((resolve) => setTimeout(resolve, 40));
+  expect(observation.contextRead).not.toBe(previousRead);
+  // The cache listener registered its paint continuation on this read first.
+  await observation.contextRead;
   document.querySelector('[data-review-push="dir-api"]').click();
   await vi.waitFor(() => expect(document.querySelector("[data-push-review-pins]")).not.toBeNull());
   expect(document.querySelector("[data-push-review-pins]").textContent).toContain("Review version 2");

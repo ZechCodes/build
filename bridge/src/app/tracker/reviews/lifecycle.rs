@@ -80,6 +80,12 @@ impl SyncJob {
                     .ok_or_else(|| "unknown PR review".into())
             }
             SyncOperation::Reopen(request) => {
+                let review = self
+                    .store
+                    .load_review_sync_state(&request.task_id)
+                    .stored()?
+                    .ok_or("unknown PR review")?;
+                version(&review, request.expected_version)?;
                 crate::reviews::lifecycle::reopen(&self.store, request, &self.hooks)
             }
         }

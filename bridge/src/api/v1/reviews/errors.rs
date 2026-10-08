@@ -45,16 +45,40 @@ pub(crate) fn decode(message: &str) -> Option<ApiError> {
     })
 }
 
-pub(crate) fn service(message: String, details: Value) -> String {
+pub(crate) fn service(message: String, mut details: Value) -> String {
     if decode(&message).is_some() {
         return message;
     }
-    let code = service_code(&message);
+    let code = if let Some((expected, current)) = review_versions(&message) {
+        if let Some(details) = details.as_object_mut() {
+            details.insert("expected_version".into(), expected.into());
+            details.insert("current_version".into(), current.into());
+        }
+        "stale_version"
+    } else {
+        service_code(&message)
+    };
     encode(
         code,
         crate::source_sync::without_credentials(&message),
         details,
     )
+}
+
+// The landed reopen guard and the store's CAS report the same version refusal
+// through different strings. Preserve their exact observed versions after any
+// deferred precheck without reclassifying unrelated workspace conflicts.
+fn review_versions(message: &str) -> Option<(u64, u64)> {
+    let versions = message
+        .strip_prefix("conflict: review version changed: expected ")
+        .or_else(|| {
+            message
+                .strip_prefix("stale_version: review ")?
+                .split_once(" expected version ")
+                .map(|(_, versions)| versions)
+        })?;
+    let (expected, current) = versions.split_once(", found ")?;
+    Some((expected.parse().ok()?, current.parse().ok()?))
 }
 
 fn service_code(message: &str) -> &str {

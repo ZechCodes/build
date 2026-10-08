@@ -24,11 +24,12 @@ fn deferred_reopen_returns_stale_version_after_another_reopen_and_close() {
     assert!(admitted.is_ok());
     let deferred = deferred.unwrap();
     review_call(&mut state, "tasks.review.reopen", asked.clone());
-    let closed = review_call(
+    review_call(
         &mut state,
         "tasks.review.close",
         json!({"task_id":task_id,"expected_version":3,"description":"Still deferred"}),
     );
+    let closed = state.tracker_store().unwrap().load_review(task_id).unwrap();
     let done = deferred.run();
     let error = state
         .apply_deferred("tasks.review.reopen", &asked, done)
@@ -39,8 +40,8 @@ fn deferred_reopen_returns_stale_version_after_another_reopen_and_close() {
     assert_eq!(refusal["details"]["task_id"], task_id);
     assert_eq!(refusal["details"]["expected_version"], 2);
     assert_eq!(refusal["details"]["current_version"], 4);
-    let after = review_call(&mut state, "tasks.review.get", json!({"task_id":task_id}));
-    assert_eq!(after["review"], closed["review"]);
+    let after = state.tracker_store().unwrap().load_review(task_id).unwrap();
+    assert_eq!(after, closed);
 }
 
 #[test]

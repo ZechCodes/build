@@ -62,8 +62,7 @@ pub fn choose_remote_name_avoiding(
 pub fn configure_remote(binding: &ReviewBranchBinding) -> Result<(), String> {
     validate_binding_receiver(binding)?;
     let expected = configuration(binding)?;
-    // Ownership is persisted first, so a stopped preparation owns only the
-    // expected entries it managed to write and can safely remove those entries.
+    // Recheck and replace all owned entries while Git's local config is locked.
     with_local_config_locked(&binding.working_repository, |config, local| {
         validate_configuration(config, binding, &expected)?;
         for (key, value) in &expected {
@@ -825,9 +824,6 @@ fn lock_receivers<T>(
         return publish();
     };
     let repository = git2::Repository::open_bare(path).map_err(|error| error.to_string())?;
-    let mut transaction = repository
-        .transaction()
-        .map_err(|error| error.to_string())?;
     let mut refs = BTreeSet::new();
     for binding in bindings {
         refs.extend(
@@ -836,16 +832,17 @@ fn lock_receivers<T>(
                 .map(|(name, _)| name),
         );
     }
+    let mut locks = Vec::with_capacity(refs.len());
     for name in refs {
-        transaction
-            .lock_ref(&name)
-            .map_err(|error| error.to_string())?;
+        let (lock, _) =
+            super::receivers::locks::acquire_git_lock(path, Path::new(&format!("{name}.lock")))?;
+        locks.push(lock);
     }
     for binding in bindings {
         validate_initial_pins(&repository, task_id, snapshot_id, binding)?;
     }
     let result = lock_receivers(&groups[1..], task_id, snapshot_id, publish);
-    drop(transaction);
+    drop(locks);
     result
 }
 

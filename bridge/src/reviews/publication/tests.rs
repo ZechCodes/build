@@ -508,3 +508,67 @@ fn local_configuration_is_locked_across_validation_and_commit() {
         "https://example.test/changed.git"
     );
 }
+
+#[cfg(unix)]
+fn interrupt_publication_writer(binding_file: &Path) {
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "reviews::publication::tests::interrupted_metadata_publication_recovers_owned_ref_locks", "--nocapture"])
+        .env("BUILD_REVIEW_PUBLICATION_BINDING", binding_file)
+        .status().unwrap();
+    assert_eq!(status.code(), Some(24));
+}
+
+#[cfg(unix)]
+#[test]
+fn interrupted_metadata_publication_recovers_owned_ref_locks() {
+    if let Some(path) = std::env::var_os("BUILD_REVIEW_PUBLICATION_BINDING") {
+        let binding: ReviewBranchBinding =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        with_initial_receivers_locked::<()>(
+            std::slice::from_ref(&binding),
+            "task-1",
+            "opening-task-1",
+            || {
+                std::process::exit(24);
+            },
+        )
+        .unwrap();
+        panic!("interrupted writer must exit inside the publication transaction");
+    }
+    let (temporary, source) = init_repo();
+    let binding = binding(&source, &temporary.path().join("receivers"));
+    configure_remote(&binding).unwrap();
+    publish_initial(&binding).unwrap();
+    capture(&binding, "opening-task-1");
+    let binding_file = temporary.path().join("binding.json");
+    std::fs::write(&binding_file, serde_json::to_vec(&binding).unwrap()).unwrap();
+    interrupt_publication_writer(&binding_file);
+    let receiving_lock = binding
+        .receiving_repository
+        .join(format!("{}.lock", binding.receiving_ref));
+    assert!(receiving_lock.exists());
+    let result = with_initial_receivers_locked(
+        std::slice::from_ref(&binding),
+        "task-1",
+        "opening-task-1",
+        || Ok(123),
+    )
+    .unwrap();
+    assert_eq!(result, 123);
+    assert!(!receiving_lock.exists());
+    interrupt_publication_writer(&binding_file);
+    std::fs::remove_file(&receiving_lock).unwrap();
+    std::fs::write(&receiving_lock, "user lock\n").unwrap();
+    let error = with_initial_receivers_locked::<()>(
+        std::slice::from_ref(&binding),
+        "task-1",
+        "opening-task-1",
+        || panic!("replaced user lock must block publication"),
+    )
+    .unwrap_err();
+    assert!(error.contains("prove it owns"));
+    assert_eq!(
+        std::fs::read_to_string(&receiving_lock).unwrap(),
+        "user lock\n"
+    );
+}

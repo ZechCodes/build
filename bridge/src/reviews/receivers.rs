@@ -10,6 +10,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+pub(crate) mod locks;
+
 const OWNERSHIP_FILE: &str = ".build-review-receiver.json";
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -196,7 +198,7 @@ fn validate_receiver(receiver: &ReviewReceiver) -> Result<(), String> {
             return Err("review receiver must not use object alternates".into());
         }
     }
-    Ok(())
+    locks::recover_git_locks(&receiver.path)
 }
 
 fn has_unowned_initialization_files(path: &Path) -> Result<bool, String> {
@@ -260,190 +262,12 @@ pub(crate) fn write_owned_json(path: &Path, value: &impl Serialize) -> Result<bo
     result
 }
 
-struct LocalConfigLock {
-    path: PathBuf,
-    temporary: PathBuf,
-    backing: PathBuf,
-    marker: PathBuf,
-    owner: ConfigLockOwner,
-    committed: bool,
-}
+struct ConfigStagingFile(PathBuf);
 
-impl Drop for LocalConfigLock {
+impl Drop for ConfigStagingFile {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.temporary);
-        if !self.committed && same_lock_file(&self.path, &self.owner) {
-            let _ = fs::remove_file(&self.path);
-        }
-        if same_lock_file(&self.backing, &self.owner) {
-            let _ = fs::remove_file(&self.backing);
-        }
-        let _ = fs::remove_file(&self.marker);
+        let _ = fs::remove_file(&self.0);
     }
-}
-
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct ConfigLockOwner {
-    token: String,
-    common_git_dir: PathBuf,
-    pid: u32,
-    boot: Option<String>,
-    started: Option<String>,
-    device: Option<u64>,
-    inode: Option<u64>,
-}
-
-fn lock_file_identity(path: &Path) -> Option<(u64, u64)> {
-    let metadata = fs::symlink_metadata(path).ok()?;
-    if !metadata.file_type().is_file() {
-        return None;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        Some((metadata.dev(), metadata.ino()))
-    }
-    #[cfg(not(unix))]
-    {
-        None
-    }
-}
-
-fn same_lock_file(path: &Path, owner: &ConfigLockOwner) -> bool {
-    lock_file_identity(path)
-        .is_some_and(|(device, inode)| owner.device == Some(device) && owner.inode == Some(inode))
-}
-
-fn process_started(pid: u32) -> Option<String> {
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    stat.rsplit_once(')')?
-        .1
-        .split_whitespace()
-        .nth(19)
-        .map(str::to_owned)
-}
-
-fn config_owner_dead(owner: &ConfigLockOwner) -> bool {
-    if let (Some(saved_boot), Ok(boot)) = (
-        &owner.boot,
-        fs::read_to_string("/proc/sys/kernel/random/boot_id"),
-    ) {
-        if saved_boot != boot.trim() {
-            return true;
-        }
-    }
-    if let (Some(saved_start), Some(current_start)) = (&owner.started, process_started(owner.pid)) {
-        return saved_start != &current_start;
-    }
-    #[cfg(unix)]
-    {
-        if owner.pid == 0 || owner.pid > i32::MAX as u32 {
-            return false;
-        }
-        unsafe {
-            libc::kill(owner.pid as i32, 0) == -1
-                && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        false
-    }
-}
-
-fn recover_config_locks(parent: &Path) -> Result<(), String> {
-    for entry in fs::read_dir(parent).map_err(|error| error.to_string())? {
-        let entry = entry.map_err(|error| error.to_string())?;
-        let Some(owner) = dead_config_owner(parent, &entry)? else {
-            continue;
-        };
-        let lock = parent.join("config.lock");
-        if same_lock_file(&lock, &owner) {
-            fs::remove_file(lock).map_err(|error| error.to_string())?;
-        }
-        let backing = parent.join(format!(".build-review-config-lock-{}.tmp", owner.token));
-        if same_lock_file(&backing, &owner) {
-            fs::remove_file(backing).map_err(|error| error.to_string())?;
-        }
-        fs::remove_file(entry.path()).map_err(|error| error.to_string())?;
-    }
-    Ok(())
-}
-
-fn dead_config_owner(
-    parent: &Path,
-    entry: &fs::DirEntry,
-) -> Result<Option<ConfigLockOwner>, String> {
-    let name = entry.file_name();
-    let Some(token) = name
-        .to_str()
-        .and_then(|name| name.strip_prefix(".build-review-config-lock-"))
-        .and_then(|name| name.strip_suffix(".json"))
-    else {
-        return Ok(None);
-    };
-    if uuid::Uuid::parse_str(token).is_err()
-        || !entry
-            .file_type()
-            .map_err(|error| error.to_string())?
-            .is_file()
-    {
-        return Ok(None);
-    }
-    let content = fs::read(entry.path()).map_err(|error| error.to_string())?;
-    let Ok(owner) = serde_json::from_slice::<ConfigLockOwner>(&content) else {
-        return Ok(None);
-    };
-    if owner.token != token || owner.common_git_dir != parent || !config_owner_dead(&owner) {
-        return Ok(None);
-    }
-    Ok(Some(owner))
-}
-
-fn acquire_config_lock(
-    parent: &Path,
-    permissions: fs::Permissions,
-) -> Result<(LocalConfigLock, File), String> {
-    recover_config_locks(parent)?;
-    let token = uuid::Uuid::new_v4().to_string();
-    let backing = parent.join(format!(".build-review-config-lock-{token}.tmp"));
-    let file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&backing)
-        .map_err(|error| error.to_string())?;
-    file.set_permissions(permissions)
-        .and_then(|()| file.sync_all())
-        .map_err(|error| error.to_string())?;
-    let identity = lock_file_identity(&backing);
-    let pid = std::process::id();
-    let owner = ConfigLockOwner {
-        token: token.clone(),
-        common_git_dir: parent.into(),
-        pid,
-        boot: fs::read_to_string("/proc/sys/kernel/random/boot_id")
-            .ok()
-            .map(|boot| boot.trim().into()),
-        started: process_started(pid),
-        device: identity.map(|(device, _)| device),
-        inode: identity.map(|(_, inode)| inode),
-    };
-    let guard = LocalConfigLock {
-        path: parent.join("config.lock"),
-        temporary: parent.join(format!(".build-review-config-{token}.tmp")),
-        backing,
-        marker: parent.join(format!(".build-review-config-lock-{token}.json")),
-        owner,
-        committed: false,
-    };
-    write_owned_json(&guard.marker, &guard.owner)?;
-    fs::hard_link(&guard.backing, &guard.path).map_err(|error| {
-        format!("local Git config is locked; Build will only recover a dead lock it can prove it owns: {error}")
-    })?;
-    File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| error.to_string())?;
-    Ok((guard, file))
 }
 
 /// git2 0.20 has no config transaction API. Honor Git's config.lock protocol
@@ -462,26 +286,32 @@ pub(crate) fn with_local_config_locked(
     if !metadata.file_type().is_file() {
         return Err("local review repository config is not a regular file".into());
     }
-    let (mut guard, mut lock) = acquire_config_lock(&parent, metadata.permissions())?;
+    let (guard, mut lock) = locks::acquire_git_lock(&parent, Path::new("config.lock"))?;
+    lock.set_permissions(metadata.permissions())
+        .map_err(|error| error.to_string())?;
+    let temporary =
+        ConfigStagingFile(parent.join(format!(".build-review-config-{}.tmp", guard.token())));
     let original = fs::read(&config_path).map_err(|error| error.to_string())?;
     let mut staged_file = OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(&guard.temporary)
+        .open(&temporary.0)
+        .map_err(|error| error.to_string())?;
+    staged_file
+        .set_permissions(metadata.permissions())
         .map_err(|error| error.to_string())?;
     staged_file
         .write_all(&original)
         .map_err(|error| error.to_string())?;
-    let mut staged = git2::Config::open(&guard.temporary).map_err(|error| error.to_string())?;
+    let mut staged = git2::Config::open(&temporary.0).map_err(|error| error.to_string())?;
     let fresh = repository.config().map_err(|error| error.to_string())?;
     mutate(&fresh, &mut staged)?;
     drop(staged);
-    let changed = fs::read(&guard.temporary).map_err(|error| error.to_string())?;
+    let changed = fs::read(&temporary.0).map_err(|error| error.to_string())?;
     lock.write_all(&changed)
         .and_then(|()| lock.sync_all())
         .map_err(|error| error.to_string())?;
-    fs::rename(&guard.path, &config_path).map_err(|error| error.to_string())?;
-    guard.committed = true;
+    guard.commit_to(&config_path)?;
     File::open(&parent)
         .and_then(|directory| directory.sync_all())
         .map_err(|error| error.to_string())

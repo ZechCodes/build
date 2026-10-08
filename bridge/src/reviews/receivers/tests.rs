@@ -150,14 +150,12 @@ fn interrupted_config_transaction_recovers_only_its_own_lock() {
     })
     .unwrap();
     assert!(!source.join(".git/config.lock").exists());
-    assert!(
-        git2::Repository::open(&source)
-            .unwrap()
-            .config()
-            .unwrap()
-            .get_bool("build.recovered")
-            .unwrap()
-    );
+    assert!(git2::Repository::open(&source)
+        .unwrap()
+        .config()
+        .unwrap()
+        .get_bool("build.recovered")
+        .unwrap());
     interrupt_config_writer(&source);
     std::fs::remove_file(source.join(".git/config.lock")).unwrap();
     std::fs::write(source.join(".git/config.lock"), "user lock\n").unwrap();
@@ -194,4 +192,27 @@ fn receiver_recovers_an_interrupted_atomic_marker_write() {
     )
     .unwrap();
     ensure_receiver(&receiver).unwrap();
+}
+
+#[test]
+fn configuration_commit_preserves_a_lock_replaced_while_held() {
+    let (_temporary, source) = init_repo();
+    let config = source.join(".git/config");
+    let before = std::fs::read(&config).unwrap();
+    let lock = source.join(".git/config.lock");
+    let error = with_local_config_locked(&source, |_, staged| {
+        staged
+            .set_str("build.staged", "true")
+            .map_err(|error| error.to_string())?;
+        std::fs::remove_file(&lock).unwrap();
+        std::fs::write(&lock, "user replacement\n").unwrap();
+        Ok(())
+    })
+    .unwrap_err();
+    assert!(error.contains("replaced"));
+    assert_eq!(std::fs::read(&config).unwrap(), before);
+    assert_eq!(
+        std::fs::read_to_string(&lock).unwrap(),
+        "user replacement\n"
+    );
 }

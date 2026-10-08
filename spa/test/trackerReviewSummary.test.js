@@ -79,9 +79,28 @@ describe("atomic tracker summary writes", () => {
     await tracker.writeTaskRecord(DEVICE, PROJECT, task.id, tracker.taskRecord(row(7, { read_through: later }), [{ id: "old" }]));
     const incoming = row(3, { title: "latest task fields", read_through: "tc-01K5ZQ8M4T0J7WQ2R6X3YB9C4F" });
     await tracker.writeTaskRecord(DEVICE, PROJECT, task.id, tracker.taskRecord(incoming, [{ id: "new" }]));
-    expect(await tracker.readTaskRecord(DEVICE, PROJECT, task.id)).toEqual({
+    expect(await tracker.readTaskRecord(DEVICE, PROJECT, task.id)).toMatchObject({
       task: { ...incoming, review_summary: summary(7), read_through: later }, timeline: [{ id: "new" }],
     });
+  });
+
+  it("retains detail summary absence and its authority through stale ordinary task fields", async () => {
+    const at = (minute) => `2026-10-08T20:${String(minute).padStart(2, "0")}:00Z`;
+    const write = (taskRow) => tracker.writeTaskRecord(DEVICE, PROJECT, task.id, tracker.taskRecord(taskRow, []));
+    const read = async () => (await tracker.readTaskRecord(DEVICE, PROJECT, task.id)).task;
+    await write(row(7, { updated_at: at(20) }));
+    await write(withoutSummary({ updated_at: at(30) }));
+    await write(row(3, { title: "older ordinary fields", updated_at: at(10) }));
+    expect((await read()).title).toBe("older ordinary fields");
+    expect(await read()).not.toHaveProperty("review_summary");
+    await write(row(3, { updated_at: at(15) }));
+    expect(await read()).not.toHaveProperty("review_summary");
+    await write(row(8, { updated_at: at(5) }));
+    expect((await read()).review_summary.version).toBe(8);
+    await write(withoutSummary({ updated_at: at(25) }));
+    expect((await read()).review_summary.version).toBe(8);
+    await write(withoutSummary({ updated_at: at(40) }));
+    expect(await read()).not.toHaveProperty("review_summary");
   });
 
   for (const kind of ["whole", "query"]) {
@@ -133,6 +152,23 @@ describe("atomic tracker summary writes", () => {
     expect((await tracker.readTasksRecord(DEVICE, PROJECT)).tasks[0]).toMatchObject({
       title: "paged task fields", review_summary: summary(7),
     });
+  });
+
+  it("does not restore a cleared whole-list PR summary from late pages", async () => {
+    const address = tracker.tasksAddress(DEVICE, PROJECT);
+    await tracker.writeTasksRecord(DEVICE, PROJECT, tracker.tasksRecord([row(7)], [], 20));
+    await tracker.writeTasksRecord(DEVICE, PROJECT, tracker.tasksRecord([withoutSummary()], [], 30));
+    const fold = (read) => pages.foldTasksPage(address, {
+      tasks: [row(3, { title: "paged ordinary fields" })], above: Infinity, through: -Infinity, read,
+    }, () => []);
+    await fold(10);
+    let held = await tracker.readTasksRecord(DEVICE, PROJECT);
+    expect(held.tasks[0].title).toBe("paged ordinary fields");
+    expect(held.tasks[0]).not.toHaveProperty("review_summary");
+    await fold(15);
+    held = await tracker.readTasksRecord(DEVICE, PROJECT);
+    expect(held.tasks[0]).not.toHaveProperty("review_summary");
+    expect(held.read_order).toBe(30);
   });
 });
 

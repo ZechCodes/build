@@ -152,10 +152,56 @@ function withReadThroughFloor(held, incoming) {
   return { ...incoming, task: { ...task, read_through: floor } };
 }
 
-function preserveTaskFloors(held, incoming) {
-  const task = preserveReviewSummary(held?.task, incoming?.task);
+const DETAIL_REVIEW_CACHE = "__review_summary_cache";
+const advancesSummaryFloor = (floor, summary) => hasSummaryVersion(floor) && hasSummaryVersion(summary)
+  && summary.task_id === floor.task_id && summary.version > floor.version;
+const belowSummaryFloor = (floor, summary) => hasSummaryVersion(floor) && hasSummaryVersion(summary) && olderSummary(floor, summary);
+
+function detailReviewState(record) {
+  const task = record?.task || {};
+  const state = record?.[DETAIL_REVIEW_CACHE];
+  if (state && state.task_id === task.id) return state;
+  return { task_id: task.id, floor: task.review_summary ?? null, updated_at: task.updated_at };
+}
+
+function detailReviewOptions(state, task) {
+  const summary = task?.review_summary;
+  const later = Date.parse(task?.updated_at) > Date.parse(state.updated_at);
+  return {
+    allowMissing: later,
+    keepHeld: belowSummaryFloor(state.floor, summary)
+      || Boolean(state.floor) && !later && !advancesSummaryFloor(state.floor, summary),
+  };
+}
+
+function latestTaskTimestamp(held, incoming) {
+  const before = Date.parse(held);
+  const next = Date.parse(incoming);
+  return Number.isFinite(before) && (!Number.isFinite(next) || before > next) ? held : incoming;
+}
+
+/** Detail replies can carry older ordinary task fields. Keep PR authority
+ * beside the record, so such fields cannot lower the timestamp of a clear,
+ * and a higher numeric PR version can still advance an older task copy. */
+function withDetailReviewState(state, record) {
+  if (!record?.task) return record;
+  const task = record.task;
+  const floor = hasSummaryVersion(task.review_summary) ? task.review_summary : state.floor;
+  if (!hasSummaryVersion(floor)) return record;
+  return { ...record, [DETAIL_REVIEW_CACHE]: {
+    task_id: task.id, floor, updated_at: latestTaskTimestamp(state.updated_at, task.updated_at),
+  } };
+}
+
+function preserveDetailReview(held, incoming) {
+  const state = sameRow(held?.task, incoming?.task) ? detailReviewState(held) : detailReviewState(incoming);
+  const task = preserveReviewSummary(held?.task, incoming?.task, "review_summary", detailReviewOptions(state, incoming?.task));
   const next = task === incoming?.task ? incoming : { ...incoming, task };
-  return withReadThroughFloor(held, next);
+  return withDetailReviewState(state, next);
+}
+
+function preserveTaskFloors(held, incoming) {
+  return withReadThroughFloor(held, preserveDetailReview(held, incoming));
 }
 
 /** What the cache holds for a project, or null when it has never been read

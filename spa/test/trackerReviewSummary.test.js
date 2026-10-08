@@ -141,6 +141,41 @@ describe("PR summary version floors", () => {
     }
   });
 
+  it("retains a raw PR advance over the exact clear it already observed", () => {
+    const at = (minute) => `2026-10-08T20:${String(minute).padStart(2, "0")}:00Z`;
+    const seed = tracker.preserveTaskReviewSummary(null, row(7, { updated_at: at(20) }));
+    const clear = tracker.preserveTaskReviewSummary(seed, withoutSummary({ updated_at: at(30) }));
+    const accepted = tracker.preserveTaskReviewSummary(clear, row(8, { updated_at: at(10) }));
+    expect(accepted.review_summary.version).toBe(8);
+    const staleWrite = tracker.preserveTaskReviewSummary(accepted, row(3, { updated_at: at(5) }));
+    const laterAdvance = tracker.preserveTaskReviewSummary(staleWrite, row(9, { updated_at: at(15) }));
+    const staleClearWrite = tracker.preserveTaskReviewSummary(clear, row(3, { updated_at: at(50) }), { readOrder: 40 });
+    for (const visible of [accepted, staleWrite, laterAdvance]) {
+      expect(tracker.preserveTaskReviewSummary(clear, visible).review_summary.version).toBe(visible.review_summary.version);
+      expect(tracker.preserveTaskReviewSummary(visible, clear).review_summary.version).toBe(visible.review_summary.version);
+      expect(tracker.preserveTaskReviewSummary(staleClearWrite, visible).review_summary.version).toBe(visible.review_summary.version);
+      expect(tracker.preserveTaskReviewSummary(visible, staleClearWrite).review_summary.version).toBe(visible.review_summary.version);
+    }
+  });
+
+  it("limits an accepted PR's clear observation to that exact clear", () => {
+    const at = (minute) => `2026-10-08T20:${String(minute).padStart(2, "0")}:00Z`;
+    const seed = tracker.preserveTaskReviewSummary(null, row(7, { updated_at: at(20) }));
+    const clear = tracker.preserveTaskReviewSummary(seed, withoutSummary({ updated_at: at(30) }));
+    const accepted = tracker.preserveTaskReviewSummary(clear, row(8, { updated_at: at(10) }));
+    const newerSameFloorClear = tracker.preserveTaskReviewSummary(clear, withoutSummary({ updated_at: at(40) }));
+    const differentlyObservedClear = tracker.preserveTaskReviewSummary(clear, withoutSummary({ updated_at: at(30) }), { readOrder: 50, allowMissing: true });
+    const newerVersionClear = tracker.preserveTaskReviewSummary(accepted, withoutSummary({ updated_at: at(40) }));
+    for (const nextClear of [newerSameFloorClear, differentlyObservedClear, newerVersionClear]) {
+      expect(tracker.preserveTaskReviewSummary(nextClear, accepted)).not.toHaveProperty("review_summary");
+      expect(tracker.preserveTaskReviewSummary(accepted, nextClear)).not.toHaveProperty("review_summary");
+    }
+    const staleClearWrite = tracker.preserveTaskReviewSummary(clear, row(3, { updated_at: at(50) }), { readOrder: 40 });
+    const mergedClear = tracker.preserveTaskReviewSummary(staleClearWrite, newerSameFloorClear);
+    expect(tracker.preserveTaskReviewSummary(accepted, mergedClear)).not.toHaveProperty("review_summary");
+    expect(tracker.preserveTaskReviewSummary(mergedClear, accepted)).not.toHaveProperty("review_summary");
+  });
+
   it("tracks board task rows by task_id and keeps ordinary fields independent of PR authority", () => {
     const boardRow = (version, updatedAt) => {
       const next = row(version, { task_id: task.id, updated_at: updatedAt });

@@ -157,16 +157,39 @@ function newerTaskReviewState(held, incoming) {
   return incoming.cleared ? incoming : held;
 }
 
+/** An accepted absence has a stable identity even as rejected replies raise
+ * its protective floors. Old cached clears gain that identity on first use. */
+function taskReviewClearKey(state) {
+  return state.clear_key || {
+    task_id: state.task_id, review_task_id: state.floor.task_id, version: state.floor.version,
+    updated_at: state.updated_at ?? null, read_order: reviewRead(state),
+  };
+}
+
+function newerTaskReviewClearKey(held, incoming) {
+  const before = taskReviewClearKey(held);
+  const next = taskReviewClearKey(incoming);
+  const reads = reviewRead(next) - reviewRead(before);
+  const timestamps = reviewInstant(next) - reviewInstant(before);
+  const chronology = reviewRead(before) > 0 && reviewRead(next) > 0 ? reads : timestamps;
+  const difference = chronology || timestamps || reads || next.version - before.version;
+  return difference > 0 ? next : before;
+}
+
 function combinedTaskReviewClear(held, incoming) {
   return {
     ...held,
     floor: advancesSummaryFloor(held.floor, incoming.floor) ? incoming.floor : held.floor,
     updated_at: latestTaskTimestamp(held.updated_at, incoming.updated_at),
     read_order: Math.max(reviewRead(held), reviewRead(incoming)),
+    clear_key: newerTaskReviewClearKey(held, incoming),
   };
 }
 
 function clearFencesCachedReview(clear, visible) {
+  // A raw summary already accepted after this exact clear must survive an
+  // interrupted repair. Mutable protective floors do not change that event.
+  if (JSON.stringify(visible.observed_clear) === JSON.stringify(taskReviewClearKey(clear))) return false;
   const comparableReads = reviewRead(clear) > 0 && reviewRead(visible) > 0;
   return comparableReads ? reviewRead(visible) < reviewRead(clear)
     : reviewInstant(visible) <= reviewInstant(clear);
@@ -205,16 +228,23 @@ function withTaskReviewState(base, state) {
   return next;
 }
 
+function withTaskReviewLineage(held, next, keep) {
+  if (next.cleared) return { ...next, clear_key: taskReviewClearKey(keep ? held : next) };
+  const observedClear = held?.cleared ? taskReviewClearKey(held) : held?.observed_clear;
+  return observedClear ? { ...next, observed_clear: observedClear } : next;
+}
+
 function acceptedTaskReviewState(state, incoming, options) {
   const keep = state && keepTaskReviewState(state, incoming, options);
   const floor = keep ? state.floor : incoming.review_summary || state?.floor;
   if (!hasSummaryVersion(floor)) return null;
-  return {
+  const next = {
     task_id: rowIdentity(incoming), floor,
     cleared: keep ? state.cleared : !incoming.review_summary,
     updated_at: latestTaskTimestamp(state?.updated_at, incoming.updated_at),
     read_order: Math.max(reviewRead(state), Number(options.readOrder) || 0),
   };
+  return withTaskReviewLineage(state, next, keep);
 }
 
 /** PR floors survive clears and stale ordinary fields on every task row.

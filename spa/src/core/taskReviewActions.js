@@ -150,7 +150,7 @@ function focusedControl(host) {
 function restoreFocus(host, focused) {
   if (!focused) return;
   const control = host.querySelectorAll("input, select, textarea, button")[focused.index];
-  control?.focus();
+  control?.focus({ preventScroll: true });
   if (control?.setSelectionRange && focused.start !== null) control.setSelectionRange(focused.start, focused.end);
 }
 
@@ -171,7 +171,7 @@ function retryHasResult(review, snapshot, pendingRetry) {
 }
 
 export function mountTaskReviewActions(host, options) {
-  const { deviceId, projectId, taskId, snapshot, repository, support, onTaskChanged } = options;
+  const { deviceId, projectId, taskId, snapshot, repository, support, onTaskChanged, keepReadingPlace = (paint) => paint() } = options;
   let review = options.review;
   let draft = { selected: {}, intent: null };
   let busy = false;
@@ -232,13 +232,15 @@ export function mountTaskReviewActions(host, options) {
   }
 
   function renderHtml(rows) {
-    const wasOpen = host.querySelector('[data-review-act-sheet]')?.open || false;
-    const focused = focusedControl(host);
-    const form = support.act ? `<details data-review-act-sheet${wasOpen ? " open" : ""}><summary>Merge and Push</summary>
-      <form data-review-act>${choicesFor(review, snapshot, draft.selected)}<button class="btn primary" type="submit"${busy ? " disabled" : ""}>Run selected steps</button></form></details>` : "";
-    host.innerHTML = `${form}${rows.length ? `<div class="task-review-results"><h3>Results</h3><ul>${rows.map((row, index) => resultHtml(row, support.act && !resolvedRetry(rows, index))).join("")}</ul></div>` : ""}
-      <p class="warn" data-review-act-error role="alert"${error ? "" : " hidden"}>${esc(error)}</p>`;
-    restoreFocus(host, focused);
+    keepReadingPlace(() => {
+      const wasOpen = host.querySelector('[data-review-act-sheet]')?.open || false;
+      const focused = focusedControl(host);
+      const form = support.act ? `<details data-review-act-sheet${wasOpen ? " open" : ""}><summary>Merge and Push</summary>
+        <form data-review-act>${choicesFor(review, snapshot, draft.selected)}<button class="btn primary" type="submit"${busy ? " disabled" : ""}>Run selected steps</button></form></details>` : "";
+      host.innerHTML = `${form}${rows.length ? `<div class="task-review-results"><h3>Results</h3><ul>${rows.map((row, index) => resultHtml(row, support.act && !resolvedRetry(rows, index))).join("")}</ul></div>` : ""}
+        <p class="warn" data-review-act-error role="alert"${error ? "" : " hidden"}>${esc(error)}</p>`;
+      restoreFocus(host, focused);
+    });
   }
 
   function paint() {

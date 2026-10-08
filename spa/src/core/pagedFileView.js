@@ -177,7 +177,7 @@ export function wholeBytesPainter(render, { asPages = false } = {}) {
  * Answers `{ more, dispose }`: `more()` reads the next page, which is what the
  * sentinel coming into view does.
  */
-export function mountPagedFile(scroller, { head, file, readPage = null, restart = () => {}, painter, onPaint = () => {}, releaseCompletedPages = false }) {
+export function mountPagedFile(scroller, { head, file, readPage = null, restart = () => {}, painter, onPaint = () => {}, releaseCompletedPages = false, keepReadingPlace = (paint) => paint() }) {
   scroller.innerHTML = `<div class="fppages"></div><div class="fpmore" hidden></div><div class="ftrunc" hidden>truncated at 1 MiB</div>`;
   const content = scroller.querySelector(".fppages");
   const sentinel = scroller.querySelector(".fpmore");
@@ -228,7 +228,7 @@ export function mountPagedFile(scroller, { head, file, readPage = null, restart 
     observer.observe(sentinel);
   };
 
-  const paint = (state) => {
+  const paint = (state) => keepReadingPlace(() => {
     const grew = painter.paint(content, state, state.complete);
     if (releaseCompletedPages && state.complete) body.releasePages();
     sentinel.hidden = state.complete;
@@ -241,7 +241,7 @@ export function mountPagedFile(scroller, { head, file, readPage = null, restart 
     if (state.complete) observer?.disconnect();
     else if (!parked) watchSentinel();
     onPaint();
-  };
+  });
 
   const body = createPagedBody({ head, of: file.of, readPage, keepGuard, onChange: paint, onMoved: () => restart() });
   void body.hydrate().then((state) => {

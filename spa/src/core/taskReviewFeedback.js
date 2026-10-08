@@ -27,7 +27,7 @@ const commentParams = (taskId, snapshotId, draft) => ({
 
 /** One review's composer. A new mount reads its task/snapshot draft from build-ui. */
 export function mountTaskReviewFeedback(host, {
-  deviceId, projectId, taskId, snapshot, callRpc, onSent = null,
+  deviceId, projectId, taskId, snapshot, callRpc, onSent = null, keepReadingPlace = (paint) => paint(),
 }) {
   const snapshotId = snapshotIdOf(snapshot);
   let draft = emptyDraft();
@@ -52,7 +52,7 @@ export function mountTaskReviewFeedback(host, {
   const opinion = form.querySelector("select");
   const target = form.querySelector("[data-review-target]");
   const button = form.querySelector('button[type="submit"]');
-  const paint = (saved) => {
+  const paint = (saved) => keepReadingPlace(() => {
     if (disposed) return;
     draft = { ...emptyDraft(), ...saved };
     if (field.value !== draft.body) field.value = draft.body;
@@ -62,7 +62,7 @@ export function mountTaskReviewFeedback(host, {
     target.hidden = !parts.length;
     button.disabled = sending || !hasBody(draft);
     button.textContent = sending ? "sending…" : "Comment";
-  };
+  });
   const address = uiAddress({ deviceId, entityId: projectId, kind: "draft", view: "task-review-feedback", sub: `${taskId}:${snapshotId}` });
   const saved = watchUiState(address, paint, { debounceMs: 100 });
   const edit = (changes) => {

@@ -67,7 +67,7 @@ export function mountTaskReviewPage(host, options) {
     controlsKey = key;
     controls?.dispose();
     controls = mountTaskReviewControls(node("controls"), {
-      ...scope, snapshot: saved, review: review(), repository, support, workspaces: workspaces(),
+      ...scope, snapshot: saved, review: review(), repository, support, workspaces: workspaces(), keepReadingPlace: options.keepReadingPlace,
       onTaskChanged: options.onTaskChanged,
       onSaved: async (verb) => {
         if (verb !== "snapshot") return;
@@ -85,7 +85,7 @@ export function mountTaskReviewPage(host, options) {
     feedback?.dispose();
     feedback = null;
     node("feedback-host").innerHTML = "";
-    if (key) feedback = mountTaskReviewFeedback(node("feedback-host"), { ...scope, snapshot: saved, callRpc, onSent: options.onTaskChanged });
+    if (key) feedback = mountTaskReviewFeedback(node("feedback-host"), { ...scope, snapshot: saved, callRpc, onSent: options.onTaskChanged, keepReadingPlace: options.keepReadingPlace });
   }
 
   function paintGitActions(saved) {
@@ -96,7 +96,7 @@ export function mountTaskReviewPage(host, options) {
     gitActions = null;
     node("git-actions").innerHTML = "";
     if (saved) gitActions = mountTaskReviewActions(node("git-actions"), {
-      ...scope, snapshot: saved, review: review(), repository, support, onTaskChanged: options.onTaskChanged,
+      ...scope, snapshot: saved, review: review(), repository, support, onTaskChanged: options.onTaskChanged, keepReadingPlace: options.keepReadingPlace,
     });
   }
 
@@ -123,7 +123,7 @@ export function mountTaskReviewPage(host, options) {
       return;
     }
     const params = {
-      ...scope, workspaceId: review().workspace_id, snapshot: saved, directory: dir, callRpc,
+      ...scope, workspaceId: review().workspace_id, keepReadingPlace: options.keepReadingPlace, snapshot: saved, directory: dir, callRpc,
       path: selection.path || "", anchor: selection.anchor,
       onOpenFile: openFiles,
       onComment: support.comments ? (anchor) => feedback?.comment(anchor) : null,
@@ -143,6 +143,13 @@ export function mountTaskReviewPage(host, options) {
 
   function paint() {
     if (disposed) return;
+    // A task embeds this pane above its timeline. Independent review cache
+    // reads must keep that task's reader still as the pane changes height.
+    if (options.keepReadingPlace) options.keepReadingPlace(paintContent);
+    else paintContent();
+  }
+
+  function paintContent() {
     host.hidden = !support.get && !record?.review;
     const saved = snapshot();
     const dir = directory();

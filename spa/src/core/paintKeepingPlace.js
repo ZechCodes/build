@@ -27,7 +27,7 @@ const now = () => (typeof performance !== "undefined" && performance.now ? perfo
 /// before writing, and write nothing while the list is moving under the reader.
 export function wireReaderMotion(scroller) {
   if (!scroller || readerMotion.has(scroller)) return;
-  const state = { touching: false, lastScrollAt: 0, lastInputAt: 0 };
+  const state = { touching: false, lastScrollAt: 0, lastInputAt: -Infinity };
   readerMotion.set(scroller, state);
   const passive = { passive: true };
   const input = () => {
@@ -105,6 +105,80 @@ export function paintKeepingPlace(scroller, paint, { opening, policy }) {
   policy.restore(scroller, held, changed);
 }
 
+// Match the blocks emitted by markdownBlocks, including nested content and
+// table cells. A body's visible child is the fallback for other renderers.
+const READING_CONTENT = "p, pre, h1, h2, h3, h4, h5, h6, hr, ul, ol, li, blockquote, .mdtable, table, thead, tbody, tr, th, td";
+const READING_BODY = ".task-comment-body, .thread-body, .thread-notice-body";
+
+function readingContents(row) {
+  const bodies = [...row.querySelectorAll(READING_BODY)];
+  const roots = bodies.length ? bodies : [row];
+  const contents = roots.flatMap((body) => {
+    const blocks = [...body.querySelectorAll(READING_CONTENT)];
+    const fallback = bodies.length ? [...body.querySelectorAll("*"), body] : [];
+    return [...new Set([...blocks, ...fallback])];
+  });
+  const attachments = [...row.querySelectorAll(".thread-attachments img, .thread-attachments video, .thread-attachments figcaption")];
+  return [...new Set([...contents, ...attachments])]
+    .sort((first, second) => first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
+}
+
+function visibleReadingContent(contents, viewport) {
+  const visible = contents.filter((node) => intersectsViewport(node, viewport));
+  const blocks = visible.filter((node) => node.matches(READING_CONTENT));
+  const candidates = blocks.length ? blocks : visible;
+  // A long quote/list/table can cover the viewport while the reader is far
+  // below its start. Keep the visible inner content rather than that wrapper.
+  return candidates.find((node) => !candidates.some((child) => child !== node && node.contains(child)));
+}
+const readingEntries = (scroller) => [...scroller.querySelectorAll("[data-key]:not(button)")];
+
+/** The visible reading area starts below a header pinned over the content. */
+function readingViewport(scroller) {
+  const viewport = scroller.getBoundingClientRect();
+  const top = [...scroller.querySelectorAll("header")].reduce((edge, header) => {
+    const box = header.getBoundingClientRect();
+    const pinned = ["sticky", "fixed"].includes(getComputedStyle(header).position);
+    return pinned && box.top <= edge && box.bottom > edge ? box.bottom : edge;
+  }, viewport.top);
+  return { top, bottom: viewport.bottom };
+}
+
+const intersectsViewport = (element, viewport) => {
+  const box = element.getBoundingClientRect();
+  return box.top < viewport.bottom && box.bottom > viewport.top;
+};
+
+/** Keep a visible content node, including one inside a very tall entry.
+ *  Buttons with keys are navigation ticks, rather than timeline content. */
+function holdReadingAnchor(scroller) {
+  const viewport = readingViewport(scroller);
+  const row = readingEntries(scroller)
+    .find((element) => intersectsViewport(element, viewport));
+  if (!row) return null;
+  const contents = readingContents(row);
+  const element = visibleReadingContent(contents, viewport) || row;
+  const top = scroller.getBoundingClientRect().top;
+  return {
+    row, element, key: row.getAttribute("data-key"), index: contents.indexOf(element), tag: element.tagName,
+    offset: element.getBoundingClientRect().top - top,
+    rowOffset: row.getBoundingClientRect().top - top,
+  };
+}
+
+function restoreReadingAnchor(scroller, held) {
+  const row = scroller.contains(held.row) ? held.row
+    : readingEntries(scroller).find((element) => element.getAttribute("data-key") === held.key);
+  if (!row) return;
+  const candidate = row.contains(held.element) ? held.element : readingContents(row)[held.index];
+  const element = candidate?.tagName === held.tag ? candidate : row;
+  const offset = element === row ? held.rowOffset : held.offset;
+  const moved = element.getBoundingClientRect().top - scroller.getBoundingClientRect().top - offset;
+  // Native anchoring may already have moved the scroller. Correct only the
+  // displacement that remains, rather than adding it to an old scrollTop.
+  writeScrollTop(scroller, scroller.scrollTop + moved);
+}
+
 /// Where the reader belongs in a conversation that is still being written.
 ///
 /// A reader who is at the end is FOLLOWING, and a paint keeps them at the end:
@@ -142,6 +216,7 @@ export function followConversation({ olderItemsPrepended = false, unreadSelector
       scrollTop: scroller.scrollTop,
       scrollHeight: scroller.scrollHeight,
       atBottom: isAtBottom(scroller),
+      anchor: opening ? null : holdReadingAnchor(scroller),
     }),
     restore: (scroller, held, changed) => {
       if (!held.opening && !changed) return;
@@ -151,7 +226,9 @@ export function followConversation({ olderItemsPrepended = false, unreadSelector
       }
       if (!held.opening && readerIsMoving(scroller)) return;
       if (!held.opening) {
-        writeScrollTop(scroller, held.atBottom ? scroller.scrollHeight : held.scrollTop);
+        if (held.atBottom) writeScrollTop(scroller, scroller.scrollHeight);
+        else if (held.anchor) restoreReadingAnchor(scroller, held.anchor);
+        else writeScrollTop(scroller, held.scrollTop);
         return;
       }
       const land = () => {

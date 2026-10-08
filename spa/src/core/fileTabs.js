@@ -36,7 +36,7 @@ const keepingDirty = (layout, dirty) => {
  */
 const byPath = (path) => ({ root: {}, path });
 
-export function mountFileTabs(stripEl, { stateAddress = null, dirtyPaths, confirmClose, onClose, onShow, initial = null, locate = byPath }) {
+export function mountFileTabs(stripEl, { stateAddress = null, dirtyPaths, confirmClose, onClose, onShow, initial = null, locate = byPath, keepReadingPlace = (paint) => paint() }) {
   const accepts = (tab) => Boolean(locate(tab));
   let disposed = false;
   let started = false;
@@ -56,7 +56,7 @@ export function mountFileTabs(stripEl, { stateAddress = null, dirtyPaths, confir
     else if (tab.right > box.right) stripEl.scrollLeft += tab.right - box.right;
   };
 
-  const paint = (value) => {
+  const paint = (value) => keepReadingPlace(() => {
     if (disposed || !started) return;
     layout = keepingDirty(readTabLayout(value, accepts), dirtyPaths());
     marked = markedKey();
@@ -66,7 +66,7 @@ export function mountFileTabs(stripEl, { stateAddress = null, dirtyPaths, confir
     if (layout.active === shown) return;
     shown = layout.active;
     onShow(shown);
-  };
+  });
 
   const record = stateAddress ? watchUiState(stateAddress, paint) : null;
   const commit = (next) => (record ? record.write(next) : paint(next));

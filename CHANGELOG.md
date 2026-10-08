@@ -27,6 +27,12 @@ Wire 3.14.0.
   pointer, keyboard and touch feedback while preserving selection in content,
   form fields and the terminal (#397).
 
+### Fixed
+
+- Keep long task comments and loaded images in place when ages, references or
+  review metadata refresh, and follow new comments when reading at the bottom
+  (#410).
+
 ## [0.2.12] - 2026-10-07
 
 Wire 3.13.0.

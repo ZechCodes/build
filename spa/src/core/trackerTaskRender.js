@@ -96,8 +96,8 @@ const reviewMetadataHtml = (row, context) => {
   const snapshot = label ? `<span>${label}</span>` : "";
   const place = reviewAnchorHtml(row.anchor);
   const reply = row.replyTo ? `<span>Reply to ${esc(row.replyTo)}</span>` : "";
-  if (!snapshot && !verdict && !place && !reply) return "";
-  return `<div class="task-review-comment-meta">${snapshot}${verdict}${place}${reply}</div>`;
+  const empty = !snapshot && !verdict && !place && !reply;
+  return `<div class="task-review-comment-meta"${empty ? " hidden" : ""}>${snapshot}${verdict}${place}${reply}</div>`;
 };
 
 /// The id an action line in a conversation lands on: a comment is linked as
@@ -108,7 +108,7 @@ const commentHtml = (row, context) => `<li class="task-entry task-comment${row.m
       <div class="task-entry-head"><strong>${actorIdentityHtml(row.actor, context)}</strong>${whenHtml(row)}</div>
       ${reviewMetadataHtml(row, context)}
       <div class="task-comment-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ taskMarkdownHtml(row.body, context, false, taskMarkdownScope(context, "comment", row.key))}</div>
-      ${attachmentListHtml(row.attachments, { className: "task-comment-attachments" })}
+      ${attachmentListHtml(row.attachments, { className: "task-comment-attachments" }) || '<div class="thread-attachments task-comment-attachments" hidden></div>'}
       ${row.anchor || row.opinion || row.replyTo ? `<button class="btn" type="button" data-review-reply="${esc(row.key)}">Reply</button>` : ""}
     </div>
   </li>`;
@@ -147,22 +147,26 @@ const eventHtml = (row, context) => `<li class="task-entry task-event">
     ${whenHtml(row)}
   </li>`;
 
-/** One row, with the unread divider ahead of it when the reader's new
- *  activity starts there. */
-const timelineRowHtml = (row, context) => {
-  const line = context.unreadFrom != null && context.unreadFrom === taskUnreadKey(row.key)
-    ? '<li class="thread-unread-line task-unread-line" role="separator"><span>New</span></li>' : "";
-  return line + (row.type === "comment" ? commentHtml(row, context) : eventHtml(row, context));
+/** One keyed element per entry, including the unread divider. Keeping the
+ *  divider separate lets it arrive and leave without replacing its comment. */
+const timelineRowPart = (row, context) => ({
+  name: row.key,
+  html: row.type === "comment" ? commentHtml(row, context) : eventHtml(row, context),
+});
+
+const timelineEntryParts = (row, context) => {
+  const entry = timelineRowPart(row, context);
+  if (context.unreadFrom == null || context.unreadFrom !== taskUnreadKey(row.key)) return [entry];
+  return [{ name: `unread:${row.key}`, html: '<li class="thread-unread-line task-unread-line" role="separator"><span>New</span></li>' }, entry];
 };
 
-/** The timeline as its list and one part per row, keyed by the row's record,
- *  for a page that patches rows (core/partPatch.js): a push adds its row and
- *  leaves every row already on screen, pictures and all, where it was. */
+/** Rows retain their nodes while metadata, reference labels and ages change;
+ *  the mounted page patches these entries with the shared keyed list painter. */
 export function timelineParts(rows, context) {
   if (!rows.length) return { frame: `<p class="empty task-empty">Nothing has happened on this task yet.</p>`, rows: [] };
   return {
     frame: '<ul class="task-timeline"></ul>',
-    rows: rows.map((row) => ({ name: row.key, html: timelineRowHtml(row, context) })),
+    rows: rows.flatMap((row) => timelineEntryParts(row, context)),
   };
 }
 

@@ -44,6 +44,8 @@ import {
   taskPageParts,
 } from "./trackerTaskRender.js";
 import { patchParts } from "./partPatch.js";
+import { patchList } from "./patchList.js";
+import { followConversation, paintKeepingPlace, wireReaderMotion } from "./paintKeepingPlace.js";
 import { subscribeReferenceIndex } from "./referenceIndex.js";
 import { mountComposerAttachments } from "./composer.js";
 import { taskAttachmentRefusal } from "./taskAttachments.js";
@@ -73,11 +75,13 @@ export function focusTaskComment(host, commentId, { scroll = true } = {}) {
     .find((entry) => entry.id === `comment-${commentId}`);
   if (!row) return false;
   row.classList.add("task-comment-target");
-  if (scroll) scrollWithin(host, row, { block: "center" });
+  if (scroll) scrollWithin(host, row, { block: "center", behavior: "auto" });
   return true;
 }
 
 export function mountTaskPage(host, options) {
+  wireReaderMotion(host);
+  const readingPolicy = followConversation();
   let reviewPage = null;
   const state = {
     ...options,
@@ -315,6 +319,27 @@ export function mountTaskPage(host, options) {
     if (!state.task) return paintUnframed(state.loaded ? taskMissingHtml() : "");
     const parts = taskPageParts(state.task, pageContext());
     const typing = fieldSnapshot();
+    const repaint = () => paintParts(parts, typing);
+    // First paint opens at the top. While composing, native anchoring keeps
+    // the focused box on screen as comments arrive above it (#153).
+    keepReadingPlace(repaint);
+    markRoutedComment();
+  };
+
+  function keepReadingPlace(repaint) {
+    if (!framed || composerOwnsPlace()) repaint();
+    else paintKeepingPlace(host, repaint, { opening: () => false, policy: readingPolicy });
+  }
+
+  function composerOwnsPlace() {
+    const field = host.querySelector(".task-composer :focus");
+    if (!field) return false;
+    const box = field.getBoundingClientRect();
+    const viewport = host.getBoundingClientRect();
+    return box.bottom > viewport.top && box.top < viewport.bottom;
+  }
+
+  function paintParts(parts, typing) {
     frame();
     const main = host.querySelector(".task-page-main");
     const painted = new Set(patchParts(main, held.main, parts.main));
@@ -324,8 +349,7 @@ export function mountTaskPage(host, options) {
     syncCommentBox();
     if (painted.has("timeline")) unreadPill.sync();
     restoreField(typing);
-    markRoutedComment();
-  };
+  }
 
   /** The timeline's rows, patched inside the list the `timeline` part stood
    *  up; a list just stood up holds none yet. Answers whether any row was
@@ -334,7 +358,14 @@ export function mountTaskPage(host, options) {
   function patchTimeline(rows, newList) {
     if (newList) held.timeline.clear();
     const list = host.querySelector(".task-timeline");
-    return Boolean(list) && patchParts(list, held.timeline, rows).length > 0;
+    if (!list) return false;
+    const changed = held.timeline.size !== rows.length || rows.some((row) => held.timeline.get(row.name) !== row.html);
+    patchList(list, rows, { keyOf: (row) => row.name, render: (row) => row.html, signatureOf: (row) => row.html });
+    if (changed) {
+      held.timeline.clear();
+      rows.forEach((row) => held.timeline.set(row.name, row.html));
+    }
+    return changed;
   }
 
   /** The comment box's live state, set on the one box this mount made: its
@@ -711,6 +742,7 @@ export function mountTaskPage(host, options) {
     reviewPage = mountTaskReviewPage(host.querySelector('[data-task-review]'), {
       ...options, task: () => state.task, workspaces: projectWorkspaces, onTaskChanged: refresh,
       generationOf: () => deviceSession(state.deviceId),
+      keepReadingPlace,
     });
   }
 

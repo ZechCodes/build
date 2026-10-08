@@ -35,7 +35,7 @@ function controlsHtml(review, snapshot, support) {
 }
 
 export function mountTaskReviewControls(host, options) {
-  const { deviceId, projectId, taskId, snapshot, repository, support, onSaved, onTaskChanged } = options;
+  const { deviceId, projectId, taskId, snapshot, repository, support, onSaved, onTaskChanged, keepReadingPlace = (paint) => paint() } = options;
   let review = options.review;
   let workspaces = options.workspaces;
   let draft = { workspace: review?.workspace_id || "", bases: savedBaseOverrides(snapshot), description: "" };
@@ -47,32 +47,43 @@ export function mountTaskReviewControls(host, options) {
   const description = host.querySelector('[data-review-description]');
   const bases = [...host.querySelectorAll('[data-review-base]')];
   function paintBases() {
-    for (const input of bases) {
-      input.disabled = draft.workspace !== review?.workspace_id;
-      const wanted = draft.bases[input.dataset.reviewBase] || "";
-      if (input.value !== wanted) input.value = wanted;
-    }
+    keepReadingPlace(() => {
+      for (const input of bases) {
+        input.disabled = draft.workspace !== review?.workspace_id;
+        const wanted = draft.bases[input.dataset.reviewBase] || "";
+        if (input.value !== wanted) input.value = wanted;
+      }
+    });
   }
   function paint(saved) {
-    if (disposed) return;
-    draft = { ...draft, ...saved, bases: { ...draft.bases, ...saved?.bases } };
-    if (workspace) workspace.value = draft.workspace;
-    if (description && description.value !== draft.description) description.value = draft.description;
-    paintBases();
+    keepReadingPlace(() => {
+      if (disposed) return;
+      draft = { ...draft, ...saved, bases: { ...draft.bases, ...saved?.bases } };
+      if (workspace) workspace.value = draft.workspace;
+      if (description && description.value !== draft.description) description.value = draft.description;
+      paintBases();
+    });
   }
   function paintWorkspaces() {
-    if (!workspace) return;
-    workspace.innerHTML = optionsHtml(workspaces, draft.workspace);
-    workspace.value = draft.workspace;
-    paintBases();
+    keepReadingPlace(() => {
+      if (!workspace) return;
+      workspace.innerHTML = optionsHtml(workspaces, draft.workspace);
+      workspace.value = draft.workspace;
+      paintBases();
+    });
   }
   const state = watchUiState(uiAddress({ deviceId, entityId: projectId, view: "task-review-actions", kind: "draft",
     sub: JSON.stringify([taskId, snapshot?.id || "new"]) }), paint, { debounceMs: 180 });
   const edit = (changes) => { draft = { ...draft, ...changes }; state.schedule(draft); };
-  if (workspace) workspace.onchange = () => { edit({ workspace: workspace.value }); paintBases(); };
-  if (description) description.oninput = () => edit({ description: description.value });
-  for (const input of bases) input.oninput = () => edit({ bases: { ...draft.bases, [input.dataset.reviewBase]: input.value } });
-  function showError(message) { errorNode.textContent = message; errorNode.hidden = !message; }
+  function wireDraftFields() {
+    if (workspace) workspace.onchange = () => { edit({ workspace: workspace.value }); paintBases(); };
+    if (description) description.oninput = () => edit({ description: description.value });
+    for (const input of bases) input.oninput = () => edit({ bases: { ...draft.bases, [input.dataset.reviewBase]: input.value } });
+  }
+  wireDraftFields();
+  function showError(message) {
+    keepReadingPlace(() => { errorNode.textContent = message; errorNode.hidden = !message; });
+  }
   async function submit(verb, params) {
     if (busy) return;
     busy = true;

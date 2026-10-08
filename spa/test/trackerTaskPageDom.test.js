@@ -524,7 +524,7 @@ describe("the timeline", () => {
     call = vi.fn(() => new Promise(() => {}));
     await mount({ commentId: "tc-2" }, { waitForPaint: false });
     await vi.waitFor(() => expect(host.querySelector("#comment-tc-2")?.classList.contains("task-comment-target")).toBe(true));
-    expect(host.scrollTo).toHaveBeenCalledWith({ top: 0, behavior: "smooth" });
+    expect(host.scrollTo).toHaveBeenCalledWith({ top: 0, behavior: "auto" });
   });
 
   it("opens a missing comment at the top without an error", async () => {

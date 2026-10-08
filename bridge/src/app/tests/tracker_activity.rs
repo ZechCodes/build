@@ -49,6 +49,7 @@ fn start_review(state: &AppState, task_id: &str, workspace_id: &str) {
             workspace_id,
             0,
             crate::reviews::model::ReviewSnapshot {
+                publication: None,
                 id: format!("snapshot-{task_id}"),
                 number: 0,
                 created_at: crate::store::now_rfc3339(),

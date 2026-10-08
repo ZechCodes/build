@@ -22,6 +22,7 @@ pub fn capture(
         }
     }
     let mut snapshot = ReviewSnapshot {
+        publication: None,
         id: snapshot_id.into(),
         number: 0,
         created_at: time::OffsetDateTime::now_utc()

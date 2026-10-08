@@ -9,14 +9,17 @@ use std::path::Path;
 use std::time::Duration;
 
 mod pins;
+mod received;
 mod remote;
 mod tracking;
 
 use pins::pin_mutation_checkpoint;
 pub use pins::{
-    capture_snapshot, cleanup_opening_pins, cleanup_snapshot_target, validate_snapshot_pins,
-    with_initial_receivers_locked,
+    capture_received_directory, capture_snapshot, cleanup_opening_pins, cleanup_received_pins,
+    cleanup_snapshot_target, validate_snapshot_pins, with_initial_receivers_locked,
+    with_received_snapshot_locked,
 };
+pub use received::{observe_received, ReceivedCommit};
 use remote::validate_push_destination;
 pub use remote::{
     choose_remote_name, choose_remote_name_avoiding, cleanup_remote, configure_remote,
@@ -119,6 +122,12 @@ pub fn validate_bases(bindings: &[ReviewBranchBinding]) -> Result<(), String> {
         comparison_base(binding, &binding.initial_head, &base)?;
     }
     Ok(())
+}
+
+/// A health observation may still read the receiver after source removal.
+pub fn registered_received_head(binding: &ReviewBranchBinding) -> Result<Option<String>, String> {
+    super::receivers::validate_registered_receiver(binding)?;
+    received_head(binding)
 }
 
 fn received_head(binding: &ReviewBranchBinding) -> Result<Option<String>, String> {

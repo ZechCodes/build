@@ -5,12 +5,35 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReviewSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication: Option<ReviewSnapshotPublication>,
     pub id: String,
     /// Assigned when the metadata write wins its version check.
     pub number: u64,
     pub created_at: String,
     pub author: Actor,
     pub directories: Vec<ReviewDirectory>,
+}
+
+/// Publication cause and selected target tips, separate from comparison bases.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewSnapshotPublication {
+    pub reason: ReviewPublicationReason,
+    pub directories: Vec<ReviewPublishedDirectory>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewPublicationReason {
+    Received,
+    BaseChanged,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewPublishedDirectory {
+    pub directory_id: String,
+    pub target_head: String,
+    pub rewritten: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,6 +203,10 @@ pub struct ReviewSyncObservation {
     pub directory_id: String,
     pub revision: u64,
     pub health: ReviewSyncHealth,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_head: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comparison_base: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working_head: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -6,6 +6,7 @@ pub(in crate::app) mod off_the_workers;
 pub(in crate::app) mod pumps;
 pub(in crate::app) mod recovery;
 pub(in crate::app) mod resume;
+pub(in crate::app) mod review_sync;
 pub(in crate::app) mod sessions;
 pub(in crate::app) mod spawning;
 pub(in crate::app) mod terminals;

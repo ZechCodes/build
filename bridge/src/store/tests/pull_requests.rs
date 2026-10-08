@@ -46,6 +46,7 @@ fn binding() -> ReviewBranchBinding {
 
 fn snapshot() -> ReviewSnapshot {
     ReviewSnapshot {
+        publication: None,
         id: "snapshot-1".into(),
         number: 0,
         author: Actor::User,
@@ -241,6 +242,8 @@ fn sync_revision_is_separate_from_review_version_and_lifecycle() {
         task_id: review.task_id.clone(),
         directory_id: "dir-1".into(),
         revision: 0,
+        target_head: None,
+        comparison_base: None,
         health: ReviewSyncHealth::Unavailable,
         working_head: Some("def456".into()),
         received_head: None,
@@ -710,4 +713,210 @@ fn preparing_a_binding_requires_its_initial_recovery_head() {
         store.save_review_opening(&opening, opening.version),
         Err(StoreError::ReviewPullRequestInvalid(_))
     ));
+}
+
+fn received_snapshot() -> (ReviewSnapshot, Vec<ReviewBranchBinding>) {
+    let mut next = snapshot();
+    next.id = "snapshot-received".into();
+    next.author = Actor::Build;
+    next.directories[0].head = Some("def456".into());
+    let mut next_binding = binding();
+    next_binding.last_received_head = Some("def456".into());
+    (next, vec![next_binding])
+}
+
+#[test]
+fn received_snapshot_appends_atomically_and_moves_task_with_build_activity() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let review = publish(&store);
+    let mut task = store.load_tracker_task(&review.task_id).unwrap().unwrap();
+    task.status = "in_progress".into();
+    store.save_tracker_task_activity(&task, &[], &[]).unwrap();
+    let (next, bindings) = received_snapshot();
+    store.fail_next_write();
+    assert!(store
+        .save_review_received_snapshot(&review.task_id, 1, next.clone(), &bindings)
+        .is_err());
+    assert_eq!(store.load_review(&review.task_id).unwrap().unwrap(), review);
+    let saved = store
+        .save_review_received_snapshot(&review.task_id, 1, next.clone(), &bindings)
+        .unwrap();
+    assert_eq!(saved.version, 2);
+    assert_eq!(saved.snapshots.len(), 2);
+    assert_eq!(saved.snapshots[0], review.snapshots[0]);
+    assert_eq!(saved.snapshots[1].number, 2);
+    assert_eq!(saved.bindings, bindings);
+    assert_eq!(
+        saved.pull_request.unwrap().latest_published_snapshot_id,
+        Some(next.id.clone())
+    );
+    assert_eq!(
+        store
+            .load_tracker_task(&review.task_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        "in_review"
+    );
+    let timeline = store.load_tracker_timeline(&review.task_id).unwrap();
+    let crate::tracker::TimelineEntry::Event(event) = &timeline[0] else {
+        panic!("receiving a snapshot must append a move event");
+    };
+    assert_eq!(event.actor, Actor::Build);
+    assert_eq!(event.kind, crate::tracker::TaskEventKind::Moved);
+    assert_eq!(
+        event.payload,
+        serde_json::json!({"from": "in_progress", "to": "in_review"})
+    );
+    assert!(matches!(
+        store.save_review_received_snapshot(&review.task_id, 1, next.clone(), &bindings),
+        Err(StoreError::ReviewVersionConflict { .. })
+    ));
+    assert!(matches!(
+        store.save_review_received_snapshot(&review.task_id, 2, next, &bindings),
+        Err(StoreError::ReviewSnapshotExists { .. })
+    ));
+    assert_eq!(
+        store
+            .load_review(&review.task_id)
+            .unwrap()
+            .unwrap()
+            .snapshots
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn received_snapshot_rejects_changed_binding_membership_and_terminal_reviews() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let review = publish(&store);
+    let (next, bindings) = received_snapshot();
+    let mut altered = bindings.clone();
+    altered[0].repository_id = "other".into();
+    assert!(store
+        .save_review_received_snapshot(&review.task_id, 1, next.clone(), &altered)
+        .is_err());
+    assert!(store
+        .save_review_received_snapshot(&review.task_id, 1, next.clone(), &[])
+        .is_err());
+    let mut duplicate_bindings = bindings.clone();
+    duplicate_bindings.push(bindings[0].clone());
+    assert!(store
+        .save_review_received_snapshot(&review.task_id, 1, next.clone(), &duplicate_bindings)
+        .is_err());
+    let mut missing = next.clone();
+    missing.directories.clear();
+    assert!(store
+        .save_review_received_snapshot(&review.task_id, 1, missing, &bindings)
+        .is_err());
+    let mut changed_source = next.clone();
+    changed_source.directories[0].source_id = "other".into();
+    assert!(store
+        .save_review_received_snapshot(&review.task_id, 1, changed_source, &bindings)
+        .is_err());
+    assert_eq!(store.load_review(&review.task_id).unwrap().unwrap(), review);
+    let closed = store
+        .complete_review(&review.task_id, 1, &Actor::User, "closed")
+        .unwrap();
+    assert!(store
+        .save_review_received_snapshot(&review.task_id, closed.version, next, &bindings)
+        .is_err());
+}
+
+#[test]
+fn active_sync_tasks_use_bounded_sorted_database_pages() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let review = publish(&store);
+    assert!(store
+        .list_active_review_sync_tasks(None, 0)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        store.list_active_review_sync_tasks(None, 1).unwrap(),
+        vec![review.task_id.clone()]
+    );
+    assert!(store
+        .list_active_review_sync_tasks(Some(&review.task_id), 1)
+        .unwrap()
+        .is_empty());
+    let mut opening = store
+        .reserve_review_opening("/repo", "open-page", request("ws-page"))
+        .unwrap();
+    let mut second_binding = binding();
+    second_binding.repository_id = "repo-page".into();
+    second_binding.receiving_repository = "/receivers/repo-page.git".into();
+    opening.bindings.push(second_binding);
+    let opening = store
+        .save_review_opening(&opening, opening.version)
+        .unwrap();
+    let mut second_snapshot = snapshot();
+    second_snapshot.id = "snapshot-page".into();
+    second_snapshot.directories[0].common_git_dir = Some("/receivers/repo-page.git".into());
+    let second = store
+        .publish_review_opening("/repo", "open-page", opening.version, second_snapshot, &[])
+        .unwrap();
+    let mut sorted = vec![review.task_id.clone(), second.task_id.clone()];
+    sorted.sort();
+    assert_eq!(
+        store.list_active_review_sync_tasks(None, 1).unwrap(),
+        sorted[..1]
+    );
+    assert_eq!(
+        store
+            .list_active_review_sync_tasks(Some(&sorted[0]), 1)
+            .unwrap(),
+        sorted[1..]
+    );
+    let snapshot_task = store
+        .create_tracker_task(Task::drafted("/repo", "snapshot", Actor::User, NOW), &[])
+        .unwrap();
+    let mut legacy = snapshot();
+    legacy.id = "snapshot-legacy".into();
+    store
+        .save_review_snapshot(&snapshot_task.id, "ws-legacy", 0, legacy)
+        .unwrap();
+    assert_eq!(
+        store.list_active_review_sync_tasks(None, 100).unwrap(),
+        sorted
+    );
+    store
+        .complete_review(&review.task_id, 1, &Actor::User, "closed")
+        .unwrap();
+    assert_eq!(
+        store.list_active_review_sync_tasks(None, 100).unwrap(),
+        vec![second.task_id]
+    );
+}
+
+#[test]
+fn received_snapshot_preserves_snapshot_scoped_opinions_and_resets_approval() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let review = publish(&store);
+    let task = store.load_tracker_task(&review.task_id).unwrap().unwrap();
+    let opinion: crate::tracker::TaskComment = serde_json::from_value(serde_json::json!({
+        "id": "comment-approval", "task_id": review.task_id, "author": {"kind": "user"},
+        "body": "Approved", "created_at": NOW,
+        "opinion": {"snapshot_id": "snapshot-1", "verdict": "approve"}
+    }))
+    .unwrap();
+    store
+        .save_tracker_task_activity(&task, std::slice::from_ref(&opinion), &[])
+        .unwrap();
+    store.connection().execute("UPDATE reviews SET record = json_set(record, '$.pull_request.status', 'approved') WHERE task_id = ?1", [&review.task_id]).unwrap();
+    let (next, bindings) = received_snapshot();
+    let saved = store
+        .save_review_received_snapshot(&review.task_id, 1, next, &bindings)
+        .unwrap();
+    assert_eq!(saved.pull_request.unwrap().status, PullRequestStatus::Open);
+    assert_eq!(
+        store.load_tracker_timeline(&review.task_id).unwrap(),
+        vec![crate::tracker::TimelineEntry::Comment(opinion)]
+    );
+    assert_eq!(saved.snapshots[0].id, "snapshot-1");
+    assert_eq!(saved.snapshots[1].id, "snapshot-received");
 }

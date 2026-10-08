@@ -12,6 +12,7 @@ fn task(store: &Store) -> Task {
 
 fn snapshot(id: &str) -> ReviewSnapshot {
     ReviewSnapshot {
+        publication: None,
         id: id.into(),
         number: 0,
         created_at: NOW.into(),

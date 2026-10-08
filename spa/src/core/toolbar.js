@@ -47,6 +47,8 @@ import { workspaceLockState, paintWorkspaceLock } from "./workspaceLock.js";
 import { watchWorkspaceLockSupport } from "./workspaceLockSupport.js";
 import "../styles/workspace-lock.css";
 import { fieldTraits } from "./fieldTraits.js";
+import { subscribeCache } from "./localCache.js";
+import { NO_REVIEW_SUPPORT, readReviewSupport, reviewSupportAddress, reviewSupportFor } from "./taskReviewSupport.js";
 
 const SCOPE_ADDRESS = uiAddress({ view: "toolbar", kind: "filter", sub: "project" });
 const MENU_ADDRESS = uiAddress({ view: "toolbar", kind: "menu", sub: "jump" });
@@ -78,6 +80,30 @@ let toolbarRun = 0;
 let lockDeviceId = null;
 let lockSupported = false;
 let stopLockSupport = null;
+let reviewDeviceId = null;
+let reviewSupport = NO_REVIEW_SUPPORT;
+let stopReviewSupport = null;
+
+function watchStandingReviewSupport() {
+  const deviceId = App.route.name === "workspace" ? App.route.deviceId : null;
+  if (deviceId === reviewDeviceId) return;
+  stopReviewSupport?.();
+  reviewDeviceId = deviceId;
+  reviewSupport = NO_REVIEW_SUPPORT;
+  if (!deviceId) return;
+  let disposed = false;
+  let reading = 0;
+  const read = async () => {
+    const token = ++reading;
+    const support = await readReviewSupport(deviceId);
+    if (disposed || token !== reading) return;
+    reviewSupport = support;
+    paint();
+  };
+  const stop = subscribeCache(reviewSupportAddress(deviceId), () => void read());
+  stopReviewSupport = () => { disposed = true; stop(); };
+  void read();
+}
 
 function watchStandingLockSupport() {
   const deviceId = App.route.name === "workspace" ? App.route.deviceId : null;
@@ -91,9 +117,13 @@ function watchStandingLockSupport() {
   }) : null;
 }
 
-function standingWorkspaceLock() {
-  const workspace = (workspacesByProject.get(routeProjectKey(App.route)) || [])
+function standingWorkspace() {
+  return (workspacesByProject.get(routeProjectKey(App.route)) || [])
     .find((row) => row.id === App.route.workspaceId);
+}
+
+function standingWorkspaceLock() {
+  const workspace = standingWorkspace();
   return workspaceLockState(workspace && { ...workspace, deviceId: App.route.deviceId }, lockSupported);
 }
 
@@ -212,6 +242,7 @@ function identity() {
 // eslint-disable-next-line complexity -- ratchet: paint is at 13, cap 10 — reduce it, then drop this line
 function paint({ entering = false } = {}) {
   watchStandingLockSupport();
+  watchStandingReviewSupport();
   const host = $("#toolbar");
   if (!host || !scopeReady) return;
   const standing = identity();
@@ -416,6 +447,50 @@ function paintMenu() {
     keyOf: (entry) => entry.key,
     render: (entry) => entry.html,
   });
+  const reviewHost = open.element.querySelector(".tbmenu-review");
+  if (reviewHost) {
+    const review = workspaceReviewMenuEntry();
+    patchList(reviewHost, review ? [review] : [], { keyOf: () => "review", render: (entry) => entry.html });
+  }
+}
+
+/** The workspace name menu offers review only for the place the route stands.
+ * A different project selected inside this same popup owns no action on it. */
+function workspaceForReviewMenu() {
+  if (App.route.name !== "workspace" || open?.select !== "workspace") return null;
+  if (scopedProject()?.projectKey !== routeProjectKey(App.route)) return null;
+  return standingWorkspace();
+}
+
+function workspaceReviewMenuEntry() {
+  const workspace = workspaceForReviewMenu();
+  if (!workspace) return null;
+  const support = reviewSupportFor(null, reviewSupport);
+  const review = workspace.active_review;
+  if (review?.task_id && review.workspace_id === workspace.id) {
+    return support.pullRequests && support.get ? reviewMenuEntry("View pull request", "Open this workspace’s task review", review.task_id) : null;
+  }
+  return support.open ? reviewMenuEntry("Open review", "Publish this workspace as a pull request") : null;
+}
+
+const reviewMenuEntry = (label, description, taskId = null) => ({
+  taskId,
+  html: `<button class="mi" data-workspace-review type="button" role="menuitem"><span class="mt">${label}</span>
+    <span class="md">${description}</span></button>`,
+});
+
+function openStandingReview() {
+  const review = workspaceReviewMenuEntry();
+  if (!review) return;
+  const { deviceId, projectId, workspaceId } = App.route;
+  closeMenu();
+  if (review.taskId) {
+    go({ name: "trackerTask", deviceId, projectId, taskId: review.taskId });
+    return;
+  }
+  void import("./workspaceReviewEntry.js")
+    .then(({ openWorkspaceReview }) => openWorkspaceReview({ deviceId, projectId, workspaceId, navigate: go }))
+    .catch((error) => notifyError("Could not open review", error?.message || String(error)));
 }
 
 /** The frame the rows sit in: the filter, and — on the workspace list — the
@@ -460,6 +535,7 @@ function onMenuClick(event) {
   const { target } = event;
   if (target.closest("[data-projects]")) return showList("projects");
   if (target.closest("[data-project-page]")) return openProjectPage();
+  if (target.closest("[data-workspace-review]")) return openStandingReview();
   if (pickProject(target.closest("[data-project]"))) return;
   if (pickWorkspace(target.closest("[data-workspace]"))) return;
   const create = target.closest("[data-create]");
@@ -542,6 +618,7 @@ function workspaceMenuShellHtml() {
     </div>
     <div class="tbmenu-list"></div>
     <div class="tbmenu-foot">
+      <div class="tbmenu-review"></div>
       <button class="mi" data-project-page type="button" role="menuitem"><span class="mt">Project page</span>
         <span class="md">The tasks and workspaces of ${esc(scopedName())}</span></button>
       <button class="mi" data-create="workspace" type="button" role="menuitem"><span class="mt">New workspace…</span>
@@ -624,6 +701,10 @@ export function stopToolbar() {
   stopLockSupport = null;
   lockDeviceId = null;
   lockSupported = false;
+  stopReviewSupport?.();
+  stopReviewSupport = null;
+  reviewDeviceId = null;
+  reviewSupport = NO_REVIEW_SUPPORT;
   toolbarRun += 1;
   scopeRecord?.dispose({ flushPending: false });
   menuRecord?.dispose({ flushPending: false });

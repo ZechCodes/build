@@ -5,6 +5,68 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
 
+/// Hold the exact working branch tip while an explicit publication imports and
+/// publishes that immutable commit. Native Git writers honor these locks too.
+pub(crate) fn with_expected_reference_locked<T>(
+    repository: &git2::Repository,
+    reference: &str,
+    expected: git2::Oid,
+    locked: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    validate_reference(reference)?;
+    let directory = repository.commondir();
+    let (packed_guard, _) = acquire_git_lock(directory, Path::new("packed-refs.lock"))?;
+    let (guard, _) = acquire_git_lock(directory, Path::new(&format!("{reference}.lock")))?;
+    packed_guard.verify_owned()?;
+    guard.verify_owned()?;
+    if reference_target(repository, reference)? != Some(expected) {
+        return Err(format!("stale: review working branch changed: {reference}"));
+    }
+    let result = locked();
+    drop(guard);
+    drop(packed_guard);
+    result
+}
+
+/// Compare and replace one registered receiving ref without receive-pack's
+/// unregistered locks. The metadata check runs after both Git locks are held.
+pub(crate) fn update_expected_reference_checked(
+    repository: &git2::Repository,
+    reference: &str,
+    expected: Option<git2::Oid>,
+    new: git2::Oid,
+    publish: impl FnOnce(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>,
+) -> Result<bool, String> {
+    validate_reference(reference)?;
+    let directory = repository.commondir();
+    let (packed_guard, _) = acquire_git_lock(directory, Path::new("packed-refs.lock"))?;
+    let (guard, mut file) = acquire_git_lock(directory, Path::new(&format!("{reference}.lock")))?;
+    packed_guard.verify_owned()?;
+    guard.verify_owned()?;
+    if reference_target(repository, reference)? != expected {
+        return Err(format!(
+            "stale: review receiving lease changed: {reference}"
+        ));
+    }
+    read_regular_optional(&directory.join(reference))?;
+    repository
+        .find_commit(new)
+        .map_err(|error| error.to_string())?;
+    let unchanged = expected == Some(new);
+    publish(&mut || {
+        packed_guard.verify_owned()?;
+        guard.verify_owned()?;
+        if unchanged {
+            return Ok(());
+        }
+        file.write_all(format!("{new}\n").as_bytes())
+            .and_then(|()| file.sync_all())
+            .map_err(|error| error.to_string())?;
+        guard.publish_retaining_lock(&directory.join(reference))
+    })?;
+    Ok(!unchanged)
+}
+
 pub(crate) fn create_expected_reference(
     repository: &git2::Repository,
     reference: &str,

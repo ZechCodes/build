@@ -1,0 +1,208 @@
+use super::*;
+use crate::reviews::publication::{self, PublicationError};
+use crate::reviews::receivers::{self, refs};
+use crate::reviews::sync::reconcile::{reconcile_held_as, recovery::CaptureJournal};
+use std::cell::Cell;
+
+const RECOVERY: &str = "Refresh review and receiver state before retrying publication.";
+
+pub(super) fn push(
+    store: &Store,
+    request: &PushRequest,
+    check: &dyn Fn() -> Result<(), String>,
+) -> Result<PushResult, String> {
+    let review = active(store, &request.task_id, request.expected_version)?;
+    selections(
+        &review,
+        request
+            .sources
+            .iter()
+            .map(|source| source.directory_id.as_str()),
+    )?;
+    check()?;
+    let mut journal = CaptureJournal::acquire(&review.task_id, &review.bindings)?;
+    journal.recover(store, &review.bindings)?;
+    let review = active(store, &request.task_id, request.expected_version)?;
+    let mut sources = Vec::with_capacity(request.sources.len());
+    for source in &request.sources {
+        let binding = review
+            .bindings
+            .iter()
+            .find(|binding| binding.directory_id == source.directory_id)
+            .ok_or("invalid review params: Git directory is not bound")?;
+        let result = publish_one(store, request, source, binding, check);
+        sources.push(outcome(source, result));
+    }
+    let recovery = match reconcile_held_as(store, &request.task_id, &mut journal, &request.actor) {
+        Ok(result) if result.retry => Some(
+            "Publication received; snapshot reconciliation needs recovery. Refresh the review."
+                .into(),
+        ),
+        Ok(_) => None,
+        Err(error) => Some(format!(
+            "Publication received; reconciliation needs recovery: {}",
+            crate::source_sync::without_credentials(&error)
+        )),
+    };
+    Ok(PushResult {
+        review: load_full(store, &request.task_id)?,
+        sources,
+        recovery,
+    })
+}
+
+fn publish_one(
+    store: &Store,
+    request: &PushRequest,
+    source: &PushSource,
+    binding: &ReviewBranchBinding,
+    check: &dyn Fn() -> Result<(), String>,
+) -> Result<bool, PublicationError> {
+    receivers::validate_binding_receiver(binding).map_err(PublicationError::Failed)?;
+    publication::validate_bound_remote(binding).map_err(PublicationError::Failed)?;
+    let head = oid(&source.expected_head).map_err(PublicationError::Failed)?;
+    let expected = source
+        .expected_received_head
+        .as_deref()
+        .map(oid)
+        .transpose()
+        .map_err(PublicationError::Failed)?;
+    let working = git2::Repository::open(&binding.working_repository)
+        .map_err(|error| PublicationError::Failed(error.to_string()))?;
+    validate_head(&working, binding, head).map_err(PublicationError::Failed)?;
+    publication::import_publication_commit(
+        &binding.receiving_repository,
+        &binding.working_repository,
+        &source.expected_head,
+    )?;
+    check().map_err(PublicationError::Failed)?;
+    let receiver = git2::Repository::open_bare(&binding.receiving_repository)
+        .map_err(|error| PublicationError::Failed(error.to_string()))?;
+    validate_fast_forward(&receiver, expected, head, source.force_with_lease)
+        .map_err(PublicationError::Failed)?;
+    publish_locked(
+        store,
+        request,
+        binding,
+        &working,
+        &receiver,
+        (expected, head),
+        check,
+    )
+}
+
+fn publish_locked(
+    store: &Store,
+    request: &PushRequest,
+    binding: &ReviewBranchBinding,
+    working: &git2::Repository,
+    receiver: &git2::Repository,
+    heads: (Option<git2::Oid>, git2::Oid),
+    check: &dyn Fn() -> Result<(), String>,
+) -> Result<bool, PublicationError> {
+    let (expected, head) = heads;
+    let applied = Cell::new(false);
+    let result =
+        refs::with_expected_reference_locked(working, &binding.dedicated_branch_ref, head, || {
+            validate_head(working, binding, head)?;
+            refs::update_expected_reference_checked(
+                receiver,
+                &binding.receiving_ref,
+                expected,
+                head,
+                |publish| {
+                    check()?;
+                    receivers::validate_binding_receiver(binding)?;
+                    publication::validate_bound_remote(binding)?;
+                    store
+                        .with_review_publication_version(
+                            &request.task_id,
+                            request.expected_version,
+                            || {
+                                publish()?;
+                                applied.set(expected != Some(head));
+                                Ok(())
+                            },
+                        )
+                        .map_err(|error| error.to_string())
+                },
+            )
+        });
+    result.map_err(|error| {
+        if applied.get() {
+            PublicationError::Interrupted(error)
+        } else {
+            PublicationError::Failed(error)
+        }
+    })
+}
+
+fn oid(value: &str) -> Result<git2::Oid, String> {
+    if value.len() != 40 {
+        return Err("invalid review params: expected head must be a full commit OID".into());
+    }
+    git2::Oid::from_str(value).map_err(|error| error.to_string())
+}
+
+fn validate_head(
+    repository: &git2::Repository,
+    binding: &ReviewBranchBinding,
+    expected: git2::Oid,
+) -> Result<(), String> {
+    let head = repository.head().map_err(|error| error.to_string())?;
+    if head.name() != Some(&binding.dedicated_branch_ref)
+        || head.target() != Some(expected)
+        || repository.refname_to_id(&binding.dedicated_branch_ref).ok() != Some(expected)
+    {
+        return Err("stale: review working branch or expected head changed".into());
+    }
+    repository
+        .find_commit(expected)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+fn validate_fast_forward(
+    repository: &git2::Repository,
+    expected: Option<git2::Oid>,
+    head: git2::Oid,
+    force: bool,
+) -> Result<(), String> {
+    if force || expected.is_none() || expected == Some(head) {
+        return Ok(());
+    }
+    if !repository
+        .graph_descendant_of(head, expected.expect("received head checked"))
+        .map_err(|error| error.to_string())?
+    {
+        return Err("conflict: review push would rewrite received history; use force_with_lease with the exact received head".into());
+    }
+    Ok(())
+}
+
+fn outcome(source: &PushSource, result: Result<bool, PublicationError>) -> PushOutcome {
+    match result {
+        Ok(changed) => PushOutcome {
+            directory_id: source.directory_id.clone(),
+            status: if changed {
+                PushStatus::Published
+            } else {
+                PushStatus::Unchanged
+            },
+            head: Some(source.expected_head.clone()),
+            error: None,
+            recovery: None,
+        },
+        Err(error) => PushOutcome {
+            directory_id: source.directory_id.clone(),
+            status: if matches!(error, PublicationError::Interrupted(_)) {
+                PushStatus::Interrupted
+            } else {
+                PushStatus::Failed
+            },
+            head: None,
+            error: Some(crate::source_sync::without_credentials(&error.to_string())),
+            recovery: Some(RECOVERY.into()),
+        },
+    }
+}

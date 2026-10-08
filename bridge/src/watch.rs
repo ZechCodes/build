@@ -28,7 +28,11 @@
 //! #128). So the tree is walked once at start, the directories the repository
 //! ignores are skipped along with everything beneath them, and each watched
 //! directory is watched on its own; a directory created later is adopted the
-//! same way when its creation is seen.
+//! same way when its creation is seen. Linked worktrees also watch their actual
+//! Git directory and shared common directory outside the checkout.
+//! [`metadata`] supplies subscription-independent committed-ref notifications.
+
+pub mod metadata;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -168,6 +172,7 @@ fn start_with_sink<S: ChangeSink>(
     let classifier = Arc::new(Classifier::for_root(&root));
     let mut coverage = Coverage::default();
     watch_tree(&watcher, &classifier, &root, &mut coverage).map_err(fail)?;
+    watch_external_metadata(&watcher, &classifier, &mut coverage).map_err(fail)?;
 
     let entity_id = entity_id.to_string();
     // Weak, so the thread's hold on the watcher is not a hold at all: the
@@ -185,6 +190,36 @@ fn start_with_sink<S: ChangeSink>(
         watched: coverage.watched,
         skipped: coverage.skipped,
     })
+}
+
+/// Linked checkouts store metadata outside their working tree. Watch the
+/// resolved directories directly, without following their object databases.
+fn watch_external_metadata(
+    watcher: &SharedWatcher,
+    classifier: &Classifier,
+    coverage: &mut Coverage,
+) -> Result<(), String> {
+    let mut watcher = watcher.lock().unwrap();
+    for root in classifier
+        .metadata
+        .iter()
+        .filter(|path| !path.starts_with(&classifier.root))
+    {
+        watcher
+            .watch(root, notify::RecursiveMode::NonRecursive)
+            .map_err(|error| error.to_string())?;
+        coverage.watched += 1;
+        for name in ["refs", "logs"] {
+            let path = root.join(name);
+            if path.is_dir() {
+                watcher
+                    .watch(&path, notify::RecursiveMode::Recursive)
+                    .map_err(|error| error.to_string())?;
+                coverage.watched += 1;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// What one walk of the tree registered and what it left alone.
@@ -343,6 +378,7 @@ fn note<S: ChangeSink>(burst: &Burst, entity_id: &str, sink: &S) {
 /// [`Class`].
 struct Classifier {
     root: PathBuf,
+    metadata: BTreeSet<PathBuf>,
     /// The root's `.gitignore` and `.git/info/exclude`.
     ignores: Gitignore,
     /// The user's global excludes (`core.excludesFile`).
@@ -359,11 +395,14 @@ impl Classifier {
         // with no `.gitignore` is the common case, and an unreadable one must
         // not cost the worktree its watcher.
         builder.add(root.join(".gitignore"));
-        builder.add(root.join(".git/info/exclude"));
+        if let Ok(repository) = git2::Repository::open(root) {
+            builder.add(repository.commondir().join("info/exclude"));
+        }
         let ignores = builder.build().unwrap_or_else(|_| Gitignore::empty());
         let (global, _) = Gitignore::global();
         Classifier {
             root: root.to_path_buf(),
+            metadata: metadata::metadata_roots(root).unwrap_or_default(),
             ignores,
             global,
         }
@@ -385,6 +424,11 @@ impl Classifier {
 
     /// What one raw path means.
     fn classify(&self, path: &Path) -> Class {
+        for root in self.metadata.iter().rev() {
+            if let Ok(relative) = path.strip_prefix(root) {
+                return classify_git_metadata(relative);
+            }
+        }
         let Ok(relative) = path.strip_prefix(&self.root) else {
             return Class::Drop; // outside the worktree; not ours to report
         };
@@ -720,5 +764,65 @@ mod tests {
             );
         }
         assert_eq!(classifier.classify(Path::new("/elsewhere/x")), Class::Drop);
+    }
+    #[test]
+    fn linked_worktree_metadata_is_not_a_working_tree_file() {
+        let dir = repo();
+        let repo = git2::Repository::open(dir.path()).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let oid = repo.index().unwrap().write_tree().unwrap();
+        repo.commit(
+            Some("HEAD"),
+            &sig,
+            &sig,
+            "initial",
+            &repo.find_tree(oid).unwrap(),
+            &[],
+        )
+        .unwrap();
+        let linked = dir.path().join("linked");
+        repo.worktree("linked", &linked, None).unwrap();
+        let classifier = Classifier::for_root(&linked.canonicalize().unwrap());
+        let linked_repo = git2::Repository::open(&linked).unwrap();
+        assert_eq!(
+            classifier.classify(&linked_repo.path().join("HEAD")),
+            Class::Git
+        );
+        assert_eq!(
+            classifier.classify(&repo.path().join("refs/heads/main")),
+            Class::Git
+        );
+        assert_eq!(
+            classifier.classify(&repo.path().join("objects/ab/oid")),
+            Class::Drop
+        );
+    }
+    #[test]
+    fn linked_worktree_notifies_external_head_and_common_refs() {
+        let source = repo();
+        let repo = git2::Repository::open(source.path()).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let oid = repo.index().unwrap().write_tree().unwrap();
+        repo.commit(
+            Some("HEAD"),
+            &sig,
+            &sig,
+            "initial",
+            &repo.find_tree(oid).unwrap(),
+            &[],
+        )
+        .unwrap();
+        let linked = source.path().join("linked");
+        repo.worktree("linked", &linked, None).unwrap();
+        let linked_repo = git2::Repository::open(&linked).unwrap();
+        let (_watcher, sink) = start_recording(&linked);
+        std::fs::write(linked_repo.path().join("HEAD"), "ref: refs/heads/linked\n").unwrap();
+        assert!(settle(&sink, |s| s.git_notes() > 0));
+        assert!(sink.noted_paths().is_empty());
+        std::thread::sleep(Duration::from_millis(150));
+        sink.forget();
+        std::fs::write(repo.path().join("refs/heads/main"), format!("{oid}\n")).unwrap();
+        assert!(settle(&sink, |s| s.git_notes() > 0));
+        assert!(sink.noted_paths().is_empty());
     }
 }

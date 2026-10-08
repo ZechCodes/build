@@ -31,7 +31,8 @@ describe("the v1 adapter against fixtures/api/v1", () => {
   it("announces PR mutations and their shared feature while retaining Snapshot verbs", () => {
     const greeting = methodFixtures.find(({ body }) => body.method === "session.hello").body;
     expect(greeting.result.api_version).toBe("3.15.0");
-    expect(greeting.result.capabilities).toContain("tasks.pullRequests");
+    expect(greeting.result.capabilities).toContain("tasks.review.pullRequests");
+    expect(greeting.result.capabilities).not.toContain("tasks.pullRequests");
     for (const verb of ["open", "push", "update", "merge", "close", "reopen", "refresh"]) {
       const method = `tasks.review.${verb}`;
       expect(greeting.result.capabilities).toContain(method);
@@ -55,6 +56,8 @@ describe("the v1 adapter against fixtures/api/v1", () => {
     }
     const legacy = { api_version: "3.14.0", capabilities: ["tasks.review.get", "tasks.review.act"] };
     expect(v1.capabilitiesOf(legacy).reviews).toMatchObject({ get: true, act: true, pullRequests: false, open: false });
+    const incorrect = { api_version: "3.15.0", capabilities: ["tasks.pullRequests"] };
+    expect(v1.capabilitiesOf(incorrect).reviews.pullRequests).toBe(false);
   });
 
   it("keeps PR summaries additive on task, feed and workspace reads", () => {

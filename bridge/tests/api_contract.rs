@@ -324,7 +324,8 @@ fn review_snapshots_and_selected_git_actions_have_separate_capabilities() {
 fn pull_requests_announce_their_new_mutations_without_retiring_snapshot_reviews() {
     let advertised = capabilities(false);
     assert_eq!(API_VERSION, "3.15.0");
-    assert!(advertised.contains(&"tasks.pullRequests"));
+    assert!(advertised.contains(&"tasks.review.pullRequests"));
+    assert!(!advertised.contains(&"tasks.pullRequests"));
     for verb in [
         "open", "push", "update", "merge", "close", "reopen", "refresh",
     ] {

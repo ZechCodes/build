@@ -156,7 +156,10 @@ describe("the v1 adapter against fixtures/api/v1", () => {
     expect(result?.review.pull_request.status).toBe("open");
     expect(result.review.actions[0].status).toBe("succeeded");
     expect(result.review.actions[1]).toMatchObject({
-      directory_id: "dir-ui", status: "failed", steps: [{ kind: "merge", status: "failed", branch: "main", error: expect.any(String) }],
+      directory_id: "dir-ui", status: "failed", steps: [
+        { kind: "merge", status: "failed", branch: "main", error: expect.any(String) },
+        { kind: "push", branch: "main", remote: "origin", status: "pending" },
+      ],
     });
     expect(result.merge_intents[0].state).toBe("failed");
     expect(v1.parseResult("tasks.review.merge", result)).toEqual(result);

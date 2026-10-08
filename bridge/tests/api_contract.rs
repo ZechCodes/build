@@ -570,6 +570,12 @@ fn pull_request_merge_records_git_mid_operation_without_losing_partial_results()
         result["review"]["actions"][1]["steps"][0]["status"],
         "failed"
     );
+    assert_eq!(
+        result["review"]["actions"][1]["steps"][1],
+        serde_json::json!({
+            "kind":"push","branch":"main","remote":"origin","status":"pending"
+        })
+    );
     assert_eq!(result["merge_intents"][0]["state"], "failed");
     let parsed: build_bridge::api::v1::reviews::ReviewResult = typed(result, "merge Git operation");
     assert_eq!(serde_json::to_value(parsed).unwrap(), *result);

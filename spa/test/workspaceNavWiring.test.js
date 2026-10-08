@@ -422,12 +422,14 @@ describe("kept Git initialization dialogs", () => {
   it.each(["success", "error"])("settles an init %s while hidden and keeps the result in its own directory", async (outcome) => {
     let settle;
     const pending = new Promise((resolve, reject) => { settle = { resolve, reject }; });
+    const requested = Promise.withResolvers();
     adoptDeviceSession({ ...fakeSession("dev-1"), call: vi.fn(async (method, params) => {
-      if (method === "workspace.init_git") { asked.push({ method, params }); return pending; }
+      if (method === "workspace.init_git") { asked.push({ method, params }); requested.resolve(); return pending; }
       return machine(method, params);
     }) });
     await openDialog();
     document.querySelector("[data-confirm-init-git]").click();
+    await requested.promise;
     expect(asked.filter(({ method }) => method === "workspace.init_git")).toHaveLength(1);
     const heldDialog = dialog();
     expect(heldDialog.querySelector("[data-confirm-init-git]").disabled).toBe(true);

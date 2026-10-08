@@ -6,6 +6,8 @@ use super::*;
 
 mod opening;
 mod pull_requests;
+#[path = "reviews/pull_requests/reopen_version.rs"]
+mod reopen_version;
 mod summaries;
 
 fn review_call(state: &mut AppState, method: &str, params: Value) -> Value {

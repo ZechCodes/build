@@ -93,7 +93,7 @@
             {
               "id": "snapshot-1",
               "number": 1,
-              "created_at": "2026-10-02T16:00:00Z",
+              "created_at": "2026-10-08T17:00:00Z",
               "author": {
                 "kind": "user"
               },
@@ -106,7 +106,7 @@
                   "source_path": "/sources/api",
                   "is_git": true,
                   "status": "git",
-                  "common_git_dir": "/sources/api/.git",
+                  "common_git_dir": "/receivers/api.git",
                   "branch": "review/1-api",
                   "base": {
                     "kind": "configured",
@@ -124,7 +124,7 @@
                   "source_path": "/sources/ui",
                   "is_git": true,
                   "status": "git",
-                  "common_git_dir": "/sources/ui/.git",
+                  "common_git_dir": "/receivers/ui.git",
                   "branch": "review/1-ui",
                   "base": {
                     "kind": "configured",
@@ -151,24 +151,9 @@
                   "source_path": "/sources/missing",
                   "is_git": true,
                   "status": "unavailable",
-                  "reason": "Source unavailable"
+                  "reason": "Excluded when opening this review."
                 }
-              ],
-              "publication": {
-                "reason": "received",
-                "directories": [
-                  {
-                    "directory_id": "dir-api",
-                    "target_head": "1111111111111111111111111111111111111111",
-                    "rewritten": false
-                  },
-                  {
-                    "directory_id": "dir-ui",
-                    "target_head": "1111111111111111111111111111111111111111",
-                    "rewritten": false
-                  }
-                ]
-              }
+              ]
             }
           ],
           "completion": null,
@@ -202,7 +187,7 @@
                 "directory_id": "dir-missing",
                 "source_id": "source-missing",
                 "kind": "excluded",
-                "reason": "Source unavailable"
+                "reason": "Excluded when opening this review."
               }
             ]
           },
@@ -287,7 +272,7 @@
             {
               "id": "snapshot-1",
               "number": 1,
-              "created_at": "2026-10-02T16:00:00Z",
+              "created_at": "2026-10-08T17:00:00Z",
               "author": {
                 "kind": "user"
               },
@@ -300,7 +285,7 @@
                   "source_path": "/sources/api",
                   "is_git": true,
                   "status": "git",
-                  "common_git_dir": "/sources/api/.git",
+                  "common_git_dir": "/receivers/api.git",
                   "branch": "review/1-api",
                   "base": {
                     "kind": "configured",
@@ -318,7 +303,7 @@
                   "source_path": "/sources/ui",
                   "is_git": true,
                   "status": "git",
-                  "common_git_dir": "/sources/ui/.git",
+                  "common_git_dir": "/receivers/ui.git",
                   "branch": "review/1-ui",
                   "base": {
                     "kind": "configured",
@@ -345,24 +330,9 @@
                   "source_path": "/sources/missing",
                   "is_git": true,
                   "status": "unavailable",
-                  "reason": "Source unavailable"
+                  "reason": "Excluded when opening this review."
                 }
-              ],
-              "publication": {
-                "reason": "received",
-                "directories": [
-                  {
-                    "directory_id": "dir-api",
-                    "target_head": "1111111111111111111111111111111111111111",
-                    "rewritten": false
-                  },
-                  {
-                    "directory_id": "dir-ui",
-                    "target_head": "1111111111111111111111111111111111111111",
-                    "rewritten": false
-                  }
-                ]
-              }
+              ]
             }
           ],
           "completion": null,
@@ -396,7 +366,7 @@
                 "directory_id": "dir-missing",
                 "source_id": "source-missing",
                 "kind": "excluded",
-                "reason": "Source unavailable"
+                "reason": "Excluded when opening this review."
               }
             ]
           },
@@ -477,7 +447,7 @@
             {
               "id": "snapshot-1",
               "number": 1,
-              "created_at": "2026-10-02T16:00:00Z",
+              "created_at": "2026-10-08T17:00:00Z",
               "author": {
                 "kind": "user"
               },
@@ -490,7 +460,7 @@
                   "source_path": "/sources/api",
                   "is_git": true,
                   "status": "git",
-                  "common_git_dir": "/sources/api/.git",
+                  "common_git_dir": "/receivers/api.git",
                   "branch": "review/1-api",
                   "base": {
                     "kind": "configured",
@@ -508,7 +478,7 @@
                   "source_path": "/sources/ui",
                   "is_git": true,
                   "status": "git",
-                  "common_git_dir": "/sources/ui/.git",
+                  "common_git_dir": "/receivers/ui.git",
                   "branch": "review/1-ui",
                   "base": {
                     "kind": "configured",
@@ -535,24 +505,9 @@
                   "source_path": "/sources/missing",
                   "is_git": true,
                   "status": "unavailable",
-                  "reason": "Source unavailable"
+                  "reason": "Excluded when opening this review."
                 }
-              ],
-              "publication": {
-                "reason": "received",
-                "directories": [
-                  {
-                    "directory_id": "dir-api",
-                    "target_head": "1111111111111111111111111111111111111111",
-                    "rewritten": false
-                  },
-                  {
-                    "directory_id": "dir-ui",
-                    "target_head": "1111111111111111111111111111111111111111",
-                    "rewritten": false
-                  }
-                ]
-              }
+              ]
             }
           ],
           "completion": null,
@@ -639,7 +594,7 @@
                 "directory_id": "dir-missing",
                 "source_id": "source-missing",
                 "kind": "excluded",
-                "reason": "Source unavailable"
+                "reason": "Excluded when opening this review."
               }
             ]
           },
@@ -684,10 +639,10 @@
           {
             "task_id": "task-1",
             "directory_id": "dir-api",
-            "revision": 2,
+            "revision": 3,
             "health": "current",
-            "target_head": "1111111111111111111111111111111111111111",
-            "comparison_base": "1111111111111111111111111111111111111111",
+            "target_head": "3333333333333333333333333333333333333333",
+            "comparison_base": "2222222222222222222222222222222222222222",
             "working_head": "2222222222222222222222222222222222222222",
             "received_head": "2222222222222222222222222222222222222222",
             "snapshot_head": "2222222222222222222222222222222222222222",

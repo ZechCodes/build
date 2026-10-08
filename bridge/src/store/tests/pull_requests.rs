@@ -460,8 +460,14 @@ fn explicit_history_deletion_cleans_cancelled_and_published_pr_rows() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();
     let review = publish(&store);
-    store
+    let mut merge = store
         .reserve_review_merge("/repo", "merge-1", merge_request(&review))
+        .unwrap();
+    // History deletion waits for admitted work to finish or be recovered.
+    // No Git was started by this store-only fixture.
+    merge.state = ReviewMergeState::Interrupted;
+    store
+        .save_review_merge_intent(&merge, merge.version)
         .unwrap();
     let mut cancelled = store
         .reserve_review_opening("/repo", "open-2", request("ws-2"))

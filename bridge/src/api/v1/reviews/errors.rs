@@ -137,6 +137,7 @@ const REFUSALS: &[(&str, &str, &str)] = &[
     ),
     ("Git operation in progress", "busy", "git_operation"),
     ("in-progress Git", "busy", "git_operation"),
+    (" is in progress in ", "busy", "git_operation"),
     ("already running", "busy", "operation_running"),
     ("review base unavailable", "conflict", "missing_base"),
     (

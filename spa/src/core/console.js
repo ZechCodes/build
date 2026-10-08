@@ -613,7 +613,7 @@ export function mountConsole(host, context) {
         // reaped while the console was shut): drop the tab rather than leave a
         // blank pane that fails identically on every click.
         if (/unknown term_id/.test((error && error.message) || "")) void afterTerminalGone(termId);
-        else paneHost.innerHTML = `<div class="empty">terminal unavailable: ${esc((error && error.message) || "error")}</div>`;
+        else paneHost.innerHTML = `<div class="empty selectable">terminal unavailable: ${esc((error && error.message) || "error")}</div>`;
       },
     );
   };

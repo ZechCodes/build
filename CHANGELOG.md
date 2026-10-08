@@ -6,6 +6,16 @@ Notable changes to the bridge (`build-bridge`). The format follows
 protocol versions; see
 [Wire versioning and capabilities](ARCHITECTURE.md#wire-versioning-and-capabilities).
 
+## [0.2.13] - Unreleased
+
+Wire 3.13.0.
+
+### Changed
+
+- Keep SPA controls, labels and navigation chrome unselectable, with shared
+  pointer, keyboard and touch feedback while preserving selection in content,
+  form fields and the terminal (#397).
+
 ## [0.2.12] - 2026-10-07
 
 Wire 3.13.0.

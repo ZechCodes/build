@@ -1,0 +1,125 @@
+/* The shell is chrome by default. Content below opts back into native selection.
+   Explicit inheritance keeps this policy consistent across browser engines. */
+body {
+  -webkit-user-select:none; user-select:none;
+  -webkit-touch-callout:none; cursor:default;
+}
+:where(body *) {
+  -webkit-user-select:inherit; user-select:inherit;
+  -webkit-touch-callout:inherit;
+}
+
+/* Copyable content, including diagnostics inside otherwise quiet surfaces.
+   .selectable is for a copyable payload without a dedicated content wrapper. */
+:where(.selectable, .markdown, .task-page-title, .ivstagetitle,
+    td.code, .fsrc-code, pre, code, .cc-body, .cc-reply, .cc-snip,
+    .pctext, .psnip, .csub, .cinfo,
+    .thread-event-detail, .task-event-text, .thread-anchor,
+    .agent-observation-objective, .stage-invalidation,
+    .surface-row-detail, .surface-row-error, .surface-agent-fact dd,
+    .notice-summary, .notice-detail, .adderr, .error, .giterror, .ferr,
+    .fpidle-error, .file-save-status, .trf-status, .compose-error,
+    .capture-decide-error, .create-error, [role="alert"],
+    [data-reclaim-error], [data-done-error], [data-capture-error],
+    .plan-empty.warn, .fupload-name, .fupload-destination, .fupload-error,
+    .v, .ppath) {
+  -webkit-user-select:text; user-select:text;
+  -webkit-touch-callout:default; cursor:text;
+}
+
+/* A control's nested code/caption is still chrome. Fields are restored last,
+   including fields nested in labels, disclosures and disabled containers. */
+:where(button, summary, [role="button"], [role="tab"], [role="menuitem"],
+    [role="menuitemradio"], [role="option"], label, time, th,
+    .no-select, .tabs, .toolbar, .task-page-marks, .task-column-head,
+    .chip, .badge, .pill, .task-status, .task-page-labels,
+    .empty:not(.giterror, .selectable, .error), .sub, .hint, [role="tooltip"], .ln, .fsrc-ln),
+:where(button, summary, [role="button"], [role="tab"], [role="menuitem"],
+    [role="menuitemradio"], [role="option"], .no-select, .toolbar) * {
+  -webkit-user-select:none; user-select:none; -webkit-touch-callout:none;
+}
+:where(label, th, .chip, .badge, .pill, .task-status, .task-page-state) { cursor:default; }
+:where(button, summary, [role="button"], [role="tab"], [role="menuitem"],
+    [role="menuitemradio"], [role="option"]) * { cursor:inherit; }
+
+/* Native/ARIA controls and the older click targets use one feedback grammar.
+   Low specificity lets native sliders and terminal keys keep their gestures. */
+:where(button, a[href], summary, [role="button"], [role="tab"],
+    [role="menuitem"], [role="menuitemradio"], [role="option"],
+    .tabs .t, .console-tab .tx, .card, .stagerow, .srow.snav,
+    .crow, .rrow, .ivlin-row, .pcx, .cc-x,
+    .frow:is(.fdir, .ffile), .task-row:has(.task-row-open[href]),
+    .file .fhead, .file.capped .dscroll, .gitmore, .fpmore,
+    .toggle, .changedonly) {
+  -webkit-tap-highlight-color:transparent;
+  touch-action:manipulation;
+}
+@media (any-pointer:fine) {
+  :where(button, a[href], summary, [role="button"], [role="tab"],
+      [role="menuitem"], [role="menuitemradio"], [role="option"],
+      .tabs .t, .console-tab .tx, .card, .stagerow, .srow.snav,
+    .crow, .rrow, .ivlin-row, .pcx, .cc-x,
+      .frow:is(.fdir, .ffile), .task-row:has(.task-row-open[href]),
+      .file .fhead, .file.capped .dscroll, .gitmore, .fpmore,
+      .toggle, .changedonly):not(:disabled, [aria-disabled="true"]) { cursor:pointer; }
+  :where(button, a[href], summary, [role="button"], [role="tab"],
+      [role="menuitem"], [role="menuitemradio"], [role="option"],
+      .tabs .t, .console-tab .tx, .card, .stagerow, .srow.snav,
+    .crow, .rrow, .ivlin-row, .pcx, .cc-x,
+      .frow:is(.fdir, .ffile), .task-row:has(.task-row-open[href]),
+      .file .fhead, .file.capped .dscroll, .gitmore, .fpmore,
+      .toggle, .changedonly):hover:not(:disabled, [aria-disabled="true"]) {
+    box-shadow:inset 0 0 0 999px color-mix(in srgb, currentColor 8%, transparent);
+  }
+}
+:where(button, a[href], summary, [role="button"], [role="tab"],
+    [role="menuitem"], [role="menuitemradio"], [role="option"],
+    .tabs .t, .console-tab .tx, .card, .stagerow, .srow.snav,
+    .crow, .rrow, .ivlin-row, .pcx, .cc-x,
+    .frow:is(.fdir, .ffile), .task-row:has(.task-row-open[href]),
+    .file .fhead, .file.capped .dscroll, .gitmore, .fpmore,
+    .toggle, .changedonly):focus-visible {
+  outline:2px solid var(--accent); outline-offset:2px;
+}
+:where(button, a[href], summary, [role="button"], [role="tab"],
+    [role="menuitem"], [role="menuitemradio"], [role="option"],
+    .tabs .t, .console-tab .tx, .card, .stagerow, .srow.snav,
+    .crow, .rrow, .ivlin-row, .pcx, .cc-x,
+    .frow:is(.fdir, .ffile), .task-row:has(.task-row-open[href]),
+    .file .fhead, .file.capped .dscroll, .gitmore, .fpmore,
+    .toggle, .changedonly):active:not(:disabled, [aria-disabled="true"]) {
+  box-shadow:inset 0 0 0 999px color-mix(in srgb, currentColor 18%, transparent);
+}
+
+/* Native choices retain their own tap feedback. Every field explicitly escapes
+   the chrome policy; disabling a field does not prevent copying its value. */
+:where(input, textarea, select, [contenteditable]:not([contenteditable="false"])) {
+  -webkit-user-select:text; user-select:text; -webkit-touch-callout:default;
+}
+:where(input:not([type="checkbox"], [type="radio"], [type="range"], [type="file"],
+    [type="button"], [type="submit"], [type="reset"], [type="color"], [type="image"]),
+    textarea, [contenteditable]:not([contenteditable="false"])) { cursor:text; }
+
+/* A text cursor belongs to the code even when its preview can be expanded.
+   Nonpressable clips and unfollowed links in the file tree must not promise an
+   action. The gutter's real comment button keeps its own pointer cursor. */
+.file td.code { cursor:text; }
+.file tr td.ln { cursor:default; }
+@media (any-pointer:fine) {
+  .commentable-diff .file:not(.capped) tr[data-ln] td.ln { cursor:pointer; }
+}
+.surface-clip:not([role="button"]) { cursor:inherit; }
+.frow:is(.fsym, .fsubmodule), .frow.ferr { cursor:default; }
+
+:is(button, input, textarea, select, [role="button"], [role="tab"],
+    [role="menuitem"], [role="menuitemradio"], [role="option"]):is(:disabled, [aria-disabled="true"]) {
+  cursor:default; opacity:.55;
+}
+:is(button, [role="button"], [role="tab"]):is(:disabled, [aria-disabled="true"]) * { cursor:inherit; }
+.task-card[draggable="true"] { cursor:grab; }
+.task-card[draggable="true"]:active { cursor:grabbing; }
+
+/* Ghostty selects its canvas itself; keep its editable host and gesture policy.
+   The terminal key bar pans sideways while preserving terminal focus. */
+.term-screen { -webkit-user-select:auto; user-select:auto; cursor:default; }
+.termkey { touch-action:pan-x; }

@@ -2246,7 +2246,7 @@ export function wireThreadRevisionLinks(root, loadRevision) {
           viewer.innerHTML = "";
         };
       } catch (error) {
-        viewer.innerHTML = `<div class="thread-revision-head">Could not load revision: ${esc(error.message || String(error))}</div>`;
+        viewer.innerHTML = `<div class="thread-revision-head selectable">Could not load revision: ${esc(error.message || String(error))}</div>`;
       }
     };
   });

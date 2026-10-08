@@ -20,6 +20,8 @@ Wire 3.14.0.
 
 ### Changed
 
+- Task comment replies quote their parent's author and excerpt, jump to and
+  briefly highlight the full comment on activation, and show reply counts (#411).
 - Files directory actions use recognizable upload and new-folder icons, shown
   on hover or keyboard focus and revealed one row at a time by long press on
   touch devices (#396).

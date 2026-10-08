@@ -5,8 +5,12 @@ import { fieldTraits } from "./fieldTraits.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import { readUiRecord, writeUiRecordIfUnwritten } from "./localUiStore.js";
 import { notifyError } from "./notify.js";
-import { assigneeOptions, selectedOptionId, workspaceAgents } from "./trackerAssignee.js";
+import { agentLabels, assigneeOptions, selectedOptionId, workspaceAgents, projectName } from "./trackerAssignee.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
+import { readTaskRecord, taskAddress } from "./trackerCache.js";
+import { subscribeCache } from "./localCache.js";
+import { timelineRows } from "./trackerTimeline.js";
+import { commentReplyIndex, commentReplyLabel } from "./taskCommentReplies.js";
 
 const emptyDraft = () => ({ body: "", verdict: "", anchor: null, replyTo: null });
 const snapshotIdOf = (snapshot) => snapshot?.id || snapshot?.snapshot_id || "";
@@ -28,12 +32,16 @@ const commentParams = (taskId, snapshotId, draft) => ({
 /** One review's composer. A new mount reads its task/snapshot draft from build-ui. */
 export function mountTaskReviewFeedback(host, {
   deviceId, projectId, taskId, snapshot, callRpc, onSent = null, keepReadingPlace = (paint) => paint(),
+  feed = null, projectKey = "",
 }) {
   const snapshotId = snapshotIdOf(snapshot);
   let draft = emptyDraft();
   let sending = false;
   let disposed = false;
   let draftRevision = 0;
+  let taskRecord = null;
+  let replyIndex = commentReplyIndex([]);
+  let readSerial = 0;
   host.innerHTML = `<form class="task-review-feedback" data-review-feedback>
     <label class="create-label" for="task-review-feedback-body">Review feedback</label>
     <p class="sub" data-review-target hidden></p>
@@ -52,12 +60,19 @@ export function mountTaskReviewFeedback(host, {
   const opinion = form.querySelector("select");
   const target = form.querySelector("[data-review-target]");
   const button = form.querySelector('button[type="submit"]');
+  const replyLabel = () => {
+    const heldFeed = typeof feed === "function" ? feed() : feed;
+    return commentReplyLabel(replyIndex.comments.get(draft.replyTo), {
+      deviceId, projectId, identities: taskRecord?.task?.identities || {},
+      projectName: projectName(heldFeed, projectKey), agentLabels: agentLabels(workspaceAgents(heldFeed, projectKey)),
+    });
+  };
   const paint = (saved) => keepReadingPlace(() => {
     if (disposed) return;
     draft = { ...emptyDraft(), ...saved };
     if (field.value !== draft.body) field.value = draft.body;
     opinion.value = draft.verdict;
-    const parts = [draft.anchor && anchorLabel(draft.anchor), draft.replyTo && `Reply to ${draft.replyTo}`].filter(Boolean);
+    const parts = [draft.anchor && anchorLabel(draft.anchor), draft.replyTo && replyLabel()].filter(Boolean);
     target.textContent = parts.join(" · ");
     target.hidden = !parts.length;
     button.disabled = sending || !hasBody(draft);
@@ -65,6 +80,16 @@ export function mountTaskReviewFeedback(host, {
   });
   const address = uiAddress({ deviceId, entityId: projectId, kind: "draft", view: "task-review-feedback", sub: `${taskId}:${snapshotId}` });
   const saved = watchUiState(address, paint, { debounceMs: 100 });
+  const hydrateReply = async () => {
+    const serial = ++readSerial;
+    const record = await readTaskRecord(deviceId, projectId, taskId);
+    if (disposed || serial !== readSerial) return;
+    taskRecord = record;
+    replyIndex = commentReplyIndex(timelineRows(record?.timeline));
+    paint(draft);
+  };
+  const stopReplyCache = subscribeCache(taskAddress(deviceId, projectId, taskId), () => void hydrateReply());
+  void hydrateReply();
   const edit = (changes) => {
     draftRevision += 1;
     draft = { ...draft, ...changes };
@@ -100,6 +125,7 @@ export function mountTaskReviewFeedback(host, {
     }
   };
   return {
+    update() { paint(draft); },
     comment(anchor = null, replyTo = null) {
       if (disposed) return;
       if (anchor && !validAnchor(anchor, snapshotId)) return;
@@ -108,6 +134,7 @@ export function mountTaskReviewFeedback(host, {
     },
     dispose() {
       disposed = true;
+      stopReplyCache();
       saved.dispose();
       form.onsubmit = null;
     },

@@ -80,12 +80,13 @@ export function mountTaskReviewPage(host, options) {
 
   function paintFeedback(saved) {
     const key = support.comments && saved ? saved.id : "";
-    if (key === feedbackKey) return;
+    if (key === feedbackKey) return feedback?.update();
     feedbackKey = key;
     feedback?.dispose();
     feedback = null;
     node("feedback-host").innerHTML = "";
-    if (key) feedback = mountTaskReviewFeedback(node("feedback-host"), { ...scope, snapshot: saved, callRpc, onSent: options.onTaskChanged, keepReadingPlace: options.keepReadingPlace });
+    if (key) feedback = mountTaskReviewFeedback(node("feedback-host"), { ...scope, snapshot: saved, callRpc, onSent: options.onTaskChanged, keepReadingPlace: options.keepReadingPlace,
+      feed: options.feed, projectKey: options.projectKey });
   }
 
   function paintGitActions(saved) {

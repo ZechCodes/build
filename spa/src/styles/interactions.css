@@ -35,7 +35,11 @@ body {
     .chip, .badge, .pill, .task-status, .task-page-labels,
     [role="tooltip"], .ln, .fsrc-ln),
 :where(button, summary, [role="button"], [role="tab"], [role="menuitem"],
-    [role="menuitemradio"], [role="option"], .no-select, .toolbar) * {
+    [role="menuitemradio"], [role="option"], .no-select, .toolbar)
+    *:not(:where(.selectable, .selectable *, .error, .error *, .v, .v *,
+      .ppath, .ppath *, .adderr, .adderr *, .notice-summary, .notice-summary *,
+      .notice-detail, .notice-detail *, .surface-row-detail, .surface-row-detail *,
+      .surface-row-error, .surface-row-error *, .fupload-error, .fupload-error *)) {
   -webkit-user-select:none; user-select:none; -webkit-touch-callout:none;
 }
 /* Labels that belong to a document (table headings, dates, empty cells) copy

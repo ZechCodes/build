@@ -43,6 +43,16 @@ it("copies markdown tables while a button inside a comment stays unselectable", 
   });
 }, 60_000);
 
+it("copies values and errors nested inside navigation chrome", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await mountInteractionFixture(page, basePath, { extras: true });
+    expect(await dragInteractionText(page, ".toolbar .v")).toBe("Copy this diagnostic value");
+    expect(await dragInteractionText(page, "[data-error-row] .error")).toBe("Upload refused");
+    expect(await page.locator(".toolbar .v span").evaluate((node) => getComputedStyle(node).userSelect)).toBe("text");
+    expect(await page.locator("[data-error-row] .error span").evaluate((node) => getComputedStyle(node).userSelect)).toBe("text");
+  });
+}, 60_000);
+
 it("keeps native editing, pointer feedback and keyboard focus while disabled controls stay quiet", async () => {
   await withLayoutPage(async ({ page, basePath }) => {
     await mountInteractionFixture(page, basePath);

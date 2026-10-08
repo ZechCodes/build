@@ -38,6 +38,10 @@ export async function mountInteractionFixture(page, basePath, { theme = "light",
     content.className = "task-surface";
     content.innerHTML = m.task.taskPageHtml(task, context);
     if (extras) {
+      const value = document.createElement("span");
+      value.className = "v";
+      value.innerHTML = "<span>Copy this diagnostic value</span>";
+      document.querySelector(".toolbar").appendChild(value);
       const action = document.createElement("button");
       action.className = "btn";
       action.dataset.commentAction = "";
@@ -50,6 +54,7 @@ export async function mountInteractionFixture(page, basePath, { theme = "light",
     extra.id = "interaction-extras";
     const rowContext = { ...context, href: () => "#task-397" };
     extra.innerHTML = `<ul class="task-rows">${m.rows.taskRowHtml(task, rowContext)}</ul>
+      <div role="button" tabindex="0" data-error-row><span class="error"><span>Upload refused</span></span></div>
       ${m.board.boardFrameHtml([{ id: "in_progress", name: "In progress", tasks: [task] }], rowContext)}
       ${m.diff.diffFileHtml({ path: "src/interaction.js", status: "M", add: 1, del: 0, rows: [{ t: "add", n: 1, text: "const copyable = true;" }] }, { fold: "open" })}
       <pre class="bridge-update-command">curl https://build.example/install | sh</pre>

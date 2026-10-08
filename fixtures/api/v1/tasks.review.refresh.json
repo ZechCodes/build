@@ -1,14 +1,15 @@
 {
-  "method": "tasks.review.get",
-  "since": "3.6.0",
+  "method": "tasks.review.refresh",
+  "since": "3.15.0",
   "params": {
-    "task_id": "task-1"
+    "task_id": "task-1",
+    "expected_version": 3
   },
   "result": {
     "review": {
       "task_id": "task-1",
       "workspace_id": "workspace-1",
-      "version": 1,
+      "version": 3,
       "state": "open",
       "snapshots": [
         {
@@ -16,8 +17,7 @@
           "number": 1,
           "created_at": "2026-10-02T16:00:00Z",
           "author": {
-            "kind": "agent",
-            "agent_id": "agent-1"
+            "kind": "user"
           },
           "directories": [
             {
@@ -29,7 +29,7 @@
               "is_git": true,
               "status": "git",
               "common_git_dir": "/sources/api/.git",
-              "branch": "build/review",
+              "branch": "review/1-api",
               "base": {
                 "kind": "configured",
                 "name": "main",
@@ -37,6 +37,24 @@
               },
               "head": "2222222222222222222222222222222222222222",
               "uncommitted_files": 2
+            },
+            {
+              "id": "dir-ui",
+              "source_id": "source-ui",
+              "name": "UI",
+              "path": "/workspaces/review/ui",
+              "source_path": "/sources/ui",
+              "is_git": true,
+              "status": "git",
+              "common_git_dir": "/sources/ui/.git",
+              "branch": "review/1-ui",
+              "base": {
+                "kind": "configured",
+                "name": "main",
+                "oid": "1111111111111111111111111111111111111111"
+              },
+              "head": "2222222222222222222222222222222222222222",
+              "uncommitted_files": 0
             },
             {
               "id": "dir-notes",
@@ -57,225 +75,139 @@
               "status": "unavailable",
               "reason": "Source unavailable"
             }
-          ]
+          ],
+          "publication": {
+            "reason": "received",
+            "directories": [
+              {
+                "directory_id": "dir-api",
+                "target_head": "1111111111111111111111111111111111111111",
+                "rewritten": false
+              },
+              {
+                "directory_id": "dir-ui",
+                "target_head": "1111111111111111111111111111111111111111",
+                "rewritten": false
+              }
+            ]
+          }
         }
       ],
       "completion": null,
       "actions": [],
-      "destinations": []
-    }
+      "destinations": [],
+      "mode": "pull_request",
+      "pull_request": {
+        "status": "open",
+        "creator": {
+          "kind": "user"
+        },
+        "originating_workspace_id": "workspace-1",
+        "latest_published_snapshot_id": "snapshot-1",
+        "directories": [
+          {
+            "directory_id": "dir-api",
+            "source_id": "source-api",
+            "kind": "git"
+          },
+          {
+            "directory_id": "dir-ui",
+            "source_id": "source-ui",
+            "kind": "git"
+          },
+          {
+            "directory_id": "dir-notes",
+            "source_id": "source-notes",
+            "kind": "live"
+          },
+          {
+            "directory_id": "dir-missing",
+            "source_id": "source-missing",
+            "kind": "excluded",
+            "reason": "Source unavailable"
+          }
+        ]
+      },
+      "bindings": [
+        {
+          "directory_id": "dir-api",
+          "source_id": "source-api",
+          "repository_id": "repository-api",
+          "working_repository": "/workspaces/review/api",
+          "source_repository": "/sources/api",
+          "initial_head": "2222222222222222222222222222222222222222",
+          "original_branch_ref": "refs/heads/build/work",
+          "dedicated_branch_ref": "refs/heads/review/1-api",
+          "base_branch_ref": "refs/heads/main",
+          "receiving_repository": "/receivers/api.git",
+          "receiving_ref": "refs/heads/review/1-api",
+          "remote_name": "build-review-api",
+          "last_received_head": "2222222222222222222222222222222222222222",
+          "preparation": "ready",
+          "publication": "published"
+        },
+        {
+          "directory_id": "dir-ui",
+          "source_id": "source-ui",
+          "repository_id": "repository-ui",
+          "working_repository": "/workspaces/review/ui",
+          "source_repository": "/sources/ui",
+          "initial_head": "2222222222222222222222222222222222222222",
+          "original_branch_ref": "refs/heads/build/work",
+          "dedicated_branch_ref": "refs/heads/review/1-ui",
+          "base_branch_ref": "refs/heads/main",
+          "receiving_repository": "/receivers/ui.git",
+          "receiving_ref": "refs/heads/review/1-ui",
+          "remote_name": "build-review-ui",
+          "last_received_head": "2222222222222222222222222222222222222222",
+          "preparation": "ready",
+          "publication": "published"
+        }
+      ]
+    },
+    "sync": [
+      {
+        "task_id": "task-1",
+        "directory_id": "dir-api",
+        "revision": 2,
+        "health": "current",
+        "target_head": "1111111111111111111111111111111111111111",
+        "comparison_base": "1111111111111111111111111111111111111111",
+        "working_head": "2222222222222222222222222222222222222222",
+        "received_head": "2222222222222222222222222222222222222222",
+        "snapshot_head": "2222222222222222222222222222222222222222",
+        "pending_commits": 0,
+        "observed_at": "2026-10-08T17:00:00Z"
+      },
+      {
+        "task_id": "task-1",
+        "directory_id": "dir-ui",
+        "revision": 2,
+        "health": "current",
+        "target_head": "1111111111111111111111111111111111111111",
+        "comparison_base": "1111111111111111111111111111111111111111",
+        "working_head": "2222222222222222222222222222222222222222",
+        "received_head": "2222222222222222222222222222222222222222",
+        "snapshot_head": "2222222222222222222222222222222222222222",
+        "pending_commits": 0,
+        "observed_at": "2026-10-08T17:00:00Z"
+      }
+    ]
   },
   "errors": [
     "not_found",
     "invalid_params",
+    "stale_version",
+    "conflict",
+    "busy",
+    "unavailable",
     "internal"
   ],
   "examples": [
     {
       "params": {
-        "task_id": "task-without-review"
-      },
-      "result": {
-        "review": null
-      }
-    },
-    {
-      "params": {
-        "task_id": "task-1"
-      },
-      "result": {
-        "review": {
-          "task_id": "task-1",
-          "workspace_id": "workspace-1",
-          "version": 3,
-          "state": "open",
-          "snapshots": [
-            {
-              "id": "snapshot-1",
-              "number": 1,
-              "created_at": "2026-10-02T16:00:00Z",
-              "author": {
-                "kind": "user"
-              },
-              "directories": [
-                {
-                  "id": "dir-api",
-                  "source_id": "source-api",
-                  "name": "API",
-                  "path": "/workspaces/review/api",
-                  "source_path": "/sources/api",
-                  "is_git": true,
-                  "status": "git",
-                  "common_git_dir": "/sources/api/.git",
-                  "branch": "review/1-api",
-                  "base": {
-                    "kind": "configured",
-                    "name": "main",
-                    "oid": "1111111111111111111111111111111111111111"
-                  },
-                  "head": "2222222222222222222222222222222222222222",
-                  "uncommitted_files": 2
-                },
-                {
-                  "id": "dir-ui",
-                  "source_id": "source-ui",
-                  "name": "UI",
-                  "path": "/workspaces/review/ui",
-                  "source_path": "/sources/ui",
-                  "is_git": true,
-                  "status": "git",
-                  "common_git_dir": "/sources/ui/.git",
-                  "branch": "review/1-ui",
-                  "base": {
-                    "kind": "configured",
-                    "name": "main",
-                    "oid": "1111111111111111111111111111111111111111"
-                  },
-                  "head": "2222222222222222222222222222222222222222",
-                  "uncommitted_files": 0
-                },
-                {
-                  "id": "dir-notes",
-                  "source_id": "source-notes",
-                  "name": "Notes",
-                  "path": "/workspaces/review/notes",
-                  "source_path": "/sources/notes",
-                  "is_git": false,
-                  "status": "not_git"
-                },
-                {
-                  "id": "dir-missing",
-                  "source_id": "source-missing",
-                  "name": "Removed source",
-                  "path": "/workspaces/review/missing",
-                  "source_path": "/sources/missing",
-                  "is_git": true,
-                  "status": "unavailable",
-                  "reason": "Source unavailable"
-                }
-              ],
-              "publication": {
-                "reason": "received",
-                "directories": [
-                  {
-                    "directory_id": "dir-api",
-                    "target_head": "1111111111111111111111111111111111111111",
-                    "rewritten": false
-                  },
-                  {
-                    "directory_id": "dir-ui",
-                    "target_head": "1111111111111111111111111111111111111111",
-                    "rewritten": false
-                  }
-                ]
-              }
-            }
-          ],
-          "completion": null,
-          "actions": [],
-          "destinations": [],
-          "mode": "pull_request",
-          "pull_request": {
-            "status": "open",
-            "creator": {
-              "kind": "user"
-            },
-            "originating_workspace_id": "workspace-1",
-            "latest_published_snapshot_id": "snapshot-1",
-            "directories": [
-              {
-                "directory_id": "dir-api",
-                "source_id": "source-api",
-                "kind": "git"
-              },
-              {
-                "directory_id": "dir-ui",
-                "source_id": "source-ui",
-                "kind": "git"
-              },
-              {
-                "directory_id": "dir-notes",
-                "source_id": "source-notes",
-                "kind": "live"
-              },
-              {
-                "directory_id": "dir-missing",
-                "source_id": "source-missing",
-                "kind": "excluded",
-                "reason": "Source unavailable"
-              }
-            ]
-          },
-          "bindings": [
-            {
-              "directory_id": "dir-api",
-              "source_id": "source-api",
-              "repository_id": "repository-api",
-              "working_repository": "/workspaces/review/api",
-              "source_repository": "/sources/api",
-              "initial_head": "2222222222222222222222222222222222222222",
-              "original_branch_ref": "refs/heads/build/work",
-              "dedicated_branch_ref": "refs/heads/review/1-api",
-              "base_branch_ref": "refs/heads/main",
-              "receiving_repository": "/receivers/api.git",
-              "receiving_ref": "refs/heads/review/1-api",
-              "remote_name": "build-review-api",
-              "last_received_head": "2222222222222222222222222222222222222222",
-              "preparation": "ready",
-              "publication": "published"
-            },
-            {
-              "directory_id": "dir-ui",
-              "source_id": "source-ui",
-              "repository_id": "repository-ui",
-              "working_repository": "/workspaces/review/ui",
-              "source_repository": "/sources/ui",
-              "initial_head": "2222222222222222222222222222222222222222",
-              "original_branch_ref": "refs/heads/build/work",
-              "dedicated_branch_ref": "refs/heads/review/1-ui",
-              "base_branch_ref": "refs/heads/main",
-              "receiving_repository": "/receivers/ui.git",
-              "receiving_ref": "refs/heads/review/1-ui",
-              "remote_name": "build-review-ui",
-              "last_received_head": "2222222222222222222222222222222222222222",
-              "preparation": "ready",
-              "publication": "published"
-            }
-          ]
-        },
-        "sync": [
-          {
-            "task_id": "task-1",
-            "directory_id": "dir-api",
-            "revision": 2,
-            "health": "current",
-            "target_head": "1111111111111111111111111111111111111111",
-            "comparison_base": "1111111111111111111111111111111111111111",
-            "working_head": "2222222222222222222222222222222222222222",
-            "received_head": "2222222222222222222222222222222222222222",
-            "snapshot_head": "2222222222222222222222222222222222222222",
-            "pending_commits": 0,
-            "observed_at": "2026-10-08T17:00:00Z"
-          },
-          {
-            "task_id": "task-1",
-            "directory_id": "dir-ui",
-            "revision": 2,
-            "health": "current",
-            "target_head": "1111111111111111111111111111111111111111",
-            "comparison_base": "1111111111111111111111111111111111111111",
-            "working_head": "2222222222222222222222222222222222222222",
-            "received_head": "2222222222222222222222222222222222222222",
-            "snapshot_head": "2222222222222222222222222222222222222222",
-            "pending_commits": 0,
-            "observed_at": "2026-10-08T17:00:00Z"
-          }
-        ]
-      }
-    },
-    {
-      "params": {
-        "task_id": "task-1"
+        "task_id": "task-1",
+        "expected_version": 3
       },
       "result": {
         "review": {
@@ -465,14 +397,15 @@
     },
     {
       "params": {
-        "task_id": "task-1"
+        "task_id": "task-1",
+        "expected_version": 4
       },
       "result": {
         "review": {
           "task_id": "task-1",
           "workspace_id": "workspace-1",
-          "version": 7,
-          "state": "open",
+          "version": 4,
+          "state": "completed",
           "snapshots": [
             {
               "id": "snapshot-1",
@@ -555,65 +488,18 @@
               }
             }
           ],
-          "completion": null,
-          "actions": [
-            {
-              "id": "action-api",
-              "snapshot_id": "snapshot-1",
-              "directory_id": "dir-api",
-              "source_name": "API",
-              "source_path": "/sources/api",
-              "actor": {
-                "kind": "user"
-              },
-              "started_at": "2026-10-08T17:00:00Z",
-              "finished_at": "2026-10-08T17:00:00Z",
-              "status": "succeeded",
-              "steps": [
-                {
-                  "kind": "merge",
-                  "branch": "main",
-                  "status": "succeeded",
-                  "input_head": "2222222222222222222222222222222222222222",
-                  "result_head": "3333333333333333333333333333333333333333"
-                },
-                {
-                  "kind": "push",
-                  "branch": "main",
-                  "remote": "origin",
-                  "status": "succeeded",
-                  "input_head": "3333333333333333333333333333333333333333",
-                  "result_head": "3333333333333333333333333333333333333333"
-                }
-              ]
+          "completion": {
+            "actor": {
+              "kind": "user"
             },
-            {
-              "id": "action-ui",
-              "snapshot_id": "snapshot-1",
-              "directory_id": "dir-ui",
-              "source_name": "UI",
-              "source_path": "/sources/ui",
-              "actor": {
-                "kind": "user"
-              },
-              "started_at": "2026-10-08T17:00:00Z",
-              "finished_at": "2026-10-08T17:00:00Z",
-              "status": "failed",
-              "steps": [
-                {
-                  "kind": "merge",
-                  "branch": "main",
-                  "status": "failed",
-                  "input_head": "2222222222222222222222222222222222222222",
-                  "error": "Merge conflicts in src/app.js"
-                }
-              ]
-            }
-          ],
+            "description": "Closed without merging.",
+            "completed_at": "2026-10-08T17:00:00Z"
+          },
+          "actions": [],
           "destinations": [],
           "mode": "pull_request",
           "pull_request": {
-            "status": "open",
+            "status": "closed",
             "creator": {
               "kind": "user"
             },
@@ -684,14 +570,14 @@
           {
             "task_id": "task-1",
             "directory_id": "dir-api",
-            "revision": 2,
-            "health": "current",
+            "revision": 3,
+            "health": "pending",
             "target_head": "1111111111111111111111111111111111111111",
             "comparison_base": "1111111111111111111111111111111111111111",
-            "working_head": "2222222222222222222222222222222222222222",
-            "received_head": "2222222222222222222222222222222222222222",
+            "working_head": "4444444444444444444444444444444444444444",
+            "received_head": "4444444444444444444444444444444444444444",
             "snapshot_head": "2222222222222222222222222222222222222222",
-            "pending_commits": 0,
+            "pending_commits": 1,
             "observed_at": "2026-10-08T17:00:00Z"
           },
           {
@@ -707,55 +593,27 @@
             "pending_commits": 0,
             "observed_at": "2026-10-08T17:00:00Z"
           }
-        ],
-        "merge_intents": [
-          {
-            "project_path": "/sources/project",
-            "request_id": "merge-review-1",
-            "version": 3,
-            "request": {
-              "task_id": "task-1",
-              "expected_version": 3,
-              "snapshot_id": "snapshot-1",
-              "actor": {
-                "kind": "user"
-              },
-              "sources": [
-                {
-                  "directory_id": "dir-api",
-                  "repository_id": "repository-api",
-                  "base_branch_ref": "refs/heads/main",
-                  "head": "2222222222222222222222222222222222222222",
-                  "expected_base_head": "1111111111111111111111111111111111111111",
-                  "push": {
-                    "remote": "origin",
-                    "branch": "main"
-                  }
-                },
-                {
-                  "directory_id": "dir-ui",
-                  "repository_id": "repository-ui",
-                  "base_branch_ref": "refs/heads/main",
-                  "head": "2222222222222222222222222222222222222222",
-                  "expected_base_head": "1111111111111111111111111111111111111111",
-                  "push": {
-                    "remote": "origin",
-                    "branch": "main"
-                  }
-                }
-              ]
-            },
-            "state": "failed",
-            "execution_version": 7,
-            "action_ids": [
-              "action-api",
-              "action-ui"
-            ],
-            "created_at": "2026-10-08T17:00:00Z",
-            "updated_at": "2026-10-08T17:00:00Z",
-            "error": "One included source failed; successful source results are retained."
-          }
         ]
+      }
+    }
+  ],
+  "refusals": [
+    {
+      "params": {
+        "task_id": "task-1",
+        "expected_version": 3
+      },
+      "reply": {
+        "id": 405,
+        "ok": false,
+        "error": "Review capture is already running.",
+        "error_code": "busy",
+        "retryable": true,
+        "details": {
+          "reason": "Review capture is already running.",
+          "recovery": "Wait for the accepted capture to finish, then refresh explicitly.",
+          "task_id": "task-1"
+        }
       }
     }
   ]

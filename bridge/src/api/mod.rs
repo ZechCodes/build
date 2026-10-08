@@ -46,7 +46,8 @@ use std::collections::BTreeSet;
 /// 3.13.0 adds scoped directory creation, binary file uploads, and the
 /// `already_exists` refusal (#391).
 /// 3.14.0 adds user-controlled workspace locks (#398).
-pub const API_VERSION: &str = "3.14.0";
+/// 3.15.0 adds PR review mutations, summaries and sync observations (#405).
+pub const API_VERSION: &str = "3.15.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -96,6 +97,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "tasks.commentUserMentions",
     "tasks.commentUserNotifies",
     "tasks.reviewComments", // Since 3.7.0: anchor, reply_to and opinion on task comments.
+    "tasks.pullRequests",   // Since 3.15.0: PR lifecycle, summaries and sync observations (#405).
     "tasks.context",
     "tasks.createdUserMentions", // Since 1.27.0: mentions_user on an agent's created event.
     "tasks.doneSinceLeft",
@@ -366,6 +368,9 @@ impl ApiError {
     /// <thing>`), and `internal` for everything else — which a test counts,
     /// so the list shrinks over time.
     pub fn classify(message: String) -> ApiError {
+        if let Some(error) = v1::reviews::errors::decode(&message) {
+            return error;
+        }
         let sentence = Self::unlabelled(&message);
         if sentence == crate::workspace::LOCKED_REFUSAL {
             return ApiError::locked(message);

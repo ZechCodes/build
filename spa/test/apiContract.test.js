@@ -43,6 +43,69 @@ describe("the v1 adapter against fixtures/api/v1", () => {
     }
   });
 
+  it("gates every PR verb independently of its shared feature and Snapshot verbs", () => {
+    const greeting = methodFixtures.find(({ body }) => body.method === "session.hello").body.result;
+    expect(v1.capabilitiesOf(greeting).reviews.pullRequests).toBe(true);
+    for (const verb of ["open", "push", "update", "merge", "close", "reopen", "refresh"]) {
+      expect(v1.capabilitiesOf(greeting).reviews[verb], verb).toBe(true);
+      const isolated = { api_version: "3.15.0", capabilities: [`tasks.review.${verb}`] };
+      expect(v1.capabilitiesOf(isolated).reviews[verb], verb).toBe(true);
+      expect(v1.capabilitiesOf(isolated).reviews.pullRequests).toBe(false);
+      expect(v1.capabilitiesOf(isolated).reviews.act).toBe(false);
+    }
+    const legacy = { api_version: "3.14.0", capabilities: ["tasks.review.get", "tasks.review.act"] };
+    expect(v1.capabilitiesOf(legacy).reviews).toMatchObject({ get: true, act: true, pullRequests: false, open: false });
+  });
+
+  it("keeps PR summaries additive on task, feed and workspace reads", () => {
+    const summaryOf = {
+      "tasks.get": ({ task }) => task?.review_summary,
+      "tasks.list": ({ tasks }) => tasks?.[0]?.review_summary,
+      "board.list": ({ items }) => items?.[0]?.review_summary,
+      "workspace.get": ({ active_review }) => active_review,
+      "workspace.list": ({ workspaces }) => workspaces?.[0]?.active_review,
+    };
+    for (const [method, summary] of Object.entries(summaryOf)) {
+      const fixture = methodFixtures.find(({ body }) => body.method === method).body;
+      expect(summary(fixture.result), method).toBeUndefined();
+      const example = fixture.examples?.find(({ result }) => summary(result));
+      expect(summary(example?.result || {}), method).toMatchObject({
+        status: "open", latest_published_snapshot_id: "snapshot-1",
+      });
+      expect(v1.parseResult(method, example.result)).toEqual(example.result);
+    }
+  });
+
+  it("preserves PR sync failures, partial integration and failed publication after merge", () => {
+    const read = (verb) => methodFixtures.find(({ body }) => body.method === `tasks.review.${verb}`).body;
+    expect(read("get").result.review).not.toHaveProperty("mode");
+    const refresh = read("refresh");
+    expect(refresh.examples[0].result.sync[1]).toMatchObject({ health: "unavailable", error: expect.any(String) });
+    expect(refresh.examples[1].result.review.pull_request.status).toBe("closed");
+    const push = read("push");
+    expect(push.examples[0].result.sources.map(({ status }) => status)).toEqual(["published", "failed"]);
+    expect(push.examples[1].params.sources[0]).toMatchObject({ force_with_lease: true, expected_received_head: expect.any(String) });
+    const merge = read("merge");
+    expect(merge.examples[0].result.review.actions.map(({ status }) => status)).toEqual(["succeeded", "failed"]);
+    expect(merge.examples[1].result.review.pull_request.status).toBe("merged");
+    expect(merge.examples[1].result.merge_intents[0].state).toBe("failed");
+  });
+
+  it("keeps structured PR refusal details when normalizing wire errors", () => {
+    for (const verb of ["open", "push", "update", "merge", "close", "reopen", "refresh"]) {
+      const fixture = methodFixtures.find(({ body }) => body.method === `tasks.review.${verb}`).body;
+      expect(fixture.refusals?.length, verb).toBeGreaterThan(0);
+      for (const { reply } of fixture.refusals) {
+        expect(fixture.errors).toContain(reply.error_code);
+        const error = v1.normalizeError(reply);
+        expect(error.code).toBe(reply.error_code);
+        expect(error.retryable).toBe(reply.error_code === "busy");
+        expect(error.details).toEqual(reply.details);
+        expect(error.details).toMatchObject({ reason: expect.any(String), recovery: expect.any(String) });
+      }
+    }
+  });
+
   it("keeps review snapshots and Git actions independently gated", () => {
     for (const verb of ["snapshot", "get", "diff", "complete"]) {
       const fixture = methodFixtures.find(({ body }) => body.method === `tasks.review.${verb}`).body;

@@ -1,6 +1,6 @@
 {
-  "api_version": "3.13.0",
-  "commit": "cccc8163",
+  "api_version": "3.14.0",
+  "commit": "62f7fa9f",
   "generated_by": "scripts/api-verbs-manifest.mjs",
   "verbs": [
     "agent.add",
@@ -124,6 +124,7 @@
     "workspace.remove_directory",
     "workspace.rename",
     "workspace.retry",
+    "workspace.set_locked",
     "worktree.diff"
   ],
   "capabilities": [
@@ -308,6 +309,7 @@
     "workspace.remove_directory",
     "workspace.rename",
     "workspace.retry",
+    "workspace.set_locked",
     "workspaces.lifecycle",
     "workspaces.reclaimBranches",
     "worktree.diff"

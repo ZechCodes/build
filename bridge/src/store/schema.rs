@@ -269,6 +269,56 @@ CREATE TABLE IF NOT EXISTS review_actions (
 );
 CREATE INDEX IF NOT EXISTS review_actions_by_task ON review_actions(task_id);
 
+-- Claims span opening preparation and active published PRs. Failed/interrupted
+-- preparation retains ownership until its owned Git state is safely unwound.
+CREATE TABLE IF NOT EXISTS review_workspace_claims (
+    workspace_id TEXT PRIMARY KEY,
+    project_key TEXT NOT NULL,
+    task_id TEXT NOT NULL UNIQUE
+);
+CREATE TABLE IF NOT EXISTS review_openings (
+    project_key TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    task_id TEXT NOT NULL UNIQUE,
+    number INTEGER NOT NULL,
+    version INTEGER NOT NULL,
+    state TEXT NOT NULL,
+    record TEXT NOT NULL,
+    PRIMARY KEY (project_key, request_id),
+    UNIQUE (project_key, number)
+);
+CREATE TABLE IF NOT EXISTS review_branch_bindings (
+    task_id TEXT NOT NULL,
+    directory_id TEXT NOT NULL,
+    repository_id TEXT NOT NULL,
+    dedicated_ref TEXT NOT NULL,
+    receiving_repository TEXT NOT NULL,
+    receiving_ref TEXT NOT NULL,
+    record TEXT NOT NULL,
+    PRIMARY KEY (task_id, directory_id),
+    UNIQUE (repository_id, dedicated_ref),
+    UNIQUE (receiving_repository, receiving_ref)
+);
+CREATE TABLE IF NOT EXISTS review_sync_observations (
+    task_id TEXT NOT NULL,
+    directory_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    record TEXT NOT NULL,
+    PRIMARY KEY (task_id, directory_id)
+);
+CREATE TABLE IF NOT EXISTS review_merge_intents (
+    project_key TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    state TEXT NOT NULL,
+    record TEXT NOT NULL,
+    PRIMARY KEY (project_key, request_id)
+);
+CREATE INDEX IF NOT EXISTS review_merge_intents_by_task ON review_merge_intents(task_id);
+CREATE UNIQUE INDEX IF NOT EXISTS review_merge_running_by_task
+    ON review_merge_intents(task_id) WHERE state = 'running';
+
 -- One bounded copy of each pre-v6 agent skeleton. The migration materializes
 -- formerly inherited settings and implicit conversation aliases; retaining the
 -- source makes that one-way interpretation auditable without copying any

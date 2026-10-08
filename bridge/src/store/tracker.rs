@@ -116,7 +116,8 @@ impl Store {
     /// File a new task, minting its per-project number inside the same
     /// transaction as the insert, and write the events that explain it.
     ///
-    /// The number is `MAX(number) + 1` over the project under the `IMMEDIATE`
+    /// The number is `MAX(number) + 1` over tasks and durable PR reservations
+    /// under the `IMMEDIATE`
     /// transaction every store write already takes, so two writers cannot read
     /// the same maximum; the unique index is the backstop if one ever does.
     /// Answers the task as it was stored — the draft handed in carries no
@@ -345,6 +346,10 @@ impl Store {
                 "tracker_events",
                 "review_snapshots",
                 "review_actions",
+                "review_branch_bindings",
+                "review_sync_observations",
+                "review_workspace_claims",
+                "review_merge_intents",
                 "reviews",
             ] {
                 tx.execute(
@@ -354,6 +359,12 @@ impl Store {
                     ),
                     [project_path],
                 )?;
+            }
+            // Preparing openings have no tracker task yet, so delete their
+            // claims and request journals by project as well.
+            tx.execute("DELETE FROM review_branch_bindings WHERE task_id IN (SELECT task_id FROM review_openings WHERE project_key = ?1)", [project_path])?;
+            for table in ["review_workspace_claims", "review_openings", "review_merge_intents"] {
+                tx.execute(&format!("DELETE FROM {table} WHERE project_key = ?1"), [project_path])?;
             }
             tx.execute(
                 "DELETE FROM tracker_tasks WHERE project_key = ?1",
@@ -366,9 +377,12 @@ impl Store {
 
 /// The next number this project hands out. Read inside the caller's write
 /// transaction, never before it.
-fn next_task_number(tx: &Transaction, project_path: &str) -> Result<u64, StoreError> {
+pub(super) fn next_task_number(tx: &Transaction, project_path: &str) -> Result<u64, StoreError> {
     let highest: i64 = tx.query_row(
-        "SELECT COALESCE(MAX(number), 0) FROM tracker_tasks WHERE project_key = ?1",
+        "SELECT MAX(number) FROM (
+             SELECT COALESCE(MAX(number), 0) AS number FROM tracker_tasks WHERE project_key = ?1
+             UNION ALL SELECT COALESCE(MAX(number), 0) FROM review_openings WHERE project_key = ?1
+         )",
         [project_path],
         |row| row.get(0),
     )?;

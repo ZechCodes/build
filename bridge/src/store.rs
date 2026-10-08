@@ -181,6 +181,21 @@ pub enum StoreError {
     ReviewPinCleanup(String),
     #[error("{0}")]
     ReviewAction(String),
+    #[error("workspace {workspace_id} already belongs to active PR {task_id}")]
+    ReviewWorkspaceBusy {
+        workspace_id: String,
+        task_id: String,
+    },
+    #[error("review request {request_id} was already used with different arguments")]
+    ReviewRequestConflict { request_id: String },
+    #[error("review operation {request_id} expected version {expected}, found {found}")]
+    ReviewOperationVersionConflict {
+        request_id: String,
+        expected: u64,
+        found: u64,
+    },
+    #[error("invalid pull request: {0}")]
+    ReviewPullRequestInvalid(String),
 }
 
 /// The schema this build writes. A stored value ahead of this one means the
@@ -199,7 +214,9 @@ pub enum StoreError {
 ///
 /// 12 adds task review metadata and append-only snapshot rows (#328).
 /// 13 adds persisted per-source review Git actions (#330).
-pub const SCHEMA_VERSION: i64 = 14;
+/// 14 persists workspace removal locks (#398).
+/// 15 adds PR bindings, operation journals, workspace claims and sync observations.
+pub const SCHEMA_VERSION: i64 = 15;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.

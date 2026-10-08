@@ -53,6 +53,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+pub(crate) use reviews::TrackingExpectation;
+
 mod conversation_reset;
 mod conversations;
 mod documents;

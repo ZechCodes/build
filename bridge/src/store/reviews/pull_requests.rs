@@ -12,6 +12,7 @@ mod sync;
 mod tracking;
 pub(super) use sync::validate_received_snapshot;
 pub(in crate::store) use tracking::clear_tracking_expectations;
+pub(crate) use tracking::TrackingExpectation;
 
 impl Store {
     /// Branch allocation consults durable claims as well as refs on disk: an

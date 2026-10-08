@@ -14,6 +14,18 @@ pub(crate) struct TrackingExpectation {
 }
 
 impl Store {
+    pub(crate) fn load_review_tracking_expectation(
+        &self,
+        task_id: &str,
+        expected_version: u64,
+        directory_id: &str,
+    ) -> Result<Option<TrackingExpectation>, StoreError> {
+        self.in_transaction(|tx| {
+            require_bound_publication(tx, task_id, expected_version, directory_id)?;
+            load_expectation(tx, &tracking_key(task_id, directory_id))
+        })
+    }
+
     /// Commit before mutating the receiver, while its exact Git lease is held.
     /// A later received snapshot can advance the binding without losing this
     /// original tracking CAS expectation. The version remains unchanged.
@@ -57,6 +69,45 @@ impl Store {
             Ok(())
         })
     }
+
+    /// The prior authorized target was settled under Git/version fences. Carry
+    /// that exact tip into a new durable CAS proof without a clear/recreate gap,
+    /// even when a native push has independently advanced the receiver again.
+    pub(crate) fn replace_review_tracking_expectation(
+        &self,
+        task_id: &str,
+        expected_version: u64,
+        directory_id: &str,
+        token: &str,
+        received_head: &str,
+    ) -> Result<TrackingExpectation, StoreError> {
+        self.in_transaction(|tx| {
+            require_bound_publication(tx, task_id, expected_version, directory_id)?;
+            let key = tracking_key(task_id, directory_id);
+            let previous = load_expectation(tx, &key)?
+                .ok_or_else(|| invalid("tracking recovery proof disappeared before replacement"))?;
+            if previous.token != token {
+                return Err(invalid(
+                    "tracking recovery proof changed before replacement",
+                ));
+            }
+            let replacement = TrackingExpectation {
+                token: uuid::Uuid::new_v4().to_string(),
+                claim_fingerprint: previous.claim_fingerprint,
+                expected_tracking_head: Some(previous.received_head),
+                received_head: received_head.into(),
+            };
+            validate_expectation(&replacement)?;
+            tx.execute(
+                "UPDATE meta SET value = ?2 WHERE key = ?1",
+                params![
+                    key,
+                    serde_json::to_string(&replacement).expect("tracking expectation serializes")
+                ],
+            )?;
+            Ok(replacement)
+        })
+    }
 }
 
 fn require_bound_publication(
@@ -82,7 +133,7 @@ fn next_expectation(
     expected: Option<&str>,
     received: &str,
 ) -> Result<TrackingExpectation, StoreError> {
-    let mut expectation = match existing {
+    let expectation = match existing {
         Some(saved) => {
             if saved.claim_fingerprint != fingerprint {
                 return Err(invalid("tracking recovery ownership claim changed"));
@@ -97,8 +148,9 @@ fn next_expectation(
         },
     };
     if expectation.received_head != received {
-        expectation.token = uuid::Uuid::new_v4().to_string();
-        expectation.received_head = received.into();
+        return Err(invalid(
+            "tracking recovery target must settle before replacement",
+        ));
     }
     validate_expectation(&expectation)?;
     Ok(expectation)

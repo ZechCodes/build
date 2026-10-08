@@ -121,24 +121,19 @@ fn publish_locked(
                 head,
                 |publish| {
                     check()?;
+                    validate_head(working, binding, head)?;
                     receivers::validate_binding_receiver(binding)?;
                     publication::validate_bound_remote(binding)?;
-                    let fingerprint = publication::tracking::fingerprint(working, binding)?;
-                    let expectation = store
-                        .prepare_review_tracking_expectation(
-                            &request.task_id,
-                            request.expected_version,
-                            &binding.directory_id,
-                            &fingerprint,
-                            expected.as_ref().map(|head| head.to_string()).as_deref(),
-                            &head.to_string(),
-                        )
-                        .map_err(|error| error.to_string())?;
+                    let expectation =
+                        prepare_tracking(store, request, binding, working, packed, heads)?;
+                    check()?;
+                    validate_head(working, binding, head)?;
                     let tracking_error = store
                         .with_review_publication_version(
                             &request.task_id,
                             request.expected_version,
                             || {
+                                validate_head(working, binding, head)?;
                                 publish()?;
                                 applied.set(expected != Some(head));
                                 Ok(publication::tracking::advance(
@@ -179,6 +174,61 @@ fn publish_locked(
             PublicationError::Failed(error)
         }
     })
+}
+
+fn prepare_tracking(
+    store: &Store,
+    request: &PushRequest,
+    binding: &ReviewBranchBinding,
+    working: &git2::Repository,
+    packed: &refs::PackedReferenceLease<'_>,
+    heads: (Option<git2::Oid>, git2::Oid),
+) -> Result<crate::store::TrackingExpectation, String> {
+    let (expected, head) = heads;
+    let fingerprint = publication::tracking::fingerprint(working, binding)?;
+    let previous = store
+        .load_review_tracking_expectation(
+            &request.task_id,
+            request.expected_version,
+            &binding.directory_id,
+        )
+        .map_err(|error| error.to_string())?;
+    if let Some(previous) = previous {
+        if previous.received_head != head.to_string() {
+            store
+                .with_review_publication_version(&request.task_id, request.expected_version, || {
+                    validate_head(working, binding, head)?;
+                    publication::tracking::advance(
+                        working,
+                        binding,
+                        packed,
+                        &previous.claim_fingerprint,
+                        previous.expected_tracking_head.as_deref(),
+                        &previous.received_head,
+                    )
+                })
+                .map_err(|error| error.to_string())?;
+            return store
+                .replace_review_tracking_expectation(
+                    &request.task_id,
+                    request.expected_version,
+                    &binding.directory_id,
+                    &previous.token,
+                    &head.to_string(),
+                )
+                .map_err(|error| error.to_string());
+        }
+    }
+    store
+        .prepare_review_tracking_expectation(
+            &request.task_id,
+            request.expected_version,
+            &binding.directory_id,
+            &fingerprint,
+            expected.as_ref().map(|head| head.to_string()).as_deref(),
+            &head.to_string(),
+        )
+        .map_err(|error| error.to_string())
 }
 
 fn oid(value: &str) -> Result<git2::Oid, String> {

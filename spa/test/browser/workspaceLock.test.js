@@ -61,6 +61,14 @@ it("clicks the workspace lock against the fixture bridge and paints only its cac
     expect(await page.evaluate(() => window.__lockRequests.at(-1).locked)).toBe(false);
     await page.evaluate(() => window.__lockPush());
     await page.waitForFunction(() => document.querySelector('[data-workspace-lock]').getAttribute("aria-label") === "Lock workspace");
+    await page.waitForFunction(() => !document.querySelector('[data-workspace-lock]').disabled);
+    expect(await lock.evaluate((button) => document.activeElement === button)).toBe(true);
+    await page.keyboard.press("Space");
+    await page.waitForFunction(() => window.__lockRequests.length === 3);
+    expect(await page.evaluate(() => window.__lockRequests.at(-1).locked)).toBe(true);
+    await page.evaluate(() => window.__lockPush());
+    await page.waitForFunction(() => document.querySelector('[data-workspace-lock]').getAttribute("aria-label") === "Unlock workspace");
+    expect(await lock.evaluate((button) => document.activeElement === button)).toBe(true);
     await page.evaluate(async () => {
       const { toolbar, feed, contexts } = window.__layoutModules;
       await toolbar.stopToolbar(); feed.stopFeed(); contexts.resetDeviceContexts();

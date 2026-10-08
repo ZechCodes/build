@@ -43,7 +43,7 @@ import { workspaceRoute } from "./projectModel.js";
 import { projectReturnRoute } from "./projectRailState.js";
 import { standsOnProjectCheckout, workspaceStatusText } from "./workspaceModel.js";
 import "../styles/shell.css";
-import { workspaceLockState, wireWorkspaceLock } from "./workspaceLock.js";
+import { workspaceLockState, paintWorkspaceLock } from "./workspaceLock.js";
 import { watchWorkspaceLockSupport } from "./workspaceLockSupport.js";
 import "../styles/workspace-lock.css";
 import { fieldTraits } from "./fieldTraits.js";
@@ -222,7 +222,7 @@ function paint({ entering = false } = {}) {
   // (core/router.js).
   if (entering) rememberScope(standing.projectKey || routeProjectKey(App.route));
   const shown = shownIdentity(standing);
-  const signature = JSON.stringify(shown);
+  const signature = JSON.stringify({ ...shown, workspaceLock: null });
   // A poll tick that says the same thing the bar already shows must leave the
   // DOM alone: the verb slot (setToolbarVerb) can carry a view's own open menu
   // or in-flight action, and rebuilding out from under it would close the one
@@ -231,7 +231,6 @@ function paint({ entering = false } = {}) {
   if (entering || signature !== paintedIdentity || !host.querySelector(".toolbar")) {
     paintedIdentity = signature;
     host.innerHTML = toolbarHtml(shown);
-    wireWorkspaceLock(host, shown.workspaceLock, () => { if (mounted) paint(); });
     // A repaint replaces the very buttons a menu hangs off, so an open menu is
     // re-pointed at the new one — otherwise its anchor is a detached node and
     // the selector that opened it stops toggling it shut.
@@ -253,6 +252,7 @@ function paint({ entering = false } = {}) {
       };
     });
   }
+  paintWorkspaceLock(host, shown.workspaceLock, () => { if (mounted) paint(); });
   paintVerb();
   if (open) paintMenu();
 }

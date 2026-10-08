@@ -3,6 +3,7 @@ import { ICON_LOCK, ICON_LOCK_OPEN } from "./icons.js";
 import { contextFor } from "./deviceContexts.js";
 import { notifyError } from "./notify.js";
 const pending = new Set();
+const pendingFocus = new WeakSet();
 const keyOf = (state) => `${state.deviceId}/${state.workspaceId}`;
 export function workspaceLockState(workspace, supported) {
   if (!workspace || !supported) return null;
@@ -30,7 +31,30 @@ async function toggle(state, changed) {
     changed();
   }
 }
-export function wireWorkspaceLock(host, state, changed) {
-  const button = host.querySelector("[data-workspace-lock]");
-  if (button && state) button.onclick = () => void toggle(state, changed);
+function updateButton(button, state) {
+  if (state.pending && document.activeElement === button) pendingFocus.add(button);
+  const label = state.locked ? "Unlock workspace" : "Lock workspace";
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  button.setAttribute("aria-pressed", String(state.locked));
+  const icon = state.locked ? ICON_LOCK : ICON_LOCK_OPEN;
+  if (button.innerHTML !== icon) button.innerHTML = icon;
+  button.disabled = state.pending;
+  if (!state.pending && pendingFocus.has(button)) {
+    pendingFocus.delete(button);
+    // Disabling a focused native button blurs it. Restore only if the user
+    // has not moved to another control while the request was pending.
+    if (document.activeElement === document.body) button.focus({ preventScroll: true });
+  }
+}
+// Lock/cache updates leave the toolbar and its focused control in place.
+export function paintWorkspaceLock(host, state, changed) {
+  let button = host.querySelector("[data-workspace-lock]");
+  if (!state) { button?.remove(); return; }
+  if (!button) {
+    host.querySelector(".toolbar").insertAdjacentHTML("beforeend", workspaceLockHtml(state));
+    button = host.querySelector("[data-workspace-lock]");
+  }
+  updateButton(button, state);
+  button.onclick = () => void toggle(state, changed);
 }

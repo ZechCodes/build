@@ -4,6 +4,7 @@ import { FEED_COLLECTIONS } from "./feedMerge.js";
 import { entityIdOf } from "./entityId.js";
 import { recordKey } from "./idbRecords.js";
 import { cachedWriteOf, captureCachedRecord, updateCachedFeed } from "./localCache.js";
+import { preserveReviewSummary, preserveReviewSummaries } from "./trackerCache.js";
 
 const rosterOf = (agents) => Array.isArray(agents) ? agents : [];
 const threadAgent = (thread) => thread?.agent?.id ? [{ id: thread.agent.id, thread_id: thread.thread_id || thread.id,
@@ -88,7 +89,7 @@ const retiredDigest = (agent, thread) => thread?.thread_id && (agent.thread_id
 
 function admittedFeedRow(row, deviceId, records, rewriteRow) {
   const entityId = entityIdOf(row);
-  let next = row;
+  let next = preserveReviewSummary(currentRow(deviceId, entityId, records), row);
   const seen = new Set();
   for (const agent of agentsOf(row)) {
     const conversationId = canonicalId(agent);
@@ -103,15 +104,21 @@ function admittedFeedRow(row, deviceId, records, rewriteRow) {
   return next;
 }
 
+function withHeldReviewSummaries(held, view) {
+  return { ...view, ...Object.fromEntries(FEED_COLLECTIONS.filter((field) => Array.isArray(view?.[field]))
+    .map((field) => [field, preserveReviewSummaries(held?.[field], view[field])])) };
+}
+
 /** Admit a board snapshot against all its thread generations inside the same
  * transaction as the feed write. Other rows remain this list's observation. */
 export function writeConversationFeed(address, view, { active, supersededFeedRow, rewriteRow, pruneView = (held) => held }) {
   const guards = feedGuards(address.deviceId, view);
   return guardedFeedWrite(address, guards, {
     active, options: { observedFeedRows: true, supersededFeedRow },
-    makeFeed: (_held, found) => {
+    makeFeed: (held, found) => {
       const records = new Map(guards.map((at, index) => [recordKey(at), found[index]]));
-      return mapFeedRows(pruneView(view), (row) => admittedFeedRow(row, address.deviceId, records, rewriteRow));
+      return mapFeedRows(withHeldReviewSummaries(held, pruneView(view)),
+        (row) => admittedFeedRow(row, address.deviceId, records, rewriteRow));
     },
   });
 }

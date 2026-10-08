@@ -1312,10 +1312,10 @@ const validSession = (record) => Number.isSafeInteger(record?.session_started_ms
   && Number.isSafeInteger(record?.last_activity_ms)
   && record.session_started_ms <= record.last_activity_ms;
 
-async function writeSessionList(context, kind, incoming, before) {
+async function writeSessionList(context, kind, incoming, before, options) {
   await replaceSessionList(addressOf(context, "", kind), kind, incoming, (held) => {
     if (before) before[kind] = held;
-  }, context.sessionListObservations?.[kind]);
+  }, context.sessionListObservations?.[kind], options);
 }
 
 /** A record as a push carries it, marked so a read that was already out when
@@ -1383,7 +1383,8 @@ async function writePushedBoard(context, state, before) {
     const summaries = workspaceSummaries(await heldValue(context, "", "workspaces"));
     if (!context.active()) return;
     await writeSessionList(context, "workspaces", state.workspaces.map((workspace) =>
-      stampWorkspace(workspace, context.deviceId, workspace.work_summary === undefined ? summaries : [])), before);
+      stampWorkspace(workspace, context.deviceId, workspace.work_summary === undefined ? summaries : [])), before,
+    { clearMissingReview: true });
   }
 }
 

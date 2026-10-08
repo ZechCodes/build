@@ -5,7 +5,7 @@ import getFixture from "../../fixtures/api/v1/tasks.review.get.json";
 import workspaceFixture from "../../fixtures/api/v1/workspace.list.json";
 
 const state = vi.hoisted(() => ({ context: null, watchers: [] }));
-vi.mock("../src/appState.js", () => ({ App: { route: { name: "inbox" } } }));
+vi.mock("../src/appState.js", () => ({ App: { route: { name: "inbox" }, devices: [] } }));
 vi.mock("../src/core/deviceContexts.js", () => ({
   contextFor: () => state.context,
   // Tests start the cache lock, then await exactly one explicit sync pass.
@@ -19,7 +19,7 @@ vi.mock("../src/core/changeEvents.js", () => ({
   watchChanges: (watcher) => { state.watchers.push(watcher); return { dispose() {} }; },
 }));
 
-let cache, sync, reviewCache, support, rpc, answer, workspaces, tasks, items;
+let cache, sync, reviewCache, support, rpc, answer, workspaces, tasks, items, feed;
 const deviceId = "pr-sync";
 const projectId = "proj-1";
 const taskId = "task-1";
@@ -55,7 +55,7 @@ beforeEach(async () => {
   sync.startCacheSync();
 });
 
-afterEach(() => sync.stopCacheSync());
+afterEach(() => { feed?.stopFeed(); feed = null; sync.stopCacheSync(); });
 
 it("discovers an unopened PR from task summaries and refreshes only metadata on reconnect", async () => {
   tasks = [{ id: taskId, number: 1, project_id: projectId, review_summary: summary }];
@@ -116,6 +116,16 @@ it("warms newly linked workspace metadata from a pushed board list", async () =>
   expect(reviewCalls()).toHaveLength(1);
 });
 
+it("clears a retained workspace PR link when an authoritative board push omits it", async () => {
+  const row = { id: "workspace-1", project_id: projectId, active_review: { ...summary, version: 7 } };
+  workspaces = [row];
+  await sync.syncDevice(deviceId);
+  await pushed([{ entity_id: "board", state: { workspaces: [{ id: row.id, project_id: projectId }] } }]);
+  const held = (await cache.readCached({ deviceId, entityId: "", kind: "workspaces" })).value[0];
+  expect(held).not.toHaveProperty("active_review");
+  expect(await reviewCache.readWorkspaceReview({ ...scope, workspaceId: row.id })).toBeNull();
+});
+
 it("discovers an unopened review from a newly watched task state", async () => {
   await sync.syncDevice(deviceId);
   await pushed([{ entity_id: taskId, state: { kind: "tracker_task", task_id: taskId, project_id: projectId, review_summary: summary } }]);
@@ -123,11 +133,44 @@ it("discovers an unopened review from a newly watched task state", async () => {
   expect(reviewCalls()).toHaveLength(1);
 });
 
-it("keeps a newer feed review summary when a late state reply names an older version", async () => {
+it("keeps a newer pushed row review summary when a late state reply names an older version", async () => {
   await sync.syncDevice(deviceId);
   const row = { kind: "tracker_task", task_id: taskId, project_id: projectId, review_summary: { ...summary, version: 8, status: "merged" } };
   await pushed([{ entity_id: taskId, state: row }]);
   await pushed([{ entity_id: taskId, state: { ...row, review_summary: summary } }]);
   const held = (await cache.readCached({ deviceId, entityId: taskId, kind: "row" })).value;
   expect(held.review_summary).toEqual(row.review_summary);
+});
+
+it.each(["individual row", "feed copy"])("persists and paints the PR version from a protected %s before stopped sync can repair rows", async (source) => {
+  await sync.syncDevice(deviceId);
+  const feedAddress = { deviceId, entityId: "", kind: "feed" };
+  const rowAddress = { deviceId, entityId: taskId, kind: "row" };
+  const held = { kind: "tracker_task", task_id: taskId, project_id: projectId, title: "held fields",
+    review_summary: { ...summary, version: 8, status: "merged" } };
+  if (source === "individual row") await cache.writeCached(rowAddress, held);
+  else {
+    await cache.writeCached(rowAddress, null);
+    await cache.writeCached(feedAddress, { items: [held], projects: [], workspaces: [] });
+  }
+  const ownBefore = await cache.readCached(rowAddress);
+  items = [{ ...held, title: "board fields", review_summary: summary }];
+  const stopAfterFeed = cache.subscribeCache(feedAddress, () => { state.context.session = {}; });
+  try { expect(await sync.syncDevice(deviceId)).toBe(false); }
+  finally { stopAfterFeed(); }
+  expect(await cache.readCached(rowAddress)).toEqual(ownBefore);
+  const cached = (await cache.readCached(feedAddress)).value.items[0];
+  expect(cached.review_summary).toEqual(held.review_summary);
+  expect(cached.title).toBe("board fields");
+
+  await cache.writeCached(cache.DEVICES_ADDRESS, [{ id: deviceId }]);
+  feed = await import("../src/core/taskFeed.js");
+  let painted;
+  const stopPaint = feed.subscribeFeed((snapshot) => { painted = snapshot; });
+  try {
+    await feed.startFeed();
+    expect(painted.items.find((row) => row.task_id === taskId)).toMatchObject({
+      title: "board fields", review_summary: held.review_summary,
+    });
+  } finally { stopPaint(); feed.stopFeed(); }
 });

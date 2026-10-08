@@ -332,12 +332,26 @@ impl Store {
     /// Explicit history deletion, called by the review service off the app
     /// lock. Release each history's Git pins inside the transaction: a snapshot
     /// cannot commit new pins between their enumeration and metadata deletion.
+    /// Unfinished openings must be recovered or safely cancelled first. Check
+    /// before release callbacks, which cannot be rolled back with SQLite.
     pub(crate) fn delete_tracker_tasks_of_project(
         &self,
         project_path: &str,
         release: impl Fn(&crate::reviews::records::Review) -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
+            let unfinished: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM review_openings WHERE project_key = ?1
+                 AND state IN ('preparing', 'failed', 'interrupted'))",
+                [project_path],
+                |row| row.get(0),
+            )?;
+            if unfinished {
+                return Err(StoreError::ReviewPullRequestInvalid(
+                    "recover or safely cancel unfinished PR openings before deleting project history"
+                        .into(),
+                ));
+            }
             for review in super::reviews::load_reviews_of_project(tx, project_path)? {
                 release(&review)?;
             }
@@ -360,8 +374,8 @@ impl Store {
                     [project_path],
                 )?;
             }
-            // Preparing openings have no tracker task yet, so delete their
-            // claims and request journals by project as well.
+            // Cancelled openings have no tracker task. Once their Git cleanup
+            // is verified, their remaining journals can be deleted by project.
             tx.execute("DELETE FROM review_branch_bindings WHERE task_id IN (SELECT task_id FROM review_openings WHERE project_key = ?1)", [project_path])?;
             for table in ["review_workspace_claims", "review_openings", "review_merge_intents"] {
                 tx.execute(&format!("DELETE FROM {table} WHERE project_key = ?1"), [project_path])?;

@@ -451,15 +451,19 @@ fn upgrading_real_v14_shape_preserves_legacy_header_and_snapshot_bytes() {
 }
 
 #[test]
-fn explicit_history_deletion_cleans_preparing_and_published_pr_rows() {
+fn explicit_history_deletion_cleans_cancelled_and_published_pr_rows() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();
     let review = publish(&store);
     store
         .reserve_review_merge("/repo", "merge-1", merge_request(&review))
         .unwrap();
-    store
+    let mut cancelled = store
         .reserve_review_opening("/repo", "open-2", request("ws-2"))
+        .unwrap();
+    cancelled.state = ReviewOpeningState::Cancelled;
+    store
+        .save_review_opening(&cancelled, cancelled.version)
         .unwrap();
     store
         .delete_tracker_tasks_of_project("/repo", |_| Ok(()))
@@ -477,6 +481,115 @@ fn explicit_history_deletion_cleans_preparing_and_published_pr_rows() {
             .reserve_review_opening("/repo", workspace, request(workspace))
             .is_ok());
     }
+}
+
+#[test]
+fn history_deletion_preserves_unfinished_opening_recovery_across_restart() {
+    for state in [
+        ReviewOpeningState::Interrupted,
+        ReviewOpeningState::Preparing,
+        ReviewOpeningState::Failed,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        let published = publish(&store);
+        let mut opening = store
+            .reserve_review_opening("/repo", "open-2", request("ws-2"))
+            .unwrap();
+        let mut prepared = binding();
+        prepared.dedicated_branch_ref = "refs/heads/review/2-preparing".into();
+        prepared.receiving_ref = prepared.dedicated_branch_ref.clone();
+        prepared.preparation = ReviewPreparationState::RemoteConfigured;
+        prepared.publication = ReviewPublicationState::Interrupted;
+        prepared.last_received_head = None;
+        prepared.recovery = Some("Inspect the prepared remote before unwinding".into());
+        opening.bindings.push(prepared.clone());
+        opening.state = state;
+        let opening = store
+            .save_review_opening(&opening, opening.version)
+            .unwrap();
+
+        let released = std::cell::Cell::new(false);
+        let result = store.delete_tracker_tasks_of_project("/repo", |_| {
+            released.set(true);
+            Ok(())
+        });
+        assert!(matches!(
+            result,
+            Err(StoreError::ReviewPullRequestInvalid(_))
+        ));
+        assert!(
+            !released.get(),
+            "refusal must precede the Git release callback"
+        );
+        drop(store);
+
+        let store = Store::new(dir.path()).unwrap();
+        assert_eq!(
+            store.load_review_opening("/repo", "open-2").unwrap(),
+            Some(opening.clone())
+        );
+        assert_eq!(
+            store.load_unfinished_review_openings().unwrap(),
+            vec![opening.clone()]
+        );
+        let raw: String = store.connection().query_row(
+            "SELECT record FROM review_branch_bindings WHERE task_id = ?1 AND directory_id = ?2",
+            rusqlite::params![opening.task.id, prepared.directory_id], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ReviewBranchBinding>(&raw).unwrap(),
+            prepared
+        );
+        assert_eq!(
+            store.load_review(&published.task_id).unwrap(),
+            Some(published)
+        );
+        assert_eq!(
+            store
+                .reserve_review_opening("/repo", "open-2", request("ws-2"))
+                .unwrap(),
+            opening
+        );
+        assert!(matches!(
+            store.reserve_review_opening("/repo", "another", request("ws-2")),
+            Err(StoreError::ReviewWorkspaceBusy { .. })
+        ));
+        let normal = store
+            .create_tracker_task(
+                Task::drafted("/repo", "after restart", Actor::User, NOW),
+                &[],
+            )
+            .unwrap();
+        assert_eq!(normal.number, opening.task.number + 1);
+    }
+}
+
+#[test]
+fn history_deletion_checks_unfinished_openings_only_in_its_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let published = publish(&store);
+    let other = store
+        .reserve_review_opening("/other", "open-other", request("ws-other"))
+        .unwrap();
+    let released = std::cell::Cell::new(false);
+    store
+        .delete_tracker_tasks_of_project("/repo", |_| {
+            released.set(true);
+            Ok(())
+        })
+        .unwrap();
+    assert!(released.get());
+    assert!(store.load_review(&published.task_id).unwrap().is_none());
+    assert_eq!(
+        store.load_review_opening("/other", "open-other").unwrap(),
+        Some(other)
+    );
+    assert!(matches!(
+        store.reserve_review_opening("/other", "another", request("ws-other")),
+        Err(StoreError::ReviewWorkspaceBusy { .. })
+    ));
 }
 
 #[test]

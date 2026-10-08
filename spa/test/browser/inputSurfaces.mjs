@@ -31,6 +31,7 @@ export const INPUT_SOURCES = {
   "core/trackerTaskRender.js": "task controls / task comment",
   "core/workspaceLifecycleSetting.js": "device settings",
   "core/workspaceRefPicker.js": "workspace refs",
+  "core/workspaceReviewForm.js": "open workspace review",
   "sheets/addDevice.js": "pairing",
   "sheets/browser.js": "directory browser",
   "sheets/newRepo.js": "new project remote",
@@ -58,6 +59,7 @@ export const INPUT_TOGGLE_SOURCES = {
   "core/taskReviewActions.js": "merge and push checkboxes",
   "core/watchSetting.js": "watch tasks checkbox",
   "core/workspaceLifecycleSetting.js": "prune build output checkbox",
+  "core/workspaceReviewForm.js": "excluded Git directory checkboxes",
   "sheets/browser.js": "Show hidden checkbox",
   "sheets/sourceSyncControls.js": "sync base checkbox",
 };
@@ -81,6 +83,7 @@ export const INPUT_SURFACES = [
   { name: "project remote", selectSurface: "project settings", selectors: ["#psremoteurl", "#pssourcelabel"] },
   { name: "new project remote", selectSurface: "new project", selectors: ["#nrproject", "[data-source-value]", "[data-source-name]", "[data-source-branch]"] },
   { name: "task review", selectSurface: "task review", selectors: ["[data-review-base]", "[data-review-push-branch]", "[data-review-description]", "#task-review-feedback-body"] },
+  { name: "open workspace review", selectors: ["[data-review-title]", "[data-review-description]", "[data-review-base]", "#review-create-assignee"] },
   { name: "new conversation", selectSurface: "new conversation", selectors: ["[data-new-agent-name]", ".rail-composer textarea"] },
   { name: "pairing", selectors: ["#paircode"] },
   { name: "directory browser", selectors: ["#bdirnew"] },
@@ -108,6 +111,7 @@ const modules = {
   task: "src/core/trackerTaskRender.js", assignee: "src/core/trackerAssigneePicker.js", pop: "src/commentPop.js",
   fileUploads: "src/core/filesUploadActions.js",
   changes: "src/core/changesComposer.js", editor: "src/core/fileEditor.js", reviewFiles: "src/core/taskReviewFiles.js",
+  reviewEntry: "src/core/workspaceReviewEntry.js", reviewSupport: "src/core/taskReviewSupport.js",
 };
 
 // All data stays in the browser's disposable cache. No fixture opens a bridge
@@ -136,6 +140,13 @@ async function seedInputSurface({ name, theme }) {
   await m.cache.writeCached({ deviceId: device.id, entityId: "", kind: "workspaces" }, [workspace]);
 
   const mounts = {
+    "open workspace review": async () => {
+      await m.cache.writeCached({ deviceId: device.id, entityId: "", kind: "workspaces" }, [{ ...workspace,
+        directories: [{ id: "input-directory", source_id: "input-source", name: "Build", is_git: true, status: "ready", branch: "main", base_branch: "main" }] }]);
+      await m.reviewSupport.rememberReviewSupport(device.id, { reviews: { pullRequests: true, open: true } });
+      const modal = await m.reviewEntry.openWorkspaceReview({ deviceId: device.id, projectId: project.id, workspaceId: workspace.id, callRpc });
+      disposers.push(() => modal?.close());
+    },
     "New folder"() {
       root.innerHTML = '<div class="ftree-list"><div class="frow fdir" data-kind="dir" data-path="docs"><span class="fname">docs</span></div></div>';
       dispose(m.fileUploads.mountFilesUploadActions(root, {

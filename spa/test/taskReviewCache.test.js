@@ -6,6 +6,7 @@ import { forgetPushes, notePush } from "../src/core/pushFence.js";
 import { capabilitiesOf } from "../src/core/bridgeApi/v1/index.js";
 import { rememberReviewSupport, readReviewSupport } from "../src/core/taskReviewSupport.js";
 import * as reviewSupport from "../src/core/taskReviewSupport.js";
+import { replaceSessionList, sessionListObservation } from "../src/core/sessionListCache.js";
 import {
   createTaskReviewRepository, readWorkspaceReview, refreshCachedReviews, refreshWorkspaceReview,
   reviewAddress, writeReviewRecord, writeReviewReply,
@@ -14,6 +15,7 @@ import fixture from "../../fixtures/api/v1/tasks.review.get.json";
 import openFixture from "../../fixtures/api/v1/tasks.review.open.json";
 import pushFixture from "../../fixtures/api/v1/tasks.review.push.json";
 import mergeFixture from "../../fixtures/api/v1/tasks.review.merge.json";
+import closeFixture from "../../fixtures/api/v1/tasks.review.close.json";
 
 // These repositories use isolated injected callers; current-greeting dispatch
 // is covered by taskReviewSupport's registered-device tests.
@@ -283,4 +285,40 @@ it("checks current greeting authority before sending a mutation advertised by ol
   expect(guardedRpc).toHaveBeenCalledExactlyOnceWith("tasks.review.merge", mergeFixture.params);
   expect(callRpc).not.toHaveBeenCalled();
   expect(await readCached(reviewAddress(scope))).toBeUndefined();
+});
+
+const workspaceListAddress = { deviceId: scope.deviceId, entityId: "", kind: "workspaces" };
+const workspaceScope = { ...scope, workspaceId: "workspace-1" };
+async function clearWorkspaceReview() {
+  const workspace = { id: workspaceScope.workspaceId, project_id: scope.projectId };
+  await replaceSessionList(workspaceListAddress, "workspaces", [{ ...workspace, active_review: {
+    task_id: scope.taskId, workspace_id: workspaceScope.workspaceId, version: 3, status: "open",
+  } }]);
+  const observation = await sessionListObservation(workspaceListAddress, "workspaces");
+  await replaceSessionList(workspaceListAddress, "workspaces", [workspace], undefined, observation);
+}
+
+it("honors a canonical workspace summary clear when old task metadata remains cached", async () => {
+  await writeReviewReply(scope, pullRequest, 10);
+  await clearWorkspaceReview();
+  expect((await readCached(workspaceListAddress)).value[0]).not.toHaveProperty("active_review");
+  expect(await readWorkspaceReview(workspaceScope)).toBeNull();
+});
+
+it("finds a distinct newly opened PR before its workspace summary refreshes after a clear", async () => {
+  await writeReviewReply(scope, pullRequest, 10);
+  await clearWorkspaceReview();
+  const opened = { ...openFixture.result, task: { ...openFixture.result.task, id: "new-pr-task" },
+    review: { ...openFixture.result.review, task_id: "new-pr-task" } };
+  await writeReviewReply({ ...scope, taskId: "new-pr-task" }, opened, 20);
+  expect(await readWorkspaceReview(workspaceScope)).toMatchObject(opened);
+});
+
+it.each([
+  ["closed", closeFixture.result],
+  ["merged", mergeFixture.examples[1].result],
+])("retains a cached %s PR link when a legacy workspace row has no summary authority", async (_status, reply) => {
+  await replaceSessionList(workspaceListAddress, "workspaces", [{ id: workspaceScope.workspaceId, project_id: scope.projectId }]);
+  await writeReviewReply(scope, reply, 10);
+  expect(await readWorkspaceReview(workspaceScope)).toMatchObject(reply);
 });

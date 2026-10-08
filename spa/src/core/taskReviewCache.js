@@ -6,6 +6,7 @@ import { nextTaskRead } from "./taskReadOrder.js";
 import { pushFence, removedSince } from "./pushFence.js";
 import { canReviewOperation, readReviewSupport, reviewMutationRpc } from "./taskReviewSupport.js";
 import { mergeReviewObservations } from "./taskReviewObservations.js";
+import { clearedWorkspaceReviewTask } from "./sessionListCache.js";
 import { commandRefusalMessage } from "./commandRefusal.js";
 import { trailingRead } from "./trailingRead.js";
 
@@ -116,10 +117,11 @@ export async function refreshCachedReviews({ deviceId, projectId, callRpc, activ
   }
 }
 
-async function workspaceReviewHint({ deviceId, workspaceId, activeReview }) {
-  if (activeReview !== undefined) return activeReview;
+async function workspaceReviewState({ deviceId, workspaceId, activeReview }) {
+  if (activeReview !== undefined) return { hint: activeReview };
   const workspaces = (await readCached({ deviceId, entityId: "", kind: "workspaces" }))?.value || [];
-  return workspaces.find((row) => (row.workspace_id || row.id) === workspaceId)?.active_review;
+  const workspace = workspaces.find((row) => (row.workspace_id || row.id) === workspaceId);
+  return { hint: workspace?.active_review, clearedTaskId: clearedWorkspaceReviewTask(workspace) };
 }
 
 const matchingHint = (hint, workspaceId) => hint?.task_id && hint.workspace_id === workspaceId;
@@ -128,7 +130,7 @@ const matchingHint = (hint, workspaceId) => hint?.task_id && hint.workspace_id =
 export async function refreshWorkspaceReview(scope) {
   const support = await readReviewSupport(scope.deviceId);
   if (!support.pullRequests || !support.get) return false;
-  const hint = await workspaceReviewHint(scope);
+  const { hint } = await workspaceReviewState(scope);
   if (!matchingHint(hint, scope.workspaceId)) return false;
   return createTaskReviewRepository({ ...scope, taskId: hint.task_id }).refresh();
 }
@@ -136,13 +138,13 @@ export async function refreshWorkspaceReview(scope) {
 /** Read only local replicas. A just-created PR may precede the workspace-list
  * read, so its full cached opening result can resolve that workspace as well. */
 export async function readWorkspaceReview(scope) {
-  const hint = await workspaceReviewHint(scope);
+  const { hint, clearedTaskId } = await workspaceReviewState(scope);
   if (hint !== undefined) {
     if (!matchingHint(hint, scope.workspaceId)) return null;
     const held = (await readCached(reviewAddress({ ...scope, taskId: hint.task_id })))?.value;
     return held?.review?.workspace_id === scope.workspaceId ? held : null;
   }
   const records = await cachedRecords({ deviceId: scope.deviceId, entityId: scope.projectId, kind: REVIEW_KIND });
-  return records.filter(({ value }) => value?.review?.workspace_id === scope.workspaceId)
+  return records.filter(({ value }) => value?.review?.workspace_id === scope.workspaceId && value.review.task_id !== clearedTaskId)
     .sort((left, right) => right.value.read_order - left.value.read_order)[0]?.value || null;
 }

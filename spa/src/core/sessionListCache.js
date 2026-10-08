@@ -15,6 +15,10 @@ function activeReviewState(row) {
   return { revision: Number(state?.revision) || 0, floor: state?.floor ?? row?.active_review ?? null };
 }
 
+/** Which previous PR an authoritative absence cleared. Workspace readers may
+ * discover a newly opened task locally, but cannot restore this retired link. */
+export const clearedWorkspaceReviewTask = (row) => row?.active_review ? null : activeReviewState(row).floor?.task_id || null;
+
 const activeReviewObservation = (row) => [activeReviewState(row).revision, reviewSummaryKey(row?.active_review)];
 
 const observedActiveReview = (held, observation) => observation !== undefined

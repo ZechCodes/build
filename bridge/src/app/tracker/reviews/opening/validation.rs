@@ -17,7 +17,12 @@ pub(super) fn validate_actor(
         app.agent_of_this_project(project_id, agent_id)?;
     }
     if let Some(ReviewReviewer::Agent { agent_id }) = reviewer {
-        app.agent_of_this_project(project_id, agent_id)?;
+        app.agent_of_this_project(project_id, agent_id).map_err(|_| {
+            crate::api::v1::reviews::errors::encode(
+                "not_found", "unknown reviewer agent_id",
+                serde_json::json!({"reason":"reviewer_scope","recovery":"Select the project agent or an agent of this project."}),
+            )
+        })?;
     }
     Ok(())
 }

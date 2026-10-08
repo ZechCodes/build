@@ -142,6 +142,142 @@ fn opening_with_agent_creator_preserves_actor_and_device_watch_policy() {
 }
 
 #[test]
+fn shared_opening_rejects_reviewer_delivery_after_creator_reset() {
+    reset_creator_before_reviewer_delivery(true);
+}
+
+#[test]
+fn settled_opening_rejects_reviewer_delivery_after_creator_reset() {
+    reset_creator_before_reviewer_delivery(false);
+}
+
+fn reset_creator_before_reviewer_delivery(shared_hooks: bool) {
+    let home = tempfile::tempdir().unwrap();
+    let (_repository, mut app, project) = tracked(home.path());
+    let workspace_id = workspace(&mut app, &project, "reset creator");
+    let (owner, creator) = project_agent(&mut app, &project);
+    let reviewer = app.handle(req("agent.add", json!({"entity_id": owner})))["result"]["agent"]
+        ["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let old_thread = app
+        .agent_conversation(&owner, Some(&creator))
+        .unwrap()
+        .id
+        .clone();
+    let mut asked = params(&workspace_id);
+    asked.reviewer = Some(ReviewReviewer::Agent {
+        agent_id: reviewer.clone(),
+    });
+    let shared = Arc::new(Mutex::new(app));
+    let job = {
+        let mut app = shared.lock().unwrap();
+        if shared_hooks {
+            app.self_handle = Some(Arc::downgrade(&shared));
+        }
+        let (answer, job) = app.agent_action_deferring(
+            &owner,
+            &creator,
+            crate::mcp::BridgeAction::TrackerOpenReview { params: asked },
+        );
+        answer.unwrap();
+        let reset = app.handle(req(
+            "conversation.reset",
+            json!({
+                "project_id": project, "entity_id": owner, "agent_id": creator,
+                "conversation_id": creator, "expected_thread_id": old_thread,
+            }),
+        ));
+        assert_eq!(reset["ok"], true, "{reset}");
+        assert_ne!(
+            app.agent_conversation(&owner, Some(&creator)).unwrap().id,
+            old_thread,
+        );
+        job.unwrap()
+    };
+    let done = job.run();
+    let mut app = shared.lock().unwrap();
+    let opened = app
+        .apply_deferred(crate::app::mcp::MCP_CONTROL_METHOD, &Value::Null, done)
+        .unwrap();
+    assert_eq!(opened["opening_state"], "published");
+    assert_eq!(opened["task"]["status"], "in_review");
+    assert_eq!(opened["review"]["snapshots"].as_array().unwrap().len(), 1);
+    assert_eq!(opened["reviewer_dispatch"]["state"], "failed", "{opened}");
+    assert!(opened["reviewer_dispatch"]["error"]
+        .as_str()
+        .unwrap()
+        .contains("stale thread_id"));
+    let task_id = opened["task"]["id"].as_str().unwrap();
+    let store = app.store.as_ref().unwrap();
+    assert!(store.load_review(task_id).unwrap().is_some());
+    assert!(store
+        .operation(&format!("review-open-{task_id}"))
+        .unwrap()
+        .is_none());
+    assert!(
+        app.agent_conversation(&owner, Some(&reviewer))
+            .unwrap()
+            .items
+            .is_empty(),
+        "a stale creator cannot dispatch new reviewer work"
+    );
+    assert!(
+        app.agent_conversation(&owner, Some(&creator))
+            .unwrap()
+            .items
+            .is_empty(),
+        "old work cannot repopulate the creator's replacement thread"
+    );
+}
+
+#[test]
+fn reviewer_dispatch_preserves_the_unchanged_creator_generation() {
+    let home = tempfile::tempdir().unwrap();
+    let (_repository, mut app, project) = tracked(home.path());
+    let workspace_id = workspace(&mut app, &project, "creator generation");
+    let (owner, creator) = project_agent(&mut app, &project);
+    let conversation_id = app
+        .resolve_conversation_address(&owner, Some(&creator))
+        .unwrap()
+        .conversation_id;
+    let reviewer = app.handle(req("agent.add", json!({"entity_id": owner})))["result"]["agent"]
+        ["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut asked = params(&workspace_id);
+    asked.reviewer = Some(ReviewReviewer::Agent { agent_id: reviewer });
+    let opened = open_direct(
+        &mut app,
+        asked,
+        Actor::Agent {
+            agent_id: creator.clone(),
+        },
+    );
+    assert_eq!(
+        opened["reviewer_dispatch"]["state"], "delivered",
+        "{opened}"
+    );
+    let requester = app
+        .store
+        .as_ref()
+        .unwrap()
+        .operation(&format!(
+            "review-open-{}",
+            opened["task"]["id"].as_str().unwrap()
+        ))
+        .unwrap()
+        .unwrap()
+        .requested_by
+        .unwrap();
+    assert_eq!(requester.entity_id, owner);
+    assert_eq!(requester.agent_id, creator);
+    assert_eq!(requester.conversation_id, conversation_id);
+}
+
+#[test]
 fn an_opening_claim_blocks_removal_and_checks_a_new_reclaim_reservation_off_lock() {
     let home = tempfile::tempdir().unwrap();
     let (_repository, mut app, project) = tracked(home.path());

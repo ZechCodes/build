@@ -296,6 +296,59 @@ describe("paintKeepingPlace", () => {
       expect(scroller.scrollTop).toBe(700);
     });
 
+    for (const [kind, content] of [
+      ["table cells", '<div class="mdtable"><table><tbody><tr><td data-reading-leaf>Reading table cell</td></tr></tbody></table></div>'],
+      ["nested quote content", '<blockquote><ul><li><blockquote><h2 data-reading-leaf>Reading heading</h2></blockquote></li></ul></blockquote>'],
+      ["rules", '<hr data-reading-leaf>'],
+      ["attachment sibling", '</div><div class="thread-attachments"><figure class="thread-attachment-figure"><img data-reading-leaf><figcaption>Saved image</figcaption></figure></div><div>'],
+      ["body child fallback", '<div><span data-reading-leaf>Visible body child</span></div>'],
+    ]) for (const nativeAnchoring of [false, true]) {
+      it(`keeps visible ${kind} still through metadata and row replacement (native anchoring ${nativeAnchoring})`, () => {
+        const rows = [{ key: "before", height: 200 }, { key: "reading", height: 1000, inset: 100 }, { key: "after", height: 200 }];
+        const { scroller } = conversation(rows);
+        const measure = Element.prototype.getBoundingClientRect;
+        Element.prototype.getBoundingClientRect = function () {
+          if (kind === "attachment sibling" && this.matches(".task-comment-body")) return { top: -600, bottom: -500 };
+          if (this.matches("[data-reading-leaf], .task-comment-body")) {
+            const box = measure.call(this);
+            return { ...box, top: box.top + rows[1].inset };
+          }
+          return measure.call(this);
+        };
+        const paint = () => { scroller.innerHTML = `<div data-key="reading"><div class="task-comment-body">${content}</div></div>`; };
+        paint();
+        scroller.scrollTop = 600;
+        const top = () => scroller.querySelector("[data-reading-leaf]").getBoundingClientRect().top;
+        const before = top();
+        paintKeepingPlace(scroller, () => {
+          rows[1].inset += 100; rows[1].height += 100;
+          paint(); // a new row with the same key must recover its content anchor
+          if (nativeAnchoring) scroller.scrollTop += 100;
+        }, { opening: () => false, policy: followConversation() });
+        expect(top()).toBe(before);
+        expect(scroller.scrollTop).toBe(700);
+      });
+    }
+
+    it("keeps the first visible formatted paragraph when only a later paragraph moves", () => {
+      const { scroller } = conversation([{ key: "reading", height: 1500 }]);
+      scroller.innerHTML = '<div data-key="reading"><div class="task-comment-body"><p data-first><strong>First visible text</strong></p><p data-later>Later plain text</p></div></div>';
+      scroller.scrollTop = 600;
+      const measure = Element.prototype.getBoundingClientRect;
+      let laterGrowth = 0;
+      Element.prototype.getBoundingClientRect = function () {
+        if (this.closest("[data-first]")) return { top: 500 - scroller.scrollTop, bottom: 800 - scroller.scrollTop };
+        if (this.matches("[data-later]")) return { top: 800 + laterGrowth - scroller.scrollTop, bottom: 1200 + laterGrowth - scroller.scrollTop };
+        return measure.call(this);
+      };
+      paintKeepingPlace(scroller, () => {
+        laterGrowth = 100;
+        scroller.querySelector("[data-later]").textContent += " More lower content";
+      }, { opening: () => false, policy: followConversation() });
+      expect(scroller.scrollTop).toBe(600);
+      expect(scroller.querySelector("[data-first]").getBoundingClientRect().top).toBe(-100);
+    });
+
     it("does not apply the same correction twice after native anchoring", () => {
       const rows = [{ key: "before", height: 200 }, { key: "reading", height: 1000 }, { key: "after", height: 200 }];
       const { scroller, paint } = conversation(rows);

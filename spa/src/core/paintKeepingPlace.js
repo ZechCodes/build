@@ -105,7 +105,32 @@ export function paintKeepingPlace(scroller, paint, { opening, policy }) {
   policy.restore(scroller, held, changed);
 }
 
-const READING_CONTENT = "p, pre, li, blockquote";
+// Match the blocks emitted by markdownBlocks, including nested content and
+// table cells. A body's visible child is the fallback for other renderers.
+const READING_CONTENT = "p, pre, h1, h2, h3, h4, h5, h6, hr, ul, ol, li, blockquote, .mdtable, table, thead, tbody, tr, th, td";
+const READING_BODY = ".task-comment-body, .thread-body, .thread-notice-body";
+
+function readingContents(row) {
+  const bodies = [...row.querySelectorAll(READING_BODY)];
+  const roots = bodies.length ? bodies : [row];
+  const contents = roots.flatMap((body) => {
+    const blocks = [...body.querySelectorAll(READING_CONTENT)];
+    const fallback = bodies.length ? [...body.querySelectorAll("*"), body] : [];
+    return [...new Set([...blocks, ...fallback])];
+  });
+  const attachments = [...row.querySelectorAll(".thread-attachments img, .thread-attachments video, .thread-attachments figcaption")];
+  return [...new Set([...contents, ...attachments])]
+    .sort((first, second) => first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
+}
+
+function visibleReadingContent(contents, viewport) {
+  const visible = contents.filter((node) => intersectsViewport(node, viewport));
+  const blocks = visible.filter((node) => node.matches(READING_CONTENT));
+  const candidates = blocks.length ? blocks : visible;
+  // A long quote/list/table can cover the viewport while the reader is far
+  // below its start. Keep the visible inner content rather than that wrapper.
+  return candidates.find((node) => !candidates.some((child) => child !== node && node.contains(child)));
+}
 const readingEntries = (scroller) => [...scroller.querySelectorAll("[data-key]:not(button)")];
 
 /** The visible reading area starts below a header pinned over the content. */
@@ -131,8 +156,8 @@ function holdReadingAnchor(scroller) {
   const row = readingEntries(scroller)
     .find((element) => intersectsViewport(element, viewport));
   if (!row) return null;
-  const contents = [...row.querySelectorAll(READING_CONTENT)];
-  const element = contents.find((node) => intersectsViewport(node, viewport)) || row;
+  const contents = readingContents(row);
+  const element = visibleReadingContent(contents, viewport) || row;
   const top = scroller.getBoundingClientRect().top;
   return {
     row, element, key: row.getAttribute("data-key"), index: contents.indexOf(element), tag: element.tagName,
@@ -145,7 +170,7 @@ function restoreReadingAnchor(scroller, held) {
   const row = scroller.contains(held.row) ? held.row
     : readingEntries(scroller).find((element) => element.getAttribute("data-key") === held.key);
   if (!row) return;
-  const candidate = row.contains(held.element) ? held.element : row.querySelectorAll(READING_CONTENT)[held.index];
+  const candidate = row.contains(held.element) ? held.element : readingContents(row)[held.index];
   const element = candidate?.tagName === held.tag ? candidate : row;
   const offset = element === row ? held.rowOffset : held.offset;
   const moved = element.getBoundingClientRect().top - scroller.getBoundingClientRect().top - offset;

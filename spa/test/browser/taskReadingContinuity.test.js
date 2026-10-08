@@ -79,21 +79,22 @@ async function settle(page) {
   await page.waitForTimeout(100);
 }
 
-async function parkReader(page, fraction = 0.5) {
-  await page.evaluate(({ id, fraction }) => {
+async function parkReader(page, fraction = 0.5, attachment = false) {
+  await page.evaluate(({ id, fraction, attachment }) => {
     const host = document.querySelector("#task-pane");
     const row = document.getElementById(id);
     const body = row.querySelector(".task-comment-body");
-    host.scrollTop += body.getBoundingClientRect().top + body.offsetHeight * fraction - host.getBoundingClientRect().top - host.clientHeight / 2;
-  }, { id: READING_ROW, fraction });
+    const reading = attachment ? row.querySelector("img.thread-attachment-image") : body;
+    host.scrollTop += reading.getBoundingClientRect().top + reading.offsetHeight * fraction - host.getBoundingClientRect().top - host.clientHeight / 2;
+  }, { id: READING_ROW, fraction, attachment });
   await settle(page);
-  return page.evaluate((id) => {
+  return page.evaluate(({ id, attachment }) => {
     const host = document.querySelector("#task-pane");
     const row = document.getElementById(id);
     const viewport = host.getBoundingClientRect();
     const readingTop = Math.max(viewport.top, host.querySelector(".task-page-head").getBoundingClientRect().bottom);
     const body = row.querySelector(".task-comment-body");
-    const content = [...body.querySelectorAll("p, pre, li")].find((element) => {
+    const content = attachment ? row.querySelector("img.thread-attachment-image") : [...body.querySelectorAll("p, pre, li, td, th, h1, h2, h3, h4, h5, h6")].find((element) => {
       const box = element.getBoundingClientRect();
       return box.top < viewport.bottom && box.bottom > readingTop;
     }) || body;
@@ -115,7 +116,7 @@ async function parkReader(page, fraction = 0.5) {
     window.__reading.saved.reviewHeight = host.querySelector("[data-task-review]").getBoundingClientRect().height;
     window.__reading.saved.rowTop = row.getBoundingClientRect().top;
     return host.scrollTop;
-  }, READING_ROW);
+  }, { id: READING_ROW, attachment });
 }
 
 async function measure(page, before, label) {
@@ -467,4 +468,54 @@ for (const [label, width, height] of [["phone", 390, 844], ["desktop", 1440, 900
       await page.evaluate(() => { window.__reading.mounted.dispose(); window.__reading.stopIndex(); });
     }, { width, height, plugins: [deviceShim] });
   }, 90_000);
+}
+
+for (const [label, width, height] of [["phone", 390, 844], ["desktop", 1440, 900]]) {
+  it(`keeps visible ${label} long-comment table cells still when metadata grows above the table`, async () => {
+    await withLayoutPage(async ({ page, basePath }) => {
+      await mountReadingPage(page, basePath);
+      await page.evaluate(async () => {
+        const { record, scope } = window.__reading;
+        const entry = record.timeline.find((row) => row.id === "tc-reading18");
+        entry.opinion = null;
+        entry.body = "| Reading row | Detailed content |\n| --- | --- |\n" +
+          Array.from({ length: 80 }, (_, index) => `| Row ${index} | This is the table content the reader follows through a long comment. |`).join("\n");
+        await window.__layoutModules.cache.writeTaskRecord(scope.deviceId, scope.projectId, scope.taskId, record);
+      });
+      await page.locator(`#${READING_ROW} tbody tr`).last().waitFor({ state: "attached" });
+      await page.locator("#task-comment").evaluate((field) => field.focus({ preventScroll: true }));
+      let before = await parkReader(page);
+      expect(await page.evaluate(() => window.__reading.saved.content.tagName)).toBe("TD");
+      await updateMetadata(page, "metadata-add");
+      await measure(page, before, `${label}/table-metadata-add`);
+      before = await parkReader(page);
+      await updateMetadata(page, "metadata-remove");
+      await measure(page, before, `${label}/table-metadata-remove`);
+      expect(await page.evaluate(() => window.__reading.errors)).toEqual([]);
+      await page.evaluate(() => { window.__reading.mounted.dispose(); window.__reading.stopIndex(); });
+    }, { width, height, plugins: [deviceShim] });
+  }, 30_000);
+}
+
+for (const [label, width, height] of [["phone", 390, 844], ["desktop", 1440, 900]]) {
+  it(`keeps visible ${label} loaded attachment still when metadata grows above it`, async () => {
+    await withLayoutPage(async ({ page, basePath }) => {
+      await mountReadingPage(page, basePath);
+      await updateMetadata(page, "metadata-remove");
+      await page.addStyleTag({ content: `#${READING_ROW} .thread-attachment-image { height:1200px; max-height:none; }` });
+      await page.locator("#task-comment").evaluate((field) => field.focus({ preventScroll: true }));
+      const before = await parkReader(page, 0.5, true);
+      expect(await page.evaluate(() => window.__reading.saved.body.getBoundingClientRect().bottom < document.querySelector("#task-pane").getBoundingClientRect().top)).toBe(true);
+      await updateMetadata(page, "metadata-add");
+      await measure(page, before, `${label}/attachment-metadata-add`);
+      expect(await page.evaluate(() => {
+        const host = document.querySelector("#task-pane");
+        const box = window.__reading.saved.content.getBoundingClientRect();
+        return box.height === 1200 && box.top < host.getBoundingClientRect().bottom &&
+          box.bottom > host.querySelector(".task-page-head").getBoundingClientRect().bottom;
+      })).toBe(true);
+      expect(await page.evaluate(() => window.__reading.errors)).toEqual([]);
+      await page.evaluate(() => { window.__reading.mounted.dispose(); window.__reading.stopIndex(); });
+    }, { width, height, plugins: [deviceShim] });
+  }, 30_000);
 }

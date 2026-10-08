@@ -45,16 +45,27 @@ const unsupportedOperation = () => new ApiError("unknown_method", "Update this d
 /** A cache-backed surface may hold an older greeting. Recheck the session's
  * compatible greeting at dispatch, passing the wire shape and result intact.
  * Load the dispatcher only when called so cache readers stay transport-free. */
-export function reviewRpc(context) {
+export function reviewRpc(context, callRpc = (...asked) => context.rpc(...asked)) {
   return async (...asked) => {
     const verb = verbsByMethod.get(asked[0]);
     if (!verb) throw unsupportedOperation();
     const { whenGreeted } = await import("./deviceContexts.js");
     const request = await whenGreeted(context, () => {
       if (!canReviewOperation(context?.adapter?.capabilities?.reviews, verb)) throw unsupportedOperation();
-      return context.rpc(...asked);
+      return callRpc(...asked);
     });
     if (!request) throw new Error("This machine is unavailable.");
     return request.sent;
+  };
+}
+
+/** Production repositories have a registered device. Standalone injected
+ * callers do not; keep that adapter seam while guarding real mutations on the
+ * latest greeting. The original caller retains its captured request priority. */
+export function reviewMutationRpc(deviceId, callRpc) {
+  return async (...asked) => {
+    const { contextFor } = await import("./deviceContexts.js");
+    const context = contextFor(deviceId);
+    return context ? reviewRpc(context, callRpc)(...asked) : callRpc(...asked);
   };
 }

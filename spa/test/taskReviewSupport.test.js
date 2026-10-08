@@ -5,7 +5,9 @@ import { readCached, wipeCache, writeCached } from "../src/core/localCache.js";
 import * as reviewSupport from "../src/core/taskReviewSupport.js";
 import * as adapter from "../src/core/bridgeApi/v1/index.js";
 
+const registry = vi.hoisted(() => new Map());
 vi.mock("../src/core/deviceContexts.js", () => ({
+  contextFor: (deviceId) => registry.get(deviceId) || null,
   whenGreeted: (context, dispatch) => context.whenGreeted(dispatch),
 }));
 
@@ -20,7 +22,7 @@ const context = (support = allSupport) => ({
   whenGreeted: vi.fn(async (dispatch) => ({ sent: dispatch() })),
 });
 
-beforeEach(async () => { await wipeCache(); });
+beforeEach(async () => { registry.clear(); await wipeCache(); });
 
 describe("cached review support", () => {
   it("restores a pre-PR cache record with false defaults for every PR operation", async () => {
@@ -156,5 +158,90 @@ describe("thin review RPC", () => {
       await expect(call(method, {})).rejects.toMatchObject({ code: "unknown_method" });
     }
     expect(machine.rpc).not.toHaveBeenCalled();
+  });
+});
+
+describe("registered review mutation dispatch", () => {
+  it("passes an injected caller through when no device context is registered", async () => {
+    const callRpc = vi.fn(async () => fixture("open").result);
+    const sample = fixture("open");
+    const options = { priority: "background", timeoutMs: 4321 };
+    expect(await reviewSupport.reviewMutationRpc("standalone", callRpc)(sample.method, sample.params, options))
+      .toEqual(sample.result);
+    expect(callRpc).toHaveBeenCalledExactlyOnceWith(sample.method, sample.params, options);
+    expect(callRpc.mock.calls[0][1]).toBe(sample.params);
+  });
+
+  it("uses the registered greeting while preserving the original callback and its priority", async () => {
+    const machine = context();
+    registry.set("device", machine);
+    const sample = fixture("merge");
+    const callRpc = vi.fn(async () => sample.result);
+    const options = { priority: "foreground", timeoutMs: 60000 };
+    expect(await reviewSupport.reviewMutationRpc("device", callRpc)(sample.method, sample.params, options)).toBe(sample.result);
+    expect(callRpc).toHaveBeenCalledExactlyOnceWith(sample.method, sample.params, options);
+    expect(machine.rpc).not.toHaveBeenCalled();
+  });
+
+  it("preserves callback arity under a registered greeting", async () => {
+    const machine = context();
+    registry.set("device", machine);
+    const callRpc = vi.fn();
+    await reviewSupport.reviewMutationRpc("device", callRpc)("tasks.review.close");
+    expect(callRpc).toHaveBeenCalledExactlyOnceWith("tasks.review.close");
+  });
+
+  it.each([
+    { merge: true },
+    { pullRequests: true },
+    {},
+  ])("refuses the current greeting's missing PR feature or merge verb (%j)", async (support) => {
+    registry.set("device", context(support));
+    const callRpc = vi.fn();
+    await expect(reviewSupport.reviewMutationRpc("device", callRpc)("tasks.review.merge", fixture("merge").params))
+      .rejects.toMatchObject({ code: "unknown_method" });
+    expect(callRpc).not.toHaveBeenCalled();
+  });
+
+  it("waits for the latest greeting before deciding whether the command can send", async () => {
+    const machine = context();
+    registry.set("device", machine);
+    let enter, greet;
+    const entered = new Promise((resolve) => { enter = resolve; });
+    const greeting = new Promise((resolve) => { greet = resolve; });
+    machine.whenGreeted = async (dispatch) => {
+      enter();
+      await greeting;
+      return { sent: dispatch() };
+    };
+    const callRpc = vi.fn();
+    const pending = reviewSupport.reviewMutationRpc("device", callRpc)("tasks.review.merge", fixture("merge").params);
+    await entered;
+    expect(callRpc).not.toHaveBeenCalled();
+    machine.adapter.capabilities.reviews = { pullRequests: true, merge: false };
+    greet();
+    await expect(pending).rejects.toMatchObject({ code: "unknown_method" });
+    expect(callRpc).not.toHaveBeenCalled();
+  });
+
+  it("refuses a context retired while awaiting its greeting instead of invoking the captured caller", async () => {
+    const machine = context();
+    registry.set("device", machine);
+    machine.active = () => registry.get("device") === machine;
+    let enter, greet;
+    const entered = new Promise((resolve) => { enter = resolve; });
+    const greeting = new Promise((resolve) => { greet = resolve; });
+    machine.whenGreeted = async (dispatch) => {
+      enter();
+      await greeting;
+      return machine.active() ? { sent: dispatch() } : null;
+    };
+    const callRpc = vi.fn();
+    const pending = reviewSupport.reviewMutationRpc("device", callRpc)("tasks.review.open", fixture("open").params);
+    await entered;
+    registry.set("device", context());
+    greet();
+    await expect(pending).rejects.toThrow("unavailable");
+    expect(callRpc).not.toHaveBeenCalled();
   });
 });

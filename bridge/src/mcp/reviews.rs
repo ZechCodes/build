@@ -464,7 +464,10 @@ mod tests {
                 assert!(prompt.contains(rule), "prompt omits {rule}");
             }
         }
-        let workspace = include_str!("../../templates/notes/workspace.md");
+        let workspace = include_str!("../../templates/notes/workspace.md")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(workspace.contains("open_review"));
         assert!(workspace.contains("retained workspace"));
     }

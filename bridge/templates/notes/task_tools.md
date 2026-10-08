@@ -25,7 +25,8 @@ work to the local receiver. Build observes received changes even with no
 browser connected. `push_review` provides the same publication with explicit
 working and received head checks. Rewrites require `force_with_lease` with the
 expected received head; with native Git use an explicit
-`--force-with-lease=<ref>:<expected-head>`. A plain `git push --force` is refused.
+`--force-with-lease=<ref>:<expected-head>`. A plain `git push --force` skips this
+head check; use the explicit lease when publishing a rewrite.
 Read `get_review` after partial or interrupted publication before trying again.
 Uncommitted files are counted but excluded from published snapshots.
 

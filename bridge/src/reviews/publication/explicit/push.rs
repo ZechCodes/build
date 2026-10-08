@@ -124,8 +124,9 @@ fn publish_locked(
                     validate_head(working, binding, head)?;
                     receivers::validate_binding_receiver(binding)?;
                     publication::validate_bound_remote(binding)?;
-                    let expectation =
-                        prepare_tracking(store, request, binding, working, packed, heads)?;
+                    let expectation = prepare_tracking(
+                        store, request, binding, working, receiver, packed, heads,
+                    )?;
                     check()?;
                     validate_head(working, binding, head)?;
                     let tracking_error = store
@@ -142,7 +143,7 @@ fn publish_locked(
                                     packed,
                                     &expectation.claim_fingerprint,
                                     expectation.expected_tracking_head.as_deref(),
-                                    &expectation.received_head,
+                                    &expectation.target_head,
                                 )
                                 .err())
                             },
@@ -181,6 +182,7 @@ fn prepare_tracking(
     request: &PushRequest,
     binding: &ReviewBranchBinding,
     working: &git2::Repository,
+    receiver: &git2::Repository,
     packed: &refs::PackedReferenceLease<'_>,
     heads: (Option<git2::Oid>, git2::Oid),
 ) -> Result<crate::store::TrackingExpectation, String> {
@@ -194,17 +196,12 @@ fn prepare_tracking(
         )
         .map_err(|error| error.to_string())?;
     if let Some(previous) = previous {
-        if previous.received_head != head.to_string() {
-            store
+        if previous.target_head != head.to_string() {
+            let expected_tracking = store
                 .with_review_publication_version(&request.task_id, request.expected_version, || {
                     validate_head(working, binding, head)?;
-                    publication::tracking::advance(
-                        working,
-                        binding,
-                        packed,
-                        &previous.claim_fingerprint,
-                        previous.expected_tracking_head.as_deref(),
-                        &previous.received_head,
+                    recover_tracking_expectation(
+                        working, receiver, binding, packed, heads, &previous,
                     )
                 })
                 .map_err(|error| error.to_string())?;
@@ -214,6 +211,7 @@ fn prepare_tracking(
                     request.expected_version,
                     &binding.directory_id,
                     &previous.token,
+                    expected_tracking.as_deref(),
                     &head.to_string(),
                 )
                 .map_err(|error| error.to_string());
@@ -229,6 +227,68 @@ fn prepare_tracking(
             &head.to_string(),
         )
         .map_err(|error| error.to_string())
+}
+
+fn recover_tracking_expectation(
+    working: &git2::Repository,
+    receiver: &git2::Repository,
+    binding: &ReviewBranchBinding,
+    packed: &refs::PackedReferenceLease<'_>,
+    heads: (Option<git2::Oid>, git2::Oid),
+    previous: &crate::store::TrackingExpectation,
+) -> Result<Option<String>, String> {
+    let (received, head) = heads;
+    let head = head.to_string();
+    if received.map(|received| received.to_string()).as_deref() == Some(&head)
+        && publication::tracking::validate_tip(
+            working,
+            binding,
+            packed,
+            &previous.claim_fingerprint,
+            Some(&head),
+        )
+        .is_ok()
+    {
+        return Ok(Some(head));
+    }
+    if target_was_received(receiver, received, &previous.target_head)? {
+        publication::tracking::advance(
+            working,
+            binding,
+            packed,
+            &previous.claim_fingerprint,
+            previous.expected_tracking_head.as_deref(),
+            &previous.target_head,
+        )?;
+        return Ok(Some(previous.target_head.clone()));
+    }
+    publication::tracking::validate_tip(
+        working,
+        binding,
+        packed,
+        &previous.claim_fingerprint,
+        previous.expected_tracking_head.as_deref(),
+    )?;
+    Ok(previous.expected_tracking_head.clone())
+}
+
+fn target_was_received(
+    receiver: &git2::Repository,
+    received: Option<git2::Oid>,
+    target: &str,
+) -> Result<bool, String> {
+    let Some(received) = received else {
+        return Ok(false);
+    };
+    let target = oid(target)?;
+    if received == target {
+        return Ok(true);
+    }
+    match receiver.graph_descendant_of(received, target) {
+        Ok(found) => Ok(found),
+        Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(false),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 fn oid(value: &str) -> Result<git2::Oid, String> {

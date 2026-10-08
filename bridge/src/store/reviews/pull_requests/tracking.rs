@@ -10,7 +10,7 @@ pub(crate) struct TrackingExpectation {
     pub(crate) token: String,
     pub(crate) claim_fingerprint: String,
     pub(crate) expected_tracking_head: Option<String>,
-    pub(crate) received_head: String,
+    pub(crate) target_head: String,
 }
 
 impl Store {
@@ -36,13 +36,13 @@ impl Store {
         directory_id: &str,
         claim_fingerprint: &str,
         expected_tracking_head: Option<&str>,
-        received_head: &str,
+        target_head: &str,
     ) -> Result<TrackingExpectation, StoreError> {
         self.in_transaction(|tx| {
             require_bound_publication(tx, task_id, expected_version, directory_id)?;
             let key = tracking_key(task_id, directory_id);
             let existing = load_expectation(tx, &key)?;
-            let expectation = next_expectation(existing, claim_fingerprint, expected_tracking_head, received_head)?;
+            let expectation = next_expectation(existing, claim_fingerprint, expected_tracking_head, target_head)?;
             tx.execute(
                 "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 params![key, serde_json::to_string(&expectation).expect("tracking expectation serializes")],
@@ -70,16 +70,17 @@ impl Store {
         })
     }
 
-    /// The prior authorized target was settled under Git/version fences. Carry
-    /// that exact tip into a new durable CAS proof without a clear/recreate gap,
-    /// even when a native push has independently advanced the receiver again.
+    /// Carry only a validated original tip, confirmed prior target or exact
+    /// matching receiver/working goal into the next proof. Replace the exact
+    /// token atomically, preserving authorization through every crash window.
     pub(crate) fn replace_review_tracking_expectation(
         &self,
         task_id: &str,
         expected_version: u64,
         directory_id: &str,
         token: &str,
-        received_head: &str,
+        expected_tracking_head: Option<&str>,
+        target_head: &str,
     ) -> Result<TrackingExpectation, StoreError> {
         self.in_transaction(|tx| {
             require_bound_publication(tx, task_id, expected_version, directory_id)?;
@@ -91,11 +92,17 @@ impl Store {
                     "tracking recovery proof changed before replacement",
                 ));
             }
+            if expected_tracking_head != previous.expected_tracking_head.as_deref()
+                && expected_tracking_head != Some(previous.target_head.as_str())
+                && expected_tracking_head != Some(target_head)
+            {
+                return Err(invalid("tracking replacement tip is not authorized"));
+            }
             let replacement = TrackingExpectation {
                 token: uuid::Uuid::new_v4().to_string(),
                 claim_fingerprint: previous.claim_fingerprint,
-                expected_tracking_head: Some(previous.received_head),
-                received_head: received_head.into(),
+                expected_tracking_head: expected_tracking_head.map(str::to_owned),
+                target_head: target_head.into(),
             };
             validate_expectation(&replacement)?;
             tx.execute(
@@ -131,7 +138,7 @@ fn next_expectation(
     existing: Option<TrackingExpectation>,
     fingerprint: &str,
     expected: Option<&str>,
-    received: &str,
+    target: &str,
 ) -> Result<TrackingExpectation, StoreError> {
     let expectation = match existing {
         Some(saved) => {
@@ -144,10 +151,10 @@ fn next_expectation(
             token: uuid::Uuid::new_v4().to_string(),
             claim_fingerprint: fingerprint.into(),
             expected_tracking_head: expected.map(str::to_owned),
-            received_head: received.into(),
+            target_head: target.into(),
         },
     };
-    if expectation.received_head != received {
+    if expectation.target_head != target {
         return Err(invalid(
             "tracking recovery target must settle before replacement",
         ));
@@ -180,7 +187,7 @@ fn validate_expectation(expectation: &TrackingExpectation) -> Result<(), StoreEr
     if canonical_token != expectation.token || !canonical_hex(&expectation.claim_fingerprint, 64) {
         return Err(invalid("invalid tracking recovery identity"));
     }
-    if !canonical_hex(&expectation.received_head, 40)
+    if !canonical_hex(&expectation.target_head, 40)
         || expectation
             .expected_tracking_head
             .as_deref()

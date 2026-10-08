@@ -46,6 +46,28 @@ impl<'a> PackedReferenceLease<'a> {
         self.update_checked(repository, reference, expected, new, true, publish)
     }
 
+    /// Validate an exact tip under its native lock without publishing a ref.
+    pub(crate) fn validate_expected_reference_checked(
+        &self,
+        repository: &git2::Repository,
+        reference: &str,
+        expected: Option<git2::Oid>,
+        checkpoint: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        validate_reference(reference)?;
+        self.verify(repository)?;
+        let directory = repository.commondir();
+        let (guard, _) = acquire_git_lock(directory, Path::new(&format!("{reference}.lock")))?;
+        guard.verify_owned()?;
+        if reference_target(repository, reference)? != expected {
+            return Err(format!("stale: review tracking lease changed: {reference}"));
+        }
+        read_regular_optional(&directory.join(reference))?;
+        checkpoint()?;
+        guard.verify_owned()?;
+        self.verify(repository)
+    }
+
     fn update_checked(
         &self,
         repository: &git2::Repository,

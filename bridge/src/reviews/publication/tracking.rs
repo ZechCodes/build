@@ -120,11 +120,7 @@ pub(super) fn advance(
     expected: Option<&str>,
     head: &str,
 ) -> Result<(), String> {
-    let claim = TrackingClaim::for_binding(repository, binding)?;
-    require_claim(&claim)?;
-    if claim_fingerprint(&claim)? != fingerprint {
-        return Err("review tracking recovery ownership changed".into());
-    }
+    let claim = recovery_claim(repository, binding, fingerprint)?;
     let head = git2::Oid::from_str(head).map_err(|error| error.to_string())?;
     let expected = expected
         .map(git2::Oid::from_str)
@@ -142,6 +138,37 @@ pub(super) fn advance(
         },
     )?;
     Ok(())
+}
+
+pub(super) fn validate_tip(
+    repository: &git2::Repository,
+    binding: &ReviewBranchBinding,
+    packed: &refs::PackedReferenceLease<'_>,
+    fingerprint: &str,
+    expected: Option<&str>,
+) -> Result<(), String> {
+    let claim = recovery_claim(repository, binding, fingerprint)?;
+    let expected = expected
+        .map(git2::Oid::from_str)
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    packed.validate_expected_reference_checked(repository, &claim.tracking_ref, expected, || {
+        require_claim(&claim)?;
+        validate_tracking_alias(binding, true)
+    })
+}
+
+fn recovery_claim(
+    repository: &git2::Repository,
+    binding: &ReviewBranchBinding,
+    fingerprint: &str,
+) -> Result<TrackingClaim, String> {
+    let claim = TrackingClaim::for_binding(repository, binding)?;
+    require_claim(&claim)?;
+    if claim_fingerprint(&claim)? != fingerprint {
+        return Err("review tracking recovery ownership changed".into());
+    }
+    Ok(claim)
 }
 
 pub(super) fn validate_cleanup(binding: &ReviewBranchBinding) -> Result<(), String> {

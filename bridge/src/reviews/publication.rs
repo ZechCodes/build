@@ -10,6 +10,7 @@ use std::time::Duration;
 
 mod pins;
 mod remote;
+mod tracking;
 
 use pins::pin_mutation_checkpoint;
 pub use pins::{
@@ -34,6 +35,8 @@ pub fn publish_initial(binding: &ReviewBranchBinding) -> Result<String, Publicat
     validate_push_destination(binding).map_err(PublicationError::Failed)?;
     let received = received_head(binding).map_err(PublicationError::Failed)?;
     if received.as_deref() == Some(&binding.initial_head) {
+        tracking::checkpoint(binding, "after-receiver");
+        tracking::publish(binding).map_err(PublicationError::Failed)?;
         return Ok(binding.initial_head.clone());
     }
     if received.is_some() {
@@ -59,10 +62,14 @@ pub fn publish_initial(binding: &ReviewBranchBinding) -> Result<String, Publicat
             "initial review publication did not receive the expected commit".into(),
         ));
     }
+    tracking::checkpoint(binding, "after-receiver");
+    tracking::publish(binding).map_err(PublicationError::Failed)?;
     Ok(binding.initial_head.clone())
 }
 
 pub fn cleanup_initial(binding: &ReviewBranchBinding) -> Result<(), String> {
+    validate_initial_cleanup(binding)?;
+    tracking::cleanup(binding)?;
     match fs::symlink_metadata(&binding.receiving_repository) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.to_string()),
@@ -72,6 +79,27 @@ pub fn cleanup_initial(binding: &ReviewBranchBinding) -> Result<(), String> {
     let repository = git2::Repository::open_bare(&binding.receiving_repository)
         .map_err(|error| error.to_string())?;
     remove_expected_ref(&repository, &binding.receiving_ref, &binding.initial_head)
+}
+
+/// Preserve every owned setup claim when either publication ref has changed
+/// or its exact Git lock is owned by another writer.
+pub fn validate_initial_cleanup(binding: &ReviewBranchBinding) -> Result<(), String> {
+    match fs::symlink_metadata(&binding.receiving_repository) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.to_string()),
+        Ok(_) => {
+            validate_binding_receiver(binding)?;
+            let repository = git2::Repository::open_bare(&binding.receiving_repository)
+                .map_err(|error| error.to_string())?;
+            super::receivers::refs::validate_expected_reference_checked(
+                &repository,
+                &binding.receiving_ref,
+                git2::Oid::from_str(&binding.initial_head).map_err(|error| error.to_string())?,
+                || Ok(()),
+            )?;
+        }
+    }
+    tracking::validate_cleanup(binding)
 }
 
 pub fn validate_bases(bindings: &[ReviewBranchBinding]) -> Result<(), String> {

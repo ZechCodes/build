@@ -157,7 +157,8 @@ fn interrupted_tracking_writes_recover_for_retry_and_cancellation() {
     if let Some(path) = std::env::var_os("BUILD_REVIEW_INTERRUPTED_TRACKING_BINDING") {
         let binding: ReviewBranchBinding =
             serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-        if std::env::var("BUILD_REVIEW_INTERRUPTED_TRACKING_PHASE").unwrap() == "cleanup-locked" {
+        let phase = std::env::var("BUILD_REVIEW_INTERRUPTED_TRACKING_PHASE").unwrap();
+        if phase == "cleanup-locked" || phase == "tracking-removed" {
             cleanup_initial(&binding).unwrap();
         } else {
             publish_initial(&binding).unwrap();
@@ -205,4 +206,69 @@ fn interrupted_tracking_writes_recover_for_retry_and_cancellation() {
         "replacement user lock\n"
     );
     assert_eq!(fs::read_to_string(unrelated_lock).unwrap(), "user lock\n");
+}
+
+#[test]
+fn cleanup_replay_refuses_changed_alias_even_after_the_tracking_ref_was_removed() {
+    let (temporary, source) = init_repo();
+    let binding = binding(&source, &temporary.path().join("receivers"));
+    configure_remote(&binding).unwrap();
+    publish_initial(&binding).unwrap();
+    let repository = git2::Repository::open(&source).unwrap();
+    repository
+        .find_reference(&tracking_ref(&binding))
+        .unwrap()
+        .delete()
+        .unwrap();
+    repository
+        .config()
+        .unwrap()
+        .set_str(
+            &format!("remote.{}.url", binding.remote_name),
+            "https://example.test/user.git",
+        )
+        .unwrap();
+    let claim_directory = repository.commondir().join("build-review-tracking");
+    let claims = fs::read_dir(&claim_directory).unwrap().count();
+    assert_eq!(claims, 1);
+    assert!(validate_initial_cleanup(&binding).is_err());
+    assert!(cleanup_initial(&binding).is_err());
+    assert_eq!(
+        received_head(&binding).unwrap(),
+        Some(binding.initial_head.clone())
+    );
+    assert_eq!(fs::read_dir(claim_directory).unwrap().count(), claims);
+}
+
+#[cfg(unix)]
+#[test]
+fn cleanup_replay_keeps_ref_lock_held_until_claim_removal_and_accepts_removed_alias() {
+    let (temporary, source) = init_repo();
+    let binding = binding(&source, &temporary.path().join("receivers"));
+    configure_remote(&binding).unwrap();
+    publish_initial(&binding).unwrap();
+    let repository = git2::Repository::open(&source).unwrap();
+    let binding_path = temporary.path().join("binding.json");
+    fs::write(&binding_path, serde_json::to_vec(&binding).unwrap()).unwrap();
+    interrupt_tracking_writer(&binding_path, "tracking-removed");
+    assert!(repository.find_reference(&tracking_ref(&binding)).is_err());
+    assert!(repository
+        .commondir()
+        .join(format!("{}.lock", tracking_ref(&binding)))
+        .exists());
+    assert_eq!(
+        fs::read_dir(repository.commondir().join("build-review-tracking"))
+            .unwrap()
+            .count(),
+        1
+    );
+    cleanup_remote(&binding).unwrap();
+    cleanup_initial(&binding).unwrap();
+    assert_eq!(received_head(&binding).unwrap(), None);
+    assert_eq!(
+        fs::read_dir(repository.commondir().join("build-review-tracking"))
+            .unwrap()
+            .count(),
+        0
+    );
 }

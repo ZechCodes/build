@@ -229,3 +229,25 @@ pub(super) fn validate_push_destination(binding: &ReviewBranchBinding) -> Result
     }
     Ok(())
 }
+
+pub(super) fn validate_tracking_alias(
+    binding: &ReviewBranchBinding,
+    require_complete: bool,
+) -> Result<(), String> {
+    let repository =
+        git2::Repository::open(&binding.working_repository).map_err(|error| error.to_string())?;
+    let config = repository.config().map_err(|error| error.to_string())?;
+    let expected = configuration(binding)?;
+    validate_configuration(&config, binding, &expected)?;
+    if !require_complete {
+        return Ok(());
+    }
+    for (key, value) in expected {
+        if config_values(&config, &key)? != [value.as_str()] {
+            return Err(format!(
+                "local review tracking configuration changed: {key}"
+            ));
+        }
+    }
+    Ok(())
+}

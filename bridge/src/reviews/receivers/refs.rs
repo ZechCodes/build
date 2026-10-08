@@ -11,11 +11,25 @@ pub(crate) fn create_expected_reference(
     expected: git2::Oid,
     checkpoint: impl FnOnce(),
 ) -> Result<(), String> {
+    create_expected_reference_checked(repository, reference, expected, || {
+        checkpoint();
+        Ok(())
+    })
+}
+
+pub(crate) fn create_expected_reference_checked(
+    repository: &git2::Repository,
+    reference: &str,
+    expected: git2::Oid,
+    checkpoint: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
     validate_reference(reference)?;
     let directory = repository.commondir();
-    let (_packed_guard, _) = acquire_git_lock(directory, Path::new("packed-refs.lock"))?;
+    let (packed_guard, _) = acquire_git_lock(directory, Path::new("packed-refs.lock"))?;
     let (guard, mut file) = acquire_git_lock(directory, Path::new(&format!("{reference}.lock")))?;
-    checkpoint();
+    checkpoint()?;
+    packed_guard.verify_owned()?;
+    guard.verify_owned()?;
     if reference_target(repository, reference)? == Some(expected) {
         return Ok(());
     }
@@ -37,14 +51,39 @@ pub(crate) fn remove_expected_reference(
     expected: git2::Oid,
     checkpoint: impl FnOnce(),
 ) -> Result<(), String> {
+    remove_expected_reference_checked(repository, reference, expected, || {
+        checkpoint();
+        Ok(())
+    })
+}
+
+pub(crate) fn remove_expected_reference_checked(
+    repository: &git2::Repository,
+    reference: &str,
+    expected: git2::Oid,
+    checkpoint: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    remove_expected_reference_finalized(repository, reference, expected, checkpoint, || Ok(()))
+}
+
+/// Retain both Git locks through durable sidecar finalization after deletion.
+pub(crate) fn remove_expected_reference_finalized(
+    repository: &git2::Repository,
+    reference: &str,
+    expected: git2::Oid,
+    checkpoint: impl FnOnce() -> Result<(), String>,
+    finalize: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
     validate_reference(reference)?;
     let directory = repository.commondir();
     let (packed_guard, mut packed_file) =
         acquire_git_lock(directory, Path::new("packed-refs.lock"))?;
     let (ref_guard, _) = acquire_git_lock(directory, Path::new(&format!("{reference}.lock")))?;
-    checkpoint();
+    checkpoint()?;
+    ref_guard.verify_owned()?;
+    packed_guard.verify_owned()?;
     let Some(current) = reference_target(repository, reference)? else {
-        return Ok(());
+        return finalize();
     };
     if current != expected {
         return Err(format!("review ref changed: {reference}"));
@@ -65,6 +104,31 @@ pub(crate) fn remove_expected_reference(
             .map_err(|error| error.to_string())?;
         packed_guard.publish_retaining_lock(&packed_path)?;
     }
+    ref_guard.verify_owned()?;
+    packed_guard.verify_owned()?;
+    finalize()
+}
+
+/// Preflight under the same registered locks used by a later expected-OID
+/// removal, including a packed entry hidden behind the loose reference.
+pub(crate) fn validate_expected_reference_checked(
+    repository: &git2::Repository,
+    reference: &str,
+    expected: git2::Oid,
+    checkpoint: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    validate_reference(reference)?;
+    let directory = repository.commondir();
+    let (packed_guard, _) = acquire_git_lock(directory, Path::new("packed-refs.lock"))?;
+    let (ref_guard, _) = acquire_git_lock(directory, Path::new(&format!("{reference}.lock")))?;
+    checkpoint()?;
+    packed_guard.verify_owned()?;
+    ref_guard.verify_owned()?;
+    if reference_target(repository, reference)?.is_some_and(|current| current != expected) {
+        return Err(format!("review ref changed: {reference}"));
+    }
+    packed_without_reference(&directory.join("packed-refs"), reference, expected)?;
+    read_regular_optional(&directory.join(reference))?;
     Ok(())
 }
 

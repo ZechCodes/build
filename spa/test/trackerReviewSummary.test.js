@@ -71,6 +71,34 @@ describe("PR summary version floors", () => {
     expect(merged.map(({ id }) => id)).toEqual(incoming.map(({ id }) => id));
     expect(merged.map(({ review_summary }) => review_summary.version)).toEqual([7, 1]);
   });
+
+  it("keeps clear authority when cached task copies are merged in either order", () => {
+    const at = (minute) => `2026-10-08T20:${String(minute).padStart(2, "0")}:00Z`;
+    const visible = tracker.preserveTaskReviewSummary(null, row(7, { updated_at: at(20) }));
+    const cleared = tracker.preserveTaskReviewSummary(visible, withoutSummary({ updated_at: at(30) }));
+    const stale = tracker.preserveTaskReviewSummary(cleared, row(3, { title: "ordinary stale copy", updated_at: at(10) }));
+    for (const [held, incoming] of [[visible, stale], [stale, visible]]) {
+      const merged = tracker.preserveTaskReviewSummary(held, incoming);
+      expect(merged).not.toHaveProperty("review_summary");
+      expect(tracker.preserveTaskReviewSummary(merged, row(7, { updated_at: at(25) }))).not.toHaveProperty("review_summary");
+    }
+    expect(stale.title).toBe("ordinary stale copy");
+  });
+
+  it("tracks board task rows by task_id and keeps ordinary fields independent of PR authority", () => {
+    const boardRow = (version, updatedAt) => {
+      const next = row(version, { task_id: task.id, updated_at: updatedAt });
+      delete next.id;
+      return next;
+    };
+    const held = tracker.preserveTaskReviewSummary(null, boardRow(7, "2026-10-08T20:20:00Z"));
+    const clearWire = withoutSummary({ task_id: task.id, updated_at: "2026-10-08T20:30:00Z" });
+    delete clearWire.id;
+    const cleared = tracker.preserveTaskReviewSummary(held, clearWire);
+    const baseRow = { ...cleared, title: "ordinary page fields" };
+    const result = tracker.preserveTaskReviewSummary(cleared, boardRow(8, "2026-10-08T20:10:00Z"), { baseRow });
+    expect(result).toMatchObject({ task_id: task.id, title: "ordinary page fields", review_summary: summary(8) });
+  });
 });
 
 describe("atomic tracker summary writes", () => {
@@ -149,6 +177,27 @@ describe("atomic tracker summary writes", () => {
       expect(held.tasks[0]).toMatchObject({ title: "ordinary reply fields", review_summary: summary(8) });
       expect(held.read_order).toBe(20);
     });
+
+    it(`keeps the cleared ${kind} PR floor when an older task arrives from a later request`, async () => {
+      const at = (minute) => `2026-10-08T20:${String(minute).padStart(2, "0")}:00Z`;
+      await write(tracker, tracker.tasksRecord([row(7, { updated_at: at(20) })], [], 20));
+      await write(tracker, tracker.tasksRecord([withoutSummary({ updated_at: at(30) })], [], 30));
+      await write(tracker, tracker.tasksRecord([row(3, { title: "ordinary later reply", updated_at: at(10) })], [], 40));
+      let held = await read();
+      expect(held.tasks[0].title).toBe("ordinary later reply");
+      expect(held.tasks[0]).not.toHaveProperty("review_summary");
+      expect(held.read_order).toBe(40);
+      await write(tracker, tracker.tasksRecord([row(7, { updated_at: at(15) })], [], 50));
+      expect((await read()).tasks[0]).not.toHaveProperty("review_summary");
+      await write(tracker, tracker.tasksRecord([row(7, { updated_at: at(35) })], [], 60));
+      expect((await read()).tasks[0].review_summary.version).toBe(7);
+      await write(tracker, tracker.tasksRecord([withoutSummary({ updated_at: at(40) })], [], 70));
+      await write(tracker, tracker.tasksRecord([row(8, { updated_at: at(5) })], [], 80));
+      held = await read();
+      expect(held.tasks[0].review_summary.version).toBe(8);
+      await write(tracker, tracker.tasksRecord([row(3, { updated_at: at(50) })], [], 90));
+      expect((await read()).tasks[0].review_summary.version).toBe(8);
+    });
   }
 
   it("keeps a newer summary when a paged fold accepts an otherwise current task row", async () => {
@@ -199,6 +248,30 @@ describe("atomic tracker summary writes", () => {
     await pages.foldTasksPage(address, { tasks: [], above: Infinity, through: -Infinity, read: 20 }, () => []);
     await pages.foldTasksPage(address, { tasks: [row(8)], above: Infinity, through: -Infinity, read: 10 }, () => []);
     expect((await tracker.readTasksRecord(DEVICE, PROJECT)).tasks).toEqual([]);
+  });
+
+  it("keeps a page's PR floor across later reads with stale ordinary timestamps", async () => {
+    const at = (minute) => `2026-10-08T20:${String(minute).padStart(2, "0")}:00Z`;
+    const address = tracker.tasksAddress(DEVICE, PROJECT);
+    const fold = (taskRow, read) => pages.foldTasksPage(address, {
+      tasks: [taskRow], above: Infinity, through: -Infinity, read,
+    }, () => []);
+    await tracker.writeTasksRecord(DEVICE, PROJECT, tracker.tasksRecord([row(7, { updated_at: at(20) })], [], 20));
+    await tracker.writeTasksRecord(DEVICE, PROJECT, tracker.tasksRecord([withoutSummary({ updated_at: at(30) })], [], 30));
+    await tracker.writeTasksRecord(DEVICE, PROJECT, tracker.tasksRecord([withoutSummary({ updated_at: at(10) })], [], 40));
+    await fold(row(3, { title: "paged ordinary fields", updated_at: at(15) }), 50);
+    let held = await tracker.readTasksRecord(DEVICE, PROJECT);
+    expect(held.tasks[0].title).toBe("paged ordinary fields");
+    expect(held.tasks[0]).not.toHaveProperty("review_summary");
+    await fold(row(7, { updated_at: at(21) }), 60);
+    expect((await tracker.readTasksRecord(DEVICE, PROJECT)).tasks[0]).not.toHaveProperty("review_summary");
+    await fold(row(7, { updated_at: at(35) }), 70);
+    expect((await tracker.readTasksRecord(DEVICE, PROJECT)).tasks[0].review_summary.version).toBe(7);
+    await fold(withoutSummary({ title: "ordinary clear", updated_at: at(40) }), 80);
+    await fold(row(8, { title: "stale ordinary fields", updated_at: at(25) }), 90);
+    held = await tracker.readTasksRecord(DEVICE, PROJECT);
+    expect(held.tasks[0]).toMatchObject({ title: "ordinary clear", review_summary: summary(8) });
+    expect(held.read_order).toBe(90);
   });
 });
 

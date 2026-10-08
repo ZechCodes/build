@@ -90,6 +90,7 @@ export const listAskedAt = (cached) => Number(cached?.value?.read_order) || cach
 export const taskRecord = (task, timeline) => ({ task: task || null, timeline: timeline || [] });
 
 const rowIdentity = (row) => row?.id ?? row?.task_id ?? row?.workspace_id;
+const TASK_REVIEW_CACHE = "__review_summary_cache";
 const hasSummaryVersion = (summary) => Boolean(summary?.task_id) && Number.isFinite(summary.version);
 const rowWrittenLater = (held, incoming) => Date.parse(incoming.updated_at) > Date.parse(held.updated_at);
 const olderSummary = (held, incoming) => held.task_id === incoming.task_id
@@ -131,6 +132,79 @@ export function preserveReviewSummaries(held, incoming, field = "review_summary"
   return (incoming || []).map((row) => preserveReviewSummary(old.get(rowIdentity(row)), row, field, options));
 }
 
+function cachedTaskReviewState(row) {
+  const state = row?.[TASK_REVIEW_CACHE];
+  return state?.task_id === rowIdentity(row) && hasSummaryVersion(state?.floor) ? state : null;
+}
+
+function taskReviewState(row) {
+  const cached = cachedTaskReviewState(row);
+  if (cached) return cached;
+  if (!hasSummaryVersion(row?.review_summary)) return null;
+  return { task_id: rowIdentity(row), floor: row.review_summary, updated_at: row.updated_at, cleared: false };
+}
+
+const reviewRead = (state) => Number(state?.read_order) || 0;
+const reviewInstant = (state) => Date.parse(state?.updated_at) || 0;
+const reviewReadOvertaken = (state, options) => options.keepHeld
+  || Number.isFinite(options.readOrder) && options.readOrder < reviewRead(state);
+
+/** Cached copies can have older ordinary fields than their accepted PR
+ * authority. Compare that authority, never the ordinary row's timestamp. */
+function strongerTaskReviewState(held, incoming) {
+  if (!held) return incoming;
+  if (advancesSummaryFloor(held.floor, incoming.floor)) return incoming;
+  if (belowSummaryFloor(held.floor, incoming.floor)) return held;
+  if (reviewInstant(held) !== reviewInstant(incoming)) return reviewInstant(incoming) > reviewInstant(held) ? incoming : held;
+  if (reviewRead(held) !== reviewRead(incoming)) return reviewRead(incoming) > reviewRead(held) ? incoming : held;
+  return incoming.cleared ? incoming : held;
+}
+
+function keepTaskReviewState(state, incoming, options) {
+  const advances = advancesSummaryFloor(state.floor, incoming.review_summary);
+  // A higher server version advances a visible PR across client read order.
+  // A clear still fences requests that were made before it was accepted.
+  if (reviewReadOvertaken(state, options) && (state.cleared || !advances)) return true;
+  if (belowSummaryFloor(state.floor, incoming.review_summary)) return true;
+  const later = rowWrittenLater(state, incoming);
+  if (!incoming.review_summary) return !options.allowMissing && !later;
+  return state.cleared && !advances && !later;
+}
+
+function withTaskReviewState(base, state) {
+  const next = { ...base, [TASK_REVIEW_CACHE]: state };
+  if (state.cleared) delete next.review_summary;
+  else next.review_summary = state.floor;
+  return next;
+}
+
+function acceptedTaskReviewState(state, incoming, options) {
+  const keep = state && keepTaskReviewState(state, incoming, options);
+  const floor = keep ? state.floor : incoming.review_summary || state?.floor;
+  if (!hasSummaryVersion(floor)) return null;
+  return {
+    task_id: rowIdentity(incoming), floor,
+    cleared: keep ? state.cleared : !incoming.review_summary,
+    updated_at: latestTaskTimestamp(state?.updated_at, incoming.updated_at),
+    read_order: Math.max(reviewRead(state), Number(options.readOrder) || 0),
+  };
+}
+
+/** PR floors survive clears and stale ordinary fields on every task row.
+ * Wire rows are filtered once against the held authority. Already cached
+ * copies carry their own authority, so merging two cache replicas cannot
+ * revive a clear. `baseRow` keeps a page's independently chosen ordinary
+ * fields while applying only the PR field and its private authority. */
+export function preserveTaskReviewSummary(held, incoming, options = {}) {
+  if (!incoming) return incoming;
+  const state = sameRow(held, incoming) ? taskReviewState(held) : null;
+  const incomingState = cachedTaskReviewState(incoming);
+  const next = incomingState ? strongerTaskReviewState(state, incomingState)
+    : acceptedTaskReviewState(state, incoming, options);
+  const base = options.baseRow || incoming;
+  return next ? withTaskReviewState(base, next) : base;
+}
+
 const newerListRead = (held, incoming) => Number.isFinite(held?.read_order)
   && Number.isFinite(incoming?.read_order) && incoming.read_order > held.read_order;
 const olderListRead = (held, incoming) => Number.isFinite(held?.read_order)
@@ -145,11 +219,18 @@ function preserveListSummaries(held, incoming) {
   return {
     ...incoming,
     ...(Number.isFinite(readOrder) ? { read_order: readOrder } : {}),
-    tasks: preserveReviewSummaries(held?.tasks, incoming.tasks, "review_summary", {
-      allowMissing: newerListRead(held, incoming),
-      keepHeld: olderListRead(held, incoming),
-    }),
+    tasks: preserveListTaskRows(held, incoming),
   };
+}
+
+function preserveListTaskRows(held, incoming) {
+  const old = new Map((held?.tasks || []).map((row) => [rowIdentity(row), row]));
+  const options = {
+    readOrder: incoming.read_order,
+    allowMissing: newerListRead(held, incoming),
+    keepHeld: olderListRead(held, incoming),
+  };
+  return (incoming.tasks || []).map((row) => preserveTaskReviewSummary(old.get(rowIdentity(row)), row, options));
 }
 
 function withReadThroughFloor(held, incoming) {
@@ -159,12 +240,11 @@ function withReadThroughFloor(held, incoming) {
   return { ...incoming, task: { ...task, read_through: floor } };
 }
 
-const DETAIL_REVIEW_CACHE = "__review_summary_cache";
 const belowSummaryFloor = (floor, summary) => hasSummaryVersion(floor) && hasSummaryVersion(summary) && olderSummary(floor, summary);
 
 function detailReviewState(record) {
   const task = record?.task || {};
-  const state = record?.[DETAIL_REVIEW_CACHE];
+  const state = record?.[TASK_REVIEW_CACHE];
   if (state && state.task_id === task.id) return state;
   return { task_id: task.id, floor: task.review_summary ?? null, updated_at: task.updated_at };
 }
@@ -193,7 +273,7 @@ function withDetailReviewState(state, record) {
   const task = record.task;
   const floor = hasSummaryVersion(task.review_summary) ? task.review_summary : state.floor;
   if (!hasSummaryVersion(floor)) return record;
-  return { ...record, [DETAIL_REVIEW_CACHE]: {
+  return { ...record, [TASK_REVIEW_CACHE]: {
     task_id: task.id, floor, updated_at: latestTaskTimestamp(state.updated_at, task.updated_at),
   } };
 }

@@ -29,7 +29,7 @@ import { lastSayIn, nextTaskRead, readsAddress, withStretch } from "./taskReadOr
 import { bridgeCapabilities } from "./changeEvents.js";
 import { sortTasks } from "./trackerFilters.js";
 import {
-  TRACKER_TASKS_PAGE_KIND, tasksPageAddress, tasksRecord, listAskedAt, preserveReviewSummary, advancesReviewSummary,
+  TRACKER_TASKS_PAGE_KIND, tasksPageAddress, tasksRecord, listAskedAt, preserveReviewSummary, preserveTaskReviewSummary,
 } from "./trackerCache.js";
 import { userSessionOf } from "./userSessionCache.js";
 
@@ -90,9 +90,6 @@ function summaryPageOvertaken(held, stretch, row, lastSay) {
   return Math.max(Number(held?.read_order) || 0, lastSay(row)) > read;
 }
 
-const withNewerPageSummary = (row, answered) => advancesReviewSummary(row, answered)
-  ? { ...row, review_summary: answered.review_summary } : row;
-
 /** A whole-list read has no page stretch note. Its accepted PR field,
  * including absence, still stands over a page asked before that list read.
  * A higher version of the same visible PR can advance even when the page's
@@ -102,9 +99,15 @@ function foldedTaskRows(held, stretch, reads) {
   const old = new Map((held?.tasks || []).map((row) => [row.id, row]));
   const answered = new Map((stretch.tasks || []).map((row) => [row.id, row]));
   return withTaskPage(held?.tasks, stretch, lastSay).map((row) => {
-    const next = preserveReviewSummary(old.get(row.id), row,
-      "review_summary", { keepHeld: summaryPageOvertaken(held, stretch, row, lastSay) });
-    return withNewerPageSummary(next, answered.get(row.id));
+    const answer = answered.get(row.id);
+    if (!answer) return row;
+    const overtaken = summaryPageOvertaken(held, stretch, answer, lastSay);
+    return preserveTaskReviewSummary(old.get(row.id), answer, {
+      readOrder: spanAt(stretch, Number(answer.number))?.read ?? stretch.read,
+      allowMissing: !overtaken,
+      keepHeld: overtaken,
+      baseRow: row,
+    });
   });
 }
 

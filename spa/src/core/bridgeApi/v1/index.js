@@ -24,6 +24,15 @@ export const range = ">=2.0.0 <4.0.0";
 /** The API major it is the adapter for. */
 export const major = 3;
 
+/** Exact review verbs: capability lookup and dispatch share this closed list. */
+export const REVIEW_METHODS = Object.freeze({
+  get: "tasks.review.get", snapshot: "tasks.review.snapshot", diff: "tasks.review.diff",
+  complete: "tasks.review.complete", act: "tasks.review.act",
+  open: "tasks.review.open", push: "tasks.review.push", update: "tasks.review.update",
+  merge: "tasks.review.merge", close: "tasks.review.close", reopen: "tasks.review.reopen",
+  refresh: "tasks.review.refresh",
+});
+
 /** `ApiError.code` for a refusal that named none. */
 export const UNKNOWN_CODE = "unknown";
 
@@ -149,15 +158,9 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
     diffs: { perFile: names.has("diffs.perFile") },
     bodies: { pages: names.has("bodies.pages"), mediaRawPages: names.has("fs.mediaRawPages") },
     reviews: {
-      get: names.has("tasks.review.get"), snapshot: names.has("tasks.review.snapshot"),
-      diff: names.has("tasks.review.diff"), complete: names.has("tasks.review.complete"),
-      act: names.has("tasks.review.act"),
+      ...Object.fromEntries(Object.entries(REVIEW_METHODS).map(([verb, method]) => [verb, names.has(method)])),
       comments: names.has("tasks.reviewComments"),
       pullRequests: names.has("tasks.review.pullRequests"),
-      open: names.has("tasks.review.open"), push: names.has("tasks.review.push"),
-      update: names.has("tasks.review.update"), merge: names.has("tasks.review.merge"),
-      close: names.has("tasks.review.close"), reopen: names.has("tasks.review.reopen"),
-      refresh: names.has("tasks.review.refresh"),
     },
     tasks: {
       context: names.has("tasks.context"),

@@ -461,3 +461,26 @@ fn newer_matching_native_receiver_and_tracking_allow_the_next_working_head() {
     );
     assert_eq!(fixture.review().snapshots.len(), before.snapshots.len() + 1);
 }
+
+#[test]
+fn same_pending_goal_uses_a_newer_matching_native_receiver_tracking_lease() {
+    let fixture = Fixture::new();
+    let intermediate = fixture.commit("intermediate.txt");
+    let target = unreceived_proof(&fixture);
+    git_in(fixture.checkout(), &["reset", "--hard", &intermediate]);
+    fixture.push();
+    fixture.sync();
+    git_in(fixture.checkout(), &["reset", "--hard", &target]);
+    let result = push(&fixture.store, &push_request(&fixture, target.clone())).unwrap();
+    assert_eq!(result.sources[0].status, PushStatus::Published);
+    assert_eq!(result.sources[0].recovery, None);
+    let (repository, reference) = tracking(&fixture);
+    assert_eq!(
+        repository.refname_to_id(&reference).unwrap().to_string(),
+        target
+    );
+    assert_eq!(
+        registered_received_head(&fixture.review().bindings[0]).unwrap(),
+        Some(target)
+    );
+}

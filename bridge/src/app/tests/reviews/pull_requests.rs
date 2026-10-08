@@ -116,3 +116,53 @@ fn pr_refresh_reports_unavailable_received_refs_with_independent_observations() 
     assert!(refreshed["sync"][0]["revision"].as_u64().unwrap() > 0);
     assert!(refreshed["sync"][0]["error"].is_string());
 }
+
+#[test]
+fn pr_merge_can_refresh_a_failed_unintegrated_plan_after_a_same_snapshot_opinion() {
+    let home = tempfile::tempdir().unwrap();
+    let (_repo_home, mut state, project) = tracked(home.path());
+    let workspace_id = workspace(&mut state, &project, "pr-merge-replan");
+    review_call(
+        &mut state,
+        "workspace.set_locked",
+        json!({"workspace_id":workspace_id,"locked":true}),
+    );
+    let working = state.workspaces.get(&workspace_id).unwrap().directories[0]
+        .path
+        .clone();
+    std::fs::write(working.join("change.txt"), "reviewed change\n").unwrap();
+    git_in(&working, &["add", "change.txt"]);
+    git_in(&working, &["commit", "-m", "reviewed change"]);
+    let pr = opened(&mut state, &workspace_id);
+    let task_id = pr["task"]["id"].as_str().unwrap();
+    let binding = &pr["review"]["bindings"][0];
+    let source = std::path::Path::new(binding["source_repository"].as_str().unwrap());
+    let base = git2::Repository::open(source)
+        .unwrap()
+        .refname_to_id(binding["base_branch_ref"].as_str().unwrap())
+        .unwrap();
+    let mut params = json!({"task_id":task_id,"expected_version":1,"snapshot_id":pr["review"]["snapshots"][0]["id"],
+        "sources":[{"directory_id":binding["directory_id"],"expected_base_head":base.to_string()}]});
+    std::fs::write(source.join("README.md"), "uncommitted source change\n").unwrap();
+    let failed = review_call(&mut state, "tasks.review.merge", params.clone());
+    assert_eq!(failed["merge_intents"][0]["state"], "failed", "{failed}");
+    review_call(
+        &mut state,
+        "tasks.comment",
+        json!({"task_id":task_id,"body":"Ready after resolving the source change",
+        "opinion":{"snapshot_id":params["snapshot_id"],"verdict":"approve"}}),
+    );
+    git_in(source, &["checkout", "--", "README.md"]);
+    let current = review_call(&mut state, "tasks.review.get", json!({"task_id":task_id}));
+    params["expected_version"] = current["review"]["version"].clone();
+    let merged = review_call(&mut state, "tasks.review.merge", params.clone());
+    assert_eq!(
+        merged["review"]["pull_request"]["status"], "merged",
+        "{merged}"
+    );
+    assert_eq!(merged["merge_intents"].as_array().unwrap().len(), 2);
+    params["expected_version"] = merged["review"]["version"].clone();
+    let retried = review_call(&mut state, "tasks.review.merge", params);
+    assert_eq!(retried["merge_intents"], merged["merge_intents"]);
+    assert_eq!(retried["review"]["actions"], merged["review"]["actions"]);
+}

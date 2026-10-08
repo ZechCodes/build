@@ -4,6 +4,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { wipeUiRecords } from "../src/core/localUiStore.js";
 import { mountTaskReviewControls } from "../src/core/taskReviewControls.js";
 import fixture from "../../fixtures/api/v1/tasks.review.get.json";
+import prFixture from "../../fixtures/api/v1/tasks.review.open.json";
 
 let controls;
 const review = fixture.result.review;
@@ -14,6 +15,27 @@ const mount = (repository, over = {}) => {
   controls = mountTaskReviewControls(document.querySelector('#controls'), { ...options, repository, ...over });
 };
 beforeEach(async () => { controls?.dispose(); await wipeUiRecords(); });
+
+it("renders cached PR status read-only even when legacy mutations are advertised", () => {
+  const repository = { mutate: vi.fn() };
+  mount(repository, { review: prFixture.result.review, support: { snapshot: true, complete: true, act: true } });
+  expect(document.querySelector('[data-review-read-only]').textContent).toContain("Open");
+  expect(document.querySelector('[data-review-read-only]').textContent).toContain("Read-only");
+  expect(document.querySelector('[data-review-save]')).toBeNull();
+  expect(document.querySelector('[data-review-complete]')).toBeNull();
+  expect(repository.mutate).not.toHaveBeenCalled();
+
+  controls.update({ ...prFixture.result.review, pull_request: { ...prFixture.result.review.pull_request, status: "changes_requested" } }, []);
+  expect(document.querySelector('[data-review-read-only]').textContent).toContain("Changes requested");
+});
+
+it("keeps explicit snapshot-mode reviews editable on a PR-capable device", () => {
+  mount({ mutate: vi.fn() }, { review: { ...review, mode: "snapshot" },
+    support: { snapshot: true, complete: true, pullRequests: true, open: true } });
+  expect(document.querySelector('[data-review-save]')).not.toBeNull();
+  expect(document.querySelector('[data-review-complete]')).not.toBeNull();
+  expect(document.querySelector('[data-review-read-only]')).toBeNull();
+});
 
 it("keeps a saved base override on the next snapshot update", async () => {
   const repository = { mutate: vi.fn(async () => {}) };

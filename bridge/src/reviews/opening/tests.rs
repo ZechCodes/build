@@ -10,6 +10,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 mod preflight;
+mod push_routing;
 
 struct Hooks {
     dispatches: AtomicUsize,

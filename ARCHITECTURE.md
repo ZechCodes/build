@@ -735,6 +735,9 @@ holders before removing setup, and repeats that check before restoring HEAD.
 workspace, and `publication.rs` imports and pins explicit committed OIDs there.
 Initial publication fetches objects without updating refs, then creates the
 receiving branch through the registered writer instead of native receive-pack.
+It also establishes the working repository's owned remote-tracking ref before
+success, including retries after the receiving write, so UI Push uses the local
+review remote.
 Branch, config and receiver ref writes use registered Git locks that can
 recover a dead owner's exact inode while preserving replacement locks. A new
 receiver is initialized in a separate staging directory and published only

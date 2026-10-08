@@ -15,6 +15,7 @@ fn setup(store: &Store) -> String {
             "workspace",
             0,
             ReviewSnapshot {
+                publication: None,
                 id: "snapshot".into(),
                 number: 0,
                 created_at: NOW.into(),
@@ -156,6 +157,7 @@ fn completion_and_snapshot_replacement_do_not_erase_inflight_facts() {
             "replacement",
             review.version,
             ReviewSnapshot {
+                publication: None,
                 id: "new-snapshot".into(),
                 number: 0,
                 created_at: NOW.into(),

@@ -96,6 +96,7 @@ impl Fixture {
                 "workspace",
                 0,
                 ReviewSnapshot {
+                    publication: None,
                     id: "snapshot".into(),
                     number: 0,
                     created_at: now_rfc3339(),

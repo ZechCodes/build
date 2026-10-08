@@ -78,6 +78,19 @@ pub fn validate_binding_receiver(binding: &ReviewBranchBinding) -> Result<(), St
     validate_receiver(&receiver)
 }
 
+/// Validate the registered receiver even after a source checkout is removed.
+pub fn validate_registered_receiver(binding: &ReviewBranchBinding) -> Result<(), String> {
+    let saved = read_ownership(&binding.receiving_repository.join(OWNERSHIP_FILE))?;
+    if saved.repository_id != binding.repository_id {
+        return Err("review receiver repository identity changed".into());
+    }
+    validate_receiver(&ReviewReceiver {
+        repository_id: saved.repository_id,
+        path: binding.receiving_repository.clone(),
+        source_common_git_dir: saved.source_common_git_dir,
+    })
+}
+
 fn identity(common_git_dir: &Path) -> String {
     format!(
         "{:x}",

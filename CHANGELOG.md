@@ -12,6 +12,10 @@ Wire 3.14.0.
 
 ### Added
 
+- Bridge-owned PR ref synchronization without a connected client: terminal
+  pushes publish debounced snapshots, with startup/poll recovery, separate
+  target-tip observations, rewrite history and retained receiver pins (#403).
+
 - Internal PR review opening service with recoverable dedicated branches,
   local receiving repositories, committed snapshots, and reviewer delivery
   retry (#402).
@@ -34,6 +38,9 @@ Wire 3.14.0.
 
 ### Fixed
 
+- Keep PR push bursts coalesced across polling, bound metadata registration,
+  share linked-worktree metadata watches without watching private pins, and
+  recover interrupted unpublished snapshot captures (#403).
 - Recover interrupted initial PR receiving-ref writes and preserve review
   opening setup when another worktree holds the original branch (#402).
 - Establish recoverable PR tracking refs before opening succeeds, so the first

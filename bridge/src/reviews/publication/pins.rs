@@ -5,7 +5,8 @@ use super::super::model::{
     ReviewMembership, ReviewMembershipKind, ReviewSnapshot,
 };
 use super::super::receivers::{
-    validate_binding_receiver, validate_recorded_receiver, write_owned_json,
+    validate_binding_receiver, validate_recorded_receiver, validate_registered_receiver,
+    write_owned_json,
 };
 use super::remote::short_branch;
 use super::{comparison_base, import_commit, remove_expected_ref, source_base};
@@ -26,6 +27,7 @@ pub fn capture_snapshot(
     author: &Actor,
 ) -> Result<ReviewSnapshot, String> {
     let mut snapshot = ReviewSnapshot {
+        publication: None,
         id: snapshot_id.into(),
         number: 0,
         created_at: time::OffsetDateTime::now_utc()
@@ -180,11 +182,20 @@ pub(super) fn plan_snapshot_pins(
         source_base,
         comparison_base,
     };
+    save_pin_plan(binding, &pins)
+}
+
+fn save_pin_plan(
+    binding: &ReviewBranchBinding,
+    pins: &SnapshotPins,
+) -> Result<SnapshotPins, String> {
+    let task_id = &pins.task_id;
+    let snapshot_id = &pins.snapshot_id;
     let path = snapshot_marker(binding, task_id, snapshot_id);
     validate_snapshot_marker_root(&path)?;
     fs::create_dir_all(path.parent().ok_or("invalid snapshot marker path")?)
         .map_err(|error| error.to_string())?;
-    write_owned_json(&path, &pins)?;
+    write_owned_json(&path, pins)?;
     read_snapshot_pins(binding, task_id, snapshot_id)?
         .ok_or_else(|| "review snapshot ownership marker is missing".into())
 }
@@ -197,6 +208,53 @@ fn capture_git(
 ) -> Result<(), String> {
     validate_binding_receiver(binding)?;
     let pins = plan_snapshot_pins(binding, task_id, snapshot_id)?;
+    install_snapshot_pins(task_id, snapshot_id, binding, saved, &pins)?;
+    let working =
+        git2::Repository::open(&binding.working_repository).map_err(|error| error.to_string())?;
+    saved.uncommitted_files = Some(super::super::capture::count_uncommitted(&working)?);
+    Ok(())
+}
+
+/// Capture a single observed tuple without re-reading source or checkout HEAD.
+pub fn capture_received_directory(
+    task_id: &str,
+    snapshot_id: &str,
+    binding: &ReviewBranchBinding,
+    received: &super::ReceivedCommit,
+    saved: &mut ReviewDirectory,
+) -> Result<(), String> {
+    validate_registered_receiver(binding)?;
+    let pins = save_pin_plan(
+        binding,
+        &SnapshotPins {
+            task_id: task_id.into(),
+            snapshot_id: snapshot_id.into(),
+            directory_id: binding.directory_id.clone(),
+            head: received.head.clone(),
+            source_base: received.target_head.clone(),
+            comparison_base: received.comparison_base.clone(),
+        },
+    )?;
+    if pins.head != received.head
+        || pins.source_base != received.target_head
+        || pins.comparison_base != received.comparison_base
+    {
+        return Err("review snapshot ownership tuple changed".into());
+    }
+    install_snapshot_pins(task_id, snapshot_id, binding, saved, &pins)?;
+    saved.uncommitted_files = git2::Repository::open(&binding.working_repository)
+        .ok()
+        .and_then(|working| super::super::capture::count_uncommitted(&working).ok());
+    Ok(())
+}
+
+fn install_snapshot_pins(
+    task_id: &str,
+    snapshot_id: &str,
+    binding: &ReviewBranchBinding,
+    saved: &mut ReviewDirectory,
+    pins: &SnapshotPins,
+) -> Result<(), String> {
     let repository = git2::Repository::open_bare(&binding.receiving_repository)
         .map_err(|error| error.to_string())?;
     let prefix = super::super::capture::pin_prefix(task_id, snapshot_id, &binding.directory_id)?;
@@ -207,13 +265,11 @@ fn capture_git(
     ] {
         create_expected_pin(&repository, &format!("{prefix}/{name}"), oid)?;
     }
-    let working =
-        git2::Repository::open(&binding.working_repository).map_err(|error| error.to_string())?;
     saved.common_git_dir = Some(binding.receiving_repository.clone());
     saved.status = ReviewDirectoryStatus::Git;
     saved.reason = None;
     saved.branch = Some(short_branch(binding)?.into());
-    saved.head = Some(pins.head);
+    saved.head = Some(pins.head.clone());
     saved.base = Some(ReviewBase {
         kind: ReviewBaseKind::Configured,
         name: Some(
@@ -223,9 +279,8 @@ fn capture_git(
                 .unwrap_or(&binding.base_branch_ref)
                 .into(),
         ),
-        oid: pins.comparison_base,
+        oid: pins.comparison_base.clone(),
     });
-    saved.uncommitted_files = Some(super::super::capture::count_uncommitted(&working)?);
     Ok(())
 }
 
@@ -260,11 +315,32 @@ pub fn cleanup_opening_pins(
     snapshot_id: &str,
     bindings: &[ReviewBranchBinding],
 ) -> Result<(), String> {
+    cleanup_pin_plans(task_id, snapshot_id, bindings, true)
+}
+
+pub fn cleanup_received_pins(
+    task_id: &str,
+    snapshot_id: &str,
+    bindings: &[ReviewBranchBinding],
+) -> Result<(), String> {
+    cleanup_pin_plans(task_id, snapshot_id, bindings, false)
+}
+
+fn cleanup_pin_plans(
+    task_id: &str,
+    snapshot_id: &str,
+    bindings: &[ReviewBranchBinding],
+    initial: bool,
+) -> Result<(), String> {
     for binding in bindings {
         let Some(pins) = read_snapshot_pins(binding, task_id, snapshot_id)? else {
             continue;
         };
-        validate_binding_receiver(binding)?;
+        if initial {
+            validate_binding_receiver(binding)?;
+        } else {
+            validate_registered_receiver(binding)?;
+        }
         let repository = git2::Repository::open_bare(&binding.receiving_repository)
             .map_err(|error| error.to_string())?;
         let prefix =
@@ -328,19 +404,28 @@ pub fn validate_snapshot_pins(
     Ok(())
 }
 
-fn initial_pin_refs(
+fn snapshot_pin_refs(
     task_id: &str,
     snapshot_id: &str,
     binding: &ReviewBranchBinding,
+    initial: bool,
 ) -> Result<Vec<(String, String)>, String> {
     let pins = read_snapshot_pins(binding, task_id, snapshot_id)?
         .ok_or("review snapshot ownership marker is missing")?;
-    if pins.head != binding.initial_head {
-        return Err("review snapshot head changed from the opening commit".into());
+    let expected = if initial {
+        &binding.initial_head
+    } else {
+        binding
+            .last_received_head
+            .as_ref()
+            .ok_or("missing received head")?
+    };
+    if &pins.head != expected {
+        return Err("review snapshot head changed from observed commit".into());
     }
     let prefix = super::super::capture::pin_prefix(task_id, snapshot_id, &binding.directory_id)?;
     Ok(vec![
-        (binding.receiving_ref.clone(), binding.initial_head.clone()),
+        (binding.receiving_ref.clone(), pins.head.clone()),
         (format!("{prefix}/head"), pins.head),
         (format!("{prefix}/base"), pins.comparison_base),
         (format!("{prefix}/target"), pins.source_base),
@@ -353,7 +438,17 @@ fn validate_initial_pins(
     snapshot_id: &str,
     binding: &ReviewBranchBinding,
 ) -> Result<(), String> {
-    for (name, expected) in initial_pin_refs(task_id, snapshot_id, binding)? {
+    validate_pins(repository, task_id, snapshot_id, binding, true)
+}
+
+fn validate_pins(
+    repository: &git2::Repository,
+    task_id: &str,
+    snapshot_id: &str,
+    binding: &ReviewBranchBinding,
+    initial: bool,
+) -> Result<(), String> {
+    for (name, expected) in snapshot_pin_refs(task_id, snapshot_id, binding, initial)? {
         let actual = repository
             .find_reference(&name)
             .map_err(|error| error.to_string())?;
@@ -375,22 +470,46 @@ pub fn with_initial_receivers_locked<T>(
     snapshot_id: &str,
     publish: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
+    with_snapshot_receivers_locked(bindings, task_id, snapshot_id, true, publish)
+}
+
+pub fn with_received_snapshot_locked<T>(
+    bindings: &[ReviewBranchBinding],
+    task_id: &str,
+    snapshot_id: &str,
+    publish: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    with_snapshot_receivers_locked(bindings, task_id, snapshot_id, false, publish)
+}
+
+fn with_snapshot_receivers_locked<T>(
+    bindings: &[ReviewBranchBinding],
+    task_id: &str,
+    snapshot_id: &str,
+    initial: bool,
+    publish: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
     let mut grouped: BTreeMap<PathBuf, Vec<&ReviewBranchBinding>> = BTreeMap::new();
     for binding in bindings {
-        validate_binding_receiver(binding)?;
+        if initial {
+            validate_binding_receiver(binding)?;
+        } else {
+            validate_registered_receiver(binding)?;
+        }
         grouped
             .entry(binding.receiving_repository.clone())
             .or_default()
             .push(binding);
     }
     let groups: Vec<_> = grouped.into_iter().collect();
-    lock_receivers(&groups, task_id, snapshot_id, publish)
+    lock_receivers(&groups, task_id, snapshot_id, initial, publish)
 }
 
 fn lock_receivers<T>(
     groups: &[(PathBuf, Vec<&ReviewBranchBinding>)],
     task_id: &str,
     snapshot_id: &str,
+    initial: bool,
     publish: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
     let Some((path, bindings)) = groups.first() else {
@@ -400,7 +519,7 @@ fn lock_receivers<T>(
     let mut refs = BTreeSet::new();
     for binding in bindings {
         refs.extend(
-            initial_pin_refs(task_id, snapshot_id, binding)?
+            snapshot_pin_refs(task_id, snapshot_id, binding, initial)?
                 .into_iter()
                 .map(|(name, _)| name),
         );
@@ -414,9 +533,9 @@ fn lock_receivers<T>(
         locks.push(lock);
     }
     for binding in bindings {
-        validate_initial_pins(&repository, task_id, snapshot_id, binding)?;
+        validate_pins(&repository, task_id, snapshot_id, binding, initial)?;
     }
-    let result = lock_receivers(&groups[1..], task_id, snapshot_id, publish);
+    let result = lock_receivers(&groups[1..], task_id, snapshot_id, initial, publish);
     drop(locks);
     result
 }

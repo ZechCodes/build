@@ -919,6 +919,7 @@ mod review_boot_tests {
                     "workspace",
                     0,
                     ReviewSnapshot {
+                        publication: None,
                         id: "snapshot".into(),
                         number: 0,
                         created_at: "2026-10-02T19:00:00Z".into(),

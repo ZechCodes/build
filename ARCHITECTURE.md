@@ -748,6 +748,46 @@ live reclaim/placement
 checks, manifest installation and idempotent reviewer dispatch. Reviewer
 delivery runs after publication, with a durable status and explicit retry.
 
+The daemon registers `reviews/sync.rs` independently of client subscriptions.
+Its blocking worker discovers active PRs in pages, watches canonical worktree
+Git directories, shared common directories and bare receivers, and reconciles
+at startup and every 30 seconds. Metadata callbacks enqueue identities only;
+tasks coalesce for 500 ms of quiet with a two-second maximum and retry with
+bounded backoff. Its store loader reads only bindings and the latest published
+snapshot; retained history and actions add no background polling reads.
+Metadata watches are deduplicated across linked worktrees and recurse only
+through branch refs. Objects, working-file writes, access events and private
+pin trees neither allocate recursive watches nor trigger publication. Missing
+watches are covered by polling.
+Discovery, repository resolution and watch registration share an eight-operation
+budget per worker turn; registration has no whole-set tail at the end of a scan.
+Polling preserves a task's existing quiet deadline. Client worktree watchers
+also share canonical Git metadata coverage and exclude private pin/ref-log
+trees before registering kernel watches.
+
+Reconciliation reads only each registered receiving ref for publication. It
+compares the fixed directory/head/merge-base vector with the latest snapshot,
+then pins explicit head, comparison base and selected target tip in the owned
+receiver. Source target movement is recorded separately in sync observations;
+only comparison-base movement creates a `base_changed` snapshot. Terminal
+pushes use actor Build, and non-fast-forward received heads record rewritten
+history while retaining old snapshots and their snapshot-scoped opinions.
+Receiver ref locks and the review version check fence publication. A persisted
+snapshot atomically updates bindings, resets PR status to Open and moves the
+task to In review. Observations have separate, deduplicated revisions, and each
+persisted result invalidates the task and workspace. Deleted receiving refs or
+unavailable required bases retain the previous snapshot and expose sync health.
+Snapshot readers validate the recorded receiver without requiring the original
+source or disposable workspace.
+Before capture, sync records one pending candidate per task in SQLite and writes
+a durable candidate journal in the registered receiver. A nonblocking advisory
+lock excludes another sync writer through capture and publication. Restart and
+poll discovery include pending candidates even after a PR closes: published
+candidates retain their pins, while unpublished candidates use the existing
+marker/OID-checked cleanup. Recovery reads one candidate and an indexed snapshot
+existence check, without scanning snapshot history. Project history deletion
+waits for outstanding candidates to recover.
+
 `bridge/src/reviews/` saves one task's workspace review as numbered snapshots.
 `capture.rs` reads every manifest directory, resolves each Git directory's
 committed HEAD and base (explicit override, configured base, upstream, empty

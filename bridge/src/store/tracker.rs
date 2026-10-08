@@ -332,8 +332,8 @@ impl Store {
     /// Explicit history deletion, called by the review service off the app
     /// lock. Release each history's Git pins inside the transaction: a snapshot
     /// cannot commit new pins between their enumeration and metadata deletion.
-    /// Unfinished openings must be recovered or safely cancelled first. Check
-    /// before release callbacks, which cannot be rolled back with SQLite.
+    /// Unfinished openings and pending sync captures must be recovered first.
+    /// Check before release callbacks, which cannot be rolled back with SQLite.
     pub(crate) fn delete_tracker_tasks_of_project(
         &self,
         project_path: &str,
@@ -342,13 +342,16 @@ impl Store {
         self.in_transaction(|tx| {
             let unfinished: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM review_openings WHERE project_key = ?1
-                 AND state IN ('preparing', 'failed', 'interrupted'))",
+                 AND state IN ('preparing', 'failed', 'interrupted')) OR EXISTS(
+                    SELECT 1 FROM review_sync_candidates AS candidates
+                    JOIN tracker_tasks ON tracker_tasks.id = candidates.task_id
+                    WHERE tracker_tasks.project_key = ?1)",
                 [project_path],
                 |row| row.get(0),
             )?;
             if unfinished {
                 return Err(StoreError::ReviewPullRequestInvalid(
-                    "recover or safely cancel unfinished PR openings before deleting project history"
+                    "recover unfinished PR openings and pending sync captures before deleting project history"
                         .into(),
                 ));
             }

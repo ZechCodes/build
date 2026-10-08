@@ -7,6 +7,8 @@ use crate::tracker::Actor;
 
 #[path = "observations.rs"]
 mod observations;
+#[path = "recovery.rs"]
+mod recovery;
 
 #[derive(Debug)]
 pub struct SyncResult {
@@ -33,52 +35,127 @@ pub fn reconcile(store: &Store, task_id: &str) -> Result<SyncResult, String> {
         persisted: false,
         retry: false,
     };
-    if !review
-        .pull_request
-        .as_ref()
-        .is_some_and(|pr| pr.status.is_active())
-    {
+    if review.bindings.is_empty() {
+        if store
+            .load_review_sync_candidate(task_id)
+            .map_err(|error| error.to_string())?
+            .is_some()
+        {
+            return Err("pending review sync capture has no registered Git receiver".into());
+        }
         return Ok(result);
     }
-    let received: Vec<_> = review
-        .bindings
-        .iter()
-        .map(publication::observe_received)
-        .collect();
-    let observed: Result<Vec<_>, _> = received.iter().cloned().collect();
-    let mut capture_error = None;
-    if let Ok(tips) = observed {
-        if vector_changed(&review, &tips)? {
-            match publish(store, &review, &tips) {
-                Ok(saved) => {
-                    review = saved;
-                    result.persisted = true;
-                }
-                Err(error) => {
-                    capture_error = Some(error);
-                    result.retry = true;
-                }
-            }
-        }
-    } else {
-        result.retry = true;
+    let (mut journal, current, recovered) = match prepare(store, &review) {
+        Ok(prepared) => prepared,
+        Err(error) => return preparation_failure(store, &review, result, error),
+    };
+    review = current;
+    result.persisted |= recovered;
+    if !active(&review) {
+        return Ok(result);
     }
-    if let Err(error) = observations::persist(
+    let received = observe_all(&review);
+    let capture_error = update_snapshot(store, &mut review, &mut journal, &received, &mut result)?;
+    persist_observations(
         store,
         &review,
         &received,
         capture_error.as_deref(),
         &mut result,
-    ) {
-        // A committed snapshot or observation must still be announced even
-        // when another writer wins a subsequent observation revision.
+    )?;
+    Ok(result)
+}
+
+fn active(review: &Review) -> bool {
+    review
+        .pull_request
+        .as_ref()
+        .is_some_and(|pr| pr.status.is_active())
+}
+
+fn observe_all(review: &Review) -> Vec<Result<ReceivedCommit, String>> {
+    review
+        .bindings
+        .iter()
+        .map(publication::observe_received)
+        .collect()
+}
+
+fn prepare(
+    store: &Store,
+    review: &Review,
+) -> Result<(recovery::CaptureJournal, Review, bool), String> {
+    let journal = recovery::CaptureJournal::acquire(&review.task_id, &review.bindings)?;
+    let recovered = journal.recover(store, &review.bindings)?;
+    let current = store
+        .load_review_sync_state(&review.task_id)
+        .map_err(|error| error.to_string())?
+        .ok_or("review missing")?;
+    Ok((journal, current, recovered))
+}
+
+fn preparation_failure(
+    store: &Store,
+    review: &Review,
+    mut result: SyncResult,
+    error: String,
+) -> Result<SyncResult, String> {
+    if error.starts_with("busy:") || !active(review) {
+        return Err(error);
+    }
+    result.retry = true;
+    let received = observe_all(review);
+    persist_observations(store, review, &received, Some(&error), &mut result)?;
+    Ok(result)
+}
+
+fn update_snapshot(
+    store: &Store,
+    review: &mut Review,
+    journal: &mut recovery::CaptureJournal,
+    received: &[Result<ReceivedCommit, String>],
+    result: &mut SyncResult,
+) -> Result<Option<String>, String> {
+    let tips: Result<Vec<_>, _> = received.iter().cloned().collect();
+    let Ok(tips) = tips else {
+        result.retry = true;
+        return Ok(None);
+    };
+    if !vector_changed(review, &tips)? {
+        return Ok(None);
+    }
+    match publish_locked(store, review, &tips, journal) {
+        Ok((saved, cleanup_error)) => {
+            *review = saved;
+            result.persisted = true;
+            result.retry |= cleanup_error.is_some();
+            Ok(cleanup_error)
+        }
+        Err(error) => {
+            result.retry = true;
+            Ok(Some(error))
+        }
+    }
+}
+
+fn persist_observations(
+    store: &Store,
+    review: &Review,
+    received: &[Result<ReceivedCommit, String>],
+    capture_error: Option<&str>,
+    result: &mut SyncResult,
+) -> Result<(), String> {
+    if let Err(error) = observations::persist(store, review, received, capture_error, result) {
         if !result.persisted {
             return Err(error);
         }
-        eprintln!("review sync: observation retry for {task_id}: {error}");
+        eprintln!(
+            "review sync: observation retry for {}: {error}",
+            review.task_id
+        );
         result.retry = true;
     }
-    Ok(result)
+    Ok(())
 }
 
 fn latest(review: &Review) -> Result<&ReviewSnapshot, String> {
@@ -111,9 +188,25 @@ fn vector_changed(review: &Review, received: &[ReceivedCommit]) -> Result<bool, 
     Ok(false)
 }
 
+#[cfg(test)]
 fn publish(store: &Store, review: &Review, received: &[ReceivedCommit]) -> Result<Review, String> {
+    let mut journal = recovery::CaptureJournal::acquire(&review.task_id, &review.bindings)?;
+    journal.recover(store, &review.bindings)?;
+    publish_locked(store, review, received, &mut journal).map(|(saved, _)| saved)
+}
+
+fn publish_locked(
+    store: &Store,
+    review: &Review,
+    received: &[ReceivedCommit],
+    journal: &mut recovery::CaptureJournal,
+) -> Result<(Review, Option<String>), String> {
     let snapshot_id = uuid::Uuid::new_v4().to_string();
+    journal.begin(store, &snapshot_id)?;
     let captured = capture(review, &snapshot_id, received);
+    if captured.is_ok() {
+        recovery::checkpoint(&review.task_id, "before-db");
+    }
     let result = captured.and_then(|snapshot| {
         let mut bindings = review.bindings.clone();
         for (binding, tip) in bindings.iter_mut().zip(received) {
@@ -127,14 +220,14 @@ fn publish(store: &Store, review: &Review, received: &[ReceivedCommit]) -> Resul
                 .map_err(|error| error.to_string())
         })
     });
-    if result.is_err() {
-        if let Err(error) =
-            publication::cleanup_received_pins(&review.task_id, &snapshot_id, &review.bindings)
-        {
-            eprintln!("review sync: retain refused snapshot pins {snapshot_id}: {error}");
-        }
+    if result.is_ok() {
+        recovery::checkpoint(&review.task_id, "after-db");
     }
-    result
+    let cleanup_error = journal.finish(store, &review.bindings).err();
+    if let Some(error) = &cleanup_error {
+        eprintln!("review sync: retain refused candidate {snapshot_id}: {error}");
+    }
+    result.map(|saved| (saved, cleanup_error))
 }
 
 fn capture(
@@ -207,3 +300,7 @@ fn rewritten(
 #[cfg(test)]
 #[path = "tests.rs"]
 pub(crate) mod tests;
+
+#[cfg(test)]
+#[path = "recovery_tests.rs"]
+mod recovery_tests;

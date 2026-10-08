@@ -1010,3 +1010,94 @@ fn sync_state_ignores_legacy_reviews_and_binds_latest_snapshot_to_task() {
         "another task's snapshot must never be accepted as sync input"
     );
 }
+
+#[test]
+fn schema_fifteen_reopen_restores_additive_sync_candidate_table_without_rewriting_review() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let review = publish(&store);
+    store
+        .connection()
+        .execute_batch("DROP TABLE review_sync_candidates")
+        .unwrap();
+    drop(store);
+    let store = Store::new(dir.path()).unwrap();
+    assert_eq!(store.load_review(&review.task_id).unwrap().unwrap(), review);
+    assert_eq!(
+        store.load_review_sync_candidate(&review.task_id).unwrap(),
+        None
+    );
+    assert_eq!(SCHEMA_VERSION, 15);
+}
+
+#[test]
+fn candidate_registry_identity_is_immutable_and_blocks_history_release_until_recovered() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let review = publish(&store);
+    let id = uuid::Uuid::new_v4().to_string();
+    store
+        .register_review_sync_candidate(&review.task_id, &id)
+        .unwrap();
+    store
+        .register_review_sync_candidate(&review.task_id, &id)
+        .unwrap();
+    let other = uuid::Uuid::new_v4().to_string();
+    assert!(store
+        .register_review_sync_candidate(&review.task_id, &other)
+        .is_err());
+    assert!(store
+        .clear_review_sync_candidate(&review.task_id, &other)
+        .is_err());
+    assert_eq!(
+        store.load_review_sync_candidate(&review.task_id).unwrap(),
+        Some(id.clone())
+    );
+    let called = std::cell::Cell::new(false);
+    assert!(store
+        .delete_tracker_tasks_of_project("/repo", |_| {
+            called.set(true);
+            Ok(())
+        })
+        .is_err());
+    assert!(
+        !called.get(),
+        "pending pins must block irreversible release callbacks"
+    );
+    store
+        .clear_review_sync_candidate(&review.task_id, &id)
+        .unwrap();
+    assert!(!store.review_snapshot_is_published(&id).unwrap());
+    assert!(store.review_snapshot_is_published("snapshot-1").unwrap());
+}
+
+#[test]
+fn sync_task_page_work_is_bounded_with_large_active_inactive_and_candidate_sets() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    store
+        .connection()
+        .execute_batch(
+            r#"
+        WITH RECURSIVE numbers(n) AS (
+            SELECT 0 UNION ALL SELECT n + 1 FROM numbers WHERE n < 13999
+        ) INSERT INTO reviews (task_id, workspace_id, version, record)
+        SELECT printf('task-%05d', n), 'workspace', 1,
+            CASE WHEN n < 2000 THEN '{"mode":"pull_request","pull_request":{"status":"open"}}'
+            ELSE '{"mode":"pull_request","pull_request":{"status":"closed"}}' END
+        FROM numbers;
+        WITH RECURSIVE candidates(n) AS (
+            SELECT 2000 UNION ALL SELECT n + 1 FROM candidates WHERE n < 3999
+        ) INSERT INTO review_sync_candidates (task_id, snapshot_id)
+        SELECT printf('task-%05d', n), printf('candidate-%05d', n) FROM candidates;
+    "#,
+        )
+        .unwrap();
+    let page = store
+        .list_active_review_sync_tasks(Some("task-03899"), 64)
+        .unwrap();
+    assert_eq!(page.len(), 64);
+    assert_eq!(page[0], "task-03900");
+    let steps = store.review_sync_scan_steps();
+    assert!(steps < 5000, "one late keyset page must avoid scanning all 14000 reviews and 2000 candidates; VM steps={steps}");
+}

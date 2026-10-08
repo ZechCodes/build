@@ -6,7 +6,97 @@ use crate::store::tracker::{append_activity, write_tracker_task};
 use crate::tracker::{Actor, TaskEvent, TaskEventKind, IN_REVIEW_STATUS};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(test)]
+thread_local! { static SYNC_SCAN_STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
+
 impl Store {
+    /// Globally unique snapshot IDs protect published pins even if a candidate
+    /// journal is altered to name a snapshot belonging to another task.
+    pub fn review_snapshot_is_published(&self, snapshot_id: &str) -> Result<bool, StoreError> {
+        self.connection()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM review_snapshots WHERE id = ?1)",
+                [snapshot_id],
+                |row| row.get(0),
+            )
+            .map_err(StoreError::from)
+    }
+
+    pub fn load_review_sync_candidate(&self, task_id: &str) -> Result<Option<String>, StoreError> {
+        self.connection()
+            .query_row(
+                "SELECT snapshot_id FROM review_sync_candidates WHERE task_id = ?1",
+                [task_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(StoreError::from)
+    }
+
+    /// Register before writing any receiver journal or candidate pin. A task
+    /// has at most one outstanding capture, independently of its active status.
+    pub fn register_review_sync_candidate(
+        &self,
+        task_id: &str,
+        snapshot_id: &str,
+    ) -> Result<(), StoreError> {
+        let id = uuid::Uuid::parse_str(snapshot_id)
+            .map_err(|_| invalid("sync candidate needs a canonical UUID"))?;
+        if id.to_string() != snapshot_id {
+            return Err(invalid("sync candidate needs a canonical UUID"));
+        }
+        self.in_transaction(|tx| {
+            require_task(tx, task_id)?;
+            require_pull_request(tx, task_id)?;
+            let found: Option<String> = tx
+                .query_row(
+                    "SELECT snapshot_id FROM review_sync_candidates WHERE task_id = ?1",
+                    [task_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(found) = found {
+                return if found == snapshot_id {
+                    Ok(())
+                } else {
+                    Err(invalid(
+                        "sync candidate identity cannot change before recovery",
+                    ))
+                };
+            }
+            tx.execute(
+                "INSERT INTO review_sync_candidates (task_id, snapshot_id) VALUES (?1, ?2)",
+                params![task_id, snapshot_id],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Remove only the registry identity whose owned journal/pins were handled.
+    pub fn clear_review_sync_candidate(
+        &self,
+        task_id: &str,
+        snapshot_id: &str,
+    ) -> Result<(), StoreError> {
+        self.in_transaction(|tx| {
+            let found: Option<String> = tx
+                .query_row(
+                    "SELECT snapshot_id FROM review_sync_candidates WHERE task_id = ?1",
+                    [task_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if found.as_deref().is_some_and(|found| found != snapshot_id) {
+                return Err(invalid("sync candidate registry changed before cleanup"));
+            }
+            tx.execute(
+                "DELETE FROM review_sync_candidates WHERE task_id = ?1 AND snapshot_id = ?2",
+                params![task_id, snapshot_id],
+            )?;
+            Ok(())
+        })
+    }
+
     /// Sync reads only the pointed-to published snapshot and fixed bindings.
     /// Historical snapshots, actions and destinations are omitted; legacy
     /// snapshot-mode reviews have no sync state.
@@ -14,24 +104,37 @@ impl Store {
         load_sync_state(&self.connection(), task_id)
     }
 
-    /// Keyset pagination keeps each background sync pass bounded in SQLite.
+    #[cfg(test)]
+    pub(crate) fn review_sync_scan_steps(&self) -> u64 {
+        SYNC_SCAN_STEPS.with(std::cell::Cell::get)
+    }
+
+    /// Keyset pagination includes active PRs and any outstanding sync capture,
+    /// so a concurrent close cannot hide a crashed candidate from recovery.
     pub fn list_active_review_sync_tasks(
         &self,
         after_task_id: Option<&str>,
         limit: usize,
     ) -> Result<Vec<String>, StoreError> {
+        #[cfg(test)]
+        SYNC_SCAN_STEPS.with(|steps| steps.set(0));
         let conn = self.connection();
-        let mut statement = conn.prepare(
+        let after = after_task_id.unwrap_or("");
+        let bound = limit.min(i64::MAX as usize) as i64;
+        let active = sync_task_page(&conn,
             "SELECT task_id FROM reviews WHERE json_extract(record, '$.mode') = 'pull_request'
              AND json_extract(record, '$.pull_request.status') IN ('open', 'changes_requested', 'approved')
-             AND (?1 IS NULL OR task_id > ?1) ORDER BY task_id LIMIT ?2",
-        )?;
-        let rows = statement.query_map(
-            params![after_task_id, limit.min(i64::MAX as usize) as i64],
-            |row| row.get(0),
-        )?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(StoreError::from)
+             AND task_id > ?1 ORDER BY task_id LIMIT ?2", after, bound)?;
+        let pending = sync_task_page(&conn,
+            "SELECT task_id FROM review_sync_candidates WHERE task_id > ?1 ORDER BY task_id LIMIT ?2",
+            after, bound)?;
+        Ok(active
+            .into_iter()
+            .chain(pending)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .take(limit)
+            .collect())
     }
 
     /// Append the receiver's pinned snapshot and advance all bindings in one
@@ -71,6 +174,22 @@ impl Store {
             Ok(load_sync_state(tx, task_id)?.expect("received snapshot was written"))
         })
     }
+}
+
+fn sync_task_page(
+    conn: &Connection,
+    sql: &str,
+    after: &str,
+    limit: i64,
+) -> Result<Vec<String>, StoreError> {
+    let mut statement = conn.prepare(sql)?;
+    let rows = statement.query_map(params![after, limit], |row| row.get(0))?;
+    let tasks = rows.collect::<Result<Vec<_>, _>>()?;
+    #[cfg(test)]
+    SYNC_SCAN_STEPS.with(|steps| {
+        steps.set(steps.get() + statement.get_status(rusqlite::StatementStatus::VmStep) as u64)
+    });
+    Ok(tasks)
 }
 
 fn load_sync_state(conn: &Connection, task_id: &str) -> Result<Option<Review>, StoreError> {

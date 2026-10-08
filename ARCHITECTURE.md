@@ -759,6 +759,11 @@ Metadata watches are deduplicated across linked worktrees and recurse only
 through branch refs. Objects, working-file writes, access events and private
 pin trees neither allocate recursive watches nor trigger publication. Missing
 watches are covered by polling.
+Discovery, repository resolution and watch registration share an eight-operation
+budget per worker turn; registration has no whole-set tail at the end of a scan.
+Polling preserves a task's existing quiet deadline. Client worktree watchers
+also share canonical Git metadata coverage and exclude private pin/ref-log
+trees before registering kernel watches.
 
 Reconciliation reads only each registered receiving ref for publication. It
 compares the fixed directory/head/merge-base vector with the latest snapshot,
@@ -774,6 +779,14 @@ persisted result invalidates the task and workspace. Deleted receiving refs or
 unavailable required bases retain the previous snapshot and expose sync health.
 Snapshot readers validate the recorded receiver without requiring the original
 source or disposable workspace.
+Before capture, sync records one pending candidate per task in SQLite and writes
+a durable candidate journal in the registered receiver. A nonblocking advisory
+lock excludes another sync writer through capture and publication. Restart and
+poll discovery include pending candidates even after a PR closes: published
+candidates retain their pins, while unpublished candidates use the existing
+marker/OID-checked cleanup. Recovery reads one candidate and an indexed snapshot
+existence check, without scanning snapshot history. Project history deletion
+waits for outstanding candidates to recover.
 
 `bridge/src/reviews/` saves one task's workspace review as numbered snapshots.
 `capture.rs` reads every manifest directory, resolves each Git directory's

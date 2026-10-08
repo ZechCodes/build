@@ -251,6 +251,10 @@ CREATE TABLE IF NOT EXISTS reviews (
     version      INTEGER NOT NULL,
     record       TEXT NOT NULL
 );
+-- Match discovery's exact predicate so inactive history is never scanned.
+CREATE INDEX IF NOT EXISTS reviews_active_sync ON reviews(task_id)
+    WHERE json_extract(record, '$.mode') = 'pull_request'
+    AND json_extract(record, '$.pull_request.status') IN ('open', 'changes_requested', 'approved');
 CREATE TABLE IF NOT EXISTS review_snapshots (
     id       TEXT PRIMARY KEY,
     task_id  TEXT NOT NULL,
@@ -298,6 +302,11 @@ CREATE TABLE IF NOT EXISTS review_branch_bindings (
     PRIMARY KEY (task_id, directory_id),
     UNIQUE (repository_id, dedicated_ref),
     UNIQUE (receiving_repository, receiving_ref)
+);
+-- One outstanding sync capture; retained after task closure for bounded recovery.
+CREATE TABLE IF NOT EXISTS review_sync_candidates (
+    task_id TEXT PRIMARY KEY,
+    snapshot_id TEXT NOT NULL UNIQUE
 );
 CREATE TABLE IF NOT EXISTS review_sync_observations (
     task_id TEXT NOT NULL,

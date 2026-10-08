@@ -38,6 +38,9 @@ Wire 3.14.0.
 
 ### Fixed
 
+- Keep PR push bursts coalesced across polling, bound metadata registration,
+  share linked-worktree metadata watches without watching private pins, and
+  recover interrupted unpublished snapshot captures (#403).
 - Recover interrupted initial PR receiving-ref writes and preserve review
   opening setup when another worktree holds the original branch (#402).
 - Establish recoverable PR tracking refs before opening succeeds, so the first

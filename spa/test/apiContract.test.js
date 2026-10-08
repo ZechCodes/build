@@ -79,10 +79,9 @@ describe("the v1 adapter against fixtures/api/v1", () => {
   it("preserves PR sync failures, partial integration and failed publication after merge", () => {
     const read = (verb) => methodFixtures.find(({ body }) => body.method === `tasks.review.${verb}`).body;
     expect(read("get").result.review).not.toHaveProperty("mode");
-    expect(read("get").examples[2].result.sync[1]).toMatchObject({ health: "unavailable", error: expect.any(String) });
     const refresh = read("refresh");
-    expect(refresh.examples).toHaveLength(1);
-    expect(refresh.examples[0].result.review.pull_request.status).toBe("closed");
+    expect(refresh.examples[0].result.sync[1]).toMatchObject({ health: "unavailable", error: expect.any(String) });
+    expect(refresh.examples[1].result.review.pull_request.status).toBe("closed");
     const push = read("push");
     expect(push.examples[0].result.sources.map(({ status }) => status)).toEqual(["published", "failed"]);
     expect(push.examples[1].params.sources[0]).toMatchObject({ force_with_lease: true, expected_received_head: expect.any(String) });

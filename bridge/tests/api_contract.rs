@@ -394,14 +394,13 @@ fn pull_request_contracts_refuse_caller_identity_and_paths_at_every_selection() 
 fn pull_request_fixtures_keep_sync_health_and_partial_git_results_visible() {
     let get = read_json(&fixtures_root().join("v1/tasks.review.get.json"));
     assert!(get["result"]["review"].get("mode").is_none());
+    let refresh = read_json(&fixtures_root().join("v1/tasks.review.refresh.json"));
     assert_eq!(
-        get["examples"][2]["result"]["sync"][1]["health"],
+        refresh["examples"][0]["result"]["sync"][1]["health"],
         "unavailable"
     );
-    let refresh = read_json(&fixtures_root().join("v1/tasks.review.refresh.json"));
-    assert_eq!(refresh["examples"].as_array().unwrap().len(), 1);
     assert_eq!(
-        refresh["examples"][0]["result"]["review"]["pull_request"]["status"],
+        refresh["examples"][1]["result"]["review"]["pull_request"]["status"],
         "closed"
     );
     let push = read_json(&fixtures_root().join("v1/tasks.review.push.json"));

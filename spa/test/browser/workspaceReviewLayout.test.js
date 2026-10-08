@@ -16,6 +16,7 @@ async function mountWorkspaceReview(page, basePath, { published = false } = {}) 
     entry: "src/core/workspaceReviewEntry.js", support: "src/core/taskReviewSupport.js",
     review: "src/core/taskReviewCache.js", local: "src/core/localCache.js",
     directory: "src/core/directoryScope.js", model: "src/core/workspaceModel.js",
+    motion: "src/core/motion.js",
   }, basePath);
   await page.evaluate(async ({ opened, pushed, published }) => {
     const { entry, support, review, local, directory, model } = window.__layoutModules;
@@ -62,6 +63,7 @@ async function mountWorkspaceReview(page, basePath, { published = false } = {}) 
 }
 
 async function expectFitsViewport(page) {
+  await page.evaluate(() => window.__layoutModules.motion.motionSettled());
   const bounds = await page.evaluate(() => ({ viewport: innerWidth, page: document.documentElement.scrollWidth,
     dialogs: [...document.querySelectorAll('[role="dialog"]')].map((node) => ({ left: node.getBoundingClientRect().left, right: node.getBoundingClientRect().right })) }));
   expect(bounds.page, JSON.stringify(bounds)).toBeLessThanOrEqual(bounds.viewport + 1);
@@ -77,6 +79,8 @@ for (const { label, width, hasTouch } of sizes) {
       await mountWorkspaceReview(page, basePath);
       const open = page.locator("[data-workspace-review]");
       expect(await open.textContent()).toContain("Open review");
+      await expectFitsViewport(page);
+      await captureLayout(page, `workspace-review-entry-${label}.png`);
       if (hasTouch) await open.tap();
       else {
         await page.keyboard.press("Tab");
@@ -84,19 +88,23 @@ for (const { label, width, hasTouch } of sizes) {
         await page.keyboard.press("Enter");
       }
       await page.locator("[data-review-title]").waitFor({ timeout: 5000 });
+      expect(await page.evaluate(() => window.__reviewCalls)).toEqual([]);
       await page.locator("[data-review-title]").fill("Review API and UI changes");
       await page.locator("[data-review-description]").fill("Publish the committed API and UI changes.");
+      await page.locator("#review-create-assignee").selectOption("project_agent");
       await page.locator('[data-review-base="dir-api"]').fill("main");
       await page.locator('[data-review-base="dir-ui"]').fill("release");
       await page.locator('[data-review-exclude="dir-missing"]').check();
       const form = page.locator('[role="dialog"]');
-      expect(await form.textContent()).toContain("review/<number>-api");
-      expect(await form.textContent()).toContain("review/<number>-ui");
+      expect(await form.textContent()).toContain("review/<number>-review-api-and-ui-changes");
       expect(await form.textContent()).toContain("Notes");
       expect(await page.locator('[data-review-base="dir-notes"]').count()).toBe(0);
       await expectFitsViewport(page);
+      await form.evaluate((node) => { node.scrollTop = 0; });
       await captureLayout(page, `workspace-review-open-${label}.png`);
       const submit = page.locator("[data-open-review-submit]");
+      await submit.scrollIntoViewIfNeeded();
+      await captureLayout(page, `workspace-review-open-sources-${label}.png`);
       if (hasTouch) await submit.tap();
       else {
         await submit.focus();
@@ -113,6 +121,8 @@ for (const { label, width, hasTouch } of sizes) {
       expect(await page.locator("#review-entry").textContent()).toContain("review/1-api");
       await expectFitsViewport(page);
       await captureLayout(page, `workspace-review-created-${label}.png`);
+      await page.locator("[data-review-link]").click();
+      expect(await page.evaluate(() => window.__reviewNavigations)).toEqual([{ name: "trackerTask", deviceId: "workspace-review-layout", projectId: "layout-project", taskId: "task-1" }]);
       await page.evaluate(() => window.__workspaceReview.dispose());
     }, { width, height: 844, hasTouch });
   }, 60_000);
@@ -133,6 +143,7 @@ for (const { label, width, hasTouch } of sizes) {
         await review.writeReviewReply(scope, answer, 2);
       });
       await page.waitForFunction(() => document.querySelector('[data-review-push="dir-api"]')?.textContent.includes("1"));
+      expect(await page.evaluate(() => window.__reviewCalls.filter((call) => call.method === "tasks.review.push"))).toEqual([]);
       await expectFitsViewport(page);
       await captureLayout(page, `workspace-review-pending-${label}.png`);
       if (hasTouch) await push.tap();
@@ -159,6 +170,7 @@ for (const { label, width, hasTouch } of sizes) {
       });
       expect(saved.snapshots).toHaveLength(2);
       expect(saved.pull_request.latest_published_snapshot_id).toBe("snapshot-2");
+      expect(await page.locator("#review-entry").textContent()).toContain("Snapshot 2");
       await expectFitsViewport(page);
       await captureLayout(page, `workspace-review-published-${label}.png`);
       await page.evaluate(() => window.__workspaceReview.dispose());

@@ -22,7 +22,7 @@ for (const theme of ["light", "dark"]) {
       for (const field of fields) expect(field.select, field.type).toBe("text");
       const cursors = [[".tb-sel", "pointer"], [".tabs .t", "pointer"], [".task-row", "pointer"], [".task-row-open", "pointer"], [".task-card", "grab"], [".task-page-state", "default"], [".task-rail-section h2", "default"], [".task-composer button:disabled", "default"]];
       for (const [selector, cursor] of cursors) expect(await page.locator(selector).first().evaluate((node) => getComputedStyle(node).cursor), selector).toBe(cursor);
-      expect(await dragInteractionText(page, ".tb-legacy-item .tb-name")).toBe("");
+      expect(await dragInteractionText(page, ".tb-legacy-item .tb-name", { clickCount: 3 })).toBe("");
       await captureLayout(page, `interaction-header-${theme}.png`);
       expect(await dragInteractionText(page, ".task-comment-body p")).toBe(COMMENT_TEXT);
       await captureLayout(page, `interaction-comment-${theme}.png`);
@@ -32,6 +32,16 @@ for (const theme of ["light", "dark"]) {
     }, { width: 1280, height: 900 });
   }, 60_000);
 }
+
+it("copies markdown tables while a button inside a comment stays unselectable", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await mountInteractionFixture(page, basePath, { extras: true });
+    expect(await dragInteractionText(page, ".task-page-body th")).toBe("Area");
+    expect(await dragInteractionText(page, ".task-comment-body [data-comment-action]")).toBe("");
+    expect(await page.locator(".task-page-body th").first().evaluate((node) => getComputedStyle(node).userSelect)).toBe("text");
+    expect(await page.locator("[data-comment-action]").evaluate((node) => getComputedStyle(node).userSelect)).toBe("none");
+  });
+}, 60_000);
 
 it("keeps native editing, pointer feedback and keyboard focus while disabled controls stay quiet", async () => {
   await withLayoutPage(async ({ page, basePath }) => {

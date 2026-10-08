@@ -24,6 +24,7 @@ export async function mountInteractionFixture(page, basePath, { theme = "light",
     document.body.classList.add("inbox-collapsed");
     const m = window.__layoutModules;
     const task = { id: "task-397", number: 397, title: "Make Build feel like an app", state: "open", status: "in_progress", priority: "medium", labels: ["ui"], updated_at: "2026-10-07T20:00:00Z", body: "Keep the navigation quiet while preserving readable content.\n\nCopy task descriptions, comments and code without accidentally selecting the app controls.", attachments: [] };
+    if (extras) task.body += "\n\n| Area | Expected |\n| --- | --- |\n| Content | Selectable |";
     const context = { deviceId: "interaction-device", projectId: "proj-1", columns: [{ id: "in_progress", name: "In progress" }], links: [], labelsDraft: "ui", rows: [{ type: "comment", key: "comment-397", actor: { kind: "user", name: "You" }, body: `${comment}\n\nThe toolbar, tabs and status labels should behave like application controls.`, at: "2026-10-07T20:05:00Z", attachments: [] }], draft: "", sending: false, busy: false, identities: {} };
     document.querySelector("#toolbar").innerHTML = m.toolbar.toolbarHtml({ project: "Build", kind: "task", label: header });
     const root = document.querySelector("#root");
@@ -36,6 +37,13 @@ export async function mountInteractionFixture(page, basePath, { theme = "light",
     content.id = "tabbody";
     content.className = "task-surface";
     content.innerHTML = m.task.taskPageHtml(task, context);
+    if (extras) {
+      const action = document.createElement("button");
+      action.className = "btn";
+      action.dataset.commentAction = "";
+      action.textContent = "Comment action";
+      content.querySelector(".task-comment-body").appendChild(action);
+    }
     root.appendChild(content);
     if (!extras) return;
     const extra = document.createElement("section");
@@ -58,7 +66,7 @@ export async function mountInteractionFixture(page, basePath, { theme = "light",
 }
 
 /** A trusted mouse drag, which CSS can block; a programmatic Range cannot. */
-export async function dragInteractionText(page, selector) {
+export async function dragInteractionText(page, selector, { clickCount = 1 } = {}) {
   const element = page.locator(selector).first();
   await element.scrollIntoViewIfNeeded();
   await page.evaluate(() => window.getSelection().removeAllRanges());
@@ -73,8 +81,9 @@ export async function dragInteractionText(page, selector) {
     return { x: first.x, y: first.y, width: first.width, height: first.height };
   });
   await page.mouse.move(box.x + 1, box.y + box.height / 2);
-  await page.mouse.down();
+  if (clickCount === 3) await page.mouse.click(box.x + 1, box.y + box.height / 2, { clickCount: 2 });
+  await page.mouse.down({ clickCount });
   await page.mouse.move(box.x + box.width - 1, box.y + box.height / 2, { steps: 16 });
-  await page.mouse.up();
+  await page.mouse.up({ clickCount });
   return page.evaluate(() => window.getSelection().toString());
 }

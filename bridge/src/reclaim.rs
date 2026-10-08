@@ -75,6 +75,10 @@ pub const HOLD_LOCKED: &str = "locked";
 pub const HOLD_NOT_READY: &str = "not_ready";
 /// One of the user's terminals is open somewhere in the workspace.
 pub const HOLD_TERMINAL_OPEN: &str = "terminal_open";
+/// A durable merge is running or its requested external push is unsettled.
+pub const HOLD_REVIEW_PUBLICATION_PENDING: &str = "review_publication_pending";
+/// Review merge publication state could not be read safely.
+pub const HOLD_REVIEW_PUBLICATION_UNREAD: &str = "review_publication_unread";
 /// Measuring ran out of budget, so what it would have found is not known.
 pub const HOLD_UNMEASURED: &str = "unmeasured";
 
@@ -648,16 +652,18 @@ pub fn hold_order(hold: &str) -> usize {
         FINISH_BLOCKER_AGENT_WORKING, FINISH_BLOCKER_DIRTY, FINISH_BLOCKER_PLAIN_DIRECTORY,
         FINISH_BLOCKER_UNKNOWN, FINISH_BLOCKER_UNPUSHED,
     };
-    const ORDER: [&str; 11] = [
+    const ORDER: [&str; 13] = [
         HOLD_LOCKED,
         HOLD_NOT_READY,
         FINISH_BLOCKER_AGENT_WORKING,
         HOLD_TERMINAL_OPEN,
+        HOLD_REVIEW_PUBLICATION_PENDING,
         FINISH_BLOCKER_DIRTY,
         FINISH_BLOCKER_UNPUSHED,
         FINISH_BLOCKER_PLAIN_DIRECTORY,
         HOLD_TASK_OPEN,
         HOLD_TASKS_UNREAD,
+        HOLD_REVIEW_PUBLICATION_UNREAD,
         FINISH_BLOCKER_UNKNOWN,
         HOLD_UNMEASURED,
     ];
@@ -676,6 +682,8 @@ pub fn hold_sentence(hold: &str) -> &'static str {
         HOLD_LOCKED => "the workspace is locked",
         HOLD_NOT_READY => "it is not ready",
         HOLD_TERMINAL_OPEN => "a terminal is open in it",
+        HOLD_REVIEW_PUBLICATION_PENDING => "review merge publication is still pending",
+        HOLD_REVIEW_PUBLICATION_UNREAD => "Build could not read the review merge publication state",
         HOLD_UNMEASURED => "Build could not finish measuring it",
         other => crate::workspace::blocker_sentence(other),
     }

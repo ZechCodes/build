@@ -20,6 +20,8 @@ use crate::reclaim::{GitProbe, ReclaimPolicy};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+mod reviews;
+
 /// An agent on the workspace's own conversation, as `(owner, agent_id)`, with
 /// nothing queued for it.
 fn agent_in(state: &Arc<Mutex<AppState>>, ws: &str) -> (String, String) {

@@ -61,7 +61,7 @@ impl AppState {
         let last = timeline.last()?;
         let at = entry_at(last).to_string();
         let assigned_to_user = matches!(task.assignee, Some(Assignee::User));
-        Some(json!({
+        let mut row = json!({
             "kind": "tracker_task",
             "task_id": task.id,
             "number": task.number,
@@ -84,7 +84,9 @@ impl AppState {
             // absence of the row is the whole of the answer.
             "muted": false,
             "done_until_next": self.task_is_done_until_next(task, &timeline),
-        }))
+        });
+        self.extend_task_review_summary(&task.id, &mut row).ok()?;
+        Some(row)
     }
 
     /// What the row's subtitle says: the reader's voice of the same line an

@@ -743,6 +743,9 @@ pub struct TrackerTaskRow {
     pub muted: bool,
     /// The user cleared the row and nothing has happened since.
     pub done_until_next: bool,
+    /// The same durable PR discovery link the task detail carries (3.15.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_summary: Option<crate::reviews::records::ReviewSummary>,
 }
 
 /// What last happened to a watched task, in the reader's voice.

@@ -339,6 +339,9 @@ pub struct TaskView {
     /// and from a bridge that does not announce `tasks.doneSinceLeft`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub done_at: Option<String>,
+    /// Durable PR discovery link (3.15.0), retained after the review closes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_summary: Option<crate::reviews::records::ReviewSummary>,
 }
 
 /// One attachment as every ANSWER carries it — what `tasks.attach` says it

@@ -335,9 +335,10 @@ impl AppState {
                         .unwrap_or_default());
                     value["entity_id"] = owner.map(Value::String).unwrap_or(Value::Null);
                     value["lifecycle"] = self.workspace_lifecycle_json(&workspace.id);
-                    value
+                    self.extend_workspace_review_summary(&workspace.id, &mut value)?;
+                    Ok(value)
                 })
-                .collect::<Vec<_>>()
+                .collect::<Result<Vec<_>, String>>()?
         }))
     }
 
@@ -368,6 +369,7 @@ impl AppState {
             .ok_or_else(|| format!("unknown workspace_id: {id}"))?;
         let owner = self.workspace_conversation_owner(&workspace);
         let mut value = workspace_json(&workspace);
+        self.extend_workspace_review_summary(&workspace.id, &mut value)?;
         let summary = owner
             .as_deref()
             .map(|id| self.session_summary(id))
@@ -399,6 +401,23 @@ impl AppState {
         value["thread"] = run["thread"].clone();
         value["run"] = run;
         Ok(value)
+    }
+
+    fn extend_workspace_review_summary(
+        &self,
+        workspace_id: &str,
+        row: &mut Value,
+    ) -> Result<(), String> {
+        let Some(store) = &self.store else {
+            return Ok(());
+        };
+        if let Some(summary) = store
+            .load_workspace_review_summary(workspace_id)
+            .map_err(|error| error.to_string())?
+        {
+            row["active_review"] = json!(summary);
+        }
+        Ok(())
     }
 
     /// The existing run that owns this workspace's root. Adopted run

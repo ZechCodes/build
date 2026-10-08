@@ -197,7 +197,9 @@ impl AppState {
             let task = self.backfill_task_identities(task, &timeline, &rosters)?;
             let task = self.backfill_done_at(task, &timeline)?;
             let task = self.task_with_read_identities(task, &timeline, &rosters);
-            rows.push(views::read_task_json(project_id, &task, &timeline));
+            let mut row = views::read_task_json(project_id, &task, &timeline);
+            self.extend_task_review_summary(&task.id, &mut row)?;
+            rows.push(row);
         }
         Ok(rows)
     }
@@ -214,7 +216,21 @@ impl AppState {
         let task = self.backfill_task_identities(task, &timeline, &rosters)?;
         let task = self.backfill_done_at(task, &timeline)?;
         let task = self.task_with_read_identities(task, &timeline, &rosters);
-        Ok(task_with_timeline_json(&project_id, &task, &timeline))
+        let mut answer = task_with_timeline_json(&project_id, &task, &timeline);
+        self.extend_task_review_summary(&task.id, &mut answer["task"])?;
+        Ok(answer)
+    }
+
+    /// Discover PR identity without reading its snapshots or action journal.
+    fn extend_task_review_summary(&self, task_id: &str, row: &mut Value) -> Result<(), String> {
+        if let Some(summary) = self
+            .tracker_store()?
+            .load_review_summary(task_id)
+            .stored()?
+        {
+            row["review_summary"] = json!(summary);
+        }
+        Ok(())
     }
 
     /// Give a task filed before `done_at` existed the one its timeline

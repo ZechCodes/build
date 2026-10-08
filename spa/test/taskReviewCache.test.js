@@ -62,9 +62,10 @@ it("clears an authoritative missing review without letting an older null erase a
   await writeReviewRecord(scope, review, 1);
   const repository = createTaskReviewRepository({ ...scope, callRpc: async () => ({ review: null }) });
   expect(await repository.refresh()).toBe(true);
-  expect((await readCached(reviewAddress(scope))).value.review).toBeNull();
-  await writeReviewRecord(scope, { ...review, version: 3 }, 100);
-  await writeReviewRecord(scope, null, 200, 2);
+  const cleared = (await readCached(reviewAddress(scope))).value;
+  expect(cleared.review).toBeNull();
+  await writeReviewRecord(scope, { ...review, version: 3 }, cleared.read_order + 1);
+  await writeReviewRecord(scope, null, cleared.read_order + 2, 2);
   expect((await readCached(reviewAddress(scope))).value.review.version).toBe(3);
 });
 
@@ -176,4 +177,24 @@ it("gates PR and legacy operations against the cached review mode", async () => 
     await expect(repository.mutate(verb, { expected_version: 3 })).rejects.toThrow();
   }
   expect(callRpc).not.toHaveBeenCalled();
+});
+
+it("does not resurrect metadata or observations from a read preceding an authoritative missing review", async () => {
+  await writeReviewReply(scope, pullRequest, 10);
+  await writeReviewReply(scope, { review: null }, 30, pullRequest.review.version);
+  await writeReviewReply(scope, { ...pullRequest, sync: [{ ...pullRequest.sync[0], revision: 100 }] }, 20);
+  expect((await readCached(reviewAddress(scope))).value.review).toBeNull();
+  expect((await readCached(reviewAddress(scope))).value.sync).toBeUndefined();
+});
+
+it("filters invalidations while discovering summaries only on feature-capable devices", async () => {
+  await rememberReviewSupport(scope.deviceId, { reviews: prSupport });
+  await writeReviewReply(scope, pullRequest, 1);
+  const callRpc = vi.fn(async () => pullRequest);
+  await refreshCachedReviews({ ...scope, callRpc, discoveredTaskIds: ["new-task"] }, [scope.taskId]);
+  expect(callRpc).toHaveBeenCalledExactlyOnceWith("tasks.review.get", { task_id: scope.taskId });
+  callRpc.mockClear();
+  await rememberReviewSupport(scope.deviceId, { reviews: { ...prSupport, pullRequests: false } });
+  await refreshCachedReviews({ ...scope, callRpc, discoveredTaskIds: ["new-task"] });
+  expect(callRpc).toHaveBeenCalledExactlyOnceWith("tasks.review.get", { task_id: scope.taskId });
 });

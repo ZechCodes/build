@@ -20,8 +20,10 @@ const mayClear = (held, observedVersion, readOrder) => !held ||
 
 const newerReview = (held, review, readOrder) => versionOf(review) > versionOf(held?.review) ||
   (versionOf(review) === versionOf(held?.review) && readOrder >= (held?.read_order || 0));
+const precedesClear = (held, readOrder) => held?.review === null && held.read_order > readOrder;
 
 function mergeReviewReply(held, answer, readOrder, observedVersion) {
+  if (precedesClear(held, readOrder)) return null;
   if (!answer.review) return mayClear(held, observedVersion, readOrder)
     ? { review: null, read_order: readOrder } : null;
   const observations = mergeReviewObservations(held, answer.sync, readOrder);

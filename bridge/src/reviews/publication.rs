@@ -8,11 +8,11 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
+pub mod explicit;
 mod pins;
 mod received;
 mod remote;
 mod tracking;
-pub mod explicit;
 
 use pins::pin_mutation_checkpoint;
 pub use pins::{

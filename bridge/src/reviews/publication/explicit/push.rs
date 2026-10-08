@@ -31,7 +31,7 @@ pub(super) fn push(
             .find(|binding| binding.directory_id == source.directory_id)
             .ok_or("invalid review params: Git directory is not bound")?;
         let result = publish_one(store, request, source, binding, check);
-        sources.push(outcome(source, result));
+        sources.push(outcome(source, binding, result));
     }
     let recovery = match reconcile_held_as(store, &request.task_id, &mut journal, &request.actor) {
         Ok(result) if result.retry => Some(
@@ -73,7 +73,7 @@ fn publish_one(
     publication::import_publication_commit(
         &binding.receiving_repository,
         &binding.working_repository,
-        &source.expected_head,
+        &head.to_string(),
     )?;
     check().map_err(PublicationError::Failed)?;
     let receiver = git2::Repository::open_bare(&binding.receiving_repository)
@@ -180,7 +180,11 @@ fn validate_fast_forward(
     Ok(())
 }
 
-fn outcome(source: &PushSource, result: Result<bool, PublicationError>) -> PushOutcome {
+fn outcome(
+    source: &PushSource,
+    binding: &ReviewBranchBinding,
+    result: Result<bool, PublicationError>,
+) -> PushOutcome {
     match result {
         Ok(changed) => PushOutcome {
             directory_id: source.directory_id.clone(),
@@ -189,9 +193,10 @@ fn outcome(source: &PushSource, result: Result<bool, PublicationError>) -> PushO
             } else {
                 PushStatus::Unchanged
             },
-            head: Some(source.expected_head.clone()),
+            head: Some(source.expected_head.to_ascii_lowercase()),
             error: None,
-            recovery: None,
+            recovery: publication::tracking::advance(binding, source.expected_received_head.as_deref(), &source.expected_head)
+                .err().map(|error| format!("Received publication succeeded; owned upstream tracking needs recovery: {} {RECOVERY}", crate::source_sync::without_credentials(&error))),
         },
         Err(error) => PushOutcome {
             directory_id: source.directory_id.clone(),

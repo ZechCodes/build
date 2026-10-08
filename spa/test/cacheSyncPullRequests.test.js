@@ -174,3 +174,41 @@ it.each(["individual row", "feed copy"])("persists and paints the PR version fro
     });
   } finally { stopPaint(); feed.stopFeed(); }
 });
+
+it.each(["individual row", "feed copy"])("preserves a cleared PR from the %s when merging cached feed authorities", async (source) => {
+  await sync.syncDevice(deviceId);
+  const tracker = await import("../src/core/trackerCache.js");
+  const { nextTaskRead } = await import("../src/core/taskReadOrder.js");
+  const visible = { kind: "tracker_task", task_id: taskId, project_id: projectId, title: "held fields",
+    updated_at: "2026-10-08T20:00:20Z", review_summary: { ...summary, version: 7 } };
+  await tracker.writeTasksRecord(deviceId, projectId, tracker.tasksRecord([visible], [], await nextTaskRead()));
+  const { review_summary: _summary, ...absent } = visible;
+  await tracker.writeTasksRecord(deviceId, projectId, tracker.tasksRecord([
+    { ...absent, updated_at: "2026-10-08T20:00:30Z" },
+  ], [], await nextTaskRead()));
+  const cleared = (await tracker.readTasksRecord(deviceId, projectId)).tasks[0];
+  const rowAddress = { deviceId, entityId: taskId, kind: "row" };
+  const feedAddress = { deviceId, entityId: "", kind: "feed" };
+  await cache.writeCached(rowAddress, source === "individual row" ? cleared : visible);
+  await cache.writeCached(feedAddress, { items: [source === "feed copy" ? cleared : visible], projects: [], workspaces: [] });
+  const ownBefore = await cache.readCached(rowAddress);
+  items = [{ ...visible, title: "board fields", updated_at: "2026-10-08T20:00:10Z", review_summary: summary }];
+  const stopAfterFeed = cache.subscribeCache(feedAddress, () => { state.context.session = {}; });
+  try { expect(await sync.syncDevice(deviceId)).toBe(false); }
+  finally { stopAfterFeed(); }
+  expect(await cache.readCached(rowAddress)).toEqual(ownBefore);
+  const cached = (await cache.readCached(feedAddress)).value.items[0];
+  expect(cached).not.toHaveProperty("review_summary");
+  expect(cached.title).toBe("board fields");
+
+  await cache.writeCached(cache.DEVICES_ADDRESS, [{ id: deviceId }]);
+  feed = await import("../src/core/taskFeed.js");
+  let painted;
+  const stopPaint = feed.subscribeFeed((snapshot) => { painted = snapshot; });
+  try {
+    await feed.startFeed();
+    const row = painted.items.find((candidate) => candidate.task_id === taskId);
+    expect(row).not.toHaveProperty("review_summary");
+    expect(row.title).toBe("board fields");
+  } finally { stopPaint(); feed.stopFeed(); }
+});

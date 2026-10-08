@@ -65,7 +65,7 @@ import {
   writeCached,
 } from "./localCache.js";
 import { TASK_RECORD_KIND } from "./taskCache.js";
-import { tasksAddress, tasksRecord, readTasksRecord, writeTasksRecord, preserveReviewSummary } from "./trackerCache.js";
+import { tasksAddress, tasksRecord, readTasksRecord, writeTasksRecord, preserveTaskReviewSummary } from "./trackerCache.js";
 import { foldTasksPage, pagesTasks, pullTaskPages } from "./trackerPages.js";
 import { nextTaskRead } from "./taskReadOrder.js";
 import { refreshCachedReviews } from "./taskReviewCache.js";
@@ -506,7 +506,7 @@ function writeConversationRow(context, entityId, row) {
   const addresses = [addressOf(context, entityId, "row"), ...agents.map((agent) => agentThreadAddress(context, entityId, agent))];
   return mergeCachedTogether(addresses, ([held, ...threads]) =>
     context.active() && agents.every((agent, index) => currentAgentGeneration(threads[index], agent))
-      ? [preserveReviewSummary(held, row), ...agents.map(() => null)] : null);
+      ? [preserveTaskReviewSummary(held, row), ...agents.map(() => null)] : null);
 }
 
 /** The snapshot without the entities a push said left after it was asked for:

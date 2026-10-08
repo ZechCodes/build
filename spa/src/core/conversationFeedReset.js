@@ -4,7 +4,7 @@ import { FEED_COLLECTIONS } from "./feedMerge.js";
 import { entityIdOf } from "./entityId.js";
 import { recordKey } from "./idbRecords.js";
 import { cachedWriteOf, captureCachedRecord, updateCachedFeed } from "./localCache.js";
-import { preserveReviewSummary, preserveReviewSummaries } from "./trackerCache.js";
+import { preserveTaskReviewSummary } from "./trackerCache.js";
 
 const rosterOf = (agents) => Array.isArray(agents) ? agents : [];
 const threadAgent = (thread) => thread?.agent?.id ? [{ id: thread.agent.id, thread_id: thread.thread_id || thread.id,
@@ -89,7 +89,7 @@ const retiredDigest = (agent, thread) => thread?.thread_id && (agent.thread_id
 
 function admittedFeedRow(row, deviceId, records, rewriteRow) {
   const entityId = entityIdOf(row);
-  let next = preserveReviewSummary(currentRow(deviceId, entityId, records), row);
+  let next = preserveTaskReviewSummary(currentRow(deviceId, entityId, records), row);
   const seen = new Set();
   for (const agent of agentsOf(row)) {
     const conversationId = canonicalId(agent);
@@ -106,7 +106,10 @@ function admittedFeedRow(row, deviceId, records, rewriteRow) {
 
 function withHeldReviewSummaries(held, view) {
   return { ...view, ...Object.fromEntries(FEED_COLLECTIONS.filter((field) => Array.isArray(view?.[field]))
-    .map((field) => [field, preserveReviewSummaries(held?.[field], view[field])])) };
+    .map((field) => {
+      const old = new Map((held?.[field] || []).map((row) => [entityIdOf(row), row]));
+      return [field, view[field].map((row) => preserveTaskReviewSummary(old.get(entityIdOf(row)), row))];
+    })) };
 }
 
 /** Admit a board snapshot against all its thread generations inside the same

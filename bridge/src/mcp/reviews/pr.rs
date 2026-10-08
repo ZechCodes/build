@@ -1,7 +1,7 @@
 //! Strict PR tool contracts. These accept saved identities and leases only;
 //! the app adapter supplies the actor, project and filesystem locations.
 
-use serde::de::DeserializeOwned;
+use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 
 use super::super::{BridgeAction, Handled};
@@ -82,8 +82,9 @@ pub(super) fn tools() -> Vec<Value> {
     ]
 }
 
-fn params<T: DeserializeOwned>(params: Option<&Value>) -> Result<T, String> {
-    serde_json::from_value(super::arguments(params)?.clone()).map_err(|error| error.to_string())
+fn params<T: DeserializeOwned + Serialize>(params: Option<&Value>) -> Result<T, String> {
+    crate::api::v1::parse_params(super::arguments(params)?)
+        .map_err(|error| error.message().to_string())
 }
 
 pub(super) fn handle_call(id: &Value, name: &str, arguments: Option<&Value>) -> Option<Handled> {

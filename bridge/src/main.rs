@@ -1288,18 +1288,7 @@ fn mcp_stdio() {
                 .map_err(|error| format!("could not read response: {error}"))?;
             let value: serde_json::Value = serde_json::from_str(&response)
                 .map_err(|error| format!("invalid daemon response: {error}"))?;
-            if value.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
-                Ok(value
-                    .get("result")
-                    .cloned()
-                    .unwrap_or(serde_json::Value::Null))
-            } else {
-                Err(value
-                    .get("error")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("Build daemon rejected the request")
-                    .to_string())
-            }
+            build_bridge::mcp::daemon_action_result(value)
         },
     );
 }

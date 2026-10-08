@@ -2515,6 +2515,29 @@ fn tool_error(id: Value, text: String) -> String {
     )
 }
 
+/// The stdio adapter preserves structured PR refusals carried by the daemon.
+/// Other tools keep their established success value and plain error text.
+pub fn daemon_action_result(value: Value) -> Result<Value, String> {
+    if value.get("ok").and_then(Value::as_bool) == Some(true) {
+        return Ok(value.get("result").cloned().unwrap_or(Value::Null));
+    }
+    let message = value
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or("Build daemon rejected the request");
+    if let (Some(code), Some(retryable)) = (
+        value.get("error_code").and_then(Value::as_str),
+        value.get("retryable").and_then(Value::as_bool),
+    ) {
+        let mut refusal = json!({"error":message,"error_code":code,"retryable":retryable});
+        if let Some(details) = value.get("details") {
+            refusal["details"] = details.clone();
+        }
+        return Err(refusal.to_string());
+    }
+    Err(message.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2525,6 +2548,54 @@ mod tests {
 
     fn parse(reply: &str) -> Value {
         serde_json::from_str(reply).expect("reply is valid JSON")
+    }
+
+    #[test]
+    fn daemon_pr_refusals_retain_codes_and_recovery_details_in_stdio() {
+        let refusal = json!({
+            "ok":false,"error":"The review changed; fetch its current version",
+            "error_code":"stale_version","retryable":false,
+            "details":{"task_id":"task-1","current_version":3,"recovery":"Read get_review"}
+        });
+        let input = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{
+            "name":"close_review","arguments":{"task_id":"task-1","expected_version":1,"description":"Superseded"}
+        }}).to_string();
+        let mut output = Vec::new();
+        server()
+            .run_stdio(
+                std::io::Cursor::new(input),
+                &mut output,
+                |_| {},
+                |_| daemon_action_result(refusal.clone()),
+            )
+            .unwrap();
+        let response = parse(std::str::from_utf8(&output).unwrap());
+        assert_eq!(response["result"]["isError"], true);
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(!text.contains("review_api_error:"));
+        let structured: Value =
+            serde_json::from_str(text).expect("PR error is readable structured JSON");
+        assert_eq!(structured["error"], refusal["error"]);
+        assert_eq!(structured["error_code"], "stale_version");
+        assert_eq!(structured["retryable"], false);
+        assert_eq!(structured["details"], refusal["details"]);
+    }
+
+    #[test]
+    fn daemon_action_result_preserves_legacy_error_text_and_success_shapes() {
+        assert_eq!(
+            daemon_action_result(json!({"ok":true,"result":{"task_id":"task-1"}})),
+            Ok(json!({"task_id":"task-1"}))
+        );
+        assert_eq!(daemon_action_result(json!({"ok":true})), Ok(Value::Null));
+        assert_eq!(
+            daemon_action_result(json!({"ok":false,"error":"legacy refusal"})),
+            Err("legacy refusal".into())
+        );
+        assert_eq!(
+            daemon_action_result(json!({"ok":false})),
+            Err("Build daemon rejected the request".into())
+        );
     }
 
     #[test]

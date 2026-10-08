@@ -1,9 +1,20 @@
+use super::pins::{create_expected_pin, plan_snapshot_pins, snapshot_marker};
+use super::remote::{config_values, configuration};
 use super::*;
 use crate::git_fixture::{git_command, git_in, init_repo};
-use crate::reviews::model::{ReviewPreparationState, ReviewPublicationState};
-use crate::reviews::receivers::{ensure_receiver, plan_receiver};
-use crate::workspace::{DirectoryStatus, WorkspaceDirectory, WorkspaceStatus};
+use crate::reviews::model::{
+    ReviewMembership, ReviewMembershipKind, ReviewPreparationState, ReviewPublicationState,
+    ReviewSnapshot,
+};
+use crate::reviews::receivers::{ensure_receiver, plan_receiver, with_local_config_locked};
+use crate::tracker::Actor;
+use crate::workspace::{DirectoryStatus, Workspace, WorkspaceDirectory, WorkspaceStatus};
+use std::collections::BTreeSet;
 use std::path::Path;
+
+#[cfg(target_os = "linux")]
+#[path = "tests/native_publication.rs"]
+mod native_publication;
 
 fn oid(repository: &Path, reference: &str) -> String {
     String::from_utf8(
@@ -728,4 +739,56 @@ fn pin_cleanup_refuses_a_replaced_held_lock_before_deleting_the_ref() {
         assert_eq!(fs::read_to_string(&lock).unwrap(), "user lock\n");
         fs::remove_file(lock).unwrap();
     }
+}
+
+#[cfg(unix)]
+fn interrupt_initial_writer(binding_path: &Path, receiver: &Path) {
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "reviews::publication::tests::interrupted_initial_ref_creation_recovers_for_retry_and_cancellation", "--nocapture"])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("BUILD_REVIEW_INTERRUPTED_INITIAL_BINDING", binding_path)
+        .env("BUILD_REVIEW_INTERRUPTED_INITIAL_RECEIVER", receiver)
+        .status().unwrap();
+    assert_eq!(status.code(), Some(26));
+}
+
+#[cfg(unix)]
+#[test]
+fn interrupted_initial_ref_creation_recovers_for_retry_and_cancellation() {
+    if let Some(path) = std::env::var_os("BUILD_REVIEW_INTERRUPTED_INITIAL_BINDING") {
+        let binding: ReviewBranchBinding =
+            serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        publish_initial(&binding).unwrap();
+        panic!("initial writer must exit while the receiving ref lock is held");
+    }
+    let (temporary, source) = init_repo();
+    let binding = binding(&source, &temporary.path().join("receivers"));
+    configure_remote(&binding).unwrap();
+    let binding_path = temporary.path().join("binding.json");
+    fs::write(&binding_path, serde_json::to_vec(&binding).unwrap()).unwrap();
+    let receiving_lock = binding
+        .receiving_repository
+        .join(format!("{}.lock", binding.receiving_ref));
+    let unrelated_lock = binding
+        .receiving_repository
+        .join("refs/heads/user-owned.lock");
+    fs::write(&unrelated_lock, "user lock\n").unwrap();
+
+    interrupt_initial_writer(&binding_path, &binding.receiving_repository);
+    assert!(receiving_lock.exists());
+    assert_eq!(publish_initial(&binding).unwrap(), binding.initial_head);
+    assert!(!receiving_lock.exists());
+    assert_eq!(
+        received_head(&binding).unwrap(),
+        Some(binding.initial_head.clone())
+    );
+    cleanup_initial(&binding).unwrap();
+
+    interrupt_initial_writer(&binding_path, &binding.receiving_repository);
+    assert!(receiving_lock.exists());
+    cleanup_initial(&binding).unwrap();
+    assert!(!receiving_lock.exists());
+    assert_eq!(received_head(&binding).unwrap(), None);
+    assert_eq!(fs::read_to_string(unrelated_lock).unwrap(), "user lock\n");
 }

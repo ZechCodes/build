@@ -27,7 +27,7 @@ const now = () => (typeof performance !== "undefined" && performance.now ? perfo
 /// before writing, and write nothing while the list is moving under the reader.
 export function wireReaderMotion(scroller) {
   if (!scroller || readerMotion.has(scroller)) return;
-  const state = { touching: false, lastScrollAt: 0, lastInputAt: 0 };
+  const state = { touching: false, lastScrollAt: 0, lastInputAt: -Infinity };
   readerMotion.set(scroller, state);
   const passive = { passive: true };
   const input = () => {

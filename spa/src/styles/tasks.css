@@ -467,6 +467,8 @@
 /* min-width:0 so a fenced block inside scrolls instead of widening the
    column it is in (#50). */
 .task-comment-body { min-width:0; color:var(--ink); }
+/* Stable empty slots keep metadata changes from shifting the body DOM. */
+.task-comment-card > [hidden] { display:none; }
 
 /* History is drawn quieter than a comment — but never hidden: "the board moved
    and nobody said anything" is exactly what a timeline is for. */

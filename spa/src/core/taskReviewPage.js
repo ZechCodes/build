@@ -143,6 +143,13 @@ export function mountTaskReviewPage(host, options) {
 
   function paint() {
     if (disposed) return;
+    // A task embeds this pane above its timeline. Independent review cache
+    // reads must keep that task's reader still as the pane changes height.
+    if (options.keepReadingPlace) options.keepReadingPlace(paintContent);
+    else paintContent();
+  }
+
+  function paintContent() {
     host.hidden = !support.get && !record?.review;
     const saved = snapshot();
     const dir = directory();

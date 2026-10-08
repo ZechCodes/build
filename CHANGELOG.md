@@ -16,6 +16,12 @@ Wire 3.13.0.
   on hover or keyboard focus and revealed one row at a time by long press on
   touch devices (#396).
 
+### Fixed
+
+- Keep long task comments and loaded images in place when ages, references or
+  review metadata refresh, and follow new comments when reading at the bottom
+  (#410).
+
 ## [0.2.12] - 2026-10-07
 
 Wire 3.13.0.

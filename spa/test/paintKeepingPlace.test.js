@@ -264,6 +264,16 @@ describe("paintKeepingPlace", () => {
       expect(writes).toEqual([]);
     });
 
+    it("does not mistake an early programmatic scroll for reader input", () => {
+      const { scroller } = conversation([{ key: "a", height: 400 }]);
+      const clock = vi.spyOn(performance, "now").mockReturnValue(100);
+      try {
+        wireReaderMotion(scroller);
+        scroller.dispatchEvent(new Event("scroll"));
+        expect(readerIsMoving(scroller)).toBe(false);
+      } finally { clock.mockRestore(); }
+    });
+
     // On iOS a write to scrollTop during a fling ends the fling where the
     // write said; a paint that lands mid-fling must not write at all.
     it("writes nothing while the reader is moving the list", () => {

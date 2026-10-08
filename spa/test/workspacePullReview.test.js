@@ -107,6 +107,21 @@ it("shows cached pending commits and publishes the pinned source to its bound de
   expect((await readCached(reviewAddress({ ...scope, taskId: "task-1" })))).toBeDefined();
 });
 
+it("pins the newest cached heads when a commit amendment leaves the pending label unchanged", async () => {
+  await enable();
+  const pending = { ...pushed.result.sync[0], revision: 4, pending_commits: 1, working_head: "3".repeat(40), health: "pending" };
+  const actionScope = { ...scope, taskId: "task-1" };
+  await writeReviewReply(actionScope, { ...opened.result, sync: [pending] }, 1);
+  mount(vi.fn(async () => { throw new Error("Unavailable"); }));
+  await vi.waitFor(() => expect(document.querySelector('[data-review-push="dir-api"]')).not.toBeNull());
+  await writeReviewReply(actionScope, { review: { ...opened.result.review, version: 2 }, sync: [{ ...pending, revision: 5, working_head: "4".repeat(40) }] }, 2);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  document.querySelector('[data-review-push="dir-api"]').click();
+  await vi.waitFor(() => expect(document.querySelector("[data-push-review-pins]")).not.toBeNull());
+  expect(document.querySelector("[data-push-review-pins]").textContent).toContain("Review version 2");
+  expect(document.querySelector("[data-push-review-pins]").textContent).toContain("4".repeat(40));
+});
+
 it("links the bound PR while on another branch and switches without publishing unrelated HEAD", async () => {
   await enable(); await writeCached(workspaceAddress, [{ ...workspace, directories: [{ ...workspace.directories[0], branch: "other-work" }] }]);
   await writeReviewReply({ ...scope, taskId: "task-1" }, { ...opened.result, sync: pushed.result.sync }, 1);
@@ -127,6 +142,16 @@ it("offers switching back for a cached detached checkout without offering Push",
   mount();
   await vi.waitFor(() => expect(document.querySelector("[data-review-switch]")).not.toBeNull());
   expect(document.querySelector('[data-review-push="dir-api"]')).toBeNull();
+});
+
+it("suppresses publication when a newer cached workspace summary closes the PR", async () => {
+  await enable();
+  await writeReviewReply({ ...scope, taskId: "task-1" }, { ...opened.result, sync: pushed.result.sync }, 1);
+  await writeCached(workspaceAddress, [{ ...workspace, active_review: { task_id: "task-1", workspace_id: scope.workspaceId, version: 2, status: "closed" } }]);
+  mount();
+  await vi.waitFor(() => expect(document.querySelector("[data-review-link]")).not.toBeNull());
+  expect(document.querySelector(".workspace-review-badge").textContent).toBe("Closed");
+  expect(document.querySelector("[data-review-push]")).toBeNull();
 });
 
 it("renders changed and rewritten notes against the user's cached reviewed snapshot", async () => {
@@ -163,4 +188,7 @@ it("retains a submitted opening for explicit recovery after its PR arrives in th
   expect(rpc).toHaveBeenCalledOnce();
   await openForm();
   expect(document.querySelector("[data-review-title]").value).toBe("Retry review");
+  document.querySelector("[data-review-form-cancel]").click();
+  await enable({ open: false });
+  await vi.waitFor(() => expect(document.querySelector("[data-workspace-review]")).toBeNull());
 });

@@ -131,15 +131,17 @@ function snapshotHtml(review, summary) {
 
 function linkedReviewHtml(context, options, taskId) {
   const { review, summary, task } = entryIdentity(context);
-  const status = review?.pull_request?.status || summary.status || "open";
+  const status = cachedReviewStatus(review, summary);
   const number = task.number || summary.task_number;
   const title = task.title || summary.title || "Review";
   const terminal = ["closed", "merged"].includes(status);
   return `<div class="workspace-review-heading"><h2>Changes</h2><a data-review-link href="${esc(reviewHref(options, taskId))}">${number ? `#${Number(number)} ` : ""}${esc(title)}</a>
-      <span class="workspace-review-badge">${esc(statusLabels[status] || status)}</span>${snapshotHtml(review, summary)}${resumeOpeningHtml(context.createDraft)}</div>
+      <span class="workspace-review-badge">${esc(statusLabels[status] || status)}</span>${snapshotHtml(review, summary)}${context.support.open ? resumeOpeningHtml(context.createDraft) : ""}</div>
       ${boundSourceFacts(context).map((fact) => sourceHtml(fact, context.support, terminal)).join("")}
       ${dispatchFailureHtml(context.held)}`;
 }
+const cachedReviewStatus = (review, summary) => summary.version > review?.version
+  ? summary.status : review?.pull_request?.status || summary.status || "open";
 const resumeOpeningHtml = (draft) => draft?.submitted
   ? `<button type="button" class="btn" data-workspace-review>${draft.dispatchFailed ? "Retry reviewer dispatch" : "Resume opening"}</button>` : "";
 const dispatchFailureHtml = (held) => held?.reviewer_dispatch?.state === "failed"
@@ -178,7 +180,7 @@ export function mountWorkspaceReviewEntry(host, options) {
     const context = await readWorkspaceReviewContext(options);
     if (disposed || read !== revision) return;
     const next = entryHtml(context, options);
-    if (html === next) return;
+    if (html === next) { wirePublication(context); return; }
     html = next;
     replaceEntryHtml(host, next);
     const open = host.querySelector("[data-workspace-review]");

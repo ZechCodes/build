@@ -34,6 +34,7 @@ export { default as ICON_WIFI_OFF } from "lucide-static/icons/wifi-off.svg?raw";
 export { default as ICON_HOURGLASS } from "lucide-static/icons/hourglass.svg?raw";
 export { default as ICON_EYE } from "lucide-static/icons/eye.svg?raw";
 export { default as ICON_EYE_OFF } from "lucide-static/icons/eye-off.svg?raw";
+export { default as ICON_LOCK_OPEN } from "lucide-static/icons/lock-open.svg?raw";
 export { default as ICON_LOCK } from "lucide-static/icons/lock.svg?raw";
 export { default as ICON_CHEVRON_RIGHT } from "lucide-static/icons/chevron-right.svg?raw";
 export { default as ICON_CHEVRON_LEFT } from "lucide-static/icons/chevron-left.svg?raw";

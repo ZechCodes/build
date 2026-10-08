@@ -296,6 +296,9 @@ impl AppState {
         // in it. Both are read off the record, so they answer after a restart.
         let keeps_checkout = self.stands_in_the_repository(&run_id, active)
             || self.is_project_conversation_owner(&run_id);
+        if !keeps_checkout {
+            self.refuse_removing_locked_workspace_at(&active.worktree.path)?;
+        }
         let title = active.run.goal.clone();
         let task_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
         let stages = self.stage_publication_query(&run_id, active);

@@ -60,6 +60,7 @@ const pageRow = (entry, workspace, measuresSizes) => ({
   working: entry.working,
   unreadCount: entry.unreadCount,
   muted: entry.muted,
+  locked: entry.locked,
   facts: entry.facts,
   branch: branchOf(workspace),
   status: workspace?.status || "",
@@ -130,7 +131,7 @@ const largestFirst = (left, right) => (right.sizeBytes ?? -1) - (left.sizeBytes 
  * is every workspace.
  */
 export function workspaceListing(page, filter) {
-  const reclaimable = page.rows.filter((row) => row.lifecycle?.reclaimable === true);
+  const reclaimable = page.rows.filter((row) => !row.locked && row.lifecycle?.reclaimable === true);
   const narrowed = filter === RECLAIMABLE_WORKSPACES;
   const rows = narrowed ? [...reclaimable].sort(largestFirst) : page.rows;
   return {

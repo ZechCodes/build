@@ -83,6 +83,9 @@ impl AppState {
             .collect();
         source_paths.push(project.repo_path.clone());
         let workspaces = self.workspaces.list(Some(&project_id));
+        if workspaces.iter().any(|workspace| workspace.locked) {
+            return Err(crate::workspace::LOCKED_REFUSAL.into());
+        }
         if workspaces
             .iter()
             .any(|workspace| workspace.status == crate::workspace::WorkspaceStatus::Provisioning)

@@ -258,7 +258,7 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.13.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.14.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
@@ -355,6 +355,9 @@ runtime that starts them.
   `fs.uploadFinish` and `fs.uploadAbort` (#391), each announced by its verb
   name, plus the nonretryable `already_exists` error code. The new mutations
   create directories and stage binary uploads inside a resolved file scope.
+  3.14.0 adds `workspace.set_locked` (#398), announced by its verb name,
+  the Boolean `locked` field on workspace rows, and the nonretryable `locked`
+  error code for removals held by the user's workspace lock.
   3.11.0 adds `conversation.reset` (#358) and thread generations on conversation
   digests and responses. Generation-aware requests refuse a cleared thread;
   the reset capability gates the menu, its generation-aware cache handling,
@@ -592,6 +595,25 @@ A workspace brings together one checkout per project source. Its manifest is
 and those feed git and files changes into the `ChangeBus`.
 Workspace Done and branch rows share an outcome computed from all runs on the workspace root, including runs hidden from the inbox.
 
+**Workspace locks** (#398). `workspace.set_locked` takes `workspace_id` and
+the Boolean `locked`, persists the change, returns a `WorkspaceRow`, and notes
+the workspace list changed. Managed manifests retain the flag; older manifests
+default to unlocked. Adopted checkouts keep their locks in the registry's
+`.locks/<workspace id>` metadata, so Build does not write into their working
+copies. The command refuses `busy` while deferred filesystem work or a reclaim
+reservation could overwrite the record or has already admitted a removal.
+The browser calls this RPC from the toolbar control beside the workspace name
+(`spa/src/core/toolbar.js`, `spa/src/styles/workspace-lock.css`), drawing from
+the cached workspace row. Agents can read the flag but have no MCP action to
+change it.
+
+The bridge checks the lock before workspace Delete, Done and explicit reclaim,
+before deleting a project with a locked workspace, and before run cleanup that
+would remove files inside one. These paths return the same nonretryable
+`locked` refusal before stopping processes or changing files. The SPA disables
+the corresponding deletion controls while their cached workspace is locked.
+The reclaim service also records `locked` as a hold, preserving build output.
+
 **Reclaim** (#135) is a service, not a verb. `AppState::spawn_workspace_reclaim`
 (`bridge/src/app/workspaces/reclaim.rs`) sweeps every managed workspace two
 minutes after startup, then every hour. It also sweeps five seconds after a
@@ -613,7 +635,7 @@ carry it as `lifecycle`. A workspace is idle after 24 h, or the device's
 `workspace_idle_secs` setting (#167); `BRIDGE_WORKSPACE_IDLE_SECS`, where set,
 overrides the setting. Each sweep reads the policy afresh
 (`AppState::reclaim_policy_now`), so a change in Settings applies at the next
-sweep, which the change asks for at once. What holds it: not ready, an agent working or a
+sweep, which the change asks for at once. What holds it: locked, not ready, an agent working or a
 terminal open anywhere inside it, uncommitted or unpushed work, a plain
 directory, a linked task not Done, or tasks that could not be read.
 

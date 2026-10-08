@@ -20,6 +20,13 @@ const entriesOf = (workspaces, items = []) => {
 };
 
 describe("workspace inbox rows", () => {
+  it("disables Done from the cached lock even with an older clean verdict", () => {
+    const [entry] = entriesOf([{ id: "locked", project_id: "project-1", name: "Protected", status: "ready", locked: true, can_finish: true }]);
+    expect(entry.locked).toBe(true);
+    expect(entry.canFinish).toBe(false);
+    expect(inboxRowHtml(entry)).toMatch(/data-workspace-done=[^>]+title="Unlock the workspace to delete it"[^>]+disabled/);
+  });
+
   it("orders bridge workspace sessions without fetching a thread", () => {
     const hour = 60 * 60 * 1000;
     const workspace = (id, started, last = started) => ({

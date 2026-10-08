@@ -641,6 +641,7 @@ impl AppState {
     ) -> Vec<&'static str> {
         let root = Self::canonical_root(&workspace.root);
         let checks = [
+            (workspace.locked, crate::reclaim::HOLD_LOCKED),
             (
                 workspace.status != WorkspaceStatus::Ready,
                 crate::reclaim::HOLD_NOT_READY,

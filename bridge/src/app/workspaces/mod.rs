@@ -13,6 +13,7 @@ mod branch_delete;
 mod deletion;
 mod directories;
 mod git_initialization;
+mod lock;
 mod reclaim;
 mod sizes;
 
@@ -1159,6 +1160,7 @@ fn workspace_json(workspace: &Workspace) -> Value {
         // report a summary as missing.
         "managed": workspace.managed,
         "created_by_agent": workspace.created_by_agent,
+        "locked": workspace.locked,
         "directories": workspace.directories.iter().map(|directory| json!({
             "id": directory.id,
             "source_id": directory.source_id,

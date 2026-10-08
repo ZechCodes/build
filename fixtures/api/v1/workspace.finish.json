@@ -23,6 +23,7 @@
     "invalid_params",
     "conflict",
     "busy",
+    "locked",
     "internal"
   ]
 }

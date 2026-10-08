@@ -120,6 +120,16 @@ describe("projectPageModel", () => {
 // #167: the Workspaces tab narrows to what can be reclaimed, biggest first,
 // and every row says what it weighs, all from the cached workspace.list rows.
 describe("the workspaces listing", () => {
+  it("excludes locked workspaces from the count and filter before lifecycle refreshes", () => {
+    const page = projectPageModel({ ...feed, workspaces: [
+      workspace("locked", { locked: true, lifecycle: { idle: true, reclaimable: true } }),
+      workspace("unlocked", { locked: false, lifecycle: { idle: true, reclaimable: true } }),
+    ] }, route);
+    expect(page.rows.map((row) => row.locked)).toEqual([true, false]);
+    expect(workspaceListing(page, ALL_WORKSPACES).reclaimableCount).toBe(1);
+    expect(workspaceListing(page, RECLAIMABLE_WORKSPACES).rows.map((row) => row.workspaceId)).toEqual(["unlocked"]);
+  });
+
   const verdict = (reclaimable, size) => ({
     idle: true, reclaimable, holds: reclaimable ? [] : ["dirty"], dirty_files: 1, size_bytes: size, pruned_bytes: 0,
   });

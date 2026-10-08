@@ -45,7 +45,8 @@ use std::collections::BTreeSet;
 /// bounded host-socket conntrack sweeps for unresolved LAN names (#374).
 /// 3.13.0 adds scoped directory creation, binary file uploads, and the
 /// `already_exists` refusal (#391).
-pub const API_VERSION: &str = "3.13.0";
+/// 3.14.0 adds user-controlled workspace locks (#398).
+pub const API_VERSION: &str = "3.14.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -163,6 +164,11 @@ pub enum ApiError {
         message: String,
         details: Option<Value>,
     },
+    /// The user locked a workspace against removal.
+    Locked {
+        message: String,
+        details: Option<Value>,
+    },
     /// A stale `expected_revision` / `expected_choice_revision`; `details`
     /// carries the current value.
     Conflict {
@@ -203,11 +209,12 @@ pub enum ApiError {
 
 impl ApiError {
     /// Every code, as a fixture may cite it.
-    pub const CODES: [&'static str; 11] = [
+    pub const CODES: [&'static str; 12] = [
         "unknown_method",
         "invalid_params",
         "not_found",
         "already_exists",
+        "locked",
         "conflict",
         "stale_version",
         "stale_body",
@@ -240,6 +247,13 @@ impl ApiError {
 
     pub fn already_exists(message: impl Into<String>) -> ApiError {
         ApiError::AlreadyExists {
+            message: message.into(),
+            details: None,
+        }
+    }
+
+    pub fn locked(message: impl Into<String>) -> ApiError {
+        ApiError::Locked {
             message: message.into(),
             details: None,
         }
@@ -287,6 +301,7 @@ impl ApiError {
             ApiError::InvalidParams { .. } => "invalid_params",
             ApiError::NotFound { .. } => "not_found",
             ApiError::AlreadyExists { .. } => "already_exists",
+            ApiError::Locked { .. } => "locked",
             ApiError::Conflict { .. } => "conflict",
             ApiError::StaleVersion { .. } => "stale_version",
             ApiError::StaleBody { .. } => "stale_body",
@@ -308,6 +323,7 @@ impl ApiError {
             | ApiError::InvalidParams { message, details }
             | ApiError::NotFound { message, details }
             | ApiError::AlreadyExists { message, details }
+            | ApiError::Locked { message, details }
             | ApiError::Conflict { message, details }
             | ApiError::StaleVersion { message, details }
             | ApiError::StaleBody { message, details }
@@ -351,6 +367,9 @@ impl ApiError {
     /// so the list shrinks over time.
     pub fn classify(message: String) -> ApiError {
         let sentence = Self::unlabelled(&message);
+        if sentence == crate::workspace::LOCKED_REFUSAL {
+            return ApiError::locked(message);
+        }
         if let Some(error) = review_refusal(sentence) {
             return error;
         }
@@ -472,6 +491,7 @@ mod tests {
             ApiError::invalid_params("m"),
             ApiError::not_found("m"),
             ApiError::already_exists("m"),
+            ApiError::locked("m"),
             ApiError::conflict("m", None),
             ApiError::StaleVersion {
                 message: "m".into(),
@@ -486,6 +506,7 @@ mod tests {
             ApiError::unsupported_version("m"),
             ApiError::internal("m"),
         ];
+        assert_eq!(errors.len(), ApiError::CODES.len());
         for (error, code) in errors.iter().zip(ApiError::CODES) {
             assert_eq!(error.code(), code);
             assert_eq!(error.retryable(), code == "busy");

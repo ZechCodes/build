@@ -1,0 +1,68 @@
+{
+  "method": "workspace.set_locked",
+  "since": "3.14.0",
+  "params": {
+    "workspace_id": "ws-3f2a91c4",
+    "locked": true
+  },
+  "result": {
+    "id": "ws-3f2a91c4",
+    "workspace_id": "ws-3f2a91c4",
+    "project_id": "proj-1",
+    "name": "wire-facade",
+    "root": "/home/ada/.build/workspaces/proj-1/wire-facade",
+    "status": "ready",
+    "created_by_agent": false,
+    "locked": true,
+    "directories": [
+      {
+        "id": "ws-3f2a91c4:source-1",
+        "source_id": "source-1",
+        "name": "bridge",
+        "path": "/home/ada/.build/workspaces/proj-1/wire-facade/bridge",
+        "is_git": true,
+        "branch": "build/wire-facade",
+        "isolation": "worktree",
+        "status": "ready",
+        "error": null
+      }
+    ]
+  },
+  "examples": [
+    {
+      "params": {
+        "workspace_id": "ws-3f2a91c4",
+        "locked": false
+      },
+      "result": {
+        "id": "ws-3f2a91c4",
+        "workspace_id": "ws-3f2a91c4",
+        "project_id": "proj-1",
+        "name": "wire-facade",
+        "root": "/home/ada/.build/workspaces/proj-1/wire-facade",
+        "status": "ready",
+        "created_by_agent": false,
+        "locked": false,
+        "directories": [
+          {
+            "id": "ws-3f2a91c4:source-1",
+            "source_id": "source-1",
+            "name": "bridge",
+            "path": "/home/ada/.build/workspaces/proj-1/wire-facade/bridge",
+            "is_git": true,
+            "branch": "build/wire-facade",
+            "isolation": "worktree",
+            "status": "ready",
+            "error": null
+          }
+        ]
+      }
+    }
+  ],
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "busy",
+    "internal"
+  ]
+}

@@ -5,6 +5,7 @@
 // escaped. core/toolbar.js holds the state and does the wiring; this file only
 // says what the bar looks like for one identity.
 
+import { workspaceLockHtml } from "./workspaceLock.js";
 import { esc } from "./text.js";
 
 /** One of the bar's popup triggers. The workspace picker and the project
@@ -53,9 +54,9 @@ const verbSlotHtml = (kind) =>
 
 /** Pure: the toolbar's markup for one identity. Names come from repos, agents
  *  and the user, so every one of them is escaped. */
-export function toolbarHtml({ project, kind, label }) {
+export function toolbarHtml({ project, kind, label, workspaceLock }) {
   return `<div class="toolbar">
-    ${identityHtml({ project, kind, label })}
+    ${identityHtml({ project, kind, label })}${workspaceLockHtml(workspaceLock)}
     ${verbSlotHtml(kind)}
   </div>`;
 }

@@ -3,7 +3,7 @@
   "since": "1.0.0",
   "params": {},
   "result": {
-    "api_version": "3.13.0",
+    "api_version": "3.14.0",
     "capabilities": [
       "agent.add",
       "agent.attach",
@@ -186,6 +186,7 @@
       "workspace.remove_directory",
       "workspace.rename",
       "workspace.retry",
+      "workspace.set_locked",
       "workspaces.lifecycle",
       "workspaces.reclaimBranches",
       "worktree.diff"

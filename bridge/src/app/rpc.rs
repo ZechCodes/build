@@ -114,6 +114,7 @@ pub(in crate::app) const USER_ACTIVITY_VERBS: &[&str] = &[
     "workspace.reclaim",
     "workspace.remove_directory",
     "workspace.rename",
+    "workspace.set_locked",
     "workspace.retry",
 ];
 

@@ -112,7 +112,7 @@ describe("adapter selection", () => {
       push: { registerKey: false, revokeKey: false },
       agents: { createdBy: false },
       projects: { updateSource: false, syncBase: false },
-      workspaces: { measureSizes: false },
+      workspaces: { measureSizes: false, setLocked: false },
     });
   });
 
@@ -195,7 +195,7 @@ describe("adapter selection", () => {
         push: { registerKey: false, revokeKey: false },
         agents: { createdBy: false },
         projects: { updateSource: false, syncBase: false },
-        workspaces: { measureSizes: false },
+        workspaces: { measureSizes: false, setLocked: false },
       });
     }
   });

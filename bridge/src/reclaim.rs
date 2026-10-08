@@ -69,6 +69,8 @@ pub const RESERVED: &str = "Build is measuring this workspace. Try again in a mo
 pub const HOLD_TASK_OPEN: &str = "task_open";
 /// The linked tasks could not be read, so none of them can be called Done.
 pub const HOLD_TASKS_UNREAD: &str = "tasks_unread";
+/// The user locked the workspace against cleanup.
+pub const HOLD_LOCKED: &str = "locked";
 /// The workspace is still provisioning, or failed to.
 pub const HOLD_NOT_READY: &str = "not_ready";
 /// One of the user's terminals is open somewhere in the workspace.
@@ -646,7 +648,8 @@ pub fn hold_order(hold: &str) -> usize {
         FINISH_BLOCKER_AGENT_WORKING, FINISH_BLOCKER_DIRTY, FINISH_BLOCKER_PLAIN_DIRECTORY,
         FINISH_BLOCKER_UNKNOWN, FINISH_BLOCKER_UNPUSHED,
     };
-    const ORDER: [&str; 10] = [
+    const ORDER: [&str; 11] = [
+        HOLD_LOCKED,
         HOLD_NOT_READY,
         FINISH_BLOCKER_AGENT_WORKING,
         HOLD_TERMINAL_OPEN,
@@ -670,6 +673,7 @@ pub fn hold_sentence(hold: &str) -> &'static str {
     match hold {
         HOLD_TASK_OPEN => "a task linked to it is not Done",
         HOLD_TASKS_UNREAD => "Build could not read the tasks linked to it",
+        HOLD_LOCKED => "the workspace is locked",
         HOLD_NOT_READY => "it is not ready",
         HOLD_TERMINAL_OPEN => "a terminal is open in it",
         HOLD_UNMEASURED => "Build could not finish measuring it",

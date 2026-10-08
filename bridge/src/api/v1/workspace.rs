@@ -117,6 +117,12 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             WorkspaceDetail
         ),
         v1_method!(
+            "workspace.set_locked",
+            workspace_set_locked,
+            WorkspaceSetLockedParams,
+            WorkspaceRow
+        ),
+        v1_method!(
             "workspace.delete",
             workspace_delete,
             WorkspaceIdParams,
@@ -152,6 +158,13 @@ pub struct WorkspaceListParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct WorkspaceIdParams {
     pub workspace_id: String,
+}
+
+/// The user's removal guard. Agents have no corresponding MCP action.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct WorkspaceSetLockedParams {
+    pub workspace_id: String,
+    pub locked: bool,
 }
 
 /// The workspaces whose size on disk the Workspaces tab wants (3.4.0, #273):
@@ -295,6 +308,9 @@ pub struct WorkspaceRow {
     /// Whether an agent created this workspace. Older peers omit the field.
     #[serde(default)]
     pub created_by_agent: bool,
+    /// User-controlled removal guard, additive in wire 3.14.0.
+    #[serde(default)]
+    pub locked: bool,
     /// When a clean-only Done archived the workspace; otherwise `null`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
@@ -638,6 +654,14 @@ fn workspace_rename(
     answer(app.workspace_rename(&params.wire())).map_err(refine)
 }
 
+/// Persist the user's removal guard and return the updated workspace row.
+fn workspace_set_locked(
+    app: &mut AppState,
+    params: WorkspaceSetLockedParams,
+) -> Result<Answer<WorkspaceRow>, ApiError> {
+    answer(app.workspace_set_locked(&params.wire())).map_err(refine)
+}
+
 /// The removal itself runs off the app mutex, but the shape never changes:
 /// the acknowledgement here and the value the drain publishes are the same
 /// `{workspace_id, deleted}`, so no placeholder is needed.
@@ -747,8 +771,64 @@ mod tests {
     }
 
     #[test]
+    fn the_workspace_set_locked_fixture_round_trips() {
+        round_trips("workspace.set_locked");
+    }
+
+    #[test]
     fn the_workspace_delete_fixture_round_trips() {
         round_trips("workspace.delete");
+    }
+
+    #[test]
+    fn typed_workspace_removal_handlers_return_a_nonretryable_locked_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        std::fs::create_dir(&repository).unwrap();
+        let context = crate::harness::HarnessContext::resolved(
+            temp.path().join("mcp.sock"),
+            temp.path().join("state"),
+        )
+        .unwrap();
+        let mut app = AppState::new_unrooted_configured(
+            temp.path().join("worktrees"),
+            "main",
+            false,
+            context,
+        );
+        let project_id = app.add_project(repository, "main".to_string());
+        let workspace_id = format!("legacy-{project_id}");
+        workspace_set_locked(
+            &mut app,
+            WorkspaceSetLockedParams {
+                workspace_id: workspace_id.clone(),
+                locked: true,
+            },
+        )
+        .unwrap();
+        let params = || WorkspaceIdParams {
+            workspace_id: workspace_id.clone(),
+        };
+        let errors = [
+            workspace_delete(&mut app, params())
+                .err()
+                .expect("locked Delete is refused"),
+            workspace_finish(&mut app, params())
+                .err()
+                .expect("locked Done is refused"),
+            workspace_reclaim(&mut app, params())
+                .err()
+                .expect("locked reclaim is refused"),
+        ];
+        for error in errors {
+            assert_eq!(error.code(), "locked");
+            assert_eq!(error.message(), crate::workspace::LOCKED_REFUSAL);
+            assert!(!error.retryable());
+            assert_eq!(
+                error.into_reply(serde_json::json!(1))["error_code"],
+                "locked"
+            );
+        }
     }
 
     /// Renaming needs both words. A name-less rename would otherwise reach the

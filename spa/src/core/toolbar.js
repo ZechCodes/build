@@ -43,6 +43,9 @@ import { workspaceRoute } from "./projectModel.js";
 import { projectReturnRoute } from "./projectRailState.js";
 import { standsOnProjectCheckout, workspaceStatusText } from "./workspaceModel.js";
 import "../styles/shell.css";
+import { workspaceLockState, paintWorkspaceLock } from "./workspaceLock.js";
+import { watchWorkspaceLockSupport } from "./workspaceLockSupport.js";
+import "../styles/workspace-lock.css";
 import { fieldTraits } from "./fieldTraits.js";
 
 const SCOPE_ADDRESS = uiAddress({ view: "toolbar", kind: "filter", sub: "project" });
@@ -72,6 +75,28 @@ let cachedMenuValue = null;
 let unsubscribeFeed = null;
 let toolbarReady = Promise.resolve();
 let toolbarRun = 0;
+let lockDeviceId = null;
+let lockSupported = false;
+let stopLockSupport = null;
+
+function watchStandingLockSupport() {
+  const deviceId = App.route.name === "workspace" ? App.route.deviceId : null;
+  if (deviceId === lockDeviceId) return;
+  stopLockSupport?.();
+  lockDeviceId = deviceId;
+  lockSupported = false;
+  stopLockSupport = deviceId ? watchWorkspaceLockSupport(deviceId, (supported) => {
+    lockSupported = supported;
+    paint();
+  }) : null;
+}
+
+function standingWorkspaceLock() {
+  const workspace = (workspacesByProject.get(routeProjectKey(App.route)) || [])
+    .find((row) => row.id === App.route.workspaceId);
+  return workspaceLockState(workspace && { ...workspace, deviceId: App.route.deviceId }, lockSupported);
+}
+
 
 /** Register the standing view's verb-slot content — called every repaint the
  *  toolbar does, poll-driven ticks included, so the caller's own function must
@@ -186,6 +211,7 @@ function identity() {
  *  never survive long enough to be acted on. Your pick stands until you move. */
 // eslint-disable-next-line complexity -- ratchet: paint is at 13, cap 10 — reduce it, then drop this line
 function paint({ entering = false } = {}) {
+  watchStandingLockSupport();
   const host = $("#toolbar");
   if (!host || !scopeReady) return;
   const standing = identity();
@@ -196,7 +222,7 @@ function paint({ entering = false } = {}) {
   // (core/router.js).
   if (entering) rememberScope(standing.projectKey || routeProjectKey(App.route));
   const shown = shownIdentity(standing);
-  const signature = JSON.stringify(shown);
+  const signature = JSON.stringify({ ...shown, workspaceLock: null });
   // A poll tick that says the same thing the bar already shows must leave the
   // DOM alone: the verb slot (setToolbarVerb) can carry a view's own open menu
   // or in-flight action, and rebuilding out from under it would close the one
@@ -226,6 +252,7 @@ function paint({ entering = false } = {}) {
       };
     });
   }
+  paintWorkspaceLock(host, shown.workspaceLock, () => { if (mounted) paint(); });
   paintVerb();
   if (open) paintMenu();
 }
@@ -236,6 +263,7 @@ const shownIdentity = (standing) => ({
   project: standing.project || nameOf(scopedProject()),
   kind: standing.kind,
   label: standing.label,
+  workspaceLock: standing.kind === "workspace" ? standingWorkspaceLock() : null,
 });
 
 /** An explicit return restores the project's last face. Ordinary project
@@ -592,6 +620,10 @@ export function toolbarRouteChanged() {
 export function stopToolbar() {
   const settled = Promise.all([scopeRecord?.flush(), menuRecord?.flush()]);
   mounted = false;
+  stopLockSupport?.();
+  stopLockSupport = null;
+  lockDeviceId = null;
+  lockSupported = false;
   toolbarRun += 1;
   scopeRecord?.dispose({ flushPending: false });
   menuRecord?.dispose({ flushPending: false });

@@ -1,0 +1,18 @@
+.workspace-lock-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  padding: 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.workspace-lock-toggle svg { width: 1em; height: 1em; }
+.workspace-lock-toggle:not(:disabled):hover { color: var(--ink2); }
+.workspace-lock-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.workspace-lock-toggle:disabled { opacity: 0.5; cursor: default; }

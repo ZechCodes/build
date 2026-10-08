@@ -10,3 +10,4 @@ pub(in crate::app::tests) mod finish;
 pub(in crate::app::tests) mod lifecycle_offlock;
 pub(in crate::app::tests) mod recovery;
 mod repo_root_runs;
+mod workspace_lock_cleanup;

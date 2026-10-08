@@ -118,7 +118,7 @@ export async function openReviewCreateForm(scope) {
   const error = modal.body.querySelector("[data-review-form-error]");
   const saveDraft = () => writer.schedule(draft);
   const paint = (saved) => {
-    if (closed || !saved) return;
+    if (busy || closed || !saved) return;
     draft = saved; paintCreateValues(modal.body, context, draft); wire(); freezeCreate(modal.body, draft.submitted, busy);
   };
   const preview = () => {
@@ -156,14 +156,16 @@ export async function openReviewCreateForm(scope) {
     }
     busy = true; error.hidden = true;
     draft.submitted ||= createRequest(scope, context, draft);
+    const sent = structuredClone(draft);
+    freezeCreate(modal.body, true, busy);
     try {
-      await writer.write(draft); freezeCreate(modal.body, true, busy);
-      const captured = await readUiRecord(reviewCreateDraftAddress(scope));
+      await writer.write(sent);
+      const captured = await captureSubmittedCreateDraft(scope, sent);
       const repository = createTaskReviewRepository(scope);
-      const answer = await repository.mutate("open", draft.submitted);
+      const answer = await repository.mutate("open", sent.submitted);
       if (answer.opening_state !== "published") throw new Error("Opening is incomplete. Retry this saved opening to resume.");
       await keepOpenedWorkspace(scope, context, answer);
-      await settleCreateDraft(scope, writer, draft, captured, answer);
+      await settleCreateDraft(scope, sent, captured, answer);
       await modal.close();
     } catch (failure) {
       if (!closed) { error.textContent = reviewFailure(failure); error.hidden = false; }
@@ -173,9 +175,16 @@ export async function openReviewCreateForm(scope) {
   return modal;
 }
 
-async function settleCreateDraft(scope, writer, draft, captured, answer) {
-  if (answer.reviewer_dispatch?.state === "failed") return writer.write({ ...draft, dispatchFailed: true });
-  return writeUiRecordIfUnwritten(reviewCreateDraftAddress(scope), captured, null);
+async function captureSubmittedCreateDraft(scope, sent) {
+  const captured = await readUiRecord(reviewCreateDraftAddress(scope));
+  // A peer can replace the record during the writer's readback. Its write is
+  // never ours to clear or relabel, even when it predates this capture.
+  return JSON.stringify(captured?.value) === JSON.stringify(sent) ? captured : undefined;
+}
+
+function settleCreateDraft(scope, sent, captured, answer) {
+  const retained = answer.reviewer_dispatch?.state === "failed" ? { ...sent, dispatchFailed: true } : null;
+  return writeUiRecordIfUnwritten(reviewCreateDraftAddress(scope), captured, retained);
 }
 
 export async function openReviewPushForm(scope, review, fact) {

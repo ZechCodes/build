@@ -29,10 +29,13 @@
 //! ignores are skipped along with everything beneath them, and each watched
 //! directory is watched on its own; a directory created later is adopted the
 //! same way when its creation is seen. Linked worktrees also watch their actual
-//! Git directory and shared common directory outside the checkout.
+//! Git directory and common directory through shared metadata subscriptions.
+//! Object databases, private refs and their reflogs are excluded before watches
+//! are registered. Multiple linked checkouts share their common coverage.
 //! [`metadata`] supplies subscription-independent committed-ref notifications.
 
 pub mod metadata;
+mod worktree_metadata;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -66,11 +69,12 @@ pub enum WatchError {
     },
 }
 
-/// A live watcher on one worktree. Holds the `notify` watcher and the
-/// classifying thread; dropping it stops watching — the dropped watcher closes
-/// the raw channel, and the thread ends on the next receive.
+/// A live watcher on one worktree. Holds working-directory coverage and shared
+/// metadata subscriptions. Dropping it removes its metadata subscribers and
+/// closes the raw channel so its classifying thread can finish.
 pub struct WorktreeWatcher {
     _watcher: SharedWatcher,
+    _metadata: Vec<worktree_metadata::MetadataSubscription>,
     /// How many directories were watched at start, and how many ignored
     /// subtrees were left alone: the two numbers that say what the watcher
     /// costs.
@@ -161,6 +165,7 @@ fn start_with_sink<S: ChangeSink>(
     let root = std::fs::canonicalize(worktree_root).map_err(|err| fail(err.to_string()))?;
 
     let (raw_tx, raw_rx) = std::sync::mpsc::channel::<Event>();
+    let metadata_tx = raw_tx.clone();
     let watcher = notify::recommended_watcher(move |res: notify::Result<Event>| {
         if let Ok(event) = res {
             let _ = raw_tx.send(event);
@@ -172,7 +177,11 @@ fn start_with_sink<S: ChangeSink>(
     let classifier = Arc::new(Classifier::for_root(&root));
     let mut coverage = Coverage::default();
     watch_tree(&watcher, &classifier, &root, &mut coverage).map_err(fail)?;
-    watch_external_metadata(&watcher, &classifier, &mut coverage).map_err(fail)?;
+    let metadata = subscribe_metadata(&classifier, metadata_tx).map_err(fail)?;
+    coverage.watched += metadata
+        .iter()
+        .map(|subscription| subscription.coverage())
+        .sum::<usize>();
 
     let entity_id = entity_id.to_string();
     // Weak, so the thread's hold on the watcher is not a hold at all: the
@@ -187,39 +196,23 @@ fn start_with_sink<S: ChangeSink>(
 
     Ok(WorktreeWatcher {
         _watcher: watcher,
+        _metadata: metadata,
         watched: coverage.watched,
         skipped: coverage.skipped,
     })
 }
 
-/// Linked checkouts store metadata outside their working tree. Watch the
-/// resolved directories directly, without following their object databases.
-fn watch_external_metadata(
-    watcher: &SharedWatcher,
+/// Linked checkouts share common metadata coverage and subscribe separately to
+/// their own Git directory. Subscriptions release coverage when the last drops.
+fn subscribe_metadata(
     classifier: &Classifier,
-    coverage: &mut Coverage,
-) -> Result<(), String> {
-    let mut watcher = watcher.lock().unwrap();
-    for root in classifier
+    sender: std::sync::mpsc::Sender<Event>,
+) -> Result<Vec<worktree_metadata::MetadataSubscription>, String> {
+    classifier
         .metadata
         .iter()
-        .filter(|path| !path.starts_with(&classifier.root))
-    {
-        watcher
-            .watch(root, notify::RecursiveMode::NonRecursive)
-            .map_err(|error| error.to_string())?;
-        coverage.watched += 1;
-        for name in ["refs", "logs"] {
-            let path = root.join(name);
-            if path.is_dir() {
-                watcher
-                    .watch(&path, notify::RecursiveMode::Recursive)
-                    .map_err(|error| error.to_string())?;
-                coverage.watched += 1;
-            }
-        }
-    }
-    Ok(())
+        .map(|root| worktree_metadata::subscribe(root, sender.clone()))
+        .collect()
 }
 
 /// What one walk of the tree registered and what it left alone.
@@ -233,16 +226,18 @@ struct Coverage {
 }
 
 /// Watch `dir` and, beneath it, every directory the repository does not
-/// ignore. `.git` is watched whole: its churn is classified away, and its
-/// metadata is the thing rule one is about. A watch that cannot be added
-/// ends the walk with the reason, so a worktree past the inotify limit is
-/// polled rather than half-watched.
+/// ignore. Git metadata is covered by the shared metadata subscriptions,
+/// which exclude private history before registering any directories. A watch
+/// that cannot be added ends the walk so the checkout can fall back to polling.
 fn watch_tree(
     watcher: &SharedWatcher,
     classifier: &Classifier,
     dir: &Path,
     coverage: &mut Coverage,
 ) -> Result<(), String> {
+    if classifier.metadata.contains(dir) {
+        return Ok(());
+    }
     watcher
         .lock()
         .unwrap()
@@ -262,12 +257,7 @@ fn watch_tree(
         };
         if kind.is_dir() {
             if relative == Path::new(".git") {
-                watcher
-                    .lock()
-                    .unwrap()
-                    .watch(&path, notify::RecursiveMode::Recursive)
-                    .map_err(|err| err.to_string())?;
-                coverage.watched += 1;
+                continue;
             } else if classifier.is_ignored_dir(relative) {
                 coverage.skipped += 1;
             } else {
@@ -476,7 +466,7 @@ fn classify_git_metadata(inside_git: &Path) -> Class {
     if text.is_empty() {
         return Class::Drop; // the `.git` directory's own mtime
     }
-    if text.ends_with(".lock") || text.starts_with("objects/") || text == "objects" {
+    if text.ends_with(".lock") || worktree_metadata::excluded(inside_git) {
         return Class::Drop;
     }
     Class::Git
@@ -493,6 +483,9 @@ fn slash_path(relative: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    mod resource_tests;
+
     use super::*;
     use std::sync::Mutex;
     use std::time::Instant;
@@ -748,6 +741,15 @@ mod tests {
             ("src/lib.rs", Class::File("src/lib.rs".into())),
             (".git/index", Class::Git),
             (".git/refs/heads/main", Class::Git),
+            (".git/refs/remotes/build-review/topic", Class::Git),
+            (".git/refs/tags/version", Class::Git),
+            (".git/refs/custom/label", Class::Git),
+            (".git/refs/build/reviews/task/snapshot/head", Class::Drop),
+            (
+                ".git/logs/refs/build/reviews/task/snapshot/head",
+                Class::Drop,
+            ),
+            (".git/refs/build/review-import/id", Class::Drop),
             (".git/logs/HEAD", Class::Git),
             (".git/MERGE_HEAD", Class::Git),
             (".git/index.lock", Class::Drop),

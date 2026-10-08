@@ -171,6 +171,18 @@ mod tests {
     }
 
     #[test]
+    fn target_sync_git_midoperation_refusal_is_busy_with_recovery_details() {
+        let error = ApiError::classify(service(
+            "A rebase of main is in progress in /sources/api.".into(),
+            json!({"directory_id":"dir-api","recovery":"Finish or abort the source Git operation, then retry the saved merge plan."}),
+        ));
+        assert_eq!(error.code(), "busy");
+        assert_eq!(error.details().unwrap()["reason"], "git_operation");
+        assert_eq!(error.details().unwrap()["directory_id"], "dir-api");
+        assert!(error.retryable());
+    }
+
+    #[test]
     fn landed_pr_service_refusals_have_directory_recovery_details_and_stable_codes() {
         for (message, code, reason) in [
             (

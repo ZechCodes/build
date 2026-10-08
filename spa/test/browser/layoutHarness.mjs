@@ -39,7 +39,7 @@ async function chromiumExecutable() {
 
 /** Run a real Chromium layout check against the SPA's production renderers and
  * styles. Each call owns its Vite server and browser, so failures also clean up. */
-export async function withLayoutPage(check, { width = 1180, height = 840, plugins = [], deviceScaleFactor = 1 } = {}) {
+export async function withLayoutPage(check, { width = 1180, height = 840, plugins = [], deviceScaleFactor = 1, hasTouch = false } = {}) {
   const chromiumPath = await chromiumExecutable();
   // Browser suites start Vite servers in parallel. Each optimizer must own its
   // cache or another server can replace dependency files mid-import.
@@ -72,7 +72,7 @@ export async function withLayoutPage(check, { width = 1180, height = 840, plugin
       executablePath: chromiumPath, headless: true, args: ["--no-sandbox"],
       env: { ...process.env, FONTCONFIG_FILE: pinnedFonts },
     });
-    const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor });
+    const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor, hasTouch });
     // Serve real Vite-transformed modules through the driver, without an HTTP
     // proxy or retained APIResponse bodies. Host network notifications can
     // cancel Chromium's loopback module graph even when the server is healthy.

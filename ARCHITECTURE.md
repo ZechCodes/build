@@ -1320,7 +1320,10 @@ a sibling `build-secure-transport` checkout (`spa/package.json`).
 The Files explorer shares directory upload and New folder actions across
 workspace sources, project sources and checkouts. `spa/src/core/filesUploads.js`
 mounts them from cached upload capabilities; `fileUploadRpc.js` checks the
-current greeting when starting a write. `fileUploads.js` owns an in-memory
+current greeting when starting a write. Their SVG actions appear on hover or
+keyboard focus; on coarse pointers `longPress.js` reveals one directory's
+actions after a stationary hold, preserving ordinary tap navigation.
+`fileUploads.js` owns an in-memory
 queue per device, streams at most two files with sequential acknowledged chunks,
 and keeps completed metadata in `ui-uploads` for 30 minutes. Directory drops
 create each parent before uploading its files. Successful writes invalidate

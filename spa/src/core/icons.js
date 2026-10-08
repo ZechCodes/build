@@ -53,6 +53,8 @@ export { default as ICON_FILE } from "lucide-static/icons/file.svg?raw";
 export { default as ICON_GIT_BRANCH } from "lucide-static/icons/git-branch.svg?raw";
 export { default as ICON_GIT_GRAPH } from "lucide-static/icons/git-graph.svg?raw";
 export { default as ICON_FOLDER } from "lucide-static/icons/folder.svg?raw";
+export { default as ICON_UPLOAD } from "lucide-static/icons/upload.svg?raw";
+export { default as ICON_FOLDER_PLUS } from "lucide-static/icons/folder-plus.svg?raw";
 export { default as ICON_FILE_TEXT } from "lucide-static/icons/file-text.svg?raw";
 export { default as ICON_FILE_CODE } from "lucide-static/icons/file-code.svg?raw";
 export { default as ICON_FILE_IMAGE } from "lucide-static/icons/file-image.svg?raw";

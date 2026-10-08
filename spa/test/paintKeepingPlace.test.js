@@ -204,14 +204,15 @@ describe("paintKeepingPlace", () => {
       document.body.appendChild(scroller);
       Element.prototype.getBoundingClientRect = function () {
         if (this === scroller) return { top: 0, bottom: VIEWPORT, height: VIEWPORT };
-        const at = rows.findIndex((row) => row.key === this.getAttribute("data-key"));
+        const at = rows.findIndex((row) => row.key === this.closest("[data-key]")?.getAttribute("data-key"));
         if (at < 0) return { top: 0, bottom: 0, height: 0 };
         const above = rows.slice(0, at).reduce((sum, row) => sum + row.height, 0);
-        return { top: above - scroller.scrollTop, bottom: above + rows[at].height - scroller.scrollTop };
+        const inset = this.tagName === "P" ? rows[at].inset || 0 : 0;
+        return { top: above + inset - scroller.scrollTop, bottom: above + rows[at].height - scroller.scrollTop };
       };
       const paint = () => {
         scroller.innerHTML = rows
-          .map((row) => `<div class="${row.line ? "thread-unread-line" : "msg"}" data-key="${row.key}"></div>`)
+          .map((row) => `<div class="${row.line ? "thread-unread-line" : "msg"}" data-key="${row.key}">${row.inset == null ? "" : "<p>Reading</p>"}</div>`)
           .join("");
       };
       return { scroller, paint };
@@ -262,6 +263,74 @@ describe("paintKeepingPlace", () => {
       const writes = watchScrollTop(scroller);
       paintKeepingPlace(scroller, paint, { opening: () => false, policy: followUnread() });
       expect(writes).toEqual([]);
+    });
+
+    it("anchors halfway through a long row when content grows above it, but not below it", () => {
+      const rows = [{ key: "before", height: 200 }, { key: "reading", height: 1000 }, { key: "after", height: 200 }];
+      const { scroller, paint } = conversation(rows);
+      paint();
+      scroller.scrollTop = 600;
+      const readingTop = () => scroller.querySelector('[data-key="reading"]').getBoundingClientRect().top;
+      const before = readingTop();
+      paintKeepingPlace(scroller, () => { rows[0].height += 100; paint(); }, { opening: () => false, policy: followConversation() });
+      expect(readingTop()).toBe(before);
+      expect(scroller.scrollTop).toBe(700);
+      paintKeepingPlace(scroller, () => { rows[2].height += 100; paint(); }, { opening: () => false, policy: followConversation() });
+      expect(readingTop()).toBe(before);
+      expect(scroller.scrollTop).toBe(700);
+      // The same total height can still move the content being read.
+      paintKeepingPlace(scroller, () => { rows[0].height += 100; rows[2].height -= 100; paint(); }, { opening: () => false, policy: followConversation() });
+      expect(readingTop()).toBe(before);
+      expect(scroller.scrollTop).toBe(800);
+    });
+
+    it("keeps the visible paragraph still when metadata grows inside its row", () => {
+      const rows = [{ key: "before", height: 200 }, { key: "reading", height: 1000, inset: 100 }, { key: "after", height: 200 }];
+      const { scroller, paint } = conversation(rows);
+      paint();
+      scroller.scrollTop = 600;
+      const contentTop = () => scroller.querySelector("p").getBoundingClientRect().top;
+      const before = contentTop();
+      paintKeepingPlace(scroller, () => { rows[1].inset += 100; rows[1].height += 100; paint(); }, { opening: () => false, policy: followConversation() });
+      expect(contentTop()).toBe(before);
+      expect(scroller.scrollTop).toBe(700);
+    });
+
+    it("does not apply the same correction twice after native anchoring", () => {
+      const rows = [{ key: "before", height: 200 }, { key: "reading", height: 1000 }, { key: "after", height: 200 }];
+      const { scroller, paint } = conversation(rows);
+      paint();
+      scroller.scrollTop = 600;
+      const writes = watchScrollTop(scroller);
+      paintKeepingPlace(scroller, () => {
+        rows[0].height += 100;
+        paint();
+        scroller.scrollTop += 100; // the browser already kept the entry still
+      }, { opening: () => false, policy: followConversation() });
+      expect(scroller.scrollTop).toBe(700);
+      expect(writes).toEqual([700]);
+    });
+
+    it("ignores a navigation button sharing the reading entry's key", () => {
+      const rows = [{ key: "before", height: 200 }, { key: "reading", height: 1000 }, { key: "after", height: 200 }];
+      const { scroller, paint } = conversation(rows);
+      const measure = Element.prototype.getBoundingClientRect;
+      Element.prototype.getBoundingClientRect = function () {
+        return this.tagName === "BUTTON" ? { top: 0, bottom: 20 } : measure.call(this);
+      };
+      const paintWithTick = () => {
+        paint();
+        const tick = document.createElement("button");
+        tick.dataset.key = "reading";
+        scroller.prepend(tick);
+      };
+      paintWithTick();
+      scroller.scrollTop = 600;
+      const top = () => scroller.querySelector('.msg[data-key="reading"]').getBoundingClientRect().top;
+      const before = top();
+      paintKeepingPlace(scroller, () => { rows[0].height += 100; paintWithTick(); }, { opening: () => false, policy: followConversation() });
+      expect(top()).toBe(before);
+      expect(scroller.scrollTop).toBe(700);
     });
 
     it("does not mistake an early programmatic scroll for reader input", () => {

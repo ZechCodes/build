@@ -105,6 +105,55 @@ export function paintKeepingPlace(scroller, paint, { opening, policy }) {
   policy.restore(scroller, held, changed);
 }
 
+const READING_CONTENT = "p, pre, li, blockquote";
+const readingEntries = (scroller) => [...scroller.querySelectorAll("[data-key]:not(button)")];
+
+/** The visible reading area starts below a header pinned over the content. */
+function readingViewport(scroller) {
+  const viewport = scroller.getBoundingClientRect();
+  const top = [...scroller.querySelectorAll("header")].reduce((edge, header) => {
+    const box = header.getBoundingClientRect();
+    const pinned = ["sticky", "fixed"].includes(getComputedStyle(header).position);
+    return pinned && box.top <= edge && box.bottom > edge ? box.bottom : edge;
+  }, viewport.top);
+  return { top, bottom: viewport.bottom };
+}
+
+const intersectsViewport = (element, viewport) => {
+  const box = element.getBoundingClientRect();
+  return box.top < viewport.bottom && box.bottom > viewport.top;
+};
+
+/** Keep a visible content node, including one inside a very tall entry.
+ *  Buttons with keys are navigation ticks, rather than timeline content. */
+function holdReadingAnchor(scroller) {
+  const viewport = readingViewport(scroller);
+  const row = readingEntries(scroller)
+    .find((element) => intersectsViewport(element, viewport));
+  if (!row) return null;
+  const contents = [...row.querySelectorAll(READING_CONTENT)];
+  const element = contents.find((node) => intersectsViewport(node, viewport)) || row;
+  const top = scroller.getBoundingClientRect().top;
+  return {
+    row, element, key: row.getAttribute("data-key"), index: contents.indexOf(element), tag: element.tagName,
+    offset: element.getBoundingClientRect().top - top,
+    rowOffset: row.getBoundingClientRect().top - top,
+  };
+}
+
+function restoreReadingAnchor(scroller, held) {
+  const row = scroller.contains(held.row) ? held.row
+    : readingEntries(scroller).find((element) => element.getAttribute("data-key") === held.key);
+  if (!row) return;
+  const candidate = row.contains(held.element) ? held.element : row.querySelectorAll(READING_CONTENT)[held.index];
+  const element = candidate?.tagName === held.tag ? candidate : row;
+  const offset = element === row ? held.rowOffset : held.offset;
+  const moved = element.getBoundingClientRect().top - scroller.getBoundingClientRect().top - offset;
+  // Native anchoring may already have moved the scroller. Correct only the
+  // displacement that remains, rather than adding it to an old scrollTop.
+  writeScrollTop(scroller, scroller.scrollTop + moved);
+}
+
 /// Where the reader belongs in a conversation that is still being written.
 ///
 /// A reader who is at the end is FOLLOWING, and a paint keeps them at the end:
@@ -142,6 +191,7 @@ export function followConversation({ olderItemsPrepended = false, unreadSelector
       scrollTop: scroller.scrollTop,
       scrollHeight: scroller.scrollHeight,
       atBottom: isAtBottom(scroller),
+      anchor: opening ? null : holdReadingAnchor(scroller),
     }),
     restore: (scroller, held, changed) => {
       if (!held.opening && !changed) return;
@@ -151,7 +201,9 @@ export function followConversation({ olderItemsPrepended = false, unreadSelector
       }
       if (!held.opening && readerIsMoving(scroller)) return;
       if (!held.opening) {
-        writeScrollTop(scroller, held.atBottom ? scroller.scrollHeight : held.scrollTop);
+        if (held.atBottom) writeScrollTop(scroller, scroller.scrollHeight);
+        else if (held.anchor) restoreReadingAnchor(scroller, held.anchor);
+        else writeScrollTop(scroller, held.scrollTop);
         return;
       }
       const land = () => {

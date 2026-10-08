@@ -88,10 +88,21 @@ async function parkReader(page, fraction = 0.5) {
   return page.evaluate((id) => {
     const host = document.querySelector("#task-pane");
     const row = document.getElementById(id);
-    window.__reading.saved = { row, body: row.querySelector(".task-comment-body"), image: row.querySelector("img") };
+    const viewport = host.getBoundingClientRect();
+    const readingTop = Math.max(viewport.top, host.querySelector(".task-page-head").getBoundingClientRect().bottom);
+    const body = row.querySelector(".task-comment-body");
+    const content = [...body.querySelectorAll("p, pre, li")].find((element) => {
+      const box = element.getBoundingClientRect();
+      return box.top < viewport.bottom && box.bottom > readingTop;
+    }) || body;
+    window.__reading.saved = { row, body, image: row.querySelector("img"), content, contentTop: content.getBoundingClientRect().top };
     window.__reading.scrolls = [];
+    window.__reading.contentScrolls = [];
     if (!window.__reading.scrollListener) {
-      window.__reading.scrollListener = () => window.__reading.scrolls.push(host.scrollTop);
+      window.__reading.scrollListener = () => {
+        window.__reading.scrolls.push(host.scrollTop);
+        window.__reading.contentScrolls.push(window.__reading.saved.content.getBoundingClientRect().top - window.__reading.saved.contentTop);
+      };
       host.addEventListener("scroll", window.__reading.scrollListener);
     }
     const topRow = [...host.querySelectorAll(".task-comment")].find((entry) => {
@@ -118,15 +129,19 @@ async function measure(page, before, label) {
     return { before, after: host.scrollTop, delta: host.scrollTop - before,
       sameRow: saved.row === row, sameBody: saved.body === row.querySelector(".task-comment-body"),
       sameImage: saved.image === row.querySelector("img"), sameTopRow: saved.topRow === topRow,
-      rowTopDelta: row.getBoundingClientRect().top - saved.rowTop,
+      rootTopDelta: row.getBoundingClientRect().top - saved.rowTop,
+      anchor: saved.content.tagName.toLowerCase(),
+      contentTopDelta: saved.content.getBoundingClientRect().top - saved.contentTop,
+      sameContent: saved.content.isConnected && row.contains(saved.content),
       reviewHeightDelta: host.querySelector("[data-task-review]").getBoundingClientRect().height - saved.reviewHeight,
-      scrolls: window.__reading.scrolls };
+      scrolls: window.__reading.scrolls, contentScrolls: window.__reading.contentScrolls };
   }, { id: READING_ROW, before });
   console.log(`${label}: ${JSON.stringify(result)}`);
-  expect.soft(Math.abs(result.delta), `${label}: scrollTop moved`).toBeLessThanOrEqual(1);
-  expect.soft(result.scrolls.every((top) => Math.abs(top - before) <= 1), `${label}: transient scroll jump`).toBe(true);
+  expect.soft(Math.abs(result.contentTopDelta), `${label}: visible content moved`).toBeLessThanOrEqual(1);
+  expect.soft(result.contentScrolls.every((delta) => Math.abs(delta) <= 1), `${label}: transient content jump`).toBe(true);
+  expect.soft(result.sameContent, `${label}: reading content replaced`).toBe(true);
+  if (!label.includes("metadata-")) expect.soft(Math.abs(result.rootTopDelta), `${label}: row geometry moved`).toBeLessThanOrEqual(1);
   if (label.endsWith("review-label")) {
-    expect.soft(Math.abs(result.rowTopDelta), `${label}: row geometry moved`).toBeLessThanOrEqual(1);
     expect.soft(Math.abs(result.reviewHeightDelta), `${label}: review panel footprint changed`).toBeLessThanOrEqual(1);
   }
   expect.soft(result.sameTopRow, `${label}: comment under viewport top changed`).toBe(true);

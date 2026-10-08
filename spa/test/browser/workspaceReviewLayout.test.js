@@ -5,7 +5,7 @@ import { captureLayout, loadBrowserModules, mountLayout, withLayoutPage } from "
 
 const sizes = [{ label: "desktop", width: 1280, hasTouch: false }, { label: "mobile", width: 390, hasTouch: true }];
 
-async function mountWorkspaceReview(page, basePath, { published = false } = {}) {
+async function mountWorkspaceReview(page, basePath, { published = false, rejectedOpen = false } = {}) {
   await mountLayout(page, '<div id="shell"><div id="view"><header id="toolbar">Workspace</header><div id="view-body"><main id="root" class="surface"><div class="workspace-changes"><div class="workspace-changes-header"><div id="review-entry"></div></div><nav class="workspace-dirtabs" aria-label="Directories"><button class="workspace-dirtab">API</button><button class="workspace-dirtab">UI</button><button class="workspace-dirtab">Notes</button></nav><div class="workspace-changes-body"><p>Committed workspace changes</p></div></div></main></div></div></div>', {
     basePath, styles: '#shell{height:100vh;box-sizing:border-box} #view-body,#root{min-width:0} .workspace-changes-body{padding:1rem}',
   });
@@ -17,8 +17,9 @@ async function mountWorkspaceReview(page, basePath, { published = false } = {}) 
     review: "src/core/taskReviewCache.js", local: "src/core/localCache.js",
     directory: "src/core/directoryScope.js", model: "src/core/workspaceModel.js",
     motion: "src/core/motion.js",
+    drafts: "src/core/taskReviewDrafts.js", ui: "src/core/localUiStore.js",
   }, basePath);
-  await page.evaluate(async ({ opened, pushed, published }) => {
+  await page.evaluate(async ({ opened, pushed, published, rejectedOpen }) => {
     const { entry, support, review, local, directory, model } = window.__layoutModules;
     const scope = { deviceId: "workspace-review-layout", projectId: "layout-project", workspaceId: "workspace-1" };
     const directories = opened.review.snapshots[0].directories.map((row) => ({ ...row, base_branch: "main", branch: "build/work" }));
@@ -44,7 +45,10 @@ async function mountWorkspaceReview(page, basePath, { published = false } = {}) 
     window.__reviewAnswer = initial;
     const callRpc = async (method, params) => {
       window.__reviewCalls.push({ method, params });
-      if (method === "tasks.review.open") return initial;
+      if (method === "tasks.review.open") {
+        if (rejectedOpen) throw Object.assign(new Error("The selected review base was rejected. Choose another base branch."), { code: "invalid_params" });
+        return initial;
+      }
       if (method === "tasks.review.get") return window.__reviewAnswer;
       if (method === "tasks.review.push") {
         const answer = structuredClone(pushed.examples[1].result);
@@ -58,7 +62,7 @@ async function mountWorkspaceReview(page, basePath, { published = false } = {}) 
     window.__workspaceReview = entry.mountWorkspaceReviewEntry(document.querySelector("#review-entry"), {
       ...scope, callRpc, navigate: (route) => window.__reviewNavigations.push(route),
     });
-  }, { opened: opening.result, pushed: pushing, published });
+  }, { opened: opening.result, pushed: pushing, published, rejectedOpen });
   await page.locator(published ? "[data-review-link]" : "[data-workspace-review]").waitFor({ timeout: 5000 });
 }
 
@@ -72,6 +76,11 @@ async function expectFitsViewport(page) {
     expect(dialog.right).toBeLessThanOrEqual(bounds.viewport + 1);
   }
 }
+
+const readCreateDraft = (page) => page.evaluate(async () => {
+  const { drafts, ui } = window.__layoutModules;
+  return (await ui.readUiRecord(drafts.reviewCreateDraftAddress(window.__reviewScope)))?.value;
+});
 
 for (const { label, width, hasTouch } of sizes) {
   it(`opens a multi-directory review with usable controls on ${label}`, async () => {
@@ -123,6 +132,60 @@ for (const { label, width, hasTouch } of sizes) {
       await captureLayout(page, `workspace-review-created-${label}.png`);
       await page.locator("[data-review-link]").click();
       expect(await page.evaluate(() => window.__reviewNavigations)).toEqual([{ name: "trackerTask", deviceId: "workspace-review-layout", projectId: "layout-project", taskId: "task-1" }]);
+      await page.evaluate(() => window.__workspaceReview.dispose());
+    }, { width, height: 844, hasTouch });
+  }, 60_000);
+
+  it(`keeps a rejected Open review draft editable and durable on ${label}`, async () => {
+    await withLayoutPage(async ({ page, basePath }) => {
+      await mountWorkspaceReview(page, basePath, { rejectedOpen: true });
+      await page.locator("[data-workspace-review]").click();
+      await page.locator("[data-review-title]").fill("Review API and UI changes");
+      await page.locator("[data-review-description]").fill("Publish the committed API and UI changes.");
+      await page.locator("#review-create-assignee").selectOption("project_agent");
+      await page.locator('[data-review-base="dir-ui"]').fill("release");
+      const submit = page.locator("[data-open-review-submit]");
+      if (hasTouch) await submit.tap();
+      else { await submit.focus(); await page.keyboard.press("Enter"); }
+      const error = page.locator("[data-review-form-error]");
+      await error.waitFor({ state: "visible", timeout: 5000 });
+      expect(await error.textContent()).toContain("The selected review base was rejected.");
+      for (const selector of ["[data-review-title]", "[data-review-description]", "#review-create-assignee", '[data-review-base="dir-api"]', '[data-review-base="dir-ui"]']) {
+        expect(await page.locator(selector).isEnabled(), selector).toBe(true);
+      }
+      expect(await page.locator('[data-review-base="dir-missing"]').isEnabled()).toBe(false);
+      const rejected = await readCreateDraft(page);
+      expect(rejected).toMatchObject({ title: "Review API and UI changes", description: "Publish the committed API and UI changes.",
+        reviewerDraft: { optionId: "project_agent" }, excluded_git_directory_ids: ["dir-missing"] });
+      expect(rejected.submitted).toBeFalsy();
+      await expectFitsViewport(page);
+      await error.scrollIntoViewIfNeeded();
+      await captureLayout(page, `workspace-review-rejected-${label}.png`);
+      await page.locator("[data-review-title]").fill("Review revised API and UI changes");
+      await page.locator("[data-review-description]").fill("Use the revised publication description.");
+      await page.locator("#review-create-assignee").selectOption("none");
+      await page.locator('[data-review-base="dir-api"]').fill("release");
+      await page.waitForFunction(async () => {
+        const { drafts, ui } = window.__layoutModules;
+        const held = (await ui.readUiRecord(drafts.reviewCreateDraftAddress(window.__reviewScope)))?.value;
+        return held?.title === "Review revised API and UI changes" && held.bases.find((base) => base.directory_id === "dir-api")?.branch === "release";
+      });
+      await page.locator("[data-review-form-cancel]").click();
+      await page.locator("[data-review-title]").waitFor({ state: "detached" });
+      await page.locator("[data-workspace-review]").click();
+      await page.locator("[data-review-title]").waitFor({ state: "visible" });
+      expect(await page.locator("[data-review-title]").inputValue()).toBe("Review revised API and UI changes");
+      expect(await page.locator("[data-review-description]").inputValue()).toBe("Use the revised publication description.");
+      expect(await page.locator("#review-create-assignee").inputValue()).toBe("none");
+      expect(await page.locator('[data-review-base="dir-api"]').inputValue()).toBe("release");
+      expect(await page.locator('[data-review-base="dir-api"]').isEnabled()).toBe(true);
+      expect(await page.locator('[data-review-base="dir-missing"]').isEnabled()).toBe(false);
+      expect((await readCreateDraft(page)).submitted).toBeFalsy();
+      expect(await page.evaluate(() => window.__reviewCalls.filter((call) => call.method === "tasks.review.open"))).toHaveLength(1);
+      await expectFitsViewport(page);
+      await page.locator('[role="dialog"]').evaluate((node) => { node.scrollTop = 0; });
+      await captureLayout(page, `workspace-review-rejected-editable-${label}.png`);
+      await page.locator("[data-review-form-cancel]").click();
       await page.evaluate(() => window.__workspaceReview.dispose());
     }, { width, height: 844, hasTouch });
   }, 60_000);

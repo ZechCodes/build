@@ -41,6 +41,10 @@ Wire 3.14.0.
 
 ### Fixed
 
+- Preserve effective project Git hooks and their nested Git configuration during
+  fenced PR merges; recover registered hook fence resources at startup after
+  verifying ownership and process death, preserving live or uncertain launches
+  (#423).
 - Retain workspaces and build output while PR merge or saved publication is
   unsettled, preserve concurrent merge completion during task comments and read
   backfills, and classify legacy PR action refusals as client errors (#404, #423).

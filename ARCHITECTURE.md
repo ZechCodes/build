@@ -823,6 +823,21 @@ the expected tip in order; a partial failure retains successes in the other
 repositories. A ref-transaction fence rejects target movement between the
 preflight read and Git's actual update.
 
+PR merges resolve effective hooks from the actual target checkout before
+applying the per-command ref fence. Traditional default/configured hook paths
+and Git-configured hook commands retain their arguments, stdin, enabled flags
+and vetoes; the original reference-transaction hook receives its transaction
+phases and bytes while the prepared-phase expected-OID guard remains active.
+Delegates restore the original `GIT_CONFIG_PARAMETERS` so nested Git commands
+retain the user's hook routing. Repository hook files and configuration stay
+untouched. The fence directory contains hook resources only, registered under
+the canonical common Git directory with pinned ownership markers/files,
+directory leases and process/group identity records. Startup visits persisted
+action source paths, including settled results, before merge recovery and removes
+only registered resources whose ownership and inactive process groups are
+verified. Live or unverified launches, changed ownership and old unmarked
+temporary directories are preserved.
+
 Finalization reacquires native receiving and target ref locks, verifies each
 reviewed head is still received and contained in its configured base, and checks
 the current snapshot, review version and intent-owned successful action results

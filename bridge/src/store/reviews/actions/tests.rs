@@ -171,3 +171,34 @@ fn completion_and_snapshot_replacement_do_not_erase_inflight_facts() {
         Some("git failed")
     );
 }
+
+#[test]
+fn source_registry_includes_every_action_status_and_deduplicates_repositories() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::new(temp.path()).unwrap();
+    let task = setup(&store);
+    for (id, directory, status) in [
+        ("success", "api", ActionStatus::Succeeded),
+        ("failed", "web", ActionStatus::Failed),
+        ("interrupted", "worker", ActionStatus::Interrupted),
+        ("running", "service", ActionStatus::Running),
+        ("duplicate", "api", ActionStatus::Succeeded),
+    ] {
+        let mut row = action(id, directory);
+        let version = store.load_review(&task).unwrap().unwrap().version;
+        store
+            .start_review_actions(&task, version, &[row.clone()])
+            .unwrap();
+        row.status = status;
+        store.save_review_action(&task, &row).unwrap();
+    }
+    assert_eq!(
+        store.review_action_source_paths().unwrap(),
+        [
+            std::path::PathBuf::from("/repo/api"),
+            std::path::PathBuf::from("/repo/service"),
+            std::path::PathBuf::from("/repo/web"),
+            std::path::PathBuf::from("/repo/worker"),
+        ]
+    );
+}

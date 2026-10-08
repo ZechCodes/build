@@ -41,6 +41,113 @@ fn feature(repository: &Path) -> ReviewDirectory {
     saved
 }
 
+#[cfg(unix)]
+fn install_hook(path: &Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn expected_merge_honors_default_merge_and_commit_hooks() {
+    for hook in ["pre-merge-commit", "commit-msg"] {
+        let (_temporary, repository) = init_repo();
+        let saved = feature(&repository);
+        let before = oid(&repository, "main");
+        install_hook(&repository.join(".git/hooks").join(hook), "exit 37");
+        let result = merge_expected(&saved, &repository, "refs/heads/main", &before);
+        assert!(
+            matches!(result, Err(GitActionError::Failed(_))),
+            "{hook}: {result:?}"
+        );
+        assert_eq!(oid(&repository, "main"), before);
+        assert!(!repository.join("feature.txt").exists());
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn expected_merge_honors_a_relative_configured_hooks_path() {
+    let (_temporary, repository) = init_repo();
+    let saved = feature(&repository);
+    let hooks = "hooks with 'quotes'";
+    git_in(&repository, &["config", "core.hooksPath", hooks]);
+    // A Git hook is ignored unless executable. Its sibling resource remains available.
+    let directory = repository.join(hooks);
+    fs::create_dir(&directory).unwrap();
+    fs::write(directory.join("policy"), "reject").unwrap();
+    install_hook(
+        &directory.join("pre-merge-commit"),
+        "test \"$(git config core.hooksPath)\" = \"hooks with 'quotes'\" || exit 99\n\
+         test \"$(cat \"$(dirname \"$0\")/policy\")\" = reject || exit 98\n\
+         printf honored > \"$(git rev-parse --git-dir)/user-hook-policy\"\nexit 37",
+    );
+    git_in(&repository, &["add", "."]);
+    git_in(&repository, &["commit", "-m", "hook resources"]);
+    let before = oid(&repository, "main");
+    let result = merge_expected(&saved, &repository, "refs/heads/main", &before);
+    let Err(GitActionError::Failed(error)) = result else {
+        panic!("{result:?}");
+    };
+    assert!(error.contains("37") || error.contains("hook"), "{error}");
+    assert_eq!(
+        fs::read_to_string(repository.join(".git/user-hook-policy")).unwrap(),
+        "honored"
+    );
+    assert_eq!(oid(&repository, "main"), before);
+}
+
+#[test]
+#[cfg(unix)]
+fn expected_merge_delegates_reference_transaction_input_and_veto() {
+    let (_temporary, repository) = init_repo();
+    let saved = feature(&repository);
+    let before = oid(&repository, "main");
+    install_hook(
+        &repository.join(".git/hooks/reference-transaction"),
+        "[ \"$1\" = prepared ] || exit 0\n\
+         directory=$(git rev-parse --git-dir)\n\
+         cat > \"$directory/user-transaction-current\"\n\
+         if grep -q ' refs/heads/main$' \"$directory/user-transaction-current\"; then\n\
+         cp \"$directory/user-transaction-current\" \"$directory/user-transaction\"\nexit 37\nfi",
+    );
+    let result = merge_expected(&saved, &repository, "refs/heads/main", &before);
+    assert!(
+        matches!(result, Err(GitActionError::Failed(_))),
+        "{result:?}"
+    );
+    assert_eq!(oid(&repository, "main"), before);
+    let input = fs::read_to_string(repository.join(".git/user-transaction")).unwrap();
+    assert!(input.contains(&format!("{before} ")), "{input}");
+    assert!(input.contains(" refs/heads/main\n"), "{input}");
+}
+
+#[test]
+#[cfg(unix)]
+fn expected_merge_does_not_silently_drop_non_utf8_hooks() {
+    use std::os::unix::ffi::OsStringExt;
+    let (temporary, repository) = init_repo();
+    let saved = feature(&repository);
+    let before = oid(&repository, "main");
+    let hooks = temporary
+        .path()
+        .join(std::ffi::OsString::from_vec(b"hooks-\xff".to_vec()));
+    install_hook(&hooks.join("pre-merge-commit"), "exit 37");
+    let status = git_command(&repository, &["config", "core.hooksPath"])
+        .arg(&hooks)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let result = merge_expected(&saved, &repository, "refs/heads/main", &before);
+    assert!(
+        matches!(result, Err(GitActionError::Failed(_))),
+        "{result:?}"
+    );
+    assert_eq!(oid(&repository, "main"), before);
+}
+
 fn advance_without_files(repository: &Path, before: &str) -> String {
     let tree = oid(repository, &format!("{before}^{{tree}}"));
     let output = git_command(
@@ -121,9 +228,9 @@ fn prepared_ref_transaction_rejects_external_movement_after_the_last_preflight()
         "main",
         saved.head.as_ref().unwrap(),
         &before,
-        |checkout, arguments| {
+        |checkout, arguments, observer| {
             external = Some(advance_without_files(checkout, &before));
-            super::super::merge_git_action(checkout, arguments)
+            super::super::merge_git_action_observed(checkout, arguments, observer)
         },
     );
     assert!(
@@ -148,11 +255,46 @@ fn expected_merge_preserves_an_uncertain_git_outcome() {
         "main",
         saved.head.as_ref().unwrap(),
         &before,
-        |_, _| Err(GitActionError::OutcomeUnknown("uncertain child".into())),
+        |_, _, _| Err(GitActionError::OutcomeUnknown("uncertain child".into())),
     );
     assert_eq!(
         result,
         Err(GitActionError::OutcomeUnknown("uncertain child".into()))
+    );
+}
+
+#[test]
+fn child_identity_failure_after_git_updates_the_target_is_uncertain() {
+    let (_temporary, repository) = init_repo();
+    let saved = feature(&repository);
+    let before = oid(&repository, "main");
+    let result = merge_checkout_expected_with_runner(
+        &repository,
+        "main",
+        saved.head.as_ref().unwrap(),
+        &before,
+        |checkout, arguments, observer| {
+            super::super::merge_git_action_observed(checkout, arguments, &mut |event| {
+                observer(event)?;
+                if matches!(event, crate::git_process::GitProcessEvent::Started(_)) {
+                    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    while oid(checkout, "main") == before {
+                        assert!(
+                            std::time::Instant::now() < until,
+                            "native Git updates its target"
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    return Err("child identity journal failed after Git completed".into());
+                }
+                Ok(())
+            })
+        },
+    );
+    assert_ne!(oid(&repository, "main"), before);
+    assert!(
+        matches!(result, Err(GitActionError::OutcomeUnknown(_))),
+        "{result:?}"
     );
 }
 

@@ -7,6 +7,20 @@ use crate::store::{now_rfc3339, Store, StoreError};
 use rusqlite::{params, Connection, Transaction};
 
 impl Store {
+    /// Distinct source repositories that can retain settled action resources.
+    pub fn review_action_source_paths(&self) -> Result<Vec<std::path::PathBuf>, StoreError> {
+        let conn = self.connection();
+        let mut statement = conn.prepare(
+            "SELECT DISTINCT CASE WHEN json_valid(record) THEN json_extract(record, '$.source_path') END AS source_path
+             FROM review_actions INDEXED BY review_actions_by_source
+             WHERE source_path IS NOT NULL ORDER BY source_path",
+        )?;
+        let rows = statement.query_map([], |row| {
+            row.get::<_, String>(0).map(std::path::PathBuf::from)
+        })?;
+        rows.map(|row| row.map_err(StoreError::from)).collect()
+    }
+
     /// Running and previously interrupted review rows whose Build-owned
     /// temporary checkouts may still need cleanup after a later restart.
     pub fn recoverable_review_actions(&self) -> Result<Vec<ReviewAction>, StoreError> {

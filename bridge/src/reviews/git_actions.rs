@@ -97,6 +97,12 @@ pub fn recover_temporary_worktrees(source: &Path) -> Result<usize, String> {
     Ok(removed)
 }
 
+/// Recover registered per-command hook artifacts before interpreting merge
+/// outcomes. A surviving Git child retains its exact hook resources.
+pub fn recover_pr_fences(source: &Path) -> Result<(), String> {
+    pr::fence_owner::recover_fences(source)
+}
+
 pub fn destinations(
     directory: &ReviewDirectory,
     source_path: &Path,
@@ -434,6 +440,14 @@ fn merge_checkout(checkout: &Path, branch: &str, head: &str) -> Result<GitStepOu
 }
 
 fn merge_git_action(checkout: &Path, args: &[&str]) -> Result<String, GitActionError> {
+    merge_git_action_observed(checkout, args, &mut |_| Ok(()))
+}
+
+fn merge_git_action_observed(
+    checkout: &Path,
+    args: &[&str],
+    extra_observer: &mut dyn FnMut(GitProcessEvent) -> Result<(), String>,
+) -> Result<String, GitActionError> {
     let os_args = args.iter().map(OsStr::new).collect::<Vec<_>>();
     let temporary = is_owned_review_target(checkout, checkout);
     if temporary {
@@ -441,21 +455,24 @@ fn merge_git_action(checkout: &Path, args: &[&str]) -> Result<String, GitActionE
     }
     let mut owned_lock = None;
     let mut marker_error = None;
-    let mut observer = |event| match event {
-        GitProcessEvent::Started(pid) => {
-            if temporary {
-                if let Err(error) = record_review_target_process(checkout, pid) {
-                    marker_error = Some(error);
-                    #[cfg(unix)]
-                    unsafe {
-                        libc::kill(-(pid as i32), libc::SIGKILL);
+    let mut observer = |event| {
+        observe_extra_merge_process(event, extra_observer, &mut marker_error);
+        match event {
+            GitProcessEvent::Started(pid) => {
+                if temporary {
+                    if let Err(error) = record_review_target_process(checkout, pid) {
+                        marker_error = Some(error);
+                        #[cfg(unix)]
+                        unsafe {
+                            libc::kill(-(pid as i32), libc::SIGKILL);
+                        }
                     }
                 }
             }
-        }
-        GitProcessEvent::BeforeTimeoutKill(pid) => {
-            if let Ok(repo) = git2::Repository::open(checkout) {
-                owned_lock = child_holds_index_lock(pid, &repo.path().join("index.lock"));
+            GitProcessEvent::BeforeTimeoutKill(pid) => {
+                if let Ok(repo) = git2::Repository::open(checkout) {
+                    owned_lock = child_holds_index_lock(pid, &repo.path().join("index.lock"));
+                }
             }
         }
     };
@@ -474,7 +491,7 @@ fn merge_git_action(checkout: &Path, args: &[&str]) -> Result<String, GitActionE
                 }
             })?;
     if let Some(error) = marker_error {
-        return Err(GitActionError::Failed(format!(
+        return Err(GitActionError::OutcomeUnknown(format!(
             "review merge child identity could not be recorded: {error}"
         )));
     }
@@ -484,6 +501,21 @@ fn merge_git_action(checkout: &Path, args: &[&str]) -> Result<String, GitActionE
         ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn observe_extra_merge_process(
+    event: GitProcessEvent,
+    observer: &mut dyn FnMut(GitProcessEvent) -> Result<(), String>,
+    error: &mut Option<String>,
+) {
+    if let Err(failed) = observer(event) {
+        *error = Some(failed);
+        let (GitProcessEvent::Started(pid) | GitProcessEvent::BeforeTimeoutKill(pid)) = event;
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGKILL);
+        }
+    }
 }
 
 fn merge_checkout_with_runner(

@@ -1,9 +1,11 @@
 //! PR-specific merge preconditions at the target's Git ref transaction.
 use super::{GitActionError, GitStepOutcome};
 use crate::reviews::model::ReviewDirectory;
-use std::fs::{self, File, OpenOptions};
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::fs;
+use std::path::Path;
+
+pub(super) mod fence_owner;
+mod hooks;
 
 /// Merge the saved head only from the selected exact base. Callers retain
 /// repository sequencing; finalization later reacquires receiver guards.
@@ -126,7 +128,13 @@ fn merge_checkout_expected(
     head: &str,
     expected: &str,
 ) -> Result<GitStepOutcome, GitActionError> {
-    merge_checkout_expected_with_runner(checkout, branch, head, expected, super::merge_git_action)
+    merge_checkout_expected_with_runner(
+        checkout,
+        branch,
+        head,
+        expected,
+        super::merge_git_action_observed,
+    )
 }
 
 fn merge_checkout_expected_with_runner(
@@ -134,27 +142,58 @@ fn merge_checkout_expected_with_runner(
     branch: &str,
     head: &str,
     expected_base: &str,
-    run: impl FnOnce(&Path, &[&str]) -> Result<String, GitActionError>,
+    run: impl FnOnce(
+        &Path,
+        &[&str],
+        &mut dyn FnMut(crate::git_process::GitProcessEvent) -> Result<(), String>,
+    ) -> Result<String, GitActionError>,
 ) -> Result<GitStepOutcome, GitActionError> {
     let target_ref = format!("refs/heads/{branch}");
     expected_target(checkout, &target_ref, expected_base)?;
-    let fence = TargetFence::create(&target_ref, expected_base).map_err(GitActionError::Failed)?;
+    if !git2::Reference::is_valid_name(&target_ref) || git2::Oid::from_str(expected_base).is_err() {
+        return Err(GitActionError::Failed(
+            "invalid PR target ref transaction fence".into(),
+        ));
+    }
+    let fence = fence_owner::OwnedFence::create(checkout).map_err(GitActionError::Failed)?;
+    let commands = hooks::install(checkout, fence.path(), &target_ref, expected_base);
+    fence.seal().map_err(GitActionError::Failed)?;
+    let commands = commands.map_err(GitActionError::Failed)?;
     let hooks = format!(
         "core.hooksPath={}",
-        fence.path.to_str().ok_or_else(|| {
+        fence.path().to_str().ok_or_else(|| {
             GitActionError::Failed("PR ref transaction fence path is not UTF-8".into())
         })?
     );
+    let mut settings = vec![hooks];
+    settings.extend(
+        commands
+            .into_iter()
+            .map(|(key, value)| format!("{key}={value}")),
+    );
     let mut failure = None;
+    let mut cleanup = Ok(());
     let result = super::merge_checkout_with_runner(checkout, branch, head, |path, args| {
         expected_target(path, &target_ref, expected_base)?;
-        let mut arguments = vec!["-c", hooks.as_str()];
+        let mut arguments = settings
+            .iter()
+            .flat_map(|setting| ["-c", setting.as_str()])
+            .collect::<Vec<_>>();
         arguments.extend_from_slice(args);
-        let result = run(path, &arguments);
+        fence.begin_launch().map_err(GitActionError::Failed)?;
+        let result = run(path, &arguments, &mut |event| fence.observe(event));
         failure = result.as_ref().err().cloned();
+        if !matches!(result, Err(GitActionError::OutcomeUnknown(_))) {
+            cleanup = fence.finish();
+        }
         result
     });
-    result.map_err(|error| classify_failure(checkout, &target_ref, expected_base, failure, error))
+    finish_typed(
+        result.map_err(|error| {
+            classify_failure(checkout, &target_ref, expected_base, failure, error)
+        }),
+        cleanup,
+    )
 }
 
 fn expected_target(path: &Path, target_ref: &str, expected: &str) -> Result<(), GitActionError> {
@@ -228,69 +267,10 @@ fn finish_typed(
     }
 }
 
-/// A per-command hook observes the old OID while Git holds its real target ref
-/// lock. Repository hooks and configuration are never written by this fence.
-struct TargetFence {
-    path: PathBuf,
-    directory: File,
-    hook: Option<File>,
-}
-
-impl TargetFence {
-    fn create(target_ref: &str, expected: &str) -> Result<Self, String> {
-        if !git2::Reference::is_valid_name(target_ref)
-            || !target_ref.starts_with("refs/heads/")
-            || git2::Oid::from_str(expected).is_err()
-        {
-            return Err("invalid PR target ref transaction fence".into());
-        }
-        let path =
-            std::env::temp_dir().join(format!("build-review-fence-{}", uuid::Uuid::new_v4()));
-        let mut builder = fs::DirBuilder::new();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
-        }
-        builder.create(&path).map_err(|error| error.to_string())?;
-        let path = path.canonicalize().map_err(|error| error.to_string())?;
-        let mut guard = Self {
-            directory: File::open(&path).map_err(|error| error.to_string())?,
-            path,
-            hook: None,
-        };
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o700);
-        }
-        let mut file = options
-            .open(guard.path.join("reference-transaction"))
-            .map_err(|error| error.to_string())?;
-        let script = fence_script(target_ref, expected);
-        file.write_all(script.as_bytes())
-            .and_then(|()| file.sync_all())
-            .map_err(|error| error.to_string())?;
-        drop(file);
-        guard.hook = Some(
-            File::open(guard.path.join("reference-transaction"))
-                .map_err(|error| error.to_string())?,
-        );
-        guard
-            .directory
-            .sync_all()
-            .map_err(|error| error.to_string())?;
-        Ok(guard)
-    }
-}
-
-fn fence_script(target_ref: &str, expected: &str) -> String {
+fn fence_check(target_ref: &str, expected: &str) -> String {
     let target = format!("'{}'", target_ref.replace('\'', "'\\''"));
     format!(
-        "#!/bin/sh\n[ \"$1\" = prepared ] || exit 0\n\
-         while IFS=' ' read -r old new reference; do\n\
+        "while IFS=' ' read -r old new reference; do\n\
          case \"$reference\" in\n\
          {target}|HEAD)\n\
          if [ \"$old\" != '{expected}' ]; then\n\
@@ -300,36 +280,6 @@ fn fence_script(target_ref: &str, expected: &str) -> String {
          printf '%s\\n' 'PR merge target changed its branch binding' >&2\n\
          exit 1\n;;\nesac\ndone\n"
     )
-}
-
-impl Drop for TargetFence {
-    fn drop(&mut self) {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            let same = |opened: &File, path: &Path| {
-                opened
-                    .metadata()
-                    .ok()
-                    .zip(fs::symlink_metadata(path).ok())
-                    .is_some_and(|(opened, current)| {
-                        !current.file_type().is_symlink()
-                            && opened.dev() == current.dev()
-                            && opened.ino() == current.ino()
-                    })
-            };
-            if !same(&self.directory, &self.path)
-                || self
-                    .hook
-                    .as_ref()
-                    .is_some_and(|hook| !same(hook, &self.path.join("reference-transaction")))
-            {
-                return;
-            }
-        }
-        let _ = fs::remove_file(self.path.join("reference-transaction"));
-        let _ = fs::remove_dir(&self.path);
-    }
 }
 
 #[cfg(test)]

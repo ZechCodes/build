@@ -153,6 +153,14 @@ pub(in crate::app) fn load_stored_tasks(dir: std::path::PathBuf) -> Result<Store
         Err(error) => return Err(format!("store import failed: {error}")),
     }
     for source in store
+        .review_action_source_paths()
+        .map_err(|error| error.to_string())?
+    {
+        if let Err(error) = crate::reviews::git_actions::recover_pr_fences(&source) {
+            eprintln!("review fence recovery: {}: {error}", source.display());
+        }
+    }
+    for source in store
         .recoverable_review_actions()
         .map_err(|error| error.to_string())?
         .into_iter()

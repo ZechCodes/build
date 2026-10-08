@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { IDBDatabase, IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import getFixture from "../../fixtures/api/v1/tasks.review.get.json";
 import workspaceFixture from "../../fixtures/api/v1/workspace.list.json";
 
@@ -126,6 +126,42 @@ it("clears a retained workspace PR link when an authoritative board push omits i
   expect(await reviewCache.readWorkspaceReview({ ...scope, workspaceId: row.id })).toBeNull();
 });
 
+it.each([true, false])("checks the sync lifetime when a queued workspace push commits (stopped: %s)", async (stopped) => {
+  workspaces = [{ id: "workspace-1", project_id: projectId, active_review: { ...summary, version: 7 } }];
+  await sync.syncDevice(deviceId);
+  const address = { deviceId, entityId: "", kind: "workspaces" };
+  const before = await cache.readCached(address);
+  const queued = Promise.withResolvers();
+  const original = IDBDatabase.prototype.transaction;
+  let release;
+  const transaction = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (...args) {
+    const opened = original.apply(this, args);
+    if (!release && this.name === "build-cache" && opened.mode === "readwrite") {
+      const start = opened._start;
+      release = () => { opened._start = start; start.call(opened); };
+      opened._start = () => { queued.resolve(); };
+    }
+    return opened;
+  });
+  const heard = vi.fn();
+  const stopListening = cache.subscribeCache(address, heard);
+  try {
+    const pending = pushed([{ entity_id: "board", state: { workspaces: [{ id: "workspace-1", project_id: projectId }] } }]);
+    await queued.promise;
+    if (stopped) sync.stopCacheSync();
+    release();
+    await pending;
+    const after = await cache.readCached(address);
+    if (stopped) {
+      expect(after).toEqual(before);
+      expect(heard).not.toHaveBeenCalled();
+    } else {
+      expect(after.value[0]).not.toHaveProperty("active_review");
+      expect(heard).toHaveBeenCalledTimes(1);
+    }
+  } finally { transaction.mockRestore(); stopListening(); }
+});
+
 it("discovers an unopened review from a newly watched task state", async () => {
   await sync.syncDevice(deviceId);
   await pushed([{ entity_id: taskId, state: { kind: "tracker_task", task_id: taskId, project_id: projectId, review_summary: summary } }]);
@@ -176,10 +212,15 @@ it.each(["individual row", "feed copy"])("persists and paints the PR version fro
 });
 
 it.each([
-  { source: "individual row", version: 7, legacy: false }, { source: "feed copy", version: 7, legacy: false },
-  { source: "individual row", version: 8, legacy: false }, { source: "feed copy", version: 8, legacy: false },
-  { source: "individual row", version: 8, legacy: true }, { source: "feed copy", version: 8, legacy: true },
-])("preserves a clear from the $source over an earlier cached v$version copy (legacy: $legacy)", async ({ source, version, legacy }) => {
+  { source: "individual row", version: 7, legacy: false, rejectedRefresh: false },
+  { source: "feed copy", version: 7, legacy: false, rejectedRefresh: false },
+  { source: "individual row", version: 8, legacy: false, rejectedRefresh: false },
+  { source: "feed copy", version: 8, legacy: false, rejectedRefresh: false },
+  { source: "individual row", version: 8, legacy: true, rejectedRefresh: false },
+  { source: "feed copy", version: 8, legacy: true, rejectedRefresh: false },
+  { source: "individual row", version: 8, legacy: false, rejectedRefresh: true },
+  { source: "feed copy", version: 8, legacy: false, rejectedRefresh: true },
+])("preserves a clear from the $source over an earlier cached v$version copy (legacy: $legacy, rejected refresh: $rejectedRefresh)", async ({ source, version, legacy, rejectedRefresh }) => {
   await sync.syncDevice(deviceId);
   const tracker = await import("../src/core/trackerCache.js");
   const { nextTaskRead } = await import("../src/core/taskReadOrder.js");
@@ -188,13 +229,16 @@ it.each([
   const oldRow = {
     ...visible, updated_at: "2026-10-08T20:00:10Z", review_summary: { ...summary, version },
   };
-  const earlier = legacy ? oldRow : tracker.preserveTaskReviewSummary(null, oldRow, { readOrder: await nextTaskRead() });
+  let earlier = legacy ? oldRow : tracker.preserveTaskReviewSummary(null, oldRow, { readOrder: await nextTaskRead() });
   await tracker.writeTasksRecord(deviceId, projectId, tracker.tasksRecord([visible], [], await nextTaskRead()));
   const { review_summary: _summary, ...absent } = visible;
   await tracker.writeTasksRecord(deviceId, projectId, tracker.tasksRecord([
     { ...absent, updated_at: "2026-10-08T20:00:30Z" },
   ], [], await nextTaskRead()));
   const cleared = (await tracker.readTasksRecord(deviceId, projectId)).tasks[0];
+  if (rejectedRefresh) earlier = tracker.preserveTaskReviewSummary(earlier, {
+    ...oldRow, updated_at: "2026-10-08T20:00:05Z", review_summary: summary,
+  }, { readOrder: await nextTaskRead() });
   const rowAddress = { deviceId, entityId: taskId, kind: "row" };
   const feedAddress = { deviceId, entityId: "", kind: "feed" };
   await cache.writeCached(rowAddress, source === "individual row" ? cleared : earlier);

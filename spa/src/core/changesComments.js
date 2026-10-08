@@ -230,7 +230,9 @@ export function createCommentLayer({
      *  tray's control, offer the gutter's comment button under the pointer, and
      *  watch for text selections. */
     attach(element) {
+      host?.classList.remove("commentable-diff");
       host = element;
+      host.classList.add("commentable-diff");
       if (!draftRecord && cacheAddressOf) {
         const address = cacheAddressOf();
         if (address) draftRecord = watchUiState(address, (saved) => {
@@ -335,7 +337,10 @@ export function createCommentLayer({
       selectionWatcher = null;
       hideCommentPop(popOwner);
       restorePop = null;
-      if (host) host.onmouseover = null;
+      if (host) {
+        host.onmouseover = null;
+        host.classList.remove("commentable-diff");
+      }
       host = null;
     },
   };

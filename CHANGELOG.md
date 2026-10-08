@@ -15,6 +15,9 @@ Wire 3.13.0.
 - Files directory actions use recognizable upload and new-folder icons, shown
   on hover or keyboard focus and revealed one row at a time by long press on
   touch devices (#396).
+- Keep SPA controls, labels and navigation chrome unselectable, with shared
+  pointer, keyboard and touch feedback while preserving selection in content,
+  form fields and the terminal (#397).
 
 ## [0.2.12] - 2026-10-07
 

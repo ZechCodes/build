@@ -44,6 +44,7 @@ pub fn cancel(
     if opening.state == ReviewOpeningState::Published {
         return Err("published reviews cannot be unwound; close the review instead".into());
     }
+    validate_opening_workspace(request, &opening)?;
     let cleanup = unwind(request, hooks, &opening);
     if let Err(error) = cleanup {
         record_failure(store, &mut opening, &error);

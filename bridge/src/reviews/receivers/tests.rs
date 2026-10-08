@@ -111,3 +111,87 @@ fn receiver_path_cannot_redirect_through_a_symlink() {
     std::os::unix::fs::symlink(source.join(".git"), &receiver.path).unwrap();
     assert!(ensure_receiver(&receiver).unwrap_err().contains("symlink"));
 }
+
+#[cfg(unix)]
+fn interrupt_config_writer(source: &Path) {
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "reviews::receivers::tests::interrupted_config_transaction_recovers_only_its_own_lock",
+            "--nocapture",
+        ])
+        .env("BUILD_REVIEW_INTERRUPTED_CONFIG_DIR", source)
+        .status()
+        .unwrap();
+    assert_eq!(status.code(), Some(23));
+}
+
+#[cfg(unix)]
+#[test]
+fn interrupted_config_transaction_recovers_only_its_own_lock() {
+    if let Some(path) = std::env::var_os("BUILD_REVIEW_INTERRUPTED_CONFIG_DIR") {
+        with_local_config_locked(Path::new(&path), |_, local| {
+            local.set_str("build.interrupted", "true").unwrap();
+            std::process::exit(23);
+        })
+        .unwrap();
+        panic!("interrupted writer must exit inside the transaction");
+    }
+    let (_temporary, source) = init_repo();
+    let config_path = source.join(".git/config");
+    let before = std::fs::read(&config_path).unwrap();
+    interrupt_config_writer(&source);
+    assert!(source.join(".git/config.lock").exists());
+    assert_eq!(std::fs::read(&config_path).unwrap(), before);
+    with_local_config_locked(&source, |_, local| {
+        local
+            .set_str("build.recovered", "true")
+            .map_err(|error| error.to_string())
+    })
+    .unwrap();
+    assert!(!source.join(".git/config.lock").exists());
+    assert!(
+        git2::Repository::open(&source)
+            .unwrap()
+            .config()
+            .unwrap()
+            .get_bool("build.recovered")
+            .unwrap()
+    );
+    interrupt_config_writer(&source);
+    std::fs::remove_file(source.join(".git/config.lock")).unwrap();
+    std::fs::write(source.join(".git/config.lock"), "user lock\n").unwrap();
+    let error = with_local_config_locked(&source, |_, _| {
+        panic!("a replaced user lock must remain untouched")
+    })
+    .unwrap_err();
+    assert!(error.contains("prove it owns"));
+    assert_eq!(
+        std::fs::read_to_string(source.join(".git/config.lock")).unwrap(),
+        "user lock\n"
+    );
+}
+
+#[test]
+fn receiver_recovers_an_interrupted_atomic_marker_write() {
+    let (temporary, source) = init_repo();
+    let receiver = plan_receiver(&source, &temporary.path().join("receivers")).unwrap();
+    let parent = receiver.path.parent().unwrap();
+    std::fs::create_dir_all(&receiver.path).unwrap();
+    write_owned_json(
+        &parent.join(format!(
+            ".{}.receiver-reservation.json",
+            receiver.repository_id
+        )),
+        &ownership(&receiver),
+    )
+    .unwrap();
+    std::fs::write(
+        receiver
+            .path
+            .join(format!(".build-review-write-{}.tmp", uuid::Uuid::new_v4())),
+        "{partial",
+    )
+    .unwrap();
+    ensure_receiver(&receiver).unwrap();
+}

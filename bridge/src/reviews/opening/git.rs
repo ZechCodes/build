@@ -1665,4 +1665,36 @@ mod tests {
             Some("refs/heads/main")
         );
     }
+
+    #[test]
+    fn detached_rebase_elsewhere_still_holds_the_owned_branch() {
+        let (temp, repo) = init_repo();
+        let mut binding = plan(&workspace(&repo)).remove(0);
+        prepare_branch("task-stable-identity", "request-1", &mut binding).unwrap();
+        let other = temp.path().join("other");
+        git_in(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                other.to_str().unwrap(),
+                &binding.initial_head,
+            ],
+        );
+        let other_git_dir = crate::isolation::checkout_git_dir(&other).unwrap();
+        fs::create_dir(other_git_dir.join("rebase-merge")).unwrap();
+        fs::write(
+            other_git_dir.join("rebase-merge/head-name"),
+            &binding.dedicated_branch_ref,
+        )
+        .unwrap();
+        assert!(validate_current(&binding, ReviewPreparationState::BranchCreated).is_err());
+        assert!(validate_cleanup("task-stable-identity", "request-1", &binding).is_err());
+        assert!(cleanup_branch("task-stable-identity", "request-1", &binding).is_err());
+        assert!(git2::Repository::open(&repo)
+            .unwrap()
+            .find_reference(&binding.dedicated_branch_ref)
+            .is_ok());
+    }
 }

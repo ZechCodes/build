@@ -64,6 +64,7 @@ pub(super) fn prepare(
     if opening.bindings.is_empty() {
         opening.bindings = preview_branches(store, request, opening.task.number, &opening.task.id)?;
     }
+    validate_opening_workspace(request, opening)?;
     save(store, opening)?;
     hooks.checkpoint(OpeningStep::Planned)?;
     for index in 0..opening.bindings.len() {

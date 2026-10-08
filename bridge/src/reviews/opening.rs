@@ -122,6 +122,21 @@ fn save(store: &Store, opening: &mut ReviewOpening) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_opening_workspace(request: &OpenReviewRequest, opening: &ReviewOpening) -> Result<(), String> {
+    if request.workspace.id != opening.request.workspace_id || request.project_path != opening.project_path {
+        return Err("review opening belongs to a different workspace or project".into());
+    }
+    for binding in &opening.bindings {
+        let directory = request.workspace.directories.iter().find(|directory| directory.id == binding.directory_id && directory.source_id == binding.source_id)
+            .ok_or("review opening directory identity changed")?;
+        if directory.path.canonicalize().map_err(|error| error.to_string())? != binding.working_repository
+            || directory.source_path.canonicalize().map_err(|error| error.to_string())? != binding.source_repository {
+            return Err("review opening directory placement changed; restore its recorded placement before retrying or cancelling".into());
+        }
+    }
+    Ok(())
+}
+
 fn record_failure(store: &Store, opening: &mut ReviewOpening, error: &str) {
     // Publication may have committed before a lost response. Its task must
     // never be relabelled as a failed preparation or unwound.

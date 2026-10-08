@@ -1,12 +1,12 @@
 //! Thin review adapters: resolve trusted task/workspace identities, then hand
 //! Git to the shared service with the app lock released.
 
-mod tools;
 mod lifecycle;
 mod merge;
 mod opening;
 mod projection;
 mod publication;
+mod tools;
 
 use super::{StoredAnswer, TaskWrite};
 use crate::api::v1::reviews::{ReviewCompleteParams, ReviewDiffParams, ReviewSnapshotParams};
@@ -69,17 +69,30 @@ impl AppState {
         author: Actor,
     ) -> Result<Value, String> {
         let (project_id, _) = self.tracker_task(&params.task_id)?;
-        if self.tracker_store()?.load_review(&params.task_id).stored()?.is_some_and(|review| review.mode == crate::reviews::model::ReviewMode::PullRequest) {
+        if self
+            .tracker_store()?
+            .load_review(&params.task_id)
+            .stored()?
+            .is_some_and(|review| review.mode == crate::reviews::model::ReviewMode::PullRequest)
+        {
             let (_, _, review) = self.pull_request(&params.task_id)?;
             if params.workspace_id != review.workspace_id || !params.base_overrides.is_empty() {
-                return Err(crate::api::v1::reviews::errors::encode("invalid_params", "PR snapshots only reconcile the bound receiving refs", json!({
-                    "task_id":params.task_id,"workspace_id":review.workspace_id,
-                    "recovery":"Use tasks.review.update to retarget bases; open a new PR for another workspace."
-                })));
+                return Err(crate::api::v1::reviews::errors::encode(
+                    "invalid_params",
+                    "PR snapshots only reconcile the bound receiving refs",
+                    json!({
+                        "task_id":params.task_id,"workspace_id":review.workspace_id,
+                        "recovery":"Use tasks.review.update to retarget bases; open a new PR for another workspace."
+                    }),
+                ));
             }
-            return self.review_refresh(crate::api::v1::reviews::ReviewVersionParams {
-                task_id:params.task_id,expected_version:params.expected_version,
-            }, author);
+            return self.review_refresh(
+                crate::api::v1::reviews::ReviewVersionParams {
+                    task_id: params.task_id,
+                    expected_version: params.expected_version,
+                },
+                author,
+            );
         }
         let workspace = self
             .workspaces
@@ -121,7 +134,10 @@ impl AppState {
         let sources = self.review_action_sources(&project_id, &review);
         let store = self.tracker_store()?.clone();
         self.deferred_work = Some(DeferredWork::External(Box::new(move || {
-            projection::result(&store, crate::reviews::actions::with_destinations(review, &sources))
+            projection::result(
+                &store,
+                crate::reviews::actions::with_destinations(review, &sources),
+            )
         })));
         Ok(Value::Null)
     }

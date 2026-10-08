@@ -125,7 +125,9 @@ describe("touch directory actions", () => {
   const revealed = () => [...host.querySelectorAll(".fupload-revealed")];
   beforeEach(() => {
     vi.useFakeTimers();
-    vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: true })));
+    // A touchscreen laptop can have a fine primary pointer and a coarse
+    // secondary one; eligibility must ask about every attached pointer.
+    vi.stubGlobal("matchMedia", vi.fn((query) => ({ matches: query === "(any-pointer: coarse)" })));
     row("docs").insertAdjacentHTML("afterend", '<div class="frow fdir" data-kind="dir" data-path="assets"><span class="fname">assets</span></div>');
     mount();
   });
@@ -162,7 +164,13 @@ describe("touch directory actions", () => {
     pointer(row("docs"), "pointerdown");
     vi.advanceTimersByTime(600);
     pointer(row("docs"), "pointerup");
+    const delayedMenu = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    Object.assign(delayedMenu, { pointerType: "touch" });
+    row("docs").dispatchEvent(delayedMenu);
+    expect(delayedMenu.defaultPrevented).toBe(true);
+    click(row("docs"));
     const menu = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    Object.assign(menu, { pointerType: "touch" });
     row("docs").dispatchEvent(menu);
     expect(menu.defaultPrevented).toBe(false);
   });

@@ -62,6 +62,7 @@ it("reveals one row after a 600 ms touch hold, prevents contextmenu and preserve
     expect(await page.evaluate(() => matchMedia("(pointer: coarse)").matches)).toBe(true);
     const directory = row(page, "spa");
     expect(await visibleActions(page)).toBe(0);
+    expect(await directory.evaluate((node) => getComputedStyle(node).userSelect)).toBe("none");
     const client = await page.context().newCDPSession(page);
     await touchStart(client, directory);
     await page.waitForTimeout(600);

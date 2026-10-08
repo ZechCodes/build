@@ -1,4 +1,4 @@
-const coarsePointer = () => window.matchMedia?.("(pointer: coarse)").matches === true;
+const coarsePointer = () => window.matchMedia?.("(any-pointer: coarse)").matches === true;
 
 /** Reveal one delegated target after a stationary press. Pointer taps and
  * scrolling keep their defaults; only the click following a hold is consumed.

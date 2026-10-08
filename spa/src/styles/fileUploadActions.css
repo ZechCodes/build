@@ -1,6 +1,9 @@
 .fupload-directory-actions { margin-left:auto; display:flex; gap:2px; flex:none; opacity:0; pointer-events:none; }
-@media (pointer:fine) {
+@media (any-hover:hover) {
   .frow:hover .fupload-directory-actions, .frow:focus-within .fupload-directory-actions { opacity:1; pointer-events:auto; }
+}
+@media (any-pointer:coarse) {
+  .frow:has(.fupload-directory-actions) { -webkit-touch-callout:none; user-select:none; }
 }
 .frow.fupload-revealed .fupload-directory-actions, .frow:has(:focus-visible) .fupload-directory-actions,
 .frow:focus-visible .fupload-directory-actions { opacity:1; pointer-events:auto; }

@@ -29,11 +29,38 @@ pub fn merge_expected(
     finish_typed(result, imported.cleanup(source_path))
 }
 
-pub fn verify_integrated(source_path: &Path, target_ref: &str, head: &str) -> Result<String, String> {
-    let _ = head;
+/// Caller holds the native target ref reservation across this read and the
+/// durable Merged transition. The source checkout may be on another branch.
+pub fn verify_integrated(
+    source_path: &Path,
+    target_ref: &str,
+    head: &str,
+) -> Result<String, String> {
+    if !target_ref.starts_with("refs/heads/") || !git2::Reference::is_valid_name(target_ref) {
+        return Err("PR target must be a full local branch ref".into());
+    }
     let repository = git2::Repository::open(source_path).map_err(|error| error.to_string())?;
-    let reference = repository.find_reference(target_ref).map_err(|error| error.to_string())?;
-    reference.target().map(|oid| oid.to_string()).ok_or_else(|| "PR target ref became symbolic".into())
+    let reference = repository
+        .find_reference(target_ref)
+        .map_err(|error| error.to_string())?;
+    let tip = reference.target().ok_or("PR target ref became symbolic")?;
+    let received = git2::Oid::from_str(head).map_err(|error| error.to_string())?;
+    repository
+        .find_commit(tip)
+        .map_err(|error| error.to_string())?;
+    repository
+        .find_commit(received)
+        .map_err(|error| error.to_string())?;
+    if tip != received
+        && !repository
+            .graph_descendant_of(tip, received)
+            .map_err(|error| error.to_string())?
+    {
+        return Err(format!(
+            "PR target {target_ref} does not contain its reviewed head {head}"
+        ));
+    }
+    Ok(tip.to_string())
 }
 
 fn merge_in_target_expected(
@@ -242,11 +269,15 @@ impl TargetFence {
         let mut file = options
             .open(guard.path.join("reference-transaction"))
             .map_err(|error| error.to_string())?;
-        guard.hook = Some(file.try_clone().map_err(|error| error.to_string())?);
         let script = fence_script(target_ref, expected);
         file.write_all(script.as_bytes())
             .and_then(|()| file.sync_all())
             .map_err(|error| error.to_string())?;
+        drop(file);
+        guard.hook = Some(
+            File::open(guard.path.join("reference-transaction"))
+                .map_err(|error| error.to_string())?,
+        );
         guard
             .directory
             .sync_all()

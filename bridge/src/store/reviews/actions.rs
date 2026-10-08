@@ -24,29 +24,7 @@ impl Store {
         expected_version: u64,
         actions: &[ReviewAction],
     ) -> Result<Review, StoreError> {
-        self.in_transaction(|tx| {
-            let mut header = load_header(tx, task_id)?.ok_or_else(|| StoreError::ReviewNotFound {
-                task_id: task_id.into(),
-            })?;
-            check_version(&header, expected_version)?;
-            if actions.is_empty() {
-                return Ok(load_review(tx, task_id)?.expect("review exists"));
-            }
-            let held = load_actions(tx, task_id)?;
-            for action in actions {
-                if held.iter().any(|row| row.status == ActionStatus::Running
-                    && (row.directory_id == action.directory_id || row.source_path == action.source_path)) {
-                    return Err(StoreError::ReviewAction(format!(
-                        "A Git action is already running for {}.", action.source_name
-                    )));
-                }
-                tx.execute("INSERT INTO review_actions (id, task_id, status, record) VALUES (?1, ?2, 'running', ?3)",
-                    params![action.id, task_id, serde_json::to_string(action).expect("action serializes")])?;
-            }
-            header.version += 1;
-            write_header(tx, &header)?;
-            Ok(load_review(tx, task_id)?.expect("review exists"))
-        })
+        self.in_transaction(|tx| start_actions(tx, task_id, expected_version, actions))
     }
 
     /// Save the observed outcome even if somebody completed or replaced the
@@ -132,7 +110,11 @@ fn recoverable_actions(conn: &Connection) -> Result<Vec<(String, ReviewAction)>,
     .collect()
 }
 
-fn save_action(tx: &Transaction, task_id: &str, action: &ReviewAction) -> Result<(), StoreError> {
+pub(super) fn save_action(
+    tx: &Transaction,
+    task_id: &str,
+    action: &ReviewAction,
+) -> Result<(), StoreError> {
     let mut header = load_header(tx, task_id)?.ok_or_else(|| StoreError::ReviewNotFound {
         task_id: task_id.into(),
     })?;
@@ -163,3 +145,36 @@ fn save_action(tx: &Transaction, task_id: &str, action: &ReviewAction) -> Result
 
 #[cfg(test)]
 mod tests;
+
+pub(super) fn start_actions(
+    tx: &Transaction,
+    task_id: &str,
+    expected_version: u64,
+    actions: &[ReviewAction],
+) -> Result<Review, StoreError> {
+    let mut header = load_header(tx, task_id)?.ok_or_else(|| StoreError::ReviewNotFound {
+        task_id: task_id.into(),
+    })?;
+    check_version(&header, expected_version)?;
+    if actions.is_empty() {
+        return Ok(load_review(tx, task_id)?.expect("review exists"));
+    }
+    let held = load_actions(tx, task_id)?;
+    for action in actions {
+        if held.iter().any(|row| {
+            row.status == ActionStatus::Running
+                && (row.directory_id == action.directory_id
+                    || row.source_path == action.source_path)
+        }) {
+            return Err(StoreError::ReviewAction(format!(
+                "A Git action is already running for {}.",
+                action.source_name
+            )));
+        }
+        tx.execute("INSERT INTO review_actions (id, task_id, status, record) VALUES (?1, ?2, 'running', ?3)",
+            params![action.id, task_id, serde_json::to_string(action).expect("action serializes")])?;
+    }
+    header.version += 1;
+    write_header(tx, &header)?;
+    Ok(load_review(tx, task_id)?.expect("review exists"))
+}

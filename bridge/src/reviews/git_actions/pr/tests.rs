@@ -178,11 +178,9 @@ fn target_ref_shell_characters_remain_literal_in_the_transaction_fence() {
 fn final_integration_verification_refuses_an_unmerged_received_head() {
     let (_temporary, repository) = init_repo();
     let saved = feature(&repository);
-    assert!(verify_integrated(
-        &repository,
-        "refs/heads/main",
-        saved.head.as_ref().unwrap()
-    ).is_err());
+    assert!(
+        verify_integrated(&repository, "refs/heads/main", saved.head.as_ref().unwrap()).is_err()
+    );
 }
 
 #[test]

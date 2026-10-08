@@ -168,6 +168,7 @@ pub(in crate::app) fn load_stored_tasks(dir: std::path::PathBuf) -> Result<Store
             Err(error) => eprintln!("review recovery: {}: {error}", source.display()),
         }
     }
+    crate::reviews::merge::recover(&store)?;
     let interrupted = store
         .interrupt_review_actions()
         .map_err(|error| error.to_string())?;

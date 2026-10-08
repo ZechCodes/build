@@ -2,7 +2,7 @@
 mod model;
 pub use model::*;
 
-mod plan;
+pub(crate) mod plan;
 use super::{git_actions, records::Review};
 use crate::source_sync::{SyncLock, SERVICE_FETCH_DEADLINE};
 use crate::store::{now_rfc3339, Store};
@@ -146,7 +146,7 @@ fn execute(
     }
 }
 
-fn record_outcome(
+pub(crate) fn record_outcome(
     source: &mut PreparedSource,
     index: usize,
     outcome: Result<git_actions::GitStepOutcome, git_actions::GitActionError>,

@@ -407,8 +407,8 @@ fn same_directory(left: &Path, right: &Path) -> bool {
     }
 }
 
-/// One sync at a time per checkout: the service, a cut and the Sync now
-/// button never fetch into the same repository together.
+/// One sync at a time per repository: linked checkouts share refs, so the
+/// service, cuts and review merges hold the same canonical Git directory.
 pub struct SyncLock {
     path: PathBuf,
 }
@@ -429,11 +429,12 @@ impl SyncLock {
     /// `within`. The flag says whether another sync had it first, so a cut
     /// that waited can take what that sync fetched instead of fetching again.
     pub fn acquire(path: &Path, within: Duration) -> Option<(Self, bool)> {
+        let path = sync_lock_identity(path);
         let (held, released) = held_checkouts();
         let expiry = std::time::Instant::now() + within;
         let mut guard = held.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut waited = false;
-        while guard.contains(path) {
+        while guard.contains(&path) {
             waited = true;
             let left = expiry.saturating_duration_since(std::time::Instant::now());
             if left.is_zero() {
@@ -444,14 +445,16 @@ impl SyncLock {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .0;
         }
-        guard.insert(path.to_path_buf());
-        Some((
-            Self {
-                path: path.to_path_buf(),
-            },
-            waited,
-        ))
+        guard.insert(path.clone());
+        Some((Self { path }, waited))
     }
+}
+
+fn sync_lock_identity(path: &Path) -> PathBuf {
+    git2::Repository::open(path)
+        .ok()
+        .and_then(|repository| repository.commondir().canonicalize().ok())
+        .unwrap_or_else(|| path.canonicalize().unwrap_or_else(|_| path.into()))
 }
 
 impl Drop for SyncLock {

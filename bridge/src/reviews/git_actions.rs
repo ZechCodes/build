@@ -1,5 +1,8 @@
 //! Explicit Git steps for a saved review source.
 
+mod pr;
+pub use pr::{merge_expected, verify_integrated};
+
 use super::actions::ReviewRemote;
 use super::model::ReviewDirectory;
 use crate::git_process::{

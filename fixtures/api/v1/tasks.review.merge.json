@@ -470,6 +470,12 @@
                   "status": "failed",
                   "input_head": "2222222222222222222222222222222222222222",
                   "error": "Merge conflicts in src/app.js"
+                },
+                {
+                  "kind": "push",
+                  "branch": "main",
+                  "remote": "origin",
+                  "status": "pending"
                 }
               ]
             }
@@ -1084,6 +1090,12 @@
                   "status": "failed",
                   "input_head": "2222222222222222222222222222222222222222",
                   "error": "A rebase of main is in progress in /sources/ui."
+                },
+                {
+                  "kind": "push",
+                  "branch": "main",
+                  "remote": "origin",
+                  "status": "pending"
                 }
               ]
             }

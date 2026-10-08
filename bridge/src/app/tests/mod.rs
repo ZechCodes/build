@@ -226,6 +226,7 @@ mod renamed_ids;
 mod resume;
 mod review_done;
 mod reviews;
+mod pr_review_tools;
 mod routing;
 mod rtc;
 mod runtime;

@@ -123,7 +123,7 @@ export function mountTaskReviewPage(host, options) {
       return;
     }
     const params = {
-      ...scope, workspaceId: review().workspace_id, snapshot: saved, directory: dir, callRpc,
+      ...scope, workspaceId: review().workspace_id, keepReadingPlace: options.keepReadingPlace, snapshot: saved, directory: dir, callRpc,
       path: selection.path || "", anchor: selection.anchor,
       onOpenFile: openFiles,
       onComment: support.comments ? (anchor) => feedback?.comment(anchor) : null,

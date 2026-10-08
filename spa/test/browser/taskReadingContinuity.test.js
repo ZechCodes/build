@@ -33,6 +33,8 @@ async function mountReadingPage(page, basePath, commentId = null, omitTarget = f
     cache: "src/core/trackerCache.js", taskPage: "src/core/trackerTaskPage.js",
     references: "src/core/referenceIndexFeed.js", review: "src/core/taskReviewCache.js",
     ui: "src/core/localUiState.js", uiStore: "src/core/localUiStore.js",
+    local: "src/core/localCache.js", support: "src/core/taskReviewSupport.js",
+    reviewFiles: "src/core/taskReviewFiles.js", pages: "src/core/bodyPages.js",
   }, basePath);
   await page.evaluate(async ({ record, commentId, omitTarget }) => {
     const { cache, taskPage, references } = window.__layoutModules;
@@ -140,6 +142,9 @@ async function measure(page, before, label) {
   expect.soft(Math.abs(result.contentTopDelta), `${label}: visible content moved`).toBeLessThanOrEqual(1);
   expect.soft(result.contentScrolls.every((delta) => Math.abs(delta) <= 1), `${label}: transient content jump`).toBe(true);
   expect.soft(result.sameContent, `${label}: reading content replaced`).toBe(true);
+  if (/delayed-(listing|patch|blob|tree|page-first|page-next|failure)$/.test(label)) {
+    expect.soft(Math.abs(result.reviewHeightDelta), `${label}: cache arrival must change review height`).toBeGreaterThan(1);
+  }
   if (!label.includes("metadata-")) expect.soft(Math.abs(result.rootTopDelta), `${label}: row geometry moved`).toBeLessThanOrEqual(1);
   if (label.endsWith("review-label")) {
     expect.soft(Math.abs(result.reviewHeightDelta), `${label}: review panel footprint changed`).toBeLessThanOrEqual(1);
@@ -323,3 +328,143 @@ it("keeps the reader at the bottom when a task comment is appended there", async
     await page.evaluate(() => { window.__reading.mounted.dispose(); window.__reading.stopIndex(); });
   }, { plugins: [deviceShim] });
 }, 60_000);
+
+
+async function mountDelayedReview(page) {
+  await page.evaluate(async () => {
+    const { support, review } = window.__layoutModules;
+    const { scope, record } = window.__reading;
+    const directory = { id: "dir-async", source_id: "source-async", name: "Saved source", is_git: true,
+      status: "git", path: "/saved/source", source_path: "/source", branch: "build/scroll", head: "2".repeat(40),
+      base: { kind: "configured", name: "main", oid: "1".repeat(40) } };
+    const snapshot = { id: "snapshot-async", number: 8, created_at: "2026-10-07T12:00:00Z",
+      author: record.task.assignee, directories: [directory] };
+    window.__reading.reviewIdentity = { ...scope, snapshot, directory };
+    await support.rememberReviewSupport(scope.deviceId, { reviews: { get: true, diff: true } });
+    await review.writeReviewRecord(scope, { task_id: scope.taskId, workspace_id: "ws-reading", state: "open", version: 3,
+      snapshots: [snapshot], actions: [], destinations: [], completion: null }, 3);
+  });
+  await page.locator(".task-review-changes").waitFor({ state: "attached" });
+  await settle(page);
+}
+
+async function writeDelayedReview(page, action) {
+  await page.evaluate(async (action) => {
+    const { local, reviewFiles, pages, uiStore } = window.__layoutModules;
+    const { scope, reviewIdentity } = window.__reading;
+    const { snapshot, directory } = reviewIdentity;
+    const base = [scope.taskId, snapshot.id, directory.id];
+    const at = (kind, sub) => ({ deviceId: scope.deviceId, entityId: scope.projectId, kind, sub: JSON.stringify(sub) });
+    const fileAt = (kind, path) => reviewFiles.taskReviewFileAddress(reviewIdentity, kind, path);
+    const encode = (text) => btoa(String.fromCharCode(...new TextEncoder().encode(text)));
+    const lines = (count, prefix) => Array.from({ length: count }, (_, index) => `${prefix} ${index}`).join("\n") + "\n";
+    if (action === "listing") await local.writeCached(at("task-review-changes", base), {
+      files: Array.from({ length: 30 }, (_, index) => ({ path: `file${index}.js`, status: "Modified", additions: 40,
+        deletions: 0, content_key: `key-${index}` })), files_truncated: false, diff_key: "base:head",
+    });
+    if (action === "patch") await local.writeCached(at("task-review-patch", [...base, "file0.js", "old..new"]), {
+      content_key: "key-0", patch: "diff --git a/file0.js b/file0.js\n--- a/file0.js\n+++ b/file0.js\n@@ -0,0 +1,40 @@\n" +
+        Array.from({ length: 40 }, (_, index) => `+saved line ${index + 1}`).join("\n") + "\n", truncated: false,
+    });
+    if (action === "blob") {
+      const text = lines(24, "Saved file line");
+      await local.writeCached(fileAt("task-review-file", "notes.txt"), { file: {
+        path: "notes.txt", mime: "text/plain", size: text.length, content_b64: encode(text), truncated: false, editable: false,
+      } });
+    }
+    if (action === "tree") await local.writeCached(fileAt("task-review-tree", ""), {
+      path: "", entries: [{ name: "notes.txt", kind: "file" }, { name: "paged.txt", kind: "file" },
+        ...Array.from({ length: 40 }, (_, index) => ({ name: `saved-${index}.txt`, kind: "file" }))],
+    });
+    if (action === "paged-head") await local.writeCached(fileAt("task-review-file", "paged.txt"), { file: {
+      path: "paged.txt", mime: "text/plain", size: 2000000, paged: true, of: "paged-reading", truncated: false, editable: false,
+    } });
+    if (action.startsWith("page-")) {
+      const first = lines(100, "Paged saved line");
+      const second = lines(20, "More paged saved line");
+      const offset = action === "page-first" ? 0 : first.length;
+      const body = action === "page-first" ? first : second;
+      await pages.writeBodyPage(fileAt("task-review-file", "paged.txt"), { of: "paged-reading", offset,
+        end: offset + body.length, total: first.length + second.length, body: encode(body) });
+    }
+    if (action === "failure") await local.writeCached(fileAt("task-review-file-error", "paged.txt"), {
+      message: "Delayed saved file read failed. ".repeat(30),
+    });
+    if (action === "tabs-paged" || action === "tabs-restored") await uiStore.writeUiRecord(fileAt("ui-task-review-files", "tabs"), {
+      tabs: ["notes.txt", "paged.txt"], active: action === "tabs-paged" ? "paged.txt" : "notes.txt",
+    });
+  }, action);
+}
+
+for (const [label, width, height] of [["phone", 390, 844], ["desktop", 1440, 900]]) {
+  it(`keeps visible ${label} task text still through delayed saved-review child cache paints`, async () => {
+    await withLayoutPage(async ({ page, basePath }) => {
+      await mountReadingPage(page, basePath);
+      await mountDelayedReview(page);
+      await page.locator("#task-comment").evaluate((field) => field.focus({ preventScroll: true }));
+      let before = await parkReader(page);
+      await writeDelayedReview(page, "listing");
+      await page.waitForFunction(() => document.querySelectorAll("[data-review-path]").length === 30);
+      await measure(page, before, `${label}/delayed-listing`);
+      await page.locator('[data-review-path="file0.js"] [data-review-expand]').evaluate((button) => button.click());
+      await settle(page);
+      before = await parkReader(page);
+      await writeDelayedReview(page, "patch");
+      await page.locator('[data-review-path="file0.js"] tr[data-new-line="40"]').waitFor({ state: "attached" });
+      await measure(page, before, `${label}/delayed-patch`);
+      await page.evaluate(async () => {
+        const { ui, uiStore } = window.__layoutModules;
+        const { scope } = window.__reading;
+        await uiStore.writeUiRecord(ui.uiAddress({ deviceId: scope.deviceId, entityId: scope.projectId,
+          view: "task-review", kind: "selection", sub: scope.taskId }), {
+          snapshotId: "snapshot-async", directoryId: "dir-async", view: "files", path: "notes.txt",
+        });
+      });
+      await page.locator(".trf-preview .throbber").waitFor({ state: "attached" });
+      await settle(page);
+      before = await parkReader(page);
+      await writeDelayedReview(page, "blob");
+      await page.locator('.trf-preview tr[data-new-line="24"]').waitFor({ state: "attached" });
+      await measure(page, before, `${label}/delayed-blob`);
+      before = await parkReader(page);
+      await writeDelayedReview(page, "tree");
+      await page.waitForFunction(() => document.querySelectorAll(".trf-tree .frow").length === 42);
+      await measure(page, before, `${label}/delayed-tree`);
+      before = await parkReader(page);
+      await writeDelayedReview(page, "tabs-paged");
+      await page.locator('.ftab.active [data-tab-path="paged.txt"]').waitFor({ state: "attached" });
+      await settle(page);
+      await measure(page, before, `${label}/delayed-tabs-placeholder`);
+      before = await parkReader(page);
+      await writeDelayedReview(page, "paged-head");
+      await page.locator(".trf-paged .fppages").waitFor({ state: "attached" });
+      await measure(page, before, `${label}/delayed-paged-head`);
+      for (const action of ["page-first", "page-next", "failure", "tabs-restored"]) {
+        before = await parkReader(page);
+        await writeDelayedReview(page, action);
+        if (action === "page-first") await page.locator('.trf-paged tr[data-new-line="100"]').waitFor({ state: "attached" });
+        if (action === "page-next") await page.locator('.trf-paged tr[data-new-line="120"]').waitFor({ state: "attached" });
+        if (action === "failure") await page.waitForFunction(() => document.querySelector(".trf-status").textContent.includes("Delayed saved file read failed"));
+        if (action === "tabs-restored") await page.locator('.trf-preview tr[data-new-line="24"]').waitFor({ state: "attached" });
+        await measure(page, before, `${label}/delayed-${action}`);
+      }
+      // A deliberate review-anchor press must still navigate after a wrapped
+      // cache paint; preserving history must never undo that explicit reveal.
+      before = await parkReader(page);
+      await page.evaluate(async () => {
+        const { cache } = window.__layoutModules;
+        const { record, scope } = window.__reading;
+        record.timeline.find((row) => row.id === "tc-reading18").anchor = {
+          snapshot_id: "snapshot-async", directory_id: "dir-async", path: "file0.js", side: "new", line: 40,
+        };
+        await cache.writeTaskRecord(scope.deviceId, scope.projectId, scope.taskId, record);
+      });
+      await page.locator(`#${READING_ROW} [data-review-anchor]`).evaluate((button) => button.click());
+      await page.locator('tr.task-review-anchor[data-new-line="40"]').waitFor({ state: "attached" });
+      await page.waitForFunction((before) => document.querySelector("#task-pane").scrollTop < before - 1000, before);
+      expect(await page.locator('[data-review-path="file0.js"] [data-review-expand]').getAttribute("aria-expanded")).toBe("true");
+      expect(await page.evaluate(() => window.__reading.errors)).toEqual([]);
+      await page.evaluate(() => { window.__reading.mounted.dispose(); window.__reading.stopIndex(); });
+    }, { width, height, plugins: [deviceShim] });
+  }, 90_000);
+}

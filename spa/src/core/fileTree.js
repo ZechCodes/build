@@ -65,7 +65,7 @@ const markRows = (listEl, openPath, cursorPath) => {
  *
  * Returns { ready, setOpenPath, reveal, relist, dispose }.
  */
-export function mountFileTree(listEl, { listingAddress, stateAddress = null, readsForItself, listDirectory, finePointer, onOpen, baseDepth = 0, onEdge = null, keepHeldOnError = false }) {
+export function mountFileTree(listEl, { listingAddress, stateAddress = null, readsForItself, listDirectory, finePointer, onOpen, baseDepth = 0, onEdge = null, keepHeldOnError = false, keepReadingPlace = (paint) => paint() }) {
   let disposed = false;
   const listings = new Map();
   let expanded = new Set();
@@ -77,7 +77,7 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
 
   const focusCursor = () => rowsIn(listEl).find((row) => row.dataset.path === cursorPath)?.focus();
 
-  const paint = () => {
+  const paint = () => keepReadingPlace(() => {
     if (disposed) return;
     if (!listings.has("")) {
       listEl.innerHTML = "";
@@ -87,7 +87,7 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
     rows = visibleTreeRows(listings, expanded, "", baseDepth);
     listEl.innerHTML = fileTreeHtml(rows, { openPath, cursorPath });
     if (hadFocus) focusCursor();
-  };
+  });
 
   const shown = (dir) => !dir || (expanded.has(dir) && reachable(expanded, dir));
   const stillListing = (dir, request) => !disposed && requests.get(dir) === request && shown(dir);

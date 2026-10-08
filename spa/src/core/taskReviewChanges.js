@@ -133,7 +133,7 @@ async function seekAnchorPages(host, target, bodies) {
 }
 
 /** Mount one saved source's Changes tab. refresh() retries the listing. */
-export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snapshot, directory, callRpc, onOpenFile, onComment, anchor = null }) {
+export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snapshot, directory, callRpc, onOpenFile, onComment, anchor = null, keepReadingPlace = (paint) => paint() }) {
   const listAddress = addressOf(deviceId, projectId, "task-review-changes", listSub(taskId, snapshot, directory));
   const patchAddress = (path) => addressOf(deviceId, projectId, "task-review-patch", patchSub(taskId, snapshot, directory, path));
   const ui = uiAddress({ deviceId, entityId: projectId, view: "task-review-changes", kind: "review", sub: JSON.stringify([taskId, directory.id]) });
@@ -156,9 +156,11 @@ export function mountTaskReviewChanges(host, { deviceId, projectId, taskId, snap
 
   const paint = () => {
     if (!alive) return;
-    const focus = focusedControl(host);
-    host.innerHTML = changesHtml(state, Boolean(onComment), (path) => ({ ...bodies.bodyOf(path), loading: state.loading.has(path) }));
-    restoreFocusedControl(host, focus);
+    keepReadingPlace(() => {
+      const focus = focusedControl(host);
+      host.innerHTML = changesHtml(state, Boolean(onComment), (path) => ({ ...bodies.bodyOf(path), loading: state.loading.has(path) }));
+      restoreFocusedControl(host, focus);
+    });
     const row = state.anchor && anchoredRow(host, state.anchor);
     if (!row) return;
     row.classList.add("task-review-anchor");

@@ -80,7 +80,7 @@ const pagedPainter = (path, file) => {
  * Mount a saved review directory's Files view. The returned open(path) accepts
  * a path from Changes; refresh() retries the currently shown tree and file.
  */
-export function mountTaskReviewFiles(host, { deviceId, projectId, taskId, workspaceId, snapshot, directory, callRpc, path = "", onComment = null }) {
+export function mountTaskReviewFiles(host, { deviceId, projectId, taskId, workspaceId, snapshot, directory, callRpc, path = "", onComment = null, keepReadingPlace = (paint) => paint() }) {
   const live = !directory.is_git;
   const identity = { deviceId, projectId, taskId, snapshot, directory };
   const address = (kind, name) => taskReviewFileAddress(identity, kind, name);
@@ -105,7 +105,9 @@ export function mountTaskReviewFiles(host, { deviceId, projectId, taskId, worksp
     const [treeHeld, fileHeld] = await Promise.all([
       readCached(treeFailureAddress), path ? readCached(fileFailureAddress(path)) : null,
     ]);
-    if (!disposed && serial === failureSerial) status.textContent = fileHeld?.value?.message || treeHeld?.value?.message || "";
+    if (!disposed && serial === failureSerial) keepReadingPlace(() => {
+      status.textContent = fileHeld?.value?.message || treeHeld?.value?.message || "";
+    });
   };
   const unwatchTreeFailure = subscribeCache(treeFailureAddress, () => void paintFailure());
   const unwatchFileFailure = subscribeCache({ deviceId, entityId: projectId, kind: "task-review-file-error" }, () => void paintFailure());
@@ -130,7 +132,7 @@ export function mountTaskReviewFiles(host, { deviceId, projectId, taskId, worksp
     return pageFromAnswer(await readFile(name, { offset, bytes, ...(raw ? { raw: true } : {}) }), "content_b64");
   };
 
-  const paintFile = (name, file) => {
+  const paintFile = (name, file) => keepReadingPlace(() => {
     if (disposed || selected !== name) return;
     paged?.dispose();
     paged = null;
@@ -148,9 +150,9 @@ export function mountTaskReviewFiles(host, { deviceId, projectId, taskId, worksp
       readPage: pageReader(name, file.mime),
       restart: () => void refreshFile(name),
       painter: pagedPainter(name, file),
-      onPaint: () => wireCommentLines(preview),
+      onPaint: () => wireCommentLines(preview), keepReadingPlace,
     });
-  };
+  });
 
   const commentAt = (line) => {
     if (!onComment || !selected || !Number.isSafeInteger(line) || line < 1) return;
@@ -194,7 +196,7 @@ export function mountTaskReviewFiles(host, { deviceId, projectId, taskId, worksp
     }
   };
 
-  const showFile = (name) => {
+  const showFile = (name) => keepReadingPlace(() => {
     selected = name;
     const serial = ++fileSerial;
     void paintFailure();
@@ -211,13 +213,13 @@ export function mountTaskReviewFiles(host, { deviceId, projectId, taskId, worksp
       if (disposed || selected !== name || serial !== fileSerial) return;
       void refreshFile(name);
     });
-  };
+  });
 
   const tree = mountFileTree(treeEl, {
     listingAddress: (name) => address(treeKind(live), name),
     stateAddress: address("ui-task-review-files", "expanded"),
     readsForItself: () => true,
-    keepHeldOnError: true,
+    keepHeldOnError: true, keepReadingPlace,
     listDirectory: async (name) => {
       try { const listing = await listDirectory(name); setTreeFailure(""); return listing; }
       catch (error) { setTreeFailure(readError(error)); throw error; }
@@ -228,7 +230,7 @@ export function mountTaskReviewFiles(host, { deviceId, projectId, taskId, worksp
   const tabs = mountFileTabs(host.querySelector(".trf-tabs"), {
     stateAddress: address("ui-task-review-files", "tabs"),
     dirtyPaths: () => new Set(), confirmClose: async () => true, onClose: () => {}, onShow: showFile,
-    initial: safePath(path) ? path : null,
+    initial: safePath(path) ? path : null, keepReadingPlace,
   });
   if (safePath(path)) void tree.reveal(path);
   if (sourceUnavailable) setTreeFailure("Source unavailable");

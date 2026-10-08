@@ -1,0 +1,203 @@
+use super::*;
+use crate::reviews::publication::registered_received_head;
+use std::path::PathBuf;
+
+fn tracking(fixture: &Fixture) -> (git2::Repository, String) {
+    let binding = &fixture.review().bindings[0];
+    let branch = binding
+        .dedicated_branch_ref
+        .strip_prefix("refs/heads/")
+        .unwrap();
+    (
+        git2::Repository::open(fixture.checkout()).unwrap(),
+        format!("refs/remotes/{}/{branch}", binding.remote_name),
+    )
+}
+
+fn partial_publication(fixture: &Fixture) -> (String, String) {
+    let previous = fixture.review().bindings[0].initial_head.clone();
+    let head = fixture.commit("partial.txt");
+    let (repository, reference) = tracking(fixture);
+    let lock = repository.commondir().join(format!("{reference}.lock"));
+    std::fs::write(&lock, b"foreign tracking lock").unwrap();
+    let result = push(&fixture.store, &push_request(fixture, head.clone())).unwrap();
+    assert_eq!(result.sources[0].status, PushStatus::Published);
+    assert!(result.sources[0].recovery.is_some());
+    assert_eq!(std::fs::read(&lock).unwrap(), b"foreign tracking lock");
+    assert_eq!(
+        repository.refname_to_id(&reference).unwrap().to_string(),
+        previous
+    );
+    assert_eq!(
+        registered_received_head(&fixture.review().bindings[0]).unwrap(),
+        Some(head.clone())
+    );
+    std::fs::remove_file(lock).unwrap();
+    (previous, head)
+}
+
+fn assert_repaired(fixture: &Fixture, head: &str) {
+    let before = fixture.review();
+    let result = push(&fixture.store, &push_request(fixture, head.into())).unwrap();
+    assert_eq!(result.sources[0].status, PushStatus::Unchanged);
+    assert_eq!(result.sources[0].recovery, None);
+    let (repository, reference) = tracking(fixture);
+    assert_eq!(
+        repository.refname_to_id(&reference).unwrap().to_string(),
+        head
+    );
+    assert_eq!(fixture.review().version, before.version);
+    assert_eq!(fixture.review().snapshots, before.snapshots);
+}
+
+#[test]
+fn partial_tracking_publication_recovers_after_store_reopens() {
+    let fixture = Fixture::new();
+    let (_, head) = partial_publication(&fixture);
+    let before = fixture.review();
+    let reopened = Store::new(fixture._home.path().join("db")).unwrap();
+    let result = push(&reopened, &push_request(&fixture, head.clone())).unwrap();
+    assert_eq!(result.sources[0].status, PushStatus::Unchanged);
+    assert_eq!(result.sources[0].recovery, None);
+    assert_eq!(
+        reopened.load_review(fixture.task_id()).unwrap().unwrap(),
+        before
+    );
+    let (repository, reference) = tracking(&fixture);
+    assert_eq!(
+        repository.refname_to_id(&reference).unwrap().to_string(),
+        head
+    );
+}
+
+#[test]
+fn partial_tracking_recovery_preserves_foreign_tip_and_retains_proof() {
+    let fixture = Fixture::new();
+    let (previous, head) = partial_publication(&fixture);
+    git_in(
+        &fixture.source,
+        &["commit", "--allow-empty", "-m", "foreign"],
+    );
+    let source = git2::Repository::open(&fixture.source).unwrap();
+    let foreign = source.head().unwrap().target().unwrap();
+    let (repository, reference) = tracking(&fixture);
+    repository
+        .reference(&reference, foreign, true, "foreign tracking writer")
+        .unwrap();
+    let result = push(&fixture.store, &push_request(&fixture, head.clone())).unwrap();
+    assert!(result.sources[0].recovery.is_some());
+    assert_eq!(repository.refname_to_id(&reference).unwrap(), foreign);
+    assert_eq!(
+        registered_received_head(&fixture.review().bindings[0]).unwrap(),
+        Some(head.clone())
+    );
+    repository
+        .reference(
+            &reference,
+            git2::Oid::from_str(&previous).unwrap(),
+            true,
+            "restore owned expectation",
+        )
+        .unwrap();
+    assert_repaired(&fixture, &head);
+}
+
+fn claim_path(repository: &git2::Repository) -> PathBuf {
+    std::fs::read_dir(repository.commondir().join("build-review-tracking"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path()
+}
+
+#[test]
+fn partial_tracking_recovery_preserves_changed_claim_and_retains_proof() {
+    let fixture = Fixture::new();
+    let (previous, head) = partial_publication(&fixture);
+    let (repository, reference) = tracking(&fixture);
+    let path = claim_path(&repository);
+    let original = std::fs::read(&path).unwrap();
+    let mut claim: serde_json::Value = serde_json::from_slice(&original).unwrap();
+    claim["source_id"] = serde_json::json!("foreign-source");
+    let foreign = serde_json::to_vec(&claim).unwrap();
+    std::fs::write(&path, &foreign).unwrap();
+    let result = push(&fixture.store, &push_request(&fixture, head.clone())).unwrap();
+    assert!(result.sources[0].recovery.is_some());
+    assert_eq!(std::fs::read(&path).unwrap(), foreign);
+    assert_eq!(
+        repository.refname_to_id(&reference).unwrap().to_string(),
+        previous
+    );
+    assert_eq!(
+        registered_received_head(&fixture.review().bindings[0]).unwrap(),
+        Some(head.clone())
+    );
+    std::fs::write(path, original).unwrap();
+    assert_repaired(&fixture, &head);
+}
+
+#[test]
+fn stale_receiver_cannot_use_tracking_recovery_to_rewind_publication() {
+    let fixture = Fixture::new();
+    let (previous, head) = partial_publication(&fixture);
+    let mut request = push_request(&fixture, head.clone());
+    request.sources[0].force_with_lease = true;
+    git_in(
+        &fixture.source,
+        &["commit", "--allow-empty", "-m", "new receiver"],
+    );
+    let source = git2::Repository::open(&fixture.source).unwrap();
+    let advanced = source.head().unwrap().target().unwrap();
+    let binding = fixture.review().bindings.remove(0);
+    crate::reviews::publication::import_publication_commit(
+        &binding.receiving_repository,
+        &fixture.source,
+        &advanced.to_string(),
+    )
+    .unwrap();
+    let receiver = git2::Repository::open_bare(&binding.receiving_repository).unwrap();
+    receiver
+        .reference(
+            &binding.receiving_ref,
+            advanced,
+            true,
+            "new receiver writer",
+        )
+        .unwrap();
+    let result = push(&fixture.store, &request).unwrap();
+    assert_eq!(result.sources[0].status, PushStatus::Failed);
+    assert_eq!(
+        receiver.refname_to_id(&binding.receiving_ref).unwrap(),
+        advanced
+    );
+    let (repository, reference) = tracking(&fixture);
+    assert_eq!(
+        repository.refname_to_id(&reference).unwrap().to_string(),
+        previous
+    );
+}
+
+#[test]
+fn stale_working_head_and_review_version_cannot_repair_tracking() {
+    let fixture = Fixture::new();
+    let (previous, head) = partial_publication(&fixture);
+    let mut request = push_request(&fixture, head.clone());
+    request.expected_version -= 1;
+    assert!(push(&fixture.store, &request)
+        .unwrap_err()
+        .starts_with("stale_version:"));
+    request.expected_version += 1;
+    fixture.commit("advanced.txt");
+    let result = push(&fixture.store, &request).unwrap();
+    assert_eq!(result.sources[0].status, PushStatus::Failed);
+    let (repository, reference) = tracking(&fixture);
+    assert_eq!(
+        repository.refname_to_id(&reference).unwrap().to_string(),
+        previous
+    );
+    assert_eq!(
+        registered_received_head(&fixture.review().bindings[0]).unwrap(),
+        Some(head)
+    );
+}

@@ -9,7 +9,9 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 mod merge;
 mod opening;
 mod sync;
+mod tracking;
 pub(super) use sync::validate_received_snapshot;
+pub(in crate::store) use tracking::clear_tracking_expectations;
 
 impl Store {
     /// Branch allocation consults durable claims as well as refs on disk: an

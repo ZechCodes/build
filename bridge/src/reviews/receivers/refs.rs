@@ -1,9 +1,91 @@
 //! Literal review refs with registered, recoverable Git file locks.
 
-use super::locks::acquire_git_lock;
+use super::locks::{acquire_git_lock, OwnedGitFileLock};
 use std::fs::{self, File};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Only the holder of this repository's packed-refs lock can reuse its lease.
+pub(crate) struct PackedReferenceLease<'a> {
+    directory: PathBuf,
+    guard: &'a OwnedGitFileLock,
+}
+
+impl<'a> PackedReferenceLease<'a> {
+    fn new(repository: &git2::Repository, guard: &'a OwnedGitFileLock) -> Result<Self, String> {
+        Ok(Self {
+            directory: repository
+                .commondir()
+                .canonicalize()
+                .map_err(|error| error.to_string())?,
+            guard,
+        })
+    }
+
+    fn verify(&self, repository: &git2::Repository) -> Result<(), String> {
+        let directory = repository
+            .commondir()
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        if self.directory != directory {
+            return Err("review packed-reference lease belongs to another repository".into());
+        }
+        self.guard.verify_owned()
+    }
+
+    /// Settle an owned recovery expectation, also accepting an already-settled
+    /// tip. The actual ref is read only after acquiring its native Git lock.
+    pub(crate) fn settle_expected_reference_checked(
+        &self,
+        repository: &git2::Repository,
+        reference: &str,
+        expected: Option<git2::Oid>,
+        new: git2::Oid,
+        publish: impl FnOnce(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>,
+    ) -> Result<bool, String> {
+        self.update_checked(repository, reference, expected, new, true, publish)
+    }
+
+    fn update_checked(
+        &self,
+        repository: &git2::Repository,
+        reference: &str,
+        expected: Option<git2::Oid>,
+        new: git2::Oid,
+        accept_settled: bool,
+        publish: impl FnOnce(&mut dyn FnMut() -> Result<(), String>) -> Result<(), String>,
+    ) -> Result<bool, String> {
+        validate_reference(reference)?;
+        self.verify(repository)?;
+        let directory = repository.commondir();
+        let (guard, mut file) =
+            acquire_git_lock(directory, Path::new(&format!("{reference}.lock")))?;
+        guard.verify_owned()?;
+        let current = reference_target(repository, reference)?;
+        if current != expected && !(accept_settled && current == Some(new)) {
+            return Err(format!(
+                "stale: review receiving lease changed: {reference}"
+            ));
+        }
+        read_regular_optional(&directory.join(reference))?;
+        repository
+            .find_commit(new)
+            .map_err(|error| error.to_string())?;
+        let unchanged = current == Some(new);
+        publish(&mut || {
+            self.verify(repository)?;
+            guard.verify_owned()?;
+            if unchanged {
+                return Ok(());
+            }
+            file.write_all(format!("{new}\n").as_bytes())
+                .and_then(|()| file.sync_all())
+                .map_err(|error| error.to_string())?;
+            guard.publish_retaining_lock(&directory.join(reference))
+        })?;
+        Ok(!unchanged)
+    }
+}
 
 /// Hold the exact working branch tip while an explicit publication imports and
 /// publishes that immutable commit. Native Git writers honor these locks too.
@@ -11,7 +93,7 @@ pub(crate) fn with_expected_reference_locked<T>(
     repository: &git2::Repository,
     reference: &str,
     expected: git2::Oid,
-    locked: impl FnOnce() -> Result<T, String>,
+    locked: impl FnOnce(&PackedReferenceLease<'_>) -> Result<T, String>,
 ) -> Result<T, String> {
     validate_reference(reference)?;
     let directory = repository.commondir();
@@ -22,7 +104,8 @@ pub(crate) fn with_expected_reference_locked<T>(
     if reference_target(repository, reference)? != Some(expected) {
         return Err(format!("stale: review working branch changed: {reference}"));
     }
-    let result = locked();
+    let lease = PackedReferenceLease::new(repository, &packed_guard)?;
+    let result = locked(&lease);
     drop(guard);
     drop(packed_guard);
     result
@@ -40,31 +123,8 @@ pub(crate) fn update_expected_reference_checked(
     validate_reference(reference)?;
     let directory = repository.commondir();
     let (packed_guard, _) = acquire_git_lock(directory, Path::new("packed-refs.lock"))?;
-    let (guard, mut file) = acquire_git_lock(directory, Path::new(&format!("{reference}.lock")))?;
-    packed_guard.verify_owned()?;
-    guard.verify_owned()?;
-    if reference_target(repository, reference)? != expected {
-        return Err(format!(
-            "stale: review receiving lease changed: {reference}"
-        ));
-    }
-    read_regular_optional(&directory.join(reference))?;
-    repository
-        .find_commit(new)
-        .map_err(|error| error.to_string())?;
-    let unchanged = expected == Some(new);
-    publish(&mut || {
-        packed_guard.verify_owned()?;
-        guard.verify_owned()?;
-        if unchanged {
-            return Ok(());
-        }
-        file.write_all(format!("{new}\n").as_bytes())
-            .and_then(|()| file.sync_all())
-            .map_err(|error| error.to_string())?;
-        guard.publish_retaining_lock(&directory.join(reference))
-    })?;
-    Ok(!unchanged)
+    PackedReferenceLease::new(repository, &packed_guard)?
+        .update_checked(repository, reference, expected, new, false, publish)
 }
 
 pub(crate) fn create_expected_reference(

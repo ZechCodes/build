@@ -182,7 +182,7 @@ impl Store {
     }
 }
 
-fn require_publication(
+pub(super) fn require_publication(
     tx: &Transaction,
     task_id: &str,
     expected_version: u64,

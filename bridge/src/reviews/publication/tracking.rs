@@ -95,27 +95,43 @@ pub(super) fn publish(binding: &ReviewBranchBinding) -> Result<(), String> {
     )
 }
 
-/// A successful explicit receiver push advances its already-owned upstream,
-/// preserving any tracking ref another writer changed in the meantime.
-pub(super) fn advance(
+pub(super) fn fingerprint(
+    repository: &git2::Repository,
     binding: &ReviewBranchBinding,
+) -> Result<String, String> {
+    let claim = TrackingClaim::for_binding(repository, binding)?;
+    require_claim(&claim)?;
+    validate_tracking_alias(binding, true)?;
+    claim_fingerprint(&claim)
+}
+
+fn claim_fingerprint(claim: &TrackingClaim) -> Result<String, String> {
+    let bytes = serde_json::to_vec(claim).map_err(|error| error.to_string())?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+/// Settle only the durable owned CAS proof while publication's source and
+/// receiver Git leases and metadata version are still fenced.
+pub(super) fn advance(
+    repository: &git2::Repository,
+    binding: &ReviewBranchBinding,
+    packed: &refs::PackedReferenceLease<'_>,
+    fingerprint: &str,
     expected: Option<&str>,
     head: &str,
 ) -> Result<(), String> {
-    let repository =
-        git2::Repository::open(&binding.working_repository).map_err(|error| error.to_string())?;
-    let claim = TrackingClaim::for_binding(&repository, binding)?;
+    let claim = TrackingClaim::for_binding(repository, binding)?;
     require_claim(&claim)?;
+    if claim_fingerprint(&claim)? != fingerprint {
+        return Err("review tracking recovery ownership changed".into());
+    }
     let head = git2::Oid::from_str(head).map_err(|error| error.to_string())?;
-    let mut expected = expected
+    let expected = expected
         .map(git2::Oid::from_str)
         .transpose()
         .map_err(|error| error.to_string())?;
-    if repository.refname_to_id(&claim.tracking_ref).ok() == Some(head) {
-        expected = Some(head);
-    }
-    refs::update_expected_reference_checked(
-        &repository,
+    packed.settle_expected_reference_checked(
+        repository,
         &claim.tracking_ref,
         expected,
         head,

@@ -4,6 +4,9 @@ use crate::reviews::model::ReviewPublicationReason;
 use crate::reviews::sync::reconcile::tests::Fixture;
 use crate::tracker::Actor;
 
+#[path = "tests/tracking_recovery.rs"]
+mod tracking_recovery;
+
 fn push_request(fixture: &Fixture, head: String) -> PushRequest {
     let review = fixture.review();
     PushRequest {

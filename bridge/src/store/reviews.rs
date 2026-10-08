@@ -16,6 +16,7 @@ use std::path::PathBuf;
 mod actions;
 pub(crate) mod lifecycle;
 mod pull_requests;
+pub(super) use pull_requests::clear_tracking_expectations;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct ReviewHeader {

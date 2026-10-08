@@ -6,6 +6,11 @@ use std::cell::Cell;
 
 const RECOVERY: &str = "Refresh review and receiver state before retrying publication.";
 
+struct PublicationSuccess {
+    changed: bool,
+    recovery: Option<String>,
+}
+
 pub(super) fn push(
     store: &Store,
     request: &PushRequest,
@@ -31,7 +36,7 @@ pub(super) fn push(
             .find(|binding| binding.directory_id == source.directory_id)
             .ok_or("invalid review params: Git directory is not bound")?;
         let result = publish_one(store, request, source, binding, check);
-        sources.push(outcome(source, binding, result));
+        sources.push(outcome(source, result));
     }
     let recovery = match reconcile_held_as(store, &request.task_id, &mut journal, &request.actor) {
         Ok(result) if result.retry => Some(
@@ -57,7 +62,7 @@ fn publish_one(
     source: &PushSource,
     binding: &ReviewBranchBinding,
     check: &dyn Fn() -> Result<(), String>,
-) -> Result<bool, PublicationError> {
+) -> Result<PublicationSuccess, PublicationError> {
     receivers::validate_binding_receiver(binding).map_err(PublicationError::Failed)?;
     publication::validate_bound_remote(binding).map_err(PublicationError::Failed)?;
     let head = oid(&source.expected_head).map_err(PublicationError::Failed)?;
@@ -99,13 +104,17 @@ fn publish_locked(
     receiver: &git2::Repository,
     heads: (Option<git2::Oid>, git2::Oid),
     check: &dyn Fn() -> Result<(), String>,
-) -> Result<bool, PublicationError> {
+) -> Result<PublicationSuccess, PublicationError> {
     let (expected, head) = heads;
     let applied = Cell::new(false);
-    let result =
-        refs::with_expected_reference_locked(working, &binding.dedicated_branch_ref, head, || {
+    let result = refs::with_expected_reference_locked(
+        working,
+        &binding.dedicated_branch_ref,
+        head,
+        |packed| {
             validate_head(working, binding, head)?;
-            refs::update_expected_reference_checked(
+            let mut recovery = None;
+            let changed = refs::update_expected_reference_checked(
                 receiver,
                 &binding.receiving_ref,
                 expected,
@@ -114,20 +123,55 @@ fn publish_locked(
                     check()?;
                     receivers::validate_binding_receiver(binding)?;
                     publication::validate_bound_remote(binding)?;
-                    store
+                    let fingerprint = publication::tracking::fingerprint(working, binding)?;
+                    let expectation = store
+                        .prepare_review_tracking_expectation(
+                            &request.task_id,
+                            request.expected_version,
+                            &binding.directory_id,
+                            &fingerprint,
+                            expected.as_ref().map(|head| head.to_string()).as_deref(),
+                            &head.to_string(),
+                        )
+                        .map_err(|error| error.to_string())?;
+                    let tracking_error = store
                         .with_review_publication_version(
                             &request.task_id,
                             request.expected_version,
                             || {
                                 publish()?;
                                 applied.set(expected != Some(head));
-                                Ok(())
+                                Ok(publication::tracking::advance(
+                                    working,
+                                    binding,
+                                    packed,
+                                    &expectation.claim_fingerprint,
+                                    expectation.expected_tracking_head.as_deref(),
+                                    &expectation.received_head,
+                                )
+                                .err())
                             },
                         )
-                        .map_err(|error| error.to_string())
+                        .map_err(|error| error.to_string())?;
+                    let tracking_error = match tracking_error {
+                        Some(error) => Some(error),
+                        None => store
+                            .clear_review_tracking_expectation(
+                                &request.task_id,
+                                request.expected_version,
+                                &binding.directory_id,
+                                &expectation.token,
+                            )
+                            .err()
+                            .map(|error| error.to_string()),
+                    };
+                    recovery = tracking_error.map(tracking_recovery);
+                    Ok(())
                 },
-            )
-        });
+            )?;
+            Ok(PublicationSuccess { changed, recovery })
+        },
+    );
     result.map_err(|error| {
         if applied.get() {
             PublicationError::Interrupted(error)
@@ -182,21 +226,19 @@ fn validate_fast_forward(
 
 fn outcome(
     source: &PushSource,
-    binding: &ReviewBranchBinding,
-    result: Result<bool, PublicationError>,
+    result: Result<PublicationSuccess, PublicationError>,
 ) -> PushOutcome {
     match result {
-        Ok(changed) => PushOutcome {
+        Ok(success) => PushOutcome {
             directory_id: source.directory_id.clone(),
-            status: if changed {
+            status: if success.changed {
                 PushStatus::Published
             } else {
                 PushStatus::Unchanged
             },
             head: Some(source.expected_head.to_ascii_lowercase()),
             error: None,
-            recovery: publication::tracking::advance(binding, source.expected_received_head.as_deref(), &source.expected_head)
-                .err().map(|error| format!("Received publication succeeded; owned upstream tracking needs recovery: {} {RECOVERY}", crate::source_sync::without_credentials(&error))),
+            recovery: success.recovery,
         },
         Err(error) => PushOutcome {
             directory_id: source.directory_id.clone(),
@@ -210,4 +252,11 @@ fn outcome(
             recovery: Some(RECOVERY.into()),
         },
     }
+}
+
+fn tracking_recovery(error: String) -> String {
+    format!(
+        "Received publication succeeded; owned upstream tracking needs recovery: {} {RECOVERY}",
+        crate::source_sync::without_credentials(&error)
+    )
 }
